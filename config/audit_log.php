@@ -51,7 +51,7 @@ return [
     | Criterio: se excluye lo que NO es información del negocio, o lo que tiene un volumen tal que
     | el registro pesaría más que el dato. Un nombre de clase mal escrito acá es una exclusión que
     | no excluye nada y nadie se entera: por eso hay un test
-    | (tests/Feature/AuditoriaDeCambios/Exclusiones_bien_escritas_Test) que comprueba que cada
+    | (tests/Feature/AuditoriaDeCambios/ExclusionesBienEscritasTest) que comprueba que cada
     | clase existe, que tiene motivo, y que ninguna de las que NUNCA se pueden excluir (Article,
     | Sale, Client, CurrentAcount, StockMovement…) está en esta lista.
     */
@@ -68,7 +68,9 @@ return [
         \App\Models\SyncedVersionNotificationRead::class => 'Marca de "novedad leída" por usuario: ruido de navegación.',
         \App\Models\VersionSessionTransfer::class       => 'Token de transferencia de sesión entre versiones del SPA: efímero y sensible, sin valor de auditoría.',
         \App\Models\DemoIngresoToken::class             => 'Token de ingreso a una demo: efímero y sensible.',
-        \App\Models\WhatsappChatMessage::class          => 'Mensajes del chat de WhatsApp: volumen alto y el contenido ya vive en su propia tabla.',
+        \App\Models\WhatsappChatMessage::class          => 'Se excluye por volumen: es una fila por cada mensaje de cada chat. El contenido no se pierde, vive en el propio chat y en su tabla; WhatsappChat sí se audita.',
+        \App\Models\ImageAssignmentRun::class           => 'Estado de una corrida de asignación de imágenes: se actualiza sin parar mientras corre. La operación ya queda en su propia fila de corrida.',
+        \App\Models\ImageAssignmentItem::class          => 'Un renglón por artículo dentro de una corrida de asignación de imágenes: estado de proceso, el volumen pesaría más que el dato.',
 
         /* ---- Telemetría / tracking de alto volumen ---- */
         \App\Models\BuyerTrackingEvent::class           => 'Telemetría de la tienda: una fila por evento de cada visitante.',
@@ -80,7 +82,7 @@ return [
         \App\Models\AiTokenUsage::class                 => 'Consumo de tokens de IA: una fila por llamada al modelo.',
         \App\Models\ArticleImageSearchAttempt::class    => 'Intentos de búsqueda de imágenes por artículo: una fila por intento automático.',
         \App\Models\GeocoderCounter::class              => 'Contador de llamadas al geocodificador.',
-        \App\Models\Impression::class                   => 'Impresiones de contenido en la tienda: una fila por vista.',
+        \App\Models\Impression::class                   => 'Registra qué comprobante de una venta se imprimió: ruido de bajo valor, una fila por cada impresión.',
         \App\Models\TableColumnPreference::class        => 'Preferencia de columnas de una tabla: se reescribe al mover una columna.',
         \App\Models\VenderKeyboardShortcut::class       => 'Atajos de teclado de la pantalla de vender: preferencia personal.',
 
@@ -103,7 +105,11 @@ return [
         \App\Models\MeliBuyingMode::class               => 'Catálogo de Mercado Libre.',
         \App\Models\MeliItemCondition::class            => 'Catálogo de Mercado Libre.',
         \App\Models\MeliListingType::class              => 'Catálogo de Mercado Libre.',
-        \App\Models\Provincia::class                    => 'Catálogo geográfico global.',
+        /*
+         * `Provincia` NO se excluye: tiene `user_id` y su `Route::resource('provincia')` con
+         * store/update/destroy, o sea que la editan usuarios. Solo `Provicia` (el modelo con el
+         * typo, sin referencias en el código) queda afuera.
+         */
         \App\Models\Provicia::class                     => 'Catálogo geográfico global (el modelo se llama así, con el typo).',
         \App\Models\Localidad::class                    => 'Catálogo geográfico global.',
         \App\Models\PaisExportacion::class              => 'Catálogo de países para exportación.',
@@ -232,6 +238,9 @@ return [
     |  - remember_token: lo rota Laravel al hacer login/logout.
     |  - last_used_at: Sanctum lo actualiza en cada request autenticado con token.
     |  - last_seen_at: latido de los agentes de impresión.
+    |  - last_message_at / last_inbound_at: cada mensaje de WhatsApp o del chat IA los reescribe
+    |    en `whatsapp_chats` y `ai_conversations` (y last_message_at en `buyers`): sin ignorarlos,
+    |    cada mensaje dejaba una fila `updated` que no dice nada del negocio.
     */
     'campos_ignorados' => [
         'created_at',
@@ -241,6 +250,8 @@ return [
         'remember_token',
         'last_used_at',
         'last_seen_at',
+        'last_message_at',
+        'last_inbound_at',
     ],
 
     /*
@@ -287,6 +298,7 @@ return [
         'ai_auto_send_token',
         'ai_schedule_token',
         'eventos_token',
+        'verification_code',
     ],
 
     /*
@@ -324,11 +336,42 @@ return [
     | max_filas_por_lote:  máximo de filas de auditoría por request o por job. Al pasarlo se
     |                      escribe UNA fila `truncated` y el resto solo se cuenta. Es la red de
     |                      seguridad contra una operación masiva que nadie previó: acota el peor
-    |                      caso, no lo oculta.
+    |                      caso, no lo oculta. Es 5000 y no 500 porque con 500 una venta grande
+    |                      (150+ renglones, cada uno con su artículo, su StockMovement y su
+    |                      pivote) agotaba el cupo antes de llegar a lo último que hace: caja, cuenta
+    |                      corriente, el cierre de la venta. Además, los modelos de
+    |                      `modelos_sin_tope` (más abajo) nunca se omiten.
     */
     'max_largo_valor'    => 1000,
     'max_bytes_fila'     => 60000,
-    'max_filas_por_lote' => 500,
+    'max_filas_por_lote' => 5000,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Modelos que el tope de filas por lote NUNCA omite
+    |--------------------------------------------------------------------------
+    |
+    | Plata y stock. Siguen contando para el marco (`filas`) pero se escriben SIEMPRE aunque el
+    | lote ya haya pasado `max_filas_por_lote`. Sin esta excepción, la venta de 150+ renglones
+    | perdía JUSTO las filas de plata: renglones y artículos llenaban el cupo, y lo último de la
+    | venta (Caja, CurrentAcount, Sale updated...) era lo que quedaba afuera, que es lo que más
+    | importa auditar. Es un conjunto acotado (una fila por movimiento de plata o de stock), no
+    | el volumen que el tope quiere frenar.
+    */
+    'modelos_sin_tope' => [
+        \App\Models\Sale::class,
+        \App\Models\CurrentAcount::class,
+        \App\Models\MovimientoCaja::class,
+        \App\Models\Payment::class,
+        \App\Models\Caja::class,
+        \App\Models\AperturaCaja::class,
+        \App\Models\Cheque::class,
+        \App\Models\Expense::class,
+        \App\Models\ProviderOrder::class,
+        \App\Models\Budget::class,
+        \App\Models\StockMovement::class,
+        \App\Models\ArticlePurchase::class,
+    ],
 
     /*
     |--------------------------------------------------------------------------

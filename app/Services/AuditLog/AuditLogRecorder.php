@@ -34,8 +34,31 @@ use Illuminate\Support\Facades\Log;
  * Reglas del diseño, en el orden en que se aplican (ver `procesar()`):
  *  1. Interruptor general. 2. Modelos excluidos. 3. Silencio de operación masiva (jobs
  *  `jobs_masivos`: una fila por OPERACIÓN, no por artículo). 4. En un `updated`, solo cuentan los
- *  campos que cambiaron y no son ignorados. 5. Los campos sensibles se guardan como "[oculto]".
- *  6. Topes de tamaño por valor y por fila. 7. Tope de filas por lote. 8. INSERT inmediato.
+ *  campos que cambiaron y no son ignorados. 5. Tope de filas por lote (los modelos de plata y
+ *  stock, `modelos_sin_tope`, nunca se omiten). 6. Los campos sensibles se guardan como
+ *  "[oculto]" y hay topes de tamaño por valor y por fila. 7. INSERT inmediato.
+ *
+ * Límites conocidos (lo que esta auditoría NO hace; declarado, no escondido):
+ *  - `old_values` sale de la copia EN MEMORIA del modelo (`getRawOriginal()`), no de la base. Con un
+ *    `increment()` concurrente de otro proceso, o con un `DB::raw('stock - 1')` asignado al
+ *    atributo, puede diferir de lo que había en la base (y la expresión `DB::raw` asignada queda
+ *    como texto en `new_values`).
+ *  - Sin actor (cola, consola) y con un modelo que no tiene la columna `user_id`, la fila queda con
+ *    `user_id = NULL` (son 107 de los modelos auditados). El dueño se recupera por el `batch_uuid`:
+ *    otras filas del mismo lote sí lo traen.
+ *  - `actor_id` es NULL en TODOS los jobs de cola: el worker no tiene sesión, aunque el job reciba
+ *    un `auth_user_id`.
+ *  - `dispatchNow()` / `dispatchSync()` de un job de `jobs_masivos` esquiva el silencio: no dispara
+ *    los eventos de la cola (`JobProcessing`), así que sus filas se auditan una por una (las
+ *    acota el tope).
+ *  - El `$hidden` del modelo enmascara datos de negocio además de secretos (p. ej. `Envio.respuesta`
+ *    y `Envio.bultos`): en esos campos queda constancia de que cambiaron, pero no el valor.
+ *  - La IP sale de `Request::ip()`. Con `TrustProxies '*'` un cliente puede falsificarla mandando
+ *    `X-Forwarded-For` si delante no hay un proxy que sobrescriba ese header.
+ *  - El contador del tope de filas cuenta filas que después pueden revertirse con un rollback (la
+ *    fila revertida desaparece pero ya ocupó un lugar del cupo del lote).
+ *  - Lo que no pasa por eventos de Eloquent (query builder, `attach()/sync()`, `saveQuietly()`):
+ *    ver `huecos.md`.
  *
  * 🔴 NUNCA rompe la operación de negocio: todo pasa dentro de un `try/catch (\Throwable)`. Un
  * fallo de auditoría (tabla inexistente en un cliente a mitad de upgrade, base saturada) deja un
@@ -131,8 +154,19 @@ class AuditLogRecorder
         try {
             self::procesar($evento, $modelo);
         } catch (\Throwable $e) {
-            // 🔴 Un fallo de auditoría no rompe jamás la operación de negocio.
+
+            // 🔴 EXCEPCIÓN a "no rompe jamás": un deadlock (1213) o un lock wait timeout (1205) SE
+            // RELANZA. En MySQL un deadlock ya deshizo la transacción del negocio, y tragarlo
+            // haría que Laravel siguiera creyéndola viva: `DB::transaction($callback, $intentos)`
+            // nunca vería la excepción y no reintentaría, y lo que siga se escribiría fuera de
+            // la transacción. Hay que dejar que el negocio se entere y reintente como siempre.
+            if (self::es_deadlock_o_lock_wait($e)) {
+                throw $e;
+            }
+
+            // 🔴 Cualquier otro fallo de auditoría no rompe jamás la operación de negocio.
             self::avisar_falla($e);
+
         } finally {
             self::$trabajando = false;
         }
@@ -159,6 +193,13 @@ class AuditLogRecorder
 
         // Clase del modelo que cambió.
         $clase = get_class($modelo);
+
+        // 🔴 La auditoría no se audita a sí misma, y eso va EN EL CÓDIGO y no solo en el config: si
+        // alguien vaciara `modelos_excluidos` (o lo pisara en un .env de un cliente), cada fila de
+        // audit_logs que se toque por Eloquent generaría otra fila de auditoría de sí misma.
+        if ($clase === 'App\Models\AuditLog') {
+            return;
+        }
 
         // 2. Excluidos (clase => motivo).
         $excluidos = config('audit_log.modelos_excluidos', []);
@@ -216,20 +257,32 @@ class AuditLogRecorder
             }
         }
 
-        // 5 y 6. Sensibles ocultos, valores largos cortados, JSON con tope de bytes.
-        $ocultos_del_modelo = $modelo->getHidden();
-        $json_viejos = is_null($viejos) ? null : self::serializar($viejos, $ocultos_del_modelo);
-        $json_nuevos = is_null($nuevos) ? null : self::serializar($nuevos, $ocultos_del_modelo);
+        // 5. Tope de filas por lote.
+        //
+        // Va ANTES de serializar() a propósito: serializar() oculta sensibles, corta strings y arma
+        // el JSON, que es lo caro de la fila. Un lote que ya pasó el tope descarta todo lo que
+        // sigue, y no tiene sentido pagar el JSON de lo que se va a tirar.
+        $maximo = (int) config('audit_log.max_filas_por_lote', 5000);
 
-        // 7. Tope de filas por lote.
-        $maximo = (int) config('audit_log.max_filas_por_lote', 500);
+        // 🔴 Los modelos de plata y stock (`modelos_sin_tope`) se escriben SIEMPRE, aunque el lote
+        // ya haya pasado el tope: siguen contando para el marco pero nunca se omiten. Con un tope
+        // parejo para todos, una venta de 150 renglones agotaba el cupo con los renglones y los
+        // artículos y perdía JUSTO las últimas filas (Caja, CurrentAcount, Sale updated...), que
+        // son las que más importa poder auditar. Es un conjunto acotado por diseño (una fila por
+        // movimiento de plata), no el volumen que el tope quiere frenar.
+        $sin_tope = in_array($clase, config('audit_log.modelos_sin_tope', []), true);
 
-        if ($maximo > 0 && $marco->filas >= $maximo) {
+        if ($maximo > 0 && $marco->filas >= $maximo && !$sin_tope) {
             self::omitir($marco, $modelo, $clase, $maximo);
             return;
         }
 
-        // 8. Escritura.
+        // 6. Sensibles ocultos, valores largos cortados, JSON con tope de bytes.
+        $ocultos_del_modelo = $modelo->getHidden();
+        $json_viejos = is_null($viejos) ? null : self::serializar($viejos, $ocultos_del_modelo);
+        $json_nuevos = is_null($nuevos) ? null : self::serializar($nuevos, $ocultos_del_modelo);
+
+        // 7. Escritura.
         self::insertar($marco, $modelo, $clase, $evento, $json_viejos, $json_nuevos);
     }
 
@@ -340,7 +393,7 @@ class AuditLogRecorder
                 ->where('id', $marco->id_truncada)
                 ->update([
                     'new_values' => json_encode([
-                        'limite'   => (int) config('audit_log.max_filas_por_lote', 500),
+                        'limite'   => (int) config('audit_log.max_filas_por_lote', 5000),
                         'omitidas' => (int) $marco->omitidas,
                     ]),
                 ]);
@@ -628,6 +681,12 @@ class AuditLogRecorder
      * Una vez por proceso y no una por fila: con la tabla ausente, una importación grande dejaría
      * un warning por cada artículo.
      *
+     * 🔴 El log NO lleva `$e->getMessage()`: en una QueryException ese mensaje trae el SQL completo
+     * CON SUS BINDINGS, o sea los valores de la fila que se estaba auditando (nombres, DNI,
+     * precios), y terminarían en laravel.log en claro, saltándose el ocultamiento de campos
+     * sensibles. Se loguea solo la clase de la excepción, su código y el texto del DRIVER
+     * (`errorInfo[2]`, p. ej. "Table 'x' doesn't exist"), que describe el error sin la fila.
+     *
      * @param \Throwable $e
      * @return void
      */
@@ -644,11 +703,32 @@ class AuditLogRecorder
             }
 
             if (!AuditContext::aviso_ya_emitido()) {
-                Log::warning('AuditLogRecorder: no se pudo registrar la auditoría (la operación de negocio siguió): ' . $e->getMessage());
+                // Texto del driver si existe (no lleva bindings); si no, solo el código.
+                $detalle = ($e instanceof QueryException && isset($e->errorInfo[2]))
+                    ? (string) $e->errorInfo[2]
+                    : 'código ' . $e->getCode();
+
+                Log::warning(
+                    'AuditLogRecorder: no se pudo registrar la auditoría (la operación de negocio siguió): '
+                    . get_class($e) . ' [' . $e->getCode() . '] ' . $detalle
+                );
             }
 
         } catch (\Throwable $ignorada) {
             // Ni siquiera el aviso puede romper al negocio.
         }
+    }
+
+    /**
+     * Indica si la excepción es un deadlock (1213) o un lock wait timeout (1205) de MySQL.
+     *
+     * @param \Throwable $e
+     * @return bool
+     */
+    protected static function es_deadlock_o_lock_wait(\Throwable $e)
+    {
+        return $e instanceof QueryException
+            && isset($e->errorInfo[1])
+            && in_array((int) $e->errorInfo[1], [1213, 1205], true);
     }
 }
