@@ -54,6 +54,11 @@ class ArticleVariantController extends Controller
         $model->oculta = $request->oculta;
         $model->save();
 
+        // Se devuelve con las mismas relaciones que el resto de los endpoints de variantes (withAll):
+        // la SPA reemplaza la variante del store con esta respuesta, y sin `addresses` la fila de la
+        // grilla revienta al renderizar apenas se habilita o se oculta una variante.
+        $model->load('article_property_values', 'addresses');
+
         return response()->json(['model' => $model], 200);
     }
 
