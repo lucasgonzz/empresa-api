@@ -180,9 +180,10 @@ class Saneo_causa_c_costo_total_con_firma_sana_Test extends TestCase
     protected function fila($amount, $price, $cost, $unidades, $costo_real)
     {
         return (object) [
-            'linea_id' => 1,
-            'sale_id' => 1,
-            'article_id' => 1,
+            // Ids que no existen: la condicion 6 (otra linea con el mismo costo) no encuentra nada.
+            'linea_id' => -1,
+            'sale_id' => -1,
+            'article_id' => -1,
             'amount' => $amount,
             'price' => $price,
             'cost' => $cost,
@@ -409,6 +410,71 @@ class Saneo_causa_c_costo_total_con_firma_sana_Test extends TestCase
         $analisis = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
         $this->assertSame('descartar', $analisis['accion']);
         $this->assertSame('pivot_con_unidades_individuales_historicas_distintas', $analisis['motivo']);
+    }
+
+    /**
+     * Guardas del verificador independiente (30/9/2026), medidas en ferretotal: una correccion que sigue
+     * en perdida no se escribe (linea viva 176494) y un margen resultante fuera de lo creible tampoco.
+     *
+     * @group sales
+     * @test
+     */
+    public function no_escribe_una_correccion_que_sigue_en_perdida_ni_con_margen_absurdo()
+    {
+        // Candidato 1000 >= precio 900: seguiria perdiendo plata.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($this->fila(6, 900, 6000, null, 1000), true, true, 4, true);
+        $this->assertNotContains('C', $analisis['causas'], 'Una correccion que sigue en perdida no se escribe');
+
+        // Candidato 1000 con precio 2500: margen 2,5 > 2,0, sin evidencia.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($this->fila(6, 2500, 6000, null, 1000), true, true, 4, true);
+        $this->assertNotContains('C', $analisis['causas'], 'Un margen mayor a 2,0 no se acepta');
+
+        // Y el caso sano de siempre (margen 1,5) sigue entrando.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($this->fila(6, 1500, 6000, null, 1000), true, true, 4, true);
+        $this->assertSame(['C'], $analisis['causas']);
+    }
+
+    /**
+     * Condicion 6: si otra venta del mismo articulo tiene el MISMO costo con OTRA cantidad, el costo no es
+     * proporcional a la cantidad (art. 2147 de ferretotal: 71.002,80 en diez lineas de cantidades 1,5 a
+     * 30) y no se toca. Con la misma cantidad no hay contradiccion y se corrige.
+     *
+     * @group sales
+     * @test
+     */
+    public function no_corrige_si_otra_linea_del_articulo_repite_el_costo_con_otra_cantidad()
+    {
+        $article = $this->crear_articulo(['costo_real' => 1000]);
+
+        $venta_a = $this->crear_venta();
+        $venta_b = $this->crear_venta();
+
+        $this->adjuntar_linea_sana($venta_a, $article, 6, 1500, 6000);
+        // Mismo costo guardado, otra cantidad: el 6000 no puede ser "1000 x cantidad" en las dos.
+        $this->adjuntar_linea_sana($venta_b, $article, 4, 1500, 6000);
+
+        $this->correr_saneo($venta_a, true, 'c');
+
+        $this->assertEquals(6000, (float) $this->linea($venta_a, $article)->cost, 'Costo repetido con otra cantidad: no se toca');
+    }
+
+    /**
+     * @group sales
+     * @test
+     */
+    public function corrige_si_la_otra_linea_del_articulo_tiene_la_misma_cantidad_y_el_mismo_costo()
+    {
+        $article = $this->crear_articulo(['costo_real' => 1000]);
+
+        $venta_a = $this->crear_venta();
+        $venta_b = $this->crear_venta();
+
+        $this->adjuntar_linea_sana($venta_a, $article, 6, 1500, 6000);
+        $this->adjuntar_linea_sana($venta_b, $article, 6, 1500, 6000);
+
+        $this->correr_saneo($venta_a, true, 'c');
+
+        $this->assertEquals(1000, (float) $this->linea($venta_a, $article)->cost, 'Mismo costo con la misma cantidad es coherente');
     }
 
     /**

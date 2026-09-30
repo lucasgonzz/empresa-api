@@ -77,6 +77,13 @@ class CostoDeLineaDeVentaHelper
     const FICHA_BANDA_MAXIMA = 2.5;
 
     /**
+     * Tope del margen que deja el costo reconstruido por la causa C (`precio / candidato`). Por encima
+     * el costo corregido queda demasiado barato para creerle: en ferretotal (margen 1,50) las líneas
+     * genuinas caen entre 1,47 y 1,53, y las que la regla subestimaba daban 1,9 a 3,0.
+     */
+    const MARGEN_MAXIMO_CAUSA_C = 2.0;
+
+    /**
      * Query base de las líneas de venta de UN cliente, con las columnas que necesita `analizar()`.
      *
      * 🔴 El `join` a `articles` NO es decorativo y es una de las tres divergencias que se cerraron:
@@ -483,6 +490,16 @@ class CostoDeLineaDeVentaHelper
      *      (cantidad 2, p. ej.) es ambiguo y no se adivina; si la ficha no sirve (sin `costo_real`, en
      *      dólares, o que cambió varias veces) tampoco se adivina.
      *
+     *   4. (verificador independiente, 30/9/2026) El costo reconstruido tiene que dejar la línea EN
+     *      GANANCIA (`candidato < price`): una "corrección" que sigue perdiendo plata no tiene evidencia,
+     *      y corregida así se falsea la ganancia de una venta a pérdida real (línea viva 176494).
+     *   5. El margen resultante no pasa de `MARGEN_MAXIMO_CAUSA_C` (`price / candidato`).
+     *   6. No existe otra línea del MISMO artículo y del mismo dueño con el mismo costo (±0,5 %) y OTRA
+     *      cantidad. Un costo que es proporcional a la cantidad no se repite con cantidades distintas;
+     *      si se repite, o es un costo unitario mal cargado en la ficha de entonces (art. 2147: 71.002,80
+     *      en diez líneas de cantidades 1,5 a 30) o la cantidad cambió después de calcular el costo.
+     *      Es la única condición que consulta la base, y va última.
+     *
      * No se usa "costo > precio" como criterio: una venta legítima a pérdida con `amount > 1` cuyo costo
      * unitario real supera el doble del precio no cumple 3 (el costo crudo encaja con la ficha).
      *
@@ -534,7 +551,51 @@ class CostoDeLineaDeVentaHelper
             return null;
         }
 
-        return $candidato;
+        // Una corrección que sigue en pérdida, o con un margen fuera de lo creíble, no tiene evidencia.
+        if ($candidato >= $price || $price / $candidato > self::MARGEN_MAXIMO_CAUSA_C) {
+            return null;
+        }
+
+        if (self::hay_otra_linea_con_el_mismo_costo_y_otra_cantidad($fila, $cost, $amount)) {
+            return null;
+        }
+
+        return round($candidato, 2);
+    }
+
+    /**
+     * ¿Hay otra línea (de una venta no borrada, del mismo dueño y del mismo artículo) con el mismo costo
+     * guardado y otra cantidad? Ver la condición 6 de `probar_causa_c()`.
+     *
+     * Sin `sale_id` / `article_id` / `linea_id` en la fila, o con una venta que no existe, devuelve false
+     * (nada con qué contrastar; las otras cinco condiciones ya se cumplieron).
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float $amount
+     * @return bool
+     */
+    private static function hay_otra_linea_con_el_mismo_costo_y_otra_cantidad($fila, $cost, $amount)
+    {
+        if (!isset($fila->sale_id) || !isset($fila->article_id) || !isset($fila->linea_id)) {
+            return false;
+        }
+
+        $user_id = DB::table('sales')->where('id', $fila->sale_id)->value('user_id');
+
+        if (is_null($user_id)) {
+            return false;
+        }
+
+        return DB::table('article_sale')
+            ->join('sales', 'sales.id', '=', 'article_sale.sale_id')
+            ->whereNull('sales.deleted_at')
+            ->where('sales.user_id', $user_id)
+            ->where('article_sale.article_id', $fila->article_id)
+            ->where('article_sale.id', '!=', $fila->linea_id)
+            ->whereRaw('ABS(article_sale.cost - ?) <= ?', [$cost, abs($cost) * 0.005])
+            ->whereRaw('ABS(article_sale.amount - ?) > 0.0001', [$amount])
+            ->exists();
     }
 
     /**
