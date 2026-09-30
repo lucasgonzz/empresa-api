@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\combo;
 
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Models\Combo;
 use Illuminate\Support\Facades\Log;
 
@@ -174,21 +175,39 @@ class ComboCostoDeVentaHelper {
         }
 
         /*
-         * 🔴 Venta en dólares sin cotización: `getCost()` dividiría por cero (en PHP 7.4 es INF con
-         * un warning, y un INF en una columna DECIMAL rompe el guardado de la venta entera). Un
-         * costo que no se puede expresar en la moneda de la venta es un costo que no se puede
-         * resolver.
+         * 🔴 Venta en DÓLARES sin ninguna cotización (ni la de la venta ni el dólar del dueño).
+         *
+         * `SaleHelper::getCost()` resuelve la cotización con
+         * `CotizacionDeVentaHelper::resolver_para_costo()`: usa el `valor_dolar` de la venta, si no
+         * el dólar del dueño (con un warning) y, solo si tampoco hay, deja el costo SIN CONVERTIR.
+         * Ese fallback vale para los caminos que no pasan por el 422 de `SaleController::store()`
+         * (confirmar un presupuesto en USD, el asistente de IA, editar una venta vieja en USD), así
+         * que acá NO se corta por `valor_dolar <= 0` a secas: una venta en USD con `valor_dolar`
+         * NULL y dólar del dueño cargado convierte igual que un artículo suelto, y cortar dejaba el
+         * costo del combo en NULL mientras el suelto sí tenía costo (la ganancia volvía a tomar el
+         * precio entero del combo).
+         *
+         * Lo único que no se puede hacer es un costo en PESOS dentro de una venta en dólares sin
+         * con qué dividirlo: `getCost()` lo dejaría sin convertir, o sea un número en pesos
+         * disfrazado de dólares. Eso es NULL ("no sé"), pero solo para el componente que LO
+         * NECESITA: un componente cargado en dólares (`item_esta_en_pesos()` da false) no se
+         * convierte nunca y no pide cotización. Se calcula acá una vez y cada tipo de combo decide.
+         * No se llama a `resolver_para_costo()` para no duplicar su warning: `getCost()` ya lo
+         * emite cuando le toca.
          */
-        if ((int) $sale->moneda_id === 2 && (float) $sale->valor_dolar <= 0) {
+        $sin_cotizacion = false;
 
-            Log::info('ComboCostoDeVentaHelper: venta en dolares sin valor_dolar, el costo del combo '.$combo->id.' queda en NULL.');
+        if ((int) $sale->moneda_id === CotizacionDeVentaHelper::MONEDA_DOLAR
+            && !CotizacionDeVentaHelper::es_cotizacion_valida($sale->valor_dolar)) {
 
-            return null;
+            $dueno = $sale->user;
+
+            $sin_cotizacion = is_null($dueno) || !CotizacionDeVentaHelper::es_cotizacion_valida($dueno->dollar);
         }
 
         $costo = ((int) $combo->calcular_desde_articulos === 1)
-            ? self::costo_de_combo_calculado($sale, $combo)
-            : self::costo_de_combo_manual($sale, $combo);
+            ? self::costo_de_combo_calculado($sale, $combo, $sin_cotizacion)
+            : self::costo_de_combo_manual($sale, $combo, $sin_cotizacion);
 
         if (is_null($costo)) {
             return null;
@@ -204,9 +223,16 @@ class ComboCostoDeVentaHelper {
      * @param  \App\Models\Combo  $combo
      * @return float|null
      */
-    protected static function costo_de_combo_manual($sale, Combo $combo) {
+    protected static function costo_de_combo_manual($sale, Combo $combo, $sin_cotizacion = false) {
 
         if (is_null($combo->cost)) {
+            return null;
+        }
+
+        // Un combo manual se carga en pesos: en una venta en dólares sin cotización no hay con qué pasarlo.
+        if ($sin_cotizacion && (float) $combo->cost > 0) {
+            Log::info('ComboCostoDeVentaHelper: venta en dolares sin cotizacion, el costo en pesos del combo '.$combo->id.' queda en NULL.');
+
             return null;
         }
 
@@ -235,7 +261,7 @@ class ComboCostoDeVentaHelper {
      * @param  \App\Models\Combo  $combo
      * @return float|null
      */
-    protected static function costo_de_combo_calculado($sale, Combo $combo) {
+    protected static function costo_de_combo_calculado($sale, Combo $combo, $sin_cotizacion = false) {
 
         $total  = 0.0;
         $alguno = false;
@@ -249,13 +275,32 @@ class ComboCostoDeVentaHelper {
              * `unidades_individuales` presente, `getCost()` divide por las del artículo sin ir a
              * buscarlas de nuevo.
              */
-            $costo = SaleHelper::getCost($sale, [
+            $item = [
                 'id'                    => $article->id,
                 'cost'                  => $article->cost,
                 'costo_real'            => $article->costo_real,
                 'cost_in_dollars'       => $article->cost_in_dollars,
                 'unidades_individuales' => $article->unidades_individuales,
-            ]);
+            ];
+
+            /*
+             * Venta en dólares sin cotización y un componente con costo EN PESOS: no se puede pasar a
+             * dólares, y `getCost()` lo dejaría sin convertir. Todo el combo queda sin costo
+             * resuelto (NULL): un costo parcial sería peor que ninguno. Un componente ya cargado en
+             * dólares no entra acá (no necesita cotización).
+             */
+            if ($sin_cotizacion && CotizacionDeVentaHelper::item_esta_en_pesos($item)) {
+
+                $base = !is_null($article->costo_real) ? (float) $article->costo_real : (float) $article->cost;
+
+                if ($base > 0) {
+                    Log::info('ComboCostoDeVentaHelper: venta en dolares sin cotizacion y el componente '.$article->id.' esta en pesos, el costo del combo '.$combo->id.' queda en NULL.');
+
+                    return null;
+                }
+            }
+
+            $costo = SaleHelper::getCost($sale, $item);
 
             if (is_null($costo)) {
                 continue;

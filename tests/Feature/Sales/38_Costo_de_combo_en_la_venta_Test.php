@@ -511,21 +511,95 @@ class Costo_de_combo_en_la_venta_Test extends ComboCalculadoTestCase
     }
 
     /**
-     * Venta en dólares SIN cotización: no hay forma de expresar el costo en dólares. NULL, no INF
-     * ni una división por cero que rompa el guardado de la venta.
+     * Venta en dólares SIN cotización propia (`valor_dolar` en 0/NULL) pero con el dólar del DUEÑO
+     * cargado: `getCost()` usa el del dueño (`CotizacionDeVentaHelper::resolver_para_costo()`), y el
+     * combo tiene que costar lo mismo que el mismo artículo vendido suelto. Antes la guarda del
+     * combo devolvía NULL acá y la ganancia volvía a tomar el precio entero del combo.
+     *
+     * Es el camino de confirmar un presupuesto en USD sin cotización, del asistente de IA o de editar
+     * una venta vieja en USD: los que no pasan por el 422 de `store()`.
      *
      * @group sales
      * @group combos
      * @test
      */
-    public function una_venta_en_dolares_sin_cotizacion_deja_el_costo_del_combo_en_null()
+    public function una_venta_en_dolares_sin_cotizacion_usa_el_dolar_del_dueno_igual_que_un_suelto()
     {
+        $this->opcion_de_cuenta('dollar', 1000);
+
+        $a     = $this->nuevo_articulo(['costo_real' => 500]);
+        $combo = $this->combo_calculado([[$a, 2]], ['price' => 10]);
+
+        $sale = new Sale(['user_id' => self::DUENO, 'moneda_id' => 2, 'valor_dolar' => 0]);
+
+        $suelto = \App\Http\Controllers\Helpers\SaleHelper::getCost($sale, [
+            'id'                    => $a->id,
+            'costo_real'            => 500,
+            'cost_in_dollars'       => 0,
+            'unidades_individuales' => null,
+        ]);
+
+        $this->assertEqualsWithDelta(0.5, $suelto, 0.0001, 'Precondición: el suelto se convierte con el dólar del dueño.');
+
+        $this->assertEqualsWithDelta(1.0, ComboCostoDeVentaHelper::costo_unitario($sale, $combo->id), 0.001, '2 unidades a 0,50: el mismo costo de línea que el suelto.');
+
+        // Y el combo manual (se carga en pesos) también.
+        $manual = $this->combo([], ['cost' => 5000, 'price' => 8]);
+
+        $this->assertEqualsWithDelta(5.0, ComboCostoDeVentaHelper::costo_unitario($sale, $manual->id), 0.001);
+    }
+
+    /**
+     * Venta en dólares sin cotización propia Y dueño sin dólar cargado: no hay con qué pasar un costo
+     * en PESOS a dólares. NULL (no un número en pesos disfrazado de dólares, ni una división por cero).
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function una_venta_en_dolares_sin_cotizacion_y_sin_dolar_del_dueno_deja_el_costo_del_combo_en_null()
+    {
+        $this->opcion_de_cuenta('dollar', null);
+
         $a     = $this->nuevo_articulo(['costo_real' => 500]);
         $combo = $this->combo_calculado([[$a, 1]], ['price' => 10]);
+        $manual = $this->combo([], ['cost' => 5000, 'price' => 8]);
 
         $sale = new Sale(['user_id' => self::DUENO, 'moneda_id' => 2, 'valor_dolar' => 0]);
 
         $this->assertNull(ComboCostoDeVentaHelper::costo_unitario($sale, $combo->id));
+        $this->assertNull(ComboCostoDeVentaHelper::costo_unitario($sale, $manual->id));
+
+        // Con cotización en la venta sí se resuelve (control).
+        $con_dolar = new Sale(['user_id' => self::DUENO, 'moneda_id' => 2, 'valor_dolar' => 1000]);
+
+        $this->assertEqualsWithDelta(0.5, ComboCostoDeVentaHelper::costo_unitario($con_dolar, $combo->id), 0.001);
+    }
+
+    /**
+     * Venta en dólares sin ninguna cotización con un combo cuyos componentes están TODOS cargados en
+     * dólares: no necesita cotización (`getCost()` no los divide), así que el costo es la suma sin
+     * convertir y no NULL. Con uno solo en pesos, sí es NULL.
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function un_combo_todo_en_dolares_no_necesita_cotizacion_en_una_venta_en_dolares()
+    {
+        $this->opcion_de_cuenta('dollar', null);
+
+        $x = $this->nuevo_articulo(['costo_real' => 10, 'cost_in_dollars' => 1]);
+        $y = $this->nuevo_articulo(['costo_real' => 4, 'cost_in_dollars' => 1]);
+        $pesos = $this->nuevo_articulo(['costo_real' => 500]);
+
+        $todo_en_dolares = $this->combo_calculado([[$x, 2], [$y, 1]], ['price' => 40]);
+        $mezclado        = $this->combo_calculado([[$x, 1], [$pesos, 1]], ['price' => 40]);
+
+        $sale = new Sale(['user_id' => self::DUENO, 'moneda_id' => 2, 'valor_dolar' => null]);
+
+        $this->assertEqualsWithDelta(24.0, ComboCostoDeVentaHelper::costo_unitario($sale, $todo_en_dolares->id), 0.001, '10 x 2 + 4, sin convertir.');
+        $this->assertNull(ComboCostoDeVentaHelper::costo_unitario($sale, $mezclado->id), 'Un componente en pesos sí necesita cotización.');
     }
 
     /**
