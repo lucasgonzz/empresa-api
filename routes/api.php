@@ -1463,6 +1463,15 @@ Route::middleware('admin.api.key')
         // consumo-ia, valida X-Admin-Api-Key ADENTRO del controlador (require_api_key está apagado
         // en producción) porque ESCRIBE el plan del cliente. Idempotente; 409 si no hay dueño resoluble.
         Route::put('plan-ia', 'AdminSync\\PlanIaController@update');
+        // Los modelos de IA de este cliente (misión modelos-ia-por-cliente, 30/9/2026): la solapa
+        // "Inteligencia artificial" del admin lee y escribe el modelo del asistente, del bot de
+        // WhatsApp, de la verificación de imágenes y de la importación de Excel. El admin no
+        // persiste nada: lee en vivo. Como plan-ia, valida X-Admin-Api-Key ADENTRO del controlador
+        // porque ESCRIBE la configuración del cliente; 409 si no hay dueño resoluble, 422 si una
+        // opción no vale para su tarea. Un cliente viejo sin estas rutas le da 404 al admin, que lo
+        // muestra como "versión anterior" sin romper.
+        Route::get('modelos-ia', 'AdminSync\\ModelosIaController@show');
+        Route::put('modelos-ia', 'AdminSync\\ModelosIaController@update');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
