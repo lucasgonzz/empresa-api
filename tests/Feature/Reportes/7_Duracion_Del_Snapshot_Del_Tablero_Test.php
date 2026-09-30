@@ -216,4 +216,43 @@ class Duracion_Del_Snapshot_Del_Tablero_Test extends EmpresaTestCase
         $this->assertCount(1, $snapshots);
         $this->assertSame($existente->id, $snapshots->first()->id, 'Con el umbral en 20 el snapshot de hace 11 minutos se conserva.');
     }
+
+    /**
+     * Botón Actualizar de Reportes: con $forzar el snapshot se regenera aunque tenga 1 minuto de
+     * vida y el umbral sea de 10.
+     *
+     * @return void
+     */
+    public function test_forzar_recrea_el_snapshot_aunque_sea_reciente()
+    {
+        config(['app.duracion_reportes' => 10.0]);
+
+        $reciente = $this->snapshot_de_hoy_creado_hace(1);
+
+        (new CompanyPerformanceController())->check_tiempo_ultima_creada(true);
+
+        $snapshots = $this->snapshots_de_hoy();
+
+        $this->assertCount(1, $snapshots, 'Tiene que quedar exactamente un snapshot de hoy.');
+        $this->assertNotSame($reciente->id, $snapshots->first()->id, 'Forzar tenía que reemplazar el snapshot reciente.');
+        $this->assertNull(CompanyPerformance::find($reciente->id));
+    }
+
+    /**
+     * Por el endpoint real: sin `forzar` el snapshot reciente se conserva; con `?forzar=1` se regenera.
+     *
+     * @return void
+     */
+    public function test_el_endpoint_regenera_solo_con_forzar()
+    {
+        config(['app.duracion_reportes' => 10.0]);
+
+        $reciente = $this->snapshot_de_hoy_creado_hace(1);
+
+        $this->getJson('api/company-performance')->assertSuccessful();
+        $this->assertSame($reciente->id, $this->snapshots_de_hoy()->first()->id, 'Sin forzar se conserva.');
+
+        $this->getJson('api/company-performance?forzar=1')->assertSuccessful();
+        $this->assertNotSame($reciente->id, $this->snapshots_de_hoy()->first()->id, 'Con forzar se regenera.');
+    }
 }
