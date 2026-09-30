@@ -646,6 +646,33 @@ class Costo_de_combo_en_la_venta_Test extends ComboCalculadoTestCase
         $this->assertEqualsWithDelta(600 - 200, (float) $sale->ganancia, 0.001);
     }
 
+    /**
+     * 🔴 `set_total_cost()` no puede depender de la relación `combos` que trae el modelo: en la
+     * edición (`SaleController::update()`) llega con los combos de ANTES. El test de arriba no lo
+     * prueba solo, porque `ArticlePurchaseHelper` recarga la relación un paso antes; acá se le da
+     * a `set_total_cost()` la relación VIEJA a mano (vacía, como una venta sin combos) y tiene que
+     * sumar igual los combos que hay en la base.
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function set_total_cost_suma_los_combos_de_la_base_aunque_la_relacion_cargada_este_vieja()
+    {
+        $a     = $this->nuevo_articulo(['costo_real' => 100]);
+        $combo = $this->combo_calculado([[$a, 2]], ['price' => 600]);
+
+        $sale = $this->vender([$this->renglon_combo($combo, 3, 600)]);
+
+        $vieja = Sale::find($sale->id);
+        $vieja->setRelation('combos', collect([]));
+
+        $resultado = SaleTotalesHelper::set_total_cost($vieja);
+
+        $this->assertEqualsWithDelta(600, (float) $resultado->total_cost, 0.001, 'Tiene que sumar combo_sale, no la relación cargada.');
+        $this->assertCount(0, $vieja->combos, 'Y no le pisa la relación al modelo que recibió.');
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  7. Presupuestos y pedidos
     // ─────────────────────────────────────────────────────────────────────────
