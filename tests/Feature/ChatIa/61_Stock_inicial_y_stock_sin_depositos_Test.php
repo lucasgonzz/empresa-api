@@ -362,7 +362,8 @@ class Stock_inicial_y_stock_sin_depositos_Test extends EmpresaTestCase
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
 
-        $this->assertSame('20', $this->renglones($respuesta['tarjeta_id'])['Stock inicial']);
+        // Ronda de correcciones (29/9/2026), punto G: con unidades por bulto, la tarjeta dice que son sueltas.
+        $this->assertSame('20 unidades sueltas (no bultos de 12)', $this->renglones($respuesta['tarjeta_id'])['Stock inicial']);
 
         // El modelo también lo lee en el resumen: lo que dice que se carga está en la tarjeta.
         $this->assertStringContainsString('Stock inicial: 20', (string) $respuesta['resumen']);
@@ -726,7 +727,9 @@ class Stock_inicial_y_stock_sin_depositos_Test extends EmpresaTestCase
         ]);
 
         $this->assertFalse($con_deposito['ok']);
-        $this->assertStringContainsString('No mandes deposito', (string) $con_deposito['error']);
+        // Ronda de correcciones (29/9/2026), punto F: el rechazo dice que no se cargó nada y qué hacer.
+        $this->assertStringStartsWith('No se cargó nada:', (string) $con_deposito['error']);
+        $this->assertStringContainsString('sin deposito', (string) $con_deposito['error']);
 
         ArticleVariant::create(['article_id' => $articulo->id, 'variant_description' => 'Talle M']);
 
