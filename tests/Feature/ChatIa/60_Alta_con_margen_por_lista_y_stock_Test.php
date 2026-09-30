@@ -536,6 +536,16 @@ class Alta_con_margen_por_lista_y_stock_Test extends EmpresaTestCase
 
         $this->assertSame('40 %', $renglones['Margen Minorista']);
         $this->assertSame('30 %', $renglones['Margen Mayorista']);
+
+        // Mandado como texto JSON (DeepSeek a veces serializa los arrays anidados) también se entiende.
+        $como_texto = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'            => 'article',
+            'datos'              => ['name' => 'Cera zz-p60 texto', 'cost' => 1000],
+            'margenes_por_lista' => '[{"lista": "Distribuidor", "margen": "12,5"}]',
+        ]);
+
+        $this->assertTrue(!empty($como_texto['ok']), json_encode($como_texto));
+        $this->assertSame('12,50 %', $this->renglones($como_texto['tarjeta_id'])['Margen Distribuidor']);
     }
 
     // =====================================================================

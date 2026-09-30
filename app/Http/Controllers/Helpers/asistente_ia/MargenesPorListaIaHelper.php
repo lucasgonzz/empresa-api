@@ -987,6 +987,21 @@ class MargenesPorListaIaHelper
      */
     protected static function como_lista($crudo)
     {
+        /*
+         * Un modelo a veces manda el array anidado como TEXTO JSON ('[{"lista": "general", "margen":
+         * 30}]'): se decodifica en vez de cortar por formato, que haría repreguntar algo que la
+         * persona ya dijo.
+         */
+        if (is_string($crudo) && in_array(substr(ltrim($crudo), 0, 1), ['[', '{'], true)) {
+
+            $decodificado = json_decode($crudo, true);
+
+            if (is_array($decodificado)) {
+
+                $crudo = $decodificado;
+            }
+        }
+
         if ($crudo instanceof \stdClass) {
 
             $crudo = json_decode(json_encode($crudo), true);
