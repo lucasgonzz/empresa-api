@@ -604,12 +604,17 @@ class PropuestaStockIaHelper
             return RespuestaDeCargaIa::faltan(['cuántas unidades']);
         }
 
-        if (!is_numeric($cantidad)) {
+        /*
+         * El mismo parser que el stock inicial (última ronda de correcciones, 29/9/2026): con
+         * is_numeric/(float), "1.000" se leía como 1 y "15 unidades" no se entendía. Ver
+         * cantidad_de_stock() y MargenesPorListaIaHelper::numero_escrito_a_punto().
+         */
+        $cantidad = self::cantidad_de_stock($cantidad);
+
+        if (is_null($cantidad)) {
 
             return self::rechazo('la cantidad tiene que ser un número.');
         }
-
-        $cantidad = round((float) $cantidad, 2);
 
         if ($modo !== self::MODO_FIJAR && $cantidad <= 0) {
 
@@ -985,6 +990,17 @@ class PropuestaStockIaHelper
             $deposito = self::resolver_deposito($contexto, $depositos, $deposito_texto, 'en qué depósito entra el stock inicial');
 
             if (RespuestaDeCargaIa::es_negativa($deposito)) {
+
+                /*
+                 * resolver_deposito() es compartido con el movimiento y con el stock de un depósito, y
+                 * sus textos ("No encontré ningún depósito…", "Tu usuario solo puede tocar…") no dicen
+                 * si algo quedó. En el camino del stock inicial se les antepone "No se cargó nada:"
+                 * (última ronda de correcciones, 29/9/2026); los otros dos caminos quedan como estaban.
+                 */
+                if (!empty($deposito['error']) && strpos((string) $deposito['error'], self::NO_SE_CARGO) !== 0) {
+
+                    $deposito['error'] = self::NO_SE_CARGO . (string) $deposito['error'];
+                }
 
                 return $deposito;
             }
@@ -1478,7 +1494,7 @@ class PropuestaStockIaHelper
 
             throw new AccionIaException(
                 422,
-                'En ' . (is_null($donde) ? self::nombre_de_deposito_por_id($address_id) : $donde) . ' ahora hay ' . self::numero($antes)
+                self::NO_SE_CARGO . 'en ' . (is_null($donde) ? self::nombre_de_deposito_por_id($address_id) : $donde) . ' ahora hay ' . self::numero($antes)
                 . ' (cambió desde que armé la tarjeta): restarle ' . self::numero($cantidad)
                 . ' lo dejaría en negativo. Pedímelo de nuevo con el número que quieras.'
             );

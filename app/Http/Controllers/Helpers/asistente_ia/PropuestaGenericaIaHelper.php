@@ -210,6 +210,14 @@ class PropuestaGenericaIaHelper
 
             $datos_de_la_tarjeta['extras'] = $resueltos['extras'];
 
+            // Márgenes heredados de listas que ya no existen: se descartaron y la tarjeta lo dice.
+            if (!empty($resueltos['aviso'])) {
+
+                $aviso_de_lo_heredado = is_null($aviso_de_lo_heredado) ? $resueltos['aviso'] : $aviso_de_lo_heredado.' '.$resueltos['aviso'];
+
+                $aviso = is_null($aviso) ? $resueltos['aviso'] : $aviso.' '.$resueltos['aviso'];
+            }
+
             foreach ($resueltos['renglones'] as $renglon) {
 
                 $renglones[] = $renglon;
@@ -519,16 +527,25 @@ class PropuestaGenericaIaHelper
          */
         $margenes_que_cambian = [];
 
+        /** El aviso de la tarjeta de edición (hoy: márgenes heredados de listas borradas), o null. */
+        $aviso_de_la_edicion = null;
+
         if ($vinieron_margenes) {
 
-            $margenes = MargenesPorListaIaHelper::resolver($contexto, $margenes_por_lista);
+            $descartados = [];
+
+            $margenes = MargenesPorListaIaHelper::resolver($contexto, $margenes_por_lista, $descartados);
+
+            // Lo heredado de una lista que ya no existe se descartó: la tarjeta lo dice.
+            $aviso_de_la_edicion = MargenesPorListaIaHelper::aviso_de_descartados($descartados);
 
             if (RespuestaDeCargaIa::es_negativa($margenes)) {
 
                 return $margenes;
             }
 
-            if (!count($margenes)) {
+            // Vacío porque TODO lo heredado era de listas borradas: no es un error, lo dice el aviso.
+            if (!count($margenes) && !count($descartados)) {
 
                 return RespuestaDeCargaIa::error(MargenesPorListaIaHelper::NO_SE_CARGO.'margenes_por_lista vino vacío: decime qué lista cambia y a qué margen.');
             }
@@ -574,7 +591,7 @@ class PropuestaGenericaIaHelper
             [
                 'titulo'    => Catalogo::titulo($declaracion['entidad'], Catalogo::OP_EDICION, $nombre_actual),
                 'renglones' => $renglones,
-                'aviso'     => null,
+                'aviso'     => $aviso_de_la_edicion,
             ],
             $reemplaza_a,
             $referencia
@@ -582,7 +599,7 @@ class PropuestaGenericaIaHelper
 
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_EDICION, $nombre_actual).self::resumen_de_renglones($renglones, null);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, is_null($aviso_de_la_edicion) ? [] : ['aviso' => $aviso_de_la_edicion]);
     }
 
     /**
@@ -590,6 +607,14 @@ class PropuestaGenericaIaHelper
      * tarjeta de edición viva (propuesta o recién reemplazada), de esta conversación y del MISMO
      * artículo: nunca de una confirmada, cancelada o vencida, ni de otro artículo (mismo criterio
      * que con_los_campos_de_la_tarjeta_reemplazada()).
+     *
+     * 🔴 SIN `reemplaza_a` TAMBIÉN (última ronda de correcciones, 29/9/2026). La tarjeta de edición
+     * tiene clave `edicion:article:<id>` y AccionesIaHelper::crear() reemplaza SOLA a la propuesta
+     * viva con la misma clave; el prompt y esquema_de_reemplazo() le dicen al modelo que en ese caso
+     * no hace falta `reemplaza_a`. Entonces "cambiale la minorista a 35" y después "y la mayorista a
+     * 20 también" llegaba sin reemplaza_a y la tarjeta nueva pisaba a la anterior perdiendo la
+     * minorista. Sin reemplaza_a se hereda de EXACTAMENTE la que crear() va a reemplazar: la
+     * propuesta viva de esta conversación con la misma clave.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  mixed  $reemplaza_a
@@ -600,16 +625,24 @@ class PropuestaGenericaIaHelper
     {
         $reemplaza_a = is_numeric($reemplaza_a) ? (int) $reemplaza_a : 0;
 
-        if ($reemplaza_a <= 0) {
+        if ($reemplaza_a > 0) {
 
-            return [];
+            $anterior = AiMessageAction::where('id', $reemplaza_a)
+                                        ->where('ai_conversation_id', $contexto->conversation->id)
+                                        ->where('tipo', AiMessageAction::TIPO_EDICION)
+                                        ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
+                                        ->first();
+
+        } else {
+
+            // La misma clave que arma proponer_edicion() y el mismo filtro que crear(): la propuesta viva.
+            $anterior = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                                        ->where('tipo', AiMessageAction::TIPO_EDICION)
+                                        ->where('clave', 'edicion:'.AltaDeArticuloConFotoIaHelper::ENTIDAD.':'.$article_id)
+                                        ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                        ->orderBy('id', 'DESC')
+                                        ->first();
         }
-
-        $anterior = AiMessageAction::where('id', $reemplaza_a)
-                                    ->where('ai_conversation_id', $contexto->conversation->id)
-                                    ->where('tipo', AiMessageAction::TIPO_EDICION)
-                                    ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
-                                    ->first();
 
         if (is_null($anterior) || !is_array($anterior->datos)) {
 

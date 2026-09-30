@@ -72,6 +72,9 @@ class MargenesPorListaIaHelper
     /** Tolerancia para comparar porcentajes guardados en decimal(…,2). */
     const TOLERANCIA = 0.01;
 
+    /** Desde qué margen se pregunta antes de cargarlo: ver el 🔴 de resolver(). */
+    const MARGEN_RARO = 1000;
+
     /**
      * 🔴 LA CLASE ENTERA DE "CAMPO QUE LA FICHA ESCONDE CON LISTAS" (ronda de correcciones del
      * 29/9/2026). No era solo `percentage_gain`: `src/models/article.js` de la SPA esconde con
@@ -344,7 +347,14 @@ class MargenesPorListaIaHelper
                 continue;
             }
 
-            if ($columna === 'price' && is_numeric($valor) && (float) $valor == 0.0) {
+            /*
+             * El margen suelto y el precio manual en 0 pasan (última ronda de correcciones del
+             * 29/9/2026): el controller los guarda como null (CriterioDePrecioHelper::normalizar),
+             * no mueven nada, y un `percentage_gain: 0` es justamente la forma de LIMPIAR el margen
+             * suelto que dejó el bug viejo (el 30 del artículo 17320 de demo3). Solo se rechaza un
+             * valor distinto de 0.
+             */
+            if (in_array($columna, ['percentage_gain', 'price'], true) && is_numeric($valor) && (float) $valor == 0.0) {
 
                 continue;
             }
@@ -394,19 +404,52 @@ class MargenesPorListaIaHelper
      */
     public static function vino_vacio($crudo)
     {
-        if (is_null($crudo)) {
+        /*
+         * También `false`, el texto "null" y una lista de ítems vacíos (`[[]]`, `[{}]`): son las
+         * formas en que un modelo dice "nada" (última ronda de correcciones, 29/9/2026). Cualquier
+         * otra cosa que no se entienda NO es vacía: resolver() dice qué está mal.
+         */
+        if (is_null($crudo) || $crudo === false) {
 
             return true;
         }
 
-        if (is_string($crudo) && trim($crudo) === '') {
+        if (is_string($crudo) && in_array(mb_strtolower(trim($crudo)), ['', 'null'], true)) {
 
             return true;
         }
 
         $lista = self::como_lista($crudo);
 
-        return is_array($lista) && !count($lista);
+        return is_array($lista) && !count(self::sin_items_vacios($lista));
+    }
+
+    /**
+     * La lista sin los ítems vacíos (null, [], {}): no dicen nada y no se validan.
+     *
+     * @param  array  $lista
+     * @return array
+     */
+    protected static function sin_items_vacios(array $lista)
+    {
+        $con_algo = [];
+
+        foreach ($lista as $item) {
+
+            if ($item instanceof \stdClass) {
+
+                $item = json_decode(json_encode($item), true);
+            }
+
+            if (is_null($item) || (is_array($item) && !count($item))) {
+
+                continue;
+            }
+
+            $con_algo[] = $item;
+        }
+
+        return $con_algo;
     }
 
     /**
@@ -442,13 +485,21 @@ class MargenesPorListaIaHelper
      * HERENCIA de una corrección con la lista ya resuelta en la tarjeta anterior. Se valida contra el
      * dueño igual que el nombre.
      *
+     * 🔴 Un margen HEREDADO cuya lista ya no existe (la borraron entre la tarjeta y la corrección) se
+     * DESCARTA y se anota en `$descartados`, en vez de cortar toda la tarjeta (última ronda de
+     * correcciones, 29/9/2026): la persona no mandó esa lista en esta corrección, así que un error
+     * que le pide sacarla no tiene salida. Uno que manda el modelo con una lista que no existe sí corta.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  mixed  $crudo
+     * @param  array|null  $descartados  Salida: los nombres de las listas heredadas que ya no existen.
      * @return array  [['price_type_id' => int, 'nombre' => string, 'margen' => float], ...] en el orden
      *                de las listas (vacío = la persona pidió sacar los márgenes), o la respuesta negativa.
      */
-    public static function resolver(ContextoDeCargaIa $contexto, $crudo)
+    public static function resolver(ContextoDeCargaIa $contexto, $crudo, &$descartados = null)
     {
+        $descartados = [];
+
         $motivo = self::motivo_si_no_aplica($contexto->owner);
 
         if (!is_null($motivo)) {
@@ -462,6 +513,9 @@ class MargenesPorListaIaHelper
 
             return self::rechazo(self::mensaje_de_formato());
         }
+
+        // Un ítem vacío ([], {}, null) no dice nada: no se valida ni corta (ver vino_vacio()).
+        $items = self::sin_items_vacios($items);
 
         if (!count($items)) {
 
@@ -513,11 +567,28 @@ class MargenesPorListaIaHelper
                 return self::rechazo('el margen de ' . $para . ' no puede ser -100 % o menos: el precio quedaría en cero o negativo.');
             }
 
+            /*
+             * 🔴 Un margen de 1000 % o más casi seguro es un número mal escrito (última ronda de
+             * correcciones, 29/9/2026): "12.500" puede ser 12,5 con punto, y con el punto de miles
+             * se lee doce mil quinientos. Se pregunta en vez de multiplicar el precio por 126.
+             */
+            if ($margen >= self::MARGEN_RARO) {
+
+                return self::rechazo('un margen de ' . Catalogo::numero($margen) . ' % para ' . $para . ' es raro; confirmá el número con la persona (¿no será ' . Catalogo::numero($margen / 1000) . ' %?).');
+            }
+
             $por_id = isset($item['price_type_id']) && is_numeric($item['price_type_id']) ? (int) $item['price_type_id'] : 0;
 
             if ($por_id > 0) {
 
                 $lista = $listas->firstWhere('id', $por_id);
+
+                if (is_null($lista) && $es_heredado) {
+
+                    $descartados[] = $texto_de_la_lista === '' ? 'una lista que ya no existe' : $texto_de_la_lista;
+
+                    continue;
+                }
 
                 if (is_null($lista)) {
 
@@ -654,6 +725,24 @@ class MargenesPorListaIaHelper
         }
 
         return array_merge($de_antes, $nuevos);
+    }
+
+    /**
+     * El aviso de la tarjeta cuando resolver() descartó márgenes heredados de listas que ya no
+     * existen, o null si no descartó ninguno.
+     *
+     * @param  array  $descartados
+     * @return string|null
+     */
+    public static function aviso_de_descartados(array $descartados)
+    {
+        if (!count($descartados)) {
+
+            return null;
+        }
+
+        return (count($descartados) === 1 ? 'La lista ' . $descartados[0] . ' ya no existe' : 'Las listas ' . implode(', ', $descartados) . ' ya no existen')
+            . ': el margen que traía la tarjeta anterior para ' . (count($descartados) === 1 ? 'esa lista' : 'esas listas') . ' no se carga.';
     }
 
     /**
@@ -1209,7 +1298,7 @@ class MargenesPorListaIaHelper
 
             } else {
 
-                $inicio = 'No se cargó ningún margen por lista: las listas quedaron con su margen por defecto: ';
+                $inicio = 'Sin margen por lista: todas quedaron con su margen por defecto: ';
             }
 
             $texto = isset($resultado['texto']) ? rtrim((string) $resultado['texto'], '. ') : '';

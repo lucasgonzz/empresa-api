@@ -289,6 +289,9 @@ class AltaDeArticuloConFotoIaHelper
         $guardar = [];
         $renglones = [];
 
+        /** Un aviso para la tarjeta (hoy: márgenes heredados de listas que ya no existen), o null. */
+        $aviso = null;
+
         $imagen = null;
 
         if (isset($extras[self::IMAGEN_ID])) {
@@ -374,7 +377,12 @@ class AltaDeArticuloConFotoIaHelper
          */
         if (array_key_exists(self::MARGENES, $extras)) {
 
-            $margenes = MargenesPorListaIaHelper::resolver($contexto, $extras[self::MARGENES]);
+            $descartados = [];
+
+            $margenes = MargenesPorListaIaHelper::resolver($contexto, $extras[self::MARGENES], $descartados);
+
+            // Lo heredado de una lista que ya no existe se descartó: la tarjeta lo dice.
+            $aviso = MargenesPorListaIaHelper::aviso_de_descartados($descartados);
 
             if (RespuestaDeCargaIa::es_negativa($margenes)) {
 
@@ -433,7 +441,7 @@ class AltaDeArticuloConFotoIaHelper
             );
         }
 
-        return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url];
+        return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url, 'aviso' => $aviso];
     }
 
     /**
