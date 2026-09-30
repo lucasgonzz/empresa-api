@@ -549,4 +549,84 @@ class Combo_calculado_en_el_abm_Test extends ComboCalculadoTestCase
         $this->assertNotNull($this->fila($combo)->deleted_at);
         $this->assertSame(1, Image::where('imageable_type', 'combo')->where('imageable_id', $combo->id)->count());
     }
+
+    /**
+     * 🔴 Un combo calculado SIN artículos no tiene de dónde calcular nada: sin este rechazo quedaba
+     * con precio 0.00 y stock "sin control", y con "Mostrar en la tienda" se publicaba regalado.
+     * El alta responde 422 con el motivo y no crea nada.
+     *
+     * @test
+     */
+    public function crear_un_combo_calculado_sin_articulos_responde_422_y_no_crea()
+    {
+        $this->con_listas(0);
+
+        $nombre = 'zz Combo calculado vacio ' . uniqid();
+
+        foreach ([[], null] as $articulos) {
+
+            $payload = ['name' => $nombre, 'calcular_desde_articulos' => 1, 'online' => 1, 'articles' => $articulos];
+
+            $respuesta = $this->postJson('api/combo', $payload);
+
+            $respuesta->assertStatus(422);
+
+            $this->assertNotEmpty($respuesta->json('message'));
+        }
+
+        $this->assertSame(0, Combo::where('name', $nombre)->count(), 'No tiene que haber creado nada.');
+    }
+
+    /**
+     * El mismo rechazo en la edición: ni vaciar los artículos de un combo calculado, ni prender el
+     * check en un combo que queda sin artículos. Y el combo queda como estaba.
+     *
+     * @test
+     */
+    public function editar_un_combo_calculado_dejandolo_sin_articulos_responde_422()
+    {
+        $this->con_listas(0);
+
+        $a = $this->nuevo_articulo(['costo_real' => 100, 'final_price' => 250]);
+
+        $combo = $this->combo_calculado([[$a, 1]]);
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(250.0, $this->precio_en_base($combo));
+
+        $this->putJson('api/combo/' . $combo->id, ['name' => $combo->name, 'articles' => []])->assertStatus(422);
+
+        $this->assertSame(1, $combo->articles()->count(), 'Los artículos siguen ahí: el 422 no tocó nada.');
+        $this->assertSame(250.0, $this->precio_en_base($combo));
+
+        // Prender el check en un combo manual que no tiene artículos tampoco se puede.
+        $manual = $this->combo([], ['cost' => 5, 'price' => 9]);
+
+        $this->putJson('api/combo/' . $manual->id, ['name' => $manual->name, 'calcular_desde_articulos' => 1, 'articles' => []])->assertStatus(422);
+
+        $this->assertSame(0, (int) $this->fila($manual)->calcular_desde_articulos);
+    }
+
+    /**
+     * Lo que NO cambia: un combo MANUAL sin artículos sigue aceptándose (es lo que hacía la
+     * pantalla), y un calculado con artículos cuyo precio da 0 NO se rechaza (puede ser transitorio).
+     *
+     * @test
+     */
+    public function el_manual_sin_articulos_y_el_calculado_con_precio_cero_siguen_guardandose()
+    {
+        $this->con_listas(0);
+
+        $manual = $this->postJson('api/combo', ['name' => 'zz Manual vacio ' . uniqid(), 'cost' => 1, 'price' => 2, 'articles' => []]);
+
+        $manual->assertStatus(201);
+
+        $sin_precio = $this->nuevo_articulo(['costo_real' => 10, 'final_price' => null]);
+
+        $calculado = $this->postJson('api/combo', $this->payload([[$sin_precio, 1]], ['calcular_desde_articulos' => 1, 'online' => 1]));
+
+        $calculado->assertStatus(201);
+
+        $this->assertSame(0.0, $this->precio_en_base($calculado->json('model.id')), 'Precio 0 por un componente sin precio: no se rechaza.');
+    }
 }

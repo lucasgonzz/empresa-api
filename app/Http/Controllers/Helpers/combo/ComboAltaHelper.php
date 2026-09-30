@@ -226,6 +226,11 @@ class ComboAltaHelper {
              * saldrían en 0 y se escribirían como si fueran los definitivos.
              */
             if ($calcular) {
+
+                // 🔴 Decisión registrada (30/9/2026): un combo calculado CON artículos cuyo precio
+                // da 0 o menos (un componente sin precio cargado todavía) y `online = 1` NO se
+                // rechaza: puede ser transitorio y el disparador lo recalcula cuando se cargue.
+                // Sin artículos sí se rechaza, pero en el controlador (ver ComboController::store()).
                 ComboCalculadoHelper::guardar($model);
             }
 

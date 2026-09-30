@@ -58,6 +58,20 @@ class ComboController extends Controller
             return response()->json(['message' => $rechazo], 422);
         }
 
+        /*
+         * Un combo calculado sin artículos no tiene de dónde calcular nada: quedaría con precio 0.00
+         * y sin stock controlado, y con "Mostrar en la tienda" tildado se publicaría regalado.
+         * Solo aplica al calculado: el manual sigue aceptando lo que aceptaba (ver el docblock).
+         */
+        $rechazo_sin_articulos = $this->rechazo_del_calculado_sin_articulos(
+            ComboCalculadoEsquemaHelper::disponible() && (bool) $request->calcular_desde_articulos,
+            $request->articles
+        );
+
+        if (!is_null($rechazo_sin_articulos)) {
+            return response()->json(['message' => $rechazo_sin_articulos], 422);
+        }
+
         // El correlativo va como closure para que num() corra ADENTRO de la transacción del helper
         // y su lockForUpdate se sostenga hasta el commit (ver el docblock de ComboAltaHelper::crear()).
         $model = ComboAltaHelper::crear($request->only(['name', 'cost', 'price', 'articles', 'online', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor']), $this->userId(), function () {
@@ -106,16 +120,23 @@ class ComboController extends Controller
             }
         }
 
-        DB::transaction(function () use ($request, $model, $disponible) {
+        /* ¿El combo queda calculado después de este guardado? La clave del request manda; sin ella, lo que ya tenía. */
+        $calculado = $disponible && (
+            $request->has('calcular_desde_articulos')
+                ? (bool) $request->calcular_desde_articulos
+                : (bool) $model->calcular_desde_articulos
+        );
+
+        /* Mismo rechazo que el alta: un combo calculado sin artículos no se guarda (ver store()). */
+        $rechazo_sin_articulos = $this->rechazo_del_calculado_sin_articulos($calculado, $request->articles);
+
+        if (!is_null($rechazo_sin_articulos)) {
+            return response()->json(['message' => $rechazo_sin_articulos], 422);
+        }
+
+        DB::transaction(function () use ($request, $model, $disponible, $calculado) {
 
             $model->name                = $request->name;
-
-            /* ¿El combo queda calculado después de este guardado? La clave del request manda; sin ella, lo que ya tenía. */
-            $calculado = $disponible && (
-                $request->has('calcular_desde_articulos')
-                    ? (bool) $request->calcular_desde_articulos
-                    : (bool) $model->calcular_desde_articulos
-            );
 
             if (!$calculado) {
                 $model->cost            = $request->cost;
@@ -162,6 +183,13 @@ class ComboController extends Controller
                 if ($calculado) {
 
                     // Los artículos ya están reemplazados: recién ahora la cuenta es la de verdad.
+                    //
+                    // 🔴 Decisión registrada (30/9/2026): si hay artículos pero el precio calculado
+                    // da 0 o menos (un componente al que todavía no se le cargó el precio) y el combo
+                    // está publicado (`online = 1`), NO se rechaza. Puede ser transitorio —se carga el
+                    // costo después y el disparador lo recalcula—, y rechazar acá bloquearía guardar
+                    // el combo. El riesgo queda a la vista: hasta que se corrija, la tienda lo
+                    // mostraría a $0.
                     ComboCalculadoHelper::guardar($model);
 
                 } else {
@@ -187,6 +215,29 @@ class ComboController extends Controller
         $model->delete();
         $this->sendDeleteModelNotification('Combo', $model->id);
         return response(null);
+    }
+
+    /**
+     * El motivo por el que un combo CALCULADO no se puede guardar sin artículos, o null.
+     *
+     * "Sin artículos" es la lista ausente, no-array o vacía. Un combo manual no pasa por acá: sigue
+     * aceptando lo que aceptaba (la pantalla nunca validó nada, ver el docblock de store()).
+     *
+     * @param  bool   $calculado  Si el combo queda con `calcular_desde_articulos = 1`.
+     * @param  mixed  $articles   La lista del request.
+     * @return string|null
+     */
+    protected function rechazo_del_calculado_sin_articulos($calculado, $articles) {
+
+        if (!$calculado) {
+            return null;
+        }
+
+        if (!is_array($articles) || count($articles) === 0) {
+            return 'Un combo que se calcula a partir de sus artículos necesita al menos un artículo.';
+        }
+
+        return null;
     }
 
     /**
