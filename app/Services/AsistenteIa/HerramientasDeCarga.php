@@ -921,6 +921,14 @@ class HerramientasDeCarga
                             'type'        => 'string',
                             'description' => 'Solo para entidad article: la descripción del producto para la ficha y la tienda online, en español. Con reemplaza_a NO la mandes salvo que la persona pida cambiarla: se hereda entera de la tarjeta anterior (si la mandás, reemplaza a la heredada).',
                         ],
+                        /*
+                         * Misión alta-por-agente-margen-y-stock (29/9/2026, demo3 artículo 17320),
+                         * AL FINAL de las propiedades por la regla del prefijo del caché. Opcional:
+                         * un cliente MCP viejo que no la manda sigue andando igual.
+                         */
+                        'margenes_por_lista' => self::esquema_de_margenes_por_lista(
+                            'Solo para entidad article en un negocio que trabaja con listas de precio (que_puedo_cargar de article te lo dice): el margen de ganancia de cada lista, como lo dijo la persona. "lista" es el nombre de la lista (o "todas"); "margen", el porcentaje (30 es 30 %). Si la persona dijo un margen sin decir para qué lista, NO lo mandes: preguntale cuál. Con reemplaza_a NO lo mandes si no cambia: se hereda; [] lo saca.'
+                        ),
                     ],
                     'required'   => ['entidad', 'datos'],
                 ],
@@ -945,6 +953,10 @@ class HerramientasDeCarga
                             'additionalProperties' => true,
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        // Misión alta-por-agente-margen-y-stock (29/9/2026): al final, por el prefijo del caché.
+                        'margenes_por_lista' => self::esquema_de_margenes_por_lista(
+                            'Solo para entidad article en un negocio con listas de precio: el margen NUEVO de cada lista que cambia ("cambiale el margen de la general a 35" es [{"lista": "general", "margen": 35}]). Si solo cambia el margen, mandá cambios vacío ({}). En un negocio con listas el margen NO va en percentage_gain: ése no mueve ningún precio de lista.'
+                        ),
                     ],
                     'required'   => ['entidad', 'registro', 'cambios'],
                 ],
@@ -1694,7 +1706,8 @@ class HerramientasDeCarga
                         EntradaDeCargaIa::valor($input, 'entidad'),
                         EntradaDeCargaIa::valor($input, 'registro'),
                         self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
-                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a'),
+                        EntradaDeCargaIa::valor($input, 'margenes_por_lista')
                     )
                 ));
 
@@ -2189,6 +2202,35 @@ class HerramientasDeCarga
         return [
             'type'        => 'integer',
             'description' => 'tarjeta_id de una tarjeta anterior que esta corrige, si la corrección cambia la subcategoría, la cuenta o la tarea.',
+        ];
+    }
+
+    /**
+     * Esquema de `margenes_por_lista`, común al alta y a la edición de un artículo (misión
+     * alta-por-agente-margen-y-stock, 29/9/2026). Lo resuelve MargenesPorListaIaHelper::resolver().
+     *
+     * @param  string  $descripcion
+     * @return array
+     */
+    protected static function esquema_de_margenes_por_lista($descripcion): array
+    {
+        return [
+            'type'        => 'array',
+            'description' => (string) $descripcion,
+            'items'       => [
+                'type'       => 'object',
+                'properties' => [
+                    'lista'  => [
+                        'type'        => 'string',
+                        'description' => 'El nombre de la lista de precios como lo dijo la persona, o "todas".',
+                    ],
+                    'margen' => [
+                        'type'        => 'number',
+                        'description' => 'El margen de ganancia en porcentaje: 30 es 30 %.',
+                    ],
+                ],
+                'required'   => ['lista', 'margen'],
+            ],
         ];
     }
 }

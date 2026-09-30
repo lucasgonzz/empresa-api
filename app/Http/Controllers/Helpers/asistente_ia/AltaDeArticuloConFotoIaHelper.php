@@ -43,6 +43,24 @@ use Illuminate\Support\Facades\Log;
  * pudo asignar: <motivo>", y la foto queda sin usar para volver a intentarla con la foto de un
  * artículo.
  *
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ * Misión alta-por-agente-margen-y-stock (29/9/2026, caso demo3 artículo 17320, la Cera Nic)
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * El mismo mecanismo de extras lleva ahora dos cosas más que la persona dicta en el mismo pedido
+ * y que la pantalla de artículos tampoco recibe en su store():
+ *
+ *   - `margenes_por_lista`: el margen de cada lista de precio en un negocio con listas. SÍ termina
+ *     en el controller, pero no como campo: EjecutorGenericoIaHelper lo convierte en el
+ *     `price_types` que manda la ficha (MargenesPorListaIaHelper::price_types_para_el_payload)
+ *     antes de llamar a store(). Acá se separa, se hereda, se resuelve y, después del alta, se
+ *     VERIFICA releyendo el pivote.
+ *
+ * 🔴 En demo3 el agente dijo "las 20 unidades ya quedaron cargadas" y el margen "del 30 %"
+ * quedó en 0 % en las dos listas: el resultado del alta decía "creado" y nada más. Por eso
+ * completar() enumera lo que QUEDÓ (el precio de cada lista releído del pivote) y lo que falló:
+ * es lo único que el modelo repite.
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
  */
 class AltaDeArticuloConFotoIaHelper
@@ -51,6 +69,9 @@ class AltaDeArticuloConFotoIaHelper
     const CON_FOTO = 'con_foto_de_la_conversacion';
     const IMAGEN_ID = 'imagen_id';
     const DESCRIPCION = 'descripcion';
+
+    /** El margen por lista (misión alta-por-agente-margen-y-stock, 29/9/2026). */
+    const MARGENES = MargenesPorListaIaHelper::CLAVE;
 
     /** La única entidad que acepta extras. */
     const ENTIDAD = 'article';
@@ -68,6 +89,7 @@ class AltaDeArticuloConFotoIaHelper
      */
     const QUITAR_FOTO = 'quitar_foto';
     const QUITAR_DESCRIPCION = 'quitar_descripcion';
+    const QUITAR_MARGENES = 'quitar_margenes_por_lista';
 
     /** Cuánto de la descripción se muestra en la tarjeta: la persona la ve, pero no entera. */
     const LARGO_EN_LA_TARJETA = 300;
@@ -98,7 +120,7 @@ class AltaDeArticuloConFotoIaHelper
 
         $es_articulo = !is_null($declaracion) && $declaracion['entidad'] === self::ENTIDAD;
 
-        foreach ([self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION] as $clave) {
+        foreach (self::claves() as $clave) {
 
             if ($es_articulo && array_key_exists($clave, $datos)) {
 
@@ -117,6 +139,16 @@ class AltaDeArticuloConFotoIaHelper
         }
 
         return [$datos, self::limpiar($extras, $es_articulo)];
+    }
+
+    /**
+     * Las claves de los extras que acepta proponer_alta, en el orden en que se separan.
+     *
+     * @return array<int, string>
+     */
+    public static function claves()
+    {
+        return [self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION, self::MARGENES];
     }
 
     /**
@@ -173,6 +205,40 @@ class AltaDeArticuloConFotoIaHelper
         if (!isset($extras[self::DESCRIPCION]) && empty($extras[self::QUITAR_DESCRIPCION]) && isset($de_antes['descripcion']) && trim((string) $de_antes['descripcion']) !== '') {
 
             $extras[self::DESCRIPCION] = (string) $de_antes['descripcion'];
+        }
+
+        /*
+         * Misión alta-por-agente-margen-y-stock (29/9/2026): el margen por lista se hereda igual que
+         * la descripción. Va con el `price_type_id` ya resuelto en la tarjeta anterior (además del
+         * nombre, para el renglón): "sí, pero cambiale el nombre" no tiene por qué volver a
+         * adivinar a qué lista se refería "la general". `[]` explícito (QUITAR_MARGENES) corta la
+         * herencia.
+         */
+        if (!array_key_exists(self::MARGENES, $extras)
+            && empty($extras[self::QUITAR_MARGENES])
+            && !empty($de_antes[self::MARGENES])
+            && is_array($de_antes[self::MARGENES])) {
+
+            $heredados = [];
+
+            foreach ($de_antes[self::MARGENES] as $margen) {
+
+                if (!is_array($margen) || !isset($margen['price_type_id'], $margen['margen'])) {
+
+                    continue;
+                }
+
+                $heredados[] = [
+                    'lista'         => isset($margen['nombre']) ? (string) $margen['nombre'] : '',
+                    'margen'        => (float) $margen['margen'],
+                    'price_type_id' => (int) $margen['price_type_id'],
+                ];
+            }
+
+            if (count($heredados)) {
+
+                $extras[self::MARGENES] = $heredados;
+            }
         }
 
         return $extras;
@@ -270,6 +336,32 @@ class AltaDeArticuloConFotoIaHelper
             $renglones[] = ['etiqueta' => 'Descripción', 'valor' => self::recortar($extras[self::DESCRIPCION], self::LARGO_EN_LA_TARJETA)];
         }
 
+        /*
+         * El margen por lista: se resuelve contra las listas del dueño AL PROPONER (una lista que no
+         * existe o que es ambigua vuelve como error o `faltan`, sin tarjeta) y queda guardado ya
+         * resuelto, con el id de cada lista. La tarjeta muestra un renglón por lista nombrada; el
+         * aviso con las demás lo arma proponer_alta, porque va aunque no venga ningún margen.
+         */
+        if (array_key_exists(self::MARGENES, $extras)) {
+
+            $margenes = MargenesPorListaIaHelper::resolver($contexto, $extras[self::MARGENES]);
+
+            if (RespuestaDeCargaIa::es_negativa($margenes)) {
+
+                return $margenes;
+            }
+
+            if (count($margenes)) {
+
+                $guardar[self::MARGENES] = $margenes;
+
+                foreach (MargenesPorListaIaHelper::renglones_del_alta($margenes) as $renglon) {
+
+                    $renglones[] = $renglon;
+                }
+            }
+        }
+
         return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url];
     }
 
@@ -359,6 +451,27 @@ class AltaDeArticuloConFotoIaHelper
         }
 
         /*
+         * El margen por lista ya lo escribió el controller (entró como `price_types`, el mismo
+         * camino que la ficha). Acá se RELEE el pivote: el resultado dice el precio que quedó en
+         * cada lista, y si una lista no quedó con ese margen, lo dice como falla. Ver el 🔴 de
+         * MargenesPorListaIaHelper::verificar().
+         */
+        if (!empty($extras[self::MARGENES]) && is_array($extras[self::MARGENES])) {
+
+            $verificado = MargenesPorListaIaHelper::verificar((int) $articulo->id, $extras[self::MARGENES]);
+
+            foreach ($verificado['hechos'] as $hecho) {
+
+                $hechos[] = $hecho;
+            }
+
+            foreach ($verificado['fallas'] as $falla) {
+
+                $fallas[] = $falla;
+            }
+        }
+
+        /*
          * La foto del código de barras del pedido se sella con el alta hecha, haya quedado o no la
          * foto de internet: ver el 🔴 de resolver(). Protegido: un sello que falla no deshace nada.
          */
@@ -381,7 +494,8 @@ class AltaDeArticuloConFotoIaHelper
 
         if (count($hechos)) {
 
-            $texto .= ', con ' . implode(' y ', $hechos);
+            // "la foto y la descripción" como siempre; con más de dos, "a, b y c".
+            $texto .= ', con ' . MargenesPorListaIaHelper::enumerar($hechos);
         }
 
         if (count($fallas)) {
@@ -544,6 +658,33 @@ class AltaDeArticuloConFotoIaHelper
 
                 /* descripcion "" explícita = "sin descripción". */
                 $limpios[self::QUITAR_DESCRIPCION] = true;
+            }
+        }
+
+        /*
+         * El margen por lista (misión alta-por-agente-margen-y-stock, 29/9/2026) viaja CRUDO: lo
+         * valida y lo resuelve MargenesPorListaIaHelper::resolver(), que es quien sabe decir qué
+         * está mal ("esa lista no existe", "el margen tiene que ser un número"). Descartarlo acá por
+         * un formato raro sería callarse una parte del pedido. `[]` explícito = QUITAR el heredado.
+         */
+        if (array_key_exists(self::MARGENES, $extras) && !is_null($extras[self::MARGENES])) {
+
+            $valor = $extras[self::MARGENES];
+
+            if ($valor instanceof \stdClass) {
+
+                $valor = json_decode(json_encode($valor), true);
+            }
+
+            $vacio = (is_array($valor) && !count($valor)) || (is_string($valor) && trim($valor) === '');
+
+            if ($vacio && $es_articulo) {
+
+                $limpios[self::QUITAR_MARGENES] = true;
+
+            } elseif (!$vacio) {
+
+                $limpios[self::MARGENES] = $valor;
             }
         }
 
