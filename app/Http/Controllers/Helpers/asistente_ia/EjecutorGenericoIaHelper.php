@@ -140,7 +140,7 @@ class EjecutorGenericoIaHelper
 
             if (!MargenesPorListaIaHelper::aplica($contexto->owner)) {
 
-                throw new AccionIaException(422, 'La tarjeta trae márgenes por lista de precio y el negocio ya no trabaja con listas por artículo. Pedímelo de nuevo.');
+                throw new AccionIaException(422, MargenesPorListaIaHelper::NO_SE_CARGO.'la tarjeta trae márgenes por lista de precio y el negocio ya no trabaja con listas por artículo. Pedímelo de nuevo.');
             }
 
             $payload['price_types'] = MargenesPorListaIaHelper::price_types_para_el_payload(
@@ -180,6 +180,19 @@ class EjecutorGenericoIaHelper
         if ($operacion === Catalogo::OP_EDICION && count($margenes)) {
 
             $resultado = MargenesPorListaIaHelper::completar_resultado($resultado, (int) $id, $margenes);
+        }
+
+        /*
+         * 🔴 Y con listas por artículo, el resultado dice el precio de TODAS las listas, no solo de
+         * las nombradas (ronda de correcciones del 29/9/2026): en "directo" el `aviso` de la tarjeta
+         * no le llega al modelo, y un alta sin margen quedaba con 0 % en todas y un "creado" a secas,
+         * que es demo3. Va en toda alta de artículo (tenga o no extras) y en la edición con márgenes.
+         * Protegido: nunca lanza.
+         */
+        if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD
+            && ($operacion === Catalogo::OP_ALTA || ($operacion === Catalogo::OP_EDICION && count($margenes)))) {
+
+            $resultado = MargenesPorListaIaHelper::sumar_las_demas_listas($contexto, $resultado, (int) $id, $margenes, $operacion === Catalogo::OP_ALTA);
         }
 
         return $resultado;

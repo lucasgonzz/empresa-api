@@ -1413,6 +1413,17 @@ class CatalogoDeEscrituraIaHelper
 
         $campos = [];
 
+        /*
+         * Con el contexto de un negocio con listas, los campos que la ficha esconde (el margen
+         * suelto, el precio manual, "aplica el margen del proveedor") van MARCADOS como que no
+         * aplican (ronda de correcciones de la misión alta-por-agente-margen-y-stock, 29/9/2026):
+         * así el modelo no gasta un turno mandándolos para comerse el rechazo. Se marcan en vez de
+         * sacarlos para que la lista de campos sea la misma en todos los negocios.
+         */
+        $no_aplican = ($contexto instanceof ContextoDeCargaIa && $declaracion['entidad'] === 'article')
+            ? MargenesPorListaIaHelper::campos_que_no_aplican($contexto->owner)
+            : [];
+
         foreach ($declaracion['campos'] as $columna => $campo) {
 
             $fila = [
@@ -1422,6 +1433,11 @@ class CatalogoDeEscrituraIaHelper
                 'obligatorio' => $campo['obligatorio'],
                 'operaciones' => $campo['operaciones'],
             ];
+
+            if (isset($no_aplican[$columna])) {
+
+                $fila['no_aplica'] = $no_aplican[$columna];
+            }
 
             if (!is_null($campo['relacion'])) {
 

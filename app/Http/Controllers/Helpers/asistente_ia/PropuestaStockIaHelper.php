@@ -92,6 +92,9 @@ class PropuestaStockIaHelper
      */
     const CONCEPTO_INGRESO = 'Ingreso manual';
 
+    /** El principio de todo rechazo de stock de esta misión (ver MargenesPorListaIaHelper::NO_SE_CARGO). */
+    const NO_SE_CARGO = MargenesPorListaIaHelper::NO_SE_CARGO;
+
     /** Lo que queda en las observaciones del movimiento del stock inicial. */
     const OBSERVACION_STOCK_INICIAL = 'Stock inicial cargado por el asistente';
 
@@ -173,10 +176,24 @@ class PropuestaStockIaHelper
 
         $depositos = self::depositos_del_dueno($contexto->owner_id);
 
+        /*
+         * 🔴 Con CERO depósitos el texto decía "tiene una sola sucursal", que es falso y además no
+         * dice qué hacer (ronda de correcciones de la misión alta-por-agente-margen-y-stock,
+         * 29/9/2026). En demo3 un error de stock sin salida se leyó como "ya está": este dice que no
+         * se movió nada y manda a la herramienta que sí carga el stock total.
+         */
+        if (!count($depositos)) {
+
+            return RespuestaDeCargaIa::error(
+                'No se movió nada: este negocio no tiene depósitos ni sucursales cargadas, así que no hay entre cuáles mover stock. '
+                . 'Para cargarle o sacarle stock al artículo, usá proponer_stock_en_deposito sin deposito (deja el stock total del artículo).'
+            );
+        }
+
         if (count($depositos) < 2) {
 
             return RespuestaDeCargaIa::error(
-                'Este negocio tiene una sola sucursal cargada, así que no hay entre qué depósitos mover stock.'
+                'No se movió nada: este negocio tiene una sola sucursal cargada, así que no hay entre qué depósitos mover stock.'
             );
         }
 
@@ -457,7 +474,7 @@ class PropuestaStockIaHelper
             return $deposito;
         }
 
-        $modo_y_cantidad = self::modo_y_cantidad($input, 'El stock de un depósito no puede quedar en un número negativo.');
+        $modo_y_cantidad = self::modo_y_cantidad($input, 'el stock de un depósito no puede quedar en un número negativo.');
 
         if (RespuestaDeCargaIa::es_negativa($modo_y_cantidad)) {
 
@@ -577,7 +594,7 @@ class PropuestaStockIaHelper
 
         if (!in_array($modo, [self::MODO_SUMAR, self::MODO_RESTAR, self::MODO_FIJAR], true)) {
 
-            return RespuestaDeCargaIa::error('El modo tiene que ser "sumar", "restar" o "fijar".');
+            return self::rechazo('el modo tiene que ser "sumar", "restar" o "fijar".');
         }
 
         $cantidad = EntradaDeCargaIa::valor($input, 'cantidad');
@@ -589,19 +606,19 @@ class PropuestaStockIaHelper
 
         if (!is_numeric($cantidad)) {
 
-            return RespuestaDeCargaIa::error('La cantidad tiene que ser un número.');
+            return self::rechazo('la cantidad tiene que ser un número.');
         }
 
         $cantidad = round((float) $cantidad, 2);
 
         if ($modo !== self::MODO_FIJAR && $cantidad <= 0) {
 
-            return RespuestaDeCargaIa::error('La cantidad a ' . $modo . ' tiene que ser un número mayor a 0.');
+            return self::rechazo('la cantidad a ' . $modo . ' tiene que ser un número mayor a 0.');
         }
 
         if ($modo === self::MODO_FIJAR && $cantidad < 0) {
 
-            return RespuestaDeCargaIa::error($motivo_si_negativo);
+            return self::rechazo($motivo_si_negativo);
         }
 
         return [$modo, $cantidad];
@@ -629,10 +646,16 @@ class PropuestaStockIaHelper
      */
     protected static function proponer_stock_total(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input, Article $articulo): array
     {
+        /*
+         * 🔴 "No se cargó nada:" al principio, y qué hacer (ronda de correcciones del 29/9/2026). El
+         * error viejo de este mismo caso —"el stock se edita sobre el total del artículo"— lo leyó
+         * DeepSeek en demo3 como "ya quedaron cargadas". Ningún rechazo de esta herramienta puede
+         * leerse como un hecho cumplido.
+         */
         if (EntradaDeCargaIa::texto($input, 'deposito') !== '') {
 
-            return RespuestaDeCargaIa::error(
-                'Este negocio no tiene depósitos ni sucursales cargadas: el stock va al total del artículo. No mandes deposito.'
+            return self::rechazo(
+                'este negocio no tiene depósitos ni sucursales cargadas, así que el stock va al total del artículo. Volvé a llamar sin deposito.'
             );
         }
 
@@ -643,8 +666,8 @@ class PropuestaStockIaHelper
          */
         if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
 
-            return RespuestaDeCargaIa::error(
-                'Tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock del artículo lo carga alguien con permiso para editar el stock.'
+            return self::rechazo(
+                'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock del artículo lo carga alguien con permiso para editar el stock.'
             );
         }
 
@@ -652,10 +675,10 @@ class PropuestaStockIaHelper
 
         if (!is_null($motivo)) {
 
-            return RespuestaDeCargaIa::error($motivo);
+            return self::rechazo($motivo);
         }
 
-        $modo_y_cantidad = self::modo_y_cantidad($input, 'El stock de un artículo no puede quedar en un número negativo.');
+        $modo_y_cantidad = self::modo_y_cantidad($input, 'el stock de un artículo no puede quedar en un número negativo.');
 
         if (RespuestaDeCargaIa::es_negativa($modo_y_cantidad)) {
 
@@ -664,7 +687,9 @@ class PropuestaStockIaHelper
 
         list($modo, $cantidad) = $modo_y_cantidad;
 
-        $actual = self::stock_total($articulo->id);
+        $crudo = DB::table('articles')->where('id', (int) $articulo->id)->value('stock');
+
+        $actual = is_null($crudo) ? 0.0 : (float) $crudo;
 
         if ($modo === self::MODO_SUMAR) {
 
@@ -683,15 +708,32 @@ class PropuestaStockIaHelper
 
         if ($final < 0) {
 
-            return RespuestaDeCargaIa::error(
-                'El artículo tiene ' . self::numero($actual) . ': restando ' . self::numero($cantidad)
+            return self::rechazo(
+                'el artículo tiene ' . self::numero($actual) . ': restando ' . self::numero($cantidad)
                 . ' quedaría en ' . self::numero($final) . ', y el stock no puede quedar negativo.'
             );
         }
 
+        /*
+         * Sin cambio no hay tarjeta (ronda de correcciones del 29/9/2026): "5 → 5" es una carga que
+         * no carga nada, y confirmarla le haría creer a la persona que algo se movió. Un artículo
+         * que NO llevaba stock (null) y queda en 0 sí es un cambio: empieza a llevarlo.
+         */
+        if (!is_null($crudo) && abs($final - $actual) < 0.01) {
+
+            return self::rechazo(
+                'el stock de "' . self::nombre_de_articulo($articulo) . '" ya está en ' . self::numero($actual) . ', así que no hay nada para cambiar.'
+            );
+        }
+
+        $unidades_individuales = DB::table('articles')->where('id', (int) $articulo->id)->value('unidades_individuales');
+
         $renglones = [
             ['etiqueta' => 'Artículo', 'valor' => self::nombre_de_articulo($articulo)],
-            ['etiqueta' => 'Stock total', 'valor' => self::numero($actual) . ' → ' . self::numero($final)],
+            [
+                'etiqueta' => 'Stock total',
+                'valor'    => (is_null($crudo) ? 'sin stock cargado' : self::numero($actual)) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales),
+            ],
         ];
 
         $creada = AccionesIaHelper::crear(
@@ -720,7 +762,7 @@ class PropuestaStockIaHelper
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
-        $resumen = self::nombre_de_articulo($articulo) . ', stock total: ' . self::numero($actual) . ' → ' . self::numero($final);
+        $resumen = self::nombre_de_articulo($articulo) . ', stock total: ' . self::numero($actual) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
     }
@@ -739,6 +781,14 @@ class PropuestaStockIaHelper
      * del bulto y "cargale 15" en un artículo de 12 por caja cargaría 180. Es el mismo criterio que
      * MasiveUpdateHelper::aplicar_stock_por_movimiento().
      *
+     * 🔴 ATÓMICO SIN TRANSACCIÓN PROPIA, y a propósito (ronda de correcciones del 29/9/2026): el tipo
+     * TIPO_STOCK_DEPOSITO NO es de dos etapas (EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS), así que
+     * esto corre adentro de la transacción con candado del ejecutor. Cualquier excepción —la de la
+     * relectura de abajo, o una que lance crear() después de CheckGlobalStock— revierte el movimiento
+     * y el stock sumado: un 422 acá es literalmente "no se cargó nada". Lo prueba
+     * 62_Correcciones_de_alta_con_margen_y_stock_Test. Si este tipo pasara algún día a dos etapas,
+     * esto necesita su propio DB::transaction, como cargar_stock_inicial().
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\User  $persona
      * @param  \App\Models\Article  $articulo
@@ -751,14 +801,14 @@ class PropuestaStockIaHelper
     {
         if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
 
-            throw new AccionIaException(422, PermisosIaHelper::mensaje_sin_permiso('el stock del artículo'));
+            throw new AccionIaException(422, self::NO_SE_CARGO . 'tu usuario no tiene permiso para editar el stock del artículo.');
         }
 
         $motivo = self::motivo_si_no_lleva_stock_total($articulo->id);
 
         if (!is_null($motivo)) {
 
-            throw new AccionIaException(422, $motivo);
+            throw new AccionIaException(422, self::NO_SE_CARGO . $motivo);
         }
 
         $crudo = DB::table('articles')->where('id', (int) $articulo->id)->value('stock');
@@ -800,8 +850,8 @@ class PropuestaStockIaHelper
 
             throw new AccionIaException(
                 422,
-                'El sistema no dejó el stock donde corresponde: el artículo quedó en ' . self::numero($despues)
-                . ' y tenía que quedar en ' . self::numero($final) . '. No lo doy por hecho: revisalo en el Listado.'
+                self::NO_SE_CARGO . 'el sistema no dejó el stock donde corresponde (el artículo iba a quedar en ' . self::numero($despues)
+                . ' y tenía que quedar en ' . self::numero($final) . '), así que no se guardó ningún movimiento. Revisalo en el Listado.'
             );
         }
 
@@ -842,17 +892,17 @@ class PropuestaStockIaHelper
 
         if (is_null($modelo)) {
 
-            return 'El artículo ya no existe entre los tuyos.';
+            return 'el artículo ya no existe entre los tuyos.';
         }
 
         if ($modelo->article_variants()->count()) {
 
-            return 'El stock de un artículo con variantes se carga variante por variante desde el Listado: por acá no lo toco.';
+            return 'el stock de un artículo con variantes se carga variante por variante desde el Listado: por acá no lo toco.';
         }
 
         if ($modelo->addresses()->count()) {
 
-            return 'Este artículo tiene el stock repartido por depósitos: se carga en su depósito, no sobre el total.';
+            return 'este artículo tiene el stock repartido por depósitos: se carga en su depósito, no sobre el total.';
         }
 
         return null;
@@ -898,14 +948,14 @@ class PropuestaStockIaHelper
 
         if (!PermisosIaHelper::puede($persona, self::PERMISO) && !PermisosIaHelper::puede($persona, self::PERMISO_SOLO_SU_SUCURSAL)) {
 
-            return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('stock'));
+            return self::rechazo('tu usuario no tiene permiso para cargar stock, así que el alta no puede llevar stock inicial. Volvé a proponerla sin stock_inicial si la persona quiere el artículo igual.');
         }
 
         $numero = self::cantidad_de_stock($cantidad);
 
         if (is_null($numero) || $numero <= 0) {
 
-            return RespuestaDeCargaIa::error('El stock inicial tiene que ser un número de unidades mayor a 0 (por ejemplo 20).');
+            return self::rechazo('el stock inicial tiene que ser un número de unidades mayor a 0 (por ejemplo 20).');
         }
 
         $deposito_texto = is_scalar($deposito_texto) ? trim((string) $deposito_texto) : '';
@@ -916,14 +966,14 @@ class PropuestaStockIaHelper
 
             if ($deposito_texto !== '') {
 
-                return RespuestaDeCargaIa::error('Este negocio no tiene depósitos ni sucursales cargadas: el stock inicial va al total del artículo. No mandes deposito.');
+                return self::rechazo('este negocio no tiene depósitos ni sucursales cargadas, así que el stock inicial va al total del artículo. Volvé a llamar sin deposito.');
             }
 
             // Ver proponer_stock_total(): el total se toca con el permiso general.
             if (!PermisosIaHelper::puede($persona, self::PERMISO)) {
 
-                return RespuestaDeCargaIa::error(
-                    'Tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock inicial lo carga alguien con permiso para editar el stock.'
+                return self::rechazo(
+                    'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock inicial lo carga alguien con permiso para editar el stock. Volvé a proponer el alta sin stock_inicial si la persona quiere el artículo igual.'
                 );
             }
 
@@ -955,7 +1005,20 @@ class PropuestaStockIaHelper
                     }
                 }
 
-                return RespuestaDeCargaIa::faltan(['en qué depósito entra el stock inicial'], ['depositos' => $opciones]);
+                /*
+                 * Un `faltan` sin opciones es una pregunta sin respuesta posible (ronda de correcciones
+                 * del 29/9/2026): pasa con un empleado con "solo su sucursal" que no tiene ninguna
+                 * asignada en su ficha. Eso no se resuelve preguntando: se dice.
+                 */
+                if (!count($opciones)) {
+
+                    return self::rechazo(
+                        'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y no tiene ninguna asignada en su ficha. '
+                        . 'El stock inicial lo carga alguien con permiso para editar el stock; volvé a proponer el alta sin stock_inicial si la persona quiere el artículo igual.'
+                    );
+                }
+
+                return RespuestaDeCargaIa::faltan(['en qué depósito entra el stock inicial (todavía no se cargó nada)'], ['depositos' => $opciones]);
             }
         }
 
@@ -1016,7 +1079,14 @@ class PropuestaStockIaHelper
      *
      * 🔴 NUNCA LANZA, y si falla el artículo NO se deshace: el alta ya pasó por el controller de la
      * pantalla (mismo 🔴 que la foto en AltaDeArticuloConFotoIaHelper). El resultado del alta dice
-     * "pero el stock inicial no se pudo cargar: <motivo>".
+     * "pero el stock inicial NO se cargó (<motivo>)".
+     *
+     * 🔴 Y ES ATÓMICO: "falla" = NO QUEDÓ NADA ESCRITO (ronda de correcciones del 29/9/2026). El alta
+     * es de dos etapas, así que acá no hay ninguna transacción del ejecutor alrededor: si algo lanzaba
+     * después de CheckGlobalStock, el stock ya estaba sumado y el resultado decía "falló"; reintentar
+     * lo duplicaba. Y si la relectura no cerraba, el movimiento quedaba escrito igual. Ahora crear() y
+     * las dos relecturas van en UNA transacción: si la relectura no cierra se lanza ADENTRO (y se
+     * revierte el movimiento), y la excepción recién se convierte en el motivo afuera.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\Article  $articulo
@@ -1068,41 +1138,49 @@ class PropuestaStockIaHelper
                 }
             }
 
-            $antes = self::stock_total($articulo->id);
+            DB::transaction(function () use ($contexto, $articulo, $cantidad, $address_id, $persona) {
 
-            $pivot_antes = is_null($address_id) ? 0.0 : self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
+                $antes = self::stock_total($articulo->id);
 
-            (new StockMovementController())->crear([
-                'model_id'                     => (int) $articulo->id,
-                'amount'                       => $cantidad,
-                'concepto_stock_movement_name' => self::CONCEPTO_INGRESO,
-                'to_address_id'                => $address_id,
-                'provider_id'                  => $articulo->provider_id,
-                'observations'                 => self::OBSERVACION_STOCK_INICIAL,
-                'sin_unidades_individuales'    => true,
-            ], false, $contexto->owner, is_null($persona) ? null : (int) $persona->id);
+                $pivot_antes = is_null($address_id) ? 0.0 : self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
 
-            /*
-             * 🔴 Se relee, no se confía en crear(): con un artículo que no existe devuelve sin hacer
-             * nada, y un depósito que no se pudo abrir manda el movimiento al stock global. Lo único
-             * que prueba que el stock quedó es la fila.
-             */
-            $despues = self::stock_total($articulo->id);
+                (new StockMovementController())->crear([
+                    'model_id'                     => (int) $articulo->id,
+                    'amount'                       => $cantidad,
+                    'concepto_stock_movement_name' => self::CONCEPTO_INGRESO,
+                    'to_address_id'                => $address_id,
+                    'provider_id'                  => $articulo->provider_id,
+                    'observations'                 => self::OBSERVACION_STOCK_INICIAL,
+                    'sin_unidades_individuales'    => true,
+                ], false, $contexto->owner, is_null($persona) ? null : (int) $persona->id);
 
-            if (abs(($antes + $cantidad) - $despues) > 0.01) {
+                /*
+                 * 🔴 Se relee, no se confía en crear(): con un artículo que no existe devuelve sin
+                 * hacer nada, y un depósito que no se pudo abrir manda el movimiento al stock global.
+                 * Lo único que prueba que el stock quedó es la fila; y si no quedó como tenía que
+                 * quedar, se lanza ACÁ ADENTRO para que la transacción se lleve el movimiento.
+                 */
+                $despues = self::stock_total($articulo->id);
 
-                return 'el sistema no lo registró: el stock del artículo quedó en ' . self::numero($despues);
-            }
+                if (abs(($antes + $cantidad) - $despues) > 0.01) {
 
-            if (!is_null($address_id)) {
-
-                $pivot_despues = self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
-
-                if (abs(($pivot_antes + $cantidad) - $pivot_despues) > 0.01) {
-
-                    return 'el sistema no lo dejó en ' . self::nombre_de_deposito_por_id($address_id) . ': ese depósito quedó en ' . self::numero($pivot_despues);
+                    throw new AccionIaException(422, 'el sistema no lo registró como corresponde: el stock del artículo iba a quedar en ' . self::numero($despues));
                 }
-            }
+
+                if (!is_null($address_id)) {
+
+                    $pivot_despues = self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
+
+                    if (abs(($pivot_antes + $cantidad) - $pivot_despues) > 0.01) {
+
+                        throw new AccionIaException(422, 'el sistema no lo dejó en ' . self::nombre_de_deposito_por_id($address_id) . ': ese depósito iba a quedar en ' . self::numero($pivot_despues));
+                    }
+                }
+            });
+
+        } catch (AccionIaException $e) {
+
+            return $e->getMessage();
 
         } catch (\Throwable $e) {
 
@@ -1111,15 +1189,16 @@ class PropuestaStockIaHelper
                 'error'      => $e->getMessage(),
             ]);
 
-            return 'falló el sistema al cargarlo';
+            return 'falló el sistema al cargarlo y no quedó ningún movimiento';
         }
 
         return null;
     }
 
     /**
-     * Una cantidad de stock a partir de lo que dijo la persona (20, "20", "20 unidades", "20,5"), o
-     * null si no se entiende.
+     * Una cantidad de stock a partir de lo que dijo la persona (20, "20", "20 unidades", "20,5",
+     * "1.500 unidades"), o null si no se entiende. El punto de miles se lee como miles: ver
+     * MargenesPorListaIaHelper::numero_escrito_a_punto().
      *
      * @param  mixed  $valor
      * @return float|null
@@ -1138,12 +1217,14 @@ class PropuestaStockIaHelper
 
         $texto = mb_strtolower(trim($valor));
 
-        if (!preg_match('/^(-?\d+(?:[.,]\d+)?)\s*(unidades|unidad|uds\.?|u\.?|un\.?)?$/u', $texto, $partes)) {
+        if (!preg_match('/^(-?\d+(?:[.,]\d+)*)\s*(unidades|unidad|uds\.?|u\.?|un\.?)?$/u', $texto, $partes)) {
 
             return null;
         }
 
-        return round((float) str_replace(',', '.', $partes[1]), 2);
+        $numero = MargenesPorListaIaHelper::numero_escrito_a_punto($partes[1]);
+
+        return is_numeric($numero) ? round((float) $numero, 2) : null;
     }
 
     /**
@@ -1187,6 +1268,45 @@ class PropuestaStockIaHelper
     public static function numero_legible($numero): string
     {
         return self::numero($numero);
+    }
+
+    /**
+     * La cantidad del stock como la tiene que leer la persona ANTES de confirmar: "20", o "20 unidades
+     * sueltas (no bultos de 12)" si el artículo se compra por bulto (ronda de correcciones del
+     * 29/9/2026).
+     *
+     * 🔴 POR QUÉ SE DICE. El asistente NO multiplica por el bulto, a propósito (ver el 🔴 de
+     * ejecutar_stock_total()): la persona dice unidades del Listado. Pero el botón "Asignar Stock" de
+     * la ficha SÍ multiplica, así que alguien acostumbrado a la pantalla puede estar pensando en
+     * cajas. La tarjeta lo dice con todas las letras y la persona decide antes del clic.
+     *
+     * @param  float  $cantidad
+     * @param  mixed  $unidades_individuales  Unidades por bulto del artículo (o del alta), o null.
+     * @return string
+     */
+    public static function texto_de_cantidad($cantidad, $unidades_individuales = null): string
+    {
+        $texto = self::numero($cantidad);
+
+        if (is_numeric($unidades_individuales) && (float) $unidades_individuales > 1) {
+
+            $texto .= ' unidades sueltas (no bultos de ' . self::numero($unidades_individuales) . ')';
+        }
+
+        return $texto;
+    }
+
+    /**
+     * Un rechazo de las cargas de stock de esta misión: empieza SIEMPRE con "No se cargó nada:"
+     * (ver MargenesPorListaIaHelper::NO_SE_CARGO: en demo3 un error de stock se leyó como un hecho).
+     *
+     * @param  string  $motivo
+     * @param  array  $opciones
+     * @return array
+     */
+    protected static function rechazo($motivo, array $opciones = [])
+    {
+        return RespuestaDeCargaIa::error(self::NO_SE_CARGO . $motivo, $opciones);
     }
 
     /**

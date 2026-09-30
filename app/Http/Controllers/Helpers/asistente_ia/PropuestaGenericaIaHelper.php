@@ -81,7 +81,7 @@ class PropuestaGenericaIaHelper
          */
         if (count($extras) && $declaracion['entidad'] !== AltaDeArticuloConFotoIaHelper::ENTIDAD) {
 
-            return RespuestaDeCargaIa::error('La foto, la descripción, el margen por lista y el stock inicial sólo se cargan en el alta de un artículo.');
+            return RespuestaDeCargaIa::error(MargenesPorListaIaHelper::NO_SE_CARGO.'la foto, la descripción, el margen por lista y el stock inicial sólo se cargan en el alta de un artículo. Volvé a llamar sin eso.');
         }
 
         /*
@@ -103,24 +103,42 @@ class PropuestaGenericaIaHelper
             return $validado;
         }
 
+        /*
+         * 🔴 Misión alta-por-agente-margen-y-stock (29/9/2026, demo3, artículo 17320): con listas de
+         * precio, los campos que la ficha esconde —el margen suelto (`percentage_gain`, por la columna
+         * o por su alias "margen de ganancia"), el precio manual y "aplica el margen del proveedor"—
+         * NO mueven ningún precio de lista. Si los MANDA EL MODELO, se rechaza con un error que dice
+         * que no se cargó nada, que el margen va por lista y que pregunte cuál. Se mira lo que mandó
+         * él (antes de combinar con la tarjeta reemplazada y sin los defaults de la pantalla): ver
+         * MargenesPorListaIaHelper::guarda_de_campos_escondidos().
+         */
+        $es_articulo = $declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD;
+
+        if ($es_articulo) {
+
+            $escondido = MargenesPorListaIaHelper::guarda_de_campos_escondidos($contexto, $validado['payload']);
+
+            if (!is_null($escondido)) {
+
+                return $escondido;
+            }
+        }
+
+        $del_modelo = $validado;
+
         $validado = self::con_los_campos_de_la_tarjeta_reemplazada($contexto, $declaracion, $reemplaza_a, $validado);
 
         /*
-         * 🔴 Misión alta-por-agente-margen-y-stock (29/9/2026, demo3, artículo 17320): con listas de
-         * precio, un margen suelto (`percentage_gain`, llegue por la columna o por su alias "margen
-         * de ganancia") NO mueve ningún precio de lista y la ficha ni lo muestra. Se rechaza con un
-         * error que le dice al modelo que el margen va por lista y que pregunte cuál. Va DESPUÉS de
-         * heredar los campos de la tarjeta reemplazada: un margen suelto heredado de una tarjeta
-         * vieja tampoco puede colarse. Ver MargenesPorListaIaHelper::guarda_del_margen_suelto().
+         * Y si alguno de esos campos llegó SOLO por herencia de una tarjeta propuesta antes del
+         * deploy (el modelo no lo mandó), se descarta y la tarjeta lo avisa: cortar con "no lo
+         * mandes" sería pedirle que deje de mandar algo que no mandó (ronda de correcciones del
+         * 29/9/2026). Ver MargenesPorListaIaHelper::sacar_campos_escondidos_heredados().
          */
-        if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+        $aviso_de_lo_heredado = null;
 
-            $margen_suelto = MargenesPorListaIaHelper::guarda_del_margen_suelto($contexto, $validado['payload']);
+        if ($es_articulo) {
 
-            if (!is_null($margen_suelto)) {
-
-                return $margen_suelto;
-            }
+            list($validado, $aviso_de_lo_heredado) = MargenesPorListaIaHelper::sacar_campos_escondidos_heredados($contexto, $del_modelo, $validado);
         }
 
         $faltan = [];
@@ -154,6 +172,11 @@ class PropuestaGenericaIaHelper
             $aviso = is_null($aviso) ? $declaracion['aviso_de_alta'] : $aviso.' '.$declaracion['aviso_de_alta'];
         }
 
+        if (!is_null($aviso_de_lo_heredado)) {
+
+            $aviso = is_null($aviso) ? $aviso_de_lo_heredado : $aviso.' '.$aviso_de_lo_heredado;
+        }
+
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
 
         $renglones = self::costo_en_dolares_en_los_renglones($declaracion, $validado['payload'], $renglones);
@@ -173,7 +196,12 @@ class PropuestaGenericaIaHelper
          */
         if (count($extras)) {
 
-            $resueltos = AltaDeArticuloConFotoIaHelper::resolver($contexto, $mensaje, $extras);
+            $resueltos = AltaDeArticuloConFotoIaHelper::resolver(
+                $contexto,
+                $mensaje,
+                $extras,
+                isset($validado['payload']['unidades_individuales']) ? $validado['payload']['unidades_individuales'] : null
+            );
 
             if (RespuestaDeCargaIa::es_negativa($resueltos)) {
 
@@ -266,7 +294,10 @@ class PropuestaGenericaIaHelper
 
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA).(is_null($nombre) ? '' : ' '.$nombre).self::resumen_de_renglones($renglones, $nombre);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, is_null($aviso_de_las_listas) ? [] : ['aviso' => $aviso]);
+        // El aviso viaja también al modelo cuando habla de listas o de algo que se descartó.
+        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado);
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $avisa_al_modelo ? ['aviso' => $aviso] : []);
     }
 
     /**
@@ -378,11 +409,25 @@ class PropuestaGenericaIaHelper
             unset($cambios[MargenesPorListaIaHelper::CLAVE]);
         }
 
+        /*
+         * 🔴 VACÍO ES "NO VINO", para cualquier entidad (ronda de correcciones del 29/9/2026): null,
+         * "", [] y el texto "[]". Un modelo que manda `margenes_por_lista: []` al cambiar el teléfono
+         * de un cliente no está pidiendo nada de listas, y antes eso cortaba con "sólo para el margen
+         * de un artículo" (o con "no trabaja con listas" en un artículo sin listas). La única lectura
+         * distinta: con reemplaza_a en un artículo, el vacío EXPLÍCITO saca los márgenes heredados.
+         */
+        $vacio_explicito = !is_null($margenes_por_lista) && MargenesPorListaIaHelper::vino_vacio($margenes_por_lista);
+
+        if (MargenesPorListaIaHelper::vino_vacio($margenes_por_lista)) {
+
+            $margenes_por_lista = null;
+        }
+
         $vinieron_margenes = !is_null($margenes_por_lista);
 
         if ($vinieron_margenes && !$es_articulo) {
 
-            return RespuestaDeCargaIa::error('margenes_por_lista es sólo para el margen de un artículo en cada lista de precio.');
+            return RespuestaDeCargaIa::error(MargenesPorListaIaHelper::NO_SE_CARGO.'margenes_por_lista es sólo para el margen de un artículo en cada lista de precio. Volvé a llamar sin eso.');
         }
 
         $fila = self::ubicar($contexto, $declaracion, $registro);
@@ -390,6 +435,23 @@ class PropuestaGenericaIaHelper
         if (RespuestaDeCargaIa::es_negativa($fila)) {
 
             return $fila;
+        }
+
+        /*
+         * 🔴 UNA CORRECCIÓN DE UNA EDICIÓN CON MÁRGENES LOS SUMA, NO LOS PISA (ronda de correcciones
+         * del 29/9/2026): mismo criterio que el alta. Solo de una edición del MISMO artículo que siga
+         * viva (propuesta o recién reemplazada); lo nuevo gana por lista y `[]` explícito los saca.
+         */
+        if ($es_articulo && !$vacio_explicito) {
+
+            $heredados = self::margenes_de_la_edicion_reemplazada($contexto, $reemplaza_a, (int) $fila->id);
+
+            if (count($heredados)) {
+
+                $margenes_por_lista = MargenesPorListaIaHelper::mezclar_con_heredados($margenes_por_lista, $heredados);
+
+                $vinieron_margenes = !is_null($margenes_por_lista);
+            }
         }
 
         if (!count($cambios) && !$vinieron_margenes) {
@@ -406,17 +468,18 @@ class PropuestaGenericaIaHelper
 
         /*
          * 🔴 La misma guarda que el alta (misión alta-por-agente-margen-y-stock, 29/9/2026): con
-         * listas, "cambiale el margen a 35" mandado como percentage_gain cambiaría una columna que
-         * no mueve ningún precio de lista, y la tarjeta diría "Margen de ganancia: 0 → 35 %" sobre
-         * un cambio que la persona no va a ver en ningún precio.
+         * listas, "cambiale el margen a 35" mandado como percentage_gain (o un precio manual, o
+         * "aplica el margen del proveedor") cambiaría una columna que no mueve ningún precio de
+         * lista, y la tarjeta diría "Margen de ganancia: 0 → 35 %" sobre un cambio que la persona no
+         * va a ver en ningún precio. Ver MargenesPorListaIaHelper::guarda_de_campos_escondidos().
          */
         if ($es_articulo) {
 
-            $margen_suelto = MargenesPorListaIaHelper::guarda_del_margen_suelto($contexto, $validado['payload']);
+            $escondido = MargenesPorListaIaHelper::guarda_de_campos_escondidos($contexto, $validado['payload']);
 
-            if (!is_null($margen_suelto)) {
+            if (!is_null($escondido)) {
 
-                return $margen_suelto;
+                return $escondido;
             }
         }
 
@@ -467,7 +530,7 @@ class PropuestaGenericaIaHelper
 
             if (!count($margenes)) {
 
-                return RespuestaDeCargaIa::error('margenes_por_lista vino vacío: decime qué lista cambia y a qué margen.');
+                return RespuestaDeCargaIa::error(MargenesPorListaIaHelper::NO_SE_CARGO.'margenes_por_lista vino vacío: decime qué lista cambia y a qué margen.');
             }
 
             $de_la_edicion = MargenesPorListaIaHelper::cambios_de_edicion($contexto, (int) $fila->id, $margenes);
@@ -520,6 +583,49 @@ class PropuestaGenericaIaHelper
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_EDICION, $nombre_actual).self::resumen_de_renglones($renglones, null);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+    }
+
+    /**
+     * Los márgenes por lista de la EDICIÓN que esta corrige, ya resueltos, o []. Solo de una
+     * tarjeta de edición viva (propuesta o recién reemplazada), de esta conversación y del MISMO
+     * artículo: nunca de una confirmada, cancelada o vencida, ni de otro artículo (mismo criterio
+     * que con_los_campos_de_la_tarjeta_reemplazada()).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $reemplaza_a
+     * @param  int  $article_id
+     * @return array
+     */
+    protected static function margenes_de_la_edicion_reemplazada(ContextoDeCargaIa $contexto, $reemplaza_a, int $article_id): array
+    {
+        $reemplaza_a = is_numeric($reemplaza_a) ? (int) $reemplaza_a : 0;
+
+        if ($reemplaza_a <= 0) {
+
+            return [];
+        }
+
+        $anterior = AiMessageAction::where('id', $reemplaza_a)
+                                    ->where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('tipo', AiMessageAction::TIPO_EDICION)
+                                    ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
+                                    ->first();
+
+        if (is_null($anterior) || !is_array($anterior->datos)) {
+
+            return [];
+        }
+
+        $datos = $anterior->datos;
+
+        if (!isset($datos['entidad'], $datos['id']) || $datos['entidad'] !== AltaDeArticuloConFotoIaHelper::ENTIDAD || (int) $datos['id'] !== $article_id) {
+
+            return [];
+        }
+
+        return isset($datos[MargenesPorListaIaHelper::CLAVE]) && is_array($datos[MargenesPorListaIaHelper::CLAVE])
+            ? $datos[MargenesPorListaIaHelper::CLAVE]
+            : [];
     }
 
     // -------------------------------------------------------------------------------------------
