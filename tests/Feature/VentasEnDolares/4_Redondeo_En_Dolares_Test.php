@@ -104,7 +104,7 @@ class Redondeo_En_Dolares_Test extends EmpresaTestCase
      * CARACTERIZACIÓN del esquema: precio, costo y ganancia por renglón guardan 2 decimales, y
      * también el total, el subtotal, el costo total y la ganancia de la venta, y el `final_price` del
      * artículo. Si alguien ensancha alguna columna este test avisa que el escenario de redondeo
-     * cambió (y los tests de hallazgo de abajo tienen que revisarse).
+     * cambió (el redondeo a 2 decimales se aceptó el 30/9/2026; ver el encabezado de la clase).
      *
      * @group ventas-en-dolares
      * @test

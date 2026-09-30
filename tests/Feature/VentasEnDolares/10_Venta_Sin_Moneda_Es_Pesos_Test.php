@@ -152,13 +152,14 @@ class Venta_Sin_Moneda_Es_Pesos_Test extends EmpresaTestCase
 
     /**
      * El efecto de la migración de datos: todas las filas sin moneda (NULL o 0) pasan a 1 y las que ya
-     * tenían moneda (1 o 2) no se tocan. Se aplica el mismo UPDATE de la migración sobre ventas
-     * dejadas en NULL y en 0 directo en la base.
+     * tenían moneda (1 o 2) no se tocan. Se EJECUTA la migración (`up()`), no una copia de su SQL,
+     * sobre ventas dejadas en NULL y en 0 directo en la base; corre adentro de la transacción del test
+     * y se revierte sola.
      *
      * @group ventas-en-dolares
      * @test
      */
-    public function el_update_de_la_migracion_pasa_las_ventas_sin_moneda_a_pesos_y_no_toca_las_demas()
+    public function la_migracion_pasa_las_ventas_sin_moneda_a_pesos_y_no_toca_las_demas()
     {
         $nula = Sale::create(['user_id' => $this->dueno->id, 'num' => 990040, 'total' => 10, 'moneda_id' => 1]);
         $cero = Sale::create(['user_id' => $this->dueno->id, 'num' => 990041, 'total' => 10, 'moneda_id' => 1]);
@@ -168,7 +169,9 @@ class Venta_Sin_Moneda_Es_Pesos_Test extends EmpresaTestCase
         DB::table('sales')->where('id', $nula->id)->update(['moneda_id' => null]);
         DB::table('sales')->where('id', $cero->id)->update(['moneda_id' => 0]);
 
-        DB::statement('UPDATE `sales` SET `moneda_id` = 1 WHERE `moneda_id` IS NULL OR `moneda_id` = 0');
+        require_once database_path('migrations/2026_09_30_140000_ventas_sin_moneda_a_pesos.php');
+
+        (new \VentasSinMonedaAPesos())->up();
 
         $this->assertEquals(1, (int) DB::table('sales')->where('id', $nula->id)->value('moneda_id'));
         $this->assertEquals(1, (int) DB::table('sales')->where('id', $cero->id)->value('moneda_id'));
