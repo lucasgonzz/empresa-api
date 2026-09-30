@@ -77,6 +77,19 @@ class CicloDeUnArticuloPorElEndpointTest extends AuditoriaTestCase
             'cost' => 250,
         ]))->assertStatus(200);
 
+        // Editar el costo por el endpoint guarda el artículo tres veces (el controlador y sus
+        // helpers de precio) y crea un PriceChange: cuatro filas exactas, y ninguna de más.
+        $this->assertSame(4, AuditLog::where('id', '>', $desde)->count(), 'Conteo exacto de filas de una edición.');
+        $this->assertSame(3, AuditLog::where('id', '>', $desde)->where('auditable_type', Article::class)->where('event', 'updated')->count());
+        $this->assertSame(1, AuditLog::where('id', '>', $desde)->where('auditable_type', \App\Models\PriceChange::class)->where('event', 'created')->count());
+        $del_request = AuditLog::where('id', '>', $desde)->get();
+
+        $this->assertCount(
+            1,
+            $del_request->pluck('batch_uuid')->unique(),
+            'TODAS las filas de un mismo request tienen que compartir un único batch_uuid.'
+        );
+
         $filas = AuditLog::where('id', '>', $desde)
             ->where('auditable_type', Article::class)
             ->where('auditable_id', $articulo->id)

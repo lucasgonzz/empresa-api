@@ -5,6 +5,7 @@ namespace Tests\Feature\AuditoriaDeCambios;
 use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
+use App\Models\Buyer;
 
 /**
  * Test 4 del plan: los campos sensibles se guardan como "[oculto]" y NINGUNA clave, token ni
@@ -149,5 +150,40 @@ class CamposSensiblesTest extends AuditoriaTestCase
             ['_truncado' => true, 'campos' => ['name']],
             json_decode($ultima->new_values, true)
         );
+    }
+
+    /**
+     * `buyers.verification_code` (el código que llega por mail para verificar la cuenta) no queda
+     * en claro ni al crear, ni al editar, ni al borrar.
+     *
+     * @return void
+     */
+    public function test_el_codigo_de_verificacion_de_un_comprador_no_queda_en_claro()
+    {
+        $comprador = Buyer::create([
+            'name'              => 'ZZ Comprador de prueba',
+            'verification_code' => 'CodigoVerif111222',
+        ]);
+
+        $comprador->verification_code = 'CodigoVerif333444';
+        $comprador->save();
+
+        $comprador->delete();
+
+        foreach (['created', 'updated', 'deleted'] as $evento) {
+
+            $fila = $this->filas(Buyer::class, $evento)->first();
+
+            $this->assertNotNull($fila, 'Falta la fila ' . $evento . ' del comprador.');
+
+            $valores = json_decode($evento === 'deleted' ? $fila->old_values : $fila->new_values, true);
+
+            $this->assertSame('[oculto]', $valores['verification_code'], 'verification_code se guardó en claro en ' . $evento . '.');
+        }
+
+        foreach (['CodigoVerif111222', 'CodigoVerif333444'] as $codigo) {
+            $this->assertSame(0, AuditLog::where('new_values', 'like', '%' . $codigo . '%')->count());
+            $this->assertSame(0, AuditLog::where('old_values', 'like', '%' . $codigo . '%')->count());
+        }
     }
 }

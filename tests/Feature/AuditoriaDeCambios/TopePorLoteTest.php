@@ -7,6 +7,8 @@ use App\Models\AuditLog;
 use App\Models\Provider;
 use App\Services\AuditLog\AuditContext;
 use App\Services\AuditLog\AuditLogRecorder;
+use Illuminate\Support\Facades\Log;
+use App\Models\Sale;
 
 /**
  * Test 9 del plan: al pasar `max_filas_por_lote` queda exactamente UNA fila `truncated` con el
@@ -130,5 +132,74 @@ class TopePorLoteTest extends AuditoriaTestCase
         $this->assertSame(['limite' => 4, 'omitidas' => 7], $datos);
 
         $this->assertSame(4, $this->filas()->whereNotIn('event', ['truncated'])->count());
+    }
+
+    /**
+     * Al cerrar un lote que pasó el tope se deja un Log::warning con el total omitido.
+     *
+     * @return void
+     */
+    public function test_al_cerrar_un_lote_truncado_sale_un_warning_con_el_total_omitido()
+    {
+        config(['audit_log.max_filas_por_lote' => 2]);
+
+        Log::spy();
+
+        for ($i = 1; $i <= 5; $i++) {
+            Provider::create(['name' => 'ZZ Proveedor tope log ' . $i, 'user_id' => $this->dueno->id]);
+        }
+
+        AuditLogRecorder::cerrar_marco(AuditContext::marco());
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje) {
+                return strpos((string) $mensaje, 'pasó el tope de auditoría') !== false
+                    && strpos((string) $mensaje, 'se omitieron 3 filas') !== false;
+            })
+            ->once();
+    }
+
+    /**
+     * Los modelos de `modelos_sin_tope` (plata y stock) se escriben SIEMPRE, aunque el lote ya haya
+     * pasado el tope; los demás se omiten. Es la corrección de la venta de 150+ renglones, que
+     * perdía justo las últimas filas (Caja, CurrentAcount, Sale updated...).
+     *
+     * @return void
+     */
+    public function test_los_modelos_sin_tope_se_escriben_siempre_y_los_demas_se_omiten()
+    {
+        config(['audit_log.max_filas_por_lote' => 2]);
+
+        // Cuatro proveedores: los dos primeros llenan el cupo, los otros dos se omiten.
+        for ($i = 1; $i <= 4; $i++) {
+            Provider::create(['name' => 'ZZ Proveedor sin tope ' . $i, 'user_id' => $this->dueno->id]);
+        }
+
+        $this->assertCount(2, $this->filas(Provider::class, 'created'));
+        $this->assertCount(1, $this->filas(null, 'truncated'));
+
+        // Ya pasado el tope: dos ventas (modelo sin tope) y un proveedor más (con tope).
+        Sale::create([
+            'user_id' => $this->dueno->id, 'client_id' => null, 'terminada' => 1, 'sub_total' => 100,
+            'total' => 100, 'moneda_id' => 1, 'descuento' => 0,
+        ]);
+        $venta = Sale::create([
+            'user_id' => $this->dueno->id, 'client_id' => null, 'terminada' => 1, 'sub_total' => 200,
+            'total' => 200, 'moneda_id' => 1, 'descuento' => 0,
+        ]);
+        $venta->update(['total' => 250]);
+        Provider::create(['name' => 'ZZ Proveedor sin tope 5', 'user_id' => $this->dueno->id]);
+
+        $this->assertCount(2, $this->filas(Sale::class, 'created'), 'Las ventas se escriben aunque el lote ya pasó el tope.');
+        $this->assertCount(1, $this->filas(Sale::class, 'updated'), 'Y sus cambios también.');
+        $this->assertCount(2, $this->filas(Provider::class, 'created'), 'Los proveedores de después del tope se omiten.');
+
+        // Al cierre, lo omitido son solo los tres proveedores; las ventas no cuentan como omitidas.
+        AuditLogRecorder::cerrar_marco(AuditContext::marco());
+
+        $this->assertSame(
+            ['limite' => 2, 'omitidas' => 3],
+            json_decode($this->filas(null, 'truncated')->first()->new_values, true)
+        );
     }
 }

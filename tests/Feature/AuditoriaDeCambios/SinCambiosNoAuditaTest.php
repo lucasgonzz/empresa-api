@@ -2,6 +2,9 @@
 
 namespace Tests\Feature\AuditoriaDeCambios;
 
+use App\Models\AiConversation;
+use App\Models\WhatsappChat;
+
 /**
  * Test 2 del plan: un `save()` que no cambia nada, o que solo toca campos ignorados
  * (`updated_at`, el candado de sesión, el token de "recordarme"), NO deja ninguna fila (misión
@@ -79,5 +82,39 @@ class SinCambiosNoAuditaTest extends AuditoriaTestCase
 
         $this->assertSame(['name'], array_keys($nuevos), 'Solo el campo que cambió de verdad, sin los ignorados.');
         $this->assertSame('ZZ Empleado renombrado', $nuevos['name']);
+    }
+
+    /**
+     * `last_message_at` y `last_inbound_at` los reescribe cada mensaje de WhatsApp o del chat IA: si
+     * lo único que cambia son ellos, no hay fila.
+     *
+     * @return void
+     */
+    public function test_last_message_at_y_last_inbound_at_no_dejan_filas()
+    {
+        $chat = WhatsappChat::create(['phone' => '5491100000000', 'user_id' => $this->dueno->id]);
+
+        $conversacion = AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]);
+
+        $desde = $this->filas()->count();
+
+        $chat->last_message_at = now();
+        $chat->last_inbound_at = now();
+        $chat->save();
+
+        $conversacion->last_message_at = now();
+        $conversacion->save();
+
+        $this->assertSame($desde, $this->filas()->count(), 'Solo last_message_at / last_inbound_at: no es un cambio de negocio.');
+
+        // Control: un cambio real en la misma conversación sí deja fila.
+        $chat->phone = '5491111111111';
+        $chat->last_message_at = now()->addMinute();
+        $chat->save();
+
+        $filas = $this->filas(WhatsappChat::class, 'updated');
+
+        $this->assertCount(1, $filas);
+        $this->assertSame(['phone'], array_keys(json_decode($filas->first()->new_values, true)));
     }
 }

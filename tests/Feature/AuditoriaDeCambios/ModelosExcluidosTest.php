@@ -7,6 +7,8 @@ use App\Models\GeocoderCounter;
 use App\Models\ImportStatus;
 use App\Models\LastSearch;
 use App\Models\Provider;
+use App\Models\ImageAssignmentRun;
+use App\Models\Provincia;
 
 /**
  * Test 5 del plan: los modelos excluidos no generan fila, y la propia `AuditLog` no se audita a
@@ -76,5 +78,47 @@ class ModelosExcluidosTest extends AuditoriaTestCase
         // delete) y el conteo no volvería al de antes.
         $this->assertSame($cantidad, $this->filas()->count(), 'La auditoría no puede auditarse a sí misma.');
         $this->assertSame(0, $this->filas(AuditLog::class)->count());
+    }
+
+    /**
+     * Aunque se vacíe `modelos_excluidos`, AuditLog sigue sin auditarse: la exclusión también está
+     * en el código, para que la recursión no dependa de que nadie toque el config.
+     *
+     * @return void
+     */
+    public function test_audit_log_no_se_audita_aunque_se_saque_del_config()
+    {
+        config(['audit_log.modelos_excluidos' => []]);
+
+        $propia = AuditLog::create([
+            'auditable_type' => 'App\Models\Article',
+            'auditable_id'   => 1,
+            'event'          => 'created',
+            'source'         => 'console',
+            'batch_uuid'     => '00000000-0000-4000-8000-000000000001',
+        ]);
+
+        $propia->update(['origin' => 'editada']);
+        $propia->delete();
+
+        $this->assertSame(0, $this->filas(AuditLog::class)->count(), 'AuditLog no se puede auditar a sí misma.');
+        $this->assertSame(0, $this->filas()->count());
+    }
+
+    /**
+     * Provincia la editan usuarios (`Route::resource('provincia')`): se audita. La corrida de
+     * asignación de imágenes es estado de proceso: no.
+     *
+     * @return void
+     */
+    public function test_provincia_se_audita_y_la_corrida_de_imagenes_no()
+    {
+        $provincia = Provincia::create(['name' => 'ZZ Provincia de prueba', 'user_id' => $this->dueno->id]);
+
+        $this->assertCount(1, $this->filas(Provincia::class, 'created'));
+
+        $this->assertArrayNotHasKey(Provincia::class, config('audit_log.modelos_excluidos'));
+        $this->assertArrayHasKey(ImageAssignmentRun::class, config('audit_log.modelos_excluidos'));
+        $this->assertArrayHasKey(\App\Models\ImageAssignmentItem::class, config('audit_log.modelos_excluidos'));
     }
 }

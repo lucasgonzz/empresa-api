@@ -159,4 +159,42 @@ class ExclusionesBienEscritasTest extends TestCase
             $this->assertContains($campo, config('audit_log.campos_sensibles'));
         }
     }
+
+    /**
+     * `modelos_sin_tope` (plata y stock): las clases existen, son modelos y NINGUNA está excluida
+     * (sería una contradicción: "nunca se omite" y "nunca se audita").
+     *
+     * @return void
+     */
+    public function test_los_modelos_sin_tope_existen_y_no_estan_excluidos()
+    {
+        $sin_tope = config('audit_log.modelos_sin_tope');
+
+        $this->assertNotEmpty($sin_tope);
+
+        foreach ($sin_tope as $clase) {
+
+            $this->assertClaseExiste($clase, 'modelos_sin_tope');
+            $this->assertTrue(is_subclass_of($clase, Model::class), 'modelos_sin_tope: ' . $clase . ' no es un modelo.');
+            $this->assertArrayNotHasKey($clase, config('audit_log.modelos_excluidos'), $clase . ' está excluido y también sin tope.');
+        }
+
+        foreach (['Sale', 'CurrentAcount', 'MovimientoCaja', 'Payment', 'Caja', 'AperturaCaja', 'Cheque', 'Expense',
+                  'ProviderOrder', 'Budget', 'StockMovement', 'ArticlePurchase'] as $nombre) {
+            $this->assertContains('App\\Models\\' . $nombre, $sin_tope, $nombre . ' salió de modelos_sin_tope.');
+        }
+    }
+
+    /**
+     * Las columnas que se ignoran o se ocultan están declaradas con su nombre exacto.
+     *
+     * @return void
+     */
+    public function test_las_columnas_nuevas_estan_en_el_config()
+    {
+        $this->assertContains('verification_code', config('audit_log.campos_sensibles'));
+        $this->assertContains('last_message_at', config('audit_log.campos_ignorados'));
+        $this->assertContains('last_inbound_at', config('audit_log.campos_ignorados'));
+        $this->assertSame(5000, config('audit_log.max_filas_por_lote'));
+    }
 }
