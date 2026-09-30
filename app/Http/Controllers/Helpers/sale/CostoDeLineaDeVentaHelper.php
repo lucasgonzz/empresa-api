@@ -263,6 +263,21 @@ class CostoDeLineaDeVentaHelper
             $causas[] = 'B';
         }
 
+        /*
+         * 🔴 Causa C, variante DEVOLUCIÓN: cantidad negativa con el costo guardado negativo (el comando viejo
+         * multiplicó el costo unitario por una cantidad negativa). `set_total_cost()` suma `cost × amount`,
+         * así que esa línea SUMA un costo enorme al total de la venta en vez de restarlo. Ver
+         * `probar_causa_c_devolucion()`. Solo con `$hacer_c`, y solo si ninguna otra causa tocó la línea.
+         */
+        if ($hacer_c && count($causas) === 0 && $amount < 0) {
+            $costo_de_la_devolucion = self::probar_causa_c_devolucion($fila, $cost, $price, $amount, $ganancia, $unidades);
+
+            if (!is_null($costo_de_la_devolucion)) {
+                $cost_final = $costo_de_la_devolucion;
+                $causas[] = 'C';
+            }
+        }
+
         /* ── Causa A ─────────────────────────────────────────────────────────────────────── */
 
         $es_incoherente = !is_null($price)
@@ -561,6 +576,78 @@ class CostoDeLineaDeVentaHelper
         }
 
         return round($candidato, 2);
+    }
+
+    /**
+     * Causa C, variante DEVOLUCIÓN — línea con `amount < 0` y `cost < 0`, con la firma del comando viejo.
+     * Devuelve el costo unitario POSITIVO reconstruido, o null si no cumple TODAS las condiciones.
+     *
+     * 🔴 Por qué existe (ferretotal, 30/9/2026, medido en el dry-run del saneo): `set_costo_ventas` hizo
+     * `cost *= amount` sobre devoluciones, y con cantidad negativa el "total" quedó negativo. Una línea
+     * `amount −150, cost −1.197.224` (unitario real 7.981) no la ve la causa B (exige `amount > 0`) y, al
+     * recalcular la venta, `cost × amount` suma +179 millones de costo: 56 ventas hoy positivas quedaban
+     * negativas después del saneo. 46 líneas en 38 ventas, todas de sep-2025 a ene-2026.
+     *
+     * Condiciones:
+     *   1. `amount < 0`, `cost < 0`, `price > 0`, y la firma del comando viejo `ganancia = price × amount − cost`
+     *      (y no la sana, que con cantidad negativa y costo negativo darían otra cuenta).
+     *   2. Unitario `cost / amount` (positivo); si el artículo tiene `unidades_individuales` y todavía supera
+     *      el doble del precio, se divide también por ellas (el bulto sin dividir apilado, como en la A).
+     *   3. `0 < unitario < price` y margen `price / unitario <= MARGEN_MAXIMO_CAUSA_C` (mismas guardas que
+     *      la C: no se escribe una corrección que sigue en pérdida ni con un margen fuera de lo creíble).
+     *   4. Contra la ficha de hoy: `unitario / (costo_real / unidades)` dentro de la banda
+     *      [`FICHA_BANDA_MINIMA`, `FICHA_BANDA_MAXIMA`]. Sin `costo_real`, no se adivina.
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float|null $price
+     * @param  float $amount
+     * @param  float|null $ganancia
+     * @param  float|null $unidades  Ya normalizadas: null si <= 1.
+     * @return float|null
+     */
+    private static function probar_causa_c_devolucion($fila, $cost, $price, $amount, $ganancia, $unidades)
+    {
+        if (is_null($price) || is_null($ganancia) || $price <= 0 || $cost >= 0 || $amount >= 0) {
+            return null;
+        }
+
+        $tolerancia = self::tolerancia($amount);
+
+        $firma_del_comando = abs($ganancia - ($price * $amount - $cost)) <= $tolerancia;
+        $firma_sana = abs($ganancia - (($price - $cost) * $amount)) <= $tolerancia;
+
+        if (!$firma_del_comando || $firma_sana) {
+            return null;
+        }
+
+        $ficha = (isset($fila->costo_real_del_articulo) && is_numeric($fila->costo_real_del_articulo))
+            ? (float) $fila->costo_real_del_articulo
+            : 0.0;
+
+        if ($ficha <= 0) {
+            return null;
+        }
+
+        $divisor_de_unidades = 1.0;
+        $unitario = $cost / $amount;
+
+        if (!is_null($unidades) && $unitario > $price * self::FACTOR_COSTO_INCOHERENTE) {
+            $unitario = $unitario / $unidades;
+            $divisor_de_unidades = $unidades;
+        }
+
+        if ($unitario <= 0 || $unitario >= $price || $price / $unitario > self::MARGEN_MAXIMO_CAUSA_C) {
+            return null;
+        }
+
+        $de_la_ficha = $unitario / ($ficha / $divisor_de_unidades);
+
+        if ($de_la_ficha < self::FICHA_BANDA_MINIMA || $de_la_ficha > self::FICHA_BANDA_MAXIMA) {
+            return null;
+        }
+
+        return round($unitario, 2);
     }
 
     /**

@@ -478,6 +478,83 @@ class Saneo_causa_c_costo_total_con_firma_sana_Test extends TestCase
     }
 
     /**
+     * Variante DEVOLUCION: cantidad negativa y costo negativo con la firma del comando viejo (le multiplico
+     * el costo unitario por una cantidad negativa). Unitario real 1000, cantidad −2: costo guardado −2000 y
+     * ganancia `price × amount − cost` = 1500 × −2 + 2000 = −1000. `set_total_cost()` suma `cost × amount`:
+     * con el costo negativo esa linea SUMARIA 4000 de costo en vez de restar 2000.
+     *
+     * @group sales
+     * @test
+     */
+    public function corrige_la_devolucion_con_costo_negativo_y_no_suma_costo_a_la_venta()
+    {
+        $article = $this->crear_articulo(['costo_real' => 1000]);
+
+        $sale = $this->crear_venta();
+
+        $sale->articles()->attach($article->id, [
+            'amount' => -2,
+            'price' => 1500,
+            'cost' => -2000,
+            'ganancia' => 1500 * -2 - -2000,
+        ]);
+
+        $this->correr_saneo($sale, true, 'c');
+
+        $linea = $this->linea($sale, $article);
+
+        $this->assertEquals(1000, (float) $linea->cost, 'El costo unitario tiene que quedar positivo');
+        $this->assertEquals((1500 - 1000) * -2, (float) $linea->ganancia);
+
+        $sale->refresh();
+
+        $this->assertEquals(-2000, (float) $sale->total_cost, 'Una devolucion RESTA costo: 1000 × −2');
+    }
+
+    /**
+     * Devolucion con bulto apilado: articulo de 10 unidades (costo_real 10000), unitario de bulto 10000 y
+     * cantidad −10, costo guardado −100000. Dividir por la cantidad (10000) no entra en el doble del
+     * precio (1500): se divide ademas por las unidades y queda 1000.
+     *
+     * @group sales
+     * @test
+     */
+    public function corrige_la_devolucion_con_unidades_individuales_apiladas()
+    {
+        $fila = $this->fila(-10, 1500, -100000, 10, 10000);
+        $fila->ganancia = 1500 * -10 - -100000;
+
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
+
+        $this->assertSame('corregir', $analisis['accion']);
+        $this->assertSame(['C'], $analisis['causas']);
+        $this->assertEquals(1000, $analisis['cost_final']);
+
+        // Sin la causa C prendida la linea queda como esta (el costo negativo nunca es "incoherente").
+        $sin_c = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4);
+        $this->assertNotSame('corregir', $sin_c['accion']);
+    }
+
+    /**
+     * La devolucion sana (costo positivo, cantidad negativa) y la que solo cumple la firma sana no se tocan.
+     *
+     * @group sales
+     * @test
+     */
+    public function no_toca_una_devolucion_sana()
+    {
+        // Costo positivo: lo que guarda el codigo de hoy para una devolucion.
+        $fila = $this->fila(-1, 1248.01, 832.01, 1, 955.23);
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
+        $this->assertNotSame('corregir', $analisis['accion']);
+
+        // Costo negativo pero con la firma sana (ganancia = (precio − costo) × cantidad): no es del comando.
+        $fila = $this->fila(-2, 1500, -2000, null, 1000);
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
+        $this->assertNotSame('corregir', $analisis['accion']);
+    }
+
+    /**
      * Sin `--aplicar` no se escribe nada, y el respaldo dice que la causa fue la C.
      *
      * @group sales
