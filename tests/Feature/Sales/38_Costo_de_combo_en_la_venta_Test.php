@@ -1106,4 +1106,46 @@ class Costo_de_combo_en_la_venta_Test extends ComboCalculadoTestCase
         $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $viejo->id), 0.001);
         $this->assertEqualsWithDelta(10, $this->costo_congelado($sale->id, $nuevo->id), 0.001);
     }
+
+    /**
+     * F7, de punta a punta: un combo calculado CON descuento (porcentaje y monto) que se vende al
+     * precio que el ABM le calculó. La ganancia es precio con descuento menos costo: el descuento
+     * NUNCA toca el costo congelado.
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function vender_un_combo_calculado_con_descuento_da_ganancia_precio_con_descuento_menos_costo()
+    {
+        $this->con_listas(0);
+
+        $a = $this->nuevo_articulo(['costo_real' => 100, 'final_price' => 250]);
+        $b = $this->nuevo_articulo(['costo_real' => 40, 'final_price' => 90]);
+
+        // Sin descuento: costo 240, precio 2 x 250 + 90 = 590.
+        $porcentaje = $this->combo_calculado([[$a, 2], [$b, 1]], ['descuento_tipo' => 'porcentaje', 'descuento_valor' => 10]);
+        $monto      = $this->combo_calculado([[$a, 2], [$b, 1]], ['descuento_tipo' => 'monto', 'descuento_valor' => 90]);
+
+        \App\Http\Controllers\Helpers\combo\ComboCalculadoHelper::guardar($porcentaje);
+        \App\Http\Controllers\Helpers\combo\ComboCalculadoHelper::guardar($monto);
+
+        $this->assertSame(531.0, $this->precio_en_base($porcentaje), 'Precondición: 590 menos el 10 %.');
+        $this->assertSame(500.0, $this->precio_en_base($monto), 'Precondición: 590 menos 90.');
+        $this->assertSame(240.0, $this->costo_en_base($porcentaje), 'El descuento no toca el costo.');
+
+        $sale = $this->vender([
+            $this->renglon_combo($porcentaje, 2, $this->precio_en_base($porcentaje)),
+            $this->renglon_combo($monto, 1, $this->precio_en_base($monto)),
+        ]);
+
+        $this->assertEqualsWithDelta(240, $this->costo_congelado($sale->id, $porcentaje->id), 0.001);
+        $this->assertEqualsWithDelta(240, $this->costo_congelado($sale->id, $monto->id), 0.001);
+
+        $sale = $this->releer($sale);
+
+        $this->assertEqualsWithDelta(2 * 531 + 500, (float) $sale->total, 0.001);
+        $this->assertEqualsWithDelta(3 * 240, (float) $sale->total_cost, 0.001);
+        $this->assertEqualsWithDelta((2 * 531 + 500) - (3 * 240), (float) $sale->ganancia, 0.001, 'Ganancia = precio con descuento - costo.');
+    }
 }
