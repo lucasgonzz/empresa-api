@@ -470,6 +470,11 @@ class ModelosIaHelper
      * perfectamente buena. Tampoco se concatenan todos los bloques `text`: el JSON que se espera es
      * uno solo, y pegarle un segundo bloque lo rompería.
      *
+     * Un bloque que NO declara `type` pero trae `text` también cuenta como texto: es lo que devolvía
+     * content[0]['text'] para un body así (varios tests de la importación lo arman de esa forma), y
+     * no hay riesgo de confundirlo con un `thinking`, que siempre declara su tipo y lleva su
+     * contenido en la clave `thinking`, no en `text`.
+     *
      * @param  mixed  $body  El body decodificado de la respuesta.
      * @return string|null
      */
@@ -480,12 +485,46 @@ class ModelosIaHelper
         }
 
         foreach ($body['content'] as $bloque) {
-            if (is_array($bloque) && isset($bloque['type']) && $bloque['type'] === 'text' && isset($bloque['text'])) {
+            if (! is_array($bloque) || ! isset($bloque['text'])) {
+                continue;
+            }
+
+            $tipo = isset($bloque['type']) ? (string) $bloque['type'] : 'text';
+
+            if ($tipo === 'text') {
                 return (string) $bloque['text'];
             }
         }
 
         return null;
+    }
+
+    /**
+     * true si un error de la importación de Excel es TRANSITORIO ("el servicio no está disponible,
+     * esperá unos segundos") y no un rechazo. Lo usan los tres Ai*Analyzer.
+     *
+     * 🔴 CON ANTHROPIC SE MANTIENE LA REGLA DE SIEMPRE DE LOS ANALIZADORES (tipo `overloaded_error` o
+     * `api_error`, o HTTP 529), no la de ProveedorIaHelper::es_error_transitorio(), que además cuenta
+     * 429/500/502/503. La diferencia está en el 429 (`rate_limit_error`): los analizadores siempre lo
+     * contaron como "el servicio rechazó el pedido" y tests/Import/MensajesDeErrorTest lo fija así.
+     * Con DeepSeek sí va ProveedorIaHelper::es_error_transitorio(): DeepSeek saturado contesta
+     * 429/500/503 sin `overloaded_error` ni 529, y con la regla de Anthropic el usuario leería
+     * "rechazó el pedido" para algo que se arregla esperando.
+     *
+     * @param  \Illuminate\Http\Client\Response  $response
+     * @param  string  $proveedor
+     * @return bool
+     */
+    public static function error_transitorio_de_importacion($response, $proveedor): bool
+    {
+        if ((string) $proveedor === ProveedorIaHelper::DEEPSEEK) {
+            return ProveedorIaHelper::es_error_transitorio($response);
+        }
+
+        $cuerpo = $response->json();
+        $tipo   = is_array($cuerpo) && isset($cuerpo['error']['type']) ? (string) $cuerpo['error']['type'] : '';
+
+        return in_array($tipo, ['overloaded_error', 'api_error'], true) || (int) $response->status() === 529;
     }
 
     /**
