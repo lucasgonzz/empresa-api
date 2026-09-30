@@ -1062,15 +1062,24 @@ class CatalogoDeEscrituraIaHelper
      * referencias cuando la columna no está indexada.
      *
      * Existe porque casi ninguna de estas columnas tiene índice: de las quince tablas que
-     * referencian a `price_type_id`, una sola lo tiene (medido el 21/9/2026 sobre el esquema). Un
-     * COUNT sobre una columna sin índice es un scan de la tabla entera, y hay tablas de un cliente
-     * grande que no se pueden escanear adentro del request que propone la tarjeta. Con este tope,
-     * el peor caso de una tabla es escanear 200.000 filas; las que se pasan no se cuentan y el
-     * aviso lo dice con "puede haber más".
+     * referencian a `price_type_id`, una sola lo tiene (medido el 21/9/2026 sobre el esquema;
+     * desde el 29/9/2026 son dieciséis, con `article_ticket_designs`). Un COUNT sobre una columna
+     * sin índice es un scan de la tabla entera, y hay tablas de un cliente grande que no se pueden
+     * escanear adentro del request que propone la tarjeta. Con este tope, el peor caso de una tabla
+     * es escanear 200.000 filas; las que se pasan no se cuentan y el aviso lo dice con "puede haber
+     * más".
      */
     const TOPE_DE_FILAS_SIN_INDICE = 200000;
 
-    /** Tope de tablas a las que se les cuentan referencias, de la más chica a la más grande. */
+    /**
+     * Tope de tablas a las que se les cuentan referencias. Se cuentan primero las tablas que tienen
+     * nombre en el catálogo ("clientes", "ventas") y después las demás, cada grupo de la más chica
+     * a la más grande (ver ordenar_para_contar()).
+     *
+     * El orden importa porque el tope corta de verdad: medido el 30/9/2026 sobre el esquema, hay 16
+     * tablas con `price_type_id`, 27 con `address_id` y 18 con `seller_id`. Si la que queda afuera
+     * es `clients`, el aviso se calla justo la cuenta que la persona entiende.
+     */
     const TOPE_DE_TABLAS_A_CONTAR = 15;
 
     /** Cuántas referencias se nombran en el aviso antes de agrupar el resto. */
@@ -1910,14 +1919,16 @@ class CatalogoDeEscrituraIaHelper
     /**
      * Las tablas que tienen una columna `<entidad>_id`, con lo que hace falta para decidir si se
      * les puede contar: si la columna está indexada (primera columna de algún índice), cuántas
-     * filas tienen estimadas, y si tienen `user_id` y `deleted_at`. Ordenadas de la más chica a la
-     * más grande, para que el tope de tablas corte por las caras.
+     * filas tienen estimadas, si tienen `user_id` y `deleted_at`, y si son nombrables (una entidad
+     * del catálogo, con etiqueta propia en el aviso). En el orden que da ordenar_para_contar():
+     * primero las nombrables, y dentro de cada grupo de la más chica a la más grande, para que, si
+     * el tope de tablas corta, corte por las innombrables más grandes y no por `clients`.
      *
      * Cuatro consultas a information_schema, cacheadas por proceso: una tarjeta de baja las paga
      * una sola vez aunque se proponga varias veces en la misma conversación.
      *
      * @param  string  $columna
-     * @return array<int, array{tabla: string, indexada: bool, filas: int, tiene_user_id: bool, tiene_deleted_at: bool}>
+     * @return array<int, array{tabla: string, indexada: bool, filas: int, tiene_user_id: bool, tiene_deleted_at: bool, nombrable: bool}>
      */
     protected static function tablas_que_referencian(string $columna): array
     {
@@ -2003,15 +2014,61 @@ class CatalogoDeEscrituraIaHelper
                 'filas'            => isset($filas_por_tabla[$tabla]) ? $filas_por_tabla[$tabla] : 0,
                 'tiene_user_id'    => isset($propias[$tabla]['user_id']),
                 'tiene_deleted_at' => isset($propias[$tabla]['deleted_at']),
+                // Una vez por tabla, acá: etiqueta_de_tabla() recorre el catálogo entero y no
+                // tiene sentido pagarlo en cada comparación del sort.
+                'nombrable'        => self::etiqueta_de_tabla($tabla) !== self::ETIQUETA_INNOMBRABLE,
             ];
         }
 
-        usort($candidatas, function ($a, $b) {
-
-            return $a['filas'] - $b['filas'];
-        });
+        $candidatas = self::ordenar_para_contar($candidatas);
 
         self::$referencias[$columna] = $candidatas;
+
+        return $candidatas;
+    }
+
+    /**
+     * El orden en que referencias_que_quedan_colgadas() cuenta las tablas, que es también el orden
+     * en que las deja afuera cuando llega a TOPE_DE_TABLAS_A_CONTAR:
+     *   1. primero las nombrables (`clients`, `sales`: las que el aviso dice con nombre), después
+     *      las innombrables;
+     *   2. dentro de cada grupo, de la más chica a la más grande por `filas`;
+     *   3. a igualdad de filas, por nombre de tabla.
+     *
+     * Por qué las nombrables primero: la cuenta que la persona lee —"3 clientes lo tienen
+     * asignado"— no puede depender de una estimación de MySQL. `filas` es
+     * `information_schema.tables.table_rows`, que InnoDB estima y cachea por 86400 segundos;
+     * ordenando sólo por eso, `clients` y `sales` (que en un cliente real están entre las tablas
+     * más grandes) son justamente las que el tope deja afuera. Pasó el 29/9/2026: con la tabla
+     * número 16 de `price_type_id` (`article_ticket_designs`), la estimación de `clients` quedó por
+     * encima de la de `sales`, `clients` quedó última y el aviso de baja de una lista de precios
+     * dejó de decir cuántos clientes quedaban sin ella. Las innombrables, en cambio, se suman todas
+     * en "vínculos internos": si el tope tiene que cortar, son las que conviene dejar afuera, y el
+     * aviso ya lo dice con "puede haber más".
+     *
+     * Por qué el desempate por nombre: el `usort` de PHP 7.4 no es estable, y hay nueve tablas con
+     * `price_type_id` que tienen 0 filas estimadas. Sin el desempate, dos corridas con los mismos
+     * datos podían contar tablas distintas.
+     *
+     * @param  array<int, array{tabla: string, filas: int, nombrable: bool}>  $candidatas
+     * @return array<int, array{tabla: string, filas: int, nombrable: bool}>
+     */
+    protected static function ordenar_para_contar(array $candidatas): array
+    {
+        usort($candidatas, function ($a, $b) {
+
+            if ($a['nombrable'] !== $b['nombrable']) {
+
+                return $a['nombrable'] ? -1 : 1;
+            }
+
+            if ($a['filas'] !== $b['filas']) {
+
+                return $a['filas'] < $b['filas'] ? -1 : 1;
+            }
+
+            return strcmp($a['tabla'], $b['tabla']);
+        });
 
         return $candidatas;
     }

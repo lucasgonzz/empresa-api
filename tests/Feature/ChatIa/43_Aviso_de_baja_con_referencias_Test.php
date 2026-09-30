@@ -237,4 +237,97 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
         $this->assertStringNotContainsString('van a quedar sin', $aviso, $aviso);
         $this->assertNotNull(Brand::find($marca->id));
     }
+
+    /**
+     * 🔴 El caso del 29/9/2026: en una corrida completa de ChatIa en s8 fallaron los dos primeros
+     * tests de esta clase, y en la corrida siguiente pasaron sin que nadie tocara nada.
+     *
+     * La causa: ese día apareció la tabla número 16 con `price_type_id` (`article_ticket_designs`),
+     * y el helper cuenta sólo TOPE_DE_TABLAS_A_CONTAR (15), ordenadas por la estimación de filas de
+     * InnoDB (`information_schema.tables.table_rows`, cacheada 86400 s). `clients` y `sales` eran
+     * las dos más grandes y estaban pegadas: cuando la estimación de `clients` quedó por encima de
+     * la de `sales`, `clients` quedó 16ª, no se contó, y el aviso dejó de decir "3 clientes".
+     *
+     * Este test no depende de la base: arma a mano las 16 candidatas reales, con `clients` como la
+     * de MÁS filas estimadas —el escenario que rompía—, y le pregunta al orden directamente. No
+     * crea filas.
+     *
+     * @test
+     */
+    public function clientes_se_cuentan_aunque_la_estimacion_de_mysql_los_ponga_ultimos()
+    {
+        $etiqueta_de_tabla = new \ReflectionMethod(Catalogo::class, 'etiqueta_de_tabla');
+        $etiqueta_de_tabla->setAccessible(true);
+
+        $ordenar_para_contar = new \ReflectionMethod(Catalogo::class, 'ordenar_para_contar');
+        $ordenar_para_contar->setAccessible(true);
+
+        // Las 16 tablas con `price_type_id` del esquema al 29/9/2026, con filas estimadas donde
+        // `clients` (95) supera a `sales` (89).
+        $filas_por_tabla = [
+            'article_price_type_monedas'     => 0,
+            'article_prices'                 => 0,
+            'category_price_type'            => 0,
+            'category_price_type_ranges'     => 0,
+            'movimiento_puntos'              => 0,
+            'offer_suggestion_lines'         => 0,
+            'price_type_sistema_de_puntos'   => 0,
+            'price_type_sub_category'        => 0,
+            'price_type_surchages'           => 0,
+            'article_ticket_designs'         => 5,
+            'budgets'                        => 23,
+            'company_performance_price_type' => 32,
+            'article_price_type'             => 40,
+            'price_change_price_type'        => 40,
+            'clients'                        => 95,
+            'sales'                          => 89,
+        ];
+
+        $candidatas = [];
+
+        foreach ($filas_por_tabla as $tabla => $filas) {
+            $candidatas[] = [
+                'tabla'            => $tabla,
+                'indexada'         => false,
+                'filas'            => $filas,
+                'tiene_user_id'    => true,
+                'tiene_deleted_at' => false,
+                // Lo mismo que calcula tablas_que_referencian(), no un valor inventado.
+                'nombrable'        => $etiqueta_de_tabla->invoke(null, $tabla) !== Catalogo::ETIQUETA_INNOMBRABLE,
+            ];
+        }
+
+        // La premisa: `clients` tiene nombre en el aviso. Si deja de tenerlo, este test no prueba nada.
+        $this->assertNotSame(Catalogo::ETIQUETA_INNOMBRABLE, $etiqueta_de_tabla->invoke(null, 'clients'), 'clients tiene que ser una entidad del catálogo con etiqueta propia');
+
+        $ordenadas = $ordenar_para_contar->invoke(null, $candidatas);
+
+        $orden = array_column($ordenadas, 'tabla');
+
+        $this->assertCount(count($candidatas), $orden, 'Ordenar no puede agregar ni sacar tablas');
+
+        $contadas = array_slice($orden, 0, Catalogo::TOPE_DE_TABLAS_A_CONTAR);
+
+        $this->assertContains('clients', $contadas, 'clients tiene que estar entre las primeras ' . Catalogo::TOPE_DE_TABLAS_A_CONTAR . ' tablas que se cuentan aunque sea la de más filas estimadas. Orden: ' . implode(', ', $orden));
+
+        // Lo que el tope deja afuera tiene que ser de lo que se suma en "vínculos internos".
+        foreach (array_slice($ordenadas, Catalogo::TOPE_DE_TABLAS_A_CONTAR) as $afuera) {
+            $this->assertFalse($afuera['nombrable'], 'El tope dejó afuera una tabla con nombre en el aviso: ' . $afuera['tabla'] . '. Orden: ' . implode(', ', $orden));
+        }
+
+        // Determinismo: el mismo conjunto, entrando en otro orden, sale igual. usort no es estable
+        // en PHP 7.4 y hay nueve tablas con 0 filas y dos con 40.
+        $invertidas = array_reverse($candidatas);
+
+        $this->assertSame($orden, array_column($ordenar_para_contar->invoke(null, $invertidas), 'tabla'), 'El orden cambió al invertir la entrada');
+
+        $mezcladas = $candidatas;
+
+        mt_srand(43);
+        shuffle($mezcladas);
+        // Se vuelve a sembrar al azar para no dejarle una semilla fija al resto de la suite.
+        mt_srand();
+
+        $this->assertSame($orden, array_column($ordenar_para_contar->invoke(null, $mezcladas), 'tabla'), 'El orden cambió al mezclar la entrada');
+    }
 }
