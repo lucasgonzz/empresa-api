@@ -525,6 +525,26 @@ class ComboCalculadoHelper {
         DB::table('combo_price_type')->where('combo_id', $combo_id)->delete();
     }
 
+    /**
+     * Borra de `combo_price_type` las filas de una lista que el dueño acaba de eliminar.
+     *
+     * El recálculo de los combos calculados ya las saca (reescribe sus filas con las listas que
+     * quedan), pero este borrado directo no depende de que el recálculo corra ni de que el combo
+     * siga siendo calculado: una fila huérfana es un precio por una lista que ya no existe y una
+     * tienda nueva la mostraría. Es una tabla derivada, sin modelo ni auditoría.
+     *
+     * @param  int  $price_type_id
+     * @return void
+     */
+    static function olvidar_lista($price_type_id) {
+
+        if (!ComboCalculadoEsquemaHelper::disponible()) {
+            return;
+        }
+
+        DB::table('combo_price_type')->where('price_type_id', $price_type_id)->delete();
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Los disparadores
     // ─────────────────────────────────────────────────────────────────────────

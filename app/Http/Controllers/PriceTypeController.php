@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\ArticleTicketDesign;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Jobs\ProcessSetFinalPrices;
 use App\Models\Article;
 use App\Models\PriceType;
@@ -155,6 +156,10 @@ class PriceTypeController extends Controller
 
         PriceTypeHelper::check_recargos($model);
 
+        // Cambiar el nombre, la posición o la visibilidad de una lista cambia qué fila se copia a
+        // `combos.price`; el porcentaje cambia el precio de los componentes. Ver el método.
+        $this->recalcular_combos_calculados();
+
         return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 200);
     }
 
@@ -167,6 +172,42 @@ class PriceTypeController extends Controller
         $model->delete();
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('PriceType', $model->id);
+
+        // Sus filas de `combo_price_type` ya no apuntan a nada, y los combos calculados pierden esa
+        // lista (y `combos.price` puede pasar a otra). Ver el método.
+        ComboCalculadoHelper::olvidar_lista($model->id);
+        $this->recalcular_combos_calculados();
+
         return response(null);
+    }
+
+    /**
+     * Recalcula los combos calculados del dueño después de tocar una lista de precios.
+     *
+     * Antes de esto solo el ALTA de una lista los recalculaba (por ProcessSetFinalPrices, que cierra
+     * con el recálculo de combos); editar o borrar una lista los dejaba con el precio por lista
+     * viejo hasta la red de seguridad de la noche: `combos.price` (lo único que lee una tienda
+     * vieja) seguía saliendo de la lista que ya no era la por defecto, y una lista borrada seguía
+     * con su fila.
+     *
+     * 🔴 Una falla acá NUNCA tumba al que llamó: guardar o borrar una lista es lo importante, y un
+     * combo desactualizado lo corrige el recálculo de la noche. `recalcular_de_un_dueno()` ya
+     * atrapa cada combo y la guarda de esquema; el try/catch cubre lo que escape (ej. el `userId()`).
+     * Empleado → dueño lo resuelve el helper.
+     *
+     * @return void
+     */
+    protected function recalcular_combos_calculados() {
+
+        try {
+
+            ComboCalculadoHelper::recalcular_de_un_dueno($this->userId());
+
+        } catch (\Throwable $e) {
+
+            Log::warning('PriceTypeController: no se pudieron recalcular los combos calculados', [
+                'motivo' => $e->getMessage(),
+            ]);
+        }
     }
 }
