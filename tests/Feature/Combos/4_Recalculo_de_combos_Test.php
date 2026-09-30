@@ -130,6 +130,62 @@ class Recalculo_de_combos_Test extends ComboCalculadoTestCase
     }
 
     /**
+     * 🔴 CON LISTAS DE PRECIO: el gancho de `setFinalPrice()` corre DESPUÉS de que los pivots de las
+     * listas quedaron escritos, así que cada fila de `combo_price_type` es el pivote real del
+     * artículo por su cantidad. Si el gancho estuviera antes de escribir los pivots, el combo
+     * quedaría con los precios de lista de la vez anterior (y nadie se daría cuenta hasta el
+     * siguiente guardado). Se compara contra lo que el artículo QUEDÓ teniendo en la base.
+     *
+     * @test
+     */
+    public function guardar_un_articulo_con_listas_deja_los_precios_por_lista_del_combo_al_dia()
+    {
+        $this->con_listas(1);
+
+        /*
+         * El dueño del fixture tiene la extensión `ventas_en_dolares`, que manda las listas por otro
+         * camino (precios por lista Y por moneda, en `article_price_type_monedas`). Acá se mide el
+         * camino común —los pivots de `article_price_type`—, así que se le saca la extensión
+         * adentro de la transacción del test (se revierte sola).
+         */
+        $extension = \App\Models\ExtencionEmpresa::where('slug', 'ventas_en_dolares')->first();
+
+        if (!is_null($extension)) {
+            $this->dueno->extencions()->detach($extension->id);
+        }
+
+        $this->dueno = \App\Models\User::find(self::DUENO);
+
+        $lista_a = $this->lista('Gancho A', 90);
+        $lista_b = $this->lista('Gancho B', 91);
+
+        foreach ([[$lista_a, 10], [$lista_b, 30]] as $par) {
+            DB::table('price_types')->where('id', $par[0]->id)->update(['percentage' => $par[1]]);
+        }
+
+        $articulo = $this->nuevo_articulo(['cost' => 1000, 'costo_real' => 1000, 'final_price' => 1, 'percentage_gain' => 20]);
+
+        $combo = $this->combo_calculado([[$articulo, 3]]);
+
+        ArticleHelper::setFinalPrice($articulo, self::DUENO, $this->dueno);
+
+        $pivotes = DB::table('article_price_type')
+                        ->where('article_id', $articulo->id)
+                        ->pluck('final_price', 'price_type_id')
+                        ->all();
+
+        $this->assertArrayHasKey($lista_a->id, $pivotes, 'precondición: setFinalPrice escribió el pivote de la lista A');
+        $this->assertArrayHasKey($lista_b->id, $pivotes, 'precondición: setFinalPrice escribió el pivote de la lista B');
+        $this->assertNotEquals((float) $pivotes[$lista_a->id], (float) $pivotes[$lista_b->id], 'precondición: las dos listas dan precios distintos');
+
+        $precios = $this->precios_por_lista_en_base($combo);
+
+        $this->assertSame(round(3 * (float) $pivotes[$lista_a->id], 2), $precios[$lista_a->id]);
+        $this->assertSame(round(3 * (float) $pivotes[$lista_b->id], 2), $precios[$lista_b->id]);
+        $this->assertSame($precios[$lista_b->id], $this->precio_en_base($combo), 'combos.price = la lista por defecto (la B, de mayor position)');
+    }
+
+    /**
      * Un artículo que no está en ningún combo calculado no toca a los demás combos: ni a uno
      * calculado que lleva OTRO artículo ni a un manual que lleva este.
      *
