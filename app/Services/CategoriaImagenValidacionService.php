@@ -78,9 +78,10 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
         /*
          * La misma tarea `imagenes` que el padre (misión modelos-ia-por-cliente, 30/9/2026): la IA
          * que el admin eligió para este cliente, con su fallback de clave. Acá no hay artículo, así
-         * que el dueño sale directo del `$user_id` que pasa el job (el owner de la corrida).
+         * que el dueño sale directo del `$user_id` que pasa el job (el owner de la corrida),
+         * memoizado en la instancia como en el padre (una consulta por corrida, no por imagen).
          */
-        $ia = ModelosIaHelper::resolver(ModelosIaHelper::dueno_de($user_id), ModelosIaHelper::TAREA_IMAGENES, true);
+        $ia = ModelosIaHelper::resolver($this->dueno_memoizado($user_id), ModelosIaHelper::TAREA_IMAGENES, true);
 
         if (is_null($ia)) {
             Log::info('[ValidacionImagenCategoria] Sin clave de IA (ANTHROPIC_API_KEY ni DEEPSEEK_API_KEY); la candidata queda dudosa.', [

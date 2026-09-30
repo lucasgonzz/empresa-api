@@ -678,9 +678,41 @@ class ArticleImageValidationService
      */
     protected function ia_para($user_id, Article $article)
     {
-        $dueno = ModelosIaHelper::dueno_de($this->dueno_para_el_registro($user_id, $article));
+        $dueno = $this->dueno_memoizado($this->dueno_para_el_registro($user_id, $article));
 
         return ModelosIaHelper::resolver($dueno, ModelosIaHelper::TAREA_IMAGENES, true);
+    }
+
+    /**
+     * Los dueños ya resueltos por ESTA instancia, por user_id (null = no se encontró).
+     *
+     * 🔴 PROPIEDAD DE INSTANCIA, NUNCA ESTÁTICA. Una asignación valida cientos de artículos con la
+     * misma instancia y sin esto cada uno pagaba una o dos consultas a `users` solo para saber el
+     * modelo. Pero el worker de cola del VPS vive DÍAS: una caché estática serviría la fila del dueño
+     * de ayer y un cambio de modelo hecho desde el admin no se vería hasta reiniciar el worker. La
+     * instancia vive lo que un tramo de la corrida (el job crea una por tramo), así que un cambio
+     * desde el admin se toma en el tramo siguiente.
+     *
+     * @var array<int, \App\Models\User|null>
+     */
+    protected $duenos_resueltos = [];
+
+    /**
+     * ModelosIaHelper::dueno_de() memoizado por user_id dentro de esta instancia (ver
+     * $duenos_resueltos). Lo usan validate(), evaluar_candidatas() y la validación de categorías.
+     *
+     * @param  int|null $user_id
+     * @return \App\Models\User|null
+     */
+    protected function dueno_memoizado($user_id)
+    {
+        $clave = is_null($user_id) ? 0 : (int) $user_id;
+
+        if (!array_key_exists($clave, $this->duenos_resueltos)) {
+            $this->duenos_resueltos[$clave] = ModelosIaHelper::dueno_de($user_id);
+        }
+
+        return $this->duenos_resueltos[$clave];
     }
 
     /**

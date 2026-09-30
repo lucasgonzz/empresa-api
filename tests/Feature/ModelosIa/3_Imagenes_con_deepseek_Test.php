@@ -329,6 +329,45 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
     }
 
     /**
+     * El dueño se resuelve UNA vez por instancia: la segunda validación con el mismo user_id no
+     * vuelve a consultar `users` (antes eran una o dos consultas por artículo).
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function el_dueno_se_consulta_una_sola_vez_por_instancia()
+    {
+        $articulo = $this->nuevo_articulo('Yerba mate 1 kg', self::CODIGO);
+
+        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::fake(function ($request) {
+            return Http::response([
+                'model'   => 'deepseek-flash-test',
+                'content' => [['type' => 'text', 'text' => json_encode(['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'ok'])]],
+                'usage'   => ['input_tokens' => 10, 'output_tokens' => 5],
+            ], 200);
+        });
+
+        $servicio = new ArticleImageValidationService();
+        $imagen   = $this->png(300, 300, 'rojo');
+
+        $servicio->validate($imagen, $articulo, $this->owner->id);
+
+        \DB::flushQueryLog();
+        \DB::enableQueryLog();
+
+        $servicio->validate($imagen, $articulo, $this->owner->id);
+
+        $consultas_a_users = array_filter(\DB::getQueryLog(), function ($consulta) {
+            return preg_match('/from [`"]?users[`"]?/i', $consulta['query']) === 1;
+        });
+
+        \DB::disableQueryLog();
+
+        $this->assertCount(0, $consultas_a_users, 'La segunda validación de la misma instancia no vuelve a leer al dueño.');
+    }
+
+    /**
      * La clave de DeepSeek se tacha del texto que se guarda en el registro de consultas, igual que
      * las otras claves de config.
      *
