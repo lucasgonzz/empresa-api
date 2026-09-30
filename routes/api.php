@@ -135,6 +135,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@update');
 
     // Employee
+    // Va antes del resource, igual que budget/{id}/duplicate.
+    Route::post('employee/{id}/duplicate', 'CommonLaravel\EmployeeController@duplicate');
     Route::resource('employee', 'CommonLaravel\EmployeeController');
 
     // Permissions
@@ -1034,6 +1036,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::resource('sale-status', 'SaleStatusController');
+
+    // Diseños de Vender (misión diseno-vender-configurable, 28/9/2026): ABM -> Ventas -> "Diseños de Vender".
+    // Sin create/edit: no hay vistas de servidor, y así `vender-layout/create` cae en show() y da 404.
+    Route::resource('vender-layout', 'VenderLayoutController')->except(['create', 'edit']);
+
+    // Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): ABM -> Artículos -> "Diseños de etiquetas".
+    // El PDF sigue saliendo por la ruta web article/tickets-pdf/{ids}, ahora con ?article_ticket_design_id=.
+    Route::resource('article-ticket-design', 'ArticleTicketDesignController')->except(['create', 'edit']);
 
 
 });

@@ -8,6 +8,7 @@ use App\Models\Description;
 use App\Models\Image;
 use App\Models\PriceChange;
 use App\Models\StockMovement;
+use Illuminate\Support\Facades\Schema;
 
 class DatabaseArticleHelper {
 
@@ -23,6 +24,9 @@ class DatabaseArticleHelper {
                                 ->get();
 
             DatabaseHelper::set_user_conecction($bbdd_destino);
+
+            // Una vez por copia, ya parados en la base destino (ver destino_tiene_stock_por_deposito()).
+            $destino_con_stock_por_deposito = Self::destino_tiene_stock_por_deposito();
 
             foreach ($articles as $article) {
                 $finded_article = Article::find($article->id);
@@ -76,7 +80,7 @@ class DatabaseArticleHelper {
                 Self::price_changes($created_article, $article);
 
                 // Crear stock_movements
-                Self::stock_movements($created_article, $article);
+                Self::stock_movements($created_article, $article, $destino_con_stock_por_deposito);
 
                 // Crear addresses
                 Self::addresses($created_article, $article);
@@ -117,9 +121,38 @@ class DatabaseArticleHelper {
         }
     }
 
-    static function stock_movements($created_article, $article) {
+    /**
+     * Si la base destino (la conexión `mysql`, que `DatabaseHelper::set_user_conecction()` ya
+     * apuntó ahí) tiene las columnas `stock_anterior` y `stock_por_deposito` de
+     * `stock_movements`. Una base que todavía no corrió esa migración (29/9/2026) las rechaza con
+     * "Unknown column" y el INSERT cortaría la copia entera: en ese caso no se mandan.
+     *
+     * @return bool
+     */
+    static function destino_tiene_stock_por_deposito() {
+
+        $schema = Schema::connection('mysql');
+
+        return $schema->hasColumn('stock_movements', 'stock_anterior')
+            && $schema->hasColumn('stock_movements', 'stock_por_deposito');
+    }
+
+    /**
+     * @param  \App\Models\Article  $created_article
+     * @param  \App\Models\Article  $article
+     * @param  bool|null            $con_stock_por_deposito  si la base destino tiene las columnas
+     *                                                       nuevas; null lo averigua acá
+     * @return void
+     */
+    static function stock_movements($created_article, $article, $con_stock_por_deposito = null) {
+
+        if (is_null($con_stock_por_deposito)) {
+            $con_stock_por_deposito = Self::destino_tiene_stock_por_deposito();
+        }
+
         foreach ($article->stock_movements as $stock_movement) {
-            StockMovement::create([
+
+            $datos = [
                 'temporal_id'               =>  $stock_movement->temporal_id,
                 'article_id'                =>  $stock_movement->article_id,
                 'from_address_id'           =>  $stock_movement->from_address_id,
@@ -133,7 +166,17 @@ class DatabaseArticleHelper {
                 'stock_resultante'          =>  $stock_movement->stock_resultante,
                 'employee_id'               =>  $stock_movement->employee_id,
                 'user_id'                   =>  $stock_movement->user_id,
-            ]);
+            ];
+
+            // Stock por deposito del movimiento (ver SetStockPorDeposito), solo si la base destino
+            // tiene las columnas. Con el cast del modelo llega como array y se vuelve a guardar
+            // como JSON; una base de origen sin estas columnas las da en null.
+            if ($con_stock_por_deposito) {
+                $datos['stock_anterior']     = $stock_movement->stock_anterior;
+                $datos['stock_por_deposito'] = $stock_movement->stock_por_deposito;
+            }
+
+            StockMovement::create($datos);
         }
     }
 

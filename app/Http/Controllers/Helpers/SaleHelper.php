@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
@@ -62,6 +63,7 @@ use App\Models\StockMovement;
 use App\Models\User;
 use App\Models\Variant;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 
@@ -1145,6 +1147,12 @@ class SaleHelper extends Controller {
                         'id'                    => $previus_article->id,
                         'amount'                => (float)$previus_article->pivot->amount,
                         'cost'                  => $previus_article->pivot->cost,
+                        /*
+                            El costo del pivot ya es UNITARIO. La clave va presente y en null a
+                            proposito: `getCost()` respeta la clave cuando viene y, sin ella, leeria
+                            las unidades del articulo y lo dividiria por segunda vez.
+                        */
+                        'unidades_individuales' => null,
                         'price_vender'          => $previus_article->pivot->price,
                         'returned_amount'       => $previus_article->pivot->returned_amount,
                         'delivered_amount'      => $previus_article->pivot->delivered_amount,
@@ -2050,6 +2058,81 @@ class SaleHelper extends Controller {
         return null;
     }
 
+    /**
+     * Las `unidades_individuales` con las que hay que dividir el costo de un item y, cuando hace
+     * falta, la ficha (`articles.costo_real`, el costo del BULTO) con la que se decide si el costo
+     * guardado en un pivot es el del bulto sin dividir.
+     *
+     * Si el item TRAE la clave `unidades_individuales` (aunque sea null o 0) se respeta lo que mandó
+     * el front, igual que siempre: la tabla de VENDER permite editarla por venta y el API no la pisa.
+     * Si la clave NO viene, se lee de `articles.unidades_individuales`.
+     *
+     * 🔴 POR QUÉ el API la busca él mismo (misión ganancia-unidades-individuales, 29/9/2026): antes
+     * "clave ausente" significaba "no dividir", o sea que el API le creía al front un dato que él
+     * mismo tiene en la base. Cualquier camino que llegara sin la clave —el SPA viejo, una respuesta
+     * liviana de búsqueda, un camino de IA, un duplicado— guardaba el costo del BULTO como unitario.
+     * Así nació la venta 54.499 de ferretotal (presupuesto 411, SPA del 2/9 sin la clave).
+     *
+     * La ficha se toma de `$item['costo_real']` si viene numérica y > 0; si no, de la base. Las dos
+     * lecturas salen de UNA sola consulta por renglón, y solo cuando falta algo que hace falta:
+     * las unidades cuando la clave no viene, y la ficha únicamente para la rama del pivot y solo si
+     * las unidades pueden ser > 1 (con ui <= 1 la guarda del pivot no actúa, no se la busca).
+     *
+     * `DB::table` y no `Article::find`: sin scopes ni eventos, y solo dos columnas. Se filtra por el
+     * `user_id` de la venta para no leer nunca el artículo de otra cuenta. Los ítems sin `id`
+     * numérico mayor a 0 (servicios, artículos inactivos con id <= 0) no consultan nada.
+     *
+     * @param  \App\Models\Sale|\App\Models\Budget $sale
+     * @param  array $item
+     * @param  bool $con_costo_de_pivot  Si el item va por la rama del pivot (ahí se necesita la ficha).
+     * @return array  `['unidades' => mixed, 'costo_real' => mixed]`; el llamador decide si son > 0.
+     */
+    private static function get_unidades_y_ficha_del_item($sale, $item, $con_costo_de_pivot) {
+
+        $tiene_la_clave = array_key_exists('unidades_individuales', $item);
+
+        // Lo que manda el front manda; sin la clave, pendiente de leer de la base.
+        $unidades = $tiene_la_clave ? $item['unidades_individuales'] : null;
+
+        $ficha = null;
+
+        if (isset($item['costo_real']) && is_numeric($item['costo_real']) && (float) $item['costo_real'] > 0) {
+            $ficha = $item['costo_real'];
+        }
+
+        $falta_leer_unidades = !$tiene_la_clave;
+
+        // Solo la rama del pivot usa la ficha, y solo si las unidades pueden ser > 1.
+        $falta_leer_ficha = $con_costo_de_pivot
+            && is_null($ficha)
+            && ($falta_leer_unidades || (is_numeric($unidades) && (float) $unidades > 1));
+
+        if (!$falta_leer_unidades && !$falta_leer_ficha) {
+            return ['unidades' => $unidades, 'costo_real' => $ficha];
+        }
+
+        if (!isset($item['id']) || !is_numeric($item['id']) || (int) $item['id'] <= 0) {
+            return ['unidades' => $unidades, 'costo_real' => $ficha];
+        }
+
+        $fila = DB::table('articles')
+                    ->where('id', (int) $item['id'])
+                    ->where('user_id', $sale->user_id)
+                    ->first(['unidades_individuales', 'costo_real']);
+
+        if (!is_null($fila)) {
+            if ($falta_leer_unidades) {
+                $unidades = $fila->unidades_individuales;
+            }
+
+            if (is_null($ficha)) {
+                $ficha = $fila->costo_real;
+            }
+        }
+
+        return ['unidades' => $unidades, 'costo_real' => $ficha];
+    }
+
     static function getCost($sale, $item) {
         $user = $sale->user;
         Log::info('getCost');
@@ -2060,6 +2143,16 @@ class SaleHelper extends Controller {
 
         $cost = null;
 
+        /*
+         * Una sola vez por renglón: la usan la rama del pivot y la división del final, y la consulta
+         * a la base (cuando falta la clave o hace falta la ficha) no tiene por qué repetirse.
+         */
+        $con_costo_de_pivot = isset($item['pivot']) && isset($item['pivot']['cost']);
+
+        $lectura = Self::get_unidades_y_ficha_del_item($sale, $item, $con_costo_de_pivot);
+
+        $unidades_individuales = $lectura['unidades'];
+
         // Si se esta actualizando, se retorna el valor que estaba guardado (ya cotizado)
         if (
             isset($item['pivot'])
@@ -2067,7 +2160,44 @@ class SaleHelper extends Controller {
         ) {
             Log::info('retornando del pivot: '.$item['pivot']['cost']);
             $cost = (float) $item['pivot']['cost'];
-            return $cost;
+
+            /*
+             * 🔴 NO simplificar esto a "devolver el pivot tal cual", ni a "dividir siempre por las
+             * unidades": el costo guardado en el pivot de una venta o de un presupuesto puede ser
+             * el del BULTO sin dividir (el 2/9/2026 el SPA viejo guardó así el presupuesto 411 de
+             * ferretotal) y este return lo propagaba de venta en venta y de presupuesto a venta.
+             * La venta 54.499 salió con PRECINTOS a costo 4118,66 y precio 61,78.
+             *
+             * Y tampoco se puede comparar contra `articles.costo_real` de hoy: la ficha cambia
+             * DESPUÉS de la venta (mangueras 3073/3074/3075: costo_real hoy 6,17 contra 388,77 con
+             * el que se vendió, margen del 50 % y ganancia positiva; ese "arreglo" las rompería).
+             * El criterio único —`CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir`—
+             * mira el PRECIO DE LA PROPIA LÍNEA (solo actúa si la línea pierde más del doble de lo
+             * que factura Y dividir por las unidades la vuelve coherente) y, para no confundir una
+             * pérdida real con un bulto sin dividir, exige además que el costo guardado esté más
+             * cerca del BULTO que de la UNIDAD según la ficha de hoy (`costo_real`, del ítem o de la
+             * base): sin eso, una línea sana con ui > 1 vendida a pérdida fuerte —cost 100, price 40,
+             * ui 10— se "arreglaba" a 10. Una línea ya dividida pasa intacta, así que no hay riesgo
+             * de dividir dos veces. Es una defensa: no reemplaza al saneo del histórico.
+             *
+             * El precio de la línea: `price_vender` (venta), si no `pivot.price`, si no `price`.
+             */
+            $price_de_la_linea = null;
+
+            if (isset($item['price_vender'])) {
+                $price_de_la_linea = $item['price_vender'];
+            } else if (isset($item['pivot']['price'])) {
+                $price_de_la_linea = $item['pivot']['price'];
+            } else if (isset($item['price'])) {
+                $price_de_la_linea = $item['price'];
+            }
+
+            return (float) CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
+                $cost,
+                $price_de_la_linea,
+                $unidades_individuales,
+                $lectura['costo_real']
+            );
         }
 
 
@@ -2135,11 +2265,10 @@ class SaleHelper extends Controller {
         }
 
         if (
-            isset($item['unidades_individuales'])
-            && $item['unidades_individuales']
-            && (float)$item['unidades_individuales'] > 0
+            $unidades_individuales
+            && (float)$unidades_individuales > 0
         ) {
-            $cost /= (float)$item['unidades_individuales'];
+            $cost /= (float)$unidades_individuales;
         }
 
         return $cost;

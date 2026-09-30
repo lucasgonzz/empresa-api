@@ -20,7 +20,7 @@ use Illuminate\Support\Str;
  * y deja las diecisiete de siempre como OVERRIDES (descripción, etiquetas y relaciones curadas
  * mandan sobre lo derivado; lo derivado aporta los campos que nadie declaró).
  *
- * Tres listas negras explícitas, cada una con su motivo escrito al lado:
+ * Cuatro listas negras explícitas, cada una con su motivo escrito al lado:
  *
  *   1. TABLAS_EXCLUIDAS: tablas con `user_id` que no describen nada del negocio que un dueño
  *      quiera leer (estado interno del asistente, tokens, credenciales, sesiones, colas,
@@ -29,6 +29,28 @@ use Illuminate\Support\Str;
  *      curadas incluidas: `buyers.password`, `payment_methods.access_token` y
  *      `articles.embedding` no salen por acá aunque la tabla sí.
  *   3. `user_id` nunca es un campo: es el scope, no un dato.
+ *   4. COLUMNAS_EXCLUIDAS_POR_TABLA: una columna concreta de una tabla concreta, para no ablandar
+ *      el regex de la 2.
+ *
+ * 🔴 Y DOS GUARDAS QUE NO SON LISTAS, porque las listas solo frenan lo que alguien ya vio. El
+ * catálogo se deriva del esquema REAL de cada cliente, que puede tener tablas que la base de
+ * testing no tiene; estas dos miran la ESTRUCTURA y frenan igual lo que ninguna lista nombra
+ * (misión catalogo-ia-tablas-sin-id, 29/9/2026):
+ *
+ *   - Una tabla sin columna `id` no se declara —ni derivada, ni curada, ni hija—, y una relación
+ *     DERIVADA (por la convención `x_id → xs` o por RELACIONES_POR_CONVENCION) no apunta a una
+ *     tabla sin `id`: el motor cuenta, proyecta, ordena, pagina y resuelve etiquetas por `id`. Ver
+ *     tabla_legible().
+ *   - Una columna que se lee del esquema nunca es un campo si su tipo vuelve como bytes (binario,
+ *     espacial, VECTOR), se llame como se llame: rompe el `json_encode` del tool_result y el
+ *     modelo lee "no hay registros". Ver TIPOS_BINARIOS.
+ *
+ * ⚠️ LO ESCRITO A MANO NO PASA POR ESTAS GUARDAS: las relaciones curadas de
+ * CatalogoDeDatosIaHelper::ENTIDADES y de CURADAS_ADICIONALES (entran por aplicar_override()), los
+ * campos curados, los `campos_del_padre` de una hija y la tabla padre de una hija. Todo eso apunta
+ * a tablas núcleo (clientes, proveedores, ventas, cajas) y lo sostienen, sobre la base de testing,
+ * el invariante del test 59 (toda entidad y toda relación apuntan a una tabla con `id`, ningún
+ * campo es binario) y el test 30 (el padre de cada hija existe y tiene su columna de join).
  *
  * Las entidades HIJAS (renglón de venta, de compra, de presupuesto, de nota de crédito, de pedido,
  * movimiento de caja y empleado) no tienen `user_id` propio: se scopean por su padre
@@ -136,11 +158,55 @@ class EsquemaDeDatosIaHelper
     ];
 
     /**
+     * 🔴 LOS TIPOS DE COLUMNA QUE NUNCA SON UN CAMPO, se llame como se llame la columna: los que por
+     * PDO vuelven como BYTES y no como texto. Van como los reporta `information_schema.DATA_TYPE`.
+     *
+     *   - Los binarios: BINARY, VARBINARY y los BLOB.
+     *   - Los espaciales: vuelven como el WKB de la geometría (con el SRID adelante, que es como
+     *     MySQL los guarda). `geomcollection` es como lo reporta MySQL 8; `geometrycollection`,
+     *     como lo reportan las versiones viejas.
+     *   - `vector` (MySQL 9): vuelve como los float32 empaquetados.
+     *
+     * Esos bytes no son texto UTF-8, y el tool_result viaja por `json_encode`: con un solo valor así
+     * en la página devuelve false, y AsistenteIaService::contenido_de_tool_result() lo reemplaza por
+     * `'[]'`. El modelo lee "no hay registros" y lo contesta tranquilo: una falla muda con cara de
+     * respuesta. Lo mismo al agrupar por esa columna en resumir_datos. Y adentro no hay nada que un
+     * comerciante quiera leer: son vectores, imágenes, archivos serializados o geometrías crudas.
+     *
+     * El caso que la trajo (29/9/2026): `article_compact_embeddings.vector` (4.3.0), el vector
+     * compacto de la búsqueda semántica del agente de WhatsApp, un BLOB de 2048 bytes por artículo.
+     * No llegó a viajar porque la tabla tampoco tenía `id` (ver tabla_legible()); con un `id`, habría
+     * ido en la proyección por defecto. Los espaciales y `vector` no tienen caso todavía —ninguna
+     * migración crea una columna así (medido el 29/9/2026)—: están porque rompen exactamente igual
+     * que un BLOB, y el esquema de un cliente puede tener lo que las migraciones no crean.
+     *
+     * Va por TIPO y no por nombre a propósito: COLUMNAS_SENSIBLES mira nombres, y `vector` no cae en
+     * ninguno. Se chequea en columna_visible(), que es la puerta por la que pasa toda columna antes
+     * de volverse un campo derivado.
+     *
+     * @var array<int, string>
+     */
+    const TIPOS_BINARIOS = [
+        // Binarios.
+        'binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob',
+        // Espaciales (WKB).
+        'geometry', 'point', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'multipolygon',
+        'geomcollection', 'geometrycollection',
+        // VECTOR de MySQL 9 (float32 empaquetados).
+        'vector',
+    ];
+
+    /**
      * LA LISTA NEGRA DE TABLAS: tabla => por qué no es un dato del negocio.
      *
      * Revisadas una por una contra `SELECT DISTINCT table_name FROM information_schema.columns
      * WHERE column_name = 'user_id'` (182 tablas el 21/9/2026). Las dudosas se decidieron mirando
      * qué tienen y qué pantalla las muestra; la decisión está en el motivo.
+     *
+     * ⚠️ Una tabla con `user_id` y SIN `id` ya no entra aunque no esté acá (ver tabla_legible()),
+     * pero igual se nombra con su motivo, y no es redundante: la guarda protege producción, y la
+     * entrada deja escrita la decisión. El test 59 exige que toda tabla así de la base esté en
+     * esta lista, así que una migración nueva que cree otra obliga a decidir qué es.
      *
      * @var array<string, string>
      */
@@ -154,6 +220,7 @@ class EsquemaDeDatosIaHelper
         'mostrador_memorias'                 => 'memoria interna del mostrador',
         'mostrador_reportes'                 => 'informes generados (el asistente ya los tiene como contexto cuando corresponde)',
         'embedding_runs'                     => 'corridas de embeddings (interno)',
+        'article_compact_embeddings'         => 'vectores binarios de la busqueda semantica del agente de WhatsApp (interno); su clave es article_id, no tiene id',
         // Tokens, credenciales, sesiones y estados de OAuth.
         'demo_ingreso_tokens'                => 'tokens de ingreso a la demo',
         'mercado_libre_tokens'               => 'credenciales de Mercado Libre',
@@ -915,24 +982,56 @@ class EsquemaDeDatosIaHelper
 
     /**
      * LA DERIVACIÓN. Una sola consulta a `information_schema.columns` para toda la base, y de ahí
-     * sale todo: qué tablas tienen `user_id`, qué tablas existen (para las relaciones), qué tablas
-     * tienen `name` y el tipo de cada columna.
+     * sale todo (ver derivar_de()).
      *
      * @return array<string, array<string, mixed>>
      */
     protected static function derivar(): array
     {
-        $columnas = self::columnas_de_la_base();
+        return self::derivar_de(self::columnas_de_la_base());
+    }
 
+    /**
+     * EL CATÁLOGO A PARTIR DE UN MAPA DE COLUMNAS: qué tablas tienen `user_id`, qué tablas existen
+     * y tienen `id` (para las entidades y las relaciones), qué tablas tienen `name` y el tipo de
+     * cada columna. derivar() es exactamente `derivar_de(columnas_de_la_base())`.
+     *
+     * Existe aparte para poder PROBAR la derivación con un esquema sintético. El test 59 le suma al
+     * mapa real tablas que no existen —una sin `id`, una con una columna BLOB, un destino de
+     * relación sin `id`— y verifica que las guardas las frenen. Crearlas de verdad no sirve: un
+     * `CREATE TABLE` en MySQL hace commit implícito y rompe el `DatabaseTransactions` del test, y
+     * una tabla temporal no aparece en `information_schema`. Por eso es PURA: no consulta la base
+     * ni el caché; todo lo que sabe del esquema es el mapa que recibe.
+     *
+     * 🔴 SE LLAMA SOLO CON EL MAPA DE columnas_de_la_base() —o, en un test, con ese mapa más tablas
+     * sintéticas—, NUNCA con un mapa armado con input del modelo o de un request. Los nombres de
+     * tabla y de columna de la declaración terminan interpolados en SQL (CatalogoDeDatosIaHelper y
+     * ResumenDeDatosIaHelper), y lo único que garantiza que salgan de `information_schema` o de una
+     * constante de este archivo es que el mapa sale de acá.
+     *
+     * @param  array  $columnas  tabla => columna => info, con la forma de columnas_de_la_base()
+     * @return array<string, array<string, mixed>>
+     */
+    public static function derivar_de(array $columnas): array
+    {
         $curadas = array_merge(CatalogoDeDatosIaHelper::ENTIDADES, self::CURADAS_ADICIONALES);
 
         $catalogo = [];
+
+        /*
+         * 🔴 LOS TRES CAMINOS PREGUNTAN tabla_legible() ANTES DE DECLARAR: una tabla sin `id` no
+         * entra ni como curada, ni como derivada, ni como hija, esté o no en TABLAS_EXCLUIDAS. El
+         * motor cuenta, proyecta, ordena y pagina por `tabla.id`: declararla es ofrecerle al modelo
+         * una consulta que revienta con `Unknown column` (29/9/2026: `article_compact_embeddings`,
+         * 4.3.0). No saques la guarda porque "la tabla ya está en la lista negra": el esquema de un
+         * cliente puede tener tablas que la lista no conoce. El detalle, en tabla_legible().
+         */
 
         // Primero las curadas, en su orden: son las que el modelo ya conoce.
         foreach ($curadas as $entidad => $curada) {
             $tabla = self::tabla_de_la_curada($entidad, $columnas);
 
-            if (is_null($tabla)) {
+            if (is_null($tabla) || ! self::tabla_legible($tabla, $columnas)) {
                 continue;
             }
 
@@ -948,6 +1047,10 @@ class EsquemaDeDatosIaHelper
                 continue;
             }
 
+            if (! self::tabla_legible($tabla, $columnas)) {
+                continue;
+            }
+
             $entidad = Str::singular($tabla);
 
             if (isset($catalogo[$entidad])) {
@@ -959,7 +1062,7 @@ class EsquemaDeDatosIaHelper
 
         // Y las hijas, que no tienen user_id propio.
         foreach (self::HIJAS as $entidad => $hija) {
-            if (! isset($columnas[$hija['tabla']])) {
+            if (! self::tabla_legible($hija['tabla'], $columnas)) {
                 continue;
             }
 
@@ -970,14 +1073,56 @@ class EsquemaDeDatosIaHelper
     }
 
     /**
+     * 🔴 SI EL MOTOR PUEDE LEER UNA TABLA: existe en el mapa y tiene columna `id`.
+     *
+     * CatalogoDeDatosIaHelper da por sentado que toda tabla que toca tiene `id`, y no por
+     * descuido: cuenta el total con `count(DISTINCT tabla.id)` (consultar_datos), manda
+     * `tabla.id as id` en cada fila (proyeccion / proyectar) porque es lo que permite encadenar con
+     * otra consulta, desempata el orden por `id` y pagina sobre ese orden (traducir_orden), y del
+     * lado de las relaciones filtra por nombre con `SELECT id FROM <destino>`
+     * (condicion_por_nombre) y busca las etiquetas con `whereIn('id')` (etiquetas_de_relacion).
+     * Una tabla sin `id` se puede declarar —figura en que_puedo_consultar y en los recursos MCP—,
+     * pero consultar_datos sobre ella revienta, y recién cuando el modelo la pide. resumir_datos
+     * andaría (cuenta con `COUNT(*)` y agrupa por campos, no toca el `id`), pero una entidad que se
+     * puede sumar y no se puede listar confunde al modelo: queda afuera entera, a propósito.
+     *
+     * El caso que la trajo (29/9/2026): `article_compact_embeddings`, que entró con la 4.3.0 con
+     * clave primaria `article_id`. Tenía `user_id`, así que se derivó como entidad, y cada
+     * consultar_datos sobre ella volvía con `SQLSTATE[42S22]: Column not found: 1054 Unknown column
+     * 'article_compact_embeddings.id'`. La conversación no se caía (AsistenteIaService atrapa la
+     * excepción y se la pasa al modelo), pero la entidad figuraba como consultable y no lo era.
+     *
+     * ⚠️ POR QUÉ UNA GUARDA Y NO SOLO LA LISTA NEGRA. La tabla está en TABLAS_EXCLUIDAS, y eso
+     * alcanzaría si el catálogo saliera de las migraciones. Pero sale del esquema REAL de cada
+     * cliente, que puede tener tablas huérfanas que la base de testing no tiene (migraciones viejas
+     * editadas, tablas que alguien creó y nadie borró), y entre una migración nueva y la próxima
+     * corrida de los tests del asistente hay una ventana: la 4.3.0 salió por ahí. Lo que el motor no
+     * puede leer no se declara, esté o no en la lista.
+     *
+     * Se usa en los tres caminos de derivar_de() (curadas, derivadas e hijas) y en relacion_para(),
+     * para la tabla destino de una relación.
+     *
+     * @param  string  $tabla
+     * @param  array   $columnas
+     * @return bool
+     */
+    protected static function tabla_legible(string $tabla, array $columnas): bool
+    {
+        return isset($columnas[$tabla]['id']);
+    }
+
+    /**
      * Todas las columnas de la base conectada, agrupadas por tabla, en UNA consulta.
      *
      * ⚠️ Con MySQL 8 las columnas de `information_schema` vuelven en MAYÚSCULAS por PDO
      * (`TABLE_NAME`, no `table_name`): por eso van con alias explícito.
      *
+     * Es pública para que un test pueda partir del mapa real y sumarle tablas sintéticas antes de
+     * pasárselo a derivar_de().
+     *
      * @return array<string, array<string, array<string, mixed>>>  tabla => columna => info
      */
-    protected static function columnas_de_la_base(): array
+    public static function columnas_de_la_base(): array
     {
         $filas = DB::table('information_schema.columns')
             ->where('table_schema', DB::connection()->getDatabaseName())
@@ -1022,8 +1167,8 @@ class EsquemaDeDatosIaHelper
     }
 
     /**
-     * La declaración derivada de una tabla: todos sus campos menos los sensibles y `user_id`, con
-     * tipo, etiqueta, relaciones por convención y condiciones fijas.
+     * La declaración derivada de una tabla: todos sus campos menos los sensibles, los binarios y
+     * `user_id`, con tipo, etiqueta, relaciones por convención y condiciones fijas.
      *
      * @param  string  $tabla
      * @param  array   $columnas
@@ -1035,7 +1180,7 @@ class EsquemaDeDatosIaHelper
         $relaciones = [];
 
         foreach ($columnas[$tabla] as $columna => $info) {
-            if (! self::columna_visible($columna, $tabla)) {
+            if (! self::columna_visible($columna, $tabla, $info)) {
                 continue;
             }
 
@@ -1106,16 +1251,33 @@ class EsquemaDeDatosIaHelper
     }
 
     /**
+     * Si una columna puede volverse un campo derivado. Es la única puerta: la usan derivada_de() y
+     * declaracion_hija(), así que vale para toda columna que se lee del esquema, sea de una
+     * derivada, de una curada o de una hija. Lo que una curada o una hija declara A MANO (sus
+     * `campos`, `campos_del_padre`) no pasa por acá: lo escribió alguien, y el test 59 verifica
+     * contra el esquema que ningún campo del catálogo sea una columna binaria.
+     *
+     * No pueden: `id` y `user_id` (el id viaja siempre y el user_id es el scope), las de
+     * COLUMNAS_EXCLUIDAS_POR_TABLA, las binarias por TIPO (TIPOS_BINARIOS) y las que caen en
+     * COLUMNAS_SENSIBLES por nombre.
+     *
      * @param  string  $columna
+     * @param  string  $tabla
+     * @param  array   $info     la de columnas_de_la_base(): acá importa `tipo_dato`
      * @return bool
      */
-    protected static function columna_visible(string $columna, string $tabla = ''): bool
+    protected static function columna_visible(string $columna, string $tabla, array $info): bool
     {
         if ($columna === 'user_id' || $columna === 'id') {
             return false;
         }
 
-        if ($tabla !== '' && isset(self::COLUMNAS_EXCLUIDAS_POR_TABLA[$tabla][$columna])) {
+        if (isset(self::COLUMNAS_EXCLUIDAS_POR_TABLA[$tabla][$columna])) {
+            return false;
+        }
+
+        // 🔴 Por tipo, no por nombre: un BLOB vacía el tool_result entero (ver TIPOS_BINARIOS).
+        if (isset($info['tipo_dato']) && in_array($info['tipo_dato'], self::TIPOS_BINARIOS, true)) {
             return false;
         }
 
@@ -1184,11 +1346,19 @@ class EsquemaDeDatosIaHelper
      * LA RELACIÓN DE UNA COLUMNA `*_id`, por convención.
      *
      *   1. `moneda_id` → etiquetas fijas (ver ETIQUETAS_DE_MONEDA).
-     *   2. RELACIONES_POR_CONVENCION, por nombre exacto de columna.
-     *   3. `x_id` → tabla `Str::plural('x')` si existe en el esquema y tiene columna `name`.
+     *   2. RELACIONES_POR_CONVENCION, por nombre exacto de columna, si la tabla existe, tiene `id` y
+     *      tiene el campo.
+     *   3. `x_id` → tabla `Str::plural('x')` si existe en el esquema y tiene columnas `id` y `name`.
      *
      * El chequeo de existencia va contra el mapa de `information_schema` que ya se trajo, que es
      * exactamente lo que `Schema::hasTable` consultaría, sin una consulta por columna.
+     *
+     * 🔴 LA TABLA DESTINO TIENE QUE TENER `id` (tabla_legible()). Una relación se usa de dos formas
+     * y las dos van por `id`: el filtro por nombre arma `x_id IN (SELECT id FROM <destino> WHERE
+     * ...)` (CatalogoDeDatosIaHelper::condicion_por_nombre) y las etiquetas de la respuesta se
+     * buscan con `whereIn('id', ...)` (etiquetas_de_relacion). Contra un destino sin `id` las dos
+     * revientan con `Unknown column`, así que no hay relación: el campo queda `number`, que es lo
+     * que es (misión catalogo-ia-tablas-sin-id, 29/9/2026).
      *
      * `con_user_id` dice si la tabla destino está scopeada por dueño: el filtro por nombre lo usa
      * para no matchear un rubro de OTRO comercio que se llame igual.
@@ -1206,7 +1376,7 @@ class EsquemaDeDatosIaHelper
         if (isset(self::RELACIONES_POR_CONVENCION[$columna])) {
             $fija = self::RELACIONES_POR_CONVENCION[$columna];
 
-            if (! isset($columnas[$fija['tabla']]) || ! isset($columnas[$fija['tabla']][$fija['campo']])) {
+            if (! self::tabla_legible($fija['tabla'], $columnas) || ! isset($columnas[$fija['tabla']][$fija['campo']])) {
                 return null;
             }
 
@@ -1219,7 +1389,7 @@ class EsquemaDeDatosIaHelper
 
         $destino = Str::plural(substr($columna, 0, -3));
 
-        if (! isset($columnas[$destino]) || ! isset($columnas[$destino]['name'])) {
+        if (! self::tabla_legible($destino, $columnas) || ! isset($columnas[$destino]['name'])) {
             return null;
         }
 
@@ -1432,7 +1602,7 @@ class EsquemaDeDatosIaHelper
         }
 
         foreach ($columnas[$tabla] as $columna => $info) {
-            if (! self::columna_visible($columna, $tabla) || isset($campos[$columna])) {
+            if (! self::columna_visible($columna, $tabla, $info) || isset($campos[$columna])) {
                 continue;
             }
 

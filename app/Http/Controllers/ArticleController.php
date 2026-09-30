@@ -11,6 +11,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ArticleTablePdfHelper;
+use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -35,6 +36,7 @@ use App\Http\Controllers\Pdf\ArticleTablePdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
+use App\Http\Controllers\Pdf\ArticleTicket\ArticleTicketDesignPdf;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -1024,8 +1026,40 @@ class ArticleController extends Controller
         );
     }
 
+    /**
+     * Etiquetas de góndola de los artículos `$ids` (separados por `-`).
+     *
+     * Con `?article_ticket_design_id=` de un diseño DEL DUEÑO (misión disenos-etiquetas-gondola,
+     * 29/9/2026) las dibuja `ArticleTicketDesignPdf` según ese diseño y responde el PDF inline.
+     * Sin ese parámetro, o con un id que no es del dueño, sale el camino de siempre
+     * (`ArticleTicketPdf`, con su `?price_type_id=` y la variante golonorte) sin ningún cambio:
+     * un SPA viejo sigue imprimiendo igual.
+     */
     function ticketsPdf($ids) {
+        $diseno = $this->diseno_de_etiquetas_pedido(request()->query('article_ticket_design_id'));
+
+        if (!is_null($diseno)) {
+            $pdf = new ArticleTicketDesignPdf($diseno->diseno, $ids, $this->userId());
+
+            return response($pdf->generar(), 200, [
+                'Content-Type'        => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="etiquetas.pdf"',
+            ]);
+        }
+
         new ArticleTicketPdf($ids);
+    }
+
+    /**
+     * La bifurcación de `ticketsPdf()`: el diseño de etiquetas pedido si es DEL DUEÑO, o null
+     * (-> camino de siempre, `ArticleTicketPdf`). Separado en su propio método para poder
+     * testearlo: el camino de siempre termina en `exit` y no se puede ejercitar desde PHPUnit.
+     *
+     * @param  mixed  $article_ticket_design_id  El `?article_ticket_design_id=` tal cual llegó.
+     * @return \App\Models\ArticleTicketDesign|null
+     */
+    function diseno_de_etiquetas_pedido($article_ticket_design_id) {
+        return ArticleTicketDesignHelper::diseno_del_dueno($article_ticket_design_id, $this->userId());
     }
 
     function pdf($ids, $moneda_id = null) {
