@@ -33,6 +33,17 @@ namespace App\Http\Controllers\Helpers\combo;
  *    hay siempre. No 0: un combo de servicios o de artículos sin stock se vende sin límite.
  *  - Cantidad del componente <= 0 o no numérica: ese renglón no aporta límite (evita dividir por
  *    cero con un combo mal cargado).
+ *  - 🔴 EL MISMO ARTÍCULO EN MÁS DE UN RENGLÓN se AGRUPA ANTES DE DIVIDIR: clave de agrupación =
+ *    `article_id`, y las cantidades de sus renglones se SUMAN (solo las válidas: numéricas y > 0).
+ *    Con A de stock 2 y dos renglones de cantidad 1, el combo lleva 2 unidades de A por combo:
+ *    floor(2/2) = 1. Dividir cada renglón por separado daba floor(2/1) = 2 y vendía de más. El ABM
+ *    permite repetir un artículo (y puede haber datos viejos así), y el stock es UNO solo por
+ *    artículo, así que el reparto entre renglones no existe. El renglón que trae `borrado` manda
+ *    igual que siempre (si CUALQUIERA de los renglones del combo está borrado, el resultado es 0).
+ *    Un renglón sin `article_id` no se agrupa con nadie: cuenta solo (así funciona el llamador que
+ *    arma los renglones a mano sin ids).
+ *    La regla es IDÉNTICA en tienda-api (`ComboStockHelper` de ese repo): si se cambia acá, se
+ *    cambia allá en el mismo release.
  *
  * Es el stock GLOBAL del artículo (`articles.stock`), no el de un depósito.
  *
@@ -52,6 +63,8 @@ class ComboStockHelper {
      *                              - `amount` (int|float|string): cantidad que lleva UN combo
      *                                (`article_combo.amount`).
      *                              - `borrado` (bool, opcional): true si el artículo está en la papelera.
+ *                              - `article_id` (int, opcional): id del artículo; los renglones con el
+ *                                mismo id se agrupan y suman su cantidad (ver el encabezado).
      * @return int|null  Cantidad de combos armables, o null si ningún componente lleva stock
      *                   (sin control: hay siempre).
      */
@@ -59,7 +72,14 @@ class ComboStockHelper {
 
         $minimo = null;
 
-        foreach ($componentes as $componente) {
+        /*
+         * Primera pasada: agrupar por artículo. `$por_articulo` guarda, por clave, el stock y la
+         * cantidad SUMADA que el combo lleva de ese artículo. La clave es `article_id`; un renglón
+         * sin id usa una clave propia (`renglon:N`) y no se mezcla con ninguno.
+         */
+        $por_articulo = [];
+
+        foreach ($componentes as $posicion => $componente) {
 
             /*
              * El borrado corta ANTES que todo: el combo no se puede armar, y no hace falta seguir
@@ -83,10 +103,24 @@ class ComboStockHelper {
                 continue;
             }
 
-            /* Stock negativo = 0: ver el encabezado. */
-            $disponible = max(0, (float) $stock);
+            $clave = (isset($componente['article_id']) && $componente['article_id'] !== '')
+                ? 'articulo:' . $componente['article_id']
+                : 'renglon:' . $posicion;
 
-            $armables = (int) floor($disponible / (float) $amount);
+            if (!isset($por_articulo[$clave])) {
+                $por_articulo[$clave] = ['stock' => $stock, 'amount' => 0.0];
+            }
+
+            $por_articulo[$clave]['amount'] += (float) $amount;
+        }
+
+        /* Segunda pasada: el limitante es el mínimo de floor(stock / cantidad TOTAL) por artículo. */
+        foreach ($por_articulo as $agrupado) {
+
+            /* Stock negativo = 0: ver el encabezado. */
+            $disponible = max(0, (float) $agrupado['stock']);
+
+            $armables = (int) floor($disponible / $agrupado['amount']);
 
             if (is_null($minimo) || $armables < $minimo) {
                 $minimo = $armables;
@@ -110,6 +144,7 @@ class ComboStockHelper {
         foreach ($articulos as $articulo) {
 
             $componentes[] = [
+                'article_id' => $articulo->id,
                 'stock'   => $articulo->stock,
                 'amount'  => isset($articulo->pivot) ? $articulo->pivot->amount : null,
                 'borrado' => !is_null($articulo->deleted_at),

@@ -287,4 +287,103 @@ class Stock_del_combo_Test extends ComboCalculadoTestCase
         $this->assertArrayHasKey('stock_disponible', $json);
         $this->assertNull($json['stock_disponible']);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  El mismo artículo en más de un renglón (F2)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 🔴 El mismo artículo repetido en dos renglones se agrupa ANTES de dividir: A con stock 2 y dos
+     * renglones de cantidad 1 lleva 2 unidades por combo, o sea 1 combo. Dividir cada renglón por
+     * separado daba 2 y vendía de más.
+     *
+     * @test
+     */
+    public function el_mismo_articulo_en_dos_renglones_suma_sus_cantidades_antes_de_dividir()
+    {
+        $this->assertSame(1, ComboStockHelper::calcular([
+            ['article_id' => 7, 'stock' => 2, 'amount' => 1],
+            ['article_id' => 7, 'stock' => 2, 'amount' => 1],
+        ]));
+
+        // Y mezclado con otros artículos: A repetido (1 + 2 = 3 por combo, stock 7 -> 2) y B (stock 9 x 1 -> 9).
+        $this->assertSame(2, ComboStockHelper::calcular([
+            ['article_id' => 1, 'stock' => 7, 'amount' => 1],
+            ['article_id' => 2, 'stock' => 9, 'amount' => 1],
+            ['article_id' => 1, 'stock' => 7, 'amount' => 2],
+        ]));
+    }
+
+    /**
+     * Repetido más un componente sin control de stock: el sin control no limita ni "rescata" al
+     * repetido.
+     *
+     * @test
+     */
+    public function un_articulo_repetido_con_otro_sin_control_de_stock_sigue_limitando()
+    {
+        $this->assertSame(1, ComboStockHelper::calcular([
+            ['article_id' => 1, 'stock' => 2, 'amount' => 1],
+            ['article_id' => 9, 'stock' => null, 'amount' => 1],
+            ['article_id' => 1, 'stock' => 2, 'amount' => 1],
+        ]));
+
+        // Un renglón repetido con cantidad inválida no suma ni divide por cero.
+        $this->assertSame(2, ComboStockHelper::calcular([
+            ['article_id' => 1, 'stock' => 2, 'amount' => 1],
+            ['article_id' => 1, 'stock' => 2, 'amount' => 0],
+        ]));
+    }
+
+    /**
+     * Un renglón repetido que está BORRADO deja el combo en 0 aunque el otro renglón tenga stock.
+     *
+     * @test
+     */
+    public function un_renglon_borrado_entre_repetidos_deja_el_combo_en_cero()
+    {
+        $this->assertSame(0, ComboStockHelper::calcular([
+            ['article_id' => 1, 'stock' => 50, 'amount' => 1],
+            ['article_id' => 1, 'stock' => 50, 'amount' => 1, 'borrado' => true],
+        ]));
+    }
+
+    /**
+     * Los dos casos literales de Lucas, con `article_id` como los arma `calcular_de_articulos()`:
+     * A, B, C de amount 1 con stocks 2/3/4 -> 2; y con amounts 2/3/4 y stocks 2/3/4 -> 1.
+     *
+     * @test
+     */
+    public function los_casos_literales_de_lucas_dan_dos_y_uno()
+    {
+        $this->assertSame(2, ComboStockHelper::calcular([
+            ['article_id' => 1, 'stock' => 2, 'amount' => 1],
+            ['article_id' => 2, 'stock' => 3, 'amount' => 1],
+            ['article_id' => 3, 'stock' => 4, 'amount' => 1],
+        ]));
+
+        $this->assertSame(1, ComboStockHelper::calcular([
+            ['article_id' => 1, 'stock' => 2, 'amount' => 2],
+            ['article_id' => 2, 'stock' => 3, 'amount' => 3],
+            ['article_id' => 3, 'stock' => 4, 'amount' => 4],
+        ]));
+    }
+
+    /**
+     * Con artículos reales y el accessor del modelo: el mismo artículo cargado dos veces en el
+     * combo (el ABM lo permite) da el stock agrupado.
+     *
+     * @test
+     */
+    public function un_articulo_cargado_dos_veces_en_el_combo_real_da_el_stock_agrupado()
+    {
+        $a = $this->nuevo_articulo(['stock' => 2]);
+
+        $combo = $this->combo([[$a, 1], [$a, 1]]);
+
+        $this->assertSame(1, $this->stock_del($combo));
+
+        // El mismo combo con un solo renglón de cantidad 2 da lo mismo: son la misma receta.
+        $this->assertSame(1, $this->stock_del($this->combo([[$a, 2]])));
+    }
 }
