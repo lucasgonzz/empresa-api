@@ -497,4 +497,37 @@ class Combo_calculado_Test extends ComboCalculadoTestCase
 
         $this->assertSame(840.0, $this->precio_en_base($combo));
     }
+
+    /**
+     * 🔴 `combos.price` y `combos.cost` eran DECIMAL(10,2) (tope 99.999.999,99) y ahora guardan el
+     * precio de la lista por defecto y la suma de costos de los componentes: un combo de 150 millones
+     * se calculaba bien y reventaba al guardar (`Out of range`). Con las columnas ensanchadas
+     * (migración 2026_09_30_130300) se guarda, y se vuelve a leer igual.
+     *
+     * @test
+     */
+    public function un_combo_de_ciento_cincuenta_millones_se_guarda_y_se_lee_entero()
+    {
+        $this->con_listas(0);
+
+        $a = $this->nuevo_articulo(['costo_real' => 120000000, 'final_price' => 150000000]);
+
+        $combo = $this->combo_calculado([[$a, 1]]);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(150000000.0, $this->precio_en_base($combo), 'El precio no entra en DECIMAL(10,2).');
+        $this->assertSame(120000000.0, $this->costo_en_base($combo), 'El costo tampoco.');
+
+        // Y con listas: combos.price copia el precio de la lista por defecto, que también es enorme.
+        $this->con_listas(1);
+
+        $lista = $this->lista('Millonaria', 97);
+        $this->precio_en_lista($a, $lista, 250000000);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(250000000.0, $this->precio_en_base($combo));
+        $this->assertSame(250000000.0, $this->precios_por_lista_en_base($combo)[$lista->id]);
+    }
 }
