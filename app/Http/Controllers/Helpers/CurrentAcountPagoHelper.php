@@ -106,7 +106,31 @@ class CurrentAcountPagoHelper {
                 $this->sin_pagar = $found;
             } else {
                 // No estaba en los pendientes (puede ser un débito ya pagado o de otro estado)
-                $this->sin_pagar = CurrentAcount::find($this->pago->to_pay_id);
+                $dirigido = CurrentAcount::find($this->pago->to_pay_id);
+
+                /*
+                 * 🔴 Solo se acepta un débito de ESTA cuenta (misión corregir-ventas-en-dolares,
+                 * 30/9/2026). Los pendientes de arriba ya son de la cuenta del pago, pero este
+                 * `find()` no miraba la cuenta: un `to_pay` que apuntaba a un débito de la cuenta
+                 * en OTRA moneda lo cargaba igual y el pago le imputaba un monto que no está en su
+                 * moneda (50000 pesos dejaban en "pagandose" un débito en dólares mientras el saldo
+                 * de esa cuenta no se movía). Pesos no saldan dólares sin cotizar.
+                 *
+                 * Un `to_pay` que no sirve (de otra cuenta, o un débito que ya no existe) se IGNORA y
+                 * el pago sigue en orden (FIFO) sobre la cuenta que se está pagando: es lo que pasa
+                 * con un pago sin `to_pay`, y deja el dinero imputado en vez de suelto.
+                 * `CurrentAcountPagoMonedaHelper` ya rebota con 422 el caso del `to_pay` ajeno que
+                 * llega por la pantalla; esto cubre los pagos que no pasan por el controlador y la
+                 * re-imputación de cuentas viejas que tienen el `to_pay_id` ajeno guardado.
+                 */
+                if (!is_null($dirigido) && (int) $dirigido->credit_account_id == (int) $this->credit_account->id) {
+
+                    $this->sin_pagar = $dirigido;
+
+                } else {
+
+                    $this->sin_pagar = $this->debitos_pendientes->shift();
+                }
             }
 
             Log::info('con to_pay_id '.$this->pago->to_pay_id);

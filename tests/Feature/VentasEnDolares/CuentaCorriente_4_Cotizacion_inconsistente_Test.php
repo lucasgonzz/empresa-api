@@ -188,6 +188,32 @@ class CuentaCorriente_4_Cotizacion_inconsistente_Test extends CuentaCorriente_Ba
     }
 
     /**
+     * Regla: una cotización de 1 entre pesos y dólares ("un peso = un dólar") no se acepta aunque sea
+     * consistente consigo misma (`120000 / 1 = 120000`): es lo que queda cuando la cotización no se
+     * cargó, y acredita 120000 dólares donde se debían 100. CASO REAL en 2R (14/8/2026, Pago N°303):
+     * $126.900 con cotización 1,00 sobre una cuenta en dólares dejaron a un cliente con -126.899,97 USD.
+     *
+     * @group ventas-en-dolares
+     * @test
+     */
+    public function una_cotizacion_de_uno_entre_pesos_y_dolares_no_se_acepta()
+    {
+        list($cliente, $dolares) = $this->deuda_de_100_dolares();
+
+        $desde = $this->max_id_movimiento_caja();
+
+        $response = $this->postear_pago($cliente, $dolares, [
+            $this->fila_de_pago(self::DOLARES, self::PESOS, 120000, $this->caja_pesos, 1, ['cotizacion' => 1, 'amount_cotizado' => 120000]),
+        ]);
+
+        $response->assertStatus(422);
+
+        $this->assertEquals(0, CurrentAcount::where('client_id', $cliente->id)->whereNotNull('haber')->count(), 'El pago rechazado no puede dejar un movimiento.');
+        $this->assertEquals(0, MovimientoCaja::where('id', '>', $desde)->count(), 'El pago rechazado no puede dejar movimientos de caja.');
+        $this->assertMonto(100, $this->saldo_de($dolares));
+    }
+
+    /**
      * Regla: cotización NEGATIVA. Con cotización -1200 no existe un haber correcto (el front
      * calcularía un cotizado negativo): lo único aceptable es rebotar. Si el back lo acepta, la fila
      * termina valiendo su monto nominal (como una fila sin cotizar) o un haber negativo.
