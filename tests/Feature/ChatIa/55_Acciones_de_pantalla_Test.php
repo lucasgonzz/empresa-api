@@ -259,6 +259,27 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
     }
 
     /**
+     * Una venta del dueño, viva y con total, creada por este test.
+     *
+     * 🔴 No volver a tomar "una venta del dueño" de la base: ningún seeder de
+     * `database/seeders/testing` crea ventas, así que en una base recién sembrada no hay ninguna y
+     * el test de facturar daba rojo. Pasaba solo en slots con ventas residuales de corridas viejas
+     * (medido el 30/9/2026: 0 en una base limpia, 89 en s23).
+     *
+     * @return Sale
+     */
+    protected function venta_de_prueba()
+    {
+        return Sale::create([
+            'num'       => (int) Sale::where('user_id', $this->dueno->id)->max('num') + 1,
+            'user_id'   => $this->dueno->id,
+            'moneda_id' => 1,
+            'total'     => 1530,
+            'terminada' => 1,
+        ]);
+    }
+
+    /**
      * El bloque del `case` de una herramienta en HerramientasDeCarga, leído como texto plano (igual
      * que los tests 36 y 51: el switch no es introspectable de otra forma).
      *
@@ -575,9 +596,21 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         list($conversation, $assistant) = $this->conversacion();
 
         // El índice de artículos de la pantalla (`api/article` es un resource sin index).
+        //
+        // 🔴 per_page 2, no 5. Con 5 la página traía el artículo de acá más los cuatro más nuevos que
+        // hubiera en la base, y el JSON pasaba o no el tope de EjecutorAccionDePantallaIaHelper::
+        // LARGO_MAXIMO (30.000) según cuáles fueran: en una base recién sembrada son los del fixture,
+        // ~7.240 caracteres cada uno con withAll(), y la página de 5 daba 36.808 → recortada y rojo;
+        // en un slot con artículos residuales de otras corridas (~2.670 c/u) entraba (medido el
+        // 30/9/2026 en s9 limpia y en s23). Con 2 entra siempre.
+        //
+        // Y 2, no 1: el ajeno se crea después del propio, casi siempre en el mismo segundo. Si el
+        // filtro por dueño se rompiera, esos dos serían los más nuevos y el ajeno caería en la
+        // página; con 1, el empate de created_at podría dejarlo afuera y el assertNotContains no
+        // mordería.
         $respuesta = $this->herramienta($conversation, $assistant, 'consultar_por_pantalla', [
             'ruta'     => 'api/article/index/from-status',
-            'consulta' => ['per_page' => 5],
+            'consulta' => ['per_page' => 2],
         ]);
 
         $this->assertTrue($respuesta['ok'], json_encode($respuesta));
@@ -591,7 +624,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
 
         $this->assertContains('Zeta P55 del dueño', $nombres);
         $this->assertNotContains('Zeta P55 ajeno', $nombres, 'La pantalla filtra por dueño, y por acá también');
-        $this->assertSame(5, $respuesta['respuesta']['models']['per_page'], 'La query string llegó al controller');
+        $this->assertSame(2, $respuesta['respuesta']['models']['per_page'], 'La query string llegó al controller (el default es 500)');
 
         // Con {param} y la query pegada a la ruta: la caja del dueño por su ruta con valor.
         $caja = $this->caja_de_prueba('Caja P55 lectura');
@@ -1061,16 +1094,18 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
      * la propuesta, que quizas_auto_confirmar() respeta antes de mirar el modo.
      *
      * No se toca ARCA: la tarjeta queda propuesta y nada se ejecuta. El `sale_id` es una venta
-     * real del dueño porque la tenencia del cuerpo exige que exista y sea suya; lo que se mide es
-     * que la tarjeta quede propuesta y que `afip_tickets` y `sales` no cambien.
+     * del dueño creada por el test (venta_de_prueba) porque la tenencia del cuerpo exige que exista
+     * y sea suya; lo que se mide es que la tarjeta quede propuesta y que `afip_tickets` y `sales`
+     * no cambien.
      *
      * @test
      */
     public function una_accion_que_emite_comprobantes_ante_arca_siempre_deja_tarjeta_incluso_en_directo()
     {
-        $venta = Sale::where('user_id', $this->dueno->id)->whereNull('deleted_at')->orderBy('id')->first();
+        $venta = $this->venta_de_prueba();
 
-        $this->assertNotNull($venta, 'El fixture trae ventas');
+        $this->assertNotNull($venta, 'El test tiene que tener una venta del dueño');
+        $this->assertNull($venta->fresh()->deleted_at, 'La venta tiene que estar viva, como pedía la búsqueda de antes');
 
         // El catálogo la marca, y a una acción común no.
         $declaracion = Catalogo::declaracion('POST', 'api/afip-ticket');
