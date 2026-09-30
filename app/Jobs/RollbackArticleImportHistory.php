@@ -674,7 +674,7 @@ class RollbackArticleImportHistory implements ShouldQueue
          * una cosa ni la otra pasa por el gancho de `setFinalPrice()`. Los combos calculados que
          * incluyen estos artículos vuelven a la cuenta correcta acá, con todo ya escrito.
          */
-        ComboCalculadoHelper::recalcular_por_articulos($article_ids, $user_id);
+        ComboCalculadoHelper::recalcular_por_articulos($article_ids);
     }
 
     /**
