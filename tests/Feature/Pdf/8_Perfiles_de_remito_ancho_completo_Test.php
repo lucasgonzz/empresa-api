@@ -209,14 +209,46 @@ class Perfiles_de_remito_ancho_completo_Test extends TestCase
         $this->assertSame(140, PdfColumnProfileHelper::suma_de_anchos_mm($perfil->fresh()));
     }
 
-    /** @test */
-    public function respeta_el_margen_propio_del_perfil()
+    /**
+     * NewSalePdf dibuja siempre 200 mm (A4, start_x = 5) y no lee la hoja del perfil: el objetivo es
+     * 200 aunque el perfil declare otra cosa. Si declara MENOS de 200 útiles se lleva la hoja a A4 con
+     * margen 5 (si no, el ABM rechazaría guardarlo); si declara MÁS (277, el default del editor), la
+     * hoja no se toca pero las columnas no pueden pasar de 200 o se cortan contra el borde.
+     *
+     * @test
+     */
+    public function el_objetivo_es_siempre_el_ancho_que_dibuja_el_pdf_y_no_lo_que_declara_la_hoja()
     {
-        $perfil = $this->perfil('Sin Precios', $this->sin_precios_quino(), ['margin_mm' => 10]);
+        $margen_10 = $this->perfil('Sin Precios', $this->sin_precios_quino(), ['margin_mm' => 10]);
+        PdfColumnRemitoSetupHelper::apply_for_owner(self::OWNER_ID);
+
+        $this->assertSame(200, PdfColumnProfileHelper::suma_de_anchos_mm($margen_10->fresh()));
+        $this->assertSame(5, (int) $margen_10->fresh()->margin_mm, 'La hoja declaraba 190 útiles: se lleva a margen 5.');
+        $this->assertSame(210, (int) $margen_10->fresh()->printable_width_mm);
+    }
+
+    /** @test */
+    public function un_perfil_con_la_hoja_ancha_del_editor_no_se_estira_mas_alla_de_la_pagina()
+    {
+        $ancho = $this->perfil('Sin Precios', $this->sin_precios_quino(), [
+            'paper_width_mm' => 297, 'printable_width_mm' => 277, 'margin_mm' => 5,
+        ]);
 
         PdfColumnRemitoSetupHelper::apply_for_owner(self::OWNER_ID);
 
-        $this->assertSame(190, PdfColumnProfileHelper::suma_de_anchos_mm($perfil->fresh()));
+        $this->assertSame(200, PdfColumnProfileHelper::suma_de_anchos_mm($ancho->fresh()), 'No debe llegar a 267.');
+        $this->assertSame(277, (int) $ancho->fresh()->printable_width_mm, 'La hoja declarada de más no se toca.');
+    }
+
+    /** @test */
+    public function una_variante_del_nombre_no_genera_un_perfil_duplicado()
+    {
+        $this->perfil('Remito sin precio', $this->sin_precios_quino());
+
+        $resultado = PdfColumnRemitoSetupHelper::apply_for_owner(self::OWNER_ID);
+
+        $this->assertSame(0, PdfColumnProfile::where('user_id', self::OWNER_ID)->where('name', 'Sin Precios')->count());
+        $this->assertSame(['creado', 'ajustado'], array_column($resultado['perfiles'], 'accion'));
     }
 
     /** @test */

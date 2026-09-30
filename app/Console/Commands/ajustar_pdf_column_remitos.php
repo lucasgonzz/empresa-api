@@ -7,10 +7,13 @@ use Illuminate\Console\Command;
 
 /**
  * Deja los perfiles de PDF "Remito" y "Sin Precios" de cada owner con todas sus columnas sumando
- * el ancho útil de la hoja (ancho imprimible menos los dos márgenes laterales), y crea el que falte.
+ * 200 mm, que es el ancho que el PDF de venta dibuja de verdad (A4 vertical, margen de 5 mm por
+ * lado; NewSalePdf no lee la hoja del perfil), y crea el que falte.
  *
- * Solo toca los dos perfiles no fiscales con esos nombres: no cambia qué columnas hay, ni su orden,
- * ni el ancho de ninguna salvo "Nombre del artículo", que absorbe la diferencia. Es idempotente.
+ * Solo toca los dos perfiles no fiscales con esos nombres (o variantes como "Sin precio"): no
+ * cambia qué columnas hay ni su orden; normalmente solo cambia el ancho de "Nombre del artículo",
+ * que absorbe la diferencia, y si no puede escala todas en proporción. Si la hoja del perfil declara
+ * menos de 200 mm útiles, la lleva a A4 con margen 5 para que el ABM no lo rechace. Es idempotente.
  *
  * Uso típico tras actualizar el sistema:
  * php artisan pdf-column-profiles:ajustar-remitos

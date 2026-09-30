@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Asegura que cada owner tenga los perfiles de PDF "Remito" y "Sin Precios", y que sus columnas
- * ocupen TODO el ancho útil de la hoja (ancho imprimible menos los dos márgenes laterales).
+ * ocupen TODO el ancho que el PDF de venta dibuja: 200 mm (A4 vertical con margen de 5 mm por lado).
  *
  * Por qué existe (Quino2, 30/9/2026): el remito sin precios de un cliente salía con la tabla a dos
  * tercios del ancho, contra un encabezado que sí llegaba al borde: # 8 + Num 15 + Cod. barras 30 +
@@ -39,6 +39,14 @@ class PdfColumnRemitoSetupHelper
     /** Ancho mínimo al que se achica la columna elástica antes de repartir entre todas. */
     const ANCHO_MINIMO_ELASTICA_MM = 30;
 
+    /**
+     * Ancho que NewSalePdf dibuja de verdad: siempre una A4 vertical (210 mm) con `start_x = 5`, o sea
+     * de x = 5 a x = 205. NO lee `paper_width_mm`, `printable_width_mm` ni `margin_mm` del perfil (solo
+     * ArticleTablePdf los usa): ajustar las columnas a lo que declare el perfil podría dejarlas fuera
+     * de la hoja (un perfil creado con los 277 mm por defecto del editor) o angostas.
+     */
+    const ANCHO_UTIL_PDF_MM = 200;
+
     /** Hoja A4 con margen de 5 mm: los valores con que nacen los dos perfiles. */
     const PAPEL_MM = 210;
     const IMPRIMIBLE_MM = 210;
@@ -61,7 +69,23 @@ class PdfColumnRemitoSetupHelper
      */
     public static function ancho_util_de_hoja_nueva()
     {
-        return PdfColumnProfileHelper::ancho_disponible_mm(self::IMPRIMIBLE_MM, self::MARGEN_MM);
+        return self::ANCHO_UTIL_PDF_MM;
+    }
+
+    /**
+     * Nombres (normalizados) con que se reconoce cada perfil, para no crear un duplicado si el
+     * cliente lo renombró a una variante obvia.
+     *
+     * @param  string $profile_name
+     * @return array<int, string>
+     */
+    public static function alias_de_perfil($profile_name)
+    {
+        if ($profile_name === self::SIN_PRECIOS) {
+            return ['sin precios', 'sin precio', 'remito sin precios', 'remito sin precio'];
+        }
+
+        return ['remito'];
     }
 
     /**
@@ -247,8 +271,11 @@ class PdfColumnRemitoSetupHelper
         DB::beginTransaction();
         try {
             foreach (self::nombres_de_perfiles() as $nombre) {
-                $existentes = $perfiles_de_venta->filter(function ($perfil) use ($nombre) {
-                    return PdfColumnProfileHelper::normalizar($perfil->name) === PdfColumnProfileHelper::normalizar($nombre);
+                $alias = self::alias_de_perfil($nombre);
+                $existentes = $perfiles_de_venta->filter(function ($perfil) use ($alias) {
+                    $normalizado = preg_replace('/\s+/', ' ', PdfColumnProfileHelper::normalizar($perfil->name));
+
+                    return in_array($normalizado, $alias, true);
                 });
 
                 if ($existentes->isEmpty()) {
@@ -292,7 +319,16 @@ class PdfColumnRemitoSetupHelper
         $resultados = [];
         $owners->chunkById(200, function ($lote) use (&$resultados, $dry_run) {
             foreach ($lote as $owner) {
-                $resultados[] = self::apply_for_owner($owner->id, $dry_run);
+                /** Un owner con datos raros no frena a los demás: se anota y se sigue. */
+                try {
+                    $resultados[] = self::apply_for_owner($owner->id, $dry_run);
+                } catch (\Throwable $e) {
+                    $resultados[] = [
+                        'user_id' => (int) $owner->id,
+                        'skipped_reason' => 'error: '.$e->getMessage(),
+                        'perfiles' => [],
+                    ];
+                }
             }
         });
 
@@ -348,7 +384,9 @@ class PdfColumnRemitoSetupHelper
     protected static function ajustar_perfil(PdfColumnProfile $perfil, $dry_run)
     {
         $margen = ($perfil->margin_mm === null || $perfil->margin_mm === '') ? self::MARGEN_MM : (int) $perfil->margin_mm;
-        $disponible = PdfColumnProfileHelper::ancho_disponible_mm($perfil->printable_width_mm, $margen);
+        $declarado = PdfColumnProfileHelper::ancho_disponible_mm($perfil->printable_width_mm, $margen);
+        /** Lo que se imprime es siempre 200 mm (ver ANCHO_UTIL_PDF_MM), diga lo que diga la hoja del perfil. */
+        $disponible = self::ANCHO_UTIL_PDF_MM;
         $visibles = PdfColumnProfileHelper::columnas_visibles($perfil);
         $suma = PdfColumnProfileHelper::suma_de_anchos_mm($perfil);
 
@@ -361,14 +399,21 @@ class PdfColumnRemitoSetupHelper
             'disponible' => $disponible,
         ];
 
-        if ($disponible <= 0 || ! count($visibles)) {
+        if (! count($visibles)) {
             $fila['accion'] = 'omitido';
 
             return $fila;
         }
 
+        /**
+         * Si la hoja declara menos de 200 mm útiles (por ejemplo A4 con 200 imprimibles, o un margen de
+         * 10), el ABM rechazaría guardar el perfil con columnas que sumen 200: se lleva la hoja a A4 con
+         * margen 5, que es lo que el PDF dibuja de todos modos. Si declara más, no se toca.
+         */
+        $hoja_corta = $declarado < self::ANCHO_UTIL_PDF_MM;
+
         $cambios = self::repartir_ancho($visibles, $disponible);
-        if (! count($cambios)) {
+        if (! count($cambios) && ! $hoja_corta) {
             return $fila;
         }
 
@@ -377,6 +422,13 @@ class PdfColumnRemitoSetupHelper
 
         if ($dry_run) {
             return $fila;
+        }
+
+        if ($hoja_corta) {
+            $perfil->paper_width_mm = max((int) $perfil->paper_width_mm, self::PAPEL_MM);
+            $perfil->printable_width_mm = self::IMPRIMIBLE_MM;
+            $perfil->margin_mm = self::MARGEN_MM;
+            $perfil->save();
         }
 
         foreach ($cambios as $option_id => $ancho) {
