@@ -131,28 +131,23 @@ class Casos_Borde_De_Cotizacion_Test extends EmpresaTestCase
     }
 
     /**
-     * CARACTERIZACIÓN. Venta en dólares sin `valor_dolar` pero con un artículo que YA está en
-     * dólares: no hay nada que convertir, la venta se guarda (201) con precio y costo en dólares y
-     * `sales.valor_dolar` en NULL. Costo 10, precio 15, ganancia 5 por unidad.
+     * Venta en dólares sin `valor_dolar`, aunque el artículo YA esté en dólares y no haya nada que
+     * convertir: se rechaza (422). Antes se guardaba (201) con `sales.valor_dolar` en NULL; desde la
+     * misión corregir-ventas-en-dolares (30/9/2026) una venta en dólares sin cotización no se guarda:
+     * no se puede facturar (ARCA recibe `Moneda_cotiz` null) ni cobrar en pesos contra su cuenta, y
+     * un renglón en pesos agregado después dividiría por cero.
      *
      * @group ventas-en-dolares
      * @test
      */
-    public function venta_en_dolares_sin_valor_dolar_y_con_articulo_en_dolares_se_guarda_con_valor_dolar_null()
+    public function venta_en_dolares_sin_valor_dolar_se_rechaza_aunque_el_articulo_ya_este_en_dolares()
     {
         $items = [$this->item($this->en_dolares, 2, 15)];
 
-        $venta = $this->guardar_venta($this->payload_venta(2, null, $items));
+        list($response, $creadas) = $this->postear_crudo($this->payload_venta(2, null, $items));
 
-        $this->assertNull($venta->valor_dolar, 'La clave no viajo: valor_dolar queda en NULL.');
-
-        $p = $this->pivot_de($venta, $this->en_dolares);
-
-        $this->assertEqualsWithDelta(15, (float) $p->price, self::DELTA);
-        $this->assertEqualsWithDelta(10, (float) $p->cost, self::DELTA);
-        $this->assertEqualsWithDelta(10, (float) $p->ganancia, self::DELTA);
-        $this->assertEqualsWithDelta(30, (float) $venta->total, self::DELTA);
-        $this->assertEqualsWithDelta(20, (float) $venta->total_cost, self::DELTA);
+        $response->assertStatus(422);
+        $this->assertEquals(0, $creadas, 'Un rechazo no puede dejar una venta a medias.');
     }
 
     /**

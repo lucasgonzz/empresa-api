@@ -441,7 +441,9 @@ class AfipItemCalculator
          */
         $total = (float) $sale->total;
 
-        if ($sale->moneda_id == 2 && $sale->valor_dolar) {
+        // `(float) > 0` y no truthy: `sales.valor_dolar` es DECIMAL y Eloquent devuelve '0.00', que en PHP
+        // es truthy (solo '0' y '' son falsy). Con el INT de antes, un 0 era falso y no multiplicaba.
+        if ($sale->moneda_id == 2 && (float) $sale->valor_dolar > 0) {
             $total *= (float) $sale->valor_dolar;
         }
 
@@ -497,7 +499,8 @@ class AfipItemCalculator
          * el total en esa moneda), mientras que el bruto contra el que se compara ya viene cotizado
          * a pesos por `get_article_price_raw()`.
          */
-        if ($sale->moneda_id == 2 && $sale->valor_dolar) {
+        // `(float) > 0`: ver el comentario del cotizado del total (un '0.00' DECIMAL es truthy).
+        if ($sale->moneda_id == 2 && (float) $sale->valor_dolar > 0) {
             $descuento *= (float) $sale->valor_dolar;
         }
 
@@ -739,9 +742,10 @@ class AfipItemCalculator
 
         if (
             $this->afip_helper->sale->moneda_id == 2
-            && $this->afip_helper->sale->valor_dolar
+            && (float) $this->afip_helper->sale->valor_dolar > 0
         ) {
-            $price *= $this->afip_helper->sale->valor_dolar;
+            // (float): `sales.valor_dolar` es DECIMAL y Eloquent lo devuelve como string.
+            $price *= (float) $this->afip_helper->sale->valor_dolar;
         }
 
         return $price;
