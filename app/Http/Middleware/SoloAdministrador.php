@@ -7,7 +7,7 @@ use Closure;
 use Illuminate\Http\Request;
 
 /**
- * Deja pasar SOLO al dueño de la cuenta (o a un empleado con admin_access / acceso maestro) a las
+ * Deja pasar SOLO al dueño de la cuenta (o a un empleado con admin_access) a las
  * rutas que ESCRIBEN la configuración general y la configuración online. Pedido de Lucas del
  * 30/9/2026, misión config-solo-administrador.
  *

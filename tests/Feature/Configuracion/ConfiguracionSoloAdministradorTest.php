@@ -199,4 +199,23 @@ class ConfiguracionSoloAdministradorTest extends TestCase
         $response->assertStatus(200);
         $this->assertEquals(1, $this->empleado->fresh()->dark_mode);
     }
+
+    /**
+     * `user/set-impresora` y `user/set-chat-ia-preferencias` tienen dos segmentos, igual que el
+     * comodín `user/{id}` que ahora lleva el gate: si alguna quedara registrada DESPUÉS de él, el
+     * PUT caería en UserController@update y un empleado raso recibiría 403. Esta es la prueba de
+     * que el orden de registro de las rutas sigue siendo el correcto.
+     *
+     * @test
+     * @group configuracion-solo-administrador
+     */
+    public function las_preferencias_de_dos_segmentos_no_caen_en_el_comodin_gateado()
+    {
+        $this->actingAs($this->empleado, 'web');
+
+        $this->putJson('api/user/set-impresora', ['impresora' => 'Impresora de prueba'])
+            ->assertStatus(200);
+
+        $this->assertNotEquals(403, $this->putJson('api/user/set-chat-ia-preferencias', [])->status());
+    }
 }

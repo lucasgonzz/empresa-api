@@ -80,7 +80,7 @@ class Kernel extends HttpKernel
         'print.agent.token' => \App\Http\Middleware\PrintAgentToken::class,
         /* Solo el dueño (o admin_access / acceso maestro) entra al asistente de IA. */
         'solo_el_dueno_ia' => \App\Http\Middleware\SoloElDuenoIa::class,
-        /* Solo el dueño (o admin_access / acceso maestro) escribe la configuración general y online. */
+        /* Solo el dueño (o un empleado con admin_access) escribe la configuración general y online. */
         'solo_administrador' => \App\Http\Middleware\SoloAdministrador::class,
     ];
 }
