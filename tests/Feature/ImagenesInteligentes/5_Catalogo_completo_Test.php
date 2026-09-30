@@ -352,6 +352,57 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
     }
 
     /**
+     * Reanudada, la asignación sigue desde donde quedó y el registro de procesos en segundo plano
+     * lo muestra así: cuenta la corrida entera (total y ya procesados), no "0 de lo que falta". Antes
+     * nacía con `total = pendientes` y `procesados = 0`: el modal decía "37 de 2.462 · 1 %" mientras
+     * Alertas decía "1.629 de 4.054 · 40 %" (Doblep Herrajes, 30/9/2026).
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function al_reanudarla_el_registro_visible_sigue_desde_lo_ya_procesado()
+    {
+        $this->escenario();
+
+        $this->actuar_como($this->owner, true);
+
+        Queue::fake();
+
+        $run = ImageAssignmentRun::find($this->postJson('api/image-assignment-runs/catalogo')->json('model.id'));
+        $total = (int) $run->total_articulos;
+
+        $this->assertGreaterThan(2, $total);
+
+        // Quedaron hechos dos artículos antes de que se cortara.
+        $hechos = ImageAssignmentItem::where('run_id', $run->id)->orderBy('orden')->limit(2)->get();
+
+        foreach ($hechos as $item) {
+            DB::table('image_assignment_items')->where('id', $item->id)->update([
+                'status'       => ImageAssignmentItem::STATUS_NO_ASIGNADA,
+                'procesado_at' => Carbon::now(),
+            ]);
+        }
+
+        DB::table('image_assignment_runs')->where('id', $run->id)->update(['procesados' => 2]);
+
+        $this->postJson('api/image-assignment-runs/'.$run->id.'/detener')->assertStatus(200);
+
+        Queue::fake();
+
+        $this->postJson('api/image-assignment-runs/'.$run->id.'/reanudar')->assertStatus(200);
+
+        $run->refresh();
+        $proceso = BackgroundProcess::find($run->background_process_id);
+
+        $this->assertSame('pendiente', $proceso->status, 'Sigue esperando al procesador: lo ya procesado no lo saca de pendiente.');
+        $this->assertSame($total, (int) $proceso->total, 'El registro visible cuenta la corrida entera, no solo lo que falta.');
+        $this->assertSame(2, (int) $proceso->procesados, 'Lo ya procesado no vuelve a cero.');
+        $this->assertSame((int) floor(2 * 100 / $total), (int) $proceso->porcentaje);
+        $this->assertStringContainsString('reanudada, faltaban '.($total - 2), (string) $proceso->detalle);
+        $this->assertSame(2, (int) $run->procesados, 'La corrida conserva su avance.');
+    }
+
+    /**
      * Plan §12.1, extra 1: en "todo el catálogo", un artículo que mientras esperaba su turno ya
      * consiguió imagen (se la cargaron a mano, o se la asignó otra asignación) no se busca: 0
      * búsquedas, no asignada con `ya_tenia_imagen`, y queda con su única imagen. En una de selección

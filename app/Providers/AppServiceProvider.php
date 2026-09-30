@@ -79,5 +79,13 @@ class AppServiceProvider extends ServiceProvider
         User::observe(UserEtiquetaMedidaObserver::class);
         /* Lista de precios nueva -> su diseño de etiquetas de góndola, venga del camino que venga. */
         PriceType::observe(PriceTypeObserver::class);
+
+        /*
+         * Auditoría de cambios (misión auditoria-de-cambios, 30/9/2026): un listener global de los
+         * eventos de Eloquent deja una fila en `audit_logs` por cada cambio de cualquier modelo.
+         * Se registra acá, en una sola línea, y no en cada modelo: así cubre también a los modelos
+         * que se agreguen después. Qué se excluye y por qué: config/audit_log.php.
+         */
+        \App\Services\AuditLog\AuditLogRecorder::register();
     }
 }
