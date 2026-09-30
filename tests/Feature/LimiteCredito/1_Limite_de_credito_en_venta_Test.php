@@ -460,7 +460,7 @@ class Limite_de_credito_en_venta_Test extends EmpresaTestCase
         $this->fijar_limite($client, 1, 100);
         $this->fijar_limite($client, 2, null);
 
-        $venta_dolares = $this->postear_venta($this->payload_venta($client->id, 500000, ['moneda_id' => 2]));
+        $venta_dolares = $this->postear_venta($this->payload_venta($client->id, 500000, ['moneda_id' => 2, 'valor_dolar' => 1200]));
 
         $venta_dolares->assertStatus(201, 'El límite de pesos no tiene que tocar una venta en dólares.');
 
