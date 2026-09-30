@@ -240,11 +240,18 @@ return [
      *   DeepSeek Pro razona (thinking enabled) antes de contestar y tarda más que Sonnet sin razonar.
      *
      * Los techos de salida (4000 artículos / 2000 clientes y proveedores) siguen como constantes de
-     * cada analizador; con Pro los sube ProveedorIaHelper::agregar_thinking() al techo de profundo.
+     * cada analizador para las llamadas sin razonamiento.
+     *
+     * - `max_tokens_con_razonamiento`: el techo cuando el thinking va prendido (DeepSeek Pro). El
+     *   razonamiento puede contar contra max_tokens y el column_mapping de una planilla ancha es
+     *   largo: con menos, Pro puede cortar el JSON a la mitad (stop_reason = max_tokens), y eso se
+     *   le muestra al usuario como "no se pudo interpretar la planilla". No cambia el costo: se paga
+     *   por token generado, no por el techo declarado.
      */
     'importacion_excel_ia' => [
-        'model_anthropic' => env('IMPORTACION_EXCEL_IA_MODEL_ANTHROPIC', 'claude-sonnet-4-5'),
-        'timeout'         => (int) env('IMPORTACION_EXCEL_IA_TIMEOUT', 120),
+        'model_anthropic'             => env('IMPORTACION_EXCEL_IA_MODEL_ANTHROPIC', 'claude-sonnet-4-5'),
+        'timeout'                     => (int) env('IMPORTACION_EXCEL_IA_TIMEOUT', 120),
+        'max_tokens_con_razonamiento' => (int) env('IMPORTACION_EXCEL_IA_MAX_TOKENS_CON_RAZONAMIENTO', 16000),
     ],
 
     /**

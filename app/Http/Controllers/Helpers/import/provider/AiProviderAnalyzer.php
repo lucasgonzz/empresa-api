@@ -801,6 +801,21 @@ PROMPT;
         ], $ia['thinking']);
 
         /*
+         * 🔴 Con el thinking PRENDIDO (DeepSeek Pro, el default de la importación) el techo de salida
+         * es `services.importacion_excel_ia.max_tokens_con_razonamiento` (16000 por defecto), no el
+         * de profundo del asistente. El razonamiento puede contar contra max_tokens, y el column_mapping
+         * de una planilla ancha es largo: con 8000 un Pro que piensa mucho puede cortar el JSON a la
+         * mitad. Sin thinking (Anthropic, Flash) el techo es el de siempre de este analizador.
+         */
+        if (is_array($ia['thinking']) && isset($ia['thinking']['type']) && (string) $ia['thinking']['type'] === 'enabled') {
+            $techo_con_razonamiento = (int) config('services.importacion_excel_ia.max_tokens_con_razonamiento', 16000);
+
+            if ($techo_con_razonamiento > 0) {
+                $payload['max_tokens'] = $techo_con_razonamiento;
+            }
+        }
+
+        /*
          * El timeout y el corte de conexión llegan como ConnectionException, que
          * extiende \Exception y NO \RuntimeException (verificado). Sin este catch caían en el
          * \Throwable genérico del job y el usuario leía "ocurrió un error inesperado" para algo
@@ -873,6 +888,24 @@ PROMPT;
          * `thinking` y no tiene `text`: leerlo daba null y la importación decía "no pudo
          * interpretar esta planilla" con una respuesta perfectamente buena.
          */
+        /*
+         * Respuesta CORTADA por el techo de salida (`stop_reason = max_tokens`): lo que vino es un JSON
+         * a medias. Se trata como "no se pudo interpretar" (el mismo mensaje de siempre), pero con un
+         * warning claro en el log, porque la causa es el techo y no la planilla: si se repite, hay que
+         * subir IMPORTACION_EXCEL_IA_MAX_TOKENS_CON_RAZONAMIENTO. La llamada ya quedó registrada arriba
+         * (se pagó igual).
+         */
+        if (is_array($response_data) && isset($response_data['stop_reason']) && (string) $response_data['stop_reason'] === 'max_tokens') {
+            Log::warning('AiProviderAnalyzer: la respuesta de la IA se cortó por el techo de salida (stop_reason = max_tokens)', [
+                'proveedor'     => $proveedor,
+                'modelo'        => $modelo,
+                'max_tokens'    => isset($payload['max_tokens']) ? (int) $payload['max_tokens'] : null,
+                'output_tokens' => isset($response_data['usage']['output_tokens']) ? (int) $response_data['usage']['output_tokens'] : null,
+            ]);
+
+            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
+        }
+
         $text = ModelosIaHelper::texto_de_respuesta($response_data);
 
         if (is_null($text)) {

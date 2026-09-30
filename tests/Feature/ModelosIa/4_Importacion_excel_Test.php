@@ -53,6 +53,7 @@ class Importacion_excel_Test extends TestCase
             'services.deepseek.api_key'                     => 'clave-deepseek-de-prueba',
             'services.deepseek.model_profundo'              => 'deepseek-pro-test',
             'services.deepseek.max_tokens_profundo'         => 8000,
+            'services.importacion_excel_ia.max_tokens_con_razonamiento' => 16000,
             'services.importacion_excel_ia.model_anthropic' => 'claude-sonnet-legado-test',
         ]);
 
@@ -109,8 +110,14 @@ class Importacion_excel_Test extends TestCase
 
         Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
 
-        Http::fake(function ($request) use ($test, $body, $status) {
-            $test->enviados[] = ['url' => $request->url(), 'headers' => $request->headers(), 'body' => $request->data()];
+        Http::fake(function ($request, $options) use ($test, $body, $status) {
+            $test->enviados[] = [
+                'url'     => $request->url(),
+                'headers' => $request->headers(),
+                'body'    => $request->data(),
+                /* Las opciones de Guzzle del request: de acá sale el timeout que se configuró. */
+                'timeout' => isset($options['timeout']) ? $options['timeout'] : null,
+            ];
 
             return Http::response($body, $status);
         });
@@ -174,7 +181,7 @@ class Importacion_excel_Test extends TestCase
             $this->assertSame(['clave-deepseek-de-prueba'], $enviado['headers']['x-api-key'], $nombre);
             $this->assertSame('deepseek-pro-test', $enviado['body']['model'], $nombre . ': el default de la importación es Pro.');
             $this->assertSame('enabled', $enviado['body']['thinking']['type'], $nombre);
-            $this->assertSame(8000, $enviado['body']['max_tokens'], $nombre . ': con thinking el techo sube al de profundo.');
+            $this->assertSame(16000, $enviado['body']['max_tokens'], $nombre . ': con thinking el techo es max_tokens_con_razonamiento, no el de profundo del asistente.');
 
             $fila = AiTokenUsage::where('user_id', $this->dueno->id)->where('proceso', $proceso)->orderBy('id', 'desc')->first();
 
@@ -307,5 +314,68 @@ class Importacion_excel_Test extends TestCase
 
         $this->assertSame('Recomendación de Pro (prueba).', $resultado['explicacion'], 'Si cayera al fallback heurístico, la explicación sería otra.');
         $this->assertSame('deepseek-pro-test', $this->enviados[0]['body']['model']);
+    }
+
+    /**
+     * Una respuesta cortada por el techo (`stop_reason = max_tokens`) es "no se pudo interpretar" en
+     * los tres, aunque el texto cortado se pudiera leer; la llamada igual queda registrada (se pagó).
+     *
+     * @group import
+     * @test
+     */
+    public function una_respuesta_cortada_por_el_techo_es_ilegible_y_queda_registrada()
+    {
+        foreach ($this->analizadores() as $nombre => $par) {
+            list($analizador, $proceso) = $par;
+
+            $respuesta = $this->respuesta_con_thinking_primero('{"column_mapping":{"A":"nom');
+            $respuesta['stop_reason'] = 'max_tokens';
+
+            $this->falsear($respuesta);
+
+            $this->assertSame(AiExcelAnalyzer::MENSAJE_IA_RESPUESTA_ILEGIBLE, $this->mensaje_de_error($analizador), $nombre);
+
+            $this->assertSame(1, AiTokenUsage::where('user_id', $this->dueno->id)->where('proceso', $proceso)->count(), $nombre . ': la llamada cortada igual se pagó.');
+        }
+
+        /* Con stop_reason end_turn, la misma forma se lee normal. */
+        list($analizador) = $this->analizadores()['articulos'];
+
+        $respuesta = $this->respuesta_con_thinking_primero('{"column_mapping":{}}');
+        $respuesta['stop_reason'] = 'end_turn';
+
+        $this->falsear($respuesta);
+
+        $this->assertSame('{"column_mapping":{}}', $analizador->llamar('Prompt de prueba'));
+    }
+
+    /**
+     * Los tres usan el timeout de `services.importacion_excel_ia.timeout` (antes era 60 fijo).
+     *
+     * @group import
+     * @test
+     */
+    public function los_tres_usan_el_timeout_de_config()
+    {
+        config(['services.importacion_excel_ia.timeout' => 7]);
+
+        foreach ($this->analizadores() as $nombre => $par) {
+            $this->falsear($this->respuesta_con_thinking_primero('ok'));
+
+            $par[0]->llamar('Prompt de prueba');
+
+            $this->assertEquals(7, $this->enviados[0]['timeout'], $nombre . ': el timeout sale de config.');
+        }
+
+        /* Y el fallback legado también. */
+        config(['services.deepseek.api_key' => null, 'services.importacion_excel_ia.timeout' => 9]);
+
+        list($analizador) = $this->analizadores()['clientes'];
+
+        $this->falsear(['content' => [['type' => 'text', 'text' => 'ok']]]);
+
+        $analizador->llamar('Prompt de prueba');
+
+        $this->assertEquals(9, $this->enviados[0]['timeout']);
     }
 }
