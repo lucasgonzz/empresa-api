@@ -53,7 +53,14 @@ class ComboController extends Controller
      */
     public function store(Request $request) {
 
-        $rechazo = $this->rechazo_del_descuento($request->descuento_tipo, $request->descuento_valor);
+        /*
+         * El descuento se valida SOLO si el combo nace calculado (F4): con el check apagado el modal
+         * no muestra esos campos pero el SPA igual los manda, y rechazar un valor que la persona ni
+         * ve sería un 422 sin explicación. Con el check apagado se ignoran sin error.
+         */
+        $nace_calculado = ComboCalculadoEsquemaHelper::disponible() && (bool) $request->calcular_desde_articulos;
+
+        $rechazo = $nace_calculado ? $this->rechazo_del_descuento($request->descuento_tipo, $request->descuento_valor) : null;
 
         if (!is_null($rechazo)) {
             return response()->json(['message' => $rechazo], 422);
@@ -117,7 +124,19 @@ class ComboController extends Controller
 
         $disponible = ComboCalculadoEsquemaHelper::disponible();
 
-        if ($disponible && ($request->has('descuento_tipo') || $request->has('descuento_valor'))) {
+        /* ¿El combo queda calculado después de este guardado? La clave del request manda; sin ella, lo que ya tenía. */
+        $calculado = $disponible && (
+            $request->has('calcular_desde_articulos')
+                ? (bool) $request->calcular_desde_articulos
+                : (bool) $model->calcular_desde_articulos
+        );
+
+        /*
+         * El descuento se valida SOLO si el combo queda calculado (F4): el SPA manda siempre esos
+         * campos y con el check apagado están ocultos; rechazarlos sería un 422 por algo que la
+         * persona no ve. Con el check apagado se ignoran sin error (y más abajo no se escriben).
+         */
+        if ($calculado && ($request->has('descuento_tipo') || $request->has('descuento_valor'))) {
 
             $rechazo = $this->rechazo_del_descuento(
                 $request->has('descuento_tipo') ? $request->descuento_tipo : $model->descuento_tipo,
@@ -128,13 +147,6 @@ class ComboController extends Controller
                 return response()->json(['message' => $rechazo], 422);
             }
         }
-
-        /* ¿El combo queda calculado después de este guardado? La clave del request manda; sin ella, lo que ya tenía. */
-        $calculado = $disponible && (
-            $request->has('calcular_desde_articulos')
-                ? (bool) $request->calcular_desde_articulos
-                : (bool) $model->calcular_desde_articulos
-        );
 
         /* Mismo rechazo que el alta: un combo calculado sin artículos no se guarda (ver store()). */
         $rechazo_sin_articulos = $this->rechazo_del_calculado_sin_articulos($calculado, $request->articles);
@@ -173,7 +185,8 @@ class ComboController extends Controller
                     $model->calcular_desde_articulos = $request->calcular_desde_articulos ? 1 : 0;
                 }
 
-                if ($request->has('descuento_tipo') || $request->has('descuento_valor')) {
+                /* Con el check apagado el descuento no se toca (ni se valida ni se pisa): ver arriba. */
+                if ($calculado && ($request->has('descuento_tipo') || $request->has('descuento_valor'))) {
 
                     $descuento = ComboCalculadoHelper::normalizar_descuento(
                         $request->has('descuento_tipo') ? $request->descuento_tipo : $model->descuento_tipo,

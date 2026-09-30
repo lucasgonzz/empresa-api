@@ -273,4 +273,44 @@ class Descuento_del_combo_Test extends ComboCalculadoTestCase
             ComboCalculadoHelper::normalizar_descuento(null, null)
         );
     }
+
+    /**
+     * F4 (a): se valida el valor YA REDONDEADO a 2 decimales. Un 99,996 % pasaba el "menor a 100",
+     * se guardaba como 100,00 y el cálculo lo ignoraba; un 99,994 % se guarda como 99,99 y es válido.
+     *
+     * @test
+     */
+    public function un_porcentaje_que_se_redondea_a_cien_se_rechaza()
+    {
+        $this->assertNotNull(ComboCalculadoHelper::validar_descuento('porcentaje', 99.996));
+        $this->assertNotNull(ComboCalculadoHelper::validar_descuento('porcentaje', '99.999'));
+        $this->assertNotNull(ComboCalculadoHelper::validar_descuento('porcentaje', 99.995));
+
+        $this->assertNull(ComboCalculadoHelper::validar_descuento('porcentaje', 99.994));
+        $this->assertNull(ComboCalculadoHelper::validar_descuento('porcentaje', 99.99));
+
+        // Y lo que se valida es lo que se guarda: 99,994 queda en 99,99, que el cálculo SÍ aplica.
+        $normalizado = ComboCalculadoHelper::normalizar_descuento('porcentaje', 99.994);
+
+        $this->assertSame(99.99, $normalizado['descuento_valor']);
+        $this->assertEqualsWithDelta(0.1, ComboCalculadoHelper::aplicar_descuento(1000, 'porcentaje', $normalizado['descuento_valor']), 0.0001);
+    }
+
+    /**
+     * F4 (b): el monto tiene tope en lo que entra en DECIMAL(12,2) (9999999999,99): más es un 422
+     * legible y no un 500 de la base.
+     *
+     * @test
+     */
+    public function un_monto_que_no_entra_en_la_columna_se_rechaza()
+    {
+        $this->assertNull(ComboCalculadoHelper::validar_descuento('monto', 9999999999.99));
+        $this->assertNotNull(ComboCalculadoHelper::validar_descuento('monto', 10000000000));
+        $this->assertNotNull(ComboCalculadoHelper::validar_descuento('monto', '99999999999999'));
+
+        // Defensivo: aunque alguien se saltee la validación, el INSERT no recibe un valor fuera de rango.
+        $normalizado = ComboCalculadoHelper::normalizar_descuento('monto', 99999999999999);
+
+        $this->assertSame(9999999999.99, $normalizado['descuento_valor']);
+    }
 }

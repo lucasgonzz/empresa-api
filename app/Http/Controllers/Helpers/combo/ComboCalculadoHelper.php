@@ -100,6 +100,9 @@ class ComboCalculadoHelper {
     const DESCUENTO_PORCENTAJE = 'porcentaje';
     const DESCUENTO_MONTO      = 'monto';
 
+    /** Lo más grande que entra en `combos.descuento_valor` (DECIMAL(12,2)). */
+    const DESCUENTO_MAXIMO = 9999999999.99;
+
     /** Ids por consulta en los `whereIn` (un recálculo masivo puede traer decenas de miles). */
     const TANDA_DE_IDS = 1000;
 
@@ -149,8 +152,21 @@ class ComboCalculadoHelper {
             return 'El valor del descuento del combo tiene que ser un número mayor o igual a 0.';
         }
 
-        if ($tipo === self::DESCUENTO_PORCENTAJE && (float) $valor >= 100) {
+        /*
+         * 🔴 Se valida el valor YA REDONDEADO a 2 decimales (F4), que es el que `normalizar_descuento()`
+         * guarda: un 99,996 % pasaba el "menor a 100", se guardaba como 100,00 y `aplicar_descuento()`
+         * lo ignoraba (un 100 % no es un descuento): la persona creía tener un descuento que el
+         * cálculo no aplicaba.
+         */
+        $redondeado = round((float) $valor, 2);
+
+        if ($tipo === self::DESCUENTO_PORCENTAJE && $redondeado >= 100) {
             return 'El descuento en porcentaje del combo tiene que ser menor a 100.';
+        }
+
+        /* `combos.descuento_valor` es DECIMAL(12,2): un monto mayor sería un error 500 de la base, no un 422. */
+        if ($redondeado > self::DESCUENTO_MAXIMO) {
+            return 'El valor del descuento del combo no puede superar ' . number_format(self::DESCUENTO_MAXIMO, 2, ',', '.') . '.';
         }
 
         return null;
@@ -173,6 +189,9 @@ class ComboCalculadoHelper {
         }
 
         $valor = (is_numeric($valor) && (float) $valor > 0) ? round((float) $valor, 2) : 0.0;
+
+        // Defensivo: un valor fuera de la columna (lo rechaza validar_descuento) no puede llegar al INSERT.
+        $valor = min($valor, self::DESCUENTO_MAXIMO);
 
         return ['descuento_tipo' => $tipo, 'descuento_valor' => $valor];
     }

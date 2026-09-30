@@ -750,4 +750,79 @@ class Combo_calculado_en_el_abm_Test extends ComboCalculadoTestCase
             return strpos($mensaje, 'quedó con precio 0') !== false;
         })->once();
     }
+
+    /**
+     * F4 (b) por el endpoint: un monto enorme con el check prendido responde 422 (antes, 500).
+     *
+     * @test
+     */
+    public function un_monto_de_descuento_que_no_entra_en_la_columna_responde_422_y_no_500()
+    {
+        $this->con_listas(0);
+
+        $a = $this->nuevo_articulo(['costo_real' => 100, 'final_price' => 250]);
+
+        $this->postJson('api/combo', $this->payload([[$a, 1]], [
+            'calcular_desde_articulos' => 1,
+            'descuento_tipo'           => 'monto',
+            'descuento_valor'          => 99999999999999,
+        ]))->assertStatus(422);
+
+        $this->postJson('api/combo', $this->payload([[$a, 1]], [
+            'calcular_desde_articulos' => 1,
+            'descuento_tipo'           => 'porcentaje',
+            'descuento_valor'          => 99.998,
+        ]))->assertStatus(422);
+    }
+
+    /**
+     * F4 (c): con el check APAGADO el descuento que manda el SPA (los campos están ocultos pero viajan)
+     * se ignora sin error, en el alta y en la edición, y en la edición no pisa el que el combo tenía.
+     *
+     * @test
+     */
+    public function con_el_check_apagado_el_descuento_se_ignora_sin_error_y_no_se_pisa()
+    {
+        $this->con_listas(0);
+
+        $a = $this->nuevo_articulo(['costo_real' => 100, 'final_price' => 250]);
+
+        // Alta manual con un descuento inválido que el modal no muestra: 201 y sin descuento guardado.
+        $respuesta = $this->postJson('api/combo', $this->payload([[$a, 1]], [
+            'cost'            => 5,
+            'price'           => 9,
+            'descuento_tipo'  => 'porcentaje',
+            'descuento_valor' => 150,
+        ]));
+
+        $respuesta->assertStatus(201);
+
+        $id = $respuesta->json('model.id');
+
+        $this->assertNull($this->fila($id)->descuento_tipo);
+        $this->assertSame(0.0, (float) $this->fila($id)->descuento_valor);
+
+        // Edición: un combo calculado con 10 % se pasa a manual mandando un descuento inválido.
+        $combo = $this->combo_calculado([[$a, 1]], ['descuento_tipo' => 'porcentaje', 'descuento_valor' => 10]);
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->putJson('api/combo/' . $combo->id, $this->payload([[$a, 1]], [
+            'calcular_desde_articulos' => 0,
+            'cost'                     => 5,
+            'price'                    => 9,
+            'descuento_tipo'           => 'porcentaje',
+            'descuento_valor'          => 150,
+        ]))->assertStatus(200);
+
+        $this->assertSame('porcentaje', $this->fila($combo)->descuento_tipo, 'No se pisa el descuento con el check apagado.');
+        $this->assertSame(10.0, (float) $this->fila($combo)->descuento_valor);
+        $this->assertSame(0, (int) $this->fila($combo)->calcular_desde_articulos);
+
+        // Y con el check prendido el mismo descuento inválido sí se rechaza.
+        $this->putJson('api/combo/' . $combo->id, $this->payload([[$a, 1]], [
+            'calcular_desde_articulos' => 1,
+            'descuento_tipo'           => 'porcentaje',
+            'descuento_valor'          => 150,
+        ]))->assertStatus(422);
+    }
 }

@@ -198,11 +198,20 @@ class ComboAltaHelper {
             if (ComboCalculadoEsquemaHelper::disponible()) {
 
                 $calcular  = (bool) $valor('calcular_desde_articulos');
-                $descuento = ComboCalculadoHelper::normalizar_descuento($valor('descuento_tipo'), $valor('descuento_valor'));
 
                 $datos['calcular_desde_articulos'] = $calcular ? 1 : 0;
-                $datos['descuento_tipo']           = $descuento['descuento_tipo'];
-                $datos['descuento_valor']          = $descuento['descuento_valor'];
+
+                /*
+                 * El descuento solo se guarda si el combo nace calculado (F4): con el check apagado
+                 * el modal lo esconde pero el SPA lo manda igual, y es un valor que la persona no ve.
+                 */
+                if ($calcular) {
+
+                    $descuento = ComboCalculadoHelper::normalizar_descuento($valor('descuento_tipo'), $valor('descuento_valor'));
+
+                    $datos['descuento_tipo']  = $descuento['descuento_tipo'];
+                    $datos['descuento_valor'] = $descuento['descuento_valor'];
+                }
 
                 /*
                  * Un combo calculado nace SIN el costo ni el precio del request: los pone el
