@@ -244,13 +244,15 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
      *
      * La causa: ese día apareció la tabla número 16 con `price_type_id` (`article_ticket_designs`),
      * y el helper cuenta sólo TOPE_DE_TABLAS_A_CONTAR (15), ordenadas por la estimación de filas de
-     * InnoDB (`information_schema.tables.table_rows`, cacheada 86400 s). `clients` y `sales` eran
-     * las dos más grandes y estaban pegadas: cuando la estimación de `clients` quedó por encima de
-     * la de `sales`, `clients` quedó 16ª, no se contó, y el aviso dejó de decir "3 clientes".
+     * InnoDB (`information_schema.tables.table_rows`, que MySQL cachea 86400 s). `clients` y
+     * `sales` eran las dos más grandes y estaban pegadas: cuando la estimación de `clients` quedó
+     * por encima de la de `sales`, `clients` quedó 16ª, no se contó, y el aviso dejó de decir
+     * "3 clientes".
      *
-     * Este test no depende de la base: arma a mano las 16 candidatas reales, con `clients` como la
-     * de MÁS filas estimadas —el escenario que rompía—, y le pregunta al orden directamente. No
-     * crea filas.
+     * Este test no depende de los DATOS de la base ni de las estimaciones de MySQL: arma a mano las
+     * 16 candidatas reales, con `clients` como la de MÁS filas estimadas —el escenario que rompía—,
+     * y le pregunta al orden directamente. Lo único que lee es el catálogo, que etiqueta_de_tabla()
+     * arma desde el esquema y las rutas. No crea filas.
      *
      * @test
      */
@@ -306,6 +308,28 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
 
         $this->assertCount(count($candidatas), $orden, 'Ordenar no puede agregar ni sacar tablas');
 
+        // El orden completo, fijo: nombrables por filas, después innombrables por filas, y los
+        // empates por nombre de tabla. Atrapa también un orden invertido adentro de un grupo o un
+        // criterio de filas que desaparezca.
+        $this->assertSame([
+            'category_price_type_ranges',
+            'sales',
+            'clients',
+            'article_price_type_monedas',
+            'article_prices',
+            'category_price_type',
+            'movimiento_puntos',
+            'offer_suggestion_lines',
+            'price_type_sistema_de_puntos',
+            'price_type_sub_category',
+            'price_type_surchages',
+            'article_ticket_designs',
+            'budgets',
+            'company_performance_price_type',
+            'article_price_type',
+            'price_change_price_type',
+        ], $orden, 'El orden para contar no es el esperado');
+
         $contadas = array_slice($orden, 0, Catalogo::TOPE_DE_TABLAS_A_CONTAR);
 
         $this->assertContains('clients', $contadas, 'clients tiene que estar entre las primeras ' . Catalogo::TOPE_DE_TABLAS_A_CONTAR . ' tablas que se cuentan aunque sea la de más filas estimadas. Orden: ' . implode(', ', $orden));
@@ -315,8 +339,9 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
             $this->assertFalse($afuera['nombrable'], 'El tope dejó afuera una tabla con nombre en el aviso: ' . $afuera['tabla'] . '. Orden: ' . implode(', ', $orden));
         }
 
-        // Determinismo: el mismo conjunto, entrando en otro orden, sale igual. usort no es estable
-        // en PHP 7.4 y hay nueve tablas con 0 filas y dos con 40.
+        // Determinismo: el mismo conjunto, entrando en otro orden, sale igual. El orden de entrada
+        // real varía entre corridas (la consulta a information_schema no tiene ORDER BY), y hay
+        // nueve tablas con 0 filas y dos con 40.
         $invertidas = array_reverse($candidatas);
 
         $this->assertSame($orden, array_column($ordenar_para_contar->invoke(null, $invertidas), 'tabla'), 'El orden cambió al invertir la entrada');
@@ -329,5 +354,52 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
         mt_srand();
 
         $this->assertSame($orden, array_column($ordenar_para_contar->invoke(null, $mezcladas), 'tabla'), 'El orden cambió al mezclar la entrada');
+    }
+
+    /**
+     * El test de arriba prueba ordenar_para_contar() con una entrada armada a mano; éste prueba que
+     * el camino real la use. Si tablas_que_referencian() vuelve a ordenar sólo por filas, o calcula
+     * mal `nombrable`, el de arriba sigue verde y éste no.
+     *
+     * Lee `information_schema` de la base del slot (el setUp ya llamó a Catalogo::olvidar(), así
+     * que no hay caché de otra corrida) y no crea filas. Es determinista aunque dependa del
+     * esquema: con `price_type_id` hay tres tablas nombrables, así que `clients` cae tercera o
+     * antes, estime lo que estime MySQL.
+     *
+     * @test
+     */
+    public function el_camino_real_cuenta_primero_las_tablas_con_nombre()
+    {
+        $tablas_que_referencian = new \ReflectionMethod(Catalogo::class, 'tablas_que_referencian');
+        $tablas_que_referencian->setAccessible(true);
+
+        $etiqueta_de_tabla = new \ReflectionMethod(Catalogo::class, 'etiqueta_de_tabla');
+        $etiqueta_de_tabla->setAccessible(true);
+
+        $candidatas = $tablas_que_referencian->invoke(null, 'price_type_id');
+
+        $orden = array_column($candidatas, 'tabla');
+
+        $this->assertContains('clients', $orden, 'clients tiene columna price_type_id y tenía que aparecer entre las candidatas');
+
+        $vista_una_innombrable = false;
+
+        foreach ($candidatas as $posicion => $candidata) {
+
+            $esperado = $etiqueta_de_tabla->invoke(null, $candidata['tabla']) !== Catalogo::ETIQUETA_INNOMBRABLE;
+
+            $this->assertSame($esperado, $candidata['nombrable'], 'nombrable no coincide con etiqueta_de_tabla() para ' . $candidata['tabla']);
+
+            if (!$candidata['nombrable']) {
+                $vista_una_innombrable = true;
+            }
+
+            $this->assertFalse($candidata['nombrable'] && $vista_una_innombrable, 'La nombrable ' . $candidata['tabla'] . ' quedó después de una innombrable. Orden: ' . implode(', ', $orden));
+
+            if ($candidata['tabla'] === 'clients') {
+                $this->assertTrue($candidata['nombrable'], 'clients tiene que ser nombrable');
+                $this->assertLessThan(Catalogo::TOPE_DE_TABLAS_A_CONTAR, $posicion, 'clients tiene que estar entre las primeras ' . Catalogo::TOPE_DE_TABLAS_A_CONTAR . ' tablas que se cuentan. Orden: ' . implode(', ', $orden));
+            }
+        }
     }
 }
