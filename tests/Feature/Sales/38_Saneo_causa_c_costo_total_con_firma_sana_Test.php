@@ -555,6 +555,94 @@ class Saneo_causa_c_costo_total_con_firma_sana_Test extends TestCase
     }
 
     /**
+     * Refinamiento del k de la causa B con la ficha (golonorte, 30/9/2026). El comando viejo corrio DOS
+     * veces sobre una linea de cantidad 2: costo unitario real 100 -> guardado 100 × 2 × 2 = 400, y la firma
+     * del comando `price × amount − cost` = 260 − 400 = −140. `buscar_k()` devuelve el menor k que entra bajo
+     * el doble del precio (130 × 2 = 260): k = 1 da 200 y entra, o sea quedaba al doble. La ficha (100) dice
+     * que el costo correcto es 100: k = 2.
+     *
+     * @group sales
+     * @test
+     */
+    public function el_refinamiento_de_k_con_la_ficha_corrige_el_costo_que_quedaba_al_doble()
+    {
+        $fila = $this->fila(2, 130, 400, null, 100);
+        $fila->ganancia = 130 * 2 - 400; // firma del comando viejo
+
+        // Sin la causa C prendida: comportamiento de siempre, el menor k (1) deja 200.
+        $sin = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4);
+        $this->assertSame('corregir', $sin['accion']);
+        $this->assertSame(1, $sin['k']);
+        $this->assertEquals(200, $sin['cost_final']);
+
+        // Con la causa C prendida la ficha sube el k a 2.
+        $con = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
+        $this->assertSame('corregir', $con['accion']);
+        $this->assertSame(['B'], $con['causas']);
+        $this->assertSame(2, $con['k']);
+        $this->assertEquals(100, $con['cost_final']);
+    }
+
+    /**
+     * La ficha tiene que CONFIRMAR el salto: si el costo de k = 1 ya encaja con ella, o el siguiente dejaria
+     * la linea en perdida, o no hay ficha, o el articulo tiene unidades individuales, el k no se toca.
+     *
+     * @group sales
+     * @test
+     */
+    public function el_refinamiento_de_k_no_sube_si_la_ficha_no_lo_confirma()
+    {
+        $firma = function ($fila) {
+            $fila->ganancia = $fila->price * $fila->amount - $fila->cost;
+
+            return $fila;
+        };
+
+        // k = 1 -> 200 y la ficha dice 200: ya esta bien.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($firma($this->fila(2, 300, 400, null, 200)), true, true, 4, true);
+        $this->assertSame(1, $analisis['k']);
+
+        // k = 1 entra (200 <= 2 x 100) pero el siguiente (100) no dejaria ganancia contra el precio (100): no se sube.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($firma($this->fila(2, 100, 400, null, 100)), true, true, 4, true);
+        $this->assertSame(1, $analisis['k']);
+
+        // Sin ficha: no se adivina.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($firma($this->fila(2, 130, 400, null, null)), true, true, 4, true);
+        $this->assertSame(1, $analisis['k']);
+
+        // Con unidades individuales el tramo B puede ser el bulto apilado: no se refina.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($firma($this->fila(2, 130, 400, 10, 100)), true, true, 4, true);
+        $this->assertNotSame(2, $analisis['k']);
+    }
+
+    /**
+     * Mismo caso, de punta a punta por el comando: queda 100 y no 200.
+     *
+     * @group sales
+     * @test
+     */
+    public function el_comando_aplica_el_refinamiento_de_k()
+    {
+        $article = $this->crear_articulo(['costo_real' => 100]);
+
+        $sale = $this->crear_venta();
+
+        $sale->articles()->attach($article->id, [
+            'amount' => 2,
+            'price' => 130,
+            'cost' => 400,
+            'ganancia' => 130 * 2 - 400,
+        ]);
+
+        $this->correr_saneo($sale, true);
+
+        $linea = $this->linea($sale, $article);
+
+        $this->assertEquals(100, (float) $linea->cost);
+        $this->assertEquals((130 - 100) * 2, (float) $linea->ganancia);
+    }
+
+    /**
      * Sin `--aplicar` no se escribe nada, y el respaldo dice que la causa fue la C.
      *
      * @group sales

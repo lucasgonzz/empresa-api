@@ -84,6 +84,19 @@ class CostoDeLineaDeVentaHelper
     const MARGEN_MAXIMO_CAUSA_C = 2.0;
 
     /**
+     * Refinamiento del `k` de la causa B con la ficha (golonorte, 30/9/2026). El comando viejo pudo correr
+     * varias veces sobre la misma línea (`cost = unitario × cantidad^k`), y `buscar_k()` devuelve el MENOR k
+     * que entra bajo el doble del precio: con cantidad 2 y margen normal, k = 1 ya entra aunque el costo
+     * real sea k = 2, y la línea queda con el costo AL DOBLE. Se sube un k más solo si la ficha de hoy lo
+     * confirma: el costo actual queda al menos 1,6 veces por encima de ella y el siguiente cae dentro de
+     * [0,6 ; 1,6] veces la ficha y deja la línea en ganancia. Medido: 6.576 de 42.472 líneas de la causa B,
+     * casi todas cantidad 2, y el costo refinado coincide con la ficha al centavo.
+     */
+    const REFINAR_K_ACTUAL_SOBRE_FICHA = 1.6;
+    const REFINAR_K_SIGUIENTE_MINIMO = 0.6;
+    const REFINAR_K_SIGUIENTE_MAXIMO = 1.6;
+
+    /**
      * Query base de las líneas de venta de UN cliente, con las columnas que necesita `analizar()`.
      *
      * 🔴 El `join` a `articles` NO es decorativo y es una de las tres divergencias que se cerraron:
@@ -257,6 +270,10 @@ class CostoDeLineaDeVentaHelper
 
             if (is_null($k)) {
                 return self::descartar($sana, 'firma_del_comando_sin_k_coherente');
+            }
+
+            if ($hacer_c && is_null($unidades)) {
+                $k = self::refinar_k_con_la_ficha($fila, $cost, $price, $amount, $k, $k_max);
             }
 
             $cost_final = $cost / pow($amount, $k);
@@ -576,6 +593,53 @@ class CostoDeLineaDeVentaHelper
         }
 
         return round($candidato, 2);
+    }
+
+    /**
+     * Sube el `k` de la causa B mientras la ficha de hoy lo confirme. Ver `REFINAR_K_ACTUAL_SOBRE_FICHA`.
+     *
+     * Solo para artículos SIN unidades individuales (con unidades, el costo del tramo B puede ser el del
+     * bulto apilado y la comparación contra la ficha es ambigua: no se adivina). Sin `costo_real`, o con un
+     * costo de ficha que no sirve, devuelve el `k` que llegó.
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float $price
+     * @param  float $amount  Mayor que 1 (la firma de la causa B ya lo exige).
+     * @param  int $k
+     * @param  int $k_max
+     * @return int
+     */
+    private static function refinar_k_con_la_ficha($fila, $cost, $price, $amount, $k, $k_max)
+    {
+        $ficha = (isset($fila->costo_real_del_articulo) && is_numeric($fila->costo_real_del_articulo))
+            ? (float) $fila->costo_real_del_articulo
+            : 0.0;
+
+        if ($ficha <= 0 || $amount <= 1.0) {
+            return $k;
+        }
+
+        while ($k < $k_max) {
+            $actual = $cost / pow($amount, $k);
+            $siguiente = $actual / $amount;
+
+            if (
+                $actual / $ficha >= self::REFINAR_K_ACTUAL_SOBRE_FICHA
+                && $siguiente / $ficha >= self::REFINAR_K_SIGUIENTE_MINIMO
+                && $siguiente / $ficha <= self::REFINAR_K_SIGUIENTE_MAXIMO
+                && $siguiente > 0
+                && $siguiente < $price
+            ) {
+                $k++;
+
+                continue;
+            }
+
+            break;
+        }
+
+        return $k;
     }
 
     /**
