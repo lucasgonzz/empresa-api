@@ -530,4 +530,48 @@ class Combo_calculado_Test extends ComboCalculadoTestCase
         $this->assertSame(250000000.0, $this->precio_en_base($combo));
         $this->assertSame(250000000.0, $this->precios_por_lista_en_base($combo)[$lista->id]);
     }
+
+    /**
+     * F6: si cambia SOLO el precio de una lista que no es la de `combos.price` (ni el costo), el
+     * `updated_at` del combo se mueve igual (hay clientes que sincronizan por `updated_at`). Y si no
+     * cambió nada, recalcular no lo toca.
+     *
+     * @test
+     */
+    public function cambiar_solo_el_precio_de_otra_lista_mueve_el_updated_at_del_combo()
+    {
+        $this->con_listas(1);
+
+        $baja = $this->lista('Baja F6', 90);
+        $alta = $this->lista('Alta F6', 91);
+
+        $a = $this->nuevo_articulo();
+        $this->precio_en_lista($a, $baja, 300);
+        $this->precio_en_lista($a, $alta, 180);
+
+        $combo = $this->combo_calculado([[$a, 1]]);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $viejo = '2020-01-01 00:00:00';
+
+        \Illuminate\Support\Facades\DB::table('combos')->where('id', $combo->id)->update(['updated_at' => $viejo]);
+
+        // Sin cambios: recalcular no toca el combo.
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame($viejo, $this->fila($combo)->updated_at, 'Sin cambios, updated_at queda quieto.');
+
+        // Cambia solo la lista BAJA (la de combos.price es la alta): price y cost no se mueven.
+        \Illuminate\Support\Facades\DB::table('article_price_type')
+            ->where('article_id', $a->id)
+            ->where('price_type_id', $baja->id)
+            ->update(['final_price' => 350]);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(180.0, $this->precio_en_base($combo), 'combos.price no cambió.');
+        $this->assertSame(350.0, $this->precios_por_lista_en_base($combo)[$baja->id]);
+        $this->assertNotSame($viejo, $this->fila($combo)->updated_at, 'Pero el updated_at del combo se movió.');
+    }
 }

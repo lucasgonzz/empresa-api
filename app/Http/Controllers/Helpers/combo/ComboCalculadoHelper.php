@@ -471,14 +471,29 @@ class ComboCalculadoHelper {
 
             $calculo = self::calcular($fila, $user);
 
+            $guardo_la_fila = false;
+
             if (!self::mismo_numero($fila->cost, $calculo['cost']) || !self::mismo_numero($fila->price, $calculo['price'])) {
 
                 $fila->cost  = $calculo['cost'];
                 $fila->price = $calculo['price'];
                 $fila->save();
+
+                $guardo_la_fila = true;
             }
 
-            self::escribir_precios_por_lista($fila->id, $calculo['precios_por_lista']);
+            $cambiaron_las_listas = self::escribir_precios_por_lista($fila->id, $calculo['precios_por_lista']);
+
+            /*
+             * F6: si cambió el precio de UNA LISTA que no es la de `combos.price` (ni el costo), la
+             * fila del combo no se guardó y su `updated_at` no se movió. Hay clientes que sincronizan
+             * el catálogo por `updated_at`, y para ellos un combo con un precio por lista nuevo
+             * tendría que verse como modificado. `touch()` solo mueve `updated_at` (no pasa por la
+             * comparación de arriba, que a propósito evita reescribir lo que no cambió).
+             */
+            if ($cambiaron_las_listas && !$guardo_la_fila) {
+                $fila->touch();
+            }
 
             return $calculo;
         });
@@ -492,7 +507,7 @@ class ComboCalculadoHelper {
      *
      * @param  int    $combo_id
      * @param  array  $precios
-     * @return void
+     * @return bool  true si escribió algo (cambió alguna fila), false si ya estaba igual.
      */
     protected static function escribir_precios_por_lista($combo_id, array $precios) {
 
@@ -512,7 +527,7 @@ class ComboCalculadoHelper {
         }
 
         if ($iguales) {
-            return;
+            return false;
         }
 
         DB::table('combo_price_type')->where('combo_id', $combo_id)->delete();
@@ -533,6 +548,8 @@ class ComboCalculadoHelper {
         if (count($filas) > 0) {
             DB::table('combo_price_type')->insert($filas);
         }
+
+        return true;
     }
 
     /**
