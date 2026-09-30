@@ -652,7 +652,10 @@ class Correcciones_de_alta_con_margen_y_stock_Test extends EmpresaTestCase
 
         $texto = (string) $respuesta['resultado'];
 
-        $this->assertStringContainsString('No se cargó ningún margen por lista', $texto);
+        // Última ronda de correcciones (29/9/2026), punto 4: en un resultado EXITOSO el texto no puede
+        // parecerse a la marca de rechazo ("No se cargó…").
+        $this->assertStringContainsString('Sin margen por lista: todas quedaron con su margen por defecto: ', $texto);
+        $this->assertStringNotContainsString('No se cargó', $texto);
 
         $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'zz-p62 Cera sin margen')->first();
 
@@ -1090,5 +1093,298 @@ class Correcciones_de_alta_con_margen_y_stock_Test extends EmpresaTestCase
         ]);
 
         $this->assertFalse($mandado['ok']);
+    }
+
+    // =====================================================================
+    // Última ronda de correcciones (29/9/2026)
+    // =====================================================================
+
+    /**
+     * 🔴 1. "Cambiale la minorista a 35" y después "y la mayorista a 20 también" SIN reemplaza_a (la
+     * tarjeta de edición tiene clave y crear() reemplaza sola a la viva): la segunda hereda la
+     * minorista de la que va a reemplazar, en vez de perderla.
+     *
+     * @test
+     */
+    public function la_edicion_sin_reemplaza_a_suma_los_margenes_de_la_propuesta_viva()
+    {
+        $this->con_listas();
+
+        $this->articulo_de_prueba('zz-p62 Cera sin reemplaza');
+
+        list($conversation, $assistant) = $this->conversacion('Minorista a 35');
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'            => 'article',
+            'registro'           => 'zz-p62 Cera sin reemplaza',
+            'cambios'            => [],
+            'margenes_por_lista' => [['lista' => 'Minorista', 'margen' => 35]],
+        ]);
+
+        $this->assertTrue(!empty($primera['ok']), json_encode($primera));
+
+        $segunda = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'            => 'article',
+            'registro'           => 'zz-p62 Cera sin reemplaza',
+            'cambios'            => [],
+            'margenes_por_lista' => [['lista' => 'Mayorista', 'margen' => 20]],
+        ]);
+
+        $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
+
+        $renglones = $this->renglones($segunda['tarjeta_id']);
+
+        $this->assertArrayHasKey('Margen Minorista', $renglones, 'Sin reemplaza_a, la tarjeta nueva perdió la minorista: ' . json_encode($renglones));
+        $this->assertStringEndsWith('→ 35 %', $renglones['Margen Minorista']);
+        $this->assertStringEndsWith('→ 20 %', $renglones['Margen Mayorista']);
+
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::find($primera['tarjeta_id'])->estado_guardado());
+    }
+
+    /**
+     * 2. En proponer_stock_en_deposito "1.000" es mil (antes, is_numeric/(float) lo leía como 1) y
+     * "15 unidades" se entiende.
+     *
+     * @test
+     */
+    public function el_stock_en_deposito_lee_los_miles_y_las_unidades()
+    {
+        $this->sin_depositos();
+
+        $this->articulo_de_prueba('zz-p62 Pastina miles', 5);
+
+        list($conversation, $assistant) = $this->conversacion('Sumale mil');
+
+        $mil = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p62 Pastina miles',
+            'cantidad' => '1.000',
+            'modo'     => 'sumar',
+        ]);
+
+        $this->assertTrue(!empty($mil['ok']), json_encode($mil));
+        $this->assertSame('5 → 1005', $this->renglones($mil['tarjeta_id'])['Stock total']);
+
+        $unidades = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p62 Pastina miles',
+            'cantidad' => '15 unidades',
+            'modo'     => 'sumar',
+        ]);
+
+        $this->assertTrue(!empty($unidades['ok']), json_encode($unidades));
+        $this->assertSame('5 → 20', $this->renglones($unidades['tarjeta_id'])['Stock total']);
+    }
+
+    /**
+     * 3. Los rechazos que faltaban: un depósito que no existe en el stock inicial, y el negativo que
+     * se descubre al confirmar, también empiezan con "No se cargó nada:".
+     *
+     * @test
+     */
+    public function el_deposito_inexistente_y_el_negativo_al_confirmar_dicen_que_no_se_cargo_nada()
+    {
+        list($conversation, $assistant) = $this->conversacion('Con 20 en Marte');
+
+        $inexistente = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'       => 'article',
+            'datos'         => ['name' => 'zz-p62 Cera marte', 'cost' => 1000],
+            'stock_inicial' => 20,
+            'deposito'      => 'Marte',
+        ]);
+
+        $this->assertFalse($inexistente['ok']);
+        $this->assertStringStartsWith('No se cargó nada:', (string) $inexistente['error']);
+        $this->assertStringContainsString('Marte', (string) $inexistente['error']);
+
+        $this->sin_depositos();
+
+        $articulo = $this->articulo_de_prueba('zz-p62 Pastina negativa', 5);
+
+        list($conversation, $assistant) = $this->conversacion('Restale 3');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p62 Pastina negativa',
+            'cantidad' => 3,
+            'modo'     => 'restar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        // Entre la tarjeta y el clic se vendieron 4: restar 3 sobre 1 lo dejaría negativo.
+        DB::table('articles')->where('id', $articulo->id)->update(['stock' => 1]);
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $confirmacion->assertStatus(422);
+
+        $this->assertStringStartsWith('No se cargó nada:', (string) $confirmacion->json('message'));
+        $this->assertEqualsWithDelta(1, $this->stock($articulo->id), self::DELTA);
+    }
+
+    /**
+     * 5. Con listas, `percentage_gain` en 0 se acepta (como `price` en 0): el controller lo guarda
+     * vacío y es la forma de LIMPIAR el margen suelto que dejó el bug viejo (el 30 del 17320).
+     * Distinto de 0 se sigue rechazando.
+     *
+     * @test
+     */
+    public function con_listas_el_margen_suelto_en_cero_se_acepta_y_limpia_el_viejo()
+    {
+        $this->con_listas();
+
+        list($conversation, $assistant) = $this->conversacion('Sacale el margen suelto');
+
+        $alta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'zz-p62 Cera margen cero', 'cost' => 1000, 'percentage_gain' => 0],
+        ]);
+
+        $this->assertTrue(!empty($alta['ok']), json_encode($alta));
+
+        $articulo = $this->articulo_de_prueba('zz-p62 Cera bug viejo', null, ['percentage_gain' => 30]);
+
+        $limpia = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'article',
+            'registro' => 'zz-p62 Cera bug viejo',
+            'cambios'  => ['percentage_gain' => 0],
+        ]);
+
+        $this->assertTrue(!empty($limpia['ok']), json_encode($limpia));
+
+        $this->confirmar($conversation, $assistant, $limpia['tarjeta_id'])->assertStatus(200);
+
+        $this->assertNull(DB::table('articles')->where('id', $articulo->id)->value('percentage_gain'), 'El margen suelto viejo tiene que quedar limpio.');
+
+        list($conversation, $assistant) = $this->conversacion('Margen 25');
+
+        $distinto = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'article',
+            'registro' => 'zz-p62 Cera bug viejo',
+            'cambios'  => ['percentage_gain' => 25],
+        ]);
+
+        $this->assertFalse($distinto['ok']);
+    }
+
+    /**
+     * 6. Un margen de 1000 % o más se pregunta: "12.500" puede ser 12,5 escrito con punto. 999 pasa.
+     *
+     * @test
+     */
+    public function un_margen_de_mil_por_ciento_o_mas_se_pregunta()
+    {
+        $this->con_listas();
+
+        list($conversation, $assistant) = $this->conversacion('Margen 12.500');
+
+        $raro = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'            => 'article',
+            'datos'              => ['name' => 'zz-p62 Cera raro', 'cost' => 1000],
+            'margenes_por_lista' => [['lista' => 'Minorista', 'margen' => '12.500']],
+        ]);
+
+        $this->assertFalse($raro['ok']);
+        $this->assertStringStartsWith('No se cargó nada:', (string) $raro['error']);
+        $this->assertStringContainsString('es raro', (string) $raro['error']);
+        $this->assertStringContainsString('12,50 %', (string) $raro['error']);
+
+        $casi = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'            => 'article',
+            'datos'              => ['name' => 'zz-p62 Cera raro', 'cost' => 1000],
+            'margenes_por_lista' => [['lista' => 'Minorista', 'margen' => 999]],
+        ]);
+
+        $this->assertTrue(!empty($casi['ok']), json_encode($casi));
+    }
+
+    /**
+     * 7. "null", false y una lista de ítems vacíos ([[]]) también son "no vino".
+     *
+     * @test
+     */
+    public function null_false_y_lista_de_vacios_son_no_vino()
+    {
+        $this->assertTrue(MargenesPorListaIaHelper::vino_vacio('null'));
+        $this->assertTrue(MargenesPorListaIaHelper::vino_vacio(false));
+        $this->assertTrue(MargenesPorListaIaHelper::vino_vacio([[]]));
+        $this->assertTrue(MargenesPorListaIaHelper::vino_vacio('[{}]'));
+        $this->assertFalse(MargenesPorListaIaHelper::vino_vacio([['lista' => 'Minorista', 'margen' => 30]]));
+        $this->assertFalse(MargenesPorListaIaHelper::vino_vacio('cualquier cosa'));
+
+        $this->dueno_con(['listas_de_precio' => 0]);
+
+        Client::create(['name' => 'zz-p62 Cliente null', 'user_id' => $this->dueno->id]);
+
+        list($conversation, $assistant) = $this->conversacion('Cambiale el teléfono');
+
+        foreach (['null', false, [[]]] as $indice => $vacio) {
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+                'entidad'            => 'client',
+                'registro'           => 'zz-p62 Cliente null',
+                'cambios'            => ['phone' => '351666000' . $indice],
+                'margenes_por_lista' => $vacio,
+            ]);
+
+            $this->assertTrue(!empty($respuesta['ok']), json_encode($vacio) . ': ' . json_encode($respuesta));
+        }
+
+        $alta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'            => 'article',
+            'datos'              => ['name' => 'zz-p62 Cera null', 'cost' => 1000],
+            'margenes_por_lista' => [[]],
+        ]);
+
+        $this->assertTrue(!empty($alta['ok']), json_encode($alta));
+    }
+
+    /**
+     * 8. En una corrección, un margen HEREDADO de una lista que ya no existe se descarta con aviso en
+     * vez de cortar la tarjeta; uno que MANDA el modelo con una lista que no existe sí corta.
+     *
+     * @test
+     */
+    public function un_margen_heredado_de_una_lista_borrada_se_descarta_con_aviso()
+    {
+        $this->con_listas();
+
+        list($conversation, $assistant) = $this->conversacion('Minorista 30 y mayorista 40');
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'            => 'article',
+            'datos'              => ['name' => 'zz-p62 Cera borrada', 'cost' => 1000],
+            'margenes_por_lista' => [['lista' => 'Minorista', 'margen' => 30], ['lista' => 'Mayorista', 'margen' => 40]],
+        ]);
+
+        $this->assertTrue(!empty($primera['ok']), json_encode($primera));
+
+        // Borran la lista Mayorista entre la tarjeta y la corrección (adentro de la transacción del test).
+        PriceType::where('id', $this->lista('Mayorista')->id)->delete();
+
+        $corregida = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'zz-p62 Cera borrada mate'],
+            'reemplaza_a' => $primera['tarjeta_id'],
+        ]);
+
+        $this->assertTrue(!empty($corregida['ok']), 'Un heredado de una lista borrada cortó la corrección: ' . json_encode($corregida));
+
+        $tarjeta = AiMessageAction::find($corregida['tarjeta_id']);
+
+        $renglones = $this->renglones($tarjeta->id);
+
+        $this->assertSame('30 %', $renglones['Margen Minorista']);
+        $this->assertArrayNotHasKey('Margen Mayorista', $renglones);
+        $this->assertStringContainsString('Mayorista ya no existe', (string) $tarjeta->presentacion['aviso']);
+        $this->assertStringContainsString('Mayorista ya no existe', (string) $corregida['aviso']);
+
+        $mandada = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'            => 'article',
+            'datos'              => ['name' => 'zz-p62 Cera borrada mate'],
+            'margenes_por_lista' => [['lista' => 'Mayorista', 'margen' => 45]],
+            'reemplaza_a'        => $corregida['tarjeta_id'],
+        ]);
+
+        $this->assertFalse($mandada['ok']);
+        $this->assertStringStartsWith('No se cargó nada:', (string) $mandada['error']);
     }
 }
