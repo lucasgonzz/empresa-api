@@ -88,11 +88,12 @@ class CostoDeLineaDeVentaHelper
      * varias veces sobre la misma línea (`cost = unitario × cantidad^k`), y `buscar_k()` devuelve el MENOR k
      * que entra bajo el doble del precio: con cantidad 2 y margen normal, k = 1 ya entra aunque el costo
      * real sea k = 2, y la línea queda con el costo AL DOBLE. Se sube un k más solo si la ficha de hoy lo
-     * confirma: el costo actual queda al menos 1,6 veces por encima de ella y el siguiente cae dentro de
-     * [0,6 ; 1,6] veces la ficha y deja la línea en ganancia. Medido: 6.576 de 42.472 líneas de la causa B,
-     * casi todas cantidad 2, y el costo refinado coincide con la ficha al centavo.
+     * confirma: el costo actual queda al menos 1,4 veces por encima de ella y el siguiente cae dentro de
+     * [0,6 ; 1,6] veces la ficha y deja la línea en ganancia. Medido: ~7.900 de 42.472 líneas de la causa B,
+     * casi todas cantidad 2; contra las líneas vecinas del mismo artículo el costo refinado coincide en el
+     * 99,9 % y el viejo en ninguna (verificador independiente, 30/9/2026). Con 1,6 quedaban ~1.300 líneas al doble.
      */
-    const REFINAR_K_ACTUAL_SOBRE_FICHA = 1.6;
+    const REFINAR_K_ACTUAL_SOBRE_FICHA = 1.4;
     const REFINAR_K_SIGUIENTE_MINIMO = 0.6;
     const REFINAR_K_SIGUIENTE_MAXIMO = 1.6;
 
