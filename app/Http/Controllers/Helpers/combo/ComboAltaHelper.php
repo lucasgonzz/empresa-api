@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Helpers\combo;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\Article;
 use App\Models\Combo;
 use Illuminate\Support\Facades\DB;
@@ -126,8 +128,10 @@ class ComboAltaHelper {
      * (Helpers\sale\ComboHelper::discount_articles_stock() recorre `$combo['articles']`).
      *
      * @param  array  $data  Claves: `name`, `cost`, `price`, `articles` (la lista tal como la manda
-     *                       la pantalla: cada ítem con `id` y `pivot.amount`; puede ser `[]`) y
-     *                       `online` (opcional; ver el comentario sobre la columna, más abajo).
+     *                       la pantalla: cada ítem con `id` y `pivot.amount`; puede ser `[]`),
+     *                       `online` (opcional; ver el comentario sobre la columna, más abajo) y
+     *                       `calcular_desde_articulos`, `descuento_tipo`, `descuento_valor`
+     *                       (opcionales; misión combos-calculados, ver más abajo).
      * @param  int  $user_id  Dueño de la cuenta (Controller::userId()).
      * @param  int|callable  $num  Correlativo del combo. Puede venir resuelto (int) o como callable
      *                             que se ejecuta ADENTRO de la transacción, por el mismo motivo que
@@ -168,16 +172,62 @@ class ComboAltaHelper {
              * tiene que poder publicar, la clave se suma a `$datos` en PropuestaComboIaHelper y
              * acá no cambia nada — pero que sea una decisión, igual que ésta.
              */
-            $model = Combo::create([
+            $datos = [
                 'num'     => is_callable($num) ? $num() : $num,
                 'name'    => $valor('name'),
                 'cost'    => $valor('cost'),
                 'price'   => $valor('price'),
                 'online'  => $valor('online') ? 1 : 0,
                 'user_id' => $user_id,
-            ]);
+            ];
+
+            /*
+             * Combo calculado (misión combos-calculados, 30/9/2026).
+             *
+             * 🔴 Las tres claves entran al create SOLO si la base ya tiene las columnas: en la
+             * ventana de un deploy (código nuevo, migración todavía sin correr) nombrarlas es un
+             * `Unknown column` que tumba el alta de TODO combo, no solo la de los calculados.
+             *
+             * Mismo criterio de truthiness que `ComboController::update()` para el interruptor, y
+             * un descuento inválido se guarda como "sin descuento" (el ABM ya lo rechazó con 422
+             * antes de llegar; esto cubre a quien llame al helper directo). El combo del asistente
+             * de IA no manda ninguna de las tres: nace manual, como siempre.
+             */
+            $calcular = false;
+
+            if (ComboCalculadoEsquemaHelper::disponible()) {
+
+                $calcular  = (bool) $valor('calcular_desde_articulos');
+                $descuento = ComboCalculadoHelper::normalizar_descuento($valor('descuento_tipo'), $valor('descuento_valor'));
+
+                $datos['calcular_desde_articulos'] = $calcular ? 1 : 0;
+                $datos['descuento_tipo']           = $descuento['descuento_tipo'];
+                $datos['descuento_valor']          = $descuento['descuento_valor'];
+
+                /*
+                 * Un combo calculado nace SIN el costo ni el precio del request: los pone el
+                 * servidor un par de líneas más abajo, y dejar los que mandó la pantalla (que en un
+                 * combo calculado son de solo lectura y pueden venir viejos) escribiría un número
+                 * inventado por un instante, dentro de la transacción y para la auditoría.
+                 */
+                if ($calcular) {
+                    $datos['cost']  = null;
+                    $datos['price'] = null;
+                }
+            }
+
+            $model = Combo::create($datos);
 
             GeneralHelper::attachModels($model, 'articles', $articles, ['amount']);
+
+            /*
+             * Los artículos ya están adjuntos: recién ahora se puede hacer la cuenta. El orden
+             * importa (crear -> adjuntar -> calcular): con el combo vacío, el costo y el precio
+             * saldrían en 0 y se escribirían como si fueran los definitivos.
+             */
+            if ($calcular) {
+                ComboCalculadoHelper::guardar($model);
+            }
 
             return $model;
         });
