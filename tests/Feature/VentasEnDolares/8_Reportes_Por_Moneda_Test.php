@@ -226,24 +226,25 @@ class Reportes_Por_Moneda_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 HALLAZGO (inconsistencia entre pantallas, con datos legacy). Una venta con `moneda_id` NULL
-     * (las de antes de que existiera la columna) se cuenta como PESOS en el Estado de Resultados
-     * (`ContabilidadRepository::aplicar_filtro_moneda()`: "0, null y 1 son pesos") pero NO suma en
-     * ningún chip del listado de ventas (`ListadoVentasHelper::agregados()` usa `moneda_id = 1`, y
-     * su docblock dice que una venta sin moneda "no suma en ninguno"). El mismo día, el mismo
-     * comercio ve un total de pesos distinto en el listado y en el reporte. Se arma con una venta
-     * hecha por API y dejada con `moneda_id` NULL directo en la base (así están los datos viejos).
+     * DECISIÓN DE LUCAS (30/9/2026): una venta con `moneda_id` NULL se trata SIEMPRE como pesos, en
+     * todas las pantallas. Antes se contaba como pesos en el Estado de Resultados
+     * (`ContabilidadRepository::aplicar_filtro_moneda()`: "0, null y 1 son pesos") pero NO sumaba en
+     * ningún chip del listado de ventas (`ListadoVentasHelper::agregados()` comparaba `moneda_id = 1`).
+     * Se arma con una venta hecha por API y dejada con `moneda_id` NULL directo en la base (así están
+     * los datos viejos): el listado tiene que sumarla en pesos igual que cuando tenía moneda 1, no
+     * sumarla en dólares, y coincidir con el reporte.
      *
      * @group ventas-en-dolares
-     * @group hallazgo-moneda
-     * @group hallazgo-abierto
      * @test
      */
-    public function una_venta_sin_moneda_se_cuenta_en_el_mismo_lugar_en_el_listado_y_en_el_reporte()
+    public function una_venta_sin_moneda_cuenta_como_pesos_en_el_listado_y_en_el_reporte()
     {
-        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): una venta con moneda_id NULL: el listado no la suma y el Estado de Resultados la cuenta como pesos; ambos docblocks la dan por intencional. Queda a decision de Lucas.');
-
         $venta = $this->vender(1, 2, 1);
+
+        $antes = $this->getJson('api/sale/from-date/ventas/'.self::DIA.'?per_page=50');
+        $pesos_antes = (float) $antes->json('totales.pesos.total');
+        $costos_antes = (float) $antes->json('totales.pesos.costos');
+        $ganancia_antes = (float) $antes->json('totales.pesos.ganancia');
 
         DB::table('sales')->where('id', $venta->id)->update(['moneda_id' => null]);
 
@@ -253,11 +254,11 @@ class Reportes_Por_Moneda_Test extends EmpresaTestCase
         $listado_pesos = (float) $response->json('totales.pesos.total');
         $listado_dolares = (float) $response->json('totales.dolares.total');
 
-        $this->assertEqualsWithDelta(
-            $reporte_pesos,
-            $listado_pesos + $listado_dolares,
-            self::DELTA,
-            'HALLAZGO: la venta con moneda_id NULL suma '.$reporte_pesos.' en el reporte (pesos) y '.($listado_pesos + $listado_dolares).' en los totales del listado.'
-        );
+        $this->assertGreaterThan(0, $pesos_antes, 'La venta de prueba tiene que sumar en pesos antes de dejarla sin moneda.');
+        $this->assertEqualsWithDelta($pesos_antes, $listado_pesos, self::DELTA, 'Sin moneda la venta sigue sumando en pesos en el listado.');
+        $this->assertEqualsWithDelta($costos_antes, (float) $response->json('totales.pesos.costos'), self::DELTA, 'Los costos tambien.');
+        $this->assertEqualsWithDelta($ganancia_antes, (float) $response->json('totales.pesos.ganancia'), self::DELTA, 'La ganancia tambien.');
+        $this->assertEqualsWithDelta(0.0, $listado_dolares, self::DELTA, 'Una venta sin moneda nunca suma en dolares.');
+        $this->assertEqualsWithDelta($reporte_pesos, $listado_pesos, self::DELTA, 'El listado y el Estado de Resultados dicen lo mismo.');
     }
 }

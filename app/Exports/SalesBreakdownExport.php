@@ -140,9 +140,10 @@ class SalesBreakdownExport implements FromCollection, WithHeadings, ShouldAutoSi
         $total_usd = 0;
 
         $this->sales->each(function ($sale) use (&$total_pesos, &$total_usd) {
-            if ($sale->moneda_id == 1) {
+            // Pesos es todo lo que no es dolares (moneda_id NULL o 0 incluidos).
+            if ($sale->moneda_id != 2) {
                 $total_pesos += (float) $sale->total;
-            } elseif ($sale->moneda_id == 2) {
+            } else {
                 $total_usd += (float) $sale->total;
             }
         });

@@ -51,13 +51,16 @@ class ArticlePurchaseHelper {
 		
 		Log::info('set_costo_y_price, cost: '.$this->article->pivot->price);
 
-		if ($this->sale->moneda_id == 1) {
+		// Pesos es todo lo que no es dolares: una venta con moneda_id NULL o 0 se trata siempre como
+		// pesos (decision de Lucas, 30/9/2026). Antes solo entraba con == 1 y una venta sin moneda
+		// no llenaba ni `cost`/`price` ni `cost_dolar`/`price_dolar`.
+		if ($this->sale->moneda_id != 2) {
 
 			$this->article_purchase->cost = $this->article->pivot->cost;
 			$this->article_purchase->price = $this->article->pivot->price;
 			Log::info('se usa cost');
 
-		} else if ($this->sale->moneda_id == 2) {
+		} else {
 
 			$this->article_purchase->cost_dolar = $this->article->pivot->cost;
 			$this->article_purchase->price_dolar = $this->article->pivot->price;
@@ -72,7 +75,8 @@ class ArticlePurchaseHelper {
 		$this->cost = $this->article->pivot->cost;
 		Log::info('cost empieza en '.$this->cost);
 
-		if ($this->sale->moneda_id == 1) {
+		// Pesos es todo lo que no es dolares (moneda_id NULL o 0 incluidos).
+		if ($this->sale->moneda_id != 2) {
 
 			// Pesos
 
@@ -86,7 +90,7 @@ class ArticlePurchaseHelper {
 				// Costo queda igual
 			}
 
-		} else if ($this->sale->moneda_id == 2) {
+		} else {
 
 			// Dolares
 

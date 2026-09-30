@@ -2242,7 +2242,13 @@ class SaleHelper extends Controller {
              * la venta que necesita cotización y no la trae; esta red es para los caminos que no
              * pasan por ahí (confirmar presupuesto, IA, SaleModificationsHelper, BudgetHelper).
              */
-            if ($sale->moneda_id == 1) {
+            /*
+             * 🔴 Pesos es TODO lo que no es dólares (decisión de Lucas, 30/9/2026: una venta con
+             * `moneda_id` NULL o 0 se trata SIEMPRE como pesos). Antes esta rama era `== 1` y la de
+             * dólares `== 2`: una venta sin moneda no entraba en ninguna y el costo de un artículo
+             * cargado en dólares quedaba sin convertir (en dólares, dentro de una venta en pesos).
+             */
+            if ($sale->moneda_id != CotizacionDeVentaHelper::MONEDA_DOLAR) {
                 // Pesos: solo se convierte el costo de un artículo cargado en dólares.
                 if (
                     CotizacionDeVentaHelper::item_esta_en_dolares($item)
@@ -2258,7 +2264,7 @@ class SaleHelper extends Controller {
                     }
                 }
 
-            } else if ($sale->moneda_id == 2) {
+            } else {
 
                 /*
                  * Dólares: solo se convierte el costo de un artículo cargado en PESOS (el que está

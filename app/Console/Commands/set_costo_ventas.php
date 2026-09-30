@@ -450,7 +450,10 @@ class set_costo_ventas extends Command
             return $cost;
         }
 
-        if ((int) $sale->moneda_id === 1 && $cotizar_precios_en_dolares === 0) {
+        // Pesos es todo lo que no es dolares: una venta con moneda_id NULL o 0 se trata siempre como
+        // pesos (decision de Lucas, 30/9/2026). Antes era `=== 1` y el costo de un articulo en dolares de
+        // una venta sin moneda quedaba sin cotizar (en 2R, la venta 345: $328.500 con costo 170,84).
+        if ((int) $sale->moneda_id !== 2 && $cotizar_precios_en_dolares === 0) {
             if ((int) $article->cost_in_dollars === 1) {
                 $cost *= $valor_dolar;
             }
