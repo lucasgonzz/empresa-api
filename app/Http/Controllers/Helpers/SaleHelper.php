@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
@@ -1768,6 +1769,22 @@ class SaleHelper extends Controller {
                 $sale->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                             'amount' => (float)$combo['amount'],
                                                             'price' => $combo['price_vender'],
+                                                            /*
+                                                                🔴 El costo UNITARIO del combo lo decide el servidor (misión
+                                                                combos-calculados, Parte A2, 30/9/2026): Σ del costo de línea de cada
+                                                                componente si el combo es calculado, o `combos.cost` si es manual.
+                                                                NUNCA se lee `$combo['cost']`: ni el que mande el SPA ni el
+                                                                `order_combo.cost` que `CreateSaleOrderHelper` copia del pedido de
+                                                                la tienda (que hoy llega en NULL y mañana puede traer cualquier
+                                                                cosa). Sin este costo, `sales.ganancia` tomaba el precio ENTERO
+                                                                del combo como ganancia. NULL si no se puede resolver; ver
+                                                                `ComboCostoDeVentaHelper`.
+
+                                                                Se calcula acá, con los descuentos y recargos de la venta ya
+                                                                adjuntados (`attachProperies()` los adjunta antes), porque la
+                                                                cuenta que aplica los descuentos a los costos los lee.
+                                                            */
+                                                            'cost' => ComboCostoDeVentaHelper::costo_unitario($sale, $combo['id']),
                                                             'created_at' => Carbon::now(),
                                                         ], RecargosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'));
 
