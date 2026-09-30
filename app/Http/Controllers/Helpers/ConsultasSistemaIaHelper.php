@@ -1547,9 +1547,10 @@ class ConsultasSistemaIaHelper
      * invoca y no se reescribe.
      *
      * 🔴 LAS UNIDADES SON EXACTAS; EL MONTO PUEDE ESTAR INCOMPLETO, Y CUÁNTO SE DICE.
-     * `ArticlePurchaseHelper::set_costo_y_price()` (`:50-67`) llena `article_purchases.price` SOLO
-     * cuando la venta tiene `moneda_id == 1`; con `== 2` llena `price_dolar`; y con null o 0 NO
-     * LLENA NINGUNO DE LOS DOS. Y `sales.moneda_id` es nullable sin default desde la migración
+     * `ArticlePurchaseHelper::set_costo_y_price()` llenaba `article_purchases.price` SOLO
+     * cuando la venta tenia `moneda_id == 1`; con `== 2` llena `price_dolar`; y con null o 0 NO
+     * LLENABA NINGUNO DE LOS DOS. (Desde el 30/9/2026 una venta sin moneda es pesos y el helper le llena
+     * `price`, pero las ventas VIEJAS ya guardadas siguen con `price` NULL: lo que sigue vale para ellas.) Y `sales.moneda_id` es nullable sin default desde la migración
      * `2025_08_29_162530`, que no hizo backfill: TODA venta anterior al 29/8/2025 lo tiene en null.
      *
      * Hasta el 16/9/2026 el monto se calculaba con `COALESCE(price, 0)`, así que esas unidades
@@ -1648,9 +1649,10 @@ class ConsultasSistemaIaHelper
                 'ultima_compra'  => self::fecha_legible($fila->ultima),
                 /*
                  * 🔴 EN PESOS Y SOLO DE LO QUE TIENE PRECIO, y por eso van las dos claves juntas.
-                 * `article_purchases.price` lo llena ArticlePurchaseHelper::set_costo_y_price()
-                 * SOLO cuando la venta tiene `moneda_id == 1`; con 2 llena `price_dolar`, y con
-                 * null o 0 NO LLENA NINGUNO. Y `sales.moneda_id` es nullable sin default desde la
+                 * `article_purchases.price` lo llenaba ArticlePurchaseHelper::set_costo_y_price()
+                 * SOLO cuando la venta tenia `moneda_id == 1`; con 2 llena `price_dolar`, y con
+                 * null o 0 NO LLENABA NINGUNO (desde el 30/9/2026 una venta sin moneda es pesos y se
+                 * llena `price`; las ventas viejas siguen con `price` NULL). Y `sales.moneda_id` es nullable sin default desde la
                  * migración del 29/8/2025, que no hizo backfill: toda venta anterior a esa fecha
                  * cae en el último caso.
                  */

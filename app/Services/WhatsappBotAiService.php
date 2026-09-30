@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\User;
 use App\Models\WhatsappBotConfig;
@@ -37,6 +38,13 @@ use Illuminate\Support\Facades\Storage;
  * con Anthropic), con el modelo "general" de ese proveedor (`services.<proveedor>.model`). Este
  * service no sabe cuál es: ProveedorIaHelper le da el modelo, el cliente HTTP, la URL y el
  * bloque `thinking`, y el gasto se registra con el proveedor que efectivamente contestó.
+ *
+ * Misión modelos-ia-por-cliente (30/9/2026, decisión de Lucas): el bot YA NO SIGUE AL ASISTENTE.
+ * Tiene su propio modelo, elegible por cliente desde el admin (`users.ia_modelo_whatsapp`; null =
+ * DeepSeek Flash) y lo resuelve ModelosIaHelper::resolver($owner, 'whatsapp'). Sin clave de
+ * DeepSeek cae a Anthropic con `services.anthropic.model`, el mismo modelo que usaba antes (así la
+ * producción sin DEEPSEEK_API_KEY no cambia). Un turno con foto (visión prendida) y una opción que
+ * no ve (DeepSeek Pro) va al modelo de visión de DeepSeek, igual que el asistente.
  */
 class WhatsappBotAiService
 {
@@ -243,16 +251,15 @@ SUMMARY;
     {
         try {
             /*
-             * El proveedor y el modelo general los elige el DUEÑO del negocio (misión
-             * proveedores-ia-deepseek): sin clave para ese proveedor (ni para otro al que caer)
-             * no se sale a la red.
+             * El modelo del bot lo elige el admin por cliente (misión modelos-ia-por-cliente):
+             * `users.ia_modelo_whatsapp` del DUEÑO, con su fallback de clave. resolver() devuelve
+             * null solo si no hay clave de NINGÚN proveedor: ahí no se sale a la red.
              */
             $owner_user = $this->owner_user($config);
-            $eleccion   = ProveedorIaHelper::modelo_general($owner_user);
-            $proveedor  = $eleccion['proveedor'];
+            $eleccion   = ModelosIaHelper::resolver($owner_user, ModelosIaHelper::TAREA_WHATSAPP);
 
-            if (! ProveedorIaHelper::hay_credenciales($proveedor)) {
-                Log::channel('daily')->warning('WhatsappBotAiService: sin clave de ' . ProveedorIaHelper::nombre_de($proveedor) . ' configurada.');
+            if (is_null($eleccion)) {
+                Log::channel('daily')->warning('WhatsappBotAiService: sin clave de ningún proveedor de IA configurada.');
                 return $this->empty_response('sin_configurar');
             }
 
@@ -281,8 +288,22 @@ SUMMARY;
             // imágenes entrantes van como bloques de visión o como texto (`ai_vision_enabled`).
             $messages = $this->build_messages_payload($history, $articles, $owner_user, $config);
 
-            $model = $eleccion['modelo'];
-            $http  = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
+            /*
+             * Si el payload terminó llevando una foto (visión prendida y el cliente mandó una), se
+             * vuelve a resolver pidiendo visión: con DeepSeek Pro elegido, ese turno va al modelo
+             * que ve. Pro no ve imágenes y DeepSeek no avisa: contestaría sin mirar la foto.
+             */
+            if ($this->payload_lleva_imagen($messages)) {
+                $con_vision = ModelosIaHelper::resolver($owner_user, ModelosIaHelper::TAREA_WHATSAPP, true);
+
+                if (! is_null($con_vision)) {
+                    $eleccion = $con_vision;
+                }
+            }
+
+            $proveedor = $eleccion['proveedor'];
+            $model     = $eleccion['modelo'];
+            $http      = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
 
             // El mismo payload para los dos proveedores; `thinking` solo viaja con DeepSeek.
             $response = $http->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
@@ -419,16 +440,17 @@ SUMMARY;
     {
         try {
             /*
-             * Acá no llega `$config`, así que el dueño —cuya elección de proveedor manda— se
-             * resuelve por el `user_id` del chat (misión proveedores-ia-deepseek).
+             * Acá no llega `$config`, así que el dueño —cuya elección de modelo del bot manda— se
+             * resuelve por el `user_id` del chat. El resumen es texto puro: sin visión.
              */
-            $eleccion  = ProveedorIaHelper::modelo_general(User::find($chat->user_id));
-            $proveedor = $eleccion['proveedor'];
+            $eleccion = ModelosIaHelper::resolver(ModelosIaHelper::dueno_de($chat->user_id), ModelosIaHelper::TAREA_WHATSAPP);
 
-            if (! ProveedorIaHelper::hay_credenciales($proveedor)) {
-                Log::channel('daily')->warning('WhatsappBotAiService: sin clave de ' . ProveedorIaHelper::nombre_de($proveedor) . ' configurada (resumen).');
+            if (is_null($eleccion)) {
+                Log::channel('daily')->warning('WhatsappBotAiService: sin clave de ningún proveedor de IA configurada (resumen).');
                 return '';
             }
+
+            $proveedor = $eleccion['proveedor'];
 
             $history = $this->fetch_recent_messages($chat, self::SUMMARY_HISTORY_LIMIT);
             if ($history->isEmpty()) {
@@ -1132,9 +1154,40 @@ SUMMARY;
     }
 
     /**
+     * true si algún turno del payload lleva un bloque `image` (visión prendida y el cliente mandó
+     * una foto que se pudo adjuntar). Decide si el modelo tiene que ver (ModelosIaHelper::resolver
+     * con `$necesita_vision`).
+     *
+     * @param array<int, array{role: string, content: string|array}> $messages
+     *
+     * @return bool
+     */
+    private function payload_lleva_imagen(array $messages): bool
+    {
+        foreach ($messages as $turno) {
+            if (! isset($turno['content']) || ! is_array($turno['content'])) {
+                continue;
+            }
+
+            foreach ($turno['content'] as $bloque) {
+                if (is_array($bloque) && ($bloque['type'] ?? '') === 'image') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Extrae el texto de la respuesta del proveedor (concatena todos los bloques `text`
      * del array `content`, forma de Anthropic que DeepSeek también devuelve), igual que el
      * comportamiento previo a este refactor.
+     *
+     * Misión modelos-ia-por-cliente: NO pasa a ModelosIaHelper::texto_de_respuesta() (el primer
+     * bloque `text`) a propósito. Este método ya filtra por `type === 'text'`, así que un bloque
+     * `thinking` adelante (DeepSeek Pro) no le molesta, y cambiarlo a "solo el primero" sería un
+     * cambio de comportamiento para una respuesta de varios bloques de texto sin ningún beneficio.
      *
      * @param array|null $body Body decodificado de la respuesta HTTP.
      *

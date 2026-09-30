@@ -35,6 +35,7 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
+use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTicketRasterHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
@@ -232,6 +233,37 @@ class SaleController extends Controller
 
     public function store(Request $request) {
 
+        /*
+         * Moneda y cotización (misión corregir-ventas-en-dolares, 30/9/2026).
+         *
+         * 1. La moneda se normaliza UNA vez y sobre el request, antes de cualquier validación:
+         *    ausente, null o 0 son pesos. Antes solo el null caía a pesos al crear la venta, y el 0
+         *    se guardaba como moneda 0 (que `getCost()` no convierte) mientras que
+         *    `LimiteCreditoHelper` —que lee `$request->moneda_id` y no la venta— buscaba la cuenta
+         *    de crédito de una "moneda 0" inexistente y se salteaba el tope. Normalizando el
+         *    request, el tope, el 422 de más abajo y el `Sale::create()` hablan de la misma moneda.
+         *
+         * 2. El 422 de la cotización: una venta EN DÓLARES que llega sin `valor_dolar` válido
+         *    (ausente, no numérico o <= 0) se rechaza ACÁ y no dentro de `getCost()`, donde era un
+         *    "Division by zero" (HTTP 500). Una venta en pesos con un artículo en dólares y sin
+         *    cotización NO se rechaza: `getCost()` cuenta con el dólar del dueño (antes guardaba el
+         *    costo en cero sin avisar). Mismo criterio que los 422 de más abajo: la SPA es guarda
+         *    de UX y la autoridad es este rechazo, porque un POST directo, el asistente de IA o una
+         *    PWA con datos viejos llegan igual hasta acá. No mira la base, va antes del candado y
+         *    de la transacción: un rechazo no toca nada ni consume número de venta. La regla
+         *    completa (qué es "necesita cotización") vive en CotizacionDeVentaHelper.
+         */
+        $request->merge(['moneda_id' => CotizacionDeVentaHelper::normalizar_moneda_id($request->moneda_id)]);
+
+        $error_cotizacion = CotizacionDeVentaHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_cotizacion)) {
+
+            Log::info('store sale: rechazada sin cotizacion del dolar (user_id '.$this->userId().', moneda_id '.$request->moneda_id.', valor_dolar '.var_export($request->valor_dolar, true).').');
+
+            return response()->json($error_cotizacion, 422);
+        }
+
         /**
          * Límite de crédito del cliente (misión 160). La validación de la SPA es guarda de UX; la
          * autoridad es este 422, porque un POST directo a /sale llega igual hasta acá. Es el mismo
@@ -424,8 +456,16 @@ class SaleController extends Controller
                 'caja_id'                           => $request->caja_id,
                 'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
                 'fecha_entrega'                     => $request->fecha_entrega,
-                'moneda_id'                         => !is_null($request->moneda_id) ? $request->moneda_id : 1,
-                'valor_dolar'                       => $request->valor_dolar,
+                // Ya normalizada al principio de store() (ausente, null o 0 = pesos).
+                'moneda_id'                         => CotizacionDeVentaHelper::normalizar_moneda_id($request->moneda_id),
+                /*
+                 * La cotización redondeada a los 2 decimales de la columna (DECIMAL(20,2) desde la
+                 * migración `2026_09_30_130000`, antes INT: 1234,56 se guardaba como 1235 y esa
+                 * cotización es la que recibe ARCA) o null si no sirve. Ver
+                 * CotizacionDeVentaHelper::valor_dolar_para_guardar(). Con la columna vieja (el
+                 * deploy sube los archivos antes de migrar) sigue siendo solo un número: no rompe.
+                 */
+                'valor_dolar'                       => CotizacionDeVentaHelper::valor_dolar_para_guardar($request->valor_dolar),
                 'incoterms'                         => $request->incoterms,
                 'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
                 'sale_status_id'                    => $request->sale_status_id,

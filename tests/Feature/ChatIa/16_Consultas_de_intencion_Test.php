@@ -413,9 +413,10 @@ class Consultas_de_intencion_Test extends TestCase
      * más. Plausible, bajo e indetectable — y la pregunta apunta justo ahí, porque la ventana por
      * defecto es toda la historia.
      *
-     * 🔴 El fixture de este test pasa por ArticlePurchaseHelper a propósito: es el único que
-     * produce la combinación real (venta sin moneda → `price` null). Armando la fila a mano el
-     * defecto no aparece, que es exactamente lo que pasaba antes.
+     * 🔴 El fixture de este test pasa por ArticlePurchaseHelper a propósito. Hasta el 30/9/2026 era el
+     * único que producía la combinación real (venta sin moneda → `price` null); desde que una venta
+     * sin moneda es pesos, esa combinación solo existe en las ventas viejas, y `venta_con_articulo()`
+     * la deja armada igual que está en producción (moneda NULL y `price` NULL).
      *
      * @group chat-ia
      * @test
@@ -964,6 +965,18 @@ class Consultas_de_intencion_Test extends TestCase
 
         $helper = new ArticlePurchaseHelper();
         $helper->set_article_purcase($venta->fresh());
+
+        /*
+         * 🔴 Una venta SIN MONEDA ya no la produce el sistema (decision de Lucas, 30/9/2026: sin moneda
+         * es pesos): `Sale` la crea en pesos y `ArticlePurchaseHelper` le llena `price`. Lo que existe
+         * son las ventas VIEJAS, de antes de la columna, que quedaron con moneda NULL y con `price`
+         * NULL en article_purchases; es esa forma de dato la que cubre la consulta del asistente
+         * (nunca sumar esas unidades como cero pesos). Se la arma a mano, como esta en produccion.
+         */
+        if (array_key_exists('moneda_id', $extra) && is_null($extra['moneda_id'])) {
+            DB::table('sales')->where('id', $venta->id)->update(['moneda_id' => null]);
+            DB::table('article_purchases')->where('sale_id', $venta->id)->update(['price' => null, 'cost' => null]);
+        }
 
         return $venta;
     }

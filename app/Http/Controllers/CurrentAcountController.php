@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCuotaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoMonedaHelper;
 use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
 use App\Http\Controllers\Pdf\CurrentAcount\NewPagoPdf;
@@ -131,6 +132,39 @@ class CurrentAcountController extends Controller
             return response()->json([
                 'message' => 'Las siguientes cajas nunca se abrieron: '.implode(', ', $cajas_sin_apertura).'. Hay que abrirlas para poder registrar el pago.',
             ], 422);
+        }
+
+        /*
+         * 🔴 Las MONEDAS del pago se validan ACA, por el mismo motivo que las cajas: antes de crear
+         * nada (misión corregir-ventas-en-dolares, 30/9/2026).
+         *
+         * El `haber` de un pago se arma con el `amount_cotizado` que calcula el FRONT, y el back lo
+         * tomaba tal cual: una fila en pesos sin cotizado valía su monto nominal en dólares, un
+         * cotizado residual duplicaba el total, una fila en dólares podía caer en una caja en pesos y
+         * un `to_pay` de la cuenta en otra moneda cambiaba de estado a un débito que el pago no
+         * salda. Ver CurrentAcountPagoMonedaHelper para la regla completa.
+         *
+         * Devuelve el 422 (con nada escrito) o las filas NORMALIZADAS, que reemplazan a las del
+         * request: así todo lo que sigue —los endosos, el pivote, la caja, el haber y los
+         * certificados de retención— lee datos coherentes y no el payload crudo. Si no hay cuenta
+         * (`credit_account_id` ausente) el helper no opina y las filas quedan como vinieron.
+         */
+        list($error_de_monedas, $filas_normalizadas) = CurrentAcountPagoMonedaHelper::validar_y_normalizar(
+            $request->credit_account_id,
+            $request->current_acount_payment_methods,
+            $request->to_pay
+        );
+
+        if (!is_null($error_de_monedas)) {
+
+            return response()->json([
+                'message' => $error_de_monedas,
+            ], 422);
+        }
+
+        if (is_array($filas_normalizadas)) {
+
+            $request->merge(['current_acount_payment_methods' => $filas_normalizadas]);
         }
 
         /*
@@ -640,6 +674,22 @@ class CurrentAcountController extends Controller
             if (! is_null($current_acount->num_receipt)) {
                 $notas_compensacion .= ' N° '.$current_acount->num_receipt;
             }
+
+            /*
+             * 🔴 Las filas de medios de pago del cobro se sueltan ANTES de borrarlo (misión
+             * corregir-ventas-en-dolares, 30/9/2026). Cada fila del pivote
+             * `current_acount_current_acount_payment_method` guarda lo que el cliente entregó con
+             * su moneda, cotización y caja; la tabla no tiene clave foránea con cascada, así que
+             * borrar el movimiento las dejaba huérfanas: cobros "fantasma" con moneda y caja que
+             * ningún pago reclama y que cualquier lectura del pivote por moneda o por caja
+             * contaba igual.
+             *
+             * No rompe la compensación de caja: `$metodos_para_compensacion` se cargó más arriba y
+             * es una colección en memoria (con el pivote de cada fila adentro). `detach()` borra
+             * las filas de la base y no toca lo ya cargado, que es lo que lee
+             * `crear_movimientos_compensacion()` más abajo.
+             */
+            $current_acount->current_acount_payment_methods()->detach();
 
             $current_acount->delete();
 

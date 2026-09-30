@@ -201,7 +201,9 @@ class set_costo_ventas extends Command
         $cotizar_precios_en_dolares
     ) {
         $total_cost = 0;
-        $valor_dolar = $sale->valor_dolar ? (float) $sale->valor_dolar : $user_dollar;
+        // `(float) > 0`: `sales.valor_dolar` es DECIMAL y un '0.00' es truthy; sin esto se perderia el respaldo
+        // al dolar del dueño para las ventas guardadas con cotizacion 0.
+        $valor_dolar = (float) $sale->valor_dolar > 0 ? (float) $sale->valor_dolar : $user_dollar;
 
         foreach ($sale->articles as $article) {
             $pivot = $article->pivot;
@@ -448,7 +450,10 @@ class set_costo_ventas extends Command
             return $cost;
         }
 
-        if ((int) $sale->moneda_id === 1 && $cotizar_precios_en_dolares === 0) {
+        // Pesos es todo lo que no es dolares: una venta con moneda_id NULL o 0 se trata siempre como
+        // pesos (decision de Lucas, 30/9/2026). Antes era `=== 1` y el costo de un articulo en dolares de
+        // una venta sin moneda quedaba sin cotizar (en 2R, la venta 345: $328.500 con costo 170,84).
+        if ((int) $sale->moneda_id !== 2 && $cotizar_precios_en_dolares === 0) {
             if ((int) $article->cost_in_dollars === 1) {
                 $cost *= $valor_dolar;
             }

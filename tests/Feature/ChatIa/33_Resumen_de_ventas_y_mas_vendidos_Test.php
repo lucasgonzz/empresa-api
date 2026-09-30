@@ -448,6 +448,16 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
 
         (new ArticlePurchaseHelper())->set_article_purcase($venta->fresh());
 
+        /*
+         * Una venta vieja SIN MONEDA: ya no la produce el sistema (decision de Lucas, 30/9/2026: sin
+         * moneda es pesos), pero existen en produccion, con moneda NULL y `price` NULL en
+         * article_purchases. Se la deja armada como esta ahi (ver 16_).
+         */
+        if (is_null($moneda_id)) {
+            DB::table('sales')->where('id', $venta->id)->update(['moneda_id' => null]);
+            DB::table('article_purchases')->where('sale_id', $venta->id)->update(['price' => null, 'cost' => null]);
+        }
+
         return $venta;
     }
 }

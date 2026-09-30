@@ -267,7 +267,7 @@ class ImageServiceCallLogger
     /**
      * El texto sin credenciales: parámetros de URL con claves (`key=`, `cx=`, `api_key=`, `token=`),
      * claves con forma conocida sueltas (Anthropic `sk-ant-...`, Google `AIza...`), las claves de
-     * config tal cual y las que pase quien llama.
+     * config tal cual (Serper, Anthropic, DeepSeek, Google, OpenAI) y las que pase quien llama.
      *
      * @param  string|null $texto
      * @param  array       $claves_extra  Claves que config no conoce y que también se tachan tal cual:
@@ -292,6 +292,9 @@ class ImageServiceCallLogger
         foreach (array_merge([
             config('services.serper.api_key'),
             config('services.anthropic.api_key'),
+            // Misión modelos-ia-por-cliente (30/9/2026): la validación con IA puede ir a DeepSeek, y
+            // su mensaje de error (o el de cURL) podría traer la clave; se tacha igual que las demás.
+            config('services.deepseek.api_key'),
             config('services.google_search.api_key'),
             config('services.openai.api_key'),
         ], $claves_extra) as $clave) {

@@ -10,12 +10,17 @@ use Illuminate\Support\Facades\Log;
  * y DeepSeek (misión proveedores-ia-deepseek, 22/9/2026).
  *
  * Lo eligen por DUEÑO (`users.agente_proveedor`, mismo precedente que `agente_pensamiento` y
- * `agente_confianza`: la config es del comercio, no de la persona) y lo siguen los tres caminos del
- * asistente: el chat del dueño (AsistenteIaService, en el sistema y por WhatsApp), el bot de WhatsApp
- * a los clientes del negocio (WhatsappBotAiService) y el título de conversación
- * (InferirTituloConversacionIaJob). Ninguno de los tres sabe cuántos proveedores hay ni cómo se
- * llaman: le piden a este helper el modelo, el cliente HTTP, la URL y el payload, y registran el
- * gasto con el `proveedor` que este helper les devolvió, que es el que efectivamente contestó.
+ * `agente_confianza`: la config es del comercio, no de la persona) y lo siguen dos caminos del
+ * asistente: el chat del dueño (AsistenteIaService, en el sistema y por WhatsApp) y el título de
+ * conversación (InferirTituloConversacionIaJob). Ninguno de los dos sabe cuántos proveedores hay ni
+ * cómo se llaman: le piden a este helper el modelo, el cliente HTTP, la URL y el payload, y registran
+ * el gasto con el `proveedor` que este helper les devolvió, que es el que efectivamente contestó.
+ *
+ * Misión modelos-ia-por-cliente (30/9/2026): el bot de WhatsApp a los clientes del negocio
+ * (WhatsappBotAiService) YA NO sigue `agente_proveedor`: tiene su propio modelo por cliente
+ * (`users.ia_modelo_whatsapp`), igual que la verificación de imágenes y la importación de Excel, y lo
+ * decide ModelosIaHelper. Este helper les sigue dando el CÓMO (cliente HTTP, URL, thinking, errores
+ * transitorios); el QUÉ modelo lo resuelve aquel.
  *
  * 🔴 POR QUÉ NO HAY UN TRADUCTOR DE FORMATOS. DeepSeek publica un endpoint COMPATIBLE CON ANTHROPIC
  * (`https://api.deepseek.com/anthropic`, `POST /v1/messages`, header `x-api-key`; documentado en
@@ -348,6 +353,11 @@ class ProveedorIaHelper
      * apagado (son respuestas cortas y baratas, el análogo de Ágil); con Anthropic, sin clave
      * `thinking`, como siempre.
      *
+     * Misión modelos-ia-por-cliente (30/9/2026): el bot de WhatsApp YA NO pasa por acá. Tiene su
+     * propio modelo elegible por cliente (`users.ia_modelo_whatsapp`, ver ModelosIaHelper), separado
+     * del asistente, por decisión de Lucas. Lo que sigue usando este método es el título de
+     * conversación (InferirTituloConversacionIaJob), que el plan de esa misión deja como estaba.
+     *
      * @param  \App\Models\User|null  $owner
      * @return array{proveedor:string, modelo:string, thinking:array|null}
      */
@@ -555,10 +565,14 @@ class ProveedorIaHelper
      * `enabled` pelado rebota con 400 en el primer uso real de Profundo. Mandarlo no cuesta nada;
      * omitirlo puede costar la funcionalidad entera. Queda por debajo de `max_tokens_profundo`.
      *
+     * Es PUBLIC desde la misión modelos-ia-por-cliente (30/9/2026): ModelosIaHelper la usa para el
+     * bloque `thinking` de las opciones de DeepSeek de las tareas que no son el asistente (WhatsApp,
+     * imágenes, Excel). Solo cambió la visibilidad; el comportamiento es el mismo de siempre.
+     *
      * @param  bool  $es_profundo
      * @return array{type:string, budget_tokens?:int}
      */
-    protected static function thinking_de_deepseek($es_profundo): array
+    public static function thinking_de_deepseek($es_profundo): array
     {
         $tipo = (string) config($es_profundo ? 'services.deepseek.thinking_profundo' : 'services.deepseek.thinking_agil');
 

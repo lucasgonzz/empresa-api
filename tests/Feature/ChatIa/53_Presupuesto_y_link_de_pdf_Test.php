@@ -133,6 +133,31 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
     }
 
     /**
+     * Una venta del dueño con número y total propios, creada adentro de la transacción del test.
+     *
+     * 🔴 No volver a tomar "la última venta del dueño" de la base: ningún seeder de
+     * `database/seeders/testing` crea ventas, así que en una base recién sembrada no hay ninguna y
+     * los tests del link daban rojo. Pasaban solo en slots con ventas residuales de corridas viejas
+     * (medido el 30/9/2026: 0 en una base limpia, 89 en s23).
+     *
+     * El número es fijo y alto, como los de los presupuestos de este archivo (990053, 990153), para
+     * que no choque con ninguna venta que haya quedado en la base: el link se busca por `num`.
+     *
+     * @param  int  $numero
+     * @return Sale
+     */
+    protected function venta_de_prueba($numero)
+    {
+        return Sale::create([
+            'num'       => $numero,
+            'user_id'   => $this->dueno->id,
+            'moneda_id' => 1,
+            'total'     => 1530,
+            'terminada' => 1,
+        ]);
+    }
+
+    /**
      * @param  string  $pedido
      * @return array{0: AiConversation, 1: AiMessage}
      */
@@ -417,9 +442,9 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
 
         User::where('id', $this->dueno->id)->update(['api_url' => 'https://api-p53.comerciocity.com']);
 
-        $venta = Sale::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+        $venta = $this->venta_de_prueba(990253);
 
-        $this->assertNotNull($venta, 'El fixture tiene que tener al menos una venta.');
+        $this->assertNotNull($venta, 'El test tiene que tener una venta del dueño.');
 
         list($conversation) = $this->conversacion('Pasame el PDF de esa venta');
 
@@ -491,7 +516,9 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
 
         config(['app.APP_URL' => '']);
 
-        $venta = Sale::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+        // La venta tiene que existir: link() la busca ANTES de mirar la URL, y sin venta el error
+        // sería "No encontré…" en vez del de la dirección pública, que es lo que se prueba acá.
+        $venta = $this->venta_de_prueba(990353);
 
         list($conversation) = $this->conversacion('Pasame el PDF');
 
