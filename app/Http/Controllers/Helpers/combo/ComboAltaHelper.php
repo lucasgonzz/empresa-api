@@ -227,11 +227,15 @@ class ComboAltaHelper {
              */
             if ($calcular) {
 
-                // 🔴 Decisión registrada (30/9/2026): un combo calculado CON artículos cuyo precio
-                // da 0 o menos (un componente sin precio cargado todavía) y `online = 1` NO se
-                // rechaza: puede ser transitorio y el disparador lo recalcula cuando se cargue.
-                // Sin artículos sí se rechaza, pero en el controlador (ver ComboController::store()).
-                ComboCalculadoHelper::guardar($model);
+                // 🔴 F3: un combo calculado y PUBLICADO (`online = 1`) cuyo precio da 0 o menos (un
+                // componente sin precio cargado) no se crea: publicarlo es regalarlo. Se lanza
+                // adentro de la transacción, que deshace el alta; el controlador responde 422.
+                // Despublicado se crea normal. Sin artículos se rechaza antes, en el controlador.
+                $calculo = ComboCalculadoHelper::guardar($model);
+
+                if ($model->online && !is_null($calculo) && (float) $calculo['price'] <= 0) {
+                    throw new ComboSinPrecioParaPublicarException();
+                }
             }
 
             return $model;

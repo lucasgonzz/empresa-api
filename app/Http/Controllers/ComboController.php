@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\combo\ComboAltaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
+use App\Http\Controllers\Helpers\combo\ComboSinPrecioParaPublicarException;
 use App\Models\Combo;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -74,9 +75,17 @@ class ComboController extends Controller
 
         // El correlativo va como closure para que num() corra ADENTRO de la transacción del helper
         // y su lockForUpdate se sostenga hasta el commit (ver el docblock de ComboAltaHelper::crear()).
-        $model = ComboAltaHelper::crear($request->only(['name', 'cost', 'price', 'articles', 'online', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor']), $this->userId(), function () {
-            return $this->num('combos');
-        });
+        try {
+
+            $model = ComboAltaHelper::crear($request->only(['name', 'cost', 'price', 'articles', 'online', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor']), $this->userId(), function () {
+                return $this->num('combos');
+            });
+
+        } catch (ComboSinPrecioParaPublicarException $e) {
+
+            // Calculado + publicado + precio 0 (F3): la transacción del helper ya deshizo el alta.
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
         // Las fotos que se subieron ANTES de que el combo existiera (con un temporal_id) se
         // enganchan ahora al combo recién creado. Mismo mecanismo que Article y PromocionVinoteca.
@@ -134,6 +143,8 @@ class ComboController extends Controller
             return response()->json(['message' => $rechazo_sin_articulos], 422);
         }
 
+        try {
+
         DB::transaction(function () use ($request, $model, $disponible, $calculado) {
 
             $model->name                = $request->name;
@@ -186,11 +197,14 @@ class ComboController extends Controller
                     //
                     // 🔴 Decisión registrada (30/9/2026): si hay artículos pero el precio calculado
                     // da 0 o menos (un componente al que todavía no se le cargó el precio) y el combo
-                    // está publicado (`online = 1`), NO se rechaza. Puede ser transitorio —se carga el
-                    // costo después y el disparador lo recalcula—, y rechazar acá bloquearía guardar
-                    // el combo. El riesgo queda a la vista: hasta que se corrija, la tienda lo
-                    // mostraría a $0.
-                    ComboCalculadoHelper::guardar($model);
+                    // está publicado (`online = 1`) SE RECHAZA (F3): publicar un combo a $0 es regalarlo.
+                    // Despublicado (`online = 0`) se guarda normal, y un recálculo de fondo que lo deje
+                    // en $0 estando publicado no rechaza nada (solo avisa en el log).
+                    $calculo = ComboCalculadoHelper::guardar($model);
+
+                    if ($model->online && !is_null($calculo) && (float) $calculo['price'] <= 0) {
+                        throw new ComboSinPrecioParaPublicarException();
+                    }
 
                 } else {
 
@@ -203,6 +217,12 @@ class ComboController extends Controller
                 }
             }
         });
+
+        } catch (ComboSinPrecioParaPublicarException $e) {
+
+            // La transacción ya deshizo el guardado entero: el combo queda como estaba.
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
         $this->updateRelationsCreated('combo', $model->id, $request->childrens);
 

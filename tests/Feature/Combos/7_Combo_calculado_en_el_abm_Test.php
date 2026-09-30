@@ -623,10 +623,131 @@ class Combo_calculado_en_el_abm_Test extends ComboCalculadoTestCase
 
         $sin_precio = $this->nuevo_articulo(['costo_real' => 10, 'final_price' => null]);
 
-        $calculado = $this->postJson('api/combo', $this->payload([[$sin_precio, 1]], ['calcular_desde_articulos' => 1, 'online' => 1]));
+        // Despublicado (online = 0) el precio 0 es transitorio y se guarda (F3: publicado se rechaza).
+        $calculado = $this->postJson('api/combo', $this->payload([[$sin_precio, 1]], ['calcular_desde_articulos' => 1, 'online' => 0]));
 
         $calculado->assertStatus(201);
 
-        $this->assertSame(0.0, $this->precio_en_base($calculado->json('model.id')), 'Precio 0 por un componente sin precio: no se rechaza.');
+        $this->assertSame(0.0, $this->precio_en_base($calculado->json('model.id')), 'Precio 0 por un componente sin precio, sin publicar: no se rechaza.');
+    }
+
+    /**
+     * 🔴 F3: un combo calculado y PUBLICADO (`online = 1`) cuyo precio da 0 (un componente sin
+     * precio) se rechaza con 422 en el alta, y no queda nada creado.
+     *
+     * @test
+     */
+    public function crear_un_combo_calculado_publicado_con_precio_cero_responde_422_y_no_crea()
+    {
+        $this->con_listas(0);
+
+        $sin_precio = $this->nuevo_articulo(['costo_real' => 10, 'final_price' => null]);
+
+        $payload = $this->payload([[$sin_precio, 1]], ['calcular_desde_articulos' => 1, 'online' => 1]);
+
+        $respuesta = $this->postJson('api/combo', $payload);
+
+        $respuesta->assertStatus(422);
+
+        $this->assertStringContainsString('precio 0', $respuesta->json('message'));
+        $this->assertSame(0, Combo::where('name', $payload['name'])->count(), 'La transacción deshizo el alta.');
+    }
+
+    /**
+     * Mismo rechazo al editar: pasar un combo publicado a un artículo sin precio, o publicar uno
+     * que ya está en precio 0, responde 422 y el combo queda EXACTAMENTE como estaba (la
+     * transacción deshace el guardado entero: nombre, artículos y precio).
+     *
+     * @test
+     */
+    public function editar_un_combo_calculado_publicado_dejandolo_en_precio_cero_responde_422_y_no_guarda()
+    {
+        $this->con_listas(0);
+
+        $bueno      = $this->nuevo_articulo(['costo_real' => 100, 'final_price' => 250]);
+        $sin_precio = $this->nuevo_articulo(['costo_real' => 10, 'final_price' => null]);
+
+        $combo = $this->combo_calculado([[$bueno, 1]], ['online' => 1, 'name' => 'zz Combo publicado original']);
+        ComboCalculadoHelper::guardar($combo);
+
+        $respuesta = $this->putJson('api/combo/' . $combo->id, $this->payload([[$sin_precio, 1]], ['name' => 'zz Combo publicado cambiado', 'online' => 1]));
+
+        $respuesta->assertStatus(422);
+
+        $this->assertSame('zz Combo publicado original', $this->fila($combo)->name, 'El nombre no se guardó.');
+        $this->assertSame([(int) $bueno->id], $combo->articles()->pluck('articles.id')->map(function ($id) {
+            return (int) $id;
+        })->all(), 'Los artículos siguen siendo los de antes.');
+        $this->assertSame(250.0, $this->precio_en_base($combo));
+    }
+
+    /**
+     * Publicar un combo que ya estaba en precio 0 tampoco se puede; despublicado se guarda y
+     * después, con el precio cargado, se puede publicar.
+     *
+     * @test
+     */
+    public function no_se_puede_publicar_un_combo_calculado_en_precio_cero_pero_despublicado_si_se_guarda()
+    {
+        $this->con_listas(0);
+
+        $articulo = $this->nuevo_articulo(['costo_real' => 10, 'final_price' => null]);
+
+        $combo = $this->combo_calculado([[$articulo, 1]], ['online' => 0]);
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->putJson('api/combo/' . $combo->id, $this->payload([[$articulo, 1]], ['calcular_desde_articulos' => 1, 'online' => 1]))->assertStatus(422);
+
+        $this->assertSame(0, (int) $this->fila($combo)->online, 'Sigue sin publicar.');
+
+        $this->putJson('api/combo/' . $combo->id, $this->payload([[$articulo, 1]], ['calcular_desde_articulos' => 1, 'online' => 0]))->assertStatus(200);
+
+        // Con el precio cargado, publicar anda.
+        $this->escribir_crudo($articulo, ['final_price' => 300]);
+
+        $this->putJson('api/combo/' . $combo->id, $this->payload([[$articulo, 1]], ['calcular_desde_articulos' => 1, 'online' => 1]))->assertStatus(200);
+
+        $this->assertSame(1, (int) $this->fila($combo)->online);
+        $this->assertSame(300.0, $this->precio_en_base($combo));
+    }
+
+    /**
+     * Un combo MANUAL publicado con precio 0 no cambia (la regla es solo del calculado).
+     *
+     * @test
+     */
+    public function un_combo_manual_publicado_con_precio_cero_sigue_guardandose()
+    {
+        $this->postJson('api/combo', ['name' => 'zz Manual publicado cero ' . uniqid(), 'cost' => 1, 'price' => 0, 'online' => 1, 'articles' => []])->assertStatus(201);
+    }
+
+    /**
+     * Un recálculo AUTOMÁTICO (de fondo) que deja a un combo publicado en precio 0 no rechaza ni
+     * tumba nada: guarda el número nuevo y deja un warning en el log.
+     *
+     * @test
+     */
+    public function un_recalculo_de_fondo_que_deja_un_combo_publicado_en_cero_solo_avisa_en_el_log()
+    {
+        $this->con_listas(0);
+
+        $articulo = $this->nuevo_articulo(['costo_real' => 100, 'final_price' => 250]);
+
+        $combo = $this->combo_calculado([[$articulo, 1]], ['online' => 1]);
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(250.0, $this->precio_en_base($combo));
+
+        $this->escribir_crudo($articulo, ['final_price' => 0]);
+
+        \Illuminate\Support\Facades\Log::spy();
+
+        ComboCalculadoHelper::recalcular_por_articulos([$articulo->id]);
+
+        $this->assertSame(0.0, $this->precio_en_base($combo), 'El recálculo de fondo no rechaza: escribe el número nuevo.');
+
+        \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->withArgs(function ($mensaje) {
+            return strpos($mensaje, 'quedó con precio 0') !== false;
+        })->once();
     }
 }

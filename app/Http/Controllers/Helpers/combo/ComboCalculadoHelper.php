@@ -683,7 +683,21 @@ class ComboCalculadoHelper {
                     $duenos[$combo->user_id] = self::resolver_dueno(null, $combo->user_id);
                 }
 
-                self::guardar($combo, $duenos[$combo->user_id]);
+                $calculo = self::guardar($combo, $duenos[$combo->user_id]);
+
+                /*
+                 * F3: un recálculo de fondo NO rechaza nada (no hay a quién responderle 422, y el
+                 * precio de un componente puede estar sin cargar solo un rato), pero un combo
+                 * PUBLICADO que queda en precio <= 0 se deja dicho en el log para que alguien lo vea.
+                 * La tienda ya oculta los combos con precio 0, así que no se vende regalado.
+                 */
+                if (!is_null($calculo) && (int) $combo->online === 1 && (float) $calculo['price'] <= 0) {
+
+                    Log::warning('ComboCalculadoHelper: un combo publicado en la tienda quedó con precio 0 tras el recálculo', [
+                        'combo_id' => $combo->id,
+                        'user_id'  => $combo->user_id,
+                    ]);
+                }
 
                 $recalculados++;
 
