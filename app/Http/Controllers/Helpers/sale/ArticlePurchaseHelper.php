@@ -127,6 +127,17 @@ class ArticlePurchaseHelper {
 	}
 
 	function combos() {
+
+		/*
+			Se recarga la relacion desde la base (mision combos-calculados, Parte A2, 30/9/2026).
+			En la edicion de una venta, `SaleController::update()` deja `$sale->combos` con los
+			combos de ANTES de editar (`setRelation('combos', $previus_combos)`) y nadie la
+			refresca, mientras que `$sale->articles` si se recarga: sin esto, las filas de
+			`article_purchases` de los combos salian de los combos viejos (los que el usuario
+			acababa de sacar) y no de los que quedaron.
+		*/
+		$this->sale->load('combos');
+
 		foreach ($this->sale->combos as $combo) {
 
 			foreach ($combo->articles as $article) {
