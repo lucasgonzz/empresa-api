@@ -1068,7 +1068,9 @@ class CatalogoDeEscrituraIaHelper
      * sobre una columna sin índice es un scan de la tabla entera, y hay tablas de un cliente grande
      * que no se pueden escanear adentro del request que propone la tarjeta. Con este tope, el peor
      * caso de una tabla es escanear 200.000 filas; las que se pasan no se cuentan y el aviso lo
-     * dice con "puede haber más".
+     * dice: con "(puede haber más)" detrás de la cuenta si se contó alguna referencia, o con la
+     * frase de que no se pudieron contar todos los registros si no se contó ninguna (ver
+     * aviso_de_baja()).
      */
     const TOPE_DE_FILAS_SIN_INDICE = 200000;
 
@@ -1211,6 +1213,16 @@ class CatalogoDeEscrituraIaHelper
      * la baja es definitiva: si la entidad usa SoftDeletes la fila sigue existiendo y nadie queda
      * colgado, así que no hay nada que contar.
      *
+     * Cuando no se pudo contar todo (`hay_sin_contar` de referencias_que_quedan_colgadas(): el tope
+     * de tablas cortó, una tabla grande sin índice se salteó o un COUNT falló), el aviso lo dice de
+     * una de dos formas: si se contó al menos una referencia, con "(puede haber más)" detrás de la
+     * cuenta; si no se contó ninguna, con una frase propia —"No se pudieron contar todos los
+     * registros que podrían tenerla asignada: puede haber algunos que queden sin ella."—, sin número
+     * y sin "van a quedar sin". Hasta el 30/9/2026 ese segundo caso no decía nada, y callarse es
+     * decirle a la persona que no queda nada colgado sin haberlo revisado (hallazgo 2 de
+     * `informes/20260930-aviso-de-baja-test-determinista.md`). Si no se contó ninguna y no quedó
+     * nada sin contar, el aviso dice sólo que la baja es DEFINITIVA, como siempre.
+     *
      * @param  array  $declaracion
      * @param  object|array  $fila  La fila que se va a borrar (se usa su id).
      * @param  int  $owner_id
@@ -1238,14 +1250,26 @@ class CatalogoDeEscrituraIaHelper
 
         $colgadas = self::referencias_que_quedan_colgadas($declaracion, $id, (int) $owner_id);
 
-        if (count($colgadas['referencias'])) {
+        $femenino = $declaracion['genero'] === 'f';
 
-            $femenino = $declaracion['genero'] === 'f';
+        if (count($colgadas['referencias'])) {
 
             $partes[] = self::enumerar($colgadas['referencias'])
                 . ($femenino ? ' la tienen asignada y van a quedar sin ella' : ' lo tienen asignado y van a quedar sin él')
                 . ($colgadas['hay_sin_contar'] ? ' (puede haber más)' : '')
                 . '.';
+
+        } elseif ($colgadas['hay_sin_contar']) {
+
+            /*
+             * No se contó ninguna referencia, pero hubo tablas que no se revisaron (ver
+             * referencias_que_quedan_colgadas()). Callarse acá sería decirle a la persona que no
+             * queda nada colgado sin haberlo mirado. Sin número, porque no lo hay, y sin "van a
+             * quedar sin": esa frase es la marca de que hubo una cuenta de verdad.
+             */
+            $partes[] = $femenino
+                ? 'No se pudieron contar todos los registros que podrían tenerla asignada: puede haber algunos que queden sin ella.'
+                : 'No se pudieron contar todos los registros que podrían tenerlo asignado: puede haber algunos que queden sin él.';
         }
 
         return implode(' ', $partes);
@@ -1261,8 +1285,15 @@ class CatalogoDeEscrituraIaHelper
      *     por el id solo: ese id ya se verificó que es del dueño, así que lo que lo referencia es
      *     suyo.
      *   - No se cuentan las tablas grandes sin índice en esa columna (ver TOPE_DE_FILAS_SIN_INDICE):
-     *     serían un scan entero adentro del request que propone la tarjeta. Cuando se saltea alguna,
-     *     `hay_sin_contar` queda en true y el aviso lo dice.
+     *     serían un scan entero adentro del request que propone la tarjeta.
+     *
+     * `hay_sin_contar` queda en true por cualquiera de estas tres causas, y el aviso lo dice (ver
+     * aviso_de_baja()):
+     *   1. El tope de tablas cortó: después de contar TOPE_DE_TABLAS_A_CONTAR quedaba al menos una
+     *      candidata (ver ordenar_para_contar() para cuáles quedan afuera).
+     *   2. Una candidata sin índice en la columna y con más de TOPE_DE_FILAS_SIN_INDICE filas
+     *      estimadas: se saltea.
+     *   3. El COUNT de una candidata tiró una excepción: se loguea y se saltea.
      *
      * @param  array  $declaracion
      * @param  int  $id
@@ -2047,8 +2078,10 @@ class CatalogoDeEscrituraIaHelper
      * clientes quedaban sin ella. Las innombrables, en cambio, no tienen cuenta propia en el aviso:
      * se suman todas en una sola entrada de "vínculos internos". Si el tope tiene que cortar, son
      * las que conviene dejar afuera; la que queda afuera pone `hay_sin_contar` en true, y nada más.
-     * Ojo: aviso_de_baja() sólo lo convierte en "(puede haber más)" cuando se contó al menos una
-     * referencia; si no se contó ninguna, el aviso no dice nada de las que faltaron.
+     * Ojo: aviso_de_baja() lo convierte en "(puede haber más)" cuando se contó al menos una
+     * referencia; si no se contó ninguna, en la frase de que no se pudieron contar todos los
+     * registros que podrían tenerlo asignado. En los dos casos el aviso dice que faltó revisar
+     * algo, pero sólo en el primero hay una cuenta que la persona lee.
      *
      * Por qué el desempate por nombre: con la misma entrada, `usort` da siempre el mismo orden
      * (medido con PHP 7.4.33). Lo que cambia entre corridas es el orden de ENTRADA: la consulta a
