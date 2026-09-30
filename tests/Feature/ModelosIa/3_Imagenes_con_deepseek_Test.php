@@ -10,6 +10,7 @@ use App\Models\ImageAssignmentRun;
 use App\Models\ImageServiceCall;
 use App\Services\ArticleImageValidationService;
 use App\Services\CategoriaImagenValidacionService;
+use App\Services\ImageAssignment\ImageServiceCallLogger;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\ImagenesInteligentes\ImagenesInteligentesTestCase;
@@ -325,6 +326,22 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
         $this->assertFalse($ia['configurada']);
         $this->assertStringStartsWith('Falta la clave de la IA (ANTHROPIC_API_KEY)', $ia['motivo']);
         $this->assertStringContainsString('DEEPSEEK_API_KEY', $ia['motivo']);
+    }
+
+    /**
+     * La clave de DeepSeek se tacha del texto que se guarda en el registro de consultas, igual que
+     * las otras claves de config.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function sin_claves_tacha_tambien_la_clave_de_deepseek()
+    {
+        config(['services.deepseek.api_key' => 'sk-deepseek-CLAVE-DE-PRUEBA-123']);
+
+        $limpio = ImageServiceCallLogger::sin_claves('Falló con la clave sk-deepseek-CLAVE-DE-PRUEBA-123 en el header.');
+
+        $this->assertSame('Falló con la clave *** en el header.', $limpio);
     }
 
     /**
