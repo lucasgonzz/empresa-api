@@ -1512,12 +1512,23 @@ class ImageAssignmentRunHelper
             $proceso = is_null($run->background_process_id) ? null : BackgroundProcess::find($run->background_process_id);
 
             if (is_null($proceso) || $proceso->esta_terminado()) {
+                /*
+                 * 🔴 El registro visible nuevo cuenta la corrida ENTERA, no solo lo que falta: nace con
+                 * el total de la asignación y lo ya procesado. Antes nacía con `total = pendientes` y
+                 * `procesados = 0`, y el modal de procesos en segundo plano mostraba "37 de 2.462 · 1 %"
+                 * mientras Alertas (que lee la corrida) decía "1.629 de 4.054 · 40 %": parecía que la
+                 * reanudación arrancaba de cero, y no era así — los artículos hechos no se tocan.
+                 */
+                $total_corrida = max((int) $run->total_articulos, (int) $run->procesados + $pendientes);
+                $ya_procesados = min((int) $run->procesados, $total_corrida);
+
                 $nuevo = BackgroundProcessHelper::iniciar((int) $run->user_id, self::TIPO_DE_PROCESO, $run->origen === ImageAssignmentRun::ORIGEN_CATALOGO ? self::TITULO_DE_PROCESO_CATALOGO : self::TITULO_DE_PROCESO, [
                     // El registro que abre la reanudación sigue la misma regla que el primero.
                     'auth_user_id' => self::auth_user_id_del_registro_visible((string) $run->origen, $run->auth_user_id),
-                    'total'        => $pendientes,
+                    'total'        => $total_corrida,
+                    'procesados'   => $ya_procesados,
                     'unidad'       => 'artículos',
-                    'detalle'      => $pendientes.' artículos (reanudada)',
+                    'detalle'      => $total_corrida.' artículos'.($run->origen === ImageAssignmentRun::ORIGEN_CATALOGO ? ' (todo el catálogo)' : '').' · reanudada, faltaban '.$pendientes,
                     'status'       => BackgroundProcess::STATUS_PENDIENTE,
                     'etapa'        => 'En espera del procesador',
                     'referencia'   => $run,

@@ -201,7 +201,9 @@ class set_costo_ventas extends Command
         $cotizar_precios_en_dolares
     ) {
         $total_cost = 0;
-        $valor_dolar = $sale->valor_dolar ? (float) $sale->valor_dolar : $user_dollar;
+        // `(float) > 0`: `sales.valor_dolar` es DECIMAL y un '0.00' es truthy; sin esto se perderia el respaldo
+        // al dolar del dueño para las ventas guardadas con cotizacion 0.
+        $valor_dolar = (float) $sale->valor_dolar > 0 ? (float) $sale->valor_dolar : $user_dollar;
 
         foreach ($sale->articles as $article) {
             $pivot = $article->pivot;

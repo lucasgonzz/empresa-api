@@ -181,29 +181,38 @@ class CurrentAcountPagoAltaHelper {
     }
 
     /**
-     * Total del pago: la suma de las filas de métodos de pago, tomando el monto cotizado cuando la
-     * fila vino en otra moneda. Mudado tal cual desde CurrentAcountController::get_haber().
+     * Total del pago: la suma de las filas de métodos de pago, EN LA MONEDA DE LA CUENTA que se
+     * paga. Mudado desde CurrentAcountController::get_haber() y corregido en la misión
+     * corregir-ventas-en-dolares (30/9/2026).
+     *
+     * Antes tomaba el `amount_cotizado` de cualquier fila que lo trajera con valor, sin mirar en
+     * qué moneda estaba la fila: un cotizado residual en una fila de la moneda de la cuenta
+     * duplicaba el total, y una fila cruzada que llegaba sin cotizado valía su monto nominal (120000
+     * pesos contaban como 120000 dólares). Ahora cada fila vale lo que dice
+     * CurrentAcountPagoMonedaHelper::valor_de_la_fila_en_la_cuenta(): su `amount` si está en la
+     * moneda de la cuenta, y su cotizado (calculado con la cotización si falta) si vino en otra.
+     *
+     * 🔴 Es defensivo a propósito y no rechaza nada. La pantalla ya pasó por
+     * CurrentAcountPagoMonedaHelper::validar_y_normalizar() y sus filas llegan coherentes, pero el
+     * asistente de IA y el endoso de cheques llaman a registrar() directo, sin pasar por el
+     * controlador: para ésos, get_haber() es la única barrera entre una fila mal armada y un haber
+     * inflado.
+     *
+     * Con una cuenta que no existe (un llamador viejo sin `credit_account_id`) queda el criterio de
+     * siempre: el cotizado si vino con valor y si no el monto.
      *
      * @param  object  $pedido  Objeto armado por pedido().
      * @return float|int
      */
     static function get_haber($pedido) {
+
+        /** Moneda de la cuenta que se paga (null si la cuenta no existe). Una sola lectura por pago. */
+        $moneda_de_la_cuenta = CurrentAcountPagoMonedaHelper::moneda_de_la_cuenta($pedido->credit_account_id);
+
         $total = 0;
         foreach ($pedido->current_acount_payment_methods as $payment_method) {
 
-            if (
-                isset($payment_method['amount_cotizado'])
-                && !is_null($payment_method['amount_cotizado'])
-                && $payment_method['amount_cotizado'] != ''
-                && (float)$payment_method['amount_cotizado'] > 0
-            ) {
-                $haber = (float)$payment_method['amount_cotizado'];
-            } else {
-
-                $haber = (float)$payment_method['amount'];
-            }
-
-            $total += $haber;
+            $total += CurrentAcountPagoMonedaHelper::valor_de_la_fila_en_la_cuenta($payment_method, $moneda_de_la_cuenta);
         }
         return $total;
     }
