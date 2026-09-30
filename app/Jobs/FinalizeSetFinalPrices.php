@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\PriceUpdateRun;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
@@ -174,6 +175,21 @@ class FinalizeSetFinalPrices implements ShouldQueue
 
             return;
         }
+
+        /*
+         * Combos calculados (misión combos-calculados, 30/9/2026): todos los lotes de la corrida ya
+         * escribieron sus precios, así que ahora sí los combos calculados del dueño rehacen su
+         * cuenta, UNA vez por corrida y no una por lote. Se hacen TODOS los del dueño y no "los que
+         * incluyen los artículos que cambiaron": esta tabla solo registra los artículos cuyo
+         * precio final cambió, y un combo también depende del costo real, que puede haberse movido
+         * sin mover el precio.
+         *
+         * Va ANTES de cerrar la corrida, no después: este job se reintenta hasta que la corrida
+         * está cerrada (arriba, `status != en_proceso` corta), así que si algo muriera entre el
+         * cierre y el recálculo, los combos quedarían viejos sin nadie que lo reintente. Recalcular
+         * dos veces es inocuo (idempotente). El helper no tira: sus fallas quedan en el log.
+         */
+        ComboCalculadoHelper::recalcular_de_un_dueno($this->user_id);
 
         $articles_updated = (int) DB::table('price_update_run_articles')
             ->where('price_update_run_id', $run->id)

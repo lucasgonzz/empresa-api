@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
@@ -181,6 +182,16 @@ class FinalizeArticleImport implements ShouldQueue
         ArticleImportHelper::calcular_matching_counts_total($import_history);
 
         $import_history->save();
+
+        /*
+         * Combos calculados (misión combos-calculados, 30/9/2026): la importación escribe los
+         * precios en bloque (modo lote de `PreciosEnLote`), y en ese modo `setFinalPrice()` NO
+         * dispara el recálculo de combos. Este es el único punto donde la importación ya terminó y
+         * no queda ningún lote corriendo, así que los combos calculados del dueño se rehacen acá,
+         * una vez por importación. Todos los del dueño y no "los de los artículos importados":
+         * a esta altura ya no se sabe cuáles fueron sin releer todo el archivo. Nunca tira.
+         */
+        ComboCalculadoHelper::recalcular_de_un_dueno($user->id);
 
         /*
          * Registro visible del proceso (misión procesos-en-segundo-plano): se cierra acá, en el

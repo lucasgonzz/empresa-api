@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Jobs\ProcessPropagarDescuentosProveedorJob;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -2364,6 +2365,14 @@ class ArticleProviderDiscountHelper {
             if (!is_null($dueno) && empty($dueno->owner_id)) {
 
                 RecalculoDePreciosEnLote::recalcular($ids, $dueno, $auth_user_id);
+
+                /*
+                 * Combos calculados (misión combos-calculados, 30/9/2026): el motor escribe en
+                 * bloque y no pasa por el gancho de `setFinalPrice()`, así que los combos
+                 * calculados que incluyen estos artículos se rehacen acá, con los precios ya
+                 * escritos. Una consulta por tanda si ningún combo calculado los incluye.
+                 */
+                ComboCalculadoHelper::recalcular_por_articulos($ids, $user_id);
 
                 continue;
             }

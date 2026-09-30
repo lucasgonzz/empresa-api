@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessMasiveUpdateJob;
 use App\Models\Article;
@@ -1246,6 +1247,15 @@ class MasiveUpdateHelper
             foreach ($modelos as $modelo) {
                 TiendaNubeSyncArticleService::add_article_to_sync($modelo);
             }
+
+            /*
+             * Combos calculados (misión combos-calculados, 30/9/2026): el motor ya escribió los
+             * precios de la tanda (y los de cada lista), así que los combos calculados que incluyen
+             * alguno de estos artículos rehacen su cuenta ahora. El motor no lo hace solo: escribe
+             * en bloque y no pasa por el gancho de `setFinalPrice()`. Una consulta por tanda, y
+             * nada más si ningún combo calculado incluye estos artículos.
+             */
+            ComboCalculadoHelper::recalcular_por_articulos($ids, $owner_id);
 
             return;
         }
