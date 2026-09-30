@@ -2067,20 +2067,19 @@ PROMPT;
     protected function parse_claude_response(string $claude_text, array $providers = [], array $addresses = [], array $price_types = []): array
     {
         /*
-         * Limpiamos posibles bloques de código markdown que Claude pueda incluir
-         * a pesar de que el prompt pide JSON puro.
+         * El JSON adentro del texto de la IA (ModelosIaHelper::extraer_json(), misión
+         * modelos-ia-por-cliente): tolera el bloque cercado ```json, el JSON pelado y PROSA antes del
+         * JSON (con o sin llaves), que es lo que a veces hace DeepSeek. Antes se decodificaba el texto
+         * entero y cualquier frase antes del JSON daba "no se pudo interpretar la planilla". Solo
+         * vale un objeto que traiga `column_mapping`: una llave suelta de la prosa no lo engaña.
          */
-        $clean_text = trim($claude_text);
-        $clean_text = preg_replace('/^```(?:json)?\s*/i', '', $clean_text);
-        $clean_text = preg_replace('/\s*```$/i', '', $clean_text);
-        $clean_text = trim($clean_text);
+        $parsed = ModelosIaHelper::extraer_json($claude_text, function ($candidato) {
+            return isset($candidato['column_mapping']) && is_array($candidato['column_mapping']);
+        });
 
-        $parsed = json_decode($clean_text, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            Log::error('AiExcelAnalyzer: JSON inválido en respuesta de Claude', [
+        if (is_null($parsed)) {
+            Log::error('AiExcelAnalyzer: la respuesta de la IA no trae un JSON legible con column_mapping', [
                 'raw_response' => $claude_text,
-                'json_error'   => json_last_error_msg(),
             ]);
 
             /* El JSON crudo y el error de parseo ya quedaron en el Log::error de arriba. */
@@ -2858,16 +2857,17 @@ PROMPT;
             /* Llamamos a Claude con el mismo método que usa el análisis principal. */
             $claude_response = $this->call_claude($prompt);
 
-            /* Limpiamos posibles bloques markdown igual que en parse_claude_response(). */
-            $clean_text = trim($claude_response);
-            $clean_text = preg_replace('/^```(?:json)?\s*/i', '', $clean_text);
-            $clean_text = preg_replace('/\s*```$/i', '', $clean_text);
-            $clean_text = trim($clean_text);
+            /*
+             * El JSON adentro del texto, con el mismo criterio que parse_claude_response()
+             * (ModelosIaHelper::extraer_json()): cercas, JSON pelado o prosa antes. Solo vale un
+             * objeto con `politica_colision`; si no hay, cae al fallback heurístico como siempre.
+             */
+            $decoded = ModelosIaHelper::extraer_json($claude_response, function ($candidato) {
+                return array_key_exists('politica_colision', $candidato);
+            });
 
-            $decoded = json_decode($clean_text, true);
-
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new \RuntimeException('JSON inválido: ' . json_last_error_msg());
+            if (is_null($decoded)) {
+                throw new \RuntimeException('JSON inválido: la respuesta no trae un objeto con politica_colision');
             }
 
             /* Validamos que los valores estén dentro del set permitido. */

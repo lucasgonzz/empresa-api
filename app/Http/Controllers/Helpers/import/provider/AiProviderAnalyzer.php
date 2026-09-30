@@ -938,20 +938,19 @@ PROMPT;
     protected function parse_claude_response(string $claude_text): array
     {
         /*
-         * Limpiamos posibles bloques de código markdown que Claude pueda incluir
-         * a pesar de que el prompt pide JSON puro.
+         * El JSON adentro del texto de la IA (ModelosIaHelper::extraer_json(), misión
+         * modelos-ia-por-cliente): tolera el bloque cercado ```json, el JSON pelado y PROSA antes del
+         * JSON (con o sin llaves), que es lo que a veces hace DeepSeek. Antes se decodificaba el texto
+         * entero y cualquier frase antes del JSON daba "no se pudo interpretar la planilla". Solo
+         * vale un objeto que traiga `column_mapping`: una llave suelta de la prosa no lo engaña.
          */
-        $clean_text = trim($claude_text);
-        $clean_text = preg_replace('/^```(?:json)?\s*/i', '', $clean_text);
-        $clean_text = preg_replace('/\s*```$/i', '', $clean_text);
-        $clean_text = trim($clean_text);
+        $parsed = ModelosIaHelper::extraer_json($claude_text, function ($candidato) {
+            return isset($candidato['column_mapping']) && is_array($candidato['column_mapping']);
+        });
 
-        $parsed = json_decode($clean_text, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            Log::error('AiProviderAnalyzer: JSON inválido en respuesta de Claude', [
+        if (is_null($parsed)) {
+            Log::error('AiProviderAnalyzer: la respuesta de la IA no trae un JSON legible con column_mapping', [
                 'raw_response' => $claude_text,
-                'json_error'   => json_last_error_msg(),
             ]);
 
             /* El JSON crudo y el error de parseo ya quedaron en el Log::error de arriba. */

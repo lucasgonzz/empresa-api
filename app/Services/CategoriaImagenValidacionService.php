@@ -262,20 +262,12 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
             return null;
         }
 
-        $text = preg_replace('/^```(?:json)?/i', '', trim($text));
-        $text = preg_replace('/```$/', '', trim($text));
-        $text = trim($text);
+        // El JSON adentro del texto, tolerando cercas y prosa antes (ver ModelosIaHelper::extraer_json()).
+        $decoded = ModelosIaHelper::extraer_json($text, function ($candidato) {
+            return array_key_exists('representa', $candidato);
+        });
 
-        $start = strpos($text, '{');
-        $end   = strrpos($text, '}');
-
-        if ($start === false || $end === false || $end <= $start) {
-            return null;
-        }
-
-        $decoded = json_decode(substr($text, $start, $end - $start + 1), true);
-
-        if (!is_array($decoded) || !array_key_exists('representa', $decoded)) {
+        if (is_null($decoded)) {
             return null;
         }
 

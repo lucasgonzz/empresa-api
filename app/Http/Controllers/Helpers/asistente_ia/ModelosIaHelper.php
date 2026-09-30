@@ -500,6 +500,162 @@ class ModelosIaHelper
     }
 
     /**
+     * El objeto JSON que devolvió la IA adentro de su texto, tolerando lo que los modelos agregan
+     * alrededor aunque el prompt pida "solo JSON". Devuelve el primer candidato que decodifica a un
+     * array Y pasa `$es_valido` (la forma esperada por quien llama), o null si no hay ninguno.
+     *
+     * 🔴 POR QUÉ NO ALCANZA "DEL PRIMER `{` AL ÚLTIMO `}`" (lo que hacían los parsers de imágenes):
+     * la comparación real Flash vs Haiku del 30/9/2026 mostró que DeepSeek Flash a veces escribe
+     * PROSA antes del JSON ("Analizo las candidatas: ... {ejemplo} ..."). Si esa prosa trae una llave,
+     * el recorte arranca en ella y el JSON queda ilegible: la candidata vuelve `sin_evaluar` aunque la
+     * respuesta fuera buena. Y los analizadores de Excel directamente decodificaban el texto entero,
+     * así que cualquier prosa los tiraba. Orden de búsqueda:
+     *   1. El bloque cercado ```json ... ``` (o ``` ... ```), si existe: es lo que hace Haiku y es la
+     *      señal más clara de dónde está el JSON.
+     *   2. El texto entero (el caso de siempre: JSON pelado).
+     *   3. Desde CADA `{` del texto, el objeto balanceado que abre (el escaneo respeta los strings,
+     *      así una llave adentro de un "motivo" no corta nada), y si ese no sirve, desde esa `{`
+     *      hasta la última `}`. Gana el primero que tenga la forma esperada: una `{ejemplo}` de la
+     *      prosa decodifica mal o no pasa `$es_valido`, y se sigue con la próxima.
+     *
+     * @param  string  $texto
+     * @param  callable|null  $es_valido  fn(array $candidato): bool. Null = cualquier array.
+     * @return array|null
+     */
+    public static function extraer_json($texto, $es_valido = null)
+    {
+        $texto = trim((string) $texto);
+
+        if ($texto === '') {
+            return null;
+        }
+
+        $candidatos = [];
+
+        /* 1. Bloques cercados con ``` (con o sin "json"), en orden. */
+        if (preg_match_all('/```(?:json)?\s*(.*?)```/is', $texto, $cercados)) {
+            foreach ($cercados[1] as $cercado) {
+                $candidatos[] = trim($cercado);
+            }
+        }
+
+        /* 2. El texto entero, sin las cercas de las puntas (el comportamiento de siempre). */
+        $sin_cercas = preg_replace('/^```(?:json)?\s*/i', '', $texto);
+        $sin_cercas = preg_replace('/\s*```$/', '', (string) $sin_cercas);
+        $candidatos[] = trim((string) $sin_cercas);
+
+        foreach ($candidatos as $candidato) {
+            $decodificado = self::decodificar_si_sirve($candidato, $es_valido);
+
+            if (! is_null($decodificado)) {
+                return $decodificado;
+            }
+        }
+
+        /* 3. Desde cada `{`: el objeto balanceado y, si no, hasta la última `}`. */
+        $ultima = strrpos($texto, '}');
+        $offset = 0;
+
+        while (($inicio = strpos($texto, '{', $offset)) !== false) {
+            $offset = $inicio + 1;
+
+            $balanceado = self::objeto_balanceado($texto, $inicio);
+
+            if (! is_null($balanceado)) {
+                $decodificado = self::decodificar_si_sirve($balanceado, $es_valido);
+
+                if (! is_null($decodificado)) {
+                    return $decodificado;
+                }
+            }
+
+            if ($ultima !== false && $ultima > $inicio) {
+                $decodificado = self::decodificar_si_sirve(substr($texto, $inicio, $ultima - $inicio + 1), $es_valido);
+
+                if (! is_null($decodificado)) {
+                    return $decodificado;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * json_decode del candidato, solo si da un array y tiene la forma esperada.
+     *
+     * @param  string  $candidato
+     * @param  callable|null  $es_valido
+     * @return array|null
+     */
+    protected static function decodificar_si_sirve($candidato, $es_valido)
+    {
+        if ($candidato === '' || $candidato[0] !== '{') {
+            return null;
+        }
+
+        $decodificado = json_decode($candidato, true);
+
+        if (! is_array($decodificado)) {
+            return null;
+        }
+
+        if (! is_null($es_valido) && ! call_user_func($es_valido, $decodificado)) {
+            return null;
+        }
+
+        return $decodificado;
+    }
+
+    /**
+     * El objeto `{...}` balanceado que abre la llave de la posición `$inicio`, o null si no cierra.
+     * Las llaves adentro de strings JSON (con sus escapes) no cuentan. Trabaja por bytes: las llaves,
+     * las comillas y la barra son ASCII y en UTF-8 ningún byte de un carácter multibyte coincide con
+     * ellas, así que no parte caracteres.
+     *
+     * @param  string  $texto
+     * @param  int  $inicio
+     * @return string|null
+     */
+    protected static function objeto_balanceado($texto, $inicio)
+    {
+        $profundidad = 0;
+        $en_string   = false;
+        $escapado    = false;
+        $largo       = strlen($texto);
+
+        for ($i = $inicio; $i < $largo; $i++) {
+            $caracter = $texto[$i];
+
+            if ($en_string) {
+                if ($escapado) {
+                    $escapado = false;
+                } elseif ($caracter === '\\') {
+                    $escapado = true;
+                } elseif ($caracter === '"') {
+                    $en_string = false;
+                }
+
+                continue;
+            }
+
+            if ($caracter === '"') {
+                $en_string = true;
+            } elseif ($caracter === '{') {
+                $profundidad++;
+            } elseif ($caracter === '}') {
+                $profundidad--;
+
+                if ($profundidad === 0) {
+                    return substr($texto, $inicio, $i - $inicio + 1);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * true si un error de la importación de Excel es TRANSITORIO ("el servicio no está disponible,
      * esperá unos segundos") y no un rechazo. Lo usan los tres Ai*Analyzer.
      *

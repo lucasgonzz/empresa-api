@@ -516,23 +516,13 @@ class ArticleImageValidationService
             return null;
         }
 
-        // Saca backticks/markdown por si el modelo los agrega igual, pese a la instruccion.
-        $text = preg_replace('/^```(?:json)?/i', '', trim($text));
-        $text = preg_replace('/```$/', '', trim($text));
-        $text = trim($text);
+        // El JSON adentro del texto, tolerando cercas ```json y prosa antes (con o sin llaves): ver
+        // ModelosIaHelper::extraer_json(). Solo vale un objeto que traiga `es_el_producto`.
+        $decoded = ModelosIaHelper::extraer_json($text, function ($candidato) {
+            return isset($candidato['es_el_producto']);
+        });
 
-        // Se queda con el primer objeto JSON balanceado del texto.
-        $start = strpos($text, '{');
-        $end   = strrpos($text, '}');
-
-        if ($start === false || $end === false || $end <= $start) {
-            return null;
-        }
-
-        $json    = substr($text, $start, $end - $start + 1);
-        $decoded = json_decode($json, true);
-
-        if (!is_array($decoded) || !isset($decoded['es_el_producto'])) {
+        if (is_null($decoded)) {
             return null;
         }
 
@@ -1060,20 +1050,17 @@ class ArticleImageValidationService
             }
         }
 
-        $texto = trim($texto);
-        $texto = preg_replace('/^```(?:json)?/i', '', $texto);
-        $texto = trim(preg_replace('/```$/', '', trim($texto)));
+        /*
+         * El JSON adentro del texto (ModelosIaHelper::extraer_json()): DeepSeek Flash a veces escribe
+         * prosa ANTES del JSON y Haiku lo envuelve en ```json. Con "del primer `{` al último `}`" una
+         * llave en la prosa dejaba la respuesta ilegible y todas las candidatas sin evaluar. Solo vale
+         * un objeto con la lista `candidatas`.
+         */
+        $decodificado = ModelosIaHelper::extraer_json($texto, function ($candidato) {
+            return isset($candidato['candidatas']) && is_array($candidato['candidatas']);
+        });
 
-        $inicio = strpos($texto, '{');
-        $fin    = strrpos($texto, '}');
-
-        if ($inicio === false || $fin === false || $fin <= $inicio) {
-            return null;
-        }
-
-        $decodificado = json_decode(substr($texto, $inicio, $fin - $inicio + 1), true);
-
-        if (!is_array($decodificado) || !isset($decodificado['candidatas']) || !is_array($decodificado['candidatas'])) {
+        if (is_null($decodificado)) {
             return null;
         }
 
