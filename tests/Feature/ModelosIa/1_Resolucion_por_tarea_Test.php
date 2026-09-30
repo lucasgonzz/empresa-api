@@ -237,6 +237,37 @@ class Resolucion_por_tarea_Test extends TestCase
     }
 
     /**
+     * (M3) dueno_de() con el id de un EMPLEADO devuelve al dueño, y el modelo resuelto es el que eligió
+     * el dueño (la configuración vive en su fila, no en la del empleado).
+     *
+     * @test
+     */
+    public function dueno_de_con_un_empleado_resuelve_al_dueno_y_su_modelo()
+    {
+        $this->dueno->ia_modelo_whatsapp = 'claude_opus';
+        $this->dueno->save();
+
+        $empleado = User::create([
+            'name'     => 'Empleado R1',
+            'email'    => 'modelos-ia-r1-empleado-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+        ]);
+        $empleado->owner_id = $this->dueno->id;
+        /* Una elección cargada en el empleado no cuenta: manda la del dueño. */
+        $empleado->ia_modelo_whatsapp = 'deepseek_pro';
+        $empleado->save();
+
+        $resuelto = ModelosIaHelper::dueno_de($empleado->id);
+
+        $this->assertSame((int) $this->dueno->id, (int) $resuelto->id);
+        $this->assertSame('claude-opus-test', ModelosIaHelper::resolver($resuelto, 'whatsapp')['modelo']);
+
+        $this->assertSame((int) $this->dueno->id, (int) ModelosIaHelper::dueno_de($this->dueno->id)->id, 'El dueño se resuelve a sí mismo.');
+        $this->assertNull(ModelosIaHelper::dueno_de(null));
+        $this->assertNull(ModelosIaHelper::dueno_de(0));
+    }
+
+    /**
      * El texto de una respuesta es el del PRIMER bloque `text`: con thinking prendido el primero es
      * `thinking` y content[0] no tiene texto.
      *

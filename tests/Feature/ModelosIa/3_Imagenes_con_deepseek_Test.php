@@ -83,6 +83,14 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
             if (strpos($url, 'api.deepseek.com') !== false || strpos($url, 'api.anthropic.com') !== false) {
                 $test->requests_ia[] = ['url' => $url, 'headers' => $request->headers(), 'body' => $request->data()];
 
+                /* 'timeout' = la IA no contesta a tiempo (cURL 28), con la clave en el mensaje para ver que se tacha. */
+                if ($ia === 'timeout') {
+                    throw new \GuzzleHttp\Exception\ConnectException(
+                        'cURL error 28: Operation timed out after 25001 milliseconds (clave DEEPSEEK-DE-PRUEBA) for '.$url,
+                        $request->toPsrRequest()
+                    );
+                }
+
                 if (is_int($ia)) {
                     return Http::response(['error' => ['message' => $mensaje_de_error, 'type' => 'error_de_prueba']], $ia);
                 }
@@ -326,6 +334,107 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
         $this->assertFalse($ia['configurada']);
         $this->assertStringStartsWith('Falta la clave de la IA (ANTHROPIC_API_KEY)', $ia['motivo']);
         $this->assertStringContainsString('DEEPSEEK_API_KEY', $ia['motivo']);
+    }
+
+    /**
+     * (M1) Un timeout de DeepSeek en evaluar_candidatas() queda registrado con `proveedor=deepseek`
+     * (no con el Anthropic de siempre), sin cobrar y con la clave tachada.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function un_timeout_de_deepseek_en_el_motor_queda_registrado_como_deepseek()
+    {
+        $articulo = $this->nuevo_articulo('Pinza de punta', self::CODIGO);
+        $run      = $this->asignacion([$articulo]);
+
+        $this->falsear_con_deepseek(
+            [self::CODIGO => [$this->resultado($this->url_imagen('pinza'), 1000, 1000, 1)]],
+            [$this->url_imagen('pinza') => $this->png(1000, 1000, 'azul')],
+            'timeout'
+        );
+
+        $this->procesar($run, $articulo);
+
+        $consulta = ImageServiceCall::where('run_id', $run->id)->where('tipo', ImageServiceCall::TIPO_VALIDACION_IA)->first();
+
+        $this->assertNotNull($consulta);
+        $this->assertSame('deepseek', $consulta->proveedor);
+        $this->assertSame('deepseek-flash-test', $consulta->modelo);
+        $this->assertFalse($consulta->ok);
+        $this->assertFalse($consulta->cobrada);
+        $this->assertStringContainsString('Error de conexión con DeepSeek', (string) $consulta->error);
+        $this->assertStringContainsString('cURL error 28', (string) $consulta->error);
+        $this->assertStringNotContainsString('DEEPSEEK-DE-PRUEBA', (string) $consulta->error, 'La clave no queda en el registro.');
+    }
+
+    /**
+     * (M1) Lo mismo en validate(), la validación individual.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function un_timeout_de_deepseek_en_validate_queda_registrado_como_deepseek()
+    {
+        $articulo = $this->nuevo_articulo('Yerba mate 1 kg', self::CODIGO);
+
+        $this->falsear_con_deepseek([], [], 'timeout');
+
+        $veredicto = (new ArticleImageValidationService())->validate($this->png(600, 600, 'rojo'), $articulo, $this->owner->id);
+
+        $this->assertFalse($veredicto['evaluated']);
+        $this->assertTrue($veredicto['accepted'], 'El fail-open de siempre.');
+
+        $fila = ImageServiceCall::where('user_id', $this->owner->id)->orderBy('id', 'desc')->first();
+
+        $this->assertSame(ImageServiceCall::ORIGEN_VALIDACION_INDIVIDUAL, $fila->origen);
+        $this->assertSame('deepseek', $fila->proveedor);
+        $this->assertFalse($fila->ok);
+        $this->assertStringContainsString('Error de conexión con DeepSeek', (string) $fila->error);
+        $this->assertStringNotContainsString('DEEPSEEK-DE-PRUEBA', (string) $fila->error);
+    }
+
+    /**
+     * (M3) validate() con el user_id de un EMPLEADO: el registro va a su nombre (como siempre), pero
+     * el MODELO es el que eligió el DUEÑO.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function con_el_id_de_un_empleado_el_modelo_es_el_que_eligio_el_dueno()
+    {
+        config(['services.anthropic.model_equilibrado' => 'claude-sonnet-del-dueno-test']);
+
+        $this->owner->ia_modelo_imagenes = 'claude_sonnet';
+        $this->owner->save();
+
+        $empleado = \App\Models\User::create([
+            'name'     => 'Empleado imágenes M3',
+            'email'    => 'empleado-imagenes-m3-'.uniqid().'@test.local',
+            'password' => \Illuminate\Support\Facades\Hash::make('secret'),
+        ]);
+        $empleado->owner_id = $this->owner->id;
+        $empleado->save();
+
+        $articulo = $this->nuevo_articulo('Yerba mate 1 kg', self::CODIGO);
+
+        $this->requests_ia = [];
+        $test = $this;
+
+        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::fake(function ($request) use ($test) {
+            $test->requests_ia[] = ['url' => $request->url(), 'body' => $request->data()];
+
+            return Http::response([
+                'content' => [['type' => 'text', 'text' => json_encode(['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'ok'])]],
+                'usage'   => ['input_tokens' => 10, 'output_tokens' => 5],
+            ], 200);
+        });
+
+        (new ArticleImageValidationService())->validate($this->png(300, 300, 'rojo'), $articulo, $empleado->id);
+
+        $this->assertSame('https://api.anthropic.com/v1/messages', $this->requests_ia[0]['url']);
+        $this->assertSame('claude-sonnet-del-dueno-test', $this->requests_ia[0]['body']['model'], 'El modelo sale de la fila del DUEÑO, no del empleado.');
     }
 
     /**
