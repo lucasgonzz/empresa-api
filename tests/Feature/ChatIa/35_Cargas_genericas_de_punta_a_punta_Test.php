@@ -28,7 +28,8 @@ use Tests\EmpresaTestCase;
  * LA PANTALLA.
  *
  * Corre sobre el fixture de la ferretería (TestingFerreteriaSeeder): el proveedor "Buenos Aires"
- * con sus dos descuentos, las ventas sembradas y el dueño. Lo que protege:
+ * con sus dos descuentos y el dueño. La venta de la baja la crea el propio test: el fixture no
+ * siembra ventas. Lo que protege:
  *
  * - Alta de proveedor, cliente, categoría y artículo: la fila la crea el controller (el correlativo
  *   sale de num(), las cuentas corrientes de CreditAccountHelper, el precio final de setFinalPrice),
@@ -160,6 +161,32 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
         }
 
         return null;
+    }
+
+    /**
+     * Una venta del dueño con número y total propios, creada adentro de la transacción del test.
+     *
+     * 🔴 No volver a tomar "la última venta del dueño" de la base: ningún seeder de
+     * `database/seeders/testing` crea ventas, así que en una base recién sembrada no hay ninguna y
+     * la baja daba rojo. Pasaba solo en slots con ventas residuales de corridas viejas (medido el
+     * 30/9/2026: 0 en una base limpia, 89 en s23).
+     *
+     * Lleva `total` porque la tarjeta de baja muestra el renglón "Total" solo si no está vacío
+     * (PropuestaGenericaIaHelper::renglones_de_baja), y el test lo exige. El número es fijo y alto
+     * para que no choque con ninguna venta que haya quedado en la base: la baja la ubica por `num`.
+     *
+     * @param int $numero
+     * @return Sale
+     */
+    protected function venta_de_prueba($numero)
+    {
+        return Sale::create([
+            'num'       => $numero,
+            'user_id'   => $this->dueno->id,
+            'moneda_id' => 1,
+            'total'     => 1530,
+            'terminada' => 1,
+        ]);
     }
 
     /**
@@ -501,13 +528,13 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
      */
     public function la_baja_de_una_venta_por_su_numero_pasa_por_sale_controller_destroy()
     {
-        $venta = Sale::where('user_id', $this->dueno->id)
-                    ->whereNull('deleted_at')
-                    ->where('is_consolidacion_facturacion', 0)
-                    ->orderBy('id', 'DESC')
-                    ->first();
+        $venta = $this->venta_de_prueba(990235);
 
-        $this->assertNotNull($venta, 'El fixture trae ventas');
+        // Las mismas dos condiciones que pedía la búsqueda de antes: viva y no una consolidación
+        // de facturación (esa no se anula por acá).
+        $this->assertNotNull($venta, 'El test tiene que tener una venta del dueño');
+        $this->assertNull($venta->fresh()->deleted_at);
+        $this->assertSame(0, (int) $venta->fresh()->is_consolidacion_facturacion);
 
         list($conversation, $assistant) = $this->conversacion();
 
