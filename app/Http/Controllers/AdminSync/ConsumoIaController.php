@@ -314,7 +314,12 @@ class ConsumoIaController extends Controller
      * EFECTIVOS que resuelve ProveedorIaHelper: si el elegido no tiene clave en esta
      * instalación, acá se ve el proveedor al que cayó, que es el que aparece en las filas de
      * consumo. `modelo_asistente` es el del chat del dueño (según su pensamiento) y
-     * `modelo_general` el del bot de WhatsApp y el título.
+     * `modelo_general` el del título de conversación.
+     *
+     * Desde la misión modelos-ia-por-cliente (30/9/2026) `modelo_general` YA NO es el del bot de
+     * WhatsApp: el bot, la verificación de imágenes y la importación de Excel tienen su propio modelo
+     * por cliente (ModelosIaHelper, lo lee el admin por `GET admin-sync/modelos-ia`). La forma de
+     * esta respuesta no cambió, para no romper al admin que la recolecta.
      *
      * @param  \App\Models\User  $dueno
      * @return array{proveedor:string, pensamiento:string, modelo_asistente:string, modelo_general:string}

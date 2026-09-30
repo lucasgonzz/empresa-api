@@ -10,12 +10,17 @@ use Illuminate\Support\Facades\Log;
  * y DeepSeek (misión proveedores-ia-deepseek, 22/9/2026).
  *
  * Lo eligen por DUEÑO (`users.agente_proveedor`, mismo precedente que `agente_pensamiento` y
- * `agente_confianza`: la config es del comercio, no de la persona) y lo siguen los tres caminos del
- * asistente: el chat del dueño (AsistenteIaService, en el sistema y por WhatsApp), el bot de WhatsApp
- * a los clientes del negocio (WhatsappBotAiService) y el título de conversación
- * (InferirTituloConversacionIaJob). Ninguno de los tres sabe cuántos proveedores hay ni cómo se
- * llaman: le piden a este helper el modelo, el cliente HTTP, la URL y el payload, y registran el
- * gasto con el `proveedor` que este helper les devolvió, que es el que efectivamente contestó.
+ * `agente_confianza`: la config es del comercio, no de la persona) y lo siguen dos caminos del
+ * asistente: el chat del dueño (AsistenteIaService, en el sistema y por WhatsApp) y el título de
+ * conversación (InferirTituloConversacionIaJob). Ninguno de los dos sabe cuántos proveedores hay ni
+ * cómo se llaman: le piden a este helper el modelo, el cliente HTTP, la URL y el payload, y registran
+ * el gasto con el `proveedor` que este helper les devolvió, que es el que efectivamente contestó.
+ *
+ * Misión modelos-ia-por-cliente (30/9/2026): el bot de WhatsApp a los clientes del negocio
+ * (WhatsappBotAiService) YA NO sigue `agente_proveedor`: tiene su propio modelo por cliente
+ * (`users.ia_modelo_whatsapp`), igual que la verificación de imágenes y la importación de Excel, y lo
+ * decide ModelosIaHelper. Este helper les sigue dando el CÓMO (cliente HTTP, URL, thinking, errores
+ * transitorios); el QUÉ modelo lo resuelve aquel.
  *
  * 🔴 POR QUÉ NO HAY UN TRADUCTOR DE FORMATOS. DeepSeek publica un endpoint COMPATIBLE CON ANTHROPIC
  * (`https://api.deepseek.com/anthropic`, `POST /v1/messages`, header `x-api-key`; documentado en
