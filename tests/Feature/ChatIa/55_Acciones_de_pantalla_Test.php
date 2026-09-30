@@ -597,12 +597,14 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
 
         // El índice de artículos de la pantalla (`api/article` es un resource sin index).
         //
-        // 🔴 per_page 2, no 5. Con 5 la página traía el artículo de acá más los cuatro más nuevos que
-        // hubiera en la base, y el JSON pasaba o no el tope de EjecutorAccionDePantallaIaHelper::
+        // 🔴 per_page 2, no 5. Con 5 la página traía el artículo de acá más los cuatro más nuevos del
+        // dueño que hubiera en la base, y el JSON pasaba o no el tope de EjecutorAccionDePantallaIaHelper::
         // LARGO_MAXIMO (30.000) según cuáles fueran: en una base recién sembrada son los del fixture,
         // ~7.240 caracteres cada uno con withAll(), y la página de 5 daba 36.808 → recortada y rojo;
         // en un slot con artículos residuales de otras corridas (~2.670 c/u) entraba (medido el
-        // 30/9/2026 en s9 limpia y en s23). Con 2 entra siempre.
+        // 30/9/2026 en s9 limpia y en s23). Con 2 la página es el de acá más UNO solo de la base
+        // (10.781 en la base limpia), y entra mientras ese uno pese menos de ~26.000 caracteres:
+        // más de tres veces uno del fixture.
         //
         // Y 2, no 1: el ajeno se crea después del propio, casi siempre en el mismo segundo. Si el
         // filtro por dueño se rompiera, esos dos serían los más nuevos y el ajeno caería en la
