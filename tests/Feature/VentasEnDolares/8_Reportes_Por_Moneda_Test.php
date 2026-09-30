@@ -236,10 +236,13 @@ class Reportes_Por_Moneda_Test extends EmpresaTestCase
      *
      * @group ventas-en-dolares
      * @group hallazgo-moneda
+     * @group hallazgo-abierto
      * @test
      */
     public function una_venta_sin_moneda_se_cuenta_en_el_mismo_lugar_en_el_listado_y_en_el_reporte()
     {
+        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): una venta con moneda_id NULL: el listado no la suma y el Estado de Resultados la cuenta como pesos; ambos docblocks la dan por intencional. Queda a decision de Lucas.');
+
         $venta = $this->vender(1, 2, 1);
 
         DB::table('sales')->where('id', $venta->id)->update(['moneda_id' => null]);

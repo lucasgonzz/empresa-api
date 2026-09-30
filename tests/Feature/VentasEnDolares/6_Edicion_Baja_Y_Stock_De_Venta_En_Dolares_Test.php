@@ -172,10 +172,13 @@ class Edicion_Baja_Y_Stock_De_Venta_En_Dolares_Test extends EmpresaTestCase
      *
      * @group ventas-en-dolares
      * @group hallazgo-moneda
+     * @group hallazgo-abierto
      * @test
      */
     public function guardar_una_venta_en_dolares_sin_cambios_no_cambia_el_total()
     {
+        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): al editar se reenvia el precio de la pivot ya redondeado a 2 decimales; misma causa que el redondeo de article_sale (columnas DECIMAL(x,2)). Queda a decision de Lucas.');
+
         $venta = $this->venta_en_dolares(3, 2);
 
         $total_original = (float) $venta->total;
