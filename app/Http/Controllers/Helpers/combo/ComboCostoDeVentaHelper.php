@@ -88,6 +88,64 @@ use Illuminate\Support\Facades\Log;
 class ComboCostoDeVentaHelper {
 
     /**
+     * El mapa `combo_id => cost` de los combos que la venta YA TENÍA antes de editarla.
+     *
+     * 🔴 Editar una venta borra `combo_sale` y lo vuelve a armar (`SaleHelper::detachItems()` +
+     * `attachCombos()`). Si cada combo se recalculara con el costo de HOY, una venta vieja cambiaría
+     * su `total_cost` y su ganancia retroactivamente por editarle una observación — cosa que los
+     * artículos sueltos NO hacen: `getCost()` devuelve el `pivot.cost` guardado cuando el ítem lo
+     * trae. El combo hace lo mismo: el costo que la venta ya congeló se conserva tal cual, incluso
+     * si es NULL (una venta anterior a esta misión no pasa a tener costo por editarse).
+     *
+     * `$previus_combos` es la colección que `SaleController::update()` lee de la BASE antes de
+     * borrar nada (`$model->combos()->lockForUpdate()->get()`), con `pivot->cost`. Nunca sale del
+     * payload.
+     *
+     * @param  iterable|null  $previus_combos
+     * @return array<int,float|null>
+     */
+    static function costos_previos($previus_combos) {
+
+        $mapa = [];
+
+        if (is_null($previus_combos)) {
+            return $mapa;
+        }
+
+        foreach ($previus_combos as $combo) {
+
+            $id = (int) $combo->id;
+
+            // Si el mismo combo estuviera en dos renglones, vale el primero (tienen el mismo costo).
+            if (array_key_exists($id, $mapa)) {
+                continue;
+            }
+
+            $mapa[$id] = (isset($combo->pivot) && !is_null($combo->pivot->cost)) ? (float) $combo->pivot->cost : null;
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * El costo con el que se adjunta un renglón de combo a la venta: el que la venta ya tenía si el
+     * combo YA estaba (ver `costos_previos()`), o el calculado hoy si es NUEVO en la venta.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  mixed             $combo_id
+     * @param  array|null        $costos_previos  Lo que devolvió `costos_previos()`; null = alta.
+     * @return float|null
+     */
+    static function costo_para_renglon($sale, $combo_id, $costos_previos = null) {
+
+        if (is_array($costos_previos) && is_numeric($combo_id) && array_key_exists((int) $combo_id, $costos_previos)) {
+            return $costos_previos[(int) $combo_id];
+        }
+
+        return self::costo_unitario($sale, $combo_id);
+    }
+
+    /**
      * El costo unitario del combo para esta venta, o null si no se puede resolver.
      *
      * @param  \App\Models\Sale|\App\Models\Budget  $sale      Venta (con `user_id`, `moneda_id`, `valor_dolar`).

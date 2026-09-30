@@ -216,11 +216,11 @@ class Costo_de_combo_en_la_venta_Test extends ComboCalculadoTestCase
      * @param  array             $items
      * @return \App\Models\Sale  Releída de la base.
      */
-    protected function actualizar(Sale $sale, array $items)
+    protected function actualizar(Sale $sale, array $items, array $overrides = [])
     {
         $total = $this->total_de($items);
 
-        $this->putJson('api/sale/' . $sale->id, [
+        $this->putJson('api/sale/' . $sale->id, array_merge([
             'client_id'                        => $sale->client_id,
             'save_current_acount'              => 1,
             'omitir_en_cuenta_corriente'       => 0,
@@ -238,7 +238,7 @@ class Costo_de_combo_en_la_venta_Test extends ComboCalculadoTestCase
             'discounts'                        => [],
             'surchages'                        => [],
             'returned_items'                   => [],
-        ])->assertStatus(200);
+        ], $overrides))->assertStatus(200);
 
         return Sale::find($sale->id);
     }
@@ -980,5 +980,130 @@ class Costo_de_combo_en_la_venta_Test extends ComboCalculadoTestCase
         ]);
 
         return $pedido->fresh();
+    }
+
+    /**
+     * 🔴 F1 (DINERO): editar una venta NO re-congela el costo de los combos que ya tenía. Se vende un
+     * combo, después sube el costo de un componente, y se edita la venta por cuatro motivos
+     * distintos (observación, agregar un artículo, cambiar la cantidad del combo, cambiar el
+     * cliente): `combo_sale.cost`, `total_cost` y la ganancia de ESE combo no se mueven. Los
+     * artículos sueltos ya se comportaban así (`getCost()` devuelve el `pivot.cost` guardado).
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function editar_la_venta_no_recalcula_el_costo_de_un_combo_que_ya_tenia()
+    {
+        $a      = $this->nuevo_articulo(['costo_real' => 100]);
+        $suelto = $this->nuevo_articulo(['costo_real' => 70]);
+        $combo  = $this->combo_calculado([[$a, 2]], ['price' => 600]); // costo 200
+
+        $sale = $this->vender([$this->renglon_combo($combo, 2, 600)]);
+
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $combo->id), 0.001, 'Precondición.');
+
+        // Sube el costo del componente: hoy el combo costaría 600.
+        $this->escribir_crudo($a, ['costo_real' => 300]);
+
+        // 1. Observación.
+        $sale = $this->actualizar($sale, [$this->renglon_combo($combo, 2, 600)], ['observations' => 'zz cambio de observacion']);
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $combo->id), 0.001, 'Editar la observación no toca el costo congelado.');
+        $this->assertEqualsWithDelta(400, (float) $sale->total_cost, 0.001);
+        $this->assertEqualsWithDelta(1200 - 400, (float) $sale->ganancia, 0.001);
+
+        // 2. Se agrega un artículo suelto (su costo sí es el de hoy: es un renglón nuevo).
+        $sale = $this->actualizar($sale, [$this->renglon_combo($combo, 2, 600), $this->renglon_articulo($suelto, 1, 150)]);
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $combo->id), 0.001);
+        $this->assertEqualsWithDelta(400 + 70, (float) $sale->total_cost, 0.001);
+
+        // 3. Cambia la cantidad del combo: el costo UNITARIO sigue siendo el congelado.
+        $sale = $this->actualizar($sale, [$this->renglon_combo($combo, 5, 600)]);
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $combo->id), 0.001);
+        $this->assertEqualsWithDelta(1000, (float) $sale->total_cost, 0.001, '5 x 200, no 5 x 600.');
+        $this->assertEqualsWithDelta(3000 - 1000, (float) $sale->ganancia, 0.001);
+
+        // 4. Otro cliente.
+        $sale = $this->actualizar($sale, [$this->renglon_combo($combo, 5, 600)], ['client_id' => $this->cliente_nuevo()->id]);
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $combo->id), 0.001);
+        $this->assertEqualsWithDelta(1000, (float) $sale->total_cost, 0.001);
+    }
+
+    /**
+     * Un combo AGREGADO en la edición sí se calcula (con el costo de hoy, porque es nuevo en la
+     * venta), y no le cambia nada al que ya estaba.
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function un_combo_agregado_en_la_edicion_se_calcula_y_el_anterior_conserva_el_suyo()
+    {
+        $a = $this->nuevo_articulo(['costo_real' => 100]);
+        $b = $this->nuevo_articulo(['costo_real' => 40]);
+
+        $viejo = $this->combo_calculado([[$a, 2]], ['price' => 600]); // 200
+        $nuevo = $this->combo_calculado([[$b, 5]], ['price' => 300]); // 200
+
+        $sale = $this->vender([$this->renglon_combo($viejo, 1, 600)]);
+
+        $this->escribir_crudo($a, ['costo_real' => 300]); // el viejo hoy costaría 600
+        $this->escribir_crudo($b, ['costo_real' => 50]);  // el nuevo hoy cuesta 250
+
+        $sale = $this->actualizar($sale, [$this->renglon_combo($viejo, 1, 600), $this->renglon_combo($nuevo, 2, 300)]);
+
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $viejo->id), 0.001, 'El que ya estaba conserva el suyo.');
+        $this->assertEqualsWithDelta(250, $this->costo_congelado($sale->id, $nuevo->id), 0.001, 'El nuevo se calcula con el costo de hoy.');
+        $this->assertEqualsWithDelta(200 + 2 * 250, (float) $sale->total_cost, 0.001);
+    }
+
+    /**
+     * Una venta ANTERIOR a la misión (su `combo_sale.cost` es NULL) sigue con NULL después de
+     * editarla, aunque hoy el combo sí se pueda costear: no le aparece un costo de golpe.
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function una_venta_vieja_con_costo_null_sigue_en_null_tras_editarla()
+    {
+        $a     = $this->nuevo_articulo(['costo_real' => 100]);
+        $combo = $this->combo_calculado([[$a, 2]], ['price' => 600]);
+
+        $sale = $this->vender([$this->renglon_combo($combo, 1, 600)]);
+
+        // La venta "vieja": sin costo congelado.
+        DB::table('combo_sale')->where('sale_id', $sale->id)->update(['cost' => null]);
+
+        $sale = $this->actualizar($sale, [$this->renglon_combo($combo, 3, 600)], ['observations' => 'zz edicion de venta vieja']);
+
+        $this->assertNull($this->costo_congelado($sale->id, $combo->id), 'No pasa a tener costo por editarse.');
+        $this->assertEqualsWithDelta(0, (float) $sale->total_cost, 0.001);
+    }
+
+    /**
+     * El `cost` del payload tampoco se usa en la edición: ni para un combo nuevo ni para uno que ya
+     * estaba (manda el congelado).
+     *
+     * @group sales
+     * @group combos
+     * @test
+     */
+    public function en_la_edicion_el_cost_del_payload_se_ignora()
+    {
+        $a     = $this->nuevo_articulo(['costo_real' => 100]);
+        $b     = $this->nuevo_articulo(['costo_real' => 10]);
+        $viejo = $this->combo_calculado([[$a, 2]], ['price' => 600]);
+        $nuevo = $this->combo_calculado([[$b, 1]], ['price' => 50]);
+
+        $sale = $this->vender([$this->renglon_combo($viejo, 1, 600)]);
+
+        $sale = $this->actualizar($sale, [
+            $this->renglon_combo($viejo, 1, 600, ['cost' => 99999, 'pivot' => ['cost' => 88888]]),
+            $this->renglon_combo($nuevo, 1, 50, ['cost' => 77777]),
+        ]);
+
+        $this->assertEqualsWithDelta(200, $this->costo_congelado($sale->id, $viejo->id), 0.001);
+        $this->assertEqualsWithDelta(10, $this->costo_congelado($sale->id, $nuevo->id), 0.001);
     }
 }

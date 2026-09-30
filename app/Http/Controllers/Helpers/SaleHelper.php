@@ -412,7 +412,12 @@ class SaleHelper extends Controller {
         $previus_combos_a_restar = ($se_esta_confirmando_por_primera_vez || $se_activando_discount_stock) ? null : $previus_combos;
 
         Self::attachPromocionVinotecas($model, $request->items, $previus_promos_a_restar);
-        Self::attachCombos($model, $request->items, $previus_combos_a_restar);
+        /*
+            El costo que los combos ya tenian (solo hay en la edicion) sale de `$previus_combos`
+            COMPLETO y no de `$previus_combos_a_restar`: ese ultimo se anula al confirmar, y la
+            confirmacion tambien tiene que conservar el costo ya congelado.
+        */
+        Self::attachCombos($model, $request->items, $previus_combos_a_restar, ComboCostoDeVentaHelper::costos_previos($previus_combos));
         Self::attachServices($model, $request->items);
 
         Self::attachSelectedPaymentMethods($model, $request);
@@ -1763,7 +1768,14 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachCombos($sale, $combos, $previus_combos) {
+    /**
+     * @param  \App\Models\Sale  $sale
+     * @param  array             $combos           Los renglones del request (`items`).
+     * @param  mixed             $previus_combos   Para el stock (puede venir en null aunque la venta ya tuviera combos).
+     * @param  array|null        $costos_previos   `ComboCostoDeVentaHelper::costos_previos()` de los combos que la venta
+     *                                             ya tenía (solo en la edición): esos conservan su costo congelado.
+     */
+    static function attachCombos($sale, $combos, $previus_combos, $costos_previos = null) {
         foreach ($combos as $combo) {
             if (isset($combo['is_combo'])) {
                 $sale->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
@@ -1783,8 +1795,13 @@ class SaleHelper extends Controller {
                                                                 Se calcula acá, con los descuentos y recargos de la venta ya
                                                                 adjuntados (`attachProperies()` los adjunta antes), porque la
                                                                 cuenta que aplica los descuentos a los costos los lee.
+
+                                                                🔴 EN UNA EDICIÓN, un combo que la venta YA TENÍA conserva su
+                                                                costo congelado (`$costos_previos`, leído de la base): recalcularlo
+                                                                con el costo de hoy cambiaría la ganancia de una venta vieja por
+                                                                editarle cualquier cosa. Solo los combos NUEVOS se calculan.
                                                             */
-                                                            'cost' => ComboCostoDeVentaHelper::costo_unitario($sale, $combo['id']),
+                                                            'cost' => ComboCostoDeVentaHelper::costo_para_renglon($sale, $combo['id'], $costos_previos),
                                                             'created_at' => Carbon::now(),
                                                         ], RecargosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'));
 
