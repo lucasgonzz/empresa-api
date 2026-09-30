@@ -25,9 +25,12 @@ use Tests\EmpresaTestCase;
  * 3,33 dólares). Es la clase de inconsistencia "el total no es la suma de los renglones" que ya
  * rebotó en presupuestos.
  *
- * Los dos primeros tests miden el esquema (cuántos decimales guarda cada columna) y son de
- * caracterización: documentan cómo está hoy. Los rojos marcados `hallazgo-moneda` son reglas que el
- * sistema debería cumplir y hoy no cumple; se dejan rojos.
+ * ✅ DECISIÓN DE LUCAS (30/9/2026): este redondeo a 2 decimales se ACEPTA tal como está. Los cuatro
+ * tests que lo medían como defecto (el total contra la suma de renglones con cantidades grandes, la
+ * ganancia de una venta hecha al costo, la ganancia de la venta contra la de sus renglones y un
+ * precio menor a un centavo) se sacaron de este archivo junto con esa decisión. Lo que queda
+ * caracteriza el comportamiento vigente (cuántos decimales guarda cada columna). Si algún día se
+ * ensanchan esas columnas, esos casos se reescriben contra el número nuevo.
  *
  * @group ventas-en-dolares
  */
@@ -148,93 +151,6 @@ class Redondeo_En_Dolares_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 HALLAZGO. Con 10 unidades del mismo artículo el total de la venta (8,33) no cierra con la
-     * suma de sus renglones (0,83 * 10 = 8,30): faltan 3 centavos. Con 1000 unidades faltan
-     * 3,33 dólares. `sales.total` conserva la precisión de lo que mandó la SPA (0,8333... * cantidad),
-     * pero `article_sale.price` se guarda redondeado a 2 decimales, así que quien reconstruya la
-     * venta desde sus renglones (PDF, reimpresión, devolución, cuenta corriente por renglón) obtiene
-     * otro número. Código: `SaleHelper::attachArticle()` (línea del `'price' => $price`) + columna
-     * DECIMAL(25,2) de `article_sale.price`.
-     *
-     * @group ventas-en-dolares
-     * @group hallazgo-moneda
-     * @group hallazgo-abierto
-     * @test
-     */
-    public function con_cantidad_grande_el_total_cierra_con_la_suma_de_renglones_dentro_de_un_centavo()
-    {
-        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): article_sale.price/cost/ganancia son DECIMAL(x,2): un precio o costo en dolares de menos de un centavo se redondea y la ganancia/total se descuadran. La correccion es ensanchar esas columnas (tabla grande de produccion) y queda a decision de Lucas.');
-
-        $venta = $this->venta_al_costo_en_dolares(1000);
-
-        $p = $this->pivot_de($venta, $this->al_costo);
-
-        $suma_renglones = (float) $p->price * (float) $p->amount;
-
-        $this->assertEqualsWithDelta(
-            (float) $venta->total,
-            $suma_renglones,
-            self::CENTAVO + 0.0001,
-            'HALLAZGO: sales.total ('.$venta->total.') no cierra con la suma de los renglones ('.$suma_renglones.'): '
-            .'article_sale.price se guarda con 2 decimales ('.$p->price.') y la SPA manda el precio sin redondear.'
-        );
-    }
-
-    /**
-     * 🔴 HALLAZGO. Una venta hecha EXACTAMENTE al costo (artículo de $1000 con precio manual 1000
-     * y costo 1000, vendido en dólares) tiene que dar ganancia 0. Con 1000 unidades da 3,33
-     * dólares: `sales.total` = 833,33 (precisión de la SPA) contra `sales.total_cost` = 830,00
-     * (0,83 redondeado * 1000, porque `SaleTotalesHelper::set_total_cost()` suma sobre la pivot ya
-     * redondeada). Mientras tanto `article_sale.ganancia` del renglón queda en 0,00: la venta y su
-     * renglón discrepan sobre la ganancia.
-     *
-     * @group ventas-en-dolares
-     * @group hallazgo-moneda
-     * @group hallazgo-abierto
-     * @test
-     */
-    public function una_venta_al_costo_en_dolares_tiene_ganancia_cero()
-    {
-        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): article_sale.price/cost/ganancia son DECIMAL(x,2): un precio o costo en dolares de menos de un centavo se redondea y la ganancia/total se descuadran. La correccion es ensanchar esas columnas (tabla grande de produccion) y queda a decision de Lucas.');
-
-        $venta = $this->venta_al_costo_en_dolares(1000);
-
-        $this->assertEqualsWithDelta(
-            0,
-            (float) $venta->ganancia,
-            self::CENTAVO,
-            'HALLAZGO: una venta al costo en dolares informa ganancia '.$venta->ganancia
-            .' (total '.$venta->total.' - total_cost '.$venta->total_cost.'). El costo unitario de la linea se guarda redondeado a 2 decimales.'
-        );
-    }
-
-    /**
-     * 🔴 HALLAZGO (misma causa): la ganancia de la venta tiene que coincidir con la suma de las
-     * ganancias de sus renglones (no hay IVA declarado ni descuentos en este escenario). Con 1000
-     * unidades la venta dice 3,33 y el renglón 0,00.
-     *
-     * @group ventas-en-dolares
-     * @group hallazgo-moneda
-     * @group hallazgo-abierto
-     * @test
-     */
-    public function la_ganancia_de_la_venta_en_dolares_coincide_con_la_suma_de_la_de_sus_renglones()
-    {
-        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): article_sale.price/cost/ganancia son DECIMAL(x,2): un precio o costo en dolares de menos de un centavo se redondea y la ganancia/total se descuadran. La correccion es ensanchar esas columnas (tabla grande de produccion) y queda a decision de Lucas.');
-
-        $venta = $this->venta_al_costo_en_dolares(1000);
-
-        $suma_ganancias = (float) DB::table('article_sale')->where('sale_id', $venta->id)->sum('ganancia');
-
-        $this->assertEqualsWithDelta(
-            $suma_ganancias,
-            (float) $venta->ganancia,
-            self::CENTAVO,
-            'HALLAZGO: sales.ganancia ('.$venta->ganancia.') no coincide con la suma de article_sale.ganancia ('.$suma_ganancias.').'
-        );
-    }
-
-    /**
      * CONTROL en pesos: la misma venta al costo (1000 unidades a $1000) da ganancia exactamente 0,
      * con el total y el costo iguales. Confirma que la inconsistencia de arriba es propia del
      * redondeo en dólares y no de la construcción del escenario.
@@ -253,41 +169,4 @@ class Redondeo_En_Dolares_Test extends EmpresaTestCase
         $this->assertEqualsWithDelta(0, (float) $venta->ganancia, self::CENTAVO);
     }
 
-    /**
-     * 🔴 HALLAZGO. Un artículo barato (1 peso, costo 0,50) vendido en dólares llega con precio
-     * 1/1200 = 0,000833: `article_sale.price` lo guarda como 0,00. El renglón queda con precio CERO
-     * y costo cero (aunque `sales.total` sume un centavo por las 10 unidades). Un precio positivo
-     * que se persiste como cero pierde el dato para siempre (reimpresión, devolución, reportes por
-     * artículo).
-     *
-     * @group ventas-en-dolares
-     * @group hallazgo-moneda
-     * @group hallazgo-abierto
-     * @test
-     */
-    public function un_precio_positivo_muy_chico_en_dolares_no_se_guarda_como_cero()
-    {
-        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): article_sale.price/cost/ganancia son DECIMAL(x,2): un precio o costo en dolares de menos de un centavo se redondea y la ganancia/total se descuadran. La correccion es ensanchar esas columnas (tabla grande de produccion) y queda a decision de Lucas.');
-
-        $barato = $this->crear_articulo('zz Articulo barato usd', [
-            'cost'            => 0.5,
-            'cost_in_dollars' => 0,
-            'percentage_gain' => null,
-            'price'           => 1,
-        ], 1000);
-
-        $precio_spa = $this->price_vender_para($barato, 2, $this->VALOR_DOLAR);
-
-        $this->assertGreaterThan(0, $precio_spa, 'Sanidad del escenario: el precio que manda la SPA es positivo.');
-
-        $venta = $this->guardar_venta($this->payload_venta(2, $this->VALOR_DOLAR, [$this->item($barato, 10, $precio_spa)]));
-
-        $p = $this->pivot_de($venta, $barato);
-
-        $this->assertGreaterThan(
-            0,
-            (float) $p->price,
-            'HALLAZGO: el precio '.$precio_spa.' USD se guardo en article_sale.price como '.$p->price.'. Total de la venta: '.$venta->total.'.'
-        );
-    }
 }

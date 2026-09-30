@@ -26,6 +26,10 @@ use Tests\EmpresaTestCase;
  *  - Stock: vender en dólares descuenta la misma cantidad que vender en pesos; editar la cantidad
  *    mueve el stock por la diferencia ("Act Venta"); eliminar la venta devuelve lo que sacó.
  *
+ * ✅ DECISIÓN DE LUCAS (30/9/2026): el redondeo a 2 decimales de `article_sale` se acepta, así que el
+ * test que medía "guardar sin cambios una venta en dólares cambia el total un centavo" se sacó (es la
+ * misma causa y la misma decisión que en `Redondeo_En_Dolares_Test`).
+ *
  * @group ventas-en-dolares
  */
 class Edicion_Baja_Y_Stock_De_Venta_En_Dolares_Test extends EmpresaTestCase
@@ -159,43 +163,6 @@ class Edicion_Baja_Y_Stock_De_Venta_En_Dolares_Test extends EmpresaTestCase
         $this->assertNotNull($nuevo, 'El renglon agregado en la edicion no quedo en la venta.');
         $this->assertEqualsWithDelta(1000 / 1200, (float) $nuevo->cost, self::DELTA);
         $this->assertEqualsWithDelta(1000 / 1200, (float) $nuevo->price, self::DELTA);
-    }
-
-    /**
-     * 🔴 HALLAZGO. Guardar una venta en dólares SIN cambiarle nada cambia su total. El artículo en
-     * pesos se vendió a 0,8333 y `article_sale.price` lo guardó como 0,83; al editar, la SPA manda
-     * ese precio ya redondeado (el del pivot) y el `total` que recalcula es 0,83 * cantidad: la
-     * venta original decía 32,50 (3 * 0,8333 + 2 * 15) y después de un "guardar" sin cambios dice
-     * 32,49. Con cantidades grandes la deriva crece (medio centavo por unidad) y con precios muy
-     * chicos el renglón baja a 0. Código: `SaleHelper::attachArticle()` guarda el precio en
-     * DECIMAL(25,2) y `SaleController::update()` persiste el `total` que llega.
-     *
-     * @group ventas-en-dolares
-     * @group hallazgo-moneda
-     * @group hallazgo-abierto
-     * @test
-     */
-    public function guardar_una_venta_en_dolares_sin_cambios_no_cambia_el_total()
-    {
-        $this->markTestIncomplete('HALLAZGO ABIERTO (informe 20260929-test-ventas-en-dolares): al editar se reenvia el precio de la pivot ya redondeado a 2 decimales; misma causa que el redondeo de article_sale (columnas DECIMAL(x,2)). Queda a decision de Lucas.');
-
-        $venta = $this->venta_en_dolares(3, 2);
-
-        $total_original = (float) $venta->total;
-
-        $items = [
-            $this->item_de_edicion($this->en_pesos, $venta, 3),
-            $this->item_de_edicion($this->en_dolares, $venta, 2),
-        ];
-
-        $this->editar($venta, $this->payload_edicion_venta($venta, $items));
-
-        $this->assertEqualsWithDelta(
-            $total_original,
-            (float) Sale::find($venta->id)->total,
-            0.001,
-            'HALLAZGO: el total cambio de '.$total_original.' a '.Sale::find($venta->id)->total.' al guardar sin tocar nada (el pivot guarda el precio con 2 decimales y la edicion lo reenvia).'
-        );
     }
 
     /**
