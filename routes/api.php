@@ -118,7 +118,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::delete('print-agents/{id}', 'PrintAgentController@destroy');
     Route::post('print-jobs', 'PrintAgentController@store_job');
     Route::get('print-jobs/{id}', 'PrintAgentController@show_job');
-    Route::put('user/{id}', 'UserController@update');
+    Route::put('user/{id}', 'UserController@update')->middleware('solo_administrador');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
     Route::put('user/set_eliminar_articulos_offline/{user_id}/{value}', 'UserController@set_eliminar_articulos_offline');
@@ -157,14 +157,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::get('online-configuration', 'OnlineConfigurationController@index');
-    Route::put('online-configuration/{id}', 'OnlineConfigurationController@update');
+    Route::put('online-configuration/{id}', 'OnlineConfigurationController@update')->middleware('solo_administrador');
     // Prompt 358: prueba de la config SMTP propia del cliente. La usa el dueño del comercio desde
     // el ERP (no es pública), por eso va dentro del mismo grupo de middleware de autenticación.
-    Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail');
+    Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail')->middleware('solo_administrador');
     // Grupo 202, prompt 02: paleta de colores generada por IA a partir del logo del comercio.
     // Tiene que quedar ANTES de cualquier ruta 'online-configuration/{id}' para que Laravel no
     // matchee 'generate-palette' como si fuera un {id}.
-    Route::post('online-configuration/generate-palette', 'OnlineConfigurationController@generatePalette');
+    Route::post('online-configuration/generate-palette', 'OnlineConfigurationController@generatePalette')->middleware('solo_administrador');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
