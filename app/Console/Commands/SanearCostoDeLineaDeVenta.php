@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\DB;
  * DESPUES de leer el costo: `SaleHelper::attachArticle()`, `SaleTotalesHelper::set_total_cost()`
  * y `ContabilidadRepository::costo_mercaderia_vendida()`.
  *
- * ─── Las dos causas que detecta ───────────────────────────────────────────────────────────
+ * ─── Las tres causas que detecta ───────────────────────────────────────────────────────────
  *
  * CAUSA B — costo TOTAL escrito en la columna unitaria por `set_costo_ventas`.
  *

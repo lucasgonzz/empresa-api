@@ -379,6 +379,39 @@ class Saneo_causa_c_costo_total_con_firma_sana_Test extends TestCase
     }
 
     /**
+     * Bordes de la regla, a nivel helper: cantidad que no supera 1, cantidad fraccionada entre 1 y 2,
+     * candidato por encima del doble del precio y venta en deposito (la C corre antes del descarte de
+     * deposito, que tiene que atraparla despues).
+     *
+     * @group sales
+     * @test
+     */
+    public function los_bordes_de_la_regla_no_corrigen_de_mas()
+    {
+        // amount = 1: con una sola unidad el costo total y el unitario son lo mismo, no hay que dividir.
+        $analisis = CostoDeLineaDeVentaHelper::analizar($this->fila(1, 1500, 6000, null, 1000), true, true, 4, true);
+        $this->assertNotContains('C', $analisis['causas'], 'Con cantidad 1 no hay nada que dividir');
+
+        // amount = 1,5: es > 1, asi que se evalua; 6000 / 1,5 = 4000 supera el doble del precio (3000).
+        $analisis = CostoDeLineaDeVentaHelper::analizar($this->fila(1.5, 1500, 6000, null, 4000), true, true, 4, true);
+        $this->assertNotContains('C', $analisis['causas'], 'Un candidato por encima de 2 x precio no se acepta');
+
+        // Venta en deposito: la regla la corrige en papel pero el descarte comun la deja afuera.
+        $fila = $this->fila(6, 1500, 6000, null, 1000);
+        $fila->venta_to_check = 1;
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
+        $this->assertSame('descartar', $analisis['accion']);
+        $this->assertSame('venta_en_deposito_el_recalculo_blanquearia_su_total_cost', $analisis['motivo']);
+
+        // Pivot con unidades historicas distintas de las del articulo: tampoco se adivina.
+        $fila = $this->fila(4, 1500, 40000, 10, 10000);
+        $fila->unidades_de_la_linea = 5;
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, true, true, 4, true);
+        $this->assertSame('descartar', $analisis['accion']);
+        $this->assertSame('pivot_con_unidades_individuales_historicas_distintas', $analisis['motivo']);
+    }
+
+    /**
      * Sin `--aplicar` no se escribe nada, y el respaldo dice que la causa fue la C.
      *
      * @group sales
