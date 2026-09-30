@@ -1147,6 +1147,38 @@ class PropuestaStockIaHelper
     }
 
     /**
+     * Lo que que_puedo_cargar de `article` le cuenta al modelo sobre los depósitos de ESTE negocio
+     * (misión alta-por-agente-margen-y-stock, 29/9/2026): si tiene, cuáles, y dónde va el stock. Sin
+     * esto el modelo no sabe, antes de proponer, si tiene que preguntar el depósito.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return array
+     */
+    public static function para_que_puedo_cargar(ContextoDeCargaIa $contexto)
+    {
+        $nombres = [];
+
+        foreach (self::depositos_del_dueno($contexto->owner_id) as $deposito) {
+
+            $nombres[] = self::nombre_de_deposito($deposito);
+        }
+
+        if (!count($nombres)) {
+
+            return [
+                'tiene_depositos' => false,
+                'el_stock_va'     => 'al total del artículo: stock_inicial en el alta, y para uno que ya existe proponer_stock_en_deposito SIN deposito.',
+            ];
+        }
+
+        return [
+            'tiene_depositos' => true,
+            'depositos'       => $nombres,
+            'el_stock_va'     => 'a un depósito: stock_inicial (+ deposito si la persona lo dijo) en el alta, y proponer_stock_en_deposito con deposito para uno que ya existe.',
+        ];
+    }
+
+    /**
      * Una cantidad de stock como texto para un renglón o un resultado ("20", "20,5").
      *
      * @param  float  $numero

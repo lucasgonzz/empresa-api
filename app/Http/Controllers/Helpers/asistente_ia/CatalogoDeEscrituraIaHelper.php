@@ -263,7 +263,13 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'artículos',
             'singular'           => 'artículo',
             'genero'             => 'm',
-            'descripcion'        => 'Los artículos del catálogo (Listado de artículos). El precio final, el stock y el costo real los calcula el sistema: el stock se mueve por sus pantallas y el precio sale del costo, el margen, el IVA y la lista.',
+            /*
+             * Misión alta-por-agente-margen-y-stock (29/9/2026): antes decía que "el stock se mueve
+             * por sus pantallas" y nada más, y en demo3 el modelo no tenía cómo saber que el stock
+             * inicial y el margen por lista SÍ se cargan desde el asistente (ni dónde). Con una
+             * entidad y el contexto, que_puedo_cargar agrega las listas y los depósitos del negocio.
+             */
+            'descripcion'        => 'Los artículos del catálogo (Listado de artículos). El precio final, el stock y el costo real los calcula el sistema. El precio sale del costo, el margen, el IVA y la lista: con listas de precio el margen va por lista (margenes_por_lista), sin listas en percentage_gain (listas_de_precio te dice cuál es el caso). El stock inicial va en stock_inicial del alta; el de un artículo que ya existe, con proponer_stock_en_deposito (depositos te dice si el negocio tiene).',
             'operaciones'        => null,
             'solo_lectura'       => [
                 'status', 'stock', 'final_price', 'final_price_blanco', 'previus_final_price', 'final_price_updated_at',
@@ -1365,10 +1371,16 @@ class CatalogoDeEscrituraIaHelper
      * EL CATÁLOGO BAJO DEMANDA, para la herramienta que_puedo_cargar. Sin entidad, la lista corta
      * (entidad, etiqueta, operaciones, descripción); con una entidad, sus campos por operación.
      *
+     * Misión alta-por-agente-margen-y-stock (29/9/2026): con `$contexto` y la entidad `article`, la
+     * respuesta suma `listas_de_precio` (si el negocio trabaja con listas, cuáles, su margen por
+     * defecto y dónde va el margen) y `depositos` (cuáles, o que no tiene). Es OPCIONAL a propósito:
+     * el recurso del MCP (McpRecursosHelper) lo sigue llamando sin contexto y recibe lo de siempre.
+     *
      * @param  string|null  $entidad
+     * @param  ContextoDeCargaIa|null  $contexto
      * @return array<string, mixed>
      */
-    public static function que_puedo_cargar($entidad = null): array
+    public static function que_puedo_cargar($entidad = null, $contexto = null): array
     {
         $entidad = is_null($entidad) ? '' : trim((string) $entidad);
 
@@ -1456,6 +1468,18 @@ class CatalogoDeEscrituraIaHelper
         if (isset($declaracion['operaciones'][self::OP_EDICION]) || isset($declaracion['operaciones'][self::OP_BAJA])) {
 
             $respuesta['como_se_ubica_un_registro'] = self::como_se_ubica($declaracion);
+        }
+
+        /*
+         * 🔴 Lo que el modelo NECESITA saber de este negocio antes de proponer un artículo: si "margen
+         * 30" va por lista o en percentage_gain, y si el stock inicial lleva depósito. En demo3 no lo
+         * sabía, mandó percentage_gain en una cuenta con listas y prometió un stock que no había
+         * dónde cargar.
+         */
+        if ($contexto instanceof ContextoDeCargaIa && $declaracion['entidad'] === 'article') {
+
+            $respuesta['listas_de_precio'] = MargenesPorListaIaHelper::para_que_puedo_cargar($contexto);
+            $respuesta['depositos'] = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
         }
 
         return $respuesta;
