@@ -1221,7 +1221,8 @@ class CatalogoDeEscrituraIaHelper
      * y sin "van a quedar sin". Hasta el 30/9/2026 ese segundo caso no decía nada, y callarse es
      * decirle a la persona que no queda nada colgado sin haberlo revisado (hallazgo 2 de
      * `informes/20260930-aviso-de-baja-test-determinista.md`). Si no se contó ninguna y no quedó
-     * nada sin contar, el aviso dice sólo que la baja es DEFINITIVA, como siempre.
+     * nada sin contar, el aviso queda como siempre: el texto propio de la entidad (si tiene) y que
+     * la baja es DEFINITIVA.
      *
      * @param  array  $declaracion
      * @param  object|array  $fila  La fila que se va a borrar (se usa su id).

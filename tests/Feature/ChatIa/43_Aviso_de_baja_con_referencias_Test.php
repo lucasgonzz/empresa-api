@@ -462,7 +462,9 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
             'tabla'            => $tabla,
             'indexada'         => $indexada,
             'filas'            => $filas,
-            // `articles` y `clients`, las tablas reales que se usan abajo, tienen las dos columnas.
+            // `articles` y `clients`, las tablas reales que se llegan a contar abajo, tienen las dos
+            // columnas. Las demás (`sales` salteada por grande, una tabla que no existe) nunca se
+            // consultan. `nombrable` no pesa: la caché inyectada no pasa por ordenar_para_contar().
             'tiene_user_id'    => true,
             'tiene_deleted_at' => true,
             'nombrable'        => true,
@@ -594,6 +596,11 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
             }
 
             $this->assertNotNull($clients, 'clients tiene columna price_type_id y tenía que aparecer entre las candidatas');
+
+            // Del esquema se toman las columnas reales (user_id, deleted_at); las filas estimadas
+            // se fijan en cero para que la cuenta no dependa de la estimación de MySQL: con más de
+            // TOPE_DE_FILAS_SIN_INDICE, `clients` se saltearía y no habría ninguna cuenta que decir.
+            $clients['filas'] = 0;
 
             $this->inyectar_candidatas('price_type_id', [
                 $clients,
