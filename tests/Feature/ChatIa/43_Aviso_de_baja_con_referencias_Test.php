@@ -251,8 +251,13 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
      *
      * Este test no depende de los DATOS de la base ni de las estimaciones de MySQL: arma a mano las
      * 16 candidatas reales, con `clients` como la de MÁS filas estimadas —el escenario que rompía—,
-     * y le pregunta al orden directamente. Lo único que lee es el catálogo, que etiqueta_de_tabla()
-     * arma desde el esquema y las rutas. No crea filas.
+     * y le pregunta al orden directamente. No crea filas.
+     *
+     * Cuáles son nombrables también va fijo, a propósito: acá se prueba sólo el ORDEN, y el orden
+     * completo esperado está escrito literal abajo. Si se leyera del catálogo real, sumarle al
+     * asistente una entidad cuya tabla tenga `price_type_id` (presupuestos, por ejemplo) pondría
+     * rojo este test sin que nada esté mal. Que `nombrable` salga bien del catálogo real lo prueba
+     * el_camino_real_cuenta_primero_las_tablas_con_nombre().
      *
      * @test
      */
@@ -285,6 +290,9 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
             'sales'                          => 89,
         ];
 
+        // Las nombrables de `price_type_id` medidas con etiqueta_de_tabla() el 30/9/2026.
+        $nombrables = ['category_price_type_ranges', 'clients', 'sales'];
+
         $candidatas = [];
 
         foreach ($filas_por_tabla as $tabla => $filas) {
@@ -294,8 +302,7 @@ class Aviso_de_baja_con_referencias_Test extends EmpresaTestCase
                 'filas'            => $filas,
                 'tiene_user_id'    => true,
                 'tiene_deleted_at' => false,
-                // Lo mismo que calcula tablas_que_referencian(), no un valor inventado.
-                'nombrable'        => $etiqueta_de_tabla->invoke(null, $tabla) !== Catalogo::ETIQUETA_INNOMBRABLE,
+                'nombrable'        => in_array($tabla, $nombrables, true),
             ];
         }
 
