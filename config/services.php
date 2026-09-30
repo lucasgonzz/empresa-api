@@ -87,7 +87,10 @@ return [
     ],
 
     /*
-     * API Anthropic (Claude) — importación Excel asistida por IA.
+     * API Anthropic (Claude). Nació para la importación Excel asistida por IA y hoy la usan casi
+     * todos los puntos de IA del repo (desde el 30/9/2026 la importación de Excel, la verificación de
+     * imágenes y el bot de WhatsApp van por defecto a DeepSeek y caen acá solo si no hay clave de
+     * DeepSeek; ver ModelosIaHelper).
      * Misma configuración TLS que admin-api (WAMP/Windows suele requerir ANTHROPIC_CAINFO).
      */
     'anthropic' => [
@@ -118,10 +121,17 @@ return [
 
     /*
      * API de DeepSeek — el segundo proveedor del asistente (misión proveedores-ia-deepseek,
-     * 22/9/2026). El DUEÑO del negocio elige entre Claude y DeepSeek (`users.agente_proveedor`) y los
-     * tres caminos del asistente —el chat del dueño, el bot de WhatsApp y el título de conversación—
-     * siguen esa elección. El resto de los puntos de IA del repo (escaneo de facturas, importación
-     * Excel, validación de imágenes, descripciones, paleta, resúmenes) siguen en Anthropic.
+     * 22/9/2026). El DUEÑO del negocio elige entre Claude y DeepSeek (`users.agente_proveedor`) y el
+     * chat del dueño y el título de conversación siguen esa elección.
+     *
+     * Misión modelos-ia-por-cliente (30/9/2026): cuatro tareas tienen su modelo elegible por cliente
+     * desde el admin (ModelosIaHelper): el asistente (que se traduce a `agente_proveedor` +
+     * `agente_pensamiento`), el bot de WhatsApp (`users.ia_modelo_whatsapp`), la verificación de
+     * imágenes (`users.ia_modelo_imagenes`) y la importación de Excel (`users.ia_modelo_excel`). Por
+     * defecto van todas a DeepSeek (Flash, salvo Excel que va a Pro). Sin DEEPSEEK_API_KEY cada tarea
+     * cae a Anthropic con el modelo que usaba antes de esa misión (ver ModelosIaHelper::resolver()).
+     * El resto de los puntos de IA del repo (escaneo de facturas, descripciones, paleta, resúmenes,
+     * búsqueda por código de barras, título) siguen en Anthropic.
      *
      * Se le pega por su endpoint COMPATIBLE CON ANTHROPIC (`base_url` termina en `/anthropic`):
      * acepta el mismo payload de `/v1/messages` —system, tools con input_schema, bloques tool_use /
@@ -189,22 +199,52 @@ return [
      * Validación de imagen por visión IA (grupo 201, prompt 02): antes de asignar una imagen
      * encontrada por Google a un artículo, ArticleImageValidationService le pide a Claude que
      * confirme si la imagen realmente muestra el producto (y no una lista de precios, un
-     * catálogo en PDF, un logo, etc). Reutiliza la ANTHROPIC_API_KEY / ca_bundle / verify_ssl
-     * del bloque 'anthropic' de arriba; estas claves son propias de este servicio puntual.
+     * catálogo en PDF, un logo, etc). Estas claves son propias de este servicio puntual; la clave
+     * de API, la URL y el TLS salen del bloque del proveedor que corresponda.
+     *
+     * Misión modelos-ia-por-cliente (30/9/2026): el proveedor y el modelo los elige el admin por
+     * cliente (`users.ia_modelo_imagenes`, default DeepSeek Flash, el único DeepSeek con visión) y
+     * los resuelve ModelosIaHelper. `model` de acá quedó como el modelo LEGADO: es el que se usa
+     * cuando la opción elegida es de DeepSeek y la instalación no tiene DEEPSEEK_API_KEY, así la
+     * producción de hoy (sin esa clave en ningún .env) sigue exactamente igual.
      */
     'article_image_validation' => [
         // Permite apagar la validación por completo (fail-open): en false, el servicio
         // devuelve 'evaluated' => false y 'accepted' => true sin llamar a la API.
         'enabled'          => filter_var(env('ARTICLE_IMAGE_VALIDATION_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
-        // Modelo de Claude usado para la validación (uno económico, alcanza para esta tarea).
+        // Modelo de Claude LEGADO de la validación (el de antes del 30/9/2026): se usa cuando la
+        // tarea cae a Anthropic por falta de clave de DeepSeek (ver ModelosIaHelper::resolver()).
         'model'            => env('ARTICLE_IMAGE_VALIDATION_MODEL', 'claude-haiku-4-5-20251001'),
-        // Timeout en segundos de la request HTTP a Anthropic.
+        // Timeout en segundos de la request HTTP al proveedor de IA (el que corresponda).
         'timeout'          => (int) env('ARTICLE_IMAGE_VALIDATION_TIMEOUT', 25),
         // Lado mayor máximo (px) al que se redimensiona la imagen antes de mandarla a la IA,
         // para bajar el costo en tokens sin perder precisión de la validación.
         'max_side'         => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_SIDE', 512),
         // Techo de llamadas reales a Anthropic por corrida de batch (protección de costo).
         'max_calls_batch'  => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH', 300),
+    ],
+
+    /**
+     * Importación de Excel con IA (AiExcelAnalyzer, AiClientAnalyzer, AiProviderAnalyzer): la
+     * identificación de columnas y la recomendación. Misión modelos-ia-por-cliente (30/9/2026).
+     *
+     * El proveedor y el modelo los elige el admin por cliente (`users.ia_modelo_excel`, default
+     * DeepSeek Pro: es una llamada por archivo y un mapeo mal hecho ensucia un catálogo entero) y
+     * los resuelve ModelosIaHelper. La clave, la URL y el TLS salen del bloque del proveedor.
+     *
+     * - `model_anthropic`: el modelo LEGADO, el que usaban los tres analizadores antes de esta misión
+     *   (su constante CLAUDE_MODEL, 'claude-sonnet-4-5'). Se usa cuando la opción elegida es de
+     *   DeepSeek y la instalación no tiene DEEPSEEK_API_KEY: la producción de hoy (sin esa clave en
+     *   ningún .env) sigue llamando exactamente al mismo modelo.
+     * - `timeout`: segundos de la llamada. Era 60 fijo en los tres analizadores; sube a 120 porque
+     *   DeepSeek Pro razona (thinking enabled) antes de contestar y tarda más que Sonnet sin razonar.
+     *
+     * Los techos de salida (4000 artículos / 2000 clientes y proveedores) siguen como constantes de
+     * cada analizador; con Pro los sube ProveedorIaHelper::agregar_thinking() al techo de profundo.
+     */
+    'importacion_excel_ia' => [
+        'model_anthropic' => env('IMPORTACION_EXCEL_IA_MODEL_ANTHROPIC', 'claude-sonnet-4-5'),
+        'timeout'         => (int) env('IMPORTACION_EXCEL_IA_TIMEOUT', 120),
     ],
 
     /**

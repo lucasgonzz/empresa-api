@@ -348,6 +348,11 @@ class ProveedorIaHelper
      * apagado (son respuestas cortas y baratas, el análogo de Ágil); con Anthropic, sin clave
      * `thinking`, como siempre.
      *
+     * Misión modelos-ia-por-cliente (30/9/2026): el bot de WhatsApp YA NO pasa por acá. Tiene su
+     * propio modelo elegible por cliente (`users.ia_modelo_whatsapp`, ver ModelosIaHelper), separado
+     * del asistente, por decisión de Lucas. Lo que sigue usando este método es el título de
+     * conversación (InferirTituloConversacionIaJob), que el plan de esa misión deja como estaba.
+     *
      * @param  \App\Models\User|null  $owner
      * @return array{proveedor:string, modelo:string, thinking:array|null}
      */
@@ -555,10 +560,14 @@ class ProveedorIaHelper
      * `enabled` pelado rebota con 400 en el primer uso real de Profundo. Mandarlo no cuesta nada;
      * omitirlo puede costar la funcionalidad entera. Queda por debajo de `max_tokens_profundo`.
      *
+     * Es PUBLIC desde la misión modelos-ia-por-cliente (30/9/2026): ModelosIaHelper la usa para el
+     * bloque `thinking` de las opciones de DeepSeek de las tareas que no son el asistente (WhatsApp,
+     * imágenes, Excel). Solo cambió la visibilidad; el comportamiento es el mismo de siempre.
+     *
      * @param  bool  $es_profundo
      * @return array{type:string, budget_tokens?:int}
      */
-    protected static function thinking_de_deepseek($es_profundo): array
+    public static function thinking_de_deepseek($es_profundo): array
     {
         $tipo = (string) config($es_profundo ? 'services.deepseek.thinking_profundo' : 'services.deepseek.thinking_agil');
 
