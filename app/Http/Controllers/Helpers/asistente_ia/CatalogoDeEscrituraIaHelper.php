@@ -374,7 +374,11 @@ class CatalogoDeEscrituraIaHelper
             'genero'             => 'f',
             'descripcion'        => 'Las listas de precio ("tipos de precio" en ABM > Precios): un porcentaje sobre el precio base. Crear una recalcula los precios de los artículos en segundo plano si la cuenta usa listas.',
             'operaciones'        => null,
-            'solo_lectura'       => ['apply_percentage_on_existing_articles'],
+            // update_existing_articles_percentage_mode: el modo viejo de "al cambiar el margen, actualizar
+            // los artículos" ya no se ofrece (misión sincronizar-margen-lista-precios, 1/10/2026). El
+            // controller lo sigue LEYENDO en update() solo para el SPA viejo cacheado, y si el asistente
+            // lo mandara volvería a disparar la actualización masiva que el SPA nuevo ya no hace sola.
+            'solo_lectura'       => ['apply_percentage_on_existing_articles', 'update_existing_articles_percentage_mode'],
             'claves_de_pantalla' => ['categories' => [], 'sub_categories' => [], 'childrens' => []],
             // El formulario nace con "incluir en la lista de precios de Excel" prendido (la columna no tiene default).
             'defaults_de_pantalla' => ['incluir_en_lista_de_precios_de_excel' => 1],
@@ -382,7 +386,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => 'Se borra la lista y los artículos dejan de tener precio en ella.',
             'aviso_de_alta'      => 'Si la cuenta usa listas de precio, los precios de los artículos se recalculan en segundo plano.',
             'extension'          => null,
-            'revisado'           => 'PriceTypeController: store() fuerza apply_percentage_on_existing_articles = 1 y encola ProcessSetFinalPrices si el dueño usa listas; store()/update() iteran categories y sub_categories sin guarda (claves_de_pantalla; withAll() las trae para la edición). destroy() desengancha artículos.',
+            'revisado'           => 'PriceTypeController: store() fuerza apply_percentage_on_existing_articles = 1 y encola ProcessSetFinalPrices si el dueño usa listas; store()/update() iteran categories y sub_categories sin guarda (claves_de_pantalla; withAll() las trae para la edición). destroy() desengancha artículos. update() ya no actualiza los artículos al cambiar el margen salvo pedido explícito (`sincronizar_margen`, el botón "Sincronizar artículos" del modal) o el modo que mande el SPA viejo; el modo no se persiste (1/10/2026).',
         ],
         'discount' => [
             'etiqueta'           => 'descuentos',
