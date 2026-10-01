@@ -341,6 +341,11 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         }
 
         $this->getJson(self::URL)->assertStatus(422);
+
+        /** Un model_name que llega como arreglo no puede tumbar el endpoint con un 500. */
+        $this->getJson(self::URL.'?model_name[]=sale')
+            ->assertStatus(422)
+            ->assertJson(['message' => 'Ese tipo de diseño no se arma con cajas.']);
     }
 
     /**

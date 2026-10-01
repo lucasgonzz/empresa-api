@@ -451,9 +451,14 @@ class PdfColumnProfileController extends Controller
      */
     public function page_layout_catalog(Request $request)
     {
-        $model_name = (string) $request->query('model_name', '');
+        /**
+         * Sin cast a string: un `model_name[]=sale` llega como arreglo, y castearlo tira un notice
+         * que Laravel convierte en 500. Lo que no es texto es, simplemente, un modelo que no se
+         * diseña con cajas.
+         */
+        $model_name = $request->query('model_name');
 
-        if (! CatalogoDeCamposPdf::soporta($model_name)) {
+        if (! is_string($model_name) || ! CatalogoDeCamposPdf::soporta($model_name)) {
             return response()->json(['message' => 'Ese tipo de diseño no se arma con cajas.'], 422);
         }
 
