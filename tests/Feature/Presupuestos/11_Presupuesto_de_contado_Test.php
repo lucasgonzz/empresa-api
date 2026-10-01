@@ -12,6 +12,7 @@ use App\Models\Article;
 use App\Models\Budget;
 use App\Models\BudgetStatus;
 use App\Models\Caja;
+use App\Models\Cheque;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
@@ -494,7 +495,15 @@ class Presupuesto_de_contado_Test extends TestCase
         );
 
         // La comisión del vendedor del cliente (el mismo molde de Presupuestos/7).
-        $this->assertNotNull(SellerCommission::where('sale_id', $sale->id)->first(), 'La venta de contado genera la comision del vendedor.');
+        $comision = SellerCommission::where('sale_id', $sale->id)->first();
+
+        $this->assertNotNull($comision, 'La venta de contado genera la comision del vendedor.');
+        $this->assertEquals($vendedor->id, (int) $comision->seller_id);
+        $this->assertEquals(
+            self::PRECIO * self::CANTIDAD * 10 / 100,
+            (float) $comision->debe,
+            'La comision es el 10 % del total de la venta (200), no alcanza con que exista.'
+        );
 
         // El stock: la venta descuenta como cualquier otra.
         $this->assertEquals(self::STOCK - self::CANTIDAD, (float) Article::find($this->article->id)->stock, 'Confirmar descuenta el stock.');
@@ -541,21 +550,40 @@ class Presupuesto_de_contado_Test extends TestCase
     public function un_descuento_por_metodo_de_pago_entra_en_el_total_y_el_alta_lo_acepta()
     {
         $client = $this->cliente();
-        $caja = $this->caja_abierta('zz Caja contado');
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
 
         $budget = $this->presupuesto_de_contado($client, [
-            $this->fila($this->efectivo_id, 100, $caja->id),
-            $this->fila($this->transferencia_id, 90, $caja->id, ['discount_amount' => 10]),
+            $this->fila($this->efectivo_id, 100, $caja_a->id),
+            $this->fila($this->transferencia_id, 90, $caja_b->id, ['discount_amount' => 10]),
         ], 190);
 
         $this->assertEquals(190, (float) $budget->total);
         $this->assertEquals(-10, BudgetCobroHelper::ajuste_por_metodos_de_pago($budget), 'El ajuste se deriva de las filas: el descuento resta.');
         $this->assertEquals(190, BudgetHelper::getTotal($budget), 'getTotal() incluye el ajuste y coincide con el total guardado.');
 
-        // Y la venta nace con el total NETO.
         $this->confirmar($budget)->assertStatus(200);
 
-        $this->assertEquals(190, (float) Sale::where('budget_id', $budget->id)->first()->total);
+        $sale = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertEquals(190, (float) $sale->total, 'La venta nace con el total NETO.');
+
+        // La caja recibe el NETO de cada fila: la fila con descuento mueve 90, no 100.
+        $movimientos = MovimientoCaja::where('sale_id', $sale->id)->orderBy('id')->get();
+
+        $this->assertCount(2, $movimientos);
+        $this->assertEquals($caja_a->id, $movimientos[0]->caja_id);
+        $this->assertEquals(100, (float) $movimientos[0]->ingreso, 'El efectivo mueve sus 100.');
+        $this->assertEquals($caja_b->id, $movimientos[1]->caja_id);
+        $this->assertEquals(90, (float) $movimientos[1]->ingreso, 'La transferencia con descuento mueve el neto (90), no el bruto.');
+
+        // Y lo que entra a las cajas suma EXACTAMENTE lo que la venta cobra: el descuento no se pierde ni se duplica.
+        $this->assertEquals((float) $sale->total, (float) $movimientos->sum('ingreso'), 'Los movimientos de caja suman el total de la venta.');
+        $this->assertEquals(
+            (float) $sale->total,
+            (float) DB::table('current_acount_payment_method_sale')->where('sale_id', $sale->id)->sum('amount'),
+            'Y los metodos de pago del pivote tambien.'
+        );
     }
 
     /**
@@ -805,9 +833,22 @@ class Presupuesto_de_contado_Test extends TestCase
         $this->assertTrue($respuesta->json('caja_cerrada'));
         $this->assertTrue($respuesta->json('cobro_invalido'));
 
-        $this->assertFalse(Sale::where('budget_id', $budget->id)->exists(), 'No se creo la venta.');
-        $this->assertEquals(self::ESTADO_SIN_CONFIRMAR, (int) Budget::find($budget->id)->budget_status_id, 'El presupuesto sigue sin confirmar.');
-        $this->assertEquals(self::STOCK, (float) Article::find($this->article->id)->stock, 'No se desconto el stock.');
+        /*
+            ⚠️ QUE PRUEBA CADA ASERCION, para que nadie lea de mas:
+
+            - "No se creo la venta", "no se desconto el stock" y "ninguna caja se movio" prueban que la
+              RE-VALIDACION corre ANTES de crear nada (`saveSale()` la hace primero): no habia nada que
+              revertir, simplemente no se llego a crear. NO prueban el rollback.
+            - El estado "sin confirmar" SI prueba un rollback, pero solo uno: `confirmar()` hace
+              `$model->save()` del estado 2 ANTES de llamar a `saveSale()`, asi que esa escritura es la
+              unica que el `DB::rollBack()` del catch tiene que deshacer.
+
+            La prueba del rollback REAL --venta creada, stock descontado y un movimiento de caja ya
+            escrito, y recien despues un fallo-- son los tests de la seccion "Atomicidad".
+        */
+        $this->assertFalse(Sale::where('budget_id', $budget->id)->exists(), 'No se creo la venta (la validacion corrio antes de crearla).');
+        $this->assertEquals(self::ESTADO_SIN_CONFIRMAR, (int) Budget::find($budget->id)->budget_status_id, 'El presupuesto sigue sin confirmar: el rollback deshizo el save() del estado.');
+        $this->assertEquals(self::STOCK, (float) Article::find($this->article->id)->stock, 'No se desconto el stock (no se llego a crear la venta).');
         $this->assertEquals($movimientos_antes, MovimientoCaja::count(), 'Ninguna caja se movio, ni siquiera la que estaba abierta.');
     }
 
@@ -867,9 +908,14 @@ class Presupuesto_de_contado_Test extends TestCase
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * 🔴 El form genérico del módulo (o una SPA vieja) edita un campo cualquiera y NO manda las
-     * claves del cobro: el cobro guardado se PRESERVA. Si no, cambiar una observación pasaría a
-     * cuenta corriente un presupuesto cobrado de contado y el reparto se perdería en silencio.
+     * 🔴 Una SPA VIEJA (o un cliente HTTP que arma el PUT a mano) edita un campo cualquiera y NO
+     * manda las claves del cobro: el cobro guardado se PRESERVA. Si no, cambiar una observación
+     * pasaría a cuenta corriente un presupuesto cobrado de contado y el reparto se perdería en
+     * silencio.
+     *
+     * ⚠️ NO es el caso del form genérico del módulo Presupuestos: ese manda el modelo ENTERO en cada
+     * PUT (`getModelToSend()` hace `{...this.model}`), o sea que las claves del cobro viajan SIEMPRE,
+     * con el cobro que ya estaba. Ese caso lo miden los tests de "la forma del modelo recargado".
      *
      * @group presupuestos
      * @test
@@ -1252,6 +1298,680 @@ class Presupuesto_de_contado_Test extends TestCase
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Montos y cajas mal formados (tanda de correcciones del 1/10/2026)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Un dueño que NO es el del test: ninguna caja suya sirve para cobrar un presupuesto del 500. */
+    const OTRO_DUENO_ID = 999999;
+
+    /**
+     * Una caja abierta del dueño que se pide (por defecto, otro comercio), SIN ninguna apertura: la
+     * regla V2 solo mira `cajas.abierta`, así que la acepta, pero `MovimientoCajaHelper` no tiene
+     * una apertura donde colgar el movimiento y tira una excepción. Es la forma de provocar un fallo
+     * REAL después de que `saveSale()` ya creó la venta y descontó el stock.
+     *
+     * @param  string  $nombre
+     * @param  int     $user_id
+     * @return \App\Models\Caja
+     */
+    protected function caja_abierta_sin_apertura($nombre, $user_id = self::USER_ID)
+    {
+        return Caja::create([
+            'num'     => (int) Caja::where('user_id', $user_id)->max('num') + 1,
+            'name'    => $nombre.' '.uniqid(),
+            'user_id' => $user_id,
+            'saldo'   => 0,
+            'abierta' => 1,
+        ]);
+    }
+
+    /**
+     * El presupuesto TAL COMO lo devuelve el listado/`show`: es lo que el form genérico del módulo
+     * Presupuestos reenvía entero en cada PUT (`getModelToSend()` hace `{...this.model}`).
+     *
+     * @param  \App\Models\Budget  $budget
+     * @return array
+     */
+    protected function modelo_recargado($budget)
+    {
+        return $this->getJson('api/budget/'.$budget->id)->assertStatus(200)->json('model');
+    }
+
+    /**
+     * 🔴 EL CASO MEDIDO. Total 200, reparto Efectivo 250 + Transferencia −50: suma 200, así que V3
+     * solo no lo ve, y antes llegaba a la caja B como un ingreso NEGATIVO de −50. Un monto negativo
+     * se rechaza al guardar, y no deja ni presupuesto ni movimientos.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_monto_negativo_se_rechaza_con_422_y_no_llega_a_la_caja()
+    {
+        $client = $this->cliente();
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
+
+        $presupuestos_antes = Budget::where('user_id', self::USER_ID)->count();
+        $movimientos_antes  = MovimientoCaja::count();
+
+        $respuesta = $this->postJson('api/budget', $this->payload_crear($client, [
+            'omitir_en_cuenta_corriente' => 1,
+            'total'                      => 200,
+            'selected_payment_methods'   => [
+                $this->fila($this->efectivo_id, 250, $caja_a->id),
+                $this->fila($this->transferencia_id, -50, $caja_b->id),
+            ],
+        ]));
+
+        $respuesta->assertStatus(422);
+        $this->assertTrue($respuesta->json('cobro_invalido'));
+        $this->assertSame('Los montos de los métodos de pago no pueden ser negativos.', $respuesta->json('message'));
+        $this->assertEquals($presupuestos_antes, Budget::where('user_id', self::USER_ID)->count(), 'No quedo ningun presupuesto.');
+        $this->assertEquals($movimientos_antes, MovimientoCaja::count(), 'Y ninguna caja se movio.');
+
+        // Tambien el `amount_cotizado` (la plata en pesos de una fila en otra moneda).
+        $this->postJson('api/budget', $this->payload_crear($client, [
+            'omitir_en_cuenta_corriente' => 1,
+            'selected_payment_methods'   => [$this->fila($this->efectivo_id, 200, $caja_a->id, ['amount_cotizado' => -5])],
+        ]))->assertStatus(422)->assertJson(['message' => 'Los montos de los métodos de pago no pueden ser negativos.']);
+    }
+
+    /**
+     * Un monto que no es un número (`'abc'`, un booleano, un array) pasaba V3 —se sumaba como 0— y
+     * reventaba recién al confirmar con un 500 de SQL crudo ("1366 Incorrect decimal value"). Ahora
+     * se rechaza al guardar, también en `amount_cotizado`.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_monto_que_no_es_un_numero_se_rechaza_con_422()
+    {
+        $client = $this->cliente();
+        $caja = $this->caja_abierta('zz Caja contado');
+
+        $casos = [
+            ['amount' => 'abc'],
+            ['amount' => true],
+            ['amount' => [1]],
+            ['amount_cotizado' => 'abc'],
+        ];
+
+        foreach ($casos as $extra) {
+
+            $respuesta = $this->postJson('api/budget', $this->payload_crear($client, [
+                'omitir_en_cuenta_corriente' => 1,
+                'selected_payment_methods'   => [$this->fila($this->efectivo_id, 200, $caja->id, $extra)],
+            ]));
+
+            $respuesta->assertStatus(422);
+            $this->assertTrue($respuesta->json('cobro_invalido'), 'Caso '.json_encode($extra));
+            $this->assertSame('Hay un método de pago con un monto que no es un número.', $respuesta->json('message'), 'Caso '.json_encode($extra));
+        }
+    }
+
+    /**
+     * 🔴 UNA FILA SIN MONTO NO SE GUARDA. El modal de Vender agrega por defecto una fila (método 3,
+     * monto ''), y un reparto con un método dejado en 0 manda otra: con caja, cada una creaba un
+     * movimiento de $ 0. Se descartan al normalizar —null, '', 0 y "0.00"—: la columna guarda solo
+     * la fila que cobra, la venta tiene un método y la caja de las filas descartadas no se mueve.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function las_filas_sin_monto_se_descartan_y_no_llegan_a_la_caja()
+    {
+        $client = $this->cliente();
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
+
+        $budget = $this->presupuesto_de_contado($client, [
+            $this->fila($this->efectivo_id, 200, $caja_a->id),
+            $this->fila($this->transferencia_id, 0, $caja_b->id),
+            $this->fila($this->efectivo_id, '', $caja_b->id),
+            $this->fila($this->credito_id, null, $caja_b->id),
+            $this->fila($this->efectivo_id, '0.00', $caja_b->id),
+        ]);
+
+        $this->assertCount(1, $budget->selected_payment_methods, 'Solo la fila que cobra se guarda.');
+        $this->assertEquals(200, (float) $budget->selected_payment_methods[0]['amount']);
+
+        $this->confirmar($budget)->assertStatus(200);
+
+        $sale = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertEquals(1, DB::table('current_acount_payment_method_sale')->where('sale_id', $sale->id)->count(), 'La venta tiene UN metodo de pago.');
+
+        $movimientos = MovimientoCaja::where('sale_id', $sale->id)->get();
+
+        $this->assertCount(1, $movimientos, 'Y UN movimiento de caja: ninguno de $ 0.');
+        $this->assertEquals($caja_a->id, $movimientos[0]->caja_id);
+        $this->assertEquals(200, (float) $movimientos[0]->ingreso);
+        $this->assertEquals(0, MovimientoCaja::where('caja_id', $caja_b->id)->count(), 'La caja B no recibio nada.');
+    }
+
+    /**
+     * Si tras descartar las filas sin monto no queda ninguna, el 422 es el de siempre:
+     * `sin_metodo_de_pago`. No cae a cuenta corriente en silencio: el vendedor pidió cobrar de contado.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function si_todas_las_filas_estan_en_cero_se_rechaza_con_sin_metodo_de_pago()
+    {
+        $respuesta = $this->postJson('api/budget', $this->payload_crear($this->cliente(), [
+            'omitir_en_cuenta_corriente' => 1,
+            'selected_payment_methods'   => [
+                $this->fila($this->efectivo_id, 0, 0),
+                $this->fila($this->transferencia_id, '', 0),
+            ],
+        ]));
+
+        $respuesta->assertStatus(422);
+        $this->assertTrue($respuesta->json('sin_metodo_de_pago'));
+        $this->assertTrue($respuesta->json('cobro_invalido'));
+    }
+
+    /**
+     * 🔴 `V2` y `attach_payment_methods()` tienen que leer el `caja_id` igual. Esa función adjunta con
+     * `caja_id != 0` (laxo): `true` se guardaba como la caja 1 y `"190.5"` pasaba la validación de la
+     * caja 190 y reventaba el INSERT al confirmar. Solo se acepta lo que tiene una lectura única:
+     * ausente, null, '' o 0 (sin caja), o un entero positivo / string de dígitos puros.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_caja_id_mal_formado_se_rechaza_con_422_y_uno_de_digitos_se_acepta()
+    {
+        $client = $this->cliente();
+        $caja = $this->caja_abierta('zz Caja contado');
+
+        foreach ([true, '190.5', 'abc', 190.5, -3, [1]] as $caja_id_malo) {
+
+            $respuesta = $this->postJson('api/budget', $this->payload_crear($client, [
+                'omitir_en_cuenta_corriente' => 1,
+                'selected_payment_methods'   => [$this->fila($this->efectivo_id, 200, 0, ['caja_id' => $caja_id_malo])],
+            ]));
+
+            $respuesta->assertStatus(422);
+            $this->assertTrue($respuesta->json('caja_inexistente'), 'caja_id '.json_encode($caja_id_malo));
+            $this->assertTrue($respuesta->json('cobro_invalido'), 'caja_id '.json_encode($caja_id_malo));
+        }
+
+        foreach ([(string) $caja->id, $caja->id, null, '', 0, '0'] as $caja_id_bueno) {
+
+            $this->postJson('api/budget', $this->payload_crear($client, [
+                'omitir_en_cuenta_corriente' => 1,
+                'selected_payment_methods'   => [$this->fila($this->efectivo_id, 200, 0, ['caja_id' => $caja_id_bueno])],
+            ]))->assertStatus(201);
+        }
+    }
+
+    /**
+     * 🔴 LA CAJA DE OTRO COMERCIO NO SIRVE. `Caja::find()` a secas aceptaba cualquier caja abierta
+     * (en las bases compartidas viejas conviven 51 comercios) y el movimiento se escribía en el
+     * arqueo ajeno. Se rechaza al guardar, contestada igual que una inexistente.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function una_caja_de_otro_dueno_se_rechaza_al_guardar()
+    {
+        $client = $this->cliente();
+        $ajena = $this->caja_abierta_sin_apertura('zz Caja ajena contado', self::OTRO_DUENO_ID);
+
+        $this->assertSame(1, (int) Caja::find($ajena->id)->abierta, 'Control: la caja ajena esta abierta, asi que sin el filtro de dueño pasaria.');
+
+        $movimientos_antes = MovimientoCaja::count();
+
+        $respuesta = $this->postJson('api/budget', $this->payload_crear($client, [
+            'omitir_en_cuenta_corriente' => 1,
+            'selected_payment_methods'   => [$this->fila($this->efectivo_id, 200, $ajena->id)],
+        ]));
+
+        $respuesta->assertStatus(422);
+        $this->assertTrue($respuesta->json('caja_inexistente'));
+        $this->assertTrue($respuesta->json('cobro_invalido'));
+        $this->assertEquals($movimientos_antes, MovimientoCaja::count());
+    }
+
+    /**
+     * Lo mismo AL CONFIRMAR: el presupuesto se guardó con una caja propia y después la caja cambió de
+     * dueño (en una base compartida, un traspaso o un dato mal cargado). La re-validación usa el
+     * dueño del PRESUPUESTO (`budgets.user_id`) y la rechaza, sin crear nada.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function una_caja_que_pasa_a_otro_dueno_antes_de_confirmar_da_422()
+    {
+        $client = $this->cliente();
+        $caja = $this->caja_abierta('zz Caja contado');
+
+        $budget = $this->presupuesto_de_contado($client, [$this->fila($this->efectivo_id, 200, $caja->id)]);
+
+        Caja::where('id', $caja->id)->update(['user_id' => self::OTRO_DUENO_ID]);
+
+        $movimientos_antes = MovimientoCaja::count();
+
+        $respuesta = $this->confirmar($budget);
+
+        $respuesta->assertStatus(422);
+        $this->assertTrue($respuesta->json('caja_inexistente'));
+        $this->assertFalse(Sale::where('budget_id', $budget->id)->exists());
+        $this->assertEquals(self::ESTADO_SIN_CONFIRMAR, (int) Budget::find($budget->id)->budget_status_id);
+        $this->assertEquals($movimientos_antes, MovimientoCaja::count(), 'Ninguna caja se movio, ni la ajena.');
+    }
+
+    /**
+     * Las MISMAS reglas de montos sobre lo que ya estaba guardado (filas viejas, escritas antes de la
+     * limpieza o a mano): las filas en 0 se ignoran y la venta se cobra con las que quedan; una fila
+     * negativa corta con 422; si todas están en 0, `sin_metodo_de_pago`. Nada de eso llega a la caja.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function las_filas_viejas_se_normalizan_o_se_rechazan_al_confirmar()
+    {
+        $client = $this->cliente();
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
+
+        // (i) Una fila que cobra y dos en 0 colgadas: se cobra solo la que cobra.
+        $budget = $this->presupuesto_de_contado($client, [$this->fila($this->efectivo_id, 200, $caja_a->id)]);
+
+        Budget::where('id', $budget->id)->update(['selected_payment_methods' => json_encode([
+            $this->fila($this->efectivo_id, 200, $caja_a->id),
+            $this->fila($this->transferencia_id, 0, $caja_b->id),
+            $this->fila($this->efectivo_id, '', $caja_b->id),
+        ])]);
+
+        $this->confirmar(Budget::find($budget->id))->assertStatus(200);
+
+        $sale = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertEquals(1, DB::table('current_acount_payment_method_sale')->where('sale_id', $sale->id)->count());
+        $this->assertEquals(1, MovimientoCaja::where('sale_id', $sale->id)->count());
+        $this->assertEquals(0, MovimientoCaja::where('caja_id', $caja_b->id)->count());
+
+        // (ii) Una fila negativa guardada: el reparto suma 200 (250 - 50) y de todos modos se rechaza.
+        $con_negativo = $this->presupuesto_de_contado($client, [$this->fila($this->efectivo_id, 200, $caja_a->id)]);
+
+        Budget::where('id', $con_negativo->id)->update(['selected_payment_methods' => json_encode([
+            $this->fila($this->efectivo_id, 250, $caja_a->id),
+            $this->fila($this->transferencia_id, -50, $caja_b->id),
+        ])]);
+
+        $this->confirmar(Budget::find($con_negativo->id))
+            ->assertStatus(422)
+            ->assertJson(['message' => 'Los montos de los métodos de pago no pueden ser negativos.', 'cobro_invalido' => true]);
+
+        $this->assertFalse(Sale::where('budget_id', $con_negativo->id)->exists());
+
+        // (iii) Todas en 0: sigue siendo "de contado" y recibe el 422 de siempre, no pasa a cuenta corriente.
+        $en_cero = $this->presupuesto_de_contado($client, [$this->fila($this->efectivo_id, 200, $caja_a->id)]);
+
+        Budget::where('id', $en_cero->id)->update(['selected_payment_methods' => json_encode([
+            $this->fila($this->efectivo_id, 0, $caja_a->id),
+        ])]);
+
+        $this->confirmar(Budget::find($en_cero->id))->assertStatus(422)->assertJson(['sin_metodo_de_pago' => true]);
+
+        $this->assertFalse(Sale::where('budget_id', $en_cero->id)->exists());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  El PUT del form genérico: manda el modelo ENTERO, con el cobro adentro
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 🔴 `getModelToSend()` del form genérico de Presupuestos hace `{...this.model}`: en CADA PUT viaja
+     * `omitir_en_cuenta_corriente` y `selected_payment_methods` tal como los devolvió el listado. La
+     * clave está presente siempre, y sin la comparación contra lo guardado, un presupuesto de contado
+     * guardado a la mañana con la Caja 1 no dejaba editar ni las observaciones a la noche, con la caja
+     * cerrada (422 `caja_cerrada`).
+     *
+     * Con el MISMO cobro no se revalidan ni el método ni la caja: se conserva lo guardado, tal cual.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_put_con_la_forma_del_modelo_recargado_conserva_el_cobro_aunque_la_caja_se_haya_cerrado()
+    {
+        $client = $this->cliente();
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
+
+        $budget = $this->presupuesto_de_contado($client, $this->reparto_dos_metodos($caja_a, $caja_b));
+
+        $cobro_antes = Budget::find($budget->id)->selected_payment_methods;
+
+        $modelo = $this->modelo_recargado($budget);
+
+        // Pasa la noche: las dos cajas se cierran.
+        $this->cerrar_caja($caja_a);
+        $this->cerrar_caja($caja_b);
+
+        $modelo['observations'] = 'editada por el form generico';
+
+        $this->putJson('api/budget/'.$budget->id, $modelo)->assertStatus(200);
+
+        $recargado = Budget::find($budget->id);
+
+        $this->assertSame('editada por el form generico', $recargado->observations, 'La edicion se guardo.');
+        $this->assertSame(1, (int) $recargado->omitir_en_cuenta_corriente, 'Sigue de contado.');
+        $this->assertEquals($cobro_antes, $recargado->selected_payment_methods, 'El cobro se conserva tal cual.');
+        $this->assertEquals(200, (float) $recargado->total);
+    }
+
+    /**
+     * La comparación ignora lo que el form genérico y la SPA agregan o reordenan sin cambiar el
+     * cobro: el `__row_id`, el orden de las claves y los tipos (120 / "120.00").
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_mismo_cobro_con_row_id_otro_orden_de_claves_y_otros_tipos_se_conserva()
+    {
+        $client = $this->cliente();
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
+
+        $budget = $this->presupuesto_de_contado($client, $this->reparto_dos_metodos($caja_a, $caja_b));
+
+        $cobro_antes = Budget::find($budget->id)->selected_payment_methods;
+
+        $modelo = $this->modelo_recargado($budget);
+
+        $filas = [];
+
+        foreach ($modelo['selected_payment_methods'] as $indice => $fila) {
+
+            $fila['__row_id'] = 'fila-'.$indice;
+            $fila['amount'] = number_format($fila['amount'], 2, '.', '');
+
+            $filas[] = array_reverse($fila, true);
+        }
+
+        $modelo['selected_payment_methods'] = $filas;
+
+        $this->cerrar_caja($caja_a);
+        $this->cerrar_caja($caja_b);
+
+        $this->putJson('api/budget/'.$budget->id, $modelo)->assertStatus(200);
+
+        $this->assertEquals($cobro_antes, Budget::find($budget->id)->selected_payment_methods, 'Se conserva el cobro guardado, sin el __row_id ni los tipos nuevos.');
+    }
+
+    /**
+     * Si el form genérico CAMBIA el reparto, la validación es la completa: con la caja cerrada, 422
+     * `caja_cerrada`, y no se toca nada (ni la edición de las observaciones, ni el cobro).
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_mismo_put_cambiando_el_reparto_con_la_caja_cerrada_da_422()
+    {
+        $client = $this->cliente();
+        $caja_a = $this->caja_abierta('zz Caja A contado');
+        $caja_b = $this->caja_abierta('zz Caja B contado');
+
+        $budget = $this->presupuesto_de_contado($client, $this->reparto_dos_metodos($caja_a, $caja_b));
+
+        $cobro_antes = Budget::find($budget->id)->selected_payment_methods;
+
+        $modelo = $this->modelo_recargado($budget);
+
+        $this->cerrar_caja($caja_b);
+
+        // Otro reparto (suma lo mismo, 200, pero 100 + 100): el cobro cambio, asi que se valida entero.
+        $modelo['observations'] = 'no tiene que quedar';
+        $modelo['selected_payment_methods'] = [
+            $this->fila($this->efectivo_id, 100, $caja_a->id),
+            $this->fila($this->transferencia_id, 100, $caja_b->id),
+        ];
+
+        $respuesta = $this->putJson('api/budget/'.$budget->id, $modelo);
+
+        $respuesta->assertStatus(422);
+        $this->assertTrue($respuesta->json('caja_cerrada'));
+
+        $recargado = Budget::find($budget->id);
+
+        $this->assertNotSame('no tiene que quedar', $recargado->observations);
+        $this->assertEquals($cobro_antes, $recargado->selected_payment_methods);
+    }
+
+    /**
+     * V3 SÍ se sigue pidiendo con el mismo cobro: el `total` del request pudo cambiar (cambiaron los
+     * renglones) y el reparto guardado ya no suma. Y se pide SIN volver a mirar las cajas: el 422 es
+     * el de la suma, no el de la caja cerrada.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_mismo_cobro_con_otro_total_da_422_por_la_suma_y_no_por_la_caja()
+    {
+        $client = $this->cliente();
+        $caja = $this->caja_abierta('zz Caja contado');
+
+        $budget = $this->presupuesto_de_contado($client, [$this->fila($this->efectivo_id, 200, $caja->id)]);
+
+        $modelo = $this->modelo_recargado($budget);
+
+        $this->cerrar_caja($caja);
+
+        $modelo['total'] = 300;
+
+        $respuesta = $this->putJson('api/budget/'.$budget->id, $modelo);
+
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('no coincide con el total', $respuesta->json('message'));
+        $this->assertNull($respuesta->json('caja_cerrada'), 'Con el mismo cobro no se vuelve a mirar la caja.');
+        $this->assertEquals(200, (float) Budget::find($budget->id)->total);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Atomicidad REAL: un fallo DESPUÉS de crear la venta y descontar el stock
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Un reparto que pasa todas las validaciones y revienta recién en `check_caja()`: la fila 1 va a
+     * una caja normal (su movimiento se escribe) y la fila 2 a una caja marcada abierta SIN apertura
+     * (V2 la acepta, `MovimientoCajaHelper` tira "no tiene ninguna apertura registrada"). Para ese
+     * momento `saveSale()` ya creó la venta, descontó el stock, adjuntó los métodos y escribió el
+     * movimiento de la fila 1: es lo que el rollback tiene que deshacer.
+     *
+     * @return array  [reparto, caja_rota]
+     */
+    protected function reparto_que_revienta_en_la_segunda_fila()
+    {
+        $caja_a    = $this->caja_abierta('zz Caja A contado');
+        $caja_rota = $this->caja_abierta_sin_apertura('zz Caja sin apertura contado');
+
+        return [
+            [
+                $this->fila($this->efectivo_id, 120, $caja_a->id),
+                $this->fila($this->transferencia_id, 80, $caja_rota->id),
+            ],
+            $caja_rota,
+        ];
+    }
+
+    /**
+     * 🔴 ESTA SÍ ES LA PRUEBA DEL ROLLBACK de `confirmar()`. A diferencia de la caja cerrada (que se
+     * detecta ANTES de crear nada), acá el fallo ocurre con la venta creada, el stock descontado y un
+     * movimiento de caja ya escrito. Después del 500: sin venta, stock intacto, presupuesto en estado
+     * 1 y ni un movimiento nuevo (tampoco el de la fila 1).
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function confirmar_con_un_fallo_despues_de_crear_la_venta_deja_todo_como_estaba()
+    {
+        $client = $this->cliente();
+
+        list($reparto, $caja_rota) = $this->reparto_que_revienta_en_la_segunda_fila();
+
+        $budget = $this->presupuesto_de_contado($client, $reparto);
+
+        $movimientos_antes = MovimientoCaja::count();
+        $ventas_antes      = Sale::where('user_id', self::USER_ID)->count();
+        $cuentas_antes     = CurrentAcount::where('client_id', $client->id)->count();
+
+        $respuesta = $this->confirmar($budget);
+
+        $respuesta->assertStatus(500);
+        $this->assertStringContainsString('no tiene ninguna apertura', $respuesta->json('message'), 'Control: el fallo es el de check_caja(), o sea DESPUES de crear la venta y descontar el stock.');
+
+        $this->assertFalse(Sale::where('budget_id', $budget->id)->exists(), 'Sin venta.');
+        $this->assertEquals($ventas_antes, Sale::where('user_id', self::USER_ID)->count());
+        $this->assertEquals(self::STOCK, (float) Article::find($this->article->id)->stock, 'El stock descontado volvio.');
+        $this->assertEquals(self::ESTADO_SIN_CONFIRMAR, (int) Budget::find($budget->id)->budget_status_id, 'El presupuesto sigue sin confirmar.');
+        $this->assertEquals($movimientos_antes, MovimientoCaja::count(), 'Ni un movimiento nuevo: tampoco el de la fila 1.');
+        $this->assertEquals($cuentas_antes, CurrentAcount::where('client_id', $client->id)->count());
+    }
+
+    /**
+     * El mismo fallo real, pero por el PUT que CAMBIA el estado a "Confirmado" (la SPA vieja confirma
+     * así). El `update()` ya había escrito los campos y rehecho los renglones: todo vuelve atrás, el
+     * presupuesto sigue a cuenta corriente y sin reparto, con sus observaciones y su renglón.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_update_que_confirma_y_falla_despues_de_crear_la_venta_deja_todo_como_estaba()
+    {
+        $client = $this->cliente();
+
+        list($reparto, $caja_rota) = $this->reparto_que_revienta_en_la_segunda_fila();
+
+        // Un presupuesto a cuenta corriente, como lo guarda la SPA en "No hay cobro".
+        $id = $this->postJson('api/budget', $this->payload_crear($client))->assertStatus(201)->json('model.id');
+        $budget = Budget::find($id);
+
+        $movimientos_antes = MovimientoCaja::count();
+        $ventas_antes      = Sale::where('user_id', self::USER_ID)->count();
+
+        $respuesta = $this->putJson('api/budget/'.$id, $this->payload_actualizar($budget, [
+            'budget_status_id'           => self::ESTADO_CONFIRMADO,
+            'observations'               => 'no tiene que quedar',
+            'omitir_en_cuenta_corriente' => 1,
+            'selected_payment_methods'   => $reparto,
+        ]));
+
+        $respuesta->assertStatus(500);
+        $this->assertStringContainsString('no tiene ninguna apertura', $respuesta->json('message'));
+
+        $recargado = Budget::find($id);
+
+        $this->assertEquals(self::ESTADO_SIN_CONFIRMAR, (int) $recargado->budget_status_id);
+        $this->assertNotSame('no tiene que quedar', $recargado->observations, 'Las observaciones nuevas se revirtieron.');
+        $this->assertSame(0, (int) $recargado->omitir_en_cuenta_corriente, 'Sigue a cuenta corriente.');
+        $this->assertNull($recargado->selected_payment_methods, 'Y sin reparto.');
+        $this->assertEquals(1, DB::table('article_budget')->where('budget_id', $id)->count(), 'El renglon sigue.');
+        $this->assertEquals($ventas_antes, Sale::where('user_id', self::USER_ID)->count(), 'Sin venta.');
+        $this->assertFalse(Sale::where('budget_id', $id)->exists());
+        $this->assertEquals(self::STOCK, (float) Article::find($this->article->id)->stock, 'Stock intacto.');
+        $this->assertEquals($movimientos_antes, MovimientoCaja::count(), 'Sin movimientos nuevos.');
+    }
+
+    /**
+     * Y el mismo fallo real en el ALTA de un presupuesto que nace ya confirmado: no queda ni el
+     * presupuesto (la fila del INSERT se revierte), ni la venta, ni el stock tocado, ni movimientos.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_alta_ya_confirmada_que_falla_despues_de_crear_la_venta_no_deja_nada()
+    {
+        $client = $this->cliente();
+
+        list($reparto, $caja_rota) = $this->reparto_que_revienta_en_la_segunda_fila();
+
+        $presupuestos_antes = Budget::where('user_id', self::USER_ID)->count();
+        $movimientos_antes  = MovimientoCaja::count();
+        $ventas_antes       = Sale::where('user_id', self::USER_ID)->count();
+
+        $respuesta = $this->postJson('api/budget', $this->payload_crear($client, [
+            'budget_status_id'           => self::ESTADO_CONFIRMADO,
+            'omitir_en_cuenta_corriente' => 1,
+            'selected_payment_methods'   => $reparto,
+        ]));
+
+        $respuesta->assertStatus(500);
+        $this->assertStringContainsString('no tiene ninguna apertura', $respuesta->json('message'));
+
+        $this->assertEquals($presupuestos_antes, Budget::where('user_id', self::USER_ID)->count(), 'No quedo el presupuesto.');
+        $this->assertEquals($ventas_antes, Sale::where('user_id', self::USER_ID)->count(), 'Ni la venta.');
+        $this->assertEquals(self::STOCK, (float) Article::find($this->article->id)->stock, 'Stock intacto.');
+        $this->assertEquals($movimientos_antes, MovimientoCaja::count(), 'Sin movimientos nuevos.');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Cheque normal (no endoso)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Una fila de método Cheque con los datos del cheque (el modal de Vender los manda en la fila): al
+     * confirmar se crea UN cheque recibido con esos datos, a nombre del cliente. No es un endoso (no
+     * trae `cheque_id`), así que V4 no lo toca. Un cheque no mueve caja: sin `caja_id`, el único
+     * movimiento es el del efectivo.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function una_fila_de_cheque_con_sus_datos_crea_el_cheque_al_confirmar()
+    {
+        $client = $this->cliente();
+        $caja = $this->caja_abierta('zz Caja contado');
+        $cheque_metodo_id = $this->metodo_del_catalogo('Cheque');
+
+        $numero = 'CH-'.uniqid();
+
+        $budget = $this->presupuesto_de_contado($client, [
+            $this->fila($cheque_metodo_id, 150, 0, [
+                'numero'          => $numero,
+                'banco'           => 'Banco zz de prueba',
+                'cheque_banco_id' => 0,
+                'fecha_emision'   => '2026-10-01',
+                'fecha_pago'      => '2026-10-31',
+                'es_echeq'        => 0,
+                'notes'           => 'cheque de prueba',
+            ]),
+            $this->fila($this->efectivo_id, 50, $caja->id),
+        ]);
+
+        $this->assertSame($numero, $budget->selected_payment_methods[0]['numero'], 'Los datos del cheque viajan guardados con el presupuesto.');
+        $this->assertEquals(0, Cheque::where('numero', $numero)->count(), 'Guardar el presupuesto no crea el cheque: se crea al confirmar.');
+
+        $this->confirmar($budget)->assertStatus(200);
+
+        $cheques = Cheque::where('numero', $numero)->get();
+
+        $this->assertCount(1, $cheques, 'Se creo UN cheque.');
+
+        $cheque = $cheques[0];
+
+        $this->assertSame('recibido', $cheque->tipo);
+        $this->assertEquals(150, (float) $cheque->amount);
+        $this->assertEquals($client->id, (int) $cheque->client_id, 'A nombre del cliente de la venta.');
+        $this->assertEquals(self::USER_ID, (int) $cheque->user_id);
+        $this->assertSame('Banco zz de prueba', $cheque->banco);
+        $this->assertSame('2026-10-01', $cheque->fecha_emision->format('Y-m-d'));
+        $this->assertSame('2026-10-31', $cheque->fecha_pago->format('Y-m-d'));
+        $this->assertSame('cheque de prueba', $cheque->notes);
+
+        $sale = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertEquals(2, DB::table('current_acount_payment_method_sale')->where('sale_id', $sale->id)->count(), 'La venta tiene los dos metodos.');
+
+        $movimientos = MovimientoCaja::where('sale_id', $sale->id)->get();
+
+        $this->assertCount(1, $movimientos, 'Solo el efectivo mueve una caja: el cheque no tiene caja.');
+        $this->assertEquals(50, (float) $movimientos[0]->ingreso);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  8 bis. El PDF del presupuesto explica el ajuste por método de pago
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1309,8 +2029,11 @@ class Presupuesto_de_contado_Test extends TestCase
 
         $pdf = $this->pdf_del_presupuesto($con_descuento);
 
-        $this->assertStringContainsString(utf8_decode('Descuento por método de pago'), $pdf, 'El pie explica el descuento por metodo de pago.');
-        $this->assertStringContainsString('Sub Total sin descuentos', $pdf, 'Y muestra de donde se parte.');
+        // El IMPORTE y el SIGNO, no solo el texto: el descuento RESTA 10 y el total del pie es el neto.
+        $this->assertStringContainsString(utf8_decode('- $10 Descuento por método de pago'), $pdf, 'El pie explica el descuento: signo menos e importe 10.');
+        $this->assertStringNotContainsString(utf8_decode('+ $10 Descuento'), $pdf, 'Un descuento no puede salir con signo mas.');
+        $this->assertStringContainsString('Sub Total sin descuentos: $200', $pdf, 'Y muestra de donde se parte: la suma de los renglones.');
+        $this->assertStringContainsString('Total: $190', $pdf, 'El total del pie es el neto: 200 - 10.');
         $this->assertStringNotContainsString(utf8_decode('Recargo por método de pago'), $pdf);
 
         $con_recargo = $this->presupuesto_de_contado($client, [
@@ -1320,8 +2043,11 @@ class Presupuesto_de_contado_Test extends TestCase
 
         $pdf = $this->pdf_del_presupuesto($con_recargo);
 
-        $this->assertStringContainsString(utf8_decode('Recargo por método de pago'), $pdf, 'El pie explica el recargo por metodo de pago.');
-        $this->assertStringContainsString('Sub Total sin descuentos', $pdf, 'El recargo tambien muestra de donde se parte (la suma de los renglones es MENOR que el total).');
+        $this->assertStringContainsString(utf8_decode('+ $20 Recargo por método de pago'), $pdf, 'El pie explica el recargo: signo mas e importe 20.');
+        $this->assertStringNotContainsString(utf8_decode('- $20 Recargo'), $pdf, 'Un recargo no puede salir con signo menos.');
+        $this->assertStringContainsString('Sub Total sin descuentos: $200', $pdf, 'El recargo tambien muestra de donde se parte (la suma de los renglones es MENOR que el total).');
+        $this->assertStringContainsString('Total: $220', $pdf, 'El total del pie es el neto: 200 + 20.');
+        $this->assertStringNotContainsString(utf8_decode('Descuento por método de pago'), $pdf);
 
         $en_cuenta_corriente = Budget::find($this->postJson('api/budget', $this->payload_crear($client))->assertStatus(201)->json('model.id'));
 
