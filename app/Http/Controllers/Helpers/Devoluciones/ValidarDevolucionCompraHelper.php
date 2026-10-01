@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\Devoluciones;
 use App\Models\ConceptoStockMovement;
 use App\Models\ProviderOrder;
 use App\Models\StockMovement;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -20,9 +21,21 @@ use Illuminate\Support\Facades\Log;
  * un doble clic de una segunda devolución legítima; lo que sí lo distingue es que la segunda intenta
  * devolver unidades que la compra ya no tiene sin devolver. Eso es lo que se rechaza.
  *
- * Lo ya devuelto se lee del LIBRO de movimientos de stock (concepto "Nota de credito proveedor"
- * atado a `provider_order_id`), no de un contador en el pivot de la compra: no hay tal contador, y
- * el libro es lo único que registra lo que efectivamente salió.
+ * 🔴 DOS PREGUNTAS DISTINTAS, DOS FUENTES DISTINTAS (corrección del revisor, 1/10/2026):
+ *
+ *  - ¿Cuánto ya se le DEVOLVIÓ al proveedor? (el tope, y el `ya_devueltas` del GET) → los
+ *    renglones de las notas de crédito vivas de la compra (`article_current_acount` de las NC con
+ *    `devolucion_provider_order_id` = la compra). Con el libro de stock esto no alcanzaba: una NC
+ *    sin "descontar del stock", de un artículo sin stock o de una compra que no movió stock no deja
+ *    ningún movimiento, y dos NC idénticas por doble clic pasaban las dos. Ver
+ *    unidades_ya_devueltas().
+ *  - ¿Cuánto ya SALIÓ del stock por esas NC? (el tope de lo que puede salir, y el borrado de la
+ *    compra) → el LIBRO de movimientos (concepto "Nota de credito proveedor" atado a
+ *    `provider_order_id`), que es lo único que registra lo que efectivamente salió. Ver
+ *    unidades_ya_sacadas().
+ *
+ * Unificarlas en una sola rompe una de las dos cosas: el tope deja pasar duplicados, o el stock
+ * saca algo que nunca entró.
  *
  * 🔴 UNIDADES. La compra se carga en la unidad de la compra (bultos, si el artículo tiene
  * `unidades_individuales`), y el libro guarda unidades de stock (los conceptos de compra y el de la
@@ -216,15 +229,51 @@ class ValidarDevolucionCompraHelper {
     }
 
     /**
-     * Unidades (de la compra) que las notas de crédito a proveedor de esta compra ya sacaron del
-     * stock, según el libro. Un reverso, si alguna vez lo hay, suma en positivo y descuenta.
+     * Unidades (de la compra) que ya se le DEVOLVIERON al proveedor sobre esta compra: la suma de
+     * los renglones (`article_current_acount.amount`) de las notas de crédito VIVAS con
+     * `devolucion_provider_order_id` = la compra. Es lo que topa la devolución y lo que muestra el
+     * GET como "ya devueltas".
+     *
+     * 🔴 No sale del libro de stock a propósito (ver el docblock de la clase): una NC que no movió
+     * stock igual devolvió esas unidades, y el doble clic sin "descontar del stock" tiene que
+     * rebotar igual. Una NC eliminada desde la cuenta corriente desaparece de `current_acounts`
+     * (borrado físico) y deja de contar sola, por el join.
+     *
+     * El renglón de la NC ya está en la unidad de la compra (bultos): es el `unidades_devueltas` que
+     * mandó la pantalla. No se divide por `unidades_individuales`.
+     *
+     * @param  \App\Models\ProviderOrder  $provider_order
+     * @param  \App\Models\Article        $article
+     * @param  bool                       $con_candado  FOR UPDATE: ve lo último commiteado (doble
+     *                                                  clic simultáneo).
+     * @return float
+     */
+    static function unidades_ya_devueltas($provider_order, $article, $con_candado = false) {
+
+        $query = DB::table('article_current_acount')
+                    ->join('current_acounts', 'current_acounts.id', '=', 'article_current_acount.current_acount_id')
+                    ->where('current_acounts.devolucion_provider_order_id', $provider_order->id)
+                    ->where('current_acounts.status', 'nota_credito')
+                    ->where('article_current_acount.article_id', $article->id);
+
+        if ($con_candado) {
+            $query->lockForUpdate();
+        }
+
+        return max(0, (float)$query->sum('article_current_acount.amount'));
+    }
+
+    /**
+     * Unidades (de la compra) que las notas de crédito a proveedor de esta compra ya SACARON del
+     * stock, según el libro. El reverso de una NC eliminada (mismo concepto, monto positivo, ver
+     * NotaCreditoProveedorHelper::deshacer_stock) suma en positivo y lo descuenta.
      *
      * @param  \App\Models\ProviderOrder  $provider_order
      * @param  \App\Models\Article        $article
      * @param  bool                       $con_candado
      * @return float
      */
-    static function unidades_ya_devueltas($provider_order, $article, $con_candado = false) {
+    static function unidades_ya_sacadas($provider_order, $article, $con_candado = false) {
 
         $concepto = Self::concepto();
 
@@ -304,7 +353,9 @@ class ValidarDevolucionCompraHelper {
             return $unidades;
         }
 
-        $pendientes = Self::unidades_ingresadas($provider_order, $article) - Self::unidades_ya_devueltas($provider_order, $article);
+        // Contra el LIBRO (lo que entró menos lo que ya salió por NC), no contra lo devuelto por las
+        // NC: una NC anterior que no movió stock no tiene que achicar lo que sí puede salir.
+        $pendientes = Self::unidades_ingresadas($provider_order, $article) - Self::unidades_ya_sacadas($provider_order, $article);
 
         $a_sacar = min($unidades, max(0, $pendientes));
 

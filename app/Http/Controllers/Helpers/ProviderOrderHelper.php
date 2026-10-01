@@ -401,13 +401,19 @@ class ProviderOrderHelper {
 					la nota de crédito a proveedor (concepto "Nota de credito proveedor", atado a
 					esta compra): sacarla otra vez al borrar dejaba el stock por DEBAJO de donde
 					estaba antes de la compra. Compra 10, devolución 4, borrar: salían 10 y el
-					stock quedaba 4 abajo. Lo devuelto se lee del libro, en la unidad de la compra
+					stock quedaba 4 abajo. Lo ya sacado se lee del libro (no de los renglones de las
+					NC: lo que importa acá es lo que SALIÓ del stock), en la unidad de la compra
 					(bultos), igual que $cantidad_real: la conversión a unidades la sigue haciendo
 					check_unidades_individuales() con el concepto de eliminación.
-				*/
-				$ya_devueltas = ValidarDevolucionCompraHelper::unidades_ya_devueltas($provider_order, $article);
 
-				$amount = -max(0, (float)$cantidad_real - $ya_devueltas);
+					Hoy ProviderOrderController::destroy() frena el borrado mientras la compra tenga
+					NC vivas, y eliminar una NC devuelve su stock (el libro queda neteado en 0). Esta
+					resta queda igual como red: es la única cuenta que sigue siendo correcta si alguna
+					vez se borra por otro camino.
+				*/
+				$ya_sacadas = ValidarDevolucionCompraHelper::unidades_ya_sacadas($provider_order, $article);
+
+				$amount = -max(0, (float)$cantidad_real - $ya_sacadas);
 
 				/*
 					🔴 Se reinicia en cada vuelta. Antes $data vivía entre artículos y el

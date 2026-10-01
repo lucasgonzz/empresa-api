@@ -532,4 +532,97 @@ class Nota_de_credito_a_proveedor_Test extends NotaCreditoProveedorTestCase
         $this->assertNull($nota_credito->provider_id);
         $this->assertNull($nota_credito->devolucion_provider_order_id);
     }
+
+    /**
+     * 🔴 El doble clic SIN mover stock (sin "descontar del stock"): la segunda NC idéntica se
+     * rechaza igual. El tope cuenta lo devuelto por las NC de la compra (sus renglones), no por el
+     * libro de stock, que en este caso no tiene nada. El GET muestra lo mismo que cuenta el tope.
+     *
+     * @test
+     */
+    public function una_segunda_nc_identica_sin_mover_stock_se_rechaza()
+    {
+        $articulo = $this->crear_articulo('zz NC proveedor duplicada sin stock');
+        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        $compra = $this->crear_compra([$this->renglon_compra($articulo, 100, 4)]);
+
+        $payload = $this->payload_devolucion(
+            $proveedor->id,
+            $compra,
+            [$this->item_devolucion($articulo, 121, 4)],
+            484,
+            ['regresar_stock' => 0]
+        );
+
+        $this->postJson('api/devoluciones/', $payload)->assertStatus(201);
+
+        $this->assertEquals(9, $this->stock($articulo), 'Sin "descontar del stock" el stock no se toca.');
+        $this->assertEquals(4, $this->buscar_compra($compra)['articles'][$articulo->id]['ya_devueltas'], 'El GET tiene que contar lo devuelto por la NC aunque no haya movido stock.');
+
+        $segunda = $this->postJson('api/devoluciones/', $payload);
+
+        $segunda->assertStatus(422);
+        $this->assertTrue($segunda->json('devolucion_excedida'));
+        $this->assertEquals(1, CurrentAcount::where('status', 'nota_credito')->where('devolucion_provider_order_id', $compra->id)->count());
+    }
+
+    /**
+     * Lo que SALE del stock sigue topado por el libro: una NC sin stock y después otra con stock
+     * por el resto no sacan más de lo que la compra ingresó.
+     *
+     * @test
+     */
+    public function lo_que_sale_del_stock_sigue_topado_por_lo_que_la_compra_ingreso()
+    {
+        $articulo = $this->crear_articulo('zz NC proveedor stock topado');
+        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        // La compra NO mueve stock: el libro no tiene nada ingresado.
+        $compra = $this->crear_compra([$this->renglon_compra($articulo, 100, 4)], ['update_stock' => 0]);
+
+        $this->assertEquals(5, $this->stock($articulo));
+
+        $this->postJson('api/devoluciones/', $this->payload_devolucion(
+            $proveedor->id,
+            $compra,
+            [$this->item_devolucion($articulo, 121, 2)],
+            242
+        ))->assertStatus(201);
+
+        $this->assertEquals(5, $this->stock($articulo), 'No puede salir del stock algo que la compra nunca metió.');
+        $this->assertEquals(2, $this->buscar_compra($compra)['articles'][$articulo->id]['ya_devueltas']);
+    }
+
+    /**
+     * 🔴 Guarda del concepto: si la base no tiene "Nota de credito proveedor" (el seeder del
+     * despliegue no corrió), se crea en el momento. Sin él el movimiento quedaba sin concepto: no
+     * multiplicaba los bultos y el libro no veía lo devuelto.
+     *
+     * @test
+     */
+    public function sin_el_concepto_en_la_base_se_crea_y_el_bulto_se_multiplica()
+    {
+        DB::table('concepto_stock_movements')->where('name', 'Nota de credito proveedor')->delete();
+
+        $articulo = $this->crear_articulo('zz NC proveedor sin concepto', ['stock' => 5, 'unidades_individuales' => 12]);
+        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        $compra = $this->crear_compra([$this->renglon_compra($articulo, 1200, 2)]);
+
+        $this->postJson('api/devoluciones/', $this->payload_devolucion(
+            $proveedor->id,
+            $compra,
+            [$this->item_devolucion($articulo, 1452, 1)],
+            1452
+        ))->assertStatus(201);
+
+        $this->assertEquals(1, DB::table('concepto_stock_movements')->where('name', 'Nota de credito proveedor')->count(), 'El concepto se tenía que crear una sola vez.');
+        $this->assertEquals(17, $this->stock($articulo), 'Con el concepto creado, 1 bulto saca 12 unidades.');
+
+        $movimiento = StockMovement::where('article_id', $articulo->id)
+                                    ->where('nota_credito_id', $this->nota_credito_de($compra)->id)
+                                    ->first();
+        $this->assertEquals($this->concepto_nc_proveedor(), $movimiento->concepto_stock_movement_id);
+    }
 }

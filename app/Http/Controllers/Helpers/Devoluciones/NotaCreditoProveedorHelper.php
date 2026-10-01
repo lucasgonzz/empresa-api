@@ -13,6 +13,8 @@ use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
+use App\Models\StockMovement;
+use Database\Seeders\ConceptoStockMovementNotaCreditoProveedorSeeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -241,6 +243,8 @@ class NotaCreditoProveedorHelper {
      */
     static function sacar_stock($request, $items, $nota_credito, $provider_id, $provider_order) {
 
+        Self::asegurar_concepto();
+
         $ct = new StockMovementController();
 
         $address_id = Self::address_id_de_salida($request, $provider_order);
@@ -327,6 +331,130 @@ class NotaCreditoProveedorHelper {
                 $stock_movement->save();
             }
         }
+    }
+
+    /**
+     * Al ELIMINAR una nota de crédito a proveedor desde la cuenta corriente (la llama
+     * NotaCreditoHelper::resetUnidadesDevueltas): vuelve a meter en el stock exactamente lo que
+     * esa NC había sacado. Gemelo del camino de venta, que al borrar la NC saca lo que había
+     * repuesto.
+     *
+     * Por cada movimiento NEGATIVO de la NC (concepto "Nota de credito proveedor", con su
+     * `nota_credito_id`) se crea el inverso:
+     *
+     *  - 🔴 con el MISMO concepto y monto positivo, a propósito: el libro de la compra queda
+     *    neteado en 0 para ese concepto, que es justo lo que leen unidades_ya_sacadas() (el tope
+     *    de lo que puede salir en la próxima devolución) y el borrado de la compra
+     *    (ProviderOrderHelper::resetArticlesStock). Un concepto aparte ("Eliminacion ...")
+     *    obligaría a sumarlo en esos dos lugares, y el día que alguien se olvide de uno el stock
+     *    se descuadra. Queda rastreable igual: mismo `nota_credito_id`, monto positivo y la
+     *    observación con el número de la NC eliminada.
+     *  - 🔴 con `sin_unidades_individuales`: el movimiento original YA quedó en unidades (la NC se
+     *    cargó en bultos y check_unidades_individuales() la multiplicó). Volver a pasarlo por la
+     *    conversión metería 144 unidades por un bulto de 12.
+     *  - al depósito del que había salido (`to_address_id` = el `from_address_id` original).
+     *
+     * Lo que sigue contando como "ya devuelto" para el tope son los renglones de las NC vivas: al
+     * borrarse la NC desaparece de ahí sola (ver ValidarDevolucionCompraHelper).
+     *
+     * @param  \App\Models\CurrentAcount  $nota_credito
+     * @return void
+     */
+    static function deshacer_stock($nota_credito) {
+
+        $concepto = ValidarDevolucionCompraHelper::concepto();
+
+        // Sin el concepto no puede haber movimientos de esta NC con él: nada que deshacer.
+        if (is_null($concepto)) {
+            return;
+        }
+
+        $movimientos = StockMovement::where('nota_credito_id', $nota_credito->id)
+                                    ->where('concepto_stock_movement_id', $concepto->id)
+                                    ->where('amount', '<', 0)
+                                    ->get();
+
+        $ct = new StockMovementController();
+
+        foreach ($movimientos as $movimiento) {
+
+            $data = [
+                'model_id'                      => $movimiento->article_id,
+                'amount'                        => -(float)$movimiento->amount,
+                'sin_unidades_individuales'     => true,
+                'concepto_stock_movement_name'  => Self::CONCEPTO,
+                'nota_credito_id'               => $nota_credito->id,
+                'not_save_provider'             => true,
+                'observations'                  => 'Eliminacion Nota C. proveedor N° '.$nota_credito->num_receipt,
+            ];
+
+            if (!is_null($movimiento->provider_order_id)) {
+                $data['provider_order_id'] = $movimiento->provider_order_id;
+            }
+
+            if (!is_null($movimiento->article_variant_id) && $movimiento->article_variant_id != 0) {
+                $data['article_variant_id'] = $movimiento->article_variant_id;
+            }
+
+            if (!is_null($movimiento->from_address_id) && $movimiento->from_address_id != 0) {
+                $data['to_address_id'] = $movimiento->from_address_id;
+            }
+
+            $reverso = $ct->crear($data);
+
+            // Mismo criterio que sacar_stock(): el proveedor se graba después de crear(), para que
+            // no pase por SetProvider (que con monto positivo tocaría la relación
+            // artículo-proveedor como si fuera una compra).
+            if (!is_null($reverso)) {
+                $reverso->provider_id = $movimiento->provider_id;
+                $reverso->save();
+            }
+        }
+    }
+
+    /**
+     * Motivo por el que una compra no se puede borrar, o null: tiene notas de crédito a proveedor
+     * vivas (ver ProviderOrderController::destroy).
+     *
+     * @param  int  $provider_order_id
+     * @return string|null
+     */
+    static function motivo_por_el_que_no_se_puede_borrar_la_compra($provider_order_id) {
+
+        $numeros = CurrentAcount::where('devolucion_provider_order_id', $provider_order_id)
+                                ->where('status', 'nota_credito')
+                                ->orderBy('id')
+                                ->pluck('num_receipt')
+                                ->all();
+
+        if (count($numeros) == 0) {
+            return null;
+        }
+
+        return 'Esta compra tiene notas de crédito a proveedor (N° '.implode(', ', $numeros).'). Eliminalas primero desde la cuenta corriente del proveedor.';
+    }
+
+    /**
+     * 🔴 Guarda del concepto "Nota de credito proveedor": si la base no lo tiene (el seeder del
+     * despliegue no corrió, o es una base vieja restaurada), se crea en el momento, ANTES de
+     * escribir el primer movimiento. Sin el concepto, SetConcepto deja el movimiento sin etiqueta
+     * (no lanza error), y eso rompe dos cosas en silencio: check_unidades_individuales() no
+     * multiplica los bultos (devolver 1 caja de 12 sacaba 1 unidad) y el libro no ve lo que salió
+     * (el tope de stock y el borrado de la compra lo cuentan mal).
+     *
+     * Reusa el seeder standalone, que es idempotente por nombre: si ya existe no hace nada.
+     *
+     * @return void
+     */
+    static function asegurar_concepto() {
+
+        if (!is_null(ValidarDevolucionCompraHelper::concepto())) {
+            return;
+        }
+
+        Log::warning('NotaCreditoProveedorHelper: faltaba el concepto "'.Self::CONCEPTO.'" en concepto_stock_movements; se crea ahora (¿no corrió ConceptoStockMovementNotaCreditoProveedorSeeder en el despliegue?).');
+
+        (new ConceptoStockMovementNotaCreditoProveedorSeeder())->run();
     }
 
     /**

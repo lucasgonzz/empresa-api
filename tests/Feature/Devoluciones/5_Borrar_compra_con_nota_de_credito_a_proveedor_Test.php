@@ -3,18 +3,21 @@
 namespace Tests\Feature\Devoluciones;
 
 use App\Models\Address;
+use App\Models\ProviderOrder;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\DB;
 
 /**
  * Borrar una compra que ya tuvo una devolución al proveedor (misión
- * devoluciones-compras-y-rediseno, 1/10/2026). Ver ProviderOrderHelper::resetArticlesStock().
+ * devoluciones-compras-y-rediseno, 1/10/2026). Ver ProviderOrderController::destroy() y
+ * ProviderOrderHelper::resetArticlesStock().
  *
- * 🔴 El defecto que estos tests fijan: al borrar la compra se sacaba del stock TODO lo que la
- * compra ingresó, sin mirar que una parte ya había salido con la nota de crédito al proveedor.
- * Compra 10, devolución 4 (stock +6), borrar la compra sacaba 10: el stock quedaba 4 unidades por
- * DEBAJO de donde estaba antes de la compra. Lo que se saca al borrar es lo ingresado menos lo ya
- * devuelto según el libro.
+ * 🔴 La regla (decisión del orquestador de la misión): una compra con notas de crédito a proveedor
+ * VIVAS no se borra; responde 422 pidiendo eliminar primero esas NC desde la cuenta corriente del
+ * proveedor. Borrarla igual dejaba a la NC apuntando a una compra inexistente, con su haber en la
+ * cuenta y sin el débito contra el que se imputó, y el stock había que adivinarlo. Eliminando
+ * primero la NC (que devuelve su stock, ver 6_) y después la compra, todo vuelve a como estaba antes
+ * de la compra.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -24,19 +27,17 @@ use Illuminate\Support\Facades\DB;
 class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProveedorTestCase
 {
     /**
-     * Stock global: compra 10, devolución 4, borrar la compra → el stock vuelve al de antes de la
-     * compra (no 4 menos).
+     * Compra 10, devolución 4, borrar la compra → 422 con el número de la NC, y no se toca nada:
+     * la compra sigue, el stock sigue en 11.
      *
      * @test
      */
-    public function borrar_la_compra_despues_de_una_devolucion_deja_el_stock_de_antes_de_la_compra()
+    public function borrar_una_compra_con_nc_viva_responde_422_y_no_toca_nada()
     {
         $articulo = $this->crear_articulo('zz Borrar compra con NC global', ['stock' => 5]);
         $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
 
         $compra = $this->crear_compra([$this->renglon_compra($articulo, 100, 10)]);
-
-        $this->assertEquals(15, $this->stock($articulo), 'La compra no sumó al stock; el escenario no sirve.');
 
         $this->postJson('api/devoluciones/', $this->payload_devolucion(
             $proveedor->id,
@@ -47,45 +48,25 @@ class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProv
 
         $this->assertEquals(11, $this->stock($articulo), 'La devolución no sacó las 4 unidades; el escenario no sirve.');
 
-        $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(200);
+        $nota_credito = $this->nota_credito_de($compra);
 
-        $this->assertEquals(5, $this->stock($articulo), 'Borrar la compra tiene que sacar sólo lo que quedó de ella (10 − 4), no las 10.');
+        $response = $this->deleteJson('api/provider-order/'.$compra->id);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('notas de crédito a proveedor', $response->json('message'));
+        $this->assertStringContainsString('N° '.$nota_credito->num_receipt, $response->json('message'));
+
+        $this->assertNotNull(ProviderOrder::find($compra->id), 'La compra no se tenía que borrar.');
+        $this->assertEquals(11, $this->stock($articulo), 'Un 422 no puede mover el stock.');
+        $this->assertNotNull($nota_credito->fresh());
     }
 
     /**
-     * Por bulto (`unidades_individuales` = 12): compra 2 bultos, devolución 1, borrar → sale 1
-     * bulto (12 unidades), no 2.
+     * Con depósito, la misma regla: 422 y el depósito intacto.
      *
      * @test
      */
-    public function borrar_la_compra_por_bulto_descuenta_lo_devuelto_en_bultos()
-    {
-        $articulo = $this->crear_articulo('zz Borrar compra con NC por bulto', ['stock' => 5, 'unidades_individuales' => 12]);
-        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
-
-        $compra = $this->crear_compra([$this->renglon_compra($articulo, 1200, 2)]);
-
-        $this->postJson('api/devoluciones/', $this->payload_devolucion(
-            $proveedor->id,
-            $compra,
-            [$this->item_devolucion($articulo, 1452, 1)],
-            1452
-        ))->assertStatus(201);
-
-        $this->assertEquals(17, $this->stock($articulo), 'El escenario por bulto no quedó como se esperaba.');
-
-        $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(200);
-
-        $this->assertEquals(5, $this->stock($articulo));
-    }
-
-    /**
-     * Con depósito: lo que queda de la compra sale del depósito de la compra, que vuelve a su valor
-     * de antes.
-     *
-     * @test
-     */
-    public function borrar_la_compra_con_deposito_deja_el_deposito_como_antes()
+    public function borrar_una_compra_con_deposito_y_nc_viva_no_toca_el_deposito()
     {
         $articulo = $this->crear_articulo('zz Borrar compra con NC deposito', ['stock' => 0]);
         $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
@@ -100,16 +81,41 @@ class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProv
             484
         ))->assertStatus(201);
 
-        $deposito = function () use ($articulo, $principal) {
-            return (float) DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $principal->id)->value('amount');
-        };
+        $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(422);
 
-        $this->assertEquals(6, $deposito(), 'El escenario de depósito no quedó como se esperaba.');
+        $this->assertEquals(6, (float) DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $principal->id)->value('amount'));
+    }
+
+    /**
+     * El camino que sí funciona: eliminar primero la NC (que devuelve su stock) y después la
+     * compra. Por bulto, para cubrir también la conversión: el stock vuelve al de antes de la
+     * compra.
+     *
+     * @test
+     */
+    public function eliminando_primero_la_nc_la_compra_se_borra_y_el_stock_vuelve_al_de_antes()
+    {
+        $articulo = $this->crear_articulo('zz Borrar compra despues de la NC', ['stock' => 5, 'unidades_individuales' => 12]);
+        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        $compra = $this->crear_compra([$this->renglon_compra($articulo, 1200, 2)]);
+
+        $this->postJson('api/devoluciones/', $this->payload_devolucion(
+            $proveedor->id,
+            $compra,
+            [$this->item_devolucion($articulo, 1452, 1)],
+            1452,
+            ['generar_current_acount' => 1]
+        ))->assertStatus(201);
+
+        $this->assertEquals(17, $this->stock($articulo));
+
+        $this->deleteJson('api/current-acount/provider/'.$this->nota_credito_de($compra)->id)->assertStatus(200);
 
         $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(200);
 
-        $this->assertEquals(0, $deposito());
-        $this->assertEquals(0, $this->stock($articulo));
+        $this->assertNull(ProviderOrder::find($compra->id));
+        $this->assertEquals(5, $this->stock($articulo));
     }
 
     /**
