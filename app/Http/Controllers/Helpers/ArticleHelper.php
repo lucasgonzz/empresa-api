@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\VinotecaPriceHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Http\Controllers\PriceChangeController;
 use App\Http\Controllers\Stock\StockMovementController;
@@ -815,6 +816,27 @@ class ArticleHelper {
         if ($guardar_cambios) {
             $article->timestamps = false;
             $article->save();
+
+            /*
+             * Combos calculados (misión combos-calculados, 30/9/2026): el artículo acaba de quedar
+             * con su costo y su precio (y los de cada lista) escritos, así que los combos calculados
+             * que lo incluyen tienen que rehacer su cuenta. Una consulta indexada y nada más cuando
+             * el artículo no está en ningún combo calculado, que es casi siempre.
+             *
+             * 🔴 NO CUANDO EL MODO LOTE ESTÁ ENCENDIDO (`PreciosEnLote`: importaciones y recálculos
+             * masivos). En ese modo los pivots de las listas todavía NO están en la base (se
+             * escriben en bloque al volcar el lote), y un combo calculado leería los precios de
+             * lista viejos y quedaría mal hasta el próximo cambio. Esos procesos cierran con su
+             * propio recálculo de combos (FinalizeSetFinalPrices, FinalizeArticleImport,
+             * MasiveUpdateHelper, ArticleProviderDiscountHelper, RollbackArticleImportHistory), ya
+             * con todo escrito y una sola vez por corrida en vez de una por artículo.
+             *
+             * Va DESPUÉS del save() y no antes: el helper lee los artículos de la base, y antes
+             * del save() vería los valores viejos.
+             */
+            if (!PreciosEnLote::esta_activo()) {
+                ComboCalculadoHelper::recalcular_por_articulos([$article->id]);
+            }
 
             if ($return_description) {
 

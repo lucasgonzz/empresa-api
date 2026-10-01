@@ -100,6 +100,13 @@ use Illuminate\Support\Facades\DB;
  * propia. Devolviendo el crédito, lo que no se puede atribuir simplemente no se netea y
  * `total_cost` sigue mandando; recalculando el total, esas promociones desaparecerían del costo.
  * Invariante que se sostiene sí o sí: **el crédito nunca puede ser mayor que el costo**.
+ *
+ * ⚠️ Los COMBOS tampoco se ven acá (misión combos-calculados, Parte A2, 30/9/2026): desde esa misión
+ * `set_total_cost()` suma también `combo_sale.cost x amount`, pero la medición de abajo recorre
+ * solo `article_sale`. En una cuenta con el costo BRUTO (`aplicar_iva_al_costo`), el costo de un
+ * combo entra bruto al `total_cost` y su IVA de compra no se recupera: la ganancia de esa venta sale
+ * subestimada por ese IVA (nunca inflada). Es un límite conocido y no se arregla junto con A2: hace
+ * falta decidir cómo se atribuye la alícuota a un combo, y eso es de esta clase.
  */
 class CostoDeVentaHelper
 {

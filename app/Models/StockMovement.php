@@ -8,6 +8,15 @@ class StockMovement extends Model
 {
     protected $guarded = [];
 
+    /**
+     * `stock_por_deposito` es la foto de todos los depósitos del artículo antes y después del
+     * movimiento, guardada como JSON en una columna `text` (ver SetStockPorDeposito). Con el cast
+     * se asigna como array y el endpoint del historial la devuelve como objeto.
+     */
+    protected $casts = [
+        'stock_por_deposito' => 'array',
+    ];
+
     function scopeWithAll($q) {
         $q->with('provider', 'from_address', 'to_address', 'article_variant');
     }

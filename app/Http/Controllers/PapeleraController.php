@@ -5,8 +5,11 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\sale\RestoreSaleFromPapeleraHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
+use App\Models\Article;
+use App\Models\Combo;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -225,6 +228,20 @@ class PapeleraController extends Controller
 
         if ($model_name === Sale::class) {
             RestoreSaleFromPapeleraHelper::run($model);
+        }
+
+        /*
+         * Combos calculados (misión combos-calculados, 30/9/2026). Un combo calculado que estuvo en
+         * la papelera NO se recalculó mientras tanto (los recálculos saltean los borrados), así que
+         * al restaurarlo puede tener una cuenta vieja: se rehace ahora. Y un artículo restaurado
+         * vuelve a un combo calculado que lo incluye: idem.
+         */
+        if ($model_name === Combo::class) {
+            ComboCalculadoHelper::guardar($model);
+        }
+
+        if ($model_name === Article::class) {
+            ComboCalculadoHelper::recalcular_por_articulos([$model->id]);
         }
     }
 }

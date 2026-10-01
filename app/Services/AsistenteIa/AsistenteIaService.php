@@ -1117,6 +1117,11 @@ CARGA;
      * veces que dejara de confirmar y no pasó nada. 🔴 La BAJA sigue dejando tarjeta en los tres
      * modos y su renglón no cambia.
      *
+     * Misión alta-por-agente-margen-y-stock (29/9/2026): el renglón de "lo que decís que quedó sale
+     * de la tarjeta o del resultado". En demo3 el agente escribió "tengo listo el alta con margen
+     * 30 % y 20 unidades" antes de tener tarjeta, y después "las 20 unidades ya quedaron cargadas"
+     * leyendo un error como si fuera un hecho: las dos frases salían del PEDIDO, no de lo cargado.
+     *
      * @param  string  $confianza  El modo guardado del dueño (ConfianzaDelAgenteIaHelper).
      * @return string
      */
@@ -1176,6 +1181,11 @@ VENTA_CONFIRMA;
   borra su cuenta corriente pero no compensa la caja). Contáselo a la persona en una línea
   antes de que confirme.
 {$regla_de_las_genericas}
+- 🔴 Lo que decís que quedó cargado, o que vas a cargar, sale de los renglones de la tarjeta o
+  del `resultado`, nunca de lo que pidió la persona. Si pidió algo que no está ni en los
+  renglones ni en el resultado (un margen, un stock, una foto), decile con todas las letras que
+  eso NO quedó cargado. No digas "tengo listo" con datos antes de que la herramienta te devuelva
+  la tarjeta, y un "error" de una herramienta nunca es algo que ya está hecho.
 - Cuando la persona confirma, la tarjeta te devuelve el resultado: qué quedó creado, cambiado
   o borrado, y `campos_que_no_quedaron` si la pantalla normalizó o ignoró algo (un margen 0 se
   guarda como vacío, por ejemplo). Contá lo que devolvió el resultado, incluidos esos campos,

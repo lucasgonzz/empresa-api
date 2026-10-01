@@ -553,7 +553,9 @@ class PdfColumnService
         $es_usd = $moneda_id === 2;
         $cbte_letra = isset($context['afip_ticket']) ? (string) $context['afip_ticket']->cbte_letra : null;
         $es_exportacion = $cbte_letra === 'E';
-        $valor_dolar = ($sale && $sale->valor_dolar) ? (float) $sale->valor_dolar : 1;
+        // `(float) > 0`: `sales.valor_dolar` es DECIMAL y un '0.00' es truthy en PHP (con el INT de antes un
+        // 0 era falso y caia al 1); sin esto el PDF de una venta en USD con cotizacion 0 mostraria todo en 0.
+        $valor_dolar = ($sale && (float) $sale->valor_dolar > 0) ? (float) $sale->valor_dolar : 1;
 
         switch ($resolver) {
             case 'row_index':

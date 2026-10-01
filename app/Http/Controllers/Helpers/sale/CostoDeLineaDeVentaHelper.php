@@ -65,6 +65,39 @@ class CostoDeLineaDeVentaHelper
     const K_MAX_POR_DEFECTO = 4;
 
     /**
+     * Banda de coherencia contra la ficha de HOY para la causa C: el costo unitario reconstruido tiene
+     * que quedar entre 0,4 y 2,5 veces el costo unitario de la ficha (`costo_real / unidades`).
+     *
+     * Es deliberadamente ancha: la ficha cambia después de la venta (inflación, cambio de proveedor) y
+     * lo que se busca es el orden de magnitud —separar "el costo estaba multiplicado por la cantidad"
+     * de "el costo era ese"—, no reproducir el valor. Medido el 30/9/2026 en ferretotal: de 246 líneas
+     * candidatas, 153 entran y en casi todas el precio queda en margen 1,50 sobre el costo corregido.
+     */
+    const FICHA_BANDA_MINIMA = 0.4;
+    const FICHA_BANDA_MAXIMA = 2.5;
+
+    /**
+     * Tope del margen que deja el costo reconstruido por la causa C (`precio / candidato`). Por encima
+     * el costo corregido queda demasiado barato para creerle: en ferretotal (margen 1,50) las líneas
+     * genuinas caen entre 1,47 y 1,53, y las que la regla subestimaba daban 1,9 a 3,0.
+     */
+    const MARGEN_MAXIMO_CAUSA_C = 2.0;
+
+    /**
+     * Refinamiento del `k` de la causa B con la ficha (golonorte, 30/9/2026). El comando viejo pudo correr
+     * varias veces sobre la misma línea (`cost = unitario × cantidad^k`), y `buscar_k()` devuelve el MENOR k
+     * que entra bajo el doble del precio: con cantidad 2 y margen normal, k = 1 ya entra aunque el costo
+     * real sea k = 2, y la línea queda con el costo AL DOBLE. Se sube un k más solo si la ficha de hoy lo
+     * confirma: el costo actual queda al menos 1,4 veces por encima de ella y el siguiente cae dentro de
+     * [0,6 ; 1,6] veces la ficha y deja la línea en ganancia. Medido: ~7.900 de 42.472 líneas de la causa B,
+     * casi todas cantidad 2; contra las líneas vecinas del mismo artículo el costo refinado coincide en el
+     * 99,9 % y el viejo en ninguna (verificador independiente, 30/9/2026). Con 1,6 quedaban ~1.300 líneas al doble.
+     */
+    const REFINAR_K_ACTUAL_SOBRE_FICHA = 1.4;
+    const REFINAR_K_SIGUIENTE_MINIMO = 0.6;
+    const REFINAR_K_SIGUIENTE_MAXIMO = 1.6;
+
+    /**
      * Query base de las líneas de venta de UN cliente, con las columnas que necesita `analizar()`.
      *
      * 🔴 El `join` a `articles` NO es decorativo y es una de las tres divergencias que se cerraron:
@@ -99,6 +132,8 @@ class CostoDeLineaDeVentaHelper
                  * valor de HOY, la del pivot —si tuviera algo— seria el valor historico exacto.
                  */
                 'articles.unidades_individuales as unidades_del_articulo',
+                // Solo la usa la causa C, para contrastar el costo reconstruido contra la ficha de hoy.
+                'articles.costo_real as costo_real_del_articulo',
                 'article_sale.unidades_individuales as unidades_de_la_linea',
                 'sales.num as venta_num',
                 'sales.created_at as venta_fecha',
@@ -164,9 +199,12 @@ class CostoDeLineaDeVentaHelper
      * @param  bool $hacer_a
      * @param  bool $hacer_b
      * @param  int $k_max
+     * @param  bool $hacer_c  Causa C (costo TOTAL con firma sana). Apagada por defecto: la guarda de
+     *                        `set_costo_ventas` llama con cuatro argumentos y tiene que seguir
+     *                        respondiendo exactamente lo mismo que antes.
      * @return array
      */
-    public static function analizar($fila, $hacer_a, $hacer_b, $k_max)
+    public static function analizar($fila, $hacer_a, $hacer_b, $k_max, $hacer_c = false)
     {
         $sana = [
             'accion' => 'ninguna',
@@ -235,8 +273,27 @@ class CostoDeLineaDeVentaHelper
                 return self::descartar($sana, 'firma_del_comando_sin_k_coherente');
             }
 
+            if ($hacer_c && is_null($unidades)) {
+                $k = self::refinar_k_con_la_ficha($fila, $cost, $price, $amount, $k, $k_max);
+            }
+
             $cost_final = $cost / pow($amount, $k);
             $causas[] = 'B';
+        }
+
+        /*
+         * 🔴 Causa C, variante DEVOLUCIÓN: cantidad negativa con el costo guardado negativo (el comando viejo
+         * multiplicó el costo unitario por una cantidad negativa). `set_total_cost()` suma `cost × amount`,
+         * así que esa línea SUMA un costo enorme al total de la venta en vez de restarlo. Ver
+         * `probar_causa_c_devolucion()`. Solo con `$hacer_c`, y solo si ninguna otra causa tocó la línea.
+         */
+        if ($hacer_c && count($causas) === 0 && $amount < 0) {
+            $costo_de_la_devolucion = self::probar_causa_c_devolucion($fila, $cost, $price, $amount, $ganancia, $unidades);
+
+            if (!is_null($costo_de_la_devolucion)) {
+                $cost_final = $costo_de_la_devolucion;
+                $causas[] = 'C';
+            }
         }
 
         /* ── Causa A ─────────────────────────────────────────────────────────────────────── */
@@ -247,17 +304,39 @@ class CostoDeLineaDeVentaHelper
 
         $tiene_unidades_individuales = !is_null($unidades);
 
+        /*
+         * 🔴 Causa C: solo si ninguna otra causa tocó la línea (`$causas` vacío) y solo cuando la A no
+         * la resolvió. Es la que reconstruye una línea cuyo costo es unitario × cantidad (÷ unidades)
+         * pero que ya cumple la firma SANA, o sea la que ninguna firma delata. Ver `probar_causa_c()`.
+         */
+        $costo_de_la_causa_c = null;
+
+        if ($es_incoherente && $hacer_c && count($causas) === 0) {
+            $costo_de_la_causa_c = self::probar_causa_c($fila, $cost, $price, $amount, $ganancia, $unidades);
+        }
+
         if ($es_incoherente && $tiene_unidades_individuales && $hacer_a) {
             $candidato = $cost_final / $unidades;
 
             if ($candidato > 0 && $candidato <= $price * self::FACTOR_COSTO_INCOHERENTE) {
                 $cost_final = $candidato;
                 $causas[] = 'A';
+            } elseif (!is_null($costo_de_la_causa_c)) {
+                $cost_final = $costo_de_la_causa_c;
+                $causas[] = 'C';
             } else {
                 return self::descartar($sana, 'dividir_por_unidades_individuales_no_alcanza');
             }
         } elseif ($es_incoherente && $tiene_unidades_individuales) {
-            return self::descartar($sana, 'causa_a_no_pedida_en_esta_corrida');
+            if (is_null($costo_de_la_causa_c)) {
+                return self::descartar($sana, 'causa_a_no_pedida_en_esta_corrida');
+            }
+
+            $cost_final = $costo_de_la_causa_c;
+            $causas[] = 'C';
+        } elseif ($es_incoherente && !is_null($costo_de_la_causa_c)) {
+            $cost_final = $costo_de_la_causa_c;
+            $causas[] = 'C';
         } elseif ($es_incoherente) {
             /*
              * El costo supera el doble del precio pero no hay ninguna causa identificada: sin la
@@ -314,6 +393,361 @@ class CostoDeLineaDeVentaHelper
             'contador' => null,
             'tiene_unidades_en_el_pivot' => $sana['tiene_unidades_en_el_pivot'],
         ];
+    }
+
+    /**
+     * Defensa "en vivo": si un costo UNITARIO que está por copiarse de una línea guardada (pivot de
+     * venta o de presupuesto) es en realidad el costo del BULTO sin dividir, devuelve el costo
+     * dividido por las unidades individuales del artículo; si no, lo devuelve tal cual.
+     *
+     * Es la misma condición de la Causa A de `analizar()` (la que el saneo histórico aplica a
+     * `article_sale`), pero pensada para el momento de GUARDAR: sin filas ni contadores, solo los
+     * números de la línea, más una quinta condición que el saneo histórico no necesita.
+     *
+     *   - `unidades > 1`
+     *   - `price > 0`
+     *   - `cost > price × FACTOR_COSTO_INCOHERENTE`  → la línea pierde más del doble de lo que factura
+     *   - `cost / unidades <= price × FACTOR_COSTO_INCOHERENTE` → y dividir la vuelve coherente
+     *   - `cost / costo_real_ficha > sqrt(1 / unidades)` → el costo guardado está más cerca del
+     *     BULTO que de la UNIDAD, según la ficha del artículo de hoy
+     *
+     * Si las cinco se cumplen → `round(cost / unidades, 2)`. Si falla cualquiera → `cost` intacto.
+     *
+     * 🔴 POR QUÉ la quinta condición (falsos positivos medidos por el verificador independiente,
+     * 29/9/2026): con las primeras cuatro solas, la guarda no distingue una pérdida REAL de un bulto
+     * sin dividir. Una línea SANA de un artículo con ui > 1 vendida a pérdida fuerte cumple las
+     * cuatro y se "arreglaba" mal, falsificando la ganancia en silencio:
+     *
+     *     (cost 100, price 40, ui 10) → 10,00     (cost 100, price 10, ui 25) → 4,00
+     *     (cost 100, price 40, ui 2)  → 50,00
+     *
+     * Lo que las separa es el orden de magnitud contra la ficha: un costo de bulto sin dividir vale
+     * ~ `costo_real` (ratio ≈ 1) y un costo ya unitario vale ~ `costo_real / ui` (ratio ≈ 1/ui). Se
+     * corrige solo si el ratio pasa el punto medio geométrico, `sqrt(1/ui)`. Sin cota superior a
+     * propósito: si la ficha se cotizó en dólares o cambió mucho después de la venta, el criterio de
+     * precio de la propia línea (las condiciones 3 y 4) sigue siendo el árbitro. Y si la ficha no
+     * es numérica o es <= 0 no hay con qué comparar, así que NO se adivina: `cost` intacto.
+     *
+     * 🔴 POR QUÉ el criterio principal se mide contra el PRECIO DE LA PROPIA LÍNEA y la ficha entra
+     * solo como desempate de orden de magnitud, no como valor a copiar (medido en ferretotal el
+     * 29/9/2026, misión ganancia-unidades-individuales):
+     *
+     * El disparador fue la venta 54.499 (`sales.id 54735`): nació del presupuesto 411, que se creó
+     * el 2/9 con el SPA viejo, sin la clave `unidades_individuales`. `getCost()` guardó el costo del
+     * bulto en `article_budget.cost` y, al confirmarlo, `attachSaleArticles()` lo copió tal cual a
+     * `article_sale.cost`: PRECINTOS (ui 100) con costo 4118,66 y precio 61,78; TORNILLO C/TANQUE
+     * (ui 200) con costo 4174,98 y precio 31,31. Ganancia negativa.
+     *
+     * La tentación es "comparar con el costo actual de la ficha y corregir si difiere". No se puede:
+     * la ficha cambia DESPUÉS de la venta. En las mangueras 3073/3074/3075 el `costo_real` de hoy es
+     * 6,17 y el costo con que se vendió fue 388,77 (margen exacto del 50 % y ganancia positiva): una
+     * línea perfectamente sana que un criterio contra la ficha "arreglaría" mal, dividiéndole el
+     * costo por 25 y falsificándole la ganancia a un negocio real.
+     *
+     * Contra el precio de la propia línea, en cambio, solo se actúa cuando la línea está rota de
+     * forma EVIDENTE: pierde más que el doble de lo que factura Y dividir por las unidades la vuelve
+     * coherente. Una línea sana con ui > 1 (mangueras: costo 388,77 < precio 583,16) no cumple la
+     * primera condición y pasa intacta; una venta legítima a pérdida sin unidades individuales no
+     * cumple `unidades > 1` y pasa intacta.
+     *
+     * ⚠️ Esto es una defensa, NO reemplaza al saneo del histórico (`sale:sanear-costo-de-linea`):
+     * corrige lo que se está por copiar, no lo que ya quedó guardado mal. No hay que "simplificarla"
+     * ni a un `if ui > 1 dividir` (rompe toda línea ya dividida), ni a "solo el precio" (falsos
+     * positivos de arriba), ni a "corregir si difiere de la ficha" (rompe las líneas cuya ficha
+     * cambió después de la venta).
+     *
+     * @param  mixed $cost      Costo unitario guardado en la línea (pivot).
+     * @param  mixed $price     Precio unitario de la misma línea.
+     * @param  mixed $unidades  `unidades_individuales` del artículo.
+     * @param  mixed $costo_real_ficha  `articles.costo_real` (el costo del BULTO) del artículo, hoy.
+     * @return mixed            `float` redondeado a 2 decimales si se corrigió; `$cost` tal cual si no.
+     */
+    public static function corregir_costo_de_bulto_sin_dividir($cost, $price, $unidades, $costo_real_ficha)
+    {
+        if (!is_numeric($cost) || !is_numeric($price) || !is_numeric($unidades) || !is_numeric($costo_real_ficha)) {
+            return $cost;
+        }
+
+        $cost_float = (float) $cost;
+        $price_float = (float) $price;
+        $unidades_float = (float) $unidades;
+        $ficha_float = (float) $costo_real_ficha;
+
+        // Sin ficha positiva no hay con qué decidir si el costo está cerca del bulto: no se adivina.
+        if ($unidades_float <= 1 || $price_float <= 0 || $ficha_float <= 0) {
+            return $cost;
+        }
+
+        // Más cerca de la unidad que del bulto (punto medio geométrico): es un costo unitario sano.
+        if ($cost_float / $ficha_float <= sqrt(1 / $unidades_float)) {
+            return $cost;
+        }
+
+        // El techo de coherencia: por encima, la línea pierde más de lo que factura.
+        $techo = $price_float * self::FACTOR_COSTO_INCOHERENTE;
+
+        if ($cost_float <= $techo) {
+            return $cost;
+        }
+
+        $candidato = $cost_float / $unidades_float;
+
+        // Si ni dividiendo por las unidades queda coherente, el motivo es otro: no se adivina.
+        if ($candidato <= 0 || $candidato > $techo) {
+            return $cost;
+        }
+
+        return round($candidato, 2);
+    }
+
+    /**
+     * Causa C — el costo guardado es el TOTAL de la línea (unitario × cantidad, y además × las unidades
+     * del bulto) y la ganancia ya es la "sana" de ese costo inflado. Devuelve el costo unitario
+     * reconstruido, o null si la línea no cumple TODAS las condiciones.
+     *
+     * 🔴 Por qué existe (ferretotal, 30/9/2026): `set_costo_ventas` dejaba `cost` total y la firma
+     * `price × amount − cost`; después corrió un recálculo de `ganancia` que la reescribió como
+     * `(price − cost) × amount`, y la línea pasó a parecer sana. La causa B la detecta por la firma y
+     * ya no la ve; la causa A solo la ve si dividir por las unidades alcanza. Medido: ~170 líneas, que
+     * concentran el 99 % del monto negativo (la venta 8050 sola suma −4.606 millones).
+     *
+     * Como no hay firma, la identificación descansa en evidencia independiente, y TODAS tienen que
+     * cumplirse. Ante cualquier duda la línea queda sin tocar y el comando la lista con su motivo:
+     *
+     *   1. `amount > 1`, `price > 0`, `cost > 0` y firma sana (`ganancia = (price − cost) × amount`).
+     *   2. El costo candidato `cost / amount / max(1, unidades)` es coherente con el precio de la propia
+     *      línea (`0 < candidato <= price × FACTOR_COSTO_INCOHERENTE`).
+     *   3. La ficha de hoy lo confirma: el candidato cae dentro de la banda
+     *      [`FICHA_BANDA_MINIMA`, `FICHA_BANDA_MAXIMA`] × el costo unitario de la ficha
+     *      (`costo_real / max(1, unidades)`) **y el costo guardado tal cual NO cae**. Si los dos encajan
+     *      (cantidad 2, p. ej.) es ambiguo y no se adivina; si la ficha no sirve (sin `costo_real`, en
+     *      dólares, o que cambió varias veces) tampoco se adivina.
+     *
+     *   4. (verificador independiente, 30/9/2026) El costo reconstruido tiene que dejar la línea EN
+     *      GANANCIA (`candidato < price`): una "corrección" que sigue perdiendo plata no tiene evidencia,
+     *      y corregida así se falsea la ganancia de una venta a pérdida real (línea viva 176494).
+     *   5. El margen resultante no pasa de `MARGEN_MAXIMO_CAUSA_C` (`price / candidato`).
+     *   6. No existe otra línea del MISMO artículo y del mismo dueño con el mismo costo (±0,5 %) y OTRA
+     *      cantidad. Un costo que es proporcional a la cantidad no se repite con cantidades distintas;
+     *      si se repite, o es un costo unitario mal cargado en la ficha de entonces (art. 2147: 71.002,80
+     *      en diez líneas de cantidades 1,5 a 30) o la cantidad cambió después de calcular el costo.
+     *      Es la única condición que consulta la base, y va última.
+     *
+     * No se usa "costo > precio" como criterio: una venta legítima a pérdida con `amount > 1` cuyo costo
+     * unitario real supera el doble del precio no cumple 3 (el costo crudo encaja con la ficha).
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float|null $price
+     * @param  float $amount
+     * @param  float|null $ganancia
+     * @param  float|null $unidades  Ya normalizadas: null si <= 1.
+     * @return float|null
+     */
+    private static function probar_causa_c($fila, $cost, $price, $amount, $ganancia, $unidades)
+    {
+        if (is_null($price) || is_null($ganancia) || $price <= 0 || $cost <= 0 || $amount <= 1.0) {
+            return null;
+        }
+
+        // Firma SANA: la de una línea escrita por `attachArticle` (o reescrita por un recálculo).
+        if (abs($ganancia - (($price - $cost) * $amount)) > self::tolerancia($amount)) {
+            return null;
+        }
+
+        $ficha = (isset($fila->costo_real_del_articulo) && is_numeric($fila->costo_real_del_articulo))
+            ? (float) $fila->costo_real_del_articulo
+            : 0.0;
+
+        if ($ficha <= 0) {
+            return null;
+        }
+
+        $divisor_de_unidades = is_null($unidades) ? 1.0 : $unidades;
+        $candidato = $cost / $amount / $divisor_de_unidades;
+
+        if ($candidato <= 0 || $candidato > $price * self::FACTOR_COSTO_INCOHERENTE) {
+            return null;
+        }
+
+        $ficha_unitaria = $ficha / $divisor_de_unidades;
+
+        $del_candidato = $candidato / $ficha_unitaria;
+        $del_costo_guardado = $cost / $ficha_unitaria;
+
+        if ($del_candidato < self::FICHA_BANDA_MINIMA || $del_candidato > self::FICHA_BANDA_MAXIMA) {
+            return null;
+        }
+
+        // Si el costo guardado TAMBIÉN encaja con la ficha, pudo ser un costo unitario verdadero.
+        if ($del_costo_guardado >= self::FICHA_BANDA_MINIMA && $del_costo_guardado <= self::FICHA_BANDA_MAXIMA) {
+            return null;
+        }
+
+        // Una corrección que sigue en pérdida, o con un margen fuera de lo creíble, no tiene evidencia.
+        if ($candidato >= $price || $price / $candidato > self::MARGEN_MAXIMO_CAUSA_C) {
+            return null;
+        }
+
+        if (self::hay_otra_linea_con_el_mismo_costo_y_otra_cantidad($fila, $cost, $amount)) {
+            return null;
+        }
+
+        return round($candidato, 2);
+    }
+
+    /**
+     * Sube el `k` de la causa B mientras la ficha de hoy lo confirme. Ver `REFINAR_K_ACTUAL_SOBRE_FICHA`.
+     *
+     * Solo para artículos SIN unidades individuales (con unidades, el costo del tramo B puede ser el del
+     * bulto apilado y la comparación contra la ficha es ambigua: no se adivina). Sin `costo_real`, o con un
+     * costo de ficha que no sirve, devuelve el `k` que llegó.
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float $price
+     * @param  float $amount  Mayor que 1 (la firma de la causa B ya lo exige).
+     * @param  int $k
+     * @param  int $k_max
+     * @return int
+     */
+    private static function refinar_k_con_la_ficha($fila, $cost, $price, $amount, $k, $k_max)
+    {
+        $ficha = (isset($fila->costo_real_del_articulo) && is_numeric($fila->costo_real_del_articulo))
+            ? (float) $fila->costo_real_del_articulo
+            : 0.0;
+
+        if ($ficha <= 0 || $amount <= 1.0) {
+            return $k;
+        }
+
+        while ($k < $k_max) {
+            $actual = $cost / pow($amount, $k);
+            $siguiente = $actual / $amount;
+
+            if (
+                $actual / $ficha >= self::REFINAR_K_ACTUAL_SOBRE_FICHA
+                && $siguiente / $ficha >= self::REFINAR_K_SIGUIENTE_MINIMO
+                && $siguiente / $ficha <= self::REFINAR_K_SIGUIENTE_MAXIMO
+                && $siguiente > 0
+                && $siguiente < $price
+            ) {
+                $k++;
+
+                continue;
+            }
+
+            break;
+        }
+
+        return $k;
+    }
+
+    /**
+     * Causa C, variante DEVOLUCIÓN — línea con `amount < 0` y `cost < 0`, con la firma del comando viejo.
+     * Devuelve el costo unitario POSITIVO reconstruido, o null si no cumple TODAS las condiciones.
+     *
+     * 🔴 Por qué existe (ferretotal, 30/9/2026, medido en el dry-run del saneo): `set_costo_ventas` hizo
+     * `cost *= amount` sobre devoluciones, y con cantidad negativa el "total" quedó negativo. Una línea
+     * `amount −150, cost −1.197.224` (unitario real 7.981) no la ve la causa B (exige `amount > 0`) y, al
+     * recalcular la venta, `cost × amount` suma +179 millones de costo: 56 ventas hoy positivas quedaban
+     * negativas después del saneo. 46 líneas en 38 ventas, todas de sep-2025 a ene-2026.
+     *
+     * Condiciones:
+     *   1. `amount < 0`, `cost < 0`, `price > 0`, y la firma del comando viejo `ganancia = price × amount − cost`
+     *      (y no la sana, que con cantidad negativa y costo negativo darían otra cuenta).
+     *   2. Unitario `cost / amount` (positivo); si el artículo tiene `unidades_individuales` y todavía supera
+     *      el doble del precio, se divide también por ellas (el bulto sin dividir apilado, como en la A).
+     *   3. `0 < unitario < price` y margen `price / unitario <= MARGEN_MAXIMO_CAUSA_C` (mismas guardas que
+     *      la C: no se escribe una corrección que sigue en pérdida ni con un margen fuera de lo creíble).
+     *   4. Contra la ficha de hoy: `unitario / (costo_real / unidades)` dentro de la banda
+     *      [`FICHA_BANDA_MINIMA`, `FICHA_BANDA_MAXIMA`]. Sin `costo_real`, no se adivina.
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float|null $price
+     * @param  float $amount
+     * @param  float|null $ganancia
+     * @param  float|null $unidades  Ya normalizadas: null si <= 1.
+     * @return float|null
+     */
+    private static function probar_causa_c_devolucion($fila, $cost, $price, $amount, $ganancia, $unidades)
+    {
+        if (is_null($price) || is_null($ganancia) || $price <= 0 || $cost >= 0 || $amount >= 0) {
+            return null;
+        }
+
+        $tolerancia = self::tolerancia($amount);
+
+        $firma_del_comando = abs($ganancia - ($price * $amount - $cost)) <= $tolerancia;
+        $firma_sana = abs($ganancia - (($price - $cost) * $amount)) <= $tolerancia;
+
+        if (!$firma_del_comando || $firma_sana) {
+            return null;
+        }
+
+        $ficha = (isset($fila->costo_real_del_articulo) && is_numeric($fila->costo_real_del_articulo))
+            ? (float) $fila->costo_real_del_articulo
+            : 0.0;
+
+        if ($ficha <= 0) {
+            return null;
+        }
+
+        $divisor_de_unidades = 1.0;
+        $unitario = $cost / $amount;
+
+        if (!is_null($unidades) && $unitario > $price * self::FACTOR_COSTO_INCOHERENTE) {
+            $unitario = $unitario / $unidades;
+            $divisor_de_unidades = $unidades;
+        }
+
+        if ($unitario <= 0 || $unitario >= $price || $price / $unitario > self::MARGEN_MAXIMO_CAUSA_C) {
+            return null;
+        }
+
+        $de_la_ficha = $unitario / ($ficha / $divisor_de_unidades);
+
+        if ($de_la_ficha < self::FICHA_BANDA_MINIMA || $de_la_ficha > self::FICHA_BANDA_MAXIMA) {
+            return null;
+        }
+
+        return round($unitario, 2);
+    }
+
+    /**
+     * ¿Hay otra línea (de una venta no borrada, del mismo dueño y del mismo artículo) con el mismo costo
+     * guardado y otra cantidad? Ver la condición 6 de `probar_causa_c()`.
+     *
+     * Sin `sale_id` / `article_id` / `linea_id` en la fila, o con una venta que no existe, devuelve false
+     * (nada con qué contrastar; las otras cinco condiciones ya se cumplieron).
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float $amount
+     * @return bool
+     */
+    private static function hay_otra_linea_con_el_mismo_costo_y_otra_cantidad($fila, $cost, $amount)
+    {
+        if (!isset($fila->sale_id) || !isset($fila->article_id) || !isset($fila->linea_id)) {
+            return false;
+        }
+
+        $user_id = DB::table('sales')->where('id', $fila->sale_id)->value('user_id');
+
+        if (is_null($user_id)) {
+            return false;
+        }
+
+        return DB::table('article_sale')
+            ->join('sales', 'sales.id', '=', 'article_sale.sale_id')
+            ->whereNull('sales.deleted_at')
+            ->where('sales.user_id', $user_id)
+            ->where('article_sale.article_id', $fila->article_id)
+            ->where('article_sale.id', '!=', $fila->linea_id)
+            ->whereRaw('ABS(article_sale.cost - ?) <= ?', [$cost, abs($cost) * 0.005])
+            ->whereRaw('ABS(article_sale.amount - ?) > 0.0001', [$amount])
+            ->exists();
     }
 
     /**

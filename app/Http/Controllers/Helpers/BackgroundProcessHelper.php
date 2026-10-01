@@ -74,15 +74,17 @@ class BackgroundProcessHelper
      * @param  int    $user_id  Dueño del comercio (canal y scope).
      * @param  string $tipo     importacion_articulos | recalculo_precios | actualizacion_masiva | ...
      * @param  string $titulo   Lo que lee el usuario.
-     * @param  array  $opciones auth_user_id, detalle, total, unidad, etapa, referencia (Model),
-     *                          resultado (array), status ('pendiente' | 'en_proceso', default
-     *                          'en_proceso').
+     * @param  array  $opciones auth_user_id, detalle, total, procesados (default 0: para un registro
+     *                          que continúa algo ya empezado, como una reanudación), unidad, etapa,
+     *                          referencia (Model), resultado (array), status ('pendiente' |
+     *                          'en_proceso', default 'en_proceso').
      * @return \App\Models\BackgroundProcess|null null si el registro falló (nunca tira).
      */
     public static function iniciar($user_id, $tipo, $titulo, array $opciones = [])
     {
         try {
             $total = self::entero_o_null($opciones['total'] ?? null);
+            $procesados = max(0, (int) self::entero_o_null($opciones['procesados'] ?? null));
             $status = ($opciones['status'] ?? null) === BackgroundProcess::STATUS_PENDIENTE
                 ? BackgroundProcess::STATUS_PENDIENTE
                 : BackgroundProcess::STATUS_EN_PROCESO;
@@ -96,8 +98,8 @@ class BackgroundProcessHelper
                 'detalle'        => self::texto_o_null($opciones['detalle'] ?? null, 255),
                 'status'         => $status,
                 'total'          => $total,
-                'procesados'     => 0,
-                'porcentaje'     => is_null($total) ? null : 0,
+                'procesados'     => $procesados,
+                'porcentaje'     => is_null($total) ? null : self::calcular_porcentaje($total, $procesados),
                 'etapa'          => self::texto_o_null($opciones['etapa'] ?? null, 120),
                 'unidad'         => self::texto_o_null($opciones['unidad'] ?? null, 30),
                 'resultado_json' => self::codificar_resultado($opciones['resultado'] ?? []),

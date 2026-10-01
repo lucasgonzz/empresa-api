@@ -1003,6 +1003,7 @@ class DemoSetupHelper
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
             /*
                 Disenos de PDF de presupuesto y pedido online (28/9/2026 en adelante). Itera los
@@ -1027,6 +1028,14 @@ class DemoSetupHelper
                 reciben diseño propio: el diseño es del dueño y lo usa todo el negocio.
             */
             'VenderLayoutSeeder',
+
+            /*
+                Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno
+                por lista de precios, o uno genérico. Tiene que correr DESPUÉS de que se siembran
+                las listas: run() llama a crear_price_types() antes de este foreach, así que la
+                demo con listas nace con un diseño por lista.
+            */
+            'ArticleTicketDesignSeeder',
 
             /*
                 D3 (misión 63): las dos únicas extensiones del padrón que `ExtencionSeeder` NO

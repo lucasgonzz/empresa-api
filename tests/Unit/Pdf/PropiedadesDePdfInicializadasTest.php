@@ -51,6 +51,7 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'ArticleTablePdf.php' => [],
         'ArticleTicket/2rBarCodeEtiquetas.php' => [],
         'ArticleTicket/ArticleBarCodeEtiquetasPdf.php' => ['articles'],
+        'ArticleTicket/ArticleTicketDesignPdf.php' => [],
         'ArticleTicket/Golonorte.php' => ['start_x', 'start_y'],
         'ArticleTicketPdf.php' => ['articles', 'start_x', 'start_y'],
         'BudgetPdf.php' => [],

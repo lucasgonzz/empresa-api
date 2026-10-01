@@ -263,7 +263,13 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'artículos',
             'singular'           => 'artículo',
             'genero'             => 'm',
-            'descripcion'        => 'Los artículos del catálogo (Listado de artículos). El precio final, el stock y el costo real los calcula el sistema: el stock se mueve por sus pantallas y el precio sale del costo, el margen, el IVA y la lista.',
+            /*
+             * Misión alta-por-agente-margen-y-stock (29/9/2026): antes decía que "el stock se mueve
+             * por sus pantallas" y nada más, y en demo3 el modelo no tenía cómo saber que el stock
+             * inicial y el margen por lista SÍ se cargan desde el asistente (ni dónde). Con una
+             * entidad y el contexto, que_puedo_cargar agrega las listas y los depósitos del negocio.
+             */
+            'descripcion'        => 'Los artículos del catálogo (Listado de artículos). El precio final, el stock y el costo real los calcula el sistema. El precio sale del costo, el margen, el IVA y la lista: con listas de precio el margen va por lista (margenes_por_lista), sin listas en percentage_gain (listas_de_precio te dice cuál es el caso). El stock inicial va en stock_inicial del alta; el de un artículo que ya existe, con proponer_stock_en_deposito (depositos te dice si el negocio tiene).',
             'operaciones'        => null,
             'solo_lectura'       => [
                 'status', 'stock', 'final_price', 'final_price_blanco', 'previus_final_price', 'final_price_updated_at',
@@ -960,6 +966,12 @@ class CatalogoDeEscrituraIaHelper
          * vive solo en el editor).
          */
         'vender_layout'                => 'diseños de Vender: se arman arrastrando en el editor del ABM (un JSON que resuelve el SPA)',
+        /*
+         * Diseños de etiquetas de góndola (mision disenos-etiquetas-gondola, 29/9/2026): el diseño
+         * es un JSON de posiciones en milímetros que se arma arrastrando y redimensionando campos
+         * en el editor del ABM. Por chat no hay forma razonable de ubicarlos.
+         */
+        'article_ticket_design'        => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
     ];
 
     /**
@@ -1050,15 +1062,27 @@ class CatalogoDeEscrituraIaHelper
      * referencias cuando la columna no está indexada.
      *
      * Existe porque casi ninguna de estas columnas tiene índice: de las quince tablas que
-     * referencian a `price_type_id`, una sola lo tiene (medido el 21/9/2026 sobre el esquema). Un
-     * COUNT sobre una columna sin índice es un scan de la tabla entera, y hay tablas de un cliente
-     * grande que no se pueden escanear adentro del request que propone la tarjeta. Con este tope,
-     * el peor caso de una tabla es escanear 200.000 filas; las que se pasan no se cuentan y el
-     * aviso lo dice con "puede haber más".
+     * referencian a `price_type_id`, una sola lo tenía (medido el 21/9/2026 sobre el esquema). Desde
+     * el 29/9/2026 son dieciséis y dos indexadas: `article_ticket_designs` trae índice propio sobre
+     * `price_type_id` y se suma a `price_type_sistema_de_puntos` (medido el 30/9/2026). Un COUNT
+     * sobre una columna sin índice es un scan de la tabla entera, y hay tablas de un cliente grande
+     * que no se pueden escanear adentro del request que propone la tarjeta. Con este tope, el peor
+     * caso de una tabla es escanear 200.000 filas; las que se pasan no se cuentan y el aviso lo
+     * dice: con "(puede haber más)" detrás de la cuenta si se contó alguna referencia, o con la
+     * frase de que no se pudieron contar todos los registros si no se contó ninguna (ver
+     * aviso_de_baja()).
      */
     const TOPE_DE_FILAS_SIN_INDICE = 200000;
 
-    /** Tope de tablas a las que se les cuentan referencias, de la más chica a la más grande. */
+    /**
+     * Tope de tablas a las que se les cuentan referencias. Se cuentan primero las tablas que tienen
+     * nombre en el catálogo ("clientes", "ventas") y después las demás, cada grupo de la más chica
+     * a la más grande (ver ordenar_para_contar()).
+     *
+     * El orden importa porque el tope corta de verdad: medido el 30/9/2026 sobre el esquema, hay 16
+     * tablas con `price_type_id`, 27 con `address_id` y 18 con `seller_id`. Si la que queda afuera
+     * es `clients`, el aviso se calla justo la cuenta que la persona entiende.
+     */
     const TOPE_DE_TABLAS_A_CONTAR = 15;
 
     /** Cuántas referencias se nombran en el aviso antes de agrupar el resto. */
@@ -1189,6 +1213,17 @@ class CatalogoDeEscrituraIaHelper
      * la baja es definitiva: si la entidad usa SoftDeletes la fila sigue existiendo y nadie queda
      * colgado, así que no hay nada que contar.
      *
+     * Cuando no se pudo contar todo (`hay_sin_contar` de referencias_que_quedan_colgadas(): el tope
+     * de tablas cortó, una tabla grande sin índice se salteó o un COUNT falló), el aviso lo dice de
+     * una de dos formas: si se contó al menos una referencia, con "(puede haber más)" detrás de la
+     * cuenta; si no se contó ninguna, con una frase propia —"No se pudieron contar todos los
+     * registros que podrían tenerla asignada: puede haber algunos que queden sin ella."—, sin número
+     * y sin "van a quedar sin". Hasta el 30/9/2026 ese segundo caso no decía nada, y callarse es
+     * decirle a la persona que no queda nada colgado sin haberlo revisado (hallazgo 2 de
+     * `informes/20260930-aviso-de-baja-test-determinista.md`). Si no se contó ninguna y no quedó
+     * nada sin contar, el aviso queda como siempre: el texto propio de la entidad (si tiene) y que
+     * la baja es DEFINITIVA.
+     *
      * @param  array  $declaracion
      * @param  object|array  $fila  La fila que se va a borrar (se usa su id).
      * @param  int  $owner_id
@@ -1216,14 +1251,26 @@ class CatalogoDeEscrituraIaHelper
 
         $colgadas = self::referencias_que_quedan_colgadas($declaracion, $id, (int) $owner_id);
 
-        if (count($colgadas['referencias'])) {
+        $femenino = $declaracion['genero'] === 'f';
 
-            $femenino = $declaracion['genero'] === 'f';
+        if (count($colgadas['referencias'])) {
 
             $partes[] = self::enumerar($colgadas['referencias'])
                 . ($femenino ? ' la tienen asignada y van a quedar sin ella' : ' lo tienen asignado y van a quedar sin él')
                 . ($colgadas['hay_sin_contar'] ? ' (puede haber más)' : '')
                 . '.';
+
+        } elseif ($colgadas['hay_sin_contar']) {
+
+            /*
+             * No se contó ninguna referencia, pero hubo tablas que no se revisaron (ver
+             * referencias_que_quedan_colgadas()). Callarse acá sería decirle a la persona que no
+             * queda nada colgado sin haberlo mirado. Sin número, porque no lo hay, y sin "van a
+             * quedar sin": esa frase es la marca de que hubo una cuenta de verdad.
+             */
+            $partes[] = $femenino
+                ? 'No se pudieron contar todos los registros que podrían tenerla asignada: puede haber algunos que queden sin ella.'
+                : 'No se pudieron contar todos los registros que podrían tenerlo asignado: puede haber algunos que queden sin él.';
         }
 
         return implode(' ', $partes);
@@ -1239,8 +1286,15 @@ class CatalogoDeEscrituraIaHelper
      *     por el id solo: ese id ya se verificó que es del dueño, así que lo que lo referencia es
      *     suyo.
      *   - No se cuentan las tablas grandes sin índice en esa columna (ver TOPE_DE_FILAS_SIN_INDICE):
-     *     serían un scan entero adentro del request que propone la tarjeta. Cuando se saltea alguna,
-     *     `hay_sin_contar` queda en true y el aviso lo dice.
+     *     serían un scan entero adentro del request que propone la tarjeta.
+     *
+     * `hay_sin_contar` queda en true por cualquiera de estas tres causas, y el aviso lo dice (ver
+     * aviso_de_baja()):
+     *   1. El tope de tablas cortó: después de contar TOPE_DE_TABLAS_A_CONTAR quedaba al menos una
+     *      candidata (ver ordenar_para_contar() para cuáles quedan afuera).
+     *   2. Una candidata sin índice en la columna y con más de TOPE_DE_FILAS_SIN_INDICE filas
+     *      estimadas: se saltea.
+     *   3. El COUNT de una candidata tiró una excepción: se loguea y se saltea.
      *
      * @param  array  $declaracion
      * @param  int  $id
@@ -1359,10 +1413,16 @@ class CatalogoDeEscrituraIaHelper
      * EL CATÁLOGO BAJO DEMANDA, para la herramienta que_puedo_cargar. Sin entidad, la lista corta
      * (entidad, etiqueta, operaciones, descripción); con una entidad, sus campos por operación.
      *
+     * Misión alta-por-agente-margen-y-stock (29/9/2026): con `$contexto` y la entidad `article`, la
+     * respuesta suma `listas_de_precio` (si el negocio trabaja con listas, cuáles, su margen por
+     * defecto y dónde va el margen) y `depositos` (cuáles, o que no tiene). Es OPCIONAL a propósito:
+     * el recurso del MCP (McpRecursosHelper) lo sigue llamando sin contexto y recibe lo de siempre.
+     *
      * @param  string|null  $entidad
+     * @param  ContextoDeCargaIa|null  $contexto
      * @return array<string, mixed>
      */
-    public static function que_puedo_cargar($entidad = null): array
+    public static function que_puedo_cargar($entidad = null, $contexto = null): array
     {
         $entidad = is_null($entidad) ? '' : trim((string) $entidad);
 
@@ -1395,6 +1455,17 @@ class CatalogoDeEscrituraIaHelper
 
         $campos = [];
 
+        /*
+         * Con el contexto de un negocio con listas, los campos que la ficha esconde (el margen
+         * suelto, el precio manual, "aplica el margen del proveedor") van MARCADOS como que no
+         * aplican (ronda de correcciones de la misión alta-por-agente-margen-y-stock, 29/9/2026):
+         * así el modelo no gasta un turno mandándolos para comerse el rechazo. Se marcan en vez de
+         * sacarlos para que la lista de campos sea la misma en todos los negocios.
+         */
+        $no_aplican = ($contexto instanceof ContextoDeCargaIa && $declaracion['entidad'] === 'article')
+            ? MargenesPorListaIaHelper::campos_que_no_aplican($contexto->owner)
+            : [];
+
         foreach ($declaracion['campos'] as $columna => $campo) {
 
             $fila = [
@@ -1404,6 +1475,11 @@ class CatalogoDeEscrituraIaHelper
                 'obligatorio' => $campo['obligatorio'],
                 'operaciones' => $campo['operaciones'],
             ];
+
+            if (isset($no_aplican[$columna])) {
+
+                $fila['no_aplica'] = $no_aplican[$columna];
+            }
 
             if (!is_null($campo['relacion'])) {
 
@@ -1450,6 +1526,18 @@ class CatalogoDeEscrituraIaHelper
         if (isset($declaracion['operaciones'][self::OP_EDICION]) || isset($declaracion['operaciones'][self::OP_BAJA])) {
 
             $respuesta['como_se_ubica_un_registro'] = self::como_se_ubica($declaracion);
+        }
+
+        /*
+         * 🔴 Lo que el modelo NECESITA saber de este negocio antes de proponer un artículo: si "margen
+         * 30" va por lista o en percentage_gain, y si el stock inicial lleva depósito. En demo3 no lo
+         * sabía, mandó percentage_gain en una cuenta con listas y prometió un stock que no había
+         * dónde cargar.
+         */
+        if ($contexto instanceof ContextoDeCargaIa && $declaracion['entidad'] === 'article') {
+
+            $respuesta['listas_de_precio'] = MargenesPorListaIaHelper::para_que_puedo_cargar($contexto);
+            $respuesta['depositos'] = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
         }
 
         return $respuesta;
@@ -1864,14 +1952,16 @@ class CatalogoDeEscrituraIaHelper
     /**
      * Las tablas que tienen una columna `<entidad>_id`, con lo que hace falta para decidir si se
      * les puede contar: si la columna está indexada (primera columna de algún índice), cuántas
-     * filas tienen estimadas, y si tienen `user_id` y `deleted_at`. Ordenadas de la más chica a la
-     * más grande, para que el tope de tablas corte por las caras.
+     * filas tienen estimadas, si tienen `user_id` y `deleted_at`, y si son nombrables (una entidad
+     * del catálogo, con etiqueta propia en el aviso). En el orden que da ordenar_para_contar():
+     * primero las nombrables, y dentro de cada grupo de la más chica a la más grande, para que, si
+     * el tope de tablas corta, corte por las innombrables más grandes y no por `clients`.
      *
      * Cuatro consultas a information_schema, cacheadas por proceso: una tarjeta de baja las paga
      * una sola vez aunque se proponga varias veces en la misma conversación.
      *
      * @param  string  $columna
-     * @return array<int, array{tabla: string, indexada: bool, filas: int, tiene_user_id: bool, tiene_deleted_at: bool}>
+     * @return array<int, array{tabla: string, indexada: bool, filas: int, tiene_user_id: bool, tiene_deleted_at: bool, nombrable: bool}>
      */
     protected static function tablas_que_referencian(string $columna): array
     {
@@ -1957,15 +2047,69 @@ class CatalogoDeEscrituraIaHelper
                 'filas'            => isset($filas_por_tabla[$tabla]) ? $filas_por_tabla[$tabla] : 0,
                 'tiene_user_id'    => isset($propias[$tabla]['user_id']),
                 'tiene_deleted_at' => isset($propias[$tabla]['deleted_at']),
+                // Una vez por tabla, acá: etiqueta_de_tabla() recorre el catálogo entero y no
+                // tiene sentido pagarlo en cada comparación del sort.
+                'nombrable'        => self::etiqueta_de_tabla($tabla) !== self::ETIQUETA_INNOMBRABLE,
             ];
         }
 
-        usort($candidatas, function ($a, $b) {
-
-            return $a['filas'] - $b['filas'];
-        });
+        $candidatas = self::ordenar_para_contar($candidatas);
 
         self::$referencias[$columna] = $candidatas;
+
+        return $candidatas;
+    }
+
+    /**
+     * El orden en que referencias_que_quedan_colgadas() cuenta las tablas, que es también el orden
+     * en que las deja afuera cuando llega a TOPE_DE_TABLAS_A_CONTAR:
+     *   1. primero las nombrables (`clients`, `sales`: las que el aviso dice con nombre), después
+     *      las innombrables;
+     *   2. dentro de cada grupo, de la más chica a la más grande por `filas`;
+     *   3. a igualdad de filas, por nombre de tabla.
+     *
+     * Por qué las nombrables primero: la cuenta que la persona lee —"3 clientes lo tienen
+     * asignado"— no puede depender de una estimación de MySQL. `filas` es
+     * `information_schema.tables.table_rows`: InnoDB la estima y MySQL cachea esa estimación
+     * (`information_schema_stats_expiry`, 86400 segundos). Ordenando sólo por eso, `clients` y
+     * `sales` (que en un cliente real están entre las tablas más grandes) son justamente las que el
+     * tope deja afuera. Pasó el 29/9/2026: con la tabla número 16 de `price_type_id`
+     * (`article_ticket_designs`), la estimación de `clients` quedó por encima de la de `sales`,
+     * `clients` quedó última y el aviso de baja de una lista de precios dejó de decir cuántos
+     * clientes quedaban sin ella. Las innombrables, en cambio, no tienen cuenta propia en el aviso:
+     * se suman todas en una sola entrada de "vínculos internos". Si el tope tiene que cortar, son
+     * las que conviene dejar afuera; la que queda afuera pone `hay_sin_contar` en true, y nada más.
+     * Ojo: aviso_de_baja() lo convierte en "(puede haber más)" cuando se contó al menos una
+     * referencia; si no se contó ninguna, en la frase de que no se pudieron contar todos los
+     * registros que podrían tenerlo asignado. En los dos casos el aviso dice que faltó revisar
+     * algo, pero sólo en el primero hay una cuenta que la persona lee.
+     *
+     * Por qué el desempate por nombre: con la misma entrada, `usort` da siempre el mismo orden
+     * (medido con PHP 7.4.33). Lo que cambia entre corridas es el orden de ENTRADA: la consulta a
+     * `information_schema.columns` de tablas_que_referencian() no tiene ORDER BY. Con empates de
+     * `filas` justo en el borde del tope —en `price_type_id`, `article_price_type` y
+     * `price_change_price_type` con 40 y 40; en `address_id` el corte cae entre tablas con 0—, sin
+     * el desempate la tabla que quedaba afuera dependía de en qué orden las devolviera MySQL.
+     *
+     * @param  array<int, array{tabla: string, filas: int, nombrable: bool}>  $candidatas
+     * @return array<int, array{tabla: string, filas: int, nombrable: bool}>
+     */
+    protected static function ordenar_para_contar(array $candidatas): array
+    {
+        usort($candidatas, function ($a, $b) {
+
+            if ($a['nombrable'] !== $b['nombrable']) {
+
+                return $a['nombrable'] ? -1 : 1;
+            }
+
+            if ($a['filas'] !== $b['filas']) {
+
+                return $a['filas'] < $b['filas'] ? -1 : 1;
+            }
+
+            return strcmp($a['tabla'], $b['tabla']);
+        });
 
         return $candidatas;
     }

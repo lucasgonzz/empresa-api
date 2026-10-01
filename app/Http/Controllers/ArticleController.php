@@ -11,6 +11,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ArticleTablePdfHelper;
+use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -27,6 +28,7 @@ use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
@@ -35,6 +37,7 @@ use App\Http\Controllers\Pdf\ArticleTablePdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
+use App\Http\Controllers\Pdf\ArticleTicket\ArticleTicketDesignPdf;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -968,6 +971,17 @@ class ArticleController extends Controller
         
         // ImageController::deleteModelImages($model);
         $model->delete();
+
+        /*
+         * Combos calculados (misión combos-calculados, 30/9/2026): un componente borrado sigue
+         * contando en el costo y el precio del combo con sus últimos valores (lo que cambia es su
+         * stock, que es 0: el combo no se puede armar), así que hoy este recálculo no mueve
+         * números. Está igual, y es una consulta, para que la regla "cada cambio en un componente
+         * pasa por ComboCalculadoHelper" no dependa de que nadie decida distinto sobre los
+         * borrados sin acordarse de enganchar esto.
+         */
+        ComboCalculadoHelper::recalcular_por_articulos([$model->id]);
+
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
 
         if ($send_notification) {
@@ -1024,8 +1038,40 @@ class ArticleController extends Controller
         );
     }
 
+    /**
+     * Etiquetas de góndola de los artículos `$ids` (separados por `-`).
+     *
+     * Con `?article_ticket_design_id=` de un diseño DEL DUEÑO (misión disenos-etiquetas-gondola,
+     * 29/9/2026) las dibuja `ArticleTicketDesignPdf` según ese diseño y responde el PDF inline.
+     * Sin ese parámetro, o con un id que no es del dueño, sale el camino de siempre
+     * (`ArticleTicketPdf`, con su `?price_type_id=` y la variante golonorte) sin ningún cambio:
+     * un SPA viejo sigue imprimiendo igual.
+     */
     function ticketsPdf($ids) {
+        $diseno = $this->diseno_de_etiquetas_pedido(request()->query('article_ticket_design_id'));
+
+        if (!is_null($diseno)) {
+            $pdf = new ArticleTicketDesignPdf($diseno->diseno, $ids, $this->userId());
+
+            return response($pdf->generar(), 200, [
+                'Content-Type'        => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="etiquetas.pdf"',
+            ]);
+        }
+
         new ArticleTicketPdf($ids);
+    }
+
+    /**
+     * La bifurcación de `ticketsPdf()`: el diseño de etiquetas pedido si es DEL DUEÑO, o null
+     * (-> camino de siempre, `ArticleTicketPdf`). Separado en su propio método para poder
+     * testearlo: el camino de siempre termina en `exit` y no se puede ejercitar desde PHPUnit.
+     *
+     * @param  mixed  $article_ticket_design_id  El `?article_ticket_design_id=` tal cual llegó.
+     * @return \App\Models\ArticleTicketDesign|null
+     */
+    function diseno_de_etiquetas_pedido($article_ticket_design_id) {
+        return ArticleTicketDesignHelper::diseno_del_dueno($article_ticket_design_id, $this->userId());
     }
 
     function pdf($ids, $moneda_id = null) {

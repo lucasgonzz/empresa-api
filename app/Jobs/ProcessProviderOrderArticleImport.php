@@ -14,6 +14,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
@@ -115,7 +116,26 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
                 }
             );
 
-            Excel::import($importer, $this->archivo_excel_path);
+            /*
+             * En un worker de cola no hay sesion ni Auth, y NewProviderOrderHelper / ArticleHelper
+             * leen el usuario con UserHelper::user() (que da null). Se instala el usuario que el
+             * controller ya resolvio al despachar el job, y se saca al terminar para no filtrarlo
+             * al siguiente job del mismo worker. Servian, 29/9/2026: 'Trying to get property
+             * 'iva_included' of non-object'.
+             */
+            $usuario_previo = Auth::user();
+
+            Auth::setUser($this->user);
+
+            try {
+                Excel::import($importer, $this->archivo_excel_path);
+            } finally {
+                if (is_null($usuario_previo)) {
+                    Auth::forgetGuards();
+                } else {
+                    Auth::setUser($usuario_previo);
+                }
+            }
 
             $this->marcar_completado($importer);
 

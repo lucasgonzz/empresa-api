@@ -51,8 +51,12 @@ class AfipFexHelper
         $idioma_cbte = 1;     // Español
 
         $moneda = 'DOL';
-        $moneda_cotiz = $this->sale->valor_dolar;
-        if ($this->sale->moneda_id == 1) {
+        // `sales.valor_dolar` es DECIMAL(20,2): Eloquent lo devuelve como string ("1234.56") y a ARCA
+        // tiene que ir un número. Sin cotización queda null, como antes (no se inventa un valor).
+        $moneda_cotiz = is_null($this->sale->valor_dolar) ? null : (float) $this->sale->valor_dolar;
+        // Pesos es todo lo que no es dolares: una venta con moneda_id NULL o 0 (decision de Lucas,
+        // 30/9/2026) sale en PES; antes, sin moneda, se mandaba como DOL con la cotizacion vacia.
+        if ($this->sale->moneda_id != 2) {
             $moneda = 'PES';
             $moneda_cotiz = 1;
         }

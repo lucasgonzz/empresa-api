@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
@@ -13,6 +14,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
@@ -143,9 +145,18 @@ class BudgetHelper {
 
 	        Self::attachSalePromocionVinotecas($sale, $budget);
 
-	        Self::attachSaleCombos($sale, $budget);
-
+	        /*
+	            🔴 Los descuentos y recargos se adjuntan ANTES que los combos (mision
+	            combos-calculados, Parte A2, 30/9/2026). `attachSaleCombos()` calcula el costo del
+	            combo con `SaleHelper::getCost()`, que en las cuentas con
+	            `aplicar_descuentos_de_venta_a_costos` lee `$sale->discounts` y `$sale->surchages`:
+	            con ellos todavia sin adjuntar, el costo del combo saldria sin ajustar, distinto al
+	            de los articulos de la misma venta (esos traen el costo ya ajustado del presupuesto).
+	            `attachSaleDiscountsAndSurchages()` no depende de nada de lo que se adjunta antes.
+	        */
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
+
+	        Self::attachSaleCombos($sale, $budget);
 
 	        /*
 	            🔴 EL `sub_total` DE LA VENTA NACIDA DE UN PRESUPUESTO (mision forzar-total-por-monto,
@@ -259,6 +270,37 @@ class BudgetHelper {
 			$amount = $article->pivot->amount;
 
 			/*
+			 * 🔴 NO simplificar esto a "copiar el costo del presupuesto tal cual": el costo guardado en
+			 * `article_budget.cost` puede ser el del BULTO sin dividir. Pasó con el presupuesto 411 de
+			 * ferretotal (2/9/2026, SPA viejo sin la clave `unidades_individuales`): al confirmarlo el
+			 * 25/9 este método lo copió tal cual y la venta 54.499 salió con PRECINTOS a costo 4118,66
+			 * y precio 61,78, y TORNILLO C/TANQUE a 4174,98 y 31,31: ganancia negativa.
+			 *
+			 * Se corrige acá, al pasar a la venta, y NO se toca `article_budget`: el presupuesto queda
+			 * como se guardó y lo único que cambia es lo que se le copia a la venta.
+			 *
+			 * El criterio —`CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir`— se mide
+			 * contra el PRECIO DE LA PROPIA LÍNEA y no contra `articles.costo_real` de hoy como valor a
+			 * copiar, porque la ficha del artículo cambia después de la venta (mangueras
+			 * 3073/3074/3075: costo_real hoy 6,17 contra 388,77 con el que se vendió, margen del 50 %):
+			 * "corregir si difiere de la ficha" arreglaría mal una línea sana. La ficha entra SOLO como
+			 * desempate de orden de magnitud: el costo guardado tiene que estar más cerca del BULTO que
+			 * de la UNIDAD, o si no una pérdida real con ui > 1 (cost 100, price 40, ui 10) se
+			 * confundiría con un bulto sin dividir y se "arreglaría" a 10. Una línea ya unitaria pasa
+			 * intacta, así que no se divide dos veces. Es una defensa y no reemplaza al saneo del
+			 * histórico. Va ANTES de calcular la ganancia de la línea para que ésta salga con el costo
+			 * ya corregido.
+			 *
+			 * Unidades y ficha salen del modelo del artículo, el mismo dato que `getCost()` lee.
+			 */
+			$cost = CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
+				$cost,
+				$price,
+				$article->unidades_individuales,
+				$article->costo_real
+			);
+
+			/*
 			 * 🔴 `article_sale.cost` es UNITARIO y `article_sale.ganancia` es el TOTAL de la linea:
 			 * la convencion la fijan SaleHelper::attachArticle(), SaleTotalesHelper::set_total_cost()
 			 * y ContabilidadRepository::costo_mercaderia_vendida(). Hasta el 17/9/2026 acá se
@@ -370,6 +412,15 @@ class BudgetHelper {
 			$sale->combos()->attach($combo->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $combo->pivot->amount,
 				'price'	    		=> $combo->pivot->price,
+				/*
+					🔴 El costo del combo se calcula ACA, al confirmar (mision combos-calculados,
+					Parte A2, 30/9/2026): `budget_combo` no guarda costo, asi que no hay nada que
+					copiar. Es el costo VIGENTE del combo en este momento —componentes y costos de
+					hoy—, el mismo criterio con el que un articulo sin costo guardado se cotiza al
+					confirmar, y queda congelado en la venta. Lo decide el servidor
+					(`ComboCostoDeVentaHelper`), igual que en `SaleHelper::attachCombos()`.
+				*/
+				'cost'				=> ComboCostoDeVentaHelper::costo_unitario($sale, $combo->id),
 				'created_at'		=> Carbon::now(),
 			], RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot), 'combo_sale'));
 

@@ -118,7 +118,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::delete('print-agents/{id}', 'PrintAgentController@destroy');
     Route::post('print-jobs', 'PrintAgentController@store_job');
     Route::get('print-jobs/{id}', 'PrintAgentController@show_job');
-    Route::put('user/{id}', 'UserController@update');
+    Route::put('user/{id}', 'UserController@update')->middleware('solo_administrador');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
     Route::put('user/set_eliminar_articulos_offline/{user_id}/{value}', 'UserController@set_eliminar_articulos_offline');
@@ -135,6 +135,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@update');
 
     // Employee
+    // Va antes del resource, igual que budget/{id}/duplicate.
+    Route::post('employee/{id}/duplicate', 'CommonLaravel\EmployeeController@duplicate');
     Route::resource('employee', 'CommonLaravel\EmployeeController');
 
     // Permissions
@@ -155,14 +157,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::get('online-configuration', 'OnlineConfigurationController@index');
-    Route::put('online-configuration/{id}', 'OnlineConfigurationController@update');
+    Route::put('online-configuration/{id}', 'OnlineConfigurationController@update')->middleware('solo_administrador');
     // Prompt 358: prueba de la config SMTP propia del cliente. La usa el dueño del comercio desde
     // el ERP (no es pública), por eso va dentro del mismo grupo de middleware de autenticación.
-    Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail');
+    Route::post('online-configuration/test-mail', 'OnlineConfigurationController@testMail')->middleware('solo_administrador');
     // Grupo 202, prompt 02: paleta de colores generada por IA a partir del logo del comercio.
     // Tiene que quedar ANTES de cualquier ruta 'online-configuration/{id}' para que Laravel no
     // matchee 'generate-palette' como si fuera un {id}.
-    Route::post('online-configuration/generate-palette', 'OnlineConfigurationController@generatePalette');
+    Route::post('online-configuration/generate-palette', 'OnlineConfigurationController@generatePalette')->middleware('solo_administrador');
     Route::post('set-comercio-city-user', 'GeneralController@setComercioCityUser');
     Route::get('update-feature', 'UpdateFeatureController@index');
 
@@ -1039,6 +1041,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Sin create/edit: no hay vistas de servidor, y así `vender-layout/create` cae en show() y da 404.
     Route::resource('vender-layout', 'VenderLayoutController')->except(['create', 'edit']);
 
+    // Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): ABM -> Artículos -> "Diseños de etiquetas".
+    // El PDF sigue saliendo por la ruta web article/tickets-pdf/{ids}, ahora con ?article_ticket_design_id=.
+    Route::resource('article-ticket-design', 'ArticleTicketDesignController')->except(['create', 'edit']);
+
 
 });
 
@@ -1457,6 +1463,15 @@ Route::middleware('admin.api.key')
         // consumo-ia, valida X-Admin-Api-Key ADENTRO del controlador (require_api_key está apagado
         // en producción) porque ESCRIBE el plan del cliente. Idempotente; 409 si no hay dueño resoluble.
         Route::put('plan-ia', 'AdminSync\\PlanIaController@update');
+        // Los modelos de IA de este cliente (misión modelos-ia-por-cliente, 30/9/2026): la solapa
+        // "Inteligencia artificial" del admin lee y escribe el modelo del asistente, del bot de
+        // WhatsApp, de la verificación de imágenes y de la importación de Excel. El admin no
+        // persiste nada: lee en vivo. Como plan-ia, valida X-Admin-Api-Key ADENTRO del controlador
+        // porque ESCRIBE la configuración del cliente; 409 si no hay dueño resoluble, 422 si una
+        // opción no vale para su tarea. Un cliente viejo sin estas rutas le da 404 al admin, que lo
+        // muestra como "versión anterior" sin romper.
+        Route::get('modelos-ia', 'AdminSync\\ModelosIaController@show');
+        Route::put('modelos-ia', 'AdminSync\\ModelosIaController@update');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión

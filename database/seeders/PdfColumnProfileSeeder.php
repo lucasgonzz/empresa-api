@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Http\Controllers\Helpers\PdfColumnRemitoSetupHelper;
 use App\Http\Controllers\Helpers\Seeders\PdfColumnProfileSeederHelper;
 use App\Models\PdfColumnProfile;
 use App\Models\SheetType;
@@ -30,30 +31,12 @@ class PdfColumnProfileSeeder extends Seeder
                 'printable_width_mm' => 210,
                 'margin_mm'          => 5,
                 'is_afip_ticket'     => 0,
-                'options'            => [
-                    'Índice de fila',
-                    'Número de artículo',
-                    'Código de barras',
-                    'Nombre del artículo',
-                    'Cantidad',
-                    /**
-                     * Ancho fijo (no tomado del catálogo `pdf_column_options.default_width`):
-                     * Precio unitario y Subtotal línea quedaban con anchos viejos/chicos si el
-                     * catálogo no estaba resincronizado, dejando un hueco a la derecha del PDF.
-                     * Fijándolos acá se garantiza que la suma de las 8 columnas de este perfil
-                     * cierre siempre en 200mm (printable_width_mm 210 - margin_mm 5 x2 lados),
-                     * ocupando todo el ancho disponible cada vez que se corre el seeder.
-                     */
-                    [
-                        'name'  => 'Precio unitario',
-                        'width' => 28,
-                    ],
-                    'Descuento porcentaje',
-                    [
-                        'name'  => 'Subtotal línea',
-                        'width' => 32,
-                    ],
-                ],
+                /**
+                 * Definición única en PdfColumnRemitoSetupHelper: las columnas cierran SIEMPRE en el
+                 * ancho útil (printable_width_mm 210 - margin_mm 5 x2 lados = 200 mm); la columna
+                 * 'Nombre del artículo' se lleva lo que sobra.
+                 */
+                'options'            => PdfColumnRemitoSetupHelper::visible_columns_definition(PdfColumnRemitoSetupHelper::REMITO),
             ],
             [
                 'model_name'         => 'sale',

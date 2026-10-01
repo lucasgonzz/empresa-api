@@ -371,7 +371,15 @@ class ConsolidarFacturacionHelper extends Controller
                 $consolidada->combos()->attach($combo->id, [
                     'amount'     => (float)($pivot->amount ?? 1),
                     'price'      => (float)($pivot->price ?? 0),
-                    'cost'       => (float)($pivot->cost ?? 0),
+                    /*
+                     * El costo se copia TAL CUAL, NULL incluido (misión combos-calculados, Parte A2,
+                     * 30/9/2026). Antes era `?? 0`, y eso convierte "no sé cuánto costó" (el combo de
+                     * una venta anterior a esa misión) en "costó cero": la consolidada sumaría 0 al
+                     * costo con aspecto de dato medido. NULL sigue significando "sin costo
+                     * resuelto", y `SaleTotalesHelper::costo_de_combos()` lo trata como 0 igual que
+                     * en la venta original.
+                     */
+                    'cost'       => is_null($pivot->cost) ? null : (float)$pivot->cost,
                     'created_at' => Carbon::now(),
                 ]);
             }

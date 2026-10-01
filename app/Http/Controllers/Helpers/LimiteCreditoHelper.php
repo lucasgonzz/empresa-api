@@ -56,7 +56,12 @@ class LimiteCreditoHelper {
             return null;
         }
 
-        $moneda_id = !is_null($request->moneda_id) ? (int) $request->moneda_id : 1;
+        // 🔴 Moneda 0 o null es PESOS, como en el resto del sistema (misión corregir-ventas-en-dolares,
+        // 30/9/2026): `CurrentAcountFromSaleHelper` guarda la venta con `moneda_id = 0` en la cuenta
+        // en pesos (`if (!$moneda_id) $moneda_id = 1`). Acá el `(int) 0` se quedaba en 0, buscaba una
+        // cuenta de moneda 0 que no existe, no encontraba tope y la venta esquivaba el límite de la
+        // cuenta en pesos donde de verdad se guarda.
+        $moneda_id = (int) $request->moneda_id > 0 ? (int) $request->moneda_id : 1;
 
         // Sale hipotética, sin guardar: el objeto que las reglas ya saben leer, sin crear una
         // venta fantasma.
@@ -153,8 +158,10 @@ class LimiteCreditoHelper {
         }
 
         // update() nunca reasigna moneda_id (no está entre los campos que reescribe): en una venta
-        // ya persistida siempre viene seteado, pero se normaliza igual por las dudas.
-        $moneda_id = !is_null($sale->moneda_id) ? (int) $sale->moneda_id : 1;
+        // ya persistida siempre viene seteado, pero se normaliza igual por las dudas. Un 0 (dato
+        // residual de instalaciones viejas) es pesos, igual que en validar_venta_nueva() y en
+        // `CurrentAcountFromSaleHelper`, que es donde la venta se guarda.
+        $moneda_id = (int) $sale->moneda_id > 0 ? (int) $sale->moneda_id : 1;
 
         $credit_account = Self::buscar_credit_account_con_limite($client->id, $moneda_id);
 

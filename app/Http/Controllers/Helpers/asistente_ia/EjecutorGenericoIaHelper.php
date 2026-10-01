@@ -124,6 +124,32 @@ class EjecutorGenericoIaHelper
 
         $payload = self::payload($declaracion, $operacion, $datos, $id);
 
+        /*
+         * 🔴 Misión alta-por-agente-margen-y-stock (29/9/2026, demo3 artículo 17320): el margen por
+         * lista entra al controller como el `price_types` que manda la ficha, NO como un campo
+         * propio ni escribiendo el pivote a mano. Así `ArticleController::store()` / `update()`
+         * hacen lo de siempre —attach_price_types y recién después setFinalPrice— y el precio de
+         * cada lista sale de la MISMA cuenta que cuando la persona tipea el margen en la ficha. Se
+         * arma acá, antes de llamar, para que una lista que ya no existe corte con 422 sin dejar
+         * nada escrito (en el alta y la edición no hay transacción que lo revierta: son de dos
+         * etapas, ver EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS).
+         */
+        $margenes = self::margenes_de_la_tarjeta($declaracion, $operacion, $datos);
+
+        if (count($margenes)) {
+
+            if (!MargenesPorListaIaHelper::aplica($contexto->owner)) {
+
+                throw new AccionIaException(422, MargenesPorListaIaHelper::NO_SE_CARGO.'la tarjeta trae márgenes por lista de precio y el negocio ya no trabaja con listas por artículo. Pedímelo de nuevo.');
+            }
+
+            $payload['price_types'] = MargenesPorListaIaHelper::price_types_para_el_payload(
+                $contexto,
+                $margenes,
+                isset($payload['price_types']) && is_array($payload['price_types']) ? $payload['price_types'] : []
+            );
+        }
+
         $controller = Catalogo::controller_y_metodo($declaracion['entidad'], $operacion);
 
         $respuesta = self::llamar_al_controller($controller, $operacion, $payload, $id);
@@ -146,7 +172,63 @@ class EjecutorGenericoIaHelper
             $resultado = AltaDeArticuloConFotoIaHelper::completar($contexto, $resultado, $datos['extras']);
         }
 
+        /*
+         * La edición con márgenes por lista relee el pivote y dice el precio que quedó en cada lista
+         * (en el alta lo hace completar(), junto con la foto y el stock). Ver el 🔴 de
+         * MargenesPorListaIaHelper::verificar().
+         */
+        if ($operacion === Catalogo::OP_EDICION && count($margenes)) {
+
+            $resultado = MargenesPorListaIaHelper::completar_resultado($resultado, (int) $id, $margenes);
+        }
+
+        /*
+         * 🔴 Y con listas por artículo, el resultado dice el precio de TODAS las listas, no solo de
+         * las nombradas (ronda de correcciones del 29/9/2026): en "directo" el `aviso` de la tarjeta
+         * no le llega al modelo, y un alta sin margen quedaba con 0 % en todas y un "creado" a secas,
+         * que es demo3. Va en toda alta de artículo (tenga o no extras) y en la edición con márgenes.
+         * Protegido: nunca lanza.
+         */
+        if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD
+            && ($operacion === Catalogo::OP_ALTA || ($operacion === Catalogo::OP_EDICION && count($margenes)))) {
+
+            $resultado = MargenesPorListaIaHelper::sumar_las_demas_listas($contexto, $resultado, (int) $id, $margenes, $operacion === Catalogo::OP_ALTA);
+        }
+
         return $resultado;
+    }
+
+    /**
+     * Los márgenes por lista que guardó la tarjeta, o []: en el alta viajan en `datos.extras` (con
+     * la foto y el stock), en la edición en `datos.margenes_por_lista`. Solo un artículo los tiene;
+     * una tarjeta vieja, de antes de la misión alta-por-agente-margen-y-stock, no trae la clave y
+     * sigue exactamente el camino de siempre.
+     *
+     * @param  array  $declaracion
+     * @param  string  $operacion
+     * @param  array  $datos
+     * @return array
+     */
+    protected static function margenes_de_la_tarjeta(array $declaracion, string $operacion, array $datos): array
+    {
+        if ($declaracion['entidad'] !== AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+
+            return [];
+        }
+
+        $clave = MargenesPorListaIaHelper::CLAVE;
+
+        if ($operacion === Catalogo::OP_ALTA) {
+
+            return isset($datos['extras'][$clave]) && is_array($datos['extras'][$clave]) ? $datos['extras'][$clave] : [];
+        }
+
+        if ($operacion === Catalogo::OP_EDICION) {
+
+            return isset($datos[$clave]) && is_array($datos[$clave]) ? $datos[$clave] : [];
+        }
+
+        return [];
     }
 
     // -------------------------------------------------------------------------------------------

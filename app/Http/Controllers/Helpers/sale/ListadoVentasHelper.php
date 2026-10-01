@@ -303,8 +303,9 @@ class ListadoVentasHelper
     /**
      * Cantidad y los ocho totales del conjunto filtrado, en UNA consulta de agregados.
      *
-     * Espejo exacto de `Total.vue`: pesos = `moneda_id = 1`, dolares = `moneda_id = 2` (una venta
-     * con `moneda_id` NULL no suma en ninguno, igual que hoy en el navegador); total = `total`,
+     * Espejo exacto de `Total.vue`: dolares = `moneda_id = 2` y pesos = todo lo demas (una venta con
+     * `moneda_id` NULL o 0 es SIEMPRE pesos, decision de Lucas del 30/9/2026; antes no sumaba en
+     * ninguno de los dos chips); total = `total`,
      * costos = `total_cost`, ganancia = `ganancia`, cuenta corriente = `total` de las ventas con
      * cliente y sin `omitir_en_cuenta_corriente`. Todo sale de columnas persistidas de `sales`.
      *
@@ -336,14 +337,17 @@ class ListadoVentasHelper
         $cuenta_corriente = 'sales.client_id IS NOT NULL AND sales.client_id <> 0'
             . ' AND (sales.omitir_en_cuenta_corriente IS NULL OR sales.omitir_en_cuenta_corriente = 0)';
 
+        // Pesos = todo lo que no es dolares (moneda_id NULL o 0 incluidos). Ver Sale::EXPRESION_EN_PESOS.
+        $pesos = Sale::EXPRESION_EN_PESOS;
+
         return (clone $query_filtrada)->toBase()->selectRaw(
             'COUNT(*) AS cantidad'
             . ', MIN(sales.created_at) AS primera_venta'
             . ', MAX(sales.created_at) AS ultima_venta'
-            . ', SUM(CASE WHEN sales.moneda_id = 1 THEN sales.total ELSE 0 END) AS pesos_total'
-            . ', SUM(CASE WHEN sales.moneda_id = 1 THEN sales.total_cost ELSE 0 END) AS pesos_costos'
-            . ', SUM(CASE WHEN sales.moneda_id = 1 THEN sales.ganancia ELSE 0 END) AS pesos_ganancia'
-            . ', SUM(CASE WHEN sales.moneda_id = 1 AND ' . $cuenta_corriente . ' THEN sales.total ELSE 0 END) AS pesos_cuenta_corriente'
+            . ', SUM(CASE WHEN ' . $pesos . ' THEN sales.total ELSE 0 END) AS pesos_total'
+            . ', SUM(CASE WHEN ' . $pesos . ' THEN sales.total_cost ELSE 0 END) AS pesos_costos'
+            . ', SUM(CASE WHEN ' . $pesos . ' THEN sales.ganancia ELSE 0 END) AS pesos_ganancia'
+            . ', SUM(CASE WHEN ' . $pesos . ' AND ' . $cuenta_corriente . ' THEN sales.total ELSE 0 END) AS pesos_cuenta_corriente'
             . ', SUM(CASE WHEN sales.moneda_id = 2 THEN sales.total ELSE 0 END) AS dolares_total'
             . ', SUM(CASE WHEN sales.moneda_id = 2 THEN sales.total_cost ELSE 0 END) AS dolares_costos'
             . ', SUM(CASE WHEN sales.moneda_id = 2 THEN sales.ganancia ELSE 0 END) AS dolares_ganancia'
@@ -440,7 +444,7 @@ class ListadoVentasHelper
         /* Total sin IVA y ventas sin medir: una sola consulta, sobre los joins de comprobantes. */
         $query_iva = Sale::query()
                         ->whereIn('sales.id', $ids_del_conjunto)
-                        ->where('sales.moneda_id', 1);
+                        ->whereRaw(Sale::EXPRESION_EN_PESOS);
 
         IvaDeVentaHelper::aplicar_joins_de_iva($query_iva, $user_id, $agregados->primera_venta, $agregados->ultima_venta);
 
@@ -485,7 +489,7 @@ class ListadoVentasHelper
         $query = Sale::query()
                     ->join('article_sale', 'article_sale.sale_id', '=', 'sales.id')
                     ->whereIn('sales.id', $ids_del_conjunto)
-                    ->where('sales.moneda_id', 1);
+                    ->whereRaw(Sale::EXPRESION_EN_PESOS);
 
         /* Agrega los joins a `articles` e `ivas` (con alias propios) y devuelve la expresion del neto. */
         $costo_neto = CostoDeVentaHelper::expresion_costo_neto_de_linea($query, 'article_sale', $user);
