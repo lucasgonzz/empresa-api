@@ -243,17 +243,20 @@ class VenderSearchHelper
                 }
 
                 // Con la extension de codigo de barras, una palabra que aparece en la descripcion de
-                // ALGUNA variante disponible es una palabra de VARIANTE (color, talle): se exige en la
+                // ALGUNA variante del articulo es una palabra de VARIANTE (color, talle): se exige en la
                 // descripcion y no vale un codigo de barras que la contenga por casualidad ("36" dentro
                 // de "01362", porque los codigos de variante nacen como '0' + id). Solo una palabra que
                 // no esta en ninguna descripcion se interpreta como fragmento de codigo de barras.
+                // Se mira TODAS las variantes, ocultas incluidas: el generador crea cada combinacion
+                // nueva oculta hasta que el dueno la habilita, y "azul 36" oculta tambien dice que "36"
+                // es un talle (si no, "zapatilla azul 36" devolveria "azul 35" por su codigo).
                 $palabras_de_variante = [];
 
                 if ($search_bar_code_en_vender) {
                     foreach ($remaining_keywords as $word) {
                         $word_lower = mb_strtolower($word, 'UTF-8');
 
-                        $palabras_de_variante[$word] = $available_variants->contains(function ($variant) use ($word_lower) {
+                        $palabras_de_variante[$word] = $article->article_variants->contains(function ($variant) use ($word_lower) {
                             return strpos(mb_strtolower($variant->variant_description ?? '', 'UTF-8'), $word_lower) !== false;
                         });
                     }

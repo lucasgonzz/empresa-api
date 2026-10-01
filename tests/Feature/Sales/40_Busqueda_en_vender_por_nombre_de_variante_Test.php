@@ -579,6 +579,57 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
     }
 
     /**
+     * El talle "36" existe como variante OCULTA ("azul 36": el generador crea cada combinacion
+     * oculta hasta que se habilita). Aunque no se ofrezca, sigue diciendo que "36" es un talle:
+     * "zapatilla azul 36" no puede devolver "azul 35" porque su codigo de barras (01361) contenga
+     * "36". Va por la ruta vieja porque su SQL busca el codigo parcial de las variantes y deja pasar
+     * al articulo; el filtro fino es el que decide.
+     *
+     * @group sales
+     * @group vender-search
+     * @test
+     */
+    public function un_talle_que_existe_como_variante_oculta_no_se_toma_por_codigo_de_barras()
+    {
+        $user = $this->usuario_de_test('v17');
+        $this->dar_extension($user, 'article_variants');
+        $this->dar_extension($user, 'search_bar_code_en_vender');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $this->variante($zapatilla, 'azul 36', true, '01360');  // oculta
+        $this->variante($zapatilla, 'azul 35', false, '01361'); // el codigo contiene "36"
+        $this->variante($zapatilla, 'rojo 35', false, '01362');
+
+        $res = $this->postJson('api/vender/buscar-articulo-por-nombre/0', ['query_value' => 'zapatilla azul 36']);
+        $res->assertStatus(200);
+
+        $this->assertEquals([], collect($res->json()['data'])->pluck('name')->all());
+    }
+
+    /**
+     * Con `search_bar_code_en_vender`, una sola palabra igual al codigo de barras EXACTO de una
+     * variante devuelve solo esa variante (rama preexistente, que esta mision no cambia).
+     *
+     * @group sales
+     * @group vender-search
+     * @test
+     */
+    public function el_codigo_de_barras_exacto_de_una_variante_devuelve_solo_esa_variante()
+    {
+        $user = $this->usuario_de_test('v18');
+        $this->dar_extension($user, 'article_variants');
+        $this->dar_extension($user, 'search_bar_code_en_vender');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $this->variante($zapatilla, 'azul 35', false, '7790001');
+        $this->variante($zapatilla, 'azul 36', false, '7790002');
+
+        $this->assertEquals(['Zapatilla azul 36'], $this->nombres($this->buscar('7790002', ['name', 'provider_code'])));
+    }
+
+    /**
      * Cuenta cuantos EXISTS contra article_variants filtran por `variant_description` (la
      * condicion que agrega esta mision). No cuenta el EXISTS de codigo de barras que Vender ya
      * tenia con un criterio de una sola palabra, ni el eager load `where article_id in (...)`.
