@@ -3,9 +3,6 @@
 namespace Tests\Feature\Integraciones;
 
 use App\Models\TiendaNubeOrder;
-use App\Models\User;
-use Database\Seeders\testing\TestingFerreteriaSeeder;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\EmpresaTestCase;
