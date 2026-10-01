@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\PdfDocument;
 
+use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
@@ -226,13 +227,24 @@ class BudgetPdfDocument implements PdfDocumentSource
         $monto_forzado = SaleHelper::get_forzar_total_monto($this->budget);
 
         /**
+         * Descuento o recargo por método de pago de un presupuesto de contado (misión
+         * presupuesto-contado-o-cuenta-corriente, 1/10/2026): signo + = recargo, - = descuento,
+         * 0 = no hay. El Total de abajo sale de `BudgetHelper::getTotal()`, que ya lo incluye;
+         * sin un renglón que lo nombre, el pie no suma contra los renglones y el cliente lee un
+         * Total que nadie le explica. Es la misma cuenta que escribe el PDF de siempre
+         * (`BudgetPdf::discountsSurchages()`).
+         */
+        $ajuste_por_metodo_de_pago = BudgetCobroHelper::ajuste_por_metodos_de_pago($this->budget);
+
+        /**
          * El Sub Total se imprime solo si hay algo que lo separe del Total. El forzado hacia
          * arriba deja el subtotal MENOR que el total, por eso se nombra aparte. Se compara
          * redondeado a centavos: el ruido de coma flotante de una suma de renglones no puede
          * inventar un "Sub Total" idéntico al Total.
          */
         $hay_diferencia = round($total_original, 2) > round((float) $this->budget->total, 2)
-            || $monto_forzado != 0;
+            || $monto_forzado != 0
+            || $ajuste_por_metodo_de_pago != 0;
 
         if (! empty($flags['show_subtotal_in_footer']) && $hay_diferencia) {
             $rows[] = [
@@ -260,6 +272,16 @@ class BudgetPdfDocument implements PdfDocumentSource
                     'bold' => false,
                 ];
             }
+        }
+
+        /** El ajuste por método de pago va ANTES del forzado, que es el orden en que se aplican en getTotal(). */
+        if ($ajuste_por_metodo_de_pago != 0) {
+            $rows[] = [
+                'text' => ($ajuste_por_metodo_de_pago < 0 ? '- ' : '+ ')
+                    .'$'.Numbers::price(abs($ajuste_por_metodo_de_pago))
+                    .($ajuste_por_metodo_de_pago < 0 ? ' Descuento por método de pago' : ' Recargo por método de pago'),
+                'bold' => false,
+            ];
         }
 
         /** El ajuste del total forzado va ÚLTIMO, que es el orden en que se aplica en getTotal(). */
