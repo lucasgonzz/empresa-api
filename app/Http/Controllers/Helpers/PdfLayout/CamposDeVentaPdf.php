@@ -50,13 +50,15 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
      * @param \App\Models\User|null $user                  Dueño de la venta.
      * @param bool                  $use_current_date      "Imprimir con fecha actual".
      * @param string                $discount_display_mode 'descriptivo' | 'simple' (el del perfil).
+     * @param bool                  $es_factura            Se imprime como factura de ARCA (la plata sigue el
+     *                                                     camino fiscal de siempre: ver TotalesDeVentaPdf).
      */
-    public function __construct($sale, $user, $use_current_date, $discount_display_mode)
+    public function __construct($sale, $user, $use_current_date, $discount_display_mode, $es_factura = false)
     {
         $this->sale = $sale;
         $this->user = $user;
         $this->use_current_date = (bool) $use_current_date;
-        $this->totales = new TotalesDeVentaPdf($sale, $user, $discount_display_mode);
+        $this->totales = new TotalesDeVentaPdf($sale, $user, $discount_display_mode, $es_factura);
         $this->cuenta_corriente_calculada = false;
         $this->cuenta_corriente = null;
     }

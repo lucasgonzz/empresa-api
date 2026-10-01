@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Pdf;
 
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Models\PdfColumnOption;
 use App\Models\Sale;
 use App\Services\PdfColumnService;
@@ -110,6 +111,65 @@ class Factura_con_diseno_de_pagina_Test extends EmpresaTestCase
         $textos = $this->textos_legibles($pdf);
         $this->assertLessThan(array_search('Nombre', $textos, true), array_search('Condición de venta: ', $textos, true));
         $this->assertGreaterThan(array_search('Nombre', $textos, true), array_search('CAE N°:', $textos, true));
+    }
+
+    /**
+     * 🔴 La factura dice lo mismo que la de siempre aunque el perfil esté en modo "simple": el
+     * camino fiscal de NewSalePdf (discounts() y surchages(), desde descuentos_y_recargos()) no lee
+     * discount_display_mode y escribe siempre el renglón descriptivo. Con el diseño derivado del
+     * perfil, la factura con cajas escribe esos mismos renglones. El remito sí respeta el modo.
+     *
+     * @test
+     */
+    public function la_factura_en_modo_simple_escribe_los_descuentos_como_la_de_siempre()
+    {
+        $venta = $this->crear_venta_completa();
+        $ticket = $this->crear_factura($venta, 'B');
+
+        $perfil = $this->perfil_de_venta(['is_afip_ticket' => true, 'discount_display_mode' => 'simple']);
+        $perfil->page_layout = DisenoDerivadoPdf::para('sale', $perfil, true, $this->dueno);
+
+        $pdf = $this->pdf_de_factura($venta, $perfil, $ticket->id);
+
+        $this->assertDibujaTexto('Menos $250 (10% Descuento efectivo) = $2.250', $pdf);
+        /** El porcentaje del recargo sale como lo guarda el pivot ("5.00"), igual que en NewSalePdf::surchages(). */
+        $this->assertDibujaTexto('Mas $112,50 (5.00% Recargo tarjeta) = $2.362,50', $pdf);
+        $this->assertNoDibujaTexto('10% Descuento efectivo', $pdf, 'El renglón "simple" es del remito, no de la factura.');
+        $this->assertNoDibujaTexto('5.00% Recargo tarjeta', $pdf);
+
+        /** El control: el mismo perfil como remito respeta el modo "simple". */
+        $remito = $this->perfil_de_venta(['discount_display_mode' => 'simple']);
+        $remito->page_layout = DisenoDerivadoPdf::para('sale', $remito, false, $this->dueno);
+        $pdf_remito = $this->pdf_de_venta($venta, $remito);
+
+        $this->assertDibujaTexto('10% Descuento efectivo', $pdf_remito);
+        $this->assertNoDibujaTexto('Menos $250 (10% Descuento efectivo) = $2.250', $pdf_remito);
+    }
+
+    /**
+     * Y la condición del Sub Total en la factura es la del camino fiscal de siempre: total bruto
+     * distinto del total (o canje de puntos), SIN mirar el ajuste del total forzado. Una venta
+     * forzada justo a su total bruto ($2.500): la factura de siempre no imprime Sub Total ni
+     * descuentos, y la de cajas tampoco. El remito sí (ahí el ajuste es lo que los separa del Total).
+     *
+     * @test
+     */
+    public function la_factura_decide_el_sub_total_sin_mirar_el_ajuste_forzado()
+    {
+        $venta = $this->crear_venta_completa(['total' => 2500, 'forzar_total_monto' => 137.5]);
+        $ticket = $this->crear_factura($venta, 'B');
+
+        $factura = $this->pdf_de_factura($venta, $this->perfil_de_venta(['is_afip_ticket' => true], $this->diseno_de_factura()), $ticket->id);
+
+        $this->assertNoDibujaTexto('Sub Total: $2.500', $factura);
+        $this->assertNoDibujaTexto('Menos $250 (10% Descuento efectivo) = $2.250', $factura);
+        $this->assertDibujaTexto('CAE N°:', $factura, 'La factura se dibujó entera.');
+
+        /** El control: el mismo diseño como remito los imprime, porque el ajuste los separa del Total. */
+        $remito = $this->pdf_de_venta($venta, $this->perfil_de_venta([], $this->diseno_de_factura()));
+
+        $this->assertDibujaTexto('Sub Total: $2.500', $remito);
+        $this->assertDibujaTexto('Menos $250 (10% Descuento efectivo) = $2.250', $remito);
     }
 
     /**

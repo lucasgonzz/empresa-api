@@ -243,11 +243,17 @@ class SaleLayoutPdf extends fpdf
 
         $this->pie_en_cada_hoja = (bool) $perfil->show_totals_on_each_page;
 
+        /**
+         * Con la factura de ARCA resuelta la plata sigue el camino FISCAL de `NewSalePdf`: renglones
+         * siempre descriptivos (el modo "simple" del perfil es solo del remito) y el Sub Total con
+         * la condición fiscal. Lo decide TotalesDeVentaPdf con $this->es_fiscal.
+         */
         $this->fuente = new CamposDeVentaPdf(
             $sale,
             $this->user,
             $this->use_current_date,
-            $perfil->discount_display_mode === 'simple' ? 'simple' : 'descriptivo'
+            $perfil->discount_display_mode === 'simple' ? 'simple' : 'descriptivo',
+            $this->es_fiscal
         );
         $this->motor = new MotorDeCajasPdf($this->fuente, $this->pdf_x0, $this->pdf_ancho_util, $this->bloques_fijos());
     }

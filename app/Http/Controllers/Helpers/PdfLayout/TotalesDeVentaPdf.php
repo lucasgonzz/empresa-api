@@ -37,6 +37,12 @@ class TotalesDeVentaPdf
     /** @var string 'descriptivo' (monto + porcentaje + total parcial) o 'simple' (solo "% Nombre"). */
     private $discount_display_mode;
 
+    /**
+     * @var bool Es una factura de ARCA: la plata sigue el camino FISCAL de `NewSalePdf`
+     *           (`descuentos_y_recargos()`), no la caja de totales del remito.
+     */
+    private $es_factura;
+
     /** @var float Acumulador de artículos (gemelo de `NewSalePdf::$total_articles`). */
     private $total_articles;
 
@@ -71,12 +77,22 @@ class TotalesDeVentaPdf
      * @param \App\Models\Sale       $sale
      * @param \App\Models\User|null  $user                  Dueño de la venta.
      * @param string                 $discount_display_mode 'descriptivo' | 'simple' (el del perfil).
+     * @param bool                   $es_factura            Se imprime como factura de ARCA.
      */
-    public function __construct($sale, $user, $discount_display_mode)
+    public function __construct($sale, $user, $discount_display_mode, $es_factura = false)
     {
         $this->sale = $sale;
         $this->user = $user;
-        $this->discount_display_mode = $discount_display_mode === 'simple' ? 'simple' : 'descriptivo';
+        $this->es_factura = (bool) $es_factura;
+
+        /**
+         * 🔴 La factura escribe SIEMPRE el renglón descriptivo ("Menos $250 (10% Descuento
+         * efectivo) = $2.250"), sea cual sea el modo del perfil: el camino fiscal de `NewSalePdf`
+         * (`discounts()` y `surchages()`, que llama `descuentos_y_recargos()`) no lee
+         * `discount_display_mode`; solo la caja de totales del remito lo respeta. Si acá se
+         * respetara, la misma factura diría otra cosa con el diseño de siempre y con el de cajas.
+         */
+        $this->discount_display_mode = (! $this->es_factura && $discount_display_mode === 'simple') ? 'simple' : 'descriptivo';
 
         /**
          * Todos los acumuladores se inicializan ACÁ, juntos (clase de error "propiedad dinámica
@@ -198,13 +214,23 @@ class TotalesDeVentaPdf
      * Total, los descuentos, los recargos, el canje y el ajuste. Gemelo de
      * `$has_discounts_or_surchages` en `NewSalePdf::print_totals_box()`.
      *
+     * En una factura es la condición del camino FISCAL, gemela de la de
+     * `NewSalePdf::descuentos_y_recargos()`: total bruto distinto del total o canje de puntos, SIN
+     * el ajuste del total forzado (ese camino no lo mira). Una venta forzada justo a su total
+     * bruto no imprime Sub Total ni descuentos en la factura de siempre, y en la de cajas tampoco.
+     *
      * Se compara con `!=` igual que allá (un float contra el decimal de la base): cambiar la
-     * comparación cambiaría qué remitos imprimen Sub Total.
+     * comparación cambiaría qué comprobantes imprimen Sub Total.
      *
      * @return bool
      */
     public function hay_diferencia()
     {
+        if ($this->es_factura) {
+            return $this->total_bruto() != $this->sale->total
+                || PuntosComprobanteHelper::tiene_canje($this->sale);
+        }
+
         return $this->total_bruto() != $this->sale->total
             || PuntosComprobanteHelper::tiene_canje($this->sale)
             || !is_null($this->renglon_ajuste_del_total());
