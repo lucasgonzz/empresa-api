@@ -13,7 +13,8 @@ use Illuminate\Support\Facades\DB;
  * ProviderOrderHelper::resetArticlesStock().
  *
  * 🔴 La regla (decisión del orquestador de la misión): una compra con notas de crédito a proveedor
- * VIVAS no se borra; responde 422 pidiendo eliminar primero esas NC desde la cuenta corriente del
+ * VIVAS que fueron a CUENTA CORRIENTE no se borra (una NC sin C/C no frena: no tiene plata, y su
+ * stock lo cubre la resta por libro de resetArticlesStock); responde 422 pidiendo eliminar primero esas NC desde la cuenta corriente del
  * proveedor. Borrarla igual dejaba a la NC apuntando a una compra inexistente, con su haber en la
  * cuenta y sin el débito contra el que se imputó, y el stock había que adivinarlo. Eliminando
  * primero la NC (que devuelve su stock, ver 6_) y después la compra, todo vuelve a como estaba antes
@@ -27,8 +28,8 @@ use Illuminate\Support\Facades\DB;
 class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProveedorTestCase
 {
     /**
-     * Compra 10, devolución 4, borrar la compra → 422 con el número de la NC, y no se toca nada:
-     * la compra sigue, el stock sigue en 11.
+     * Compra 10, devolución 4 A CUENTA CORRIENTE, borrar la compra → 422 con el número de la NC,
+     * y no se toca nada: la compra sigue, el stock sigue en 11.
      *
      * @test
      */
@@ -43,7 +44,8 @@ class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProv
             $proveedor->id,
             $compra,
             [$this->item_devolucion($articulo, 121, 4)],
-            484
+            484,
+            ['generar_current_acount' => 1]
         ))->assertStatus(201);
 
         $this->assertEquals(11, $this->stock($articulo), 'La devolución no sacó las 4 unidades; el escenario no sirve.');
@@ -78,7 +80,8 @@ class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProv
             $proveedor->id,
             $compra,
             [$this->item_devolucion($articulo, 121, 4)],
-            484
+            484,
+            ['generar_current_acount' => 1]
         ))->assertStatus(201);
 
         $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(422);
@@ -132,5 +135,78 @@ class Borrar_compra_con_nota_de_credito_a_proveedor_Test extends NotaCreditoProv
         $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(200);
 
         $this->assertEquals(5, $this->stock($articulo));
+    }
+
+    /**
+     * Una NC SIN cuenta corriente no frena el borrado: la compra se borra y el stock vuelve al de
+     * antes de la compra, porque resetArticlesStock() saca lo ingresado menos lo que la NC ya sacó.
+     *
+     * @test
+     */
+    public function borrar_una_compra_con_nc_sin_cuenta_corriente_se_borra_y_el_stock_vuelve()
+    {
+        $articulo = $this->crear_articulo('zz Borrar compra con NC sin cc', ['stock' => 5]);
+        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        $compra = $this->crear_compra([$this->renglon_compra($articulo, 100, 10)]);
+
+        $this->postJson('api/devoluciones/', $this->payload_devolucion(
+            $proveedor->id,
+            $compra,
+            [$this->item_devolucion($articulo, 121, 4)],
+            484,
+            ['generar_current_acount' => 0]
+        ))->assertStatus(201);
+
+        $this->assertEquals(11, $this->stock($articulo));
+
+        $this->deleteJson('api/provider-order/'.$compra->id)->assertStatus(200);
+
+        $this->assertNull(ProviderOrder::find($compra->id));
+        $this->assertEquals(5, $this->stock($articulo), 'Borrar la compra tiene que sacar sólo lo que quedó de ella (10 − 4).');
+    }
+
+    /**
+     * El borrado MASIVO respeta el freno: la compra con NC a C/C no vuelve como eliminada (el
+     * listado no la saca de la pantalla), el motivo viaja en `not_deleted`, y las demás sí se
+     * borran.
+     *
+     * @test
+     */
+    public function el_borrado_masivo_no_cuenta_como_eliminada_la_compra_frenada()
+    {
+        $articulo = $this->crear_articulo('zz Borrado masivo compra frenada', ['stock' => 5]);
+        $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        $frenada = $this->crear_compra([$this->renglon_compra($articulo, 100, 10)]);
+        $libre = $this->crear_compra([$this->renglon_compra($articulo, 100, 1)]);
+
+        $this->postJson('api/devoluciones/', $this->payload_devolucion(
+            $proveedor->id,
+            $frenada,
+            [$this->item_devolucion($articulo, 121, 4)],
+            484,
+            ['generar_current_acount' => 1]
+        ))->assertStatus(201);
+
+        // Un solo registro: va por el camino síncrono de DeleteController.
+        $response = $this->putJson('api/delete/provider_order', [
+            'from_filter' => 0,
+            'models_id'   => [$frenada->id],
+        ]);
+
+        $response->assertStatus(200);
+        $this->assertCount(0, $response->json('models'), 'La compra frenada no puede volver como eliminada.');
+        $this->assertEquals($frenada->id, $response->json('not_deleted.0.id'));
+        $this->assertStringContainsString('notas de crédito a proveedor', $response->json('not_deleted.0.message'));
+        $this->assertNotNull(ProviderOrder::find($frenada->id));
+
+        // Varios registros (el camino del job): cuenta solo la que sí se borró.
+        $resultado = \App\Http\Controllers\Helpers\DeleteModelsHelper::process_delete('provider_order', [$frenada->id, $libre->id]);
+
+        $this->assertEquals(1, $resultado['deleted_count']);
+        $this->assertCount(1, $resultado['not_deleted']);
+        $this->assertNotNull(ProviderOrder::find($frenada->id));
+        $this->assertNull(ProviderOrder::find($libre->id));
     }
 }

@@ -421,8 +421,17 @@ class NotaCreditoProveedorHelper {
      */
     static function motivo_por_el_que_no_se_puede_borrar_la_compra($provider_order_id) {
 
+        /*
+            Solo frenan las NC que fueron a CUENTA CORRIENTE (decisión del orquestador,
+            1/10/2026): esas tienen un haber imputado al débito de la compra, que el borrado se
+            lleva. Una NC sin C/C no tiene plata en ninguna cuenta, y su stock ya lo cubre la resta
+            por libro de ProviderOrderHelper::resetArticlesStock() (saca lo ingresado MENOS lo que
+            esa NC ya sacó). Además no hay forma de borrarla desde la pantalla: si frenara, la
+            compra quedaría imposible de borrar.
+        */
         $numeros = CurrentAcount::where('devolucion_provider_order_id', $provider_order_id)
                                 ->where('status', 'nota_credito')
+                                ->whereNotNull('credit_account_id')
                                 ->orderBy('id')
                                 ->pluck('num_receipt')
                                 ->all();
