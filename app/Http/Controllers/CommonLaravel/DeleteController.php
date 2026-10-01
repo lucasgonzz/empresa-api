@@ -172,6 +172,14 @@ class DeleteController extends Controller
             );
         }
 
-        return response()->json(['models' => $result['deleted_models']], 200);
+        /*
+            `not_deleted` es aditivo (misión devoluciones-compras-y-rediseno, 1/10/2026): los
+            registros cuyo destroy() se negó, con su motivo. `models` ya no los incluye, así el
+            listado no los saca de la pantalla; el front que no lee `not_deleted` no se entera.
+        */
+        return response()->json([
+            'models'      => $result['deleted_models'],
+            'not_deleted' => $result['not_deleted'],
+        ], 200);
     }
 }

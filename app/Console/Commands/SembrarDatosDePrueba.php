@@ -2828,6 +2828,24 @@ class SembrarDatosDePrueba extends Command
                 $sale_controller->destroy($request, $sale_id);
             }
 
+            /*
+                🔴 Las notas de crédito a proveedor atadas a una compra van ANTES que las compras
+                (misión devoluciones-compras-y-rediseno, 1/10/2026). ProviderOrderController@destroy
+                rechaza con 422 la compra que tiene una NC viva EN CUENTA CORRIENTE (las sin cuenta no
+                frenan y las borra el lazo general de más abajo), y process_delete
+                la deja en pie sin avisar: la demo quedaba con esas compras después del reseteo.
+                Se borran por el controlador, que además devuelve el stock que la NC había sacado.
+            */
+            $current_acount_controller = new CurrentAcountController();
+            $notas_credito_de_compras = CurrentAcount::where('user_id', $user_id)
+                ->whereNotNull('devolucion_provider_order_id')
+                ->whereNotNull('credit_account_id')
+                ->orderBy('created_at', 'DESC')
+                ->get();
+            foreach ($notas_credito_de_compras as $nota_credito_de_compra) {
+                $current_acount_controller->delete($request, 'provider', $nota_credito_de_compra->id);
+            }
+
             $provider_order_ids = ProviderOrder::where('user_id', $user_id)->pluck('id')->toArray();
             if (count($provider_order_ids)) {
                 DeleteModelsHelper::process_delete('provider_order', $provider_order_ids, true);
