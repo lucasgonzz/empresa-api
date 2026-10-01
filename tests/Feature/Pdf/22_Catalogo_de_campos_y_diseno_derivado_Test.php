@@ -660,6 +660,7 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         ]));
 
         $this->assertSame(['fijo:afip_receptor'], $this->ids($diseno['superior']), 'Arriba solo el receptor de ARCA: el header fiscal no lleva ni cuenta corriente ni observaciones del cliente.');
+        $this->assertSame(12, $diseno['superior'][0]['cols'], 'El receptor de la factura de siempre va a lo ancho de la hoja.');
         $this->assertSame(
             ['caja_observaciones', 'caja_totales', 'fijo:afip_pie', 'caja_comisiones', 'caja_texto_de_pie'],
             $this->ids($diseno['pie']),

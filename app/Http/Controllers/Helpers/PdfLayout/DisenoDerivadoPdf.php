@@ -732,6 +732,15 @@ class DisenoDerivadoPdf
             $fijo['importes'] = (bool) $importes;
         }
 
+        /**
+         * El receptor de la factura de siempre (AfipPdfHelper::print_receptor_block()) va a lo ancho
+         * de la hoja: 12 columnas. normalizar() pondría lo mismo si faltara, pero el derivado lo
+         * dice explícito porque es lo que imprime hoy, no un default.
+         */
+        if ($key === CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR) {
+            $fijo['cols'] = 12;
+        }
+
         return $fijo;
     }
 }

@@ -517,10 +517,14 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
 
         $guardado = $perfil->fresh()->page_layout;
 
+        /**
+         * Desde el contrato de la segunda tanda (a3d6337c) el receptor de ARCA lleva su ancho, como
+         * los obligatorios de Diseños de Vender: si no vino, a lo ancho (12).
+         */
         $this->assertSame(
-            $this->canonico(['tipo' => 'fijo', 'key' => 'afip_receptor']),
+            $this->canonico(['tipo' => 'fijo', 'key' => 'afip_receptor', 'cols' => 12]),
             $this->canonico($guardado['superior'][0]),
-            'El receptor de ARCA va primero en "superior".'
+            'El receptor de ARCA va primero en "superior", a lo ancho.'
         );
         $this->assertSame('caja_cliente', $guardado['superior'][1]['id'], 'La caja que vino queda después del bloque fijo.');
 
@@ -546,6 +550,20 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
             $this->canonico($guardado['pie'][0]),
             'El pie de ARCA que mandó primero, con los importes apagados, queda así.'
         );
+
+        /** El ancho del receptor viaja por la API: el que manda el diseñador se guarda, acotado a 6..12. */
+        foreach ([8 => 8, 3 => DisenoDePaginaPdf::COLS_MIN_AFIP_RECEPTOR, 20 => 12] as $cols_enviadas => $cols_guardadas) {
+            $con_ancho = $this->diseno_valido();
+            array_unshift($con_ancho['superior'], ['tipo' => 'fijo', 'key' => 'afip_receptor', 'cols' => $cols_enviadas]);
+
+            $this->putJson('api/pdf-column-profiles/'.$perfil->id, ['page_layout' => $con_ancho])->assertStatus(200);
+
+            $this->assertSame(
+                $cols_guardadas,
+                $perfil->fresh()->page_layout['superior'][0]['cols'],
+                'Receptor de ARCA mandado con '.$cols_enviadas.' columnas.'
+            );
+        }
     }
 
     /**
