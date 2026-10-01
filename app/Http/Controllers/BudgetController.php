@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Http\Controllers\Pdf\ProfileDocumentPdf;
@@ -128,7 +129,8 @@ class BudgetController extends Controller
             */
             CuentaCorrienteLock::bloquear('client', $request->client_id);
 
-            $model = Budget::create(CobroPresupuestoEsquemaHelper::agregar_al_payload(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
+            $model = Budget::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(CobroPresupuestoEsquemaHelper::agregar_al_payload(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                       => $this->num('budgets'),
                 'client_id'                 => $request->client_id,
                 'start_at'                  => $request->start_at,
@@ -139,6 +141,8 @@ class BudgetController extends Controller
                 'sale_status_id'            => $request->sale_status_id,
                 'discount_stock'            => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 'iva_aplicado'              => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
+                // Check de Vender "Sumar IVA a los artículos sin IVA": si no se envía (SPA vieja), queda apagado.
+                'iva_en_articulos_sin_iva'  => !is_null($request->iva_en_articulos_sin_iva) ? $request->iva_en_articulos_sin_iva : 0,
                 'total'                     => $request->total,
                 'budget_status_id'          => $request->budget_status_id,
                 'address_id'                => $request->address_id,
@@ -193,10 +197,12 @@ class BudgetController extends Controller
              * presupuesto. Ver `ForzarTotalEsquemaHelper`.
              *
              * 🔴 Y el reparto de metodos de pago (`selected_payment_methods`; null = cuenta corriente)
-             * entra por SU guarda, la de afuera: mismo motivo, otra columna. Ver
-             * `CobroPresupuestoEsquemaHelper`, que lista los puntos de escritura.
+             * entra por SU guarda, la del medio: mismo motivo, otra columna. Ver
+             * `CobroPresupuestoEsquemaHelper`, que lista los puntos de escritura. La de mas afuera es
+             * la de `iva_en_articulos_sin_iva` (mision iva-a-articulos-sin-iva-en-vender): las tres
+             * guardas se anidan y cada una saca SU clave si SU columna todavia no esta.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'), $filas_de_cobro));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'), $filas_de_cobro), 'budgets'));
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
             GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
@@ -662,6 +668,9 @@ class BudgetController extends Controller
             $model->sale_status_id           = $request->sale_status_id;
             $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
             $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
+            // Mismo patrón que iva_aplicado: si no viene en el PUT (SPA vieja), se preserva lo guardado.
+            // Pasa por la guarda de esquema: en la ventana del deploy la columna puede no estar.
+            IvaEnArticulosSinIvaEsquemaHelper::asignar_en_update($model, $request->iva_en_articulos_sin_iva, 'budgets');
 
             $model->save();
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);

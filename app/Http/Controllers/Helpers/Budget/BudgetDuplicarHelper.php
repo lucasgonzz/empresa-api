@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Budget;
@@ -46,7 +47,7 @@ class BudgetDuplicarHelper {
         $ajuste_del_origen = BudgetCobroHelper::ajuste_por_metodos_de_pago($source);
 
         /** Campos escalares copiados del origen según BudgetController::store. */
-        $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+        $model = Budget::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
             'num'                       => $controller->num('budgets'),
             'client_id'                 => $source->client_id,
             'start_at'                  => $source->start_at,
@@ -73,6 +74,8 @@ class BudgetDuplicarHelper {
             'total'                     => $ajuste_del_origen != 0
                                             ? round((float) $source->total - $ajuste_del_origen, 2)
                                             : $source->total,
+            // Los renglones se copian con el mismo precio: el duplicado hereda el check "Sumar IVA a los articulos sin IVA".
+            'iva_en_articulos_sin_iva'  => !empty($source->iva_en_articulos_sin_iva) ? 1 : 0,
             'budget_status_id'          => $budget_status_id,
             'address_id'                => $source->address_id,
             'surchages_in_services'     => $source->surchages_in_services,
@@ -117,7 +120,7 @@ class BudgetDuplicarHelper {
             'omitir_en_cuenta_corriente' => 0,
             'employee_id'               => $controller->userId(false),
             'user_id'                   => $controller->userId(),
-        ], $source->forzar_total_monto, 'budgets'));
+        ], $source->forzar_total_monto, 'budgets'), 'budgets'));
 
         /** Payloads en el formato que esperan GeneralHelper::attachModels y BudgetHelper::attach*. */
         $discounts_payload = self::discounts_to_payload($source);
