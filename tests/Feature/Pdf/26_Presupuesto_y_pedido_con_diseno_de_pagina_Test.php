@@ -550,6 +550,37 @@ class Presupuesto_y_pedido_con_diseno_de_pagina_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 El derivado se dibuja en la A4 de siempre (210 × 297, margen 5), no en la hoja que el perfil
+     * tenga guardada: un perfil de venta con los 297/277 del formulario viejo, pasado a
+     * presupuesto, salía en una hoja de 297 × 297. Es la hoja con que el diseñador muestra un perfil
+     * que nunca se diseñó.
+     *
+     * @test
+     */
+    public function el_derivado_de_un_presupuesto_sin_disenar_va_en_la_a4_de_siempre()
+    {
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $perfil->paper_width_mm = 297;
+        $perfil->printable_width_mm = 277;
+        $perfil->margin_mm = 5;
+        $perfil->paper_height_mm = null;
+        $perfil->show_totals_on_each_page = true;
+
+        $pdf = new ProfileDocumentPdf(new BudgetPdfDocument($this->crear_presupuesto_completo()), $perfil);
+        $this->assertSame(5.0, (float) $pdf->pdf_x0);
+        $this->assertSame(200.0, (float) $pdf->pdf_ancho_util);
+        $pdf->SetCompression(false);
+        $pdf->render();
+        $binario = $pdf->Output('S');
+
+        $k = 72 / 25.4;
+        $this->assertSame(1, preg_match('~/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]~', $binario, $mb));
+        $this->assertEqualsWithDelta(210, (float) $mb[1] / $k, 0.01, 'A4: 210 de ancho.');
+        $this->assertEqualsWithDelta(297, (float) $mb[2] / $k, 0.01, 'A4: 297 de alto.');
+        $this->assertSame(1, preg_match('~\n'.preg_quote(sprintf('%.2F', 5 * $k), '~').' [\d.]+ [\d.]+ -'.preg_quote(sprintf('%.2F', 7 * $k), '~').' re B~', $binario), 'La tabla arranca en x = 5.');
+    }
+
+    /**
      * Y con el tilde apagado, el presupuesto sin diseño sale con el modo de siempre: sin la
      * geometría del diseño y con el Total UNA vez, en la última hoja.
      *

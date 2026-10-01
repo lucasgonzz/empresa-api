@@ -168,10 +168,20 @@ class ProfileDocumentPdf extends fpdf
          * con el pie en cada hoja), o ninguno (el modo de siempre). Con diseño de página la hoja es
          * la del perfil; sin diseño, la A4 de siempre (el mismo parent::__construct() sin
          * argumentos que antes).
+         *
+         * 🔴 Con el derivado, la hoja es la A4 de siempre y NO la que el perfil tenga guardada: esas
+         * medidas no las eligió nadie para un diseño (un perfil de venta con los 297/277 del
+         * formulario viejo, pasado a presupuesto, salía en una hoja de 297 × 297; uno con
+         * 210/200/5, con 190 mm útiles) y el diseñador muestra ese perfil en la A4 de siempre.
          */
         $diseno_crudo = $this->diseno_con_el_que_se_dibuja($source, $profile, $dueno);
         $con_diseno = ! is_null($diseno_crudo);
-        $hoja = $con_diseno ? MotorDeCajasPdf::geometria_de_la_hoja($profile) : null;
+        $hoja = null;
+        if ($con_diseno) {
+            $hoja = DisenoDePaginaPdf::tiene_diseno($profile)
+                ? MotorDeCajasPdf::geometria_de_la_hoja($profile)
+                : MotorDeCajasPdf::geometria_de_la_hoja_de_siempre();
+        }
 
         if ($con_diseno) {
             parent::__construct('P', 'mm', [$hoja['ancho_de_hoja'], $hoja['alto_de_hoja']]);
@@ -283,7 +293,7 @@ class ProfileDocumentPdf extends fpdf
      *
      * @param PdfDocumentSource $source
      * @param PdfColumnProfile  $profile
-     * @param array             $hoja         MotorDeCajasPdf::geometria_de_la_hoja($profile)
+     * @param array             $hoja         MotorDeCajasPdf::geometria_de_la_hoja($profile), o la de siempre con el derivado
      * @param array             $diseno_crudo El diseño del perfil o el derivado (diseno_con_el_que_se_dibuja()).
      * @return void
      */

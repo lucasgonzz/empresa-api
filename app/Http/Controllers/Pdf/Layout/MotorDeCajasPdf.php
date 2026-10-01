@@ -65,6 +65,18 @@ class MotorDeCajasPdf
     const ANCHO_UTIL_MINIMO = 60;
 
     /**
+     * La hoja de siempre: A4 (210 × 297), toda imprimible, margen 5. La del PDF de siempre y la que
+     * el diseñador muestra para un perfil que nunca se diseñó (HOJA_DE_SIEMPRE de
+     * estado_del_disenador.js). Ver geometria_de_la_hoja_de_siempre().
+     */
+    const HOJA_DE_SIEMPRE = [
+        'paper_width_mm' => 210,
+        'paper_height_mm' => 297,
+        'printable_width_mm' => 210,
+        'margin_mm' => 5,
+    ];
+
+    /**
      * Anchos de letra de las cuatro variantes de Helvetica (Arial en FPDF), por archivo de
      * métricas. Se leen una sola vez por proceso.
      *
@@ -165,6 +177,20 @@ class MotorDeCajasPdf
             'limite_inferior' => $alto_de_hoja - $margen - 7,
             'margen_derecho' => $ancho_de_hoja - $x0 - $ancho_util,
         ];
+    }
+
+    /**
+     * La geometría de la hoja de siempre (HOJA_DE_SIEMPRE), con la misma cuenta que la de un perfil.
+     * Es la de un comprobante que se dibuja con el diseño DERIVADO de un perfil que nunca se
+     * diseñó: las medidas que ese perfil tenga guardadas no las eligió nadie para un diseño (un
+     * perfil de venta con los 297/277 del formulario viejo, pasado a presupuesto, daría una hoja de
+     * 297 × 297), y el diseñador lo muestra en esta hoja.
+     *
+     * @return array Lo mismo que geometria_de_la_hoja().
+     */
+    public static function geometria_de_la_hoja_de_siempre()
+    {
+        return self::geometria_de_la_hoja((object) self::HOJA_DE_SIEMPRE);
     }
 
     /**
