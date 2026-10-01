@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\CobroDePresupuestoInvalidoException;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\BudgetDuplicarHelper;
+use App\Http\Controllers\Helpers\Budget\CobroPresupuestoEsquemaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
@@ -764,6 +767,25 @@ class BudgetController extends Controller
             $this->sendAddModelNotification('Budget', $model->id);
 
             return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+
+        } catch(CobroDePresupuestoInvalidoException $e) {
+
+            /*
+                🔴 El cobro guardado en un presupuesto "de contado" ya no se puede aplicar (mision
+                presupuesto-contado-o-cuenta-corriente, 1/10/2026): la caja se cerro, el metodo de pago
+                se borro o el presupuesto se edito por otro camino y su reparto quedo con un total
+                viejo. `BudgetHelper::saveSale()` lo detecta ANTES de crear la venta, pero el
+                `save()` del estado "Confirmado" de arriba ya corrio: el rollback es lo que deja el
+                presupuesto sin confirmar, sin venta y sin stock descontado.
+
+                422 con el cuerpo de la validacion (`cobro_invalido`, y `caja_cerrada` o
+                `sin_metodo_de_pago`) y no 500: es una respuesta del negocio, no un fallo, y no hay
+                nada que reportar. Va ANTES del `catch (\Throwable)` de abajo, que lo trataria como un
+                fallo comun.
+            */
+            DB::rollBack();
+
+            return response()->json($e->getCuerpo(), 422);
 
         } catch(\Throwable $e) {
 
