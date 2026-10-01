@@ -86,6 +86,9 @@ class CamposDePresupuestoPdf implements FuenteDeCamposPdf
                 return CamposDeVentaPdf::lista($this->documento->renglones_de_descuentos());
             case 'tot_recargos':
                 return CamposDeVentaPdf::lista($this->documento->renglones_de_recargos());
+            case 'tot_ajuste_metodo_de_pago':
+                /** El mismo renglón que totals_rows() ("- $50 Descuento por método de pago"). */
+                return $this->documento->renglon_ajuste_por_metodo_de_pago();
             case 'tot_ajuste_del_total':
                 return $this->documento->renglon_ajuste_del_total();
             case 'tot_total':

@@ -409,6 +409,11 @@ class DisenoDerivadoPdf
 
             $campos_de_totales[] = self::campo('tot_descuentos');
             $campos_de_totales[] = self::campo('tot_recargos');
+            /**
+             * El descuento o recargo por método de pago de un presupuesto de contado va donde lo
+             * imprime totals_rows(): después de los recargos y antes del ajuste del total.
+             */
+            $campos_de_totales[] = self::campo('tot_ajuste_metodo_de_pago');
             $campos_de_totales[] = self::campo('tot_ajuste_del_total');
             $campos_de_totales[] = self::campo('tot_total');
 

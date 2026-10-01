@@ -372,6 +372,12 @@ class CatalogoDeCamposPdf
             self::def('tot_subtotal', 'totales', 'Sub total sin descuentos', 'Sub Total sin descuentos', self::TIPO_TEXTO, '$2.300', 'Solo si hay descuentos, recargos o un ajuste del total.', $total, 'pie'),
             self::def('tot_descuentos', 'totales', 'Descuentos', '', self::TIPO_LISTA, ['- 10% Descuento por volumen'], 'Solo si el presupuesto tiene descuentos.', $renglon, 'pie'),
             self::def('tot_recargos', 'totales', 'Recargos', '', self::TIPO_LISTA, ['+ 5% Recargo financiero'], 'Solo si el presupuesto tiene recargos.', $renglon, 'pie'),
+            /**
+             * El renglón que el pie de siempre imprime para un presupuesto de contado (misión
+             * presupuesto-contado-o-cuenta-corriente, 1/10/2026), entre los recargos y el ajuste del
+             * total: es el orden en que getTotal() los aplica.
+             */
+            self::def('tot_ajuste_metodo_de_pago', 'totales', 'Descuento o recargo del método de pago', '', self::TIPO_TEXTO, '- $50 Descuento por método de pago', 'Solo en un presupuesto de contado cuyo método de pago tiene descuento o recargo.', $renglon, 'pie'),
             self::def('tot_ajuste_del_total', 'totales', 'Ajuste del total', '', self::TIPO_TEXTO, '- $12 Ajuste del total', 'Solo si el total se forzó a mano.', $renglon, 'pie'),
             self::def('tot_total', 'totales', 'Total', 'Total', self::TIPO_TEXTO, '$2.173,50', null, $total, 'pie'),
         ];

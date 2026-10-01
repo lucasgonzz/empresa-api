@@ -4,6 +4,7 @@ namespace Tests\Feature\Pdf;
 
 use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
 use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Models\Article;
 use Tests\Concerns\DocumentosParaPdf;
 use Tests\EmpresaTestCase;
@@ -127,6 +128,75 @@ class Presupuesto_y_pedido_con_diseno_de_pagina_Test extends EmpresaTestCase
 
         $this->assertDibujaTexto('- $173,50 Ajuste del total', $pdf);
         $this->assertDibujaTexto('Total: $2.000', $pdf);
+    }
+
+    /**
+     * 🔴 Un presupuesto de CONTADO con descuento o recargo por método de pago, dibujado con el
+     * diseño DERIVADO de su perfil (el equivalente al de siempre que arma el diseñador): cada
+     * renglón del pie de siempre (`totals_rows()`, el mismo texto que imprime `BudgetPdf`) sale
+     * entero en la caja de totales, incluido el del método de pago, y en el mismo orden.
+     *
+     * @test
+     */
+    public function el_derivado_de_un_presupuesto_de_contado_dice_lo_mismo_que_el_pie_de_siempre()
+    {
+        $casos = [
+            ['ajuste' => ['discount_amount' => 50], 'total' => 950, 'renglon' => '- $50 Descuento por método de pago'],
+            ['ajuste' => ['surchage_amount' => 122.4], 'total' => 1122.4, 'renglon' => '+ $122,40 Recargo por método de pago'],
+        ];
+
+        foreach ($casos as $caso) {
+            $articulo = $this->crear_articulo('Taladro percutor 13mm');
+            $budget = $this->crear_presupuesto(
+                [['article' => $articulo, 'amount' => 1, 'price' => 1000, 'bonus' => null]],
+                [
+                    'total' => $caso['total'],
+                    'omitir_en_cuenta_corriente' => 1,
+                    'selected_payment_methods' => [array_merge(['current_acount_payment_method_id' => 3, 'amount' => $caso['total'], 'caja_id' => 0], $caso['ajuste'])],
+                ]
+            );
+
+            $perfil = $this->diseno('budget', 'Presupuesto');
+            $perfil->page_layout = DisenoDerivadoPdf::para('budget', $perfil, false, $this->dueno);
+            $this->assertContains('tot_ajuste_metodo_de_pago', $this->keys_del_pie($perfil->page_layout), 'El derivado del presupuesto tiene el campo del método de pago.');
+
+            $pdf = $this->pdf_de_documento(new BudgetPdfDocument($budget), $perfil);
+
+            /** El pie de siempre, con los flags del perfil (null = el default de siempre: encendido). */
+            $de_siempre = array_column((new BudgetPdfDocument($budget))->totals_rows([
+                'show_total_in_footer' => is_null($perfil->show_total_in_footer) ? true : (bool) $perfil->show_total_in_footer,
+                'show_subtotal_in_footer' => is_null($perfil->show_subtotal_in_footer) ? true : (bool) $perfil->show_subtotal_in_footer,
+            ]), 'text');
+
+            $this->assertContains($caso['renglon'], $de_siempre, 'El control: el pie de siempre nombra el ajuste.');
+
+            $textos = $this->textos_legibles($pdf);
+            $anterior = -1;
+            foreach ($de_siempre as $renglon) {
+                $posicion = array_search($renglon, $textos, true);
+                $this->assertNotFalse($posicion, 'El diseño derivado no dibujó el renglón del pie de siempre: '.$renglon);
+                $this->assertGreaterThan($anterior, $posicion, 'El renglón "'.$renglon.'" salió fuera del orden del pie de siempre.');
+                $anterior = $posicion;
+            }
+        }
+    }
+
+    /**
+     * Las keys de los campos del pie de un diseño.
+     *
+     * @param array $diseno
+     * @return array<int, string>
+     */
+    private function keys_del_pie($diseno)
+    {
+        $keys = [];
+        foreach ($diseno['pie'] as $item) {
+            foreach (isset($item['campos']) ? $item['campos'] : [] as $campo) {
+                $keys[] = $campo['key'];
+            }
+        }
+
+        return $keys;
     }
 
     /**

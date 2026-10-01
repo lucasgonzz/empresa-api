@@ -719,7 +719,7 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         $this->assertSame(['caja_totales', 'caja_observaciones'], $this->ids($de_fabrica['pie']));
         $this->assertSame('gris', $this->caja($de_fabrica, 'caja_totales')['estilo']);
         $this->assertSame(
-            ['tot_subtotal', 'tot_descuentos', 'tot_recargos', 'tot_ajuste_del_total', 'tot_total'],
+            ['tot_subtotal', 'tot_descuentos', 'tot_recargos', 'tot_ajuste_metodo_de_pago', 'tot_ajuste_del_total', 'tot_total'],
             $this->keys($this->caja($de_fabrica, 'caja_totales'))
         );
         $observaciones = $this->caja($de_fabrica, 'caja_observaciones');

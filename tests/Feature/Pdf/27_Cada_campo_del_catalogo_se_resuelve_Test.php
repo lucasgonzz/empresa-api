@@ -239,7 +239,7 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         $valores = $this->resolver_todo(new CamposDePresupuestoPdf($documento, false));
 
         foreach ($valores as $key => $valor) {
-            if (in_array($key, ['tot_ajuste_del_total', 'presupuesto_cotizacion', 'cliente_razon_social', 'cliente_dni', 'cliente_condicion_iva', 'cliente_email', 'cliente_localidad', 'cliente_provincia', 'cliente_numero', 'cliente_lista_de_precios', 'cliente_vendedor'], true)) {
+            if (in_array($key, ['tot_ajuste_del_total', 'tot_ajuste_metodo_de_pago', 'presupuesto_cotizacion', 'cliente_razon_social', 'cliente_dni', 'cliente_condicion_iva', 'cliente_email', 'cliente_localidad', 'cliente_provincia', 'cliente_numero', 'cliente_lista_de_precios', 'cliente_vendedor'], true)) {
                 continue;
             }
             $this->assertNotNull($valor, $key.' tendría que tener valor en el presupuesto completo.');
@@ -269,6 +269,40 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
             $valores['tot_recargos'][0],
             'Total: '.$valores['tot_total'],
         ], $filas);
+    }
+
+    /**
+     * El descuento o recargo por método de pago de un presupuesto de contado: el campo dice lo
+     * mismo que el renglón de totals_rows(), y el Sub Total sale cuando lo saca el pie de siempre.
+     * En cuenta corriente no hay ajuste (la regla de getTotal()).
+     *
+     * @test
+     */
+    public function el_ajuste_por_metodo_de_pago_del_presupuesto_de_contado()
+    {
+        $articulo = $this->crear_articulo('Taladro percutor 13mm');
+        $fila = ['current_acount_payment_method_id' => 3, 'amount' => 950, 'caja_id' => 0, 'discount_amount' => 50];
+
+        $de_contado = $this->crear_presupuesto(
+            [['article' => $articulo, 'amount' => 1, 'price' => 1000, 'bonus' => null]],
+            ['total' => 950, 'omitir_en_cuenta_corriente' => 1, 'selected_payment_methods' => [$fila]]
+        );
+        $documento = new BudgetPdfDocument($de_contado);
+        $fuente = new CamposDePresupuestoPdf($documento, false);
+
+        $this->assertSame('- $50 Descuento por método de pago', $fuente->valor('tot_ajuste_metodo_de_pago', $this->campo_de_caja('tot_ajuste_metodo_de_pago')));
+        $this->assertSame('$1.000', $fuente->valor('tot_subtotal', $this->campo_de_caja('tot_subtotal')), 'El ajuste abre la diferencia: el Sub Total sale.');
+        $this->assertSame('$950', $fuente->valor('tot_total', $this->campo_de_caja('tot_total')));
+        $this->assertContains(
+            $fuente->valor('tot_ajuste_metodo_de_pago', $this->campo_de_caja('tot_ajuste_metodo_de_pago')),
+            array_column($documento->totals_rows(['show_total_in_footer' => true, 'show_subtotal_in_footer' => true]), 'text')
+        );
+
+        $a_cuenta_corriente = $this->crear_presupuesto(
+            [['article' => $articulo, 'amount' => 1, 'price' => 1000, 'bonus' => null]],
+            ['total' => 1000, 'omitir_en_cuenta_corriente' => 0, 'selected_payment_methods' => [$fila]]
+        );
+        $this->assertNull((new CamposDePresupuestoPdf(new BudgetPdfDocument($a_cuenta_corriente), false))->valor('tot_ajuste_metodo_de_pago', $this->campo_de_caja('tot_ajuste_metodo_de_pago')));
     }
 
     /**
