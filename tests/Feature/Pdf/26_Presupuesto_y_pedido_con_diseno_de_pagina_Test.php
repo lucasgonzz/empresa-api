@@ -442,6 +442,30 @@ class Presupuesto_y_pedido_con_diseno_de_pagina_Test extends EmpresaTestCase
     }
 
     /**
+     * Una hoja degenerada (papel de 20 mm con margen de 10: la API la acepta) no se dibuja con
+     * cajas: try_render() devuelve null debajo de 60 mm de ancho útil y el controlador cae al PDF
+     * de siempre, que es A4. El control: el mismo diseño en A4 sí se dibuja.
+     *
+     * @test
+     */
+    public function una_hoja_degenerada_cae_al_pdf_de_siempre()
+    {
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $perfil->page_layout = $this->diseno_de_presupuesto();
+        $perfil->paper_width_mm = 20;
+        $perfil->printable_width_mm = 20;
+        $perfil->margin_mm = 10;
+
+        $this->assertNull(ProfileDocumentPdf::try_render(new BudgetPdfDocument($this->crear_presupuesto_completo()), $perfil));
+
+        $perfil->paper_width_mm = 210;
+        $perfil->printable_width_mm = 210;
+        $perfil->margin_mm = 5;
+
+        $this->assertInstanceOf(ProfileDocumentPdf::class, ProfileDocumentPdf::try_render(new BudgetPdfDocument($this->crear_presupuesto_completo()), $perfil));
+    }
+
+    /**
      * Un perfil SIN diseño sale como siempre (control: el bloque del cliente del encabezado, la caja
      * gris de totales y el recuadro de observaciones de siempre).
      *

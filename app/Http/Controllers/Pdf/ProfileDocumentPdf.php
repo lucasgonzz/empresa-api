@@ -353,6 +353,15 @@ class ProfileDocumentPdf extends fpdf
         try {
             $pdf = new static($source, $profile);
 
+            /**
+             * Con diseño de página, una hoja con menos ancho útil que el mínimo (papel de 20 mm con
+             * margen de 10: la API lo acepta) no se dibuja: sale el PDF de siempre, que es A4 (ver
+             * MotorDeCajasPdf::ANCHO_UTIL_MINIMO).
+             */
+            if (! is_null($pdf->diseno) && $pdf->pdf_ancho_util < MotorDeCajasPdf::ANCHO_UTIL_MINIMO) {
+                return null;
+            }
+
             /** Un diseño sin ninguna columna visible saldría sin tabla de renglones: mejor el PDF de siempre. */
             if (empty($pdf->profile_columns)) {
                 return null;

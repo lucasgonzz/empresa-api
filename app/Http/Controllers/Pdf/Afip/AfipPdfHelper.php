@@ -398,6 +398,15 @@ class AfipPdfHelper
      */
     protected static function estimate_lines($pdf, $text, $width): int
     {
+        /**
+         * 🔴 Con un ancho ≤ 0 el corte por letras de abajo no termina nunca: restarle a la palabra
+         * un ancho ≤ 0 no la achica. Pasa con una hoja degenerada (ancho útil de 4 mm o menos: la
+         * API acepta papel de 20 mm con margen de 10). Ahí cada palabra va en su línea, sin bucle.
+         */
+        if ($width <= 0) {
+            return max(1, count(preg_split('/\s+/', trim((string) $text), -1, PREG_SPLIT_NO_EMPTY)));
+        }
+
         $lines = 1;
         $current = 0;
         $space = $pdf->GetStringWidth(' ');

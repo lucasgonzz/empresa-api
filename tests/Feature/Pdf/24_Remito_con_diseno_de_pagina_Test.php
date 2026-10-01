@@ -4,6 +4,7 @@ namespace Tests\Feature\Pdf;
 
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\SaleLayoutPdf;
 use App\Models\Article;
 use App\Models\PdfColumnProfile;
@@ -504,6 +505,34 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
         $this->assertStringEndsWith("%%EOF\n", $sano->Output('S'));
 
         $this->assertNull(SaleLayoutPdfQueFallaAlCerrar::try_render(Sale::find($venta->id), $perfil, null));
+    }
+
+    /**
+     * 🔴 Una hoja degenerada (papel de 20 mm con margen de 10: la API la acepta) no cuelga el
+     * pedido: con ancho útil de 4 mm o menos, el alto del receptor de la factura no se terminaba de
+     * calcular nunca (estimate_lines() le restaba a la palabra un ancho ≤ 0). try_render() devuelve
+     * null debajo de 60 mm de ancho útil (sale el PDF de siempre, que es A4 y no usa la hoja del
+     * perfil), y la cuenta del receptor termina igual aunque alguien la llame con esa hoja.
+     *
+     * @test
+     */
+    public function una_hoja_degenerada_no_se_cuelga_y_cae_al_pdf_de_siempre()
+    {
+        $venta = $this->crear_venta_completa();
+        $diseno = $this->diseno_de_remito_completo();
+
+        $degenerada = $this->perfil_de_venta(['paper_width_mm' => 20, 'printable_width_mm' => 20, 'margin_mm' => 10], $diseno);
+        $this->assertNull(SaleLayoutPdf::try_render(Sale::find($venta->id), $degenerada, null), 'Ancho útil 0: sale el PDF de siempre.');
+
+        /** El borde: 59 mm de ancho útil cae al de siempre; 60 mm se dibuja con cajas. */
+        $angosta = $this->perfil_de_venta(['paper_width_mm' => 69, 'printable_width_mm' => 69, 'margin_mm' => 5], $diseno);
+        $this->assertNull(SaleLayoutPdf::try_render(Sale::find($venta->id), $angosta, null));
+        $justa = $this->perfil_de_venta(['paper_width_mm' => 70, 'printable_width_mm' => 70, 'margin_mm' => 5], $diseno);
+        $this->assertInstanceOf(SaleLayoutPdf::class, SaleLayoutPdf::try_render(Sale::find($venta->id), $justa, null));
+
+        /** La cuenta del alto del receptor termina con la hoja degenerada (antes no volvía nunca). */
+        $pdf = new SaleLayoutPdf(Sale::find($venta->id), $degenerada, null);
+        $this->assertGreaterThan(0, AfipPdfHelper::estimate_receptor_height($pdf, Sale::find($venta->id)));
     }
 
     /**

@@ -54,6 +54,15 @@ class MotorDeCajasPdf
     const MM_POR_PUNTO = 25.4 / 72;
 
     /**
+     * Ancho útil mínimo (mm) para dibujar con un diseño de página. Más angosto no entran ni el
+     * encabezado del emisor (logo, datos y el recuadro de la letra) ni una tabla, y con 4 mm o
+     * menos el alto del receptor de la factura no se terminaba de calcular nunca. Los try_render()
+     * de los dos dibujantes devuelven null debajo de este ancho: sale el PDF de siempre, que no
+     * usa la hoja del perfil.
+     */
+    const ANCHO_UTIL_MINIMO = 60;
+
+    /**
      * Anchos de letra de las cuatro variantes de Helvetica (Arial en FPDF), por archivo de
      * métricas. Se leen una sola vez por proceso.
      *

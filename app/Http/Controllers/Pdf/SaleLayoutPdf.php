@@ -304,6 +304,14 @@ class SaleLayoutPdf extends fpdf
     public static function try_render($sale, PdfColumnProfile $perfil, $afip_ticket_id = null)
     {
         try {
+            /**
+             * Una hoja con menos ancho útil que el mínimo (papel de 20 mm con margen de 10: la API
+             * lo acepta) no se dibuja con cajas: sale el PDF de siempre (ver ANCHO_UTIL_MINIMO).
+             */
+            if (MotorDeCajasPdf::geometria_de_la_hoja($perfil)['ancho_util'] < MotorDeCajasPdf::ANCHO_UTIL_MINIMO) {
+                return null;
+            }
+
             $pdf = new static($sale, $perfil, $afip_ticket_id);
             $pdf->render();
 
