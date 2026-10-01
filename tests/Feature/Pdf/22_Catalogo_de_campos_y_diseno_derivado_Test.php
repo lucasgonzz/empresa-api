@@ -16,6 +16,7 @@ use App\Models\PdfColumnProfile;
 use App\Models\Sale;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
@@ -935,9 +936,14 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         }
         $this->assertNull($this->catalogo(['model_name' => 'sale', 'is_afip_ticket' => 1])->json('comprobante_de_prueba'));
 
-        $venta = function ($extra = []) use ($dueno) {
+        /** Cada venta con su correlativo, como lo asigna Controller::num('sales'). */
+        $num = 0;
+        $venta = function ($extra = []) use ($dueno, &$num) {
+            $num++;
+
             return Sale::create(array_merge([
                 'user_id'   => $dueno->id,
+                'num'       => $num,
                 'total'     => 1000,
                 'terminada' => 1,
                 'moneda_id' => 1,
@@ -945,6 +951,8 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         };
 
         $facturada = $venta();
+        AfipTicket::create(['sale_id' => $facturada->id, 'cae' => '71234567890120', 'resultado' => 'A']);
+        /** Si la venta tiene dos facturas con CAE, va la más nueva. */
         $factura = AfipTicket::create(['sale_id' => $facturada->id, 'cae' => '71234567890123', 'resultado' => 'A']);
         $sin_cae = $venta();
         AfipTicket::create(['sale_id' => $sin_cae->id, 'cae' => '', 'resultado' => 'A']);
@@ -953,9 +961,9 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         $ultima = $venta();
         $venta(['is_consolidacion_facturacion' => 1]);
 
-        /** Una venta facturada de OTRO dueño, posterior a todas, no cuenta. */
+        /** Una venta facturada de OTRO dueño, posterior a todas y con un correlativo más alto, no cuenta. */
         $otro_dueno = $this->crear_dueno();
-        $ajena = Sale::create(['user_id' => $otro_dueno->id, 'total' => 1, 'terminada' => 1, 'moneda_id' => 1]);
+        $ajena = Sale::create(['user_id' => $otro_dueno->id, 'num' => 999, 'total' => 1, 'terminada' => 1, 'moneda_id' => 1]);
         AfipTicket::create(['sale_id' => $ajena->id, 'cae' => '75555555555555', 'resultado' => 'A']);
 
         $this->assertSame(
@@ -997,5 +1005,45 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
             ['id' => $ultimo_pedido->id, 'afip_ticket_id' => null],
             $this->catalogo(['model_name' => 'order'])->json('comprobante_de_prueba')
         );
+    }
+
+    /**
+     * El comprobante fiscal sale de UNA consulta que trae UNA fila y que parte de las ventas del
+     * dueño, ordenadas por su correlativo (lo sirve el índice user_id, num), con la factura con CAE
+     * como subconsulta escalar. Se abre cada vez que se abre el diseñador, y en una base compartida
+     * (51 comercios) la consulta de antes recorría afip_tickets entero si el dueño no tenía CAE.
+     *
+     * Si esto se pone rojo porque alguien "simplificó" la consulta (un EXISTS, ORDER BY id): medí
+     * con EXPLAIN antes de tocar la aserción. Está explicado en el docblock de
+     * DisenoDerivadoPdf::venta_facturada_de_prueba().
+     *
+     * @test
+     */
+    public function el_comprobante_fiscal_sale_de_una_consulta_sobre_las_ventas_del_dueno()
+    {
+        $dueno = $this->crear_dueno();
+        $venta = Sale::create(['user_id' => $dueno->id, 'num' => 1, 'total' => 1, 'terminada' => 1, 'moneda_id' => 1]);
+        $factura = AfipTicket::create(['sale_id' => $venta->id, 'cae' => '71234567890123', 'resultado' => 'A']);
+
+        $consultas = [];
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = $query->sql;
+        });
+
+        $comprobante = DisenoDerivadoPdf::comprobante_de_prueba('sale', true, $dueno->id);
+
+        $this->assertSame(['id' => $venta->id, 'afip_ticket_id' => $factura->id], $comprobante);
+        $this->assertCount(1, $consultas, 'Una sola consulta: '.json_encode($consultas));
+
+        $sql = $consultas[0];
+        $this->assertStringStartsWith('select `sales`.`id`', $sql, 'Parte de las ventas, no de afip_tickets.');
+        $this->assertStringContainsString('where `sales`.`user_id` = ?', $sql, 'Las ventas de este dueño.');
+        $this->assertStringContainsString(
+            'order by `sales`.`num` desc, `sales`.`id` desc',
+            $sql,
+            'Por el correlativo del dueño: lo sirve el índice (user_id, num) sin ordenar aparte. Con ORDER BY id MySQL recorre PRIMARY, las ventas de todos.'
+        );
+        $this->assertStringEndsWith('limit 1', $sql, 'Trae una sola fila.');
+        $this->assertStringNotContainsString('exists', $sql, 'Sin EXISTS: MySQL lo convierte en semijoin y puede arrancar por afip_tickets.');
     }
 }

@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
 
 use App\Http\Controllers\Helpers\PdfDocumentSetupHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Models\AfipTicket;
 use App\Models\Budget;
 use App\Models\Order;
 use App\Models\PdfColumnProfile;
@@ -215,10 +214,6 @@ class DisenoDerivadoPdf
      *   crédito no cuentan: su ticket cuelga de sale_nota_credito_id, no de sale_id.
      * - Presupuesto / pedido online: el último.
      *
-     * Se va del lado de afip_tickets (índice afip_tickets_sale_id_idx, recorrido de atrás para
-     * adelante) y no de sales: un comercio que factura poco tiene miles de remitos encima de su
-     * última factura, y recorrerlos uno por uno para preguntar si tienen ticket es lo lento.
-     *
      * @param string $model_name 'sale' | 'budget' | 'order'.
      * @param bool   $es_fiscal
      * @param int    $owner_id
@@ -227,23 +222,16 @@ class DisenoDerivadoPdf
     public static function comprobante_de_prueba($model_name, $es_fiscal, $owner_id)
     {
         if (self::es_fiscal($model_name, $es_fiscal)) {
-            $ticket = AfipTicket::query()
-                ->whereNotNull('cae')
-                ->where('cae', '!=', '')
-                ->whereHas('sale', function ($query) use ($owner_id) {
-                    $query->where('sales.user_id', $owner_id);
-                })
-                ->orderBy('sale_id', 'desc')
-                ->orderBy('id', 'desc')
-                ->first(['id', 'sale_id']);
-
-            return is_null($ticket)
-                ? null
-                : ['id' => (int) $ticket->sale_id, 'afip_ticket_id' => (int) $ticket->id];
+            return self::venta_facturada_de_prueba($owner_id);
         }
 
         if ($model_name === 'sale') {
-            $id = Sale::where('user_id', $owner_id)->soloVentasReales()->orderBy('id', 'desc')->value('id');
+            /** Por num y no por id: ver el docblock de venta_facturada_de_prueba(), es el mismo motivo. */
+            $id = Sale::where('sales.user_id', $owner_id)
+                ->soloVentasReales()
+                ->orderBy('sales.num', 'desc')
+                ->orderBy('sales.id', 'desc')
+                ->value('sales.id');
         } elseif ($model_name === 'budget') {
             $id = Budget::where('user_id', $owner_id)->orderBy('id', 'desc')->value('id');
         } elseif ($model_name === 'order') {
@@ -253,6 +241,63 @@ class DisenoDerivadoPdf
         }
 
         return is_null($id) ? null : ['id' => (int) $id, 'afip_ticket_id' => null];
+    }
+
+    /**
+     * La última venta del dueño que tiene una factura con CAE, y esa factura (la de id más alto si
+     * tuviera más de una), o null. Una sola consulta que trae una sola fila.
+     *
+     * 🔴 PARTE DE LAS VENTAS DEL DUEÑO, no de afip_tickets. Recorrer afip_tickets de atrás para
+     * adelante preguntando de quién es cada ticket barre la tabla ENTERA cada vez que se abre el
+     * diseñador en una base compartida (u767360347_empresa: 51 comercios) si el dueño no tiene
+     * ninguna factura con CAE. Acá el recorrido son las ventas de ESTE dueño, de la más nueva a la
+     * más vieja, y corta en la primera que tiene una factura con CAE. Tres detalles sostienen ese
+     * plan, y sacar cualquiera lo rompe (medido con EXPLAIN en MySQL 8.3, 1/10/2026):
+     *
+     * - ORDENA POR `num` (el correlativo del dueño, que se asigna al crear la venta) Y NO POR `id`.
+     *   El índice que sirve es `sales_user_id_num_idx` (user_id, num): recorrido hacia atrás del
+     *   rango del dueño, sin ordenar nada aparte. No hay índice (user_id, id): el implícito de la
+     *   FK `sales_user_id_foreign` lo descarta MySQL en silencio cuando aparece otro que la sirve.
+     *   Con `ORDER BY id`, MySQL recorre PRIMARY hacia atrás, o sea las ventas de TODOS los
+     *   comercios. `id` queda de desempate (el índice ya lo trae al final).
+     * - LA FACTURA CON CAE ES UNA SUBCONSULTA ESCALAR (`(...) > 0`), NO un EXISTS: MySQL convierte
+     *   el EXISTS en semijoin y, según las estadísticas, arranca por afip_tickets (scan completo),
+     *   que es justo lo que se quiere evitar. Una subconsulta escalar no se convierte, ni en MySQL
+     *   ni en MariaDB (el shared), y se resuelve por afip_tickets_sale_id_idx.
+     * - Sale aplica SoftDeletes solo; afip_tickets va con query builder, así que el
+     *   `deleted_at is null` de la factura está escrito a mano.
+     *
+     * @param int $owner_id
+     * @return array{id:int, afip_ticket_id:int}|null
+     */
+    private static function venta_facturada_de_prueba($owner_id)
+    {
+        /** La factura con CAE más nueva de la venta (sin CAE no hay QR ni comprobante que mostrar). */
+        $factura_con_cae = function ($query) {
+            $query->select('afip_tickets.id')
+                ->from('afip_tickets')
+                ->whereColumn('afip_tickets.sale_id', 'sales.id')
+                ->whereNotNull('afip_tickets.cae')
+                ->where('afip_tickets.cae', '!=', '')
+                ->whereNull('afip_tickets.deleted_at')
+                ->orderBy('afip_tickets.id', 'desc')
+                ->limit(1);
+        };
+
+        $venta = Sale::query()
+            ->select('sales.id')
+            ->selectSub($factura_con_cae, 'afip_ticket_id')
+            ->where('sales.user_id', $owner_id)
+            ->where($factura_con_cae, '>', 0)
+            ->orderBy('sales.num', 'desc')
+            ->orderBy('sales.id', 'desc')
+            ->first();
+
+        if (is_null($venta) || is_null($venta->afip_ticket_id)) {
+            return null;
+        }
+
+        return ['id' => (int) $venta->id, 'afip_ticket_id' => (int) $venta->afip_ticket_id];
     }
 
     // ── Los cuatro derivados ──────────────────────────────────────────────────────────────────
