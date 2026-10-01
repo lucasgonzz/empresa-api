@@ -4,6 +4,7 @@ namespace Tests\Feature\Pdf;
 
 use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
 use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
+use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Models\Article;
 use Tests\Concerns\DocumentosParaPdf;
@@ -318,6 +319,79 @@ class Presupuesto_y_pedido_con_diseno_de_pagina_Test extends EmpresaTestCase
         $por_hoja = $this->hojas($pdf);
         $this->assertStringContainsString('(Total: $2.173,50) Tj', end($por_hoja));
         $this->assertDibujaTexto('Renglon de relleno 70', $pdf);
+    }
+
+    /**
+     * 🔴 Una zona de arriba más alta que el lugar libre de la hoja. El mismo defecto que se midió el
+     * 1/10/2026 en el remito (A5, margen 5, 8 renglones y una zona de dos cajas de 12 columnas: 10
+     * hojas con todos los renglones en y = 234,8 en una hoja de 210), con el mismo patrón acá: la
+     * zona se dibujaba en el encabezado de cada hoja sin medirla y print_item() dibuja siempre el
+     * primer renglón de cada hoja. Con todos los campos de arriba del presupuesto en letra de 20 pt
+     * la zona no entra en una A5: va SOLO en la primera hoja (y sigue en la segunda), los renglones
+     * arrancan donde entra el primero, y nada queda por debajo de H − M en ninguna hoja.
+     *
+     * @test
+     */
+    public function una_zona_de_arriba_mas_alta_que_la_hoja_va_solo_en_la_primera_y_nada_sale_del_papel()
+    {
+        $budget = $this->crear_presupuesto_completo();
+        for ($i = 1; $i <= 6; $i++) {
+            $articulo = Article::create(['name' => 'Renglon de relleno '.$i, 'user_id' => $this->dueno->id]);
+            $budget->articles()->attach($articulo->id, ['amount' => 0, 'price' => 0]);
+        }
+        $budget = $budget->fresh();
+
+        $del_cliente = [];
+        $del_presupuesto = [];
+        foreach (CatalogoDeCamposPdf::campos('budget') as $definicion) {
+            if ($definicion['zona_sugerida'] !== 'superior') {
+                continue;
+            }
+
+            $campo = $this->campo_de_caja($definicion['key'], ['tamano' => 20]);
+            if ($definicion['categoria'] === 'cliente') {
+                $del_cliente[] = $campo;
+            } else {
+                $del_presupuesto[] = $campo;
+            }
+        }
+
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $perfil->page_layout = $this->diseno_de_pagina([
+            $this->caja_de_diseno('caja_cliente', 12, $del_cliente, 'Datos del cliente'),
+            $this->caja_de_diseno('caja_presupuesto', 12, $del_presupuesto, 'Datos del presupuesto'),
+        ], $this->diseno_de_presupuesto()['pie']);
+        $perfil->paper_width_mm = 148;
+        $perfil->printable_width_mm = 148;
+        $perfil->paper_height_mm = 210;
+        $perfil->margin_mm = 5;
+
+        /** Las columnas del diseño sembrado suman 200 mm: se angostan (en memoria) a los 138 de la A5. */
+        $perfil->load('pdf_column_options');
+        foreach ($perfil->pdf_column_options as $opcion) {
+            $opcion->pivot->width = (int) floor((int) $opcion->pivot->width * 138 / 200);
+        }
+
+        $pdf = $this->pdf_de_documento(new BudgetPdfDocument($budget), $perfil);
+
+        $this->assertNadaDebajoDe($pdf, 210 - 5);
+
+        /** La zona sale UNA vez, cada renglón también, y el pie una vez. */
+        $this->assertSame(1, $this->veces_que_se_dibuja('Datos del cliente', $pdf));
+        $this->assertSame(1, $this->veces_que_se_dibuja('Datos del presupuesto', $pdf));
+        for ($i = 1; $i <= 6; $i++) {
+            $this->assertSame(1, $this->veces_que_se_dibuja('Renglon de relleno '.$i, $pdf), 'Renglon de relleno '.$i);
+        }
+        $this->assertSame(1, $this->veces_que_se_dibuja('Total: $2.173,50', $pdf));
+
+        /** Los renglones van en una hoja con el encabezado de la tabla (sus celdas grises de 7 mm). */
+        foreach ($this->hojas($pdf) as $numero => $hoja) {
+            if (strpos($hoja, '(Renglon de relleno 1) Tj') !== false) {
+                $this->assertSame(1, preg_match('~ -19\.84 re B~', $hoja), 'La hoja '.($numero + 1).' tiene renglones sin el encabezado de la tabla.');
+            }
+        }
+
+        $this->assertLessThanOrEqual(4, $this->cantidad_de_hojas($pdf));
     }
 
     /**

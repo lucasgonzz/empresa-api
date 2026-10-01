@@ -140,6 +140,24 @@ class SaleLayoutPdf extends fpdf
     private $rendered;
 
     /**
+     * @var bool|null La zona de arriba va en todas las hojas (true) o solo en la primera (false).
+     *                null hasta que el Header() de la primera hoja lo decide (decidir_la_hoja()).
+     */
+    private $zona_superior_en_cada_hoja;
+
+    /** @var bool render() está dibujando la zona de arriba de la primera hoja: Header() pone solo el encabezado del emisor. */
+    private $dibujando_la_zona_superior;
+
+    /** @var bool La hoja actual tiene el encabezado de la tabla (el pie "en cada hoja" va solo en esas). */
+    private $tabla_en_la_hoja;
+
+    /** @var float Alto del renglón más alto de la tabla (lo mide render() antes de la primera hoja). */
+    private $alto_maximo_de_renglon;
+
+    /** @var float Dónde arrancan los renglones en una hoja nueva (lo calcula decidir_la_hoja()). */
+    private $y_de_los_renglones;
+
+    /**
      * Prepara el PDF SIN dibujar nada ni terminar el proceso.
      *
      * @param \App\Models\Sale  $sale
@@ -173,6 +191,11 @@ class SaleLayoutPdf extends fpdf
         $this->renglones_en_hoja = 0;
         $this->rendered = false;
         $this->alto_del_pie = null;
+        $this->zona_superior_en_cada_hoja = null;
+        $this->dibujando_la_zona_superior = false;
+        $this->tabla_en_la_hoja = false;
+        $this->alto_maximo_de_renglon = 0;
+        $this->y_de_los_renglones = 0;
         $this->columnas = $this->columnas_del_perfil($perfil);
 
         /** Lo que lee el encabezado, con las mismas reglas que `NewSalePdf`. */
@@ -306,27 +329,13 @@ class SaleLayoutPdf extends fpdf
          */
         $renglones = $this->fuente->totales()->renglones();
 
+        /** Lo usa decidir_la_hoja(), que corre en el Header() de la primera hoja. */
+        $this->alto_maximo_de_renglon = $this->alto_del_renglon_mas_alto($renglones);
+
         $this->AddPage();
 
-        /**
-         * 🔴 "PIE EN CADA HOJA" QUE NO DEJA LUGAR PARA NINGÚN RENGLÓN: se dibuja solo en la última.
-         *
-         * El pie "en cada hoja" se dibuja en Footer(), donde FPDF no deja agregar una hoja: su alto
-         * se reserva restándolo del límite de los renglones (limite_de_renglones()). En una hoja
-         * chica con un diseño cargado (A5 con encabezado, zona de arriba y pie altos) esa reserva
-         * deja el lugar de los renglones en cero o negativo: la guarda de "al menos un renglón por
-         * hoja" mete uno igual y el pie se dibuja debajo, AFUERA del papel, en cada hoja (medido el
-         * 1/10/2026 en A5: el pie bajaba hasta 217 mm en una hoja de 210, en las 33 hojas).
-         *
-         * Acá ya se sabe dónde arrancan los renglones (la hoja 1 tiene su encabezado, que es el
-         * mismo en todas las hojas) y cuánto mide el pie. Si no entra ni el renglón MÁS ALTO de la
-         * tabla junto con el pie (con uno "típico" no alcanza: un nombre que ocupa dos líneas lo
-         * mete igual y se sale), el pie va SOLO en la última hoja, el camino que salta de hoja
-         * antes del pie y lo parte entre filas si no entra. Cambiar el modo acá es seguro: el
-         * Footer() de la hoja 1 recién corre en el próximo AddPage() o en el Output().
-         */
-        if ($this->pie_en_cada_hoja && $this->y + $this->alto_del_renglon_mas_alto($renglones) + $this->alto_del_pie() > $this->limite_inferior) {
-            $this->pie_en_cada_hoja = false;
+        if ($this->dibujando_la_zona_superior) {
+            $this->dibujar_la_zona_superior_de_la_primera_hoja();
         }
 
         $index = 1;
@@ -374,6 +383,7 @@ class SaleLayoutPdf extends fpdf
     public function Header()
     {
         $this->renglones_en_hoja = 0;
+        $this->tabla_en_la_hoja = false;
 
         if ($this->es_fiscal) {
             AfipPdfHelper::header($this, $this->afip_ticket, $this->sale, $this->user, $this->header_layout, ['sin_receptor' => true]);
@@ -381,14 +391,129 @@ class SaleLayoutPdf extends fpdf
             AfipPdfHelper::header_comercial($this, $this->sale, $this->user, $this->header_layout, null, ['sin_receptor' => true]);
         }
 
-        /** Zona de arriba, 2 mm debajo del encabezado; si no dibuja nada, no deja el hueco. */
-        $y = $this->y;
-        $alto = $this->motor->dibujar_zona($this, $this->diseno['superior'], $y + self::SEPARACION_DE_LA_ZONA_SUPERIOR);
-        if ($alto <= 0) {
-            $this->y = $y;
+        if (is_null($this->zona_superior_en_cada_hoja)) {
+            $this->decidir_la_hoja($this->y);
         }
 
+        /**
+         * Hoja de la zona de arriba de la primera hoja (o una a la que la zona siguió porque es
+         * más alta que la hoja): la zona la dibuja render() debajo de este encabezado, y el de la
+         * tabla va recién donde la zona termina.
+         */
+        if ($this->dibujando_la_zona_superior) {
+            return;
+        }
+
+        if ($this->zona_superior_en_cada_hoja) {
+            /** Zona de arriba, 2 mm debajo del encabezado; si no dibuja nada, no deja el hueco. */
+            $y = $this->y;
+            $alto = $this->motor->dibujar_zona($this, $this->diseno['superior'], $y + self::SEPARACION_DE_LA_ZONA_SUPERIOR);
+            if ($alto <= 0) {
+                $this->y = $y;
+            }
+        }
+
+        $this->encabezado_de_la_tabla();
+    }
+
+    /**
+     * El encabezado gris de la tabla, en la x de la hoja.
+     *
+     * @return void
+     */
+    private function encabezado_de_la_tabla()
+    {
         AfipPdfHelper::table_header($this, $this->campos_de_la_tabla(), $this->pdf_x0);
+        $this->tabla_en_la_hoja = true;
+    }
+
+    /**
+     * Decide, en el Header() de la primera hoja (ya con el encabezado del emisor dibujado, que es
+     * el mismo en todas las hojas), qué se repite en cada hoja. Cambiar los modos acá es seguro:
+     * nada debajo del encabezado se dibujó todavía y el Footer() de la hoja 1 recién corre en el
+     * próximo AddPage() o en el Output().
+     *
+     * 🔴 1. "PIE EN CADA HOJA" QUE NO DEJA LUGAR PARA NINGÚN RENGLÓN: va solo en la última.
+     * El pie "en cada hoja" se dibuja en Footer(), donde FPDF no deja agregar una hoja: su alto se
+     * reserva restándolo del límite de los renglones (limite_de_renglones()). Si ni siquiera en
+     * una hoja sin la zona de arriba entra el renglón MÁS ALTO de la tabla junto con el pie (con
+     * uno "típico" no alcanza: un nombre que ocupa dos líneas lo mete igual y se sale), la guarda
+     * de "al menos un renglón por hoja" mete uno igual y el pie se dibuja AFUERA del papel en cada
+     * hoja (medido el 1/10/2026 en A5: hasta 217 mm en una hoja de 210, en las 33 hojas). Entonces
+     * el pie va SOLO en la última hoja, el camino que salta de hoja antes del pie y lo parte entre
+     * filas si no entra.
+     *
+     * 🔴 2. ZONA DE ARRIBA QUE NO DEJA LUGAR PARA UN RENGLÓN: va solo en la primera hoja.
+     * La zona de arriba se dibujaba en el Header() de cada hoja sin medirla, y dibujar_renglon()
+     * dibuja siempre el primer renglón de cada hoja: con una zona más alta que el lugar libre, cada
+     * renglón salía en una hoja propia y por DEBAJO del papel (medido el 1/10/2026: A5, margen 5,
+     * 8 renglones y una zona de dos cajas de 12 columnas con 33 campos daban 10 hojas, con todos
+     * los renglones en y = 234,8 en una hoja de 210). Si encabezado + zona + encabezado de la
+     * tabla no dejan lugar para el renglón más alto (y, con el pie en cada hoja, para el pie), la
+     * zona va SOLO en la primera hoja y las siguientes llevan encabezado + encabezado de la tabla.
+     * La dibuja render() (dibujar_la_zona_superior_de_la_primera_hoja()), no este Header(): si
+     * tampoco entra entera en la primera hoja, sigue en la segunda, y eso pide AddPage(), que FPDF
+     * no permite desde Header(). La zona cede antes que el pie: el pie en cada hoja es lo que el
+     * usuario pidió con su tilde; repetir los datos del cliente en cada hoja es el default.
+     *
+     * @param float $y_del_encabezado Dónde terminó el encabezado del emisor.
+     * @return void
+     */
+    private function decidir_la_hoja($y_del_encabezado)
+    {
+        $tabla_y_renglon = AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon;
+
+        if ($this->pie_en_cada_hoja && $y_del_encabezado + $tabla_y_renglon + $this->alto_del_pie() > $this->limite_inferior) {
+            $this->pie_en_cada_hoja = false;
+        }
+
+        $alto_de_la_zona = $this->motor->medir_zona($this, $this->diseno['superior']);
+        $zona = $alto_de_la_zona > 0 ? self::SEPARACION_DE_LA_ZONA_SUPERIOR + $alto_de_la_zona : 0;
+        $pie = $this->pie_en_cada_hoja ? $this->alto_del_pie() : 0;
+
+        $this->zona_superior_en_cada_hoja = $zona <= 0
+            || $y_del_encabezado + $zona + $tabla_y_renglon + $pie <= $this->limite_inferior;
+        $this->dibujando_la_zona_superior = ! $this->zona_superior_en_cada_hoja;
+
+        /** Dónde arrancan los renglones en una hoja nueva (lo usa el pie de la última hoja). */
+        $this->y_de_los_renglones = $y_del_encabezado
+            + ($this->zona_superior_en_cada_hoja ? $zona : 0)
+            + AfipPdfHelper::alto_de_table_header();
+    }
+
+    /**
+     * La zona de arriba SOLO en la primera hoja (ver decidir_la_hoja()): debajo del encabezado
+     * del emisor y, si no entra entera, sigue en la hoja siguiente (entre filas, nunca partiendo
+     * una caja). Donde termina va el encabezado de la tabla, si debajo entra el renglón más alto
+     * (con el pie en cada hoja, también el pie); si no, los renglones arrancan en la hoja
+     * siguiente, que ya trae su encabezado de la tabla.
+     *
+     * @return void
+     */
+    private function dibujar_la_zona_superior_de_la_primera_hoja()
+    {
+        $this->motor->dibujar_zona(
+            $this,
+            $this->diseno['superior'],
+            $this->y + self::SEPARACION_DE_LA_ZONA_SUPERIOR,
+            function () {
+                $this->AddPage();
+
+                return $this->y + self::SEPARACION_DE_LA_ZONA_SUPERIOR;
+            },
+            $this->limite_inferior
+        );
+
+        $this->dibujando_la_zona_superior = false;
+
+        $pie = $this->pie_en_cada_hoja ? $this->alto_del_pie() : 0;
+        if ($this->y + AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon + $pie > $this->limite_inferior) {
+            $this->AddPage();
+
+            return;
+        }
+
+        $this->encabezado_de_la_tabla();
     }
 
     /**
@@ -400,7 +525,11 @@ class SaleLayoutPdf extends fpdf
      */
     public function Footer()
     {
-        if ($this->pie_en_cada_hoja) {
+        /**
+         * Solo en las hojas con la tabla: una hoja que lleva nada más que la zona de arriba (una
+         * zona más alta que la hoja, ver decidir_la_hoja()) no le reservó lugar al pie.
+         */
+        if ($this->pie_en_cada_hoja && $this->tabla_en_la_hoja) {
             $this->dibujar_pie();
         }
     }
@@ -420,7 +549,13 @@ class SaleLayoutPdf extends fpdf
             return;
         }
 
-        if ($this->renglones_en_hoja > 0 && $this->y + $alto > $this->limite_inferior) {
+        /**
+         * Salta de hoja si el pie no entra y una hoja nueva le da más lugar: si esta tiene renglones,
+         * o si tiene la zona de arriba que las siguientes no llevan (ver decidir_la_hoja()). Una
+         * hoja que solo repetiría lo que ya hay no ayuda: nunca una hoja con el encabezado y nada.
+         */
+        $hoja_nueva_con_mas_lugar = $this->renglones_en_hoja > 0 || $this->y > $this->y_de_los_renglones + 0.001;
+        if ($hoja_nueva_con_mas_lugar && $this->y + $alto > $this->limite_inferior) {
             $this->AddPage();
         }
 

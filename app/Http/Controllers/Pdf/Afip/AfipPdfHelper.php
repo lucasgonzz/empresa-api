@@ -152,6 +152,10 @@ class AfipPdfHelper
      */
     protected static $table_header_bg_rgb = [235, 235, 235];
 
+    /** table_header() con la x de un diseño: aire antes de la fila y alto de la fila (mm). */
+    const TABLE_HEADER_AIRE = 2;
+    const TABLE_HEADER_ALTO = 7;
+
     /**
      * Geometría del PDF de siempre: A4 con 5 mm de margen a cada lado (el comprobante arranca en
      * x = 5 y mide 200 mm) y el encabezado arrancando en y = 5.
@@ -532,17 +536,28 @@ class AfipPdfHelper
         /** Mismos pasos que PdfHelper::tableHeader($pdf, $fields, 10, 2, gris), con la x del diseño. */
         $pdf->SetFont('Arial', 'B', 10);
         $pdf->x = $x0;
-        $pdf->y += 2;
+        $pdf->y += self::TABLE_HEADER_AIRE;
         $pdf->SetLineWidth(.4);
         $pdf->SetFillColor(self::$table_header_bg_rgb[0], self::$table_header_bg_rgb[1], self::$table_header_bg_rgb[2]);
 
         foreach ($fields as $text => $width) {
-            $pdf->Cell($width, 7, $text, 1, 0, 'C', true);
+            $pdf->Cell($width, self::TABLE_HEADER_ALTO, $text, 1, 0, 'C', true);
         }
 
         $pdf->SetFillColor(255, 255, 255);
-        $pdf->y += 7;
+        $pdf->y += self::TABLE_HEADER_ALTO;
         $pdf->x = $x0;
+    }
+
+    /**
+     * Alto que ocupa table_header() con la x de un diseño (aire + fila). Lo usan los PDF con diseño
+     * de página para decidir, ANTES de dibujar, si debajo de la zona de arriba entra un renglón.
+     *
+     * @return float
+     */
+    public static function alto_de_table_header(): float
+    {
+        return self::TABLE_HEADER_AIRE + self::TABLE_HEADER_ALTO;
     }
 
     /**

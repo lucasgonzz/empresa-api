@@ -127,6 +127,19 @@ class ProfileDocumentPdf extends fpdf
     private $fin_de_renglon;
     /** Alto del pie del diseño (separación + zona), memoizado. */
     private $alto_del_pie;
+    /**
+     * Con diseño: la zona de arriba va en todas las hojas (true) o solo en la primera (false). null
+     * hasta que el encabezado de la primera hoja lo decide (decidir_la_zona_superior()).
+     */
+    private $zona_superior_en_cada_hoja;
+    /** Con diseño: render() está dibujando la zona de arriba de la primera hoja (el encabezado pone solo el del emisor). */
+    private $dibujando_la_zona_superior;
+    /** Con diseño: alto del renglón más alto (lo mide render() antes de la primera hoja). */
+    private $alto_maximo_de_renglon;
+    /** Con diseño: dónde arrancan los renglones en una hoja nueva (lo calcula decidir_la_zona_superior()). */
+    private $y_de_los_renglones;
+    /** Con diseño: lo que midió medir_item() de cada renglón antes de la primera hoja, por índice. */
+    private $medidas_de_renglones;
 
     /**
      * Prepara el PDF SIN dibujar nada ni terminar el proceso.
@@ -195,6 +208,11 @@ class ProfileDocumentPdf extends fpdf
         $this->diseno = null;
         $this->motor = null;
         $this->alto_del_pie = null;
+        $this->zona_superior_en_cada_hoja = null;
+        $this->dibujando_la_zona_superior = false;
+        $this->alto_maximo_de_renglon = 0;
+        $this->y_de_los_renglones = 0;
+        $this->medidas_de_renglones = [];
         $this->limite_de_renglones = self::ITEMS_BOTTOM_Y;
         $this->fin_de_renglon = 210 - $this->start_x;
 
@@ -268,9 +286,14 @@ class ProfileDocumentPdf extends fpdf
             $this->get_totals_rows();
         } else {
             $this->alto_del_pie();
+            $this->medir_los_renglones();
         }
 
         $this->AddPage();
+
+        if ($this->dibujando_la_zona_superior) {
+            $this->dibujar_la_zona_superior_de_la_primera_hoja();
+        }
 
         $index = 1;
         foreach ($this->doc_items as $item) {
@@ -451,18 +474,128 @@ class ProfileDocumentPdf extends fpdf
             ['right_title' => $this->source->title(), 'sin_receptor' => true]
         );
 
-        /** Si la zona no dibuja nada, no deja el hueco. */
-        $y = $this->y;
-        $alto = $this->motor->dibujar_zona($this, $this->diseno['superior'], $y + self::SEPARACION_DE_LA_ZONA_SUPERIOR);
-        if ($alto <= 0) {
-            $this->y = $y;
+        if (is_null($this->zona_superior_en_cada_hoja)) {
+            $this->decidir_la_zona_superior($this->y);
         }
 
+        /**
+         * Hoja de la zona de arriba de la primera hoja (o una a la que la zona siguió porque es más
+         * alta que la hoja): la zona la dibuja render() debajo de este encabezado, y el de la tabla
+         * va recién donde la zona termina.
+         */
+        if ($this->dibujando_la_zona_superior) {
+            return;
+        }
+
+        if ($this->zona_superior_en_cada_hoja) {
+            /** Si la zona no dibuja nada, no deja el hueco. */
+            $y = $this->y;
+            $alto = $this->motor->dibujar_zona($this, $this->diseno['superior'], $y + self::SEPARACION_DE_LA_ZONA_SUPERIOR);
+            if ($alto <= 0) {
+                $this->y = $y;
+            }
+        }
+
+        $this->encabezado_de_la_tabla_con_diseno();
+    }
+
+    /**
+     * El encabezado gris de la tabla, en la x de la hoja del diseño.
+     *
+     * @return void
+     */
+    private function encabezado_de_la_tabla_con_diseno()
+    {
         $fields = [];
         foreach ($this->profile_columns as $column) {
             $fields[$column['label']] = $column['width'];
         }
         AfipPdfHelper::table_header($this, $fields, $this->pdf_x0);
+    }
+
+    /**
+     * 🔴 ZONA DE ARRIBA QUE NO DEJA LUGAR PARA UN RENGLÓN: va solo en la primera hoja.
+     *
+     * La zona de arriba se dibujaba en el encabezado de cada hoja sin medirla, y print_item()
+     * dibuja siempre el primer renglón de cada hoja: con una zona más alta que el lugar libre, cada
+     * renglón salía en una hoja propia y por DEBAJO del papel (el mismo defecto que se midió el
+     * 1/10/2026 en el remito: A5, margen 5, 8 renglones y una zona de dos cajas de 12 columnas
+     * daban 10 hojas, con todos los renglones en y = 234,8 en una hoja de 210). Se decide en el
+     * encabezado de la primera hoja, con el del emisor ya dibujado (es el mismo en todas): si
+     * encabezado + zona + encabezado de la tabla no dejan lugar para el renglón más alto, la zona
+     * va SOLO en la primera hoja y las siguientes llevan encabezado + encabezado de la tabla. La
+     * dibuja render() (dibujar_la_zona_superior_de_la_primera_hoja()): si tampoco entra entera en
+     * la primera hoja sigue en la segunda, y eso pide AddPage(), que FPDF no permite desde Header().
+     *
+     * @param float $y_del_encabezado Dónde terminó el encabezado del emisor.
+     * @return void
+     */
+    private function decidir_la_zona_superior($y_del_encabezado)
+    {
+        $alto_de_la_zona = $this->motor->medir_zona($this, $this->diseno['superior']);
+        $zona = $alto_de_la_zona > 0 ? self::SEPARACION_DE_LA_ZONA_SUPERIOR + $alto_de_la_zona : 0;
+        $tabla_y_renglon = AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon;
+
+        $this->zona_superior_en_cada_hoja = $zona <= 0
+            || $y_del_encabezado + $zona + $tabla_y_renglon <= $this->limite_de_renglones;
+        $this->dibujando_la_zona_superior = ! $this->zona_superior_en_cada_hoja;
+
+        /** Dónde arrancan los renglones en una hoja nueva (lo usa el pie de la última hoja). */
+        $this->y_de_los_renglones = $y_del_encabezado
+            + ($this->zona_superior_en_cada_hoja ? $zona : 0)
+            + AfipPdfHelper::alto_de_table_header();
+    }
+
+    /**
+     * La zona de arriba SOLO en la primera hoja (ver decidir_la_zona_superior()): debajo del
+     * encabezado del emisor y, si no entra entera, sigue en la hoja siguiente (entre filas, nunca
+     * partiendo una caja). Donde termina va el encabezado de la tabla, si debajo entra el renglón
+     * más alto; si no, los renglones arrancan en la hoja siguiente, que ya trae el suyo.
+     *
+     * @return void
+     */
+    private function dibujar_la_zona_superior_de_la_primera_hoja()
+    {
+        $this->motor->dibujar_zona(
+            $this,
+            $this->diseno['superior'],
+            $this->y + self::SEPARACION_DE_LA_ZONA_SUPERIOR,
+            function () {
+                $this->AddPage();
+
+                return $this->y + self::SEPARACION_DE_LA_ZONA_SUPERIOR;
+            },
+            $this->limite_de_renglones
+        );
+
+        $this->dibujando_la_zona_superior = false;
+
+        if ($this->y + AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon > $this->limite_de_renglones) {
+            $this->AddPage();
+
+            return;
+        }
+
+        $this->encabezado_de_la_tabla_con_diseno();
+    }
+
+    /**
+     * Con diseño: mide todos los renglones antes de la primera hoja (el más alto decide si la
+     * zona de arriba va en cada hoja) y guarda cada medida para dibujarlo sin volver a resolver
+     * sus valores ni a leer su imagen.
+     *
+     * @return void
+     */
+    private function medir_los_renglones()
+    {
+        $this->alto_maximo_de_renglon = $this->line_height;
+
+        $index = 1;
+        foreach ($this->doc_items as $item) {
+            $this->medidas_de_renglones[$index] = $this->medir_item($index, $item);
+            $this->alto_maximo_de_renglon = max($this->alto_maximo_de_renglon, $this->medidas_de_renglones[$index]['row_height']);
+            $index++;
+        }
     }
 
     /**
@@ -496,7 +629,13 @@ class ProfileDocumentPdf extends fpdf
             return;
         }
 
-        if ($this->rows_on_page > 0 && $this->y + $alto > $this->limite_de_renglones) {
+        /**
+         * Salta de hoja si el pie no entra y una hoja nueva le da más lugar: si esta tiene renglones,
+         * o si tiene la zona de arriba que las siguientes no llevan (ver decidir_la_zona_superior()).
+         * Una hoja que solo repetiría lo que ya hay no ayuda: nunca una hoja con el encabezado y nada.
+         */
+        $hoja_nueva_con_mas_lugar = $this->rows_on_page > 0 || $this->y > $this->y_de_los_renglones + 0.001;
+        if ($hoja_nueva_con_mas_lugar && $this->y + $alto > $this->limite_de_renglones) {
             $this->AddPage();
         }
 
@@ -526,45 +665,24 @@ class ProfileDocumentPdf extends fpdf
      */
     private function print_item($index, $item)
     {
-        $this->SetFont('Arial', '', 8);
-
-        $row_height = $this->line_height;
-        $values = [];
-        $wrap_lines = [];
-        $image_path = null;
-        $image_box = null;
-
-        foreach ($this->profile_columns as $key => $column) {
-            $width = (int) $column['width'];
-
-            if (PdfColumnService::is_document_image_column($column['value_resolver'])) {
-                /**
-                 * MISMA decisión para medir y para dibujar: caja de la imagen respetando su
-                 * proporción, o null si no se puede leer. Si medir y dibujar decidieran por
-                 * separado, la fila reservaría alto para una imagen que no se dibuja (o al revés).
-                 */
-                $image_path = PdfColumnService::document_first_image_path($item);
-                $image_box = CatalogHeaderLayoutHelper::logo_box_dimensions_mm($image_path, max(1, $width - 2));
-                if (! is_null($image_box)) {
-                    $row_height = max($row_height, $image_box['height'] + 2);
-                } elseif (! empty($image_path)) {
-                    $this->count_discarded_image($image_path, 'no es una imagen que se pueda leer');
-                }
-                continue;
-            }
-
-            $values[$key] = (string) PdfColumnService::resolve_value($column['value_resolver'], [
-                'item' => $item,
-                'index' => $index,
-                'document' => $this->source,
-                'numbers' => Numbers::class,
-            ]);
-
-            if (! empty($column['wrap_content'])) {
-                $wrap_lines[$key] = max(1, $this->NbLines($width, $values[$key]));
-                $row_height = max($row_height, $wrap_lines[$key] * $this->line_height);
-            }
+        if (isset($this->medidas_de_renglones[$index])) {
+            /** Con diseño, render() ya lo midió antes de la primera hoja (medir_los_renglones()). */
+            $medida = $this->medidas_de_renglones[$index];
+            unset($this->medidas_de_renglones[$index]);
+            $this->SetFont('Arial', '', 8);
+        } else {
+            $medida = $this->medir_item($index, $item);
         }
+
+        foreach ($medida['discarded_images'] as $discarded_path) {
+            $this->count_discarded_image($discarded_path, 'no es una imagen que se pueda leer');
+        }
+
+        $row_height = $medida['row_height'];
+        $values = $medida['values'];
+        $wrap_lines = $medida['wrap_lines'];
+        $image_path = $medida['image_path'];
+        $image_box = $medida['image_box'];
 
         /** Guarda contra un bucle de hojas vacías si una sola fila fuera más alta que la hoja. */
         if ($this->rows_on_page > 0 && $this->y + $row_height > $this->limite_de_renglones) {
@@ -598,6 +716,69 @@ class ProfileDocumentPdf extends fpdf
         $this->y = $start_y + $row_height;
         $this->Line($this->start_x, $this->y, $this->fin_de_renglon, $this->y);
         $this->rows_on_page++;
+    }
+
+    /**
+     * Mide un renglón: sus valores, las líneas de las celdas con texto envuelto, la imagen y el alto
+     * de la fila (el mayor entre las celdas envueltas y la imagen). Es lo que print_item() medía al
+     * empezar, sin cambios; las imágenes que no se pueden leer las cuenta print_item() al dibujar
+     * (así un renglón medido antes no se cuenta dos veces).
+     *
+     * @param int    $index Posición del renglón, desde 1.
+     * @param object $item  Renglón del comprobante (con `pivot`).
+     * @return array{row_height: float, values: array, wrap_lines: array, image_path: string|null, image_box: array|null, discarded_images: array}
+     */
+    private function medir_item($index, $item)
+    {
+        $this->SetFont('Arial', '', 8);
+
+        $row_height = $this->line_height;
+        $values = [];
+        $wrap_lines = [];
+        $image_path = null;
+        $image_box = null;
+        $discarded_images = [];
+
+        foreach ($this->profile_columns as $key => $column) {
+            $width = (int) $column['width'];
+
+            if (PdfColumnService::is_document_image_column($column['value_resolver'])) {
+                /**
+                 * MISMA decisión para medir y para dibujar: caja de la imagen respetando su
+                 * proporción, o null si no se puede leer. Si medir y dibujar decidieran por
+                 * separado, la fila reservaría alto para una imagen que no se dibuja (o al revés).
+                 */
+                $image_path = PdfColumnService::document_first_image_path($item);
+                $image_box = CatalogHeaderLayoutHelper::logo_box_dimensions_mm($image_path, max(1, $width - 2));
+                if (! is_null($image_box)) {
+                    $row_height = max($row_height, $image_box['height'] + 2);
+                } elseif (! empty($image_path)) {
+                    $discarded_images[] = $image_path;
+                }
+                continue;
+            }
+
+            $values[$key] = (string) PdfColumnService::resolve_value($column['value_resolver'], [
+                'item' => $item,
+                'index' => $index,
+                'document' => $this->source,
+                'numbers' => Numbers::class,
+            ]);
+
+            if (! empty($column['wrap_content'])) {
+                $wrap_lines[$key] = max(1, $this->NbLines($width, $values[$key]));
+                $row_height = max($row_height, $wrap_lines[$key] * $this->line_height);
+            }
+        }
+
+        return [
+            'row_height' => $row_height,
+            'values' => $values,
+            'wrap_lines' => $wrap_lines,
+            'image_path' => $image_path,
+            'image_box' => $image_box,
+            'discarded_images' => $discarded_images,
+        ];
     }
 
     /**

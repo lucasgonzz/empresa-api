@@ -3,6 +3,7 @@
 namespace Tests\Feature\Pdf;
 
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Pdf\SaleLayoutPdf;
 use App\Models\Article;
 use App\Models\PdfColumnProfile;
@@ -215,12 +216,16 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 A5 con "pie en cada hoja" y un pie alto: el encabezado, la zona de arriba y el pie no dejan
-     * lugar para ningún renglón (el 1/10/2026 el pie se dibujaba en cada hoja POR DEBAJO del
-     * papel: hasta 217 mm en una hoja de 210, en las 33 hojas, con un renglón por hoja). El PDF se
-     * dibuja como si el pie fuera solo en la última hoja: sale UNA vez, al final, y nada queda por
-     * debajo del límite de la hoja. El control: el mismo diseño en A4 sí deja lugar y conserva el
-     * pie en cada hoja.
+     * 🔴 A5 con "pie en cada hoja" y un pie alto: el encabezado y el pie no dejan lugar para ningún
+     * renglón, ni siquiera sacando la zona de arriba de las hojas que siguen (el 1/10/2026 el pie se
+     * dibujaba en cada hoja POR DEBAJO del papel: hasta 217 mm en una hoja de 210, en las 33 hojas,
+     * con un renglón por hoja). El PDF se dibuja como si el pie fuera solo en la última hoja: sale
+     * UNA vez, al final, y nada queda por debajo del límite de la hoja. El control: el mismo diseño
+     * en A4 sí deja lugar y conserva el pie en cada hoja.
+     *
+     * El pie es el del remito completo con cuatro cajas de texto legal delante (152 mm en A5): con
+     * el pie del remito completo solo (78 mm), sacar la zona de arriba de las hojas que siguen ya
+     * le deja lugar, y ese caso es el de una_zona_de_arriba_que_no_deja_lugar_para_el_pie_cede_y_va_solo_en_la_primera_hoja().
      *
      * @test
      */
@@ -235,7 +240,7 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
             'paper_height_mm' => 210,
             'margin_mm' => 8,
             'show_totals_on_each_page' => true,
-        ], $this->diseno_de_remito_completo());
+        ], $this->remito_completo_con_un_pie_mas_alto());
 
         $pdf_a5 = new SaleLayoutPdf(Sale::find($venta->id), $perfil_a5, null);
         $pdf_a5->SetCompression(false);
@@ -260,7 +265,7 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
         $this->assertLessThan(10, $this->cantidad_de_hojas($a5));
 
         /** El control: el mismo diseño en A4 deja lugar y conserva el pie en cada hoja. */
-        $perfil_a4 = $this->perfil_de_venta(['show_totals_on_each_page' => true], $this->diseno_de_remito_completo());
+        $perfil_a4 = $this->perfil_de_venta(['show_totals_on_each_page' => true], $this->remito_completo_con_un_pie_mas_alto());
         $pdf_a4 = new SaleLayoutPdf(Sale::find($venta->id), $perfil_a4, null);
         $pdf_a4->SetCompression(false);
         $pdf_a4->render();
@@ -270,6 +275,127 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
         $this->assertGreaterThanOrEqual(2, $this->cantidad_de_hojas($a4));
         $this->assertSame($this->cantidad_de_hojas($a4), $this->veces_que_se_dibuja('Total: $2.362,50', $a4));
         $this->assertNadaDebajoDe($a4, 297 - 5 - 7);
+    }
+
+    /**
+     * 🔴 El caso anterior con el pie del remito completo solo (A5, margen 8, "pie en cada hoja"):
+     * encabezado + zona de arriba + pie no dejan lugar para un renglón, pero sin la zona sí. La
+     * zona cede: sale UNA vez, en la primera hoja, y el pie sigue en cada hoja con renglones, como
+     * pidió el tilde. Ninguna hoja lleva el pie sin la tabla (una hoja con solo la zona no le
+     * reservó lugar), y nada queda por debajo del límite de la hoja.
+     *
+     * @test
+     */
+    public function una_zona_de_arriba_que_no_deja_lugar_para_el_pie_cede_y_va_solo_en_la_primera_hoja()
+    {
+        $venta = $this->crear_venta_completa();
+        $this->agregar_renglones($venta, 30);
+
+        $layout = new SaleLayoutPdf(Sale::find($venta->id), $this->perfil_de_venta([
+            'paper_width_mm' => 148,
+            'printable_width_mm' => 148,
+            'paper_height_mm' => 210,
+            'margin_mm' => 8,
+            'show_totals_on_each_page' => true,
+        ], $this->diseno_de_remito_completo()), null);
+        $layout->SetCompression(false);
+        $layout->render();
+        $pdf = $layout->Output('S');
+
+        $this->assertTrue($layout->pie_en_cada_hoja(), 'Sin la zona de arriba entran el renglón más alto y el pie: el pie sigue en cada hoja.');
+        $this->assertSame(1, $this->veces_que_se_dibuja('Saldo anterior: ', $pdf), 'La zona de arriba sale una sola vez.');
+        $this->assertSame(1, $this->veces_que_se_dibuja('Renglon extra 30', $pdf));
+
+        $hojas_con_tabla = 0;
+        foreach ($this->hojas($pdf) as $numero => $hoja) {
+            $con_tabla = $this->tiene_encabezado_de_tabla($hoja);
+            $this->assertSame($con_tabla, strpos($hoja, '(Total: $2.362,50) Tj') !== false, 'El pie va en cada hoja con la tabla y en ninguna otra (hoja '.($numero + 1).').');
+            $hojas_con_tabla += $con_tabla ? 1 : 0;
+        }
+        $this->assertGreaterThanOrEqual(2, $hojas_con_tabla);
+
+        $this->assertNadaDebajoDe($pdf, 210 - 8 - 7);
+    }
+
+    /**
+     * 🔴 Una zona de arriba más alta que el lugar libre de la hoja (medido el 1/10/2026: A5,
+     * margen 5, 8 renglones y una zona de dos cajas de 12 columnas con 33 campos daban 10 hojas,
+     * con todos los renglones en y = 234,8 en una hoja de 210: la zona se dibujaba en cada hoja
+     * sin medirla y el primer renglón de cada hoja iba siempre). La zona va SOLO en la primera
+     * hoja y, como no entra entera, sigue en la segunda; los renglones arrancan donde entra el
+     * primero, con el encabezado de la tabla; y nada queda por debajo de H − M en ninguna hoja.
+     *
+     * @test
+     */
+    public function una_zona_de_arriba_mas_alta_que_la_hoja_va_solo_en_la_primera_y_nada_sale_del_papel()
+    {
+        $venta = $this->crear_venta_completa();
+        $this->agregar_renglones($venta, 5);
+
+        $pdf = $this->pdf_de_venta(Sale::find($venta->id), $this->perfil_de_venta([
+            'paper_width_mm' => 148,
+            'printable_width_mm' => 148,
+            'paper_height_mm' => 210,
+            'margin_mm' => 5,
+        ], $this->diseno_con_una_zona_de_arriba_enorme()));
+
+        $this->assertNadaDebajoDe($pdf, 210 - 5);
+
+        /** La zona sale UNA vez y cada uno de los 8 renglones también. */
+        $this->assertSame(1, $this->veces_que_se_dibuja('Datos del cliente', $pdf));
+        $this->assertSame(1, $this->veces_que_se_dibuja('Datos de la venta', $pdf));
+        $renglones = ['Taladro percutor 13mm', 'Mecha widia 8mm', 'Instalacion', 'Renglon extra 1', 'Renglon extra 2', 'Renglon extra 3', 'Renglon extra 4', 'Renglon extra 5'];
+        foreach ($renglones as $renglon) {
+            $this->assertSame(1, $this->veces_que_se_dibuja($renglon, $pdf), $renglon);
+        }
+
+        /** Los renglones van debajo del encabezado de la tabla, en una hoja que lo tiene. */
+        foreach ($this->hojas($pdf) as $numero => $hoja) {
+            if (strpos($hoja, '(Renglon extra 1) Tj') !== false || strpos($hoja, '(Taladro percutor 13mm) Tj') !== false) {
+                $this->assertTrue($this->tiene_encabezado_de_tabla($hoja), 'La hoja '.($numero + 1).' tiene renglones sin el encabezado de la tabla.');
+            }
+        }
+
+        /** El pie, una vez. Y 3 hojas, no 10. */
+        $this->assertSame(1, $this->veces_que_se_dibuja('Gracias por su compra', $pdf));
+        $this->assertLessThanOrEqual(3, $this->cantidad_de_hojas($pdf));
+    }
+
+    /**
+     * La misma zona enorme con "pie en cada hoja": el pie va en cada hoja de la tabla y en ninguna
+     * de las que solo llevan la zona, y nada sale del papel.
+     *
+     * @test
+     */
+    public function con_pie_en_cada_hoja_y_una_zona_enorme_el_pie_va_solo_en_las_hojas_de_la_tabla()
+    {
+        $venta = $this->crear_venta_completa();
+        $this->agregar_renglones($venta, 40);
+
+        $layout = new SaleLayoutPdf(Sale::find($venta->id), $this->perfil_de_venta([
+            'paper_width_mm' => 148,
+            'printable_width_mm' => 148,
+            'paper_height_mm' => 210,
+            'margin_mm' => 5,
+            'show_totals_on_each_page' => true,
+        ], $this->diseno_con_una_zona_de_arriba_enorme()), null);
+        $layout->SetCompression(false);
+        $layout->render();
+        $pdf = $layout->Output('S');
+
+        $this->assertTrue($layout->pie_en_cada_hoja());
+        $this->assertNadaDebajoDe($pdf, 210 - 5);
+        $this->assertSame(1, $this->veces_que_se_dibuja('Datos del cliente', $pdf));
+        $this->assertSame(1, $this->veces_que_se_dibuja('Renglon extra 40', $pdf));
+
+        $hojas_con_tabla = 0;
+        foreach ($this->hojas($pdf) as $numero => $hoja) {
+            $con_tabla = $this->tiene_encabezado_de_tabla($hoja);
+            $this->assertSame($con_tabla, strpos($hoja, '(Total: $2.362,50) Tj') !== false, 'El pie va en cada hoja con la tabla y en ninguna otra (hoja '.($numero + 1).').');
+            $hojas_con_tabla += $con_tabla ? 1 : 0;
+        }
+        $this->assertGreaterThanOrEqual(2, $hojas_con_tabla);
+        $this->assertLessThan($this->cantidad_de_hojas($pdf), $hojas_con_tabla, 'Las hojas de la zona sola no llevan la tabla ni el pie.');
     }
 
     /**
@@ -369,5 +495,71 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
             $articulo = Article::create(['name' => 'Renglon extra '.$i, 'user_id' => $this->dueno->id]);
             $venta->articles()->attach($articulo->id, ['amount' => 0, 'price' => 0]);
         }
+    }
+
+    /**
+     * ¿La hoja tiene el encabezado de la tabla? Sus celdas grises son las únicas de 7 mm de alto
+     * (FPDF las escribe en puntos: -19.84).
+     *
+     * @param string $hoja
+     * @return bool
+     */
+    private function tiene_encabezado_de_tabla($hoja)
+    {
+        return preg_match('~ -19\.84 re B~', $hoja) === 1;
+    }
+
+    /**
+     * Una zona de arriba más alta que el lugar libre de una A5: dos cajas de 12 columnas con TODOS
+     * los campos de arriba del catálogo de venta (cliente y cuenta corriente en una, los datos de
+     * la venta en la otra), y el pie del remito completo.
+     *
+     * @return array
+     */
+    private function diseno_con_una_zona_de_arriba_enorme()
+    {
+        $del_cliente = [];
+        $de_la_venta = [];
+        foreach (CatalogoDeCamposPdf::campos('sale') as $definicion) {
+            if ($definicion['zona_sugerida'] !== 'superior') {
+                continue;
+            }
+
+            if ($definicion['categoria'] === 'venta') {
+                $de_la_venta[] = $this->campo_de_caja($definicion['key']);
+            } else {
+                $del_cliente[] = $this->campo_de_caja($definicion['key']);
+            }
+        }
+
+        $completo = $this->diseno_de_remito_completo();
+
+        return $this->diseno_de_pagina([
+            $this->caja_de_diseno('caja_cliente', 12, $del_cliente, 'Datos del cliente'),
+            $this->caja_de_diseno('caja_venta', 12, $de_la_venta, 'Datos de la venta'),
+        ], $completo['pie']);
+    }
+
+    /**
+     * El remito completo con cuatro cajas de texto legal delante del pie: un pie que en A5 no deja
+     * lugar para un renglón ni sin la zona de arriba (152 mm), y en A4 sí (125 mm).
+     *
+     * @return array
+     */
+    private function remito_completo_con_un_pie_mas_alto()
+    {
+        $texto = 'Este comprobante no es valido como factura. Los precios incluyen IVA. Las devoluciones se aceptan dentro de los 30 dias con el ticket y el embalaje original, sin uso y en perfecto estado. La garantia la da el fabricante.';
+
+        $legales = [];
+        for ($i = 1; $i <= 4; $i++) {
+            $legales[] = $this->caja_de_diseno('caja_legal_'.$i, 12, [
+                $this->campo_de_caja('texto_libre', ['id' => 'texto_legal_'.$i, 'texto' => $texto]),
+            ], '', 'ninguno');
+        }
+
+        $diseno = $this->diseno_de_remito_completo();
+        $diseno['pie'] = array_merge($legales, $diseno['pie']);
+
+        return $diseno;
     }
 }
