@@ -409,6 +409,14 @@ class ProviderOrderHelper {
 
 				$amount = -max(0, (float)$cantidad_real - $ya_devueltas);
 
+				/*
+					🔴 Se reinicia en cada vuelta. Antes $data vivía entre artículos y el
+					`to_address_id` de uno que reparte por depósitos quedaba pegado en el siguiente,
+					que no reparte: CheckToAddress le attacheaba el depósito y lo pasaba a "reparte
+					por depósitos" con una sola fila (ver APRENDER_NO_PARCHEAR, "el attach del primer
+					pivote").
+				*/
+				$data = [];
 
 		        $data['model_id'] = $article->id;
 
