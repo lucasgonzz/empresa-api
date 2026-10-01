@@ -308,6 +308,27 @@ class SaleLayoutPdf extends fpdf
 
         $this->AddPage();
 
+        /**
+         * 🔴 "PIE EN CADA HOJA" QUE NO DEJA LUGAR PARA NINGÚN RENGLÓN: se dibuja solo en la última.
+         *
+         * El pie "en cada hoja" se dibuja en Footer(), donde FPDF no deja agregar una hoja: su alto
+         * se reserva restándolo del límite de los renglones (limite_de_renglones()). En una hoja
+         * chica con un diseño cargado (A5 con encabezado, zona de arriba y pie altos) esa reserva
+         * deja el lugar de los renglones en cero o negativo: la guarda de "al menos un renglón por
+         * hoja" mete uno igual y el pie se dibuja debajo, AFUERA del papel, en cada hoja (medido el
+         * 1/10/2026 en A5: el pie bajaba hasta 217 mm en una hoja de 210, en las 33 hojas).
+         *
+         * Acá ya se sabe dónde arrancan los renglones (la hoja 1 tiene su encabezado, que es el
+         * mismo en todas las hojas) y cuánto mide el pie. Si no entra ni el renglón MÁS ALTO de la
+         * tabla junto con el pie (con uno "típico" no alcanza: un nombre que ocupa dos líneas lo
+         * mete igual y se sale), el pie va SOLO en la última hoja, el camino que salta de hoja
+         * antes del pie y lo parte entre filas si no entra. Cambiar el modo acá es seguro: el
+         * Footer() de la hoja 1 recién corre en el próximo AddPage() o en el Output().
+         */
+        if ($this->pie_en_cada_hoja && $this->y + $this->alto_del_renglon_mas_alto($renglones) + $this->alto_del_pie() > $this->limite_inferior) {
+            $this->pie_en_cada_hoja = false;
+        }
+
         $index = 1;
         foreach ($renglones as $renglon) {
             $this->dibujar_renglon($index, $renglon[1]);
@@ -330,6 +351,18 @@ class SaleLayoutPdf extends fpdf
         $this->render();
         $this->Output();
         exit;
+    }
+
+    /**
+     * ¿El pie se dibuja en cada hoja? Es el "Mostrar pie de página en cada hoja" del perfil, salvo
+     * que render() haya tenido que dibujarlo solo en la última porque no dejaba lugar para los
+     * renglones (ver el comentario en render()).
+     *
+     * @return bool
+     */
+    public function pie_en_cada_hoja()
+    {
+        return $this->pie_en_cada_hoja;
     }
 
     /**
@@ -490,15 +523,15 @@ class SaleLayoutPdf extends fpdf
     }
 
     /**
-     * Un renglón de la tabla con las columnas del perfil. El alto se calcula ANTES de decidir el
-     * salto de hoja (como `ProfileDocumentPdf`): decidir por la posición de arranque deja pasar
-     * una fila alta que empieza apenas arriba del límite.
+     * Los valores de las celdas de un renglón y su alto (el de la celda con wrap más alta, como
+     * mínimo una línea). Es la MISMA cuenta para dibujar el renglón y para decidir si el pie
+     * "en cada hoja" deja lugar para los renglones (render()).
      *
      * @param int    $index
      * @param object $item
-     * @return void
+     * @return array{valores: array<int, string>, alto: float}
      */
-    private function dibujar_renglon($index, $item)
+    private function medir_renglon($index, $item)
     {
         $this->SetFont('Arial', '', 8);
 
@@ -512,6 +545,43 @@ class SaleLayoutPdf extends fpdf
                 $alto = max($alto, max(1, $this->NbLines($columna['width'], $valores[$i])) * $this->line_height);
             }
         }
+
+        return ['valores' => $valores, 'alto' => $alto];
+    }
+
+    /**
+     * Alto del renglón más alto de la tabla (una línea si la venta no tiene renglones).
+     *
+     * @param array $renglones Los de TotalesDeVentaPdf::renglones().
+     * @return float
+     */
+    private function alto_del_renglon_mas_alto($renglones)
+    {
+        $alto = $this->line_height;
+
+        $index = 1;
+        foreach ($renglones as $renglon) {
+            $alto = max($alto, $this->medir_renglon($index, $renglon[1])['alto']);
+            $index++;
+        }
+
+        return $alto;
+    }
+
+    /**
+     * Un renglón de la tabla con las columnas del perfil. El alto se calcula ANTES de decidir el
+     * salto de hoja (como `ProfileDocumentPdf`): decidir por la posición de arranque deja pasar
+     * una fila alta que empieza apenas arriba del límite.
+     *
+     * @param int    $index
+     * @param object $item
+     * @return void
+     */
+    private function dibujar_renglon($index, $item)
+    {
+        $medida = $this->medir_renglon($index, $item);
+        $valores = $medida['valores'];
+        $alto = $medida['alto'];
 
         if ($this->renglones_en_hoja > 0 && $this->y + $alto > $this->limite_de_renglones()) {
             $this->AddPage();

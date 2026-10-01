@@ -189,12 +189,8 @@ class Factura_con_diseno_de_pagina_Test extends EmpresaTestCase
         $this->assertSame($hojas, $this->veces_que_se_dibuja('ORIGINAL', $pdf));
         $this->assertDibujaTexto('Renglon fiscal 45', $pdf);
 
-        /** Ningún texto debajo del límite de la hoja (297 − 5 − 7). */
-        $k = 72 / 25.4;
-        preg_match_all('~BT [\d.]+ ([\d.]+) Td~', $pdf, $y);
-        foreach ($y[1] as $posicion) {
-            $this->assertLessThan(286, 297 - (float) $posicion / $k, 'Un texto quedó debajo del límite de la hoja.');
-        }
+        /** Nada (textos, recuadros, líneas, imágenes) por debajo del límite de la hoja (297 − 5 − 7). */
+        $this->assertNadaDebajoDe($pdf, 297 - 5 - 7);
     }
 
     /**

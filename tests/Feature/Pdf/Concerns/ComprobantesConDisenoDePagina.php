@@ -673,6 +673,74 @@ trait ComprobantesConDisenoDePagina
     }
 
     /**
+     * El punto más bajo dibujado en cada hoja, en mm desde el borde de arriba: la base de cada
+     * texto, el borde de abajo de cada rectángulo y de cada imagen, y los extremos de cada línea.
+     *
+     * 🔴 Acepta coordenadas NEGATIVAS: lo que se dibuja por debajo del papel, FPDF lo escribe con
+     * una y negativa (el origen del PDF está abajo). Un lector que solo acepta dígitos no lo ve, y
+     * es justamente lo que se quiere detectar.
+     *
+     * @param string $pdf
+     * @return array<int, float> Una entrada por hoja.
+     */
+    protected function punto_mas_bajo_por_hoja($pdf)
+    {
+        $k = 72 / 25.4;
+        $numero = '(-?[\d.]+)';
+
+        preg_match('~/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]~', $pdf, $mb);
+        $alto_de_hoja = (float) $mb[2] / $k;
+
+        $por_hoja = [];
+        foreach ($this->hojas($pdf) as $contenido) {
+            $mas_bajo = 0;
+
+            preg_match_all('~BT '.$numero.' '.$numero.' Td~', $contenido, $textos, PREG_SET_ORDER);
+            foreach ($textos as $t) {
+                $mas_bajo = max($mas_bajo, $alto_de_hoja - (float) $t[2] / $k);
+            }
+
+            preg_match_all('~'.$numero.' '.$numero.' '.$numero.' '.$numero.' re~', $contenido, $rects, PREG_SET_ORDER);
+            foreach ($rects as $r) {
+                $mas_bajo = max($mas_bajo, $alto_de_hoja - (float) $r[2] / $k - (float) $r[4] / $k);
+            }
+
+            preg_match_all('~'.$numero.' '.$numero.' m '.$numero.' '.$numero.' l S~', $contenido, $lineas, PREG_SET_ORDER);
+            foreach ($lineas as $l) {
+                $mas_bajo = max($mas_bajo, $alto_de_hoja - (float) $l[2] / $k, $alto_de_hoja - (float) $l[4] / $k);
+            }
+
+            preg_match_all('~q '.$numero.' 0 0 '.$numero.' '.$numero.' '.$numero.' cm /I\d+ Do Q~', $contenido, $imagenes, PREG_SET_ORDER);
+            foreach ($imagenes as $i) {
+                $mas_bajo = max($mas_bajo, $alto_de_hoja - (float) $i[4] / $k);
+            }
+
+            $por_hoja[] = $mas_bajo;
+        }
+
+        return $por_hoja;
+    }
+
+    /**
+     * Afirma que en ninguna hoja se dibuja nada por debajo de $limite_mm (mm desde arriba).
+     *
+     * @param string $pdf
+     * @param float  $limite_mm
+     * @return void
+     */
+    protected function assertNadaDebajoDe($pdf, $limite_mm)
+    {
+        foreach ($this->punto_mas_bajo_por_hoja($pdf) as $numero => $mas_bajo) {
+            /** 0,05 mm de tolerancia: FPDF redondea las coordenadas a centésimos de punto. */
+            $this->assertLessThanOrEqual(
+                $limite_mm + 0.05,
+                $mas_bajo,
+                'La hoja '.($numero + 1).' dibuja hasta '.round($mas_bajo, 1).' mm, por debajo del límite de '.$limite_mm.' mm.'
+            );
+        }
+    }
+
+    /**
      * Corre $callback con el `https` de PHP cortado: el pie de la factura de ARCA le pega a
      * api.qrserver.com para dibujar el QR (`AfipPdfHelper::print_afip_qr_image()`), y un test no
      * sale a la red. Con la red cortada `GeneralHelper::file_exists_2()` da false y el pie se dibuja

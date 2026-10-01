@@ -176,11 +176,14 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
         $this->assertSame(1, preg_match('~\n'.preg_quote(sprintf('%.2F', 8 * $k), '~').' [\d.]+ [\d.]+ -'.preg_quote(sprintf('%.2F', 7 * $k), '~').' re B~', $pdf), 'La tabla (celdas grises de 7 mm) arranca en x = margen.');
 
         /** Ningún texto se sale a la derecha de la hoja menos el margen (140 mm). */
-        preg_match_all('~BT ([\d.]+) [\d.]+ Td~', $pdf, $x);
+        preg_match_all('~BT (-?[\d.]+) -?[\d.]+ Td~', $pdf, $x);
         foreach ($x[1] as $posicion) {
             $this->assertLessThan(140, (float) $posicion / $k);
             $this->assertGreaterThanOrEqual(8, (float) $posicion / $k);
         }
+
+        /** Y nada por debajo del límite usable de la hoja (210 − 8 − 7). */
+        $this->assertNadaDebajoDe($pdf, 210 - 8 - 7);
     }
 
     /**
@@ -208,7 +211,65 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
             $this->assertStringContainsString('(Total: $2.362,50) Tj', $contenido, 'La hoja '.($numero + 1).' no tiene el Total.');
         }
 
-        $this->assertNingunTextoBajoElLimite($pdf, 297 - 5 - 7 + 1);
+        $this->assertNadaDebajoDe($pdf, 297 - 5 - 7);
+    }
+
+    /**
+     * 🔴 A5 con "pie en cada hoja" y un pie alto: el encabezado, la zona de arriba y el pie no dejan
+     * lugar para ningún renglón (el 1/10/2026 el pie se dibujaba en cada hoja POR DEBAJO del
+     * papel: hasta 217 mm en una hoja de 210, en las 33 hojas, con un renglón por hoja). El PDF se
+     * dibuja como si el pie fuera solo en la última hoja: sale UNA vez, al final, y nada queda por
+     * debajo del límite de la hoja. El control: el mismo diseño en A4 sí deja lugar y conserva el
+     * pie en cada hoja.
+     *
+     * @test
+     */
+    public function un_pie_en_cada_hoja_que_no_deja_lugar_para_renglones_sale_solo_en_la_ultima_hoja()
+    {
+        $venta = $this->crear_venta_completa();
+        $this->agregar_renglones($venta, 30);
+
+        $perfil_a5 = $this->perfil_de_venta([
+            'paper_width_mm' => 148,
+            'printable_width_mm' => 148,
+            'paper_height_mm' => 210,
+            'margin_mm' => 8,
+            'show_totals_on_each_page' => true,
+        ], $this->diseno_de_remito_completo());
+
+        $pdf_a5 = new SaleLayoutPdf(Sale::find($venta->id), $perfil_a5, null);
+        $pdf_a5->SetCompression(false);
+        $pdf_a5->render();
+        $a5 = $pdf_a5->Output('S');
+
+        $this->assertFalse($pdf_a5->pie_en_cada_hoja(), 'En A5 este pie no deja lugar para ningún renglón: tiene que ir solo en la última hoja.');
+        $this->assertSame(1, $this->veces_que_se_dibuja('Total: $2.362,50', $a5), 'El pie sale UNA sola vez.');
+        $this->assertSame(1, $this->veces_que_se_dibuja('Gracias por su compra', $a5));
+        $this->assertSame($this->cantidad_de_hojas($a5), $this->veces_que_se_dibuja('Saldo anterior: ', $a5), 'La zona de arriba sigue en todas las hojas.');
+
+        /** El pie va al final: después del último renglón, y termina en la última hoja. */
+        $textos = $this->textos_legibles($a5);
+        $this->assertGreaterThan(array_search('Renglon extra 30', $textos, true), array_search('Total: $2.362,50', $textos, true));
+        $por_hoja = $this->hojas($a5);
+        $this->assertStringContainsString('(Gracias por su compra) Tj', end($por_hoja), 'El pie termina en la última hoja.');
+
+        /** Nada por debajo del límite usable de la hoja (210 − 8 − 7), y menos del papel. */
+        $this->assertNadaDebajoDe($a5, 210 - 8 - 7);
+
+        /** Varios renglones por hoja (con el pie en cada hoja salía uno por hoja: 33 hojas). */
+        $this->assertLessThan(10, $this->cantidad_de_hojas($a5));
+
+        /** El control: el mismo diseño en A4 deja lugar y conserva el pie en cada hoja. */
+        $perfil_a4 = $this->perfil_de_venta(['show_totals_on_each_page' => true], $this->diseno_de_remito_completo());
+        $pdf_a4 = new SaleLayoutPdf(Sale::find($venta->id), $perfil_a4, null);
+        $pdf_a4->SetCompression(false);
+        $pdf_a4->render();
+        $a4 = $pdf_a4->Output('S');
+
+        $this->assertTrue($pdf_a4->pie_en_cada_hoja());
+        $this->assertGreaterThanOrEqual(2, $this->cantidad_de_hojas($a4));
+        $this->assertSame($this->cantidad_de_hojas($a4), $this->veces_que_se_dibuja('Total: $2.362,50', $a4));
+        $this->assertNadaDebajoDe($a4, 297 - 5 - 7);
     }
 
     /**
@@ -230,7 +291,7 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
         $this->assertStringContainsString('(Total: $2.362,50) Tj', end($por_hoja), 'El pie va en la última hoja.');
         $this->assertDibujaTexto('Renglon extra 1', $pdf);
         $this->assertDibujaTexto('Renglon extra 60', $pdf);
-        $this->assertNingunTextoBajoElLimite($pdf, 297 - 5 - 7 + 1);
+        $this->assertNadaDebajoDe($pdf, 297 - 5 - 7);
     }
 
     /**
@@ -307,23 +368,6 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
         for ($i = 1; $i <= $cantidad; $i++) {
             $articulo = Article::create(['name' => 'Renglon extra '.$i, 'user_id' => $this->dueno->id]);
             $venta->articles()->attach($articulo->id, ['amount' => 0, 'price' => 0]);
-        }
-    }
-
-    /**
-     * Ningún texto se dibuja por debajo del límite usable de la hoja (alto − margen − 7).
-     *
-     * @param string $pdf
-     * @param float  $limite_mm
-     * @return void
-     */
-    private function assertNingunTextoBajoElLimite($pdf, $limite_mm)
-    {
-        $k = 72 / 25.4;
-        preg_match_all('~BT [\d.]+ ([\d.]+) Td~', $pdf, $y);
-
-        foreach ($y[1] as $posicion) {
-            $this->assertLessThan($limite_mm, 297 - (float) $posicion / $k, 'Un texto quedó debajo del límite de la hoja.');
         }
     }
 }
