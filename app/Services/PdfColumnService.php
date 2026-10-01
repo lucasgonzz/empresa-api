@@ -11,7 +11,7 @@ class PdfColumnService
     /**
      * Asegura que el catálogo en BD coincida con default_options() (altas/actualizaciones de columnas).
      *
-     * @param string $model_name sale|article
+     * @param string $model_name sale|article|budget|order
      * @return void
      */
     public static function sync_catalog_options($model_name)
@@ -374,7 +374,70 @@ class PdfColumnService
             ];
         }
 
+        /**
+         * Presupuesto y pedido online: mismo catálogo salvo una columna (ver document_default_options()).
+         */
+        if ($model_name === 'budget' || $model_name === 'order') {
+            return self::document_default_options($model_name);
+        }
+
         return [];
+    }
+
+    /**
+     * Catálogo de columnas de los comprobantes que se imprimen con `ProfileDocumentPdf`
+     * (presupuesto y pedido online).
+     *
+     * 🔴 Los resolvers son PROPIOS (`document_item_*`) y no reusan los de `sale`: aquellos leen
+     * `pivot->discount` y la moneda de la venta, y el presupuesto guarda la bonificación en
+     * `pivot->bonus`. Y los `name` tienen que ser ÚNICOS dentro del modelo: el catálogo se sincroniza
+     * por (model_name, value_resolver) pero `PdfColumnProfileSeederHelper` asigna las columnas de un
+     * perfil por `name`, así que un nombre repetido hace que una de las dos columnas se pierda
+     * (le pasa a `item_discount_percentage` en `sale`, no repetir).
+     *
+     * La única diferencia entre los dos modelos: el presupuesto tiene bonificación por renglón y el
+     * pedido tiene notas por renglón (`article_order.notes`).
+     *
+     * @param string $model_name budget|order
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function document_default_options($model_name)
+    {
+        $options = [
+            ['Índice de fila', '#', 'row_index', 8, false],
+            ['Imágenes', 'Imagen', 'document_item_image', 40, false],
+            ['Número de artículo', 'Num', 'document_item_id', 15, false],
+            ['Código de barras', 'Cod. barras', 'document_item_bar_code', 30, false],
+            ['Código de proveedor', 'Cod. prov', 'document_item_provider_code', 30, false],
+            ['Nombre del artículo', 'Nombre', 'document_item_name', 72, true],
+            ['Cantidad', 'Cant', 'document_item_amount', 15, false],
+            ['Precio unitario', 'Precio', 'document_item_price', 28, false],
+        ];
+
+        if ($model_name === 'budget') {
+            $options[] = ['Bonificación porcentaje', 'Bonif', 'document_item_bonus', 15, false];
+        } else {
+            $options[] = ['Notas del renglón', 'Notas', 'document_item_notes', 28, true];
+        }
+
+        $options[] = ['Subtotal línea', 'Sub total', 'document_item_subtotal', 32, false];
+        $options[] = ['Marca', 'Marca', 'document_item_brand_name', 30, false];
+        $options[] = ['Categoría', 'Categoría', 'document_item_category_name', 35, false];
+        $options[] = ['Subcategoría', 'Subcategoría', 'document_item_sub_category_name', 35, false];
+        $options[] = ['Proveedor', 'Proveedor', 'document_item_provider_name', 35, false];
+
+        $result = [];
+        foreach ($options as $option) {
+            $result[] = [
+                'name' => $option[0],
+                'label' => $option[1],
+                'value_resolver' => $option[2],
+                'default_width' => $option[3],
+                'allow_wrap_content' => $option[4],
+            ];
+        }
+
+        return $result;
     }
 
     public static function visible_width($columns)
@@ -466,6 +529,15 @@ class PdfColumnService
         $index = $context['index'] ?? null;
         $numbers = $context['numbers'] ?? null;
         $general_helper = $context['general_helper'] ?? null;
+
+        /**
+         * Presupuesto y pedido online: el contexto trae `document` (un PdfDocumentSource). Va PRIMERO
+         * y con `return`, así que ninguna rama de `sale` ni de `article` de más abajo se toca.
+         */
+        $document = $context['document'] ?? null;
+        if ($document && self::is_document_resolver($resolver)) {
+            return self::resolve_document_value($resolver, $document, $item, $index, $numbers);
+        }
 
         /**
          * Resolvers de listado de artículos (PDF tabla sin pivot de venta).
@@ -860,6 +932,81 @@ class PdfColumnService
     }
 
     /**
+     * ¿El resolver pertenece al catálogo de presupuesto / pedido online?
+     *
+     * @param string $resolver
+     * @return bool
+     */
+    protected static function is_document_resolver($resolver)
+    {
+        return $resolver === 'row_index' || strpos((string) $resolver, 'document_item_') === 0;
+    }
+
+    /**
+     * Valor de una columna para un renglón de presupuesto o pedido online.
+     *
+     * El nombre y el importe del renglón los arma el propio comprobante (`$document`, un
+     * PdfDocumentSource): el presupuesto usa el nombre personalizado y la bonificación, el pedido
+     * usa la variante y no tiene bonificación. Todo lo demás se lee del `pivot` con guardas: los
+     * renglones no son solo artículos (también promociones, combos y servicios) y no todos
+     * declaran los mismos campos.
+     *
+     * @param string $resolver
+     * @param \App\Http\Controllers\Helpers\PdfDocument\PdfDocumentSource $document
+     * @param object|null $item Renglón del comprobante (con `pivot`).
+     * @param int|null $index Posición del renglón, desde 1.
+     * @param mixed $numbers Clase Numbers.
+     * @return string|int
+     */
+    protected static function resolve_document_value($resolver, $document, $item, $index, $numbers)
+    {
+        if ($resolver === 'row_index') {
+            return $index;
+        }
+
+        if (! $item) {
+            return '';
+        }
+
+        $pivot = $item->pivot;
+
+        switch ($resolver) {
+            case 'document_item_id':
+                return $item->id;
+            case 'document_item_bar_code':
+                return $item->bar_code ?? '';
+            case 'document_item_provider_code':
+                return $item->provider_code ?? '';
+            case 'document_item_name':
+                return $document->item_name($item);
+            case 'document_item_amount':
+                return isset($pivot->amount) ? $numbers::price($pivot->amount) : '';
+            case 'document_item_price':
+                return isset($pivot->price) ? '$'.$numbers::price($pivot->price) : '';
+            case 'document_item_bonus':
+                /** Sin bonificación (null o 0) la celda va vacía: "0%" en cada renglón es puro ruido. */
+                return (isset($pivot->bonus) && (float) $pivot->bonus != 0)
+                    ? $numbers::price($pivot->bonus).'%'
+                    : '';
+            case 'document_item_notes':
+                return isset($pivot->notes) ? (string) $pivot->notes : '';
+            case 'document_item_subtotal':
+                return '$'.$numbers::price($document->item_subtotal($item));
+            case 'document_item_brand_name':
+                return self::sale_item_relation_name($item, 'brand');
+            case 'document_item_category_name':
+                return self::sale_item_relation_name($item, 'category');
+            case 'document_item_sub_category_name':
+                return self::sale_item_relation_name($item, 'sub_category');
+            case 'document_item_provider_name':
+                return self::sale_item_relation_name($item, 'provider');
+            default:
+                /** `document_item_image` cae acá a propósito: la imagen se dibuja, no se escribe. */
+                return '';
+        }
+    }
+
+    /**
      * Devuelve el `name` de una relacion del item de venta, o cadena vacia.
      *
      * Los renglones de una venta no son solo articulos: tambien hay combos, servicios y
@@ -1078,6 +1225,38 @@ class PdfColumnService
         $general_helper = \App\Http\Controllers\Helpers\GeneralHelper::class;
 
         return $general_helper::pdf_image_path($img_url);
+    }
+
+    /**
+     * Indica si la columna del perfil corresponde a la imagen del renglón de un comprobante
+     * (presupuesto o pedido online).
+     *
+     * @param string $resolver
+     * @return bool
+     */
+    public static function is_document_image_column($resolver)
+    {
+        return $resolver === 'document_item_image';
+    }
+
+    /**
+     * Ruta LOCAL de la primera imagen del renglón de un comprobante (null si no hay o no se puede
+     * resolver). Solo los artículos y las promociones de vinoteca tienen `images`; un combo o un
+     * servicio devuelven null sin tocar la base.
+     *
+     * Va por `article_first_image_path()` (que usa GeneralHelper::pdf_image_path) y NUNCA por
+     * `getJpgImage()`: esa puede abortar el PDF entero con una .webp que no se convierte.
+     *
+     * @param object|null $item
+     * @return string|null
+     */
+    public static function document_first_image_path($item)
+    {
+        if (! $item || ! is_object($item) || ! method_exists($item, 'images')) {
+            return null;
+        }
+
+        return self::article_first_image_path($item);
     }
 }
 

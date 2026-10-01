@@ -251,9 +251,14 @@ class AfipPdfHelper
      * @param mixed $user Usuario emisor (dueño del negocio).
      * @param array<string, mixed> $layout header_layout efectivo (guardado en el perfil o el
      *     default por código), resuelto por el caller (NewSalePdf::Header()).
+     * @param array<string, mixed>|null $current_acount_data Cuenta corriente para el cuadrante derecho del cliente.
+     * @param array<string, mixed> $options Opciones opcionales. Hoy solo 'right_title': el título que se
+     *     imprime a la derecha del encabezado ('Comprobante' si no viene, que es lo que imprime el remito).
+     *     Lo usa ProfileDocumentPdf para decir "Presupuesto" o "Pedido online". Es aditivo: quien no lo
+     *     pasa (NewSalePdf) imprime exactamente lo de siempre.
      * @return void
      */
-    public static function header_comercial($pdf, $sale, $user, $layout, $current_acount_data = null): void
+    public static function header_comercial($pdf, $sale, $user, $layout, $current_acount_data = null, $options = []): void
     {
         /**
          * Posición inicial, igual que el header fiscal.
@@ -293,7 +298,9 @@ class AfipPdfHelper
             'mostrar_cod' => false,
             'cod' => '',
             'logo_size' => (!empty($pdf->logo_size_mm) ? (int) $pdf->logo_size_mm : 35),
-            'right_title' => 'Comprobante',
+            'right_title' => (isset($options['right_title']) && $options['right_title'] !== '')
+                ? (string) $options['right_title']
+                : 'Comprobante',
             'layout_izquierda' => isset($layout['emisor']['izquierda']) ? $layout['emisor']['izquierda'] : [],
             'layout_derecha' => isset($layout['emisor']['derecha']) ? $layout['emisor']['derecha'] : [],
             'field_values' => $field_values,

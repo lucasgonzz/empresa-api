@@ -404,6 +404,14 @@ class DatabaseSeeder extends Seeder
         $this->call(PdfColumnProfileArticleSeeder::class);
 
         /*
+            Disenos de PDF de presupuesto ("Presupuesto", "sin precios", "con imagenes") y de pedido
+            online. Van ACA por el mismo motivo que el de articulos de arriba: itera
+            `User::whereNull('owner_id')` y common_seeders() corre antes que UserSeeder, asi que
+            ahi sembraria cero filas SIN FALLAR. Al final del run() cubre las dos ramas.
+        */
+        $this->call(PdfColumnProfileDocumentosSeeder::class);
+
+        /*
             "Diseño predeterminado" de Vender (misión diseno-vender-configurable, 28/9/2026): uno
             por dueño, con layout null (= el diseño del sistema que arma el SPA). Mismo motivo que
             los dos de arriba para ir acá y no en common_seeders(): itera

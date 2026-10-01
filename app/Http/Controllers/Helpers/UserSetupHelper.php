@@ -406,14 +406,17 @@ class UserSetupHelper
                 Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de
                 columnas (tabla pdf_column_options, sin user_id) y los tres seeders
                 de perfiles que siguen lo necesitan poblado. PdfColumnProfileSeeder crea los perfiles de
-                venta (Remito, Factura comun) y PdfColumnProfileArticleSeeder el de listado de
-                articulos. No reordenar.
+                venta (Remito, Factura comun), PdfColumnProfileArticleSeeder el de listado de
+                articulos y PdfColumnProfileDocumentosSeeder los de presupuesto y pedido online
+                (itera los duenios, asi que como el de articulos necesita al usuario ya creado: el
+                foreach que corre esta lista es posterior a create_user()). No reordenar.
             */
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
             'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
+            'PdfColumnProfileDocumentosSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 

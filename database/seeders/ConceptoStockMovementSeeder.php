@@ -111,6 +111,14 @@ class ConceptoStockMovementSeeder extends Seeder
                 // existentes está ConceptoStockMovementEliminacionDeSucursalSeeder.
                 'name'  => 'Eliminacion de sucursal',
             ],
+            [
+                // Misión devoluciones-compras-y-rediseno (1/10/2026): lo que una devolución de
+                // compra (nota de crédito a proveedor) SACA del stock. Lo escribe
+                // NotaCreditoProveedorHelper y lo lee ValidarDevolucionCompraHelper para el tope.
+                // Para bases de producción existentes está
+                // ConceptoStockMovementNotaCreditoProveedorSeeder.
+                'name'  => 'Nota de credito proveedor',
+            ],
 
         ];
 

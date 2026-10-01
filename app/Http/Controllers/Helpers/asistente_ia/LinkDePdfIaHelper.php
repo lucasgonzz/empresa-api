@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\Budget;
+use App\Models\PdfColumnProfile;
 use App\Models\Sale;
 use App\Models\User;
 
@@ -141,7 +142,7 @@ class LinkDePdfIaHelper
 
         $ruta = $tipo === self::TIPO_VENTA
             ? '/sale/pdf/' . (int) $modelo->id
-            : '/budget/pdf/' . (int) $modelo->id . '/' . self::FLAGS_PRESUPUESTO;
+            : '/budget/pdf/' . (int) $modelo->id . '/' . self::FLAGS_PRESUPUESTO . self::query_del_diseno_del_presupuesto($owner_id);
 
         return [
             'ok'         => true,
@@ -151,6 +152,33 @@ class LinkDePdfIaHelper
             'link'       => $base . $ruta,
             'nota'       => 'Es el mismo link que comparte el botón de WhatsApp de la pantalla. Pasáselo tal cual, sin acortarlo ni cambiarlo.',
         ];
+    }
+
+    /**
+     * El `?pdf_column_profile_id=<id>` del diseño de presupuesto marcado por defecto del dueño, o
+     * cadena vacía si no tiene ninguno.
+     *
+     * Existe para que el link sea REALMENTE el mismo que comparte el botón de WhatsApp: desde la
+     * misión pdf-presupuestos-y-pedidos-personalizables ese botón lleva el diseño por defecto
+     * (`WhatsappBtn.vue::build_budget_pdf_url()`), y sin este parámetro la API imprime el PDF de
+     * siempre, que ignora lo que el dueño personalizó. Solo el marcado como por defecto, igual que
+     * la SPA: sin él, el link queda como antes y la API lo atiende con el PDF de siempre.
+     *
+     * Se busca con el dueño de la conversación y el modelo `budget`: el default de una venta o de
+     * otro comercio nunca sale acá.
+     *
+     * @param  int  $owner_id
+     * @return string  '' o '?pdf_column_profile_id=<id>'.
+     */
+    protected static function query_del_diseno_del_presupuesto($owner_id): string
+    {
+        $perfil_id = PdfColumnProfile::where('user_id', (int) $owner_id)
+            ->where('model_name', 'budget')
+            ->where('is_default', true)
+            ->orderBy('id')
+            ->value('id');
+
+        return is_null($perfil_id) ? '' : '?pdf_column_profile_id=' . (int) $perfil_id;
     }
 
     /**

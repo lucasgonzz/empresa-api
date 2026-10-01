@@ -78,25 +78,35 @@ class ArticleVariantController extends Controller
         // Acción elegida por el usuario para la disponibilidad masiva.
         $accion = $request->accion;
 
+        // Variantes que corresponden a las propiedades actuales. Las huérfanas (combinaciones que
+        // dejaron de ser válidas) se ocultan pero no se borran, y la grilla del SPA no las muestra:
+        // habilitarlas desde acá las dejaría vendiéndose en Vender y en la tienda sin que nadie las vea.
+        $generator = new ArticleVariantGeneratorHelper($article_id);
+        $valid_ids = $generator->valid_variant_ids();
+
         if ($accion == 'todas') {
-            // Todas las variantes del artículo pasan a estar disponibles.
-            ArticleVariant::where('article_id', $article_id)->update(['oculta' => false]);
+            // Todas las variantes vigentes del artículo pasan a estar disponibles.
+            ArticleVariant::where('article_id', $article_id)
+                            ->whereIn('id', $valid_ids)
+                            ->update(['oculta' => false]);
 
         } else if ($accion == 'ninguna') {
             // Ninguna variante del artículo queda disponible.
             ArticleVariant::where('article_id', $article_id)->update(['oculta' => true]);
 
         } else if ($accion == 'con_stock') {
-            // Disponibles las que tienen stock > 0...
+            // Disponibles las vigentes que tienen stock > 0...
             ArticleVariant::where('article_id', $article_id)
+                            ->whereIn('id', $valid_ids)
                             ->where('stock', '>', 0)
                             ->update(['oculta' => false]);
 
             // ...y ocultas el resto (sin stock cargado o stock <= 0).
             ArticleVariant::where('article_id', $article_id)
-                            ->where(function ($query) {
+                            ->where(function ($query) use ($valid_ids) {
                                 $query->whereNull('stock')
-                                        ->orWhere('stock', '<=', 0);
+                                        ->orWhere('stock', '<=', 0)
+                                        ->orWhereNotIn('id', $valid_ids);
                             })
                             ->update(['oculta' => true]);
         }

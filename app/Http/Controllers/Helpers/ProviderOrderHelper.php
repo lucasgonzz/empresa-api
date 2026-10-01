@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionCompraHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
@@ -394,8 +395,34 @@ class ProviderOrderHelper {
 					$cantidad_real = $article->pivot->received;
 				}
 
-				$amount = -$cantidad_real;
+				/*
+					🔴 Menos lo que ya se le DEVOLVIÓ al proveedor sobre esta compra (misión
+					devoluciones-compras-y-rediseno, 1/10/2026). Esa parte ya salió del stock con
+					la nota de crédito a proveedor (concepto "Nota de credito proveedor", atado a
+					esta compra): sacarla otra vez al borrar dejaba el stock por DEBAJO de donde
+					estaba antes de la compra. Compra 10, devolución 4, borrar: salían 10 y el
+					stock quedaba 4 abajo. Lo ya sacado se lee del libro (no de los renglones de las
+					NC: lo que importa acá es lo que SALIÓ del stock), en la unidad de la compra
+					(bultos), igual que $cantidad_real: la conversión a unidades la sigue haciendo
+					check_unidades_individuales() con el concepto de eliminación.
 
+					Hoy ProviderOrderController::destroy() frena el borrado mientras la compra tenga
+					NC vivas, y eliminar una NC devuelve su stock (el libro queda neteado en 0). Esta
+					resta queda igual como red: es la única cuenta que sigue siendo correcta si alguna
+					vez se borra por otro camino.
+				*/
+				$ya_sacadas = ValidarDevolucionCompraHelper::unidades_ya_sacadas($provider_order, $article);
+
+				$amount = -max(0, (float)$cantidad_real - $ya_sacadas);
+
+				/*
+					🔴 Se reinicia en cada vuelta. Antes $data vivía entre artículos y el
+					`to_address_id` de uno que reparte por depósitos quedaba pegado en el siguiente,
+					que no reparte: CheckToAddress le attacheaba el depósito y lo pasaba a "reparte
+					por depósitos" con una sola fila (ver APRENDER_NO_PARCHEAR, "el attach del primer
+					pivote").
+				*/
+				$data = [];
 
 		        $data['model_id'] = $article->id;
 
