@@ -168,7 +168,12 @@ class CajaReportsHelper {
 		$total = 0;
 
 		$notas_de_credito = CurrentAcount::where('user_id', $instance->userId())
-											->where('status', 'nota_credito');
+											->where('status', 'nota_credito')
+											// Solo devoluciones de VENTA: una NC a proveedor
+											// (provider_id cargado, misión
+											// devoluciones-compras-y-rediseno, 1/10/2026) no es
+											// una devolución de un cliente.
+											->whereNull('provider_id');
 		if (!is_null($until_date) && $until_date != 0) {
             $notas_de_credito = $notas_de_credito->whereDate('created_at', '>=', $from_date)
                             					->whereDate('created_at', '<=', $until_date);
