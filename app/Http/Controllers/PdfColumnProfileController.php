@@ -67,6 +67,18 @@ class PdfColumnProfileController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
+        /** Una factura de ARCA diseñada con cajas no puede nacer en una hoja donde no entra su cuadro (A5). */
+        $hoja_chica = $this->factura_en_hoja_chica_response(
+            $request->model_name,
+            $is_afip_ticket,
+            $page_layout,
+            $request->input('paper_height_mm')
+        );
+
+        if (! is_null($hoja_chica)) {
+            return $hoja_chica;
+        }
+
         if ($request->is_default) {
             PdfColumnProfile::where('user_id', $this->userId())
                 ->where('model_name', $request->model_name)
@@ -239,6 +251,23 @@ class PdfColumnProfileController extends Controller
             } catch (\InvalidArgumentException $e) {
                 return response()->json(['message' => $e->getMessage()], 422);
             }
+        }
+
+        /**
+         * Una factura de ARCA diseñada con cajas no puede quedar en una hoja donde no entra su
+         * cuadro (A5). Se mira lo que QUEDA guardado: el diseño y el alto del PUT si vienen, si no
+         * los del perfil. Así se frena también tildar "Es factura de ARCA" en el formulario de un
+         * diseño armado en A5, que no pasa por el diseñador (que ya no deja elegir A5).
+         */
+        $hoja_chica = $this->factura_en_hoja_chica_response(
+            $new_model_name,
+            $is_afip_ticket,
+            $has_page_layout ? $page_layout : $model->page_layout,
+            $request->has('paper_height_mm') ? $request->input('paper_height_mm') : $model->paper_height_mm
+        );
+
+        if (! is_null($hoja_chica)) {
+            return $hoja_chica;
         }
 
         if ($request->is_default) {
@@ -1022,6 +1051,36 @@ class PdfColumnProfileController extends Controller
             $page_layout,
             DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket)
         );
+    }
+
+    /**
+     * 422 si el perfil queda como factura de ARCA diseñada con cajas en una hoja donde no entra el
+     * cuadro de ARCA (DisenoDerivadoPdf::factura_en_hoja_chica()), o null si no.
+     *
+     * Va armada a mano y no como ValidationException: el Handler de la app le pisa el `message` a
+     * esa excepción con el genérico traducido, y acá el `message` es lo que muestra el diseñador.
+     * El mismo texto va en `errors` bajo la clave del alto de la hoja, como el resto de la
+     * validación de este controller (printable_width_mm, pdf_column_options): con `errors` arma su
+     * aviso el interceptor global del SPA, que es lo que ve el formulario genérico del registro.
+     *
+     * @param string     $model_name
+     * @param bool       $is_afip_ticket
+     * @param array|null $page_layout     el que queda guardado.
+     * @param mixed      $paper_height_mm el que queda guardado.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function factura_en_hoja_chica_response($model_name, $is_afip_ticket, $page_layout, $paper_height_mm)
+    {
+        if (! DisenoDerivadoPdf::factura_en_hoja_chica($model_name, $is_afip_ticket, $page_layout, $paper_height_mm)) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA,
+            'errors'  => [
+                'paper_height_mm' => [DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA],
+            ],
+        ], 422);
     }
 
     /**

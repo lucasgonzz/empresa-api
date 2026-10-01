@@ -13,7 +13,9 @@ use App\Models\Sale;
 /**
  * El diseño con cajas EQUIVALENTE a lo que un diseño de PDF imprime hoy con sus flags, y el
  * comprobante con el que el diseñador ofrece "Ver un PDF de prueba" (misión
- * diseno-pdf-configurable, 1/10/2026, §5 y §2.3 del plan).
+ * diseno-pdf-configurable, 1/10/2026, §5 y §2.3 del plan). También las reglas del diseñador que
+ * la API vuelve a aplicar al guardar: qué perfil es fiscal (es_fiscal()) y en qué hoja no entra
+ * una factura de ARCA (factura_en_hoja_chica()).
  *
  * POR QUÉ EXISTE. Un perfil con `page_layout` NULL imprime "el PDF de siempre" (NewSalePdf /
  * ProfileDocumentPdf, gobernados por los flags show_*). Cuando el dueño lo abre en el diseñador
@@ -49,6 +51,16 @@ class DisenoDerivadoPdf
 
     /** Id del texto libre que ocupa el lugar del "Pie de página" (footer_text) del perfil. */
     const ID_TEXTO_DE_PIE = 'texto_de_pie';
+
+    /**
+     * Alto mínimo de la hoja (mm) para una factura de ARCA diseñada con cajas: el cuadro de ARCA
+     * del pie (importes, QR y CAE, unos 100 mm) no entra completo debajo del encabezado y de la
+     * zona de arriba en una A5 (210 mm); en Carta (279), A4 (297) y Oficio (356) sí.
+     */
+    const ALTO_MINIMO_DE_HOJA_PARA_FACTURA = 250;
+
+    /** Por qué no (el texto que ya muestra el diseñador, más dónde se cambia la hoja). */
+    const MENSAJE_FACTURA_EN_HOJA_CHICA = 'En A5 no entra completo el cuadro de ARCA (importes, QR y CAE): para facturas usá A4, Carta u Oficio. Cambiá la hoja en Diseñar PDF.';
 
     /**
      * Keys del cuadrante izquierdo del cliente del remito (`header_layout.receptor.izquierda`, las
@@ -158,6 +170,38 @@ class DisenoDerivadoPdf
     public static function es_fiscal($model_name, $is_afip_ticket)
     {
         return $model_name === 'sale' && (bool) $is_afip_ticket;
+    }
+
+    /**
+     * ¿El perfil queda como una factura de ARCA diseñada con cajas en una hoja donde no entra el
+     * cuadro de ARCA (más baja que ALTO_MINIMO_DE_HOJA_PARA_FACTURA)?
+     *
+     * Es el lado API de la regla que el diseñador ya aplica (no deja elegir A5 en una factura):
+     * igual se llega tildando "Es factura de ARCA" en el formulario de un diseño armado en A5, o
+     * mandándolo por API. Sin diseño no aplica: el PDF de siempre ignora la hoja.
+     *
+     * @param string     $model_name
+     * @param mixed      $is_afip_ticket  el que queda guardado.
+     * @param array|null $page_layout     el que queda guardado, ya normalizado.
+     * @param mixed      $paper_height_mm el que queda guardado; null = A4.
+     * @return bool
+     */
+    public static function factura_en_hoja_chica($model_name, $is_afip_ticket, $page_layout, $paper_height_mm)
+    {
+        if (! self::es_fiscal($model_name, $is_afip_ticket)) {
+            return false;
+        }
+
+        /** La regla de DisenoDePaginaPdf::tiene_diseno(), sobre el arreglo que queda guardado. */
+        if (! is_array($page_layout) || (! isset($page_layout['superior']) && ! isset($page_layout['pie']))) {
+            return false;
+        }
+
+        $alto = ($paper_height_mm === null || $paper_height_mm === '')
+            ? DisenoDePaginaPdf::ALTO_DE_HOJA_POR_DEFECTO
+            : (int) $paper_height_mm;
+
+        return $alto < self::ALTO_MINIMO_DE_HOJA_PARA_FACTURA;
     }
 
     /**

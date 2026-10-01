@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Pdf;
 
+use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Services\PdfColumnService;
@@ -683,6 +685,152 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
         $this->postJson('api/pdf-column-profiles', $this->payload_de_alta(['paper_height_mm' => 50]))
             ->assertStatus(422)
             ->assertJsonValidationErrors('paper_height_mm');
+    }
+
+    /**
+     * Las medidas de un formato de hoja del catálogo (para no escribir los milímetros a mano).
+     *
+     * @param string $key 'a4' | 'carta' | 'oficio' | 'a5'
+     * @return array{ancho_mm:int, alto_mm:int, nombre:string}
+     */
+    protected function hoja($key)
+    {
+        foreach (CatalogoDeCamposPdf::formatos_de_hoja() as $formato) {
+            if ($formato['key'] === $key) {
+                return $formato;
+            }
+        }
+
+        $this->fail('El catálogo no tiene el formato de hoja '.$key.'.');
+    }
+
+    /**
+     * Los atributos de la hoja de un perfil en ese formato.
+     *
+     * @param string $key
+     * @return array<string, int>
+     */
+    protected function en_hoja($key)
+    {
+        $hoja = $this->hoja($key);
+
+        return [
+            'paper_width_mm'     => $hoja['ancho_mm'],
+            'printable_width_mm' => $hoja['ancho_mm'],
+            'paper_height_mm'    => $hoja['alto_mm'],
+        ];
+    }
+
+    /**
+     * Una factura de ARCA no puede quedar diseñada en A5: no entra completo el cuadro de importes,
+     * QR y CAE. El diseñador ya no deja elegir A5 en una factura, pero se llega igual tildando "Es
+     * factura de ARCA" en el formulario de un diseño armado en A5: 422, y no se escribe nada.
+     *
+     * @test
+     */
+    public function tildar_arca_en_un_diseno_en_a5_da_422_y_no_escribe_nada()
+    {
+        $owner = $this->autenticar();
+        $hermano = $this->crear_perfil($owner->id, ['name' => 'zz Hermano por defecto', 'is_default' => true]);
+        $a5 = $this->crear_perfil($owner->id, array_merge($this->en_hoja('a5'), [
+            'page_layout' => $this->diseno_valido(),
+        ]));
+
+        $response = $this->putJson('api/pdf-column-profiles/'.$a5->id, [
+            'is_afip_ticket' => true,
+            'is_default'     => true,
+        ]);
+
+        $response->assertStatus(422);
+        $this->assertSame(DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA, $response->json('message'), 'El message es el que muestra el diseñador.');
+        $this->assertSame(
+            [DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA],
+            $response->json('errors.paper_height_mm'),
+            'El mismo texto va en errors: con eso arma el aviso el formulario genérico del registro.'
+        );
+
+        $this->assertFalse((bool) $a5->fresh()->is_afip_ticket, 'El 422 no puede haber guardado el "Es factura de ARCA".');
+        $this->assertFalse((bool) $a5->fresh()->is_default);
+        $this->assertTrue((bool) $hermano->fresh()->is_default, 'El 422 no puede haberle sacado el "por defecto" al hermano.');
+
+        /** Cambiando la hoja en el mismo PUT (lo que hace el diseñador al guardar), pasa. */
+        $this->putJson('api/pdf-column-profiles/'.$a5->id, array_merge(['is_afip_ticket' => true], $this->en_hoja('a4')))
+            ->assertStatus(200);
+        $this->assertTrue((bool) $a5->fresh()->is_afip_ticket);
+    }
+
+    /**
+     * Los otros caminos a una factura diseñada en A5 también dan 422: achicar a A5 la hoja de una
+     * factura diseñada, mandar el diseño de una factura que está en A5, o crearla así.
+     *
+     * @test
+     */
+    public function una_factura_disenada_no_queda_en_a5_por_ningun_camino()
+    {
+        $owner = $this->autenticar();
+
+        $factura = $this->crear_perfil($owner->id, ['is_afip_ticket' => true, 'page_layout' => $this->diseno_valido()]);
+        $this->putJson('api/pdf-column-profiles/'.$factura->id, $this->en_hoja('a5'))
+            ->assertStatus(422)
+            ->assertJson(['message' => DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA]);
+        $this->assertNull($factura->fresh()->paper_height_mm, 'La hoja sigue como estaba (A4).');
+
+        $factura_a5_sin_diseno = $this->crear_perfil($owner->id, array_merge($this->en_hoja('a5'), [
+            'name'           => 'zz Factura A5 sin diseño',
+            'is_afip_ticket' => true,
+        ]));
+        $this->putJson('api/pdf-column-profiles/'.$factura_a5_sin_diseno->id, ['page_layout' => $this->diseno_valido()])
+            ->assertStatus(422);
+        $this->assertNull($factura_a5_sin_diseno->fresh()->page_layout, 'El diseño no se guardó.');
+
+        $antes = PdfColumnProfile::where('user_id', $owner->id)->count();
+        $this->postJson('api/pdf-column-profiles', $this->payload_de_alta(array_merge($this->en_hoja('a5'), [
+            'is_afip_ticket' => true,
+            'page_layout'    => $this->diseno_valido(),
+        ])))->assertStatus(422)->assertJson(['message' => DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA]);
+        $this->assertSame($antes, PdfColumnProfile::where('user_id', $owner->id)->count(), 'El 422 no crea el diseño.');
+
+        $this->postJson('api/pdf-column-profiles', $this->payload_de_alta(array_merge($this->en_hoja('carta'), [
+            'is_afip_ticket' => true,
+            'page_layout'    => $this->diseno_valido(),
+        ])))->assertStatus(201);
+    }
+
+    /**
+     * A4, Carta y Oficio pasan. Un perfil SIN diseño en A5 tampoco da 422: el PDF de siempre ignora
+     * la hoja. Un alto null es A4. Y "volver al diseño de siempre" se puede siempre, aunque el perfil
+     * haya quedado en A5 (se arma directo en la base: por la API ya no se llega).
+     *
+     * @test
+     */
+    public function una_factura_en_a4_carta_u_oficio_y_un_perfil_sin_diseno_en_a5_pasan()
+    {
+        $owner = $this->autenticar();
+
+        foreach (['a4', 'carta', 'oficio'] as $key) {
+            $perfil = $this->crear_perfil($owner->id, array_merge($this->en_hoja($key), [
+                'name'        => 'zz Factura en '.$key,
+                'page_layout' => $this->diseno_valido(),
+            ]));
+
+            $this->putJson('api/pdf-column-profiles/'.$perfil->id, ['is_afip_ticket' => true])->assertStatus(200);
+            $this->assertTrue((bool) $perfil->fresh()->is_afip_ticket, 'Una factura diseñada en '.$key.' entra.');
+        }
+
+        $sin_diseno = $this->crear_perfil($owner->id, array_merge($this->en_hoja('a5'), ['name' => 'zz Remito A5 sin diseño']));
+        $this->putJson('api/pdf-column-profiles/'.$sin_diseno->id, ['is_afip_ticket' => true])->assertStatus(200);
+        $this->assertTrue((bool) $sin_diseno->fresh()->is_afip_ticket, 'Sin diseño no se valida la hoja.');
+
+        $sin_alto = $this->crear_perfil($owner->id, ['name' => 'zz Remito sin alto', 'page_layout' => $this->diseno_valido()]);
+        $this->putJson('api/pdf-column-profiles/'.$sin_alto->id, ['is_afip_ticket' => true])->assertStatus(200);
+
+        $quedo_en_a5 = $this->crear_perfil($owner->id, array_merge($this->en_hoja('a5'), [
+            'name'           => 'zz Factura que quedó en A5',
+            'is_afip_ticket' => true,
+            'page_layout'    => $this->diseno_valido(),
+        ]));
+        $this->putJson('api/pdf-column-profiles/'.$quedo_en_a5->id, ['page_layout' => null])->assertStatus(200);
+        $this->assertNull($quedo_en_a5->fresh()->page_layout, 'Volver al diseño de siempre saca la factura del caso.');
     }
 
     /**
