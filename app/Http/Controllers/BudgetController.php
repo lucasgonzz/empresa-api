@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Http\Controllers\Pdf\ProfileDocumentPdf;
@@ -102,7 +103,8 @@ class BudgetController extends Controller
             */
             CuentaCorrienteLock::bloquear('client', $request->client_id);
 
-            $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
+            $model = Budget::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                       => $this->num('budgets'),
                 'client_id'                 => $request->client_id,
                 'start_at'                  => $request->start_at,
@@ -113,6 +115,8 @@ class BudgetController extends Controller
                 'sale_status_id'            => $request->sale_status_id,
                 'discount_stock'            => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 'iva_aplicado'              => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
+                // Check de Vender "Sumar IVA a los artículos sin IVA": si no se envía (SPA vieja), queda apagado.
+                'iva_en_articulos_sin_iva'  => !is_null($request->iva_en_articulos_sin_iva) ? $request->iva_en_articulos_sin_iva : 0,
                 'total'                     => $request->total,
                 'budget_status_id'          => $request->budget_status_id,
                 'address_id'                => $request->address_id,
@@ -161,7 +165,7 @@ class BudgetController extends Controller
              * mandaria la columna en el INSERT aunque valga null, tumbando el alta de TODO
              * presupuesto. Ver `ForzarTotalEsquemaHelper`.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'), 'budgets'));
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
             GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
@@ -517,6 +521,9 @@ class BudgetController extends Controller
             $model->sale_status_id           = $request->sale_status_id;
             $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
             $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
+            // Mismo patrón que iva_aplicado: si no viene en el PUT (SPA vieja), se preserva lo guardado.
+            // Pasa por la guarda de esquema: en la ventana del deploy la columna puede no estar.
+            IvaEnArticulosSinIvaEsquemaHelper::asignar_en_update($model, $request->iva_en_articulos_sin_iva, 'budgets');
 
             $model->save();
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);

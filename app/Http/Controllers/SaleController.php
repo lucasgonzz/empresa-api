@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
@@ -407,7 +408,8 @@ class SaleController extends Controller
             /** Checkbox "Enviar correo" en vender: sin extensión no se persiste ni se encola mail. */
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
-            $model = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
+            $model = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
                 /*
                  * La fecha de creación elegida por el usuario, ya resuelta arriba (día elegido +
@@ -473,6 +475,8 @@ class SaleController extends Controller
                 'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 // Si no se envía el campo, se asume true (comportamiento por defecto: precios con IVA).
                 'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
+                // Check de Vender "Sumar IVA a los artículos sin IVA": si no se envía (SPA vieja), queda apagado.
+                'iva_en_articulos_sin_iva'          => !is_null($request->iva_en_articulos_sin_iva) ? $request->iva_en_articulos_sin_iva : 0,
                 /*
                  * `descuento` es el PORCENTAJE legacy del "forzar total" viejo, y se deja como está
                  * a propósito (auditoría del 17/9/2026, ítem A8 de la tanda 2): hoy ningún
@@ -506,7 +510,7 @@ class SaleController extends Controller
              *
              * El cero se normaliza a null en `SaleHelper::normalized_forzar_total_monto()`.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'));
 
             // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
@@ -904,6 +908,14 @@ class SaleController extends Controller
              * Mismo patrón que `BudgetController::update()`.
              */
             $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
+
+            /*
+             * iva_en_articulos_sin_iva ("Sumar IVA a los artículos sin IVA" en Vender) sigue el mismo
+             * patrón: se prende y se apaga libremente, y si no viene en el request (SPA vieja) se
+             * preserva lo guardado. La columna nació con default 0, así que nunca queda null. Pasa
+             * por la guarda de esquema: en la ventana del deploy la columna puede no estar.
+             */
+            IvaEnArticulosSinIvaEsquemaHelper::asignar_en_update($model, $request->iva_en_articulos_sin_iva, 'sales');
 
             /*
              * Flag para indicar que discount_stock se activa por primera vez en esta actualización.

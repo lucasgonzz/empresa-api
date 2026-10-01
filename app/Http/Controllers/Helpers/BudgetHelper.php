@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
@@ -74,7 +75,7 @@ class BudgetHelper {
 
 	        $employee_id = SaleHelper::getEmployeeId();
 
-	        $sale = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+	        $sale = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
 	            'num' 					=> $ct->num('sales'),
 	            'user_id' 				=> UserHelper::userId(),
 	            'client_id' 			=> $budget->client_id,
@@ -96,6 +97,9 @@ class BudgetHelper {
             	// Misma semántica que en SaleController: si no viene definido en el presupuesto, descontar stock por defecto.
             	'discount_stock'        => !is_null($budget->discount_stock) ? ($budget->discount_stock ? 1 : 0) : 1,
             	'iva_aplicado'          => !is_null($budget->iva_aplicado) ? ($budget->iva_aplicado ? 1 : 0) : 1,
+            	// Los precios de los renglones pasan tal cual del presupuesto a la venta, asi que la venta
+            	// hereda el estado del check "Sumar IVA a los articulos sin IVA" (0 si no estaba).
+            	'iva_en_articulos_sin_iva' => !empty($budget->iva_en_articulos_sin_iva) ? 1 : 0,
             	'employee_id'           => $employee_id,
             	'seller_id'             => SaleHelper::get_seller_id_desde(null, $budget->client_id, $employee_id),
             	'valor_dolar'           => $budget->valor_dolar,
@@ -138,7 +142,7 @@ class BudgetHelper {
 	         * null viaja igual al INSERT, que revienta con `Unknown column`. Ver
 	         * `ForzarTotalEsquemaHelper`.
 	         */
-	        ], $budget->forzar_total_monto, 'sales'));
+	        ], $budget->forzar_total_monto, 'sales'), 'sales'));
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 
 	        Self::attachSaleServices($sale, $budget);
