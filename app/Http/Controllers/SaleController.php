@@ -45,6 +45,7 @@ use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
 use App\Http\Controllers\Pdf\NewSalePdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
+use App\Http\Controllers\Pdf\SaleLayoutPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
@@ -1460,6 +1461,23 @@ class SaleController extends Controller
                 if ($afip_ticket) {
                     $afip_ticket_id = $afip_ticket->id;
                 }
+            }
+        }
+
+        /**
+         * Diseño de PDF armado con cajas (misión diseno-pdf-configurable, 1/10/2026): el perfil se
+         * resuelve con las MISMAS reglas que NewSalePdf y, SOLO si tiene `page_layout`, la venta
+         * sale con SaleLayoutPdf. Sin diseño (todos los perfiles hasta que alguien diseña uno), o si
+         * el diseño falla al dibujarse (`try_render()` devuelve null y deja el error en el log),
+         * sale el PDF de siempre sin ningún cambio: este link lo abre también el cliente final.
+         */
+        $perfil_con_diseno = SaleLayoutPdf::perfil_con_diseno($sale, $profile_id, $afip_ticket_id, $origin);
+
+        if (! is_null($perfil_con_diseno)) {
+            $pdf = SaleLayoutPdf::try_render($sale, $perfil_con_diseno, $afip_ticket_id);
+
+            if ($pdf) {
+                $pdf->emit();
             }
         }
 

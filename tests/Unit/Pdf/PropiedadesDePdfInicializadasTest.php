@@ -79,6 +79,9 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'RoadMapPdf.php' => [],
         'SaleAfipTicketPdf.php' => ['afip_information', 'for_commerce', 'total_pages'],
         'SaleDeliveredArticlesPdf.php' => [],
+        // Alta del 1/10/2026 (misión diseno-pdf-configurable): la venta con diseño de página.
+        // Entra con [] a propósito: toda propiedad que lee está declarada e inicializada.
+        'SaleLayoutPdf.php' => [],
         'SalePdf.php' => ['afip_helper'],
         'SaleTicketPdf.php' => ['total_sale'],
         'SaleTicketRaw.php' => [],
