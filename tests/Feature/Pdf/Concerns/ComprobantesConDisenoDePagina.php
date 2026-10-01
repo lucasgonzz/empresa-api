@@ -6,6 +6,7 @@ use App\Http\Controllers\Pdf\SaleLayoutPdf;
 use App\Models\Address;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;
+use App\Models\Budget;
 use App\Models\BudgetStatus;
 use App\Models\Buyer;
 use App\Models\Caja;
@@ -25,6 +26,7 @@ use App\Models\PdfColumnProfile;
 use App\Models\PriceType;
 use App\Models\Provincia;
 use App\Models\Sale;
+use App\Models\SaleDeliveryInfo;
 use App\Models\SaleStatus;
 use App\Models\SaleType;
 use App\Models\Seller;
@@ -361,6 +363,71 @@ trait ComprobantesConDisenoDePagina
             'caja_posnet' => $caja_posnet,
             'condicion' => $condicion,
         ];
+
+        return Sale::find($venta->id);
+    }
+
+    /**
+     * Completa la venta COMPLETA con lo que piden los campos de la segunda tanda del catálogo: el
+     * CUIL del cliente y el código postal de su localidad (2000), el presupuesto (N° 318) y el
+     * pedido online (N° 87) de los que salió, su factura B autorizada (00001-00000027, con CAE),
+     * el total facturado ($2.362,50), los datos de envío de la etiqueta, el acopio y el incoterm
+     * (FOB). Aparte de crear_venta_completa() para no cambiarle la venta a los tests que ya la usan.
+     *
+     * @param \App\Models\Sale $venta La de crear_venta_completa().
+     * @return \App\Models\Sale
+     */
+    protected function completar_venta_con_origen_factura_y_envio($venta)
+    {
+        $dueno_id = $this->dueno->id;
+        $cliente = $venta->client;
+
+        $cliente->cuil = '20-12345678-3';
+        $cliente->save();
+        $cliente->location->codigo_postal = '2000';
+        $cliente->location->save();
+
+        $presupuesto = Budget::create([
+            'num' => 318,
+            'user_id' => $dueno_id,
+            'client_id' => $cliente->id,
+            'budget_status_id' => 1,
+            'total' => 0,
+            'moneda_id' => 1,
+        ]);
+        $comprador = Buyer::create(['name' => 'Juan', 'surname' => 'Perez', 'email' => 'comprador-'.uniqid().'@test.local', 'user_id' => $dueno_id]);
+        $estado = OrderStatus::firstOrCreate(['name' => 'Sin confirmar']);
+        $pedido = Order::create([
+            'num' => 87,
+            'status' => 'unconfirmed',
+            'deliver' => 1,
+            'buyer_id' => $comprador->id,
+            'order_status_id' => $estado->id,
+            'user_id' => $dueno_id,
+            'total' => 0,
+        ]);
+
+        $venta->budget_id = $presupuesto->id;
+        $venta->order_id = $pedido->id;
+        $venta->total_facturado = 2362.5;
+        $venta->en_acopio = 1;
+        $venta->incoterms = 'FOB';
+        $venta->save();
+
+        SaleDeliveryInfo::create([
+            'sale_id' => $venta->id,
+            'first_name' => 'Juan',
+            'last_name' => 'Perez',
+            'phone' => '1155555555',
+            'dni' => '12345678',
+            'cuit' => '',
+            'locality' => 'Rosario',
+            'province' => 'Santa Fe',
+            'postal_code' => '2000',
+            'email' => 'juan-test@correo.local',
+        ]);
+
+        $this->crear_factura($venta, 'B');
 
         return Sale::find($venta->id);
     }

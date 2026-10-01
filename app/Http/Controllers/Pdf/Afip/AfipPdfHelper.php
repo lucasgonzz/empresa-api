@@ -2332,6 +2332,20 @@ class AfipPdfHelper
     }
 
     /**
+     * El comprobante como se lo nombra: letra, punto de venta (5) y número (8), "B 00001-00000027".
+     * Los mismos ceros que el encabezado fiscal (punto de venta y N° de comprobante, con left_pad()).
+     *
+     * @param mixed $afip_ticket
+     * @return string
+     */
+    public static function numero_de_comprobante($afip_ticket): string
+    {
+        return trim((string) $afip_ticket->cbte_letra.' '
+            .self::left_pad((string) $afip_ticket->punto_venta, 5).'-'
+            .self::left_pad((string) $afip_ticket->cbte_numero, 8));
+    }
+
+    /**
      * Completa con ceros a la izquierda para códigos AFIP.
      *
      * @param string $value

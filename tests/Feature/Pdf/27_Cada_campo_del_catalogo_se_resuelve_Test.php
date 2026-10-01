@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\PdfLayout\CamposDeVentaPdf;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\FuenteDeCamposPdf;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Models\Location;
 use App\Models\Sale;
 use Tests\Concerns\DocumentosParaPdf;
 use Tests\EmpresaTestCase;
@@ -92,7 +93,7 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
      */
     public function cada_campo_de_venta_se_resuelve_y_dice_lo_mismo_que_el_remito_de_siempre()
     {
-        $venta = $this->crear_venta_completa();
+        $venta = $this->completar_venta_con_origen_factura_y_envio($this->crear_venta_completa());
         $fuente = new CamposDeVentaPdf($venta, $this->dueno, false, 'descriptivo');
 
         $valores = $this->resolver_todo($fuente);
@@ -118,6 +119,8 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         $this->assertSame('Mayorista Test', $valores['cliente_lista_de_precios']);
         $this->assertSame('Ana Vendedora del Cliente', $valores['cliente_vendedor']);
         $this->assertSame('Paga a 30 dias', $valores['cliente_observaciones']);
+        $this->assertSame('20-12345678-3', $valores['cliente_cuil']);
+        $this->assertSame('2000', $valores['cliente_codigo_postal'], 'El código postal de la localidad del cliente.');
 
         /** Venta: todo lo que pidió Lucas. */
         $this->assertSame('1520', $valores['venta_numero']);
@@ -138,6 +141,21 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         $this->assertSame('OC-4471', $valores['venta_orden_de_compra']);
         $this->assertSame('4', $valores['venta_cantidad_de_unidades'], '2 taladros, 1 mecha y 1 instalación.');
         $this->assertSame('Entregar por la tarde', $valores['venta_observaciones']);
+
+        /** Segunda tanda: origen, factura, envío, acopio e incoterms. */
+        $this->assertSame('318', $valores['venta_presupuesto_origen']);
+        $this->assertSame('87', $valores['venta_pedido_origen']);
+        $this->assertSame('B 00001-00000027', $valores['venta_factura_asociada'], 'Letra, punto de venta (5) y número (8), como el encabezado fiscal.');
+        $this->assertSame('76123456789012', $valores['venta_cae']);
+        $this->assertSame(Numbers::price(2362.5, true, $venta->moneda_id), $valores['venta_total_facturado']);
+        $this->assertSame('$2.362,50', $valores['venta_total_facturado']);
+        $this->assertSame([
+            'Juan Perez · 1155555555',
+            'Rosario, Santa Fe (2000)',
+            'juan-test@correo.local / DNI 12345678',
+        ], $valores['venta_datos_de_envio'], 'Tres renglones, salteando lo vacío (no tiene CUIT).');
+        $this->assertSame('Mercadería en acopio', $valores['venta_en_acopio']);
+        $this->assertSame('FOB', $valores['venta_incoterms']);
 
         /** Cuenta corriente: el formato del cuadrante derecho del remito ('$'.Numbers::price()). */
         $this->assertSame('$15.000', $valores['cc_saldo_anterior']);
@@ -216,6 +234,45 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
     }
 
     /**
+     * Los campos de la segunda tanda cuando falta algo: la factura asociada es la primera CON CAE
+     * (una sin CAE no cuenta, el criterio del despacho de la tienda), el total facturado en 0 no se
+     * imprime, sin acopio no hay renglón, y los datos de envío saltean lo vacío (solo teléfono y
+     * CP: dos renglones, el CP rotulado).
+     *
+     * @test
+     */
+    public function los_campos_de_la_segunda_tanda_saltean_lo_que_falta()
+    {
+        $venta = $this->crear_venta_completa(['total_facturado' => 0, 'en_acopio' => 0]);
+        $campo = function ($key) {
+            return $this->campo_de_caja($key);
+        };
+
+        /** Una factura sin CAE (rechazada) no es la factura de la venta. */
+        $rechazada = $this->crear_factura($venta, 'B');
+        $rechazada->cae = null;
+        $rechazada->save();
+
+        $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
+        $this->assertNull($fuente->valor('venta_factura_asociada', $campo('venta_factura_asociada')));
+        $this->assertNull($fuente->valor('venta_cae', $campo('venta_cae')));
+        $this->assertNull($fuente->valor('venta_total_facturado', $campo('venta_total_facturado')));
+        $this->assertNull($fuente->valor('venta_en_acopio', $campo('venta_en_acopio')));
+        $this->assertNull($fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio')), 'Sin datos de envío cargados, nada.');
+
+        /** Con una factura autorizada después de la rechazada, esa es la de la venta. */
+        $autorizada = $this->crear_factura($venta, 'A');
+        $autorizada->cbte_numero = 28;
+        $autorizada->save();
+        \App\Models\SaleDeliveryInfo::create(['sale_id' => $venta->id, 'phone' => '1155555555', 'postal_code' => '2000', 'first_name' => '', 'email' => null]);
+
+        $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
+        $this->assertSame('A 00001-00000028', $fuente->valor('venta_factura_asociada', $campo('venta_factura_asociada')));
+        $this->assertSame('76123456789012', $fuente->valor('venta_cae', $campo('venta_cae')));
+        $this->assertSame(['1155555555', 'CP 2000'], $fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio')));
+    }
+
+    /**
      * Una venta en dólares imprime la cotización.
      *
      * @test
@@ -235,6 +292,14 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
     public function cada_campo_de_presupuesto_se_resuelve_y_dice_lo_mismo_que_el_presupuesto_de_siempre()
     {
         $budget = $this->crear_presupuesto_completo();
+
+        /** Los dos campos de cliente de la segunda tanda: el CUIL y el código postal de su localidad. */
+        $localidad = Location::create(['name' => 'La Plata Test', 'codigo_postal' => '1900', 'user_id' => $this->dueno->id]);
+        $budget->client->cuil = '20-22222222-9';
+        $budget->client->location_id = $localidad->id;
+        $budget->client->save();
+        $budget = $budget->fresh();
+
         $documento = new BudgetPdfDocument($budget);
         $valores = $this->resolver_todo(new CamposDePresupuestoPdf($documento, false));
 
@@ -246,6 +311,8 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         }
 
         $this->assertSame('Cliente Presupuesto Test', $valores['cliente_nombre']);
+        $this->assertSame('20-22222222-9', $valores['cliente_cuil']);
+        $this->assertSame('1900', $valores['cliente_codigo_postal']);
         $this->assertSame((string) $budget->num, $valores['presupuesto_numero']);
         $this->assertSame('Vendedora Presupuesto', $valores['presupuesto_vendedor']);
         $this->assertSame('Mitre 980, La Plata', $valores['presupuesto_sucursal']);

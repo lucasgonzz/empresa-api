@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\Caja;
 use App\Models\SaleStatus;
 use Carbon\Carbon;
@@ -45,6 +46,12 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
     /** @var array<string, mixed>|null Saldo anterior, compra actual y saldo, o null si no corresponde. */
     private $cuenta_corriente;
 
+    /** @var bool Ya se buscó la factura asociada (memo: es una consulta y la piden dos campos). */
+    private $factura_asociada_buscada;
+
+    /** @var \App\Models\AfipTicket|null La primera factura de la venta con CAE. */
+    private $factura_asociada;
+
     /**
      * @param \App\Models\Sale      $sale
      * @param \App\Models\User|null $user                  Dueño de la venta.
@@ -61,6 +68,8 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
         $this->totales = new TotalesDeVentaPdf($sale, $user, $discount_display_mode, $es_factura);
         $this->cuenta_corriente_calculada = false;
         $this->cuenta_corriente = null;
+        $this->factura_asociada_buscada = false;
+        $this->factura_asociada = null;
     }
 
     /** @return string */
@@ -130,6 +139,25 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
                 return self::texto($this->sale->numero_orden_de_compra);
             case 'venta_cantidad_de_unidades':
                 return $this->cantidad_de_unidades();
+            case 'venta_presupuesto_origen':
+                return $this->sale->budget ? self::texto($this->sale->budget->num) : null;
+            case 'venta_pedido_origen':
+                return $this->sale->order ? self::texto($this->sale->order->num) : null;
+            case 'venta_factura_asociada':
+                return $this->factura_asociada() ? AfipPdfHelper::numero_de_comprobante($this->factura_asociada()) : null;
+            case 'venta_cae':
+                return $this->factura_asociada() ? self::texto($this->factura_asociada()->cae) : null;
+            case 'venta_total_facturado':
+                /** Con el formato de la plata del pie ("Total: $2.362,50"); null o 0 no se imprime. */
+                return (float) $this->sale->total_facturado != 0
+                    ? Numbers::price($this->sale->total_facturado, true, $this->sale->moneda_id)
+                    : null;
+            case 'venta_datos_de_envio':
+                return $this->datos_de_envio();
+            case 'venta_en_acopio':
+                return $this->sale->en_acopio ? 'Mercadería en acopio' : null;
+            case 'venta_incoterms':
+                return self::texto($this->sale->incoterms);
             case 'venta_observaciones':
                 return self::texto_largo($this->sale->observations);
 
@@ -207,6 +235,8 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
                 return self::texto($client->cuit);
             case 'cliente_dni':
                 return self::texto($client->dni);
+            case 'cliente_cuil':
+                return self::texto($client->cuil);
             case 'cliente_condicion_iva':
                 return $client->iva_condition ? self::texto($client->iva_condition->name) : null;
             case 'cliente_telefono':
@@ -224,6 +254,9 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
                 }
 
                 return ($client->location && $client->location->provincia) ? self::texto($client->location->provincia->name) : null;
+            case 'cliente_codigo_postal':
+                /** El código postal es de la localidad (`locations.codigo_postal`), no del cliente. */
+                return $client->location ? self::texto($client->location->codigo_postal) : null;
             case 'cliente_numero':
                 return self::texto($client->num);
             case 'cliente_lista_de_precios':
@@ -246,9 +279,9 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
     {
         return [
             'cliente_nombre', 'cliente_razon_social', 'cliente_documento', 'cliente_cuit', 'cliente_dni',
-            'cliente_condicion_iva', 'cliente_telefono', 'cliente_email', 'cliente_direccion',
-            'cliente_localidad', 'cliente_provincia', 'cliente_numero', 'cliente_lista_de_precios',
-            'cliente_vendedor', 'cliente_observaciones',
+            'cliente_cuil', 'cliente_condicion_iva', 'cliente_telefono', 'cliente_email', 'cliente_direccion',
+            'cliente_localidad', 'cliente_provincia', 'cliente_codigo_postal', 'cliente_numero',
+            'cliente_lista_de_precios', 'cliente_vendedor', 'cliente_observaciones',
         ];
     }
 
@@ -503,6 +536,77 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
         }
 
         return self::lista($nombres);
+    }
+
+    /**
+     * La factura de ARCA de la venta: la PRIMERA con CAE (la de id más bajo), el mismo criterio con
+     * que el despacho de la tienda elige qué factura imprimir (`SaleController::pdf()`, origen
+     * tienda). Memoizada: la piden la factura asociada y el CAE.
+     *
+     * @return \App\Models\AfipTicket|null
+     */
+    private function factura_asociada()
+    {
+        if (! $this->factura_asociada_buscada) {
+            $this->factura_asociada_buscada = true;
+            $this->factura_asociada = $this->sale->afip_tickets()
+                ->whereNotNull('cae')
+                ->orderBy('id', 'asc')
+                ->first();
+        }
+
+        return $this->factura_asociada;
+    }
+
+    /**
+     * Los datos de envío de la etiqueta (`sale_delivery_info`), en hasta tres renglones y salteando
+     * lo vacío: nombre y apellido · teléfono; localidad, provincia (CP); email / DNI / CUIT.
+     *
+     * @return array<int, string>|null
+     */
+    private function datos_de_envio()
+    {
+        $envio = $this->sale->sale_delivery_info;
+
+        if (is_null($envio)) {
+            return null;
+        }
+
+        $nombre = self::texto(trim(trim((string) $envio->first_name).' '.trim((string) $envio->last_name)));
+        $primero = self::unir([$nombre, self::texto($envio->phone)], ' · ');
+
+        $lugar = self::unir([self::texto($envio->locality), self::texto($envio->province)], ', ');
+        $codigo_postal = self::texto($envio->postal_code);
+        if (! is_null($codigo_postal)) {
+            /** Con lugar, el CP va entre paréntesis ("Rosario, Santa Fe (2000)"); solo, rotulado. */
+            $lugar = is_null($lugar) ? 'CP '.$codigo_postal : $lugar.' ('.$codigo_postal.')';
+        }
+
+        $dni = self::texto($envio->dni);
+        $cuit = self::texto($envio->cuit);
+        $tercero = self::unir([
+            self::texto($envio->email),
+            is_null($dni) ? null : 'DNI '.$dni,
+            is_null($cuit) ? null : 'CUIT '.$cuit,
+        ], ' / ');
+
+        return self::lista([$primero, $lugar, $tercero]);
+    }
+
+    /**
+     * Une las partes que tienen algo con un separador; null si no queda ninguna.
+     *
+     * @param array<int, string|null> $partes
+     * @param string                  $separador
+     * @return string|null
+     */
+    private static function unir($partes, $separador)
+    {
+        $con_algo = array_values(array_filter($partes, function ($parte) {
+            return ! is_null($parte) && $parte !== '';
+        }));
+
+        return count($con_algo) > 0 ? implode($separador, $con_algo) : null;
     }
 
     /**
