@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\TiendaNubeOrder;
 use App\Services\TiendaNube\BaseTiendaNubeService;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class TiendaNubeOrderService extends BaseTiendaNubeService
@@ -65,7 +66,7 @@ class TiendaNubeOrderService extends BaseTiendaNubeService
                 'address_id'    => 0,
                 'payment_status'          => $this->traducir_payment_status($orden_data['payment_status']),
                 'tienda_nube_order_status_id' => 1,
-                'created_at'    => $orden_data['created_at'],
+                'created_at'    => isset($orden_data['created_at']) ? Carbon::parse($orden_data['created_at'])->setTimezone(config('app.timezone')) : now(),
                 'user_id'       => UserHelper::userId(),
             ]);
 

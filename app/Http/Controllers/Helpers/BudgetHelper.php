@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -18,7 +19,9 @@ use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Article;
 use App\Models\Budget;
@@ -52,6 +55,24 @@ class BudgetHelper {
 	static function saveSale($budget, $previus_articles) {
 		if (is_null($budget->sale)) {
 	        $ct = new Controller();
+
+	        /*
+	         * 🔴 PRESUPUESTO "DE CONTADO" (mision presupuesto-contado-o-cuenta-corriente, 1/10/2026).
+	         * Si el vendedor eligio al guardar que NO va a la cuenta corriente, el presupuesto trae el
+	         * reparto de metodos de pago y la venta que nace aca se cobra en el acto, igual que una
+	         * venta de mostrador de Vender. Un presupuesto que no es de contado (la enorme mayoria, y
+	         * todo el historico) sigue exactamente por el camino de siempre: la regla esta en
+	         * `BudgetCobroHelper::es_de_contado()`.
+	         *
+	         * Se RE-VALIDA el cobro antes de crear nada: el presupuesto se pudo guardar hace dias y
+	         * desde entonces la caja se cerro, el metodo de pago se borro o el presupuesto se edito
+	         * por otro camino. Lanza `CobroDePresupuestoInvalidoException` y el controlador hace el
+	         * rollback del estado "Confirmado" y contesta 422. Va primero a proposito: todavia no
+	         * existe la venta, ni se desconto stock, ni se creo ningun movimiento.
+	         */
+	        $es_de_contado = BudgetCobroHelper::es_de_contado($budget);
+
+	        BudgetCobroHelper::validar_para_confirmar($budget);
 
 	        /*
 	         * Lo que la venta nacida de un presupuesto se lleva IGUAL que una venta de VENDER
@@ -108,22 +129,27 @@ class BudgetHelper {
 	            'terminada'				=> SaleHelper::get_terminada($to_check, null),
 	            'terminada_at'			=> SaleHelper::get_terminada_at($to_check, null),
 	            /*
-	             * 🔴 Un presupuesto NO se puede omitir de la cuenta corriente: la venta que nace al
-	             * confirmarlo va SIEMPRE a la cuenta del cliente (decision de Lucas, 18/9/2026,
-	             * tanda 3 de la mision vender-lista-obligatoria). `BudgetController` guarda 0 en el
-	             * alta y la edicion, la SPA manda 0 y deshabilita el toggle en modo presupuesto, y
-	             * aca se escribe 0 sin mirar el presupuesto (un 1 viejo no cambia nada).
+	             * 🔴 LA VENTA NACE DE CONTADO SOLO SI EL PRESUPUESTO LO ES (mision
+	             * presupuesto-contado-o-cuenta-corriente, 1/10/2026). Esto levanta PARCIALMENTE la
+	             * decision de Lucas del 18/9/2026 ("la venta que nace al confirmar va SIEMPRE a la
+	             * cuenta del cliente", tanda 3 de la mision vender-lista-obligatoria), que se tomo
+	             * porque el presupuesto no guardaba ningun dato de cobro: una venta de contado sin
+	             * metodo de pago ni caja es justo el estado que `SaleController::store()` rechaza con
+	             * el 422 `sin_metodo_de_pago`. Ahora el presupuesto GUARDA el reparto, y mas abajo se
+	             * adjunta a la venta.
 	             *
-	             * El motivo de fondo: la confirmacion desde el listado no trae ningun dato de cobro,
-	             * y una venta de contado sin metodo de pago ni movimiento de caja es justo el estado
-	             * que `SaleController::store()` rechaza con el 422 `sin_metodo_de_pago`. La deuda en
-	             * la cuenta corriente se cancela despues, registrando el pago.
+	             * Sigue siendo 0 para todo presupuesto que no sea de contado: un 1 viejo en la fila SIN
+	             * reparto no cambia nada, que es lo que fija `Presupuestos/8_Omitir_cuenta_corriente`.
+	             *
+	             * ⚠️ TIENE QUE SER 1 ANTES de adjuntar los metodos de pago:
+	             * `SaleHelper::attachSelectedPaymentMethods()` solo adjunta si `client_id` es null o la
+	             * venta esta omitida. Con el 0 de siempre, el reparto se descartaria en silencio.
 	             *
 	             * Quien lee este campo es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
 	             * (`save_current_acount && !omitir_en_cuenta_corriente`), desde `create_current_acount()`
-	             * mas abajo: `get_guardar_cuenta_corriente()` decide solo `save_current_acount`.
+	             * mas abajo: con 1 la venta NO entra a la cuenta del cliente.
 	             */
-                'omitir_en_cuenta_corriente'        => 0,
+                'omitir_en_cuenta_corriente'        => $es_de_contado ? 1 : 0,
 	        /*
 	         * El monto del total forzado viaja del presupuesto a la venta (mision
 	         * forzar-total-por-monto, 17/9/2026).
@@ -190,6 +216,17 @@ class BudgetHelper {
 	        $sale->sub_total = SaleHelper::get_sub_total($sale);
 	        $sale->save();
 
+	        /*
+	         * El cobro de contado: se adjuntan los metodos de pago de la venta, con el mismo helper y
+	         * en el mismo orden que `SaleHelper::attachProperies()` (antes de la cuenta corriente y de
+	         * la caja). Los cheques del reparto se crean aca, con el usuario que confirma. Corre
+	         * tambien con `check_sales` (venta `to_check`), como en `SaleController::store()`: ver el
+	         * comentario de la caja, mas abajo.
+	         */
+	        if ($es_de_contado) {
+	        	BudgetCobroHelper::adjuntar_cobro_a_la_venta($sale, $budget);
+	        }
+
 	        if (!$sale->to_check) {
 	        	SaleHelper::create_current_acount($sale);
 
@@ -202,6 +239,35 @@ class BudgetHelper {
 	        	 * presupuesto confirmado nunca generaba comision. Sin vendedor (0) es un no-op.
 	        	 */
 	        	SaleHelper::crear_comision($sale);
+
+	        	/*
+	        	 * 🔴 EL COBRO DE CONTADO IMPACTA EN CAJA ACA, y solo si la venta NO es `to_check`. Es el
+	        	 * mismo bloque, el mismo orden y la misma condicion de `SaleHelper::attachProperies()`:
+	        	 * `create_current_acount` (un no-op porque la venta nacio omitida) -> `crear_comision`
+	        	 * -> `SaleCajaHelper::check_caja()` (un movimiento de caja por cada fila del pivote con
+	        	 * `caja_id`) -> `PuntosAcumulacionHelper::reconciliar_venta()` (una venta de mostrador
+	        	 * nunca pasa por la cuenta corriente, que es lo que dispara los puntos para las demas).
+	        	 *
+	        	 * `adjuntar_cobro_a_la_venta()` ya dejo cargada la relacion `current_acount_payment_methods`,
+	        	 * que es lo que `check_caja()` recorre: sin ella no ve ninguna fila y no crea ningun
+	        	 * movimiento, sin error.
+	        	 *
+	        	 * ⚠️ COMO QUEDA CON `check_sales` (venta `to_check = 1`, que no entra a este `if`): los
+	        	 * metodos de pago se ADJUNTAN pero NO se crea movimiento de caja en el acto. Es lo que
+	        	 * hace `SaleController::store()` para una venta `to_check`. Y se verifico el 1/10/2026
+	        	 * que Vender NO lo registra despues: `SaleCajaHelper::check_caja()` se llama desde UN
+	        	 * solo lugar --`SaleHelper::attachProperies()`, adentro de `$from_store && !to_check &&
+	        	 * !checked`--, y `SaleController::update()`, que es por donde pasa la confirmacion de una
+	        	 * venta chequeada, entra con `$from_store = false`. O sea que hoy una venta de contado
+	        	 * chequeada NO mueve la caja nunca, ni en Vender ni aca. Es un hueco PREEXISTENTE de
+	        	 * Vender que este camino hereda a proposito (la misma plata en el mismo lugar que una
+	        	 * venta de mostrador); no se arregla aca. Esta en el informe de la mision.
+	        	 */
+	        	if ($es_de_contado) {
+	        		SaleCajaHelper::check_caja($sale);
+
+	        		PuntosAcumulacionHelper::reconciliar_venta($sale);
+	        	}
 	        }
 
 	        SaleTotalesHelper::set_total_cost($sale);
@@ -650,6 +716,26 @@ class BudgetHelper {
 
 			$total += $total_service;
 		}
+
+		/*
+			EL AJUSTE POR METODO DE PAGO, DESPUES DE TODO LO DE ARRIBA Y ANTES DEL FORZADO (mision
+			presupuesto-contado-o-cuenta-corriente, 1/10/2026).
+
+			Un presupuesto "de contado" guarda el reparto de metodos de pago, y las filas traen el
+			descuento (transferencia) o el recargo (cuotas) de cada metodo. El `total` que manda la
+			SPA ya es el NETO, con ese ajuste adentro. Sin sumarlo aca, la validacion de
+			`BudgetController::store()` --este metodo contra `budgets.total`, margen de 3-- cortaria
+			con "El total del presupuesto no corresponde con los productos ingresados" en cuanto el
+			ajuste pasara de 3 pesos, y el PDF imprimiria un "Total:" distinto al de la pantalla.
+
+			El orden es el de la pantalla de Vender: descuentos y recargos de venta -> metodos de
+			pago (modal) -> forzado. Por eso va aca y no despues de `aplicar_forzar_total_monto()`: el
+			monto del forzado esta definido contra el total que el vendedor VIO, que ya trae el ajuste.
+
+			Es cero para un presupuesto que no es de contado --que es casi todos--, incluso para uno
+			con filas colgadas en la columna: ver `BudgetCobroHelper::ajuste_por_metodos_de_pago()`.
+		*/
+		$total += BudgetCobroHelper::ajuste_por_metodos_de_pago($budget);
 
 		/*
 			EL TOTAL FORZADO, ULTIMO Y SOBRE EL TOTAL COMPLETO (mision forzar-total-por-monto,
