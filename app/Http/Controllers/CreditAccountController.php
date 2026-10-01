@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrientePeriodoHelper;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use Illuminate\Http\Request;
@@ -11,7 +12,41 @@ use Illuminate\Http\Request;
 class CreditAccountController extends Controller
 {
 
-    function index($credit_account_id, $cantidad_movimientos) {
+    function index(Request $request, $credit_account_id, $cantidad_movimientos) {
+
+        $with = [
+            'current_acount_payment_methods',
+            'pagado_por',
+            'cheques',
+            'sale.afip_tickets',
+            'afip_ticket',
+            'provider_order.provider_order_afip_tickets',
+        ];
+
+        // Período por fecha (misión cuenta-corriente-periodo, 1/10/2026). Solo si `desde` viene y es
+        // un Y-m-d válido; si no, cae al camino de siempre (los últimos N) y la respuesta no lleva
+        // `periodo`, así la SPA vieja y la nueva conviven con cualquier versión de la API.
+        $desde = CuentaCorrientePeriodoHelper::fecha($request->query('desde'));
+
+        if (!is_null($desde)) {
+
+            $resultado = CuentaCorrientePeriodoHelper::consultar(
+                $credit_account_id,
+                $desde,
+                CuentaCorrientePeriodoHelper::fecha($request->query('hasta')),
+                CuentaCorrientePeriodoHelper::minimo($request->query('minimo')),
+                $with
+            );
+
+            $models = $resultado['models'];
+
+            if (!UserHelper::user()->cc_ultimas_arriba) {
+                $models = $models->reverse()->values();
+            }
+
+            return response()->json(['models' => $models, 'periodo' => $resultado['periodo']], 200);
+        }
+
         $models = CurrentAcount::where('credit_account_id', $credit_account_id)
                             // ->where('model_name', $model_name)
                             // ->where('model_id', $model_id)
