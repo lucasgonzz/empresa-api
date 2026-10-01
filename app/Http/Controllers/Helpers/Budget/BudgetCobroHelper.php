@@ -142,6 +142,10 @@ class BudgetCobroHelper {
      */
     static function filas($budget) {
 
+        if (!is_object($budget) || !isset($budget->selected_payment_methods)) {
+            return [];
+        }
+
         return Self::normalizar_filas($budget->selected_payment_methods);
     }
 
@@ -172,6 +176,18 @@ class BudgetCobroHelper {
      * @return bool
      */
     static function es_de_contado($budget) {
+
+        /*
+            🔴 `isset()` y no una lectura pelada, y ANTES de preguntar por el esquema: este metodo lo
+            alcanza `BudgetHelper::getTotal()`, y `getTotal()` lo llaman tambien `OrderProductionPdf` y
+            `Pdf/__base.php` con modelos que NO son presupuestos (un `OrderProduction`) y que nunca van
+            a tener ninguna de las dos columnas. Misma razon, y mismo estilo, que
+            `SaleHelper::get_forzar_total_monto()`. Un modelo sin el reparto es "no es de contado",
+            sin una sola consulta.
+        */
+        if (!is_object($budget) || !isset($budget->omitir_en_cuenta_corriente) || !isset($budget->selected_payment_methods)) {
+            return false;
+        }
 
         if (!CobroPresupuestoEsquemaHelper::hay_columna()) {
             return false;

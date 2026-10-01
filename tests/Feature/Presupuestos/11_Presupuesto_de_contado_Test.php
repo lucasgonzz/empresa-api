@@ -603,6 +603,27 @@ class Presupuesto_de_contado_Test extends TestCase
         $this->assertEquals(200, BudgetHelper::getTotal($budget));
     }
 
+    /**
+     * `BudgetHelper::getTotal()` lo llaman también `OrderProductionPdf` y `Pdf/__base.php` con
+     * modelos que NO son presupuestos y nunca van a tener `omitir_en_cuenta_corriente` ni
+     * `selected_payment_methods`. Sobre ellos el ajuste es 0, sin leer atributos que no existen ni
+     * hacer una sola consulta de esquema (mismo cuidado que `SaleHelper::get_forzar_total_monto()`).
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_ajuste_tolera_modelos_que_no_son_presupuestos()
+    {
+        $orden_de_produccion = new \App\Models\OrderProduction();
+
+        $this->assertFalse(BudgetCobroHelper::es_de_contado($orden_de_produccion));
+        $this->assertEquals(0, BudgetCobroHelper::ajuste_por_metodos_de_pago($orden_de_produccion));
+        $this->assertSame([], BudgetCobroHelper::filas($orden_de_produccion));
+
+        $this->assertFalse(BudgetCobroHelper::es_de_contado(null));
+        $this->assertFalse(BudgetCobroHelper::es_de_contado(new \stdClass()));
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  3. Validaciones al guardar (422 antes de la transacción)
     // ─────────────────────────────────────────────────────────────────────────
