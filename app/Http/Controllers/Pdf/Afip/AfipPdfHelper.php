@@ -153,6 +153,85 @@ class AfipPdfHelper
     protected static $table_header_bg_rgb = [235, 235, 235];
 
     /**
+     * Geometría del PDF de siempre: A4 con 5 mm de margen a cada lado (el comprobante arranca en
+     * x = 5 y mide 200 mm) y el encabezado arrancando en y = 5.
+     */
+    const GEOMETRIA_X0 = 5;
+    const GEOMETRIA_ANCHO = 200;
+    const GEOMETRIA_Y0 = 5;
+
+    /**
+     * ¿La instancia declara su propia geometría? (misión diseno-pdf-configurable, 1/10/2026)
+     *
+     * Los PDF dibujados con un diseño de página (`SaleLayoutPdf` y `ProfileDocumentPdf` con
+     * `page_layout`) imprimen en hojas y márgenes elegidos por el usuario, y declaran dos
+     * propiedades públicas: `pdf_x0` (dónde arranca el comprobante) y `pdf_ancho_util` (cuánto
+     * mide). `NewSalePdf` no las declara y TIENE que seguir dibujando en 5 / 200 exactos: es el PDF
+     * de siempre de todos los clientes.
+     *
+     * Se pregunta con isset() a propósito, y no es tapar una propiedad sin inicializar (la clase de
+     * error de APRENDER_NO_PARCHEAR.md): este helper recibe instancias de clases distintas y la
+     * geometría es un contrato OPCIONAL de la instancia. Las clases que la declaran la inicializan
+     * en su constructor.
+     *
+     * @param mixed $pdf
+     * @return bool
+     */
+    protected static function tiene_geometria($pdf): bool
+    {
+        return isset($pdf->pdf_x0) && isset($pdf->pdf_ancho_util);
+    }
+
+    /**
+     * Dónde arranca el comprobante y cuánto mide: [x0, ancho útil] en mm. Sin geometría declarada,
+     * los 5 / 200 de siempre (enteros, para que el PDF de siempre salga byte a byte igual).
+     *
+     * @param mixed $pdf
+     * @return array{0: float|int, 1: float|int}
+     */
+    public static function geometria($pdf): array
+    {
+        if (self::tiene_geometria($pdf)) {
+            return [$pdf->pdf_x0, $pdf->pdf_ancho_util];
+        }
+
+        return [self::GEOMETRIA_X0, self::GEOMETRIA_ANCHO];
+    }
+
+    /**
+     * Dónde arranca el encabezado (el margen de arriba): `pdf_y0` si la instancia lo declara, si no
+     * los 5 mm de siempre.
+     *
+     * @param mixed $pdf
+     * @return float|int
+     */
+    protected static function y_inicial($pdf)
+    {
+        return isset($pdf->pdf_y0) ? $pdf->pdf_y0 : self::GEOMETRIA_Y0;
+    }
+
+    /**
+     * Vuelve los márgenes izquierdo y derecho a los del comprobante después de un Write() con
+     * márgenes temporales (print_label_value_multiline). Sin geometría declarada, los 5 mm fijos
+     * de siempre (literales, como antes: el PDF de siempre no cambia ni en un decimal).
+     *
+     * @param mixed $pdf
+     * @return void
+     */
+    protected static function restaurar_margenes($pdf): void
+    {
+        if (!self::tiene_geometria($pdf)) {
+            $pdf->SetLeftMargin(5);
+            $pdf->SetRightMargin(5);
+
+            return;
+        }
+
+        $pdf->SetLeftMargin($pdf->pdf_x0);
+        $pdf->SetRightMargin($pdf->GetPageWidth() - $pdf->pdf_x0 - $pdf->pdf_ancho_util);
+    }
+
+    /**
      * Dibuja el header fiscal completo estilo comprobante ARCA/AFIP.
      *
      * @param mixed $pdf Instancia FPDF (NewSalePdf).
@@ -162,9 +241,13 @@ class AfipPdfHelper
      * @param array<string, mixed> $layout header_layout efectivo (guardado en el perfil o el
      *     default por código), ya pasado por enforce_fiscal_required_fields() por el caller
      *     (NewSalePdf::Header()) para garantizar que los campos fiscales obligatorios estén.
+     * @param array<string, mixed> $options Opciones opcionales (aditivas: quien no las pasa imprime
+     *     lo de siempre). 'sin_receptor' => true no dibuja el bloque del cliente: en un diseño con
+     *     cajas (SaleLayoutPdf) ese bloque es un bloque fijo de la zona de arriba y lo dibuja el
+     *     motor de cajas con receptor_fiscal().
      * @return void
      */
-    public static function header($pdf, $afip_ticket, $sale, $user, $layout): void
+    public static function header($pdf, $afip_ticket, $sale, $user, $layout, $options = []): void
     {
         /**
          * Información fiscal del emisor: en perfil fiscal siempre sale del ticket
@@ -174,17 +257,19 @@ class AfipPdfHelper
         $afip_information = self::resolve_emisor_afip_information($afip_ticket, $sale, $user);
 
         /**
-         * Posición inicial del header fiscal.
+         * Posición inicial del header fiscal: la esquina del comprobante (5, 5 en el PDF de
+         * siempre; la de la hoja elegida en un diseño con cajas).
          */
-        $pdf->x = 5;
-        $pdf->y = 5;
+        list($x0, $ancho) = self::geometria($pdf);
+        $pdf->x = $x0;
+        $pdf->y = self::y_inicial($pdf);
 
         /**
          * Banda superior "ORIGINAL" a ancho completo (mismo tamaño que los demás renglones).
          * Exclusiva del comprobante fiscal: el header comercial (header_comercial) no la imprime.
          */
         $pdf->SetFont('Arial', 'B', self::$header_row_font_size);
-        $pdf->Cell(200, 8, 'ORIGINAL', 1, 1, 'C');
+        $pdf->Cell($ancho, 8, 'ORIGINAL', 1, 1, 'C');
 
         /**
          * Fecha de emisión: actual si el perfil fuerza use_current_date, si no la
@@ -231,12 +316,106 @@ class AfipPdfHelper
          * Bloque de datos del receptor cuando la venta tiene cliente. Fijo: en perfiles
          * fiscales el receptor no es configurable (requisito fiscal), a diferencia del
          * remito negro (ver header_comercial() / print_receptor_block_comercial()).
+         * Con 'sin_receptor' lo dibuja el diseño con cajas (bloque fijo afip_receptor).
          */
-        if (!is_null($sale->client)) {
+        if (!is_null($sale->client) && empty($options['sin_receptor'])) {
             $pdf->y += 2;
             self::print_receptor_block($pdf, $sale);
             $pdf->y += 2;
         }
+    }
+
+    /**
+     * El bloque del receptor de la factura (CUIT o DNI, condición frente al IVA, condición de
+     * venta, nombre y domicilio), tal cual lo dibuja el encabezado fiscal, en la posición y actual
+     * y a lo ancho de la geometría de la instancia. Es el bloque fijo `afip_receptor` del diseño
+     * con cajas. Sin cliente no dibuja nada (como el encabezado de siempre).
+     *
+     * @param mixed $pdf
+     * @param mixed $sale
+     * @return void
+     */
+    public static function receptor_fiscal($pdf, $sale): void
+    {
+        if (is_null($sale->client)) {
+            return;
+        }
+
+        self::print_receptor_block($pdf, $sale);
+    }
+
+    /**
+     * Alto aproximado (por arriba) del bloque del receptor de la factura, sin dibujarlo. Se usa
+     * solo para MEDIR una zona del diseño con cajas antes de dibujarla; al dibujar, el alto real
+     * es el que deja print_receptor_block(). Por arriba a propósito: mide el rótulo y el valor del
+     * nombre y del domicilio en negrita (más ancha que la letra normal con que sale el valor).
+     *
+     * @param mixed $pdf
+     * @param mixed $sale
+     * @return float 0 si la venta no tiene cliente (no se dibuja nada).
+     */
+    public static function estimate_receptor_height($pdf, $sale): float
+    {
+        $client = $sale->client;
+
+        if (is_null($client)) {
+            return 0;
+        }
+
+        list(, $block_width) = self::geometria($pdf);
+        $column_width = $block_width / 2 - 2;
+
+        $pdf->SetFont('Arial', 'B', 9);
+
+        /**
+         * Columna izquierda: documento, condición IVA (si tiene) y condición de venta, de a 4 mm
+         * (con geometría declarada cortan en varias líneas: print_label_value_fit()).
+         */
+        $left_lines = self::estimate_lines($pdf, 'CUIT: '.trim((string) $client->cuit).trim((string) $client->dni), $column_width)
+            + (is_null($client->iva_condition) ? 0 : self::estimate_lines($pdf, 'Condición frente al IVA: '.(string) $client->iva_condition->name, $column_width))
+            + self::estimate_lines($pdf, 'Condición de venta: Cuenta corriente', $column_width);
+
+        /** Columna derecha: dos rótulo + valor que pueden ocupar varias líneas (Write con wrap). */
+        $right_lines = self::estimate_lines($pdf, 'Apellido y Nombre / Razón Social: '.(string) $client->name, $column_width)
+            + self::estimate_lines($pdf, 'Domicilio Comercial: '.(string) $client->address, $column_width);
+
+        /** 2 mm arriba y 2 mm abajo, igual que print_receptor_block(). */
+        return 2 + (max($left_lines, $right_lines) * 4) + 2;
+    }
+
+    /**
+     * Cantidad de líneas que ocupa un texto en un ancho con la fuente actual, cortando en los
+     * espacios (por arriba: mide el texto UTF-8 tal cual, un acento cuenta doble).
+     *
+     * @param mixed  $pdf
+     * @param string $text
+     * @param float  $width
+     * @return int
+     */
+    protected static function estimate_lines($pdf, $text, $width): int
+    {
+        $lines = 1;
+        $current = 0;
+        $space = $pdf->GetStringWidth(' ');
+
+        foreach (explode(' ', (string) $text) as $word) {
+            $word_width = $pdf->GetStringWidth($word);
+
+            if ($current > 0 && $current + $space + $word_width > $width) {
+                $lines++;
+                $current = 0;
+            }
+
+            /** Una palabra más larga que la columna ocupa varias líneas (Write la corta por letras). */
+            while ($word_width > $width) {
+                $lines++;
+                $word_width -= $width;
+            }
+
+            $current += ($current > 0 ? $space : 0) + $word_width;
+        }
+
+        return $lines;
     }
 
     /**
@@ -252,19 +431,21 @@ class AfipPdfHelper
      * @param array<string, mixed> $layout header_layout efectivo (guardado en el perfil o el
      *     default por código), resuelto por el caller (NewSalePdf::Header()).
      * @param array<string, mixed>|null $current_acount_data Cuenta corriente para el cuadrante derecho del cliente.
-     * @param array<string, mixed> $options Opciones opcionales. Hoy solo 'right_title': el título que se
+     * @param array<string, mixed> $options Opciones opcionales. 'right_title': el título que se
      *     imprime a la derecha del encabezado ('Comprobante' si no viene, que es lo que imprime el remito).
-     *     Lo usa ProfileDocumentPdf para decir "Presupuesto" o "Pedido online". Es aditivo: quien no lo
-     *     pasa (NewSalePdf) imprime exactamente lo de siempre.
+     *     Lo usa ProfileDocumentPdf para decir "Presupuesto" o "Pedido online". 'sin_receptor' => true:
+     *     no dibuja el bloque del cliente (en un diseño con cajas los datos del cliente los ponen las
+     *     cajas). Las dos son aditivas: quien no las pasa (NewSalePdf) imprime exactamente lo de siempre.
      * @return void
      */
     public static function header_comercial($pdf, $sale, $user, $layout, $current_acount_data = null, $options = []): void
     {
         /**
-         * Posición inicial, igual que el header fiscal.
+         * Posición inicial, igual que el header fiscal: la esquina del comprobante.
          */
-        $pdf->x = 5;
-        $pdf->y = 5;
+        list($x0) = self::geometria($pdf);
+        $pdf->x = $x0;
+        $pdf->y = self::y_inicial($pdf);
 
         /**
          * Fecha de emisión: actual si el perfil fuerza use_current_date, si no la
@@ -312,8 +493,9 @@ class AfipPdfHelper
          * Bloque de datos del receptor cuando la venta tiene cliente. A diferencia del
          * fiscal (fijo), el cuadrante izquierdo del remito negro es configurable vía
          * $layout['receptor']['izquierda'] (cliente + vendedor/empleado).
+         * Con 'sin_receptor' no se dibuja: en un diseño con cajas los datos del cliente los ponen las cajas.
          */
-        if (!is_null($sale->client)) {
+        if (!is_null($sale->client) && empty($options['sin_receptor'])) {
             $pdf->y += 2;
             self::print_receptor_block_comercial($pdf, $sale, $layout, $current_acount_data);
             $pdf->y += 2;
@@ -323,19 +505,44 @@ class AfipPdfHelper
     /**
      * Encabezado de columnas del detalle de ítems con fondo gris claro.
      *
+     * Con `$x0` null es el de siempre (`PdfHelper::tableHeader()`, que arranca en x = 5). Con un
+     * `$x0` es el MISMO dibujo arrancando en esa x: lo usan los diseños con cajas, cuya hoja y cuyo
+     * margen elige el usuario. Se replica acá en vez de tocar `PdfHelper` porque ese archivo es
+     * código común (CommonLaravel) que comparten otros PDF.
+     *
      * @param mixed $pdf Instancia FPDF.
      * @param array<string|int, mixed> $fields Columnas label => ancho.
+     * @param float|null $x0 Dónde arranca la tabla (null = el de siempre).
      * @return void
      */
-    public static function table_header($pdf, $fields): void
+    public static function table_header($pdf, $fields, $x0 = null): void
     {
-        PdfHelper::tableHeader(
-            $pdf,
-            $fields,
-            10,
-            2,
-            self::$table_header_bg_rgb
-        );
+        if (is_null($x0)) {
+            PdfHelper::tableHeader(
+                $pdf,
+                $fields,
+                10,
+                2,
+                self::$table_header_bg_rgb
+            );
+
+            return;
+        }
+
+        /** Mismos pasos que PdfHelper::tableHeader($pdf, $fields, 10, 2, gris), con la x del diseño. */
+        $pdf->SetFont('Arial', 'B', 10);
+        $pdf->x = $x0;
+        $pdf->y += 2;
+        $pdf->SetLineWidth(.4);
+        $pdf->SetFillColor(self::$table_header_bg_rgb[0], self::$table_header_bg_rgb[1], self::$table_header_bg_rgb[2]);
+
+        foreach ($fields as $text => $width) {
+            $pdf->Cell($width, 7, $text, 1, 0, 'C', true);
+        }
+
+        $pdf->SetFillColor(255, 255, 255);
+        $pdf->y += 7;
+        $pdf->x = $x0;
     }
 
     /**
@@ -351,10 +558,10 @@ class AfipPdfHelper
     protected static function get_header_layout($pdf, $letter_width, $logo_size): array
     {
         /**
-         * Márgenes y ancho útil del comprobante (coherente con el resto del PDF).
+         * Márgenes y ancho útil del comprobante (coherente con el resto del PDF): 5 / 200 en el
+         * PDF de siempre, la geometría de la hoja elegida en un diseño con cajas.
          */
-        $page_left = 5;
-        $page_width = 200;
+        list($page_left, $page_width) = self::geometria($pdf);
         $page_right = $page_left + $page_width;
 
         /**
@@ -476,6 +683,32 @@ class AfipPdfHelper
     }
 
     /**
+     * Renglón rótulo + valor que en el PDF de siempre es el de print_label_value_line() (un solo
+     * renglón, exactamente como antes) y en un diseño con cajas corta en varias líneas
+     * (print_label_value_multiline()): en una hoja angosta (A5) "Condición frente al IVA:
+     * Responsable inscripto" se metía en la columna de al lado.
+     *
+     * @param mixed  $pdf
+     * @param string $label
+     * @param string $value
+     * @param float  $x
+     * @param float  $width
+     * @param int    $font_size
+     * @param int    $line_height
+     * @return void
+     */
+    protected static function print_label_value_fit($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    {
+        if (self::tiene_geometria($pdf)) {
+            self::print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size, $line_height);
+
+            return;
+        }
+
+        self::print_label_value_line($pdf, $label, $value, $x, $width, $font_size, $line_height);
+    }
+
+    /**
      * Imprime label en negrita y valor con wrap correcto para textos extensos.
      *
      * Usa Write() con márgenes temporales para que cualquier salto de línea
@@ -512,10 +745,10 @@ class AfipPdfHelper
         $pdf->Ln($line_height);
 
         /**
-         * Restaurar márgenes al valor estándar del comprobante (5mm a cada lado).
+         * Restaurar márgenes a los del comprobante (5mm a cada lado en el PDF de siempre; los de la
+         * geometría de la hoja en un diseño con cajas).
          */
-        $pdf->SetLeftMargin(5);
-        $pdf->SetRightMargin(5);
+        self::restaurar_margenes($pdf);
     }
 
     /**
@@ -573,6 +806,32 @@ class AfipPdfHelper
         } else {
             $pdf->Cell(0, $line_height, (string) $value_b, 0, 1, 'L');
         }
+    }
+
+    /**
+     * ¿El par "rótulo: valor / rótulo: valor" entra en un renglón partido al medio, como lo dibuja
+     * print_label_value_pair_line()? Cada mitad tiene que contener su rótulo (negrita) y su valor.
+     *
+     * @param mixed  $pdf
+     * @param string $label_a
+     * @param string $value_a
+     * @param string $label_b
+     * @param string $value_b
+     * @param float  $width
+     * @return bool
+     */
+    protected static function pair_line_fits($pdf, $label_a, $value_a, $label_b, $value_b, $width): bool
+    {
+        $pdf->SetFont('Arial', 'B', self::$header_row_font_size);
+        $label_a_width = $pdf->GetStringWidth($label_a);
+        $label_b_width = $pdf->GetStringWidth($label_b);
+
+        $pdf->SetFont('Arial', '', self::$header_row_font_size);
+        $value_a_width = $pdf->GetStringWidth((string) $value_a);
+        $value_b_width = $pdf->GetStringWidth((string) $value_b);
+
+        return ($label_a_width + $value_a_width) <= ($width / 2)
+            && ($label_b_width + $value_b_width) <= ($width / 2);
     }
 
     /**
@@ -1069,17 +1328,27 @@ class AfipPdfHelper
                 }
 
                 if (in_array('punto_venta', $field_keys, true) && array_key_exists('punto_venta', $field_values)) {
-                    self::print_label_value_pair_line(
-                        $pdf,
-                        'Punto de Venta: ',
-                        $field_values['punto_venta'],
-                        'Factura Nro: ',
-                        $field_values['numero_comprobante'],
-                        $x,
-                        $width,
-                        self::$header_row_font_size,
-                        self::$header_row_line_height
-                    );
+                    if (self::tiene_geometria($pdf) && !self::pair_line_fits($pdf, 'Punto de Venta: ', $field_values['punto_venta'], 'Factura Nro: ', $field_values['numero_comprobante'], $width)) {
+                        /**
+                         * En una hoja angosta de un diseño con cajas (A5) el par no entra en un
+                         * renglón partido al medio y los textos se pisan: va en dos renglones. El
+                         * PDF de siempre (sin geometría) no pasa por acá.
+                         */
+                        self::print_label_value_multiline($pdf, 'Punto de Venta: ', $field_values['punto_venta'], $x, $width, self::$header_row_font_size, self::$header_row_line_height);
+                        self::print_label_value_multiline($pdf, 'Factura Nro: ', $field_values['numero_comprobante'], $x, $width, self::$header_row_font_size, self::$header_row_line_height);
+                    } else {
+                        self::print_label_value_pair_line(
+                            $pdf,
+                            'Punto de Venta: ',
+                            $field_values['punto_venta'],
+                            'Factura Nro: ',
+                            $field_values['numero_comprobante'],
+                            $x,
+                            $width,
+                            self::$header_row_font_size,
+                            self::$header_row_line_height
+                        );
+                    }
                 } else {
                     self::print_label_value_line(
                         $pdf,
@@ -1111,7 +1380,12 @@ class AfipPdfHelper
 
             $label = isset(self::$emisor_field_labels[$key]) ? self::$emisor_field_labels[$key] : (ucfirst(str_replace('_', ' ', $key)).': ');
 
-            if (in_array($key, self::$emisor_multiline_fields, true)) {
+            /**
+             * En un diseño con cajas (la instancia declara geometría) todos los campos van con wrap:
+             * en una hoja angosta (A5) un renglón como "Fecha de Inicio de Actividades: 01/01/2020"
+             * se pasaba del recuadro. El PDF de siempre (sin geometría) sigue exactamente igual.
+             */
+            if (in_array($key, self::$emisor_multiline_fields, true) || self::tiene_geometria($pdf)) {
                 self::print_label_value_multiline(
                     $pdf,
                     $label,
@@ -1215,8 +1489,13 @@ class AfipPdfHelper
     {
         $client = $sale->client;
         $start_y = $pdf->y;
-        $start_x = 5;
-        $block_width = 200;
+
+        /**
+         * Ancho del bloque y divisoria al medio: 5 / 200 / 105 en el PDF de siempre, la geometría
+         * de la hoja en un diseño con cajas.
+         */
+        list($start_x, $block_width) = self::geometria($pdf);
+        $center_x = $start_x + $block_width / 2;
 
         /**
          * Condición de venta según cuenta corriente.
@@ -1227,9 +1506,9 @@ class AfipPdfHelper
          * Columna izquierda: CUIT, IVA y condición de venta.
          */
         $content_x = $start_x + 2;
-        $left_content_width = 98;
-        $right_content_x = 105 + 2;
-        $right_content_width = 98;
+        $left_content_width = $block_width / 2 - 2;
+        $right_content_x = $center_x + 2;
+        $right_content_width = $block_width / 2 - 2;
 
         $pdf->y = $start_y + 2;
 
@@ -1245,7 +1524,7 @@ class AfipPdfHelper
             $documento_valor = trim((string) $client->dni);
         }
 
-        self::print_label_value_line(
+        self::print_label_value_fit(
             $pdf,
             $documento_label,
             $documento_valor,
@@ -1254,7 +1533,7 @@ class AfipPdfHelper
         );
 
         if (!is_null($client->iva_condition)) {
-            self::print_label_value_line(
+            self::print_label_value_fit(
                 $pdf,
                 'Condición frente al IVA: ',
                 $client->iva_condition->name,
@@ -1263,7 +1542,7 @@ class AfipPdfHelper
             );
         }
 
-        self::print_label_value_line(
+        self::print_label_value_fit(
             $pdf,
             'Condición de venta: ',
             $condicion_venta,
@@ -1297,7 +1576,7 @@ class AfipPdfHelper
         $end_y = max($left_end_y, $pdf->y) + 2;
 
         self::draw_box($pdf, $start_x, $start_y, $block_width, $end_y - $start_y);
-        $pdf->Line(105, $start_y, 105, $end_y);
+        $pdf->Line($center_x, $start_y, $center_x, $end_y);
 
         $pdf->y = $end_y;
     }
@@ -1324,13 +1603,15 @@ class AfipPdfHelper
     {
         $client = $sale->client;
         $start_y = $pdf->y;
-        $start_x = 5;
-        $block_width = 200;
+
+        /** 5 / 200 / 105 en el PDF de siempre; la geometría de la instancia si la declara. */
+        list($start_x, $block_width) = self::geometria($pdf);
+        $center_x = $start_x + $block_width / 2;
 
         $content_x = $start_x + 2;
-        $left_content_width = 98;
-        $right_content_x = 105 + 2;
-        $right_content_width = 98;
+        $left_content_width = $block_width / 2 - 2;
+        $right_content_x = $center_x + 2;
+        $right_content_width = $block_width / 2 - 2;
 
         /**
          * Mapa clave => valor de los campos configurables del cliente + vendedor/empleado.
@@ -1413,7 +1694,7 @@ class AfipPdfHelper
         $end_y = max($left_end_y, $pdf->y) + 2;
 
         self::draw_box($pdf, $start_x, $start_y, $block_width, $end_y - $start_y);
-        $pdf->Line(105, $start_y, 105, $end_y);
+        $pdf->Line($center_x, $start_y, $center_x, $end_y);
 
         $pdf->y = $end_y;
     }
@@ -1527,9 +1808,12 @@ class AfipPdfHelper
             return;
         }
 
-        $pdf->x = 5;
+        /** A lo ancho del comprobante (5 / 200 en el PDF de siempre). */
+        list($page_left, $page_width) = self::geometria($pdf);
+
+        $pdf->x = $page_left;
         $pdf->SetFont('Arial', 'B', 8);
-        $pdf->Cell(200, self::LEYENDA_ISIB_CABA_ALTO, $texto, 0, 1, 'C');
+        $pdf->Cell($page_width, self::LEYENDA_ISIB_CABA_ALTO, $texto, 0, 1, 'C');
     }
 
     /**
@@ -1638,8 +1922,13 @@ class AfipPdfHelper
     protected static function print_footer_importes_block($pdf, $afip_ticket, $sale, $afip_helper): void
     {
         $start_y = $pdf->y + 5;
-        $page_left = 5;
-        $page_width = 200;
+
+        /**
+         * 5 / 200 en el PDF de siempre; la geometría de la hoja en un diseño con cajas. Las dos
+         * columnas (tabla de Otros Tributos a la izquierda, importes a la derecha) se reparten la
+         * mitad del ancho cada una, como siempre (97 + 98 sobre 200).
+         */
+        list($page_left, $page_width) = self::geometria($pdf);
         $row_h = 5;
 
         /**
@@ -1655,11 +1944,24 @@ class AfipPdfHelper
          * No se muestra en comprobantes de exportación.
          */
         $left_x = $page_left;
-        $left_w = 97;
-        $col_desc_w = 55;
-        $col_det_w = 15;
-        $col_alic_w = 10;
-        $col_imp_w = 17;
+        $left_w = $page_width / 2 - 3;
+
+        /**
+         * Columnas de la tabla en la proporción de siempre (55 + 15 + 10 + 17 = 97). Sobre 200 mm
+         * la escala es exactamente 1 (entera): el PDF de siempre no cambia ni en un decimal.
+         */
+        $escala = $left_w / 97;
+        $col_desc_w = 55 * $escala;
+        $col_det_w = 15 * $escala;
+        $col_alic_w = 10 * $escala;
+        $col_imp_w = 17 * $escala;
+
+        /**
+         * En una hoja más angosta (diseño con cajas en A5) la letra de la tabla se achica en la misma
+         * proporción que las columnas: si no, "Per./Ret. de Impuesto a las Ganancias" se sale de su
+         * celda. Sobre 200 mm es 1 y la letra queda en 7 / 8 como siempre.
+         */
+        $escala_de_letra = min(1, $escala);
 
         if (!$es_exportacion) {
             /**
@@ -1675,7 +1977,7 @@ class AfipPdfHelper
              */
             $pdf->x = $left_x;
             $pdf->SetFillColor(210, 210, 210);
-            $pdf->SetFont('Arial', 'B', 7);
+            $pdf->SetFont('Arial', 'B', 7 * $escala_de_letra);
             $pdf->Cell($col_desc_w, $row_h, 'Descripción', 1, 0, 'C', true);
             $pdf->Cell($col_det_w, $row_h, 'Detalle', 1, 0, 'C', true);
             $pdf->Cell($col_alic_w, $row_h, 'Alic. %', 1, 0, 'C', true);
@@ -1684,7 +1986,7 @@ class AfipPdfHelper
             /**
              * Filas de datos con borde y texto normal (sin relleno).
              */
-            $pdf->SetFont('Arial', '', 8);
+            $pdf->SetFont('Arial', '', 8 * $escala_de_letra);
             $pdf->SetFillColor(255, 255, 255);
             foreach (self::$otros_tributos_rows as $row_label) {
                 $pdf->x = $left_x;
@@ -1699,7 +2001,7 @@ class AfipPdfHelper
              */
             $moneda_code = (int) $sale->moneda_id === 2 ? ' USD' : '';
             $pdf->x = $left_x;
-            $pdf->SetFont('Arial', '', 8);
+            $pdf->SetFont('Arial', '', 8 * $escala_de_letra);
             $pdf->Cell($col_desc_w + $col_det_w + $col_alic_w, $row_h, 'Importe Otros Tributos:'.$moneda_code, 1, 0, 'L');
             $pdf->Cell($col_imp_w, $row_h, '0,00', 1, 1, 'R');
 
@@ -1709,10 +2011,10 @@ class AfipPdfHelper
         }
 
         /**
-         * Columna derecha: moneda y totales alineados a la derecha.
+         * Columna derecha: moneda y totales alineados a la derecha (107 / 98 en el PDF de siempre).
          */
-        $right_x = 107;
-        $right_w = 98;
+        $right_x = $page_left + $page_width / 2 + 2;
+        $right_w = $page_width / 2 - 2;
         $importes = AfipImportesResolver::resolve($afip_ticket, $afip_helper);
         $moneda_id = $sale->moneda_id;
         $moneda_label = self::get_footer_moneda_label($sale);
@@ -1812,9 +2114,10 @@ class AfipPdfHelper
     protected static function print_footer_right_row($pdf, $x, $total_width, $label, $value, $bold_value = false, $line_h = 5): void
     {
         /**
-         * Ancho fijo para la columna de label; el resto para el valor numérico.
+         * Ancho para la columna de label; el resto para el valor numérico. 65 sobre los 98 de
+         * siempre; en una hoja más angosta (diseño con cajas) se achica en la misma proporción.
          */
-        $label_col_w = 65;
+        $label_col_w = min(65, $total_width * 65 / 98);
         $value_col_w = $total_width - $label_col_w;
 
         $pdf->x = $x;
@@ -1835,14 +2138,23 @@ class AfipPdfHelper
     protected static function print_footer_official_block($pdf, $afip_ticket): void
     {
         $footer_start_y = $pdf->y + 4;
-        $page_left = 5;
-        $page_width = 200;
+
+        /** 5 / 200 en el PDF de siempre; la geometría de la hoja en un diseño con cajas. */
+        list($page_left, $page_width) = self::geometria($pdf);
         $center_x = $page_left + ($page_width / 2);
         $qr_size = 45;
         $afip_logo_w = 40;
         $afip_logo_h = 18;
-        $cae_block_x = 138;
         $cae_block_w = 62;
+
+        /** El CAE pegado al borde derecho del comprobante: 138 en el PDF de siempre (5 + 200 − 62 − 5). */
+        $cae_block_x = $page_left + $page_width - $cae_block_w - 5;
+
+        /**
+         * Ancho de la leyenda central ("Comprobante Autorizado" y la aclaración de ARCA): 100 mm en
+         * el PDF de siempre. En una hoja más angosta se achica para no montarse sobre el QR.
+         */
+        $center_text_w = min(100, $page_width - 2 * ($qr_size + 5));
 
         /**
          * Paginación centrada sobre el bloque AFIP.
@@ -1867,19 +2179,34 @@ class AfipPdfHelper
         $logo_x = $center_x - ($afip_logo_w / 2);
         $logo_y = $footer_start_y + 5;
 
+        /**
+         * Centro del bloque del medio (logo y leyendas): el de la hoja. En una hoja angosta de un
+         * diseño con cajas (A5) el logo centrado se montaba sobre el CAE: ahí se achica (en su
+         * proporción) para entrar entre el QR y el CAE, y las leyendas lo acompañan. En A4 la
+         * condición nunca se cumple y el PDF de siempre queda igual.
+         */
+        $block_center_x = $center_x;
+        if ($center_x + $afip_logo_w / 2 > $cae_block_x + 4) {
+            $gap_start_x = $page_left + $qr_size + 2;
+            $afip_logo_w = max(20, $cae_block_x + 2 - $gap_start_x);
+            $afip_logo_h = $afip_logo_w * 18 / 40;
+            $logo_x = $gap_start_x;
+            $block_center_x = $gap_start_x + $afip_logo_w / 2;
+        }
+
         if (file_exists($logo_path)) {
             $pdf->Image($logo_path, $logo_x, $logo_y, $afip_logo_w, $afip_logo_h);
         }
 
         $pdf->y = $logo_y + $afip_logo_h + 1;
-        $pdf->x = $center_x - 50;
+        $pdf->x = $block_center_x - $center_text_w / 2;
         $pdf->SetFont('Arial', 'BI', 9);
-        $pdf->Cell(100, 4, 'Comprobante Autorizado', 0, 1, 'C');
+        $pdf->Cell($center_text_w, 4, 'Comprobante Autorizado', 0, 1, 'C');
 
-        $pdf->x = $center_x - 50;
+        $pdf->x = $block_center_x - $center_text_w / 2;
         $pdf->SetFont('Arial', '', 6);
         $pdf->MultiCell(
-            100,
+            $center_text_w,
             3,
             'Esta Administración Federal no se responsabiliza por los datos ingresados en el detalle de la operación',
             0,
