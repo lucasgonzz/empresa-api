@@ -25,6 +25,21 @@ use Carbon\Carbon;
 class CuentaCorrientePeriodoHelper {
 
     /**
+     * Tope de filas del listado por período. La SPA renderiza todo lo que recibe, y un período
+     * ancho en una cuenta con decenas de miles de movimientos (el "Todo" de Fenix) la dejaría
+     * colgada. Cuando se pasa, se devuelven las más recientes y `periodo.truncado` avisa.
+     */
+    const LIMITE_LISTADO = 2000;
+
+    /**
+     * Tope vigente del listado. Es una propiedad y no solo la constante para que los tests puedan
+     * bajarlo sin sembrar 2000 filas; NO se expone por query, nadie de afuera lo puede cambiar.
+     *
+     * @var int
+     */
+    public static $limite_listado = self::LIMITE_LISTADO;
+
+    /**
      * Parsea una fecha en formato estricto `Y-m-d`. Cualquier otra cosa (vacío, otro formato, un
      * array de la query, un día que no existe como 2026-02-30) devuelve null: el llamador lo trata
      * como "no vino" y se queda con el comportamiento de siempre.
@@ -81,9 +96,12 @@ class CuentaCorrientePeriodoHelper {
      * @param  string|null  $hasta   `Y-m-d` ya validado, o null para no poner tope superior.
      * @param  int|null     $minimo  Cantidad mínima, o null para mostrar exactamente el período.
      * @param  array        $with    Relaciones a cargar.
-     * @return array  ['models' => Collection, 'periodo' => ['desde', 'hasta', 'ampliado', 'cantidad']]
+     * @param  int|null     $limite  Tope de filas, o null para no ponerlo (el PDF imprime todo el
+     *                               período). Si hay más, se devuelven las `$limite` más recientes y
+     *                               `periodo.truncado` queda en true.
+     * @return array  ['models' => Collection, 'periodo' => ['desde', 'hasta', 'ampliado', 'cantidad', 'truncado']]
      */
-    static function consultar($credit_account_id, $desde, $hasta = null, $minimo = null, $with = []) {
+    static function consultar($credit_account_id, $desde, $hasta = null, $minimo = null, $with = [], $limite = null) {
 
         $ampliado = false;
 
@@ -113,11 +131,26 @@ class CuentaCorrientePeriodoHelper {
             }
         }
 
-        $models = self::base($credit_account_id, $desde, $hasta)
+        $consulta = self::base($credit_account_id, $desde, $hasta)
                         ->orderBy('created_at', 'DESC')
                         ->orderBy('id', 'DESC')
-                        ->with($with)
-                        ->get();
+                        ->with($with);
+
+        $truncado = false;
+
+        if (!is_null($limite)) {
+
+            // Una fila de más: es lo que dice si había más que el tope, sin un COUNT aparte.
+            $models = $consulta->take($limite + 1)->get();
+
+            if ($models->count() > $limite) {
+                $models = $models->take($limite)->values();
+                $truncado = true;
+            }
+
+        } else {
+            $models = $consulta->get();
+        }
 
         return [
             'models'    => $models,
@@ -126,6 +159,7 @@ class CuentaCorrientePeriodoHelper {
                 'hasta'     => $hasta,
                 'ampliado'  => $ampliado,
                 'cantidad'  => $models->count(),
+                'truncado'  => $truncado,
             ],
         ];
     }

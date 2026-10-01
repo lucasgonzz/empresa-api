@@ -35,7 +35,8 @@ class CreditAccountController extends Controller
                 $desde,
                 CuentaCorrientePeriodoHelper::fecha($request->query('hasta')),
                 CuentaCorrientePeriodoHelper::minimo($request->query('minimo')),
-                $with
+                $with,
+                CuentaCorrientePeriodoHelper::$limite_listado
             );
 
             $models = $resultado['models'];

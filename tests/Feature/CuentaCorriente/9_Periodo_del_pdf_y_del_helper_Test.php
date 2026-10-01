@@ -102,7 +102,7 @@ class Periodo_del_pdf_y_del_helper_Test extends EmpresaTestCase
         $resultado = CuentaCorrientePeriodoHelper::consultar($this->cuenta->id, '2026-09-01', '2026-09-30');
 
         $this->assertSame([$b, $a], $resultado['models']->pluck('id')->all());
-        $this->assertSame(['desde' => '2026-09-01', 'hasta' => '2026-09-30', 'ampliado' => false, 'cantidad' => 2], $resultado['periodo']);
+        $this->assertSame(['desde' => '2026-09-01', 'hasta' => '2026-09-30', 'ampliado' => false, 'cantidad' => 2, 'truncado' => false], $resultado['periodo']);
 
         // Sin hasta: todo desde `desde`.
         $sin_tope = CuentaCorrientePeriodoHelper::consultar($this->cuenta->id, '2026-09-01');

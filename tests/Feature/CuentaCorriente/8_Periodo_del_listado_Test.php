@@ -120,6 +120,7 @@ class Periodo_del_listado_Test extends EmpresaTestCase
             'hasta'     => '2026-09-30',
             'ampliado'  => false,
             'cantidad'  => 3,
+            'truncado'  => false,
         ], $respuesta->json('periodo'));
     }
 
@@ -155,6 +156,7 @@ class Periodo_del_listado_Test extends EmpresaTestCase
             'hasta'     => '2026-07-31',
             'ampliado'  => false,
             'cantidad'  => 0,
+            'truncado'  => false,
         ], $respuesta->json('periodo'));
     }
 
