@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrientePeriodoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
@@ -724,6 +725,15 @@ class CurrentAcountController extends Controller
 
     function pdfFromModel($current_acount_id, $cantidad_movimientos = 0, $type = 'simple') {
         
+        // Período por fecha (misión cuenta-corriente-periodo, 1/10/2026): el PDF sale con los mismos
+        // movimientos que la pantalla, y SIN `minimo` — lo que se imprime es exactamente el período
+        // elegido. Sin `desde` válido (o sin cantidad), el camino de siempre.
+        $desde = CuentaCorrientePeriodoHelper::fecha(request()->query('desde'));
+
+        if ($cantidad_movimientos > 0 && !is_null($desde)) {
+            return $this->pdfDePeriodo($current_acount_id, $desde, CuentaCorrientePeriodoHelper::fecha(request()->query('hasta')), $type);
+        }
+
         // Si es > 0 son todos los movimientos de una credit_accounts
         if ($cantidad_movimientos > 0) {
             $models = CurrentAcount::where('credit_account_id', $current_acount_id)
@@ -761,6 +771,45 @@ class CurrentAcountController extends Controller
 
         if (is_null($credit_account)) {
             abort(404);
+        }
+
+        new CurrentAcountPdf($credit_account, $models, $type);
+    }
+
+    /**
+     * PDF de la cuenta corriente de un período (ver pdfFromModel()). Toma la cuenta del id de la
+     * ruta y no del primer movimiento: un período puede no tener ninguno.
+     *
+     * @param  int          $credit_account_id
+     * @param  string       $desde
+     * @param  string|null  $hasta
+     * @param  string       $type  'simple' o 'details'
+     * @return void
+     */
+    protected function pdfDePeriodo($credit_account_id, $desde, $hasta, $type) {
+
+        $credit_account = CreditAccount::find($credit_account_id);
+
+        if (is_null($credit_account)) {
+            abort(404);
+        }
+
+        $with = $type == 'details' ? ['articles', 'sale.articles'] : [];
+
+        $models = CuentaCorrientePeriodoHelper::consultar($credit_account->id, $desde, $hasta, null, $with)['models'];
+
+        if (!$models->count()) {
+            abort(404, 'No hay movimientos en el período seleccionado.');
+        }
+
+        // El helper devuelve DESC; el PDF de siempre arma ASC y recién ahí respeta el orden del
+        // usuario (cc_ultimas_arriba), tomado del dueño del primer movimiento.
+        $models = $models->reverse()->values();
+
+        $user = User::find($models[0]->user_id);
+
+        if ($user && $user->cc_ultimas_arriba) {
+            $models = $models->reverse()->values();
         }
 
         new CurrentAcountPdf($credit_account, $models, $type);
