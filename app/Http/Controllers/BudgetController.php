@@ -7,15 +7,19 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\Budget\BudgetDuplicarHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
+use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
+use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Budget;
 use App\Models\Client;
 use App\Models\Sale;
+use App\Services\PdfColumnService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Exception;
@@ -333,6 +337,82 @@ class BudgetController extends Controller
         }
 
         /*
+            Moneda y cotizacion del presupuesto (mision 2r-presupuestos-editables, 1/10/2026): editar
+            un presupuesto ya generado puede cambiarle la moneda de $ a USD o de USD a $, y la
+            cotizacion con la que se preciaron sus renglones tiene que viajar y quedar guardada.
+            Hasta hoy `update()` persistia `moneda_id` pero NO `valor_dolar`: un presupuesto pasado
+            a dolares quedaba con la cotizacion vieja (o NULL) y la venta que nace al confirmarlo
+            --`BudgetHelper::saveSale()` copia `valor_dolar` tal cual-- la heredaba.
+
+            REGLAS (todas COMPATIBLES HACIA ATRAS: la api y la spa no llegan juntas a produccion):
+
+              - Clave ausente (o en null) = se PRESERVA la cotizacion guardada. Es la SPA vieja, que
+                no manda `valor_dolar` en el PUT; mismo patron que `moneda_id` e `iva_aplicado` mas
+                abajo. Con una asignacion pelada, esa SPA borraria la cotizacion de un presupuesto en
+                dolares en cada edicion.
+              - Clave con un numero valido (> 0) = se guarda redondeada a 2 decimales, la misma
+                funcion que usa `SaleController::store()` (`CotizacionDeVentaHelper`). Se redondea
+                porque la columna es DECIMAL(20,2) y `getCost()` convierte con ESTE valor: tiene que
+                ser el que despues lee la venta.
+              - Clave con un valor que no sirve (0, negativo, texto) y el presupuesto QUEDA en
+                dolares = 422. Guardarlo seria perder la cotizacion con la que estan preciados los
+                renglones. Con el presupuesto en pesos no se rechaza (la cotizacion no interviene en
+                nada) y tampoco se escribe: se preserva la guardada, que sirve si despues se lo
+                vuelve a pasar a dolares.
+              - El presupuesto CAMBIA a dolares en este request y no hay cotizacion valida ni en el
+                request ni guardada = 422. Sin cotizacion no hay precios en dolares que se puedan
+                explicar ni venta que se pueda facturar (ver `CotizacionDeVentaHelper`).
+
+            🔴 NO se rechaza la edicion de un presupuesto que YA estaba en dolares con `valor_dolar`
+            NULL cuando el request no manda la clave: asi quedaron los presupuestos de 2R (su
+            version es vieja y la SPA no la manda), y un 422 aca les impediria guardar cualquier
+            cambio. Solo se exige cotizacion a quien la esta tocando o a quien esta pasando a
+            dolares. No hay forma de distinguir una cosa de la otra sin mirar si la moneda cambio,
+            por eso se lee `$model->moneda_id` (lo guardado) contra la que queda.
+
+            Va ANTES de la transaccion y sin escribir nada, igual que el 422 de lista de precios
+            de arriba: es una respuesta, no un fallo que haya que revertir.
+        */
+        $moneda_que_queda = !is_null($request->moneda_id) ? $request->moneda_id : $model->moneda_id;
+
+        $queda_en_dolares = $moneda_que_queda == CotizacionDeVentaHelper::MONEDA_DOLAR;
+
+        $estaba_en_dolares = $model->moneda_id == CotizacionDeVentaHelper::MONEDA_DOLAR;
+
+        // Lo que se va a guardar: lo guardado, salvo que el request traiga una cotizacion que sirva.
+        $valor_dolar_que_queda = $model->valor_dolar;
+
+        if (!is_null($request->valor_dolar)) {
+
+            $valor_dolar_del_request = CotizacionDeVentaHelper::valor_dolar_para_guardar($request->valor_dolar);
+
+            // Redondeada a 2 decimales puede dar 0 (0.004): tampoco sirve, no se guarda un cero.
+            if (!is_null($valor_dolar_del_request) && $valor_dolar_del_request > 0) {
+
+                $valor_dolar_que_queda = $valor_dolar_del_request;
+
+            } else if ($queda_en_dolares) {
+
+                Log::info('update budget id '.$id.': rechazado con cotizacion del dolar invalida (valor_dolar '.var_export($request->valor_dolar, true).').');
+
+                return response()->json([
+                    'message'               => 'La cotización del dólar tiene que ser un número mayor a cero. Cargá el valor del dólar y volvé a guardar el presupuesto.',
+                    'sin_cotizacion_dolar'  => true,
+                ], 422);
+            }
+        }
+
+        if ($queda_en_dolares && !$estaba_en_dolares && !CotizacionDeVentaHelper::es_cotizacion_valida($valor_dolar_que_queda)) {
+
+            Log::info('update budget id '.$id.': rechazado al pasarlo a dolares sin cotizacion del dolar.');
+
+            return response()->json([
+                'message'               => 'El presupuesto se pasó a dólares y no tiene cotización. Cargá el valor del dólar y volvé a guardarlo.',
+                'sin_cotizacion_dolar'  => true,
+            ], 422);
+        }
+
+        /*
             🔴 TODO LO QUE SIGUE ES UNA SOLA TRANSACCION (tanda 2 de la mision
             vender-lista-obligatoria, 18/9/2026, item A1). Hasta hoy este metodo era el unico de la
             clase sin `DB::beginTransaction()` ni try/catch: store(), duplicate(), confirmar() y
@@ -427,7 +507,14 @@ class BudgetController extends Controller
                                                         : $model->aplicar_recargos_directo_a_items;
             // Sin la clave se preserva la guardada (columna NOT NULL): mismo motivo que el default 1 de store().
             $model->moneda_id                 = !is_null($request->moneda_id) ? $request->moneda_id : $model->moneda_id;
-            $model->sale_status_id            = $request->sale_status_id;
+            /*
+                Ya resuelta y validada antes de la transaccion (ver "Moneda y cotizacion" arriba).
+                ⚠️ Tiene que asignarse ANTES de `save()` y de `attachArticles()`: `SaleHelper::getCost()`
+                cotiza el costo de cada renglon con la `moneda_id` y el `valor_dolar` del presupuesto
+                EN MEMORIA, y con la cotizacion vieja el costo quedaria convertido a otro valor.
+            */
+            $model->valor_dolar               = $valor_dolar_que_queda;
+            $model->sale_status_id           = $request->sale_status_id;
             $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
             $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
 
@@ -714,11 +801,44 @@ class BudgetController extends Controller
         return response(null);
     }
 
-    function pdf($id, $with_prices, $with_images) {
+    function pdf(Request $request, $id, $with_prices, $with_images) {
         $budget = Budget::find($id);
 
         if (is_null($budget)) {
             abort(404);
+        }
+
+        /**
+         * Diseño de PDF (`?pdf_column_profile_id=`): SOLO con ese parámetro se imprime con
+         * `ProfileDocumentPdf`. Sin él, el PDF es el de siempre (`BudgetPdf`), sin ningún cambio:
+         * los links de WhatsApp que ya recibieron los clientes y las pestañas viejas de la SPA no
+         * mandan el parámetro y tienen que seguir imprimiendo lo mismo. En la rama del diseño,
+         * `with_prices` y `with_images` se ignoran: el diseño manda.
+         *
+         * El perfil se busca con el dueño DEL PRESUPUESTO y nunca con el usuario logueado (la ruta
+         * es pública por id): un id de otro dueño o inexistente cae al default del dueño, y si el
+         * dueño no tiene ningún diseño de presupuesto todavía, al PDF de siempre.
+         */
+        if ($request->filled('pdf_column_profile_id')) {
+
+            $profile = PdfColumnService::get_profile_for_print(
+                $budget->user_id,
+                'budget',
+                $request->query('pdf_column_profile_id'),
+                null
+            );
+
+            if ($profile) {
+                /**
+                 * Si el diseño falla al dibujarse, `try_render()` devuelve null (y deja el error en
+                 * el log) y se cae al PDF de siempre: este link lo abre el cliente final por WhatsApp.
+                 */
+                $pdf = ProfileDocumentPdf::try_render(new BudgetPdfDocument($budget), $profile);
+
+                if ($pdf) {
+                    $pdf->emit();
+                }
+            }
         }
 
         $pdf = new BudgetPdf($budget, $with_prices, $with_images);

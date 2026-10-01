@@ -15,6 +15,8 @@ class PdfColumnOptionSeeder extends Seeder
         $supported_models = [
             'sale',
             'article',
+            'budget',
+            'order',
         ];
 
         foreach ($supported_models as $model_name) {
