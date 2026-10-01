@@ -95,6 +95,47 @@ class ArticleVariantGeneratorHelper
     }
 
     /**
+     * Ids de las variantes existentes que corresponden a las propiedades actuales del artículo
+     * (las del cartesiano vigente). Las que quedaron huérfanas —se ocultan pero no se borran,
+     * ver hide_variants_not_in()— no se incluyen.
+     *
+     * Una variante sin ningún valor de propiedad (flujo viejo) no se puede juzgar y se incluye,
+     * igual que hace la grilla del SPA.
+     *
+     * Lo usa la disponibilidad masiva para no reactivar variantes que nadie ve en la grilla.
+     *
+     * @return array Ids de ArticleVariant vigentes.
+     */
+    function valid_variant_ids()
+    {
+        if (is_null($this->article)) {
+            return [];
+        }
+
+        $valid_signatures = [];
+
+        foreach ($this->build_combinations() as $combination) {
+            $valid_signatures[$this->signature_for_combination($combination)] = true;
+        }
+
+        $ids = [];
+
+        foreach ($this->existing_variants as $existing_variant) {
+            $values = [];
+
+            foreach ($existing_variant->article_property_values as $value) {
+                $values[] = $value;
+            }
+
+            if (count($values) == 0 || isset($valid_signatures[$this->signature_for_combination($values)])) {
+                $ids[] = $existing_variant->id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * Arma la lista de "grupos de valores" (uno por propiedad con al menos un valor seleccionado)
      * y calcula el producto cartesiano entre ellos.
      *

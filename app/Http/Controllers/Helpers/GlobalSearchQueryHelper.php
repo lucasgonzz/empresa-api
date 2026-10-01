@@ -44,9 +44,19 @@ class GlobalSearchQueryHelper
      *        palabras, para que el callback decida si le aporta algo a esa palabra puntual o no; es
      *        una prop mas del "pozo comun"). El callback es responsable de no agregar ninguna
      *        condicion cuando no corresponda (Eloquent ignora un nested where sin condiciones).
+     * @param callable|null $name_extension_condition (mision busqueda-vender-por-variantes) Callback
+     *        opcional `function($sub, string $keyword)` que EXTIENDE la propiedad `name`: agrega una
+     *        alternativa mas para una palabra puntual (hoy, "alguna variante disponible cuya
+     *        descripcion la contiene", ver `VenderSearchHelper::variant_description_condition_callback`).
+     *        Solo participa si `name` esta entre las props tildadas, porque lo que extiende ES el
+     *        nombre: en el grupo 'alguna' es una alternativa mas del "pozo comun" de cada palabra
+     *        (va ULTIMA, para que MySQL solo la evalue si el articulo no matcheo ya por otra prop);
+     *        en el grupo 'todas' va adentro de la prop `name` (cada palabra: `name LIKE kw` o la
+     *        alternativa), nunca en las demas props. Con `null` el SQL generado es identico al de
+     *        siempre.
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public static function apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions = null)
+    public static function apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions = null, $name_extension_condition = null)
     {
         // Criterio de texto normalizado. Si viene vacío, la búsqueda puede ser solo por filtros
         // fijos (extra_filters): no tocamos la query.
@@ -153,7 +163,8 @@ class GlobalSearchQueryHelper
             $keywords,
             $conector,
             $table,
-            $extra_text_conditions
+            $extra_text_conditions,
+            $name_extension_condition
         ) {
             // Hay grupo estricto si hay al menos una prop o relacion en modo 'todas'.
             $has_strict_group = !empty($strict_props) || !empty($strict_relations);
@@ -167,10 +178,13 @@ class GlobalSearchQueryHelper
             if ($has_strict_group) {
                 // Grupo estricto: estructura de hoy del buscador general. OR entre props/relaciones,
                 // con AND de todas las palabras adentro de cada una.
-                $add_strict_group = function ($grupo) use ($strict_props, $strict_relations, $keywords, $table, $extra_text_conditions) {
+                $add_strict_group = function ($grupo) use ($strict_props, $strict_relations, $keywords, $table, $extra_text_conditions, $name_extension_condition) {
                     foreach ($strict_props as $prop) {
-                        $grupo->orWhere(function ($sub) use ($prop, $keywords, $table) {
-                            self::apply_all_keywords($sub, $prop, $keywords, $table);
+                        // La extension de `name` (variantes) solo se cuelga de la prop `name`.
+                        $extension_de_la_prop = $prop === 'name' ? $name_extension_condition : null;
+
+                        $grupo->orWhere(function ($sub) use ($prop, $keywords, $table, $extension_de_la_prop) {
+                            self::apply_all_keywords($sub, $prop, $keywords, $table, $extension_de_la_prop);
                         });
                     }
 
@@ -218,9 +232,9 @@ class GlobalSearchQueryHelper
             if ($has_distributed_group) {
                 // Grupo distribuido: estructura de Vender. AND de palabras, con OR entre props y
                 // relaciones del "pozo comun" adentro de cada palabra.
-                $add_distributed_group = function ($grupo) use ($distributed_props, $distributed_relations, $keywords, $table, $extra_text_conditions) {
+                $add_distributed_group = function ($grupo) use ($distributed_props, $distributed_relations, $keywords, $table, $extra_text_conditions, $name_extension_condition) {
                     foreach ($keywords as $keyword) {
-                        $grupo->where(function ($sub) use ($distributed_props, $distributed_relations, $keyword, $keywords, $table, $extra_text_conditions) {
+                        $grupo->where(function ($sub) use ($distributed_props, $distributed_relations, $keyword, $keywords, $table, $extra_text_conditions, $name_extension_condition) {
                             foreach ($distributed_props as $prop) {
                                 self::apply_single_keyword($sub, $prop, $keyword, $table);
                             }
@@ -247,6 +261,16 @@ class GlobalSearchQueryHelper
                                 $sub->orWhere(function ($extra_sub) use ($extra_text_conditions, $keywords) {
                                     call_user_func($extra_text_conditions, $extra_sub, $keywords);
                                 });
+                            }
+
+                            // Extension de `name` (mision busqueda-vender-por-variantes): la palabra
+                            // tambien puede estar en la descripcion de una variante del articulo.
+                            // Va ULTIMA del pozo a proposito: es un EXISTS (mas caro que un LIKE sobre
+                            // una columna del propio articulo) y MySQL corta el OR en la primera
+                            // alternativa verdadera, asi que solo se evalua cuando ninguna de las
+                            // otras matcheo. Solo si `name` esta tildada: lo que extiende es el nombre.
+                            if ($name_extension_condition && in_array('name', $distributed_props, true)) {
+                                call_user_func($name_extension_condition, $sub, $keyword);
                             }
                         });
                     }
@@ -351,9 +375,13 @@ class GlobalSearchQueryHelper
      * @param string $prop Columna sobre la que se arma el AND.
      * @param array $keywords Palabras del criterio.
      * @param string $table Tabla, para resolver si la columna es numerica.
+     * @param callable|null $keyword_extension Callback opcional `function($sub, string $keyword)`
+     *        que agrega una alternativa a la coincidencia de CADA palabra (`prop LIKE kw` o la
+     *        extension). Solo lo recibe la prop `name` (ver `$name_extension_condition` de `apply`).
+     *        Con `null`, el SQL es el de siempre. No aplica a props numericas.
      * @return void
      */
-    protected static function apply_all_keywords($sub, $prop, $keywords, $table)
+    protected static function apply_all_keywords($sub, $prop, $keywords, $table, $keyword_extension = null)
     {
         // Guard numerico: id, num, o cualquier columna numerica segun el schema real.
         $is_numeric_column = ($prop === 'id' || $prop === 'num' || ExtraFiltersHelper::is_numeric_column($table, $prop));
@@ -381,7 +409,15 @@ class GlobalSearchQueryHelper
         }
 
         foreach ($keywords as $keyword) {
-            $sub->where($prop, 'LIKE', '%'.$keyword.'%');
+            if ($keyword_extension) {
+                // La palabra tiene que estar en la prop O en lo que la extiende (variantes).
+                $sub->where(function ($por_palabra) use ($prop, $keyword, $keyword_extension) {
+                    $por_palabra->where($prop, 'LIKE', '%'.$keyword.'%');
+                    call_user_func($keyword_extension, $por_palabra, $keyword);
+                });
+            } else {
+                $sub->where($prop, 'LIKE', '%'.$keyword.'%');
+            }
         }
     }
 

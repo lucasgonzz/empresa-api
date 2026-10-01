@@ -9,10 +9,12 @@ use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
 use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
+use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoProveedorHelper;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Models\AfipTicket;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\ProviderOrder;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -29,7 +31,40 @@ class DevolucionesController extends Controller
         return response()->json(['sale' => $sale], 200);
     }
 
+    /**
+     * Busca una compra del usuario por su número, para devolverla al proveedor desde el módulo de
+     * Devoluciones (misión devoluciones-compras-y-rediseno, 1/10/2026). Contrato en el plan, §4.1:
+     * `{ provider_order: <ProviderOrder withAll> | null }`, y cada artículo trae además
+     * `cantidad_efectiva`, `ya_devueltas` y `costo_unitario_devolucion`, calculados en el servidor
+     * (ver NotaCreditoProveedorHelper::agregar_datos_de_devolucion).
+     *
+     * @param  string|int  $num
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function search_provider_order($num) {
+        $provider_order = ProviderOrder::where('user_id', $this->userId())
+                                        ->where('num', $num)
+                                        ->withAll()
+                                        ->first();
+
+        if (!is_null($provider_order)) {
+            $provider_order = NotaCreditoProveedorHelper::agregar_datos_de_devolucion($provider_order);
+        }
+
+        return response()->json(['provider_order' => $provider_order], 200);
+    }
+
     function store(Request $request) {
+
+        /*
+            Devolución de COMPRA (nota de crédito a proveedor, 1/10/2026): todo su camino vive en
+            NotaCreditoProveedorHelper. La bifurcación va PRIMERA y devuelve, así el camino de venta
+            de acá abajo queda intacto. Sin `tipo` (la pantalla vieja, el panel de Vender, los
+            tests) es una devolución de venta, como siempre.
+        */
+        if ($request->tipo == 'compra') {
+            return NotaCreditoProveedorHelper::store($request);
+        }
 
         /*
             🔴 No se puede devolver más de lo que la venta tiene sin devolver (auditoría de stock,
