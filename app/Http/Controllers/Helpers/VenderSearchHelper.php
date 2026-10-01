@@ -87,6 +87,49 @@ class VenderSearchHelper
     }
 
     /**
+     * Callback POR PALABRA que extiende la propiedad `name` con la descripcion de las variantes
+     * ("azul 36"), para que el criterio "zapatilla azul" encuentre el articulo "Zapatilla" cuyas
+     * variantes se llaman "azul 35" y "azul 36".
+     *
+     * Por que hace falta: la fase SQL de la busqueda (`GlobalSearchQueryHelper::apply`) exige que
+     * CADA palabra aparezca en alguna propiedad del articulo, y "azul" no esta en `name`: vive solo
+     * en `article_variants.variant_description`. El articulo moria en SQL antes de que
+     * `match_descriptors` -- que ya filtra bien las variantes por las palabras restantes -- llegara
+     * a verlo. Por eso "zapatilla" funcionaba (la palabra esta en el nombre) y "zapatilla azul" no.
+     * La fase SQL pasa a ser un SUPERCONJUNTO (cada palabra en el articulo o en alguna variante) y
+     * el filtro fino sigue siendo `match_descriptors`.
+     *
+     * Decisiones de rendimiento -- no simplificar:
+     * - Devuelve `null` si el comercio no tiene la extension `article_variants`: el SQL generado
+     *   queda EXACTAMENTE igual al de antes, sin ninguna condicion de mas.
+     * - Es un EXISTS correlacionado contra `article_variants.article_id` (indexado desde la
+     *   migracion del 19/8/2026), no un IN con ids precalculados ni un JOIN: `article_variants` no
+     *   tiene `user_id`, asi que cualquier scan propio de esa tabla mezclaria variantes de otros
+     *   comercios en las bases compartidas. Colgado del articulo, el aislamiento sale gratis.
+     *   El caller lo pone ULTIMO en el OR de cada palabra, asi MySQL solo lo evalua para los
+     *   articulos que no matchearon ya por nombre o codigo.
+     * - Solo variantes disponibles (`oculta = 0`): las ocultas no se ofrecen en Vender
+     *   (`match_descriptors` las descarta) y un articulo no tiene que aparecer por una variante que
+     *   despues no va a mostrar.
+     *
+     * @return \Closure|null function(\Illuminate\Database\Eloquent\Builder $sub, string $keyword): void
+     *         `$sub` recibe un `orWhereHas` mas, para la palabra puntual `$keyword`.
+     */
+    public static function variant_description_condition_callback()
+    {
+        if (!UserHelper::hasExtencion('article_variants')) {
+            return null;
+        }
+
+        return function ($sub, $keyword) {
+            $sub->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
+                $variant_query->where('oculta', 0)
+                              ->where('variant_description', 'LIKE', '%' . $keyword . '%');
+            });
+        };
+    }
+
+    /**
      * Decide que pares (articulo, variante|null) son el resultado de la busqueda, SIN construir el
      * objeto final de cada fila. Extraido de lo que antes era la mitad "decision" del loop de
      * `expand_variants()` (mismo orden de casos: coincidencia exacta por barcode de variante
@@ -123,8 +166,16 @@ class VenderSearchHelper
         // y de variantes) participa de la coincidencia de palabras sueltas y del match exacto.
         $search_bar_code_en_vender = UserHelper::hasExtencion('search_bar_code_en_vender');
 
-        // Palabras del criterio de busqueda, mismo criterio de separacion que search_nombre.
-        $keywords = explode(' ', trim($query_value));
+        // Palabras del criterio de busqueda. Se separa por cualquier cantidad de espacios y se
+        // descartan las vacias, igual que hace GlobalSearchQueryHelper::apply en la fase SQL. Con
+        // explode(' ') un doble espacio -o un criterio vacio, que es una busqueda solo por filtros
+        // fijos- dejaba una palabra '' y strpos(..., '') tira un warning en PHP 7.4 que Laravel
+        // convierte en un 500 ("strpos(): Empty needle"): medido el 1/10/2026 con la extension de
+        // variantes prendida.
+        $keywords = preg_split('/\s+/', trim($query_value), -1, PREG_SPLIT_NO_EMPTY);
+
+        // Sin palabras no hay nada que filtrar por texto: todo articulo es resultado.
+        $sin_palabras = empty($keywords);
 
         $descriptors = collect();
 
@@ -213,8 +264,9 @@ class VenderSearchHelper
                 }
 
             } else {
-                // Si no tiene variantes, y al menos una keyword matcheo, agregar el articulo.
-                if ($matched_keywords->isNotEmpty()) {
+                // Si no tiene variantes, y al menos una keyword matcheo (o no hay criterio de texto),
+                // agregar el articulo.
+                if ($sin_palabras || $matched_keywords->isNotEmpty()) {
                     $descriptors->push((object) ['article_id' => $article->id, 'variant_id' => null]);
                 }
             }
