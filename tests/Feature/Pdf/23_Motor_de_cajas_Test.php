@@ -142,6 +142,158 @@ class Motor_de_cajas_Test extends TestCase
         return $textos;
     }
 
+    /**
+     * Cada texto dibujado con dónde arranca y dónde termina (mm), medido con la letra con la que
+     * se dibujó: la fuente y el tamaño del último "Tf" anterior en la hoja, con las métricas de esa
+     * variante de Helvetica. El espacio del final no cuenta (no se ve).
+     *
+     * @param string $pdf
+     * @return array<int, array{texto: string, x: float, fin: float}>
+     */
+    private function textos_con_su_ancho($pdf)
+    {
+        $estilos = ['Helvetica' => '', 'Helvetica-Bold' => 'B', 'Helvetica-Oblique' => 'I', 'Helvetica-BoldOblique' => 'BI'];
+
+        /** Qué variante es cada /Fn: el recurso apunta al objeto de la fuente, que dice su BaseFont. */
+        preg_match_all('~/F(\d+) (\d+) 0 R~', $pdf, $recursos, PREG_SET_ORDER);
+        $estilo_de = [];
+        foreach ($recursos as $recurso) {
+            if (preg_match('~\n'.$recurso[2].' 0 obj\s*<</Type /Font\s*/BaseFont /([A-Za-z-]+)~', $pdf, $base)) {
+                $estilo_de[$recurso[1]] = $estilos[$base[1]];
+            }
+        }
+
+        preg_match_all('~/F(\d+) ([\d.]+) Tf|BT (-?[\d.]+) (-?[\d.]+) Td \(((?:[^()\\\\]|\\\\.)*)\) Tj ET~s', $pdf, $operaciones, PREG_SET_ORDER);
+
+        $fuente = null;
+        $tamano = null;
+        $textos = [];
+        foreach ($operaciones as $operacion) {
+            if ($operacion[1] !== '') {
+                $fuente = $operacion[1];
+                $tamano = (float) $operacion[2];
+                continue;
+            }
+
+            $texto = utf8_encode(preg_replace('~\\\\(.)~s', '$1', $operacion[5]));
+            $x = (float) $operacion[3] / self::K;
+            $textos[] = [
+                'texto' => $texto,
+                'x' => $x,
+                'fin' => $x + MotorDeCajasPdf::ancho_de_texto(rtrim($texto), $estilo_de[$fuente], $tamano),
+            ];
+        }
+
+        return $textos;
+    }
+
+    /**
+     * Dibuja una caja angosta de 3 columnas con el campo dado al lado de una de 9 con los costos, y
+     * devuelve los textos que arrancan en la angosta, el borde de cada caja y los textos de la ancha.
+     *
+     * @param array $campo
+     * @param array $valores
+     * @return array{angosta: array, ancha: array, de_la_angosta: array, de_la_ancha: array}
+     */
+    private function caja_angosta_al_lado_de_los_costos(array $campo, array $valores)
+    {
+        $pdf = $this->pdf_nuevo();
+        $this->motor($valores + ['tot_costos' => '$9.300'])->dibujar_zona($pdf, [
+            $this->caja('angosta', 3, [$campo]),
+            $this->caja('ancha', 9, [$this->campo('tot_costos')]),
+        ], 20);
+        $salida = $pdf->Output('S');
+
+        $rects = $this->rectangulos($salida);
+        $this->assertCount(2, $rects, 'Se dibujan las dos cajas.');
+        usort($rects, function ($a, $b) {
+            return $a['x'] < $b['x'] ? -1 : 1;
+        });
+
+        $de_la_angosta = [];
+        $de_la_ancha = [];
+        foreach ($this->textos_con_su_ancho($salida) as $texto) {
+            if ($texto['x'] < $rects[1]['x']) {
+                $de_la_angosta[] = $texto;
+            } else {
+                $de_la_ancha[] = $texto;
+            }
+        }
+
+        return ['angosta' => $rects[0], 'ancha' => $rects[1], 'de_la_angosta' => $de_la_angosta, 'de_la_ancha' => $de_la_ancha];
+    }
+
+    /**
+     * Un rótulo que no entra entero en la caja se parte en palabras como el valor, y el valor sigue
+     * al lado de su última línea. Si quedara de una pieza, se dibujaría pasando el borde derecho,
+     * encima de la caja de al lado. El caso medido el 1/10/2026: "Total menos comisiones: " en
+     * negrita 12 (52 mm) en una caja de 3 columnas (48,5 mm), al lado de una de 9 con los costos:
+     * el rótulo terminaba en x ≈ 60 con la caja terminando en 53,5, encima de "Costos: ".
+     *
+     * @test
+     */
+    public function un_rotulo_que_no_entra_en_la_caja_se_parte_y_no_pasa_el_borde()
+    {
+        $dibujo = $this->caja_angosta_al_lado_de_los_costos(
+            $this->campo('tot_total_menos_comisiones'),
+            ['tot_total_menos_comisiones' => '$11.875']
+        );
+        $borde_derecho = $dibujo['angosta']['x'] + $dibujo['angosta']['ancho'];
+
+        $this->assertGreaterThan(1, count($dibujo['de_la_angosta']), 'El rótulo va en más de una línea.');
+        foreach ($dibujo['de_la_angosta'] as $texto) {
+            $this->assertLessThanOrEqual($borde_derecho, $texto['fin'], '"'.$texto['texto'].'" pasa el borde derecho de la caja angosta.');
+        }
+
+        /** No se pierde ni se repite nada al partir, y el valor sigue al rótulo. */
+        $partes = [];
+        foreach ($dibujo['de_la_angosta'] as $texto) {
+            $partes[] = trim($texto['texto']);
+        }
+        $this->assertSame('Total menos comisiones: $11.875', implode(' ', $partes));
+
+        /** La caja de al lado queda como estaba: su rótulo arranca adentro de ella. */
+        $this->assertSame(['Costos: ', '$9.300'], array_column($dibujo['de_la_ancha'], 'texto'));
+        $this->assertGreaterThanOrEqual($dibujo['ancha']['x'], $dibujo['de_la_ancha'][0]['x']);
+    }
+
+    /**
+     * Lo mismo con lo más grande que acepta el diseño: una etiqueta propia de 60 letras
+     * (DisenoDePaginaPdf::MAX_ETIQUETA) a 24 puntos (TAMANO_MAX), en negrita y sin, en las tres
+     * alineaciones, con un valor que tampoco entra en una línea (se corta por letras): ningún texto
+     * de la caja angosta sale de ella, por ninguno de los dos bordes, y no se pierde ninguna letra.
+     *
+     * @test
+     */
+    public function con_la_etiqueta_mas_larga_y_la_letra_mas_grande_nada_sale_de_la_caja()
+    {
+        $etiqueta = 'Importe que queda una vez descontadas las comisiones del mes';
+        $this->assertSame(60, mb_strlen(trim($etiqueta)), 'La etiqueta tiene el largo máximo del diseño.');
+        $valor = '$1.234.567.890,12';
+
+        foreach (['izquierda', 'centro', 'derecha'] as $alineacion) {
+            foreach ([true, false] as $negrita) {
+                $caso = $alineacion.($negrita ? ', negrita' : '');
+                $dibujo = $this->caja_angosta_al_lado_de_los_costos(
+                    $this->campo('tot_total_menos_comisiones', ['etiqueta' => $etiqueta, 'tamano' => 24, 'negrita' => $negrita, 'alineacion' => $alineacion]),
+                    ['tot_total_menos_comisiones' => $valor]
+                );
+                $borde_izquierdo = $dibujo['angosta']['x'];
+                $borde_derecho = $dibujo['angosta']['x'] + $dibujo['angosta']['ancho'];
+
+                $letras = '';
+                foreach ($dibujo['de_la_angosta'] as $texto) {
+                    $this->assertGreaterThanOrEqual($borde_izquierdo, $texto['x'], $caso.': "'.$texto['texto'].'" arranca antes de la caja.');
+                    $this->assertLessThanOrEqual($borde_derecho, $texto['fin'], $caso.': "'.$texto['texto'].'" pasa el borde derecho de la caja.');
+                    $letras .= str_replace(' ', '', $texto['texto']);
+                }
+
+                $this->assertSame(str_replace(' ', '', $etiqueta.': '.$valor), $letras, $caso.': se perdió o se repitió algo al partir.');
+                $this->assertSame(['Costos: ', '$9.300'], array_column($dibujo['de_la_ancha'], 'texto'), $caso);
+            }
+        }
+    }
+
     private function solo_textos($pdf)
     {
         $textos = [];

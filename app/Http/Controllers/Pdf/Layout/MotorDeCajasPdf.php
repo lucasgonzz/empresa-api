@@ -460,7 +460,12 @@ class MotorDeCajasPdf
             $segmento = $linea['segmentos'][0];
             $pdf->SetFont('Arial', $segmento['estilo'], $segmento['tamano']);
             $pdf->x = $x;
-            $pdf->Cell($ancho, $linea['alto'], $segmento['texto'], 0, 0, $linea['alineacion'] === 'derecha' ? 'R' : 'C');
+            /**
+             * Nunca ancho 0: para Cell() de FPDF 0 quiere decir "hasta el margen derecho de la
+             * hoja", y en una caja de 1 columna de una hoja de 80 mm (4 mm de caja, 0 de contenido)
+             * el texto centrado o a la derecha se iba 190 mm, a la otra punta de la hoja.
+             */
+            $pdf->Cell(max(0.01, $ancho), $linea['alto'], $segmento['texto'], 0, 0, $linea['alineacion'] === 'derecha' ? 'R' : 'C');
 
             return;
         }
@@ -617,6 +622,34 @@ class MotorDeCajasPdf
              * siguientes arrancan en el borde de la caja (print_label_value_multiline()).
              */
             $segmento_rotulo = self::segmento($rotulo, $estilo_rotulo, $estilo['tamano']);
+
+            if ($segmento_rotulo['ancho'] > $ancho_util) {
+                /**
+                 * El rótulo no entra entero en la caja (una caja angosta, una etiqueta propia de 60
+                 * letras, 24 pt). Si quedara como un solo segmento, se dibujaría pasando el borde
+                 * derecho, encima de la caja de al lado: medido el 1/10/2026 con "Total menos
+                 * comisiones: " en negrita 12 en una caja de 3 columnas (52 mm de rótulo contra
+                 * 42,5 de ancho útil), que pisaba el "Costos: " de la caja vecina. Se parte en
+                 * palabras como el valor (y una palabra que no entra sola, por letras): todas sus
+                 * líneas menos la última van solas, y el valor sigue al lado de la última con el
+                 * ancho que le quede (o en la línea de abajo, si al lado no entra).
+                 */
+                $lineas_del_rotulo = self::partir(rtrim($rotulo), $estilo_rotulo, $estilo['tamano'], $ancho_util, $ancho_util);
+                $ultima_del_rotulo = array_pop($lineas_del_rotulo);
+
+                foreach ($lineas_del_rotulo as $parte_del_rotulo) {
+                    $lineas[] = [
+                        'alto' => $alto_de_linea,
+                        'alineacion' => 'izquierda',
+                        'color' => $color,
+                        'segmentos' => [self::segmento($parte_del_rotulo, $estilo_rotulo, $estilo['tamano'])],
+                    ];
+                }
+
+                /** El espacio que separa el rótulo del valor no se ve: no cuenta para el borde. */
+                $segmento_rotulo = self::segmento($ultima_del_rotulo.' ', $estilo_rotulo, $estilo['tamano']);
+            }
+
             $partes = self::partir($texto, $estilo_valor, $estilo['tamano'], $ancho_util - $segmento_rotulo['ancho'], $ancho_util);
 
             foreach ($partes as $j => $parte) {
@@ -772,13 +805,29 @@ class MotorDeCajasPdf
                 }
 
                 /** Una palabra que no entra sola en una línea se corta por letras. */
+                $letras = preg_split('//u', $palabra, -1, PREG_SPLIT_NO_EMPTY);
+                if (! is_array($letras)) {
+                    /**
+                     * Con UTF-8 inválido preg_split() devuelve false y el foreach no correría: la
+                     * palabra se perdería sin aviso. Se corta por bytes (Cell() los imprime igual).
+                     */
+                    $letras = str_split($palabra);
+                }
+
                 $trozo = '';
-                foreach (preg_split('//u', $palabra, -1, PREG_SPLIT_NO_EMPTY) as $letra) {
-                    if ($trozo !== '' && self::ancho_de_texto($trozo.$letra, $estilo, $tamano) > $ancho) {
-                        $lineas[] = $trozo;
-                        $ancho = $ancho_resto;
-                        $trozo = '';
+                foreach ($letras as $letra) {
+                    if (self::ancho_de_texto($trozo.$letra, $estilo, $tamano) > $ancho) {
+                        if ($trozo !== '') {
+                            $lineas[] = $trozo;
+                            $ancho = $ancho_resto;
+                            $trozo = '';
+                        } elseif (count($lineas) === 0 && $ancho < $ancho_resto) {
+                            /** Al lado del rótulo no entra ni una letra: la palabra arranca en la línea de abajo. */
+                            $lineas[] = '';
+                            $ancho = $ancho_resto;
+                        }
                     }
+                    /** La primera letra de un trozo va siempre, aunque no entre: si no, el corte no avanzaría. */
                     $trozo .= $letra;
                 }
                 $actual = $trozo;
