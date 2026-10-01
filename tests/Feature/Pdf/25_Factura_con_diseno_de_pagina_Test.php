@@ -255,6 +255,81 @@ class Factura_con_diseno_de_pagina_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 El bloque angosto se mide con la MISMA rutina que lo dibuja. La estimación aparte
+     * (estimate_receptor_height()) quedaba CORTA con una palabra larga sin espacios (un nombre de
+     * 35 letras seguidas a 6 columnas: estimaba 24 mm y el bloque mide 28): la fila avanzaba con lo
+     * estimado y el recuadro se metía 4 mm en la fila de abajo, encima de la caja siguiente. Medido
+     * con su dibujo, la fila de abajo arranca 2 mm debajo del recuadro, y el bloque deja debajo de
+     * su último renglón el mismo aire que a lo ancho.
+     *
+     * @test
+     */
+    public function el_bloque_del_cliente_angosto_se_mide_con_su_dibujo_y_no_pisa_la_fila_de_abajo()
+    {
+        $venta = $this->crear_venta_completa();
+        $venta->client->name = str_repeat('M', 35);
+        $venta->client->save();
+        $venta = Sale::find($venta->id);
+        $ticket = $this->crear_factura($venta, 'B');
+
+        $diseno = function ($cols) {
+            return $this->diseno_de_pagina([
+                ['tipo' => 'fijo', 'key' => 'afip_receptor', 'cols' => $cols],
+                $this->caja_de_diseno('caja_abajo', 12, [$this->campo_de_caja('venta_vendedor')], 'Abajo'),
+            ], []);
+        };
+        $a_lo_ancho = $this->pdf_de_factura($venta, $this->perfil_de_venta(['is_afip_ticket' => true], $diseno(12)), $ticket->id);
+        $angosto = $this->pdf_de_factura($venta, $this->perfil_de_venta(['is_afip_ticket' => true], $diseno(6)), $ticket->id);
+
+        $unidad = 202 / 12;
+        $celda = [5, 5 + 6 * $unidad - 2];
+        $recuadro = $this->recuadro_del_receptor($angosto, ($celda[0] + $celda[1]) / 2);
+        $this->assertNotNull($recuadro);
+
+        /** La caja de la fila de abajo (12 columnas: de 5 a 205) arranca 2 mm debajo del recuadro. */
+        $caja = null;
+        foreach ($this->rectangulos_de_la_primera_hoja($angosto) as $rect) {
+            if (abs($rect['x'] - 5) < 0.05 && abs($rect['ancho'] - 200) < 0.05 && $rect['y'] > $recuadro[0]) {
+                $caja = $rect;
+            }
+        }
+        $this->assertNotNull($caja, 'La caja de la fila de abajo.');
+        $this->assertEqualsWithDelta($recuadro[1] + 2, $caja['y'], 0.05, 'La fila de abajo arranca 2 mm debajo del recuadro del bloque: no lo pisa.');
+
+        /** Y el mismo aire debajo del último renglón que a lo ancho (donde el motor ya avanzaba con el alto real). */
+        $this->assertEqualsWithDelta(
+            $this->aire_debajo_del_bloque($a_lo_ancho, 105, [5, 205]),
+            $this->aire_debajo_del_bloque($angosto, ($celda[0] + $celda[1]) / 2, $celda),
+            0.05
+        );
+    }
+
+    /**
+     * Cuánto hay entre la base del último renglón del bloque del cliente y el borde de abajo de su
+     * recuadro (mm).
+     *
+     * @param string $pdf
+     * @param float  $x_de_la_divisoria
+     * @param array  $celda [izquierda, derecha]
+     * @return float
+     */
+    private function aire_debajo_del_bloque($pdf, $x_de_la_divisoria, $celda)
+    {
+        $recuadro = $this->recuadro_del_receptor($pdf, $x_de_la_divisoria);
+        $this->assertNotNull($recuadro, 'Se encuentra el recuadro del bloque.');
+
+        $ultima_base = null;
+        foreach ($this->textos_con_posicion($pdf) as $texto) {
+            if ($texto['y'] >= $recuadro[0] && $texto['y'] <= $recuadro[1] && $texto['x'] >= $celda[0] && $texto['x'] < $celda[1]) {
+                $ultima_base = is_null($ultima_base) ? $texto['y'] : max($ultima_base, $texto['y']);
+            }
+        }
+        $this->assertNotNull($ultima_base);
+
+        return $recuadro[1] - $ultima_base;
+    }
+
+    /**
      * El recuadro del bloque del cliente de ARCA: [arriba, abajo] en mm, leído de su divisoria
      * vertical (la línea al medio del bloque) que abarca el renglón "Condición de venta: " (el
      * único rótulo que es solo del bloque del cliente: el encabezado del emisor también tiene

@@ -671,11 +671,11 @@ class SaleLayoutPdf extends fpdf
              * (en_la_celda()); con 12, $x y $ancho vienen en null y va a lo ancho, como siempre.
              */
             CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR => function ($pdf, $item, $dibujar, $x = null, $ancho = null, $alto = null) {
-                return $this->en_la_celda($x, $ancho, function () use ($pdf, $dibujar, $alto) {
-                    if (! $dibujar) {
-                        return AfipPdfHelper::estimate_receptor_height($pdf, $this->sale);
-                    }
+                if (! $dibujar) {
+                    return $this->alto_del_receptor($pdf, $x, $ancho);
+                }
 
+                return $this->en_la_celda($x, $ancho, function () use ($pdf, $alto) {
                     $y = $pdf->y;
                     AfipPdfHelper::receptor_fiscal($pdf, $this->sale, $alto);
 
@@ -695,6 +695,39 @@ class SaleLayoutPdf extends fpdf
                 return $pdf->y - $y;
             },
         ];
+    }
+
+    /**
+     * El alto del bloque del cliente de ARCA (en su celda, o a lo ancho), medido con la MISMA rutina
+     * que lo dibuja (el principio del motor: una sola función mide y dibuja): se lo dibuja en una
+     * COPIA de esta instancia, que se tira. AfipPdfHelper::estimate_receptor_height() es una cuenta
+     * aparte y por arriba: con el bloque angosto la fila avanzaba con ese alto y quedaban unos 4 mm
+     * de aire debajo del bloque (a lo ancho no se notaba: ahí el motor avanza con el alto que
+     * devuelve el dibujo). La copia es barata: FPDF guarda todo en arreglos y textos, que PHP copia
+     * recién al escribirlos (solo la hoja actual). Sin una hoja abierta no hay dónde dibujar la
+     * copia: ahí, la estimación.
+     *
+     * @param mixed      $pdf
+     * @param float|null $x
+     * @param float|null $ancho
+     * @return float
+     */
+    private function alto_del_receptor($pdf, $x, $ancho)
+    {
+        if ($pdf !== $this || $this->state !== 2) {
+            return $this->en_la_celda($x, $ancho, function () use ($pdf) {
+                return AfipPdfHelper::estimate_receptor_height($pdf, $this->sale);
+            });
+        }
+
+        $copia = clone $this;
+
+        return $copia->en_la_celda($x, $ancho, function () use ($copia) {
+            $y = $copia->y;
+            AfipPdfHelper::receptor_fiscal($copia, $copia->sale);
+
+            return $copia->y - $y;
+        });
     }
 
     /**
