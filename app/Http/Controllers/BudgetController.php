@@ -461,14 +461,29 @@ class BudgetController extends Controller
             presupuesto-contado-o-cuenta-corriente, 1/10/2026). Mismo patron que `price_type_id` y
             `valor_dolar` de arriba: la CLAVE AUSENTE no es lo mismo que la clave en 0.
 
-              - Clave `omitir_en_cuenta_corriente` PRESENTE = quien manda el request sabe de cobros
-                (la SPA nueva, que la manda siempre, junto con `selected_payment_methods`). Se valida
-                (V1 a V3, 422 antes de escribir nada) y el presupuesto queda de contado si el request
-                lo pide --omitir Y al menos una fila--, o a cuenta corriente y SIN reparto si no. Una
-                SPA vieja que edita (PUT con omitir en 0 y sin reparto) un presupuesto de contado lo
-                pasa a cuenta corriente: es el lado conservador, nunca deja plata sin registrar.
+              - Clave `omitir_en_cuenta_corriente` PRESENTE = la manda la SPA de Vender (siempre, junto
+                con `selected_payment_methods`) y TAMBIEN EL FORM GENERICO del modulo Presupuestos:
+                `getModelToSend()` de `common-vue` (`components/model/Index.vue`) manda en cada PUT
+                `{...this.model}`, el modelo entero tal como lo devolvio el listado. O sea que en ese
+                form la clave esta SIEMPRE, con el cobro que el presupuesto ya tenia.
 
-              - Clave AUSENTE = el form generico del modulo Presupuestos u otra SPA que no sabe de
+                Entonces hay dos casos con la clave presente:
+
+                  a) El cobro del request es IGUAL al guardado (`es_el_cobro_guardado()`: mismas filas
+                     normalizadas, sin contar el `__row_id` ni el orden de las claves). Es el form
+                     generico editando otra cosa, o la SPA reenviando lo mismo. Se CONSERVA lo guardado
+                     tal cual y NO se vuelven a pedir V1, los montos, V4 ni V2: si la caja se cerro
+                     desde que se guardo el presupuesto, eso no tiene por que impedir editar una
+                     observacion. V3 SI se sigue pidiendo, porque el `total` del request pudo cambiar
+                     (cambiaron los renglones) y el reparto guardado ya no suma.
+
+                  b) El cobro CAMBIO. Validacion completa (V1 a V4, 422 antes de escribir nada) y el
+                     presupuesto queda de contado si el request lo pide --omitir Y al menos una fila--,
+                     o a cuenta corriente y SIN reparto si no. Una SPA vieja que edita (PUT con omitir
+                     en 0 y sin reparto) un presupuesto de contado lo pasa a cuenta corriente: es el
+                     lado conservador, nunca deja plata sin registrar.
+
+              - Clave AUSENTE = una SPA vieja, o un cliente HTTP que arma el PUT a mano y no sabe de
                 cobros. Se PRESERVAN los dos valores guardados: sin esto, cualquier edicion de un campo
                 cualquiera (una observacion) pasaria a cuenta corriente un presupuesto cobrado de
                 contado, y el cobro que el vendedor armo se perderia en silencio.
@@ -480,8 +495,12 @@ class BudgetController extends Controller
 
                 ⚠️ Con la clave ausente y un presupuesto de contado, NO se valida nada aca: el request
                 no habla del cobro. Si esa edicion cambio los renglones, el reparto guardado puede
-                haber quedado con un total viejo, y lo atrapa `validar_para_confirmar()` al confirmar
-                (422, "Volvé a repartir"), que es el momento en que el cobro importa.
+                haber quedado con un total viejo.
+
+            🔴 LA RED DE VERDAD CONTRA UN COBRO VIEJO ES `validar_para_confirmar()`, que corre al
+            confirmar sobre lo que hay en la columna (caja cerrada, metodo borrado, caja de otro
+            dueño, reparto que ya no suma). Lo que se valida aca es lo que el request DICE, no lo que
+            el presupuesto ya traia.
 
             Va ANTES de la transaccion, igual que los 422 de arriba: es una respuesta, no un fallo.
         */
@@ -489,9 +508,14 @@ class BudgetController extends Controller
 
         $filas_de_cobro_que_quedan = null;
 
+        // true = la clave vino con el MISMO cobro que ya estaba guardado: no se toca la columna.
+        $conserva_el_cobro_guardado = false;
+
         if ($actualizar_cobro) {
 
-            $cobro_invalido = BudgetCobroHelper::validar_request($request);
+            $conserva_el_cobro_guardado = BudgetCobroHelper::es_el_cobro_guardado($request, $model);
+
+            $cobro_invalido = BudgetCobroHelper::validar_request($request, $conserva_el_cobro_guardado);
 
             if (!is_null($cobro_invalido)) {
 
@@ -500,9 +524,16 @@ class BudgetController extends Controller
                 return response()->json($cobro_invalido, 422);
             }
 
-            $filas_de_cobro_que_quedan = BudgetCobroHelper::filas_del_request($request);
+            if ($conserva_el_cobro_guardado) {
 
-            $omitir_que_queda = !is_null($filas_de_cobro_que_quedan) ? 1 : 0;
+                $omitir_que_queda = 1;
+
+            } else {
+
+                $filas_de_cobro_que_quedan = BudgetCobroHelper::filas_del_request($request);
+
+                $omitir_que_queda = !is_null($filas_de_cobro_que_quedan) ? 1 : 0;
+            }
 
         } else {
 
@@ -585,13 +616,15 @@ class BudgetController extends Controller
             $model->omitir_en_cuenta_corriente = $omitir_que_queda;
 
             /*
-                El reparto, SOLO si el request hablo del cobro (clave presente): con la clave ausente
-                el guardado no se toca. null = sin reparto (pasa a cuenta corriente). Por la guarda de
-                esquema: entre que el deploy sube los archivos y corre las migraciones la columna puede
-                no existir, y esta asignacion tumbaria la edicion de cualquier presupuesto. Ver
+                El reparto, SOLO si el request hablo del cobro (clave presente) Y lo CAMBIO: con la clave
+                ausente, o presente con el mismo cobro que ya estaba (el form generico reenvia el
+                modelo entero), el guardado no se toca --queda tal cual, con su `__row_id` y todo--.
+                null = sin reparto (pasa a cuenta corriente). Por la guarda de esquema: entre que el
+                deploy sube los archivos y corre las migraciones la columna puede no existir, y esta
+                asignacion tumbaria la edicion de cualquier presupuesto. Ver
                 `CobroPresupuestoEsquemaHelper`.
             */
-            if ($actualizar_cobro) {
+            if ($actualizar_cobro && !$conserva_el_cobro_guardado) {
                 CobroPresupuestoEsquemaHelper::asignar_al_modelo($model, $filas_de_cobro_que_quedan);
             }
 
@@ -678,10 +711,12 @@ class BudgetController extends Controller
 
             /*
                 Este PUT confirmo un presupuesto de contado (el estado cambio) y su cobro guardado ya
-                no sirve --tipicamente, la clave `omitir_en_cuenta_corriente` no viajo, se preservo un
-                reparto viejo y los renglones nuevos ya no suman--. Rollback completo (renglones y
-                campos vuelven a como estaban) y 422 con el cuerpo de la validacion, no 500. Ver
-                `confirmar()`, que tiene el mismo catch por el mismo motivo.
+                no sirve. Tipicamente se conservo el cobro guardado (la clave no viajo, o viajo con el
+                mismo cobro: el form generico reenvia el modelo entero y ahi NO se revalidan la caja ni
+                el metodo) y desde que se guardo la caja se cerro, el metodo se borro o la caja paso a
+                otro dueño. Rollback completo (renglones y campos vuelven a como estaban) y 422 con el
+                cuerpo de la validacion, no 500. Ver `confirmar()`, que tiene el mismo catch por el
+                mismo motivo.
             */
             DB::rollBack();
 
