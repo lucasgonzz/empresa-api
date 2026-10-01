@@ -299,10 +299,17 @@ class SaleLayoutPdf extends fpdf
         /** Precarga marca/categoría/subcategoría/proveedor para las columnas de relación (como NewSalePdf). */
         PdfColumnService::eager_load_sale_article_relations($this->sale);
 
+        /**
+         * Los renglones se piden ANTES de la primera hoja: renglones() les pone las marcas de
+         * tipo (is_article, is_service...) que lee AfipItemCalculator para las columnas fiscales,
+         * igual que NewSalePdf::items() antes de dibujar la tabla.
+         */
+        $renglones = $this->fuente->totales()->renglones();
+
         $this->AddPage();
 
         $index = 1;
-        foreach ($this->fuente->totales()->renglones() as $renglon) {
+        foreach ($renglones as $renglon) {
             $this->dibujar_renglon($index, $renglon[1]);
             $index++;
         }

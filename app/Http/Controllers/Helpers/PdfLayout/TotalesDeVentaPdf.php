@@ -99,6 +99,12 @@ class TotalesDeVentaPdf
      * Renglones de la venta en el orden de la tabla: artículos, combos, promociones y servicios.
      * Gemelo de `NewSalePdf::get_sale_items()`.
      *
+     * 🔴 Les pone a los renglones las MISMAS marcas que `get_sale_items()` (is_article, is_combo,
+     * is_promocion_vinotecas, is_service), y no es decorativo: `AfipItemCalculator` aplica los
+     * descuentos y recargos de la venta en las columnas fiscales (precio sin IVA, importe de IVA,
+     * precio con IVA) solo a los renglones marcados como artículo o servicio. Sin las marcas, la
+     * factura con cajas imprimía esas columnas sin los descuentos ni los recargos de la venta.
+     *
      * @return array<int, array{0: string, 1: object}> [tipo, renglón]
      */
     public function renglones()
@@ -106,15 +112,19 @@ class TotalesDeVentaPdf
         $renglones = [];
 
         foreach ($this->sale->articles as $item) {
+            $item->is_article = true;
             $renglones[] = ['articles', $item];
         }
         foreach ($this->sale->combos as $item) {
+            $item->is_combo = true;
             $renglones[] = ['combos', $item];
         }
         foreach ($this->sale->promocion_vinotecas as $item) {
+            $item->is_promocion_vinotecas = true;
             $renglones[] = ['promocion_vinotecas', $item];
         }
         foreach ($this->sale->services as $item) {
+            $item->is_service = true;
             $renglones[] = ['services', $item];
         }
 

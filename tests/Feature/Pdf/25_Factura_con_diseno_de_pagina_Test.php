@@ -2,8 +2,9 @@
 
 namespace Tests\Feature\Pdf;
 
-use App\Http\Controllers\Pdf\SaleLayoutPdf;
+use App\Models\PdfColumnOption;
 use App\Models\Sale;
+use App\Services\PdfColumnService;
 use Tests\Concerns\DocumentosParaPdf;
 use Tests\EmpresaTestCase;
 use Tests\Feature\Pdf\Concerns\ComprobantesConDisenoDePagina;
@@ -194,6 +195,51 @@ class Factura_con_diseno_de_pagina_Test extends EmpresaTestCase
         foreach ($y[1] as $posicion) {
             $this->assertLessThan(286, 297 - (float) $posicion / $k, 'Un texto quedó debajo del límite de la hoja.');
         }
+    }
+
+    /**
+     * 🔴 Las columnas fiscales de la tabla (precio sin IVA, importe de IVA) llevan los descuentos y
+     * recargos de la venta, como en el PDF de siempre. `AfipItemCalculator` los aplica solo a los
+     * renglones marcados como artículo o servicio (`is_article` / `is_service`, las marcas que pone
+     * `NewSalePdf::get_sale_items()`): sin esas marcas la factura con cajas salía con los valores
+     * sin descuentos.
+     *
+     * @test
+     */
+    public function las_columnas_fiscales_llevan_los_descuentos_de_la_venta_como_siempre()
+    {
+        $venta = $this->crear_venta_completa();
+        $ticket = $this->crear_factura($venta, 'A');
+        $perfil = $this->perfil_de_venta(['is_afip_ticket' => true], $this->diseno_de_factura());
+
+        $columna = PdfColumnOption::where('model_name', 'sale')->where('value_resolver', 'item_price_without_iva')->first();
+        $perfil->pdf_column_options()->attach($columna->id, ['visible' => true, 'order' => 10, 'width' => 20, 'wrap_content' => false]);
+        $perfil = $perfil->fresh();
+
+        $pdf = $this->pdf_de_factura($venta, $perfil, $ticket->id);
+
+        /** Lo que imprime el PDF de siempre: el renglón marcado como artículo, con el contexto de NewSalePdf. */
+        $venta_fresca = Sale::find($venta->id);
+        $ticket_de_la_venta = \App\Http\Controllers\Pdf\Afip\TicketInfoHelper::resolve_afip_ticket_for_sale($venta_fresca, $ticket->id);
+        $afip_helper = (new \App\Http\Controllers\Pdf\Afip\TicketInfoHelper($ticket_de_la_venta, $venta_fresca, $this->dueno))->afip_helper();
+        $taladro = $venta_fresca->articles->first();
+        $contexto = [
+            'item' => $taladro,
+            'index' => 1,
+            'sale' => $venta_fresca,
+            'afip_ticket' => $ticket_de_la_venta,
+            'afip_helper' => $afip_helper,
+            'numbers' => \App\Http\Controllers\Helpers\Numbers::class,
+            'general_helper' => \App\Http\Controllers\Helpers\GeneralHelper::class,
+        ];
+
+        $sin_marca = (string) PdfColumnService::resolve_value('item_price_without_iva', $contexto);
+        $taladro->is_article = true;
+        $como_siempre = (string) PdfColumnService::resolve_value('item_price_without_iva', $contexto);
+
+        $this->assertNotSame($sin_marca, $como_siempre, 'El control: con la marca de artículo el valor cambia (lleva los descuentos de la venta).');
+        $this->assertDibujaTexto($como_siempre, $pdf, 'La columna fiscal no tiene el valor del PDF de siempre.');
+        $this->assertNoDibujaTexto($sin_marca, $pdf);
     }
 
     /**
