@@ -469,13 +469,20 @@ class DisenoDePaginaPdf
 
         $texto = (string) $texto;
 
+        /**
+         * Se recortan los espacios ANTES y DESPUÉS de cortar el largo. Solo antes no alcanza: si el
+         * corte cae justo detrás de un espacio, ese espacio queda colgando al final y una segunda
+         * pasada de normalizar() lo saca, así que normalizar dos veces no daba lo mismo (un título
+         * de 80 volvía con 79). Lo detectó el constructor API-A el 1/10/2026.
+         */
         if ($una_linea) {
             $texto = trim(preg_replace('/\s+/u', ' ', $texto));
-        } else {
-            $texto = str_replace("\r\n", "\n", $texto);
-            $texto = rtrim($texto);
+
+            return trim(mb_substr($texto, 0, $maximo));
         }
 
-        return mb_substr($texto, 0, $maximo);
+        $texto = rtrim(str_replace("\r\n", "\n", $texto));
+
+        return rtrim(mb_substr($texto, 0, $maximo));
     }
 }

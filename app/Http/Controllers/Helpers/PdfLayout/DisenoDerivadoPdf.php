@@ -299,7 +299,16 @@ class DisenoDerivadoPdf
             $campos_de_totales[] = self::campo('tot_canje_de_puntos');
             $campos_de_totales[] = self::campo('tot_ajuste_del_total');
             $campos_de_totales[] = self::campo('tot_total');
-            $campos_de_totales[] = self::campo('tot_puntos');
+
+            /**
+             * Los puntos van DERECHOS en la caja del remito: print_totals_box() los imprime con la
+             * letra normal. El catálogo los trae en cursiva porque así salen en la factura
+             * (renglones_de_puntos()), así que acá se pisa ese estilo para que el primer guardado
+             * se vea igual que el PDF de siempre.
+             */
+            $puntos = self::campo('tot_puntos');
+            $puntos['cursiva'] = false;
+            $campos_de_totales[] = $puntos;
 
             $pie[] = self::caja(self::CAJA_TOTALES, 12, 'gris', $campos_de_totales);
         }
@@ -344,7 +353,12 @@ class DisenoDerivadoPdf
                 $campos_de_totales[] = self::campo('tot_subtotal');
             }
 
-            $campos_de_totales[] = self::campo('tot_descuentos');
+            /**
+             * Los descuentos de la factura salen en NEGRITA: NewSalePdf::discounts() los escribe con
+             * SetFont('Arial', 'B', 9) (los recargos, surchages(), con la letra normal). El catálogo
+             * los trae sin negrita porque así salen en la caja del remito.
+             */
+            $campos_de_totales[] = self::campo('tot_descuentos', null, null, true);
             $campos_de_totales[] = self::campo('tot_recargos');
             $campos_de_totales[] = self::campo('tot_canje_de_puntos');
             $campos_de_totales[] = self::campo('tot_puntos');
