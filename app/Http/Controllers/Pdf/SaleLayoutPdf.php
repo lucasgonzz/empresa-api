@@ -253,7 +253,9 @@ class SaleLayoutPdf extends fpdf
             $this->user,
             $this->use_current_date,
             $perfil->discount_display_mode === 'simple' ? 'simple' : 'descriptivo',
-            $this->es_fiscal
+            $this->es_fiscal,
+            /** La factura que se imprime: la nombran "Factura" y "CAE" de las cajas (no otra de la venta). */
+            $this->afip_ticket
         );
         $this->motor = new MotorDeCajasPdf($this->fuente, $this->pdf_x0, $this->pdf_ancho_util, $this->bloques_fijos());
     }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
+use App\Models\AfipTicket;
 use App\Models\Caja;
 use App\Models\SaleStatus;
 use Carbon\Carbon;
@@ -49,8 +50,11 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
     /** @var bool Ya se buscó la factura asociada (memo: es una consulta y la piden dos campos). */
     private $factura_asociada_buscada;
 
-    /** @var \App\Models\AfipTicket|null La primera factura de la venta con CAE. */
+    /** @var \App\Models\AfipTicket|null La factura de la venta (ver factura_asociada()). */
     private $factura_asociada;
+
+    /** @var \App\Models\AfipTicket|null El comprobante que se está imprimiendo (la factura de SaleLayoutPdf), o null. */
+    private $ticket_impreso;
 
     /**
      * @param \App\Models\Sale      $sale
@@ -59,8 +63,10 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
      * @param string                $discount_display_mode 'descriptivo' | 'simple' (el del perfil).
      * @param bool                  $es_factura            Se imprime como factura de ARCA (la plata sigue el
      *                                                     camino fiscal de siempre: ver TotalesDeVentaPdf).
+     * @param \App\Models\AfipTicket|null $ticket_impreso El comprobante puntual que se imprime (el que
+     *                                                     resolvió SaleLayoutPdf), o null.
      */
-    public function __construct($sale, $user, $use_current_date, $discount_display_mode, $es_factura = false)
+    public function __construct($sale, $user, $use_current_date, $discount_display_mode, $es_factura = false, $ticket_impreso = null)
     {
         $this->sale = $sale;
         $this->user = $user;
@@ -70,6 +76,7 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
         $this->cuenta_corriente = null;
         $this->factura_asociada_buscada = false;
         $this->factura_asociada = null;
+        $this->ticket_impreso = $ticket_impreso;
     }
 
     /** @return string */
@@ -539,9 +546,17 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
     }
 
     /**
-     * La factura de ARCA de la venta: la PRIMERA con CAE (la de id más bajo), el mismo criterio con
-     * que el despacho de la tienda elige qué factura imprimir (`SaleController::pdf()`, origen
-     * tienda). Memoizada: la piden la factura asociada y el CAE.
+     * La factura de ARCA de la venta (la nombran venta_factura_asociada y venta_cae, y de ella sale
+     * la moneda de venta_total_facturado). Memoizada.
+     *
+     * - Si el PDF se imprime para un comprobante puntual (la factura que resolvió SaleLayoutPdf),
+     *   ESE: el renglón tiene que nombrar la factura que el papel es.
+     * - Si no, la más NUEVA con CAE de la venta: en una venta refacturada la vigente es la última.
+     *   "Con CAE" es el criterio de siempre del sistema: CAE ni nulo ni vacío
+     *   (`ResumenDeVentasIaHelper::condicion_facturada()`).
+     * - Una venta consolidada (`consolidacion_facturacion_id`) no tiene factura propia: la tiene la
+     *   venta contenedora, y se la busca directo por esa columna (una consulta, la misma regla
+     *   "propia o de la consolidación" de condicion_facturada()).
      *
      * @return \App\Models\AfipTicket|null
      */
@@ -549,13 +564,34 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
     {
         if (! $this->factura_asociada_buscada) {
             $this->factura_asociada_buscada = true;
-            $this->factura_asociada = $this->sale->afip_tickets()
-                ->whereNotNull('cae')
-                ->orderBy('id', 'asc')
-                ->first();
+
+            if (! is_null($this->ticket_impreso)) {
+                $this->factura_asociada = $this->ticket_impreso;
+            } else {
+                $this->factura_asociada = self::ultima_factura_con_cae($this->sale->id);
+
+                if (is_null($this->factura_asociada) && ! empty($this->sale->consolidacion_facturacion_id)) {
+                    $this->factura_asociada = self::ultima_factura_con_cae($this->sale->consolidacion_facturacion_id);
+                }
+            }
         }
 
         return $this->factura_asociada;
+    }
+
+    /**
+     * La factura más nueva con CAE (ni nulo ni vacío) de una venta, o null.
+     *
+     * @param int $sale_id
+     * @return \App\Models\AfipTicket|null
+     */
+    private static function ultima_factura_con_cae($sale_id)
+    {
+        return AfipTicket::where('sale_id', $sale_id)
+            ->whereNotNull('cae')
+            ->where('cae', '!=', '')
+            ->orderBy('id', 'desc')
+            ->first();
     }
 
     /**

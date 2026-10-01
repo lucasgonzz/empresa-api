@@ -273,6 +273,57 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
     }
 
     /**
+     * La factura de la venta (venta_factura_asociada y venta_cae): con CAE ni nulo ni vacío (un CAE
+     * '' no es una factura autorizada), la más NUEVA (en una venta refacturada la vigente es la
+     * última), la que se está imprimiendo si el PDF es de un comprobante puntual, y la de la venta
+     * contenedora si la venta se consolidó para facturar.
+     *
+     * @test
+     */
+    public function la_factura_de_la_venta_es_la_vigente_la_impresa_o_la_de_su_consolidacion()
+    {
+        $venta = $this->crear_venta_completa();
+        $campo = function ($key) {
+            return $this->campo_de_caja($key);
+        };
+
+        $primera = $this->crear_factura($venta, 'B');
+        $refacturada = $this->crear_factura($venta, 'A');
+        $refacturada->cbte_numero = 28;
+        $refacturada->cae = '76999999999999';
+        $refacturada->save();
+        $cae_vacio = $this->crear_factura($venta, 'B');
+        $cae_vacio->cbte_numero = 29;
+        $cae_vacio->cae = '';
+        $cae_vacio->save();
+
+        /** Sin contexto: la más nueva con CAE de verdad (la 28; la 29 tiene el CAE vacío). */
+        $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
+        $this->assertSame('A 00001-00000028', $fuente->valor('venta_factura_asociada', $campo('venta_factura_asociada')));
+        $this->assertSame('76999999999999', $fuente->valor('venta_cae', $campo('venta_cae')));
+
+        /** Imprimiendo la primera: esa, aunque haya una más nueva. */
+        $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo', true, $primera);
+        $this->assertSame('B 00001-00000027', $fuente->valor('venta_factura_asociada', $campo('venta_factura_asociada')));
+        $this->assertSame('76123456789012', $fuente->valor('venta_cae', $campo('venta_cae')));
+
+        /** Y así lo dibuja la factura con cajas impresa para la primera. */
+        $perfil = $this->perfil_de_venta(['is_afip_ticket' => true], $this->diseno_de_pagina([
+            $this->caja_de_diseno('caja_factura', 12, [$this->campo_de_caja('venta_factura_asociada'), $this->campo_de_caja('venta_cae')]),
+        ], []));
+        $pdf = $this->sin_red_https(function () use ($venta, $perfil, $primera) {
+            return $this->pdf_de_venta($venta, $perfil, $primera->id);
+        });
+        $this->assertRenglon('Factura: ', 'B 00001-00000027', $pdf);
+        $this->assertRenglon('CAE: ', '76123456789012', $pdf);
+
+        /** Una venta consolidada: la factura vigente de su venta contenedora. */
+        $consolidada = Sale::create(['num' => 2, 'user_id' => $this->dueno->id, 'total' => 100, 'moneda_id' => 1, 'consolidacion_facturacion_id' => $venta->id]);
+        $fuente = new CamposDeVentaPdf(Sale::find($consolidada->id), $this->dueno, false, 'descriptivo');
+        $this->assertSame('A 00001-00000028', $fuente->valor('venta_factura_asociada', $campo('venta_factura_asociada')));
+    }
+
+    /**
      * Una venta en dólares imprime la cotización.
      *
      * @test
