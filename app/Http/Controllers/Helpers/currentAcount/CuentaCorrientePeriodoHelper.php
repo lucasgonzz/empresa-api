@@ -164,6 +164,69 @@ class CuentaCorrientePeriodoHelper {
         ];
     }
 
+    // --- Textos y saldo del PDF con período. Viven acá y no en CurrentAcountPdf porque esa clase
+    // --- termina cada PDF con exit y arrastra la librería fpdf: así se pueden probar sin dispararlo.
+
+    /**
+     * Texto del período para el encabezado: 'desde 01/09/2026 hasta 01/10/2026', 'desde 01/09/2026'
+     * (sin tope) o 'todo el historial' (desde 2000-01-01 y sin tope: lo que manda la SPA para
+     * "Todo").
+     *
+     * @param  array  $periodo  ['desde' => 'Y-m-d', 'hasta' => 'Y-m-d'|null]
+     * @return string
+     */
+    static function texto_del_periodo($periodo) {
+        $hasta = isset($periodo['hasta']) ? $periodo['hasta'] : null;
+
+        if (is_null($hasta) && $periodo['desde'] === '2000-01-01') {
+            return 'todo el historial';
+        }
+
+        $texto = 'desde '.Carbon::createFromFormat('!Y-m-d', $periodo['desde'])->format('d/m/Y');
+
+        if (!is_null($hasta)) {
+            $texto .= ' hasta '.Carbon::createFromFormat('!Y-m-d', $hasta)->format('d/m/Y');
+        }
+
+        return $texto;
+    }
+
+    /**
+     * El saldo del movimiento cronológicamente más nuevo (mayor created_at, desempata el id), sin
+     * depender del orden en que vengan los movimientos.
+     *
+     * @param  \Illuminate\Support\Collection  $models
+     * @return float|null
+     */
+    static function saldo_del_periodo($models) {
+        $ultimo = null;
+
+        foreach ($models as $model) {
+            if (is_null($ultimo)
+                || $model->created_at > $ultimo->created_at
+                || ($model->created_at == $ultimo->created_at && $model->id > $ultimo->id)) {
+                $ultimo = $model;
+            }
+        }
+
+        return is_null($ultimo) ? null : $ultimo->saldo;
+    }
+
+    /**
+     * 'Saldo actual' si el período llega hasta hoy (o no tiene tope); 'Saldo al cierre' si terminó
+     * antes: ese saldo ya no es el de hoy.
+     *
+     * @param  array        $periodo
+     * @param  string|null  $hoy  'Y-m-d'; solo para los tests.
+     * @return string
+     */
+    static function leyenda_del_saldo($periodo, $hoy = null) {
+        $hoy = is_null($hoy) ? Carbon::today()->format('Y-m-d') : $hoy;
+        $hasta = isset($periodo['hasta']) ? $periodo['hasta'] : null;
+
+        return (is_null($hasta) || $hasta >= $hoy) ? 'Saldo actual' : 'Saldo al cierre';
+    }
+
     /**
      * Consulta base de la cuenta con los límites por datetime.
      *

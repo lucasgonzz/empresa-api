@@ -812,7 +812,7 @@ class CurrentAcountController extends Controller
             $models = $models->reverse()->values();
         }
 
-        new CurrentAcountPdf($credit_account, $models, $type);
+        new CurrentAcountPdf($credit_account, $models, $type, ['desde' => $desde, 'hasta' => $hasta]);
     }
 
     // function pdfFromModel($credit_account_id, $cantidad_movimientos) {
