@@ -43,8 +43,17 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
     protected function autenticar()
     {
         $owner = User::find(500);
+
+        /**
+         * Falla, no se saltea: una corrida sin el fixture no puede dar verde (un test salteado no
+         * prueba nada y la suite igual termina en OK).
+         */
         if (is_null($owner)) {
-            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+            $this->fail(
+                'La base de testing no tiene el usuario 500 (el dueño del fixture, que siembra '
+                .'Database\Seeders\testing\TestingFerreteriaSeeder). Sembrá la base antes de correr '
+                .'esta suite: sin el fixture, estos tests no prueban nada.'
+            );
         }
 
         $this->actingAs($owner, 'web');
