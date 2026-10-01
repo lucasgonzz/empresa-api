@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Schema;
  *  LA COLUMNA, EN UNA LINEA
  * ─────────────────────────────────────────────────────────────────────────────
  *
- *  Vive en `sales` y en `budgets` (migracion `2026_10_01_100000`). Es el check de Vender "Sumar IVA
+ *  Vive en `sales` y en `budgets` (migracion `2026_10_01_140000`). Es el check de Vender "Sumar IVA
  *  a los articulos sin IVA": 1 = a los articulos con `aplicar_iva` apagado se les sumo el IVA de su
  *  alicuota en el precio del renglon; 0 = quedaron igual al listado. La API la PERSISTE y la
  *  PROPAGA (confirmar, duplicar, consolidar), pero NO calcula precios con ella: los calcula la SPA,
