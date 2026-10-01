@@ -59,6 +59,17 @@ class OrderPdfDocument implements PdfDocumentSource
         $this->order = $order;
     }
 
+    /**
+     * El pedido adaptado. Lo lee el diseño con cajas (`CamposDePedidoPdf`) para los datos que el
+     * PDF de siempre no imprime (estado, entrega, medio de pago, vendedor, depósito).
+     *
+     * @return \App\Models\Order
+     */
+    public function order()
+    {
+        return $this->order;
+    }
+
     /** @return string */
     public function model_name()
     {
@@ -262,15 +273,15 @@ class OrderPdfDocument implements PdfDocumentSource
             return [];
         }
 
-        $subtotal = 0;
-        foreach ($this->items() as $item) {
-            $subtotal += $this->item_subtotal($item);
-        }
-
+        /**
+         * Los renglones salen de las mismas piezas que usa el diseño con cajas
+         * (`CamposDePedidoPdf`): así los dos PDF dicen lo mismo. Lo que devuelve este método no
+         * cambió al partirlo (lo cuida el test 11 de tests/Feature/Pdf).
+         */
         $extras = $this->extra_lines();
 
         $rows = [[
-            'text' => (count($extras) > 0 ? 'Subtotal' : 'Total').': $'.Numbers::price($subtotal),
+            'text' => (count($extras) > 0 ? 'Subtotal' : 'Total').': '.$this->texto_subtotal(),
             'bold' => true,
         ]];
 
@@ -292,33 +303,119 @@ class OrderPdfDocument implements PdfDocumentSource
     {
         $lines = [];
 
-        /**
-         * Envío: el envío por correo (`envio_precio`, lo que cobró el servidor de la tienda) o,
-         * si no hay, el de la zona de entrega propia del comercio.
-         */
+        $envio = $this->texto_envio();
+        if (! is_null($envio)) {
+            $lines[] = 'Envío: '.$envio;
+        }
+
+        $cupon = $this->texto_cupon();
+        if (! is_null($cupon)) {
+            $lines[] = 'Cupón: '.$cupon;
+        }
+
+        $ajuste = $this->texto_ajuste_medio_de_pago();
+        if (! is_null($ajuste)) {
+            $lines[] = 'Medio de pago: '.$ajuste;
+        }
+
+        return $lines;
+    }
+
+    // ── Piezas de la caja de totales (las usan totals_rows() y el diseño con cajas) ──────────
+
+    /**
+     * Suma de los renglones (precio por cantidad).
+     *
+     * @return float
+     */
+    public function subtotal()
+    {
+        $subtotal = 0;
+        foreach ($this->items() as $item) {
+            $subtotal += $this->item_subtotal($item);
+        }
+
+        return $subtotal;
+    }
+
+    /**
+     * Valor del Subtotal (o del Total, si no hay extras), sin el rótulo ("$4.150").
+     *
+     * @return string
+     */
+    public function texto_subtotal()
+    {
+        return '$'.Numbers::price($this->subtotal());
+    }
+
+    /**
+     * ¿El pedido tiene envío con costo, cupón o ajuste por medio de pago? Con alguno, la línea de
+     * importe se rotula "Subtotal" y no "Total" (decisión D6, ver el encabezado de la clase).
+     *
+     * @return bool
+     */
+    public function tiene_extras()
+    {
+        return count($this->extra_lines()) > 0;
+    }
+
+    /**
+     * Valor del envío, sin el rótulo ("$500"), o null si no tiene costo. El envío por correo
+     * (`envio_precio`, lo que cobró el servidor de la tienda) o, si no hay, el de la zona de entrega
+     * propia del comercio.
+     *
+     * @return string|null
+     */
+    public function texto_envio()
+    {
         $envio = null;
         if (! empty($this->order->envio_opcion) && is_numeric($this->order->envio_precio)) {
             $envio = (float) $this->order->envio_precio;
         } elseif (! is_null($this->order->delivery_zone)) {
             $envio = (float) $this->order->delivery_zone->price;
         }
-        if (! is_null($envio) && $envio > 0) {
-            $lines[] = 'Envío: $'.Numbers::price($envio);
+
+        if (is_null($envio) || $envio <= 0) {
+            return null;
         }
 
-        if (! is_null($this->order->cupon_id)) {
-            $cupon = $this->order->cupon;
-            $lines[] = 'Cupón: '.($cupon && ! empty($cupon->code) ? $cupon->code : 'aplicado');
+        return '$'.Numbers::price($envio);
+    }
+
+    /**
+     * Valor del cupón, sin el rótulo (su código, o "aplicado" si ya no se encuentra), o null si el
+     * pedido no usó cupón.
+     *
+     * @return string|null
+     */
+    public function texto_cupon()
+    {
+        if (is_null($this->order->cupon_id)) {
+            return null;
         }
 
-        /** Descuento o recargo por medio de pago: uno solo, nunca los dos (así lo resuelve la tienda). */
+        $cupon = $this->order->cupon;
+
+        return $cupon && ! empty($cupon->code) ? $cupon->code : 'aplicado';
+    }
+
+    /**
+     * Descuento o recargo por medio de pago, sin el rótulo ("-10%" / "+5%"), o null. Uno solo,
+     * nunca los dos (así lo resuelve la tienda).
+     *
+     * @return string|null
+     */
+    public function texto_ajuste_medio_de_pago()
+    {
         if ((float) $this->order->payment_method_discount > 0) {
-            $lines[] = 'Medio de pago: -'.Numbers::price($this->order->payment_method_discount).'%';
-        } elseif ((float) $this->order->payment_method_surchage > 0) {
-            $lines[] = 'Medio de pago: +'.Numbers::price($this->order->payment_method_surchage).'%';
+            return '-'.Numbers::price($this->order->payment_method_discount).'%';
         }
 
-        return $lines;
+        if ((float) $this->order->payment_method_surchage > 0) {
+            return '+'.Numbers::price($this->order->payment_method_surchage).'%';
+        }
+
+        return null;
     }
 
     /**

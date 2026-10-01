@@ -36,11 +36,30 @@ class BudgetPdfDocument implements PdfDocumentSource
     private $items = null;
 
     /**
+     * Suma de los renglones con la bonificación aplicada (memoizada: la piden el Sub Total y la
+     * condición que decide si se imprime).
+     *
+     * @var float|null
+     */
+    private $total_original = null;
+
+    /**
      * @param \App\Models\Budget $budget
      */
     public function __construct($budget)
     {
         $this->budget = $budget;
+    }
+
+    /**
+     * El presupuesto adaptado. Lo lee el diseño con cajas (`CamposDePresupuestoPdf`) para los datos
+     * que el PDF de siempre no imprime (estado, lista de precios, sucursal, moneda).
+     *
+     * @return \App\Models\Budget
+     */
+    public function budget()
+    {
+        return $this->budget;
     }
 
     /** @return string */
@@ -216,67 +235,169 @@ class BudgetPdfDocument implements PdfDocumentSource
 
         $rows = [];
 
-        /** Suma de los renglones, con la bonificación por línea aplicada. */
-        $total_original = 0;
-        foreach ($this->items() as $item) {
-            $total_original += $this->item_subtotal($item);
-        }
-
-        /** Monto con signo del total forzado (0 = no se forzó). */
-        $monto_forzado = SaleHelper::get_forzar_total_monto($this->budget);
-
         /**
-         * El Sub Total se imprime solo si hay algo que lo separe del Total. El forzado hacia
-         * arriba deja el subtotal MENOR que el total, por eso se nombra aparte. Se compara
-         * redondeado a centavos: el ruido de coma flotante de una suma de renglones no puede
-         * inventar un "Sub Total" idéntico al Total.
+         * Los renglones salen de las mismas piezas que usa el diseño con cajas
+         * (`CamposDePresupuestoPdf`): así los dos PDF dicen lo mismo. Lo que devuelve este método
+         * no cambió al partirlo (lo cuidan los tests 10 y 12 de tests/Feature/Pdf).
          */
-        $hay_diferencia = round($total_original, 2) > round((float) $this->budget->total, 2)
-            || $monto_forzado != 0;
-
-        if (! empty($flags['show_subtotal_in_footer']) && $hay_diferencia) {
+        if (! empty($flags['show_subtotal_in_footer']) && $this->hay_diferencia()) {
             $rows[] = [
-                'text' => 'Sub Total sin descuentos: $'.Numbers::price($total_original),
+                'text' => 'Sub Total sin descuentos: '.$this->texto_sub_total(),
                 'bold' => true,
             ];
         }
 
-        foreach ($this->budget->discounts as $discount) {
+        foreach ($this->renglones_de_descuentos() as $renglon) {
             $rows[] = [
-                'text' => '- '.Numbers::price($discount->pivot->percentage).'% '.$discount->name,
+                'text' => $renglon,
                 'bold' => false,
             ];
         }
 
-        /**
-         * Con `aplicar_recargos_directo_a_items` el recargo YA ESTÁ adentro del precio de cada
-         * renglón: listarlo también acá se lee como que se suma dos veces (pedido de Lucas).
-         * Los descuentos sí se listan siempre, porque nunca viajan adentro del precio.
-         */
-        if (! $this->budget->aplicar_recargos_directo_a_items) {
-            foreach ($this->budget->surchages as $surchage) {
-                $rows[] = [
-                    'text' => '+ '.Numbers::price($surchage->pivot->percentage).'% '.$surchage->name,
-                    'bold' => false,
-                ];
-            }
+        foreach ($this->renglones_de_recargos() as $renglon) {
+            $rows[] = [
+                'text' => $renglon,
+                'bold' => false,
+            ];
         }
 
         /** El ajuste del total forzado va ÚLTIMO, que es el orden en que se aplica en getTotal(). */
-        if ($monto_forzado != 0) {
-            $signo = $monto_forzado < 0 ? '- ' : '+ ';
+        $ajuste = $this->renglon_ajuste_del_total();
+        if (! is_null($ajuste)) {
             $rows[] = [
-                'text' => $signo.'$'.Numbers::price(abs($monto_forzado)).' Ajuste del total',
+                'text' => $ajuste,
                 'bold' => false,
             ];
         }
 
         /** El Total sale de getTotal() (fuente de verdad), nunca de un acumulado propio. */
         $rows[] = [
-            'text' => 'Total: $'.Numbers::price(BudgetHelper::getTotal($this->budget)),
+            'text' => 'Total: '.$this->texto_total(),
             'bold' => true,
         ];
 
         return $rows;
+    }
+
+    // ── Piezas de la caja de totales (las usan totals_rows() y el diseño con cajas) ──────────
+
+    /**
+     * Suma de los renglones, con la bonificación por línea aplicada.
+     *
+     * @return float
+     */
+    public function total_original()
+    {
+        if (is_null($this->total_original)) {
+            $total_original = 0;
+            foreach ($this->items() as $item) {
+                $total_original += $this->item_subtotal($item);
+            }
+            $this->total_original = $total_original;
+        }
+
+        return $this->total_original;
+    }
+
+    /**
+     * Monto con signo del total forzado (0 = no se forzó).
+     *
+     * @return float
+     */
+    public function monto_forzado()
+    {
+        return SaleHelper::get_forzar_total_monto($this->budget);
+    }
+
+    /**
+     * ¿Hay algo que separe el Sub Total del Total? Es lo que decide si se imprime el Sub Total.
+     *
+     * El forzado hacia arriba deja el subtotal MENOR que el total, por eso se nombra aparte. Se
+     * compara redondeado a centavos: el ruido de coma flotante de una suma de renglones no puede
+     * inventar un "Sub Total" idéntico al Total.
+     *
+     * @return bool
+     */
+    public function hay_diferencia()
+    {
+        return round($this->total_original(), 2) > round((float) $this->budget->total, 2)
+            || $this->monto_forzado() != 0;
+    }
+
+    /**
+     * Valor del Sub Total, sin el rótulo ("$2.300").
+     *
+     * @return string
+     */
+    public function texto_sub_total()
+    {
+        return '$'.Numbers::price($this->total_original());
+    }
+
+    /**
+     * Un renglón por descuento ("- 10% Descuento por volumen").
+     *
+     * @return array<int, string>
+     */
+    public function renglones_de_descuentos()
+    {
+        $renglones = [];
+
+        foreach ($this->budget->discounts as $discount) {
+            $renglones[] = '- '.Numbers::price($discount->pivot->percentage).'% '.$discount->name;
+        }
+
+        return $renglones;
+    }
+
+    /**
+     * Un renglón por recargo ("+ 5% Recargo financiero").
+     *
+     * Con `aplicar_recargos_directo_a_items` el recargo YA ESTÁ adentro del precio de cada
+     * renglón: listarlo también acá se lee como que se suma dos veces (pedido de Lucas). Los
+     * descuentos sí se listan siempre, porque nunca viajan adentro del precio.
+     *
+     * @return array<int, string>
+     */
+    public function renglones_de_recargos()
+    {
+        $renglones = [];
+
+        if (! $this->budget->aplicar_recargos_directo_a_items) {
+            foreach ($this->budget->surchages as $surchage) {
+                $renglones[] = '+ '.Numbers::price($surchage->pivot->percentage).'% '.$surchage->name;
+            }
+        }
+
+        return $renglones;
+    }
+
+    /**
+     * El renglón del ajuste del total forzado ("- $173,50 Ajuste del total"), o null si no se forzó.
+     *
+     * @return string|null
+     */
+    public function renglon_ajuste_del_total()
+    {
+        $monto_forzado = $this->monto_forzado();
+
+        if ($monto_forzado == 0) {
+            return null;
+        }
+
+        $signo = $monto_forzado < 0 ? '- ' : '+ ';
+
+        return $signo.'$'.Numbers::price(abs($monto_forzado)).' Ajuste del total';
+    }
+
+    /**
+     * Valor del Total, sin el rótulo ("$2.173,50"): sale de `BudgetHelper::getTotal()`, la fuente
+     * de verdad, nunca de `budgets.total` ni de un acumulado propio.
+     *
+     * @return string
+     */
+    public function texto_total()
+    {
+        return '$'.Numbers::price(BudgetHelper::getTotal($this->budget));
     }
 }
