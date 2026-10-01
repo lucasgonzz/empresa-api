@@ -123,4 +123,51 @@ class Periodo_del_pdf_y_del_helper_Test extends EmpresaTestCase
         $this->assertTrue($resultado['models'][0]->relationLoaded('articles'));
         $this->assertTrue($resultado['models'][0]->relationLoaded('sale'));
     }
+
+    /**
+     * @test
+     */
+    public function el_encabezado_del_pdf_dice_el_periodo()
+    {
+        $this->assertSame('desde 01/09/2026 hasta 01/10/2026', CuentaCorrientePeriodoHelper::texto_del_periodo(['desde' => '2026-09-01', 'hasta' => '2026-10-01']));
+        $this->assertSame('desde 01/09/2026', CuentaCorrientePeriodoHelper::texto_del_periodo(['desde' => '2026-09-01', 'hasta' => null]));
+        $this->assertSame('todo el historial', CuentaCorrientePeriodoHelper::texto_del_periodo(['desde' => '2000-01-01', 'hasta' => null]));
+        // El "desde 2000" con un tope sí es un período concreto.
+        $this->assertSame('desde 01/01/2000 hasta 31/12/2025', CuentaCorrientePeriodoHelper::texto_del_periodo(['desde' => '2000-01-01', 'hasta' => '2025-12-31']));
+    }
+
+    /**
+     * @test
+     */
+    public function la_leyenda_del_saldo_es_actual_si_llega_a_hoy_y_al_cierre_si_termino_antes()
+    {
+        $hoy = '2026-10-01';
+
+        $this->assertSame('Saldo actual', CuentaCorrientePeriodoHelper::leyenda_del_saldo(['desde' => '2026-09-01', 'hasta' => null], $hoy));
+        $this->assertSame('Saldo actual', CuentaCorrientePeriodoHelper::leyenda_del_saldo(['desde' => '2026-09-01', 'hasta' => '2026-10-01'], $hoy));
+        $this->assertSame('Saldo actual', CuentaCorrientePeriodoHelper::leyenda_del_saldo(['desde' => '2026-09-01', 'hasta' => '2026-12-31'], $hoy));
+        $this->assertSame('Saldo al cierre', CuentaCorrientePeriodoHelper::leyenda_del_saldo(['desde' => '2026-09-01', 'hasta' => '2026-09-30'], $hoy));
+
+        // Sin pasarle "hoy" usa el de la máquina: un período que terminó en 2020 ya cerró.
+        $this->assertSame('Saldo al cierre', CuentaCorrientePeriodoHelper::leyenda_del_saldo(['desde' => '2020-01-01', 'hasta' => '2020-12-31']));
+    }
+
+    /**
+     * El saldo impreso es el del movimiento cronológicamente más nuevo, venga el arreglo en el orden
+     * que venga (con cc_ultimas_arriba el último del arreglo es el MÁS VIEJO).
+     *
+     * @test
+     */
+    public function el_saldo_del_pdf_sale_del_movimiento_mas_nuevo_y_no_del_ultimo_del_arreglo()
+    {
+        $viejo = $this->movimiento($this->cuenta, ['debe' => 100, 'saldo' => 100, 'created_at' => '2026-09-01 10:00:00']);
+        $medio = $this->movimiento($this->cuenta, ['debe' => 50, 'saldo' => 150, 'created_at' => '2026-09-10 10:00:00']);
+        // Mismo instante que el anterior: desempata el id (el que se creó después).
+        $nuevo = $this->movimiento($this->cuenta, ['debe' => 25, 'saldo' => 175, 'created_at' => '2026-09-10 10:00:00']);
+
+        $this->assertEquals(175, CuentaCorrientePeriodoHelper::saldo_del_periodo(collect([$viejo, $medio, $nuevo])));
+        $this->assertEquals(175, CuentaCorrientePeriodoHelper::saldo_del_periodo(collect([$nuevo, $medio, $viejo])));
+        $this->assertEquals(175, CuentaCorrientePeriodoHelper::saldo_del_periodo(collect([$medio, $nuevo, $viejo])));
+        $this->assertNull(CuentaCorrientePeriodoHelper::saldo_del_periodo(collect([])));
+    }
 }

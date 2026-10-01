@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\CuentaCorriente;
 
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrientePeriodoHelper;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Tests\EmpresaTestCase;
@@ -33,6 +34,14 @@ class Periodo_del_listado_Test extends EmpresaTestCase
         list($cliente, $this->cuenta) = $this->cliente_con_cuenta($this->app['auth']->user()->id, 'Período');
 
         $this->ultimas_arriba(false);
+    }
+
+    protected function tearDown(): void
+    {
+        // Algún test baja el tope del listado; no puede quedar bajo para los que corren después.
+        CuentaCorrientePeriodoHelper::$limite_listado = CuentaCorrientePeriodoHelper::LIMITE_LISTADO;
+
+        parent::tearDown();
     }
 
     /**
@@ -398,5 +407,123 @@ class Periodo_del_listado_Test extends EmpresaTestCase
         foreach ($de_cuenta as $sql) {
             $this->assertStringNotContainsString('date(', $sql);
         }
+    }
+
+    /**
+     * 🔴 El verde falso que detectó un verificador: si la ampliación ignorara `hasta`, contaría los
+     * movimientos POSTERIORES para completar el mínimo y el período efectivo quedaría más cerca de
+     * `desde` de lo que corresponde. Acá hay 5 posteriores a `hasta`: contándolos, el `desde`
+     * efectivo sería el 7/8 en vez del 2/8.
+     *
+     * @test
+     */
+    public function la_ampliacion_no_cuenta_los_movimientos_posteriores_al_hasta()
+    {
+        for ($dia = 1; $dia <= 8; $dia++) {
+            $this->mov('2026-08-0'.$dia.' 10:00:00');
+        }
+        for ($dia = 10; $dia <= 12; $dia++) {
+            $this->mov('2026-09-'.$dia.' 10:00:00');
+        }
+        for ($dia = 5; $dia <= 9; $dia++) {
+            $this->mov('2026-10-0'.$dia.' 10:00:00');
+        }
+
+        $respuesta = $this->listar('desde=2026-09-01&hasta=2026-09-30&minimo=10');
+
+        // Los 10 más recientes con created_at <= 30/9: 3 de septiembre + agosto 8,7,6,5,4,3,2.
+        $this->assertSame('2026-08-02', $respuesta->json('periodo.desde'));
+        $this->assertTrue($respuesta->json('periodo.ampliado'));
+        $this->assertCount(10, $respuesta->json('models'));
+
+        foreach ($respuesta->json('models') as $modelo) {
+            $this->assertLessThan('2026-10-01', substr($modelo['created_at'], 0, 10));
+        }
+    }
+
+    /**
+     * La carga por defecto nueva de la SPA no manda `hasta`: un movimiento con fecha futura (hay
+     * cuentas con fechas cargadas a mano) aparece y cuenta para el mínimo.
+     *
+     * @test
+     */
+    public function sin_hasta_un_movimiento_futuro_aparece_y_cuenta_para_el_minimo()
+    {
+        $this->mov('2026-08-05 10:00:00');
+        $this->mov('2026-08-06 10:00:00');
+        $this->mov('2026-09-10 10:00:00');
+        $futuro = $this->mov('2030-01-01 10:00:00')->id;
+
+        $respuesta = $this->listar('desde=2026-09-01&minimo=3');
+
+        // En el rango hay 2 (el de septiembre y el futuro): falta 1, y es el del 6/8, no el del 5/8.
+        $this->assertSame('2026-08-06', $respuesta->json('periodo.desde'));
+        $this->assertCount(3, $respuesta->json('models'));
+        $this->assertContains($futuro, $this->ids($respuesta));
+    }
+
+    /**
+     * @test
+     */
+    public function si_hay_mas_filas_que_el_tope_devuelve_las_mas_recientes_y_avisa_truncado()
+    {
+        CuentaCorrientePeriodoHelper::$limite_listado = 5;
+
+        $creados = [];
+        for ($dia = 1; $dia <= 8; $dia++) {
+            $creados[] = $this->mov('2026-09-0'.$dia.' 10:00:00')->id;
+        }
+
+        $respuesta = $this->listar('desde=2026-09-01');
+
+        $respuesta->assertStatus(200);
+        // Las 5 más recientes (días 4 a 8), de más viejo a más nuevo.
+        $this->assertSame(array_slice($creados, 3), $this->ids($respuesta));
+        $this->assertTrue($respuesta->json('periodo.truncado'));
+        $this->assertSame(5, $respuesta->json('periodo.cantidad'));
+
+        // Con cc_ultimas_arriba el recorte es el mismo, solo cambia el orden.
+        $this->ultimas_arriba(true);
+        $this->assertSame(array_reverse(array_slice($creados, 3)), $this->ids($this->listar('desde=2026-09-01')));
+    }
+
+    /**
+     * @test
+     */
+    public function con_exactamente_el_tope_o_menos_no_hay_truncado()
+    {
+        CuentaCorrientePeriodoHelper::$limite_listado = 5;
+
+        for ($dia = 1; $dia <= 5; $dia++) {
+            $this->mov('2026-09-0'.$dia.' 10:00:00');
+        }
+
+        $respuesta = $this->listar('desde=2026-09-01');
+
+        $this->assertCount(5, $respuesta->json('models'));
+        $this->assertFalse($respuesta->json('periodo.truncado'));
+
+        $this->assertFalse($this->listar('desde=2026-09-04')->json('periodo.truncado'));
+        $this->assertFalse($this->listar('desde=2027-01-01')->json('periodo.truncado'));
+    }
+
+    /**
+     * El tope vigente por defecto es el de la constante y el helper sin límite (el PDF) no recorta.
+     *
+     * @test
+     */
+    public function el_tope_por_defecto_es_2000_y_el_helper_sin_limite_no_recorta()
+    {
+        $this->assertSame(2000, CuentaCorrientePeriodoHelper::LIMITE_LISTADO);
+        $this->assertSame(2000, CuentaCorrientePeriodoHelper::$limite_listado);
+
+        for ($dia = 1; $dia <= 8; $dia++) {
+            $this->mov('2026-09-0'.$dia.' 10:00:00');
+        }
+
+        $resultado = CuentaCorrientePeriodoHelper::consultar($this->cuenta->id, '2026-09-01');
+
+        $this->assertCount(8, $resultado['models']);
+        $this->assertFalse($resultado['periodo']['truncado']);
     }
 }
