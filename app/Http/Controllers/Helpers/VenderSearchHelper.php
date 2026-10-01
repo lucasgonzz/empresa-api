@@ -181,9 +181,13 @@ class VenderSearchHelper
 
         foreach ($articles as $article) {
 
-            // Detectar que palabras de la busqueda coincidieron con el nombre, codigo o barcode del
-            // articulo/variante.
-            $matched_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
+            // Palabras de la busqueda que cubre el propio ARTICULO por si solo: su nombre, su codigo
+            // de proveedor y (con la extension de codigo de barras) su codigo de barras. Valen para
+            // TODAS sus variantes. El codigo de barras de una variante NO entra aca: cubre solo a esa
+            // variante (ver mas abajo). Antes entraba, y como los codigos de variante nacen como
+            // '0' + id ("01360"), un talle como "36" quedaba "cubierto" por el codigo de cualquier
+            // variante y dejaba de filtrar a las demas: "zapatilla azul 36" devolvia las dos azules.
+            $article_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
                 $word_lower = mb_strtolower($word, 'UTF-8');
 
                 if (strpos(
@@ -204,22 +208,14 @@ class VenderSearchHelper
                         ) !== false) {
                         return true;
                     }
-
-                    foreach ($article->article_variants as $variant) {
-                        if (strpos(
-                                mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
-                                $word_lower
-                            ) !== false) {
-                            return true;
-                        }
-                    }
                 }
 
                 return false;
             })->values();
 
-            // Palabras restantes para buscar dentro de variant_description.
-            $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
+            // Palabras restantes: las que el articulo no cubre y por lo tanto tiene que cubrir cada
+            // variante (en su descripcion o, con la extension, en su propio codigo de barras).
+            $remaining_keywords = array_diff($keywords, $article_keywords->toArray());
 
             // Solo las variantes disponibles (oculta = false) se ofrecen para vender.
             // Portado del modulo de variantes de develop en el merge develop -> refractor.
@@ -246,13 +242,43 @@ class VenderSearchHelper
                     }
                 }
 
-                // Filtrar variantes que coincidan con todas las palabras restantes.
-                $matching_variants = $available_variants->filter(function ($variant) use ($remaining_keywords) {
+                // Con la extension de codigo de barras, una palabra que aparece en la descripcion de
+                // ALGUNA variante disponible es una palabra de VARIANTE (color, talle): se exige en la
+                // descripcion y no vale un codigo de barras que la contenga por casualidad ("36" dentro
+                // de "01362", porque los codigos de variante nacen como '0' + id). Solo una palabra que
+                // no esta en ninguna descripcion se interpreta como fragmento de codigo de barras.
+                $palabras_de_variante = [];
+
+                if ($search_bar_code_en_vender) {
                     foreach ($remaining_keywords as $word) {
-                        if (strpos(
+                        $word_lower = mb_strtolower($word, 'UTF-8');
+
+                        $palabras_de_variante[$word] = $available_variants->contains(function ($variant) use ($word_lower) {
+                            return strpos(mb_strtolower($variant->variant_description ?? '', 'UTF-8'), $word_lower) !== false;
+                        });
+                    }
+                }
+
+                // Filtrar variantes que coincidan con todas las palabras restantes: cada una tiene que
+                // estar en la descripcion de la variante o, si no es una palabra de variante y la
+                // extension esta activa, en su propio codigo de barras.
+                $matching_variants = $available_variants->filter(function ($variant) use ($remaining_keywords, $search_bar_code_en_vender, $palabras_de_variante) {
+                    foreach ($remaining_keywords as $word) {
+                        $word_lower = mb_strtolower($word, 'UTF-8');
+
+                        $en_la_descripcion = strpos(
                                 mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
-                                mb_strtolower($word, 'UTF-8')
-                            ) === false) {
+                                $word_lower
+                            ) !== false;
+
+                        $en_su_codigo_de_barras = $search_bar_code_en_vender
+                            && empty($palabras_de_variante[$word])
+                            && strpos(
+                                mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
+                                $word_lower
+                            ) !== false;
+
+                        if (!$en_la_descripcion && !$en_su_codigo_de_barras) {
                             return false;
                         }
                     }
@@ -264,9 +290,26 @@ class VenderSearchHelper
                 }
 
             } else {
-                // Si no tiene variantes, y al menos una keyword matcheo (o no hay criterio de texto),
-                // agregar el articulo.
-                if ($sin_palabras || $matched_keywords->isNotEmpty()) {
+                // Si no tiene variantes disponibles, y al menos una keyword matcheo (o no hay criterio
+                // de texto), agregar el articulo. "Matcheo" incluye, como siempre, el codigo de barras
+                // de alguna de sus variantes (ocultas incluidas) con la extension de codigo de barras.
+                $matcheo_algo = $article_keywords->isNotEmpty();
+
+                if (!$matcheo_algo && $search_bar_code_en_vender) {
+                    foreach ($article->article_variants as $variant) {
+                        foreach ($keywords as $word) {
+                            if (strpos(
+                                    mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
+                                    mb_strtolower($word, 'UTF-8')
+                                ) !== false) {
+                                $matcheo_algo = true;
+                                break 2;
+                            }
+                        }
+                    }
+                }
+
+                if ($sin_palabras || $matcheo_algo) {
                     $descriptors->push((object) ['article_id' => $article->id, 'variant_id' => null]);
                 }
             }

@@ -95,15 +95,17 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
      * @param  \App\Models\Article $article
      * @param  string              $descripcion
      * @param  bool                $oculta
+     * @param  string|null         $bar_code    Codigo de barras propio de la variante.
      * @return \App\Models\ArticleVariant
      */
-    private function variante($article, $descripcion, $oculta = false)
+    private function variante($article, $descripcion, $oculta = false, $bar_code = null)
     {
         return ArticleVariant::create([
             'article_id'          => $article->id,
             'variant_description' => $descripcion,
             'oculta'              => $oculta,
             'stock'               => 5,
+            'bar_code'            => $bar_code,
         ]);
     }
 
@@ -514,6 +516,66 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
 
         $this->assertEquals($esperado, $this->nombres($this->buscar('')));
         $this->assertEquals($esperado, $this->nombres($this->buscar('   ')));
+    }
+
+    /**
+     * Con `search_bar_code_en_vender`, el talle "36" NO se da por cubierto porque el codigo de barras
+     * de OTRA variante lo contenga. Los codigos de barras de las variantes nacen como '0' + id
+     * ("01360"), asi que los numeros cortos aparecen adentro con mucha frecuencia; antes, esa sola
+     * coincidencia exceptuaba la palabra para TODAS las variantes del articulo y "zapatilla azul 36"
+     * devolvia las dos azules en vez del unico resultado posible.
+     *
+     * @group sales
+     * @group vender-search
+     * @test
+     */
+    public function con_codigo_de_barras_en_vender_un_talle_no_se_cubre_con_el_codigo_de_otra_variante()
+    {
+        $user = $this->usuario_de_test('v15');
+        $this->dar_extension($user, 'article_variants');
+        $this->dar_extension($user, 'search_bar_code_en_vender');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $this->variante($zapatilla, 'rojo 35', false, '01360'); // el codigo contiene "36", la variante no es talle 36
+        $this->variante($zapatilla, 'rojo 36', false, '01361');
+        $this->variante($zapatilla, 'azul 35', false, '01362');
+        $this->variante($zapatilla, 'azul 36', false, '01363');
+
+        $this->assertEquals(['Zapatilla azul 36'], $this->nombres($this->buscar('zapatilla azul 36')));
+        $this->assertEquals(['Zapatilla azul 35', 'Zapatilla azul 36'], $this->nombres($this->buscar('zapatilla azul')));
+    }
+
+    /**
+     * Con `search_bar_code_en_vender`, una palabra que coincide con el codigo de barras de UNA
+     * variante (ruta vieja, que ademas busca el codigo parcial de las variantes en SQL) deja
+     * solamente esa variante, no las de todo el articulo.
+     *
+     * @group sales
+     * @group vender-search
+     * @test
+     */
+    public function un_codigo_parcial_de_variante_junto_al_nombre_deja_solo_esa_variante()
+    {
+        $user = $this->usuario_de_test('v16');
+        $this->dar_extension($user, 'article_variants');
+        $this->dar_extension($user, 'search_bar_code_en_vender');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $this->variante($zapatilla, 'rojo 35', false, '7790001');
+        $this->variante($zapatilla, 'azul 36', false, '7790002');
+
+        $res = $this->postJson('api/vender/buscar-articulo-por-nombre/0', ['query_value' => 'zapatilla 779000']);
+        $res->assertStatus(200);
+
+        $nombres = collect($res->json()['data'])->pluck('name')->all();
+        sort($nombres);
+        $this->assertEquals(['Zapatilla azul 36', 'Zapatilla rojo 35'], $nombres, 'El fragmento esta en el codigo de las dos variantes: salen las dos.');
+
+        $res = $this->postJson('api/vender/buscar-articulo-por-nombre/0', ['query_value' => 'zapatilla 7790002']);
+        $res->assertStatus(200);
+        $this->assertEquals(['Zapatilla azul 36'], collect($res->json()['data'])->pluck('name')->all(), 'El fragmento identifica una sola variante: sale solo esa.');
     }
 
     /**
