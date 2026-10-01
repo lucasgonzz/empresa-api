@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\PdfDocument;
 
+use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
@@ -238,7 +239,8 @@ class BudgetPdfDocument implements PdfDocumentSource
         /**
          * Los renglones salen de las mismas piezas que usa el diseño con cajas
          * (`CamposDePresupuestoPdf`): así los dos PDF dicen lo mismo. Lo que devuelve este método
-         * no cambió al partirlo (lo cuidan los tests 10 y 12 de tests/Feature/Pdf).
+         * no cambió al partirlo (lo cuidan los tests 10 y 12 de tests/Feature/Pdf y el 12 de
+         * tests/Feature/Presupuestos).
          */
         if (! empty($flags['show_subtotal_in_footer']) && $this->hay_diferencia()) {
             $rows[] = [
@@ -257,6 +259,15 @@ class BudgetPdfDocument implements PdfDocumentSource
         foreach ($this->renglones_de_recargos() as $renglon) {
             $rows[] = [
                 'text' => $renglon,
+                'bold' => false,
+            ];
+        }
+
+        /** El ajuste por método de pago va ANTES del forzado, que es el orden en que se aplican en getTotal(). */
+        $ajuste_por_metodo_de_pago = $this->renglon_ajuste_por_metodo_de_pago();
+        if (! is_null($ajuste_por_metodo_de_pago)) {
+            $rows[] = [
+                'text' => $ajuste_por_metodo_de_pago,
                 'bold' => false,
             ];
         }
@@ -310,18 +321,34 @@ class BudgetPdfDocument implements PdfDocumentSource
     }
 
     /**
+     * Descuento o recargo por método de pago de un presupuesto de contado (misión
+     * presupuesto-contado-o-cuenta-corriente, 1/10/2026): signo + = recargo, - = descuento,
+     * 0 = no hay. El Total sale de `BudgetHelper::getTotal()`, que ya lo incluye; sin un renglón
+     * que lo nombre, el pie no suma contra los renglones y el cliente lee un Total que nadie le
+     * explica. Es la misma cuenta que escribe el PDF de siempre (`BudgetPdf::discountsSurchages()`).
+     *
+     * @return float
+     */
+    public function ajuste_por_metodo_de_pago()
+    {
+        return BudgetCobroHelper::ajuste_por_metodos_de_pago($this->budget);
+    }
+
+    /**
      * ¿Hay algo que separe el Sub Total del Total? Es lo que decide si se imprime el Sub Total.
      *
-     * El forzado hacia arriba deja el subtotal MENOR que el total, por eso se nombra aparte. Se
-     * compara redondeado a centavos: el ruido de coma flotante de una suma de renglones no puede
-     * inventar un "Sub Total" idéntico al Total.
+     * El forzado hacia arriba deja el subtotal MENOR que el total, por eso se nombra aparte; el
+     * ajuste por método de pago de un presupuesto de contado, también. Se compara redondeado a
+     * centavos: el ruido de coma flotante de una suma de renglones no puede inventar un "Sub Total"
+     * idéntico al Total.
      *
      * @return bool
      */
     public function hay_diferencia()
     {
         return round($this->total_original(), 2) > round((float) $this->budget->total, 2)
-            || $this->monto_forzado() != 0;
+            || $this->monto_forzado() != 0
+            || $this->ajuste_por_metodo_de_pago() != 0;
     }
 
     /**
@@ -370,6 +397,25 @@ class BudgetPdfDocument implements PdfDocumentSource
         }
 
         return $renglones;
+    }
+
+    /**
+     * El renglón del descuento o recargo por método de pago ("- $50 Descuento por método de
+     * pago" / "+ $122,40 Recargo por método de pago"), o null si no hay.
+     *
+     * @return string|null
+     */
+    public function renglon_ajuste_por_metodo_de_pago()
+    {
+        $ajuste = $this->ajuste_por_metodo_de_pago();
+
+        if ($ajuste == 0) {
+            return null;
+        }
+
+        return ($ajuste < 0 ? '- ' : '+ ')
+            .'$'.Numbers::price(abs($ajuste))
+            .($ajuste < 0 ? ' Descuento por método de pago' : ' Recargo por método de pago');
     }
 
     /**

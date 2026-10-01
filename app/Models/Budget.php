@@ -12,6 +12,20 @@ class Budget extends Model
 
     protected $dates = ['start_at', 'finish_at'];
 
+    /*
+        El reparto de metodos de pago del presupuesto "de contado" (mision
+        presupuesto-contado-o-cuenta-corriente, 1/10/2026): la columna es JSON en un longText y el
+        resto del codigo (y la SPA, que lo recibe en el modelo del presupuesto) lo lee como array.
+
+        Inofensivo si la columna todavia no existe (ventana del deploy: archivos subidos, migracion
+        sin correr): Eloquent lee el atributo ausente como null y el cast de un null es null, que
+        para `BudgetCobroHelper` es "sin reparto" = cuenta corriente. Ver
+        `CobroPresupuestoEsquemaHelper`.
+    */
+    protected $casts = [
+        'selected_payment_methods' => 'array',
+    ];
+
 
     function scopeWithAll($query) {
         /*
