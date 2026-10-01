@@ -264,6 +264,38 @@ class Columnas_de_costo_y_precio_de_venta_Test extends EmpresaTestCase
     }
 
     /**
+     * Test 4b - renglón viejo sin `price_sin_iva` congelado: el neto se calcula desde la alícuota
+     * del pivot (1000 / 1,21 = 826,45) en vez de imprimir el precio con IVA en "Precio sin IVA".
+     * Sin alícuota tampoco: el unitario cae al precio (comportamiento de siempre) y el total sale
+     * vacío, porque no se inventa un IVA para restar.
+     *
+     * @group pdf
+     * @test
+     */
+    public function renglon_sin_neto_congelado_se_calcula_desde_la_alicuota()
+    {
+        $armado = $this->armar_venta_con_renglon(1000.00, 3, 400.00, null);
+        $sale = $armado['sale'];
+        $sale->articles()->updateExistingPivot($armado['item']->id, ['price_sin_iva' => null]);
+        $sale = $sale->fresh();
+        $item = $sale->articles->first();
+        $item->is_article = true;
+        $contexto = $this->armar_contexto($sale, $item, false);
+
+        $this->assertEqualsWithDelta(826.45, $this->valor('item_price_without_iva', $contexto), self::DELTA, 'Neto unitario calculado');
+        $this->assertEqualsWithDelta(2479.35, $this->valor('item_subtotal_without_iva', $contexto), self::DELTA, 'Neto total calculado');
+
+        $sale->articles()->updateExistingPivot($item->id, ['price_sin_iva' => null, 'iva_percentage' => null]);
+        $sale = $sale->fresh();
+        $item = $sale->articles->first();
+        $item->is_article = true;
+        $contexto_sin_alicuota = $this->armar_contexto($sale, $item, false);
+
+        $this->assertEqualsWithDelta(1000.00, $this->valor('item_price_without_iva', $contexto_sin_alicuota), self::DELTA, 'Sin alícuota el unitario cae al precio, como siempre');
+        $this->assertSame('', PdfColumnService::resolve_value('item_subtotal_without_iva', $contexto_sin_alicuota), 'Sin alícuota no se inventa un IVA para restar');
+    }
+
+    /**
      * Test 5 - con comprobante ARCA, "Precio con IVA unitario" × cantidad == "Precio con IVA total"
      * y el neto + el IVA del renglón cierran con el total con IVA (misma fuente de cálculo).
      *

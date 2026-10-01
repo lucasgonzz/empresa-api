@@ -641,6 +641,22 @@ class PdfColumnService
                         $moneda_id
                     );
                 }
+                /**
+                 * Renglones viejos sin `price_sin_iva` congelado pero con su alícuota: se calcula el
+                 * neto igual que lo hubiera guardado SaleHelper::get_price_sin_iva(). Antes caía directo
+                 * al precio CON IVA y esta columna ("Precio sin IVA") salía con el IVA adentro.
+                 */
+                $neto_calculado = self::sale_item_price_sin_iva_calculado($item->pivot);
+                if (! is_null($neto_calculado)) {
+                    return self::format_sale_monetary_value(
+                        $neto_calculado,
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
                 if (isset($item->pivot->price)) {
                     return self::format_sale_monetary_value(
                         (float) $item->pivot->price,
@@ -677,13 +693,12 @@ class PdfColumnService
                  * (item_subtotal), que SÍ descuenta. Sin esto, en un remito con un renglón bonificado
                  * los dos totales no coincidían (el neto salía sin el descuento).
                  */
-                if (
-                    isset($item->pivot->price_sin_iva)
-                    && ! is_null($item->pivot->price_sin_iva)
-                    && isset($item->pivot->amount)
-                ) {
+                $neto_unitario = (isset($item->pivot->price_sin_iva) && ! is_null($item->pivot->price_sin_iva))
+                    ? (float) $item->pivot->price_sin_iva
+                    : self::sale_item_price_sin_iva_calculado($item->pivot);
+                if (! is_null($neto_unitario) && isset($item->pivot->amount)) {
                     $subtotal_sin_iva = self::sale_item_line_total(
-                        $item->pivot->price_sin_iva,
+                        $neto_unitario,
                         $item->pivot->amount,
                         $item->pivot->discount ?? null
                     );
@@ -801,6 +816,28 @@ class PdfColumnService
             default:
                 return '';
         }
+    }
+
+    /**
+     * Neto unitario de un renglón calculado desde el precio con IVA y la alícuota congelada en el
+     * pivot, para renglones que no traen `price_sin_iva`. Mismo criterio que
+     * SaleHelper::get_price_sin_iva(): una alícuota no numérica (Exento / No Gravado) o 0 deja el
+     * precio como está, y el resultado se redondea a 2 decimales.
+     *
+     * @param  object $pivot Pivot del renglón (price, iva_percentage).
+     * @return float|null    null si falta el precio o la alícuota (no se inventa un IVA para restar).
+     */
+    protected static function sale_item_price_sin_iva_calculado($pivot)
+    {
+        if (! isset($pivot->price) || ! isset($pivot->iva_percentage) || $pivot->iva_percentage === '') {
+            return null;
+        }
+
+        if (! is_numeric($pivot->iva_percentage) || (float) $pivot->iva_percentage == 0) {
+            return (float) $pivot->price;
+        }
+
+        return round((float) $pivot->price / (((float) $pivot->iva_percentage / 100) + 1), 2);
     }
 
     /**
