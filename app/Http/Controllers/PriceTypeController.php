@@ -193,6 +193,19 @@ class PriceTypeController extends Controller
          */
         $pedido_de_sincronizar = PriceTypeHelper::leer_pedido_de_sincronizar_margen($request->sincronizar_margen);
 
+        /*
+         * 🔴 La sincronización solo sobre una lista PROPIA. `update()` busca la lista por id sin
+         * mirar el dueño (ya era así antes de esta misión y no se cambia acá), pero sincronizar es
+         * destructivo: con alcance "todos" y el tilde les saca el precio fijado a mano a todos los
+         * artículos de la lista. En una base compartida por varios comercios (ids secuenciales) eso
+         * no puede quedar al alcance de un id ajeno. El preview ya filtra por dueño; acá se ignora
+         * el pedido igual que uno inválido.
+         */
+        if (!is_null($pedido_de_sincronizar) && (int) $model->user_id !== (int) $this->userId()) {
+            Log::warning('PriceTypeController@update: pedido de sincronizar el margen sobre la lista '.$model->id.' de otro dueño; se ignora.');
+            $pedido_de_sincronizar = null;
+        }
+
         if (!is_null($pedido_de_sincronizar)) {
 
             $cantidad = PriceTypeHelper::sincronizar_margen(

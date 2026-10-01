@@ -302,4 +302,31 @@ class Sincronizar_en_el_guardado_de_la_lista_Test extends SincronizarMargenTestC
         $this->assertEquals($antes, $this->foto_de_pivots());
         Queue::assertNotPushed(ProcessChunkSetFinalPrices::class);
     }
+
+    /**
+     * 🔴 Una lista de OTRO comercio no se sincroniza aunque el PUT llegue con su id: con "todos" y
+     * el tilde, el pedido les sacaría el precio fijado a mano a todos sus artículos. Logueado como
+     * el dueño de "Mayorista", se pide sincronizar la lista ajena: ningún pivot cambia, no se
+     * encola nada y no hay aviso.
+     *
+     * (Que el PUT a una lista ajena guarde los demás campos es anterior a esta misión y no se
+     * mide acá.)
+     *
+     * @return void
+     */
+    public function test_no_sincroniza_la_lista_de_otro_dueno()
+    {
+        $this->armar_escenario(30);
+
+        $antes = $this->foto_de_pivots();
+
+        $this->putJson('api/price-type/' . $this->lista_ajena->id, $this->payload($this->lista_ajena, [
+            'percentage'         => '35',
+            'sincronizar_margen' => ['alcance' => 'todos', 'incluir_precio_fijado_a_mano' => true],
+        ]))->assertStatus(200)
+            ->assertJsonPath('notifications', []);
+
+        $this->assertEquals($antes, $this->foto_de_pivots());
+        Queue::assertNotPushed(ProcessChunkSetFinalPrices::class);
+    }
 }

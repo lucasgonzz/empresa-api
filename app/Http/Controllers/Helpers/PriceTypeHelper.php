@@ -461,22 +461,31 @@ class PriceTypeHelper {
 		// El margen nuevo, como lo guarda el pivot (DECIMAL(12,2)), o NULL si la lista quedó sin margen.
 		$porcentaje_nuevo = Self::porcentaje_o_null($price_type->percentage);
 
-		foreach (array_chunk($article_ids, Self::PIVOTS_POR_UPDATE) as $tanda_de_ids) {
+		/*
+		 * Todas las tandas en UNA transacción: si un UPDATE falla a mitad de camino, no queda la mitad
+		 * de los artículos con el margen nuevo y la otra mitad con el viejo. Eso no se podría
+		 * reintentar: la lista ya quedó guardada con el margen nuevo, así que un segundo
+		 * "coinciden" mediría contra el nuevo y los que quedaron atrás ya no entrarían.
+		 */
+		DB::transaction(function () use ($article_ids, $price_type, $porcentaje_nuevo, $incluir_precio_fijado_a_mano) {
 
-			DB::table('article_price_type')
-				->where('price_type_id', $price_type->id)
-				->whereIn('article_id', $tanda_de_ids)
-				->update(['percentage' => $porcentaje_nuevo]);
-
-			if ($incluir_precio_fijado_a_mano) {
+			foreach (array_chunk($article_ids, Self::PIVOTS_POR_UPDATE) as $tanda_de_ids) {
 
 				DB::table('article_price_type')
 					->where('price_type_id', $price_type->id)
 					->whereIn('article_id', $tanda_de_ids)
-					->where('setear_precio_final', 1)
-					->update(['setear_precio_final' => 0]);
+					->update(['percentage' => $porcentaje_nuevo]);
+
+				if ($incluir_precio_fijado_a_mano) {
+
+					DB::table('article_price_type')
+						->where('price_type_id', $price_type->id)
+						->whereIn('article_id', $tanda_de_ids)
+						->where('setear_precio_final', 1)
+						->update(['setear_precio_final' => 0]);
+				}
 			}
-		}
+		});
 
 		Log::info('sincronizar_margen: lista '.$price_type->id.', alcance '.$alcance
 			.($incluir_precio_fijado_a_mano ? ' (con precio fijado a mano)' : '')
