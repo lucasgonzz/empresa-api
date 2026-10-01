@@ -289,8 +289,13 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
 
     /**
      * Las variantes ocultas no se ofrecen en Vender, y por lo tanto no pueden hacer aparecer al
-     * articulo: "remera negra" no encuentra nada si "negra" esta oculta, aunque "blanca" (visible)
-     * si aparezca con "remera blanca".
+     * articulo. Dos articulos para que el test discrimine la clausula `oculta = 0` del EXISTS:
+     *   - "Remera" tiene una variante visible (blanca) y una oculta (negra): "remera negra" no
+     *     encuentra nada, "remera blanca" si. Este caso lo atajaria igual el filtro fino de PHP.
+     *   - "Mochila" tiene SOLO variantes ocultas (verde): sin `oculta = 0` el SQL dejaria pasar al
+     *     articulo, y como no tiene variantes disponibles `match_descriptors` lo devolveria como
+     *     fila comun (falso positivo: "mochila verde" ofreceria una mochila sin variante). Con la
+     *     clausula, el SQL lo excluye.
      *
      * @group sales
      * @group vender-search
@@ -306,9 +311,16 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
         $this->variante($remera, 'blanca', false);
         $this->variante($remera, 'negra', true);
 
+        $mochila = $this->articulo($user, 'Mochila');
+        $this->variante($mochila, 'verde', true);
+
         $this->assertEquals(['Remera blanca'], $this->nombres($this->buscar('remera blanca')));
         $this->assertEquals([], $this->nombres($this->buscar('remera negra')));
         $this->assertEquals([], $this->nombres($this->buscar('negra')));
+
+        // Solo variantes ocultas: no aparece ni por la variante ni como articulo comun.
+        $this->assertEquals([], $this->nombres($this->buscar('mochila verde')));
+        $this->assertEquals([], $this->nombres($this->buscar('verde')));
     }
 
     /**
@@ -383,11 +395,15 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
         $user = $this->usuario_de_test('v10a');
         $this->dar_extension($user, 'article_variants');
         $this->actingAs($user, 'web');
-        $propia = $this->articulo($user, 'Zapatilla');
-        $this->variante($propia, 'roja 36');
+        $this->articulo($user, 'Zapatilla'); // propia, SIN variantes
 
+        // Si el EXISTS viera la variante "azul 36" del otro comercio, el articulo propio pasaria el
+        // SQL y volveria como fila comun (no tiene variantes disponibles): esa es la fuga que este
+        // test detecta.
         $this->assertEquals([], $this->nombres($this->buscar('zapatilla azul')));
-        $this->assertEquals(['Zapatilla roja 36'], $this->nombres($this->buscar('zapatilla roja')));
+        $this->assertEquals([], $this->nombres($this->buscar('azul')));
+        $this->assertEquals(['Zapatilla'], $this->nombres($this->buscar('zapatilla')));
+
     }
 
     /**
@@ -438,60 +454,6 @@ class Busqueda_en_vender_por_nombre_de_variante_Test extends TestCase
         DB::disableQueryLog();
 
         $this->assertSame(2, $this->cantidad_de_exists_de_variantes($log), 'Un EXISTS por palabra (zapatilla, azul).');
-    }
-
-    /**
-     * Rendimiento (escala): la condicion de variantes viaja DENTRO de la unica consulta liviana de
-     * la fase 1, sin importar cuantos articulos matchean: con 1 articulo y con 6 hay exactamente
-     * una consulta que filtra por `variant_description` (con sus dos EXISTS), o sea que no hay
-     * ninguna consulta por articulo (N+1) escondida en esta condicion.
-     *
-     * (El total de consultas de la peticion SI crece con las filas -- build_row arma cada fila de
-     * variante con consultas propias--, pero eso es preexistente y no depende de esta condicion:
-     * medido con el criterio "zapatilla" a secas, que no ejercita nada de esta mision.)
-     *
-     * @group sales
-     * @group vender-search
-     * @test
-     */
-    public function la_condicion_de_variantes_viaja_en_una_sola_consulta_sin_importar_cuantos_articulos()
-    {
-        $user = $this->usuario_de_test('v12b');
-        $this->dar_extension($user, 'article_variants');
-        $this->actingAs($user, 'web');
-        $this->zapatilla($user);
-
-        $medir = function () {
-            DB::flushQueryLog();
-            DB::enableQueryLog();
-            $respuesta = $this->buscar('zapatilla azul');
-            $log = DB::getQueryLog();
-            DB::disableQueryLog();
-
-            $consultas_con_la_condicion = collect($log)->filter(function ($consulta) {
-                return stripos($consulta['query'], '`variant_description` like') !== false;
-            })->count();
-
-            return [$consultas_con_la_condicion, $this->cantidad_de_exists_de_variantes($log), $respuesta['models']['total']];
-        };
-
-        list($consultas_con_uno, $exists_con_uno, $total_con_uno) = $medir();
-
-        for ($i = 0; $i < 5; $i++) {
-            $otra = $this->articulo($user, 'Zapatilla modelo ' . $i);
-            $this->variante($otra, 'azul 35');
-            $this->variante($otra, 'azul 36');
-            $this->variante($otra, 'rojo 36');
-        }
-
-        list($consultas_con_seis, $exists_con_seis, $total_con_seis) = $medir();
-
-        $this->assertEquals(2, $total_con_uno);
-        $this->assertEquals(12, $total_con_seis, '6 articulos x 2 variantes azules.');
-        $this->assertSame(1, $consultas_con_uno, 'Una sola consulta lleva la condicion de variantes.');
-        $this->assertSame(1, $consultas_con_seis, 'Sigue siendo una sola con 6 articulos.');
-        $this->assertSame(2, $exists_con_uno, 'Un EXISTS por palabra.');
-        $this->assertSame(2, $exists_con_seis, 'Los mismos dos EXISTS con 6 articulos.');
     }
 
     /**

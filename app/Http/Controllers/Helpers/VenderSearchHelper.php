@@ -166,12 +166,12 @@ class VenderSearchHelper
         // y de variantes) participa de la coincidencia de palabras sueltas y del match exacto.
         $search_bar_code_en_vender = UserHelper::hasExtencion('search_bar_code_en_vender');
 
-        // Palabras del criterio de busqueda. Se separa por cualquier cantidad de espacios y se
-        // descartan las vacias, igual que hace GlobalSearchQueryHelper::apply en la fase SQL. Con
-        // explode(' ') un doble espacio -o un criterio vacio, que es una busqueda solo por filtros
-        // fijos- dejaba una palabra '' y strpos(..., '') tira un warning en PHP 7.4 que Laravel
-        // convierte en un 500 ("strpos(): Empty needle"): medido el 1/10/2026 con la extension de
-        // variantes prendida.
+        // Palabras del criterio de busqueda. Se separa por cualquier cantidad de espacios en blanco y
+        // se descartan las vacias (la fase SQL, GlobalSearchQueryHelper::apply, tambien descarta las
+        // vacias). Con explode(' ') un doble espacio -o un criterio vacio, que es una busqueda solo
+        // por filtros fijos- dejaba una palabra '' y strpos(..., '') tira un warning en PHP 7.4 que
+        // Laravel convierte en un 500 ("strpos(): Empty needle"): medido el 1/10/2026 con la
+        // extension de variantes prendida.
         $keywords = preg_split('/\s+/', trim($query_value), -1, PREG_SPLIT_NO_EMPTY);
 
         // Sin palabras no hay nada que filtrar por texto: todo articulo es resultado.
