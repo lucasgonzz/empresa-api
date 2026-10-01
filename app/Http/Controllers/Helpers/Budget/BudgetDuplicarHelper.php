@@ -42,6 +42,9 @@ class BudgetDuplicarHelper {
         /** Respaldo por migración default(1) si el seed no existiera en el entorno. */
         $budget_status_id = $budget_status ? (int) $budget_status->id : 1;
 
+        /** Descuento (−) o recargo (+) por método de pago que el origen lleva adentro de su `total`; 0 si no es de contado. */
+        $ajuste_del_origen = BudgetCobroHelper::ajuste_por_metodos_de_pago($source);
+
         /** Campos escalares copiados del origen según BudgetController::store. */
         $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
             'num'                       => $controller->num('budgets'),
@@ -53,7 +56,23 @@ class BudgetDuplicarHelper {
             'sale_status_id'            => $source->sale_status_id,
             'discount_stock'            => !is_null($source->discount_stock) ? $source->discount_stock : 1,
             'iva_aplicado'              => !is_null($source->iva_aplicado) ? $source->iva_aplicado : 1,
-            'total'                     => $source->total,
+            /*
+                🔴 El total del duplicado es el del origen SIN el ajuste por metodo de pago (mision
+                presupuesto-contado-o-cuenta-corriente, 1/10/2026). Un presupuesto "de contado" guarda
+                un `total` NETO, con el descuento/recargo de sus metodos de pago adentro. El duplicado
+                nace a CUENTA CORRIENTE y sin reparto (mas abajo), asi que `BudgetHelper::getTotal()` ya
+                no le suma ese ajuste, y `BudgetController::duplicate()` compara las dos cifras con un
+                margen de 3: copiando el total tal cual, cualquier ajuste mayor a 3 pesos mataria el
+                duplicado con el 500 "El total del presupuesto no corresponde con los productos
+                ingresados". Es el cuarto caso del mismo olvido que documentan los comentarios de
+                `aplicar_recargos_directo_a_items`, el forzado y los combos: un bucket del `total` que
+                el recalculo del duplicado no conoce.
+
+                Sin ajuste (el caso de siempre) el total pasa SIN tocarlo, ni siquiera por un float.
+            */
+            'total'                     => $ajuste_del_origen != 0
+                                            ? round((float) $source->total - $ajuste_del_origen, 2)
+                                            : $source->total,
             'budget_status_id'          => $budget_status_id,
             'address_id'                => $source->address_id,
             'surchages_in_services'     => $source->surchages_in_services,
@@ -86,8 +105,15 @@ class BudgetDuplicarHelper {
             */
             'moneda_id'                 => $source->moneda_id,
             'valor_dolar'               => $source->valor_dolar,
-            // Un presupuesto no se puede omitir de la cuenta corriente (decision de Lucas,
-            // 18/9/2026): el duplicado nace en 0 aunque el origen tenga un 1 viejo.
+            /*
+                El duplicado nace a CUENTA CORRIENTE, siempre, y sin reparto de metodos de pago
+                (mision presupuesto-contado-o-cuenta-corriente, 1/10/2026): un cobro es una operacion
+                de una sola vez --el cheque del reparto, la caja elegida, la cotizacion--, no una
+                plantilla que se copie. Si el vendedor quiere cobrarlo de contado, lo elige de nuevo
+                al guardar. Por eso `selected_payment_methods` NO esta en este array y este helper no
+                pasa por `CobroPresupuestoEsquemaHelper`: la columna queda en su default, null.
+                (Antes: decision de Lucas del 18/9/2026, "un presupuesto no se omite".)
+            */
             'omitir_en_cuenta_corriente' => 0,
             'employee_id'               => $controller->userId(false),
             'user_id'                   => $controller->userId(),
