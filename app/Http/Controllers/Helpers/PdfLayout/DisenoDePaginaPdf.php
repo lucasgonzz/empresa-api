@@ -324,10 +324,10 @@ class DisenoDePaginaPdf
 
         /** Cada campo una sola vez en todo el diseño, salvo el texto libre (se distingue por id). */
         if (! $es_texto_libre) {
-            if (in_array($key, $estado['keys'], true)) {
+            if (isset($estado['keys'][$key])) {
                 return null;
             }
-            $estado['keys'][] = $key;
+            $estado['keys'][$key] = true;
         }
 
         $normalizado = [
@@ -374,10 +374,10 @@ class DisenoDePaginaPdf
             return null;
         }
 
-        if (in_array('fijo:'.$key, $estado['keys'], true)) {
+        if (isset($estado['keys']['fijo:'.$key])) {
             return null;
         }
-        $estado['keys'][] = 'fijo:'.$key;
+        $estado['keys']['fijo:'.$key] = true;
 
         $fijo = [
             'tipo' => self::TIPO_FIJO,
@@ -401,8 +401,8 @@ class DisenoDePaginaPdf
      */
     private static function id_unico($id, $prefijo, &$estado)
     {
-        if (is_string($id) && preg_match(self::PATRON_ID, $id) && ! in_array($id, $estado['ids'], true)) {
-            $estado['ids'][] = $id;
+        if (is_string($id) && preg_match(self::PATRON_ID, $id) && ! isset($estado['ids'][$id])) {
+            $estado['ids'][$id] = true;
 
             return $id;
         }
@@ -410,9 +410,9 @@ class DisenoDePaginaPdf
         do {
             $estado['contador']++;
             $nuevo = $prefijo.'_'.$estado['contador'];
-        } while (in_array($nuevo, $estado['ids'], true) || in_array($nuevo, $estado['reservados'], true));
+        } while (isset($estado['ids'][$nuevo]) || isset($estado['reservados'][$nuevo]));
 
-        $estado['ids'][] = $nuevo;
+        $estado['ids'][$nuevo] = true;
 
         return $nuevo;
     }
@@ -422,29 +422,38 @@ class DisenoDePaginaPdf
      * generen no los pisen.
      *
      * @param array $valor diseño sin normalizar (ya decodificado).
-     * @return array<int, string>
+     * @return array<string, bool>
      */
     private static function ids_explicitos($valor)
     {
+        /**
+         * Conjunto (id => true) y ventana ACOTADA: se miran como mucho 4 veces los topes de ítems y
+         * de campos. La reserva solo sirve para que un id generado no le gane a uno explícito; la
+         * unicidad la garantiza id_unico() igual. Sin el tope y con búsquedas lineales, un JSON con
+         * miles de ids tardaba segundos en normalizarse (cuadrático): lo midió el revisor de la API
+         * el 1/10/2026 (595 KB → 6,5 s).
+         */
         $ids = [];
+        $tope_de_items = self::MAX_ITEMS_POR_ZONA * 4;
+        $tope_de_campos = self::MAX_CAMPOS_POR_CAJA * 4;
 
         foreach (self::ZONAS as $zona) {
             if (! isset($valor[$zona]) || ! is_array($valor[$zona])) {
                 continue;
             }
 
-            foreach ($valor[$zona] as $item) {
+            foreach (array_slice(array_values($valor[$zona]), 0, $tope_de_items) as $item) {
                 if (is_array($item) && isset($item['id']) && is_string($item['id']) && preg_match(self::PATRON_ID, $item['id'])) {
-                    $ids[] = $item['id'];
+                    $ids[$item['id']] = true;
                 }
 
                 if (! is_array($item) || ! isset($item['campos']) || ! is_array($item['campos'])) {
                     continue;
                 }
 
-                foreach ($item['campos'] as $campo) {
+                foreach (array_slice(array_values($item['campos']), 0, $tope_de_campos) as $campo) {
                     if (is_array($campo) && isset($campo['id']) && is_string($campo['id']) && preg_match(self::PATRON_ID, $campo['id'])) {
-                        $ids[] = $campo['id'];
+                        $ids[$campo['id']] = true;
                     }
                 }
             }
