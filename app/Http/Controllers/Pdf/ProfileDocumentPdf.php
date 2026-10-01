@@ -212,6 +212,12 @@ class ProfileDocumentPdf extends fpdf
     {
         try {
             $pdf = new self($source, $profile);
+
+            /** Un diseño sin ninguna columna visible saldría sin tabla de renglones: mejor el PDF de siempre. */
+            if (empty($pdf->profile_columns)) {
+                return null;
+            }
+
             $pdf->render();
 
             return $pdf;

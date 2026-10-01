@@ -261,6 +261,29 @@ class Elegir_diseno_al_imprimir_Test extends EmpresaTestCase
     }
 
     /**
+     * Un diseño armado a mano sin ninguna columna visible saldría sin tabla de renglones: el
+     * presupuesto "vacío" es peor que el PDF de siempre, así que `try_render()` devuelve null.
+     *
+     * @test
+     */
+    public function try_render_devuelve_null_si_el_diseno_no_tiene_columnas_visibles()
+    {
+        $articulo = $this->crear_articulo('Taladro percutor sin columnas');
+        $budget = $this->crear_presupuesto([['article' => $articulo, 'amount' => 1, 'price' => 100]]);
+        $diseno = $this->diseno_de($this->dueno->id, 'budget', 'Presupuesto');
+
+        foreach ($diseno->pdf_column_options as $opcion) {
+            $diseno->pdf_column_options()->updateExistingPivot($opcion->id, ['visible' => 0]);
+        }
+        $diseno->unsetRelation('pdf_column_options');
+
+        $this->assertNull(
+            ProfileDocumentPdf::try_render(new BudgetPdfDocument($budget), $diseno->fresh()),
+            'Un diseño sin columnas visibles tiene que caer al PDF de siempre.'
+        );
+    }
+
+    /**
      * Los dos controladores usan `try_render()` y ya no instancian el diseño a pelo (el PDF no se
      * puede ejercitar por HTTP: termina en `exit`, así que el cableado se fija leyendo el código).
      *
