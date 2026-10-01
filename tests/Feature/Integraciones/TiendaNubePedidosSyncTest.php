@@ -6,6 +6,7 @@ use App\Models\TiendaNubeOrder;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\EmpresaTestCase;
 
@@ -95,10 +96,11 @@ class TiendaNubePedidosSyncTest extends EmpresaTestCase
         $this->assertNotNull($pedido, 'El pedido nuevo de Tienda Nube no se importó.');
         $this->assertSame('Santiago Pasini', $pedido->customer_name);
         $this->assertSame('Pagado', $pedido->payment_status);
+        // 13:15 UTC en Tienda Nube son las 10:15 de Argentina, que es lo que se guarda en la base.
         $this->assertSame(
-            '2026-10-01 13:15:00',
-            $pedido->created_at->copy()->setTimezone('UTC')->format('Y-m-d H:i:s'),
-            'created_at tiene que salir de la fecha del pedido en Tienda Nube.'
+            '2026-10-01 10:15:00',
+            DB::table('tienda_nube_orders')->where('external_id', self::EXTERNAL_ID)->value('created_at'),
+            'created_at tiene que salir de la fecha del pedido en Tienda Nube, pasada a hora local.'
         );
 
         $ids = collect($respuesta->json('models'))->pluck('external_id')->map(function ($id) {
