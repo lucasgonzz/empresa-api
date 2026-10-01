@@ -5,9 +5,15 @@ namespace App\Http\Controllers\Pdf;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
+use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
 use App\Http\Controllers\Helpers\PdfDocument\PdfDocumentSource;
 use App\Http\Controllers\Helpers\PdfDocumentSetupHelper;
+use App\Http\Controllers\Helpers\PdfLayout\CamposDePedidoPdf;
+use App\Http\Controllers\Helpers\PdfLayout\CamposDePresupuestoPdf;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
+use App\Http\Controllers\Pdf\Layout\MotorDeCajasPdf;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Services\PdfColumnService;
@@ -40,6 +46,15 @@ require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
  * `Output(); exit;` en el constructor (por eso ningún test los instancia): acá el constructor NO
  * tiene efectos, `render()` arma las hojas y `emit()` es lo único que termina el proceso, y solo
  * lo llama el controlador. Así se puede probar con `render()` + `Output('S')`.
+ *
+ * DOS MODOS (misión diseno-pdf-configurable, 1/10/2026):
+ * - El de siempre (perfil con `page_layout` NULL): todo lo de arriba, sin un solo cambio. Los tests
+ *   10, 11, 12 y 13 de tests/Feature/Pdf lo cuidan sin tocar sus aserciones.
+ * - Con diseño de página: la hoja y el margen del perfil, el encabezado del emisor SIN el bloque
+ *   del cliente, las cajas de arriba de la tabla (en todas las hojas) y las del pie (en la última
+ *   hoja), dibujadas por `MotorDeCajasPdf` con los valores de `CamposDePresupuestoPdf` /
+ *   `CamposDePedidoPdf`. Los flags del pie (total, sub total, texto, observaciones del cliente)
+ *   no se leen: lo que se imprime lo dicen las cajas.
  */
 class ProfileDocumentPdf extends fpdf
 {
@@ -48,6 +63,12 @@ class ProfileDocumentPdf extends fpdf
 
     /** Límite Y (mm) hasta donde puede llegar una fila de la tabla antes de saltar de hoja. */
     const ITEMS_BOTTOM_Y = 285;
+
+    /** Diseño de página: separación entre el encabezado y la zona de arriba (mm). */
+    const SEPARACION_DE_LA_ZONA_SUPERIOR = 2;
+
+    /** Diseño de página: separación entre el último renglón y la zona pie (mm). */
+    const SEPARACION_DEL_PIE = 3;
 
     /** Comprobante que se dibuja (adaptador: presupuesto, pedido). */
     private $source;
@@ -87,6 +108,25 @@ class ProfileDocumentPdf extends fpdf
     public $logo_size_mm;
     /** Lo lee `PdfHelper::client_description()` (borde de las celdas: 0 = sin borde). */
     public $b;
+    /**
+     * Lo lee `AfipPdfHelper` con un diseño de página: dónde arranca el comprobante. null en el modo
+     * de siempre (AfipPdfHelper dibuja en 5 / 200 como siempre).
+     */
+    public $pdf_x0;
+    /** Lo lee `AfipPdfHelper` con un diseño de página: ancho útil del comprobante (null = el de siempre). */
+    public $pdf_ancho_util;
+    /** Lo lee `AfipPdfHelper` con un diseño de página: dónde arranca el encabezado (null = el de siempre). */
+    public $pdf_y0;
+    /** Diseño de página normalizado, o null: el PDF de siempre. */
+    private $diseno;
+    /** Motor que mide y dibuja las cajas del diseño (null sin diseño). */
+    private $motor;
+    /** Límite Y de los renglones de la tabla (285 en el de siempre; alto − margen − 7 con diseño). */
+    private $limite_de_renglones;
+    /** Hasta dónde llega la línea debajo de cada renglón (205 en el de siempre). */
+    private $fin_de_renglon;
+    /** Alto del pie del diseño (separación + zona), memoizado. */
+    private $alto_del_pie;
 
     /**
      * Prepara el PDF SIN dibujar nada ni terminar el proceso.
@@ -96,7 +136,19 @@ class ProfileDocumentPdf extends fpdf
      */
     public function __construct(PdfDocumentSource $source, PdfColumnProfile $profile)
     {
-        parent::__construct();
+        /**
+         * Con diseño de página la hoja es la del perfil; sin diseño, la A4 de siempre (el mismo
+         * parent::__construct() sin argumentos que antes).
+         */
+        $con_diseno = DisenoDePaginaPdf::tiene_diseno($profile)
+            && ($source instanceof BudgetPdfDocument || $source instanceof OrderPdfDocument);
+        $hoja = $con_diseno ? MotorDeCajasPdf::geometria_de_la_hoja($profile) : null;
+
+        if ($con_diseno) {
+            parent::__construct('P', 'mm', [$hoja['ancho_de_hoja'], $hoja['alto_de_hoja']]);
+        } else {
+            parent::__construct();
+        }
         $this->SetAutoPageBreak(false);
 
         $this->source = $source;
@@ -135,6 +187,53 @@ class ProfileDocumentPdf extends fpdf
         } elseif ($this->user && $this->user->pdf_image_size) {
             $this->logo_size_mm = (int) $this->user->pdf_image_size;
         }
+
+        /** Modo de siempre: A4, 5 / 200, renglones hasta 285 y la línea hasta 205. */
+        $this->pdf_x0 = null;
+        $this->pdf_ancho_util = null;
+        $this->pdf_y0 = null;
+        $this->diseno = null;
+        $this->motor = null;
+        $this->alto_del_pie = null;
+        $this->limite_de_renglones = self::ITEMS_BOTTOM_Y;
+        $this->fin_de_renglon = 210 - $this->start_x;
+
+        if ($con_diseno) {
+            $this->preparar_diseno($source, $profile, $hoja);
+        }
+    }
+
+    /**
+     * Modo con diseño de página: la geometría de la hoja (la leen AfipPdfHelper y la tabla), el
+     * diseño normalizado y el motor de cajas con la fuente de campos del comprobante.
+     *
+     * Presupuesto y pedido nunca son factura de ARCA: asegurar_fijos(…, false) saca cualquier
+     * bloque fijo que hubiera quedado en el JSON.
+     *
+     * @param PdfDocumentSource $source
+     * @param PdfColumnProfile  $profile
+     * @param array             $hoja    MotorDeCajasPdf::geometria_de_la_hoja($profile)
+     * @return void
+     */
+    private function preparar_diseno(PdfDocumentSource $source, PdfColumnProfile $profile, $hoja)
+    {
+        $this->pdf_x0 = $hoja['x0'];
+        $this->pdf_ancho_util = $hoja['ancho_util'];
+        $this->pdf_y0 = $hoja['y0'];
+        $this->SetMargins($hoja['x0'], $hoja['margen'], $hoja['margen_derecho']);
+
+        $this->start_x = $hoja['x0'];
+        $this->limite_de_renglones = $hoja['limite_inferior'];
+        $this->fin_de_renglon = $hoja['x0'] + $hoja['ancho_util'];
+
+        $diseno = DisenoDePaginaPdf::normalizar($profile->page_layout);
+        $this->diseno = DisenoDePaginaPdf::asegurar_fijos(is_null($diseno) ? DisenoDePaginaPdf::vacio() : $diseno, false);
+
+        $fuente = $source instanceof BudgetPdfDocument
+            ? new CamposDePresupuestoPdf($source, $this->use_current_date)
+            : new CamposDePedidoPdf($source, $this->use_current_date);
+
+        $this->motor = new MotorDeCajasPdf($fuente, $hoja['x0'], $hoja['ancho_util']);
     }
 
     /**
@@ -160,7 +259,16 @@ class ProfileDocumentPdf extends fpdf
             $this->has_resolver(['document_item_image']),
             $this->has_resolver(['document_item_brand_name', 'document_item_category_name', 'document_item_sub_category_name', 'document_item_provider_name'])
         );
-        $this->get_totals_rows();
+
+        /**
+         * La plata se pide en el mismo punto en los dos modos (después de la precarga de los
+         * renglones): con diseño, medir el pie le pide a la fuente sus valores una vez.
+         */
+        if (is_null($this->diseno)) {
+            $this->get_totals_rows();
+        } else {
+            $this->alto_del_pie();
+        }
 
         $this->AddPage();
 
@@ -292,6 +400,12 @@ class ProfileDocumentPdf extends fpdf
     {
         $this->rows_on_page = 0;
 
+        if (! is_null($this->diseno)) {
+            $this->header_con_diseno();
+
+            return;
+        }
+
         AfipPdfHelper::header_comercial(
             $this,
             $this->header_document,
@@ -317,6 +431,86 @@ class ProfileDocumentPdf extends fpdf
             $fields[$column['label']] = $column['width'];
         }
         AfipPdfHelper::table_header($this, $fields);
+    }
+
+    /**
+     * Encabezado con diseño de página: el del emisor SIN el bloque del cliente (lo ponen las cajas),
+     * la zona de arriba del diseño (2 mm debajo, en todas las hojas) y el encabezado de la tabla
+     * en la x de la hoja.
+     *
+     * @return void
+     */
+    private function header_con_diseno()
+    {
+        AfipPdfHelper::header_comercial(
+            $this,
+            $this->header_document,
+            $this->user,
+            $this->header_layout,
+            null,
+            ['right_title' => $this->source->title(), 'sin_receptor' => true]
+        );
+
+        /** Si la zona no dibuja nada, no deja el hueco. */
+        $y = $this->y;
+        $alto = $this->motor->dibujar_zona($this, $this->diseno['superior'], $y + self::SEPARACION_DE_LA_ZONA_SUPERIOR);
+        if ($alto <= 0) {
+            $this->y = $y;
+        }
+
+        $fields = [];
+        foreach ($this->profile_columns as $column) {
+            $fields[$column['label']] = $column['width'];
+        }
+        AfipPdfHelper::table_header($this, $fields, $this->pdf_x0);
+    }
+
+    /**
+     * Alto del pie del diseño (separación + zona), medido UNA vez con la misma rutina que lo dibuja.
+     *
+     * @return float 0 si la zona no dibuja nada.
+     */
+    private function alto_del_pie()
+    {
+        if (is_null($this->alto_del_pie)) {
+            $alto = $this->motor->medir_zona($this, $this->diseno['pie']);
+            $this->alto_del_pie = $alto > 0 ? self::SEPARACION_DEL_PIE + $alto : 0;
+        }
+
+        return $this->alto_del_pie;
+    }
+
+    /**
+     * Pie con diseño de página, en la última hoja: si no entra debajo del último renglón, salta de
+     * hoja antes. Un pie que no dibuja nada no salta de hoja (mismo criterio que el de siempre:
+     * nunca una hoja que solo repite el encabezado). Si el pie es más alto que lo que queda libre
+     * incluso en una hoja nueva, las filas que no entran siguen en la siguiente.
+     *
+     * @return void
+     */
+    private function print_pie_con_diseno()
+    {
+        $alto = $this->alto_del_pie();
+
+        if ($alto <= 0) {
+            return;
+        }
+
+        if ($this->rows_on_page > 0 && $this->y + $alto > $this->limite_de_renglones) {
+            $this->AddPage();
+        }
+
+        $this->motor->dibujar_zona(
+            $this,
+            $this->diseno['pie'],
+            $this->y + self::SEPARACION_DEL_PIE,
+            function () {
+                $this->AddPage();
+
+                return $this->y + self::SEPARACION_DEL_PIE;
+            },
+            $this->limite_de_renglones
+        );
     }
 
     /**
@@ -373,7 +567,7 @@ class ProfileDocumentPdf extends fpdf
         }
 
         /** Guarda contra un bucle de hojas vacías si una sola fila fuera más alta que la hoja. */
-        if ($this->rows_on_page > 0 && $this->y + $row_height > self::ITEMS_BOTTOM_Y) {
+        if ($this->rows_on_page > 0 && $this->y + $row_height > $this->limite_de_renglones) {
             $this->AddPage();
             $this->SetFont('Arial', '', 8);
         }
@@ -402,7 +596,7 @@ class ProfileDocumentPdf extends fpdf
 
         $this->x = $this->start_x;
         $this->y = $start_y + $row_height;
-        $this->Line($this->start_x, $this->y, 210 - $this->start_x, $this->y);
+        $this->Line($this->start_x, $this->y, $this->fin_de_renglon, $this->y);
         $this->rows_on_page++;
     }
 
@@ -464,6 +658,12 @@ class ProfileDocumentPdf extends fpdf
      */
     private function print_closing_blocks()
     {
+        if (! is_null($this->diseno)) {
+            $this->print_pie_con_diseno();
+
+            return;
+        }
+
         $with_total = count($this->get_totals_rows()) > 0;
 
         /**
