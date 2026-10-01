@@ -225,6 +225,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Devolciones
     Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
+    Route::get('devoluciones/search-provider-order/{num}', 'DevolucionesController@search_provider_order');
     Route::post('devoluciones/', 'DevolucionesController@store');
 
 

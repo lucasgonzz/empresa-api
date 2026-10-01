@@ -117,6 +117,19 @@ class PdfColumnProfileController extends Controller
              */
             'show_total_in_footer' => (bool) $request->input('show_total_in_footer', true),
             /**
+             * Flag para mostrar/ocultar la línea "Sub Total" del pie. Default true (el default de la
+             * migración). Se persistía SOLO por la columna: el formulario lo mandaba y este
+             * controlador lo descartaba en silencio, así que el checkbox "Mostrar Sub Total en el pie"
+             * no hacía nada (misión pdf-presupuestos-y-pedidos-personalizables, que lo expone también
+             * para presupuestos y pedidos online).
+             */
+            'show_subtotal_in_footer' => (bool) $request->input('show_subtotal_in_footer', true),
+            /**
+             * Imprimir la fecha actual en vez de la del comprobante. Default false. Antes solo
+             * entraba por update(): un diseño creado con la casilla tildada la perdía.
+             */
+            'use_current_date' => (bool) $request->input('use_current_date', false),
+            /**
              * Modo de listado de descuentos/recargos en el pie: 'descriptivo' (monto + % + total parcial,
              * comportamiento actual) o 'simple' (solo % + nombre). Default 'descriptivo' si no se envía.
              */
@@ -217,6 +230,7 @@ class PdfColumnProfileController extends Controller
             'show_client_description',
             'footer_text',
             'show_total_in_footer',
+            'show_subtotal_in_footer',
             'discount_display_mode',
             'use_current_date',
             'header_image_url',
@@ -459,6 +473,7 @@ class PdfColumnProfileController extends Controller
             'show_client_description' => 'mostrar observaciones del cliente',
             'footer_text' => 'pie de página',
             'show_total_in_footer' => 'mostrar total en el pie',
+            'show_subtotal_in_footer' => 'mostrar sub total en el pie',
             'table_header_font_size' => 'tamaño de letra del encabezado de columnas',
             'catalog_header_layout' => 'diseño del encabezado del catálogo',
             'pdf_column_options' => 'opciones de columnas',
@@ -500,6 +515,7 @@ class PdfColumnProfileController extends Controller
             'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
+            'show_subtotal_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
             /** Sin tipo: puede llegar array o string JSON; CatalogHeaderLayoutHelper::normalize() resuelve. */
             'catalog_header_layout' => ['sometimes', 'nullable'],
@@ -550,6 +566,7 @@ class PdfColumnProfileController extends Controller
             'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
+            'show_subtotal_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
             /** Sin tipo: puede llegar array o string JSON; CatalogHeaderLayoutHelper::normalize() resuelve. */
             'catalog_header_layout' => ['sometimes', 'nullable'],

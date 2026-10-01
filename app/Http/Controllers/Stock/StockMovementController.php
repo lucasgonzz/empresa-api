@@ -221,6 +221,11 @@ class StockMovementController extends Controller
                 // Act. Compra a proveedor
                 || $concepto->name == 'Act Compra a proveedor'
                 || $concepto->name == 'Eliminacion Compra a proveedor'
+                // Devolución de compra (misión devoluciones-compras-y-rediseno, 1/10/2026): la nota
+                // de crédito a proveedor se carga en la MISMA unidad que la compra (bultos), así
+                // que sale del stock con la misma conversión con la que entró. Sin esto, devolver
+                // 1 caja de 12 sacaba 1 unidad y dejaba 11 en el stock que ya no están.
+                || $concepto->name == 'Nota de credito proveedor'
             ) {
                 $amount *= $article->unidades_individuales;
             }
