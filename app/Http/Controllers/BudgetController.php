@@ -90,6 +90,29 @@ class BudgetController extends Controller
             ], 422);
         }
 
+        /*
+         * El cobro de un presupuesto "de contado" (mision presupuesto-contado-o-cuenta-corriente,
+         * 1/10/2026). Mismo lugar y mismo criterio que el 422 de la lista de precios de arriba: ANTES
+         * de la transaccion, para que un rechazo no consuma numero de presupuesto ni deje nada que
+         * revertir.
+         *
+         * `validar_request()` es V1 (metodo de pago real), V2 (cajas existentes y abiertas), V3 (el
+         * reparto suma el total) y V4 (sin endosos). Para un request que NO es de contado --la SPA
+         * vieja, el asistente de IA, cualquier alta a cuenta corriente-- devuelve null sin una sola
+         * consulta. La regla de "de contado" vive en un solo lugar: `BudgetCobroHelper`.
+         */
+        $cobro_invalido = BudgetCobroHelper::validar_request($request);
+
+        if (!is_null($cobro_invalido)) {
+
+            Log::info('store budget: rechazado por cobro invalido (user_id '.$this->userId().', client_id '.$request->client_id.'): '.$cobro_invalido['message']);
+
+            return response()->json($cobro_invalido, 422);
+        }
+
+        // null = cuenta corriente (lo de siempre); un array = de contado, con su reparto.
+        $filas_de_cobro = BudgetCobroHelper::filas_del_request($request);
+
         DB::beginTransaction();
 
         try {
@@ -102,7 +125,7 @@ class BudgetController extends Controller
             */
             CuentaCorrienteLock::bloquear('client', $request->client_id);
 
-            $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+            $model = Budget::create(CobroPresupuestoEsquemaHelper::agregar_al_payload(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                       => $this->num('budgets'),
                 'client_id'                 => $request->client_id,
                 'start_at'                  => $request->start_at,
@@ -130,20 +153,25 @@ class BudgetController extends Controller
                 'moneda_id'                 => !is_null($request->moneda_id) ? $request->moneda_id : 1,
                 'valor_dolar'               => $request->valor_dolar,
                 /*
-                 * 🔴 Un presupuesto NO se puede omitir de la cuenta corriente: al confirmarlo, la
-                 * venta va SIEMPRE a la cuenta del cliente (decision de Lucas, 18/9/2026, tanda 3
-                 * de la mision vender-lista-obligatoria). Se fija 0 pase lo que mande el request
-                 * --la SPA manda 0 desde esa fecha, y una SPA vieja podia mandar el 1 que tuviera
-                 * el store de Vender-- y `BudgetHelper::saveSale()` escribe 0 en la venta. La
-                 * columna queda por compatibilidad (existe desde marzo de 2026 y es NOT NULL).
+                 * 🔴 SOLO SE HONRA UN "OMITIR" JUNTO CON UN REPARTO DE METODOS DE PAGO (mision
+                 * presupuesto-contado-o-cuenta-corriente, 1/10/2026). Esto levanta PARCIALMENTE la
+                 * decision de Lucas del 18/9/2026 ("un presupuesto va SIEMPRE a la cuenta corriente",
+                 * tanda 3 de la mision vender-lista-obligatoria).
                  *
-                 * Por que no se honra un "omitir" en el presupuesto: la confirmacion desde el
-                 * listado no trae ningun dato de cobro, y una venta de contado sin metodo de pago
-                 * ni movimiento de caja es justo lo que `SaleController::store()` rechaza con el
-                 * 422 `sin_metodo_de_pago`. El cobro de un presupuesto confirmado se registra como
-                 * pago sobre la cuenta corriente del cliente.
+                 * Aquella decision se tomo porque el presupuesto no guardaba ningun dato de cobro: la
+                 * venta que nacia al confirmarlo desde el listado quedaba "de contado" sin metodo de
+                 * pago ni movimiento de caja, que es justo lo que `SaleController::store()` rechaza con
+                 * el 422 `sin_metodo_de_pago`. Ahora el presupuesto GUARDA el reparto
+                 * (`selected_payment_methods`, mas abajo) y la venta lo recibe al confirmar, asi que
+                 * esa causa desaparecio.
+                 *
+                 * Lo que NO cambia, y es lo que impide "simplificar" esto de vuelta a `$request->omitir...`:
+                 * un 1 SIN reparto --una SPA vieja que arrastra el toggle del store de Vender-- sigue
+                 * guardando 0. La regla (omitir Y al menos una fila Y la columna existe) esta en
+                 * `BudgetCobroHelper::es_de_contado_request()`; se evalua UNA vez, antes de la
+                 * transaccion, y el resultado es el `$filas_de_cobro` de arriba.
                  */
-                'omitir_en_cuenta_corriente' => 0,
+                'omitir_en_cuenta_corriente' => !is_null($filas_de_cobro) ? 1 : 0,
                 'employee_id'               => $this->userId(false),
                 'user_id'                   => $this->userId(),
             /*
@@ -160,8 +188,12 @@ class BudgetController extends Controller
              * los archivos ANTES de migrar, y en esa ventana `Budget` —que declara `$guarded = []`—
              * mandaria la columna en el INSERT aunque valga null, tumbando el alta de TODO
              * presupuesto. Ver `ForzarTotalEsquemaHelper`.
+             *
+             * 🔴 Y el reparto de metodos de pago (`selected_payment_methods`; null = cuenta corriente)
+             * entra por SU guarda, la de afuera: mismo motivo, otra columna. Ver
+             * `CobroPresupuestoEsquemaHelper`, que lista los puntos de escritura.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'), $filas_de_cobro));
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
             GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
@@ -198,6 +230,18 @@ class BudgetController extends Controller
             DB::commit();
 
             return response()->json(['model' => $this->fullModel('Budget', $model->id)], 201);
+
+        } catch(CobroDePresupuestoInvalidoException $e) {
+
+            /*
+             * Un presupuesto que NACE confirmado (estado 2 en el alta) con un cobro de contado crea la
+             * venta adentro de esta transaccion, y `saveSale()` re-valida el cobro. Ya se valido antes
+             * de abrirla, asi que solo puede saltar por una carrera (la caja se cerro en el medio).
+             * Va ANTES del `catch (\Throwable)`: es una respuesta del negocio, no un fallo.
+             */
+            DB::rollBack();
+
+            return response()->json($e->getCuerpo(), 422);
 
         } catch(\Throwable $e) {
 
@@ -413,6 +457,59 @@ class BudgetController extends Controller
         }
 
         /*
+            El cobro del presupuesto: cuenta corriente o de contado con su reparto (mision
+            presupuesto-contado-o-cuenta-corriente, 1/10/2026). Mismo patron que `price_type_id` y
+            `valor_dolar` de arriba: la CLAVE AUSENTE no es lo mismo que la clave en 0.
+
+              - Clave `omitir_en_cuenta_corriente` PRESENTE = quien manda el request sabe de cobros
+                (la SPA nueva, que la manda siempre, junto con `selected_payment_methods`). Se valida
+                (V1 a V3, 422 antes de escribir nada) y el presupuesto queda de contado si el request
+                lo pide --omitir Y al menos una fila--, o a cuenta corriente y SIN reparto si no. Una
+                SPA vieja que edita (PUT con omitir en 0 y sin reparto) un presupuesto de contado lo
+                pasa a cuenta corriente: es el lado conservador, nunca deja plata sin registrar.
+
+              - Clave AUSENTE = el form generico del modulo Presupuestos u otra SPA que no sabe de
+                cobros. Se PRESERVAN los dos valores guardados: sin esto, cualquier edicion de un campo
+                cualquiera (una observacion) pasaria a cuenta corriente un presupuesto cobrado de
+                contado, y el cobro que el vendedor armo se perderia en silencio.
+
+                Lo unico que se normaliza es el `omitir` suelto: un presupuesto con un 1 viejo y SIN
+                reparto (el residuo de la tanda 2 del 18/9/2026, o una SPA que mando el toggle) vuelve
+                a 0, como siempre. Por eso el valor que queda NO es "lo guardado" sino
+                `es_de_contado($model)`.
+
+                ⚠️ Con la clave ausente y un presupuesto de contado, NO se valida nada aca: el request
+                no habla del cobro. Si esa edicion cambio los renglones, el reparto guardado puede
+                haber quedado con un total viejo, y lo atrapa `validar_para_confirmar()` al confirmar
+                (422, "Volvé a repartir"), que es el momento en que el cobro importa.
+
+            Va ANTES de la transaccion, igual que los 422 de arriba: es una respuesta, no un fallo.
+        */
+        $actualizar_cobro = $request->exists('omitir_en_cuenta_corriente');
+
+        $filas_de_cobro_que_quedan = null;
+
+        if ($actualizar_cobro) {
+
+            $cobro_invalido = BudgetCobroHelper::validar_request($request);
+
+            if (!is_null($cobro_invalido)) {
+
+                Log::info('update budget id '.$id.': rechazado por cobro invalido: '.$cobro_invalido['message']);
+
+                return response()->json($cobro_invalido, 422);
+            }
+
+            $filas_de_cobro_que_quedan = BudgetCobroHelper::filas_del_request($request);
+
+            $omitir_que_queda = !is_null($filas_de_cobro_que_quedan) ? 1 : 0;
+
+        } else {
+
+            $omitir_que_queda = BudgetCobroHelper::es_de_contado($model) ? 1 : 0;
+        }
+
+        /*
             🔴 TODO LO QUE SIGUE ES UNA SOLA TRANSACCION (tanda 2 de la mision
             vender-lista-obligatoria, 18/9/2026, item A1). Hasta hoy este metodo era el unico de la
             clase sin `DB::beginTransaction()` ni try/catch: store(), duplicate(), confirmar() y
@@ -479,12 +576,24 @@ class BudgetController extends Controller
                 $model->price_type_id         = $price_type_id_nuevo;
             }
             /*
-                Un presupuesto no se puede omitir de la cuenta corriente (decision de Lucas,
-                18/9/2026): en la edicion se fija 0 pase lo que mande el request, igual que en el
-                alta. Hasta la tanda 2 de la mision la clave ni se guardaba; en la tanda 2 se guardo
-                con `exists()`, y en la tanda 3 quedo asi.
+                Cuenta corriente (0) o de contado (1), ya resuelto y validado antes de la transaccion
+                (ver "El cobro del presupuesto" arriba). Hasta la mision presupuesto-contado-o-cuenta-
+                corriente (1/10/2026) esto fijaba 0 pase lo que mandara el request (decision de
+                Lucas, 18/9/2026, "un presupuesto no se omite"); sigue siendo 0 salvo que el request
+                traiga ademas un reparto de metodos de pago.
             */
-            $model->omitir_en_cuenta_corriente = 0;
+            $model->omitir_en_cuenta_corriente = $omitir_que_queda;
+
+            /*
+                El reparto, SOLO si el request hablo del cobro (clave presente): con la clave ausente
+                el guardado no se toca. null = sin reparto (pasa a cuenta corriente). Por la guarda de
+                esquema: entre que el deploy sube los archivos y corre las migraciones la columna puede
+                no existir, y esta asignacion tumbaria la edicion de cualquier presupuesto. Ver
+                `CobroPresupuestoEsquemaHelper`.
+            */
+            if ($actualizar_cobro) {
+                CobroPresupuestoEsquemaHelper::asignar_al_modelo($model, $filas_de_cobro_que_quedan);
+            }
 
             $model->surchages_in_services     = $request->surchages_in_services;
             $model->discounts_in_services     = $request->discounts_in_services;
@@ -564,6 +673,19 @@ class BudgetController extends Controller
             */
             $this->sendAddModelNotification('Budget', $model->id);
             return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+
+        } catch (CobroDePresupuestoInvalidoException $e) {
+
+            /*
+                Este PUT confirmo un presupuesto de contado (el estado cambio) y su cobro guardado ya
+                no sirve --tipicamente, la clave `omitir_en_cuenta_corriente` no viajo, se preservo un
+                reparto viejo y los renglones nuevos ya no suman--. Rollback completo (renglones y
+                campos vuelven a como estaban) y 422 con el cuerpo de la validacion, no 500. Ver
+                `confirmar()`, que tiene el mismo catch por el mismo motivo.
+            */
+            DB::rollBack();
+
+            return response()->json($e->getCuerpo(), 422);
 
         } catch (\Throwable $e) {
 
@@ -664,6 +786,25 @@ class BudgetController extends Controller
             $this->sendAddModelNotification('Budget', $model->id);
 
             return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+
+        } catch(CobroDePresupuestoInvalidoException $e) {
+
+            /*
+                🔴 El cobro guardado en un presupuesto "de contado" ya no se puede aplicar (mision
+                presupuesto-contado-o-cuenta-corriente, 1/10/2026): la caja se cerro, el metodo de pago
+                se borro o el presupuesto se edito por otro camino y su reparto quedo con un total
+                viejo. `BudgetHelper::saveSale()` lo detecta ANTES de crear la venta, pero el
+                `save()` del estado "Confirmado" de arriba ya corrio: el rollback es lo que deja el
+                presupuesto sin confirmar, sin venta y sin stock descontado.
+
+                422 con el cuerpo de la validacion (`cobro_invalido`, y `caja_cerrada` o
+                `sin_metodo_de_pago`) y no 500: es una respuesta del negocio, no un fallo, y no hay
+                nada que reportar. Va ANTES del `catch (\Throwable)` de abajo, que lo trataria como un
+                fallo comun.
+            */
+            DB::rollBack();
+
+            return response()->json($e->getCuerpo(), 422);
 
         } catch(\Throwable $e) {
 
@@ -767,25 +908,6 @@ class BudgetController extends Controller
             $this->sendAddModelNotification('Budget', $model->id);
 
             return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
-
-        } catch(CobroDePresupuestoInvalidoException $e) {
-
-            /*
-                🔴 El cobro guardado en un presupuesto "de contado" ya no se puede aplicar (mision
-                presupuesto-contado-o-cuenta-corriente, 1/10/2026): la caja se cerro, el metodo de pago
-                se borro o el presupuesto se edito por otro camino y su reparto quedo con un total
-                viejo. `BudgetHelper::saveSale()` lo detecta ANTES de crear la venta, pero el
-                `save()` del estado "Confirmado" de arriba ya corrio: el rollback es lo que deja el
-                presupuesto sin confirmar, sin venta y sin stock descontado.
-
-                422 con el cuerpo de la validacion (`cobro_invalido`, y `caja_cerrada` o
-                `sin_metodo_de_pago`) y no 500: es una respuesta del negocio, no un fallo, y no hay
-                nada que reportar. Va ANTES del `catch (\Throwable)` de abajo, que lo trataria como un
-                fallo comun.
-            */
-            DB::rollBack();
-
-            return response()->json($e->getCuerpo(), 422);
 
         } catch(\Throwable $e) {
 
