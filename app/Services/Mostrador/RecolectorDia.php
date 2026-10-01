@@ -273,6 +273,10 @@ class RecolectorDia extends RecolectorBase
             ->where('current_acounts.user_id', $owner->id)
             ->where('current_acounts.status', 'nota_credito')
             ->whereNotNull('current_acounts.haber')
+            // Solo devoluciones de VENTA: una NC a proveedor (provider_id cargado, misión
+            // devoluciones-compras-y-rediseno, 1/10/2026) no es una devolución de un cliente, y su
+            // costo no tiene que restar del costo de lo vendido.
+            ->whereNull('current_acounts.provider_id')
             ->whereBetween('current_acounts.created_at', [$inicio, $fin])
             ->whereRaw(
                 '(CASE WHEN credit_accounts.id IS NOT NULL THEN COALESCE(credit_accounts.moneda_id, ?) ELSE COALESCE(current_acounts.moneda_id, ?) END) <> 2',

@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\Budget\BudgetDuplicarHelper;
 use App\Http\Controllers\Helpers\Budget\CobroPresupuestoEsquemaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
@@ -17,9 +18,11 @@ use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
+use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Budget;
 use App\Models\Client;
 use App\Models\Sale;
+use App\Services\PdfColumnService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Exception;
@@ -977,11 +980,44 @@ class BudgetController extends Controller
         return response(null);
     }
 
-    function pdf($id, $with_prices, $with_images) {
+    function pdf(Request $request, $id, $with_prices, $with_images) {
         $budget = Budget::find($id);
 
         if (is_null($budget)) {
             abort(404);
+        }
+
+        /**
+         * Diseño de PDF (`?pdf_column_profile_id=`): SOLO con ese parámetro se imprime con
+         * `ProfileDocumentPdf`. Sin él, el PDF es el de siempre (`BudgetPdf`), sin ningún cambio:
+         * los links de WhatsApp que ya recibieron los clientes y las pestañas viejas de la SPA no
+         * mandan el parámetro y tienen que seguir imprimiendo lo mismo. En la rama del diseño,
+         * `with_prices` y `with_images` se ignoran: el diseño manda.
+         *
+         * El perfil se busca con el dueño DEL PRESUPUESTO y nunca con el usuario logueado (la ruta
+         * es pública por id): un id de otro dueño o inexistente cae al default del dueño, y si el
+         * dueño no tiene ningún diseño de presupuesto todavía, al PDF de siempre.
+         */
+        if ($request->filled('pdf_column_profile_id')) {
+
+            $profile = PdfColumnService::get_profile_for_print(
+                $budget->user_id,
+                'budget',
+                $request->query('pdf_column_profile_id'),
+                null
+            );
+
+            if ($profile) {
+                /**
+                 * Si el diseño falla al dibujarse, `try_render()` devuelve null (y deja el error en
+                 * el log) y se cae al PDF de siempre: este link lo abre el cliente final por WhatsApp.
+                 */
+                $pdf = ProfileDocumentPdf::try_render(new BudgetPdfDocument($budget), $profile);
+
+                if ($pdf) {
+                    $pdf->emit();
+                }
+            }
         }
 
         $pdf = new BudgetPdf($budget, $with_prices, $with_images);

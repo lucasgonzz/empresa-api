@@ -281,11 +281,16 @@ class VenderController extends Controller
         // el helper para reusar la misma logica que usa el buscador general con contexto Vender.
         $bar_code_condition = VenderSearchHelper::bar_code_condition_callback();
 
-        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender, $bar_code_condition) {
+        // Extension de `name` con la descripcion de las variantes (null sin la extension
+        // `article_variants`). Mismo callback que usa el buscador general con contexto Vender, para
+        // que las dos rutas devuelvan lo mismo.
+        $variant_condition = VenderSearchHelper::variant_description_condition_callback();
+
+        $articles->where(function ($query_builder) use ($keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender, $bar_code_condition, $variant_condition) {
                             if (count($keywords) === 1) {
                                 $keyword = $keywords[0];
 
-                                $query_builder->where(function ($q) use ($keyword, $keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender, $bar_code_condition) {
+                                $query_builder->where(function ($q) use ($keyword, $keywords, $from_provider_order_or_recipe, $search_descripcion_en_vender, $search_bar_code_en_vender, $bar_code_condition, $variant_condition) {
                                     $q->where('name', 'LIKE', "%$keyword%")
                                       ->orWhere('provider_code', 'LIKE', "%$keyword%");
 
@@ -305,10 +310,15 @@ class VenderController extends Controller
 
                                         $bar_code_condition($q, $keywords);
                                     }
+
+                                    // Extension de `name` con las variantes (ultima alternativa del OR).
+                                    if ($variant_condition) {
+                                        $variant_condition($q, $keyword);
+                                    }
                                 });
                             } else {
                                 foreach ($keywords as $keyword) {
-                                    $query_builder->where(function ($q) use ($keyword, $search_descripcion_en_vender, $search_bar_code_en_vender) {
+                                    $query_builder->where(function ($q) use ($keyword, $search_descripcion_en_vender, $search_bar_code_en_vender, $variant_condition) {
                                         $q->where('name', 'LIKE', "%$keyword%")
                                             ->orWhere('provider_code', 'LIKE', "%$keyword%");
 
@@ -322,6 +332,11 @@ class VenderController extends Controller
                                             $q->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
                                                 $variant_query->where('bar_code', 'LIKE', "%$keyword%");
                                             });
+                                        }
+
+                                        // Extension de `name` con las variantes (ultima alternativa del OR).
+                                        if ($variant_condition) {
+                                            $variant_condition($q, $keyword);
                                         }
                                     });
                                 }

@@ -21,7 +21,10 @@ class NotaCreditoController extends Controller
         $models = $this->notas_credito_query($from_date, $until_date)
             // 'client' agregado (grupo 332, 4/8/2026): el front lee la relacion embebida en vez
             // de buscar en el store, que no descarga el catalogo completo de clientes.
-            ->with('afip_ticket.afip_errors', 'afip_ticket.afip_observations', 'sale', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions', 'client')
+            // 'provider' agregado (misión devoluciones-compras-y-rediseno, 1/10/2026): una NC a
+            // proveedor (devolución de compra) no tiene cliente, y el listado tiene que poder
+            // mostrar a quién se le hizo. Aditivo: el front que no lo lee no se entera.
+            ->with('afip_ticket.afip_errors', 'afip_ticket.afip_observations', 'sale', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions', 'client', 'provider')
             ->get();
 
         return response()->json(['models' => $models], 200);

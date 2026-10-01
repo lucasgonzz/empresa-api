@@ -45,7 +45,7 @@ class NotaCreditoPdf extends fpdf {
 	function getModelProps() {
 		return [
 			[
-				'text' 	=> 'Cliente',
+				'text' 	=> $this->es_de_proveedor() ? 'Proveedor' : 'Cliente',
 				'key'	=> 'name',
 			],
 			[
@@ -59,6 +59,18 @@ class NotaCreditoPdf extends fpdf {
 		];
 	}
 
+	/**
+	 * Si la nota de crédito es a un PROVEEDOR (devolución de compra, o la NC de monto libre desde
+	 * la cuenta corriente del proveedor): el PDF muestra al proveedor y no un "Cliente" vacío.
+	 * Misión devoluciones-compras-y-rediseno, 1/10/2026. Toda NC a proveedor tiene `provider_id`
+	 * (ver NotaCreditoProveedorHelper), y una NC de cliente nunca lo tiene.
+	 *
+	 * @return bool
+	 */
+	function es_de_proveedor() {
+		return !is_null($this->model->provider_id);
+	}
+
 	function Header() {
 		$data = [
 			'num' 				=> $this->model->num_receipt,
@@ -67,7 +79,7 @@ class NotaCreditoPdf extends fpdf {
 			'titulo'			=> $this->model->user->company_name,
 			'title_font_size'	=> 12,
 			'title_height'		=> 5,
-			'model_info'		=> $this->model->client,
+			'model_info'		=> $this->es_de_proveedor() ? $this->model->provider : $this->model->client,
 			'model_props' 		=> $this->getModelProps(),
 			// 'fields' 			=> $this->getFields(),
 		];

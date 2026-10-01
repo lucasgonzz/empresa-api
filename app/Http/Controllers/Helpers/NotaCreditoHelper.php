@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoProveedorHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use Illuminate\Support\Facades\DB;
@@ -30,6 +31,18 @@ class NotaCreditoHelper {
 	 * @return void
 	 */
 	static function resetUnidadesDevueltas($nota_credito) {
+
+		/*
+			NC a PROVEEDOR (devolución de compra, misión devoluciones-compras-y-rediseno,
+			1/10/2026): no tiene venta, así que el camino de abajo no hacía nada y borrar la NC
+			dejaba el stock como si la mercadería se hubiera devuelto. Su gemelo vuelve a meter en
+			el stock lo que la NC sacó. Una NC de cliente nunca tiene provider_id.
+		*/
+		if (!is_null($nota_credito->provider_id)) {
+			NotaCreditoProveedorHelper::deshacer_stock($nota_credito);
+			return;
+		}
+
 		if (!is_null($nota_credito->sale) && count($nota_credito->articles) >= 1) {
 			$sale = $nota_credito->sale;
 			foreach ($nota_credito->articles as $article_nota_credito) {

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -16,6 +17,9 @@ class UpdateVariantsStockHelper {
         $this->article = Article::find($article_id);
 
         $this->variants_to_update = $variants_to_update;
+
+        // Deposito que se esta procesando (null cuando se actualiza el stock GLOBAL de la variante).
+        $this->address = null;
     }
 
     function update_variants() {
@@ -26,7 +30,20 @@ class UpdateVariantsStockHelper {
 
             $this->variant = $variant;
 
-            foreach ($variant['addresses'] as $address) {
+            // Negocio sin sucursales: la variante manda `stock` (global) y no manda depositos.
+            // Es un campo opcional: un SPA viejo nunca lo manda y sigue por el camino de depositos.
+            if ($this->es_stock_global($variant)) {
+
+                $this->actualizar_stock_global($segundos);
+
+                $segundos += 5;
+
+                continue;
+            }
+
+            $addresses = isset($variant['addresses']) ? $variant['addresses'] : [];
+
+            foreach ($addresses as $address) {
                 
                 $this->address = $address;
 
@@ -59,6 +76,62 @@ class UpdateVariantsStockHelper {
         }
     }
 
+    /**
+     * Indica si el item de la lista trae el stock GLOBAL de la variante (negocio sin sucursales).
+     *
+     * Es global cuando viene `stock` con un valor y no viene ningun deposito. Si trae depositos
+     * manda el camino de siempre (stock por deposito), aunque ademas traiga `stock`.
+     *
+     * @param array $variant Item de variants_to_update: {id, addresses?, stock?}.
+     * @return bool
+     */
+    function es_stock_global($variant) {
+
+        if (!array_key_exists('stock', $variant) || is_null($variant['stock']) || $variant['stock'] === '') {
+            return false;
+        }
+
+        return empty($variant['addresses']);
+    }
+
+    /**
+     * Lleva el stock global de la variante al valor pedido, generando un movimiento por la
+     * diferencia (nunca se escribe `article_variants.stock` a mano: lo mueve CheckVariants).
+     *
+     * Si la variante ya reparte por depositos no se toca: el stock de una variante con depositos
+     * es la suma de sus depositos y un movimiento global quedaria pisado por esa suma.
+     *
+     * @param int $segundos Segundos a sumar al created_at para que los movimientos del lote queden ordenados.
+     * @return void
+     */
+    function actualizar_stock_global($segundos) {
+
+        $article_variant = ArticleVariant::where('id', $this->variant['id'])
+                                            ->where('article_id', $this->article->id)
+                                            ->with('addresses')
+                                            ->first();
+
+        if (is_null($article_variant)) {
+
+            Log::warning('UpdateVariantsStockHelper: la variante '.$this->variant['id'].' no pertenece al articulo '.$this->article->id.'. No se toca el stock.');
+
+            return;
+        }
+
+        if (count($article_variant->addresses) >= 1) {
+
+            Log::info('UpdateVariantsStockHelper: la variante '.$article_variant->id.' reparte por depositos, se ignora el stock global.');
+
+            return;
+        }
+
+        $this->address = null;
+
+        $diferencia = (float)$this->variant['stock'] - (float)$article_variant->stock;
+
+        $this->guardar_stock_movement($diferencia, $segundos);
+    }
+
     function guardar_stock_movement($amount, $segundos) {
 
         if ($amount != 0) {
@@ -73,14 +146,21 @@ class UpdateVariantsStockHelper {
 
             $data['amount'] = $amount;
 
-            $data['to_address_id'] = $this->address['id'];
+            // Sin deposito (stock global de la variante) el movimiento no lleva to_address_id.
+            if (!is_null($this->address)) {
+                $data['to_address_id'] = $this->address['id'];
+            }
 
             // $data['employee_id'] = UserHelper::user(false)->id;
 
             $data['concepto_stock_movement_name'] = 'Actualizacion de deposito';
-            
+
             Log::info('*************');
-            Log::info('Act de depositos para address '.$this->address['id'].' con '.$amount);
+            if (!is_null($this->address)) {
+                Log::info('Act de depositos para address '.$this->address['id'].' con '.$amount);
+            } else {
+                Log::info('Act de stock global de la variante '.$this->variant['id'].' con '.$amount);
+            }
 
             $ct_stock_movement->crear($data, false, null, null, $segundos);
             Log::info('*************');

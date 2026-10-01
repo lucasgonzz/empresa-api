@@ -496,11 +496,18 @@ class SearchController extends Controller
         // para que quede DENTRO del mismo grupo de coincidencia de texto (no como un AND aparte).
         $extra_text_conditions = $usar_contexto_vender ? VenderSearchHelper::bar_code_condition_callback() : null;
 
+        // Extension de la propiedad `name` con la descripcion de las variantes (mision
+        // busqueda-vender-por-variantes, 1/10/2026): "zapatilla azul" encuentra el articulo
+        // "Zapatilla" con variantes "azul 35" y "azul 36". Solo con contexto Vender valido, y el
+        // helper devuelve null si el comercio no tiene la extension `article_variants`: en ese caso
+        // el SQL queda exactamente como antes.
+        $name_extension_condition = $usar_contexto_vender ? VenderSearchHelper::variant_description_condition_callback() : null;
+
         // Grupo de coincidencia de texto (props + relaciones, con su keyword_mode y el conector),
         // delegado en GlobalSearchQueryHelper. Reemplaza el armado inline que antes mezclaba OR de
         // props con AND de palabras adentro de cada una (ver PHPDoc del helper para la lógica de
         // los dos modos y su combinación).
-        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions);
+        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions, $name_extension_condition);
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',

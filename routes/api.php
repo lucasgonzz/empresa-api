@@ -225,6 +225,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Devolciones
     Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
+    Route::get('devoluciones/search-provider-order/{num}', 'DevolucionesController@search_provider_order');
     Route::post('devoluciones/', 'DevolucionesController@store');
 
 
@@ -520,6 +521,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::patch('client/{id}/phone', 'ClientController@update_phone');
 
     Route::resource('seller', 'SellerController');
+    // Los números del modal "Sincronizar artículos" del margen de una lista (la sincronización
+    // viaja en el PUT del resource, clave `sincronizar_margen`). Misión sincronizar-margen-lista-precios.
+    Route::get('price-type/{id}/sincronizar-margen/preview', 'PriceTypeController@sincronizar_margen_preview');
     Route::resource('price-type', 'PriceTypeController');
 
     Route::resource('provider-order', 'ProviderOrderController');
