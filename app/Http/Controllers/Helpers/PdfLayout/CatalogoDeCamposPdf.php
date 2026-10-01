@@ -194,7 +194,7 @@ class CatalogoDeCamposPdf
      *
      * @param string $model_name
      * @param bool   $es_fiscal  is_afip_ticket del perfil.
-     * @return array<int, array<string, mixed>> [{key, zona, nombre, descripcion}]
+     * @return array<int, array<string, mixed>> [{key, zona, nombre, descripcion, redimensionable, cols_min}]
      */
     public static function fijos($model_name, $es_fiscal)
     {
@@ -207,13 +207,24 @@ class CatalogoDeCamposPdf
                 'key' => self::FIJO_AFIP_RECEPTOR,
                 'zona' => 'superior',
                 'nombre' => 'Datos del cliente para ARCA',
-                'descripcion' => 'CUIT o DNI, condición frente al IVA, condición de venta, nombre y domicilio. Lo pide ARCA: se puede mover, pero no sacar.',
+                'descripcion' => 'CUIT o DNI, condición frente al IVA, condición de venta, nombre y domicilio. Lo pide ARCA: se puede mover y cambiar de ancho, pero no sacar.',
+                /**
+                 * Se le cambia el ancho como a los obligatorios de Diseños de Vender ("se mueven pero no
+                 * se sacan", decisión de Lucas del 28/9), desde la mitad de la hoja: más angosto, sus dos
+                 * columnas internas (documento e IVA | nombre y domicilio) no se leen. Así la factura
+                 * también tiene su "cuadrante izquierdo del cliente" con otra caja al lado.
+                 */
+                'redimensionable' => true,
+                'cols_min' => DisenoDePaginaPdf::COLS_MIN_AFIP_RECEPTOR,
             ],
             [
                 'key' => self::FIJO_AFIP_PIE,
                 'zona' => 'pie',
                 'nombre' => 'Importes, QR y CAE de ARCA',
                 'descripcion' => 'El cuadro de importes, el código QR y el CAE de la factura. Lo pide ARCA: se puede mover, pero no sacar.',
+                /** Siempre a lo ancho: el cuadro de importes y el bloque del QR y el CAE no entran más angostos. */
+                'redimensionable' => false,
+                'cols_min' => 12,
             ],
         ];
     }
@@ -252,12 +263,14 @@ class CatalogoDeCamposPdf
             self::def('cliente_documento', 'cliente', 'CUIT o DNI (el que tenga)', 'CUIT/DNI', self::TIPO_TEXTO, '20-12345678-9', 'Sale el CUIT; si el cliente no tiene, el DNI.'),
             self::def('cliente_cuit', 'cliente', 'CUIT', 'CUIT', self::TIPO_TEXTO, '20-12345678-9', $con_cliente),
             self::def('cliente_dni', 'cliente', 'DNI', 'DNI', self::TIPO_TEXTO, '12345678', $con_cliente),
+            self::def('cliente_cuil', 'cliente', 'CUIL', 'CUIL', self::TIPO_TEXTO, '20-12345678-9', $con_cliente),
             self::def('cliente_condicion_iva', 'cliente', 'Condición frente al IVA', 'Condición IVA', self::TIPO_TEXTO, 'Responsable inscripto', $con_cliente),
             self::def('cliente_telefono', 'cliente', 'Teléfono', 'Teléfono', self::TIPO_TEXTO, '11 5555-5555', $con_cliente),
             self::def('cliente_email', 'cliente', 'Email', 'Email', self::TIPO_TEXTO, 'juan@correo.com', $con_cliente),
             self::def('cliente_direccion', 'cliente', 'Dirección', 'Dirección', self::TIPO_TEXTO, 'Av. San Martín 1234', $con_cliente),
             self::def('cliente_localidad', 'cliente', 'Localidad', 'Localidad', self::TIPO_TEXTO, 'Rosario', $con_cliente),
             self::def('cliente_provincia', 'cliente', 'Provincia', 'Provincia', self::TIPO_TEXTO, 'Santa Fe', $con_cliente),
+            self::def('cliente_codigo_postal', 'cliente', 'Código postal (el de su localidad)', 'CP', self::TIPO_TEXTO, '2000', 'Solo si la localidad del cliente tiene código postal.'),
             self::def('cliente_numero', 'cliente', 'Número de cliente', 'N° de cliente', self::TIPO_TEXTO, '154', $con_cliente),
             self::def('cliente_lista_de_precios', 'cliente', 'Lista de precios del cliente', 'Lista del cliente', self::TIPO_TEXTO, 'Mayorista', $con_cliente),
             self::def('cliente_vendedor', 'cliente', 'Vendedor asignado al cliente', 'Vendedor del cliente', self::TIPO_TEXTO, 'Carla Gómez', $con_cliente),
@@ -292,6 +305,14 @@ class CatalogoDeCamposPdf
             self::def('venta_fecha_entrega', 'venta', 'Fecha de entrega', 'Fecha de entrega', self::TIPO_TEXTO, '05/10/2026', 'Solo si la venta tiene fecha de entrega.'),
             self::def('venta_orden_de_compra', 'venta', 'N° de orden de compra', 'Orden de compra', self::TIPO_TEXTO, 'OC-4471', 'Solo si la venta tiene número de orden de compra.'),
             self::def('venta_cantidad_de_unidades', 'venta', 'Cantidad de unidades vendidas', 'Unidades', self::TIPO_TEXTO, '12'),
+            self::def('venta_presupuesto_origen', 'venta', 'Presupuesto del que salió la venta', 'Presupuesto N°', self::TIPO_TEXTO, '318', 'Solo si la venta salió de un presupuesto.'),
+            self::def('venta_pedido_origen', 'venta', 'Pedido online del que salió la venta', 'Pedido N°', self::TIPO_TEXTO, '87', 'Solo si la venta salió de un pedido de la tienda.'),
+            self::def('venta_factura_asociada', 'venta', 'Factura de ARCA de la venta', 'Factura', self::TIPO_TEXTO, 'B 00001-00000027', 'Solo si la venta tiene una factura autorizada (con CAE).'),
+            self::def('venta_cae', 'venta', 'CAE de la factura de la venta', 'CAE', self::TIPO_TEXTO, '76123456789012', 'Solo si la venta tiene una factura autorizada (con CAE).'),
+            self::def('venta_total_facturado', 'venta', 'Total facturado', 'Total facturado', self::TIPO_TEXTO, '$12.500', 'Solo si la venta tiene un total facturado.'),
+            self::def('venta_datos_de_envio', 'venta', 'Datos de envío (los de la etiqueta)', 'Envío', self::TIPO_LISTA, ['Juan Pérez · 11 5555-5555', 'Rosario, Santa Fe (2000)'], 'Solo si la venta tiene datos de envío cargados.'),
+            self::def('venta_en_acopio', 'venta', 'Mercadería en acopio', 'Acopio', self::TIPO_TEXTO, 'Mercadería en acopio', 'Solo si la venta quedó en acopio.'),
+            self::def('venta_incoterms', 'venta', 'Incoterms (exportación)', 'Incoterms', self::TIPO_TEXTO, 'FOB', 'Solo en ventas de exportación con incoterms.'),
             self::def('venta_observaciones', 'venta', 'Observaciones de la venta', 'Observaciones', self::TIPO_TEXTO_LARGO, 'Entregar por la tarde', 'Solo si la venta tiene observaciones.'),
         ];
     }

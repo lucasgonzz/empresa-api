@@ -18,7 +18,7 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
  * ITEM es uno de:
  *   {"tipo": "caja", "id": "caja_1", "cols": 6, "titulo": "Cliente", "estilo": "borde", "campos": [CAMPO, ...]}
  *   {"tipo": "salto_de_fila", "id": "salto_1"}      // lo que sigue arranca en una fila nueva
- *   {"tipo": "fijo", "key": "afip_receptor"}         // solo factura de ARCA, solo en "superior"
+ *   {"tipo": "fijo", "key": "afip_receptor", "cols": 12}   // solo factura de ARCA, solo en "superior"; cols 6..12
  *   {"tipo": "fijo", "key": "afip_pie", "importes": true}   // solo factura de ARCA, solo en "pie"
  *
  * CAMPO:
@@ -52,6 +52,12 @@ class DisenoDePaginaPdf
     const ESTILO_DE_CAJA_POR_DEFECTO = 'borde';
 
     const ALINEACIONES = ['izquierda', 'centro', 'derecha'];
+
+    /**
+     * Ancho mínimo (en columnas) del bloque del cliente de la factura de ARCA. Más angosto, sus dos
+     * columnas internas no se leen. El bloque de importes, QR y CAE va siempre a lo ancho (12).
+     */
+    const COLS_MIN_AFIP_RECEPTOR = 6;
 
     const MAX_ITEMS_POR_ZONA = 24;
     const MAX_CAMPOS_POR_CAJA = 30;
@@ -189,6 +195,7 @@ class DisenoDePaginaPdf
             array_unshift($diseno['superior'], [
                 'tipo' => self::TIPO_FIJO,
                 'key' => CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR,
+                'cols' => 12,
             ]);
         }
 
@@ -386,6 +393,12 @@ class DisenoDePaginaPdf
 
         if ($key === CatalogoDeCamposPdf::FIJO_AFIP_PIE) {
             $fijo['importes'] = array_key_exists('importes', $item) ? (bool) $item['importes'] : true;
+        }
+
+        /** El bloque del cliente de ARCA cambia de ancho (6..12, como los obligatorios de Vender). */
+        if ($key === CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR) {
+            $cols = isset($item['cols']) && is_numeric($item['cols']) ? (int) $item['cols'] : 12;
+            $fijo['cols'] = max(self::COLS_MIN_AFIP_RECEPTOR, min(12, $cols));
         }
 
         return $fijo;
