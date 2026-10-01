@@ -324,6 +324,32 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 El total facturado va en la moneda EN QUE SE FACTURÓ, que no es la de la venta: una venta
+     * en dólares facturada B (WSFE) se facturó en PESOS (AfipImportesCalculator pasa el total con
+     * la cotización, y eso es lo que se suma a total_facturado); con una factura de exportación
+     * (FEX) se facturó en la moneda de la venta.
+     *
+     * @test
+     */
+    public function el_total_facturado_va_en_la_moneda_en_que_se_facturo()
+    {
+        $campo = $this->campo_de_caja('venta_total_facturado');
+
+        $facturada_b = $this->crear_venta_completa(['moneda_id' => 2, 'valor_dolar' => 1000, 'total_facturado' => 2362500]);
+        $this->crear_factura($facturada_b, 'B');
+        $fuente = new CamposDeVentaPdf(Sale::find($facturada_b->id), $this->dueno, false, 'descriptivo');
+        $this->assertSame('$2.362.500', $fuente->valor('venta_total_facturado', $campo), 'USD 2.362,50 a $1.000: se facturaron pesos.');
+
+        $exportada = $this->crear_venta_completa(['moneda_id' => 2, 'valor_dolar' => 1000, 'total_facturado' => 2362.5]);
+        $fex = $this->crear_factura($exportada, 'B');
+        $fex->cbte_letra = 'E';
+        $fex->cbte_tipo = 19;
+        $fex->save();
+        $fuente = new CamposDeVentaPdf(Sale::find($exportada->id), $this->dueno, false, 'descriptivo');
+        $this->assertSame('USD 2.362,50', $fuente->valor('venta_total_facturado', $campo), 'Factura E: en la moneda de la venta.');
+    }
+
+    /**
      * Una venta en dólares imprime la cotización.
      *
      * @test

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\PdfLayout;
 
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
@@ -155,10 +156,7 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
             case 'venta_cae':
                 return $this->factura_asociada() ? self::texto($this->factura_asociada()->cae) : null;
             case 'venta_total_facturado':
-                /** Con el formato de la plata del pie ("Total: $2.362,50"); null o 0 no se imprime. */
-                return (float) $this->sale->total_facturado != 0
-                    ? Numbers::price($this->sale->total_facturado, true, $this->sale->moneda_id)
-                    : null;
+                return $this->total_facturado();
             case 'venta_datos_de_envio':
                 return $this->datos_de_envio();
             case 'venta_en_acopio':
@@ -577,6 +575,33 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
         }
 
         return $this->factura_asociada;
+    }
+
+    /**
+     * `sales.total_facturado` con el formato de la plata del pie, en la moneda EN QUE SE FACTURÓ;
+     * null o 0 no se imprime.
+     *
+     * 🔴 No es la moneda de la venta. Una factura A/B/C (WSFE) se factura en PESOS: AfipWsfeHelper
+     * informa 'PES', AfipImportesCalculator pasa a pesos con la cotización el total de una venta en
+     * dólares, y ese total en pesos es el que se suma a `total_facturado`. Una de exportación (FEX,
+     * AfipFexHelper) suma el total de la venta en SU moneda. Lo decide la misma factura que
+     * nombran venta_factura_asociada y venta_cae (AfipWsHelper::es_de_exportacion()); sin
+     * factura, pesos.
+     *
+     * @return string|null
+     */
+    private function total_facturado()
+    {
+        if ((float) $this->sale->total_facturado == 0) {
+            return null;
+        }
+
+        $factura = $this->factura_asociada();
+        $moneda_id = (! is_null($factura) && AfipWsHelper::es_de_exportacion($factura->cbte_tipo))
+            ? $this->sale->moneda_id
+            : 1;
+
+        return Numbers::price($this->sale->total_facturado, true, $moneda_id);
     }
 
     /**
