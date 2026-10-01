@@ -13,6 +13,32 @@ use Tests\EmpresaTestCase;
 use Tests\Feature\Pdf\Concerns\ComprobantesConDisenoDePagina;
 
 /**
+ * Un SaleLayoutPdf cuyo pie de la ÚLTIMA hoja falla: tira el Footer() que FPDF corre al cerrar el
+ * documento (Close()), y solo ese. Sirve para probar que try_render() cierra el documento adentro
+ * de su respaldo.
+ */
+class SaleLayoutPdfQueFallaAlCerrar extends SaleLayoutPdf
+{
+    /** @var bool FPDF está cerrando el documento. */
+    private $cerrando = false;
+
+    public function Close()
+    {
+        $this->cerrando = true;
+        parent::Close();
+    }
+
+    public function Footer()
+    {
+        if ($this->cerrando) {
+            throw new \RuntimeException('El pie de la última hoja falló.');
+        }
+
+        parent::Footer();
+    }
+}
+
+/**
  * El remito dibujado con un DISEÑO DE PÁGINA (`SaleLayoutPdf`, misión diseno-pdf-configurable,
  * 1/10/2026): cada dato que pidió Lucas aparece en su caja con el MISMO texto que el remito de
  * siempre, los títulos, los tamaños, el texto libre, la hoja elegida, el pie en cada hoja con los
@@ -457,6 +483,27 @@ class Remito_con_diseno_de_pagina_Test extends EmpresaTestCase
             'page_layout' => $this->diseno_de_remito_completo(),
         ]);
         $this->assertNull(SaleLayoutPdf::perfil_con_diseno($venta, $ajeno->id, null, null));
+    }
+
+    /**
+     * 🔴 El respaldo cubre también el CIERRE del documento. Con "pie en cada hoja", el pie de la
+     * última hoja lo dibuja el Footer() que FPDF corre en Close(), y el cierre recién pasaba en el
+     * Output() de emit(), afuera del try de try_render(): si ese pie fallaba, el cliente final se
+     * llevaba un 500 en vez del PDF de siempre. Ahora try_render() cierra adentro y devuelve null.
+     *
+     * @test
+     */
+    public function si_falla_el_pie_de_la_ultima_hoja_try_render_devuelve_null()
+    {
+        $perfil = $this->perfil_de_venta(['show_totals_on_each_page' => true], $this->diseno_de_remito_completo());
+        $venta = $this->crear_venta_completa();
+
+        /** El control: sin la falla, try_render() devuelve el documento ya cerrado y entero. */
+        $sano = SaleLayoutPdf::try_render(Sale::find($venta->id), $perfil, null);
+        $this->assertInstanceOf(SaleLayoutPdf::class, $sano);
+        $this->assertStringEndsWith("%%EOF\n", $sano->Output('S'));
+
+        $this->assertNull(SaleLayoutPdfQueFallaAlCerrar::try_render(Sale::find($venta->id), $perfil, null));
     }
 
     /**

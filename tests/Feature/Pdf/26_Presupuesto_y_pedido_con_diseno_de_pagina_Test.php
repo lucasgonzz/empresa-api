@@ -6,10 +6,36 @@ use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
 use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
+use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Article;
 use Tests\Concerns\DocumentosParaPdf;
 use Tests\EmpresaTestCase;
 use Tests\Feature\Pdf\Concerns\ComprobantesConDisenoDePagina;
+
+/**
+ * Un ProfileDocumentPdf que falla al cerrar el documento: tira el Footer() que FPDF corre en
+ * Close(), y solo ese. Sirve para probar que try_render() cierra adentro de su respaldo.
+ */
+class ProfileDocumentPdfQueFallaAlCerrar extends ProfileDocumentPdf
+{
+    /** @var bool FPDF está cerrando el documento. */
+    private $cerrando = false;
+
+    public function Close()
+    {
+        $this->cerrando = true;
+        parent::Close();
+    }
+
+    public function Footer()
+    {
+        if ($this->cerrando) {
+            throw new \RuntimeException('El cierre del documento falló.');
+        }
+
+        parent::Footer();
+    }
+}
 
 /**
  * El presupuesto y el pedido online dibujados con un DISEÑO DE PÁGINA (`ProfileDocumentPdf` en
@@ -392,6 +418,27 @@ class Presupuesto_y_pedido_con_diseno_de_pagina_Test extends EmpresaTestCase
         }
 
         $this->assertLessThanOrEqual(4, $this->cantidad_de_hojas($pdf));
+    }
+
+    /**
+     * 🔴 El respaldo cubre también el CIERRE del documento: el Footer() de la última hoja y el
+     * cierre de FPDF corren en Close(), que recién pasaba en el Output() de emit(), afuera del try
+     * de try_render(). Ahora try_render() cierra adentro: si el cierre falla, devuelve null y el
+     * controlador cae al PDF de siempre.
+     *
+     * @test
+     */
+    public function si_falla_el_cierre_del_documento_try_render_devuelve_null()
+    {
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $perfil->page_layout = $this->diseno_de_presupuesto();
+
+        /** El control: sin la falla, try_render() devuelve el documento ya cerrado y entero. */
+        $sano = ProfileDocumentPdf::try_render(new BudgetPdfDocument($this->crear_presupuesto_completo()), $perfil);
+        $this->assertInstanceOf(ProfileDocumentPdf::class, $sano);
+        $this->assertStringEndsWith("%%EOF\n", $sano->Output('S'));
+
+        $this->assertNull(ProfileDocumentPdfQueFallaAlCerrar::try_render(new BudgetPdfDocument($this->crear_presupuesto_completo()), $perfil));
     }
 
     /**

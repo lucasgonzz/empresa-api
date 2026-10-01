@@ -312,6 +312,13 @@ class ProfileDocumentPdf extends fpdf
      * Manda el PDF al navegador y termina el proceso. SOLO lo llama el controlador: un test que
      * llegue acá se lleva puesto a PHPUnit (usar `render()` + `Output('S')`).
      *
+     * Con diseño de página, viniendo de try_render() el documento ya está CERRADO (lo cerró su
+     * Output('S'), adentro del respaldo): este Output() no dibuja nada más —el Close() de FPDF no
+     * hace nada con el documento cerrado— y solo manda esos mismos bytes con los headers de FPDF
+     * de siempre (Content-Type: application/pdf; Content-Disposition: inline; filename="doc.pdf";
+     * Cache-Control: private, max-age=0, must-revalidate; Pragma: public). En el modo de siempre
+     * lo cierra este Output(), como antes.
+     *
      * @return void
      */
     public function emit()
@@ -332,8 +339,10 @@ class ProfileDocumentPdf extends fpdf
      * La falla NO se traga: `report()` la manda al log y al registro de errores, así que un diseño
      * que se rompe se entera igual; lo que cambia es que el cliente final no se lleva el 500.
      *
-     * Nada salió al navegador hasta acá: `render()` arma todo en memoria y recién `emit()` llama a
-     * `Output()`. Por eso volver atrás a mitad de camino es seguro.
+     * Nada salió al navegador hasta acá: `render()` y `Output('S')` arman todo en memoria y recién
+     * `emit()` manda los bytes. Por eso volver atrás a mitad de camino es seguro.
+     *
+     * `new static`: un test puede pedirle el respaldo a una subclase que falla a propósito.
      *
      * @param PdfDocumentSource $source  Presupuesto o pedido adaptado.
      * @param PdfColumnProfile  $profile Diseño elegido.
@@ -342,7 +351,7 @@ class ProfileDocumentPdf extends fpdf
     public static function try_render(PdfDocumentSource $source, PdfColumnProfile $profile)
     {
         try {
-            $pdf = new self($source, $profile);
+            $pdf = new static($source, $profile);
 
             /** Un diseño sin ninguna columna visible saldría sin tabla de renglones: mejor el PDF de siempre. */
             if (empty($pdf->profile_columns)) {
@@ -350,6 +359,21 @@ class ProfileDocumentPdf extends fpdf
             }
 
             $pdf->render();
+
+            /**
+             * 🔴 Con diseño de página el documento se CIERRA acá, adentro del try: el Footer() de la
+             * última hoja y el cierre de FPDF corren en Close(), que sin esto recién corría en el
+             * Output() de emit(), afuera de este respaldo (un 500 en vez del PDF de siempre). emit()
+             * solo manda los bytes.
+             *
+             * El modo de siempre (sin `page_layout`) queda como estaba: devuelve la instancia sin
+             * cerrar. Su último Footer() es el vacío de FPDF, y quien recibe la instancia puede
+             * elegir todavía cómo cerrarla (los tests de esa misión le apagan la compresión para
+             * leer el texto).
+             */
+            if (! is_null($pdf->diseno)) {
+                $pdf->Output('S');
+            }
 
             return $pdf;
         } catch (\Throwable $e) {

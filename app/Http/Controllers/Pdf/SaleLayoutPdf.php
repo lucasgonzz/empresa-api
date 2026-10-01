@@ -292,7 +292,9 @@ class SaleLayoutPdf extends fpdf
      * El link de la venta lo abre también el CLIENTE FINAL (WhatsApp, la tienda). Si el diseño
      * tirara una excepción con un dato raro, vería un 500 donde antes veía un PDF: con null, el
      * controlador cae al PDF de siempre. La falla NO se traga: report() la deja en el log.
-     * Nada salió al navegador hasta acá (render() arma todo en memoria).
+     * Nada salió al navegador hasta acá (render() y Output('S') arman todo en memoria).
+     *
+     * `new static`: un test puede pedirle el respaldo a una subclase que falla a propósito.
      *
      * @param \App\Models\Sale $sale
      * @param PdfColumnProfile $perfil
@@ -302,8 +304,17 @@ class SaleLayoutPdf extends fpdf
     public static function try_render($sale, PdfColumnProfile $perfil, $afip_ticket_id = null)
     {
         try {
-            $pdf = new self($sale, $perfil, $afip_ticket_id);
+            $pdf = new static($sale, $perfil, $afip_ticket_id);
             $pdf->render();
+
+            /**
+             * 🔴 El documento se CIERRA acá, adentro del try. El Footer() de la última hoja (el pie
+             * "en cada hoja") y el cierre de FPDF corren en Close(), y sin esto Close() recién corría
+             * en el Output() de emit(), afuera de este respaldo: una excepción ahí era un 500 para
+             * el cliente final en vez del PDF de siempre. Output('S') cierra y deja los bytes
+             * listos; emit() solo los manda.
+             */
+            $pdf->Output('S');
 
             return $pdf;
         } catch (\Throwable $e) {
@@ -358,6 +369,12 @@ class SaleLayoutPdf extends fpdf
     /**
      * Manda el PDF al navegador y termina el proceso. SOLO lo llama el controlador: un test que
      * llegue acá se lleva puesto a PHPUnit (usar `render()` + `Output('S')`).
+     *
+     * Viniendo de try_render() el documento ya está CERRADO (lo cerró su Output('S'), adentro del
+     * respaldo): este Output() no dibuja nada más —el Close() de FPDF no hace nada con el
+     * documento cerrado— y solo manda esos mismos bytes con los headers de FPDF de siempre
+     * (Content-Type: application/pdf; Content-Disposition: inline; filename="doc.pdf";
+     * Cache-Control: private, max-age=0, must-revalidate; Pragma: public).
      *
      * @return void
      */
