@@ -4,8 +4,10 @@ namespace Tests\Feature\Pdf;
 
 use App\Http\Controllers\Helpers\PdfDocument\BudgetPdfDocument;
 use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
+use App\Http\Controllers\Helpers\PdfLayout\CamposDePedidoPdf;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
+use App\Http\Controllers\Pdf\Layout\MotorDeCajasPdf;
 use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Article;
 use Tests\Concerns\DocumentosParaPdf;
@@ -463,6 +465,142 @@ class Presupuesto_y_pedido_con_diseno_de_pagina_Test extends EmpresaTestCase
         $perfil->margin_mm = 5;
 
         $this->assertInstanceOf(ProfileDocumentPdf::class, ProfileDocumentPdf::try_render(new BudgetPdfDocument($this->crear_presupuesto_completo()), $perfil));
+    }
+
+    /**
+     * Un presupuesto largo con 70 renglones de relleno.
+     *
+     * @return \App\Models\Budget
+     */
+    private function presupuesto_largo()
+    {
+        $budget = $this->crear_presupuesto_completo();
+        for ($i = 1; $i <= 70; $i++) {
+            $articulo = Article::create(['name' => 'Renglon de relleno '.$i, 'user_id' => $this->dueno->id]);
+            $budget->articles()->attach($articulo->id, ['amount' => 0, 'price' => 0]);
+        }
+
+        return $budget->fresh();
+    }
+
+    /**
+     * Afirma que $total sale en CADA hoja con la tabla (y solo en esas), que hay más de una, y que
+     * nada se dibuja por debajo de la hoja menos el margen.
+     *
+     * @param string                       $pdf
+     * @param string                       $total
+     * @param \App\Models\PdfColumnProfile $perfil
+     * @return void
+     */
+    private function assertTotalEnCadaHoja($pdf, $total, $perfil)
+    {
+        $hojas = $this->hojas($pdf);
+        $this->assertGreaterThanOrEqual(2, count($hojas), 'El comprobante largo ocupa varias hojas.');
+
+        foreach ($hojas as $numero => $hoja) {
+            $this->assertStringContainsString('('.$total.') Tj', $hoja, 'La hoja '.($numero + 1).' no tiene el Total.');
+        }
+
+        $hoja = MotorDeCajasPdf::geometria_de_la_hoja($perfil);
+        $this->assertNadaDebajoDe($pdf, $hoja['alto_de_hoja'] - $hoja['margen']);
+    }
+
+    /**
+     * 🔴 "Mostrar pie de página en cada hoja" en un presupuesto DISEÑADO: como el remito con cajas,
+     * el pie va en cada hoja con los totales finales (no los acumulados), reservándole su alto.
+     *
+     * @test
+     */
+    public function un_presupuesto_disenado_con_pie_en_cada_hoja_lleva_el_total_en_todas()
+    {
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $perfil->page_layout = $this->diseno_de_presupuesto();
+        $perfil->show_totals_on_each_page = true;
+
+        $pdf = $this->pdf_de_documento(new BudgetPdfDocument($this->presupuesto_largo()), $perfil);
+
+        $this->assertTotalEnCadaHoja($pdf, 'Total: $2.173,50', $perfil);
+        $this->assertSame($this->cantidad_de_hojas($pdf), $this->veces_que_se_dibuja('Presupuesto valido por 10 dias', $pdf), 'Todo el pie, en cada hoja.');
+        $this->assertSame(1, $this->veces_que_se_dibuja('Renglon de relleno 70', $pdf));
+    }
+
+    /**
+     * 🔴 El mismo tilde en un presupuesto que todavía NO se diseñó: el modo de siempre no sabe
+     * repetir el pie, así que se dibuja con el diseño DERIVADO del perfil (el que el diseñador
+     * muestra de arranque), y el Total sale en cada hoja. El tilde no miente.
+     *
+     * @test
+     */
+    public function un_presupuesto_sin_disenar_con_pie_en_cada_hoja_usa_el_derivado_y_lleva_el_total_en_todas()
+    {
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $this->assertNull($perfil->page_layout, 'El perfil sembrado no tiene diseño.');
+        $perfil->show_totals_on_each_page = true;
+
+        $documento = new BudgetPdfDocument($this->presupuesto_largo());
+        $pdf = new ProfileDocumentPdf($documento, $perfil);
+        $this->assertNotNull($pdf->pdf_x0, 'Se dibuja con diseño (el derivado), no con el modo de siempre.');
+
+        $pdf->SetCompression(false);
+        $pdf->render();
+        $binario = $pdf->Output('S');
+
+        $this->assertTotalEnCadaHoja($binario, 'Total: $2.173,50', $perfil);
+        $this->assertSame(1, $this->veces_que_se_dibuja('Renglon de relleno 70', $binario));
+    }
+
+    /**
+     * Y con el tilde apagado, el presupuesto sin diseño sale con el modo de siempre: sin la
+     * geometría del diseño y con el Total UNA vez, en la última hoja.
+     *
+     * @test
+     */
+    public function un_presupuesto_sin_disenar_sin_pie_en_cada_hoja_sale_como_siempre()
+    {
+        $perfil = $this->diseno('budget', 'Presupuesto');
+        $perfil->show_totals_on_each_page = false;
+
+        $documento = new BudgetPdfDocument($this->presupuesto_largo());
+        $pdf = new ProfileDocumentPdf($documento, $perfil);
+        $this->assertNull($pdf->pdf_x0, 'El modo de siempre (sin la geometría del diseño).');
+
+        $pdf->SetCompression(false);
+        $pdf->render();
+        $binario = $pdf->Output('S');
+
+        $this->assertGreaterThanOrEqual(2, $this->cantidad_de_hojas($binario));
+        $this->assertSame(1, $this->veces_que_se_dibuja('Total: $2.173,50', $binario), 'El Total una sola vez, como siempre.');
+        $por_hoja = $this->hojas($binario);
+        $this->assertStringContainsString('(Total: $2.173,50) Tj', end($por_hoja));
+    }
+
+    /**
+     * El pedido online, igual: sin diseñar y con el tilde, el derivado y el Total en cada hoja. Sin
+     * envío, cupón ni recargo (con ellos el pedido no imprime Total: lo calcula la tienda).
+     *
+     * @test
+     */
+    public function un_pedido_sin_disenar_con_pie_en_cada_hoja_lleva_el_total_en_todas()
+    {
+        $pedido = $this->crear_pedido_completo([], false);
+        for ($i = 1; $i <= 70; $i++) {
+            $articulo = Article::create(['name' => 'Renglon de pedido '.$i, 'user_id' => $this->dueno->id]);
+            $pedido->articles()->attach($articulo->id, ['price' => 0, 'amount' => 0]);
+        }
+        $documento = new OrderPdfDocument($pedido->fresh());
+
+        $perfil = $this->diseno('order', 'Pedido online');
+        $perfil->show_totals_on_each_page = true;
+
+        $pdf = new ProfileDocumentPdf($documento, $perfil);
+        $this->assertNotNull($pdf->pdf_x0, 'Se dibuja con el derivado.');
+        $pdf->SetCompression(false);
+        $pdf->render();
+        $binario = $pdf->Output('S');
+
+        $total = (new CamposDePedidoPdf(new OrderPdfDocument($pedido->fresh()), false))->valor('tot_total', $this->campo_de_caja('tot_total'));
+        $this->assertSame('$350', $total, '2 x $100 + 3 x $50; los 70 de relleno van en $0.');
+        $this->assertTotalEnCadaHoja($binario, 'Total: '.$total, $perfil);
     }
 
     /**

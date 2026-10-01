@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\PdfDocumentSetupHelper;
 use App\Http\Controllers\Helpers\PdfLayout\CamposDePedidoPdf;
 use App\Http\Controllers\Helpers\PdfLayout\CamposDePresupuestoPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\Layout\MotorDeCajasPdf;
 use App\Models\PdfColumnProfile;
@@ -52,9 +53,13 @@ require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
  *   10, 11, 12 y 13 de tests/Feature/Pdf lo cuidan sin tocar sus aserciones.
  * - Con diseño de página: la hoja y el margen del perfil, el encabezado del emisor SIN el bloque
  *   del cliente, las cajas de arriba de la tabla (en todas las hojas) y las del pie (en la última
- *   hoja), dibujadas por `MotorDeCajasPdf` con los valores de `CamposDePresupuestoPdf` /
+ *   hoja, o en cada hoja con "Mostrar pie de página en cada hoja", como el remito con cajas),
+ *   dibujadas por `MotorDeCajasPdf` con los valores de `CamposDePresupuestoPdf` /
  *   `CamposDePedidoPdf`. Los flags del pie (total, sub total, texto, observaciones del cliente)
  *   no se leen: lo que se imprime lo dicen las cajas.
+ * - Un perfil SIN diseño pero con "Mostrar pie de página en cada hoja" prendido se dibuja con el
+ *   diseño DERIVADO del perfil (`DisenoDerivadoPdf`), no con el modo de siempre: el de siempre
+ *   no sabe repetir el pie, y el tilde no puede mentir. Con el tilde apagado, el de siempre.
  */
 class ProfileDocumentPdf extends fpdf
 {
@@ -140,6 +145,13 @@ class ProfileDocumentPdf extends fpdf
     private $y_de_los_renglones;
     /** Con diseño: lo que midió medir_item() de cada renglón antes de la primera hoja, por índice. */
     private $medidas_de_renglones;
+    /**
+     * Con diseño: "Mostrar pie de página en cada hoja" (el pie va en Footer() de cada hoja con los
+     * totales finales), salvo que decidir_la_zona_superior() tenga que mandarlo a la última hoja.
+     */
+    private $pie_en_cada_hoja;
+    /** Con diseño: la hoja actual tiene el encabezado de la tabla (el pie en cada hoja va solo en esas). */
+    private $tabla_en_la_hoja;
 
     /**
      * Prepara el PDF SIN dibujar nada ni terminar el proceso.
@@ -149,12 +161,16 @@ class ProfileDocumentPdf extends fpdf
      */
     public function __construct(PdfDocumentSource $source, PdfColumnProfile $profile)
     {
+        $dueno = User::find($source->owner_id());
+
         /**
-         * Con diseño de página la hoja es la del perfil; sin diseño, la A4 de siempre (el mismo
-         * parent::__construct() sin argumentos que antes).
+         * El diseño con el que se dibuja: el del perfil, el derivado del perfil (sin diseño pero
+         * con el pie en cada hoja), o ninguno (el modo de siempre). Con diseño de página la hoja es
+         * la del perfil; sin diseño, la A4 de siempre (el mismo parent::__construct() sin
+         * argumentos que antes).
          */
-        $con_diseno = DisenoDePaginaPdf::tiene_diseno($profile)
-            && ($source instanceof BudgetPdfDocument || $source instanceof OrderPdfDocument);
+        $diseno_crudo = $this->diseno_con_el_que_se_dibuja($source, $profile, $dueno);
+        $con_diseno = ! is_null($diseno_crudo);
         $hoja = $con_diseno ? MotorDeCajasPdf::geometria_de_la_hoja($profile) : null;
 
         if ($con_diseno) {
@@ -165,7 +181,7 @@ class ProfileDocumentPdf extends fpdf
         $this->SetAutoPageBreak(false);
 
         $this->source = $source;
-        $this->user = User::find($source->owner_id());
+        $this->user = $dueno;
         $this->profile_columns = $this->get_profile_columns($profile);
 
         $this->start_x = 5;
@@ -213,12 +229,49 @@ class ProfileDocumentPdf extends fpdf
         $this->alto_maximo_de_renglon = 0;
         $this->y_de_los_renglones = 0;
         $this->medidas_de_renglones = [];
+        $this->pie_en_cada_hoja = false;
+        $this->tabla_en_la_hoja = false;
         $this->limite_de_renglones = self::ITEMS_BOTTOM_Y;
         $this->fin_de_renglon = 210 - $this->start_x;
 
         if ($con_diseno) {
-            $this->preparar_diseno($source, $profile, $hoja);
+            $this->preparar_diseno($source, $profile, $hoja, $diseno_crudo);
         }
+    }
+
+    /**
+     * El diseño de página con el que se dibuja este comprobante, o null para el modo de siempre.
+     *
+     * - El del perfil, si tiene (`page_layout`).
+     * - 🔴 Sin diseño pero con "Mostrar pie de página en cada hoja" prendido: el DERIVADO del
+     *   perfil (`DisenoDerivadoPdf::para()`, el mismo que el diseñador muestra de arranque; acá
+     *   solo se lee, no se guarda). El modo de siempre no sabe repetir el pie en cada hoja, y
+     *   Lucas puso ese tilde en el editor de los tres modelos: si el presupuesto saliera con el
+     *   modo de siempre, el tilde prendido mentiría. Con el tilde apagado, el modo de siempre,
+     *   sin un byte de diferencia.
+     *
+     * Solo presupuesto y pedido online: otro comprobante sale siempre con el modo de siempre.
+     *
+     * @param PdfDocumentSource       $source
+     * @param PdfColumnProfile        $profile
+     * @param \App\Models\User|null $dueno
+     * @return array|null
+     */
+    private function diseno_con_el_que_se_dibuja(PdfDocumentSource $source, PdfColumnProfile $profile, $dueno)
+    {
+        if (! ($source instanceof BudgetPdfDocument || $source instanceof OrderPdfDocument)) {
+            return null;
+        }
+
+        if (DisenoDePaginaPdf::tiene_diseno($profile)) {
+            return $profile->page_layout;
+        }
+
+        if ($this->flag($profile->show_totals_on_each_page, false)) {
+            return DisenoDerivadoPdf::para($source->model_name(), $profile, false, $dueno);
+        }
+
+        return null;
     }
 
     /**
@@ -230,10 +283,11 @@ class ProfileDocumentPdf extends fpdf
      *
      * @param PdfDocumentSource $source
      * @param PdfColumnProfile  $profile
-     * @param array             $hoja    MotorDeCajasPdf::geometria_de_la_hoja($profile)
+     * @param array             $hoja         MotorDeCajasPdf::geometria_de_la_hoja($profile)
+     * @param array             $diseno_crudo El diseño del perfil o el derivado (diseno_con_el_que_se_dibuja()).
      * @return void
      */
-    private function preparar_diseno(PdfDocumentSource $source, PdfColumnProfile $profile, $hoja)
+    private function preparar_diseno(PdfDocumentSource $source, PdfColumnProfile $profile, $hoja, $diseno_crudo)
     {
         $this->pdf_x0 = $hoja['x0'];
         $this->pdf_ancho_util = $hoja['ancho_util'];
@@ -244,8 +298,11 @@ class ProfileDocumentPdf extends fpdf
         $this->limite_de_renglones = $hoja['limite_inferior'];
         $this->fin_de_renglon = $hoja['x0'] + $hoja['ancho_util'];
 
-        $diseno = DisenoDePaginaPdf::normalizar($profile->page_layout);
+        $diseno = DisenoDePaginaPdf::normalizar($diseno_crudo);
         $this->diseno = DisenoDePaginaPdf::asegurar_fijos(is_null($diseno) ? DisenoDePaginaPdf::vacio() : $diseno, false);
+
+        /** Como el remito con cajas: el pie en cada hoja, con los totales finales (ver Footer()). */
+        $this->pie_en_cada_hoja = $this->flag($profile->show_totals_on_each_page, false);
 
         $fuente = $source instanceof BudgetPdfDocument
             ? new CamposDePresupuestoPdf($source, $this->use_current_date)
@@ -455,6 +512,7 @@ class ProfileDocumentPdf extends fpdf
     public function Header()
     {
         $this->rows_on_page = 0;
+        $this->tabla_en_la_hoja = false;
 
         if (! is_null($this->diseno)) {
             $this->header_con_diseno();
@@ -544,6 +602,45 @@ class ProfileDocumentPdf extends fpdf
             $fields[$column['label']] = $column['width'];
         }
         AfipPdfHelper::table_header($this, $fields, $this->pdf_x0);
+        $this->tabla_en_la_hoja = true;
+    }
+
+    /**
+     * Con diseño y "pie en cada hoja", el pie va debajo del último renglón de CADA hoja con la
+     * tabla, con los totales FINALES (el motor se los pide a la fuente: no dependen de cuántos
+     * renglones se llevan dibujados). FPDF no deja agregar una hoja desde acá: su alto ya se
+     * reservó en el salto de los renglones (limite_para_renglones()). Una hoja que lleva solo la
+     * zona de arriba (una zona más alta que la hoja) no le reservó lugar y no lo lleva. Sin
+     * diseño no hace nada, como el Footer() vacío de FPDF de siempre.
+     *
+     * @return void
+     */
+    public function Footer()
+    {
+        if (is_null($this->diseno) || ! $this->pie_en_cada_hoja || ! $this->tabla_en_la_hoja) {
+            return;
+        }
+
+        if ($this->alto_del_pie() <= 0) {
+            return;
+        }
+
+        $this->motor->dibujar_zona($this, $this->diseno['pie'], $this->y + self::SEPARACION_DEL_PIE);
+    }
+
+    /**
+     * Hasta dónde puede llegar un renglón de la tabla: el límite de siempre y, con diseño y el pie
+     * en cada hoja, menos el alto del pie.
+     *
+     * @return float
+     */
+    private function limite_para_renglones()
+    {
+        if (is_null($this->diseno) || ! $this->pie_en_cada_hoja) {
+            return $this->limite_de_renglones;
+        }
+
+        return $this->limite_de_renglones - $this->alto_del_pie();
     }
 
     /**
@@ -565,12 +662,25 @@ class ProfileDocumentPdf extends fpdf
      */
     private function decidir_la_zona_superior($y_del_encabezado)
     {
-        $alto_de_la_zona = $this->motor->medir_zona($this, $this->diseno['superior']);
-        $zona = $alto_de_la_zona > 0 ? self::SEPARACION_DE_LA_ZONA_SUPERIOR + $alto_de_la_zona : 0;
         $tabla_y_renglon = AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon;
 
+        /**
+         * 🔴 "Pie en cada hoja" que no deja lugar para ningún renglón ni siquiera sin la zona de
+         * arriba: va solo en la última hoja (la misma decisión que SaleLayoutPdf::decidir_la_hoja():
+         * el pie de cada hoja se dibuja en Footer(), que no puede saltar de hoja, y la guarda de "al
+         * menos un renglón por hoja" lo mandaría afuera del papel).
+         */
+        if ($this->pie_en_cada_hoja && $y_del_encabezado + $tabla_y_renglon + $this->alto_del_pie() > $this->limite_de_renglones) {
+            $this->pie_en_cada_hoja = false;
+        }
+
+        $alto_de_la_zona = $this->motor->medir_zona($this, $this->diseno['superior']);
+        $zona = $alto_de_la_zona > 0 ? self::SEPARACION_DE_LA_ZONA_SUPERIOR + $alto_de_la_zona : 0;
+        $pie = $this->pie_en_cada_hoja ? $this->alto_del_pie() : 0;
+
+        /** La zona cede antes que el pie en cada hoja (el tilde que eligió el usuario). */
         $this->zona_superior_en_cada_hoja = $zona <= 0
-            || $y_del_encabezado + $zona + $tabla_y_renglon <= $this->limite_de_renglones;
+            || $y_del_encabezado + $zona + $tabla_y_renglon + $pie <= $this->limite_de_renglones;
         $this->dibujando_la_zona_superior = ! $this->zona_superior_en_cada_hoja;
 
         /** Dónde arrancan los renglones en una hoja nueva (lo usa el pie de la última hoja). */
@@ -603,7 +713,8 @@ class ProfileDocumentPdf extends fpdf
 
         $this->dibujando_la_zona_superior = false;
 
-        if ($this->y + AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon > $this->limite_de_renglones) {
+        $pie = $this->pie_en_cada_hoja ? $this->alto_del_pie() : 0;
+        if ($this->y + AfipPdfHelper::alto_de_table_header() + $this->alto_maximo_de_renglon + $pie > $this->limite_de_renglones) {
             $this->AddPage();
 
             return;
@@ -718,7 +829,7 @@ class ProfileDocumentPdf extends fpdf
         $image_box = $medida['image_box'];
 
         /** Guarda contra un bucle de hojas vacías si una sola fila fuera más alta que la hoja. */
-        if ($this->rows_on_page > 0 && $this->y + $row_height > $this->limite_de_renglones) {
+        if ($this->rows_on_page > 0 && $this->y + $row_height > $this->limite_para_renglones()) {
             $this->AddPage();
             $this->SetFont('Arial', '', 8);
         }
@@ -873,7 +984,10 @@ class ProfileDocumentPdf extends fpdf
     private function print_closing_blocks()
     {
         if (! is_null($this->diseno)) {
-            $this->print_pie_con_diseno();
+            /** Con el pie en cada hoja, el de la última lo dibuja su Footer() al cerrar el documento. */
+            if (! $this->pie_en_cada_hoja) {
+                $this->print_pie_con_diseno();
+            }
 
             return;
         }
