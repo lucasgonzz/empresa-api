@@ -134,7 +134,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Costo',
+                    'name'              => 'Costo unitario',
                     'label'                => 'Costo',
                     'value_resolver'               => 'item_cost',
                     'default_width'                => 15,
@@ -142,7 +142,15 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Precio sin IVA',
+                    'name'              => 'Costo total',
+                    'label'                => 'Costo tot',
+                    'value_resolver'               => 'item_cost_total',
+                    'default_width'                => 20,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
+                    'name'              => 'Precio sin IVA unitario',
                     'label'                => 'Pre s/IVA',
                     'value_resolver'               => 'item_price_without_iva',
                     'default_width'                => 20,
@@ -150,7 +158,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Subtotal sin IVA',
+                    'name'              => 'Precio sin IVA total',
                     'label'                => 'SubT s/IVA',
                     'value_resolver'               => 'item_subtotal_without_iva',
                     'default_width'                => 25,
@@ -166,7 +174,15 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Total con IVA',
+                    'name'              => 'Precio con IVA unitario',
+                    'label'                => 'Pre c/IVA',
+                    'value_resolver'               => 'item_price_with_iva',
+                    'default_width'                => 20,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
+                    'name'              => 'Precio con IVA total',
                     'label'                => 'Total c/IVA',
                     'value_resolver'               => 'item_subtotal_with_iva',
                     'default_width'                => 20,
@@ -198,7 +214,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Subtotal línea',
+                    'name'              => 'Precio total',
                     'label'                => 'Sub total',
                     'value_resolver'               => 'item_subtotal',
                     'default_width'                => 25,
@@ -514,6 +530,25 @@ class PdfColumnService
                     $moneda_id,
                     false
                 );
+            case 'item_cost_total':
+                /**
+                 * Costo total del renglón = costo unitario congelado × cantidad vendida. Mismo
+                 * formato (sin símbolo) y misma conversión de moneda que item_cost, para que las dos
+                 * columnas se lean juntas. Sin costo en el pivot (renglones viejos o servicios) sale
+                 * vacío, no 0: un costo desconocido no es un costo cero.
+                 */
+                if (! isset($item->pivot->cost) || ! isset($item->pivot->amount)) {
+                    return '';
+                }
+                return self::format_sale_monetary_value(
+                    (float) $item->pivot->cost * (float) $item->pivot->amount,
+                    $numbers,
+                    $es_usd,
+                    $es_exportacion,
+                    $valor_dolar,
+                    $moneda_id,
+                    false
+                );
             case 'item_discount_percentage':
                 return isset($item->pivot->discount) ? $item->pivot->discount : '';
             case 'item_discount_total':
@@ -634,15 +669,24 @@ class PdfColumnService
                     );
                 }
                 /**
-                 * Sin $afip_helper, se cae al snapshot unitario sin IVA del pivot × cantidad,
-                 * igual que siempre.
+                 * Sin $afip_helper, se cae al snapshot unitario sin IVA del pivot × cantidad.
+                 *
+                 * Con el descuento de línea aplicado (misión columnas-costo-y-precio-en-articulos-de-
+                 * venta, 1/10/2026): el camino de arriba (con comprobante ARCA) ya lo lleva adentro,
+                 * y esta columna se ofrece ahora como "Precio sin IVA total" al lado de "Precio total"
+                 * (item_subtotal), que SÍ descuenta. Sin esto, en un remito con un renglón bonificado
+                 * los dos totales no coincidían (el neto salía sin el descuento).
                  */
                 if (
                     isset($item->pivot->price_sin_iva)
                     && ! is_null($item->pivot->price_sin_iva)
                     && isset($item->pivot->amount)
                 ) {
-                    $subtotal_sin_iva = (float) $item->pivot->price_sin_iva * (float) $item->pivot->amount;
+                    $subtotal_sin_iva = self::sale_item_line_total(
+                        $item->pivot->price_sin_iva,
+                        $item->pivot->amount,
+                        $item->pivot->discount ?? null
+                    );
                     return self::format_sale_monetary_value(
                         $subtotal_sin_iva,
                         $numbers,
@@ -667,12 +711,67 @@ class PdfColumnService
                     );
                 }
                 return '';
+            case 'item_price_with_iva':
+                /**
+                 * Precio unitario CON IVA. `article_sale.price` ya es con IVA (SaleHelper::
+                 * get_price_sin_iva() lo divide para sacar el neto), así que sin comprobante ARCA
+                 * el valor es el del pivot tal cual se registró (el descuento de línea tiene su
+                 * propia columna).
+                 *
+                 * Con comprobante: getArticlePriceWithDiscounts(), el mismo cálculo que ya usa
+                 * item_subtotal_with_iva (= esta columna × cantidad), que sí lleva los descuentos y
+                 * recargos de venta. Guarda `!$es_usd` por el mismo motivo que item_price_without_iva:
+                 * en moneda extranjera get_article_price_raw() ya convierte a pesos y
+                 * format_sale_monetary_value() volvería a convertir.
+                 */
+                if ($afip_helper && $sale && ! $es_usd && isset($item->pivot->price)) {
+                    $afip_helper->article = $item;
+                    return self::format_sale_monetary_value(
+                        (float) $afip_helper->getArticlePriceWithDiscounts(),
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
+                if (isset($item->pivot->price)) {
+                    return self::format_sale_monetary_value(
+                        (float) $item->pivot->price,
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
+                return '';
             case 'item_subtotal_with_iva':
                 if ($afip_helper && isset($item->pivot->amount)) {
                     $afip_helper->article = $item;
                     $total = (float) $afip_helper->getArticlePriceWithDiscounts() * (float) $item->pivot->amount;
                     return self::format_sale_monetary_value(
                         $total,
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
+                /**
+                 * Sin comprobante ARCA (remito, venta común) esta columna salía vacía. Como ahora se
+                 * ofrece como "Precio con IVA total", se cae al snapshot: `price` ya es con IVA, así
+                 * que el total es precio × cantidad menos el descuento de línea (el mismo cálculo
+                 * que item_subtotal).
+                 */
+                if (isset($item->pivot->price) && isset($item->pivot->amount)) {
+                    return self::format_sale_monetary_value(
+                        self::sale_item_line_total(
+                            $item->pivot->price,
+                            $item->pivot->amount,
+                            $item->pivot->discount ?? null
+                        ),
                         $numbers,
                         $es_usd,
                         $es_exportacion,
@@ -692,6 +791,25 @@ class PdfColumnService
             default:
                 return '';
         }
+    }
+
+    /**
+     * Total de un renglón de venta: unitario × cantidad menos el descuento de línea (porcentaje).
+     *
+     * @param float|string|int      $unitario  Importe unitario del pivot.
+     * @param float|string|int      $cantidad  Cantidad vendida.
+     * @param float|string|int|null $descuento Descuento de línea en %, null o '' = sin descuento.
+     * @return float
+     */
+    protected static function sale_item_line_total($unitario, $cantidad, $descuento = null)
+    {
+        $total = (float) $unitario * (float) $cantidad;
+
+        if (! is_null($descuento) && $descuento !== '') {
+            $total -= $total * ((float) $descuento / 100);
+        }
+
+        return $total;
     }
 
     /**
