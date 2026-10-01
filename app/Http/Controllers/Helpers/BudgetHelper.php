@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -646,6 +647,26 @@ class BudgetHelper {
 
 			$total += $total_service;
 		}
+
+		/*
+			EL AJUSTE POR METODO DE PAGO, DESPUES DE TODO LO DE ARRIBA Y ANTES DEL FORZADO (mision
+			presupuesto-contado-o-cuenta-corriente, 1/10/2026).
+
+			Un presupuesto "de contado" guarda el reparto de metodos de pago, y las filas traen el
+			descuento (transferencia) o el recargo (cuotas) de cada metodo. El `total` que manda la
+			SPA ya es el NETO, con ese ajuste adentro. Sin sumarlo aca, la validacion de
+			`BudgetController::store()` --este metodo contra `budgets.total`, margen de 3-- cortaria
+			con "El total del presupuesto no corresponde con los productos ingresados" en cuanto el
+			ajuste pasara de 3 pesos, y el PDF imprimiria un "Total:" distinto al de la pantalla.
+
+			El orden es el de la pantalla de Vender: descuentos y recargos de venta -> metodos de
+			pago (modal) -> forzado. Por eso va aca y no despues de `aplicar_forzar_total_monto()`: el
+			monto del forzado esta definido contra el total que el vendedor VIO, que ya trae el ajuste.
+
+			Es cero para un presupuesto que no es de contado --que es casi todos--, incluso para uno
+			con filas colgadas en la columna: ver `BudgetCobroHelper::ajuste_por_metodos_de_pago()`.
+		*/
+		$total += BudgetCobroHelper::ajuste_por_metodos_de_pago($budget);
 
 		/*
 			EL TOTAL FORZADO, ULTIMO Y SOBRE EL TOTAL COMPLETO (mision forzar-total-por-monto,
