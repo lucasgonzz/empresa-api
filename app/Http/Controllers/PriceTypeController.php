@@ -42,7 +42,9 @@ class PriceTypeController extends Controller
             'percentage'            => $request->percentage,
             'apply_percentage_on_existing_articles' => 1,
             // 'apply_percentage_on_existing_articles' => $request->apply_percentage_on_existing_articles,
-            'update_existing_articles_percentage_mode' => $request->update_existing_articles_percentage_mode ? $request->update_existing_articles_percentage_mode : 'none',
+            // Ya no se persiste el modo (misión sincronizar-margen-lista-precios, 1/10/2026): los
+            // artículos se sincronizan con el botón "Sincronizar artículos" del modal. Ver update().
+            'update_existing_articles_percentage_mode' => 'none',
             'position'              => $request->position,
             'ocultar_al_publico'    => $request->ocultar_al_publico,
             'incluir_en_lista_de_precios_de_excel'    => $request->incluir_en_lista_de_precios_de_excel,
@@ -122,14 +124,50 @@ class PriceTypeController extends Controller
         return response()->json(['model' => $this->fullModel('PriceType', $id)], 200);
     }
 
+    /**
+     * Los números del modal "Sincronizar artículos" del margen por defecto de una lista, ANTES de
+     * sincronizar: el margen guardado, cuántos artículos tiene la lista, cuántos coinciden con el
+     * margen guardado y cuántos tienen el precio fijado a mano.
+     *
+     * `GET api/price-type/{id}/sincronizar-margen/preview`. Solo listas del dueño; ajena o
+     * inexistente → 404. El cálculo vive en PriceTypeHelper::preview_sincronizar_margen().
+     *
+     * @param  int $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function sincronizar_margen_preview($id) {
+
+        $model = PriceType::where('user_id', $this->userId())
+                            ->where('id', $id)
+                            ->first();
+
+        if (is_null($model)) {
+            return response()->json(['message' => 'No se encontro la lista de precios.'], 404);
+        }
+
+        return response()->json(PriceTypeHelper::preview_sincronizar_margen($model), 200);
+    }
+
     public function update(Request $request, $id) {
+        /**
+         * Notificaciones para la respuesta (la SPA muestra `response.data.notifications`): hoy solo
+         * el resultado de "Sincronizar artículos".
+         *
+         * @var array<int, array{message:string,type:string}>
+         */
+        $notifications = [];
+
         $model = PriceType::find($id);
-        // Mantiene el porcentaje previo para decidir actualización selectiva del pivot.
+        // El margen GUARDADO antes de este request: contra él se mide "coinciden con el actual"
+        // al sincronizar, y con él decide el camino de compatibilidad del SPA viejo.
         $old_percentage = $model->percentage;
         $model->name                = $request->name;
         $model->percentage          = $request->percentage;
         // apply_percentage_on_existing_articles solo tiene sentido en el alta; no se reescribe en update.
-        $model->update_existing_articles_percentage_mode = $request->update_existing_articles_percentage_mode ? $request->update_existing_articles_percentage_mode : 'none';
+        // El modo ya no se persiste (misión sincronizar-margen-lista-precios, 1/10/2026): si se
+        // guardara, la fila arrastraría un 'all' viejo que el SPA nuevo ya no muestra ni deja
+        // cambiar. Lo que el SPA viejo mande en ESTE guardado se honra abajo, sin guardarlo.
+        $model->update_existing_articles_percentage_mode = 'none';
         $model->position            = $request->position;
         $model->ocultar_al_publico  = $request->ocultar_al_publico;
         $model->incluir_en_lista_de_precios_de_excel  = $request->incluir_en_lista_de_precios_de_excel;
@@ -139,14 +177,48 @@ class PriceTypeController extends Controller
         
         $model->save();
 
-        // Solo sincroniza pivots cuando realmente cambia el porcentaje por defecto.
-        if ((string) $old_percentage !== (string) $model->percentage) {
-            Log::info('Cambio el percentage de '.$model->name);
-            PriceTypeHelper::sync_existing_articles_percentage(
+        /*
+         * Sincronizar el margen con los artículos (misión sincronizar-margen-lista-precios,
+         * 1/10/2026). Desde esta misión un cambio de margen NO toca ningún artículo por sí solo:
+         * solo lo hace el pedido explícito del botón "Sincronizar artículos", que viaja en este
+         * mismo PUT (así "primero se guarda la lista y después se actualizan los artículos").
+         *
+         *  - `sincronizar_margen` con alcance válido → se sincroniza contra el margen GUARDADO
+         *    antes de este request ($old_percentage) con el margen recién guardado, y se avisa.
+         *    Con alcance inválido se ignora: la lista ya quedó guardada.
+         *  - Sin `sincronizar_margen`, compatibilidad con el SPA viejo cacheado en la PWA: si ESTE
+         *    request trae `update_existing_articles_percentage_mode` en 'all' u
+         *    'only_default_matches' y el margen cambió, se honra como siempre (el usuario del SPA
+         *    viejo eligió esa opción en este guardado). El SPA nuevo no lo manda.
+         */
+        $pedido_de_sincronizar = PriceTypeHelper::leer_pedido_de_sincronizar_margen($request->sincronizar_margen);
+
+        if (!is_null($pedido_de_sincronizar)) {
+
+            $cantidad = PriceTypeHelper::sincronizar_margen(
                 $model,
                 $old_percentage,
-                $model->update_existing_articles_percentage_mode
+                $pedido_de_sincronizar['alcance'],
+                $pedido_de_sincronizar['incluir_precio_fijado_a_mano']
             );
+
+            $notifications[] = PriceTypeHelper::notificacion_de_sincronizar_margen($cantidad);
+
+        } else if (is_null($request->sincronizar_margen)) {
+
+            $modo_del_spa_viejo = $request->update_existing_articles_percentage_mode;
+
+            // Solo sincroniza pivots cuando realmente cambia el porcentaje por defecto.
+            if (in_array($modo_del_spa_viejo, ['all', 'only_default_matches'], true)
+                && (string) $old_percentage !== (string) $model->percentage) {
+
+                Log::info('Cambio el percentage de '.$model->name.' (modo del SPA viejo: '.$modo_del_spa_viejo.')');
+                PriceTypeHelper::sync_existing_articles_percentage(
+                    $model,
+                    $old_percentage,
+                    $modo_del_spa_viejo
+                );
+            }
         }
 
         GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
@@ -160,7 +232,10 @@ class PriceTypeController extends Controller
         // `combos.price`; el porcentaje cambia el precio de los componentes. Ver el método.
         $this->recalcular_combos_calculados();
 
-        return response()->json(['model' => $this->fullModel('PriceType', $model->id)], 200);
+        return response()->json([
+            'model'         => $this->fullModel('PriceType', $model->id),
+            'notifications' => $notifications,
+        ], 200);
     }
 
     public function destroy($id) {

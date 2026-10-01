@@ -315,6 +315,338 @@ class PriceTypeHelper {
 
 	/*
 	 * ------------------------------------------------------------------------------------------
+	 * Botón "Sincronizar artículos" del margen por defecto de una lista (misión
+	 * sincronizar-margen-lista-precios, 1/10/2026).
+	 *
+	 * Reemplaza a la propiedad `update_existing_articles_percentage_mode`, que actuaba sola en cada
+	 * guardado donde cambiaba el margen. Ahora el dueño lo pide explícito desde el modal de la
+	 * lista: primero ve cuántos artículos hay en cada conjunto (preview_sincronizar_margen(), por
+	 * `GET api/price-type/{id}/sincronizar-margen/preview`) y después el MISMO PUT que guarda la
+	 * lista trae la clave `sincronizar_margen` (sincronizar_margen()).
+	 *
+	 * 🔴 sync_existing_articles_percentage() de arriba NO se toca: lo sigue usando el SPA viejo
+	 * (cacheado en la PWA) cuando manda el modo en el guardado, y su semántica la prueba por
+	 * equivalencia `RecalculoEnLote/11_Porcentaje_de_lista_en_bloque_Test`. Lo nuevo reusa sus
+	 * piezas (normalize_decimal_percentage, PIVOTS_POR_UPDATE, dispatch_recalculate_for_articles).
+	 *
+	 * Los artículos con el precio FIJADO A MANO en la lista (`article_price_type.setear_precio_final
+	 * = 1`) quedan afuera salvo pedido explícito: su margen sale del precio que fijó la persona
+	 * (ArticlePricesHelper::aplicar_precios_segun_listas_de_precios), así que ponerles un margen sin
+	 * sacarles el precio fijo no cambia nada. Con el tilde "incluir los que tienen el precio fijado
+	 * a mano" (solo en el alcance `todos`) se les saca el precio fijo y pasan a calcularse con el
+	 * margen. Decisión de Lucas, 1/10/2026.
+	 * ------------------------------------------------------------------------------------------
+	 */
+
+	/**
+	 * Alcance "solo los que tienen el margen actual": los que hoy calculan con el margen GUARDADO
+	 * de la lista, ya sea porque el pivot lo tiene escrito o porque está en NULL (NULL = usa el
+	 * margen por defecto de la lista).
+	 *
+	 * @var string
+	 */
+	const ALCANCE_COINCIDEN = 'coinciden';
+
+	/**
+	 * Alcance "todos los artículos de la lista", incluidos los que tienen un margen propio.
+	 *
+	 * @var string
+	 */
+	const ALCANCE_TODOS = 'todos';
+
+	/**
+	 * Los cuatro números que el modal muestra antes de sincronizar.
+	 *
+	 * Salen de la MISMA consulta que usa sincronizar_margen() (consulta_de_articulos_del_margen()),
+	 * así que, con el mismo estado de base, el número que ve el dueño es exactamente la cantidad
+	 * de artículos que se van a actualizar:
+	 *  - `coinciden_con_el_actual`  = alcance `coinciden`;
+	 *  - `total_articulos - con_precio_fijado_a_mano` = alcance `todos` sin el tilde;
+	 *  - `total_articulos`          = alcance `todos` con el tilde.
+	 *
+	 * `porcentaje_actual` es el margen GUARDADO de la lista (no el que el dueño acaba de tipear en
+	 * el formulario sin guardar), normalizado a dos decimales como lo guarda el pivot, o null si la
+	 * lista no tiene margen. Es contra ese valor que se mide "coinciden".
+	 *
+	 * Los conteos son COUNT(DISTINCT article_id): la tabla no tiene índice único y un artículo
+	 * puede tener la lista atada dos veces; se cuenta una vez, igual que se actualiza una vez.
+	 *
+	 * @param  PriceType $price_type  La lista tal como está guardada.
+	 * @return array{porcentaje_actual: string|null, total_articulos: int, coinciden_con_el_actual: int, con_precio_fijado_a_mano: int}
+	 */
+	static function preview_sincronizar_margen($price_type) {
+
+		$porcentaje_actual = Self::porcentaje_o_null($price_type->percentage);
+
+		return [
+			'porcentaje_actual'        => $porcentaje_actual,
+			'total_articulos'          => Self::contar_articulos(Self::consulta_de_articulos_del_margen($price_type, Self::ALCANCE_TODOS, $porcentaje_actual, true)),
+			'coinciden_con_el_actual'  => Self::contar_articulos(Self::consulta_de_articulos_del_margen($price_type, Self::ALCANCE_COINCIDEN, $porcentaje_actual, false)),
+			'con_precio_fijado_a_mano' => Self::contar_articulos(Self::consulta_de_articulos_con_precio_fijado_a_mano($price_type)),
+		];
+	}
+
+	/**
+	 * Lee la clave `sincronizar_margen` tal como llega en el PUT de la lista y la deja en lo único
+	 * que puede ser: un pedido válido o null.
+	 *
+	 * Forma esperada: `{"alcance": "coinciden"|"todos", "incluir_precio_fijado_a_mano": true|false}`.
+	 * Un alcance que no es ninguno de los dos (o una clave que no es un objeto) devuelve null: el
+	 * contrato dice que un alcance inválido se ignora y la lista se guarda igual, sin sincronizar.
+	 * El tilde se acepta como booleano, 1/0 o "true"/"false" (lo que puede llegar según cómo se
+	 * arme el request); cualquier otra cosa es "no".
+	 *
+	 * @param  mixed $valor  `$request->sincronizar_margen`.
+	 * @return array{alcance: string, incluir_precio_fijado_a_mano: bool}|null
+	 */
+	static function leer_pedido_de_sincronizar_margen($valor) {
+
+		if (!is_array($valor)) {
+			return null;
+		}
+
+		$alcance = isset($valor['alcance']) ? $valor['alcance'] : null;
+
+		if (!in_array($alcance, [Self::ALCANCE_COINCIDEN, Self::ALCANCE_TODOS], true)) {
+			return null;
+		}
+
+		$incluir = isset($valor['incluir_precio_fijado_a_mano']) ? $valor['incluir_precio_fijado_a_mano'] : false;
+
+		return [
+			'alcance'                      => $alcance,
+			'incluir_precio_fijado_a_mano' => $incluir === true || $incluir === 1 || $incluir === '1' || $incluir === 'true',
+		];
+	}
+
+	/**
+	 * Aplica el margen por defecto (ya guardado) de la lista a sus artículos, según el alcance, y
+	 * encola el recálculo de precios de los que tocó.
+	 *
+	 * La llama PriceTypeController::update() DESPUÉS de guardar la lista, así que
+	 * `$price_type->percentage` ya es el margen nuevo, y `$porcentaje_actual` es el que la lista
+	 * tenía guardado ANTES de este request (el que el modal le mostró al dueño como "actual").
+	 *
+	 * Pasos:
+	 *  1. Los ids se resuelven ANTES de escribir, con la misma consulta del preview: actualizar el
+	 *     pivot cambia qué filas cumplirían la condición (mismo problema de OFFSET que documenta
+	 *     sync_existing_articles_percentage()).
+	 *  2. UPDATE en bloque del pivot, `WHERE price_type_id = ? AND article_id IN (...)` de a
+	 *     PIVOTS_POR_UPDATE: `percentage` = margen nuevo normalizado (o NULL si la lista quedó sin
+	 *     margen, mismo criterio que sync_existing_articles_percentage()). Si un artículo tiene la
+	 *     lista atada dos veces, se actualizan las dos filas (igual que el método viejo).
+	 *  3. Solo con alcance `todos` y el tilde: `setear_precio_final = 0` en las filas de esos
+	 *     artículos que lo tenían en 1 (pierden el precio fijado a mano y pasan a calcularse con el
+	 *     margen). Las filas con 0 o NULL no se reescriben.
+	 *  4. Recálculo en segundo plano de esos artículos con el motor en lote
+	 *     (dispatch_recalculate_for_articles(), origen `listas_de_precio`).
+	 *
+	 * @param  PriceType   $price_type                    La lista, ya guardada con el margen nuevo.
+	 * @param  mixed       $porcentaje_actual             El margen que la lista tenía guardado antes de este guardado.
+	 * @param  string      $alcance                       ALCANCE_COINCIDEN o ALCANCE_TODOS.
+	 * @param  bool        $incluir_precio_fijado_a_mano  Solo cuenta con ALCANCE_TODOS.
+	 * @return int  Cantidad de artículos distintos que se actualizaron (y se mandaron a recalcular).
+	 */
+	static function sincronizar_margen($price_type, $porcentaje_actual, $alcance, $incluir_precio_fijado_a_mano) {
+
+		$porcentaje_actual = Self::porcentaje_o_null($porcentaje_actual);
+
+		// El tilde no aplica al alcance "coinciden": los de precio fijado a mano nunca entran ahí.
+		$incluir_precio_fijado_a_mano = $alcance === Self::ALCANCE_TODOS && (bool) $incluir_precio_fijado_a_mano;
+
+		$article_ids = Self::ids_de_articulos(
+			Self::consulta_de_articulos_del_margen($price_type, $alcance, $porcentaje_actual, $incluir_precio_fijado_a_mano)
+		);
+
+		// El margen nuevo, como lo guarda el pivot (DECIMAL(12,2)), o NULL si la lista quedó sin margen.
+		$porcentaje_nuevo = Self::porcentaje_o_null($price_type->percentage);
+
+		foreach (array_chunk($article_ids, Self::PIVOTS_POR_UPDATE) as $tanda_de_ids) {
+
+			DB::table('article_price_type')
+				->where('price_type_id', $price_type->id)
+				->whereIn('article_id', $tanda_de_ids)
+				->update(['percentage' => $porcentaje_nuevo]);
+
+			if ($incluir_precio_fijado_a_mano) {
+
+				DB::table('article_price_type')
+					->where('price_type_id', $price_type->id)
+					->whereIn('article_id', $tanda_de_ids)
+					->where('setear_precio_final', 1)
+					->update(['setear_precio_final' => 0]);
+			}
+		}
+
+		Log::info('sincronizar_margen: lista '.$price_type->id.', alcance '.$alcance
+			.($incluir_precio_fijado_a_mano ? ' (con precio fijado a mano)' : '')
+			.', margen '.(is_null($porcentaje_actual) ? 'null' : $porcentaje_actual).' -> '.(is_null($porcentaje_nuevo) ? 'null' : $porcentaje_nuevo)
+			.' en '.count($article_ids).' articulos');
+
+		Self::dispatch_recalculate_for_articles($article_ids, $price_type->user_id, 'listas_de_precio', $price_type->name);
+
+		return count($article_ids);
+	}
+
+	/**
+	 * La notificación que vuelve en la respuesta del PUT después de sincronizar (la SPA muestra
+	 * `response.data.notifications` en src/main.js).
+	 *
+	 * @param  int $cantidad  Lo que devolvió sincronizar_margen().
+	 * @return array{message: string, type: string}
+	 */
+	static function notificacion_de_sincronizar_margen($cantidad) {
+
+		if ($cantidad == 0) {
+			return [
+				'message' => 'No habia articulos para actualizar con ese margen.',
+				'type'    => 'info',
+			];
+		}
+
+		$articulos = $cantidad == 1
+			? '1 articulo'
+			: number_format($cantidad, 0, ',', '.').' articulos';
+
+		return [
+			'message' => 'Se actualizo el margen de '.$articulos.'. Los precios se recalculan en segundo plano.',
+			'type'    => 'success',
+		];
+	}
+
+	/**
+	 * 🔴 LA consulta de los conjuntos: una sola, para el preview y para la sincronización. Si se
+	 * cambia, cambian los dos a la vez y el número que ve el dueño sigue siendo el que se actualiza.
+	 *
+	 * Base: los pivots `article_price_type` de la lista cuyo artículo NO está borrado (misma
+	 * semántica que `$price_type->articles()`, que es un belongsToMany sobre Article con
+	 * SoftDeletes). Encima:
+	 *  - Sin el tilde (o con alcance `coinciden`, donde el tilde no aplica): afuera los artículos
+	 *    que tienen el precio fijado a mano en esta lista, o sea los que tienen ALGUNA fila de esta
+	 *    lista con `setear_precio_final = 1`. Se mide por artículo y no por fila para que, si la
+	 *    lista quedó atada dos veces con filas distintas, `todos` sin el tilde siga siendo
+	 *    exactamente `total - con precio fijado a mano`.
+	 *  - Alcance `coinciden`: además, fila con `percentage` igual al margen actual (normalizado) o
+	 *    NULL (= usa el margen de la lista). Si el margen actual es NULL, solo los NULL.
+	 *
+	 * Devuelve el builder sin select: contar_articulos() e ids_de_articulos() le ponen lo suyo.
+	 *
+	 * @param  PriceType   $price_type
+	 * @param  string      $alcance                       ALCANCE_COINCIDEN o ALCANCE_TODOS.
+	 * @param  string|null $porcentaje_actual             Ya normalizado (porcentaje_o_null()).
+	 * @param  bool        $incluir_precio_fijado_a_mano
+	 * @return \Illuminate\Database\Query\Builder
+	 */
+	protected static function consulta_de_articulos_del_margen($price_type, $alcance, $porcentaje_actual, $incluir_precio_fijado_a_mano) {
+
+		$consulta = Self::consulta_base_de_pivots($price_type);
+
+		$excluir_precio_fijado_a_mano = $alcance === Self::ALCANCE_COINCIDEN || !$incluir_precio_fijado_a_mano;
+
+		if ($excluir_precio_fijado_a_mano) {
+
+			$price_type_id = $price_type->id;
+
+			$consulta->whereNotExists(function ($sub) use ($price_type_id) {
+				$sub->select(DB::raw(1))
+					->from('article_price_type as fijado')
+					->whereColumn('fijado.article_id', 'article_price_type.article_id')
+					->where('fijado.price_type_id', $price_type_id)
+					->where('fijado.setear_precio_final', 1);
+			});
+		}
+
+		if ($alcance === Self::ALCANCE_COINCIDEN) {
+
+			if (is_null($porcentaje_actual)) {
+
+				$consulta->whereNull('article_price_type.percentage');
+
+			} else {
+
+				$consulta->where(function ($q) use ($porcentaje_actual) {
+					$q->where('article_price_type.percentage', $porcentaje_actual)
+						->orWhereNull('article_price_type.percentage');
+				});
+			}
+		}
+
+		return $consulta;
+	}
+
+	/**
+	 * Los artículos (no borrados) de la lista que tienen el precio fijado a mano en ella: alguna
+	 * fila del pivot con `setear_precio_final = 1`.
+	 *
+	 * @param  PriceType $price_type
+	 * @return \Illuminate\Database\Query\Builder
+	 */
+	protected static function consulta_de_articulos_con_precio_fijado_a_mano($price_type) {
+
+		return Self::consulta_base_de_pivots($price_type)
+					->where('article_price_type.setear_precio_final', 1);
+	}
+
+	/**
+	 * Los pivots de la lista con su artículo vivo (no borrado).
+	 *
+	 * @param  PriceType $price_type
+	 * @return \Illuminate\Database\Query\Builder
+	 */
+	protected static function consulta_base_de_pivots($price_type) {
+
+		return DB::table('article_price_type')
+					->join('articles', 'articles.id', '=', 'article_price_type.article_id')
+					->where('article_price_type.price_type_id', $price_type->id)
+					->whereNull('articles.deleted_at');
+	}
+
+	/**
+	 * Cuántos artículos DISTINTOS devuelve una consulta de pivots.
+	 *
+	 * @param  \Illuminate\Database\Query\Builder $consulta
+	 * @return int
+	 */
+	protected static function contar_articulos($consulta) {
+
+		return (int) $consulta->distinct()->count('article_price_type.article_id');
+	}
+
+	/**
+	 * Los ids DISTINTOS de artículo de una consulta de pivots, como enteros y ordenados.
+	 *
+	 * @param  \Illuminate\Database\Query\Builder $consulta
+	 * @return int[]
+	 */
+	protected static function ids_de_articulos($consulta) {
+
+		$ids = $consulta->distinct()
+						->orderBy('article_price_type.article_id')
+						->pluck('article_price_type.article_id')
+						->all();
+
+		return array_map('intval', $ids);
+	}
+
+	/**
+	 * Un margen tal como puede venir (de la fila, del request, con coma decimal) en el formato del
+	 * pivot ("30.00"), o null si está vacío. Mismo criterio que sync_existing_articles_percentage()
+	 * para el valor nuevo: null o '' es "sin margen".
+	 *
+	 * @param  mixed $porcentaje
+	 * @return string|null
+	 */
+	protected static function porcentaje_o_null($porcentaje) {
+
+		if (is_null($porcentaje) || $porcentaje === '') {
+			return null;
+		}
+
+		return Self::normalize_decimal_percentage($porcentaje);
+	}
+
+	/*
+	 * ------------------------------------------------------------------------------------------
 	 * Lista de precios obligatoria en ventas y presupuestos (misión vender-lista-obligatoria,
 	 * 17/9/2026). El porqué de cada decisión está en el docblock de la clase.
 	 * ------------------------------------------------------------------------------------------
