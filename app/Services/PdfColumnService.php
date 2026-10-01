@@ -134,7 +134,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Costo unitario',
+                    'name'              => 'Costo',
                     'label'                => 'Costo',
                     'value_resolver'               => 'item_cost',
                     'default_width'                => 15,
@@ -150,7 +150,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Precio sin IVA unitario',
+                    'name'              => 'Precio sin IVA',
                     'label'                => 'Pre s/IVA',
                     'value_resolver'               => 'item_price_without_iva',
                     'default_width'                => 20,
@@ -158,7 +158,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Precio sin IVA total',
+                    'name'              => 'Subtotal sin IVA',
                     'label'                => 'SubT s/IVA',
                     'value_resolver'               => 'item_subtotal_without_iva',
                     'default_width'                => 25,
@@ -174,7 +174,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Precio con IVA unitario',
+                    'name'              => 'Precio con IVA',
                     'label'                => 'Pre c/IVA',
                     'value_resolver'               => 'item_price_with_iva',
                     'default_width'                => 20,
@@ -182,7 +182,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Precio con IVA total',
+                    'name'              => 'Total con IVA',
                     'label'                => 'Total c/IVA',
                     'value_resolver'               => 'item_subtotal_with_iva',
                     'default_width'                => 20,
@@ -214,7 +214,7 @@ class PdfColumnService
                 ],
 
                 [
-                    'name'              => 'Precio total',
+                    'name'              => 'Subtotal línea',
                     'label'                => 'Sub total',
                     'value_resolver'               => 'item_subtotal',
                     'default_width'                => 25,
@@ -747,7 +747,17 @@ class PdfColumnService
                 }
                 return '';
             case 'item_subtotal_with_iva':
-                if ($afip_helper && isset($item->pivot->amount)) {
+                /**
+                 * Guarda `!$es_usd` (misión columnas-costo-y-precio-en-articulos-de-venta, 1/10/2026):
+                 * en una venta en dólares get_article_price_raw() YA convierte a pesos y
+                 * format_sale_monetary_value() convertía de nuevo (USD 10 × 2, cotización 1000 salía
+                 * $20.000.000 en vez de $20.000). Esta columna ahora se ofrece como "Precio con IVA
+                 * total", y el unitario (item_price_with_iva) ya tenía la guarda: sin ella unitario ×
+                 * cantidad no cerraba contra el total. En dólares cae al snapshot de abajo, que
+                 * convierte una sola vez. item_iva_amount tiene el mismo defecto y NO se toca acá
+                 * (no es una de las columnas pedidas): queda anotado en el informe.
+                 */
+                if ($afip_helper && ! $es_usd && isset($item->pivot->amount)) {
                     $afip_helper->article = $item;
                     $total = (float) $afip_helper->getArticlePriceWithDiscounts() * (float) $item->pivot->amount;
                     return self::format_sale_monetary_value(

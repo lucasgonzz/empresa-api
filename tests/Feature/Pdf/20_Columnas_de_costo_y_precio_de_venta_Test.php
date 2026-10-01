@@ -23,8 +23,11 @@ use Tests\EmpresaTestCase;
  * `item_price_without_iva`, `item_subtotal_without_iva`, `item_subtotal_with_iva`) y dos son
  * nuevas (`item_cost_total`, `item_price_with_iva`). Lo que se prueba acá:
  *
- *  1. El catálogo de la venta ofrece las ocho, con los nombres que lee el usuario en el ABM, y
- *     se sincroniza sin duplicar filas.
+ *  1. El catálogo de la venta ofrece las ocho y se sincroniza sin duplicar filas. 🔴 Los `name`
+ *     de las opciones YA existentes NO se renombran: PdfColumnProfileSeederHelper::
+ *     assign_profile_options() y PdfColumnRemitoSetupHelper los usan como CLAVE para armar los
+ *     perfiles, y un nombre que no existe se descarta en silencio (el remito nuevo quedaba sin
+ *     columna de total). Este test fija los nombres para que el próximo renombre falle acá.
  *  2. Las cuentas: costo total = costo × cantidad; con y sin IVA cierran contra el precio del
  *     renglón, con el descuento de línea aplicado en los totales.
  *  3. Sin comprobante ARCA (remito): "Precio con IVA total" ya no sale vacío y "Precio sin IVA
@@ -171,14 +174,14 @@ class Columnas_de_costo_y_precio_de_venta_Test extends EmpresaTestCase
     public function el_catalogo_de_venta_ofrece_las_ocho_columnas()
     {
         $esperadas = [
-            'item_cost'                 => 'Costo unitario',
+            'item_cost'                 => 'Costo',
             'item_cost_total'           => 'Costo total',
             'item_price'                => 'Precio unitario',
-            'item_subtotal'             => 'Precio total',
-            'item_price_with_iva'       => 'Precio con IVA unitario',
-            'item_subtotal_with_iva'    => 'Precio con IVA total',
-            'item_price_without_iva'    => 'Precio sin IVA unitario',
-            'item_subtotal_without_iva' => 'Precio sin IVA total',
+            'item_subtotal'             => 'Subtotal línea',
+            'item_price_with_iva'       => 'Precio con IVA',
+            'item_subtotal_with_iva'    => 'Total con IVA',
+            'item_price_without_iva'    => 'Precio sin IVA',
+            'item_subtotal_without_iva' => 'Subtotal sin IVA',
         ];
 
         // Dos lecturas seguidas: la segunda no puede agregar filas (get_options sincroniza siempre).
@@ -314,5 +317,8 @@ class Columnas_de_costo_y_precio_de_venta_Test extends EmpresaTestCase
         $contexto = $this->armar_contexto($armado['sale'], $armado['item'], true);
 
         $this->assertEqualsWithDelta(10000.00, $this->valor('item_price_with_iva', $contexto), self::DELTA, 'Precio con IVA unitario en pesos, una sola conversión');
+
+        // El total tampoco: USD 10 × 2 × cotización 1000 = $20.000 (antes salía $20.000.000).
+        $this->assertEqualsWithDelta(20000.00, $this->valor('item_subtotal_with_iva', $contexto), self::DELTA, 'Precio con IVA total en pesos, una sola conversión');
     }
 }
