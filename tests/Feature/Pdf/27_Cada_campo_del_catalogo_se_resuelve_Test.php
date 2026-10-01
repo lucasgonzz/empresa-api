@@ -234,10 +234,10 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
     }
 
     /**
-     * Los campos de la segunda tanda cuando falta algo: la factura asociada es la primera CON CAE
-     * (una sin CAE no cuenta, el criterio del despacho de la tienda), el total facturado en 0 no se
-     * imprime, sin acopio no hay renglón, y los datos de envío saltean lo vacío (solo teléfono y
-     * CP: dos renglones, el CP rotulado).
+     * Los campos de la segunda tanda cuando falta algo: una factura sin CAE no cuenta, el total
+     * facturado en 0 no se imprime, sin acopio no hay renglón, sin datos de envío cargados no hay
+     * envío, y con datos de envío a medias dice lo MISMO que la etiqueta: cada dato vacío cae al del
+     * cliente y va un solo documento (SaleDeliveryInfoHelper::resolved_for_etiqueta_pdf()).
      *
      * @test
      */
@@ -269,7 +269,19 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
         $this->assertSame('A 00001-00000028', $fuente->valor('venta_factura_asociada', $campo('venta_factura_asociada')));
         $this->assertSame('76123456789012', $fuente->valor('venta_cae', $campo('venta_cae')));
-        $this->assertSame(['1155555555', 'CP 2000'], $fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio')));
+        $this->assertSame([
+            'Juan Perez Test · 1155555555',
+            'Rosario Test, Santa Fe Test (2000)',
+            'juan-test@correo.local / DNI 12345678',
+        ], $fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio')), 'Teléfono y CP de los datos de envío; el resto, del cliente, como la etiqueta.');
+
+        /** Sin DNI en ningún lado, el CUIT de los datos de envío (la etiqueta también lo rotula "DNI"). */
+        $venta->client->dni = null;
+        $venta->client->save();
+        \App\Models\SaleDeliveryInfo::where('sale_id', $venta->id)->update(['cuit' => '20-11111111-1']);
+        $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
+        $envio = $fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio'));
+        $this->assertSame('juan-test@correo.local / DNI 20-11111111-1', $envio[2]);
     }
 
     /**

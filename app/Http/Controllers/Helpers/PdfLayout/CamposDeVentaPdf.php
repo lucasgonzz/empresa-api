@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
 use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleDeliveryInfoHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\AfipTicket;
 use App\Models\Caja;
@@ -620,36 +621,37 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
     }
 
     /**
-     * Los datos de envío de la etiqueta (`sale_delivery_info`), en hasta tres renglones y salteando
-     * lo vacío: nombre y apellido · teléfono; localidad, provincia (CP); email / DNI / CUIT.
+     * Los datos de envío: los MISMOS que imprime la etiqueta (`EtiquetaEnvioPdf`), con su misma
+     * función, `SaleDeliveryInfoHelper::resolved_for_etiqueta_pdf()`: cada dato vacío de
+     * `sale_delivery_info` cae al del cliente (y al de su localidad), y va UN documento, el DNI o si
+     * no el CUIT (la etiqueta lo rotula "DNI" sea cual sea; acá también). En hasta tres renglones,
+     * salteando lo vacío: nombre y apellido · teléfono; localidad, provincia (CP); email / DNI.
+     *
+     * Sin datos de envío cargados no sale, aunque la etiqueta sin ellos imprima los del cliente:
+     * es lo que dice el catálogo ("Solo si la venta tiene datos de envío cargados").
      *
      * @return array<int, string>|null
      */
     private function datos_de_envio()
     {
-        $envio = $this->sale->sale_delivery_info;
-
-        if (is_null($envio)) {
+        if (is_null($this->sale->sale_delivery_info)) {
             return null;
         }
 
-        $nombre = self::texto(trim(trim((string) $envio->first_name).' '.trim((string) $envio->last_name)));
-        $primero = self::unir([$nombre, self::texto($envio->phone)], ' · ');
+        $envio = SaleDeliveryInfoHelper::resolved_for_etiqueta_pdf($this->sale);
 
-        $lugar = self::unir([self::texto($envio->locality), self::texto($envio->province)], ', ');
-        $codigo_postal = self::texto($envio->postal_code);
+        $nombre = self::texto(trim($envio['first_name'].' '.$envio['last_name']));
+        $primero = self::unir([$nombre, self::texto($envio['phone'])], ' · ');
+
+        $lugar = self::unir([self::texto($envio['locality']), self::texto($envio['province'])], ', ');
+        $codigo_postal = self::texto($envio['postal_code']);
         if (! is_null($codigo_postal)) {
             /** Con lugar, el CP va entre paréntesis ("Rosario, Santa Fe (2000)"); solo, rotulado. */
             $lugar = is_null($lugar) ? 'CP '.$codigo_postal : $lugar.' ('.$codigo_postal.')';
         }
 
-        $dni = self::texto($envio->dni);
-        $cuit = self::texto($envio->cuit);
-        $tercero = self::unir([
-            self::texto($envio->email),
-            is_null($dni) ? null : 'DNI '.$dni,
-            is_null($cuit) ? null : 'CUIT '.$cuit,
-        ], ' / ');
+        $documento = self::texto($envio['document']);
+        $tercero = self::unir([self::texto($envio['email']), is_null($documento) ? null : 'DNI '.$documento], ' / ');
 
         return self::lista([$primero, $lugar, $tercero]);
     }
