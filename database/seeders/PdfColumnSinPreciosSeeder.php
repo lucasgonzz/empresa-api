@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Http\Controllers\Helpers\PdfColumnRemitoSetupHelper;
 use App\Http\Controllers\Helpers\Seeders\PdfColumnProfileSeederHelper;
 use App\Models\PdfColumnProfile;
 use App\Models\SheetType;
@@ -32,16 +33,8 @@ class PdfColumnSinPreciosSeeder extends Seeder
                 'printable_width_mm' => 210,
                 'margin_mm'          => 5,
                 'is_afip_ticket'     => 0,
-                'options'            => [
-                    'Índice de fila',
-                    'Número de artículo',
-                    'Código de barras',
-                    [
-                        'name'  => 'Nombre del artículo',
-                        'width' => 132,
-                    ],
-                    'Cantidad',
-                ],
+                /** Definición única en PdfColumnRemitoSetupHelper (Nombre = resto del ancho útil, 132 mm). */
+                'options'            => PdfColumnRemitoSetupHelper::visible_columns_definition(PdfColumnRemitoSetupHelper::SIN_PRECIOS),
             ],
         ];
 

@@ -3,10 +3,11 @@
 namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\Article;
 use App\Models\ImageServiceCall;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
@@ -32,6 +33,13 @@ use Intervention\Image\ImageManager;
  *
  * IMPORTANTE: este servicio queda CREADO y SIN USAR. El enganche a ProcessArticleBatchImagesJob
  * lo hace el prompt 03 de este mismo grupo (201). No se modifica el job aca.
+ *
+ * Misión modelos-ia-por-cliente (30/9/2026): donde este archivo dice "Claude" o "Anthropic" léase
+ * "la IA de imágenes del cliente". El proveedor y el modelo los elige el admin por cliente
+ * (`users.ia_modelo_imagenes`, default DeepSeek Flash) y los resuelve ModelosIaHelper (ver ia_para());
+ * sin DEEPSEEK_API_KEY se cae a Anthropic con `services.article_image_validation.model`, el mismo
+ * Haiku de siempre. Los prompts, los parseos, el fail-open y el corte de 5 no cambian; el registro
+ * de tokens y de consultas guarda el proveedor y el modelo que efectivamente contestaron.
  */
 class ArticleImageValidationService
 {
@@ -231,10 +239,16 @@ class ArticleImageValidationService
             return $this->not_evaluated('Se alcanzó el límite de validaciones con IA de esta corrida.');
         }
 
-        $api_key = (string) config('services.anthropic.api_key');
+        /*
+         * Con qué IA se valida (misión modelos-ia-por-cliente, 30/9/2026): la que el admin eligió
+         * para este cliente (`users.ia_modelo_imagenes`, default DeepSeek Flash), con el fallback de
+         * clave de ModelosIaHelper. Null solo si no hay clave de NINGÚN proveedor: es el mismo
+         * "sin clave" de siempre y el mismo fail-open.
+         */
+        $ia = $this->ia_para($user_id, $article);
 
-        if ($api_key === '') {
-            Log::info('[ValidacionImagenIA] ANTHROPIC_API_KEY no configurada; se asigna sin validar.', [
+        if (is_null($ia)) {
+            Log::info('[ValidacionImagenIA] Sin clave de IA (ANTHROPIC_API_KEY ni DEEPSEEK_API_KEY); se asigna sin validar.', [
                 'article_id' => $article->id,
             ]);
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
@@ -250,72 +264,72 @@ class ArticleImageValidationService
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
         }
 
-        $timeout = (int) config('services.article_image_validation.timeout');
-        $model   = (string) config('services.article_image_validation.model');
+        $timeout   = (int) config('services.article_image_validation.timeout');
+        $model     = $ia['modelo'];
+        $proveedor = $ia['proveedor'];
 
         // Registro de consultas (misión imagenes-catalogo-completo, §12.1): cuánto tarda la llamada.
         $inicio_del_registro = microtime(true);
 
         try {
-            // Mismo patron de cliente HTTP que ArticleDescriptionAiService/AiExcelAnalyzer.
-            $response = $this->build_anthropic_http_client($api_key)
-                ->timeout($timeout > 0 ? $timeout : 25)
-                ->post('https://api.anthropic.com/v1/messages', [
-                    'model'      => $model,
-                    'max_tokens' => 300,
-                    'system'     => $this->build_system_prompt(),
-                    'messages'   => [
-                        [
-                            'role'    => 'user',
-                            'content' => [
-                                [
-                                    'type'   => 'image',
-                                    'source' => [
-                                        'type'       => 'base64',
-                                        'media_type' => 'image/webp',
-                                        'data'       => $resized_base64,
-                                    ],
+            $response = $this->post_a_la_ia($ia, $timeout, [
+                'model'      => $model,
+                'max_tokens' => 300,
+                'system'     => $this->build_system_prompt(),
+                'messages'   => [
+                    [
+                        'role'    => 'user',
+                        'content' => [
+                            [
+                                'type'   => 'image',
+                                'source' => [
+                                    'type'       => 'base64',
+                                    'media_type' => 'image/webp',
+                                    'data'       => $resized_base64,
                                 ],
-                                [
-                                    'type' => 'text',
-                                    'text' => $this->build_user_prompt($article),
-                                ],
+                            ],
+                            [
+                                'type' => 'text',
+                                'text' => $this->build_user_prompt($article),
                             ],
                         ],
                     ],
-                ]);
+                ],
+            ]);
         } catch (\Exception $e) {
-            Log::info('[ValidacionImagenIA] Error de conexión con Anthropic.', [
+            Log::info('[ValidacionImagenIA] Error de conexión con '.$this->nombre_del_proveedor($proveedor).'.', [
                 'article_id' => $article->id,
                 'error'      => $e->getMessage(),
             ]);
             $this->registrar_validacion_individual($article, $user_id, $model, $inicio_del_registro, [
                 'ok'      => false,
                 'cobrada' => false,
-                'error'   => 'Error de conexión con Anthropic: '.$e->getMessage(),
-            ]);
+                'error'   => 'Error de conexión con '.$this->nombre_del_proveedor($proveedor).': '.$e->getMessage(),
+            ], $proveedor);
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
         }
 
         // Cada intento de llamada cuenta para el limite de la corrida, haya tenido exito o no:
-        // lo que se quiere limitar es el gasto de peticiones a Anthropic, no solo las exitosas.
+        // lo que se quiere limitar es el gasto de peticiones a la IA, no solo las exitosas.
         $this->calls_made++;
 
         if (!$response->successful()) {
             $body = $response->json();
             $api_error = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP '.$response->status();
 
-            Log::info('[ValidacionImagenIA] Anthropic respondió con error.', [
+            Log::info('[ValidacionImagenIA] '.$this->nombre_del_proveedor($proveedor).' respondió con error.', [
                 'article_id' => $article->id,
+                'status'     => $response->status(),
                 'error'      => $api_error,
             ]);
 
+            // El status real queda en `http_status` (DeepSeek usa 402 para saldo insuficiente).
             $this->registrar_validacion_individual($article, $user_id, $model, $inicio_del_registro, [
                 'ok'          => false,
                 'cobrada'     => false,
                 'http_status' => $response->status(),
                 'error'       => (string) $api_error,
-            ]);
+            ], $proveedor);
 
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
         }
@@ -342,7 +356,11 @@ class ArticleImageValidationService
             'proceso' => 'validacion_imagen_articulo',
             'body'    => is_array($body) ? $body : [],
 
-            // El que devolvió Anthropic (alias ya resuelto con su fecha); el de config, solo
+            // El proveedor que EFECTIVAMENTE contestó (el elegido o el del fallback): el admin
+            // costea por proveedor + modelo.
+            'proveedor' => $proveedor,
+
+            // El que devolvió el proveedor (alias ya resuelto con su fecha); el resuelto, solo
             // si no vino: el costo se calcula por modelo y el alias no alcanza.
             'modelo' => isset($body['model']) && (string) $body['model'] !== ''
                 ? (string) $body['model']
@@ -358,7 +376,7 @@ class ArticleImageValidationService
             'modelo'      => is_array($body) && isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : $model,
             'usage'       => is_array($body) && isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [],
             'resumen'     => $this->resumen_de_validacion_individual($body),
-        ]);
+        ], $proveedor);
 
         $parsed = $this->parse_vision_response($body);
 
@@ -498,23 +516,13 @@ class ArticleImageValidationService
             return null;
         }
 
-        // Saca backticks/markdown por si el modelo los agrega igual, pese a la instruccion.
-        $text = preg_replace('/^```(?:json)?/i', '', trim($text));
-        $text = preg_replace('/```$/', '', trim($text));
-        $text = trim($text);
+        // El JSON adentro del texto, tolerando cercas ```json y prosa antes (con o sin llaves): ver
+        // ModelosIaHelper::extraer_json(). Solo vale un objeto que traiga `es_el_producto`.
+        $decoded = ModelosIaHelper::extraer_json($text, function ($candidato) {
+            return isset($candidato['es_el_producto']);
+        });
 
-        // Se queda con el primer objeto JSON balanceado del texto.
-        $start = strpos($text, '{');
-        $end   = strrpos($text, '}');
-
-        if ($start === false || $end === false || $end <= $start) {
-            return null;
-        }
-
-        $json    = substr($text, $start, $end - $start + 1);
-        $decoded = json_decode($json, true);
-
-        if (!is_array($decoded) || !isset($decoded['es_el_producto'])) {
+        if (is_null($decoded)) {
             return null;
         }
 
@@ -641,31 +649,102 @@ class ArticleImageValidationService
         return str_replace($with_accents, $without_accents, $text);
     }
 
+    /* ----------------------------------------------------------------------------------------
+     * Con qué IA se valida (misión modelos-ia-por-cliente, 30/9/2026). Acá vivía
+     * build_anthropic_http_client(), que armaba el cliente SIEMPRE hacia Anthropic. Desde esa misión
+     * el proveedor y el modelo los elige el admin por cliente (`users.ia_modelo_imagenes`, default
+     * DeepSeek Flash, el único DeepSeek con visión) y los resuelve ModelosIaHelper; el cliente HTTP,
+     * la URL y el `thinking` los arma ProveedorIaHelper, el mismo que usa el asistente.
+     * -------------------------------------------------------------------------------------- */
+
     /**
-     * Cliente HTTP hacia Anthropic con headers y TLS del entorno. Mismo patron que
-     * ArticleDescriptionAiService::build_anthropic_http_client() / AiExcelAnalyzer.
+     * La resolución de la IA de imágenes para el dueño de la consulta (el que pasó el llamador o, si
+     * no vino, el del artículo — el mismo que se usa para el registro), o null si no hay clave de
+     * ningún proveedor. Siempre con visión: esta tarea le manda fotos al modelo.
      *
-     * @param  string $api_key
-     * @return \Illuminate\Http\Client\PendingRequest
+     * @param  int|null $user_id
+     * @param  Article  $article
+     * @return array|null  Ver ModelosIaHelper::resolver().
      */
-    protected function build_anthropic_http_client(string $api_key)
+    protected function ia_para($user_id, Article $article)
     {
-        $http = Http::withHeaders([
-            'x-api-key'         => $api_key,
-            'anthropic-version' => '2023-06-01',
-            'content-type'      => 'application/json',
-        ]);
+        $dueno = $this->dueno_memoizado($this->dueno_para_el_registro($user_id, $article));
 
-        $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);
-        $ca_bundle  = config('services.anthropic.ca_bundle');
+        return ModelosIaHelper::resolver($dueno, ModelosIaHelper::TAREA_IMAGENES, true);
+    }
 
-        if (!$verify_ssl) {
-            $http = $http->withoutVerifying();
-        } elseif (is_string($ca_bundle) && $ca_bundle !== '' && is_file($ca_bundle)) {
-            $http = $http->withOptions(['verify' => $ca_bundle]);
+    /**
+     * Los dueños ya resueltos por ESTA instancia, por user_id (null = no se encontró).
+     *
+     * 🔴 PROPIEDAD DE INSTANCIA, NUNCA ESTÁTICA. Una asignación valida cientos de artículos con la
+     * misma instancia y sin esto cada uno pagaba una o dos consultas a `users` solo para saber el
+     * modelo. Pero el worker de cola del VPS vive DÍAS: una caché estática serviría la fila del dueño
+     * de ayer y un cambio de modelo hecho desde el admin no se vería hasta reiniciar el worker. La
+     * instancia vive lo que un tramo de la corrida (el job crea una por tramo), así que un cambio
+     * desde el admin se toma en el tramo siguiente.
+     *
+     * @var array<int, \App\Models\User|null>
+     */
+    protected $duenos_resueltos = [];
+
+    /**
+     * ModelosIaHelper::dueno_de() memoizado por user_id dentro de esta instancia (ver
+     * $duenos_resueltos). Lo usan validate(), evaluar_candidatas() y la validación de categorías.
+     *
+     * @param  int|null $user_id
+     * @return \App\Models\User|null
+     */
+    protected function dueno_memoizado($user_id)
+    {
+        $clave = is_null($user_id) ? 0 : (int) $user_id;
+
+        if (!array_key_exists($clave, $this->duenos_resueltos)) {
+            $this->duenos_resueltos[$clave] = ModelosIaHelper::dueno_de($user_id);
         }
 
-        return $http;
+        return $this->duenos_resueltos[$clave];
+    }
+
+    /**
+     * Le manda el payload a la IA resuelta: cliente HTTP del proveedor (clave, headers y TLS), su
+     * URL de `/v1/messages` y el `thinking` que corresponda (con Anthropic no viaja ninguna clave
+     * `thinking`: el body sale igual que antes de la misión; con DeepSeek Flash va `disabled`).
+     *
+     * @param  array $ia       Resultado de ia_para().
+     * @param  int   $timeout  Segundos (0 o menos = 25, el de siempre).
+     * @param  array $payload  model, max_tokens, system, messages.
+     * @return \Illuminate\Http\Client\Response
+     */
+    protected function post_a_la_ia(array $ia, $timeout, array $payload)
+    {
+        return ProveedorIaHelper::cliente_http($ia['proveedor'], (int) $timeout > 0 ? (int) $timeout : 25)
+            ->post(ProveedorIaHelper::url_messages($ia['proveedor']), ProveedorIaHelper::agregar_thinking($payload, $ia['thinking']));
+    }
+
+    /**
+     * El nombre del proveedor para los logs y el `error` del registro. Con Anthropic dice
+     * "Anthropic", como decía siempre (no "Claude"): el texto registrado de un error de Anthropic
+     * queda igual que antes de la misión.
+     *
+     * @param  string $proveedor
+     * @return string
+     */
+    protected function nombre_del_proveedor($proveedor)
+    {
+        return (string) $proveedor === ProveedorIaHelper::DEEPSEEK ? 'DeepSeek' : 'Anthropic';
+    }
+
+    /**
+     * El proveedor tal como se graba en image_service_calls.
+     *
+     * @param  string $proveedor
+     * @return string
+     */
+    protected function proveedor_para_el_registro($proveedor)
+    {
+        return (string) $proveedor === ProveedorIaHelper::DEEPSEEK
+            ? ImageServiceCall::PROVEEDOR_DEEPSEEK
+            : ImageServiceCall::PROVEEDOR_ANTHROPIC;
     }
 
     /* ----------------------------------------------------------------------------------------
@@ -751,10 +830,11 @@ class ArticleImageValidationService
             return $this->candidatas_sin_evaluar($indices, 'Se alcanzó el límite de validaciones con IA de esta asignación.', false);
         }
 
-        $api_key = (string) config('services.anthropic.api_key');
+        // La IA elegida para este cliente, con su fallback de clave (misión modelos-ia-por-cliente).
+        $ia = $this->ia_para($user_id, $article);
 
-        if ($api_key === '') {
-            Log::info('[ValidacionImagenIA] ANTHROPIC_API_KEY no configurada; las candidatas quedan sin evaluar.', [
+        if (is_null($ia)) {
+            Log::info('[ValidacionImagenIA] Sin clave de IA (ANTHROPIC_API_KEY ni DEEPSEEK_API_KEY); las candidatas quedan sin evaluar.', [
                 'article_id' => $article->id,
             ]);
 
@@ -779,31 +859,30 @@ class ArticleImageValidationService
 
         $contenido[] = ['type' => 'text', 'text' => $this->build_user_prompt_candidatas($article, $indices)];
 
-        $timeout = (int) config('services.article_image_validation.timeout');
-        $model   = (string) config('services.article_image_validation.model');
+        $timeout   = (int) config('services.article_image_validation.timeout');
+        $model     = $ia['modelo'];
+        $proveedor = $ia['proveedor'];
 
         // Para el registro de consultas: cuánto tarda la llamada.
         $inicio = microtime(true);
 
         try {
-            $response = $this->build_anthropic_http_client($api_key)
-                ->timeout($timeout > 0 ? $timeout : 25)
-                ->post('https://api.anthropic.com/v1/messages', [
-                    'model'      => $model,
-                    // Un veredicto corto por candidata. Eran 1000; con las tres preguntas de sí o
-                    // no (campos de nombre largo) cada entrada crece ~40 tokens: 1500 deja margen
-                    // para 4 candidatas aunque el modelo indente el JSON. Solo se cobra lo que usa.
-                    'max_tokens' => 1500,
-                    'system'     => $this->build_system_prompt_candidatas(),
-                    'messages'   => [
-                        [
-                            'role'    => 'user',
-                            'content' => $contenido,
-                        ],
+            $response = $this->post_a_la_ia($ia, $timeout, [
+                'model'      => $model,
+                // Un veredicto corto por candidata. Eran 1000; con las tres preguntas de sí o
+                // no (campos de nombre largo) cada entrada crece ~40 tokens: 1500 deja margen
+                // para 4 candidatas aunque el modelo indente el JSON. Solo se cobra lo que usa.
+                'max_tokens' => 1500,
+                'system'     => $this->build_system_prompt_candidatas(),
+                'messages'   => [
+                    [
+                        'role'    => 'user',
+                        'content' => $contenido,
                     ],
-                ]);
+                ],
+            ]);
         } catch (\Exception $e) {
-            Log::info('[ValidacionImagenIA] Error de conexión con Anthropic al evaluar candidatas.', [
+            Log::info('[ValidacionImagenIA] Error de conexión con '.$this->nombre_del_proveedor($proveedor).' al evaluar candidatas.', [
                 'article_id' => $article->id,
                 'error'      => $e->getMessage(),
             ]);
@@ -812,8 +891,8 @@ class ArticleImageValidationService
                 'ok'         => false,
                 'cobrada'    => false,
                 'candidatas' => count($validas),
-                'error'      => 'Error de conexión con Anthropic: '.$e->getMessage(),
-            ]);
+                'error'      => 'Error de conexión con '.$this->nombre_del_proveedor($proveedor).': '.$e->getMessage(),
+            ], $proveedor);
 
             // La causa, legible y sin el mensaje crudo de cURL (ese quedó en el log de arriba).
             $causa = ImageServiceCallLogger::es_timeout($e->getMessage())
@@ -830,8 +909,9 @@ class ArticleImageValidationService
             $body      = $response->json();
             $api_error = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP '.$response->status();
 
-            Log::info('[ValidacionImagenIA] Anthropic respondió con error al evaluar candidatas.', [
+            Log::info('[ValidacionImagenIA] '.$this->nombre_del_proveedor($proveedor).' respondió con error al evaluar candidatas.', [
                 'article_id' => $article->id,
+                'status'     => $response->status(),
                 'error'      => $api_error,
             ]);
 
@@ -841,11 +921,13 @@ class ArticleImageValidationService
                 'http_status' => $response->status(),
                 'candidatas'  => count($validas),
                 'error'       => (string) $api_error,
-            ]);
+            ], $proveedor);
 
-            // La causa real para el mensaje del corte: el estado y el mensaje de Anthropic (que está
-            // escrito para personas: "invalid x-api-key", "Your credit balance is too low..."), sin
-            // claves y acotado.
+            // La causa real para el mensaje del corte: el estado HTTP REAL y el mensaje del proveedor
+            // (que está escrito para personas: "invalid x-api-key", "Your credit balance is too
+            // low...", o el 402 "Insufficient Balance" de DeepSeek), sin claves y acotado. Cualquier
+            // non-2xx es `sin_servicio`, con los dos proveedores: así el corte de 5 artículos
+            // seguidos sigue andando igual con DeepSeek.
             $causa = 'la IA respondió con error HTTP '.$response->status()
                 .(isset($body['error']['message']) && is_scalar($body['error']['message']) && trim((string) $body['error']['message']) !== ''
                     ? ': '.Str::limit(ImageServiceCallLogger::sin_claves(trim((string) $body['error']['message'])), 160, '…')
@@ -856,18 +938,20 @@ class ArticleImageValidationService
 
         $body = $response->json();
 
-        // Consumo de tokens: mismo registro y mismo proceso que validate() (misión tokens-por-cliente).
+        // Consumo de tokens: mismo registro y mismo proceso que validate() (misión tokens-por-cliente),
+        // con el proveedor que efectivamente contestó (misión modelos-ia-por-cliente).
         AiTokenUsageHelper::registrar([
             'user_id'       => is_null($user_id) ? null : (int) $user_id,
             'proceso'       => 'validacion_imagen_articulo',
             'body'          => is_array($body) ? $body : [],
+            'proveedor'     => $proveedor,
             'modelo'        => isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : $model,
             'referencia_id' => (int) $article->id,
         ]);
 
         $resultados = is_array($body) ? $this->parse_candidatas_response($body, $indices) : null;
 
-        // Anthropic respondió: la llamada se cobra, se haya podido leer o no.
+        // El proveedor respondió: la llamada se cobra, se haya podido leer o no.
         $this->registrar_consulta_de_candidatas($registro, $article, $user_id, $model, $inicio, [
             'ok'          => true,
             'cobrada'     => true,
@@ -876,7 +960,7 @@ class ArticleImageValidationService
             'usage'       => is_array($body) && isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [],
             'candidatas'  => count($validas),
             'resumen'     => is_null($resultados) ? 'La respuesta de la IA no se pudo leer' : $this->resumen_de_veredictos($resultados),
-        ]);
+        ], $proveedor);
 
         if (is_null($resultados)) {
             Log::info('[ValidacionImagenIA] No se pudo parsear la evaluación de candidatas.', [
@@ -966,20 +1050,17 @@ class ArticleImageValidationService
             }
         }
 
-        $texto = trim($texto);
-        $texto = preg_replace('/^```(?:json)?/i', '', $texto);
-        $texto = trim(preg_replace('/```$/', '', trim($texto)));
+        /*
+         * El JSON adentro del texto (ModelosIaHelper::extraer_json()): DeepSeek Flash a veces escribe
+         * prosa ANTES del JSON y Haiku lo envuelve en ```json. Con "del primer `{` al último `}`" una
+         * llave en la prosa dejaba la respuesta ilegible y todas las candidatas sin evaluar. Solo vale
+         * un objeto con la lista `candidatas`.
+         */
+        $decodificado = ModelosIaHelper::extraer_json($texto, function ($candidato) {
+            return isset($candidato['candidatas']) && is_array($candidato['candidatas']);
+        });
 
-        $inicio = strpos($texto, '{');
-        $fin    = strrpos($texto, '}');
-
-        if ($inicio === false || $fin === false || $fin <= $inicio) {
-            return null;
-        }
-
-        $decodificado = json_decode(substr($texto, $inicio, $fin - $inicio + 1), true);
-
-        if (!is_array($decodificado) || !isset($decodificado['candidatas']) || !is_array($decodificado['candidatas'])) {
+        if (is_null($decodificado)) {
             return null;
         }
 
@@ -1191,12 +1272,15 @@ class ArticleImageValidationService
      * @param  array    $registro  run_id, item_id, criterio, consulta (ver evaluar_candidatas()).
      * @param  Article  $article
      * @param  int|null $user_id
-     * @param  string   $modelo    El de config (la respuesta buena lo pisa con el que devolvió Anthropic).
+     * @param  string   $modelo    El resuelto (la respuesta buena lo pisa con el que devolvió el proveedor).
      * @param  float    $inicio    microtime(true) de antes de la llamada.
      * @param  array    $datos     ok, cobrada, http_status, error, usage, candidatas, resumen, modelo.
+     * @param  string   $proveedor El proveedor que se llamó de verdad (misión modelos-ia-por-cliente:
+     *                             el admin costea cada consulta por proveedor + modelo). Default
+     *                             Anthropic, el único que había antes, por si un llamador no lo pasa.
      * @return void
      */
-    protected function registrar_consulta_de_candidatas(array $registro, Article $article, $user_id, $modelo, $inicio, array $datos)
+    protected function registrar_consulta_de_candidatas(array $registro, Article $article, $user_id, $modelo, $inicio, array $datos, $proveedor = ProveedorIaHelper::ANTHROPIC)
     {
         ImageServiceCallLogger::registrar(array_merge([
             'user_id'      => $this->dueno_para_el_registro($user_id, $article),
@@ -1206,7 +1290,7 @@ class ArticleImageValidationService
             'article_name' => (string) $article->name,
             'origen'       => isset($registro['origen']) ? (string) $registro['origen'] : ImageServiceCall::ORIGEN_ASIGNACION,
             'tipo'         => ImageServiceCall::TIPO_VALIDACION_IA,
-            'proveedor'    => ImageServiceCall::PROVEEDOR_ANTHROPIC,
+            'proveedor'    => $this->proveedor_para_el_registro($proveedor),
             'modelo'       => (string) $modelo,
             'criterio'     => isset($registro['criterio']) ? $registro['criterio'] : null,
             'consulta'     => isset($registro['consulta']) ? $registro['consulta'] : null,
@@ -1224,9 +1308,10 @@ class ArticleImageValidationService
      * @param  string   $modelo
      * @param  float    $inicio
      * @param  array    $datos  ok, cobrada, http_status, error, usage, resumen, modelo.
+     * @param  string   $proveedor  El que se llamó de verdad (ver registrar_consulta_de_candidatas()).
      * @return void
      */
-    protected function registrar_validacion_individual(Article $article, $user_id, $modelo, $inicio, array $datos)
+    protected function registrar_validacion_individual(Article $article, $user_id, $modelo, $inicio, array $datos, $proveedor = ProveedorIaHelper::ANTHROPIC)
     {
         ImageServiceCallLogger::registrar(array_merge([
             'user_id'      => $this->dueno_para_el_registro($user_id, $article),
@@ -1234,7 +1319,7 @@ class ArticleImageValidationService
             'article_name' => (string) $article->name,
             'origen'       => ImageServiceCall::ORIGEN_VALIDACION_INDIVIDUAL,
             'tipo'         => ImageServiceCall::TIPO_VALIDACION_IA,
-            'proveedor'    => ImageServiceCall::PROVEEDOR_ANTHROPIC,
+            'proveedor'    => $this->proveedor_para_el_registro($proveedor),
             'modelo'       => (string) $modelo,
             'candidatas'   => 1,
             'duracion_ms'  => ImageServiceCallLogger::milisegundos_desde($inicio),

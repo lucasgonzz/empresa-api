@@ -30,9 +30,49 @@ class Sale extends Model
      */
     const EXPRESION_FECHA_DE_PEDIDO = 'COALESCE(sales.fecha_entrega, sales.created_at)';
 
+    /**
+     * Condicion SQL de "venta en pesos": todo lo que no es dolares.
+     *
+     * 🔴 Decision de Lucas (30/9/2026): una venta con `moneda_id` NULL (o 0) se trata SIEMPRE como
+     * pesos. Es lo que ya hacia el Estado de Resultados (`ContabilidadRepository`: "solo
+     * `moneda_id = 2` es USD; 0, NULL y 1 son pesos"); el listado de Ventas, en cambio, comparaba
+     * `moneda_id = 1` y una venta sin moneda no sumaba en ninguno de los dos chips. Un `= 1` pelado
+     * sobre `sales.moneda_id` es la forma de reintroducir ese defecto: usar esta constante.
+     *
+     * Va calificada con `sales.` por el mismo motivo que EXPRESION_FECHA_DE_PEDIDO.
+     */
+    const EXPRESION_EN_PESOS = '(sales.moneda_id IS NULL OR sales.moneda_id <> 2)';
+
     protected $guarded = [];
 
     protected $dates = ['fecha_entrega'];
+
+    /**
+     * Toda venta nace con moneda: si quien la crea no la manda (o la manda vacia o en 0), es pesos.
+     *
+     * Solo `creating` y `updating` con `moneda_id` tocado, y NO un `saving` a secas: un `saving`
+     * corre en cada `->save()` de un Sale, y un modelo cargado con `select('id', 'total')` tiene
+     * `moneda_id` ausente; ahi el hook escribiria 1 encima de una venta en dolares. `creating` ve un
+     * modelo nuevo entero, y en `updating` solo se mira cuando alguien asigno `moneda_id` a proposito.
+     *
+     * @return void
+     */
+    protected static function booted()
+    {
+        static::creating(function ($sale) {
+
+            if (empty($sale->moneda_id)) {
+                $sale->moneda_id = 1;
+            }
+        });
+
+        static::updating(function ($sale) {
+
+            if ($sale->isDirty('moneda_id') && empty($sale->moneda_id)) {
+                $sale->moneda_id = 1;
+            }
+        });
+    }
 
     /**
      * Casts de atributos serializados para exponer tipos consistentes en API.

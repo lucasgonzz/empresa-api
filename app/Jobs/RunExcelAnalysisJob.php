@@ -87,9 +87,11 @@ class RunExcelAnalysisJob implements ShouldQueue
 
     /**
      * Tiempo máximo (segundos) que el worker le da a este job antes de matarlo.
-     * Un análisis completo (varios recorridos del archivo + llamada a Claude,
-     * que ya tiene su propio timeout de 60s) puede tardar varios minutos con
-     * archivos grandes.
+     * Un análisis completo (varios recorridos del archivo + la llamada a la IA,
+     * que tiene su propio timeout de `services.importacion_excel_ia.timeout`, 120 s
+     * por defecto desde la misión modelos-ia-por-cliente) puede tardar varios
+     * minutos con archivos grandes. Los 900 s cubren de sobra la llamada y la
+     * recomendación.
      *
      * @var int
      */

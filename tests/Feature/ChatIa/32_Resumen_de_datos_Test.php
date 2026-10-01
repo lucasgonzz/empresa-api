@@ -214,7 +214,10 @@ class Resumen_de_datos_Test extends TestCase
      */
     public function avisa_cuando_hay_registros_en_otra_moneda()
     {
-        Sale::create(['user_id' => $this->comercio->id, 'total' => 100, 'moneda_id' => null]);
+        $sin_moneda = Sale::create(['user_id' => $this->comercio->id, 'total' => 100, 'moneda_id' => null]);
+        // Venta vieja, sin moneda: `Sale` ya no deja CREAR una (la pasa a pesos), asi que se la deja en NULL directo
+        // en la base, como estan las de antes de la columna, que es el dato que esta prueba necesita.
+        DB::table('sales')->where('id', $sin_moneda->id)->update(['moneda_id' => null]);
         Sale::create(['user_id' => $this->comercio->id, 'total' => 200, 'moneda_id' => 1]);
         Sale::create(['user_id' => $this->comercio->id, 'total' => 50, 'moneda_id' => 2]);
         Sale::create(['user_id' => $this->comercio->id, 'total' => 70, 'moneda_id' => 2]);

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
@@ -144,9 +145,18 @@ class BudgetHelper {
 
 	        Self::attachSalePromocionVinotecas($sale, $budget);
 
-	        Self::attachSaleCombos($sale, $budget);
-
+	        /*
+	            🔴 Los descuentos y recargos se adjuntan ANTES que los combos (mision
+	            combos-calculados, Parte A2, 30/9/2026). `attachSaleCombos()` calcula el costo del
+	            combo con `SaleHelper::getCost()`, que en las cuentas con
+	            `aplicar_descuentos_de_venta_a_costos` lee `$sale->discounts` y `$sale->surchages`:
+	            con ellos todavia sin adjuntar, el costo del combo saldria sin ajustar, distinto al
+	            de los articulos de la misma venta (esos traen el costo ya ajustado del presupuesto).
+	            `attachSaleDiscountsAndSurchages()` no depende de nada de lo que se adjunta antes.
+	        */
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
+
+	        Self::attachSaleCombos($sale, $budget);
 
 	        /*
 	            🔴 EL `sub_total` DE LA VENTA NACIDA DE UN PRESUPUESTO (mision forzar-total-por-monto,
@@ -402,6 +412,15 @@ class BudgetHelper {
 			$sale->combos()->attach($combo->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $combo->pivot->amount,
 				'price'	    		=> $combo->pivot->price,
+				/*
+					🔴 El costo del combo se calcula ACA, al confirmar (mision combos-calculados,
+					Parte A2, 30/9/2026): `budget_combo` no guarda costo, asi que no hay nada que
+					copiar. Es el costo VIGENTE del combo en este momento —componentes y costos de
+					hoy—, el mismo criterio con el que un articulo sin costo guardado se cotiza al
+					confirmar, y queda congelado en la venta. Lo decide el servidor
+					(`ComboCostoDeVentaHelper`), igual que en `SaleHelper::attachCombos()`.
+				*/
+				'cost'				=> ComboCostoDeVentaHelper::costo_unitario($sale, $combo->id),
 				'created_at'		=> Carbon::now(),
 			], RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot), 'combo_sale'));
 

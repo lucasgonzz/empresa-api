@@ -28,6 +28,7 @@ use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Pdf\ArticleBarCodePdf;
 use App\Http\Controllers\Pdf\ArticleListPdf;
@@ -970,6 +971,17 @@ class ArticleController extends Controller
         
         // ImageController::deleteModelImages($model);
         $model->delete();
+
+        /*
+         * Combos calculados (misión combos-calculados, 30/9/2026): un componente borrado sigue
+         * contando en el costo y el precio del combo con sus últimos valores (lo que cambia es su
+         * stock, que es 0: el combo no se puede armar), así que hoy este recálculo no mueve
+         * números. Está igual, y es una consulta, para que la regla "cada cambio en un componente
+         * pasa por ComboCalculadoHelper" no dependa de que nadie decida distinto sobre los
+         * borrados sin acordarse de enganchar esto.
+         */
+        ComboCalculadoHelper::recalcular_por_articulos([$model->id]);
+
         ArticleHelper::check_recipes_despues_de_eliminar_articulo($recipes_donde_esta_este_articulo, $this);
 
         if ($send_notification) {

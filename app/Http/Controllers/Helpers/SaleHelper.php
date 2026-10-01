@@ -22,7 +22,9 @@ use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
@@ -411,7 +413,12 @@ class SaleHelper extends Controller {
         $previus_combos_a_restar = ($se_esta_confirmando_por_primera_vez || $se_activando_discount_stock) ? null : $previus_combos;
 
         Self::attachPromocionVinotecas($model, $request->items, $previus_promos_a_restar);
-        Self::attachCombos($model, $request->items, $previus_combos_a_restar);
+        /*
+            El costo que los combos ya tenian (solo hay en la edicion) sale de `$previus_combos`
+            COMPLETO y no de `$previus_combos_a_restar`: ese ultimo se anula al confirmar, y la
+            confirmacion tambien tiene que conservar el costo ya congelado.
+        */
+        Self::attachCombos($model, $request->items, $previus_combos_a_restar, ComboCostoDeVentaHelper::costos_previos($previus_combos));
         Self::attachServices($model, $request->items);
 
         Self::attachSelectedPaymentMethods($model, $request);
@@ -1762,12 +1769,40 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function attachCombos($sale, $combos, $previus_combos) {
+    /**
+     * @param  \App\Models\Sale  $sale
+     * @param  array             $combos           Los renglones del request (`items`).
+     * @param  mixed             $previus_combos   Para el stock (puede venir en null aunque la venta ya tuviera combos).
+     * @param  array|null        $costos_previos   `ComboCostoDeVentaHelper::costos_previos()` de los combos que la venta
+     *                                             ya tenía (solo en la edición): esos conservan su costo congelado.
+     */
+    static function attachCombos($sale, $combos, $previus_combos, $costos_previos = null) {
         foreach ($combos as $combo) {
             if (isset($combo['is_combo'])) {
                 $sale->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                             'amount' => (float)$combo['amount'],
                                                             'price' => $combo['price_vender'],
+                                                            /*
+                                                                🔴 El costo UNITARIO del combo lo decide el servidor (misión
+                                                                combos-calculados, Parte A2, 30/9/2026): Σ del costo de línea de cada
+                                                                componente si el combo es calculado, o `combos.cost` si es manual.
+                                                                NUNCA se lee `$combo['cost']`: ni el que mande el SPA ni el
+                                                                `order_combo.cost` que `CreateSaleOrderHelper` copia del pedido de
+                                                                la tienda (que hoy llega en NULL y mañana puede traer cualquier
+                                                                cosa). Sin este costo, `sales.ganancia` tomaba el precio ENTERO
+                                                                del combo como ganancia. NULL si no se puede resolver; ver
+                                                                `ComboCostoDeVentaHelper`.
+
+                                                                Se calcula acá, con los descuentos y recargos de la venta ya
+                                                                adjuntados (`attachProperies()` los adjunta antes), porque la
+                                                                cuenta que aplica los descuentos a los costos los lee.
+
+                                                                🔴 EN UNA EDICIÓN, un combo que la venta YA TENÍA conserva su
+                                                                costo congelado (`$costos_previos`, leído de la base): recalcularlo
+                                                                con el costo de hoy cambiaría la ganancia de una venta vieja por
+                                                                editarle cualquier cosa. Solo los combos NUEVOS se calculan.
+                                                            */
+                                                            'cost' => ComboCostoDeVentaHelper::costo_para_renglon($sale, $combo['id'], $costos_previos),
                                                             'created_at' => Carbon::now(),
                                                         ], RecargosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'));
 
@@ -2228,30 +2263,58 @@ class SaleHelper extends Controller {
 
         if ($cost > 0) {
 
-            
-            if ($sale->moneda_id == 1) {
-                // Pesos
+            /*
+             * 🔴 La cotización SIEMPRE sale de CotizacionDeVentaHelper::resolver_para_costo() y no de
+             * `(float) $sale->valor_dolar` pelado (misión corregir-ventas-en-dolares, 30/9/2026).
+             * Con la venta sin valor_dolar el pelado daba 0: en la rama de dólares `$cost /= 0` era
+             * un "Division by zero" (HTTP 500) y en la de pesos `$cost *= 0` guardaba el costo del
+             * renglón en CERO, sin error y con la ganancia igual al precio entero.
+             *
+             * El helper cuenta con el dólar de la venta si sirve, con el del dueño si no (con un
+             * warning) y, si tampoco hay, devuelve null: en ese caso el costo se deja como está,
+             * sin dividir ni multiplicar, en vez de inventar un número. `store()` ya rechazó con 422
+             * la venta que necesita cotización y no la trae; esta red es para los caminos que no
+             * pasan por ahí (confirmar presupuesto, IA, SaleModificationsHelper, BudgetHelper).
+             */
+            /*
+             * 🔴 Pesos es TODO lo que no es dólares (decisión de Lucas, 30/9/2026: una venta con
+             * `moneda_id` NULL o 0 se trata SIEMPRE como pesos). Antes esta rama era `== 1` y la de
+             * dólares `== 2`: una venta sin moneda no entraba en ninguna y el costo de un artículo
+             * cargado en dólares quedaba sin convertir (en dólares, dentro de una venta en pesos).
+             */
+            if ($sale->moneda_id != CotizacionDeVentaHelper::MONEDA_DOLAR) {
+                // Pesos: solo se convierte el costo de un artículo cargado en dólares.
                 if (
-                    isset($item['cost_in_dollars']) 
-                    && $item['cost_in_dollars'] == 1
+                    CotizacionDeVentaHelper::item_esta_en_dolares($item)
                     // && (
                     //     $user
                     //     && $user->cotizar_precios_en_dolares == 0
                     // )
                 ) {
-                    $cost *= (float)$sale->valor_dolar;
+                    $valor_dolar = CotizacionDeVentaHelper::resolver_para_costo($sale, $user);
+
+                    if (!is_null($valor_dolar)) {
+                        $cost *= $valor_dolar;
+                    }
                 }
 
-            } else if ($sale->moneda_id == 2) {
+            } else {
 
-                if (
-                    $item['cost_in_dollars'] == 0
-                    || $item['cost_in_dollars'] == '0'
-                    || is_null($item['cost_in_dollars'])
-                ) {
-                    $cost /= (float)$sale->valor_dolar;
+                /*
+                 * Dólares: solo se convierte el costo de un artículo cargado en PESOS (el que está
+                 * en dólares ya viene en la moneda de la venta). Un renglón sin la clave
+                 * `cost_in_dollars` es un artículo en pesos: antes esta rama la leía sin `isset` y
+                 * un renglón armado a mano moría con "Undefined index".
+                 */
+                if (CotizacionDeVentaHelper::item_esta_en_pesos($item)) {
+
+                    $valor_dolar = CotizacionDeVentaHelper::resolver_para_costo($sale, $user);
+
+                    if (!is_null($valor_dolar)) {
+                        $cost /= $valor_dolar;
+                    }
                 }
-            } 
+            }
         }
 
         if (!is_null($user) && $user->aplicar_descuentos_de_venta_a_costos) {

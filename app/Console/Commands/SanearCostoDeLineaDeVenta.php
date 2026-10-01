@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\DB;
  * DESPUES de leer el costo: `SaleHelper::attachArticle()`, `SaleTotalesHelper::set_total_cost()`
  * y `ContabilidadRepository::costo_mercaderia_vendida()`.
  *
- * ─── Las dos causas que detecta ───────────────────────────────────────────────────────────
+ * ─── Las tres causas que detecta ───────────────────────────────────────────────────────────
  *
  * CAUSA B — costo TOTAL escrito en la columna unitaria por `set_costo_ventas`.
  *
@@ -64,6 +64,16 @@ use Illuminate\Support\Facades\DB;
  *   `|ganancia| > price × amount` con `ganancia < 0`, que es exactamente `cost > 2 × price`.
  *   NO se compara contra `articles.costo_real` de hoy: el costo de un articulo cambia con el
  *   tiempo y esa comparacion da falsos positivos y falsos negativos.
+ *
+ * CAUSA C — costo TOTAL (unitario × cantidad, y × unidades del bulto) con la firma SANA.
+ *
+ *   Medida el 30/9/2026 en ferretotal: ~170 lineas que concentran el 99 % del monto negativo (la
+ *   venta 8050 sola suma −4.606 millones). `set_costo_ventas` dejo el costo total y despues un
+ *   recalculo de `ganancia` la reescribio como `(price − cost) × amount`: la linea paso a parecer
+ *   sana y la causa B ya no la ve. Sin firma que la delate, se corrige SOLO si la evidencia
+ *   independiente cierra entera (criterio en `CostoDeLineaDeVentaHelper::probar_causa_c()`): el
+ *   costo dividido por cantidad (y unidades) es coherente con el precio de la linea Y con la ficha
+ *   de hoy, y el costo guardado tal cual NO lo es. Ante cualquier duda se descarta y se lista.
  *
  * ─── Los limites, que son parte del criterio ──────────────────────────────────────────────
  *
@@ -133,7 +143,7 @@ class SanearCostoDeLineaDeVenta extends Command
                             {--user_id= : Cliente a sanear. Si falta se usa config(app.USER_ID).}
                             {--aplicar : Escribe los cambios. Sin este flag el comando es dry-run.}
                             {--dry-run : Fuerza el dry-run aunque se haya pasado --aplicar.}
-                            {--causa=todas : a, b o todas.}
+                            {--causa=todas : a, b, c o todas.}
                             {--sale_id= : Limita el saneo a una sola venta.}
                             {--desde= : Fecha AAAA-MM-DD, sobre sales.created_at.}
                             {--hasta= : Fecha AAAA-MM-DD, sobre sales.created_at.}
@@ -222,14 +232,15 @@ class SanearCostoDeLineaDeVenta extends Command
 
         $causa = strtolower((string) $this->option('causa'));
 
-        if (!in_array($causa, ['a', 'b', 'todas'], true)) {
-            $this->error('--causa acepta a, b o todas. Llego: ' . $causa);
+        if (!in_array($causa, ['a', 'b', 'c', 'todas'], true)) {
+            $this->error('--causa acepta a, b, c o todas. Llego: ' . $causa);
 
             return 1;
         }
 
         $hacer_a = ($causa === 'a' || $causa === 'todas');
         $hacer_b = ($causa === 'b' || $causa === 'todas');
+        $hacer_c = ($causa === 'c' || $causa === 'todas');
 
         $k_max = (int) $this->option('k_max');
 
@@ -245,7 +256,7 @@ class SanearCostoDeLineaDeVenta extends Command
         $this->line('Cliente (user_id): ' . $user_id . '. Causas: ' . $causa . '. k_max: ' . $k_max . '.');
         $this->line($aplicar ? 'Modo: APLICAR (escribe).' : 'Modo: dry-run (no escribe una sola fila).');
 
-        $this->recorrer_lineas($user_id, $hacer_a, $hacer_b, $k_max, $limite);
+        $this->recorrer_lineas($user_id, $hacer_a, $hacer_b, $k_max, $limite, $hacer_c);
 
         $this->info('Lineas miradas: ' . $this->contadores['lineas_miradas']
             . '. A corregir: ' . count($this->correcciones) . '.');
@@ -346,11 +357,12 @@ class SanearCostoDeLineaDeVenta extends Command
      * @param  int  $user_id
      * @param  bool  $hacer_a
      * @param  bool  $hacer_b
+     * @param  bool  $hacer_c
      * @param  int  $k_max
      * @param  int|null  $limite
      * @return void
      */
-    private function recorrer_lineas($user_id, $hacer_a, $hacer_b, $k_max, $limite)
+    private function recorrer_lineas($user_id, $hacer_a, $hacer_b, $k_max, $limite, $hacer_c = false)
     {
         $query = CostoDeLineaDeVentaHelper::query_de_lineas($user_id);
 
@@ -374,11 +386,11 @@ class SanearCostoDeLineaDeVenta extends Command
 
         $corte = false;
 
-        $query->chunkById(1000, function ($filas) use ($hacer_a, $hacer_b, $k_max, $limite, &$corte) {
+        $query->chunkById(1000, function ($filas) use ($hacer_a, $hacer_b, $hacer_c, $k_max, $limite, &$corte) {
                 foreach ($filas as $fila) {
                     $this->contadores['lineas_miradas']++;
 
-                    $analisis = $this->analizar_linea($fila, $hacer_a, $hacer_b, $k_max);
+                    $analisis = $this->analizar_linea($fila, $hacer_a, $hacer_b, $k_max, $hacer_c);
 
                     $this->acumular_costo_de_la_venta($fila, $analisis);
 
@@ -428,12 +440,13 @@ class SanearCostoDeLineaDeVenta extends Command
      * @param  object  $fila
      * @param  bool  $hacer_a
      * @param  bool  $hacer_b
+     * @param  bool  $hacer_c
      * @param  int  $k_max
      * @return array
      */
-    private function analizar_linea($fila, $hacer_a, $hacer_b, $k_max)
+    private function analizar_linea($fila, $hacer_a, $hacer_b, $k_max, $hacer_c = false)
     {
-        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, $hacer_a, $hacer_b, $k_max);
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, $hacer_a, $hacer_b, $k_max, $hacer_c);
 
         if ($analisis['tiene_unidades_en_el_pivot']) {
             $this->contadores['lineas_con_unidades_individuales_en_el_pivot']++;

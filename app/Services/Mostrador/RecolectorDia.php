@@ -105,9 +105,8 @@ class RecolectorDia extends RecolectorBase
             ->where('sales.user_id', $owner->id)
             ->soloVentasReales()
             ->where('sales.terminada', 1)
-            ->where(function ($q) {
-                $q->whereNull('sales.moneda_id')->orWhere('sales.moneda_id', self::MONEDA_PESOS);
-            });
+            // Pesos es todo lo que no es dolares (moneda_id NULL o 0 incluidos): ver Sale::EXPRESION_EN_PESOS.
+            ->whereRaw(Sale::EXPRESION_EN_PESOS);
 
         if (Sale::fechaDeReportePorPedido($owner)) {
             return $query->enRangoDeFechas($desde, $hasta, $owner);

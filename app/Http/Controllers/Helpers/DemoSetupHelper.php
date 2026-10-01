@@ -1003,6 +1003,7 @@ class DemoSetupHelper
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',

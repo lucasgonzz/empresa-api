@@ -14,14 +14,27 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * Misión proveedores-ia-deepseek (22/9/2026) — el bot de WhatsApp sigue al proveedor del DUEÑO.
+ * El proveedor y el modelo del bot de WhatsApp.
  *
- * Protege: con el dueño en DeepSeek, `generate_response()` y `generate_summary()` pegan a
- * `api.deepseek.com/anthropic/v1/messages` con la clave de DeepSeek, el modelo GENERAL de DeepSeek
- * (`services.deepseek.model`, no el de la variante de pensamiento) y el thinking apagado, y las
- * filas de consumo dicen `deepseek`; con el dueño en Anthropic todo queda exactamente como hoy
- * (URL, clave, sin clave `thinking`, `proveedor = anthropic`); y sin clave del proveedor del dueño
- * (ni de otro), el bot no sale a la red.
+ * 🔴 CAMBIO DE CONTRATO — 30/9/2026, misión `modelos-ia-por-cliente`, DECISIÓN DE LUCAS: "el
+ * WhatsApp tiene su propio modelo, por defecto DeepSeek, separado del asistente".
+ *
+ * Lo que este archivo afirmaba ANTES (misión proveedores-ia-deepseek, 22/9/2026): el bot SEGUÍA al
+ * proveedor del asistente del dueño (`users.agente_proveedor`) con el modelo GENERAL de ese
+ * proveedor (`services.<proveedor>.model`, vía ProveedorIaHelper::modelo_general()). Con el dueño en
+ * DeepSeek iba a `services.deepseek.model`; con el dueño en Anthropic iba a Anthropic aunque hubiera
+ * clave de DeepSeek.
+ *
+ * Por qué cambió: Lucas pidió elegir desde el admin, por cliente, el modelo de cuatro tareas por
+ * separado (asistente, WhatsApp a clientes, verificación de imágenes, importación de Excel), con
+ * todo en DeepSeek por defecto. El bot ahora sigue a `users.ia_modelo_whatsapp` (ModelosIaHelper):
+ * null = DeepSeek Flash (`services.deepseek.model_agil`), sin importar dónde esté el asistente.
+ * Los tres primeros tests se reescribieron con ese contrato y se sumó uno que cubre, por el camino
+ * nuevo, lo que cubría "el dueño en Anthropic": elegir Claude para el WhatsApp.
+ *
+ * Lo que NO cambió (los dos últimos tests, intactos): sin clave de DeepSeek el bot cae a Anthropic
+ * con `services.anthropic.model`, el mismo modelo que usaba antes —así la producción sin
+ * DEEPSEEK_API_KEY no cambia—; y sin clave de ningún proveedor no sale a la red.
  *
  * Siembra copiada de `5_Tokens_agente_Test`: esa suite ya documenta que una respuesta del agente
  * son DOS filas (la del proveedor y la del embedding del RAG en OpenAI); acá las aserciones filtran
@@ -59,6 +72,7 @@ class Proveedor_del_bot_Test extends TestCase
         config([
             'services.anthropic.api_key' => 'clave-anthropic-de-prueba',
             'services.anthropic.model'   => 'claude-general-test',
+            'services.anthropic.model_equilibrado' => 'claude-sonnet-test',
             'services.deepseek.api_key'  => 'clave-deepseek-de-prueba',
             'services.deepseek.model'    => 'deepseek-general-test',
             'services.deepseek.model_agil'     => 'deepseek-flash-test',
@@ -181,13 +195,17 @@ class Proveedor_del_bot_Test extends TestCase
     }
 
     /**
+     * Contrato nuevo (30/9/2026): sin elección propia (`ia_modelo_whatsapp` null) el bot va a DeepSeek
+     * FLASH (`services.deepseek.model_agil`) con el thinking apagado. Antes iba al modelo GENERAL del
+     * proveedor del asistente (ver el docblock de la clase).
+     *
      * @group whatsapp
      * @test
      */
-    public function la_respuesta_del_bot_con_el_dueno_en_deepseek_va_a_deepseek_con_el_modelo_general()
+    public function la_respuesta_del_bot_sin_eleccion_propia_va_a_deepseek_flash_aunque_el_asistente_este_en_pro()
     {
         $this->fakes_de_red('Sí, tenemos tornillos.');
-        /* En profundo a propósito: el bot usa el modelo GENERAL, no el de la variante. */
+        /* El asistente en Pro a propósito: el bot tiene su propio modelo y no hereda la variante. */
         $this->dueno_en('deepseek', 'profundo');
 
         $texto = (new WhatsappBotAiService())->generate_response($this->chat, $this->config);
@@ -198,7 +216,7 @@ class Proveedor_del_bot_Test extends TestCase
 
         $this->assertEquals(self::URL_DEEPSEEK, $url);
         $this->assertEquals(['clave-deepseek-de-prueba'], $headers['x-api-key'], 'La clave del header es la de DeepSeek.');
-        $this->assertEquals(config('services.deepseek.model'), $body['model'], 'El bot usa el modelo GENERAL de DeepSeek, no el de la variante de pensamiento.');
+        $this->assertEquals(config('services.deepseek.model_agil'), $body['model'], 'Sin elección propia, el bot va a DeepSeek Flash, no al Pro del asistente.');
         $this->assertEquals('disabled', $body['thinking']['type'], 'Las respuestas del bot son cortas y baratas: el thinking va apagado.');
         $this->assertEquals(500, $body['max_tokens'], 'Con el thinking apagado el techo de salida es el de siempre.');
 
@@ -206,19 +224,19 @@ class Proveedor_del_bot_Test extends TestCase
 
         $this->assertCount(1, $filas);
         $this->assertEquals('deepseek', $filas[0]->proveedor, 'El gasto se registra con el proveedor que contestó.');
-        $this->assertEquals(config('services.deepseek.model'), $filas[0]->modelo);
+        $this->assertEquals(config('services.deepseek.model_agil'), $filas[0]->modelo);
         $this->assertEquals(321, (int) $filas[0]->input_tokens);
         $this->assertEquals(45, (int) $filas[0]->output_tokens);
     }
 
     /**
      * `generate_summary()` no recibe la config: resuelve al dueño por el `user_id` del chat, y tiene
-     * que llegar al mismo proveedor.
+     * que llegar al mismo modelo que la respuesta (DeepSeek Flash sin elección propia).
      *
      * @group whatsapp
      * @test
      */
-    public function el_resumen_con_el_dueno_en_deepseek_va_a_deepseek_con_el_modelo_general()
+    public function el_resumen_sin_eleccion_propia_va_a_deepseek_flash()
     {
         $this->fakes_de_red('El cliente preguntó por tornillos.');
         $this->dueno_en('deepseek');
@@ -231,54 +249,105 @@ class Proveedor_del_bot_Test extends TestCase
 
         $this->assertEquals(self::URL_DEEPSEEK, $url);
         $this->assertEquals(['clave-deepseek-de-prueba'], $headers['x-api-key']);
-        $this->assertEquals(config('services.deepseek.model'), $body['model']);
+        $this->assertEquals(config('services.deepseek.model_agil'), $body['model']);
         $this->assertEquals('disabled', $body['thinking']['type']);
 
         $filas = $this->consumos('whatsapp_resumen');
 
         $this->assertCount(1, $filas);
         $this->assertEquals('deepseek', $filas[0]->proveedor);
-        $this->assertEquals(config('services.deepseek.model'), $filas[0]->modelo);
+        $this->assertEquals(config('services.deepseek.model_agil'), $filas[0]->modelo);
     }
 
     /**
-     * Con el dueño en Anthropic NADA cambia: URL y clave de Anthropic, sin clave `thinking`, y la
-     * fila dice `anthropic` con el modelo general de Anthropic.
+     * Contrato nuevo (30/9/2026): el bot NO sigue al asistente. Con el asistente del dueño en Claude
+     * y las dos claves cargadas, un bot sin elección propia igual va a DeepSeek Flash. Antes iba a
+     * Anthropic con el modelo general (ver el docblock de la clase).
      *
      * @group whatsapp
      * @test
      */
-    public function con_el_dueno_en_anthropic_la_respuesta_y_el_resumen_son_los_de_siempre()
+    public function con_el_asistente_en_claude_el_bot_sin_eleccion_propia_igual_va_a_deepseek()
     {
-        $this->fakes_de_red('Como siempre.');
+        $this->fakes_de_red('Por DeepSeek.');
         $this->dueno_en('anthropic');
 
         $texto = (new WhatsappBotAiService())->generate_response($this->chat, $this->config);
 
-        $this->assertEquals('Como siempre.', $texto);
+        $this->assertEquals('Por DeepSeek.', $texto);
+
+        list($url, $headers, $body) = $this->el_request_de_chat();
+
+        $this->assertEquals(self::URL_DEEPSEEK, $url, 'El asistente en Claude no arrastra al bot: el bot tiene su propio modelo.');
+        $this->assertEquals(['clave-deepseek-de-prueba'], $headers['x-api-key']);
+        $this->assertEquals(config('services.deepseek.model_agil'), $body['model']);
+        $this->assertEquals('disabled', $body['thinking']['type']);
+
+        $filas = $this->consumos('whatsapp_respuesta');
+
+        $this->assertCount(1, $filas);
+        $this->assertEquals('deepseek', $filas[0]->proveedor);
+
+        /* El resumen, por el mismo camino. */
+        $resumen = (new WhatsappBotAiService())->generate_summary($this->chat);
+
+        $this->assertEquals('Por DeepSeek.', $resumen);
+
+        $filas_resumen = $this->consumos('whatsapp_resumen');
+
+        $this->assertCount(1, $filas_resumen);
+        $this->assertEquals('deepseek', $filas_resumen[0]->proveedor);
+
+        Http::assertNotSent(function ($request) {
+            return strpos($request->url(), 'api.anthropic.com') !== false;
+        });
+    }
+
+    /**
+     * Lo que antes cubría "el dueño en Anthropic", por el camino nuevo: con el asistente en Claude Y
+     * el WhatsApp elegido en `claude_sonnet`, el bot va a Anthropic con `model_equilibrado` (el id de
+     * Sonnet del catálogo), sin clave `thinking`, y las filas dicen `anthropic`.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function con_el_whatsapp_elegido_en_claude_sonnet_va_a_anthropic_con_model_equilibrado()
+    {
+        $this->fakes_de_red('Por Claude.');
+        $this->dueno_en('anthropic');
+
+        $this->comercio->ia_modelo_whatsapp = 'claude_sonnet';
+        $this->comercio->save();
+        $this->config = $this->config->fresh();
+
+        $texto = (new WhatsappBotAiService())->generate_response($this->chat, $this->config);
+
+        $this->assertEquals('Por Claude.', $texto);
 
         list($url, $headers, $body) = $this->el_request_de_chat();
 
         $this->assertEquals(self::URL_ANTHROPIC, $url);
         $this->assertEquals(['clave-anthropic-de-prueba'], $headers['x-api-key']);
-        $this->assertEquals(config('services.anthropic.model'), $body['model']);
+        $this->assertEquals('claude-sonnet-test', $body['model'], 'claude_sonnet es services.anthropic.model_equilibrado.');
         $this->assertArrayNotHasKey('thinking', $body, 'A Anthropic no se le manda ninguna clave thinking.');
+        $this->assertEquals(500, $body['max_tokens']);
 
         $filas = $this->consumos('whatsapp_respuesta');
 
         $this->assertCount(1, $filas);
         $this->assertEquals('anthropic', $filas[0]->proveedor);
-        $this->assertEquals(config('services.anthropic.model'), $filas[0]->modelo);
+        $this->assertEquals('claude-sonnet-test', $filas[0]->modelo);
 
         /* El resumen, por el mismo camino. */
         $resumen = (new WhatsappBotAiService())->generate_summary($this->chat);
 
-        $this->assertEquals('Como siempre.', $resumen);
+        $this->assertEquals('Por Claude.', $resumen);
 
         $filas_resumen = $this->consumos('whatsapp_resumen');
 
         $this->assertCount(1, $filas_resumen);
         $this->assertEquals('anthropic', $filas_resumen[0]->proveedor);
+        $this->assertEquals('claude-sonnet-test', $filas_resumen[0]->modelo);
 
         Http::assertNotSent(function ($request) {
             return strpos($request->url(), 'api.deepseek.com') !== false;

@@ -56,6 +56,16 @@ class AppServiceProvider extends ServiceProvider
     {
         Relation::enforceMorphMap([
             'article' => 'App\Models\Article',
+            /*
+             * Misión combos-calculados (30/9/2026): el combo tiene fotos propias en la tabla
+             * `images` (`imageable_type = 'combo'`) y con el mapa impuesto un modelo que no está
+             * acá no puede ser el dueño de una relación polimórfica: `Combo::images()` y el
+             * `Image::create(['imageable_type' => 'combo'])` de ImageController::setImage()
+             * reventarían con ClassMorphViolationException. La tienda (tienda-api) tiene el mismo
+             * alias apuntando a su propio modelo `App\Combo`: los DOS tienen que llamarse `combo`,
+             * porque el alias es lo que queda escrito en la base compartida.
+             */
+            'combo' => 'App\Models\Combo',
             'promocion_vinoteca' => 'App\Models\PromocionVinoteca',
             'client' => 'App\Models\Client',
             'provider' => 'App\Models\Provider',
@@ -79,5 +89,13 @@ class AppServiceProvider extends ServiceProvider
         User::observe(UserEtiquetaMedidaObserver::class);
         /* Lista de precios nueva -> su diseño de etiquetas de góndola, venga del camino que venga. */
         PriceType::observe(PriceTypeObserver::class);
+
+        /*
+         * Auditoría de cambios (misión auditoria-de-cambios, 30/9/2026): un listener global de los
+         * eventos de Eloquent deja una fila en `audit_logs` por cada cambio de cualquier modelo.
+         * Se registra acá, en una sola línea, y no en cada modelo: así cubre también a los modelos
+         * que se agreguen después. Qué se excluye y por qué: config/audit_log.php.
+         */
+        \App\Services\AuditLog\AuditLogRecorder::register();
     }
 }

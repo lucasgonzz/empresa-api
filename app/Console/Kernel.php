@@ -4,6 +4,8 @@ namespace App\Console;
 
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
+use App\Models\Combo;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
 use App\Models\SyncToMeliArticle;
@@ -262,6 +264,31 @@ class Kernel extends ConsoleKernel
         $schedule->command('inventario:generar')
             ->dailyAt('04:00')
             ->withoutOverlapping(120);
+
+        // Red de seguridad de los combos calculados (misión combos-calculados, 30/9/2026): rehace la
+        // cuenta de todos los combos con "calcular en base a los artículos". Los combos se
+        // recalculan solos cuando cambia un componente (ComboCalculadoHelper, enganchado en
+        // setFinalPrice, las masivas y el cierre de las importaciones), pero existen escrituras que
+        // ningún gancho ve: consultas directas a `articles` (DB::table), correcciones de datos por
+        // comando, cambios de cotización que no pasan por setFinalPrice. Sin esta corrida un combo
+        // podría quedar con una cuenta vieja por tiempo indefinido y sin que nada lo denuncie.
+        //
+        // 02:30: antes del backup del VPS (03:15) y de la ventana 03:30-04:30 del resto de los
+        // comandos nocturnos. Idempotente y barata: solo escribe los combos cuyo número cambió.
+        //
+        // 🔴 Costo permanente en los ~40 clientes que NO usan combos calculados: el ->when() decide
+        // adentro del proceso de schedule:run (regla del schedule, ver el docblock de arriba) y con
+        // cero combos calculados no arranca ningún artisan. Si no se puede decidir (esquema sin
+        // migrar), gate_de_datos() devuelve true y el comando sale solo en su primera línea.
+        $schedule->command('combos:recalcular')
+            ->dailyAt('02:30')
+            ->withoutOverlapping(60)
+            ->when(function () {
+                return $this->gate_de_datos(function () {
+                    return ComboCalculadoEsquemaHelper::disponible()
+                        && Combo::where('calcular_desde_articulos', 1)->exists();
+                });
+            });
 
         // Cierre mensual del rendimiento del comercio (company_performances / article_performances,
         // misión optimizacion-vps-fase1, 4.0.24): el día 1 borra lo que se fue calculando durante

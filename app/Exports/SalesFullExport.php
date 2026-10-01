@@ -37,7 +37,8 @@ class SalesFullExport implements FromCollection, WithHeadings, ShouldAutoSize
             return [
                 'fecha'               => $sale->created_at->format('Y-m-d H:i:s'),
                 'numero_venta'        => $sale->id,
-                'total'               => $sale->moneda_id == 1 ? $sale->total : '',
+                // Pesos es todo lo que no es dolares (moneda_id NULL o 0 incluidos).
+                'total'               => $sale->moneda_id != 2 ? $sale->total : '',
                 'total_usd'           => $sale->moneda_id == 2 ? $sale->total : '',
                 'total_facturado'     => $sale->total_facturado,
                 'moneda'              => optional($sale->moneda)->name ?? 'Peso',
@@ -71,9 +72,9 @@ class SalesFullExport implements FromCollection, WithHeadings, ShouldAutoSize
         $total_usd = 0;
 
         $this->sales->each(function ($sale) use (&$total_pesos, &$total_usd) {
-            if ($sale->moneda_id == 1) {
+            if ($sale->moneda_id != 2) {
                 $total_pesos += (float) $sale->total;
-            } elseif ($sale->moneda_id == 2) {
+            } else {
                 $total_usd += (float) $sale->total;
             }
         });

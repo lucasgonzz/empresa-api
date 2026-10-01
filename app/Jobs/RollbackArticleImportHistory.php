@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\ImportHistory;
@@ -666,6 +667,14 @@ class RollbackArticleImportHistory implements ShouldQueue
         }
 
         RecalculoDePreciosEnLote::recalcular($article_ids, $user, $this->owner_user_id);
+
+        /*
+         * Combos calculados (misión combos-calculados, 30/9/2026): la reversión restauró costos y
+         * precios de los artículos con consultas directas y el motor los recalculó en bloque; ni
+         * una cosa ni la otra pasa por el gancho de `setFinalPrice()`. Los combos calculados que
+         * incluyen estos artículos vuelven a la cuenta correcta acá, con todo ya escrito.
+         */
+        ComboCalculadoHelper::recalcular_por_articulos($article_ids);
     }
 
     /**

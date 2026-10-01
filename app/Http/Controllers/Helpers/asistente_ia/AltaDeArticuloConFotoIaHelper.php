@@ -43,6 +43,27 @@ use Illuminate\Support\Facades\Log;
  * pudo asignar: <motivo>", y la foto queda sin usar para volver a intentarla con la foto de un
  * artículo.
  *
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ * Misión alta-por-agente-margen-y-stock (29/9/2026, caso demo3 artículo 17320, la Cera Nic)
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * El mismo mecanismo de extras lleva ahora dos cosas más que la persona dicta en el mismo pedido
+ * y que la pantalla de artículos tampoco recibe en su store():
+ *
+ *   - `margenes_por_lista`: el margen de cada lista de precio en un negocio con listas. SÍ termina
+ *     en el controller, pero no como campo: EjecutorGenericoIaHelper lo convierte en el
+ *     `price_types` que manda la ficha (MargenesPorListaIaHelper::price_types_para_el_payload)
+ *     antes de llamar a store(). Acá se separa, se hereda, se resuelve y, después del alta, se
+ *     VERIFICA releyendo el pivote.
+ *   - `stock_inicial` (y `deposito` si el negocio tiene depósitos): se resuelve al proponer
+ *     (PropuestaStockIaHelper::resolver_stock_inicial) y se carga DESPUÉS del alta, como la foto,
+ *     por el camino del botón "Asignar Stock" (PropuestaStockIaHelper::cargar_stock_inicial).
+ *
+ * 🔴 En demo3 el agente dijo "las 20 unidades ya quedaron cargadas" y el margen "del 30 %"
+ * quedó en 0 % en las dos listas: el resultado del alta decía "creado" y nada más. Por eso
+ * completar() enumera lo que QUEDÓ (el precio de cada lista releído del pivote) y lo que falló:
+ * es lo único que el modelo repite.
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
  */
 class AltaDeArticuloConFotoIaHelper
@@ -51,6 +72,13 @@ class AltaDeArticuloConFotoIaHelper
     const CON_FOTO = 'con_foto_de_la_conversacion';
     const IMAGEN_ID = 'imagen_id';
     const DESCRIPCION = 'descripcion';
+
+    /** El margen por lista (misión alta-por-agente-margen-y-stock, 29/9/2026). */
+    const MARGENES = MargenesPorListaIaHelper::CLAVE;
+
+    /** El stock inicial y su depósito (misión alta-por-agente-margen-y-stock, 29/9/2026). */
+    const STOCK_INICIAL = 'stock_inicial';
+    const DEPOSITO = 'deposito';
 
     /** La única entidad que acepta extras. */
     const ENTIDAD = 'article';
@@ -68,6 +96,8 @@ class AltaDeArticuloConFotoIaHelper
      */
     const QUITAR_FOTO = 'quitar_foto';
     const QUITAR_DESCRIPCION = 'quitar_descripcion';
+    const QUITAR_MARGENES = 'quitar_margenes_por_lista';
+    const QUITAR_STOCK = 'quitar_stock_inicial';
 
     /** Cuánto de la descripción se muestra en la tarjeta: la persona la ve, pero no entera. */
     const LARGO_EN_LA_TARJETA = 300;
@@ -98,7 +128,7 @@ class AltaDeArticuloConFotoIaHelper
 
         $es_articulo = !is_null($declaracion) && $declaracion['entidad'] === self::ENTIDAD;
 
-        foreach ([self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION] as $clave) {
+        foreach (self::claves() as $clave) {
 
             if ($es_articulo && array_key_exists($clave, $datos)) {
 
@@ -117,6 +147,16 @@ class AltaDeArticuloConFotoIaHelper
         }
 
         return [$datos, self::limpiar($extras, $es_articulo)];
+    }
+
+    /**
+     * Las claves de los extras que acepta proponer_alta, en el orden en que se separan.
+     *
+     * @return array<int, string>
+     */
+    public static function claves()
+    {
+        return [self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION, self::MARGENES, self::STOCK_INICIAL, self::DEPOSITO];
     }
 
     /**
@@ -145,9 +185,17 @@ class AltaDeArticuloConFotoIaHelper
             return $extras;
         }
 
+        /*
+         * 🔴 SOLO DE UNA TARJETA VIVA —propuesta, o recién reemplazada en una cadena de
+         * correcciones—, igual que con_los_campos_de_la_tarjeta_reemplazada() (ronda de correcciones
+         * del 29/9/2026). En "directo" un reemplaza_a mal usado sobre un alta YA CONFIRMADA heredaba
+         * su stock inicial de 20 y el alta nueva se ejecutaba sola cargándolo otra vez en otro
+         * artículo. De una tarjeta confirmada, cancelada o vencida no se hereda nada.
+         */
         $anterior = AiMessageAction::where('id', $reemplaza_a)
                                     ->where('ai_conversation_id', $contexto->conversation->id)
                                     ->where('tipo', AiMessageAction::TIPO_ALTA)
+                                    ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
                                     ->first();
 
         if (is_null($anterior) || !is_array($anterior->datos) || !isset($anterior->datos['extras']) || !is_array($anterior->datos['extras'])) {
@@ -175,6 +223,53 @@ class AltaDeArticuloConFotoIaHelper
             $extras[self::DESCRIPCION] = (string) $de_antes['descripcion'];
         }
 
+        /*
+         * Misión alta-por-agente-margen-y-stock (29/9/2026): el margen por lista se hereda igual que
+         * la descripción. Va con el `price_type_id` ya resuelto en la tarjeta anterior (además del
+         * nombre, para el renglón): "sí, pero cambiale el nombre" no tiene por qué volver a
+         * adivinar a qué lista se refería "la general". `[]` explícito (QUITAR_MARGENES) corta la
+         * herencia.
+         *
+         * 🔴 Y SI LA CORRECCIÓN MANDA MÁRGENES, SE SUMAN A LOS HEREDADOS, no los pisan (ronda de
+         * correcciones del 29/9/2026): "sí, y a la mayorista 40 también" sobre una tarjeta con la
+         * minorista en 30 deja las dos; si repite una lista, gana lo nuevo. Ver
+         * MargenesPorListaIaHelper::mezclar_con_heredados().
+         */
+        if (empty($extras[self::QUITAR_MARGENES])
+            && !empty($de_antes[self::MARGENES])
+            && is_array($de_antes[self::MARGENES])) {
+
+            $mezclados = MargenesPorListaIaHelper::mezclar_con_heredados(
+                array_key_exists(self::MARGENES, $extras) ? $extras[self::MARGENES] : null,
+                $de_antes[self::MARGENES]
+            );
+
+            if (!is_null($mezclados)) {
+
+                $extras[self::MARGENES] = $mezclados;
+            }
+        }
+
+        /*
+         * El stock inicial también: la cantidad y el depósito se heredan cada uno por su lado ("sí,
+         * pero que sean 30" cambia la cantidad y deja el depósito; "ponelo en Florida" al revés).
+         * `stock_inicial: 0` explícito (QUITAR_STOCK) saca los dos.
+         */
+        if (empty($extras[self::QUITAR_STOCK]) && !empty($de_antes[self::STOCK_INICIAL]) && is_array($de_antes[self::STOCK_INICIAL])) {
+
+            $stock_de_antes = $de_antes[self::STOCK_INICIAL];
+
+            if (!array_key_exists(self::STOCK_INICIAL, $extras) && isset($stock_de_antes['cantidad'])) {
+
+                $extras[self::STOCK_INICIAL] = (float) $stock_de_antes['cantidad'];
+            }
+
+            if (!array_key_exists(self::DEPOSITO, $extras) && !empty($stock_de_antes['deposito'])) {
+
+                $extras[self::DEPOSITO] = (string) $stock_de_antes['deposito'];
+            }
+        }
+
         return $extras;
     }
 
@@ -186,12 +281,16 @@ class AltaDeArticuloConFotoIaHelper
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
      * @param  array  $extras  Lo que devolvió separar() (y heredar()).
+     * @param  mixed  $unidades_individuales  Las unidades por bulto que trae el alta (para el renglón del stock), o null.
      * @return array  ['extras' => array, 'renglones' => array, 'imagen_url' => string|null] o la respuesta negativa.
      */
-    public static function resolver(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $extras)
+    public static function resolver(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $extras, $unidades_individuales = null)
     {
         $guardar = [];
         $renglones = [];
+
+        /** Un aviso para la tarjeta (hoy: márgenes heredados de listas que ya no existen), o null. */
+        $aviso = null;
 
         $imagen = null;
 
@@ -270,7 +369,79 @@ class AltaDeArticuloConFotoIaHelper
             $renglones[] = ['etiqueta' => 'Descripción', 'valor' => self::recortar($extras[self::DESCRIPCION], self::LARGO_EN_LA_TARJETA)];
         }
 
-        return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url];
+        /*
+         * El margen por lista: se resuelve contra las listas del dueño AL PROPONER (una lista que no
+         * existe o que es ambigua vuelve como error o `faltan`, sin tarjeta) y queda guardado ya
+         * resuelto, con el id de cada lista. La tarjeta muestra un renglón por lista nombrada; el
+         * aviso con las demás lo arma proponer_alta, porque va aunque no venga ningún margen.
+         */
+        if (array_key_exists(self::MARGENES, $extras)) {
+
+            $descartados = [];
+
+            $margenes = MargenesPorListaIaHelper::resolver($contexto, $extras[self::MARGENES], $descartados);
+
+            // Lo heredado de una lista que ya no existe se descartó: la tarjeta lo dice.
+            $aviso = MargenesPorListaIaHelper::aviso_de_descartados($descartados);
+
+            if (RespuestaDeCargaIa::es_negativa($margenes)) {
+
+                return $margenes;
+            }
+
+            if (count($margenes)) {
+
+                $guardar[self::MARGENES] = $margenes;
+
+                foreach (MargenesPorListaIaHelper::renglones_del_alta($margenes) as $renglon) {
+
+                    $renglones[] = $renglon;
+                }
+            }
+        }
+
+        /*
+         * 🔴 El stock inicial (misión alta-por-agente-margen-y-stock, 29/9/2026): si la persona lo
+         * dijo, va en un renglón de la tarjeta o no va. En demo3 el agente dijo "tengo listo el
+         * alta con 20 unidades" sin ningún lugar donde cargarlas. Se resuelve AL PROPONER (permiso,
+         * cantidad y depósito) y se carga después del alta, en completar().
+         */
+        if (array_key_exists(self::STOCK_INICIAL, $extras)) {
+
+            $stock = PropuestaStockIaHelper::resolver_stock_inicial(
+                $contexto,
+                $extras[self::STOCK_INICIAL],
+                isset($extras[self::DEPOSITO]) ? $extras[self::DEPOSITO] : ''
+            );
+
+            if (RespuestaDeCargaIa::es_negativa($stock)) {
+
+                return $stock;
+            }
+
+            $guardar[self::STOCK_INICIAL] = $stock;
+
+            /*
+             * Con unidades por bulto, el renglón dice que son unidades SUELTAS (ronda de correcciones
+             * del 29/9/2026): el asistente no multiplica por el bulto a propósito (ver
+             * PropuestaStockIaHelper::cargar_stock_inicial), y la persona tiene que poder ver eso
+             * ANTES de confirmar, no descubrirlo en el Listado.
+             */
+            $renglones[] = [
+                'etiqueta' => 'Stock inicial',
+                'valor'    => PropuestaStockIaHelper::texto_de_cantidad($stock['cantidad'], $unidades_individuales)
+                    . (is_null($stock['deposito']) ? '' : ' (en ' . $stock['deposito'] . ')'),
+            ];
+
+        } elseif (isset($extras[self::DEPOSITO])) {
+
+            /* Un depósito suelto no carga nada: se dice, no se ignora. */
+            return RespuestaDeCargaIa::error(
+                MargenesPorListaIaHelper::NO_SE_CARGO . 'mandaste un depósito sin stock_inicial, y el depósito es para el stock inicial del artículo. Si la persona dijo cuántas unidades, volvé a llamar con stock_inicial; si no, volvé a llamar sin deposito.'
+            );
+        }
+
+        return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url, 'aviso' => $aviso];
     }
 
     /**
@@ -359,6 +530,56 @@ class AltaDeArticuloConFotoIaHelper
         }
 
         /*
+         * El margen por lista ya lo escribió el controller (entró como `price_types`, el mismo
+         * camino que la ficha). Acá se RELEE el pivote: el resultado dice el precio que quedó en
+         * cada lista, y si una lista no quedó con ese margen, lo dice como falla. Ver el 🔴 de
+         * MargenesPorListaIaHelper::verificar().
+         */
+        if (!empty($extras[self::MARGENES]) && is_array($extras[self::MARGENES])) {
+
+            // Protegida, como la foto: una relectura que falla no puede volver 500 un alta hecha.
+            $verificado = MargenesPorListaIaHelper::verificar_protegido((int) $articulo->id, $extras[self::MARGENES]);
+
+            foreach ($verificado['hechos'] as $hecho) {
+
+                $hechos[] = $hecho;
+            }
+
+            foreach ($verificado['fallas'] as $falla) {
+
+                $fallas[] = $falla;
+            }
+        }
+
+        /*
+         * El stock inicial va DESPUÉS de la foto y la descripción, con el artículo ya creado: el
+         * movimiento necesita el artículo, y en uno recién creado CheckToAddress le abre el
+         * depósito porque no hay stock global que perder. Si falla, el artículo no se deshace (ver
+         * el 🔴 del docblock): el resultado lo dice y el stock se puede pedir de nuevo.
+         */
+        if (!empty($extras[self::STOCK_INICIAL]) && is_array($extras[self::STOCK_INICIAL])) {
+
+            $stock = $extras[self::STOCK_INICIAL];
+
+            $cantidad = isset($stock['cantidad']) ? (float) $stock['cantidad'] : 0.0;
+
+            $address_id = isset($stock['address_id']) && !is_null($stock['address_id']) ? (int) $stock['address_id'] : null;
+
+            $motivo = PropuestaStockIaHelper::cargar_stock_inicial($contexto, $articulo, $cantidad, $address_id);
+
+            if (is_null($motivo)) {
+
+                $hechos[] = 'stock inicial ' . PropuestaStockIaHelper::texto_de_cantidad($cantidad, $articulo->unidades_individuales)
+                    . (empty($stock['deposito']) ? '' : ' en ' . $stock['deposito']);
+
+            } else {
+
+                // cargar_stock_inicial() es atómico: si devolvió un motivo, no quedó nada escrito.
+                $fallas[] = 'el stock inicial NO se cargó (' . $motivo . ')';
+            }
+        }
+
+        /*
          * La foto del código de barras del pedido se sella con el alta hecha, haya quedado o no la
          * foto de internet: ver el 🔴 de resolver(). Protegido: un sello que falla no deshace nada.
          */
@@ -381,7 +602,8 @@ class AltaDeArticuloConFotoIaHelper
 
         if (count($hechos)) {
 
-            $texto .= ', con ' . implode(' y ', $hechos);
+            // "la foto y la descripción" como siempre; con más de dos, "a, b y c".
+            $texto .= ', con ' . MargenesPorListaIaHelper::enumerar($hechos);
         }
 
         if (count($fallas)) {
@@ -545,6 +767,74 @@ class AltaDeArticuloConFotoIaHelper
                 /* descripcion "" explícita = "sin descripción". */
                 $limpios[self::QUITAR_DESCRIPCION] = true;
             }
+        }
+
+        /*
+         * El margen por lista (misión alta-por-agente-margen-y-stock, 29/9/2026) viaja CRUDO: lo
+         * valida y lo resuelve MargenesPorListaIaHelper::resolver(), que es quien sabe decir qué
+         * está mal ("esa lista no existe", "el margen tiene que ser un número"). Descartarlo acá por
+         * un formato raro sería callarse una parte del pedido. `[]` explícito = QUITAR el heredado.
+         */
+        if (array_key_exists(self::MARGENES, $extras) && !is_null($extras[self::MARGENES])) {
+
+            $valor = $extras[self::MARGENES];
+
+            if ($valor instanceof \stdClass) {
+
+                $valor = json_decode(json_encode($valor), true);
+            }
+
+            /*
+             * Vacío es [], "", {} y TAMBIÉN el texto "[]" (ronda de correcciones del 29/9/2026):
+             * antes "[]" como texto llegaba crudo a resolver() y, en una cuenta SIN listas, cortaba
+             * con "no trabaja con listas" un pedido que no traía ningún margen.
+             */
+            $vacio = MargenesPorListaIaHelper::vino_vacio($valor);
+
+            if ($vacio && $es_articulo) {
+
+                $limpios[self::QUITAR_MARGENES] = true;
+
+            } elseif (!$vacio) {
+
+                $limpios[self::MARGENES] = $valor;
+            }
+        }
+
+        /*
+         * El stock inicial también viaja crudo (lo valida PropuestaStockIaHelper::resolver_stock_inicial).
+         * Un 0 explícito —0, "0", "0 unidades", "" o false— es la forma de decir "sin stock" en una
+         * corrección: QUITA el heredado, igual que `imagen_id: 0` con la foto.
+         */
+        if (array_key_exists(self::STOCK_INICIAL, $extras) && !is_null($extras[self::STOCK_INICIAL])) {
+
+            $valor = $extras[self::STOCK_INICIAL];
+
+            $numero = PropuestaStockIaHelper::cantidad_de_stock($valor);
+
+            $es_cero = $valor === false
+                || (is_string($valor) && trim($valor) === '')
+                || (!is_null($numero) && abs($numero) < 0.0001);
+
+            if ($es_cero && $es_articulo) {
+
+                $limpios[self::QUITAR_STOCK] = true;
+
+            } elseif (!$es_cero) {
+
+                $limpios[self::STOCK_INICIAL] = $valor;
+            }
+        }
+
+        if (array_key_exists(self::DEPOSITO, $extras) && is_scalar($extras[self::DEPOSITO]) && trim((string) $extras[self::DEPOSITO]) !== '') {
+
+            $limpios[self::DEPOSITO] = trim((string) $extras[self::DEPOSITO]);
+        }
+
+        /* Sin stock no hay depósito del stock: una corrección que saca el stock saca los dos. */
+        if (!empty($limpios[self::QUITAR_STOCK])) {
+
+            unset($limpios[self::DEPOSITO]);
         }
 
         /*
