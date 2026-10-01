@@ -88,8 +88,18 @@ class Factura_con_diseno_de_pagina_Test extends EmpresaTestCase
 
         /** El encabezado fiscal de siempre: banda ORIGINAL, letra y número de comprobante. */
         $this->assertDibujaTexto('ORIGINAL', $pdf);
-        $this->assertDibujaTexto('B', $pdf);
         $this->assertDibujaTexto('00000027', $pdf, 'El número de la factura.');
+
+        /**
+         * La letra del comprobante EN SU RECUADRO: la "B" grande (Inter negrita 24, la letra del
+         * recuadro central) y, justo debajo, su código "COD. 06" (factura B = tipo 6). Una "B"
+         * suelta en cualquier otra parte de la hoja no alcanza.
+         */
+        $textos = $this->textos_legibles($pdf);
+        $codigo = array_search('COD. 06', $textos, true);
+        $this->assertNotFalse($codigo, 'El código del comprobante en el recuadro de la letra.');
+        $this->assertSame('B', $textos[$codigo - 1], 'La letra va justo arriba de su código.');
+        $this->assertSame(['fuente' => 'Inter-Bold', 'tamano' => 24.0], $this->estilo_del_texto('B', $pdf), 'La letra del recuadro, no una B cualquiera.');
 
         /** El receptor fiscal (bloque fijo de arriba), con las reglas de siempre. */
         $this->assertRenglon('CUIT: ', '20123456789', $pdf);
