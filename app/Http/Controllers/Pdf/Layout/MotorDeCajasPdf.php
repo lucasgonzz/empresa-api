@@ -23,7 +23,9 @@ use App\Http\Controllers\Helpers\PdfLayout\FuenteDeCamposPdf;
  * Cómo se arma una zona (plan de la misión, §4.3–4.5):
  * - Grilla de 12 columnas, gutter G = 2 mm, unidad U = (ancho + G) / 12; una caja de N columnas
  *   mide N·U − G y arranca en x0 + columna·U. Si no entra en lo que queda de la fila, baja.
- *   `salto_de_fila` corta la fila. Un bloque fijo ocupa una fila entera.
+ *   `salto_de_fila` corta la fila. Un bloque fijo ocupa una fila entera, salvo el que trae `cols`
+ *   de menos de 12 (el del cliente de la factura de ARCA, que se le cambia el ancho): ese fluye en
+ *   la grilla como una caja, al lado puede ir otra, y se mide y se dibuja con el ancho de su celda.
  * - El alto de una fila es el de su caja más alta, y todas sus cajas se dibujan con ese alto.
  *   2 mm entre filas. Una caja sin ningún campo con valor no se dibuja (aunque tenga título) y sus
  *   columnas quedan vacías; una fila sin nada dibujado no ocupa alto.
@@ -83,9 +85,12 @@ class MotorDeCajasPdf
     private $ancho;
 
     /**
-     * Bloques fijos que sabe dibujar el comprobante: key => callable($pdf, array $item, bool $dibujar).
+     * Bloques fijos que sabe dibujar el comprobante:
+     * key => callable($pdf, array $item, bool $dibujar, float|null $x, float|null $ancho, float|null $alto).
      * Con $dibujar false devuelve el alto que va a ocupar (0 si no dibuja nada); con true lo
-     * dibuja en $pdf->y y deja $pdf->y debajo de lo dibujado.
+     * dibuja en $pdf->y y deja $pdf->y debajo de lo dibujado. Un fijo que ocupa una fila entera
+     * recibe $x, $ancho y $alto en null (va a lo ancho de la hoja); uno que fluye en la grilla
+     * recibe la x y el ancho de su celda y, al dibujarse, el alto de su fila.
      *
      * @var array<string, callable>
      */
@@ -226,17 +231,21 @@ class MotorDeCajasPdf
                 continue;
             }
 
-            if ($item['tipo'] === DisenoDePaginaPdf::TIPO_FIJO) {
+            $es_fijo = $item['tipo'] === DisenoDePaginaPdf::TIPO_FIJO;
+
+            if ($es_fijo && is_null(self::cols_del_fijo($item))) {
                 $this->cerrar_fila($filas, $cajas, $columna);
                 $filas[] = ['tipo' => 'fijo', 'item' => $item];
                 continue;
             }
 
-            if ($item['tipo'] !== DisenoDePaginaPdf::TIPO_CAJA) {
+            if (! $es_fijo && $item['tipo'] !== DisenoDePaginaPdf::TIPO_CAJA) {
                 continue;
             }
 
-            $cols = isset($item['cols']) ? max(1, min(self::COLUMNAS, (int) $item['cols'])) : self::COLUMNAS;
+            $cols = $es_fijo
+                ? self::cols_del_fijo($item)
+                : (isset($item['cols']) ? max(1, min(self::COLUMNAS, (int) $item['cols'])) : self::COLUMNAS);
 
             /** Si no entra en lo que queda de la fila, baja a la siguiente. */
             if ($columna + $cols > self::COLUMNAS) {
@@ -244,18 +253,41 @@ class MotorDeCajasPdf
             }
 
             $unidad = ($this->ancho + self::GUTTER) / self::COLUMNAS;
-            $cajas[] = [
+            $posicion = [
                 'caja' => $item,
                 'columna' => $columna,
                 'x' => $this->x0 + $columna * $unidad,
                 'ancho' => $cols * $unidad - self::GUTTER,
             ];
+            if ($es_fijo) {
+                /** Un fijo en la grilla (el del cliente de ARCA angosto): lo mide y lo dibuja su callable. */
+                $posicion['fijo'] = true;
+            }
+            $cajas[] = $posicion;
             $columna += $cols;
         }
 
         $this->cerrar_fila($filas, $cajas, $columna);
 
         return $filas;
+    }
+
+    /**
+     * Columnas de un bloque fijo que fluye en la grilla, o null si ocupa una fila entera (sin
+     * `cols`, o con 12: a lo ancho de la hoja, como siempre).
+     *
+     * @param array $item
+     * @return int|null
+     */
+    private static function cols_del_fijo($item)
+    {
+        if (! isset($item['cols']) || ! is_numeric($item['cols'])) {
+            return null;
+        }
+
+        $cols = (int) $item['cols'];
+
+        return $cols >= self::COLUMNAS ? null : max(1, $cols);
     }
 
     /**
@@ -298,7 +330,7 @@ class MotorDeCajasPdf
 
             $alto = $fila['tipo'] === 'fijo'
                 ? $this->procesar_fijo($pdf, $fila['item'], false)
-                : $this->alto_de_fila($fila);
+                : $this->alto_de_fila($pdf, $fila);
 
             /** Una fila sin nada que dibujar no ocupa alto (ni la separación). */
             if ($alto <= 0) {
@@ -338,12 +370,15 @@ class MotorDeCajasPdf
      * Mide o dibuja un bloque fijo con el callable que dio el comprobante. Sin callable (un fijo
      * que este comprobante no sabe dibujar) no ocupa nada.
      *
-     * @param mixed $pdf
-     * @param array $item
-     * @param bool  $dibujar
+     * @param mixed      $pdf
+     * @param array      $item
+     * @param bool       $dibujar
+     * @param float|null $x     Fijo en la grilla: la x de su celda (null: a lo ancho de la hoja).
+     * @param float|null $ancho Fijo en la grilla: el ancho de su celda.
+     * @param float|null $alto  Fijo en la grilla, al dibujarse: el alto de su fila.
      * @return float
      */
-    private function procesar_fijo($pdf, $item, $dibujar)
+    private function procesar_fijo($pdf, $item, $dibujar, $x = null, $ancho = null, $alto = null)
     {
         $key = isset($item['key']) ? $item['key'] : null;
 
@@ -351,21 +386,25 @@ class MotorDeCajasPdf
             return 0;
         }
 
-        return (float) call_user_func($this->fijos[$key], $pdf, $item, $dibujar);
+        return (float) call_user_func($this->fijos[$key], $pdf, $item, $dibujar, $x, $ancho, $alto);
     }
 
     /**
-     * Alto de una fila de cajas: el de su caja más alta (0 si ninguna tiene algo que dibujar).
+     * Alto de una fila de la grilla: el de su caja más alta (0 si ninguna tiene algo que dibujar).
+     * Un fijo de la fila se mide con el ancho de su celda.
      *
+     * @param mixed $pdf
      * @param array $fila
      * @return float
      */
-    private function alto_de_fila($fila)
+    private function alto_de_fila($pdf, $fila)
     {
         $alto = 0;
 
         foreach ($fila['cajas'] as $posicion) {
-            $alto = max($alto, $this->contenido_de_caja($posicion['caja'], $posicion['ancho'])['alto']);
+            $alto = max($alto, ! empty($posicion['fijo'])
+                ? $this->procesar_fijo($pdf, $posicion['caja'], false, $posicion['x'], $posicion['ancho'])
+                : $this->contenido_de_caja($posicion['caja'], $posicion['ancho'])['alto']);
         }
 
         return $alto;
@@ -383,6 +422,13 @@ class MotorDeCajasPdf
     private function dibujar_fila($pdf, $fila, $y, $alto_de_fila)
     {
         foreach ($fila['cajas'] as $posicion) {
+            if (! empty($posicion['fijo'])) {
+                /** El fijo se dibuja en su celda, con el alto de la fila (su recuadro llega al de las vecinas). */
+                $pdf->y = $y;
+                $this->procesar_fijo($pdf, $posicion['caja'], true, $posicion['x'], $posicion['ancho'], $alto_de_fila);
+                continue;
+            }
+
             $contenido = $this->contenido_de_caja($posicion['caja'], $posicion['ancho']);
 
             /** Una caja sin ningún campo con valor no se dibuja: ni el recuadro ni el título. */

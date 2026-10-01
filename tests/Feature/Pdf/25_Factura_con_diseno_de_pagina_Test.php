@@ -183,6 +183,133 @@ class Factura_con_diseno_de_pagina_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 El bloque del cliente de ARCA se le cambia el ancho: a 6 columnas, con una caja de 6 al
+     * lado, los dos van en la MISMA fila y cada uno en su celda (nada se sale de su celda ni de la
+     * hoja), su recuadro llega al alto de la fila, y el bloque fiscal dice lo mismo que a lo ancho:
+     * CUIT, condición frente al IVA, condición de venta, nombre y domicilio, en el mismo orden.
+     *
+     * @test
+     */
+    public function el_bloque_del_cliente_de_arca_a_seis_columnas_comparte_la_fila_con_otra_caja()
+    {
+        $venta = $this->crear_venta_completa();
+        $ticket = $this->crear_factura($venta, 'B');
+
+        $diseno = function ($cols) {
+            return $this->diseno_de_pagina([
+                ['tipo' => 'fijo', 'key' => 'afip_receptor', 'cols' => $cols],
+                $this->caja_de_diseno('caja_venta', 6, [
+                    $this->campo_de_caja('venta_vendedor'),
+                    $this->campo_de_caja('venta_metodos_de_pago'),
+                    $this->campo_de_caja('venta_cajas'),
+                ], 'Venta'),
+            ], []);
+        };
+
+        $a_lo_ancho = $this->pdf_de_factura($venta, $this->perfil_de_venta(['is_afip_ticket' => true], $diseno(12)), $ticket->id);
+        $angosto = $this->pdf_de_factura($venta, $this->perfil_de_venta(['is_afip_ticket' => true], $diseno(6)), $ticket->id);
+
+        /** A4, margen 5: unidad (200 + 2) / 12; la celda 1 va de 5 a 104 y la 2 de 106 a 205. */
+        $unidad = 202 / 12;
+        $celda_1 = [5, 5 + 6 * $unidad - 2];
+        $celda_2 = [5 + 6 * $unidad, 205];
+
+        /** El recuadro del bloque: su divisoria vertical al medio de la celda dice de dónde a dónde va. */
+        $recuadro = $this->recuadro_del_receptor($angosto, ($celda_1[0] + $celda_1[1]) / 2);
+        $this->assertNotNull($recuadro, 'El bloque del cliente se dibuja en la celda 1, con su divisoria al medio de la celda.');
+
+        /** La caja de al lado, en la misma fila: arranca en la celda 2 a la misma altura y con el mismo alto. */
+        $caja = null;
+        foreach ($this->rectangulos_de_la_primera_hoja($angosto) as $rect) {
+            if (abs($rect['x'] - $celda_2[0]) < 0.05 && abs($rect['ancho'] - ($celda_2[1] - $celda_2[0])) < 0.05) {
+                $caja = $rect;
+            }
+        }
+        $this->assertNotNull($caja, 'La caja "Venta" va en la celda 2 (al lado del bloque, no abajo).');
+        $this->assertEqualsWithDelta($recuadro[0], $caja['y'], 0.05, 'Los dos arrancan a la misma altura: la misma fila.');
+        $this->assertEqualsWithDelta($recuadro[1] - $recuadro[0], $caja['alto'], 0.05, 'El recuadro del bloque llega al alto de la fila.');
+
+        /** Nada se sale de su celda: lo de la fila que arranca en la celda 1 termina antes del borde. */
+        foreach ($this->textos_con_posicion($angosto) as $texto) {
+            if ($texto['y'] < $recuadro[0] || $texto['y'] > $recuadro[1]) {
+                continue;
+            }
+            $celda = $texto['x'] < $celda_2[0] ? $celda_1 : $celda_2;
+            $this->assertGreaterThanOrEqual($celda[0], $texto['x'], '"'.$texto['texto'].'" arranca antes de su celda.');
+            $this->assertLessThanOrEqual($celda[1] + 0.05, $texto['fin'], '"'.$texto['texto'].'" pasa el borde de su celda.');
+        }
+        $this->assertNadaDebajoDe($angosto, 297 - 5);
+
+        /** Y el bloque fiscal dice lo mismo, en el mismo orden, que a lo ancho. */
+        $recuadro_ancho = $this->recuadro_del_receptor($a_lo_ancho, 105);
+        $this->assertNotNull($recuadro_ancho);
+        $this->assertSame(
+            $this->texto_del_bloque($a_lo_ancho, $recuadro_ancho, [5, 205]),
+            $this->texto_del_bloque($angosto, $recuadro, $celda_1)
+        );
+        $this->assertStringContainsString('CUIT: 20123456789', $this->texto_del_bloque($angosto, $recuadro, $celda_1));
+        $this->assertStringContainsString('Condición frente al IVA: Responsable inscripto', $this->texto_del_bloque($angosto, $recuadro, $celda_1));
+        $this->assertStringContainsString('Condición de venta: Cuenta corriente', $this->texto_del_bloque($angosto, $recuadro, $celda_1));
+        $this->assertStringContainsString('Apellido y Nombre / Razón Social: Juan Perez Test', $this->texto_del_bloque($angosto, $recuadro, $celda_1));
+        $this->assertStringContainsString('Domicilio Comercial: Av San Martin 1234', $this->texto_del_bloque($angosto, $recuadro, $celda_1));
+    }
+
+    /**
+     * El recuadro del bloque del cliente de ARCA: [arriba, abajo] en mm, leído de su divisoria
+     * vertical (la línea al medio del bloque) que abarca el renglón "Condición de venta: " (el
+     * único rótulo que es solo del bloque del cliente: el encabezado del emisor también tiene
+     * líneas al medio y un "CUIT: "). null si no hay una así.
+     *
+     * @param string $pdf
+     * @param float  $x_de_la_divisoria
+     * @return array{0: float, 1: float}|null
+     */
+    private function recuadro_del_receptor($pdf, $x_de_la_divisoria)
+    {
+        $y_del_renglon = null;
+        foreach ($this->textos_con_posicion($pdf) as $texto) {
+            if ($texto['texto'] === 'Condición de venta: ') {
+                $y_del_renglon = $texto['y'];
+            }
+        }
+        if (is_null($y_del_renglon)) {
+            return null;
+        }
+
+        foreach ($this->lineas_de_la_primera_hoja($pdf) as $linea) {
+            $arriba = min($linea[1], $linea[3]);
+            $abajo = max($linea[1], $linea[3]);
+            if (abs($linea[0] - $x_de_la_divisoria) < 0.05 && abs($linea[2] - $x_de_la_divisoria) < 0.05 && $arriba < $y_del_renglon && $abajo > $y_del_renglon) {
+                return [$arriba, $abajo];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Lo que dice el bloque: sus textos (los que caen adentro del recuadro y de la celda), en el
+     * orden en que se dibujan y con los espacios normalizados (un rótulo que se parte en dos líneas
+     * dice lo mismo que entero).
+     *
+     * @param string $pdf
+     * @param array  $recuadro [arriba, abajo]
+     * @param array  $celda    [izquierda, derecha]
+     * @return string
+     */
+    private function texto_del_bloque($pdf, $recuadro, $celda)
+    {
+        $partes = [];
+        foreach ($this->textos_con_posicion($pdf) as $texto) {
+            if ($texto['y'] >= $recuadro[0] && $texto['y'] <= $recuadro[1] && $texto['x'] >= $celda[0] && $texto['x'] < $celda[1]) {
+                $partes[] = $texto['texto'];
+            }
+        }
+
+        return trim(preg_replace('/\s+/', ' ', implode(' ', $partes)));
+    }
+
+    /**
      * El cuadro de importes se apaga (como "Mostrar total en el pie"); el QR y el CAE no.
      *
      * @test

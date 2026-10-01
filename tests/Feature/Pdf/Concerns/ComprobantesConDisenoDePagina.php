@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Pdf\Concerns;
 
+use App\Http\Controllers\Pdf\Layout\MotorDeCajasPdf;
 use App\Http\Controllers\Pdf\SaleLayoutPdf;
 use App\Models\Address;
 use App\Models\AfipInformation;
@@ -786,6 +787,109 @@ trait ComprobantesConDisenoDePagina
         }
 
         return $por_hoja;
+    }
+
+    /**
+     * Cada texto de la PRIMERA hoja con dónde arranca y dónde termina (mm) y su base (mm desde
+     * arriba), medido con la letra con la que se dibujó: el último "Tf" anterior y las métricas de
+     * esa variante de Helvetica (una fuente que no es Helvetica, como la Inter de la letra del
+     * comprobante, se mide como Helvetica negrita: alcanza para saber de qué lado de un borde cae).
+     * El espacio del final no cuenta (no se ve).
+     *
+     * @param string $pdf
+     * @return array<int, array{texto: string, x: float, fin: float, y: float}>
+     */
+    protected function textos_con_posicion($pdf)
+    {
+        $k = 72 / 25.4;
+        preg_match('~/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]~', $pdf, $mb);
+        $alto_de_hoja = (float) $mb[2] / $k;
+
+        $estilos = ['Helvetica' => '', 'Helvetica-Bold' => 'B', 'Helvetica-Oblique' => 'I', 'Helvetica-BoldOblique' => 'BI'];
+        preg_match_all('~/F(\d+) (\d+) 0 R~', $pdf, $recursos, PREG_SET_ORDER);
+        $estilo_de = [];
+        foreach ($recursos as $recurso) {
+            if (preg_match('~\n'.$recurso[2].' 0 obj\s*<</Type /Font\s*/BaseFont /([A-Za-z-]+)~', $pdf, $base)) {
+                $estilo_de[$recurso[1]] = isset($estilos[$base[1]]) ? $estilos[$base[1]] : 'B';
+            }
+        }
+
+        $hojas = $this->hojas($pdf);
+        preg_match_all('~/F(\d+) ([\d.]+) Tf|BT (-?[\d.]+) (-?[\d.]+) Td \(((?:[^()\\\\]|\\\\.)*)\) Tj ET~s', $hojas[0], $operaciones, PREG_SET_ORDER);
+
+        $fuente = null;
+        $tamano = null;
+        $textos = [];
+        foreach ($operaciones as $operacion) {
+            if ($operacion[1] !== '') {
+                $fuente = $operacion[1];
+                $tamano = (float) $operacion[2];
+                continue;
+            }
+
+            $texto = utf8_encode(preg_replace('~\\\\(.)~s', '$1', $operacion[5]));
+            $x = (float) $operacion[3] / $k;
+            $estilo = isset($estilo_de[$fuente]) ? $estilo_de[$fuente] : 'B';
+            $textos[] = [
+                'texto' => $texto,
+                'x' => $x,
+                'fin' => $x + MotorDeCajasPdf::ancho_de_texto(rtrim($texto), $estilo, $tamano),
+                'y' => $alto_de_hoja - (float) $operacion[4] / $k,
+            ];
+        }
+
+        return $textos;
+    }
+
+    /**
+     * Las líneas sueltas (Line()) de la PRIMERA hoja, en mm desde arriba: [x1, y1, x2, y2].
+     *
+     * @param string $pdf
+     * @return array<int, array{0: float, 1: float, 2: float, 3: float}>
+     */
+    protected function lineas_de_la_primera_hoja($pdf)
+    {
+        $k = 72 / 25.4;
+        preg_match('~/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]~', $pdf, $mb);
+        $alto_de_hoja = (float) $mb[2] / $k;
+
+        $hojas = $this->hojas($pdf);
+        preg_match_all('~(-?[\d.]+) (-?[\d.]+) m (-?[\d.]+) (-?[\d.]+) l S~', $hojas[0], $m, PREG_SET_ORDER);
+
+        $lineas = [];
+        foreach ($m as $l) {
+            $lineas[] = [(float) $l[1] / $k, $alto_de_hoja - (float) $l[2] / $k, (float) $l[3] / $k, $alto_de_hoja - (float) $l[4] / $k];
+        }
+
+        return $lineas;
+    }
+
+    /**
+     * Los rectángulos de la PRIMERA hoja, en mm desde arriba: x, y (borde de arriba), ancho, alto.
+     *
+     * @param string $pdf
+     * @return array<int, array{x: float, y: float, ancho: float, alto: float}>
+     */
+    protected function rectangulos_de_la_primera_hoja($pdf)
+    {
+        $k = 72 / 25.4;
+        preg_match('~/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]~', $pdf, $mb);
+        $alto_de_hoja = (float) $mb[2] / $k;
+
+        $hojas = $this->hojas($pdf);
+        preg_match_all('~(-?[\d.]+) (-?[\d.]+) ([\d.]+) (-[\d.]+) re (?:S|B|f)~', $hojas[0], $m, PREG_SET_ORDER);
+
+        $rects = [];
+        foreach ($m as $r) {
+            $rects[] = [
+                'x' => (float) $r[1] / $k,
+                'y' => $alto_de_hoja - (float) $r[2] / $k,
+                'ancho' => (float) $r[3] / $k,
+                'alto' => -((float) $r[4]) / $k,
+            ];
+        }
+
+        return $rects;
     }
 
     /**

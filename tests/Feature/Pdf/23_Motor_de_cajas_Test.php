@@ -610,6 +610,71 @@ class Motor_de_cajas_Test extends TestCase
     }
 
     /**
+     * Un bloque fijo con cols de menos de 12 (el del cliente de ARCA angosto) fluye en la grilla
+     * como una caja: al lado puede ir otra. El motor lo mide y lo dibuja con el callable del
+     * comprobante, pasándole la x y el ancho de su celda (y, al dibujar, el alto de la fila). Con 12
+     * columnas ocupa una fila entera, como siempre, y el callable recibe la geometría en null.
+     *
+     * @test
+     */
+    public function un_fijo_con_columnas_fluye_en_la_grilla_y_se_mide_con_el_ancho_de_su_celda()
+    {
+        $llamadas = [];
+        $fijos = [
+            'afip_receptor' => function ($pdf, $item, $dibujar, $x = null, $ancho = null, $alto = null) use (&$llamadas) {
+                $llamadas[] = ['dibujar' => $dibujar, 'x' => $x, 'ancho' => $ancho, 'alto' => $alto];
+
+                return 20;
+            },
+        ];
+        $motor = new MotorDeCajasPdf(new FuenteDePruebaParaElMotor(['venta_vendedor' => 'Carla Gomez']), 5, 200, $fijos);
+        $unidad = 202 / 12;
+
+        $angosto = [
+            ['tipo' => 'fijo', 'key' => 'afip_receptor', 'cols' => 6],
+            $this->caja('al_lado', 6, [$this->campo('venta_vendedor')]),
+        ];
+        $filas = $motor->filas($angosto);
+        $this->assertCount(1, $filas, 'El fijo de 6 y la caja de 6 van en la misma fila.');
+        $this->assertSame('cajas', $filas[0]['tipo']);
+        $this->assertTrue($filas[0]['cajas'][0]['fijo']);
+        $this->assertEqualsWithDelta(5, $filas[0]['cajas'][0]['x'], 0.0001);
+        $this->assertEqualsWithDelta(6 * $unidad - 2, $filas[0]['cajas'][0]['ancho'], 0.0001);
+        $this->assertEqualsWithDelta(5 + 6 * $unidad, $filas[0]['cajas'][1]['x'], 0.0001, 'La caja va al lado, en la columna 6.');
+
+        $pdf = $this->pdf_nuevo();
+        $alto = $motor->dibujar_zona($pdf, $angosto, 20);
+        $this->assertEqualsWithDelta(20, $alto, 0.0001, 'La fila mide lo del fijo (la caja de al lado es más baja).');
+        $this->assertSame([
+            ['dibujar' => false, 'x' => 5.0, 'ancho' => 6 * $unidad - 2, 'alto' => null],
+            ['dibujar' => true, 'x' => 5.0, 'ancho' => 6 * $unidad - 2, 'alto' => 20.0],
+        ], array_map(function ($llamada) {
+            return ['dibujar' => $llamada['dibujar'], 'x' => (float) $llamada['x'], 'ancho' => $llamada['ancho'], 'alto' => is_null($llamada['alto']) ? null : (float) $llamada['alto']];
+        }, $llamadas), 'Se mide y se dibuja con la geometría de su celda, y se dibuja con el alto de la fila.');
+
+        /** La caja de al lado se dibuja con el alto de la fila: 20 mm. */
+        $caja = $this->rectangulos($pdf->Output('S'))[0];
+        $this->assertEqualsWithDelta(5 + 6 * $unidad, $caja['x'], 0.01);
+        $this->assertEqualsWithDelta(20, $caja['alto'], 0.01);
+
+        /** Con 12 columnas, una fila entera como siempre: el callable no recibe geometría. */
+        $llamadas = [];
+        $a_lo_ancho = [
+            ['tipo' => 'fijo', 'key' => 'afip_receptor', 'cols' => 12],
+            $this->caja('abajo', 6, [$this->campo('venta_vendedor')]),
+        ];
+        $filas = $motor->filas($a_lo_ancho);
+        $this->assertCount(2, $filas);
+        $this->assertSame('fijo', $filas[0]['tipo']);
+        $motor->dibujar_zona($this->pdf_nuevo(), $a_lo_ancho, 20);
+        foreach ($llamadas as $llamada) {
+            $this->assertNull($llamada['x']);
+            $this->assertNull($llamada['ancho']);
+            $this->assertNull($llamada['alto']);
+        }
+    }
+
+    /**
      * El tamaño, la negrita y la cursiva del campo, y el alto de línea (tamaño × 0,5).
      *
      * @test

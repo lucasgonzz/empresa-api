@@ -339,13 +339,13 @@ class AfipPdfHelper
      * @param mixed $sale
      * @return void
      */
-    public static function receptor_fiscal($pdf, $sale): void
+    public static function receptor_fiscal($pdf, $sale, $alto_minimo = null): void
     {
         if (is_null($sale->client)) {
             return;
         }
 
-        self::print_receptor_block($pdf, $sale);
+        self::print_receptor_block($pdf, $sale, $alto_minimo);
     }
 
     /**
@@ -1509,7 +1509,7 @@ class AfipPdfHelper
      * @param mixed $sale
      * @return void
      */
-    protected static function print_receptor_block($pdf, $sale): void
+    protected static function print_receptor_block($pdf, $sale, $alto_minimo = null): void
     {
         $client = $sale->client;
         $start_y = $pdf->y;
@@ -1598,6 +1598,15 @@ class AfipPdfHelper
         );
 
         $end_y = max($left_end_y, $pdf->y) + 2;
+
+        /**
+         * En un diseño con cajas, con otra caja al lado, el recuadro llega al alto de la fila para
+         * que los dos recuadros terminen parejos (receptor_fiscal(..., $alto_minimo)). Sin alto
+         * mínimo, el de siempre.
+         */
+        if (!is_null($alto_minimo)) {
+            $end_y = max($end_y, $start_y + $alto_minimo);
+        }
 
         self::draw_box($pdf, $start_x, $start_y, $block_width, $end_y - $start_y);
         $pdf->Line($center_x, $start_y, $center_x, $end_y);

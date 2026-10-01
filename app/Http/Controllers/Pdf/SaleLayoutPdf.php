@@ -663,15 +663,22 @@ class SaleLayoutPdf extends fpdf
         }
 
         return [
-            CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR => function ($pdf, $item, $dibujar) {
-                if (! $dibujar) {
-                    return AfipPdfHelper::estimate_receptor_height($pdf, $this->sale);
-                }
+            /**
+             * El bloque del cliente se le cambia el ancho (6 a 12 columnas): con menos de 12 el
+             * motor le pasa la x y el ancho de su celda, y se mide y se dibuja en esa geometría
+             * (en_la_celda()); con 12, $x y $ancho vienen en null y va a lo ancho, como siempre.
+             */
+            CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR => function ($pdf, $item, $dibujar, $x = null, $ancho = null, $alto = null) {
+                return $this->en_la_celda($x, $ancho, function () use ($pdf, $dibujar, $alto) {
+                    if (! $dibujar) {
+                        return AfipPdfHelper::estimate_receptor_height($pdf, $this->sale);
+                    }
 
-                $y = $pdf->y;
-                AfipPdfHelper::receptor_fiscal($pdf, $this->sale);
+                    $y = $pdf->y;
+                    AfipPdfHelper::receptor_fiscal($pdf, $this->sale, $alto);
 
-                return $pdf->y - $y;
+                    return $pdf->y - $y;
+                });
             },
             CatalogoDeCamposPdf::FIJO_AFIP_PIE => function ($pdf, $item, $dibujar) {
                 $importes = ! array_key_exists('importes', $item) || (bool) $item['importes'];
@@ -686,6 +693,38 @@ class SaleLayoutPdf extends fpdf
                 return $pdf->y - $y;
             },
         ];
+    }
+
+    /**
+     * Corre $hacer con la geometría de una celda de la grilla: AfipPdfHelper mide y dibuja con
+     * `pdf_x0` y `pdf_ancho_util` (y con ellos repone los márgenes después de un Write()), así que
+     * mientras dura se los apunta a la celda, y después se vuelven a la hoja, márgenes incluidos,
+     * pase lo que pase. Con $x o $ancho null corre tal cual (a lo ancho de la hoja).
+     *
+     * @param float|null $x
+     * @param float|null $ancho
+     * @param callable   $hacer
+     * @return mixed Lo que devuelve $hacer.
+     */
+    private function en_la_celda($x, $ancho, callable $hacer)
+    {
+        if (is_null($x) || is_null($ancho)) {
+            return $hacer();
+        }
+
+        $x0_de_la_hoja = $this->pdf_x0;
+        $ancho_de_la_hoja = $this->pdf_ancho_util;
+        $this->pdf_x0 = $x;
+        $this->pdf_ancho_util = $ancho;
+
+        try {
+            return $hacer();
+        } finally {
+            $this->pdf_x0 = $x0_de_la_hoja;
+            $this->pdf_ancho_util = $ancho_de_la_hoja;
+            $this->SetLeftMargin($x0_de_la_hoja);
+            $this->SetRightMargin($this->GetPageWidth() - $x0_de_la_hoja - $ancho_de_la_hoja);
+        }
     }
 
     /**
