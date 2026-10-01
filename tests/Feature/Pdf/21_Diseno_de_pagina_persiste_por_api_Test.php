@@ -4,7 +4,6 @@ namespace Tests\Feature\Pdf;
 
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
-use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Services\PdfColumnService;
@@ -731,6 +730,40 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
     }
 
     /**
+     * El 422 de una factura diseñada en A5, con su forma y sus textos EXACTOS (escritos acá a
+     * propósito, no leídos de las constantes: si cambia el texto, este test lo dice).
+     *
+     * Título corto en `message` y el detalle SOLO en `errors.paper_height_mm`. Cambio de
+     * especificación que salió de la verificación en vivo (1/10/2026): con el mismo texto en los
+     * dos, el aviso global del SPA ("<message>\n\n1. <errors…>") lo mostraba dos veces seguidas
+     * en el formulario del registro. El diseñador lee `errors` primero y sigue mostrando el detalle.
+     *
+     * @param \Illuminate\Testing\TestResponse $response
+     * @param string                           $camino qué se intentó (para el mensaje de la aserción).
+     * @return void
+     */
+    protected function assert_factura_en_hoja_chica($response, $camino)
+    {
+        $response->assertStatus(422);
+
+        $this->assertSame(
+            'No se puede guardar una factura de ARCA en hoja A5.',
+            $response->json('message'),
+            $camino.': `message` es el título corto (el encabezado del aviso global del SPA).'
+        );
+        $this->assertSame(
+            ['paper_height_mm' => ['En A5 no entra completo el cuadro de ARCA (importes, QR y CAE): para facturas usá A4, Carta u Oficio. Cambiá la hoja en Diseñar PDF.']],
+            $response->json('errors'),
+            $camino.': el detalle va SOLO en errors.paper_height_mm (el renglón "1." del aviso y lo que muestra el diseñador).'
+        );
+        $this->assertNotContains(
+            $response->json('message'),
+            $response->json('errors.paper_height_mm'),
+            $camino.': si el título y el detalle son el mismo texto, el aviso global lo muestra dos veces.'
+        );
+    }
+
+    /**
      * Una factura de ARCA no puede quedar diseñada en A5: no entra completo el cuadro de importes,
      * QR y CAE. El diseñador ya no deja elegir A5 en una factura, pero se llega igual tildando "Es
      * factura de ARCA" en el formulario de un diseño armado en A5: 422, y no se escribe nada.
@@ -750,13 +783,7 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
             'is_default'     => true,
         ]);
 
-        $response->assertStatus(422);
-        $this->assertSame(DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA, $response->json('message'), 'El message es el que muestra el diseñador.');
-        $this->assertSame(
-            [DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA],
-            $response->json('errors.paper_height_mm'),
-            'El mismo texto va en errors: con eso arma el aviso el formulario genérico del registro.'
-        );
+        $this->assert_factura_en_hoja_chica($response, 'Tildar ARCA en un diseño en A5');
 
         $this->assertFalse((bool) $a5->fresh()->is_afip_ticket, 'El 422 no puede haber guardado el "Es factura de ARCA".');
         $this->assertFalse((bool) $a5->fresh()->is_default);
@@ -779,24 +806,30 @@ class Diseno_de_pagina_persiste_por_api_Test extends TestCase
         $owner = $this->autenticar();
 
         $factura = $this->crear_perfil($owner->id, ['is_afip_ticket' => true, 'page_layout' => $this->diseno_valido()]);
-        $this->putJson('api/pdf-column-profiles/'.$factura->id, $this->en_hoja('a5'))
-            ->assertStatus(422)
-            ->assertJson(['message' => DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA]);
+        $this->assert_factura_en_hoja_chica(
+            $this->putJson('api/pdf-column-profiles/'.$factura->id, $this->en_hoja('a5')),
+            'Achicar a A5 la hoja de una factura diseñada'
+        );
         $this->assertNull($factura->fresh()->paper_height_mm, 'La hoja sigue como estaba (A4).');
 
         $factura_a5_sin_diseno = $this->crear_perfil($owner->id, array_merge($this->en_hoja('a5'), [
             'name'           => 'zz Factura A5 sin diseño',
             'is_afip_ticket' => true,
         ]));
-        $this->putJson('api/pdf-column-profiles/'.$factura_a5_sin_diseno->id, ['page_layout' => $this->diseno_valido()])
-            ->assertStatus(422);
+        $this->assert_factura_en_hoja_chica(
+            $this->putJson('api/pdf-column-profiles/'.$factura_a5_sin_diseno->id, ['page_layout' => $this->diseno_valido()]),
+            'Mandar el diseño de una factura que está en A5'
+        );
         $this->assertNull($factura_a5_sin_diseno->fresh()->page_layout, 'El diseño no se guardó.');
 
         $antes = PdfColumnProfile::where('user_id', $owner->id)->count();
-        $this->postJson('api/pdf-column-profiles', $this->payload_de_alta(array_merge($this->en_hoja('a5'), [
-            'is_afip_ticket' => true,
-            'page_layout'    => $this->diseno_valido(),
-        ])))->assertStatus(422)->assertJson(['message' => DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA]);
+        $this->assert_factura_en_hoja_chica(
+            $this->postJson('api/pdf-column-profiles', $this->payload_de_alta(array_merge($this->en_hoja('a5'), [
+                'is_afip_ticket' => true,
+                'page_layout'    => $this->diseno_valido(),
+            ]))),
+            'Crear una factura diseñada en A5'
+        );
         $this->assertSame($antes, PdfColumnProfile::where('user_id', $owner->id)->count(), 'El 422 no crea el diseño.');
 
         $this->postJson('api/pdf-column-profiles', $this->payload_de_alta(array_merge($this->en_hoja('carta'), [

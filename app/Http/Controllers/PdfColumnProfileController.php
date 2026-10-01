@@ -1058,10 +1058,15 @@ class PdfColumnProfileController extends Controller
      * cuadro de ARCA (DisenoDerivadoPdf::factura_en_hoja_chica()), o null si no.
      *
      * Va armada a mano y no como ValidationException: el Handler de la app le pisa el `message` a
-     * esa excepción con el genérico traducido, y acá el `message` es lo que muestra el diseñador.
-     * El mismo texto va en `errors` bajo la clave del alto de la hoja, como el resto de la
-     * validación de este controller (printable_width_mm, pdf_column_options): con `errors` arma su
-     * aviso el interceptor global del SPA, que es lo que ve el formulario genérico del registro.
+     * esa excepción con el genérico traducido, y acá el `message` es un título propio.
+     *
+     * 🔴 Título y detalle van SEPARADOS, y no se repiten. `message` lleva el título corto
+     * (TITULO_FACTURA_EN_HOJA_CHICA) y el detalle (MENSAJE_FACTURA_EN_HOJA_CHICA) va SOLO en
+     * `errors.paper_height_mm`, bajo la clave del alto de la hoja como el resto de la validación de
+     * este controller (printable_width_mm, pdf_column_options). El aviso global del SPA arma
+     * "<message>\n\n1. <errors…>": con el mismo texto en los dos, el formulario genérico del
+     * registro mostraba el aviso dos veces seguidas (verificación en vivo, 1/10/2026). El diseñador
+     * lee `errors` primero, así que sigue mostrando el detalle.
      *
      * @param string     $model_name
      * @param bool       $is_afip_ticket
@@ -1076,7 +1081,7 @@ class PdfColumnProfileController extends Controller
         }
 
         return response()->json([
-            'message' => DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA,
+            'message' => DisenoDerivadoPdf::TITULO_FACTURA_EN_HOJA_CHICA,
             'errors'  => [
                 'paper_height_mm' => [DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA],
             ],

@@ -58,7 +58,20 @@ class DisenoDerivadoPdf
      */
     const ALTO_MINIMO_DE_HOJA_PARA_FACTURA = 250;
 
-    /** Por qué no (el texto que ya muestra el diseñador, más dónde se cambia la hoja). */
+    /**
+     * Título corto del 422: va en `message`.
+     *
+     * 🔴 Tiene que ser DISTINTO del detalle. El aviso global del SPA (laravel_validation_toast.js)
+     * arma "<message>\n\n1. <errors…>": con el mismo texto en los dos, el usuario lo leía dos veces
+     * seguidas en el formulario del registro (verificación en vivo, 1/10/2026).
+     */
+    const TITULO_FACTURA_EN_HOJA_CHICA = 'No se puede guardar una factura de ARCA en hoja A5.';
+
+    /**
+     * El detalle: por qué no y dónde se cambia la hoja. Va SOLO en `errors.paper_height_mm`, que es
+     * lo que muestra el diseñador (su mensaje_de_error() lee `errors` primero) y el renglón "1." del
+     * aviso global.
+     */
     const MENSAJE_FACTURA_EN_HOJA_CHICA = 'En A5 no entra completo el cuadro de ARCA (importes, QR y CAE): para facturas usá A4, Carta u Oficio. Cambiá la hoja en Diseñar PDF.';
 
     /**
