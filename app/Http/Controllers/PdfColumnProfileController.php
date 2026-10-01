@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PdfColumnProfile;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -428,6 +429,86 @@ class PdfColumnProfileController extends Controller
             'company_name'   => ! is_null($user) ? (string) $user->company_name : '',
             'default_layout' => CatalogHeaderLayoutHelper::default_for_user($user),
         ], 200);
+    }
+
+    /**
+     * Lo que necesita el diseñador de PDF (cajas) al abrirse: el catálogo de campos del modelo, los
+     * bloques fijos, los formatos de hoja, los límites del diseño, el diseño derivado de los flags
+     * del perfil y un comprobante para "Ver un PDF de prueba" (misión diseno-pdf-configurable,
+     * contrato §2.3 del plan).
+     *
+     * GET api/pdf-column-profiles/page-layout-catalog?model_name=sale|budget|order&profile_id=&is_afip_ticket=0|1
+     *
+     * - model_name que no se diseña con cajas (el catálogo de artículos, o nada) → 422.
+     * - profile_id de otro dueño o de otro modelo se IGNORA, no da 404: el diseñador abre igual,
+     *   con el derivado de un perfil nuevo. Es lo que pasa también con un perfil que se está
+     *   creando y todavía no tiene id.
+     * - is_afip_ticket viaja porque el formulario puede tener tildado "Es factura de ARCA" sin
+     *   haber guardado todavía: manda el del formulario; si no viene, el del perfil guardado.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function page_layout_catalog(Request $request)
+    {
+        $model_name = (string) $request->query('model_name', '');
+
+        if (! CatalogoDeCamposPdf::soporta($model_name)) {
+            return response()->json(['message' => 'Ese tipo de diseño no se arma con cajas.'], 422);
+        }
+
+        $owner_id = $this->userId();
+
+        $profile = null;
+        $profile_id = $request->query('profile_id');
+
+        if (is_numeric($profile_id)) {
+            $profile = PdfColumnProfile::where('user_id', $owner_id)
+                ->where('model_name', $model_name)
+                ->where('id', (int) $profile_id)
+                ->first();
+        }
+
+        $is_afip_ticket = $request->filled('is_afip_ticket')
+            ? $request->boolean('is_afip_ticket')
+            : (! is_null($profile) && (bool) $profile->is_afip_ticket);
+
+        $es_fiscal = DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket);
+
+        return response()->json([
+            'model_name'            => $model_name,
+            'es_fiscal'             => $es_fiscal,
+            'categorias'            => CatalogoDeCamposPdf::categorias($model_name),
+            'campos'                => CatalogoDeCamposPdf::campos($model_name),
+            'fijos'                 => CatalogoDeCamposPdf::fijos($model_name, $es_fiscal),
+            'formatos_de_hoja'      => CatalogoDeCamposPdf::formatos_de_hoja(),
+            'limites'               => $this->page_layout_limits(),
+            'diseno_derivado'       => DisenoDerivadoPdf::para($model_name, $profile, $es_fiscal, User::find($owner_id)),
+            'comprobante_de_prueba' => DisenoDerivadoPdf::comprobante_de_prueba($model_name, $es_fiscal, $owner_id),
+        ], 200);
+    }
+
+    /**
+     * Los límites del diseño de la hoja que el diseñador respeta, leídos de las constantes de
+     * DisenoDePaginaPdf: el SPA no tiene una copia propia, y si un límite cambia acá, cambia allá.
+     *
+     * @return array<string, mixed>
+     */
+    protected function page_layout_limits()
+    {
+        return [
+            'max_items_por_zona'  => DisenoDePaginaPdf::MAX_ITEMS_POR_ZONA,
+            'max_campos_por_caja' => DisenoDePaginaPdf::MAX_CAMPOS_POR_CAJA,
+            'max_titulo'          => DisenoDePaginaPdf::MAX_TITULO,
+            'max_etiqueta'        => DisenoDePaginaPdf::MAX_ETIQUETA,
+            'max_texto_libre'     => DisenoDePaginaPdf::MAX_TEXTO_LIBRE,
+            'tamano_min'          => DisenoDePaginaPdf::TAMANO_MIN,
+            'tamano_max'          => DisenoDePaginaPdf::TAMANO_MAX,
+            'margen_min'          => DisenoDePaginaPdf::MARGEN_MIN,
+            'margen_max'          => DisenoDePaginaPdf::MARGEN_MAX,
+            'estilos_de_caja'     => DisenoDePaginaPdf::ESTILOS_DE_CAJA,
+            'alineaciones'        => DisenoDePaginaPdf::ALINEACIONES,
+        ];
     }
 
     /**

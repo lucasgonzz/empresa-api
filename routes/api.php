@@ -858,6 +858,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // catálogo de artículos. Va ANTES del resource: si no, el GET lo captura show/{id} con
     // id = "catalog-header-sources" y responde 404.
     Route::get('pdf-column-profiles/catalog-header-sources', 'PdfColumnProfileController@catalog_header_sources');
+    // Catálogo de campos, límites y diseño derivado para el diseñador de PDF con cajas (misión
+    // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
+    Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
