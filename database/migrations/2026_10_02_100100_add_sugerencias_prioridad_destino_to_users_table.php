@@ -11,8 +11,12 @@ use Illuminate\Support\Facades\Schema;
  * users.sugerencias_prioridad_destino decide qué sucursal se lleva el stock del madre cuando no
  * alcanza para todas, y en qué orden se listan los traslados:
  *
- * - 'ventas_sucursal': la sucursal que más factura en general (pesos, últimos 90 días).
- * - 'ventas_articulo': la sucursal que más vende ESE artículo (velocidad de venta de 90 días).
+ * - 'ventas_sucursal': la sucursal que más plata facturó en pesos en los últimos 90 días, con
+ *   ventas terminadas, sin borradas, sin consolidaciones de facturación y sin las ventas en
+ *   dólares (CoberturaService::facturacion_por_sucursal()).
+ * - 'ventas_articulo': la velocidad de venta de ESE artículo en la sucursal: unidades de los
+ *   últimos 90 días por día, mezclada 2/3 – 1/3 con la misma ventana del año anterior cuando hay
+ *   historia interanual (CoberturaService::velocidades_para()).
  *
  * Sin depósito madre la columna no se usa: el orden sigue siendo por urgencia (cobertura).
  *

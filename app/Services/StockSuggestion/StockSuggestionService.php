@@ -257,8 +257,14 @@ class StockSuggestionService
      *      solo sucursales SIN déficit.
      *   4. Reparto: cada destino, en su orden, se llena desde los orígenes en su
      *      orden hasta cubrir lo que le falta o agotarlos. Un destino puede
-     *      recibir de dos orígenes (dos líneas). Misma aritmética que sin madre:
-     *      `needed` entero, min() contra el disponible, nunca cantidades <= 0.
+     *      recibir de dos orígenes (dos líneas). `needed` entero y min() contra el
+     *      disponible, como sin madre, pero en UNIDADES ENTERAS: el disponible de
+     *      cada origen va redondeado para abajo (origenes_con_madre) y nunca sale
+     *      una línea de menos de 1. Sin madre no hace falta porque hay una sola
+     *      línea por destino; acá un destino puede recibir de dos orígenes, y
+     *      suggested_amount es int en la base: 0,4 + 7,6 se guardaba 0 + 8, y
+     *      2,5 + 5,5 se guardaba 3 + 6 = 9 para una falta de 8 (post-chequeo del
+     *      2/10/2026).
      *
      * La forma de cada línea es la de siempre: article_id, from_address_id,
      * to_address_id, suggested_amount, stock_destino.
@@ -314,7 +320,7 @@ class StockSuggestionService
                 }
 
                 $mover = min($falta, $origenes[$indice]['disponible']);
-                if ($mover > 0) {
+                if ($mover >= 1) {
                     $suggestions[] = [
                         'article_id' => $article->id,
                         'from_address_id' => $origen['address_id'],
@@ -391,6 +397,9 @@ class StockSuggestionService
      * ni aunque sea designada. Sacarle stock a una sucursal que le falta para
      * dárselo a otra que también le falta iría contra la prioridad por ventas.
      *
+     * El disponible de cada origen va en unidades enteras (floor) y un origen
+     * con menos de 1 no entra: ver el paso 4 de build_suggestions_con_madre().
+     *
      * @param array $stock_data
      * @param array $deficits TODOS los déficits del artículo (incluido el del madre)
      * @param int $madre_id
@@ -407,8 +416,8 @@ class StockSuggestionService
                 continue;
             }
 
-            $disponible = max(0, $data['amount'] - $this->resolve_limite_origen($data));
-            if ($disponible > 0) {
+            $disponible = floor(max(0, $data['amount'] - $this->resolve_limite_origen($data)));
+            if ($disponible >= 1) {
                 $origenes[] = ['address_id' => $data['address_id'], 'disponible' => $disponible];
             }
             break;
@@ -424,11 +433,12 @@ class StockSuggestionService
             }
 
             $limite = $this->resolve_limite_origen($data);
-            if ($data['amount'] <= $limite) {
+            $disponible = floor($data['amount'] - $limite);
+            if ($disponible < 1) {
                 continue;
             }
 
-            $data['disponible'] = $data['amount'] - $limite;
+            $data['disponible'] = $disponible;
             $respaldo[] = $data;
         }
 

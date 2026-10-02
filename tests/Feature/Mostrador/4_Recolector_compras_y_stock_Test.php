@@ -293,12 +293,23 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
      * Con depósito madre: el madre es el origen, los movimientos se ordenan por el criterio
      * del comercio (no por urgencia) y los hechos traen las claves nuevas.
      *
-     *   - Tenaza → Chica: urgente (vendió 45 en Chica, cobertura 4 días), Chica factura $ 450.
-     *   - Pinza → Grande: sin ventas de la pinza (cobertura infinita), pero Grande factura
-     *     $ 100.000.
+     *   - Tenaza → Chica: urgente (vendió 45 en Chica: velocidad 0,5, cobertura 4 días).
+     *     Chica factura $ 450.
+     *   - Llave → Grande: vendió 180 en Grande (velocidad 2) y tiene 100 contra un mínimo de
+     *     110 (cobertura 50 días). Grande factura $ 100.180.
+     *   - Pinza → Grande: Grande no vende pinzas (cobertura nula).
      *
-     * Con 'ventas_sucursal' (el default) va primero la pinza, a la que más factura; con
-     * 'ventas_articulo', la tenaza, que es la que se vende en su destino.
+     * 'ventas_sucursal' (el default): primero los traslados cuyo destino VENDE el artículo,
+     * por facturación desc (llave, tenaza), y al final los de cobertura nula (pinza).
+     *
+     * 🔴 La especificación cambió el 2/10/2026 por decisión del orquestador (post-chequeo):
+     * antes este test afirmaba que la pinza sin ventas, a la sucursal que más factura, iba
+     * ANTES que la tenaza urgente. No es aflojar la aserción: es otra regla, para que los
+     * traslados de artículos que el destino no vende no llenen los 30 del informe y tapen
+     * quiebres reales de otra sucursal.
+     *
+     * 'ventas_articulo': velocidad desc (llave, tenaza, pinza), distinta del orden por urgencia
+     * (tenaza, llave, pinza): la llave se vende más rápido aunque esté menos apurada.
      *
      * @group mostrador
      * @test
@@ -321,6 +332,11 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         $tenaza->addresses()->attach($designado->id, ['amount' => 200, 'stock_min' => 10, 'stock_max' => 20]);
         $this->venta($this->hoy->copy()->subDays(10)->setTime(12, 0), [[$tenaza, 45, 10]], ['address_id' => $chica->id]);
 
+        $llave = $this->articulo('Llave', ['stock' => 200]);
+        $llave->addresses()->attach($madre->id, ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20]);
+        $llave->addresses()->attach($grande->id, ['amount' => 100, 'stock_min' => 110, 'stock_max' => 120]);
+        $this->venta($this->hoy->copy()->subDays(10)->setTime(12, 0), [[$llave, 180, 1]], ['address_id' => $grande->id]);
+
         $pinza = $this->articulo('Pinza', ['stock' => 102]);
         $pinza->addresses()->attach($madre->id, ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20]);
         $pinza->addresses()->attach($grande->id, ['amount' => 2, 'stock_min' => 10, 'stock_max' => 20]);
@@ -337,36 +353,39 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         $this->assertSame([
             ['address_id' => $madre->id, 'nombre' => 'Madre', 'es_deposito_origen' => false, 'es_deposito_madre' => true, 'facturacion_90_dias' => 0.0],
             ['address_id' => $chica->id, 'nombre' => 'Chica', 'es_deposito_origen' => false, 'es_deposito_madre' => false, 'facturacion_90_dias' => 450.0],
-            ['address_id' => $grande->id, 'nombre' => 'Grande', 'es_deposito_origen' => false, 'es_deposito_madre' => false, 'facturacion_90_dias' => 100000.0],
+            ['address_id' => $grande->id, 'nombre' => 'Grande', 'es_deposito_origen' => false, 'es_deposito_madre' => false, 'facturacion_90_dias' => 100180.0],
             ['address_id' => $designado->id, 'nombre' => 'Designado', 'es_deposito_origen' => true, 'es_deposito_madre' => false, 'facturacion_90_dias' => 0.0],
         ], $h['sucursales']);
 
-        // ventas_sucursal: primero la pinza (a Grande, que factura más) aunque la tenaza sea urgente.
-        $this->assertSame([$pinza->id, $tenaza->id], array_column($h['movimientos_sugeridos'], 'article_id'));
+        // ventas_sucursal: los que el destino vende, por facturación (llave a Grande, tenaza a
+        // Chica), y la pinza —que Grande no vende— al final aunque Grande facture más.
+        $this->assertSame([$llave->id, $tenaza->id, $pinza->id], array_column($h['movimientos_sugeridos'], 'article_id'));
+        $this->assertSame([1, 2, 3], array_column($h['movimientos_sugeridos'], 'prioridad'));
 
         $primero = $h['movimientos_sugeridos'][0];
         $this->assertSame(['address_id' => $madre->id, 'nombre' => 'Madre', 'stock' => 100.0, 'es_deposito_madre' => true], $primero['desde']);
         $this->assertSame(
-            ['address_id' => $grande->id, 'nombre' => 'Grande', 'stock' => 2.0, 'velocidad_diaria' => 0.0, 'cobertura_dias' => null, 'facturacion_90_dias' => 100000.0],
+            ['address_id' => $grande->id, 'nombre' => 'Grande', 'stock' => 100.0, 'velocidad_diaria' => 2.0, 'cobertura_dias' => 50.0, 'facturacion_90_dias' => 100180.0],
             $primero['hacia']
         );
-        $this->assertSame(1, $primero['prioridad']);
 
         // La tenaza sale del madre aunque el designado tenga el doble.
         $segundo = $h['movimientos_sugeridos'][1];
         $this->assertSame($madre->id, $segundo['desde']['address_id']);
         $this->assertTrue($segundo['desde']['es_deposito_madre']);
         $this->assertSame(450.0, $segundo['hacia']['facturacion_90_dias']);
-        $this->assertSame(2, $segundo['prioridad']);
 
-        // ventas_articulo: primero la tenaza, que es la que se vende en su destino.
+        $this->assertNull($h['movimientos_sugeridos'][2]['hacia']['cobertura_dias']);
+
+        // ventas_articulo: velocidad desc. La llave (2 por día, 50 días de cobertura) va antes que
+        // la tenaza (0,5 por día, 4 días): por urgencia sería al revés.
         $this->comercio->sugerencias_prioridad_destino = 'ventas_articulo';
         $this->comercio->save();
 
         $h = (new RecolectorStock())->recolectar($this->comercio, $this->hoy);
 
         $this->assertSame('ventas_articulo', $h['criterio_prioridad']);
-        $this->assertSame([$tenaza->id, $pinza->id], array_column($h['movimientos_sugeridos'], 'article_id'));
+        $this->assertSame([$llave->id, $tenaza->id, $pinza->id], array_column($h['movimientos_sugeridos'], 'article_id'));
     }
 
     /**

@@ -6,10 +6,12 @@ use App\Jobs\GenerateStockSuggestionChunksJob;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
+use App\Models\AuditLog;
 use App\Models\Sale;
 use App\Models\StockSuggestion;
 use App\Models\StockSuggestionArticle;
 use App\Models\User;
+use App\Services\AuditLog\AuditContext;
 use App\Services\StockSuggestion\CoberturaService;
 use App\Services\StockSuggestion\StockSuggestionService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -226,6 +228,12 @@ class Deposito_madre_Test extends TestCase
         $a = $this->sucursal('Madre A', true);
         $b = $this->sucursal('Sucursal B');
 
+        // Auditoría (post-chequeo del 2/10): el desmarque de A va por modelo, así que queda
+        // en audit_logs como cualquier edición. Contexto limpio y piso de ids para ver solo
+        // lo que genera este PUT.
+        AuditContext::reiniciar();
+        $ultimo_audit_log = (int) AuditLog::max('id');
+
         // El madre de OTRO comercio no se toca: la unicidad es por user_id.
         $otro = User::create([
             'name'     => 'Otro comercio madre',
@@ -240,6 +248,17 @@ class Deposito_madre_Test extends TestCase
         $this->assertTrue((bool) $b->fresh()->es_deposito_madre, 'B tiene que quedar como madre.');
         $this->assertFalse((bool) $a->fresh()->es_deposito_madre, 'Marcar B como madre tiene que desmarcar a A.');
         $this->assertTrue((bool) $madre_ajena->fresh()->es_deposito_madre, 'El madre de otro comercio no se toca.');
+
+        $registro_de_a = AuditLog::where('id', '>', $ultimo_audit_log)
+            ->where('auditable_type', Address::class)
+            ->where('auditable_id', $a->id)
+            ->where('event', 'updated')
+            ->first();
+
+        $this->assertNotNull($registro_de_a, 'El desmarque de la madre anterior tiene que quedar en la auditoría.');
+        $nuevos = json_decode($registro_de_a->new_values, true);
+        $this->assertArrayHasKey('es_deposito_madre', $nuevos);
+        $this->assertEquals(0, $nuevos['es_deposito_madre']);
 
         // Sin la clave (ABM sin la extensión): B sigue siendo madre.
         $this->putJson('api/address/' . $b->id, $this->payload_de($b))->assertStatus(200);
@@ -409,6 +428,49 @@ class Deposito_madre_Test extends TestCase
         $origenes = array_column($lineas, 'from_address_id');
         $this->assertNotContains($en_deficit->id, $origenes, 'Una sucursal en déficit nunca es origen con madre.');
         $this->assertNotContains($madre->id, array_column($lineas, 'to_address_id'), 'El madre nunca es destino.');
+    }
+
+    /**
+     * Stock fraccionario (post-chequeo del 2/10): con madre, el disponible de cada origen se
+     * redondea para abajo y nunca sale una línea de menos de 1. suggested_amount es int en la
+     * base: sin esto, 0,4 + 7,6 se guardaba como 0 + 8, y 2,5 + 5,5 como 3 + 6 = 9 para una
+     * falta de 8.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function con_madre_el_disponible_fraccionario_se_redondea_para_abajo()
+    {
+        $madre    = $this->sucursal('Madre fraccionaria', true);
+        $destino  = $this->sucursal('Destino fraccionario');
+        $respaldo = $this->sucursal('Respaldo fraccionario');
+
+        // Madre 10,4 con mínimo 10: le sobran 0,4, que no es una unidad. Todo sale del respaldo.
+        $casi_nada = $this->articulo_con_stock('Cable por metro', [
+            $madre->id    => ['amount' => 10.4, 'stock_min' => 10, 'stock_max' => 20],
+            $destino->id  => ['amount' => 2,    'stock_min' => 10, 'stock_max' => 20],
+            $respaldo->id => ['amount' => 100,  'stock_min' => 10, 'stock_max' => 20],
+        ]);
+
+        $this->assertSame(
+            [[$respaldo->id, $destino->id, 8.0]],
+            $this->movimientos($this->calcular([$casi_nada->id]))
+        );
+
+        // Madre 12,5: da 2 (no 2,5) y el respaldo completa 6; la suma es exactamente la falta.
+        $dos_y_medio = $this->articulo_con_stock('Manguera por metro', [
+            $madre->id    => ['amount' => 12.5, 'stock_min' => 10, 'stock_max' => 20],
+            $destino->id  => ['amount' => 2,    'stock_min' => 10, 'stock_max' => 20],
+            $respaldo->id => ['amount' => 100,  'stock_min' => 10, 'stock_max' => 20],
+        ]);
+
+        $lineas = $this->calcular([$dos_y_medio->id]);
+
+        $this->assertSame(
+            [[$madre->id, $destino->id, 2.0], [$respaldo->id, $destino->id, 6.0]],
+            $this->movimientos($lineas)
+        );
+        $this->assertEquals(8, array_sum(array_column($lineas, 'suggested_amount')));
     }
 
     /**
@@ -636,9 +698,24 @@ class Deposito_madre_Test extends TestCase
     }
 
     /**
-     * Sin madre manda la urgencia (cobertura). Con madre manda el criterio: con
-     * 'ventas_sucursal' va primero el traslado a la que más factura aunque no sea urgente;
-     * con 'ventas_articulo', el de mayor velocidad de venta del artículo en el destino.
+     * Sin madre manda la urgencia (cobertura). Con madre manda el criterio:
+     *
+     *   - Urgente → Chica: velocidad 0,5, cobertura 4 días. Chica factura $ 450.
+     *   - Rotativo → Grande: velocidad 2, cobertura 50 días (tiene 100 contra un mínimo de
+     *     110). Grande factura $ 100.180.
+     *   - Dormido → Grande: Grande no vende ese artículo (cobertura nula).
+     *
+     * 'ventas_sucursal': primero los traslados cuyo destino VENDE el artículo (cobertura no
+     * nula) y al final los de cobertura nula; dentro de cada bloque, facturación desc. Queda
+     * Rotativo (Grande) 1, Urgente (Chica) 2, Dormido 3.
+     *
+     * 🔴 La especificación cambió el 2/10/2026 por decisión del orquestador (post-chequeo): antes
+     * la facturación iba primero sin mirar la cobertura y el Dormido, a la sucursal grande, le
+     * ganaba al Urgente. No es aflojar la aserción: es otra regla, para que los traslados de
+     * artículos que el destino no vende no tapen quiebres reales de otra sucursal.
+     *
+     * 'ventas_articulo': velocidad desc, distinta de la urgencia (el Rotativo tiene más
+     * velocidad pero menos urgencia que el Urgente): Rotativo 1, Urgente 2, Dormido 3.
      *
      * @group sugerencias-stock
      * @test
@@ -649,33 +726,39 @@ class Deposito_madre_Test extends TestCase
         $chica   = $this->sucursal('Sucursal que factura poco');
         $grande  = $this->sucursal('Sucursal que factura mucho');
 
-        // Urgente: en déficit en la chica, con ventas (velocidad 0,5, cobertura 4 días).
         $urgente = $this->articulo_con_stock('Urgente pipeline', [
             $madre->id => ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20],
             $chica->id => ['amount' => 2,   'stock_min' => 10, 'stock_max' => 20],
         ]);
         $this->venta_de_articulo($urgente->id, $chica->id, 45, 450, now()->subDays(10));
 
-        // Dormido: en déficit en la grande, sin ventas propias (cobertura infinita).
+        $rotativo = $this->articulo_con_stock('Rotativo pipeline', [
+            $madre->id  => ['amount' => 100, 'stock_min' => 10,  'stock_max' => 20],
+            $grande->id => ['amount' => 100, 'stock_min' => 110, 'stock_max' => 120],
+        ]);
+        $this->venta_de_articulo($rotativo->id, $grande->id, 180, 180, now()->subDays(10));
+
         $dormido = $this->articulo_con_stock('Dormido pipeline', [
             $madre->id  => ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20],
             $grande->id => ['amount' => 2,   'stock_min' => 10, 'stock_max' => 20],
         ]);
         $this->venta($grande->id, 100000, now()->subDays(10));
 
-        // ventas_sucursal (default): primero el traslado a la que más factura.
+        // ventas_sucursal (default): primero los que el destino vende, por facturación; el
+        // dormido al final aunque vaya a la sucursal que más factura.
         $this->assertSame(
-            [$urgente->id => 2, $dormido->id => 1],
+            [$urgente->id => 2, $rotativo->id => 1, $dormido->id => 3],
             $this->ordenar_por_clave($this->prioridades_del_pipeline()),
-            'Con madre y ventas_sucursal, la prioridad 1 es el traslado a la sucursal que más factura.'
+            'Con ventas_sucursal, los traslados a un destino que no vende el artículo van al final.'
         );
 
-        // ventas_articulo: primero el de mayor velocidad en el destino.
+        // ventas_articulo: velocidad desc (el rotativo, aunque sea menos urgente).
         $this->criterio('ventas_articulo');
 
         $this->assertSame(
-            [$urgente->id => 1, $dormido->id => 2],
-            $this->ordenar_por_clave($this->prioridades_del_pipeline())
+            [$urgente->id => 2, $rotativo->id => 1, $dormido->id => 3],
+            $this->ordenar_por_clave($this->prioridades_del_pipeline()),
+            'Con ventas_articulo manda la velocidad del artículo en el destino, no la cobertura.'
         );
 
         // Sin madre: la urgencia de siempre.
@@ -684,7 +767,7 @@ class Deposito_madre_Test extends TestCase
         $this->criterio('ventas_sucursal');
 
         $this->assertSame(
-            [$urgente->id => 1, $dormido->id => 2],
+            [$urgente->id => 1, $rotativo->id => 2, $dormido->id => 3],
             $this->ordenar_por_clave($this->prioridades_del_pipeline())
         );
     }

@@ -382,10 +382,20 @@ class CoberturaService
      * Primero el criterio del comercio (lo que pidió Lucas: que manden las
      * sucursales que más venden), y la urgencia desempata:
      *
-     *   - 'ventas_sucursal': facturación del destino desc → cobertura asc
-     *     (nulos al final) → cantidad desc → desempate asc.
+     *   - 'ventas_sucursal': PRIMERO todos los traslados cuyo destino vende ese
+     *     artículo (cobertura no nula) y AL FINAL los de cobertura nula; dentro
+     *     de cada bloque, facturación del destino desc → cobertura asc →
+     *     cantidad desc → desempate asc.
      *   - 'ventas_articulo': velocidad del artículo en el destino desc →
-     *     cobertura asc (nulos al final) → cantidad desc → desempate asc.
+     *     cobertura asc (nulos al final) → cantidad desc → desempate asc. La
+     *     velocidad desc ya deja al final los de velocidad cero.
+     *
+     * Por qué el bloque de cobertura nula en 'ventas_sucursal' (decisión del
+     * orquestador, post-chequeo del 2/10/2026): ordenando solo por facturación,
+     * los traslados a la sucursal grande de artículos que ahí NO se venden
+     * llenaban los 30 movimientos del informe del mostrador y tapaban quiebres
+     * reales de otra sucursal. Esto ordena la LISTA; el reparto del stock escaso
+     * (StockSuggestionService::ordenar_destinos) sigue siendo por facturación.
      *
      * Cada lado es un array normalizado: to_address_id (int), velocidad
      * (float, redondeada a 4 como se guarda en velocidad_diaria), cobertura
@@ -405,6 +415,14 @@ class CoberturaService
                 return $b['velocidad'] <=> $a['velocidad'];
             }
         } else {
+            // Primero el bloque de los destinos que venden el artículo.
+            $a_sin_ventas = is_null($a['cobertura']);
+            $b_sin_ventas = is_null($b['cobertura']);
+
+            if ($a_sin_ventas !== $b_sin_ventas) {
+                return $a_sin_ventas ? 1 : -1;
+            }
+
             $facturacion_a = isset($facturacion[$a['to_address_id']]) ? $facturacion[$a['to_address_id']] : 0.0;
             $facturacion_b = isset($facturacion[$b['to_address_id']]) ? $facturacion[$b['to_address_id']] : 0.0;
 
@@ -518,6 +536,11 @@ class CoberturaService
                 'desempate'     => (int) $linea->id,
             ];
         }
+
+        // Las filas de la base ya están copiadas en $filas: se suelta la colección antes del
+        // usort para no tener las dos en memoria en el pico (una sugerencia grande tiene
+        // decenas de miles de líneas).
+        unset($lineas);
 
         usort($filas, function ($a, $b) use ($criterio, $facturacion) {
             return $this->comparar_con_madre($a, $b, $criterio, $facturacion);

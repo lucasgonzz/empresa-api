@@ -20,10 +20,12 @@ class Address extends Model
      *   tabla) nunca queda como madre: se fuerza a 0 antes de escribir. Se eligió forzarlo acá y no
      *   rechazarlo en el controller porque el controller no es el único que escribe, y porque un
      *   domicilio de comprador no es una sucursal: no hay nada que avisarle a nadie.
-     * - `saved`: si el registro quedó como madre, se apagan las OTRAS del mismo user_id con un
-     *   update() por query. Por query y no por modelo a propósito: el update del builder no
-     *   dispara eventos, así que no recursiona; y el where es_deposito_madre = 1 hace que solo se
-     *   toque la fila que de verdad estaba prendida.
+     * - `saved`: si el registro quedó como madre, se apagan las OTRAS del mismo user_id que hoy
+     *   tengan el tilde (0, 1 o, con un dato viejo, 2 filas), guardando cada una POR MODELO. Por
+     *   modelo y no con un update() por query a propósito (post-chequeo del 2/10/2026): el update
+     *   del builder no dispara eventos de Eloquent y el desmarque quedaba fuera de la auditoría
+     *   de cambios (AuditLogRecorder). No recursiona: el hook de la otra sucursal corre con el
+     *   valor en 0 y corta en la primera línea.
      *
      * @return void
      */
@@ -40,10 +42,15 @@ class Address extends Model
                 return;
             }
 
-            static::where('user_id', $address->user_id)
+            $otras = static::where('user_id', $address->user_id)
                 ->where('id', '!=', $address->id)
                 ->where('es_deposito_madre', 1)
-                ->update(['es_deposito_madre' => 0]);
+                ->get();
+
+            foreach ($otras as $otra) {
+                $otra->es_deposito_madre = 0;
+                $otra->save();
+            }
         });
     }
 
