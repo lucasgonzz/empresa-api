@@ -341,6 +341,13 @@ class CoberturaService
      * (Sale::EXPRESION_EN_PESOS: una venta sin moneda es pesos). Una venta en
      * dólares no se convierte: no suma, igual que en el Rendimiento.
      *
+     * Y solo TERMINADAS (sales.terminada = 1), el mismo conjunto que el
+     * Rendimiento (RecolectorDia::consulta_ventas): "plata facturada" no puede
+     * incluir una venta cargada y todavía sin terminar (extensión check_sales,
+     * ventas con fecha de entrega), que puede no concretarse nunca. La ventana
+     * va por sales.created_at: la segunda puerta de RecolectorDia (terminada_at
+     * en el rango) importa para "el día de ayer", no para 90 días.
+     *
      * @return array Mapa address_id (int) => facturación (float, 2 decimales). Una sucursal sin ventas no aparece.
      */
     public function facturacion_por_sucursal(): array
@@ -348,6 +355,7 @@ class CoberturaService
         $filas = Sale::query()
             ->where('sales.user_id', $this->user_id)
             ->soloVentasReales()
+            ->where('sales.terminada', 1)
             ->whereRaw(Sale::EXPRESION_EN_PESOS)
             ->whereNotNull('sales.address_id')
             ->where('sales.created_at', '>=', now()->subDays(self::VENTANA_DIAS))

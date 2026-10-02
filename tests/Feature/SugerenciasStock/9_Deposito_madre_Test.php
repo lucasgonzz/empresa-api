@@ -466,7 +466,7 @@ class Deposito_madre_Test extends TestCase
     /**
      * 'ventas_sucursal': con stock escaso en el madre se lo lleva la sucursal que más
      * facturó en 90 días. Las ventas viejas, borradas, las consolidaciones de
-     * facturación y las ventas en dólares no cuentan.
+     * facturación, las ventas en dólares y las cargadas sin terminar no cuentan.
      *
      * @group sugerencias-stock
      * @test
@@ -484,6 +484,8 @@ class Deposito_madre_Test extends TestCase
         Sale::where('id', $borrada->id)->update(['deleted_at' => now()]);
         $this->venta($menos->id, 90000, now()->subDays(5), ['is_consolidacion_facturacion' => 1]);
         $this->venta($menos->id, 90000, now()->subDays(5), ['moneda_id' => 2]);
+        // Cargada y no terminada: no es plata facturada (mismo conjunto que Rendimiento).
+        $this->venta($menos->id, 90000, now()->subDays(5), ['terminada' => 0]);
 
         $this->venta($mas->id, 1000, now()->subDays(20));
         // Una venta sin moneda es pesos (Sale::EXPRESION_EN_PESOS): suma.
