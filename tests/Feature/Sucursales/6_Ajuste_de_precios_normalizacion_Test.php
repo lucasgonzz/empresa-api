@@ -25,7 +25,7 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
      * @param  mixed        $tipo
      * @param  mixed        $porcentaje
      * @param  string|null  $tipo_esperado
-     * @param  float|null   $porcentaje_esperado
+     * @param  string|null  $porcentaje_esperado  El string de dos decimales que se asigna al modelo ("10.00").
      * @return void
      */
     protected function assert_acepta($tipo, $porcentaje, $tipo_esperado, $porcentaje_esperado)
@@ -43,7 +43,11 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
             return;
         }
 
-        $this->assertEqualsWithDelta($porcentaje_esperado, $r['valores']['ajuste_precio_porcentaje'], 0.00001, $que.': porcentaje normalizado.');
+        /*
+         * assertSame y no un delta: el porcentaje tiene que salir como el string que entrega MySQL
+         * ("10.00"), para que Eloquent no lo vea distinto del original (ver `aceptar()` del helper).
+         */
+        $this->assertSame($porcentaje_esperado, $r['valores']['ajuste_precio_porcentaje'], $que.': porcentaje normalizado.');
     }
 
     /**
@@ -104,13 +108,13 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
      */
     public function acepta_el_tipo_sin_mayusculas_y_el_porcentaje_con_coma_o_punto()
     {
-        $this->assert_acepta('recargo', 10, 'recargo', 10);
-        $this->assert_acepta('Recargo', '10', 'recargo', 10);
-        $this->assert_acepta(' DESCUENTO ', '5,5', 'descuento', 5.5);
-        $this->assert_acepta('descuento', '5.5', 'descuento', 5.5);
-        $this->assert_acepta('recargo', ' 12,25 ', 'recargo', 12.25);
-        $this->assert_acepta('recargo', 7.5, 'recargo', 7.5);
-        $this->assert_acepta('recargo', '.5', 'recargo', 0.5);
+        $this->assert_acepta('recargo', 10, 'recargo', '10.00');
+        $this->assert_acepta('Recargo', '10', 'recargo', '10.00');
+        $this->assert_acepta(' DESCUENTO ', '5,5', 'descuento', '5.50');
+        $this->assert_acepta('descuento', '5.5', 'descuento', '5.50');
+        $this->assert_acepta('recargo', ' 12,25 ', 'recargo', '12.25');
+        $this->assert_acepta('recargo', 7.5, 'recargo', '7.50');
+        $this->assert_acepta('recargo', '.5', 'recargo', '0.50');
     }
 
     /**
@@ -120,9 +124,9 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
      */
     public function redondea_el_porcentaje_a_dos_decimales()
     {
-        $this->assert_acepta('recargo', '5,123', 'recargo', 5.12);
-        $this->assert_acepta('recargo', '5,126', 'recargo', 5.13);
-        $this->assert_acepta('descuento', 33.333333, 'descuento', 33.33);
+        $this->assert_acepta('recargo', '5,123', 'recargo', '5.12');
+        $this->assert_acepta('recargo', '5,126', 'recargo', '5.13');
+        $this->assert_acepta('descuento', 33.333333, 'descuento', '33.33');
     }
 
     /**
@@ -132,15 +136,15 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
      */
     public function los_limites_se_miden_con_el_valor_ya_redondeado()
     {
-        $this->assert_acepta('descuento', '99,99', 'descuento', 99.99);
-        $this->assert_acepta('descuento', '99,994', 'descuento', 99.99);
+        $this->assert_acepta('descuento', '99,99', 'descuento', '99.99');
+        $this->assert_acepta('descuento', '99,994', 'descuento', '99.99');
         $this->assert_rechaza('descuento', '99,996', 'menor al 100%');
 
-        $this->assert_acepta('recargo', '999,99', 'recargo', 999.99);
-        $this->assert_acepta('recargo', '999,994', 'recargo', 999.99);
+        $this->assert_acepta('recargo', '999,99', 'recargo', '999.99');
+        $this->assert_acepta('recargo', '999,994', 'recargo', '999.99');
         $this->assert_rechaza('recargo', '999,996', '999,99%');
 
-        $this->assert_acepta('recargo', '0,01', 'recargo', 0.01);
+        $this->assert_acepta('recargo', '0,01', 'recargo', '0.01');
         $this->assert_rechaza('recargo', '0,004', 'mayor a 0');
     }
 

@@ -165,8 +165,9 @@ class AjusteDePreciosDeSucursalHelper {
      *
      *  - `valido`  (bool)         si el par se puede guardar.
      *  - `valores` (array)        `['ajuste_precio_tipo' => ..., 'ajuste_precio_porcentaje' => ...]`
-     *                             listo para asignar al modelo (las dos NULL = sin ajuste). Vacio si
-     *                             no es valido.
+     *                             listo para asignar al modelo (las dos NULL = sin ajuste). El
+     *                             porcentaje va como STRING de dos decimales (`"10.00"`), no como
+     *                             float: ver `aceptar()`. Vacio si no es valido.
      *  - `mensaje` (string|null)  el texto en espanol para el 422. `null` si es valido.
      *
      * Reglas:
@@ -336,8 +337,18 @@ class AjusteDePreciosDeSucursalHelper {
     }
 
     /**
+     * Arma el resultado valido. El porcentaje sale como STRING de dos decimales (`"10.00"`), igual
+     * que lo entrega MySQL para una columna DECIMAL(8,2).
+     *
+     * 🔴 NO se devuelve el float, por mas natural que parezca. Eloquent decide si un atributo cambio
+     * comparando el valor nuevo con el original que leyo de la base ("10.00"): un float 10.0 se
+     * castea a "10" y NO es igual a "10.00", asi que `update` lo marcaria como modificado en cada
+     * guardado de una sucursal con ajuste —aunque solo cambie el nombre— y la auditoria de cambios
+     * (`audit_logs`) dejaria una entrada espuria "10.00 -> 10" cada vez. Con el mismo formato de la
+     * base, "no cambio" se detecta como corresponde.
+     *
      * @param  string|null  $tipo
-     * @param  float|null   $porcentaje
+     * @param  float|null   $porcentaje  Ya redondeado a dos decimales.
      * @return array
      */
     private static function aceptar($tipo, $porcentaje) {
@@ -346,7 +357,7 @@ class AjusteDePreciosDeSucursalHelper {
             'valido'  => true,
             'valores' => [
                 self::COLUMNA_TIPO       => $tipo,
-                self::COLUMNA_PORCENTAJE => $porcentaje,
+                self::COLUMNA_PORCENTAJE => is_null($porcentaje) ? null : number_format($porcentaje, 2, '.', ''),
             ],
             'mensaje' => null,
         ];

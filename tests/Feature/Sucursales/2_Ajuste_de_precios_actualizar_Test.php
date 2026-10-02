@@ -2,6 +2,10 @@
 
 namespace Tests\Feature\Sucursales;
 
+use App\Http\Controllers\Helpers\address\AjusteDePreciosDeSucursalHelper;
+use App\Models\Address;
+use App\Models\AuditLog;
+use App\Services\AuditLog\AuditContext;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -110,5 +114,94 @@ class Ajuste_de_precios_actualizar_Test extends SucursalesTestCase
         ]))->assertStatus(200);
 
         $this->assert_ajuste($sin_ajuste, 'recargo', 3, 'PUT que agrega el ajuste');
+    }
+
+    /**
+     * Test 4 — 🔴 el porcentaje normalizado NO se ve distinto del que ya esta en la base: asignarlo al
+     * modelo no lo marca como modificado.
+     *
+     * La base entrega el DECIMAL como string ("10.00"). Si `normalizar()` devolviera el float 10.0,
+     * Eloquent lo compararia como "10" contra "10.00", lo daria por cambiado y `update` lo reescribiria
+     * en cada guardado de la sucursal. Es lo que se prueba, directo, con el mismo modelo que lee y
+     * asigna `AddressController@update`.
+     *
+     * @test
+     */
+    public function el_valor_normalizado_no_marca_el_ajuste_como_modificado()
+    {
+        foreach ([10, '12,5', '5.5', '99,99'] as $porcentaje) {
+
+            $id = $this->crear_sucursal([
+                'ajuste_precio_tipo'       => 'recargo',
+                'ajuste_precio_porcentaje' => $porcentaje,
+            ]);
+
+            $modelo = Address::find($id);
+
+            $resultado = AjusteDePreciosDeSucursalHelper::normalizar('recargo', $porcentaje);
+
+            foreach ($resultado['valores'] as $columna => $valor) {
+                $modelo->{$columna} = $valor;
+            }
+
+            $this->assertFalse(
+                $modelo->isDirty('ajuste_precio_porcentaje'),
+                'Reasignar el mismo porcentaje ('.var_export($porcentaje, true).') no puede marcarlo como modificado.'
+            );
+
+            $this->assertFalse($modelo->isDirty('ajuste_precio_tipo'), 'Reasignar el mismo tipo no puede marcarlo como modificado.');
+
+            $this->assertFalse($modelo->isDirty(), 'No cambio ningun atributo: el modelo no tiene que quedar sucio.');
+        }
+    }
+
+    /**
+     * Test 5 — de punta a punta: un PUT que cambia solo el NOMBRE y manda el mismo ajuste de siempre
+     * (como hace la SPA nueva: el ABM manda todos los campos) deja UNA fila `updated` en `audit_logs`
+     * con la calle, y NINGUNA mencion al ajuste. Sin esto, cada guardado dejaria una entrada espuria
+     * "10.00 -> 10" del porcentaje.
+     *
+     * Incluye una asercion de control (la calle SI esta en la fila): sin ella, una auditoria que no
+     * registrara nada haria pasar el test sin probar nada.
+     *
+     * @test
+     */
+    public function un_put_que_no_cambia_el_ajuste_no_deja_el_ajuste_en_la_auditoria()
+    {
+        AuditContext::reiniciar();
+
+        $id = $this->crear_sucursal([
+            'ajuste_precio_tipo'       => 'recargo',
+            'ajuste_precio_porcentaje' => 10,
+        ]);
+
+        $desde = (int) AuditLog::max('id');
+
+        $this->putJson('api/address/'.$id, $this->payload_sucursal([
+            'street'                   => 'zz Sucursal renombrada con el mismo ajuste',
+            'ajuste_precio_tipo'       => 'recargo',
+            'ajuste_precio_porcentaje' => 10,
+        ]))->assertStatus(200);
+
+        $filas = AuditLog::where('id', '>', $desde)
+                            ->where('auditable_type', Address::class)
+                            ->where('auditable_id', $id)
+                            ->where('event', 'updated')
+                            ->get();
+
+        $this->assertCount(1, $filas, 'El PUT tiene que dejar exactamente una fila updated de la sucursal.');
+
+        $nuevos  = json_decode($filas->first()->new_values, true);
+        $viejos  = json_decode($filas->first()->old_values, true);
+
+        /* Control: lo que SI cambio esta registrado. */
+        $this->assertArrayHasKey('street', $nuevos, 'La calle cambio y tiene que figurar en la auditoria.');
+
+        foreach (['ajuste_precio_porcentaje', 'ajuste_precio_tipo'] as $columna) {
+            $this->assertArrayNotHasKey($columna, $nuevos, $columna.': no cambio y no tiene que figurar en los valores nuevos.');
+            $this->assertArrayNotHasKey($columna, $viejos, $columna.': no cambio y no tiene que figurar en los valores viejos.');
+        }
+
+        AuditContext::reiniciar();
     }
 }
