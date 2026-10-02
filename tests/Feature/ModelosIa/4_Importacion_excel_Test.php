@@ -202,7 +202,7 @@ class Importacion_excel_Test extends TestCase
     {
         config(['services.deepseek.api_key' => null]);
 
-        $techos = ['articulos' => 4000, 'clientes' => 2000, 'proveedores' => 2000];
+        $techos = ['articulos' => 8000, 'clientes' => 8000, 'proveedores' => 8000];
 
         foreach ($this->analizadores() as $nombre => $par) {
             list($analizador, $proceso) = $par;
@@ -318,7 +318,9 @@ class Importacion_excel_Test extends TestCase
 
     /**
      * Una respuesta cortada por el techo (`stop_reason = max_tokens`) es "no se pudo interpretar" en
-     * los tres, aunque el texto cortado se pudiera leer; la llamada igual queda registrada (se pagó).
+     * los tres, aunque el texto cortado se pudiera leer. Desde la misión techo-ia-importacion-planillas-anchas
+     * (2/10/2026) la primera vez que se corta se reintenta UNA vez con el doble de techo: si el reintento
+     * también se corta, son dos llamadas y las dos quedan registradas (las dos se pagaron).
      *
      * @group import
      * @test
@@ -335,7 +337,7 @@ class Importacion_excel_Test extends TestCase
 
             $this->assertSame(AiExcelAnalyzer::MENSAJE_IA_RESPUESTA_ILEGIBLE, $this->mensaje_de_error($analizador), $nombre);
 
-            $this->assertSame(1, AiTokenUsage::where('user_id', $this->dueno->id)->where('proceso', $proceso)->count(), $nombre . ': la llamada cortada igual se pagó.');
+            $this->assertSame(2, AiTokenUsage::where('user_id', $this->dueno->id)->where('proceso', $proceso)->count(), $nombre . ': las dos llamadas cortadas se pagaron.');
         }
 
         /* Con stop_reason end_turn, la misma forma se lee normal. */
