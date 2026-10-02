@@ -87,6 +87,12 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
          */
         'PdfColumnProfileArticleSeeder',
 
+        /*
+         * Los diseños de PDF de presupuesto y de pedido online. Como el de artículos, itera los
+         * dueños: en `DatabaseSeeder` va al final de `run()` y en la demo en `base_seeders()`.
+         */
+        'PdfColumnProfileDocumentosSeeder',
+
         /* Catálogos del módulo de producción, que faltaban del lado de LOCAL. */
         'OrderProductionStatusSeeder',
         'ProductionBatchStatusSeeder',

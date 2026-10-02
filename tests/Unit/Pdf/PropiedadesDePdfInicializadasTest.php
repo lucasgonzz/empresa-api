@@ -60,11 +60,16 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'CurrentAcountPdf.php' => ['y_final_commerce_line'],
         'DepositMovementPdf.php' => [],
         'EtiquetaEnvioPdf.php' => [],
+        // Alta del 1/10/2026 (misión diseno-pdf-configurable): el motor de cajas y la venta con
+        // diseño de página. Entran con [] a propósito (la entrada más estricta): toda propiedad que
+        // leen está declarada en la clase e inicializada en su constructor.
+        'Layout/MotorDeCajasPdf.php' => [],
         'NotaCreditoPdf.php' => [],
         'OrderPdf.php' => [],
         'OrderProductionArticlesPdf.php' => [],
         'OrderProductionPdf.php' => [],
         'PagoPdf.php' => [],
+        'ProfileDocumentPdf.php' => [],
         'ProviderOrderPdf.php' => [],
         // Alta del 21/8/2026 (sistema de puntos). Entra con [] a proposito: es la entrada mas
         // estricta posible, o sea que el escaner no encuentra NINGUNA propiedad leida sin
@@ -74,6 +79,9 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'RoadMapPdf.php' => [],
         'SaleAfipTicketPdf.php' => ['afip_information', 'for_commerce', 'total_pages'],
         'SaleDeliveredArticlesPdf.php' => [],
+        // Alta del 1/10/2026 (misión diseno-pdf-configurable): la venta con diseño de página.
+        // Entra con [] a propósito: toda propiedad que lee está declarada e inicializada.
+        'SaleLayoutPdf.php' => [],
         'SalePdf.php' => ['afip_helper'],
         'SaleTicketPdf.php' => ['total_sale'],
         'SaleTicketRaw.php' => [],

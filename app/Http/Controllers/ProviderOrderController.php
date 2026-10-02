@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
+use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoProveedorHelper;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Models\ProviderOrder;
@@ -193,6 +194,21 @@ class ProviderOrderController extends Controller
 
     public function destroy($id) {
         $model = ProviderOrder::find($id);
+
+        /*
+         * 🔴 Una compra con notas de crédito a proveedor VIVAS no se borra (misión
+         * devoluciones-compras-y-rediseno, 1/10/2026, decisión del orquestador). Borrarla dejaba la
+         * NC apuntando a una compra inexistente, con su haber en la cuenta del proveedor imputado a
+         * un débito que desaparecía, y el stock había que adivinarlo entre lo que entró y lo que ya
+         * salió. Se frena ANTES de tocar nada, con el número de cada NC: se eliminan desde la
+         * cuenta corriente del proveedor (eso devuelve su stock, ver
+         * NotaCreditoProveedorHelper::deshacer_stock) y recién ahí se borra la compra.
+         */
+        $motivo = NotaCreditoProveedorHelper::motivo_por_el_que_no_se_puede_borrar_la_compra($id);
+
+        if (!is_null($motivo)) {
+            return response()->json(['message' => $motivo], 422);
+        }
 
         /*
          * 🔴 La baja de la compra saca su movimiento de la cuenta corriente del proveedor y

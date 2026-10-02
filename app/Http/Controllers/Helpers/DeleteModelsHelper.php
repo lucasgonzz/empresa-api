@@ -20,6 +20,17 @@ class DeleteModelsHelper
     const BACKGROUND_THRESHOLD = 1;
 
     /**
+     * Modelos cuyo destroy() puede NEGARSE (responder 4xx sin lanzar) y para los que el borrado
+     * masivo respeta esa negativa: no los cuenta ni los devuelve como eliminados. Ver
+     * process_delete() y motivo_de_rechazo().
+     */
+    const MODELOS_QUE_RESPETAN_RECHAZO = [
+        // Compra con notas de crédito a proveedor en cuenta corriente (misión
+        // devoluciones-compras-y-rediseno, 1/10/2026): ProviderOrderController::destroy() la frena.
+        'provider_order',
+    ];
+
+    /**
      * El registro visible (misión procesos-en-segundo-plano, 18/9/2026) del borrado que está
      * corriendo en este worker.
      *
@@ -101,7 +112,8 @@ class DeleteModelsHelper
      * @param string $model_name
      * @param array $models_id
      * @param bool $suppress_per_model_notifications
-     * @return array{deleted_count: int, total_count: int, deleted_models: array}
+     * @return array{deleted_count: int, total_count: int, deleted_models: array, not_deleted: array}
+     *         `not_deleted`: [{id, message}] de los registros cuyo destroy() se negó.
      */
     public static function process_delete($model_name, $models_id, $suppress_per_model_notifications = false)
     {
@@ -120,6 +132,9 @@ class DeleteModelsHelper
 
         /** Modelos eliminados para responder al frontend en operaciones síncronas. */
         $deleted_models = [];
+
+        /** Registros cuyo destroy() se negó (respuesta no 2xx), con el motivo. */
+        $not_deleted = [];
 
         /**
          * En eliminaciones masivas en background se suprimen notificaciones por registro
@@ -160,7 +175,7 @@ class DeleteModelsHelper
                      * En background siempre va en false.
                      */
                     $send_notification = !$suppress_per_model_notifications && $total_count <= 300;
-                    $controller->destroy($model->id, $send_notification);
+                    $respuesta = $controller->destroy($model->id, $send_notification);
                 } elseif ($model_name == 'sale') {
                     /**
                      * 🔴 SaleController::destroy() recibe (Request, $id), no ($id). Sin este caso
@@ -172,9 +187,37 @@ class DeleteModelsHelper
                      * articulos"). El borrado de UNA venta entra por otro lado --el modal de la
                      * venta, con el checkbox de compensar caja-- y ahi por defecto SI la compensa.
                      */
-                    $controller->destroy(new Request(), $model->id);
+                    $respuesta = $controller->destroy(new Request(), $model->id);
                 } else {
-                    $controller->destroy($model->id);
+                    $respuesta = $controller->destroy($model->id);
+                }
+
+                /*
+                    🔴 Un destroy() que se NIEGA (responde 4xx/5xx sin lanzar excepción) no borró
+                    nada: no se cuenta ni se devuelve como eliminado (misión
+                    devoluciones-compras-y-rediseno, 1/10/2026). El caso que lo trajo: una compra
+                    con notas de crédito a proveedor en cuenta corriente, que
+                    ProviderOrderController::destroy() frena con 422. Hasta acá la respuesta se
+                    tiraba y el registro volvía en `deleted_models`: el listado lo sacaba de la
+                    pantalla aunque seguía existiendo. Un destroy() que no devuelve nada, o devuelve
+                    2xx, sigue contando como antes.
+
+                    ⚠️ Por ahora SOLO para los modelos de MODELOS_QUE_RESPETAN_RECHAZO: hay una
+                    veintena de destroy() que en algún caso responden 4xx (ventas, gastos,
+                    comprobantes...), y cambiarles a todos de una qué devuelve el borrado masivo
+                    excede esta misión. Agregar uno es sumarlo a la lista.
+                */
+                $motivo_rechazo = in_array($model_name, self::MODELOS_QUE_RESPETAN_RECHAZO)
+                    ? self::motivo_de_rechazo($respuesta)
+                    : null;
+
+                if (!is_null($motivo_rechazo)) {
+                    Log::info('DeleteModelsHelper: el destroy de ' . $model_name . ' id ' . $model->id . ' se negó: ' . $motivo_rechazo);
+                    $not_deleted[] = [
+                        'id'      => $model->id,
+                        'message' => $motivo_rechazo,
+                    ];
+                    continue;
                 }
 
                 $deleted_count++;
@@ -188,7 +231,39 @@ class DeleteModelsHelper
             'deleted_count' => $deleted_count,
             'total_count' => $total_count,
             'deleted_models' => $deleted_models,
+            'not_deleted' => $not_deleted,
         ];
+    }
+
+    /**
+     * El motivo por el que un destroy() se negó a borrar, o null si borró.
+     *
+     * Se considera rechazo solo una respuesta HTTP con código fuera de 2xx: un destroy() que no
+     * devuelve nada (varios controladores no devuelven) o devuelve 2xx borró, como siempre. El
+     * motivo es el `message` del JSON si lo hay, o un texto genérico con el código.
+     *
+     * @param mixed $respuesta  Lo que devolvió el destroy() del controlador.
+     * @return string|null
+     */
+    public static function motivo_de_rechazo($respuesta)
+    {
+        if (!($respuesta instanceof \Symfony\Component\HttpFoundation\Response)) {
+            return null;
+        }
+
+        $codigo = $respuesta->getStatusCode();
+
+        if ($codigo >= 200 && $codigo < 300) {
+            return null;
+        }
+
+        $cuerpo = json_decode((string) $respuesta->getContent(), true);
+
+        if (is_array($cuerpo) && isset($cuerpo['message']) && $cuerpo['message'] !== '') {
+            return (string) $cuerpo['message'];
+        }
+
+        return 'No se pudo eliminar (código ' . $codigo . ').';
     }
 
     /**
@@ -228,6 +303,9 @@ class DeleteModelsHelper
      * @param bool $success
      * @param int $deleted_count
      * @param string|null $error_message
+     * @param array $not_deleted  [{id, message}] de los registros cuyo destroy() se negó (ver
+     *                            MODELOS_QUE_RESPETAN_RECHAZO). Opcional y al final: ningún
+     *                            llamador existente cambia.
      * @return void
      */
     public static function notify_result(
@@ -236,7 +314,8 @@ class DeleteModelsHelper
         $model_name,
         $success,
         $deleted_count = 0,
-        $error_message = null
+        $error_message = null,
+        $not_deleted = []
     ) {
         /** Usuario owner que recibe el broadcast global_notification.{owner_id}. */
         $owner_user = User::find((int) $owner_user_id);
@@ -270,6 +349,25 @@ class DeleteModelsHelper
 
             if ($model_name == 'article') {
                 $entendido_button['function_name'] = 'refresh_articles_after_masive_update';
+            }
+
+            /*
+                Los que no se pudieron eliminar, con su motivo (misión
+                devoluciones-compras-y-rediseno, 1/10/2026): sin esto el aviso decía "finalizó
+                correctamente" y el usuario no sabía por qué una compra seguía en el listado.
+            */
+            if (is_array($not_deleted) && count($not_deleted) > 0) {
+
+                $parrafos = [];
+
+                foreach ($not_deleted as $rechazo) {
+                    $parrafos[] = $rechazo['message'];
+                }
+
+                $info_to_show[] = [
+                    'title' => count($not_deleted) . ' no se pudieron eliminar',
+                    'parrafos' => $parrafos,
+                ];
             }
 
             $functions_to_execute = [$entendido_button];
@@ -383,7 +481,9 @@ class DeleteModelsHelper
                 $auth_user_id,
                 $model_name,
                 true,
-                $result['deleted_count']
+                $result['deleted_count'],
+                null,
+                $result['not_deleted']
             );
         } finally {
             self::clear_auth_context();

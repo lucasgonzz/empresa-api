@@ -368,7 +368,9 @@ class SearchController extends Controller
      *                   grupo de coincidencia de texto. Delegado en ExtraFiltersHelper::apply.
      *                   Whitelist de operadores: '=' (igualdad, admite 0 como valor legítimo),
      *                   'like' (contains), '>' / '<' / '>=' / '<=' (comparación numérica, solo si la
-     *                   columna es numérica y el valor también lo es), 'numeric_presence' (solo
+     *                   columna es numérica y el valor también lo es), 'in' (el valor es un array
+     *                   de números, típicamente ids: solo columnas numéricas; un array vacío = ninguna
+     *                   fila; lo usa Tesorería > Cheques para acotar la búsqueda a la solapa), 'numeric_presence' (solo
      *                   columnas numéricas; valores 'con_valor' = no nula, 'positivo' = mayor a
      *                   cero, 'todos' = sin filtro), 'address_stock_seteado' (filtra por RELACIÓN y
      *                   no por columna: deja pasar los modelos a los que se les cargó la sucursal
@@ -496,15 +498,22 @@ class SearchController extends Controller
         // para que quede DENTRO del mismo grupo de coincidencia de texto (no como un AND aparte).
         $extra_text_conditions = $usar_contexto_vender ? VenderSearchHelper::bar_code_condition_callback() : null;
 
+        // Extension de la propiedad `name` con la descripcion de las variantes (mision
+        // busqueda-vender-por-variantes, 1/10/2026): "zapatilla azul" encuentra el articulo
+        // "Zapatilla" con variantes "azul 35" y "azul 36". Solo con contexto Vender valido, y el
+        // helper devuelve null si el comercio no tiene la extension `article_variants`: en ese caso
+        // el SQL queda exactamente como antes.
+        $name_extension_condition = $usar_contexto_vender ? VenderSearchHelper::variant_description_condition_callback() : null;
+
         // Grupo de coincidencia de texto (props + relaciones, con su keyword_mode y el conector),
         // delegado en GlobalSearchQueryHelper. Reemplaza el armado inline que antes mezclaba OR de
         // props con AND de palabras adentro de cada una (ver PHPDoc del helper para la lógica de
         // los dos modos y su combinación).
-        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions);
+        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions, $name_extension_condition);
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
-        // comparación numérica '>','<','>=','<=', 'numeric_presence', 'address_stock_seteado', y los
+        // comparación numérica '>','<','>=','<=', 'in' (lista de números/ids), 'numeric_presence', 'address_stock_seteado', y los
         // legacy 'category' y 'stock_option'). Cualquier operador fuera de la whitelist se ignora en silencio (no se
         // ejecuta SQL arbitrario con la key/valor que venga del request).
         $models = ExtraFiltersHelper::apply($models, $table, $extra_filters);

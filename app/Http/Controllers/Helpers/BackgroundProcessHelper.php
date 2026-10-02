@@ -254,14 +254,17 @@ class BackgroundProcessHelper
                 ? (int) $proceso->procesados
                 : (int) $proceso->total;
 
+            $ahora = Carbon::now();
+
             $proceso->fill([
                 'status'         => BackgroundProcess::STATUS_COMPLETADO,
                 'procesados'     => $procesados,
                 'porcentaje'     => 100,
                 'etapa'          => self::texto_o_null(is_null($etapa) ? 'Terminado' : $etapa, 120),
                 'resultado_json' => self::codificar_resultado(array_merge($proceso->resultado(), $resultado)),
-                'finished_at'    => Carbon::now(),
+                'finished_at'    => $ahora,
             ]);
+            self::cerrar_espera_en_cola($proceso, $ahora);
             $proceso->save();
 
             self::emitir($proceso, true);
@@ -292,13 +295,16 @@ class BackgroundProcessHelper
                 return $proceso;
             }
 
+            $ahora = Carbon::now();
+
             $proceso->fill([
                 'status'         => BackgroundProcess::STATUS_FALLO,
                 'etapa'          => 'Falló',
                 'error_message'  => Str::limit(trim((string) $mensaje), 2000, '…'),
                 'resultado_json' => self::codificar_resultado(array_merge($proceso->resultado(), $resultado)),
-                'finished_at'    => Carbon::now(),
+                'finished_at'    => $ahora,
             ]);
+            self::cerrar_espera_en_cola($proceso, $ahora);
             $proceso->save();
 
             self::emitir($proceso, true);
@@ -404,9 +410,12 @@ class BackgroundProcessHelper
             'referencia_type' => $proceso->referencia_type,
             'referencia_id'   => is_null($proceso->referencia_id) ? null : (int) $proceso->referencia_id,
             'error_message'   => is_null($proceso->error_message) ? null : Str::limit($proceso->error_message, 300, '…'),
+            'created_at'      => self::fecha($proceso->created_at),
             'started_at'      => self::fecha($proceso->started_at),
             'finished_at'     => self::fecha($proceso->finished_at),
             'updated_at'      => self::fecha($proceso->updated_at),
+            'duracion_segundos' => self::duracion_segundos($proceso),
+            'espera_segundos'   => self::espera_segundos($proceso),
             'visto_at'        => self::fecha($proceso->visto_at),
             'resultado'       => self::solo_escalares($proceso->resultado()),
         ];
@@ -613,6 +622,61 @@ class BackgroundProcessHelper
         }
 
         return $cambios;
+    }
+
+    /**
+     * Segundos que tardó en EJECUTARSE un proceso ya cerrado (de que arrancó a correr a que
+     * terminó, bien o mal). Es null mientras sigue abierto o si faltan las fechas.
+     *
+     * No se persiste: sale de `started_at` y `finished_at`, que ya existen, así que también vale
+     * para las filas anteriores a este cálculo.
+     *
+     * @param  \App\Models\BackgroundProcess $proceso
+     * @return int|null
+     */
+    protected static function duracion_segundos(BackgroundProcess $proceso)
+    {
+        if (!$proceso->esta_terminado() || is_null($proceso->started_at) || is_null($proceso->finished_at)) {
+            return null;
+        }
+
+        return max(0, Carbon::parse($proceso->finished_at)->getTimestamp() - Carbon::parse($proceso->started_at)->getTimestamp());
+    }
+
+    /**
+     * Segundos que estuvo esperando en la cola antes de que un worker lo levantara (de que se
+     * encoló a que empezó a correr). Null mientras sigue `pendiente` (todavía no terminó de
+     * esperar) o si faltan las fechas. En un proceso que nace corriendo da ~0.
+     *
+     * @param  \App\Models\BackgroundProcess $proceso
+     * @return int|null
+     */
+    protected static function espera_segundos(BackgroundProcess $proceso)
+    {
+        if ($proceso->status === BackgroundProcess::STATUS_PENDIENTE
+            || is_null($proceso->created_at) || is_null($proceso->started_at)) {
+            return null;
+        }
+
+        return max(0, Carbon::parse($proceso->started_at)->getTimestamp() - Carbon::parse($proceso->created_at)->getTimestamp());
+    }
+
+    /**
+     * Si el proceso se cierra sin haber pasado nunca por avanzar() sigue `pendiente`, y su
+     * `started_at` es la hora en que se encoló: la duración incluiría la espera en cola. Se lo
+     * corre a la hora de cierre, así toda esa demora cuenta como espera y no como ejecución.
+     * Se llama después del fill() del cierre: el estado anterior se lee de los atributos
+     * originales (la fila viene fresca de la base, ver resolver()).
+     *
+     * @param  \App\Models\BackgroundProcess $proceso
+     * @param  \Carbon\Carbon $ahora
+     * @return void
+     */
+    protected static function cerrar_espera_en_cola(BackgroundProcess $proceso, Carbon $ahora)
+    {
+        if ($proceso->getOriginal('status') === BackgroundProcess::STATUS_PENDIENTE) {
+            $proceso->started_at = $ahora;
+        }
     }
 
     /**

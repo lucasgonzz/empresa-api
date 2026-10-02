@@ -225,6 +225,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Devolciones
     Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
+    Route::get('devoluciones/search-provider-order/{num}', 'DevolucionesController@search_provider_order');
     Route::post('devoluciones/', 'DevolucionesController@store');
 
 
@@ -520,6 +521,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::patch('client/{id}/phone', 'ClientController@update_phone');
 
     Route::resource('seller', 'SellerController');
+    // Los números del modal "Sincronizar artículos" del margen de una lista (la sincronización
+    // viaja en el PUT del resource, clave `sincronizar_margen`). Misión sincronizar-margen-lista-precios.
+    Route::get('price-type/{id}/sincronizar-margen/preview', 'PriceTypeController@sincronizar_margen_preview');
     Route::resource('price-type', 'PriceTypeController');
 
     Route::resource('provider-order', 'ProviderOrderController');
@@ -854,6 +858,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // catálogo de artículos. Va ANTES del resource: si no, el GET lo captura show/{id} con
     // id = "catalog-header-sources" y responde 404.
     Route::get('pdf-column-profiles/catalog-header-sources', 'PdfColumnProfileController@catalog_header_sources');
+    // Catálogo de campos, límites y diseño derivado para el diseñador de PDF con cajas (misión
+    // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
+    Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');

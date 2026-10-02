@@ -36,9 +36,27 @@ class ExtraFiltersHelper
      *   exactamente 0). El 0 solo se descarta para el operador legacy 'category' (donde significa
      *   "todas").
      * - Los operadores fuera de la whitelist se ignoran en silencio (nunca ejecutan SQL arbitrario).
+     *   La whitelist es: '=', 'like', '>', '<', '>=', '<=', 'in', 'numeric_presence',
+     *   'address_stock_seteado' y los legacy 'category' y 'stock_option'.
      * - 'address_stock_seteado' no filtra por columna sino por relación (whereHas sobre addresses,
      *   más las de las variantes si el modelo las tiene): deja pasar los modelos que tienen seteada
      *   la relación con esa sucursal, cualquiera sea el valor del pivote. Valor 0 = "todas".
+     * - 'in' (misión cheques-solapa-endosados, 2/10/2026) deja pasar solo las filas cuya columna
+     *   vale alguno de los números de la lista (`whereIn`). Sirve para acotar una búsqueda a una
+     *   selección que el cliente ya tiene (la SPA manda los ids de la solapa donde está parado el
+     *   usuario). Sus reglas:
+     *     · `value` tiene que ser un array: si no lo es, el filtro se ignora (es lo mismo que hace
+     *       una API vieja con un operador que no conoce).
+     *     · La key se valida contra el schema como en los demás operadores, y solo vale sobre
+     *       columnas NUMÉRICAS (como '>' y '<': sobre una columna de texto se ignora).
+     *     · Los elementos del array que no son numéricos se descartan.
+     *     · 🔴 Un array vacío —o que queda vacío después de descartar— significa NINGUNA fila
+     *       (`1 = 0`), NO "sin filtro". Es la solapa vacía: si se tratara como "sin filtro", una
+     *       solapa sin cheques mostraría todos los de las demás. OJO: no es lo mismo que
+     *       `value` ausente o null, que sí se ignoran en el `$sin_filtro` de abajo (un array vacío
+     *       no es null, '' ni 'todos', así que llega a esta rama).
+     *     Como todos los filtros extra, se AND-ea con el resto de la query, incluido el scope por
+     *     usuario: pasar ids de otro dueño no los trae.
      *
      * @param \Illuminate\Database\Eloquent\Builder $models Query base (ya armada, típicamente después
      *        del where(function...) del grupo OR de texto).
@@ -103,6 +121,31 @@ class ExtraFiltersHelper
                 // cualquier columna).
                 if (self::is_numeric_column($table, $key) && is_numeric($value)) {
                     $models = $models->where($key, $operator, $value);
+                }
+            } else if ($operator == 'in') {
+                // Pertenencia a una lista de números (típicamente ids). Solo aplica si `value` es un
+                // array y la columna es numérica; si no, el filtro se ignora (misma política que
+                // '>' y '<'). Ver el PHPDoc del método para el detalle de las reglas.
+                if (is_array($value) && self::is_numeric_column($table, $key)) {
+                    // Elementos numéricos de la lista, ya como número (con `+ 0`): el SQL recibe
+                    // 5 y no "5", y los textos con espacios o notación rara no se cuelan como string.
+                    $valores_numericos = [];
+
+                    foreach ($value as $elemento) {
+                        // null, textos, booleanos y arrays anidados no son números: se descartan.
+                        if (is_numeric($elemento)) {
+                            $valores_numericos[] = $elemento + 0;
+                        }
+                    }
+
+                    if (count($valores_numericos)) {
+                        $models = $models->whereIn($key, $valores_numericos);
+                    } else {
+                        // Lista vacía (o que quedó vacía al descartar la basura) = ninguna fila.
+                        // `whereIn` con un array vacío ya genera `0 = 1` en Laravel, pero se escribe
+                        // explícito para que la regla no dependa de cómo cambie el framework.
+                        $models = $models->whereRaw('1 = 0');
+                    }
                 }
             } else if ($operator == 'numeric_presence') {
                 // Presencia de valor sobre columna numérica. Solo aplica si la columna es numérica.

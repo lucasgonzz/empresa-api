@@ -8,12 +8,15 @@ use App\Http\Controllers\Helpers\LimiteCreditoHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
+use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Pdf\OrderPdf;
+use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Order;
 use App\Models\OrderStatus;
 use App\Models\Sale;
+use App\Services\PdfColumnService;
 use App\Services\Zipnova\EnvioNoGenerableException;
 use App\Services\Zipnova\ZipnovaEnvioService;
 use Illuminate\Http\Request;
@@ -607,11 +610,39 @@ class OrderController extends Controller
         $model->unsetRelation('articles');
     }
 
-    function pdf($id) {
+    function pdf(Request $request, $id) {
         $model = Order::find($id);
 
         if (is_null($model)) {
             abort(404);
+        }
+
+        /**
+         * Diseño de PDF (`?pdf_column_profile_id=`): solo con ese parámetro se imprime con
+         * `ProfileDocumentPdf`. Sin él, el PDF es el de siempre (`OrderPdf`), sin ningún cambio:
+         * `tienda-spa` tiene una `VUE_APP_ORDER_PDF_URL` opcional que puede apuntar acá y no manda el
+         * parámetro. El perfil se busca con el dueño DEL PEDIDO, nunca con el usuario logueado (la
+         * ruta es pública por id); sin ningún diseño de pedido, cae al PDF de siempre.
+         */
+        if ($request->filled('pdf_column_profile_id')) {
+
+            $order_document = new OrderPdfDocument($model);
+
+            $profile = PdfColumnService::get_profile_for_print(
+                $order_document->owner_id(),
+                'order',
+                $request->query('pdf_column_profile_id'),
+                null
+            );
+
+            if ($profile) {
+                /** Si el diseño falla al dibujarse, cae al PDF de siempre (ver `try_render()`). */
+                $pdf = ProfileDocumentPdf::try_render($order_document, $profile);
+
+                if ($pdf) {
+                    $pdf->emit();
+                }
+            }
         }
 
         new OrderPdf($model);

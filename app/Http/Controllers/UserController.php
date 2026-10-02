@@ -17,6 +17,7 @@ use App\Models\UserConfiguration;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Notifications\GlobalNotification;
+use App\Services\StockSuggestion\CoberturaService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
@@ -260,6 +261,18 @@ class UserController extends Controller
         }
         if ($request->has('sugerencias_limite_origen') && !is_null($request->sugerencias_limite_origen)) {
             $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
+        }
+        /**
+         * Prioridad al repartir desde el depósito madre (misión deposito-madre): mismo guard que
+         * las de arriba, más LISTA BLANCA. Este valor decide quién se lleva el stock cuando el
+         * madre no alcanza; uno desconocido se ignora (queda el que estaba) en vez de guardarse y
+         * caer en silencio al default en cada cálculo. Y sin la columna todavía (deploy a medio
+         * migrar, CoberturaService::columna_prioridad_existe()) no se asigna: el save sería un 500.
+         */
+        if (CoberturaService::columna_prioridad_existe()
+            && $request->has('sugerencias_prioridad_destino') && !is_null($request->sugerencias_prioridad_destino)
+            && in_array($request->sugerencias_prioridad_destino, CoberturaService::PRIORIDADES_DESTINO, true)) {
+            $model->sugerencias_prioridad_destino = $request->sugerencias_prioridad_destino;
         }
 
         /**

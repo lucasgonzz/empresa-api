@@ -49,14 +49,15 @@ class AiExcelAnalyzer
     protected const CLAUDE_MODEL = 'claude-sonnet-4-5';
 
     /**
-     * Tokens máximos para la respuesta de Claude.
+     * Tokens máximos para la respuesta de Claude (primer intento). Si la respuesta llega cortada
+     * (stop_reason = max_tokens) call_claude() repite UNA vez la llamada con el doble de este techo.
      *
      * Se eleva a 4000 porque al incluir depósitos y listas de precio el prompt
      * es más largo y la respuesta (column_mapping con propiedades codificadas) puede ser más extensa.
      *
      * @var int
      */
-    protected const MAX_TOKENS = 4000;
+    protected const MAX_TOKENS = 8000;
 
     /**
      * Cuántos códigos de proveedor repetidos se listan como ejemplo en
@@ -1878,6 +1879,45 @@ PROMPT;
      */
     protected function call_claude(string $prompt): string
     {
+        $cortada = false;
+
+        $text = $this->call_claude_con_techo($prompt, 1, $cortada);
+
+        if (!$cortada) {
+            return $text;
+        }
+
+        /*
+         * Cortada por el techo de salida: la planilla es ancha y el column_mapping no entró. Se
+         * repite UNA vez la misma llamada (mismo prompt, proveedor y modelo) con el doble de techo.
+         * Los errores HTTP y de conexión no pasan por acá: salen de call_claude_con_techo() con sus
+         * mismos mensajes, sin reintento propio.
+         */
+        $text = $this->call_claude_con_techo($prompt, 2, $cortada);
+
+        if ($cortada) {
+            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
+        }
+
+        return $text;
+    }
+
+    /**
+     * UNA llamada a la IA con el techo de salida base multiplicado por $factor (1 = primer intento,
+     * 2 = el reintento por corte). Hace todo lo que hacía call_claude() antes del reintento, incluido
+     * registrar el consumo de tokens: cada llamada se paga.
+     *
+     * @param  string $prompt   Prompt completo a enviar
+     * @param  int    $factor   Multiplicador del techo de salida
+     * @param  bool   $cortada  Salida: true si la respuesta llegó cortada por max_tokens (devuelve '')
+     * @return string           Texto de respuesta devuelto por la IA
+     *
+     * @throws \RuntimeException  Si la llamada falla o la API devuelve error
+     */
+    protected function call_claude_con_techo(string $prompt, int $factor, bool &$cortada): string
+    {
+        $cortada = false;
+
         /*
          * Con qué IA: la elegida para el DUEÑO del comercio (el user_id de este analizador ya es el
          * owner en los tres caminos que lo crean; dueno_de() lo asegura igual). Null = no hay clave
@@ -1898,12 +1938,6 @@ PROMPT;
         $proveedor = $ia['proveedor'];
         $modelo    = $ia['modelo'];
 
-        Log::info('AiExcelAnalyzer: llamando a la IA', [
-            'proveedor'  => $proveedor,
-            'model'      => $modelo,
-            'max_tokens' => self::MAX_TOKENS,
-        ]);
-
         $timeout = (int) config('services.importacion_excel_ia.timeout', 120);
 
         /* Cliente HTTP del proveedor: clave, headers y TLS (ca_bundle / verify_ssl) de su bloque de config. */
@@ -1916,7 +1950,7 @@ PROMPT;
          */
         $payload = ProveedorIaHelper::agregar_thinking([
             'model'      => $modelo,
-            'max_tokens' => self::MAX_TOKENS,
+            'max_tokens' => self::MAX_TOKENS * $factor,
             'messages'   => [
                 [
                     'role'    => 'user',
@@ -1936,9 +1970,16 @@ PROMPT;
             $techo_con_razonamiento = (int) config('services.importacion_excel_ia.max_tokens_con_razonamiento', 16000);
 
             if ($techo_con_razonamiento > 0) {
-                $payload['max_tokens'] = $techo_con_razonamiento;
+                $payload['max_tokens'] = max(self::MAX_TOKENS, $techo_con_razonamiento) * $factor;
             }
         }
+
+        Log::info('AiExcelAnalyzer: llamando a la IA', [
+            'proveedor'  => $proveedor,
+            'model'      => $modelo,
+            'max_tokens' => $payload['max_tokens'],
+            'intento'    => $factor,
+        ]);
 
         /*
          * El timeout y el corte de conexión llegan como ConnectionException, que
@@ -2015,20 +2056,23 @@ PROMPT;
          */
         /*
          * Respuesta CORTADA por el techo de salida (`stop_reason = max_tokens`): lo que vino es un JSON
-         * a medias. Se trata como "no se pudo interpretar" (el mismo mensaje de siempre), pero con un
+         * a medias. call_claude() la reintenta una vez con el doble de techo y, si se corta de nuevo,
+         * la trata como "no se pudo interpretar" (el mismo mensaje de siempre), con un
          * warning claro en el log, porque la causa es el techo y no la planilla: si se repite, hay que
          * subir IMPORTACION_EXCEL_IA_MAX_TOKENS_CON_RAZONAMIENTO. La llamada ya quedó registrada arriba
          * (se pagó igual).
          */
         if (is_array($response_data) && isset($response_data['stop_reason']) && (string) $response_data['stop_reason'] === 'max_tokens') {
-            Log::warning('AiExcelAnalyzer: la respuesta de la IA se cortó por el techo de salida (stop_reason = max_tokens)', [
+            Log::warning('AiExcelAnalyzer: la respuesta de la IA se cortó por el techo de salida (stop_reason = max_tokens)' . ($factor === 1 ? ': se reintenta una vez con el doble de techo' : ': segundo corte, se desiste'), [
                 'proveedor'     => $proveedor,
                 'modelo'        => $modelo,
                 'max_tokens'    => isset($payload['max_tokens']) ? (int) $payload['max_tokens'] : null,
                 'output_tokens' => isset($response_data['usage']['output_tokens']) ? (int) $response_data['usage']['output_tokens'] : null,
             ]);
 
-            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
+            $cortada = true;
+
+            return '';
         }
 
         $text = ModelosIaHelper::texto_de_respuesta($response_data);

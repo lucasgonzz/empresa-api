@@ -25,6 +25,13 @@ use Illuminate\Support\Facades\DB;
  * ventas en el destino (cobertura de 4 días, prioridad 1) y otro sin ventas
  * (cobertura infinita, prioridad 2), más el yunque que no rota. Sin dejar ninguna
  * stock_suggestion en la base.
+ *
+ * Misión deposito-madre (2/10/2026): con depósito madre los movimientos se ordenan por
+ * el criterio del comercio (facturación de la sucursal o ventas del artículo) y la
+ * urgencia desempata; los hechos suman deposito_madre, criterio_prioridad,
+ * es_deposito_madre y facturacion_90_dias (solo agregados: sin madre, deposito_madre y
+ * criterio_prioridad van en null y el orden es el de siempre). Los domicilios de
+ * compradores de la tienda (buyer_id) no cuentan como sucursales.
  */
 class Recolector_compras_y_stock_Test extends MostradorTestCase
 {
@@ -229,18 +236,25 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         $this->assertSame($antes, StockSuggestion::count(), 'El recolector no puede dejar una stock_suggestion en la base.');
 
         $this->assertTrue($h['aplica']);
+        // Misión deposito-madre: cada sucursal suma es_deposito_madre y su facturación de 90
+        // días en pesos (Norte: la venta de 45 tornillos a $10). Sin madre, las dos claves de
+        // la raíz van en null.
         $this->assertSame([
-            ['address_id' => $deposito->id, 'nombre' => 'Depósito', 'es_deposito_origen' => true],
-            ['address_id' => $norte->id, 'nombre' => 'Norte', 'es_deposito_origen' => false],
+            ['address_id' => $deposito->id, 'nombre' => 'Depósito', 'es_deposito_origen' => true, 'es_deposito_madre' => false, 'facturacion_90_dias' => 0.0],
+            ['address_id' => $norte->id, 'nombre' => 'Norte', 'es_deposito_origen' => false, 'es_deposito_madre' => false, 'facturacion_90_dias' => 450.0],
         ], $h['sucursales']);
+        $this->assertArrayHasKey('deposito_madre', $h);
+        $this->assertNull($h['deposito_madre']);
+        $this->assertArrayHasKey('criterio_prioridad', $h);
+        $this->assertNull($h['criterio_prioridad']);
 
         $this->assertCount(2, $h['movimientos_sugeridos']);
 
         $this->assertSame([
             'article_id' => $tornillo->id,
             'nombre'     => 'Tornillo',
-            'desde'      => ['address_id' => $deposito->id, 'nombre' => 'Depósito', 'stock' => 100.0],
-            'hacia'      => ['address_id' => $norte->id, 'nombre' => 'Norte', 'stock' => 2.0, 'velocidad_diaria' => 0.5, 'cobertura_dias' => 4.0],
+            'desde'      => ['address_id' => $deposito->id, 'nombre' => 'Depósito', 'stock' => 100.0, 'es_deposito_madre' => false],
+            'hacia'      => ['address_id' => $norte->id, 'nombre' => 'Norte', 'stock' => 2.0, 'velocidad_diaria' => 0.5, 'cobertura_dias' => 4.0, 'facturacion_90_dias' => 450.0],
             'cantidad'   => 8.0,
             'prioridad'  => 1,
             'imagen_url' => null,
@@ -249,8 +263,8 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         $this->assertSame([
             'article_id' => $clavo->id,
             'nombre'     => 'Clavo',
-            'desde'      => ['address_id' => $deposito->id, 'nombre' => 'Depósito', 'stock' => 50.0],
-            'hacia'      => ['address_id' => $norte->id, 'nombre' => 'Norte', 'stock' => 0.0, 'velocidad_diaria' => 0.0, 'cobertura_dias' => null],
+            'desde'      => ['address_id' => $deposito->id, 'nombre' => 'Depósito', 'stock' => 50.0, 'es_deposito_madre' => false],
+            'hacia'      => ['address_id' => $norte->id, 'nombre' => 'Norte', 'stock' => 0.0, 'velocidad_diaria' => 0.0, 'cobertura_dias' => null, 'facturacion_90_dias' => 450.0],
             'cantidad'   => 5.0,
             'prioridad'  => 2,
             'imagen_url' => null,
@@ -273,6 +287,136 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
 
         // Solo el tornillo tiene cobertura por debajo del punto de pedido (15 días).
         $this->assertSame(['articulos_en_riesgo' => 1, 'valor_inmovilizado' => 330100.0], $h['resumen']);
+    }
+
+    /**
+     * Con depósito madre: el madre es el origen, los movimientos se ordenan por el criterio
+     * del comercio (no por urgencia) y los hechos traen las claves nuevas.
+     *
+     *   - Tenaza → Chica: urgente (vendió 45 en Chica: velocidad 0,5, cobertura 4 días).
+     *     Chica factura $ 450.
+     *   - Llave → Grande: vendió 180 en Grande (velocidad 2) y tiene 100 contra un mínimo de
+     *     110 (cobertura 50 días). Grande factura $ 100.180.
+     *   - Pinza → Grande: Grande no vende pinzas (cobertura nula).
+     *
+     * 'ventas_sucursal' (el default): primero los traslados cuyo destino VENDE el artículo,
+     * por facturación desc (llave, tenaza), y al final los de cobertura nula (pinza).
+     *
+     * 🔴 La especificación cambió el 2/10/2026 por decisión del orquestador (post-chequeo):
+     * antes este test afirmaba que la pinza sin ventas, a la sucursal que más factura, iba
+     * ANTES que la tenaza urgente. No es aflojar la aserción: es otra regla, para que los
+     * traslados de artículos que el destino no vende no llenen los 30 del informe y tapen
+     * quiebres reales de otra sucursal.
+     *
+     * 'ventas_articulo': velocidad desc (llave, tenaza, pinza), distinta del orden por urgencia
+     * (tenaza, llave, pinza): la llave se vende más rápido aunque esté menos apurada.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function stock_con_madre_ordena_por_el_criterio_y_suma_las_claves_nuevas()
+    {
+        $madre  = $this->sucursal('Madre');
+        $chica  = $this->sucursal('Chica');
+        $grande = $this->sucursal('Grande');
+
+        // Un depósito de origen designado con más stock que el madre: con madre es solo respaldo.
+        $designado = $this->sucursal('Designado', true);
+
+        $madre->es_deposito_madre = 1;
+        $madre->save();
+
+        $tenaza = $this->articulo('Tenaza', ['stock' => 302]);
+        $tenaza->addresses()->attach($madre->id, ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20]);
+        $tenaza->addresses()->attach($chica->id, ['amount' => 2, 'stock_min' => 10, 'stock_max' => 20]);
+        $tenaza->addresses()->attach($designado->id, ['amount' => 200, 'stock_min' => 10, 'stock_max' => 20]);
+        $this->venta($this->hoy->copy()->subDays(10)->setTime(12, 0), [[$tenaza, 45, 10]], ['address_id' => $chica->id]);
+
+        $llave = $this->articulo('Llave', ['stock' => 200]);
+        $llave->addresses()->attach($madre->id, ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20]);
+        $llave->addresses()->attach($grande->id, ['amount' => 100, 'stock_min' => 110, 'stock_max' => 120]);
+        $this->venta($this->hoy->copy()->subDays(10)->setTime(12, 0), [[$llave, 180, 1]], ['address_id' => $grande->id]);
+
+        $pinza = $this->articulo('Pinza', ['stock' => 102]);
+        $pinza->addresses()->attach($madre->id, ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20]);
+        $pinza->addresses()->attach($grande->id, ['amount' => 2, 'stock_min' => 10, 'stock_max' => 20]);
+
+        $martillo = $this->articulo('Martillo grande');
+        $this->venta($this->hoy->copy()->subDays(10)->setTime(12, 0), [[$martillo, 1, 100000]], ['address_id' => $grande->id]);
+
+        $h = (new RecolectorStock())->recolectar($this->comercio, $this->hoy);
+
+        $this->assertTrue($h['aplica']);
+        $this->assertSame(['address_id' => $madre->id, 'nombre' => 'Madre'], $h['deposito_madre']);
+        $this->assertSame('ventas_sucursal', $h['criterio_prioridad']);
+
+        $this->assertSame([
+            ['address_id' => $madre->id, 'nombre' => 'Madre', 'es_deposito_origen' => false, 'es_deposito_madre' => true, 'facturacion_90_dias' => 0.0],
+            ['address_id' => $chica->id, 'nombre' => 'Chica', 'es_deposito_origen' => false, 'es_deposito_madre' => false, 'facturacion_90_dias' => 450.0],
+            ['address_id' => $grande->id, 'nombre' => 'Grande', 'es_deposito_origen' => false, 'es_deposito_madre' => false, 'facturacion_90_dias' => 100180.0],
+            ['address_id' => $designado->id, 'nombre' => 'Designado', 'es_deposito_origen' => true, 'es_deposito_madre' => false, 'facturacion_90_dias' => 0.0],
+        ], $h['sucursales']);
+
+        // ventas_sucursal: los que el destino vende, por facturación (llave a Grande, tenaza a
+        // Chica), y la pinza —que Grande no vende— al final aunque Grande facture más.
+        $this->assertSame([$llave->id, $tenaza->id, $pinza->id], array_column($h['movimientos_sugeridos'], 'article_id'));
+        $this->assertSame([1, 2, 3], array_column($h['movimientos_sugeridos'], 'prioridad'));
+
+        $primero = $h['movimientos_sugeridos'][0];
+        $this->assertSame(['address_id' => $madre->id, 'nombre' => 'Madre', 'stock' => 100.0, 'es_deposito_madre' => true], $primero['desde']);
+        $this->assertSame(
+            ['address_id' => $grande->id, 'nombre' => 'Grande', 'stock' => 100.0, 'velocidad_diaria' => 2.0, 'cobertura_dias' => 50.0, 'facturacion_90_dias' => 100180.0],
+            $primero['hacia']
+        );
+
+        // La tenaza sale del madre aunque el designado tenga el doble.
+        $segundo = $h['movimientos_sugeridos'][1];
+        $this->assertSame($madre->id, $segundo['desde']['address_id']);
+        $this->assertTrue($segundo['desde']['es_deposito_madre']);
+        $this->assertSame(450.0, $segundo['hacia']['facturacion_90_dias']);
+
+        $this->assertNull($h['movimientos_sugeridos'][2]['hacia']['cobertura_dias']);
+
+        // ventas_articulo: velocidad desc. La llave (2 por día, 50 días de cobertura) va antes que
+        // la tenaza (0,5 por día, 4 días): por urgencia sería al revés.
+        $this->comercio->sugerencias_prioridad_destino = 'ventas_articulo';
+        $this->comercio->save();
+
+        $h = (new RecolectorStock())->recolectar($this->comercio, $this->hoy);
+
+        $this->assertSame('ventas_articulo', $h['criterio_prioridad']);
+        $this->assertSame([$llave->id, $tenaza->id, $pinza->id], array_column($h['movimientos_sugeridos'], 'article_id'));
+    }
+
+    /**
+     * Los domicilios de los compradores de la tienda viven en addresses con el user_id del
+     * dueño (los escribe tienda-api): no son sucursales. Una sucursal real y un domicilio de
+     * comprador = una sola sucursal, no aplica.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function stock_no_cuenta_los_domicilios_de_compradores_como_sucursales()
+    {
+        $local = $this->sucursal('Local');
+
+        $domicilio = \App\Models\Address::create([
+            'street'   => 'Casa de un comprador',
+            'user_id'  => $this->comercio->id,
+            'buyer_id' => 999999,
+        ]);
+
+        // Un artículo con stock en las dos filas: si el domicilio contara como sucursal, el
+        // informe aplicaría y el artículo sería candidato al motor.
+        $tornillo = $this->articulo('Tornillo comprador');
+        $tornillo->addresses()->attach($local->id, ['amount' => 100, 'stock_min' => 10]);
+        $tornillo->addresses()->attach($domicilio->id, ['amount' => 0, 'stock_min' => 10]);
+
+        $recolector = new RecolectorStock();
+        $h = $recolector->recolectar($this->comercio, $this->hoy);
+
+        $this->assertFalse($h['aplica'], 'Con una sucursal real y un domicilio de comprador, el informe de stock no aplica.');
+        $this->assertSame(0, $recolector->cantidad_de_candidatos($this->comercio));
     }
 
     /**
