@@ -11,13 +11,16 @@ use App\Models\Sale;
 use App\Models\StockSuggestion;
 use App\Models\StockSuggestionArticle;
 use App\Models\User;
+use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Services\AuditLog\AuditContext;
+use App\Services\Mostrador\RecolectorStock;
 use App\Services\StockSuggestion\CoberturaService;
 use App\Services\StockSuggestion\StockSuggestionService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -40,6 +43,9 @@ class Deposito_madre_Test extends TestCase
 {
     use DatabaseTransactions;
 
+    /** Sufijo con el que los tests de la guarda de esquema esconden una columna (la renombran, no la borran). */
+    const SUFIJO_ESCONDIDA = '_escondida_por_el_test';
+
     /** @var User Comercio dueño de todo lo que siembra el test */
     protected $comercio;
 
@@ -54,7 +60,31 @@ class Deposito_madre_Test extends TestCase
         // cola sync y la clave real del .env.testing saldría a la API de verdad.
         config(['services.anthropic.api_key' => null]);
 
-        $this->comercio = User::create([
+        // Red de seguridad de la guarda de esquema: si una corrida anterior se cortó con una
+        // columna escondida, se devuelve antes de empezar.
+        $this->restaurar_columnas_si_quedaron_escondidas();
+        Address::olvidar_esquema();
+        CoberturaService::olvidar_esquema();
+
+        $this->comercio = $this->comercio_nuevo();
+    }
+
+    protected function tearDown(): void
+    {
+        Address::olvidar_esquema();
+        CoberturaService::olvidar_esquema();
+
+        parent::tearDown();
+    }
+
+    /**
+     * Un comercio propio para el test.
+     *
+     * @return User
+     */
+    protected function comercio_nuevo()
+    {
+        return User::create([
             'name'     => 'Comercio deposito madre',
             'email'    => 'deposito-madre-' . uniqid() . '@test.local',
             'password' => Hash::make('secret'),
@@ -72,12 +102,19 @@ class Deposito_madre_Test extends TestCase
      */
     protected function sucursal($nombre, $madre = false, $designada = false, $user_id = null)
     {
-        return Address::create([
+        $datos = [
             'street'             => $nombre,
             'user_id'            => $user_id !== null ? $user_id : $this->comercio->id,
             'es_deposito_origen' => $designada,
-            'es_deposito_madre'  => $madre,
-        ]);
+        ];
+
+        // La clave solo viaja si es madre: los tests de la guarda de esquema crean sucursales
+        // con la columna escondida, y ahí nombrarla sería un Unknown column del propio test.
+        if ($madre) {
+            $datos['es_deposito_madre'] = true;
+        }
+
+        return Address::create($datos);
     }
 
     /**
@@ -530,6 +567,11 @@ class Deposito_madre_Test extends TestCase
      * facturó en 90 días. Las ventas viejas, borradas, las consolidaciones de
      * facturación, las ventas en dólares y las cargadas sin terminar no cuentan.
      *
+     * Las dos sucursales VENDEN el artículo (ronda final del 2/10: en el reparto van primero
+     * los destinos con velocidad > 0, y entre ellos manda la facturación). La que factura
+     * menos vende MÁS unidades del artículo: si el reparto ordenara por velocidad en vez de
+     * por facturación, se lo llevaría ella.
+     *
      * @group sugerencias-stock
      * @test
      */
@@ -566,10 +608,46 @@ class Deposito_madre_Test extends TestCase
             $mas->id   => ['amount' => 5,  'stock_min' => 10, 'stock_max' => 20],
         ]);
 
+        // Las dos venden el artículo (montos en 0 para no mover la facturación de arriba).
+        $this->venta_de_articulo($articulo->id, $menos->id, 9, 0, now()->subDays(3));
+        $this->venta_de_articulo($articulo->id, $mas->id, 1, 0, now()->subDays(3));
+
         $this->assertSame(
             [[$madre->id, $mas->id, 5.0]],
             $this->movimientos($this->calcular([$articulo->id])),
             'Con stock escaso se lo tiene que llevar la sucursal que más facturó (en pesos, 90 días, ventas reales).'
+        );
+    }
+
+    /**
+     * Ronda final del 2/10 (decisión del orquestador): con 'ventas_sucursal' el reparto es
+     * coherente con la lista. Van PRIMERO los destinos que venden el artículo (velocidad > 0)
+     * y después los que no, cada grupo por facturación. Antes el stock escaso se lo llevaba la
+     * sucursal grande aunque ese artículo ahí no se venda, y la chica, que sí lo vende, se
+     * quedaba sin nada.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function ventas_sucursal_el_stock_escaso_va_primero_a_quien_vende_el_articulo()
+    {
+        $madre  = $this->sucursal('Madre con cinco', true);
+        $grande = $this->sucursal('Grande que no lo vende');
+        $chica  = $this->sucursal('Chica que lo vende');
+
+        $articulo = $this->articulo_con_stock('Broca escasa', [
+            $madre->id  => ['amount' => 15, 'stock_min' => 10, 'stock_max' => 20],
+            $grande->id => ['amount' => 5,  'stock_min' => 10, 'stock_max' => 20],
+            $chica->id  => ['amount' => 5,  'stock_min' => 10, 'stock_max' => 20],
+        ]);
+
+        $this->venta($grande->id, 100000, now()->subDays(10));
+        $this->venta_de_articulo($articulo->id, $chica->id, 9, 90, now()->subDays(10));
+
+        $this->assertSame(
+            [[$madre->id, $chica->id, 5.0]],
+            $this->movimientos($this->calcular([$articulo->id])),
+            'El stock escaso del madre tiene que ir primero a la sucursal que vende el artículo.'
         );
     }
 
@@ -770,6 +848,260 @@ class Deposito_madre_Test extends TestCase
             [$urgente->id => 1, $rotativo->id => 2, $dormido->id => 3],
             $this->ordenar_por_clave($this->prioridades_del_pipeline())
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Guarda de esquema: código nuevo con la base todavía sin migrar
+    // ------------------------------------------------------------------
+    //
+    // Un deploy de empresa sube los archivos ANTES de migrar. En esa ventana (o si el migrate
+    // se traba) el cliente tiene este código sin addresses.es_deposito_madre o sin
+    // users.sugerencias_prioridad_destino. Técnica de tests/Feature/Sucursales/5 (que la tomó
+    // de RecargosEnPrecios/7): la columna se RENOMBRA (no se borra) por una conexión PDO
+    // aparte, porque el DDL de MySQL hace commit implícito; y se cierra la transacción del
+    // trait antes del rename y se abre otra después, porque information_schema responde con el
+    // snapshot de la transacción abierta y la guarda seguiría viendo la columna (verde falso).
+
+    /**
+     * Conexión PDO aparte contra la MISMA base, con la config de Laravel.
+     *
+     * @return \PDO
+     */
+    protected function conexion_aparte()
+    {
+        $config = config('database.connections.' . config('database.default'));
+
+        $dsn = 'mysql:host=' . $config['host'] . ';port=' . $config['port'] . ';dbname=' . $config['database'];
+
+        $pdo = new \PDO($dsn, $config['username'], $config['password'], [
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+        ]);
+
+        // Sin esto, un metadata lock cuelga la suite (el default de MySQL es un año).
+        $pdo->exec('SET SESSION lock_wait_timeout = 10');
+
+        return $pdo;
+    }
+
+    /**
+     * Las columnas que esconden los tests de la guarda: [tabla, columna].
+     *
+     * @return array
+     */
+    protected function columnas_de_la_mision()
+    {
+        return [
+            ['addresses', 'es_deposito_madre'],
+            ['users', 'sugerencias_prioridad_destino'],
+        ];
+    }
+
+    /**
+     * Renombra las columnas pedidas (esconder = columna → columna + sufijo; si no, al revés).
+     *
+     * @param array $columnas [[tabla, columna], ...]
+     * @param bool $esconder
+     * @return void
+     */
+    protected function renombrar_columnas(array $columnas, $esconder)
+    {
+        $pdo = $this->conexion_aparte();
+
+        foreach ($columnas as $par) {
+            $tabla = $par[0];
+            $de = $esconder ? $par[1] : $par[1] . self::SUFIJO_ESCONDIDA;
+            $a = $esconder ? $par[1] . self::SUFIJO_ESCONDIDA : $par[1];
+
+            $existe = $pdo->query(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                . "AND TABLE_NAME = '" . $tabla . "' AND COLUMN_NAME = '" . $de . "'"
+            )->fetchColumn();
+
+            if ((int) $existe === 0) {
+                continue;
+            }
+
+            $pdo->exec('ALTER TABLE `' . $tabla . '` RENAME COLUMN `' . $de . '` TO `' . $a . '`');
+        }
+
+        Address::olvidar_esquema();
+        CoberturaService::olvidar_esquema();
+    }
+
+    /**
+     * Si una corrida anterior se cortó con una columna escondida, la devuelve.
+     *
+     * @return void
+     */
+    protected function restaurar_columnas_si_quedaron_escondidas()
+    {
+        foreach ($this->columnas_de_la_mision() as $par) {
+            if (Schema::hasColumn($par[0], $par[1] . self::SUFIJO_ESCONDIDA)) {
+                $this->renombrar_columnas($this->columnas_de_la_mision(), false);
+
+                return;
+            }
+        }
+    }
+
+    /**
+     * Corre el cuerpo con la base SIN esas columnas. Lo sembrado en setUp se pierde con el
+     * rollback: el cuerpo arma su propio comercio.
+     *
+     * @param array $columnas [[tabla, columna], ...]
+     * @param \Closure $cuerpo
+     * @return void
+     */
+    protected function sin_columnas(array $columnas, $cuerpo)
+    {
+        DB::rollBack();
+
+        $this->renombrar_columnas($columnas, true);
+
+        DB::beginTransaction();
+
+        try {
+            foreach ($columnas as $par) {
+                $this->assertFalse(
+                    Schema::hasColumn($par[0], $par[1]),
+                    'El escenario no se armó: ' . $par[0] . ' sigue teniendo ' . $par[1] . '.'
+                );
+            }
+
+            $this->comercio = $this->comercio_nuevo();
+            $this->actingAs($this->comercio, 'web');
+
+            $cuerpo();
+        } finally {
+            DB::rollBack();
+
+            $this->renombrar_columnas($columnas, false);
+
+            // Para que el rollback del trait tenga una transacción que cerrar.
+            DB::beginTransaction();
+        }
+    }
+
+    /**
+     * Sin addresses.es_deposito_madre: el alta y la edición de sucursal andan (la clave se
+     * ignora), no hay madre, el motor y el ranking dan lo mismo que sin madre (acá, el escalón 4
+     * histórico), y el informe de stock y la consulta de stock del asistente no revientan.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function sin_la_columna_del_madre_todo_anda_como_sin_madre()
+    {
+        $self = $this;
+
+        $this->sin_columnas([['addresses', 'es_deposito_madre']], function () use ($self) {
+
+            $self->assertFalse(Address::columna_madre_existe(), 'El escenario no se armó: la guarda sigue viendo la columna.');
+
+            $alta = $self->postJson('api/address', [
+                'street'            => 'Alta sin la columna',
+                'es_deposito_madre' => true,
+            ]);
+            $alta->assertStatus(201);
+            $id = (int) $alta->json('model.id');
+
+            $self->putJson('api/address/' . $id, [
+                'street'            => 'Editada sin la columna',
+                'es_deposito_madre' => true,
+            ])->assertStatus(200);
+            $self->assertSame('Editada sin la columna', DB::table('addresses')->where('id', $id)->value('street'));
+
+            $self->assertNull(Address::deposito_madre_de($self->comercio->id));
+
+            $a = $self->sucursal('Sucursal con 8');
+            $b = $self->sucursal('Sucursal con 2');
+
+            $articulo = $self->articulo_con_stock('Tuerca sin columna', [
+                $a->id => ['amount' => 8, 'stock_min' => 10, 'stock_max' => 20],
+                $b->id => ['amount' => 2, 'stock_min' => 10, 'stock_max' => 20],
+            ]);
+
+            // Lo mismo que sin madre: escalón 4 histórico.
+            $self->assertSame(
+                [[$a->id, $b->id, 8.0]],
+                $self->movimientos($self->calcular([$articulo->id], 'sin_limite'))
+            );
+
+            // El pipeline completo (incluye asignar_prioridades) termina. Corre con límite
+            // 'minimo', así que la tuerca (escalón 4, solo mueve sin límite) no da línea; la
+            // arandela sí, como siempre: del que tiene de sobra al que le falta.
+            $arandela = $self->articulo_con_stock('Arandela sin columna', [
+                $a->id => ['amount' => 100, 'stock_min' => 10, 'stock_max' => 20],
+                $b->id => ['amount' => 2,   'stock_min' => 10, 'stock_max' => 20],
+            ]);
+            $self->assertSame([$arandela->id => 1], $self->prioridades_del_pipeline());
+
+            // El informe de stock del mostrador: sin madre, como hoy.
+            $hechos = (new RecolectorStock())->recolectar($self->comercio, now()->startOfDay());
+            $self->assertTrue($hechos['aplica']);
+            $self->assertNull($hechos['deposito_madre']);
+            $self->assertNull($hechos['criterio_prioridad']);
+
+            // La consulta de stock por sucursal del asistente.
+            $consulta = ConsultasSistemaIaHelper::stock_por_deposito($self->comercio->id, 'Tuerca sin columna');
+            $self->assertNotEmpty($consulta['depositos']);
+            $self->assertFalse($consulta['depositos'][0]['es_deposito_madre']);
+        });
+    }
+
+    /**
+     * Sin users.sugerencias_prioridad_destino (el migrate se trabó entre las dos migraciones):
+     * el PUT de usuario anda (la clave se ignora) y el motor con madre reparte con
+     * 'ventas_sucursal', el default.
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function sin_la_columna_del_criterio_el_put_de_usuario_anda_y_el_motor_usa_ventas_sucursal()
+    {
+        $self = $this;
+
+        $this->sin_columnas([['users', 'sugerencias_prioridad_destino']], function () use ($self) {
+
+            $payload = $self->comercio->fresh()->toArray();
+
+            $self->putJson('api/user/' . $self->comercio->id, array_merge($payload, [
+                'sugerencias_prioridad_destino' => 'ventas_articulo',
+            ]))->assertStatus(200);
+
+            $self->assertSame('ventas_sucursal', (new CoberturaService($self->comercio->id))->criterio_prioridad_destino());
+
+            $madre = $self->sucursal('Madre sin criterio', true);
+            $menos = $self->sucursal('Factura menos sin criterio');
+            $mas   = $self->sucursal('Factura mas sin criterio');
+
+            $self->venta($menos->id, 500, now()->subDays(10));
+            $self->venta($mas->id, 1000, now()->subDays(10));
+
+            $articulo = $self->articulo_con_stock('Lija sin criterio', [
+                $madre->id => ['amount' => 15, 'stock_min' => 10, 'stock_max' => 20],
+                $menos->id => ['amount' => 5,  'stock_min' => 10, 'stock_max' => 20],
+                $mas->id   => ['amount' => 5,  'stock_min' => 10, 'stock_max' => 20],
+            ]);
+
+            $self->assertSame(
+                [[$madre->id, $mas->id, 5.0]],
+                $self->movimientos($self->calcular([$articulo->id]))
+            );
+        });
+    }
+
+    /**
+     * Con las dos columnas, la guarda las ve (no-regresión: una guarda que dijera siempre "no"
+     * pasaría los dos tests de arriba).
+     *
+     * @group sugerencias-stock
+     * @test
+     */
+    public function con_las_columnas_la_guarda_las_ve()
+    {
+        $this->assertTrue(Address::columna_madre_existe());
+        $this->assertTrue(CoberturaService::columna_prioridad_existe());
     }
 
     /**

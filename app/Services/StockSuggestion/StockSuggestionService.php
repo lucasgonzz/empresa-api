@@ -23,7 +23,9 @@ use Illuminate\Support\Collection;
  *   - el madre nunca es destino: se repone por compras, no por traslados;
  *   - cuando no alcanza para todas, se lo llevan primero las que más venden,
  *     con el criterio del comercio (users.sugerencias_prioridad_destino:
- *     facturación de la sucursal o ventas de ESE artículo);
+ *     facturación de la sucursal, primero entre las que venden ESE artículo; o
+ *     velocidad de venta de ESE artículo). Ver ordenar_destinos(): es la misma
+ *     regla con la que CoberturaService::comparar_con_madre() ordena la lista;
  *   - NO hay escalón 4: nunca se le saca stock a una sucursal en déficit para
  *     dárselo a otra en déficit, porque eso desharía la prioridad por ventas.
  *
@@ -48,7 +50,7 @@ class StockSuggestionService
     /** @var array Mapa address_id => facturación en pesos de 90 días, solo con madre */
     protected $facturacion = [];
 
-    /** @var array Velocidades del lote de 50 en curso (CoberturaService::clave_para => float), solo con madre y criterio 'ventas_articulo' */
+    /** @var array Velocidades del lote de 50 en curso (CoberturaService::clave_para => float), solo con madre (los dos criterios las usan) */
     protected $velocidades_lote = [];
 
     /** @var CoberturaService|null */
@@ -92,8 +94,8 @@ class StockSuggestionService
         }
 
         $query->chunk(50, function ($articles) use (&$suggestions) {
-            // Con madre y criterio 'ventas_articulo': UNA consulta de velocidades
-            // por lote de 50, nunca una por artículo. Sin madre no hace nada.
+            // Con madre: UNA consulta de velocidades por lote de 50, nunca una por
+            // artículo. Sin madre no hace nada.
             $this->preparar_lote($articles);
 
             foreach ($articles as $article) {
@@ -341,9 +343,20 @@ class StockSuggestionService
      * Orden de los destinos con madre, según el criterio del comercio (decisión
      * de Lucas, 2/10/2026: el reparto prioriza a las sucursales que más venden):
      *
-     *   - 'ventas_sucursal': facturación de 90 días desc; desempata address_id asc.
+     *   - 'ventas_sucursal': PRIMERO los destinos que venden este artículo
+     *     (velocidad > 0) y DESPUÉS los que no (velocidad 0); dentro de cada
+     *     grupo, facturación de 90 días desc; desempata address_id asc.
      *   - 'ventas_articulo': velocidad de venta de ESTE artículo en el destino
      *     desc; desempata la facturación desc y después address_id asc.
+     *
+     * Es la MISMA regla con la que CoberturaService::comparar_con_madre() ordena
+     * la lista (allá el grupo se lee como cobertura no nula / nula, que es lo
+     * mismo: la cobertura es nula justo cuando la velocidad es 0). Por qué el
+     * grupo en 'ventas_sucursal' (decisión del orquestador, ronda final del
+     * 2/10/2026): con solo facturación, el stock escaso del madre se lo llevaba
+     * la sucursal grande aunque ahí ese artículo no se venda, y la chica que sí
+     * lo vende se quedaba sin nada; la lista ya la mandaba al final, y el
+     * reparto tiene que decir lo mismo.
      *
      * El address_id final hace el orden determinístico (usort no es estable).
      *
@@ -360,12 +373,20 @@ class StockSuggestionService
             $id_a = (int) $a['to_address_id'];
             $id_b = (int) $b['to_address_id'];
 
-            if ($por_articulo) {
-                $velocidad_a = $this->velocidad_en($article_id, $id_a);
-                $velocidad_b = $this->velocidad_en($article_id, $id_b);
+            $velocidad_a = $this->velocidad_en($article_id, $id_a);
+            $velocidad_b = $this->velocidad_en($article_id, $id_b);
 
+            if ($por_articulo) {
                 if ($velocidad_a != $velocidad_b) {
                     return $velocidad_b <=> $velocidad_a;
+                }
+            } else {
+                // Primero el grupo de los que venden el artículo.
+                $a_vende = $velocidad_a > 0;
+                $b_vende = $velocidad_b > 0;
+
+                if ($a_vende !== $b_vende) {
+                    return $a_vende ? -1 : 1;
                 }
             }
 
@@ -489,7 +510,7 @@ class StockSuggestionService
      * agregada cada uno): ni una consulta más por artículo.
      *
      * La facturación se carga en los dos criterios: en 'ventas_sucursal' ordena
-     * los destinos y en 'ventas_articulo' desempata.
+     * los destinos (dentro de cada grupo) y en 'ventas_articulo' desempata.
      *
      * @return int|null
      */
@@ -515,10 +536,12 @@ class StockSuggestionService
     }
 
     /**
-     * Antes de cada lote de 50 artículos: con madre y criterio 'ventas_articulo',
-     * trae en UNA llamada a CoberturaService::velocidades_para() la velocidad de
-     * cada artículo del lote en cada una de sus sucursales (menos el madre, que
-     * nunca es destino). Sin madre, o con 'ventas_sucursal', no consulta nada.
+     * Antes de cada lote de 50 artículos: con madre, trae en UNA llamada a
+     * CoberturaService::velocidades_para() la velocidad de cada artículo del
+     * lote en cada una de sus sucursales (menos el madre, que nunca es destino).
+     * La usan los dos criterios: 'ventas_articulo' para ordenar y
+     * 'ventas_sucursal' para separar los destinos que venden el artículo de los
+     * que no (ver ordenar_destinos()). Sin madre no consulta nada.
      *
      * @param \Illuminate\Support\Collection $articles
      * @return void
@@ -527,7 +550,7 @@ class StockSuggestionService
     {
         $this->velocidades_lote = [];
 
-        if (is_null($this->deposito_madre_id()) || $this->criterio !== CoberturaService::PRIORIDAD_VENTAS_ARTICULO) {
+        if (is_null($this->deposito_madre_id())) {
             return;
         }
 

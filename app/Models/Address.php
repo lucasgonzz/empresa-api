@@ -3,10 +3,59 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
 
 class Address extends Model
 {
     protected $guarded = [];
+
+    /** Columna del depósito madre (misión deposito-madre). */
+    const COLUMNA_MADRE = 'es_deposito_madre';
+
+    /**
+     * Memo de la guarda de esquema de COLUMNA_MADRE. Solo se memoiza el SÍ (ver
+     * columna_madre_existe()).
+     *
+     * @var bool|null
+     */
+    private static $columna_madre_existe = null;
+
+    /**
+     * ¿La tabla addresses ya tiene es_deposito_madre?
+     *
+     * 🔴 POR QUÉ HAY GUARDA DE ESQUEMA (mismo criterio que AjusteDePreciosDeSucursalHelper): un
+     * deploy de empresa sube los archivos ANTES de migrar. En esa ventana (o si el migrate se
+     * traba) el cliente tiene este código sin la columna, y nombrarla a secas era un 500 en el
+     * alta y la edición de sucursales, y una excepción en deposito_madre_de(), que tumbaba las
+     * sugerencias de stock y la carpeta Stock del mostrador. Sin la columna, todo se comporta
+     * como sin madre: el comportamiento histórico.
+     *
+     * Memoizada con un Schema::hasColumn() por proceso, con una diferencia a propósito respecto
+     * del helper del ajuste: se memoiza solo el SÍ. El motor de sugerencias corre en la cola, y un
+     * queue:work booteado DENTRO de la ventana se quedaría para siempre "sin madre"; así, mientras
+     * la columna no existe se vuelve a preguntar (es una ventana de minutos), y en cuanto existe
+     * queda fija. Los tests llaman a olvidar_esquema() después de esconder y devolver la columna.
+     *
+     * @return bool
+     */
+    public static function columna_madre_existe()
+    {
+        if (self::$columna_madre_existe !== true) {
+            self::$columna_madre_existe = Schema::hasColumn('addresses', self::COLUMNA_MADRE);
+        }
+
+        return self::$columna_madre_existe;
+    }
+
+    /**
+     * Borra el memo de la guarda (lo usan los tests que esconden la columna).
+     *
+     * @return void
+     */
+    public static function olvidar_esquema()
+    {
+        self::$columna_madre_existe = null;
+    }
 
     /**
      * Unicidad del depósito madre (misión deposito-madre, 2/10/2026): un comercio tiene UNA sola
@@ -64,12 +113,15 @@ class Address extends Model
      * tienda (buyer_id nulo). Si por un dato viejo quedara más de una prendida, gana la de menor id
      * (determinístico; el hook de arriba impide que vuelva a pasar con el próximo guardado).
      *
+     * Sin la columna todavía (deploy a medio migrar, ver columna_madre_existe()) devuelve null:
+     * todo sigue como sin madre.
+     *
      * @param int $user_id Dueño del comercio
      * @return Address|null
      */
     public static function deposito_madre_de($user_id)
     {
-        if (is_null($user_id)) {
+        if (is_null($user_id) || !self::columna_madre_existe()) {
             return null;
         }
 

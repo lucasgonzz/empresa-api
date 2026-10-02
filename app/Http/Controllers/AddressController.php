@@ -33,7 +33,7 @@ class AddressController extends Controller
             return response()->json(['message' => $ajuste['mensaje']], 422);
         }
 
-        $model = Address::create(array_merge([
+        $datos = [
             'num'                   => $this->num('addresses'),
             'street'                => $request->street,
             'street_number'         => $request->street_number,
@@ -44,15 +44,21 @@ class AddressController extends Controller
             // stock (v2). Cast a bool: la columna no admite null y el ABM sin
             // la extensión no manda la clave.
             'es_deposito_origen'    => (bool) $request->es_deposito_origen,
-            // Depósito madre (misión deposito-madre): mismo cast que es_deposito_origen, la
-            // clave ausente queda en 0. Si viene en 1, el hook `saved` de Address desmarca la
-            // madre anterior del comercio.
-            'es_deposito_madre'     => (bool) $request->es_deposito_madre,
             'user_id'               => $this->userId(),
             // afip_information por defecto de la sucursal, usado para resolver
             // la identidad fiscal en ventas en negro (remitos sin facturacion).
             'default_afip_information_id' => $request->default_afip_information_id,
-        ], is_null($ajuste) ? [] : $ajuste['valores']));
+        ];
+
+        // Depósito madre (misión deposito-madre): mismo cast que es_deposito_origen, la clave
+        // ausente queda en 0. Si viene en 1, el hook `saved` de Address desmarca la madre anterior
+        // del comercio. Solo si la columna ya existe (Address::columna_madre_existe(): el deploy
+        // sube el código antes de migrar, y nombrarla sin la columna era un 500).
+        if (Address::columna_madre_existe()) {
+            $datos['es_deposito_madre'] = (bool) $request->es_deposito_madre;
+        }
+
+        $model = Address::create(array_merge($datos, is_null($ajuste) ? [] : $ajuste['valores']));
         $this->sendAddModelNotification('Address', $model->id);
         return response()->json(['model' => $this->fullModel('Address', $model->id)], 201);
     }  
@@ -95,8 +101,10 @@ class AddressController extends Controller
         }
         // Depósito madre: el MISMO guard que es_deposito_origen y por los mismos motivos (el ABM
         // sin la extensión no manda la clave, y un null no puede desmarcar el madre en silencio).
-        // La unicidad (marcar esta desmarca a la anterior) la resuelve el hook de Address.
-        if ($request->has('es_deposito_madre') && !is_null($request->es_deposito_madre)) {
+        // La unicidad (marcar esta desmarca a la anterior) la resuelve el hook de Address. Y sin la
+        // columna todavía (deploy a medio migrar) no se la nombra: sería un 500.
+        if (Address::columna_madre_existe()
+            && $request->has('es_deposito_madre') && !is_null($request->es_deposito_madre)) {
             $model->es_deposito_madre = (bool) $request->es_deposito_madre;
         }
         // afip_information por defecto de la sucursal, usado para resolver

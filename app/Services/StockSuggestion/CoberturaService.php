@@ -6,6 +6,7 @@ use App\Models\Address;
 use App\Models\Sale;
 use App\Models\StockSuggestionArticle;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Velocidad de venta y días hasta quiebre para priorizar sugerencias de stock.
@@ -60,6 +61,17 @@ class CoberturaService
      * al primero si la columna trae algo desconocido.
      */
     const PRIORIDADES_DESTINO = [self::PRIORIDAD_VENTAS_SUCURSAL, self::PRIORIDAD_VENTAS_ARTICULO];
+
+    /** Columna del criterio en users. */
+    const COLUMNA_PRIORIDAD = 'sugerencias_prioridad_destino';
+
+    /**
+     * Memo de la guarda de esquema de COLUMNA_PRIORIDAD (solo el SÍ, ver
+     * columna_prioridad_existe()).
+     *
+     * @var bool|null
+     */
+    private static $columna_prioridad_existe = null;
 
     /** @var int Comercio dueño (articles.user_id) al que se acota toda consulta */
     protected $user_id;
@@ -305,15 +317,50 @@ class CoberturaService
     }
 
     /**
+     * ¿La tabla users ya tiene sugerencias_prioridad_destino? Guarda de esquema
+     * para la ventana del deploy (el código sube antes que el migrate, o el
+     * migrate se traba entre las dos migraciones de la misión): sin ella, leer
+     * el criterio o guardarlo desde UserController reventaba. Mismo criterio que
+     * Address::columna_madre_existe(): un Schema::hasColumn() por proceso, y se
+     * memoiza solo el SÍ para que un queue:work booteado en la ventana no quede
+     * clavado en "no existe".
+     *
+     * @return bool
+     */
+    public static function columna_prioridad_existe()
+    {
+        if (self::$columna_prioridad_existe !== true) {
+            self::$columna_prioridad_existe = Schema::hasColumn('users', self::COLUMNA_PRIORIDAD);
+        }
+
+        return self::$columna_prioridad_existe;
+    }
+
+    /**
+     * Borra el memo de la guarda (lo usan los tests que esconden la columna).
+     *
+     * @return void
+     */
+    public static function olvidar_esquema()
+    {
+        self::$columna_prioridad_existe = null;
+    }
+
+    /**
      * Criterio con el que se reparte desde el depósito madre y se ordena la
      * lista (users.sugerencias_prioridad_destino del comercio dueño). Un valor
      * nulo o fuera de PRIORIDADES_DESTINO cae a 'ventas_sucursal', el default
-     * de la columna: un dato raro no puede dejar el reparto sin criterio.
+     * de la columna: un dato raro no puede dejar el reparto sin criterio. Sin
+     * la columna todavía (columna_prioridad_existe()), también.
      *
      * @return string Uno de PRIORIDADES_DESTINO
      */
     public function criterio_prioridad_destino()
     {
+        if (!self::columna_prioridad_existe()) {
+            return self::PRIORIDAD_VENTAS_SUCURSAL;
+        }
+
         $valor = DB::table('users')
             ->where('id', $this->user_id)
             ->value('sugerencias_prioridad_destino');
@@ -394,8 +441,14 @@ class CoberturaService
      * orquestador, post-chequeo del 2/10/2026): ordenando solo por facturación,
      * los traslados a la sucursal grande de artículos que ahí NO se venden
      * llenaban los 30 movimientos del informe del mostrador y tapaban quiebres
-     * reales de otra sucursal. Esto ordena la LISTA; el reparto del stock escaso
-     * (StockSuggestionService::ordenar_destinos) sigue siendo por facturación.
+     * reales de otra sucursal.
+     *
+     * El REPARTO del stock escaso (StockSuggestionService::ordenar_destinos)
+     * usa la MISMA regla (ronda final del 2/10/2026): con 'ventas_sucursal',
+     * primero los destinos con velocidad > 0 de ese artículo y después los de
+     * velocidad 0, cada grupo por facturación. Cobertura nula y velocidad 0 son
+     * el mismo grupo: la cobertura es nula justo cuando la velocidad es 0. Así
+     * la sucursal que encabeza la lista es también la que se lleva el stock.
      *
      * Cada lado es un array normalizado: to_address_id (int), velocidad
      * (float, redondeada a 4 como se guarda en velocidad_diaria), cobertura
