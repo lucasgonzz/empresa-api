@@ -51,6 +51,10 @@ class Ajuste_de_precios_invalidos_Test extends SucursalesTestCase
             'recargo de 999,999 que redondea a 1000'   => ['recargo', '999,999'],
             'porcentaje que redondea a 0'              => ['recargo', '0,004'],
             'tipo con un array'                        => [['recargo'], 10],
+            'tipo booleano verdadero'                  => [true, 10],
+            'tipo booleano falso'                      => [false, 10],
+            'tipo numerico 1'                          => [1, 10],
+            'tipo en texto "1"'                        => ['1', 10],
         ];
     }
 
@@ -68,6 +72,8 @@ class Ajuste_de_precios_invalidos_Test extends SucursalesTestCase
             'porcentaje sin tipo (null)'               => [null, 10],
             'porcentaje sin tipo (texto vacio)'        => ['', 10],
             'porcentaje sin tipo (sin_ajuste)'         => ['sin_ajuste', 10],
+            'porcentaje sin tipo (0 del ABM)'          => [0, 10],
+            'porcentaje sin tipo (texto "0")'          => ['0', 10],
         ];
     }
 

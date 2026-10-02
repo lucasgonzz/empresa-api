@@ -54,14 +54,15 @@ class Ajuste_de_precios_actualizar_Test extends SucursalesTestCase
 
     /**
      * Test 2 — PUT con `ajuste_precio_tipo` vacio / null: las dos columnas quedan en NULL (se quita el
-     * ajuste). Se prueba con null, con texto vacio y con `sin_ajuste`, que son las tres formas en que
-     * la SPA puede decir "sin ajuste".
+     * ajuste). Se prueba con null, con texto vacio, con `sin_ajuste` y con el 0 (numerico o de texto)
+     * que el motor del ABM le pone a un select sin valor, que son las formas en que la SPA puede decir
+     * "sin ajuste".
      *
      * @test
      */
     public function el_put_con_el_tipo_vacio_quita_el_ajuste()
     {
-        foreach ([null, '', 'sin_ajuste'] as $vacio) {
+        foreach ([null, '', 'sin_ajuste', 0, '0'] as $vacio) {
 
             $id = $this->crear_sucursal([
                 'ajuste_precio_tipo'       => 'descuento',

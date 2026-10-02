@@ -83,6 +83,17 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
         $this->assert_acepta(null, 0, null, null);
         $this->assert_acepta(null, '0', null, null);
         $this->assert_acepta('', '0,00', null, null);
+
+        /*
+         * El 0 como TIPO es el "vacio" del ABM de la SPA (el motor de formularios le pone 0 a todo
+         * select sin valor): sin ajuste, igual que '' o null. Numerico (JSON) o de texto (formulario).
+         */
+        $this->assert_acepta(0, null, null, null);
+        $this->assert_acepta(0, '', null, null);
+        $this->assert_acepta(0, 0, null, null);
+        $this->assert_acepta('0', null, null, null);
+        $this->assert_acepta(' 0 ', '0', null, null);
+        $this->assert_acepta('0', '0,00', null, null);
     }
 
     /**
@@ -144,11 +155,19 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
         $this->assert_rechaza(true, 10, '"recargo" o "descuento"');
         $this->assert_rechaza(['recargo'], 10, '"recargo" o "descuento"');
 
+        /* El 0 es el unico numero que vale como tipo ("vacio"); el 1, un false o un '1' no. */
+        $this->assert_rechaza(1, 10, '"recargo" o "descuento"');
+        $this->assert_rechaza('1', 10, '"recargo" o "descuento"');
+        $this->assert_rechaza(false, 10, '"recargo" o "descuento"');
+        $this->assert_rechaza(0.5, 10, '"recargo" o "descuento"');
+
         $this->assert_rechaza('recargo', null, 'cargá también el porcentaje');
         $this->assert_rechaza('descuento', '', 'cargá también el porcentaje');
 
         $this->assert_rechaza(null, 10, 'no elegiste si es un recargo o un descuento');
         $this->assert_rechaza('', '5,5', 'no elegiste si es un recargo o un descuento');
+        $this->assert_rechaza(0, 10, 'no elegiste si es un recargo o un descuento');
+        $this->assert_rechaza('0', '5,5', 'no elegiste si es un recargo o un descuento');
 
         $this->assert_rechaza('recargo', 'abc', 'tiene que ser un número');
         $this->assert_rechaza('recargo', '1e1', 'tiene que ser un número');

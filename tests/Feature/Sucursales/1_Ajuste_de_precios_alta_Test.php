@@ -115,7 +115,39 @@ class Ajuste_de_precios_alta_Test extends SucursalesTestCase
     }
 
     /**
-     * Test 5 — un 0 en el porcentaje con el tipo vacio NO impide crear la sucursal: un campo numerico
+     * Test 5 — 🔴 el ABM de la SPA, al crear una sucursal NUEVA sin tocar el select "Ajuste de precios",
+     * manda `ajuste_precio_tipo: 0`: el motor generico de formularios le pone 0 a todo select sin valor
+     * (`display.js`). Eso NO es un tipo invalido sino el "vacio" del ABM: la sucursal se crea sin ajuste.
+     * Si la API lo rechazara, no se podria crear ni la sucursal mas basica.
+     *
+     * Se prueba el 0 numerico (JSON), el 0 como texto (formulario) y el 0 con el porcentaje en null, en
+     * 0 y vacio, que son las tres formas en que el ABM puede mandar el porcentaje sin tocar.
+     *
+     * @test
+     */
+    public function el_alta_con_el_cero_del_abm_en_el_tipo_crea_la_sucursal_sin_ajuste()
+    {
+        foreach ([0, '0'] as $cero) {
+
+            foreach ([null, 0, '', '0'] as $porcentaje) {
+
+                $id = $this->crear_sucursal([
+                    'ajuste_precio_tipo'       => $cero,
+                    'ajuste_precio_porcentaje' => $porcentaje,
+                ]);
+
+                $this->assert_ajuste(
+                    $id,
+                    null,
+                    null,
+                    'alta con tipo '.var_export($cero, true).' y porcentaje '.var_export($porcentaje, true)
+                );
+            }
+        }
+    }
+
+    /**
+     * Test 6 — un 0 en el porcentaje con el tipo vacio NO impide crear la sucursal: un campo numerico
      * que arranca en 0 es lo mismo que "sin ajuste".
      *
      * @test

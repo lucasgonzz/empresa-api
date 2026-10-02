@@ -64,7 +64,7 @@ class AjusteDePreciosDeSucursalHelper {
     const TIPO_DESCUENTO = 'descuento';
 
     /**
-     * Valor que la SPA puede mandar en el tipo para decir "sin ajuste" (ademas de '' y null).
+     * Valor que la SPA puede mandar en el tipo para decir "sin ajuste" (ademas de '', null y 0).
      * Se trata igual que vacio: quita el ajuste.
      */
     const TIPO_SIN_AJUSTE = 'sin_ajuste';
@@ -171,11 +171,17 @@ class AjusteDePreciosDeSucursalHelper {
      *
      * Reglas:
      *
-     *  - Tipo `''`, `null` o `'sin_ajuste'` = quitar el ajuste (las dos columnas a NULL). Si en ese
-     *    caso llega un porcentaje con valor, es un porcentaje SIN tipo y se rechaza (la invariante).
+     *  - Tipo `''`, `null`, `'sin_ajuste'`, `0` o `'0'` = quitar el ajuste (las dos columnas a NULL).
+     *    El 0 es el "vacio" del ABM de la SPA: el motor generico de formularios le pone 0 a todo
+     *    select que el usuario no toco, asi que crear la sucursal mas basica (sin tocar "Ajuste de
+     *    precios") llega con `ajuste_precio_tipo: 0`. Si la API lo rechazara, no se podria crear una
+     *    sucursal comun. (`default_afip_information_id` ya viaja y se guarda con ese mismo criterio.)
+     *    Si en ese caso llega un porcentaje con valor, es un porcentaje SIN tipo y se rechaza (la
+     *    invariante).
      *    Un porcentaje en 0 no cuenta como "con valor": 0 % es lo mismo que no tener ajuste, y un
      *    campo numerico que arranca en 0 no tiene que impedir crear una sucursal comun.
      *  - Tipo distinto de `recargo` / `descuento` (comparado sin mayusculas ni espacios) = rechazado.
+     *    Eso incluye un bool, un array y cualquier numero que no sea el 0 (el 1 no es un tipo).
      *  - Tipo valido sin porcentaje = rechazado.
      *  - Porcentaje: numero, o texto numerico con coma o punto decimal (`"10,5"` = 10.5). Lo que no es
      *    un numero se rechaza; no se adivina.
@@ -246,14 +252,24 @@ class AjusteDePreciosDeSucursalHelper {
             return null;
         }
 
-        /* Un array, un bool o un numero en el tipo no es un tipo: se rechaza, no se castea. */
+        /*
+         * 🔴 El 0 (entero) es el "vacio" del ABM de la SPA, no un tipo invalido: el motor de
+         * formularios le pone 0 a todo select sin valor. Comparado con `===` a proposito: un `false`
+         * o un `'0'` mal casteado no pasan por aca, y el 0 de texto se resuelve mas abajo.
+         */
+        if ($tipo === 0) {
+            return null;
+        }
+
+        /* Un array, un bool o un numero distinto de 0 en el tipo no es un tipo: se rechaza, no se castea. */
         if (!is_string($tipo)) {
             return false;
         }
 
         $tipo = strtolower(trim($tipo));
 
-        if ($tipo === '' || $tipo === self::TIPO_SIN_AJUSTE) {
+        /* El mismo "vacio" del ABM, cuando llega como texto (formulario, no JSON). */
+        if ($tipo === '' || $tipo === '0' || $tipo === self::TIPO_SIN_AJUSTE) {
             return null;
         }
 
