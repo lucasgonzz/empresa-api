@@ -2016,6 +2016,8 @@ class ConsultasSistemaIaHelper
                 'addresses.id as address_id',
                 'addresses.street as nombre',
                 'addresses.es_deposito_origen as es_deposito_origen',
+                // Misión deposito-madre: la sucursal desde la que salen primero las sugerencias.
+                'addresses.es_deposito_madre as es_deposito_madre',
                 'address_article.amount as cantidad',
                 'address_article.stock_min as stock_min',
                 'address_article.stock_max as stock_max',
@@ -2036,6 +2038,7 @@ class ConsultasSistemaIaHelper
                 'stock_min'          => is_null($sucursal->stock_min) ? null : (float) $sucursal->stock_min,
                 'stock_max'          => is_null($sucursal->stock_max) ? null : (float) $sucursal->stock_max,
                 'es_deposito_origen' => (bool) $sucursal->es_deposito_origen,
+                'es_deposito_madre'  => (bool) $sucursal->es_deposito_madre,
             ];
         }
 
