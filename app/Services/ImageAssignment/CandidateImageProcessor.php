@@ -303,7 +303,16 @@ class CandidateImageProcessor
         });
 
         foreach ($candidatas as $indice => $candidata) {
-            unset($candidatas[$indice]['url_completa'], $candidatas[$indice]['titulo']);
+            /*
+             * La URL completa solo se conserva si `url` quedó recortada (más de 500 bytes, típico de un
+             * CDN con querystring): es lo único que permite elegir esa imagen a mano más tarde, porque
+             * la recortada da 404. Cuando no se recortó es igual a `url` y sobra, como siempre.
+             */
+            if (isset($candidata['url_completa']) && $candidata['url_completa'] === $candidata['url']) {
+                unset($candidatas[$indice]['url_completa']);
+            }
+
+            unset($candidatas[$indice]['titulo']);
         }
 
         return [

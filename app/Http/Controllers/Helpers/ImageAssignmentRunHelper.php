@@ -975,8 +975,10 @@ class ImageAssignmentRunHelper
 
         /*
          * Eligió OTRA de las imágenes que se encontraron: se la baja, se la guarda como la propuesta
-         * del item y recién ahí sigue la aprobación de siempre. Si no se puede, 422 y el item queda
-         * como estaba (a revisar, con la propuesta original).
+         * del item y recién ahí sigue la aprobación de siempre. Si no se puede bajar, 422 y el item
+         * queda como estaba. Ojo: una vez cambiada la propuesta, si lo que sigue falla (el artículo se
+         * borró, no se pudo copiar) el item queda a revisar CON la imagen elegida —que es la que
+         * quiso la persona— y la anterior ya no está; sigue en el diagnóstico como `alternativa`.
          */
         if (!is_null($clave_de_candidata) && trim((string) $clave_de_candidata) !== '') {
             $cambio = self::elegir_alternativa($owner_id, $item, trim((string) $clave_de_candidata));
@@ -1229,7 +1231,8 @@ class ImageAssignmentRunHelper
      * el item pasa a apuntar a ella; la anterior se borra DESPUÉS del commit. En el diagnóstico la
      * elegida pasa a `elegida` y la que proponía el sistema a `alternativa`.
      *
-     * Si algo falla, 422 SIN tocar el item: sigue a revisar con la propuesta de siempre.
+     * Si no se puede bajar o guardar la elegida, 422 SIN tocar el item: sigue a revisar con la
+     * propuesta de siempre.
      *
      * @param  int                             $owner_id
      * @param  \App\Models\ImageAssignmentItem $item

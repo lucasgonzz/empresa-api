@@ -23,7 +23,8 @@ class Elegir_otra_imagen_al_aprobar_Test extends ImagenesInteligentesTestCase
     const CODIGO_REAL = '7791234567898';
 
     /**
-     * Una candidata del diagnóstico, con la forma que escribe el motor.
+     * Una candidata del diagnóstico, con la forma que escribe el motor: sin `url_completa` salvo
+     * que la `url` haya quedado recortada (ver CandidateImageProcessor::preparar).
      *
      * @param  int    $posicion
      * @param  string $url
@@ -36,7 +37,6 @@ class Elegir_otra_imagen_al_aprobar_Test extends ImagenesInteligentesTestCase
         return array_merge([
             'posicion'           => $posicion,
             'url'                => $url,
-            'url_completa'       => $url,
             'miniatura'          => $url.'?miniatura',
             'pagina'             => 'https://tienda.test/producto-'.$posicion,
             'dominio'            => 'tienda.test',
@@ -374,5 +374,60 @@ class Elegir_otra_imagen_al_aprobar_Test extends ImagenesInteligentesTestCase
             ->assertJsonPath('model.status', 'aprobada');
 
         $this->assertSame(0, $this->requests_a('imagenes.test'));
+    }
+
+    /**
+     * Una URL de más de 500 bytes (típica de un CDN con querystring) llega recortada en `url`: el motor
+     * guarda entonces la `url_completa`, y es ESA la que se baja al elegirla (la recortada daría 404).
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function una_url_larga_se_baja_completa_y_no_recortada()
+    {
+        $larga   = $this->url_imagen('cdn').'?token='.str_repeat('a', 600);
+        $recorta = substr($larga, 0, 500);
+
+        $item = $this->a_revisar_con_alternativas([
+            $this->candidata(2, $recorta, 'alternativa', ['url_completa' => $larga]),
+        ]);
+
+        $this->falsear([], [$larga => $this->png(700, 700, 'azul')], []);
+
+        $this->postJson('api/image-assignment-items/'.$item->id.'/aprobar', ['candidata' => 'codigo_de_barras:2'])
+            ->assertStatus(200)
+            ->assertJsonPath('model.status', 'aprobada');
+
+        $this->assertSame(1, $this->requests_a('?token='), 'Se pidió una sola vez, a la URL completa.');
+        $this->assertSame(0, $this->requests_a(substr($recorta, -20).'&'), 'Nunca la recortada.');
+    }
+
+    /**
+     * El motor conserva `url_completa` en el diagnóstico SOLO cuando la `url` se recortó: con una URL
+     * normal sobra (es igual a `url`) y no engorda el JSON de cada artículo.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function el_motor_guarda_la_url_completa_solo_si_la_url_se_recorto()
+    {
+        $larga = $this->url_imagen('cdn').'?token='.str_repeat('b', 600);
+        $corta = $this->url_imagen('normal');
+
+        $this->falsear([], [
+            $larga => $this->png(700, 700, 'azul'),
+            $corta => $this->png(700, 700, 'rojo'),
+        ], []);
+
+        $procesador = new \App\Services\ImageAssignment\CandidateImageProcessor();
+        $preparadas = $procesador->preparar([
+            $this->resultado($larga, 700, 700, 1),
+            $this->resultado($corta, 700, 700, 2),
+        ]);
+
+        $this->assertSame($larga, $preparadas['candidatas'][0]['url_completa']);
+        $this->assertSame(500, strlen($preparadas['candidatas'][0]['url']));
+        $this->assertArrayNotHasKey('url_completa', $preparadas['candidatas'][1]);
+        $this->assertArrayNotHasKey('titulo', $preparadas['candidatas'][0]);
     }
 }
