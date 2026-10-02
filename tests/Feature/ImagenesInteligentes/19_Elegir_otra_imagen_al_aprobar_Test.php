@@ -420,9 +420,10 @@ class Elegir_otra_imagen_al_aprobar_Test extends ImagenesInteligentesTestCase
         ], []);
 
         $procesador = new \App\Services\ImageAssignment\CandidateImageProcessor();
+        // preparar() recibe los resultados ya normalizados por el proveedor (url, ancho, alto, posicion).
         $preparadas = $procesador->preparar([
-            $this->resultado($larga, 700, 700, 1),
-            $this->resultado($corta, 700, 700, 2),
+            ['url' => $larga, 'ancho' => 700, 'alto' => 700, 'posicion' => 1, 'dominio' => 'imagenes.test'],
+            ['url' => $corta, 'ancho' => 700, 'alto' => 700, 'posicion' => 2, 'dominio' => 'imagenes.test'],
         ]);
 
         $this->assertSame($larga, $preparadas['candidatas'][0]['url_completa']);
