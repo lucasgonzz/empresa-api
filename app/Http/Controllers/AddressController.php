@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\address\AjusteDePreciosDeSucursalHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Address;
 use Illuminate\Http\Request;
@@ -19,7 +20,20 @@ class AddressController extends Controller
     }
 
     public function store(Request $request) {
-        $model = Address::create([
+
+        /*
+         * Ajuste de precios de la sucursal (recargo o descuento en %). Se resuelve y se valida ANTES
+         * de crear nada: un valor invalido es un 422 y no queda ni la sucursal a medio escribir.
+         * `null` = no hay nada que escribir (las columnas todavia no existen porque el deploy sube
+         * el codigo antes de migrar, o la SPA no manda las claves): se crea la sucursal como siempre.
+         */
+        $ajuste = AjusteDePreciosDeSucursalHelper::resolver_del_request($request);
+
+        if (!is_null($ajuste) && !$ajuste['valido']) {
+            return response()->json(['message' => $ajuste['mensaje']], 422);
+        }
+
+        $model = Address::create(array_merge([
             'num'                   => $this->num('addresses'),
             'street'                => $request->street,
             'street_number'         => $request->street_number,
@@ -34,7 +48,7 @@ class AddressController extends Controller
             // afip_information por defecto de la sucursal, usado para resolver
             // la identidad fiscal en ventas en negro (remitos sin facturacion).
             'default_afip_information_id' => $request->default_afip_information_id,
-        ]);
+        ], is_null($ajuste) ? [] : $ajuste['valores']));
         $this->sendAddModelNotification('Address', $model->id);
         return response()->json(['model' => $this->fullModel('Address', $model->id)], 201);
     }  
@@ -44,6 +58,21 @@ class AddressController extends Controller
     }
 
     public function update(Request $request, $id) {
+
+        /*
+         * Ajuste de precios de la sucursal. Igual que en store, se valida antes de tocar el modelo.
+         *
+         * 🔴 UPDATE SIN NINGUNA DE LAS DOS CLAVES NO TOCA EL AJUSTE (el helper devuelve null). Una SPA
+         * vieja no conoce las claves y no las manda: si aca se escribiera el par "siempre", el primer
+         * guardado de la sucursal desde esa SPA le borraria el recargo o el descuento en silencio.
+         * Y sin las columnas todavia (deploy a medio hacer) tampoco se las nombra: seria un 500.
+         */
+        $ajuste = AjusteDePreciosDeSucursalHelper::resolver_del_request($request);
+
+        if (!is_null($ajuste) && !$ajuste['valido']) {
+            return response()->json(['message' => $ajuste['mensaje']], 422);
+        }
+
         $model = Address::find($id);
         $model->street                = $request->street;
         $model->phone                 = $request->phone;
@@ -63,6 +92,11 @@ class AddressController extends Controller
         // afip_information por defecto de la sucursal, usado para resolver
         // la identidad fiscal en ventas en negro (remitos sin facturacion).
         $model->default_afip_information_id = $request->default_afip_information_id;
+        if (!is_null($ajuste)) {
+            foreach ($ajuste['valores'] as $columna => $valor) {
+                $model->{$columna} = $valor;
+            }
+        }
         $model->save();
         $this->sendAddModelNotification('Address', $model->id);
         return response()->json(['model' => $this->fullModel('Address', $model->id)], 200);
