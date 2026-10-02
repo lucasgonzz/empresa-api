@@ -30,6 +30,10 @@ class AddressController extends Controller
             // stock (v2). Cast a bool: la columna no admite null y el ABM sin
             // la extensión no manda la clave.
             'es_deposito_origen'    => (bool) $request->es_deposito_origen,
+            // Depósito madre (misión deposito-madre): mismo cast que es_deposito_origen, la
+            // clave ausente queda en 0. Si viene en 1, el hook `saved` de Address desmarca la
+            // madre anterior del comercio.
+            'es_deposito_madre'     => (bool) $request->es_deposito_madre,
             'user_id'               => $this->userId(),
             // afip_information por defecto de la sucursal, usado para resolver
             // la identidad fiscal en ventas en negro (remitos sin facturacion).
@@ -59,6 +63,12 @@ class AddressController extends Controller
         // payload con la clave en null des-designa el depósito en silencio.
         if ($request->has('es_deposito_origen') && !is_null($request->es_deposito_origen)) {
             $model->es_deposito_origen = (bool) $request->es_deposito_origen;
+        }
+        // Depósito madre: el MISMO guard que es_deposito_origen y por los mismos motivos (el ABM
+        // sin la extensión no manda la clave, y un null no puede desmarcar el madre en silencio).
+        // La unicidad (marcar esta desmarca a la anterior) la resuelve el hook de Address.
+        if ($request->has('es_deposito_madre') && !is_null($request->es_deposito_madre)) {
+            $model->es_deposito_madre = (bool) $request->es_deposito_madre;
         }
         // afip_information por defecto de la sucursal, usado para resolver
         // la identidad fiscal en ventas en negro (remitos sin facturacion).
