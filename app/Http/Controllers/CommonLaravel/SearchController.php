@@ -368,7 +368,9 @@ class SearchController extends Controller
      *                   grupo de coincidencia de texto. Delegado en ExtraFiltersHelper::apply.
      *                   Whitelist de operadores: '=' (igualdad, admite 0 como valor legítimo),
      *                   'like' (contains), '>' / '<' / '>=' / '<=' (comparación numérica, solo si la
-     *                   columna es numérica y el valor también lo es), 'numeric_presence' (solo
+     *                   columna es numérica y el valor también lo es), 'in' (el valor es un array
+     *                   de números, típicamente ids: solo columnas numéricas; un array vacío = ninguna
+     *                   fila; lo usa Tesorería > Cheques para acotar la búsqueda a la solapa), 'numeric_presence' (solo
      *                   columnas numéricas; valores 'con_valor' = no nula, 'positivo' = mayor a
      *                   cero, 'todos' = sin filtro), 'address_stock_seteado' (filtra por RELACIÓN y
      *                   no por columna: deja pasar los modelos a los que se les cargó la sucursal
@@ -511,7 +513,7 @@ class SearchController extends Controller
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
-        // comparación numérica '>','<','>=','<=', 'numeric_presence', 'address_stock_seteado', y los
+        // comparación numérica '>','<','>=','<=', 'in' (lista de números/ids), 'numeric_presence', 'address_stock_seteado', y los
         // legacy 'category' y 'stock_option'). Cualquier operador fuera de la whitelist se ignora en silencio (no se
         // ejecuta SQL arbitrario con la key/valor que venga del request).
         $models = ExtraFiltersHelper::apply($models, $table, $extra_filters);
