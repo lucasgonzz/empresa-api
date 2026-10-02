@@ -395,6 +395,43 @@ class CandidateImageProcessor
     }
 
     /**
+     * Baja y mide UNA candidata que una persona eligió a mano en la revisión ("a revisar"), entre las
+     * que el motor encontró pero no eligió.
+     *
+     * Pasa por exactamente la misma descarga que las candidatas del motor (guarda SSRF, pin de IP,
+     * redirecciones validadas una por una, tope de bytes), así que quien la llama NO tiene que
+     * validar la URL: pero sí tiene que sacarla del diagnóstico del item y nunca del pedido.
+     *
+     * @param  string $url  La URL completa de la candidata (del diagnóstico del item).
+     * @return array  {ok: bool, motivo: string|null, binario: string|null, analisis: array|null}
+     *                `motivo` ya viene en castellano, listo para mostrarle a quien revisa.
+     */
+    public function bajar_y_analizar($url)
+    {
+        $url = trim((string) $url);
+
+        if ($url === '') {
+            return ['ok' => false, 'motivo' => 'Esa imagen no tiene dirección para descargarla.', 'binario' => null, 'analisis' => null];
+        }
+
+        $descargas = $this->descargar_en_paralelo([0 => $url]);
+
+        if (empty($descargas[0]['ok'])) {
+            $motivo = isset($descargas[0]['motivo']) && $descargas[0]['motivo'] ? (string) $descargas[0]['motivo'] : 'No se pudo descargar.';
+
+            return ['ok' => false, 'motivo' => $motivo, 'binario' => null, 'analisis' => null];
+        }
+
+        $analisis = $this->analizar($descargas[0]['binario']);
+
+        if (!$analisis['ok']) {
+            return ['ok' => false, 'motivo' => (string) $analisis['motivo'], 'binario' => null, 'analisis' => $analisis];
+        }
+
+        return ['ok' => true, 'motivo' => null, 'binario' => $descargas[0]['binario'], 'analisis' => $analisis];
+    }
+
+    /**
      * ¿Es un host de este mismo sistema? El de la app (APP_URL) o cualquiera de los sistemas de los
      * clientes (el otro frente de este cliente es otro subdominio de comerciocity.com).
      *

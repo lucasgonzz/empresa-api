@@ -713,9 +713,10 @@ class ImageAssignmentRunHelper
 
         $items   = $paginador->getCollection();
         $nombres = self::nombres_de_usuarios($items->pluck('revisado_por')->all());
+        $codigos = self::codigos_de_proveedor($items->pluck('article_id')->all(), $run->user_id);
 
-        $paginador->setCollection($items->map(function ($item) use ($nombres) {
-            return self::payload_de_item($item, $nombres);
+        $paginador->setCollection($items->map(function ($item) use ($nombres, $codigos) {
+            return self::payload_de_item($item, $nombres, $codigos);
         }));
 
         return [
@@ -812,12 +813,17 @@ class ImageAssignmentRunHelper
      *
      * @param  \App\Models\ImageAssignmentItem $item
      * @param  array|null $nombres  id => nombre (para revisado_por; null = se busca).
+     * @param  array|null $codigos  article_id => código de proveedor (null = se busca el de este item).
      * @return array
      */
-    public static function payload_de_item(ImageAssignmentItem $item, $nombres = null)
+    public static function payload_de_item(ImageAssignmentItem $item, $nombres = null, $codigos = null)
     {
         if (is_null($nombres)) {
             $nombres = self::nombres_de_usuarios([$item->revisado_por]);
+        }
+
+        if (is_null($codigos)) {
+            $codigos = self::codigos_de_proveedor([$item->article_id], $item->user_id);
         }
 
         $meta   = is_array($item->imagen_meta) ? $item->imagen_meta : null;
@@ -849,6 +855,8 @@ class ImageAssignmentRunHelper
             'article_id'       => (int) $item->article_id,
             'article_name'     => $item->article_name,
             'article_bar_code' => $item->article_bar_code,
+            // El código de proveedor no se snapshotea en el item: se lee del artículo (el de ahora).
+            'article_provider_code' => isset($codigos[$item->article_id]) ? $codigos[$item->article_id] : null,
             'status'           => (string) $item->status,
             'motivo'           => $item->motivo,
             'motivo_detalle'   => $item->motivo_detalle,
@@ -859,6 +867,8 @@ class ImageAssignmentRunHelper
             'imagen'           => $imagen,
             'avisos'           => !is_null($meta) && isset($meta['avisos']) && is_array($meta['avisos']) ? array_values($meta['avisos']) : [],
             'diagnostico'      => is_array($item->diagnostico) ? $item->diagnostico : [],
+            // Las otras imágenes que se encontraron, para elegir una a mano (solo "a revisar").
+            'alternativas'     => $item->status === ImageAssignmentItem::STATUS_A_REVISAR ? self::alternativas_de($item) : [],
             'revisado_por'     => !is_null($revisor) && isset($nombres[$revisor]) ? $nombres[$revisor] : null,
             'revisado_at'      => self::fecha($item->revisado_at),
             'procesado_at'     => self::fecha($item->procesado_at),
@@ -906,12 +916,12 @@ class ImageAssignmentRunHelper
      * @param  int|null $auth_user_id  Quién aprueba.
      * @return array  ['status' => 200|404|422, 'message' => string|null, 'item' => ImageAssignmentItem|null]
      */
-    public static function aprobar($owner_id, $item_id, $auth_user_id = null)
+    public static function aprobar($owner_id, $item_id, $auth_user_id = null, $clave_de_candidata = null)
     {
         // Una sola aprobación: sin tope de descargas del otro frente (es una, a lo sumo).
         $sin_tope = null;
 
-        return self::aprobar_una($owner_id, $item_id, $auth_user_id, $sin_tope);
+        return self::aprobar_una($owner_id, $item_id, $auth_user_id, $sin_tope, $clave_de_candidata);
     }
 
     /**
@@ -922,9 +932,12 @@ class ImageAssignmentRunHelper
      * @param  int|null $auth_user_id
      * @param  int|null $descargas_disponibles  (por referencia) cuántas candidatas se pueden traer
      *                                          todavía del otro frente en este pedido; null = sin tope.
+     * @param  string|null $clave_de_candidata  La candidata que eligió la persona entre las que se
+     *                                          encontraron ("<criterio>:<posicion>", ver alternativas_de()).
+     *                                          Null = la propuesta del sistema, como siempre.
      * @return array
      */
-    protected static function aprobar_una($owner_id, $item_id, $auth_user_id, &$descargas_disponibles)
+    protected static function aprobar_una($owner_id, $item_id, $auth_user_id, &$descargas_disponibles, $clave_de_candidata = null)
     {
         $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
             ->where('id', (int) $item_id)
@@ -958,6 +971,22 @@ class ImageAssignmentRunHelper
 
         if (!$existe_el_articulo) {
             return self::cerrar_por_articulo_borrado($owner_id, $item_id, $auth_user_id);
+        }
+
+        /*
+         * Eligió OTRA de las imágenes que se encontraron: se la baja, se la guarda como la propuesta
+         * del item y recién ahí sigue la aprobación de siempre. Si no se puede, 422 y el item queda
+         * como estaba (a revisar, con la propuesta original).
+         */
+        if (!is_null($clave_de_candidata) && trim((string) $clave_de_candidata) !== '') {
+            $cambio = self::elegir_alternativa($owner_id, $item, trim((string) $clave_de_candidata));
+
+            if ($cambio['status'] !== 200) {
+                return $cambio;
+            }
+
+            $item      = $cambio['item'];
+            $candidata = self::nombre_de_candidata_valido($item->imagen_archivo);
         }
 
         if (!Storage::disk('public')->exists($candidata)) {
@@ -1078,6 +1107,275 @@ class ImageAssignmentRunHelper
         }
 
         return $resultado['respuesta'];
+    }
+
+    /**
+     * Resultados de una candidata que la persona puede elegir a mano: las que el sistema encontró y
+     * dejó de lado, o con las que dudó. Las descartadas por texto, chicas, duplicadas, que no se
+     * pudieron descargar o que no son imagen no sirven y no se ofrecen.
+     */
+    const RESULTADOS_ELEGIBLES = ['alternativa', 'ia_dudosa', 'ia_no_corresponde', 'no_evaluada'];
+
+    /**
+     * Las otras imágenes que se encontraron para un artículo "a revisar", para que la persona elija
+     * una en la misma tarjeta (la propuesta del sistema NO va: esa ya está en `imagen_url`).
+     *
+     * Salen del diagnóstico del item, que ya las guarda: no hay nada nuevo en la base. Cada una lleva
+     * su `clave` ("<criterio>:<posicion>"), que es lo que se manda de vuelta a aprobar.
+     *
+     * @param  \App\Models\ImageAssignmentItem $item
+     * @return array
+     */
+    public static function alternativas_de(ImageAssignmentItem $item)
+    {
+        $alternativas = [];
+
+        foreach (is_array($item->diagnostico) ? $item->diagnostico : [] as $entrada) {
+            if (!is_array($entrada) || empty($entrada['criterio']) || empty($entrada['candidatas']) || !is_array($entrada['candidatas'])) {
+                continue;
+            }
+
+            foreach ($entrada['candidatas'] as $candidata) {
+                if (!is_array($candidata) || !isset($candidata['posicion'])) {
+                    continue;
+                }
+
+                $resultado = isset($candidata['resultado']) ? (string) $candidata['resultado'] : '';
+
+                if (!in_array($resultado, self::RESULTADOS_ELEGIBLES, true)) {
+                    continue;
+                }
+
+                $url = self::url_de_candidata($candidata);
+
+                if ($url === '') {
+                    continue;
+                }
+
+                $alternativas[] = [
+                    'clave'     => (string) $entrada['criterio'].':'.(int) $candidata['posicion'],
+                    'criterio'  => (string) $entrada['criterio'],
+                    'posicion'  => (int) $candidata['posicion'],
+                    'url'       => $url,
+                    'miniatura' => isset($candidata['miniatura']) ? (string) $candidata['miniatura'] : '',
+                    'pagina'    => isset($candidata['pagina']) ? (string) $candidata['pagina'] : '',
+                    'dominio'   => isset($candidata['dominio']) ? (string) $candidata['dominio'] : '',
+                    'titulo'    => isset($candidata['titulo']) ? (string) $candidata['titulo'] : '',
+                    'ancho'     => isset($candidata['ancho']) ? (int) $candidata['ancho'] : null,
+                    'alto'      => isset($candidata['alto']) ? (int) $candidata['alto'] : null,
+                    'resultado' => $resultado,
+                    'motivo'    => isset($candidata['motivo']) ? (string) $candidata['motivo'] : null,
+                ];
+            }
+        }
+
+        return $alternativas;
+    }
+
+    /**
+     * La URL completa de una candidata del diagnóstico (la `url` va recortada a 500 caracteres).
+     *
+     * @param  array $candidata
+     * @return string
+     */
+    protected static function url_de_candidata(array $candidata)
+    {
+        if (!empty($candidata['url_completa'])) {
+            return trim((string) $candidata['url_completa']);
+        }
+
+        return isset($candidata['url']) ? trim((string) $candidata['url']) : '';
+    }
+
+    /**
+     * Código de proveedor de varios artículos en UNA consulta (el item no lo snapshotea).
+     *
+     * @param  array $article_ids
+     * @param  int   $owner_id
+     * @return array  article_id => código (solo los que tienen)
+     */
+    protected static function codigos_de_proveedor(array $article_ids, $owner_id)
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $article_ids))));
+
+        if (empty($ids)) {
+            return [];
+        }
+
+        $codigos = [];
+
+        $filas = Article::withTrashed()
+            ->where('user_id', (int) $owner_id)
+            ->whereIn('id', $ids)
+            ->get(['id', 'provider_code']);
+
+        foreach ($filas as $fila) {
+            if ($fila->provider_code !== null && trim((string) $fila->provider_code) !== '') {
+                $codigos[(int) $fila->id] = (string) $fila->provider_code;
+            }
+        }
+
+        return $codigos;
+    }
+
+    /**
+     * Cambia la propuesta de un item "a revisar" por otra de las imágenes que se encontraron.
+     *
+     * 🔴 La URL se saca SIEMPRE del diagnóstico del item, buscando la `clave` que mandó la persona:
+     * nunca se descarga una dirección que venga en el pedido (sería un proxy hacia cualquier lado). Y
+     * se baja con la misma guarda SSRF que las candidatas del motor.
+     *
+     * Se guarda como una candidata nueva (imgcand_<uuid>.webp, recortada igual que la del motor) y
+     * el item pasa a apuntar a ella; la anterior se borra DESPUÉS del commit. En el diagnóstico la
+     * elegida pasa a `elegida` y la que proponía el sistema a `alternativa`.
+     *
+     * Si algo falla, 422 SIN tocar el item: sigue a revisar con la propuesta de siempre.
+     *
+     * @param  int                             $owner_id
+     * @param  \App\Models\ImageAssignmentItem $item
+     * @param  string                          $clave
+     * @return array  ['status', 'message', 'item'] (item ya con la propuesta nueva, si es 200)
+     */
+    protected static function elegir_alternativa($owner_id, ImageAssignmentItem $item, $clave)
+    {
+        $elegida  = null;
+        $criterio = null;
+
+        foreach (is_array($item->diagnostico) ? $item->diagnostico : [] as $entrada) {
+            if (!is_array($entrada) || empty($entrada['criterio']) || empty($entrada['candidatas']) || !is_array($entrada['candidatas'])) {
+                continue;
+            }
+
+            foreach ($entrada['candidatas'] as $candidata) {
+                if (is_array($candidata) && isset($candidata['posicion']) && (string) $entrada['criterio'].':'.(int) $candidata['posicion'] === $clave) {
+                    $elegida  = $candidata;
+                    $criterio = (string) $entrada['criterio'];
+                    break 2;
+                }
+            }
+        }
+
+        if (is_null($elegida)) {
+            return self::respuesta(422, 'Esa imagen ya no está entre las que se encontraron para este artículo. Actualizá la lista y elegí otra.', $item);
+        }
+
+        // La que ya es la propuesta: no hay nada que cambiar, se aprueba tal cual.
+        if (isset($elegida['resultado']) && $elegida['resultado'] === 'elegida') {
+            return self::respuesta(200, null, $item);
+        }
+
+        if (!isset($elegida['resultado']) || !in_array($elegida['resultado'], self::RESULTADOS_ELEGIBLES, true)) {
+            return self::respuesta(422, 'Esa imagen no se puede elegir: el sistema ya la había descartado.', $item);
+        }
+
+        $procesador = new CandidateImageProcessor();
+        $bajada     = $procesador->bajar_y_analizar(self::url_de_candidata($elegida));
+
+        if (!$bajada['ok']) {
+            return self::respuesta(422, 'No se pudo usar esa imagen: '.rtrim((string) $bajada['motivo'], '. ').'. Probá con otra, o aprobá la que se propuso.', $item);
+        }
+
+        $nuevo = ImageAssignmentItem::PREFIJO_CANDIDATA.(string) Str::uuid().'.webp';
+
+        try {
+            $guardada = $procesador->guardar_final($bajada['binario'], $nuevo);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo guardar la imagen que eligió la persona.', [
+                'item_id' => $item->id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            self::borrar_candidata($nuevo);
+
+            return self::respuesta(422, 'No se pudo preparar esa imagen en el servidor. Probá con otra o de nuevo en un momento.', $item);
+        }
+
+        $analisis = $bajada['analisis'];
+
+        try {
+            $resultado = DB::transaction(function () use ($owner_id, $item, $clave, $criterio, $nuevo, $guardada, $analisis, $elegida) {
+                $fresco = ImageAssignmentItem::where('user_id', (int) $owner_id)
+                    ->where('id', (int) $item->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (is_null($fresco) || $fresco->status !== ImageAssignmentItem::STATUS_A_REVISAR) {
+                    return ['item' => $fresco, 'cambio' => false, 'anterior' => null];
+                }
+
+                $anterior    = $fresco->imagen_archivo;
+                $diagnostico = is_array($fresco->diagnostico) ? $fresco->diagnostico : [];
+
+                foreach ($diagnostico as $i => $entrada) {
+                    if (!is_array($entrada) || empty($entrada['candidatas']) || !is_array($entrada['candidatas'])) {
+                        continue;
+                    }
+
+                    foreach ($entrada['candidatas'] as $j => $candidata) {
+                        if (!is_array($candidata)) {
+                            continue;
+                        }
+
+                        $esta = isset($entrada['criterio'], $candidata['posicion'])
+                            && (string) $entrada['criterio'].':'.(int) $candidata['posicion'] === $clave;
+
+                        if ($esta) {
+                            $diagnostico[$i]['candidatas'][$j]['resultado'] = 'elegida';
+                            $diagnostico[$i]['candidatas'][$j]['motivo']    = 'La eligió una persona entre las imágenes que se encontraron.';
+                        } elseif (isset($candidata['resultado']) && $candidata['resultado'] === 'elegida') {
+                            $diagnostico[$i]['candidatas'][$j]['resultado'] = 'alternativa';
+                            $diagnostico[$i]['candidatas'][$j]['motivo']    = 'Era la que proponía el sistema, pero se eligió otra a mano.';
+                        }
+                    }
+                }
+
+                $meta = [
+                    'ancho'              => $analisis['ancho'],
+                    'alto'               => $analisis['alto'],
+                    'fondo_blanco'       => $analisis['fondo_blanco'],
+                    'fondo_blanco_ratio' => $analisis['fondo_blanco_ratio'],
+                    'dominio'            => isset($elegida['dominio']) ? (string) $elegida['dominio'] : null,
+                    'pagina'             => isset($elegida['pagina']) ? (string) $elegida['pagina'] : null,
+                    'url_original'       => self::url_de_candidata($elegida),
+                    'lado_final'         => $guardada['lado'],
+                    // La IA no vio esta imagen como la elegida: la eligió una persona.
+                    'ia'                 => ['veredicto' => 'sin_evaluar', 'confianza' => null, 'problemas' => [], 'motivo' => 'La eligió una persona entre las imágenes que se encontraron.'],
+                    'avisos'             => $analisis['fondo_blanco'] === false ? ['Fondo no blanco'] : [],
+                ];
+
+                $fresco->fill([
+                    'imagen_archivo' => $nuevo,
+                    'imagen_url'     => $guardada['url'],
+                    'imagen_meta'    => $meta,
+                    'diagnostico'    => $diagnostico,
+                    'criterio_usado' => $criterio,
+                ]);
+                $fresco->save();
+
+                return ['item' => $fresco, 'cambio' => true, 'anterior' => $anterior];
+            });
+        } catch (\Throwable $e) {
+            self::borrar_candidata($nuevo);
+
+            Log::warning('[ImagenesInteligentes] No se pudo cambiar la propuesta por la que eligió la persona.', [
+                'item_id' => $item->id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            return self::respuesta(422, 'No se pudo usar esa imagen. Probá de nuevo en un momento.', $item);
+        }
+
+        if (!$resultado['cambio']) {
+            // Entre la lectura y el lock la resolvió otro (o se borró): la copia nueva sobra.
+            self::borrar_candidata($nuevo);
+
+            return self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $resultado['item']);
+        }
+
+        // Recién después del commit se borra la propuesta anterior (puede estar en el otro frente).
+        self::borrar_candidata($resultado['anterior'], true);
+
+        return self::respuesta(200, null, $resultado['item']);
     }
 
     /**
