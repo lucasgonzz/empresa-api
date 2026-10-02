@@ -137,18 +137,23 @@ class AjusteDePreciosDeSucursalHelper {
     /**
      * Lo que hay que hacer con el ajuste en un `store` / `update`, resuelto del request.
      *
-     * Devuelve `null` cuando NO hay que tocar el ajuste: las columnas no existen todavia (ventana del
-     * deploy) o el request no trae ninguna de las dos claves (SPA vieja). Un `null` no es un error:
-     * el controlador sigue con lo suyo de siempre.
+     * Devuelve `null` cuando NO hay que tocar el ajuste: el request no trae ninguna de las dos claves
+     * (SPA vieja) o las columnas no existen todavia (ventana del deploy). Un `null` no es un error: el
+     * controlador sigue con lo suyo de siempre.
      *
      * Si hay que escribir, devuelve lo mismo que `normalizar()`.
+     *
+     * El ORDEN de las dos preguntas importa: primero las claves del request (gratis) y recien despues
+     * la guarda de esquema (`Schema::hasColumn()`, una consulta a `information_schema` por columna la
+     * primera vez del proceso). Una SPA vieja no manda las claves, y no tiene por que pagar las dos
+     * consultas en cada `store` y `update` de una sucursal para enterarse de algo que no va a usar.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return array|null
      */
     static function resolver_del_request(Request $request) {
 
-        if (!self::columnas_existen() || !self::request_trae_ajuste($request)) {
+        if (!self::request_trae_ajuste($request) || !self::columnas_existen()) {
             return null;
         }
 

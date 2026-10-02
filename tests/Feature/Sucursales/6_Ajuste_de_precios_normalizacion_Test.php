@@ -4,6 +4,7 @@ namespace Tests\Feature\Sucursales;
 
 use App\Http\Controllers\Helpers\address\AjusteDePreciosDeSucursalHelper;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
@@ -209,5 +210,59 @@ class Ajuste_de_precios_normalizacion_Test extends TestCase
         $this->assertTrue(AjusteDePreciosDeSucursalHelper::request_trae_ajuste($solo_pct));
         $this->assertTrue(AjusteDePreciosDeSucursalHelper::request_trae_ajuste($en_null), 'Una clave en null es "quitar el ajuste": se escribe.');
         $this->assertTrue(AjusteDePreciosDeSucursalHelper::request_trae_ajuste($vacias));
+    }
+
+    /**
+     * `resolver_del_request()` mira PRIMERO las claves del request y recien despues la guarda de
+     * esquema: una SPA vieja (que no manda las claves) no dispara las consultas a `information_schema`
+     * de `Schema::hasColumn()` en cada alta y edicion de una sucursal.
+     *
+     * Se mide con el log de consultas de la conexion. La asercion de control (un request CON la clave
+     * si consulta el esquema) evita que el test pase porque el log no registre nada.
+     *
+     * @test
+     */
+    public function un_request_sin_las_claves_no_consulta_el_esquema()
+    {
+        DB::enableQueryLog();
+
+        try {
+
+            AjusteDePreciosDeSucursalHelper::olvidar();
+            DB::flushQueryLog();
+
+            $sin_claves = Request::create('/api/address/1', 'PUT', ['street' => 'zz', 'city' => 'x']);
+
+            $this->assertNull(
+                AjusteDePreciosDeSucursalHelper::resolver_del_request($sin_claves),
+                'Sin las claves del ajuste no hay nada que escribir.'
+            );
+
+            $this->assertCount(
+                0,
+                DB::getQueryLog(),
+                'Un request sin las claves del ajuste no tiene que consultar el esquema (Schema::hasColumn).'
+            );
+
+            /* Control: con la clave presente, la guarda SI se pregunta. */
+            AjusteDePreciosDeSucursalHelper::olvidar();
+            DB::flushQueryLog();
+
+            $con_clave = Request::create('/api/address/1', 'PUT', ['ajuste_precio_tipo' => null]);
+
+            AjusteDePreciosDeSucursalHelper::resolver_del_request($con_clave);
+
+            $this->assertGreaterThan(
+                0,
+                count(DB::getQueryLog()),
+                'Con la clave presente la guarda de esquema tiene que consultarse (control del test).'
+            );
+
+        } finally {
+
+            DB::disableQueryLog();
+
+            AjusteDePreciosDeSucursalHelper::olvidar();
+        }
     }
 }
