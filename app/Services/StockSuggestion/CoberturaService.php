@@ -2,8 +2,11 @@
 
 namespace App\Services\StockSuggestion;
 
+use App\Models\Address;
+use App\Models\Sale;
 use App\Models\StockSuggestionArticle;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Velocidad de venta y días hasta quiebre para priorizar sugerencias de stock.
@@ -16,6 +19,12 @@ use Illuminate\Support\Facades\DB;
  * anterior (misma estación contra misma estación); sin historia interanual
  * degrada a la velocidad reciente sola. Todo determinístico, en SQL + PHP:
  * la IA no participa de ningún número.
+ *
+ * Con DEPÓSITO MADRE (misión deposito-madre, 2/10/2026) el orden deja de ser
+ * solo urgencia: Lucas pidió que el reparto y la lista prioricen a las
+ * sucursales que más venden, con un criterio configurable por comercio
+ * (users.sugerencias_prioridad_destino, ver PRIORIDADES_DESTINO). La cobertura
+ * pasa a desempatar. Sin madre, el ranking es exactamente el de siempre.
  */
 class CoberturaService
 {
@@ -33,6 +42,36 @@ class CoberturaService
 
     /** Tamaño de lote del UPDATE de prioridades. */
     const LOTE_UPDATE_PRIORIDADES = 500;
+
+    /**
+     * Criterio de prioridad con depósito madre: la sucursal que más factura en
+     * general (pesos, últimos VENTANA_DIAS días, ver facturacion_por_sucursal()).
+     */
+    const PRIORIDAD_VENTAS_SUCURSAL = 'ventas_sucursal';
+
+    /**
+     * Criterio de prioridad con depósito madre: la sucursal que más vende ESE
+     * artículo (la misma velocidad de venta que mide la urgencia).
+     */
+    const PRIORIDAD_VENTAS_ARTICULO = 'ventas_articulo';
+
+    /**
+     * Lista blanca de users.sugerencias_prioridad_destino. UserController@update
+     * ignora cualquier valor que no esté acá, y criterio_prioridad_destino() cae
+     * al primero si la columna trae algo desconocido.
+     */
+    const PRIORIDADES_DESTINO = [self::PRIORIDAD_VENTAS_SUCURSAL, self::PRIORIDAD_VENTAS_ARTICULO];
+
+    /** Columna del criterio en users. */
+    const COLUMNA_PRIORIDAD = 'sugerencias_prioridad_destino';
+
+    /**
+     * Memo de la guarda de esquema de COLUMNA_PRIORIDAD (solo el SÍ, ver
+     * columna_prioridad_existe()).
+     *
+     * @var bool|null
+     */
+    private static $columna_prioridad_existe = null;
 
     /** @var int Comercio dueño (articles.user_id) al que se acota toda consulta */
     protected $user_id;
@@ -278,6 +317,192 @@ class CoberturaService
     }
 
     /**
+     * ¿La tabla users ya tiene sugerencias_prioridad_destino? Guarda de esquema
+     * para la ventana del deploy (el código sube antes que el migrate, o el
+     * migrate se traba entre las dos migraciones de la misión): sin ella, leer
+     * el criterio o guardarlo desde UserController reventaba. Mismo criterio que
+     * Address::columna_madre_existe(): un Schema::hasColumn() por proceso, y se
+     * memoiza solo el SÍ para que un queue:work booteado en la ventana no quede
+     * clavado en "no existe".
+     *
+     * @return bool
+     */
+    public static function columna_prioridad_existe()
+    {
+        if (self::$columna_prioridad_existe !== true) {
+            self::$columna_prioridad_existe = Schema::hasColumn('users', self::COLUMNA_PRIORIDAD);
+        }
+
+        return self::$columna_prioridad_existe;
+    }
+
+    /**
+     * Borra el memo de la guarda (lo usan los tests que esconden la columna).
+     *
+     * @return void
+     */
+    public static function olvidar_esquema()
+    {
+        self::$columna_prioridad_existe = null;
+    }
+
+    /**
+     * Criterio con el que se reparte desde el depósito madre y se ordena la
+     * lista (users.sugerencias_prioridad_destino del comercio dueño). Un valor
+     * nulo o fuera de PRIORIDADES_DESTINO cae a 'ventas_sucursal', el default
+     * de la columna: un dato raro no puede dejar el reparto sin criterio. Sin
+     * la columna todavía (columna_prioridad_existe()), también.
+     *
+     * @return string Uno de PRIORIDADES_DESTINO
+     */
+    public function criterio_prioridad_destino()
+    {
+        if (!self::columna_prioridad_existe()) {
+            return self::PRIORIDAD_VENTAS_SUCURSAL;
+        }
+
+        $valor = DB::table('users')
+            ->where('id', $this->user_id)
+            ->value('sugerencias_prioridad_destino');
+
+        if (in_array($valor, self::PRIORIDADES_DESTINO, true)) {
+            return $valor;
+        }
+
+        return self::PRIORIDAD_VENTAS_SUCURSAL;
+    }
+
+    /**
+     * Facturación en pesos de cada sucursal del comercio en los últimos
+     * VENTANA_DIAS días: "la sucursal que más vende en general" del criterio
+     * 'ventas_sucursal' (decisión de Lucas, 2/10/2026: plata facturada, en
+     * pesos, 90 días). Es pública porque la usan tres lugares que tienen que dar
+     * el mismo número: el reparto de StockSuggestionService, el ranking de
+     * asignar_prioridades() y los hechos de RecolectorStock.
+     *
+     * UNA consulta agregada por sucursal (sales.address_id), nunca una por
+     * sucursal ni por artículo. Cuenta solo ventas reales: sin borradas (el
+     * SoftDeletes de Sale), sin consolidaciones de facturación
+     * (Sale::scopeSoloVentasReales, que si no duplicarían las ventas que
+     * agrupan) y en pesos con el mismo criterio que el informe del día
+     * (Sale::EXPRESION_EN_PESOS: una venta sin moneda es pesos). Una venta en
+     * dólares no se convierte: no suma, igual que en el Rendimiento.
+     *
+     * Y solo TERMINADAS (sales.terminada = 1), el mismo conjunto que el
+     * Rendimiento (RecolectorDia::consulta_ventas): "plata facturada" no puede
+     * incluir una venta cargada y todavía sin terminar (extensión check_sales,
+     * ventas con fecha de entrega), que puede no concretarse nunca. La ventana
+     * va por sales.created_at: la segunda puerta de RecolectorDia (terminada_at
+     * en el rango) importa para "el día de ayer", no para 90 días.
+     *
+     * @return array Mapa address_id (int) => facturación (float, 2 decimales). Una sucursal sin ventas no aparece.
+     */
+    public function facturacion_por_sucursal(): array
+    {
+        $filas = Sale::query()
+            ->where('sales.user_id', $this->user_id)
+            ->soloVentasReales()
+            ->where('sales.terminada', 1)
+            ->whereRaw(Sale::EXPRESION_EN_PESOS)
+            ->whereNotNull('sales.address_id')
+            ->where('sales.created_at', '>=', now()->subDays(self::VENTANA_DIAS))
+            ->groupBy('sales.address_id')
+            ->selectRaw('sales.address_id as address_id, SUM(sales.total) as facturacion')
+            ->toBase()
+            ->get();
+
+        $mapa = [];
+
+        foreach ($filas as $fila) {
+            $mapa[(int) $fila->address_id] = round((float) $fila->facturacion, 2);
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * EL comparador del orden con depósito madre. Lo usan asignar_prioridades()
+     * (las líneas guardadas) y RecolectorStock (los movimientos del informe del
+     * mostrador, que se corta en 30): uno solo para que la lista del informe y
+     * la prioridad de la sugerencia guardada no se despeguen nunca.
+     *
+     * Primero el criterio del comercio (lo que pidió Lucas: que manden las
+     * sucursales que más venden), y la urgencia desempata:
+     *
+     *   - 'ventas_sucursal': PRIMERO todos los traslados cuyo destino vende ese
+     *     artículo (cobertura no nula) y AL FINAL los de cobertura nula; dentro
+     *     de cada bloque, facturación del destino desc → cobertura asc →
+     *     cantidad desc → desempate asc.
+     *   - 'ventas_articulo': velocidad del artículo en el destino desc →
+     *     cobertura asc (nulos al final) → cantidad desc → desempate asc. La
+     *     velocidad desc ya deja al final los de velocidad cero.
+     *
+     * Por qué el bloque de cobertura nula en 'ventas_sucursal' (decisión del
+     * orquestador, post-chequeo del 2/10/2026): ordenando solo por facturación,
+     * los traslados a la sucursal grande de artículos que ahí NO se venden
+     * llenaban los 30 movimientos del informe del mostrador y tapaban quiebres
+     * reales de otra sucursal.
+     *
+     * El REPARTO del stock escaso (StockSuggestionService::ordenar_destinos)
+     * usa la MISMA regla (ronda final del 2/10/2026): con 'ventas_sucursal',
+     * primero los destinos con velocidad > 0 de ese artículo y después los de
+     * velocidad 0, cada grupo por facturación. Cobertura nula y velocidad 0 son
+     * el mismo grupo: la cobertura es nula justo cuando la velocidad es 0. Así
+     * la sucursal que encabeza la lista es también la que se lleva el stock.
+     *
+     * Cada lado es un array normalizado: to_address_id (int), velocidad
+     * (float, redondeada a 4 como se guarda en velocidad_diaria), cobertura
+     * (float|null), cantidad (float) y desempate (int: el id de la línea, o el
+     * orden de llegada en el informe, que no tiene id).
+     *
+     * @param array $a
+     * @param array $b
+     * @param string $criterio Uno de PRIORIDADES_DESTINO
+     * @param array $facturacion Mapa address_id => facturación (facturacion_por_sucursal())
+     * @return int
+     */
+    public function comparar_con_madre(array $a, array $b, $criterio, array $facturacion)
+    {
+        if ($criterio === self::PRIORIDAD_VENTAS_ARTICULO) {
+            if ($a['velocidad'] != $b['velocidad']) {
+                return $b['velocidad'] <=> $a['velocidad'];
+            }
+        } else {
+            // Primero el bloque de los destinos que venden el artículo.
+            $a_sin_ventas = is_null($a['cobertura']);
+            $b_sin_ventas = is_null($b['cobertura']);
+
+            if ($a_sin_ventas !== $b_sin_ventas) {
+                return $a_sin_ventas ? 1 : -1;
+            }
+
+            $facturacion_a = isset($facturacion[$a['to_address_id']]) ? $facturacion[$a['to_address_id']] : 0.0;
+            $facturacion_b = isset($facturacion[$b['to_address_id']]) ? $facturacion[$b['to_address_id']] : 0.0;
+
+            if ($facturacion_a != $facturacion_b) {
+                return $facturacion_b <=> $facturacion_a;
+            }
+        }
+
+        $a_nula = is_null($a['cobertura']);
+        $b_nula = is_null($b['cobertura']);
+
+        if ($a_nula !== $b_nula) {
+            return $a_nula ? 1 : -1;
+        }
+
+        if (!$a_nula && $a['cobertura'] != $b['cobertura']) {
+            return $a['cobertura'] <=> $b['cobertura'];
+        }
+
+        if ($a['cantidad'] != $b['cantidad']) {
+            return $b['cantidad'] <=> $a['cantidad'];
+        }
+
+        return $a['desempate'] <=> $b['desempate'];
+    }
+
+    /**
      * Materializa el ranking 1..N de una sugerencia terminada, en una sola
      * pasada global (no por chunk: numerar por chunk daría varias
      * "prioridad 1" en la misma corrida).
@@ -286,17 +511,26 @@ class CoberturaService
      * desempate por cantidad sugerida descendente, y por id para que el
      * ranking sea estable entre corridas del mismo dato.
      *
+     * Con depósito madre del comercio (Address::deposito_madre_de) manda el
+     * criterio de prioridad y la cobertura desempata: ver
+     * ids_ordenados_con_madre() y comparar_con_madre(). Sin madre, la consulta
+     * es la de siempre, sin un cambio.
+     *
      * @param int $stock_suggestion_id
      * @return void
      */
     public function asignar_prioridades($stock_suggestion_id)
     {
-        $ids_ordenados = StockSuggestionArticle::where('stock_suggestion_id', $stock_suggestion_id)
-            ->orderByRaw('cobertura_dias IS NULL ASC')
-            ->orderBy('cobertura_dias', 'ASC')
-            ->orderBy('suggested_amount', 'DESC')
-            ->orderBy('id', 'ASC')
-            ->pluck('id');
+        if (!is_null(Address::deposito_madre_de($this->user_id))) {
+            $ids_ordenados = $this->ids_ordenados_con_madre($stock_suggestion_id);
+        } else {
+            $ids_ordenados = StockSuggestionArticle::where('stock_suggestion_id', $stock_suggestion_id)
+                ->orderByRaw('cobertura_dias IS NULL ASC')
+                ->orderBy('cobertura_dias', 'ASC')
+                ->orderBy('suggested_amount', 'DESC')
+                ->orderBy('id', 'ASC')
+                ->pluck('id');
+        }
 
         $prioridad = 1;
 
@@ -319,5 +553,52 @@ class CoberturaService
                  WHERE id IN (' . implode(',', $ids) . ')'
             );
         }
+    }
+
+    /**
+     * Ids de las líneas de la sugerencia en el orden con depósito madre. Se
+     * ordena en PHP con comparar_con_madre() (y no en SQL) para que el ranking
+     * guardado y el informe del mostrador usen literalmente el mismo
+     * comparador. Una sola consulta para traer las líneas y, con el criterio
+     * 'ventas_sucursal', una más para la facturación: nunca una por línea.
+     *
+     * @param int $stock_suggestion_id
+     * @return \Illuminate\Support\Collection Ids en orden de prioridad
+     */
+    protected function ids_ordenados_con_madre($stock_suggestion_id)
+    {
+        $criterio = $this->criterio_prioridad_destino();
+
+        $facturacion = $criterio === self::PRIORIDAD_VENTAS_SUCURSAL
+            ? $this->facturacion_por_sucursal()
+            : [];
+
+        $lineas = DB::table('stock_suggestion_articles')
+            ->where('stock_suggestion_id', $stock_suggestion_id)
+            ->get(['id', 'to_address_id', 'velocidad_diaria', 'cobertura_dias', 'suggested_amount']);
+
+        $filas = [];
+
+        foreach ($lineas as $linea) {
+            $filas[] = [
+                'id'            => (int) $linea->id,
+                'to_address_id' => (int) $linea->to_address_id,
+                'velocidad'     => (float) $linea->velocidad_diaria,
+                'cobertura'     => is_null($linea->cobertura_dias) ? null : (float) $linea->cobertura_dias,
+                'cantidad'      => (float) $linea->suggested_amount,
+                'desempate'     => (int) $linea->id,
+            ];
+        }
+
+        // Las filas de la base ya están copiadas en $filas: se suelta la colección antes del
+        // usort para no tener las dos en memoria en el pico (una sugerencia grande tiene
+        // decenas de miles de líneas).
+        unset($lineas);
+
+        usort($filas, function ($a, $b) use ($criterio, $facturacion) {
+            return $this->comparar_con_madre($a, $b, $criterio, $facturacion);
+        });
+
+        return collect(array_column($filas, 'id'));
     }
 }

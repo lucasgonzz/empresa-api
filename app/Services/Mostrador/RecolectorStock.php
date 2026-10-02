@@ -2,6 +2,7 @@
 
 namespace App\Services\Mostrador;
 
+use App\Models\Address;
 use App\Models\StockSuggestion;
 use App\Models\User;
 use App\Services\PurchaseSuggestion\PurchaseSuggestionService;
@@ -31,6 +32,19 @@ use Illuminate\Support\Facades\DB;
  * precio (ArticleHelper::cotizar, ProviderOrderHelper): con el dólar del proveedor
  * titular si lo tiene cargado, si no con el dólar de la cuenta (users.dollar). Sin
  * ninguna cotización cargada el costo se toma tal cual (no hay con qué convertir).
+ *
+ * DEPÓSITO MADRE (misión deposito-madre, 2/10/2026): si el comercio marcó uno, el motor
+ * reparte desde el madre y el orden de los movimientos deja de ser solo urgencia: manda el
+ * criterio del comercio (users.sugerencias_prioridad_destino) y la cobertura desempata, con
+ * el MISMO comparador que la prioridad de las sugerencias guardadas
+ * (CoberturaService::comparar_con_madre). Los hechos suman, siempre (solo agregados, nada se
+ * renombra): `deposito_madre` y `criterio_prioridad` en la raíz (null sin madre: ahí el orden
+ * es por urgencia, como siempre), `es_deposito_madre` y `facturacion_90_dias` en cada
+ * sucursal, `desde.es_deposito_madre` y `hacia.facturacion_90_dias` en cada movimiento.
+ *
+ * Sucursales = addresses del dueño SIN buyer_id: la tabla guarda también los domicilios de los
+ * compradores de la tienda (los escribe tienda-api, que comparte la base) con el user_id del
+ * dueño, y sin ese corte contaban como sucursales (mismo hallazgo que ConsultasSistemaIaHelper).
  */
 class RecolectorStock extends RecolectorBase
 {
@@ -52,6 +66,8 @@ class RecolectorStock extends RecolectorBase
     {
         $sucursales = DB::table('addresses')
             ->where('user_id', $owner->id)
+            // Los domicilios de compradores de la tienda no son sucursales (ver docblock).
+            ->whereNull('buyer_id')
             ->orderBy('id')
             ->get(['id', 'street', 'es_deposito_origen']);
 
@@ -59,26 +75,47 @@ class RecolectorStock extends RecolectorBase
             return $this->no_aplica($fecha, 'El comercio tiene una sola sucursal: no hay traslados de stock que sugerir.');
         }
 
+        $cobertura_service = new CoberturaService($owner->id);
+
+        // Facturación de 90 días por sucursal: va en los hechos siempre (con o sin madre) y,
+        // con madre y criterio 'ventas_sucursal', ordena los movimientos.
+        $facturacion = $cobertura_service->facturacion_por_sucursal();
+
+        // El madre se resuelve con la misma lectura que el motor (Address::deposito_madre_de):
+        // el informe no puede creer que hay un madre y el motor que no.
+        $madre = Address::deposito_madre_de($owner->id);
+        $madre_id = is_null($madre) ? null : (int) $madre->id;
+        $criterio = is_null($madre_id) ? null : $cobertura_service->criterio_prioridad_destino();
+
         $nombres = [];
         $lista_sucursales = [];
 
         foreach ($sucursales as $sucursal) {
-            $nombres[(int) $sucursal->id] = (string) $sucursal->street;
+            $address_id = (int) $sucursal->id;
+
+            $nombres[$address_id] = (string) $sucursal->street;
 
             $lista_sucursales[] = [
-                'address_id'         => (int) $sucursal->id,
-                'nombre'             => (string) $sucursal->street,
-                'es_deposito_origen' => (bool) $sucursal->es_deposito_origen,
+                'address_id'          => $address_id,
+                'nombre'              => (string) $sucursal->street,
+                'es_deposito_origen'  => (bool) $sucursal->es_deposito_origen,
+                'es_deposito_madre'   => $address_id === $madre_id,
+                'facturacion_90_dias' => $this->facturacion_de($facturacion, $address_id),
             ];
         }
 
-        $movimientos = $this->movimientos_sugeridos($owner, $nombres);
+        $movimientos = $this->movimientos_sugeridos($owner, $nombres, $cobertura_service, $madre_id, $criterio, $facturacion);
         $sin_rotacion = $this->sin_rotacion($owner, $fecha);
 
         return [
             'aplica'                => true,
             'fecha'                 => $fecha->format('Y-m-d'),
             'sucursales'            => $lista_sucursales,
+            'deposito_madre'        => is_null($madre_id) ? null : [
+                'address_id' => $madre_id,
+                'nombre'     => isset($nombres[$madre_id]) ? $nombres[$madre_id] : (string) $madre->street,
+            ],
+            'criterio_prioridad'    => $criterio,
             'movimientos_sugeridos' => $movimientos['lista'],
             'sin_rotacion'          => $sin_rotacion['lista'],
             'resumen'               => [
@@ -97,7 +134,7 @@ class RecolectorStock extends RecolectorBase
      */
     public function cantidad_de_candidatos(User $owner): int
     {
-        $sucursales = DB::table('addresses')->where('user_id', $owner->id)->count();
+        $sucursales = DB::table('addresses')->where('user_id', $owner->id)->whereNull('buyer_id')->count();
 
         if ($sucursales < 2) {
             return 0;
@@ -111,9 +148,13 @@ class RecolectorStock extends RecolectorBase
      *
      * @param User $owner
      * @param array $nombres Mapa address_id => nombre
+     * @param CoberturaService $cobertura_service Del dueño
+     * @param int|null $madre_id Depósito madre, o null sin madre
+     * @param string|null $criterio CoberturaService::PRIORIDAD_* con madre, null sin madre
+     * @param array $facturacion Mapa address_id => facturación de 90 días en pesos
      * @return array{lista: array, articulos_en_riesgo: int}
      */
-    protected function movimientos_sugeridos(User $owner, array $nombres): array
+    protected function movimientos_sugeridos(User $owner, array $nombres, CoberturaService $cobertura_service, $madre_id, $criterio, array $facturacion): array
     {
         $vacio = ['lista' => [], 'articulos_en_riesgo' => 0];
 
@@ -146,7 +187,6 @@ class RecolectorStock extends RecolectorBase
         }
 
         // Velocidad de venta en cada destino, una consulta por lote de pares.
-        $cobertura_service = new CoberturaService($owner->id);
         $velocidades = [];
 
         $pares = [];
@@ -170,31 +210,53 @@ class RecolectorStock extends RecolectorBase
             $sugerencias[$indice]['cobertura'] = $cobertura;
             $sugerencias[$indice]['_orden'] = $indice;
 
+            if (!is_null($madre_id)) {
+                // La forma que espera CoberturaService::comparar_con_madre, con la velocidad
+                // redondeada como la guarda la sugerencia (velocidad_diaria, 4 decimales):
+                // así el informe y la prioridad guardada comparan los mismos números.
+                $sugerencias[$indice]['_comparable'] = [
+                    'to_address_id' => (int) $sugerencia['to_address_id'],
+                    'velocidad'     => round($velocidad, 4),
+                    'cobertura'     => $cobertura,
+                    'cantidad'      => (float) $sugerencia['suggested_amount'],
+                    'desempate'     => $indice,
+                ];
+            }
+
             if (!is_null($cobertura) && $cobertura <= PurchaseSuggestionService::DIAS_PUNTO_PEDIDO) {
                 $articulos_en_riesgo[(int) $sugerencia['article_id']] = true;
             }
         }
 
-        // El orden de CoberturaService::asignar_prioridades: cobertura ascendente, nulos
-        // al final, cantidad descendente; el índice de llegada desempata (usort no es estable).
-        usort($sugerencias, function ($a, $b) {
-            $a_nula = is_null($a['cobertura']);
-            $b_nula = is_null($b['cobertura']);
+        if (!is_null($madre_id)) {
+            // Con madre: el orden de CoberturaService::asignar_prioridades con madre, con el
+            // MISMO comparador (criterio del comercio primero, la urgencia desempata). El
+            // índice de llegada desempata al final, como sin madre.
+            usort($sugerencias, function ($a, $b) use ($cobertura_service, $criterio, $facturacion) {
+                return $cobertura_service->comparar_con_madre($a['_comparable'], $b['_comparable'], $criterio, $facturacion);
+            });
+        } else {
+            // El orden de CoberturaService::asignar_prioridades: cobertura ascendente, nulos
+            // al final, cantidad descendente; el índice de llegada desempata (usort no es estable).
+            usort($sugerencias, function ($a, $b) {
+                $a_nula = is_null($a['cobertura']);
+                $b_nula = is_null($b['cobertura']);
 
-            if ($a_nula !== $b_nula) {
-                return $a_nula ? 1 : -1;
-            }
+                if ($a_nula !== $b_nula) {
+                    return $a_nula ? 1 : -1;
+                }
 
-            if (!$a_nula && $a['cobertura'] != $b['cobertura']) {
-                return $a['cobertura'] <=> $b['cobertura'];
-            }
+                if (!$a_nula && $a['cobertura'] != $b['cobertura']) {
+                    return $a['cobertura'] <=> $b['cobertura'];
+                }
 
-            if ($a['suggested_amount'] != $b['suggested_amount']) {
-                return $b['suggested_amount'] <=> $a['suggested_amount'];
-            }
+                if ($a['suggested_amount'] != $b['suggested_amount']) {
+                    return $b['suggested_amount'] <=> $a['suggested_amount'];
+                }
 
-            return $a['_orden'] <=> $b['_orden'];
-        });
+                return $a['_orden'] <=> $b['_orden'];
+            });
+        }
 
         $top = array_slice($sugerencias, 0, self::TOPE_MOVIMIENTOS);
 
@@ -215,16 +277,18 @@ class RecolectorStock extends RecolectorBase
                 'article_id' => $article_id,
                 'nombre'     => isset($nombres_articulos[$article_id]) ? $nombres_articulos[$article_id] : 'Artículo #' . $article_id,
                 'desde'      => [
-                    'address_id' => $desde_id,
-                    'nombre'     => isset($nombres[$desde_id]) ? $nombres[$desde_id] : 'Sucursal #' . $desde_id,
-                    'stock'      => isset($stock_origen[$article_id . '-' . $desde_id]) ? $stock_origen[$article_id . '-' . $desde_id] : null,
+                    'address_id'        => $desde_id,
+                    'nombre'            => isset($nombres[$desde_id]) ? $nombres[$desde_id] : 'Sucursal #' . $desde_id,
+                    'stock'             => isset($stock_origen[$article_id . '-' . $desde_id]) ? $stock_origen[$article_id . '-' . $desde_id] : null,
+                    'es_deposito_madre' => $desde_id === $madre_id,
                 ],
                 'hacia'      => [
-                    'address_id'       => $hacia_id,
-                    'nombre'           => isset($nombres[$hacia_id]) ? $nombres[$hacia_id] : 'Sucursal #' . $hacia_id,
-                    'stock'            => (float) $sugerencia['stock_destino'],
-                    'velocidad_diaria' => round((float) $sugerencia['velocidad'], 2),
-                    'cobertura_dias'   => is_null($sugerencia['cobertura']) ? null : round((float) $sugerencia['cobertura'], 1),
+                    'address_id'          => $hacia_id,
+                    'nombre'              => isset($nombres[$hacia_id]) ? $nombres[$hacia_id] : 'Sucursal #' . $hacia_id,
+                    'stock'               => (float) $sugerencia['stock_destino'],
+                    'velocidad_diaria'    => round((float) $sugerencia['velocidad'], 2),
+                    'cobertura_dias'      => is_null($sugerencia['cobertura']) ? null : round((float) $sugerencia['cobertura'], 1),
+                    'facturacion_90_dias' => $this->facturacion_de($facturacion, $hacia_id),
                 ],
                 'cantidad'   => (float) $sugerencia['suggested_amount'],
                 'prioridad'  => $prioridad,
@@ -238,6 +302,18 @@ class RecolectorStock extends RecolectorBase
             'lista'               => $lista,
             'articulos_en_riesgo' => count($articulos_en_riesgo),
         ];
+    }
+
+    /**
+     * Facturación de 90 días en pesos de una sucursal (0.0 si no vendió nada en la ventana).
+     *
+     * @param array $facturacion Mapa de CoberturaService::facturacion_por_sucursal()
+     * @param int $address_id
+     * @return float
+     */
+    protected function facturacion_de(array $facturacion, $address_id)
+    {
+        return isset($facturacion[$address_id]) ? (float) $this->monto($facturacion[$address_id]) : 0.0;
     }
 
     /**
