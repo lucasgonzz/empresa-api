@@ -120,8 +120,18 @@ class BalanzaHelper
     {
         $codigo = (string) $codigo;
 
-        // 1. Solo dígitos: un código con letras no es un ticket de balanza.
-        if (!preg_match('/^[0-9]+$/', $codigo)) {
+        /*
+         * 1. Solo dígitos: un código con letras no es un ticket de balanza.
+         *
+         * 🔴 ctype_digit y NO preg_match('/^[0-9]+$/'): en PCRE el `$` también acepta un "\n" al
+         * final, así que `2201000027143\n` pasaba y se leía corrido un lugar (el "\n" hacía de
+         * "último caracter") -> $27.143 en vez de $2.714. La SPA lo rechaza (`/^\d+$/` de
+         * JavaScript), y la regla tiene que ser la misma de los dos lados. ctype_digit sobre un
+         * string exige que TODOS los caracteres sean dígitos, y con '' devuelve false. Va sobre
+         * el string ya casteado: con un int, ctype_digit lo interpreta como un código ASCII.
+         * Existe siempre: si falta la extensión, la cubre symfony/polyfill-ctype de vendor/.
+         */
+        if (!ctype_digit($codigo)) {
             return null;
         }
 

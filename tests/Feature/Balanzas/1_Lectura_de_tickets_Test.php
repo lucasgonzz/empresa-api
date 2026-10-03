@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Balanzas;
 
+use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Models\Article;
 use App\Models\Balanza;
 use App\Models\ExtencionEmpresa;
@@ -524,6 +525,35 @@ class Lectura_de_tickets_Test extends EmpresaTestCase
 
         $this->assertTrue($json['from_balanza'] ?? false, 'Con 10 caracteres el ticket entra justo. Respuesta: ' . json_encode($json));
         $this->assertSame(2714, $json['price_vender']);
+    }
+
+    /**
+     * 🔴 Un código con un salto de línea al final NO es un ticket. En PCRE el `$` de `/^[0-9]+$/`
+     * acepta un "\n" final, así que `2201000027143\n` pasaba la validación y se leía corrido un
+     * lugar (los 7 caracteres anteriores al último, que era el "\n"): $27.143 en vez de $2.714. La
+     * SPA (`/^\d+$/` de JavaScript) lo rechaza, o sea que el mismo código se leía distinto online y
+     * offline.
+     *
+     * @test
+     */
+    public function un_codigo_con_salto_de_linea_al_final_no_se_lee()
+    {
+        $this->modo('balanzas');
+
+        $carniceria = $this->crear_articulo('Carniceria', ['price' => 0]);
+        $this->balanza('22', $carniceria->id, 'importe');
+
+        // Por el endpoint real (%0A en la URL llega como "\n" al parámetro de la ruta).
+        $this->assert_no_leyo_nada(
+            $this->escanear(rawurlencode(self::CODIGO_PANCHITO_2714 . "\n")),
+            'código con un salto de línea al final'
+        );
+
+        // Y la regla misma, sin pasar por el ruteo.
+        $this->assertNull(
+            BalanzaHelper::leer_ticket_por_balanzas(self::CODIGO_PANCHITO_2714 . "\n", $this->dueno->id),
+            'Un "\n" final no puede pasar la validación de "solo dígitos".'
+        );
     }
 
     /**
