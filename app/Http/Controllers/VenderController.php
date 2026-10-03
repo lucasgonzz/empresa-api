@@ -53,7 +53,9 @@ class VenderController extends Controller
 
         // Caso 1: el codigo escaneado es de una variante disponible del comercio (su bar_code o, con
         // numero interno, '0' + id). Se identifica ANTES que cualquier articulo, porque el codigo de
-        // una variante manda sobre el de los articulos (el guardado ya impide que coincidan).
+        // una variante manda sobre el de los articulos. El guardado de la variante impide repetir un
+        // codigo de articulo existente, pero NO al reves (un articulo nuevo o importado puede traer
+        // el codigo de una variante): en ese caso gana la variante.
         $variant = ArticleVariantBarCodeHelper::find_available_by_code($code, $user_id);
 
         if (!is_null($variant)) {
