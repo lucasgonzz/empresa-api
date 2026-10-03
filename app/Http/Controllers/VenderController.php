@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
+use App\Http\Controllers\Helpers\article\ArticleVariantBarCodeHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
@@ -13,52 +14,62 @@ use Illuminate\Support\Facades\Log;
 
 class VenderController extends Controller
 {
+    /**
+     * Resuelve un codigo de barras escaneado (Vender y consultora de precios) a un articulo y, si el
+     * codigo es de una VARIANTE, tambien a esa variante.
+     *
+     * Contrato C2 de la mision "codigo-de-barras-de-variantes": las claves de siempre de la
+     * respuesta (`article`, `variant_id`, `variant`, `has_variants`, `variants`, `from_balanza`,
+     * `from_balanza_plu`, `price_vender`, `amount`) no cambian de forma ni de significado, porque
+     * las leen ArticleBarCode.vue y la consultora de precios (BuscadorInput.vue). Se suma
+     * `variant_row`, que SOLO viene cuando el codigo fue de una variante: la misma fila que arma la
+     * busqueda por nombre (`VenderSearchHelper::build_row`), o sea el formato con el que una
+     * variante entra al remito. Un cliente viejo la ignora y sigue como siempre.
+     *
+     * La variante se busca primero (ver `ArticleVariantBarCodeHelper::find_available_by_code`):
+     * solo con la extension `article_variants`, solo entre los articulos del duenio y solo entre las
+     * disponibles. Si ninguna matchea, sigue la cadena de articulo de siempre
+     * (`num` / `provider_code` / `bar_code` segun las extensiones).
+     *
+     * @param string $code Codigo escaneado.
+     * @return \Illuminate\Http\JsonResponse
+     */
     function search_bar_code($code) {
 
         $inicio = microtime(true);
         Log::info('Incia search_bar_code con codigo: '.$code);
 
-        $article = Article::where('user_id', $this->userId());
+        // Duenio de los articulos: toda la busqueda (variantes y articulos) se acota a el.
+        $user_id = $this->userId();
+
+        $article = Article::where('user_id', $user_id);
 
         // Id de la variante encontrada por codigo de barra (caso 1: codigo de variante)
         $variant_id = null;
-        // Instancia de la variante encontrada por codigo de barra (caso 1: codigo de variante)
-        $variant = null;
 
-        if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno') && substr($code, 0, 1) == '0') {
+        // Caso 1: el codigo escaneado es de una variante disponible del comercio (su bar_code o, con
+        // numero interno, '0' + id). Se identifica ANTES que cualquier articulo, porque el codigo de
+        // una variante manda sobre el de los articulos (el guardado ya impide que coincidan).
+        $variant = ArticleVariantBarCodeHelper::find_available_by_code($code, $user_id);
 
-            // El codigo es el id de una variante ('0' + id, contrato del prompt 518/519)
-            $variant = ArticleVariant::find(substr($code, 1));
+        if (!is_null($variant)) {
 
-            if (!is_null($variant)) {
+            $variant_id = $variant->id;
+            $article = $article->where('id', $variant->article_id);
+        } else if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno')) {
 
-                $variant_id = $variant->id;
-                $article_id = $variant->article_id;
+            // Con la extension de numero interno el codigo de un articulo es su `num`.
+            // Ojo: antes, un codigo que empezaba con '0' y no era de ninguna variante entraba por la
+            // rama de la variante y dejaba esta consulta SIN ningun filtro: devolvia un articulo
+            // cualquiera del duenio. No volver a mezclar las dos ramas: "no es una variante" tiene
+            // que seguir siempre por la cadena de articulo.
+            $article = $article->where('num', $code);
+        } else if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
 
-                $article = $article->where('id', $article_id);
-            }
+            $article = $article->where('provider_code', $code);
         } else {
 
-            // Caso 1 (alternativo): el codigo escaneado matchea directo el bar_code de una variante
-            // (contrato definido en el prompt 518/519: article_variants.bar_code). Se revisa
-            // independientemente de las extensiones de matcheo de articulo, porque el codigo de
-            // una variante siempre se identifica primero como variante.
-            $variant = ArticleVariant::where('bar_code', $code)->first();
-
-            if (!is_null($variant)) {
-
-                $variant_id = $variant->id;
-                $article = $article->where('id', $variant->article_id);
-            } else if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno')) {
-
-                $article = $article->where('num', $code);
-            } else if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
-
-                $article = $article->where('provider_code', $code);
-            } else {
-
-                $article = $article->where('bar_code', $code);
-            }
+            $article = $article->where('bar_code', $code);
         }
 
         // withAllSinAcopio: las mismas 27 relaciones menos sales_with_deliveries_in_acopio, que es la
@@ -66,6 +77,13 @@ class VenderController extends Controller
         // que consumen este endpoint lee. Ver el docblock del scope en App\Models\Article.
         $article = $article->withAllSinAcopio()
                         ->first();
+
+        // Si la variante existe pero su articulo no vino (no deberia pasar: la variante ya se acoto
+        // a articulos del duenio), no se devuelve una variante huerfana: se sigue como "no encontrado".
+        if (!$article) {
+            $variant = null;
+            $variant_id = null;
+        }
 
 
         if (
@@ -102,7 +120,27 @@ class VenderController extends Controller
         // Caso 1: se encontro una variante puntual por codigo de barra -> devolverla directo
         // para que el front la agregue sin pasar por el selector de variantes.
         if (!is_null($variant)) {
-            return response()->json(['article' => $article, 'variant_id' => $variant_id, 'variant' => $variant], 200);
+
+            // Fila lista para el remito: la misma que devuelve la busqueda por nombre para esa
+            // variante (`is_variant`, `variant_id`, `variant_description`, `final_price` con el
+            // precio propio si lo tiene, `images`, `addresses`, `article` anidado, etc.).
+            // Se arma sobre una COPIA de la variante, no sobre `$variant`: `build_row` necesita
+            // `$variant->article` y se lo setea con el articulo que ya se trajo (con sus imagenes
+            // cargadas) para ahorrar una consulta por articulo e imagenes. Si se lo seteara sobre
+            // `$variant` -- que se devuelve como `variant` -- el JSON de esa clave pasaria a llevar
+            // el articulo completo anidado y cambiaria de forma: `variant` tiene que seguir siendo
+            // el modelo pelado que leen ArticleBarCode.vue y la consultora de precios.
+            $variant_for_row = clone $variant;
+            $variant_for_row->setRelation('article', $article);
+
+            $variant_row = VenderSearchHelper::build_row($article, $variant_for_row);
+
+            return response()->json([
+                'article'     => $article,
+                'variant_id'  => $variant_id,
+                'variant'     => $variant,
+                'variant_row' => $variant_row,
+            ], 200);
         }
 
         // A partir de aca el codigo matcheo un articulo (no una variante puntual).
