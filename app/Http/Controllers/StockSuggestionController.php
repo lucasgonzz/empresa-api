@@ -259,7 +259,9 @@ class StockSuggestionController extends Controller
 
             $helper = new DepositMovementHelper($deposit_movement);
             $helper->attach_articles($articles_to_attach);
-            $helper->check_status();
+            // Sin check_status(): desde la misión movimientos-deposito-auditoria (3/10/2026) el
+            // stock se mueve solo con el botón "Mover stock" del movimiento. Con estado 1
+            // ("En proceso") esa llamada tampoco movía nada.
 
             $this->sendAddModelNotification('DepositMovement', $deposit_movement->id);
 

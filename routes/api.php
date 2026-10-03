@@ -434,6 +434,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('deposit-movement', 'DepositMovementController');
     Route::get('deposit-movement/from-date/{from_date?}/{until_date?}', 'DepositMovementController@index');
 
+    // Botón "Mover stock" e historial de modificaciones de artículos (misión
+    // movimientos-deposito-auditoria, 3/10/2026). `{id}/move-stock` tiene tres segmentos y no
+    // choca con ninguna ruta del resource.
+    Route::post('deposit-movement/{id}/move-stock', 'DepositMovementController@move_stock');
+    Route::get('deposit-movement-modifications/{deposit_movement_id}', 'DepositMovementModificationController@index');
+
     Route::get('deposit-movement-en-curso', 'DepositMovementController@en_curso');
 
     // ABM de estados de movimientos (misión movimientos-deposito-auditoria, 3/10/2026): fijos
