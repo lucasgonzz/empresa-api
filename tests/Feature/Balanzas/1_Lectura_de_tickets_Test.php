@@ -4,6 +4,7 @@ namespace Tests\Feature\Balanzas;
 
 use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use App\Models\Balanza;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
@@ -142,7 +143,7 @@ class Lectura_de_tickets_Test extends EmpresaTestCase
      * @param  string  $slug
      * @return void
      */
-    protected function prender_extension_vieja($slug)
+    protected function prender_extension($slug)
     {
         $extension = ExtencionEmpresa::where('slug', $slug)->first();
 
@@ -309,8 +310,8 @@ class Lectura_de_tickets_Test extends EmpresaTestCase
      */
     public function sin_modo_o_ninguno_no_lee_nada_aunque_tenga_las_extensiones_viejas()
     {
-        $this->prender_extension_vieja('balanza_bar_code');
-        $this->prender_extension_vieja('plu_balanza_bar_code');
+        $this->prender_extension('balanza_bar_code');
+        $this->prender_extension('plu_balanza_bar_code');
 
         $carniceria = $this->crear_articulo('Carniceria', ['price' => 0]);
         $this->balanza('22', $carniceria->id, 'importe');
@@ -433,6 +434,40 @@ class Lectura_de_tickets_Test extends EmpresaTestCase
         $this->assertEquals($con_ese_codigo->id, $json['article']['id'], 'El artículo con ese código de barras tiene que ganar.');
         $this->assertFalse($json['has_variants']);
         $this->assertArrayNotHasKey('from_balanza', $json);
+    }
+
+    /**
+     * Lo mismo con una VARIANTE (la búsqueda por código de variante de la misión
+     * codigo-de-barras-de-variantes): una variante disponible cuyo código es exactamente el del
+     * ticket le gana a la balanza. La lectura de tickets corre solo si no hubo ni variante ni
+     * artículo.
+     *
+     * @test
+     */
+    public function una_variante_con_ese_codigo_le_gana_a_la_balanza()
+    {
+        $this->modo('balanzas');
+        $this->prender_extension('article_variants');
+
+        $carniceria = $this->crear_articulo('Carniceria', ['price' => 0]);
+        $this->balanza('22', $carniceria->id, 'importe');
+
+        $remera = $this->crear_articulo('Remera');
+
+        $variante = ArticleVariant::create([
+            'article_id'          => $remera->id,
+            'variant_description' => 'Talle M',
+            'oculta'              => false,
+            'price'               => null,
+            'stock'               => 5,
+            'bar_code'            => self::CODIGO_PANCHITO_2714,
+        ]);
+
+        $json = $this->escanear(self::CODIGO_PANCHITO_2714)->json();
+
+        $this->assertSame($variante->id, $json['variant_id'] ?? null, 'La variante con ese código tiene que ganar. Respuesta: ' . json_encode($json));
+        $this->assertEquals($remera->id, $json['article']['id']);
+        $this->assertArrayNotHasKey('from_balanza', $json, 'El código de una variante no se lee como ticket.');
     }
 
     /**
