@@ -542,4 +542,163 @@ class Variantes_codigo_de_barras_Test extends TestCase
         $this->articulo($user, 'Tornillo', ['num' => 321]);
         $this->guardar($variante, ['bar_code' => '321'])->assertStatus(200);
     }
+
+    /**
+     * El guardado normaliza igual que el lector: la SPA, al escanear, saca TODO el espacio en blanco
+     * del codigo (`code.replace(/\s+/g, '')`). Un "AB 12" guardado tal cual se buscaria como "AB12"
+     * y no matchearia nunca. La respuesta ya devuelve el codigo normalizado (la SPA repone el input
+     * con eso).
+     *
+     * @group stock
+     * @test
+     */
+    public function un_codigo_con_espacios_se_guarda_sin_ellos_como_lo_busca_el_lector()
+    {
+        $user = $this->usuario_de_test('g15');
+        $this->actingAs($user, 'web');
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36');
+
+        $res = $this->guardar($variante, ['bar_code' => 'AB 12']);
+
+        $res->assertStatus(200);
+        $this->assertSame('AB12', $res->json('model.bar_code'));
+        $this->assertSame('AB12', $this->codigo_guardado($variante));
+    }
+
+    /**
+     * Se sacan los espacios internos de todos los tipos: espacio doble, tab, salto de linea y el
+     * espacio no cortable (que los middlewares de Laravel no recortan y un trim() tampoco).
+     *
+     * @group stock
+     * @test
+     */
+    public function se_sacan_los_espacios_internos_de_todos_los_tipos()
+    {
+        $user = $this->usuario_de_test('g16');
+        $this->actingAs($user, 'web');
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36');
+
+        $res = $this->guardar($variante, ['bar_code' => "A\tB  C\u{00A0}D\n1"]);
+
+        $res->assertStatus(200);
+        $this->assertSame('ABCD1', $res->json('model.bar_code'));
+        $this->assertSame('ABCD1', $this->codigo_guardado($variante));
+    }
+
+    /**
+     * Lo que se compara por repetido es el codigo ya normalizado: "AB 12" es "AB12" para el lector,
+     * asi que choca con otra variante que tiene "AB12" (escribir el espacio no esquiva la regla).
+     *
+     * @group stock
+     * @test
+     */
+    public function el_codigo_normalizado_es_el_que_se_compara_por_repetido()
+    {
+        $user = $this->usuario_de_test('g17');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $azul_35 = $this->variante($zapatilla, 'azul 35');
+        $azul_36 = $this->variante($zapatilla, 'azul 36', false, 100);
+
+        $this->guardar($azul_35, ['bar_code' => 'AB12'])->assertStatus(200);
+
+        $res = $this->guardar($azul_36, ['bar_code' => 'AB 12', 'price' => 999]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('azul 35', $res->json('message'));
+        $this->assertEquals('0' . $azul_36->id, $this->codigo_guardado($azul_36));
+        $this->assertEquals(100, DB::table('article_variants')->where('id', $azul_36->id)->value('price'));
+    }
+
+    /**
+     * `/`, `\`, `?`, `#` y `%` rompen la ruta del escaneo (el codigo viaja en la URL sin escapar:
+     * dan 404 o se truncan), asi que un codigo con alguno se guardaria bien y no se podria escanear
+     * nunca. 422 con un mensaje que dice cuales no se pueden usar, y NADA guardado.
+     *
+     * @group stock
+     * @test
+     */
+    public function los_caracteres_que_rompen_la_ruta_del_escaneo_dan_422_y_no_guardan_nada()
+    {
+        $user = $this->usuario_de_test('g18');
+        $this->actingAs($user, 'web');
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36', true, 100);
+
+        foreach (['/', '\\', '?', '#', '%'] as $caracter) {
+            $res = $this->guardar($variante, [
+                'bar_code' => 'AB' . $caracter . '12',
+                'price'    => 999,
+                'oculta'   => false,
+            ]);
+
+            $res->assertStatus(422);
+            $this->assertStringContainsString($caracter, $res->json('message'), 'El mensaje tiene que nombrar el caracter ' . $caracter);
+
+            $fila = DB::table('article_variants')->where('id', $variante->id)->first();
+            $this->assertEquals('0' . $variante->id, $fila->bar_code, 'No se tiene que haber guardado el codigo con ' . $caracter);
+            $this->assertEquals(100, $fila->price, 'No se tiene que haber guardado el precio.');
+            $this->assertEquals(1, $fila->oculta, 'No se tiene que haber guardado la disponibilidad.');
+        }
+    }
+
+    /**
+     * Un codigo que despues de normalizar queda vacio (solo espacios de cualquier tipo, incluido el
+     * no cortable que ningun recorte de costados saca) restituye '0' + id, como el campo vacio.
+     *
+     * @group stock
+     * @test
+     */
+    public function un_codigo_de_solo_espacios_de_cualquier_tipo_restituye_el_cero_mas_id()
+    {
+        $user = $this->usuario_de_test('g19');
+        $this->actingAs($user, 'web');
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36');
+        $por_defecto = '0' . $variante->id;
+
+        foreach (["\t \n", "\u{00A0}", " \u{00A0} \t"] as $solo_espacios) {
+            $this->guardar($variante, ['bar_code' => '7790002'])->assertStatus(200);
+
+            $res = $this->guardar($variante, ['bar_code' => $solo_espacios]);
+
+            $res->assertStatus(200);
+            $this->assertSame($por_defecto, $res->json('model.bar_code'));
+            $this->assertSame($por_defecto, $this->codigo_guardado($variante));
+        }
+    }
+
+    /**
+     * Un valor con bytes que no son UTF-8 valido es un 422 con mensaje, no un 500 ni un vacio que
+     * restituya el codigo por defecto (`preg_replace` devuelve null). Va como formulario porque un
+     * JSON con bytes invalidos ni se decodifica.
+     *
+     * @group stock
+     * @test
+     */
+    public function un_valor_con_bytes_invalidos_da_422_y_no_revienta()
+    {
+        $user = $this->usuario_de_test('g20');
+        $this->actingAs($user, 'web');
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36', false, 100);
+
+        $res = $this->withHeaders(['Accept' => 'application/json'])
+                    ->put('api/article-variant/' . $variante->id, [
+                        'price'     => 999,
+                        'image_url' => null,
+                        'oculta'    => 0,
+                        'bar_code'  => "AB\xB112",
+                    ]);
+
+        $res->assertStatus(422);
+        $this->assertIsString($res->json('message'));
+
+        $fila = DB::table('article_variants')->where('id', $variante->id)->first();
+        $this->assertEquals('0' . $variante->id, $fila->bar_code);
+        $this->assertEquals(100, $fila->price);
+    }
 }

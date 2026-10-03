@@ -119,31 +119,37 @@ class ArticleVariantBarCodeHelper
      * ni el codigo ni el precio ni `oculta`.
      *
      * Reglas, en este orden (contrato C1):
-     *  1. trim.
-     *  2. Vacio -> se restituye el codigo por defecto '0' + id de la variante.
+     *  1. Normalizar como el lector: sacar TODO el espacio en blanco (no solo los costados). Bytes que
+     *     no son UTF-8 valido -> error. Lo que queda es lo que se valida y lo que se guarda.
+     *  2. Vacio (o solo espacios) -> se restituye el codigo por defecto '0' + id de la variante.
      *  3. Mas de 20 caracteres -> error.
-     *  4. Igual al codigo de OTRA variante del mismo duenio (las ocultas cuentan) -> error.
-     *  5. Igual al `bar_code` de un ARTICULO del mismo duenio -> error.
-     *  6. Con la extension `codigos_de_barra_basados_en_numero_interno` del duenio: el codigo es el
+     *  4. Con `/`, `\`, `?`, `#` o `%` -> error (rompen la ruta del escaneo).
+     *  5. Igual al codigo de OTRA variante del mismo duenio (las ocultas cuentan) -> error.
+     *  6. Igual al `bar_code` de un ARTICULO del mismo duenio -> error.
+     *  7. Con la extension `codigos_de_barra_basados_en_numero_interno` del duenio: el codigo es el
      *     `num` (entero canonico) de un articulo del duenio -> error.
-     *  7. Con la extension `codigo_proveedor_en_vender` del duenio: el codigo es el `provider_code` de
+     *  8. Con la extension `codigo_proveedor_en_vender` del duenio: el codigo es el `provider_code` de
      *     un articulo del duenio, sin distinguir mayusculas -> error.
      *
-     * Las reglas 6 y 7 son las de la cadena de escaneo de articulos de `VenderController::search_bar_code`
-     * (que campo identifica a un articulo depende de las extensiones). Sin esas extensiones solo
-     * cuenta la 5. Cada error dice QUE campo del articulo choca.
+     * Las reglas 1 y 4 existen porque lo que el guardado acepta tiene que poder viajar por el
+     * escaneo: el lector saca el espacio en blanco del codigo y lo manda en la URL sin escapar. Un
+     * codigo que no sobrevive a eso se guardaria bien y no se podria escanear nunca.
      *
-     * Las reglas 4 a 7 corren tambien sobre el codigo por defecto restituido: es un codigo como
+     * Las reglas 7 y 8 son las de la cadena de escaneo de articulos de `VenderController::search_bar_code`
+     * (que campo identifica a un articulo depende de las extensiones). Sin esas extensiones solo
+     * cuenta la 6. Cada error dice QUE campo del articulo choca.
+     *
+     * Las reglas 5 a 8 corren tambien sobre el codigo por defecto restituido: es un codigo como
      * cualquier otro y, aunque es raro, otra variante puede haberlo cargado a mano.
      *
      * El propio codigo de la variante no cuenta como repetido (se excluye por id), asi que volver a
      * guardar el mismo codigo es valido.
      *
-     * Por que las ocultas cuentan en la regla 4: el generador crea cada combinacion nueva oculta y
+     * Por que las ocultas cuentan en la regla 5: el generador crea cada combinacion nueva oculta y
      * el comerciante las habilita despues. Si una oculta pudiera repetir un codigo, al habilitarla
      * quedarian dos variantes disponibles con el mismo codigo.
      *
-     * Por que la regla 5 incluye al articulo de la propia variante: el lector resuelve primero la
+     * Por que la regla 6 incluye al articulo de la propia variante: el lector resuelve primero la
      * variante, asi que un codigo igual al de su articulo dejaria al articulo sin poder escanearse.
      *
      * El duenio es el del articulo de la variante (no el usuario logueado): es el comercio al que
@@ -160,11 +166,25 @@ class ArticleVariantBarCodeHelper
             return ['error' => 'El código de barras no es válido: tiene que ser un texto o un número.'];
         }
 
-        // 1. trim. Los middlewares de Laravel ya recortan los strings del request, pero el helper no
-        // puede depender de eso (se lo puede llamar desde otro lado).
-        $bar_code = trim((string) $bar_code);
+        // 1. Normalizar igual que el lector: sacar TODO el espacio en blanco (espacios, tabs, saltos de
+        // linea, espacios no cortables), no solo los de los costados. La SPA, al escanear, hace
+        // `code.replace(/\s+/g, '')` antes de pedir la variante: un codigo guardado como "AB 12" se
+        // buscaria como "AB12" y no matchearia NUNCA. Con un trim() solo, el guardado aceptaba codigos
+        // que ningun escaneo puede encontrar. No volver a un trim(): lo que se valida abajo y lo que
+        // se guarda es el codigo ya normalizado, que es el que el lector va a buscar.
+        // (Los middlewares de Laravel ya recortan los costados, pero el helper no puede depender de eso.)
+        // El modificador /u hace que \s alcance tambien a los espacios Unicode, y obliga a que el texto
+        // sea UTF-8 valido: si no lo es, preg_replace devuelve null.
+        $bar_code = preg_replace('/\s+/u', '', (string) $bar_code);
 
-        // 2. Vacio: se vuelve al codigo por defecto, el mismo que le pone el generador.
+        // Bytes que no son UTF-8 valido: no es un codigo que se pueda guardar ni leer. Es un error del
+        // comerciante, no un vacio (que restituiria el codigo por defecto) ni un 500.
+        if (is_null($bar_code)) {
+            return ['error' => 'El código de barras tiene caracteres que no se pueden leer. Escribilo de nuevo.'];
+        }
+
+        // 2. Vacio (o solo espacios, que despues de normalizar quedan vacios): se vuelve al codigo por
+        // defecto, el mismo que le pone el generador.
         if ($bar_code === '') {
             $bar_code = '0' . $variant->id;
         }
@@ -172,6 +192,15 @@ class ArticleVariantBarCodeHelper
         // 3. Largo. mb_strlen porque el tope de la columna se cuenta en caracteres, no en bytes.
         if (mb_strlen($bar_code, 'UTF-8') > self::LONGITUD_MAXIMA) {
             return ['error' => 'El código de barras no puede tener más de ' . self::LONGITUD_MAXIMA . ' caracteres.'];
+        }
+
+        // 4. Caracteres que rompen la ruta del escaneo. El codigo viaja en la URL
+        // `GET vender/buscar-articulo-por-codido/{code}` sin encodeURIComponent: '/' y '\' parten la
+        // ruta (404), '?' y '#' cortan el codigo (lo que sigue es query o fragmento) y '%' arma una
+        // secuencia de escape. Un codigo con alguno se guardaria bien y nunca se podria escanear.
+        // strpbrk (y no una regex) para que la lista de caracteres se lea tal cual.
+        if (strpbrk($bar_code, '/\\?#%') !== false) {
+            return ['error' => 'El código de barras no puede llevar / \ ? # ni %: el lector no podría encontrarlo al escanear.'];
         }
 
         // Duenio de los datos. withTrashed: el articulo de la variante puede estar dado de baja y
@@ -183,7 +212,7 @@ class ArticleVariantBarCodeHelper
             return ['bar_code' => $bar_code];
         }
 
-        // 4. Otra variante del mismo duenio con el mismo codigo, ocultas incluidas.
+        // 5. Otra variante del mismo duenio con el mismo codigo, ocultas incluidas.
         $other_variant = ArticleVariant::where('bar_code', $bar_code)
                                         ->where('id', '<>', $variant->id)
                                         ->whereHas('article', function ($article_query) use ($article) {
@@ -199,7 +228,7 @@ class ArticleVariantBarCodeHelper
                 . '". Cada variante necesita un código propio para poder escanearla.'];
         }
 
-        // 5. Un articulo del mismo duenio con ese codigo (Article ya excluye los dados de baja).
+        // 6. Un articulo del mismo duenio con ese codigo (Article ya excluye los dados de baja).
         $article_with_code = Article::where('user_id', $article->user_id)
                                     ->where('bar_code', $bar_code)
                                     ->orderBy('id')
@@ -211,7 +240,7 @@ class ArticleVariantBarCodeHelper
                 . '". Cada variante necesita un código propio para poder escanearla.'];
         }
 
-        // 6 y 7. El campo con el que se escanean los articulos depende de las extensiones del DUENIO
+        // 7 y 8. El campo con el que se escanean los articulos depende de las extensiones del DUENIO
         // (la misma cadena de `VenderController::search_bar_code`): con numero interno, el `num`; con
         // codigo de proveedor, el `provider_code`. Si una variante tuviera ese mismo codigo, el lector
         // la resolveria primero y el articulo dejaria de poder escanearse, igual que con `bar_code`.
@@ -223,7 +252,7 @@ class ArticleVariantBarCodeHelper
             return ['bar_code' => $bar_code];
         }
 
-        // 6. Numero interno: el codigo es todo digitos y es EL numero de un articulo del duenio.
+        // 7. Numero interno: el codigo es todo digitos y es EL numero de un articulo del duenio.
         if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno', $owner)) {
 
             $internal_number = self::canonical_integer($bar_code);
@@ -246,7 +275,7 @@ class ArticleVariantBarCodeHelper
             }
         }
 
-        // 7. Codigo de proveedor: igual al `provider_code` de un articulo del duenio, sin distinguir
+        // 8. Codigo de proveedor: igual al `provider_code` de un articulo del duenio, sin distinguir
         // mayusculas (asi lo compara el scanner de la SPA). LOWER de los dos lados y no el `=` de
         // MySQL: que sea insensible a mayusculas depende de la collation de la columna, y aca no se
         // puede confiar en eso. Es una consulta de guardado, no del camino caliente del escaneo.
