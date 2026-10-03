@@ -33,6 +33,12 @@ class Abm_y_configuracion_Test extends EmpresaTestCase
     /** @var \App\Models\User */
     protected $dueno;
 
+    /**
+     * Toma al dueño del fixture de testing (TestingFerreteriaSeeder): las balanzas y la
+     * configuración de cada test se le cargan a él, adentro de la transacción del test.
+     *
+     * @return void
+     */
     protected function setUp(): void
     {
         parent::setUp();

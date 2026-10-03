@@ -54,6 +54,12 @@ class Lectura_de_tickets_Test extends EmpresaTestCase
     /** @var \App\Models\User */
     protected $dueno;
 
+    /**
+     * Toma al dueño del fixture de testing (TestingFerreteriaSeeder): las balanzas, el modo y los
+     * artículos de cada test se le cargan a él, adentro de la transacción del test.
+     *
+     * @return void
+     */
     protected function setUp(): void
     {
         parent::setUp();
