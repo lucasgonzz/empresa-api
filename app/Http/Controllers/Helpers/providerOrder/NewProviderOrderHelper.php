@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -288,6 +289,23 @@ class NewProviderOrderHelper {
         $this->articulos_con_precio_pendiente = [];
 
         RecalculoDePreciosEnLote::recalcular($ids, $this->user);
+
+        /*
+         * 🔴 Combos calculados (misión combos-calculados, 30/9/2026; entró a esta rama con el merge
+         * de develop del 2/10). setFinalPrice() recalcula los combos calculados que incluyen al
+         * artículo, pero NO en modo lote, y el motor calcula en modo lote: con el recálculo
+         * diferido ese gancho no corre nunca. En el camino de antes cada llamada lo disparaba, y la
+         * última de la compra ya veía todos los componentes con su precio final; acá se hace UNA
+         * vez, con los precios ya escritos, como el resto de los que usan el motor
+         * (ArticleProviderDiscountHelper::recalcular_precios_de_la_tanda(), FinalizeSetFinalPrices,
+         * la masiva). Sin esta línea, un combo calculado con un artículo de la compra queda con el
+         * precio viejo hasta el próximo cambio, sin ningún error.
+         *
+         * Sin el dueño como segundo parámetro, igual que en los descuentos del proveedor: los ids
+         * ya son de este dueño y pasarlo suma una consulta a `users`. El helper no corta al
+         * llamador: una falla en un combo queda en el log y la compra sigue.
+         */
+        ComboCalculadoHelper::recalcular_por_articulos($ids);
 
         $this->actualizar_historial_de_proveedores();
     }
