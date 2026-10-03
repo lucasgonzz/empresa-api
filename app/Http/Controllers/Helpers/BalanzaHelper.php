@@ -85,6 +85,278 @@ class BalanzaHelper
     const EXTENCION_IMPORTE = 'balanza_bar_code';
 
     // ─────────────────────────────────────────────────────────────────────────────
+    //  Lectura de un ticket en VENDER
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Lee un código como ticket de alguna balanza del dueño (modo 'balanzas').
+     *
+     * La regla, la misma que repite la SPA para leer sin conexión:
+     *
+     *   1. El código tiene que ser solo dígitos.
+     *   2. Candidatas: las balanzas del dueño cuyo prefijo es el comienzo del código. Gana el
+     *      prefijo MÁS LARGO; si empatan, la de id más chico (elegir_balanza()).
+     *   3. Dígitos del dato: los de la balanza, o 7 si es importe / 5 si es peso (digitos_de()).
+     *   4. Si el código es más corto que prefijo + dígitos + verificador, no es un ticket de esa
+     *      balanza y no se lee (devuelve null). No se prueba con otra balanza de prefijo más corto:
+     *      eso haría que el resultado dependiera de qué balanzas hay cargadas de una forma que el
+     *      operador no ve, y la SPA tendría que replicar el mismo desempate de segundo nivel.
+     *   5. El dato son los `digitos` caracteres ANTERIORES al último (valor_del_ticket()).
+     *   6. Importe -> `price_vender`. Peso -> `amount`, dividido por 1000 salvo que el artículo se
+     *      venda en Gramos (la misma regla que el PLU).
+     *
+     * Si la balanza se encontró pero su artículo no sirve (sin asignar, inexistente, borrado o de
+     * otro dueño), devuelve el resultado con `article` en null: el controller responde
+     * `balanza_sin_articulo` para que VENDER avise en vez de decir "no se encontró artículo".
+     *
+     * @param  string  $codigo    Lo que escaneó el lector.
+     * @param  int     $owner_id  Dueño del comercio (las balanzas y el artículo tienen que ser suyos).
+     * @return array|null  null si el código no es un ticket de ninguna balanza. Si lo es:
+     *                     ['balanza' => Balanza, 'tipo_dato' => 'importe'|'peso',
+     *                      'article' => Article|null, 'price_vender' => int|null,
+     *                      'amount' => float|null]
+     */
+    static function leer_ticket_por_balanzas($codigo, $owner_id)
+    {
+        $codigo = (string) $codigo;
+
+        // 1. Solo dígitos: un código con letras no es un ticket de balanza.
+        if (!preg_match('/^[0-9]+$/', $codigo)) {
+            return null;
+        }
+
+        // Liviano: son pocas filas por dueño y acá no hace falta el artículo de cada una.
+        $balanzas = Balanza::where('user_id', $owner_id)
+                            ->orderBy('id', 'ASC')
+                            ->get();
+
+        // 2. La balanza que se queda con el código.
+        $balanza = self::elegir_balanza($codigo, $balanzas);
+
+        if (is_null($balanza)) {
+            return null;
+        }
+
+        $prefijo   = self::normalizar_prefijo($balanza->prefijo);
+        $tipo_dato = self::normalizar_tipo_dato($balanza->tipo_dato);
+
+        // 3. Cuántos dígitos son el dato.
+        $digitos = self::digitos_de($balanza);
+
+        // 4. Prefijo + dato + verificador: si no entra, no es un ticket de esta balanza.
+        if (strlen($codigo) < strlen($prefijo) + $digitos + 1) {
+            return null;
+        }
+
+        // 5. El dato, como entero.
+        $valor = self::valor_del_ticket($codigo, $digitos);
+
+        Log::info('Ticket de balanza '.$codigo.': balanza '.$balanza->id.' (prefijo '.$prefijo.', '.$tipo_dato.', '.$digitos.' digitos), valor '.$valor);
+
+        $resultado = array(
+            'balanza'      => $balanza,
+            'tipo_dato'    => $tipo_dato,
+            'article'      => null,
+            'price_vender' => null,
+            'amount'       => null,
+        );
+
+        // El artículo tiene que existir, no estar borrado (el scope de SoftDeletes lo excluye) y
+        // ser de ESTE dueño: en las bases compartidas viejas un id puede ser de otro comercio.
+        // withAllSinAcopio y no withAll: es el arreglo de performance del escaneo del 1/9/2026
+        // (ver Sales/15_Indices_De_Venta_Y_Vender_Test).
+        if (!is_null($balanza->article_id)) {
+            $resultado['article'] = Article::where('id', $balanza->article_id)
+                                            ->where('user_id', $owner_id)
+                                            ->withAllSinAcopio()
+                                            ->first();
+        }
+
+        if (is_null($resultado['article'])) {
+            return $resultado;
+        }
+
+        // 6. Importe o peso.
+        if ($tipo_dato == self::TIPO_PESO) {
+
+            $amount = (float) $valor;
+
+            if ($resultado['article']->unidad_medida_id != self::UNIDAD_MEDIDA_GRAMO) {
+                $amount = $amount / 1000;
+            }
+
+            $resultado['amount'] = $amount;
+
+        } else {
+
+            $resultado['price_vender'] = $valor;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Lee un código como ticket PLU (modo 'plu'): 2 dígitos de tipo de balanza + 5 de PLU + 5 de
+     * peso (+ verificador).
+     *
+     * 🔴 ES LA LECTURA DE `VenderController::check_balanza_plu()` MOVIDA SIN CAMBIARLE UNA COMA
+     * DE COMPORTAMIENTO. La Martina vende así todos los días (3.397 renglones con PLU en 30 días) y
+     * el pedido fue que funcione "igual que hoy". Por eso se conservan también sus rarezas, a
+     * propósito: cualquier código de 12 dígitos o más que no se encontró se intenta leer como PLU
+     * (un EAN `77…` se parsea como "tipo de balanza 77" y simplemente no encuentra PLU), y con dos
+     * artículos con el mismo PLU gana el que devuelve primero MySQL. No "arreglar" acá sin una
+     * misión que lo decida.
+     *
+     * @param  string  $barcode   Lo que escaneó el lector.
+     * @param  int     $owner_id  Dueño del comercio.
+     * @return array  ['article' => Article|null, 'amount' => float|int] (sin `amount` si el código
+     *                es más corto que 12 caracteres, igual que antes).
+     */
+    static function leer_ticket_por_plu($barcode, $owner_id)
+    {
+        if (mb_strlen($barcode) < 12) {
+            return [
+                'article'   => null,
+            ];
+        }
+
+
+        // 2
+        $tipo_balanza = mb_substr($barcode, 0, 2);
+
+        // 5 (quita ceros iniciales)
+        $plu = ltrim(mb_substr($barcode, 2, 5), '0');
+
+        // 6 (quita ceros iniciales)
+        $amount = ltrim(mb_substr($barcode, 7, 5), '0');
+
+        // Si queda vacío (ej: "00000"), lo llevamos a 0
+        $amount = $amount === '' ? 0 : (float) $amount;
+
+        Log::info('tipo_balanza: '.$tipo_balanza);
+        Log::info('plu: '.$plu);
+        Log::info('amount: '.$amount);
+
+        $article = Article::where('user_id', $owner_id)
+                            ->where('plu', $plu)
+                            ->withAllSinAcopio()
+                            ->first();
+
+        if ($article && $article->unidad_medida_id != self::UNIDAD_MEDIDA_GRAMO) {
+            $amount /= 1000;
+        }
+
+        return [
+            'article'     => $article,
+            'amount'      => $amount,
+        ];
+    }
+
+    /**
+     * Elige, entre las balanzas del dueño, la que se queda con el código.
+     *
+     * 🔴 GANA EL PREFIJO MÁS LARGO, y no "la primera que matchea". Es lo que permite tener una
+     * balanza general y otras más específicas que se pisan: en Panchito los tickets `2201…`,
+     * `2202…` y `2203…` van hoy todos a Carniceria, y la migración los deja así con una sola balanza
+     * '22'. Si 02 y 03 resultan ser otras secciones, se cargan las balanzas '2202' y '2203' en el
+     * ABM y se llevan esos tickets sin tocar la '22'. Con "la primera que matchea", el resultado
+     * dependería del orden en que se cargaron.
+     *
+     * Empate (mismo largo, o sea el mismo prefijo: el ABM no lo deja guardar, pero puede venir de
+     * otro lado) -> la de id más chico, para que la elección sea siempre la misma.
+     *
+     * @param  string  $codigo
+     * @param  \Illuminate\Support\Collection|array  $balanzas  Ordenadas por id ascendente.
+     * @return \App\Models\Balanza|null
+     */
+    static function elegir_balanza($codigo, $balanzas)
+    {
+        $elegida = null;
+        $largo_elegido = 0;
+
+        foreach ($balanzas as $balanza) {
+
+            $prefijo = self::normalizar_prefijo($balanza->prefijo);
+
+            // Una balanza sin prefijo se quedaría con TODOS los códigos que no se encontraron: se
+            // ignora (la API no deja guardarla, pero la fila podría venir de otro lado).
+            if ($prefijo === '') {
+                continue;
+            }
+
+            if (strpos($codigo, $prefijo) !== 0) {
+                continue;
+            }
+
+            // Estrictamente más largo: a igual largo se queda la anterior, que tiene id más chico.
+            if (strlen($prefijo) > $largo_elegido
+                || (strlen($prefijo) == $largo_elegido && !is_null($elegida) && $balanza->id < $elegida->id)) {
+
+                $elegida = $balanza;
+                $largo_elegido = strlen($prefijo);
+            }
+        }
+
+        return $elegida;
+    }
+
+    /**
+     * El dato del ticket: los `$digitos` caracteres ANTERIORES al último, como entero.
+     *
+     * 🔴 El último dígito es el verificador del EAN-13 y NO es parte del dato: tomar "los últimos
+     * N" correría todo un lugar y multiplicaría el importe por 10. Con 7 dígitos esto es
+     * exactamente `substr($codigo, -8)` y de eso los primeros 7, la lectura de la extensión vieja
+     * que coincide con los renglones reales de Panchito (`2201000027143` -> 2714).
+     *
+     * @param  string  $codigo   Solo dígitos, ya validado como suficientemente largo.
+     * @param  int     $digitos
+     * @return int
+     */
+    static function valor_del_ticket($codigo, $digitos)
+    {
+        return (int) substr($codigo, -($digitos + 1), $digitos);
+    }
+
+    /**
+     * Cuántos dígitos del código son el dato para esta balanza: los suyos, o el default por tipo.
+     *
+     * @param  \App\Models\Balanza  $balanza
+     * @return int
+     */
+    static function digitos_de($balanza)
+    {
+        $digitos = self::normalizar_digitos($balanza->digitos);
+
+        if (!is_null($digitos)) {
+            return $digitos;
+        }
+
+        if (self::normalizar_tipo_dato($balanza->tipo_dato) == self::TIPO_PESO) {
+            return self::DIGITOS_PESO_POR_DEFECTO;
+        }
+
+        return self::DIGITOS_IMPORTE_POR_DEFECTO;
+    }
+
+    /**
+     * Nombre de la balanza para el aviso de VENDER ("La balanza «X» no tiene un artículo
+     * válido"). Nunca vacío: si la balanza no tiene nombre, se muestra su prefijo.
+     *
+     * @param  \App\Models\Balanza  $balanza
+     * @return string
+     */
+    static function nombre_para_mostrar($balanza)
+    {
+        $nombre = trim((string) $balanza->nombre);
+
+        if ($nombre !== '') {
+            return $nombre;
+        }
+
+        return self::normalizar_prefijo($balanza->prefijo);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
     //  ABM (BalanzaController)
     // ─────────────────────────────────────────────────────────────────────────────
 

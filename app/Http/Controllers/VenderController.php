@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
 use App\Models\Article;
@@ -68,29 +69,74 @@ class VenderController extends Controller
                         ->first();
 
 
-        if (
-            !$article
-            && UserHelper::hasExtencion('balanza_bar_code')
-        ) {
-            $res = $this->check_balanza($code);
+        /*
+         * Tickets de balanza (misión balanzas-configurables, 3/10/2026). Solo si la búsqueda normal
+         * NO encontró artículo: un artículo cuyo código de barras es exactamente el del ticket le
+         * gana a cualquier balanza, como siempre.
+         *
+         * Qué lectura se intenta lo decide la configuración del dueño (`users.tickets_de_balanza`),
+         * NO las extensiones `balanza_bar_code` / `plu_balanza_bar_code`, que ya no se leen (sus
+         * filas siguen en la base: ver el comando balanzas:migrar-desde-extensiones). Las dos
+         * lecturas son excluyentes. La lógica entera está en BalanzaHelper; acá solo se elige la
+         * respuesta.
+         */
+        if (!$article) {
 
-            if (!is_null($res['article'])) {
+            $modo_balanza = UserHelper::modo_tickets_de_balanza();
 
-                $this->fin($code, $inicio, $res['article']);
-                return response()->json(['from_balanza' => true, 'article' => $res['article'], 'price_vender' => $res['price_vender']], 200);
-            }
-        }
+            if ($modo_balanza === BalanzaHelper::MODO_BALANZAS) {
 
-        if (
-            !$article
-            && UserHelper::hasExtencion('plu_balanza_bar_code')
-        ) {
-            $res = $this->check_balanza_plu($code);
+                $ticket = BalanzaHelper::leer_ticket_por_balanzas($code, $this->userId());
 
-            if (!is_null($res['article'])) {
+                if (!is_null($ticket)) {
 
-                $this->fin($code, $inicio, $res['article']);
-                return response()->json(['from_balanza_plu' => true, 'article' => $res['article'], 'amount' => $res['amount']], 200);
+                    // La balanza existe pero su artículo no sirve (sin asignar, borrado o de otro
+                    // dueño): VENDER avisa qué balanza revisar en vez de "no se encontró artículo".
+                    if (is_null($ticket['article'])) {
+
+                        $this->fin($code, $inicio, null);
+
+                        return response()->json([
+                            'article'               => null,
+                            'has_variants'          => false,
+                            'balanza_sin_articulo'  => true,
+                            'balanza_nombre'        => BalanzaHelper::nombre_para_mostrar($ticket['balanza']),
+                        ], 200);
+                    }
+
+                    $this->fin($code, $inicio, $ticket['article']);
+
+                    // Peso: las MISMAS claves que el PLU, así la SPA lo agrega por el mismo camino
+                    // (suma la cantidad si el artículo ya está) y una SPA vieja también lo entiende.
+                    if ($ticket['tipo_dato'] === BalanzaHelper::TIPO_PESO) {
+
+                        return response()->json([
+                            'from_balanza_plu'  => true,
+                            'article'           => $ticket['article'],
+                            'amount'            => $ticket['amount'],
+                            'balanza_id'        => $ticket['balanza']->id,
+                        ], 200);
+                    }
+
+                    // Importe: las claves de siempre (from_balanza + price_vender) más balanza_id.
+                    return response()->json([
+                        'from_balanza'  => true,
+                        'article'       => $ticket['article'],
+                        'price_vender'  => $ticket['price_vender'],
+                        'balanza_id'    => $ticket['balanza']->id,
+                    ], 200);
+                }
+
+            } else if ($modo_balanza === BalanzaHelper::MODO_PLU) {
+
+                // La lectura PLU de siempre, idéntica (La Martina).
+                $res = BalanzaHelper::leer_ticket_por_plu($code, $this->userId());
+
+                if (!is_null($res['article'])) {
+
+                    $this->fin($code, $inicio, $res['article']);
+                    return response()->json(['from_balanza_plu' => true, 'article' => $res['article'], 'amount' => $res['amount']], 200);
+                }
             }
         }
 
@@ -160,79 +206,16 @@ class VenderController extends Controller
         }
     }
 
-    function check_balanza($barcode) {
-
-        $prefix = substr($barcode, 0, 2);
-
-        $article = null;
-        $price_vender = null;
-
-        // Esto lo guardaria en bbdd, ahora lo harckodeo para panchito
-        if (config('app.APP_ENV') == 'local') {
-            $default_article_id = 60;
-        } else {
-
-            // Id de la carniceria
-            $default_article_id = 6346;
-        }
-
-        if ($prefix == '22') {
-
-            $last_6_digits = substr($barcode, -8);
-            $amount_str = substr($last_6_digits, 0, 7);
-
-            $price_vender = intval($amount_str);
-
-            $article = Article::where('id', $default_article_id)
-                                ->withAllSinAcopio()
-                                ->first();
-        }
-
-        return [
-            'article'           => $article,
-            'price_vender'      => $price_vender,
-        ];
-    }
-
-    function check_balanza_plu($barcode) {
-
-        if (mb_strlen($barcode) < 12) {
-            return [
-                'article'   => null,
-            ];
-        }
-
-
-        // 2
-        $tipo_balanza = mb_substr($barcode, 0, 2);
-
-        // 5 (quita ceros iniciales)
-        $plu = ltrim(mb_substr($barcode, 2, 5), '0');
-
-        // 6 (quita ceros iniciales)
-        $amount = ltrim(mb_substr($barcode, 7, 5), '0');
-
-        // Si queda vacío (ej: "00000"), lo llevamos a 0
-        $amount = $amount === '' ? 0 : (float) $amount;
-
-        Log::info('tipo_balanza: '.$tipo_balanza);
-        Log::info('plu: '.$plu);
-        Log::info('amount: '.$amount);
-
-        $article = Article::where('user_id', $this->userId())
-                            ->where('plu', $plu)
-                            ->withAllSinAcopio()
-                            ->first();
-
-        if ($article && $article->unidad_medida_id != 2) {
-            $amount /= 1000;
-        }
-
-        return [
-            'article'     => $article,
-            'amount'      => $amount,
-        ];
-    }
+    /*
+     * `check_balanza()` y `check_balanza_plu()` ya no viven acá (misión balanzas-configurables,
+     * 3/10/2026):
+     *
+     *   - check_balanza() se BORRÓ: le imputaba todo ticket '22' a un artículo con id hardcodeado
+     *     (60 en local, 6346 en el resto), sin mirar de qué comercio era. Lo reemplazan las
+     *     balanzas del ABM (BalanzaHelper::leer_ticket_por_balanzas()), y el comando
+     *     balanzas:migrar-desde-extensiones le crea a Panchito la balanza '22' -> ese artículo.
+     *   - check_balanza_plu() se MOVIÓ sin cambios a BalanzaHelper::leer_ticket_por_plu().
+     */
 
     /**
      * Busqueda de articulos del modulo de Vender (search modal). Este endpoint sigue vivo como
