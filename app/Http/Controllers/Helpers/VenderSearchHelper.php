@@ -358,6 +358,12 @@ class VenderSearchHelper
             'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, UserHelper::userId()),
             'price_types'             => $article->price_types,
             'bar_code'                => $variant->bar_code,
+            // Stock de la variante (`article_variants.stock`, null si no tiene). Sin esta clave, con la
+            // extension `check_article_stock_en_vender` la SPA bloquea TODAS las variantes con "Articulo
+            // sin stock": `check_stock_mayor_a_cero` pregunta `item.stock === null || item.stock > 0` y
+            // una fila sin `stock` queda `undefined`, que no es null ni es mayor a cero. Clave aditiva:
+            // nada de lo que ya lee la fila cambia.
+            'stock'                   => $variant->stock,
             'name'                    => $article->name . ' ' . $variant->variant_description,
             'article'                 => $article,
             'images'                  => self::get_variant_images($variant),

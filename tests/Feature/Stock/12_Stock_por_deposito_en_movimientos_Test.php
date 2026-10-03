@@ -236,7 +236,7 @@ class Stock_por_deposito_en_movimientos_Test extends AuditoriaStockTestCase
 
         $recibido = DepositMovementStatus::firstOrCreate(['name' => 'Recibido']);
 
-        $this->postJson('api/deposit-movement', [
+        $respuesta = $this->postJson('api/deposit-movement', [
             'from_address_id'            => $origen->id,
             'to_address_id'              => $destino->id,
             'deposit_movement_status_id' => $recibido->id,
@@ -246,7 +246,15 @@ class Stock_por_deposito_en_movimientos_Test extends AuditoriaStockTestCase
             'articles'                   => [
                 ['id' => $articulo->id, 'pivot' => ['amount' => 4, 'article_variant_id' => null]],
             ],
-        ])->assertStatus(201);
+        ]);
+        $respuesta->assertStatus(201);
+
+        /*
+         * Misión movimientos-deposito-auditoria (3/10/2026): crear el movimiento —aunque venga en
+         * "Recibido"— ya no traslada nada; el stock se mueve con el botón "Mover stock". Cambia el
+         * ARMADO del test, no lo que se mide.
+         */
+        $this->postJson('api/deposit-movement/'.$respuesta->json('model.id').'/move-stock')->assertStatus(200);
 
         $traslados = $this->movimientos($articulo, 'Mov entre depositos');
         $this->assertCount(1, $traslados);

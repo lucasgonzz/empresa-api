@@ -77,6 +77,11 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
         'article.edit_stock_only_sucursal',
         'article.stock_only_sucursal',
         'article.stock_min_max',
+        // Misión movimientos-deposito-auditoria (3/10/2026): los dos permisos nuevos de los
+        // movimientos de depósito. `deposit_movement.update` sigue más abajo (cambió de grupo,
+        // no de slug).
+        'deposit_movement.update_articles',
+        'deposit_movement.move_stock',
         'deposit_movement.index.previus_days',
         'deposito_para_checkear',
         'deposito_checkeadas',

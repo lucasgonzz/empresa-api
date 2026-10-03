@@ -439,9 +439,18 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('deposit-movement', 'DepositMovementController');
     Route::get('deposit-movement/from-date/{from_date?}/{until_date?}', 'DepositMovementController@index');
 
+    // Botón "Mover stock" e historial de modificaciones de artículos (misión
+    // movimientos-deposito-auditoria, 3/10/2026). `{id}/move-stock` tiene tres segmentos y no
+    // choca con ninguna ruta del resource.
+    Route::post('deposit-movement/{id}/move-stock', 'DepositMovementController@move_stock');
+    Route::get('deposit-movement-modifications/{deposit_movement_id}', 'DepositMovementModificationController@index');
+
     Route::get('deposit-movement-en-curso', 'DepositMovementController@en_curso');
 
-    Route::get('deposit-movement-status', 'DepositMovementStatusController@index');
+    // ABM de estados de movimientos (misión movimientos-deposito-auditoria, 3/10/2026): fijos
+    // (En proceso / Recibido, user_id NULL) + propios de cada comercio. El GET de la misma URL
+    // sigue siendo el index de siempre (lo usa también recursos-iniciales).
+    Route::resource('deposit-movement-status', 'DepositMovementStatusController')->except(['create', 'edit']);
 
 
     // Metodos de pago para facturar
