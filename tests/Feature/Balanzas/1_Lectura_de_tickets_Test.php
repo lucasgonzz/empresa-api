@@ -359,6 +359,34 @@ class Lectura_de_tickets_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Una sesión abierta ANTES del despliegue guarda una foto del dueño SIN la columna nueva.
+     * Si el código nuevo la atiende en caliente, la configuración se relee de la base: el cajero no
+     * tiene que recargar para que la balanza siga andando después de la migración.
+     *
+     * @test
+     */
+    public function una_sesion_anterior_a_la_columna_igual_lee_los_tickets()
+    {
+        $this->modo('balanzas');
+
+        $carniceria = $this->crear_articulo('Carniceria', ['price' => 0]);
+        $this->balanza('22', $carniceria->id, 'importe');
+
+        // La foto que guardaba la sesión antes de la migración: el dueño sin `tickets_de_balanza`.
+        $foto = User::find($this->dueno->id);
+        $atributos = $foto->getAttributes();
+        unset($atributos['tickets_de_balanza']);
+        $foto->setRawAttributes($atributos, true);
+
+        $this->withSession(['auth_user' => $foto, 'owner' => $foto]);
+
+        $json = $this->escanear(self::CODIGO_PANCHITO_2714)->json();
+
+        $this->assertTrue($json['from_balanza'] ?? false, 'Con la foto vieja de la sesión igual tiene que leer. Respuesta: ' . json_encode($json));
+        $this->assertSame(2714, $json['price_vender']);
+    }
+
+    /**
      * Y al revés: modo 'plu' NO lee las balanzas del ABM. Un `2201…` se intenta como PLU (tipo 22,
      * PLU 1000), no encuentra ese PLU y no se le imputa a la balanza '22'.
      *
