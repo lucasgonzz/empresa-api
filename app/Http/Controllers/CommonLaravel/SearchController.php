@@ -49,12 +49,26 @@ class SearchController extends Controller
      * cliente tiene su propia base de datos. El `user_id` de estas tablas separa a los usuarios de
      * UN mismo comercio, y las que no lo tienen es porque su contenido es del comercio entero.
      *
+     * 🔴 GANCHO OPT-IN `scopeDelDuenoConGlobales($query, $user_id)` (misión
+     * movimientos-deposito-auditoria, 3/10/2026). Hay tablas que mezclan filas GLOBALES del
+     * sistema (`user_id` NULL) con filas propias de cada dueño: `deposit_movement_statuses` tiene los
+     * fijos "En proceso" y "Recibido" con `user_id` NULL más los estados que crea cada comercio.
+     * Con el filtro de siempre (`user_id = dueño`) los fijos no salían, y el ABM de estados —que
+     * lista por `global-search`— quedaba vacío (medido en vivo). El modelo que define ese scope
+     * decide su propio filtro (dueño + globales); para CUALQUIER otro modelo esto no cambia nada:
+     * sigue exactamente el camino de abajo.
+     *
      * @param  string  $model_name  Clase del modelo, con namespace.
      * @return \Illuminate\Database\Eloquent\Builder
      */
     private function query_base_del_modelo($model_name)
     {
         $instancia = new $model_name();
+
+        // Opt-in: solo los modelos que definen el scope (hoy, DepositMovementStatus).
+        if (method_exists($instancia, 'scopeDelDuenoConGlobales')) {
+            return $model_name::delDuenoConGlobales($this->userId());
+        }
 
         if (! Schema::hasColumn($instancia->getTable(), 'user_id')) {
             return $model_name::query();
