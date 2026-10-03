@@ -96,6 +96,16 @@ class PermisosCatalogoHelper
                 'article.edit_stock_only_sucursal'              => 'Modificar el stock solo de su sucursal',
                 'article.stock_only_sucursal'                   => 'Ver el stock solo de su sucursal',
                 'article.stock_min_max'                         => 'Ver y editar el stock mínimo y máximo',
+                /*
+                    Movimientos de depósito (misión movimientos-deposito-auditoria, 3/10/2026). Los
+                    tres los chequea DepositMovementController (el dueño y admin_access pueden todo).
+                    `deposit_movement.update` vivía en "Sin efecto por ahora" y desde esta misión
+                    cuenta: deja cambiar todo lo que no son artículos. Los artículos piden
+                    `update_articles`, y el botón "Mover stock", `move_stock`.
+                */
+                'deposit_movement.update'                       => 'Editar movimientos de depósito (estado, depósitos y notas)',
+                'deposit_movement.update_articles'              => 'Editar los artículos de un movimiento de depósito',
+                'deposit_movement.move_stock'                   => 'Mover el stock de un movimiento de depósito',
                 'deposit_movement.index.previus_days'           => 'Ver movimientos de depósito de días anteriores',
                 'deposito_para_checkear'                        => 'Usar Depósito: ventas para chequear',
                 'deposito_checkeadas'                           => 'Usar Depósito: ventas chequeadas',
@@ -230,7 +240,6 @@ class PermisosCatalogoHelper
                 'reportes.info_facturacion'                     => 'Ver información de facturación',
                 'deposit_movement.index'                        => 'Ver movimientos de depósito',
                 'deposit_movement.store'                        => 'Crear movimientos de depósito',
-                'deposit_movement.update'                       => 'Editar movimientos de depósito',
                 'deposit_movement.delete'                       => 'Eliminar movimientos de depósito',
                 'road_map.terminadas.only_your'                 => 'Ver solo sus hojas de ruta',
                 'road_map.terminadas.all'                       => 'Ver todas las hojas de ruta',
