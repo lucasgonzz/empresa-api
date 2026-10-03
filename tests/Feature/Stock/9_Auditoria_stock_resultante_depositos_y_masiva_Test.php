@@ -11,7 +11,8 @@ use Illuminate\Support\Facades\DB;
  *
  *  - `stock_resultante` es el stock real del artículo después del movimiento, no una cadena
  *    arrastrada desde el movimiento anterior.
- *  - Un movimiento entre depósitos ya Recibido no se vuelve a aplicar al reguardarlo.
+ *  - Un movimiento entre depósitos ya trasladado no se vuelve a aplicar al reguardarlo ni con un
+ *    segundo "Mover stock" (desde el 3/10/2026 el traslado es ese botón, no el estado Recibido).
  *  - La actualización masiva del listado cambia el stock con un movimiento (y no multiplica por
  *    unidades_individuales), y revertirla también.
  *  - El modal viejo de crear depósitos manda `concepto` a secas y tiene que quedar como
@@ -91,6 +92,13 @@ class Auditoria_stock_resultante_depositos_y_masiva_Test extends AuditoriaStockT
 
         $deposit_movement_id = json_decode($response->getContent(), true)['model']['id'];
 
+        /*
+         * Misión movimientos-deposito-auditoria (3/10/2026): crear el movimiento —aunque venga en
+         * "Recibido"— ya no traslada nada. El stock se mueve con el botón "Mover stock". Cambia el
+         * ARMADO del test, no lo que se mide.
+         */
+        $this->postJson('api/deposit-movement/'.$deposit_movement_id.'/move-stock')->assertStatus(200);
+
         $this->assertEquals(6.0, $this->stock_en_deposito($articulo, $origen->id), 'Recibir el traslado tenía que sacar 4 del origen.');
         $this->assertEquals(4.0, $this->stock_en_deposito($articulo, $destino->id), 'Recibir el traslado tenía que poner 4 en el destino.');
         $this->assertEquals(10.0, $this->stock($articulo), 'Un traslado no cambia el stock global.');
@@ -104,6 +112,13 @@ class Auditoria_stock_resultante_depositos_y_masiva_Test extends AuditoriaStockT
         $this->assertEquals(6.0, $this->stock_en_deposito($articulo, $origen->id), 'Reguardar un traslado Recibido no puede volver a restar el origen.');
         $this->assertEquals(4.0, $this->stock_en_deposito($articulo, $destino->id), 'Reguardar un traslado Recibido no puede volver a sumar el destino.');
         $this->assertEquals(1, $this->movimientos($articulo, 'Mov entre depositos')->count(), 'El traslado deja un solo movimiento por artículo.');
+
+        /* Y un segundo "Mover stock" (doble clic, otra pestaña) se rechaza sin mover nada. */
+        $this->postJson('api/deposit-movement/'.$deposit_movement_id.'/move-stock')->assertStatus(422);
+
+        $this->assertEquals(6.0, $this->stock_en_deposito($articulo, $origen->id), 'Un segundo "Mover stock" no puede volver a restar el origen.');
+        $this->assertEquals(4.0, $this->stock_en_deposito($articulo, $destino->id), 'Un segundo "Mover stock" no puede volver a sumar el destino.');
+        $this->assertEquals(1, $this->movimientos($articulo, 'Mov entre depositos')->count(), 'Un segundo "Mover stock" no deja otro movimiento.');
     }
 
     /**
