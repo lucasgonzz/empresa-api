@@ -99,16 +99,17 @@ class Escaneo_de_codigo_de_barras_de_variante_Test extends TestCase
      * @param  string|null         $bar_code
      * @param  bool                $oculta
      * @param  int|null            $price       Precio propio de la variante (null = usa el del articulo).
+     * @param  int|null            $stock       Stock de la variante (null = sin stock cargado).
      * @return \App\Models\ArticleVariant
      */
-    private function variante($article, $descripcion, $bar_code, $oculta = false, $price = null)
+    private function variante($article, $descripcion, $bar_code, $oculta = false, $price = null, $stock = 5)
     {
         return ArticleVariant::create([
             'article_id'          => $article->id,
             'variant_description' => $descripcion,
             'oculta'              => $oculta,
             'price'               => $price,
-            'stock'               => 5,
+            'stock'               => $stock,
             'bar_code'            => $bar_code,
         ]);
     }
@@ -196,6 +197,54 @@ class Escaneo_de_codigo_de_barras_de_variante_Test extends TestCase
 
         $this->assertNotNull($precio_del_articulo);
         $this->assertEquals($precio_del_articulo, $fila['final_price']);
+    }
+
+    /**
+     * La fila de variante trae `stock` (el de `article_variants.stock`, null si la variante no tiene),
+     * tanto en el `variant_row` del escaneo como en la fila de la busqueda por nombre (contexto
+     * `vender`). Sin esa clave, con `check_article_stock_en_vender` la SPA bloquea todas las
+     * variantes: `check_stock_mayor_a_cero` pregunta `item.stock === null || item.stock > 0` y una
+     * fila sin `stock` queda `undefined`.
+     *
+     * @group sales
+     * @group vender-scan
+     * @test
+     */
+    public function la_fila_de_variante_trae_el_stock_en_el_escaneo_y_en_la_busqueda_por_nombre()
+    {
+        $user = $this->usuario_de_test('e2b');
+        $this->dar_extension($user, 'article_variants');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $con_stock = $this->variante($zapatilla, 'azul 35', '7790001', false, null, 7);
+        $sin_stock = $this->variante($zapatilla, 'azul 36', '7790002', false, null, null);
+
+        // Escaneo: el variant_row de cada una.
+        $fila_con = $this->escanear('7790001')->json('variant_row');
+        $this->assertArrayHasKey('stock', $fila_con);
+        $this->assertEquals(7, $fila_con['stock']);
+
+        $fila_sin = $this->escanear('7790002')->json('variant_row');
+        $this->assertArrayHasKey('stock', $fila_sin, 'Sin stock cargado la clave viene igual, con null.');
+        $this->assertNull($fila_sin['stock']);
+
+        // Busqueda por nombre: las dos filas de variante del mismo articulo.
+        $res = $this->postJson('api/global-search/article?page=1', [
+            'query_value' => 'zapatilla',
+            'props'       => ['name', 'provider_code'],
+            'contexto'    => 'vender',
+            'per_page'    => 50,
+        ]);
+        $res->assertStatus(200);
+
+        $filas = collect($res->json('models.data'))->keyBy('variant_id');
+
+        $this->assertCount(2, $filas);
+        $this->assertArrayHasKey('stock', $filas[$con_stock->id]);
+        $this->assertEquals(7, $filas[$con_stock->id]['stock']);
+        $this->assertArrayHasKey('stock', $filas[$sin_stock->id]);
+        $this->assertNull($filas[$sin_stock->id]['stock']);
     }
 
     /**
