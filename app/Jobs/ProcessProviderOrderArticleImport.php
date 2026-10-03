@@ -153,7 +153,7 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
             $this->autenticado_como($this->persona_que_importo(), function () use ($importer) {
 
                 Excel::import($importer, $this->archivo_excel_path);
-            });
+            });
 
             $this->marcar_completado($importer);
 
