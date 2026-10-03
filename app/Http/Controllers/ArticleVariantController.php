@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\article\ArticleVariantBarCodeHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantGeneratorHelper;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
@@ -43,15 +44,47 @@ class ArticleVariantController extends Controller
      * registrar. Si en el futuro hace falta permitir cambiar stock desde este endpoint, debe
      * hacerse generando un StockMovement, no escribiendo la columna directo.
      *
-     * @param Request $request Espera price, image_url, oculta (stock ya no se usa acá).
+     * Código de barras propio de la variante (`bar_code`, contrato C1 de la misión
+     * "codigo-de-barras-de-variantes"): es OPCIONAL. Si la clave no viene en el request no se toca
+     * (la SPA vieja manda solo price, image_url y oculta). Si viene, pasa por
+     * ArticleVariantBarCodeHelper (trim, vacío = '0'.id, máximo 20 caracteres, sin repetir con otra
+     * variante ni con un artículo del mismo dueño).
+     *
+     * @param Request $request Espera price, image_url, oculta y, opcional, bar_code (stock ya no se usa acá).
      * @param int $id Id de la ArticleVariant a actualizar.
-     * @return \Illuminate\Http\JsonResponse Variante actualizada.
+     * @return \Illuminate\Http\JsonResponse Variante actualizada, o 422 con `message` si el código
+     *         de barras no es válido (en ese caso no se guarda NADA: ni el código, ni el precio, ni oculta).
      */
     function update(Request $request, $id) {
         $model = ArticleVariant::find($id);
+
+        // Se valida el código ANTES de asignar o guardar cualquier campo: con un código inválido el
+        // comerciante tiene que ver el aviso y que la variante quede exactamente como estaba. Si se
+        // validara después de asignar price/oculta, un cambio de orden futuro podría guardar el
+        // precio y rechazar solo el código, dejando la grilla a medio guardar.
+        // `has` y no `filled`: un código vacío es un pedido válido (volver a '0'.id), no una omisión.
+        $tiene_bar_code = $request->has('bar_code');
+        $bar_code_final = null;
+
+        if ($tiene_bar_code) {
+            $resultado = ArticleVariantBarCodeHelper::validate_bar_code_for_update($model, $request->bar_code);
+
+            if (isset($resultado['error'])) {
+                return response()->json(['message' => $resultado['error']], 422);
+            }
+
+            $bar_code_final = $resultado['bar_code'];
+        }
+
         $model->price = $request->price;
         $model->image_url = $request->image_url;
         $model->oculta = $request->oculta;
+
+        // Solo se escribe el código si el request lo trajo: sin la clave queda el que tenía.
+        if ($tiene_bar_code) {
+            $model->bar_code = $bar_code_final;
+        }
+
         $model->save();
 
         // Se devuelve con las mismas relaciones que el resto de los endpoints de variantes (withAll):
