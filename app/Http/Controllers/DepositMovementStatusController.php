@@ -34,12 +34,8 @@ class DepositMovementStatusController extends Controller
      */
     public function index() {
 
-        $owner_id = $this->userId();
-
-        $models = DepositMovementStatus::where(function ($query) use ($owner_id) {
-                                $query->whereNull('user_id')
-                                      ->orWhere('user_id', $owner_id);
-                            })
+        // Fijos + propios del dueño: el mismo scope que usa el buscador (global-search) del ABM.
+        $models = DepositMovementStatus::delDuenoConGlobales($this->userId())
                             // Fijos (user_id NULL) primero, después los propios.
                             ->orderByRaw('CASE WHEN user_id IS NULL THEN 0 ELSE 1 END')
                             ->orderBy('id', 'ASC')
