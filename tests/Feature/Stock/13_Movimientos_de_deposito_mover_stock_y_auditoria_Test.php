@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Stock;
 
+use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\PermisosCatalogoHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EsquemaDeDatosIaHelper;
 use App\Models\Address;
 use App\Models\Brand;
 use App\Models\DepositMovement;
@@ -39,6 +41,8 @@ use Illuminate\Support\Facades\Hash;
  *    movido, "Mover stock" la llena, y el request ya no la escribe;
  *  - el estado de un movimiento tiene que ser fijo o propio; `show` filtra por dueño; "Mover
  *    stock" pide los dos depósitos.
+ *  - caso 17: el asistente (consulta genérica de datos) también ve los estados fijos: lista fijos +
+ *    propios y encuentra un movimiento por el estado fijo "Recibido".
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -1076,5 +1080,67 @@ class Movimientos_de_deposito_mover_stock_y_auditoria_Test extends AuditoriaStoc
         $this->assertNull(DB::table('deposit_movements')->where('id', $movimiento->id)->value('stock_moved_at'));
         $this->assertEquals(10.0, $this->stock_en_deposito($articulo, $this->origen->id));
         $this->assertEquals(0, $this->movimientos($articulo, 'Mov entre depositos')->count());
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 17. El asistente ve los estados fijos
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Regresión marcada en el chequeo: desde que `deposit_movement_statuses` tiene `user_id`, la
+     * consulta genérica del asistente (`CatalogoDeDatosIaHelper`) le aplicaba `user_id = dueño` y
+     * dejaba afuera los estados fijos (`user_id` NULL): "movimientos en estado Recibido" no
+     * encontraba nada y el listado de estados salía sin "En proceso" ni "Recibido".
+     *
+     * @group stock
+     * @test
+     */
+    public function el_asistente_ve_los_estados_fijos_y_encuentra_un_movimiento_por_recibido()
+    {
+        EsquemaDeDatosIaHelper::olvidar();
+
+        $duenio = $this->usuario();
+        $en_proceso = $this->estado_fijo('En proceso');
+        $recibido = $this->estado_fijo('Recibido');
+
+        $otro_duenio = $this->otro_duenio();
+        $ajeno = DepositMovementStatus::create(['name' => 'zz Estado ajeno asistente', 'user_id' => $otro_duenio->id]);
+        $propio = DepositMovementStatus::create(['name' => 'zz Estado propio asistente', 'user_id' => $duenio->id]);
+
+        $articulo = $this->crear_articulo('zz Mov dep asistente');
+
+        $en_recibido = $this->crear_movimiento([[$articulo, 1]], ['deposit_movement_status_id' => $recibido->id]);
+        $en_proceso_mov = $this->crear_movimiento([[$articulo, 1]]);
+
+        // Un movimiento del dueño por el NOMBRE del estado fijo (filtro por relación).
+        $por_estado = CatalogoDeDatosIaHelper::consultar_datos($duenio->id, 'deposit_movement', [
+            ['campo' => 'deposit_movement_status_id', 'operador' => 'igual', 'valor' => 'Recibido'],
+        ], null, 1, 200);
+
+        $this->assertArrayNotHasKey('error', $por_estado, json_encode($por_estado));
+        $ids = collect($por_estado['registros'])->pluck('id')->all();
+        $this->assertContains($en_recibido->id, $ids, 'El asistente tiene que encontrar el movimiento por el estado fijo "Recibido".');
+        $this->assertNotContains($en_proceso_mov->id, $ids);
+
+        // El listado de estados: fijos + propios, nunca los de otro comercio.
+        $estados = CatalogoDeDatosIaHelper::consultar_datos($duenio->id, 'deposit_movement_status', [], null, 1, 200);
+
+        $this->assertArrayNotHasKey('error', $estados, json_encode($estados));
+        $ids = collect($estados['registros'])->pluck('id')->all();
+        $this->assertContains($en_proceso->id, $ids, 'El asistente tiene que listar el estado fijo "En proceso".');
+        $this->assertContains($recibido->id, $ids, 'El asistente tiene que listar el estado fijo "Recibido".');
+        $this->assertContains($propio->id, $ids);
+        $this->assertNotContains($ajeno->id, $ids, 'El estado de otro comercio no se lista.');
+
+        // Y el otro comercio no ve el estado propio de este (los fijos sí).
+        $del_otro = collect(CatalogoDeDatosIaHelper::consultar_datos($otro_duenio->id, 'deposit_movement_status', [], null, 1, 200)['registros'])
+                        ->pluck('id')->all();
+        $this->assertNotContains($propio->id, $del_otro);
+        $this->assertContains($ajeno->id, $del_otro);
+        $this->assertContains($recibido->id, $del_otro);
+
+        // Los dos opt-in (buscador de la SPA y asistente) tienen que nombrar las mismas tablas.
+        $this->assertTrue(method_exists(new DepositMovementStatus(), 'scopeDelDuenoConGlobales'));
+        $this->assertContains((new DepositMovementStatus())->getTable(), CatalogoDeDatosIaHelper::TABLAS_CON_FILAS_GLOBALES);
     }
 }
