@@ -391,7 +391,7 @@ class BalanzaHelper
     /**
      * Lo que impide guardar una balanza, o null si se puede.
      *
-     * Son dos "razones fuertes" para validar del lado de la API (regla del repo: el back no valida
+     * Son tres "razones fuertes" para validar del lado de la API (regla del repo: el back no valida
      * salvo razón fuerte documentada):
      *
      *   - Prefijo vacío o de más de 6 dígitos: una balanza sin prefijo se quedaría con TODOS los
@@ -399,6 +399,13 @@ class BalanzaHelper
      *   - Prefijo repetido para el mismo dueño: dos balanzas con el mismo código dejan el escaneo
      *     ambiguo para quien las carga (cuál de los dos artículos se lleva el ticket). La lectura
      *     igual desempata en forma determinista (id más chico), pero eso el operador no lo ve.
+     *   - Artículo que no es del dueño (inexistente, borrado o de otro comercio): en una base
+     *     compartida, un POST/PUT armado a mano con el `article_id` de otro comercio se guardaba, y
+     *     como el ABM trae la relación `article` sin filtrar por dueño, le mostraba el artículo
+     *     ajeno. La lectura del ticket ya lo descartaba (`balanza_sin_articulo`), pero la balanza
+     *     no puede quedar guardada apuntando ahí. Sin artículo (null) se sigue aceptando: es una
+     *     balanza a medio configurar y VENDER avisa al escanear. Consecuencia buscada: si el
+     *     artículo de una balanza se borra, para volver a guardarla hay que elegirle otro.
      *
      * Prefijos que se pisan ('22' y '2203') SÍ están permitidos: gana el más largo, a propósito.
      *
@@ -424,6 +431,20 @@ class BalanzaHelper
 
         if ($repetida->exists()) {
             return 'Ya tenés otra balanza con el código '.$prefijo;
+        }
+
+        // El artículo, si viene, con la MISMA definición de "válido" que usa la lectura del ticket
+        // (leer_ticket_por_balanzas): que exista, que no esté borrado (lo excluye el scope de
+        // SoftDeletes) y que sea de este dueño.
+        if (!is_null($datos['article_id'])) {
+
+            $articulo_del_dueno = Article::where('id', $datos['article_id'])
+                                            ->where('user_id', $owner_id)
+                                            ->exists();
+
+            if (!$articulo_del_dueno) {
+                return 'El artículo elegido no existe o no es de este comercio.';
+            }
         }
 
         return null;

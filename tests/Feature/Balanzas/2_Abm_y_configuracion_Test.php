@@ -21,6 +21,7 @@ use Tests\EmpresaTestCase;
  *     solo lo suyo y un id ajeno es 404.
  *   - El prefijo se normaliza (solo dígitos) y no se puede repetir para el mismo dueño (422 con el
  *     mensaje del plan). Vacío o de más de 6 dígitos tampoco (422).
+ *   - El artículo, si viene, tiene que ser del dueño (ni ajeno, ni inexistente, ni borrado: 422).
  *   - `tickets_de_balanza` lo guarda SOLO el dueño, solo con un valor de la lista blanca, y un
  *     request sin la clave o con null no le borra la elección. El empleado (aun administrador) no
  *     le cambia nada al dueño: `ModelForm` postea el modelo entero, con la columna propia del
@@ -230,6 +231,72 @@ class Abm_y_configuracion_Test extends EmpresaTestCase
         }
 
         $this->assertEquals($antes, Balanza::where('user_id', $this->dueno->id)->count());
+    }
+
+    /**
+     * 🔴 El artículo de la balanza tiene que ser del dueño. En una base compartida, un POST o PUT
+     * armado a mano con el `article_id` de OTRO comercio se guardaba, y el ABM le mostraba ese
+     * artículo ajeno. Ahora: ajeno, inexistente o borrado -> 422 con el mensaje, y no se guarda
+     * nada. Sin artículo (null) se sigue aceptando, y con uno propio la edición pasa.
+     *
+     * @test
+     */
+    public function el_articulo_tiene_que_ser_del_dueno()
+    {
+        $mensaje = 'El artículo elegido no existe o no es de este comercio.';
+
+        $otro = $this->otro_dueno();
+        $ajeno = $this->crear_articulo('Ajeno', ['user_id' => $otro->id]);
+
+        $antes = Balanza::count();
+
+        // Alta con el artículo de otro comercio.
+        $alta = $this->postJson('api/balanza', $this->payload_balanza(['article_id' => $ajeno->id]));
+
+        $alta->assertStatus(422);
+        $this->assertSame($mensaje, $alta->json('message'));
+        $this->assertEquals($antes, Balanza::count(), 'El 422 no puede haber guardado nada.');
+
+        // Alta con un artículo que no existe.
+        $inexistente = (int) Article::withTrashed()->max('id') + 1000;
+
+        $this->postJson('api/balanza', $this->payload_balanza(['article_id' => $inexistente]))
+             ->assertStatus(422)
+             ->assertJsonPath('message', $mensaje);
+
+        // Alta con un artículo propio pero borrado.
+        $borrado = $this->crear_articulo('Borrado');
+        $borrado->delete();
+
+        $this->postJson('api/balanza', $this->payload_balanza(['article_id' => $borrado->id]))
+             ->assertStatus(422)
+             ->assertJsonPath('message', $mensaje);
+
+        $this->assertEquals($antes, Balanza::count(), 'Ninguno de los tres 422 guardó nada.');
+
+        // Sin artículo: se sigue aceptando.
+        $this->postJson('api/balanza', $this->payload_balanza(['prefijo' => '21', 'article_id' => null]))
+             ->assertStatus(201);
+
+        // Edición: con el artículo ajeno, 422 y la balanza queda como estaba.
+        $propio = $this->crear_articulo('Propio');
+
+        $balanza_id = $this->postJson('api/balanza', $this->payload_balanza(['prefijo' => '23', 'article_id' => $propio->id]))
+                           ->assertStatus(201)
+                           ->json('model.id');
+
+        $edicion = $this->putJson('api/balanza/' . $balanza_id, $this->payload_balanza(['prefijo' => '23', 'article_id' => $ajeno->id]));
+
+        $edicion->assertStatus(422);
+        $this->assertSame($mensaje, $edicion->json('message'));
+        $this->assertSame($propio->id, Balanza::find($balanza_id)->article_id, 'La balanza sigue con su artículo.');
+
+        // Y con otro artículo propio, la edición pasa.
+        $otro_propio = $this->crear_articulo('Otro propio');
+
+        $this->putJson('api/balanza/' . $balanza_id, $this->payload_balanza(['prefijo' => '23', 'article_id' => $otro_propio->id]))
+             ->assertStatus(200)
+             ->assertJsonPath('model.article_id', $otro_propio->id);
     }
 
     /**

@@ -19,8 +19,8 @@ use Illuminate\Http\Request;
  * la descarga inicial: lo necesita para leer tickets sin conexión. Para quien no usa balanzas es
  * una lista vacía.
  *
- * La normalización y las dos validaciones (prefijo vacío o repetido) viven en BalanzaHelper; acá
- * solo se decide y se responde.
+ * La normalización y las validaciones (prefijo vacío o repetido, artículo que no es del dueño)
+ * viven en BalanzaHelper::error_de_validacion(); acá solo se decide y se responde.
  */
 class BalanzaController extends Controller
 {
@@ -39,7 +39,8 @@ class BalanzaController extends Controller
     }
 
     /**
-     * Alta. 422 `{message}` si el prefijo queda vacío o ya lo usa otra balanza del dueño.
+     * Alta. 422 `{message}` si el prefijo queda vacío o ya lo usa otra balanza del dueño, o si el
+     * artículo elegido no existe o no es de este comercio.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
