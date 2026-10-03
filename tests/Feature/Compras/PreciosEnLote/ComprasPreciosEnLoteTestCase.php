@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Models\Article;
+use App\Models\ArticleDiscount;
 use App\Models\Iva;
 use App\Models\ProviderOrderDiscount;
 use App\Models\ProviderOrderExtraCost;
@@ -1155,5 +1156,150 @@ abstract class ComprasPreciosEnLoteTestCase extends ComprasTestCase
         }
 
         return $total;
+    }
+
+    /* ------------------------------------------------------------------------------------------
+     * Descuentos y recargos de antes de la compra (§4.4 del plan: las dos pasadas en bloque)
+     * ---------------------------------------------------------------------------------------- */
+
+    /**
+     * Sello de las filas que se siembran ANTES de la compra: viejo y distinto de AHORA, para que un
+     * updated_at tocado de más (o de menos) se note en la comparación.
+     */
+    const SELLO_VIEJO = '2028-03-10 09:15:00';
+
+    /** Otro sello viejo, distinto del anterior: sirve para distinguir dos filas sembradas iguales. */
+    const SELLO_MAS_VIEJO = '2027-11-05 17:40:00';
+
+    /**
+     * Siembra un article_discount de antes de la compra, por el query builder (así los sellos quedan
+     * los que se piden y no los de Eloquent). Por defecto un descuento manual (sin proveedor) con el
+     * sello viejo; $atributos pisa cualquier columna.
+     *
+     * Va FUERA de las corridas (antes de dos_caminos()): las dos compras lo encuentran igual.
+     *
+     * @param  \App\Models\Article $article
+     * @param  array               $atributos
+     * @return int El id de la fila.
+     */
+    protected function sembrar_descuento($article, array $atributos)
+    {
+        return (int) DB::table('article_discounts')->insertGetId(array_merge([
+            'article_id'     => $article->id,
+            'provider_id'    => null,
+            'percentage'     => null,
+            'amount'         => null,
+            'tipo'           => ArticleDiscount::TIPO_OTRO,
+            'show_in_online' => 0,
+            'created_at'     => self::SELLO_VIEJO,
+            'updated_at'     => self::SELLO_VIEJO,
+        ], $atributos));
+    }
+
+    /**
+     * Siembra un article_surchage de antes de la compra, por el query builder (sellos exactos). Por
+     * defecto un recargo de transporte por monto, antes del precio final, con el sello viejo;
+     * $atributos pisa cualquier columna.
+     *
+     * @param  \App\Models\Article $article
+     * @param  array               $atributos
+     * @return int El id de la fila.
+     */
+    protected function sembrar_recargo($article, array $atributos)
+    {
+        return (int) DB::table('article_surchages')->insertGetId(array_merge([
+            'article_id'             => $article->id,
+            'tipo'                   => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+            'amount'                 => null,
+            'percentage'             => null,
+            'luego_del_precio_final' => 0,
+            'created_at'             => self::SELLO_VIEJO,
+            'updated_at'             => self::SELLO_VIEJO,
+        ], $atributos));
+    }
+
+    /**
+     * Las filas de una sección de la foto (article_discounts, article_surchages...) que coinciden
+     * con todos los criterios, comparando como está en la foto: texto o null.
+     *
+     * @param  array  $foto
+     * @param  string $seccion
+     * @param  array  $criterios [columna => valor]
+     * @return array
+     */
+    protected function filas_de(array $foto, $seccion, array $criterios)
+    {
+        $filas = [];
+
+        foreach ($foto[$seccion] as $fila) {
+
+            $coincide = true;
+
+            foreach ($criterios as $columna => $valor) {
+
+                $esperado = is_null($valor) ? null : (string) $valor;
+
+                if (!array_key_exists($columna, $fila) || $fila[$columna] !== $esperado) {
+                    $coincide = false;
+                    break;
+                }
+            }
+
+            if ($coincide) {
+                $filas[] = $fila;
+            }
+        }
+
+        return $filas;
+    }
+
+    /**
+     * La ÚNICA fila de una sección de la foto que coincide con los criterios (falla si hay cero o
+     * más de una).
+     *
+     * @param  array  $foto
+     * @param  string $seccion
+     * @param  array  $criterios [columna => valor]
+     * @return array
+     */
+    protected function una_fila_de(array $foto, $seccion, array $criterios)
+    {
+        $filas = $this->filas_de($foto, $seccion, $criterios);
+
+        $this->assertCount(1, $filas, 'Se esperaba exactamente una fila de ' . $seccion . ' con ' . json_encode($criterios) . '. Hay: ' . json_encode($filas));
+
+        return $filas[0];
+    }
+
+    /**
+     * Las filas de una tabla de los artículos dados EN ORDEN DE ID, con las columnas pedidas (sin el
+     * id). Complementa la foto de dos_caminos(), que ordena por contenido: acá se ve el orden
+     * relativo en que quedaron creadas las filas, que es el orden en que el cálculo de precios
+     * aplica descuentos y recargos (las relaciones van por id).
+     *
+     * Los float (el DOUBLE `amount`) van con 17 dígitos significativos y no con los 14 del (string)
+     * de PHP: así dos DOUBLE distintos en el último bit se ven distintos.
+     *
+     * @param  string   $tabla
+     * @param  int[]    $article_ids
+     * @param  string[] $columnas
+     * @return array
+     */
+    protected function secuencia_de($tabla, array $article_ids, array $columnas)
+    {
+        $secuencia = [];
+
+        foreach (DB::table($tabla)->whereIn('article_id', $article_ids)->orderBy('id')->get($columnas) as $fila) {
+
+            $normalizada = [];
+
+            foreach ((array) $fila as $columna => $valor) {
+                $normalizada[$columna] = is_float($valor) ? sprintf('%.17g', $valor) : $this->normalizar_escalares($valor);
+            }
+
+            $secuencia[] = $normalizada;
+        }
+
+        return $secuencia;
     }
 }
