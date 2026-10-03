@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\article;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\User;
 
 /**
  * ArticleVariantBarCodeHelper
@@ -122,9 +123,17 @@ class ArticleVariantBarCodeHelper
      *  2. Vacio -> se restituye el codigo por defecto '0' + id de la variante.
      *  3. Mas de 20 caracteres -> error.
      *  4. Igual al codigo de OTRA variante del mismo duenio (las ocultas cuentan) -> error.
-     *  5. Igual al codigo de un ARTICULO del mismo duenio -> error.
+     *  5. Igual al `bar_code` de un ARTICULO del mismo duenio -> error.
+     *  6. Con la extension `codigos_de_barra_basados_en_numero_interno` del duenio: el codigo es el
+     *     `num` (entero canonico) de un articulo del duenio -> error.
+     *  7. Con la extension `codigo_proveedor_en_vender` del duenio: el codigo es el `provider_code` de
+     *     un articulo del duenio, sin distinguir mayusculas -> error.
      *
-     * Las reglas 4 y 5 corren tambien sobre el codigo por defecto restituido: es un codigo como
+     * Las reglas 6 y 7 son las de la cadena de escaneo de articulos de `VenderController::search_bar_code`
+     * (que campo identifica a un articulo depende de las extensiones). Sin esas extensiones solo
+     * cuenta la 5. Cada error dice QUE campo del articulo choca.
+     *
+     * Las reglas 4 a 7 corren tambien sobre el codigo por defecto restituido: es un codigo como
      * cualquier otro y, aunque es raro, otra variante puede haberlo cargado a mano.
      *
      * El propio codigo de la variante no cuenta como repetido (se excluye por id), asi que volver a
@@ -197,9 +206,62 @@ class ArticleVariantBarCodeHelper
                                     ->first();
 
         if (!is_null($article_with_code)) {
-            return ['error' => 'Ese código de barras ya lo usa el artículo "'
+            return ['error' => 'Ese código de barras ya es el código de barras del artículo "'
                 . $article_with_code->name
                 . '". Cada variante necesita un código propio para poder escanearla.'];
+        }
+
+        // 6 y 7. El campo con el que se escanean los articulos depende de las extensiones del DUENIO
+        // (la misma cadena de `VenderController::search_bar_code`): con numero interno, el `num`; con
+        // codigo de proveedor, el `provider_code`. Si una variante tuviera ese mismo codigo, el lector
+        // la resolveria primero y el articulo dejaria de poder escanearse, igual que con `bar_code`.
+        // Se mira al duenio de los articulos (no al usuario logueado), como en el resto de la validacion.
+        // Sin ninguna de las dos extensiones solo cuenta `bar_code`, como hasta ahora.
+        $owner = User::find($article->user_id);
+
+        if (is_null($owner)) {
+            return ['bar_code' => $bar_code];
+        }
+
+        // 6. Numero interno: el codigo es todo digitos y es EL numero de un articulo del duenio.
+        if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno', $owner)) {
+
+            $internal_number = self::canonical_integer($bar_code);
+
+            if (!is_null($internal_number)) {
+                // Comparacion numerica exacta con un entero, no con el texto: `articles.num` es un
+                // entero y MySQL compara '0555' = 555 como verdadero. Un codigo '0555' no es el
+                // numero 555 tal como se escanea (ese articulo sigue escaneandose por '555'), asi
+                // que solo la forma canonica ('555') choca. No pasar `$bar_code` directo al where.
+                $article_with_num = Article::where('user_id', $article->user_id)
+                                            ->where('num', $internal_number)
+                                            ->orderBy('id')
+                                            ->first();
+
+                if (!is_null($article_with_num)) {
+                    return ['error' => 'Ese código coincide con el número interno del artículo "'
+                        . $article_with_num->name
+                        . '". Como en este comercio los artículos se escanean por número interno, ese artículo dejaría de poder escanearse. Elegí otro código para la variante.'];
+                }
+            }
+        }
+
+        // 7. Codigo de proveedor: igual al `provider_code` de un articulo del duenio, sin distinguir
+        // mayusculas (asi lo compara el scanner de la SPA). LOWER de los dos lados y no el `=` de
+        // MySQL: que sea insensible a mayusculas depende de la collation de la columna, y aca no se
+        // puede confiar en eso. Es una consulta de guardado, no del camino caliente del escaneo.
+        if (UserHelper::hasExtencion('codigo_proveedor_en_vender', $owner)) {
+
+            $article_with_provider_code = Article::where('user_id', $article->user_id)
+                                                    ->whereRaw('LOWER(provider_code) = ?', [mb_strtolower($bar_code, 'UTF-8')])
+                                                    ->orderBy('id')
+                                                    ->first();
+
+            if (!is_null($article_with_provider_code)) {
+                return ['error' => 'Ese código coincide con el código de proveedor del artículo "'
+                    . $article_with_provider_code->name
+                    . '". Como en este comercio los artículos se escanean por código de proveedor, ese artículo dejaría de poder escanearse. Elegí otro código para la variante.'];
+            }
         }
 
         return ['bar_code' => $bar_code];
@@ -247,12 +309,35 @@ class ArticleVariantBarCodeHelper
         // Lo que sigue al 0 es el id candidato.
         $candidate = substr($code, 1);
 
-        // Canonico: sin ceros de relleno, mayor a cero y que entre en un entero (si el numero es
-        // gigante, el cast a int se satura y deja de coincidir con el texto).
-        if ($candidate === '' || $candidate !== (string) (int) $candidate || (int) $candidate < 1) {
+        // Canonico: sin ceros de relleno y mayor a cero.
+        $id = self::canonical_integer($candidate);
+
+        if (is_null($id) || $id < 1) {
             return null;
         }
 
-        return (int) $candidate;
+        return $id;
+    }
+
+    /**
+     * Si `$text` es un entero escrito en su forma canonica (solo digitos, sin ceros de relleno: '555',
+     * no '0555'), devuelve ese entero; si no, `null`.
+     *
+     * Lo usan las dos comparaciones numericas de este helper (el id de '0' + id y el `num` del numero
+     * interno) para no depender del cast flojo de MySQL, que da `id = '012'` y `num = '0555'` como
+     * verdaderos. Un texto gigante no entra en un entero: el cast se satura y deja de coincidir con
+     * el texto, asi que tambien devuelve `null` (no hay un `num` ni un id tan grande).
+     *
+     * @param string $text Texto a evaluar.
+     * @return int|null
+     */
+    protected static function canonical_integer($text)
+    {
+        // ctype_digit rechaza vacio, signos, puntos, espacios y letras.
+        if (!ctype_digit($text) || $text !== (string) (int) $text) {
+            return null;
+        }
+
+        return (int) $text;
     }
 }

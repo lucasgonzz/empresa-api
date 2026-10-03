@@ -4,6 +4,7 @@ namespace Tests\Feature\Stock;
 
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -45,6 +46,28 @@ class Variantes_codigo_de_barras_Test extends TestCase
             'email'    => 'codigo-variantes-' . $sufijo . '-' . uniqid() . '@test.local',
             'password' => Hash::make('secret'),
         ]);
+    }
+
+    /**
+     * Prende una extension para un usuario (mismo patron que el test 40 de Sales).
+     *
+     * @param  \App\Models\User $user
+     * @param  string           $slug
+     * @return void
+     */
+    private function dar_extension($user, $slug)
+    {
+        $extencion = ExtencionEmpresa::where('slug', $slug)->first();
+
+        if (is_null($extencion)) {
+            $extencion = ExtencionEmpresa::forceCreate([
+                'slug' => $slug,
+                'name' => $slug,
+            ]);
+        }
+
+        $user->extencions()->attach($extencion->id);
+        $user->load('extencions');
     }
 
     /**
@@ -413,5 +436,110 @@ class Variantes_codigo_de_barras_Test extends TestCase
         $res->assertStatus(422);
         $this->assertIsString($res->json('message'));
         $this->assertEquals('0' . $variante->id, $this->codigo_guardado($variante));
+    }
+
+    /**
+     * Sin las extensiones de escaneo por numero interno ni por codigo de proveedor, el unico codigo
+     * de un articulo que cuenta es su `bar_code` (la cadena de `search_bar_code` tampoco mira otra
+     * cosa): un codigo igual a su `num` o a su `provider_code` se acepta.
+     *
+     * @group stock
+     * @test
+     */
+    public function sin_las_extensiones_un_codigo_igual_al_num_o_al_codigo_de_proveedor_se_acepta()
+    {
+        $user = $this->usuario_de_test('g12');
+        $this->actingAs($user, 'web');
+
+        $this->articulo($user, 'Clavo', ['num' => 555, 'provider_code' => 'ABC-100']);
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36');
+
+        $this->guardar($variante, ['bar_code' => '555'])->assertStatus(200);
+        $this->assertEquals('555', $this->codigo_guardado($variante));
+
+        $this->guardar($variante, ['bar_code' => 'abc-100'])->assertStatus(200);
+        $this->assertEquals('abc-100', $this->codigo_guardado($variante));
+    }
+
+    /**
+     * Con `codigos_de_barra_basados_en_numero_interno` el codigo de un articulo es su `num`: una
+     * variante con ese mismo numero lo taparia en el escaneo (la variante se resuelve primero), asi
+     * que es un repetido. 422, nada guardado y un mensaje que dice QUE campo choca.
+     *
+     * La comparacion es de entero canonico, no el cast flojo de MySQL (`num = '0555'` da true para
+     * el 555): '0555' no es el numero 555 tal como lo escanea nadie, y el articulo sigue
+     * escaneandose por '555'. Tampoco chocan los codigos con letras, el num de otro duenio ni el de
+     * un articulo dado de baja.
+     *
+     * @group stock
+     * @test
+     */
+    public function con_numero_interno_un_codigo_igual_al_num_de_un_articulo_del_duenio_da_422()
+    {
+        $otro = $this->usuario_de_test('g13b');
+        $this->articulo($otro, 'Tuerca ajena', ['num' => 777]);
+
+        $user = $this->usuario_de_test('g13a');
+        $this->dar_extension($user, 'codigos_de_barra_basados_en_numero_interno');
+        $this->actingAs($user, 'web');
+
+        $this->articulo($user, 'Clavo', ['num' => 555]);
+        $baja = $this->articulo($user, 'Clavo viejo', ['num' => 888]);
+        $baja->delete();
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36', false, 100);
+
+        $res = $this->guardar($variante, ['bar_code' => '555', 'price' => 999]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('Clavo', $res->json('message'));
+        $this->assertStringContainsString('número interno', $res->json('message'));
+        $this->assertEquals('0' . $variante->id, $this->codigo_guardado($variante), 'No se tiene que haber guardado el codigo.');
+        $this->assertEquals(100, DB::table('article_variants')->where('id', $variante->id)->value('price'), 'No se tiene que haber guardado el precio.');
+
+        foreach (['0555', 'A555', '777', '888'] as $aceptado) {
+            $this->guardar($variante, ['bar_code' => $aceptado])->assertStatus(200);
+            $this->assertEquals($aceptado, $this->codigo_guardado($variante));
+        }
+    }
+
+    /**
+     * Con `codigo_proveedor_en_vender` el codigo de un articulo es su `provider_code`, y el scanner
+     * de la SPA lo compara sin distinguir mayusculas: 'abc-100' choca con 'ABC-100'. Mensaje
+     * distinto al del numero interno. El codigo de proveedor de otro duenio no cuenta.
+     *
+     * @group stock
+     * @test
+     */
+    public function con_codigo_de_proveedor_un_codigo_igual_al_provider_code_de_un_articulo_del_duenio_da_422()
+    {
+        $otro = $this->usuario_de_test('g14b');
+        $this->articulo($otro, 'Tuerca ajena', ['provider_code' => 'XYZ-9']);
+
+        $user = $this->usuario_de_test('g14a');
+        $this->dar_extension($user, 'codigo_proveedor_en_vender');
+        $this->actingAs($user, 'web');
+
+        $this->articulo($user, 'Clavo', ['provider_code' => 'ABC-100']);
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36', false, 100);
+
+        foreach (['ABC-100', 'abc-100'] as $repetido) {
+            $res = $this->guardar($variante, ['bar_code' => $repetido, 'price' => 999]);
+
+            $res->assertStatus(422);
+            $this->assertStringContainsString('Clavo', $res->json('message'));
+            $this->assertStringContainsString('proveedor', $res->json('message'));
+            $this->assertStringNotContainsString('número interno', $res->json('message'));
+            $this->assertEquals('0' . $variante->id, $this->codigo_guardado($variante));
+            $this->assertEquals(100, DB::table('article_variants')->where('id', $variante->id)->value('price'));
+        }
+
+        $this->guardar($variante, ['bar_code' => 'xyz-9'])->assertStatus(200);
+        $this->assertEquals('xyz-9', $this->codigo_guardado($variante));
+
+        // Y un numero igual al num de un articulo no choca: el modo de este duenio es el codigo de proveedor.
+        $this->articulo($user, 'Tornillo', ['num' => 321]);
+        $this->guardar($variante, ['bar_code' => '321'])->assertStatus(200);
     }
 }
