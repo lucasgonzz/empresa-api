@@ -87,7 +87,9 @@ class NewProviderOrderHelper {
         $this->provider_order           = $provider_order;
         $this->new_articles             = $new_articles;
         $this->ya_se_actualizo_stock    = $ya_se_actualizo_stock;
-        $this->user                     = UserHelper::user();
+        // En un job de cola (importacion de Excel de compras) no hay sesion ni Auth: UserHelper::user() da null.
+        // Se cae al dueno de la compra, de quien dependen iva_included, dollar y la condicion fiscal.
+        $this->user                     = UserHelper::user() ?: \App\Models\User::find($provider_order->user_id);
 
         $this->set_credit_account();
 

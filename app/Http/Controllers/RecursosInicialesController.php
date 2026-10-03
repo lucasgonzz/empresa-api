@@ -53,6 +53,7 @@ class RecursosInicialesController extends Controller
         'article_price_type_group'               => 'App\Http\Controllers\ArticlePriceTypeGroupController',
         'article_property_type'                  => 'App\Http\Controllers\ArticlePropertyTypeController',
         'article_property_value'                 => 'App\Http\Controllers\ArticlePropertyValueController',
+        'article_ticket_design'                  => 'App\Http\Controllers\ArticleTicketDesignController',
         'article_ticket_info'                    => 'App\Http\Controllers\ArticleTicketInfoController',
         'article_ubication'                      => 'App\Http\Controllers\ArticleUbicationController',
         'bodega'                                 => 'App\Http\Controllers\BodegaController',
@@ -117,6 +118,7 @@ class RecursosInicialesController extends Controller
         'turno_caja'                             => 'App\Http\Controllers\TurnoCajaController',
         'unidad_frecuencia'                      => 'App\Http\Controllers\UnidadFrecuenciaController',
         'unidad_medida'                          => 'App\Http\Controllers\UnidadMedidaController',
+        'vender_layout'                          => 'App\Http\Controllers\VenderLayoutController',
     );
 
     /**

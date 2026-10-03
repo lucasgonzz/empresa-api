@@ -199,9 +199,10 @@ class Listado_De_Ventas_Paginado_Test extends TestCase
     }
 
     /**
-     * Los totales espejan `Total.vue`: pesos = moneda 1, dolares = moneda 2, cuenta corriente solo
-     * con cliente y sin `omitir_en_cuenta_corriente`; una venta con `moneda_id` NULL no suma en
-     * ninguno (igual que hoy en el navegador).
+     * Los totales espejan `Total.vue`: dolares = moneda 2 y pesos = todo lo demas, cuenta corriente
+     * solo con cliente y sin `omitir_en_cuenta_corriente`. Una venta con `moneda_id` NULL es SIEMPRE
+     * pesos (decision de Lucas, 30/9/2026): suma en los chips de pesos, cuenta corriente incluida.
+     * Antes este test decia lo contrario ("no suma en ningun chip").
      *
      * @group sales
      * @test
@@ -217,8 +218,12 @@ class Listado_De_Ventas_Paginado_Test extends TestCase
         $this->crear_venta(['moneda_id' => 2, 'total' => 10, 'total_cost' => 6, 'ganancia' => 4, 'client_id' => $this->client_id, 'omitir_en_cuenta_corriente' => 0]);
         $this->crear_venta(['moneda_id' => 2, 'total' => 5,  'total_cost' => 2, 'ganancia' => 3, 'client_id' => null]);
 
-        /* Sin moneda: cuenta, pero no suma en ningun chip. */
-        $this->crear_venta(['moneda_id' => null, 'total' => 1000, 'total_cost' => 900, 'ganancia' => 100, 'client_id' => $this->client_id, 'omitir_en_cuenta_corriente' => 0]);
+        /*
+         * Sin moneda: es pesos. Se deja en NULL directo en la base (como estan las ventas viejas)
+         * porque `Sale` ya no deja CREAR una sin moneda: la normaliza a pesos.
+         */
+        $sin_moneda = $this->crear_venta(['total' => 1000, 'total_cost' => 900, 'ganancia' => 100, 'client_id' => $this->client_id, 'omitir_en_cuenta_corriente' => 0]);
+        DB::table('sales')->where('id', $sin_moneda->id)->update(['moneda_id' => null]);
 
         $response = $this->getJson('api/sale/from-date/ventas/' . $this->dia . '?per_page=25');
         $response->assertStatus(200);
@@ -227,11 +232,12 @@ class Listado_De_Ventas_Paginado_Test extends TestCase
 
         $this->assertSame(6, $totales['cantidad']);
 
-        $this->assertEquals(180, $totales['pesos']['total']);
-        $this->assertEquals(100, $totales['pesos']['costos']);
-        $this->assertEquals(80,  $totales['pesos']['ganancia']);
-        $this->assertEquals(100, $totales['pesos']['cuenta_corriente'],
-            'A cuenta corriente va solo la venta con cliente y sin omitir_en_cuenta_corriente.');
+        // 100 + 50 + 30 de las tres ventas en pesos + 1000 de la que no tiene moneda.
+        $this->assertEquals(1180, $totales['pesos']['total']);
+        $this->assertEquals(1000, $totales['pesos']['costos']);
+        $this->assertEquals(180,  $totales['pesos']['ganancia']);
+        $this->assertEquals(1100, $totales['pesos']['cuenta_corriente'],
+            'A cuenta corriente van solo las ventas con cliente y sin omitir_en_cuenta_corriente (la de 100 y la sin moneda, que es pesos).');
 
         $this->assertEquals(15, $totales['dolares']['total']);
         $this->assertEquals(8,  $totales['dolares']['costos']);

@@ -164,6 +164,8 @@ class ConsolidarFacturacionHelper extends Controller
             $moneda_id    = $ventas_originales->first()->moneda_id ?? 1;
             $valor_dolar  = $ventas_originales->first()->valor_dolar;
             $iva_aplicado = $ventas_originales->first()->iva_aplicado ?? 1;
+            /** Check "Sumar IVA a los articulos sin IVA" de la primera venta (0 si no estaba o no hay columna). */
+            $iva_en_articulos_sin_iva = !empty($ventas_originales->first()->iva_en_articulos_sin_iva) ? 1 : 0;
 
             Log::info("ConsolidarFacturacion: creando venta consolidada para client_id={$client_id}, user_id={$user_id}, ventas=" . implode(',', $sale_ids));
 
@@ -171,7 +173,7 @@ class ConsolidarFacturacionHelper extends Controller
             $num = (new self())->num('sales', $user_id);
 
             /** Crea la venta contenedora marcada para excluirla de reportes y cuentas. */
-            $venta_consolidada = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+            $venta_consolidada = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                           => $num,
                 'client_id'                     => $client_id,
                 'user_id'                       => $user_id,
@@ -183,6 +185,7 @@ class ConsolidarFacturacionHelper extends Controller
                 'moneda_id'                     => $moneda_id,
                 'valor_dolar'                   => $valor_dolar,
                 'iva_aplicado'                  => $iva_aplicado,
+                'iva_en_articulos_sin_iva'      => $iva_en_articulos_sin_iva,
                 /** No descuenta stock: la venta consolidada no es una venta real de mercadería. */
                 'discount_stock'                => 0,
                 /** No genera cuenta corriente: el cobro ya está registrado en las ventas originales. */
@@ -202,7 +205,7 @@ class ConsolidarFacturacionHelper extends Controller
              * viajaria igual al INSERT —con `$guarded = []` Eloquent la manda aunque valga null— y
              * la consolidacion moriria con `Unknown column`. Ver `ForzarTotalEsquemaHelper`.
              */
-            ], $forzado_consolidado, 'sales'));
+            ], $forzado_consolidado, 'sales'), 'sales'));
 
             /** Copia los ítems de todas las ventas originales a la consolidada. */
             self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items);
@@ -371,7 +374,15 @@ class ConsolidarFacturacionHelper extends Controller
                 $consolidada->combos()->attach($combo->id, [
                     'amount'     => (float)($pivot->amount ?? 1),
                     'price'      => (float)($pivot->price ?? 0),
-                    'cost'       => (float)($pivot->cost ?? 0),
+                    /*
+                     * El costo se copia TAL CUAL, NULL incluido (misión combos-calculados, Parte A2,
+                     * 30/9/2026). Antes era `?? 0`, y eso convierte "no sé cuánto costó" (el combo de
+                     * una venta anterior a esa misión) en "costó cero": la consolidada sumaría 0 al
+                     * costo con aspecto de dato medido. NULL sigue significando "sin costo
+                     * resuelto", y `SaleTotalesHelper::costo_de_combos()` lo trata como 0 igual que
+                     * en la venta original.
+                     */
+                    'cost'       => is_null($pivot->cost) ? null : (float)$pivot->cost,
                     'created_at' => Carbon::now(),
                 ]);
             }

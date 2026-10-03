@@ -12,6 +12,7 @@ use App\Models\Article;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * El stock por depósito que mueve el asistente (misión asistente-capacidades-y-hilos, 22/9/2026):
@@ -62,10 +63,44 @@ use Illuminate\Support\Facades\DB;
  * exactamente lo que hace `update_addresses_stock` (sus conceptos `Creacion de deposito` y
  * `Actualizacion de deposito` están en `CheckToAddress::CONCEPTOS_QUE_REPARTEN`).
  *
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ * Misión alta-por-agente-margen-y-stock (29/9/2026, demo3, artículo 17320)
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * 🔴 EL "YA QUEDARON CARGADAS" QUE NO ERA CIERTO. En demo3 el dueño dictó el alta de la Cera Nic
+ * "con un stock de 20 unidades". El alta no tenía dónde ponerlo; después del alta, en un negocio SIN
+ * depósitos, proponer_stock_en_deposito contestaba "el stock se edita sobre el total del artículo"
+ * y no había NINGUNA herramienta que editara ese total. El modelo leyó el error como "ya está" y le
+ * dijo al dueño que las 20 unidades habían quedado cargadas. Esta misión agrega las dos cosas que
+ * faltaban, las dos por el MISMO camino que el botón "Asignar Stock" del Listado
+ * (stock-movement/Form.vue → `POST api/stock-movement` → `StockMovementController::crear()`):
+ *
+ *   - El stock INICIAL en el alta (resolver_stock_inicial() al proponer, cargar_stock_inicial()
+ *     después del alta, desde AltaDeArticuloConFotoIaHelper::completar()).
+ *   - El stock TOTAL de un artículo que ya existe en un negocio sin depósitos (la rama sin_depositos
+ *     de proponer_stock_en_deposito / ejecutar_stock_en_deposito).
+ *
  * PHP 7.4: sin enum, sin match, sin operador nullsafe.
  */
 class PropuestaStockIaHelper
 {
+    /**
+     * 🔴 El concepto del stock que entra por el asistente sin depósito de por medio: el mismo que usa
+     * la actualización masiva del Listado (MasiveUpdateHelper::aplicar_stock_por_movimiento) y el que
+     * toma el botón "Asignar Stock" cuando no manda concepto. Escrito de otra forma, SetConcepto lo
+     * deja en null y el movimiento queda sin concepto en el historial.
+     */
+    const CONCEPTO_INGRESO = 'Ingreso manual';
+
+    /** El principio de todo rechazo de stock de esta misión (ver MargenesPorListaIaHelper::NO_SE_CARGO). */
+    const NO_SE_CARGO = MargenesPorListaIaHelper::NO_SE_CARGO;
+
+    /** Lo que queda en las observaciones del movimiento del stock inicial. */
+    const OBSERVACION_STOCK_INICIAL = 'Stock inicial cargado por el asistente';
+
+    /** Lo que queda en las observaciones del ajuste del stock total de un artículo que ya existe. */
+    const OBSERVACION_STOCK_TOTAL = 'Stock del artículo ajustado por el asistente';
+
     /**
      * Permiso para editar el stock: el input de stock del Listado se dibuja con
      * `can('article.edit_stock')` (src/components/listado/components/StockInput.vue:5) y el botón de
@@ -141,10 +176,24 @@ class PropuestaStockIaHelper
 
         $depositos = self::depositos_del_dueno($contexto->owner_id);
 
+        /*
+         * 🔴 Con CERO depósitos el texto decía "tiene una sola sucursal", que es falso y además no
+         * dice qué hacer (ronda de correcciones de la misión alta-por-agente-margen-y-stock,
+         * 29/9/2026). En demo3 un error de stock sin salida se leyó como "ya está": este dice que no
+         * se movió nada y manda a la herramienta que sí carga el stock total.
+         */
+        if (!count($depositos)) {
+
+            return RespuestaDeCargaIa::error(
+                'No se movió nada: este negocio no tiene depósitos ni sucursales cargadas, así que no hay entre cuáles mover stock. '
+                . 'Para cargarle o sacarle stock al artículo, usá proponer_stock_en_deposito sin deposito (deja el stock total del artículo).'
+            );
+        }
+
         if (count($depositos) < 2) {
 
             return RespuestaDeCargaIa::error(
-                'Este negocio tiene una sola sucursal cargada, así que no hay entre qué depósitos mover stock.'
+                'No se movió nada: este negocio tiene una sola sucursal cargada, así que no hay entre qué depósitos mover stock.'
             );
         }
 
@@ -408,9 +457,14 @@ class PropuestaStockIaHelper
 
         $depositos = self::depositos_del_dueno($contexto->owner_id);
 
+        /*
+         * 🔴 Misión alta-por-agente-margen-y-stock (29/9/2026): un negocio SIN depósitos ya no corta
+         * con "el stock se edita sobre el total del artículo" —que el modelo leyó como "ya está" en
+         * demo3 y le afirmó al dueño una carga que no existía—: arma la tarjeta del stock TOTAL.
+         */
         if (!count($depositos)) {
 
-            return RespuestaDeCargaIa::error('Este negocio no tiene ninguna sucursal cargada: el stock se edita sobre el total del artículo.');
+            return self::proponer_stock_total($contexto, $mensaje, $input, $articulo);
         }
 
         $deposito = self::resolver_deposito($contexto, $depositos, EntradaDeCargaIa::texto($input, 'deposito'), 'en qué depósito');
@@ -420,41 +474,14 @@ class PropuestaStockIaHelper
             return $deposito;
         }
 
-        $modo = EntradaDeCargaIa::texto($input, 'modo');
+        $modo_y_cantidad = self::modo_y_cantidad($input, 'el stock de un depósito no puede quedar en un número negativo.');
 
-        if ($modo === '') {
+        if (RespuestaDeCargaIa::es_negativa($modo_y_cantidad)) {
 
-            $modo = self::MODO_FIJAR;
+            return $modo_y_cantidad;
         }
 
-        if (!in_array($modo, [self::MODO_SUMAR, self::MODO_RESTAR, self::MODO_FIJAR], true)) {
-
-            return RespuestaDeCargaIa::error('El modo tiene que ser "sumar", "restar" o "fijar".');
-        }
-
-        $cantidad = EntradaDeCargaIa::valor($input, 'cantidad');
-
-        if (EntradaDeCargaIa::vacio($cantidad)) {
-
-            return RespuestaDeCargaIa::faltan(['cuántas unidades']);
-        }
-
-        if (!is_numeric($cantidad)) {
-
-            return RespuestaDeCargaIa::error('La cantidad tiene que ser un número.');
-        }
-
-        $cantidad = round((float) $cantidad, 2);
-
-        if ($modo !== self::MODO_FIJAR && $cantidad <= 0) {
-
-            return RespuestaDeCargaIa::error('La cantidad a ' . $modo . ' tiene que ser un número mayor a 0.');
-        }
-
-        if ($modo === self::MODO_FIJAR && $cantidad < 0) {
-
-            return RespuestaDeCargaIa::error('El stock de un depósito no puede quedar en un número negativo.');
-        }
+        list($modo, $cantidad) = $modo_y_cantidad;
 
         $pivots = self::pivots_del_articulo($articulo->id);
 
@@ -549,6 +576,756 @@ class PropuestaStockIaHelper
     }
 
     /**
+     * El `modo` y la `cantidad` de proponer_stock_en_deposito, validados: [modo, cantidad] o la
+     * respuesta negativa. Es la misma validación para un depósito y para el stock total.
+     *
+     * @param  array  $input
+     * @param  string  $motivo_si_negativo  El texto cuando "fijar" viene con un número negativo.
+     * @return array
+     */
+    protected static function modo_y_cantidad(array $input, $motivo_si_negativo)
+    {
+        $modo = EntradaDeCargaIa::texto($input, 'modo');
+
+        if ($modo === '') {
+
+            $modo = self::MODO_FIJAR;
+        }
+
+        if (!in_array($modo, [self::MODO_SUMAR, self::MODO_RESTAR, self::MODO_FIJAR], true)) {
+
+            return self::rechazo('el modo tiene que ser "sumar", "restar" o "fijar".');
+        }
+
+        $cantidad = EntradaDeCargaIa::valor($input, 'cantidad');
+
+        if (EntradaDeCargaIa::vacio($cantidad)) {
+
+            return RespuestaDeCargaIa::faltan(['cuántas unidades']);
+        }
+
+        /*
+         * El mismo parser que el stock inicial (última ronda de correcciones, 29/9/2026): con
+         * is_numeric/(float), "1.000" se leía como 1 y "15 unidades" no se entendía. Ver
+         * cantidad_de_stock() y MargenesPorListaIaHelper::numero_escrito_a_punto().
+         */
+        $cantidad = self::cantidad_de_stock($cantidad);
+
+        if (is_null($cantidad)) {
+
+            return self::rechazo('la cantidad tiene que ser un número.');
+        }
+
+        if ($modo !== self::MODO_FIJAR && $cantidad <= 0) {
+
+            return self::rechazo('la cantidad a ' . $modo . ' tiene que ser un número mayor a 0.');
+        }
+
+        if ($modo === self::MODO_FIJAR && $cantidad < 0) {
+
+            return self::rechazo($motivo_si_negativo);
+        }
+
+        return [$modo, $cantidad];
+    }
+
+    // =====================================================================================
+    // (c) El stock TOTAL de un artículo, en un negocio sin depósitos
+    // =====================================================================================
+
+    /**
+     * La tarjeta del stock total de un artículo que ya existe, en un negocio SIN depósitos (misión
+     * alta-por-agente-margen-y-stock, 29/9/2026). Es la misma TIPO_STOCK_DEPOSITO con
+     * `address_id = 0` y `sin_depositos = true`, para que el ejecutor tome su camino.
+     *
+     * Por qué el mismo tipo y no uno nuevo: la persona pidió lo mismo ("cargale 15 unidades más"),
+     * la tarjeta se ve igual y se confirma igual, y un tipo nuevo obligaría a tocar
+     * AiMessageAction, los modos de confianza y la SPA para algo que es la misma operación con un
+     * depósito menos. Las tarjetas viejas (`address_id > 0`, sin `sin_depositos`) siguen su camino.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  array  $input
+     * @param  \App\Models\Article  $articulo
+     * @return array
+     */
+    protected static function proponer_stock_total(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input, Article $articulo): array
+    {
+        /*
+         * 🔴 "No se cargó nada:" al principio, y qué hacer (ronda de correcciones del 29/9/2026). El
+         * error viejo de este mismo caso —"el stock se edita sobre el total del artículo"— lo leyó
+         * DeepSeek en demo3 como "ya quedaron cargadas". Ningún rechazo de esta herramienta puede
+         * leerse como un hecho cumplido.
+         */
+        if (EntradaDeCargaIa::texto($input, 'deposito') !== '') {
+
+            return self::rechazo(
+                'este negocio no tiene depósitos ni sucursales cargadas, así que el stock va al total del artículo. Volvé a llamar sin deposito.'
+            );
+        }
+
+        /*
+         * El stock total se toca con el permiso general: en la ficha el botón de stock se dibuja
+         * con can('article.edit_stock') (StockInput.vue / stock-btn). El "solo su sucursal" no
+         * alcanza: acá no hay ninguna sucursal que sea la suya.
+         */
+        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+
+            return self::rechazo(
+                'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock del artículo lo carga alguien con permiso para editar el stock.'
+            );
+        }
+
+        $motivo = self::motivo_si_no_lleva_stock_total($articulo->id);
+
+        if (!is_null($motivo)) {
+
+            return self::rechazo($motivo);
+        }
+
+        $modo_y_cantidad = self::modo_y_cantidad($input, 'el stock de un artículo no puede quedar en un número negativo.');
+
+        if (RespuestaDeCargaIa::es_negativa($modo_y_cantidad)) {
+
+            return $modo_y_cantidad;
+        }
+
+        list($modo, $cantidad) = $modo_y_cantidad;
+
+        $crudo = DB::table('articles')->where('id', (int) $articulo->id)->value('stock');
+
+        $actual = is_null($crudo) ? 0.0 : (float) $crudo;
+
+        if ($modo === self::MODO_SUMAR) {
+
+            $final = $actual + $cantidad;
+
+        } elseif ($modo === self::MODO_RESTAR) {
+
+            $final = $actual - $cantidad;
+
+        } else {
+
+            $final = $cantidad;
+        }
+
+        $final = round($final, 2);
+
+        if ($final < 0) {
+
+            return self::rechazo(
+                'el artículo tiene ' . self::numero($actual) . ': restando ' . self::numero($cantidad)
+                . ' quedaría en ' . self::numero($final) . ', y el stock no puede quedar negativo.'
+            );
+        }
+
+        /*
+         * Sin cambio no hay tarjeta (ronda de correcciones del 29/9/2026): "5 → 5" es una carga que
+         * no carga nada, y confirmarla le haría creer a la persona que algo se movió. Un artículo
+         * que NO llevaba stock (null) y queda en 0 sí es un cambio: empieza a llevarlo.
+         */
+        if (!is_null($crudo) && abs($final - $actual) < 0.01) {
+
+            return self::rechazo(
+                'el stock de "' . self::nombre_de_articulo($articulo) . '" ya está en ' . self::numero($actual) . ', así que no hay nada para cambiar.'
+            );
+        }
+
+        $unidades_individuales = DB::table('articles')->where('id', (int) $articulo->id)->value('unidades_individuales');
+
+        $renglones = [
+            ['etiqueta' => 'Artículo', 'valor' => self::nombre_de_articulo($articulo)],
+            [
+                'etiqueta' => 'Stock total',
+                'valor'    => (is_null($crudo) ? 'sin stock cargado' : self::numero($actual)) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales),
+            ],
+        ];
+
+        $creada = AccionesIaHelper::crear(
+            $contexto,
+            $mensaje,
+            AiMessageAction::TIPO_STOCK_DEPOSITO,
+            self::clave_deposito($articulo->id, 0),
+            /*
+             * Igual que la tarjeta de un depósito: `esperado` guarda el PEDIDO (modo y cantidad),
+             * que con sumar o restar es un delta que se vuelve a resolver al confirmar, y `final` es
+             * lo que la tarjeta prometió. Ver el 🔴 de ejecutar_stock_en_deposito().
+             */
+            ['esperado' => [
+                'article_id'    => (int) $articulo->id,
+                'address_id'    => 0,
+                'sin_depositos' => true,
+                'modo'          => $modo,
+                'cantidad'      => $cantidad,
+                'final'         => $final,
+            ]],
+            [
+                'titulo'    => 'Stock del artículo',
+                'renglones' => $renglones,
+                'aviso'     => 'Este negocio no tiene sucursales: el stock se carga sobre el total del artículo.',
+            ],
+            EntradaDeCargaIa::valor($input, 'reemplaza_a')
+        );
+
+        $resumen = self::nombre_de_articulo($articulo) . ', stock total: ' . self::numero($actual) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales);
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+    }
+
+    /**
+     * Deja el stock TOTAL del artículo en el número de la tarjeta, moviendo la DIFERENCIA con
+     * `StockMovementController::crear()` —el mismo camino que la masiva del Listado y el botón
+     * "Asignar Stock"—, y lo confirma releyendo `articles.stock`.
+     *
+     * 🔴 SE MUEVE LA DIFERENCIA Y NO SE ESCRIBE LA COLUMNA: el stock tiene historial
+     * (`stock_movements`), avisos de reposición y sincronización a Tienda Nube y Mercado Libre
+     * colgando del movimiento. Escribir `articles.stock` a mano sería un stock sin historia.
+     *
+     * 🔴 `sin_unidades_individuales` A PROPÓSITO: la persona dice unidades del Listado, no bultos.
+     * Sin la marca, `check_unidades_individuales()` multiplica un "Ingreso manual" por las unidades
+     * del bulto y "cargale 15" en un artículo de 12 por caja cargaría 180. Es el mismo criterio que
+     * MasiveUpdateHelper::aplicar_stock_por_movimiento().
+     *
+     * 🔴 ATÓMICO SIN TRANSACCIÓN PROPIA, y a propósito (ronda de correcciones del 29/9/2026): el tipo
+     * TIPO_STOCK_DEPOSITO NO es de dos etapas (EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS), así que
+     * esto corre adentro de la transacción con candado del ejecutor. Cualquier excepción —la de la
+     * relectura de abajo, o una que lance crear() después de CheckGlobalStock— revierte el movimiento
+     * y el stock sumado: un 422 acá es literalmente "no se cargó nada". Lo prueba
+     * 62_Correcciones_de_alta_con_margen_y_stock_Test. Si este tipo pasara algún día a dos etapas,
+     * esto necesita su propio DB::transaction, como cargar_stock_inicial().
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\User  $persona
+     * @param  \App\Models\Article  $articulo
+     * @param  array  $esperado
+     * @return array
+     *
+     * @throws AccionIaException
+     */
+    protected static function ejecutar_stock_total(ContextoDeCargaIa $contexto, $persona, Article $articulo, array $esperado): array
+    {
+        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+
+            throw new AccionIaException(422, self::NO_SE_CARGO . 'tu usuario no tiene permiso para editar el stock del artículo.');
+        }
+
+        $motivo = self::motivo_si_no_lleva_stock_total($articulo->id);
+
+        if (!is_null($motivo)) {
+
+            throw new AccionIaException(422, self::NO_SE_CARGO . $motivo);
+        }
+
+        $crudo = DB::table('articles')->where('id', (int) $articulo->id)->value('stock');
+
+        $antes = is_null($crudo) ? 0.0 : (float) $crudo;
+
+        $prometido = isset($esperado['final']) ? (float) $esperado['final'] : 0.0;
+
+        $final = self::final_al_confirmar($esperado, $antes, $prometido, 0, 'el artículo');
+
+        if (is_null($crudo) && abs($final) < 0.0001) {
+
+            /*
+             * Un artículo que no llevaba stock (null) y queda en 0 no necesita movimiento: se
+             * escribe la columna, que es lo único que cambia. Mismo caso y misma salida que la
+             * masiva del Listado.
+             */
+            DB::table('articles')->where('id', (int) $articulo->id)->update(['stock' => 0]);
+
+        } else {
+
+            $delta = round($final - $antes, 2);
+
+            if (abs($delta) >= 0.01) {
+
+                (new StockMovementController())->crear([
+                    'model_id'                     => (int) $articulo->id,
+                    'amount'                       => $delta,
+                    'concepto_stock_movement_name' => self::CONCEPTO_INGRESO,
+                    'observations'                 => self::OBSERVACION_STOCK_TOTAL,
+                    'sin_unidades_individuales'    => true,
+                ], false, $contexto->owner, (int) $persona->id);
+            }
+        }
+
+        $despues = self::stock_total($articulo->id);
+
+        if (abs($final - $despues) > 0.01) {
+
+            throw new AccionIaException(
+                422,
+                self::NO_SE_CARGO . 'el sistema no dejó el stock donde corresponde (el artículo iba a quedar en ' . self::numero($despues)
+                . ' y tenía que quedar en ' . self::numero($final) . '), así que no se guardó ningún movimiento. Revisalo en el Listado.'
+            );
+        }
+
+        $texto = 'Stock de ' . self::nombre_de_articulo($articulo) . ' actualizado: ' . self::numero($antes) . ' → ' . self::numero($despues);
+
+        // Mismo 🔴 que en un depósito: si el número no es el de la tarjeta, se dice por qué.
+        if (abs($despues - $prometido) > 0.01) {
+
+            $texto .= '. Ojo: la tarjeta decía que iba a quedar en ' . self::numero($prometido)
+                . ', pero el stock del artículo cambió entre que te la mostré y que la confirmaste, '
+                . 'así que apliqué lo que pediste sobre lo que había ahora. Contá los números de arriba, no el de la tarjeta';
+        }
+
+        return [
+            'texto' => $texto,
+            'ruta'  => [
+                'name'   => self::RUTA_LISTADO,
+                'params' => new \stdClass(),
+                'texto'  => 'Ver en el Listado',
+            ],
+        ];
+    }
+
+    /**
+     * El motivo por el que el stock de este artículo NO se puede llevar como un total, o null.
+     *
+     *   - Con variantes, el stock es la suma de las variantes (setArticleStockFromAddresses lo
+     *     recalcula): un total escrito se pisaría en el próximo movimiento.
+     *   - Con depósitos (un negocio que tuvo sucursales y las borró puede dejar alguno colgado), el
+     *     movimiento sin depósito no toca nada: CheckGlobalStock solo actúa sin depósitos.
+     *
+     * @param  int  $article_id
+     * @return string|null
+     */
+    protected static function motivo_si_no_lleva_stock_total($article_id)
+    {
+        $modelo = Article::find((int) $article_id);
+
+        if (is_null($modelo)) {
+
+            return 'el artículo ya no existe entre los tuyos.';
+        }
+
+        if ($modelo->article_variants()->count()) {
+
+            return 'el stock de un artículo con variantes se carga variante por variante desde el Listado: por acá no lo toco.';
+        }
+
+        if ($modelo->addresses()->count()) {
+
+            return 'este artículo tiene el stock repartido por depósitos: se carga en su depósito, no sobre el total.';
+        }
+
+        return null;
+    }
+
+    /**
+     * `articles.stock` leído de la fila en este instante (null cuenta como 0).
+     *
+     * @param  int  $article_id
+     * @return float
+     */
+    protected static function stock_total($article_id): float
+    {
+        $stock = DB::table('articles')->where('id', (int) $article_id)->value('stock');
+
+        return is_null($stock) ? 0.0 : (float) $stock;
+    }
+
+    // =====================================================================================
+    // (d) El stock INICIAL de un artículo que se da de alta
+    // =====================================================================================
+
+    /**
+     * Resuelve el stock inicial que la persona dictó en el alta (misión alta-por-agente-margen-y-stock,
+     * 29/9/2026): ['cantidad' => float, 'address_id' => int|null, 'deposito' => string|null] o la
+     * respuesta negativa.
+     *
+     *   - Permiso: `article.edit_stock` o `article.edit_stock_only_sucursal` (y con el segundo, solo
+     *     su propia sucursal: puede_en_deposito()).
+     *   - Sin depósitos: va al total del artículo (`address_id` null). Nombrar un depósito es un
+     *     error claro, no se ignora.
+     *   - Con depósitos: el nombrado; si no, el de quien escribe (`users.address_id`), el marcado
+     *     como `default_address`, o el único; si hay que elegir, `faltan` con las opciones.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $cantidad
+     * @param  mixed  $deposito_texto
+     * @return array
+     */
+    public static function resolver_stock_inicial(ContextoDeCargaIa $contexto, $cantidad, $deposito_texto)
+    {
+        $persona = $contexto->persona;
+
+        if (!PermisosIaHelper::puede($persona, self::PERMISO) && !PermisosIaHelper::puede($persona, self::PERMISO_SOLO_SU_SUCURSAL)) {
+
+            return self::rechazo('tu usuario no tiene permiso para cargar stock, así que el alta no puede llevar stock inicial. Volvé a proponerla sin stock_inicial si la persona quiere el artículo igual.');
+        }
+
+        $numero = self::cantidad_de_stock($cantidad);
+
+        if (is_null($numero) || $numero <= 0) {
+
+            return self::rechazo('el stock inicial tiene que ser un número de unidades mayor a 0 (por ejemplo 20).');
+        }
+
+        $deposito_texto = is_scalar($deposito_texto) ? trim((string) $deposito_texto) : '';
+
+        $depositos = self::depositos_del_dueno($contexto->owner_id);
+
+        if (!count($depositos)) {
+
+            if ($deposito_texto !== '') {
+
+                return self::rechazo('este negocio no tiene depósitos ni sucursales cargadas, así que el stock inicial va al total del artículo. Volvé a llamar sin deposito.');
+            }
+
+            // Ver proponer_stock_total(): el total se toca con el permiso general.
+            if (!PermisosIaHelper::puede($persona, self::PERMISO)) {
+
+                return self::rechazo(
+                    'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock inicial lo carga alguien con permiso para editar el stock. Volvé a proponer el alta sin stock_inicial si la persona quiere el artículo igual.'
+                );
+            }
+
+            return ['cantidad' => $numero, 'address_id' => null, 'deposito' => null];
+        }
+
+        if ($deposito_texto !== '') {
+
+            $deposito = self::resolver_deposito($contexto, $depositos, $deposito_texto, 'en qué depósito entra el stock inicial');
+
+            if (RespuestaDeCargaIa::es_negativa($deposito)) {
+
+                /*
+                 * resolver_deposito() es compartido con el movimiento y con el stock de un depósito, y
+                 * sus textos ("No encontré ningún depósito…", "Tu usuario solo puede tocar…") no dicen
+                 * si algo quedó. En el camino del stock inicial se les antepone "No se cargó nada:"
+                 * (última ronda de correcciones, 29/9/2026); los otros dos caminos quedan como estaban.
+                 */
+                if (!empty($deposito['error']) && strpos((string) $deposito['error'], self::NO_SE_CARGO) !== 0) {
+
+                    $deposito['error'] = self::NO_SE_CARGO . (string) $deposito['error'];
+                }
+
+                return $deposito;
+            }
+
+        } else {
+
+            $deposito = self::deposito_por_defecto($contexto, $depositos);
+
+            if (is_null($deposito)) {
+
+                $opciones = [];
+
+                foreach ($depositos as $uno) {
+
+                    if (self::puede_en_deposito($persona, $uno->id)) {
+
+                        $opciones[] = ['nombre' => self::nombre_de_deposito($uno)];
+                    }
+                }
+
+                /*
+                 * Un `faltan` sin opciones es una pregunta sin respuesta posible (ronda de correcciones
+                 * del 29/9/2026): pasa con un empleado con "solo su sucursal" que no tiene ninguna
+                 * asignada en su ficha. Eso no se resuelve preguntando: se dice.
+                 */
+                if (!count($opciones)) {
+
+                    return self::rechazo(
+                        'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y no tiene ninguna asignada en su ficha. '
+                        . 'El stock inicial lo carga alguien con permiso para editar el stock; volvé a proponer el alta sin stock_inicial si la persona quiere el artículo igual.'
+                    );
+                }
+
+                return RespuestaDeCargaIa::faltan(['en qué depósito entra el stock inicial (todavía no se cargó nada)'], ['depositos' => $opciones]);
+            }
+        }
+
+        return ['cantidad' => $numero, 'address_id' => (int) $deposito->id, 'deposito' => self::nombre_de_deposito($deposito)];
+    }
+
+    /**
+     * El depósito del stock inicial cuando la persona no nombró ninguno: el de su ficha
+     * (`users.address_id`), el marcado como `default_address`, o el único que haya. Siempre uno que
+     * la persona pueda tocar (puede_en_deposito). null si hay que preguntar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \Illuminate\Support\Collection  $depositos
+     * @return \App\Models\Address|null
+     */
+    protected static function deposito_por_defecto(ContextoDeCargaIa $contexto, $depositos)
+    {
+        $persona = $contexto->persona;
+
+        if (!is_null($persona) && !empty($persona->address_id)) {
+
+            foreach ($depositos as $deposito) {
+
+                if ((int) $deposito->id === (int) $persona->address_id && self::puede_en_deposito($persona, $deposito->id)) {
+
+                    return $deposito;
+                }
+            }
+        }
+
+        foreach ($depositos as $deposito) {
+
+            if (!empty($deposito->default_address) && self::puede_en_deposito($persona, $deposito->id)) {
+
+                return $deposito;
+            }
+        }
+
+        if (count($depositos) === 1 && self::puede_en_deposito($persona, $depositos[0]->id)) {
+
+            return $depositos[0];
+        }
+
+        return null;
+    }
+
+    /**
+     * Carga el stock inicial de un artículo RECIÉN CREADO. Devuelve null si quedó, o el motivo.
+     *
+     * Por el camino del botón "Asignar Stock" del Listado (`POST api/stock-movement` →
+     * `StockMovementController::crear()`): un "Ingreso manual" con el depósito (o sin él), el
+     * proveedor del artículo y una observación que dice de dónde salió. En un artículo recién creado
+     * `CheckToAddress::puede_abrir_el_primer_deposito()` le abre el depósito, porque no hay stock
+     * global que perder.
+     *
+     * 🔴 `sin_unidades_individuales = true`: la persona dijo unidades del Listado, no bultos. Ver el
+     * 🔴 de ejecutar_stock_total().
+     *
+     * 🔴 NUNCA LANZA, y si falla el artículo NO se deshace: el alta ya pasó por el controller de la
+     * pantalla (mismo 🔴 que la foto en AltaDeArticuloConFotoIaHelper). El resultado del alta dice
+     * "pero el stock inicial NO se cargó (<motivo>)".
+     *
+     * 🔴 Y ES ATÓMICO: "falla" = NO QUEDÓ NADA ESCRITO (ronda de correcciones del 29/9/2026). El alta
+     * es de dos etapas, así que acá no hay ninguna transacción del ejecutor alrededor: si algo lanzaba
+     * después de CheckGlobalStock, el stock ya estaba sumado y el resultado decía "falló"; reintentar
+     * lo duplicaba. Y si la relectura no cerraba, el movimiento quedaba escrito igual. Ahora crear() y
+     * las dos relecturas van en UNA transacción: si la relectura no cierra se lanza ADENTRO (y se
+     * revierte el movimiento), y la excepción recién se convierte en el motivo afuera.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $articulo
+     * @param  float  $cantidad
+     * @param  int|null  $address_id
+     * @return string|null
+     */
+    public static function cargar_stock_inicial(ContextoDeCargaIa $contexto, Article $articulo, $cantidad, $address_id)
+    {
+        try {
+
+            $persona = $contexto->persona;
+
+            $cantidad = round((float) $cantidad, 2);
+
+            $address_id = is_null($address_id) || (int) $address_id <= 0 ? null : (int) $address_id;
+
+            if ($cantidad <= 0) {
+
+                return 'la cantidad de la tarjeta no es válida';
+            }
+
+            /*
+             * El permiso otra vez, al ejecutar: quien confirma puede no ser quien pidió, y entre la
+             * tarjeta y el clic el permiso se pudo sacar.
+             */
+            if (is_null($address_id)) {
+
+                if (!PermisosIaHelper::puede($persona, self::PERMISO)) {
+
+                    return 'tu usuario no tiene permiso para editar el stock';
+                }
+
+            } else {
+
+                if (!self::puede_en_deposito($persona, $address_id)) {
+
+                    return 'tu usuario no puede tocar el stock de ese depósito';
+                }
+
+                $existe = Address::where('user_id', $contexto->owner_id)
+                                    ->whereNull('buyer_id')
+                                    ->where('id', $address_id)
+                                    ->exists();
+
+                if (!$existe) {
+
+                    return 'el depósito de la tarjeta ya no existe';
+                }
+            }
+
+            DB::transaction(function () use ($contexto, $articulo, $cantidad, $address_id, $persona) {
+
+                $antes = self::stock_total($articulo->id);
+
+                $pivot_antes = is_null($address_id) ? 0.0 : self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
+
+                (new StockMovementController())->crear([
+                    'model_id'                     => (int) $articulo->id,
+                    'amount'                       => $cantidad,
+                    'concepto_stock_movement_name' => self::CONCEPTO_INGRESO,
+                    'to_address_id'                => $address_id,
+                    'provider_id'                  => $articulo->provider_id,
+                    'observations'                 => self::OBSERVACION_STOCK_INICIAL,
+                    'sin_unidades_individuales'    => true,
+                ], false, $contexto->owner, is_null($persona) ? null : (int) $persona->id);
+
+                /*
+                 * 🔴 Se relee, no se confía en crear(): con un artículo que no existe devuelve sin
+                 * hacer nada, y un depósito que no se pudo abrir manda el movimiento al stock global.
+                 * Lo único que prueba que el stock quedó es la fila; y si no quedó como tenía que
+                 * quedar, se lanza ACÁ ADENTRO para que la transacción se lleve el movimiento.
+                 */
+                $despues = self::stock_total($articulo->id);
+
+                if (abs(($antes + $cantidad) - $despues) > 0.01) {
+
+                    throw new AccionIaException(422, 'el sistema no lo registró como corresponde: el stock del artículo iba a quedar en ' . self::numero($despues));
+                }
+
+                if (!is_null($address_id)) {
+
+                    $pivot_despues = self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
+
+                    if (abs(($pivot_antes + $cantidad) - $pivot_despues) > 0.01) {
+
+                        throw new AccionIaException(422, 'el sistema no lo dejó en ' . self::nombre_de_deposito_por_id($address_id) . ': ese depósito iba a quedar en ' . self::numero($pivot_despues));
+                    }
+                }
+            });
+
+        } catch (AccionIaException $e) {
+
+            return $e->getMessage();
+
+        } catch (\Throwable $e) {
+
+            Log::warning('PropuestaStockIaHelper: no se pudo cargar el stock inicial del artículo recién creado', [
+                'article_id' => (int) $articulo->id,
+                'error'      => $e->getMessage(),
+            ]);
+
+            return 'falló el sistema al cargarlo y no quedó ningún movimiento';
+        }
+
+        return null;
+    }
+
+    /**
+     * Una cantidad de stock a partir de lo que dijo la persona (20, "20", "20 unidades", "20,5",
+     * "1.500 unidades"), o null si no se entiende. El punto de miles se lee como miles: ver
+     * MargenesPorListaIaHelper::numero_escrito_a_punto().
+     *
+     * @param  mixed  $valor
+     * @return float|null
+     */
+    public static function cantidad_de_stock($valor)
+    {
+        if (is_int($valor) || is_float($valor)) {
+
+            return round((float) $valor, 2);
+        }
+
+        if (!is_string($valor)) {
+
+            return null;
+        }
+
+        $texto = mb_strtolower(trim($valor));
+
+        if (!preg_match('/^(-?\d+(?:[.,]\d+)*)\s*(unidades|unidad|uds\.?|u\.?|un\.?)?$/u', $texto, $partes)) {
+
+            return null;
+        }
+
+        $numero = MargenesPorListaIaHelper::numero_escrito_a_punto($partes[1]);
+
+        return is_numeric($numero) ? round((float) $numero, 2) : null;
+    }
+
+    /**
+     * Lo que que_puedo_cargar de `article` le cuenta al modelo sobre los depósitos de ESTE negocio
+     * (misión alta-por-agente-margen-y-stock, 29/9/2026): si tiene, cuáles, y dónde va el stock. Sin
+     * esto el modelo no sabe, antes de proponer, si tiene que preguntar el depósito.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return array
+     */
+    public static function para_que_puedo_cargar(ContextoDeCargaIa $contexto)
+    {
+        $nombres = [];
+
+        foreach (self::depositos_del_dueno($contexto->owner_id) as $deposito) {
+
+            $nombres[] = self::nombre_de_deposito($deposito);
+        }
+
+        if (!count($nombres)) {
+
+            return [
+                'tiene_depositos' => false,
+                'el_stock_va'     => 'al total del artículo: stock_inicial en el alta, y para uno que ya existe proponer_stock_en_deposito SIN deposito.',
+            ];
+        }
+
+        return [
+            'tiene_depositos' => true,
+            'depositos'       => $nombres,
+            'el_stock_va'     => 'a un depósito: stock_inicial (+ deposito si la persona lo dijo) en el alta, y proponer_stock_en_deposito con deposito para uno que ya existe.',
+        ];
+    }
+
+    /**
+     * Una cantidad de stock como texto para un renglón o un resultado ("20", "20,5").
+     *
+     * @param  float  $numero
+     * @return string
+     */
+    public static function numero_legible($numero): string
+    {
+        return self::numero($numero);
+    }
+
+    /**
+     * La cantidad del stock como la tiene que leer la persona ANTES de confirmar: "20", o "20 unidades
+     * sueltas (no bultos de 12)" si el artículo se compra por bulto (ronda de correcciones del
+     * 29/9/2026).
+     *
+     * 🔴 POR QUÉ SE DICE. El asistente NO multiplica por el bulto, a propósito (ver el 🔴 de
+     * ejecutar_stock_total()): la persona dice unidades del Listado. Pero el botón "Asignar Stock" de
+     * la ficha SÍ multiplica, así que alguien acostumbrado a la pantalla puede estar pensando en
+     * cajas. La tarjeta lo dice con todas las letras y la persona decide antes del clic.
+     *
+     * @param  float  $cantidad
+     * @param  mixed  $unidades_individuales  Unidades por bulto del artículo (o del alta), o null.
+     * @return string
+     */
+    public static function texto_de_cantidad($cantidad, $unidades_individuales = null): string
+    {
+        $texto = self::numero($cantidad);
+
+        if (is_numeric($unidades_individuales) && (float) $unidades_individuales > 1) {
+
+            $texto .= ' unidades sueltas (no bultos de ' . self::numero($unidades_individuales) . ')';
+        }
+
+        return $texto;
+    }
+
+    /**
+     * Un rechazo de las cargas de stock de esta misión: empieza SIEMPRE con "No se cargó nada:"
+     * (ver MargenesPorListaIaHelper::NO_SE_CARGO: en demo3 un error de stock se leyó como un hecho).
+     *
+     * @param  string  $motivo
+     * @param  array  $opciones
+     * @return array
+     */
+    protected static function rechazo($motivo, array $opciones = [])
+    {
+        return RespuestaDeCargaIa::error(self::NO_SE_CARGO . $motivo, $opciones);
+    }
+
+    /**
      * Deja el stock del depósito en el número de la tarjeta, por
      * `ArticleController::update_addresses_stock()`, y lo confirma leyendo el pivot después.
      *
@@ -567,6 +1344,16 @@ class PropuestaStockIaHelper
         $persona = self::persona_autenticada($contexto, 'El stock de un depósito');
 
         $articulo = self::articulo_de_la_tarjeta($contexto, isset($esperado['article_id']) ? $esperado['article_id'] : 0);
+
+        /*
+         * La tarjeta del stock TOTAL de un negocio sin depósitos (misión alta-por-agente-margen-y-stock,
+         * 29/9/2026) va por su camino. Una tarjeta vieja no trae `sin_depositos` y sigue abajo, igual
+         * que siempre.
+         */
+        if (!empty($esperado['sin_depositos'])) {
+
+            return self::ejecutar_stock_total($contexto, $persona, $articulo, $esperado);
+        }
 
         $address_id = isset($esperado['address_id']) ? (int) $esperado['address_id'] : 0;
 
@@ -675,11 +1462,13 @@ class PropuestaStockIaHelper
      * @param  float  $antes  Lo que el depósito tiene ahora.
      * @param  float  $prometido  El absoluto que dijo la tarjeta.
      * @param  int  $address_id  Para el texto del rechazo.
+     * @param  string|null  $donde  Para el texto del rechazo cuando no es un depósito ("el artículo",
+     *                              el stock total de un negocio sin depósitos).
      * @return float
      *
      * @throws AccionIaException  422 si el delta dejaría el depósito en negativo.
      */
-    protected static function final_al_confirmar(array $esperado, $antes, $prometido, $address_id): float
+    protected static function final_al_confirmar(array $esperado, $antes, $prometido, $address_id, $donde = null): float
     {
         $modo = isset($esperado['modo']) ? (string) $esperado['modo'] : '';
 
@@ -705,7 +1494,7 @@ class PropuestaStockIaHelper
 
             throw new AccionIaException(
                 422,
-                'En ' . self::nombre_de_deposito_por_id($address_id) . ' ahora hay ' . self::numero($antes)
+                self::NO_SE_CARGO . 'en ' . (is_null($donde) ? self::nombre_de_deposito_por_id($address_id) : $donde) . ' ahora hay ' . self::numero($antes)
                 . ' (cambió desde que armé la tarjeta): restarle ' . self::numero($cantidad)
                 . ' lo dejaría en negativo. Pedímelo de nuevo con el número que quieras.'
             );

@@ -889,7 +889,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_alta',
-                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; "con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
+                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; pero DÓNDE va el margen depende del negocio (que_puedo_cargar de article te lo dice): si trabaja con listas de precio, va POR LISTA en margenes_por_lista y se rechazan percentage_gain, price (precio manual) y apply_provider_percentage_gain —si la persona no dijo para qué lista, preguntale (podés ofrecer "todas")—; si no trabaja con listas, va en percentage_gain. El stock inicial va en stock_inicial (y deposito, solo si el negocio tiene depósitos). 🔴 Lo que le digas a la persona que se carga tiene que estar en los renglones de la tarjeta: si pidió algo que la tarjeta no muestra, decile que eso NO se carga. "Con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -921,13 +921,29 @@ class HerramientasDeCarga
                             'type'        => 'string',
                             'description' => 'Solo para entidad article: la descripción del producto para la ficha y la tienda online, en español. Con reemplaza_a NO la mandes salvo que la persona pida cambiarla: se hereda entera de la tarjeta anterior (si la mandás, reemplaza a la heredada).',
                         ],
+                        /*
+                         * Misión alta-por-agente-margen-y-stock (29/9/2026, demo3 artículo 17320),
+                         * AL FINAL de las propiedades por la regla del prefijo del caché. Opcional:
+                         * un cliente MCP viejo que no la manda sigue andando igual.
+                         */
+                        'margenes_por_lista' => self::esquema_de_margenes_por_lista(
+                            'Solo para entidad article en un negocio que trabaja con listas de precio (que_puedo_cargar de article te lo dice): el margen de ganancia de cada lista, como lo dijo la persona. "lista" es el nombre de la lista (o "todas"); "margen", el porcentaje (30 es 30 %). Si la persona dijo un margen sin decir para qué lista, NO lo mandes: preguntale cuál. Con reemplaza_a, lo que mandes se SUMA a los márgenes de la tarjeta anterior (si repetís una lista, gana lo nuevo): mandá solo lo que cambia o se agrega; si no cambia nada, no lo mandes (se hereda); [] los saca todos.'
+                        ),
+                        'stock_inicial'      => [
+                            'type'        => 'number',
+                            'description' => 'Solo para entidad article: cuántas unidades de stock entran al crearlo, como lo dijo la persona (las unidades del Listado, no bultos). Queda en un renglón de la tarjeta y se carga al confirmar. Con reemplaza_a NO lo mandes si no cambia: se hereda; 0 lo saca.',
+                        ],
+                        'deposito'           => [
+                            'type'        => 'string',
+                            'description' => 'Solo con stock_inicial, y solo si el negocio tiene depósitos o sucursales: en cuál entra el stock inicial. Si la persona no lo dijo, no lo mandes: uso el suyo o el único, y si hay que elegir la respuesta trae "faltan".',
+                        ],
                     ],
                     'required'   => ['entidad', 'datos'],
                 ],
             ],
             [
                 'name'         => 'proponer_edicion',
-                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme: NO cambia nada. Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme: NO cambia nada. Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -945,6 +961,10 @@ class HerramientasDeCarga
                             'additionalProperties' => true,
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        // Misión alta-por-agente-margen-y-stock (29/9/2026): al final, por el prefijo del caché.
+                        'margenes_por_lista' => self::esquema_de_margenes_por_lista(
+                            'Solo para entidad article en un negocio con listas de precio: el margen NUEVO de cada lista que cambia ("cambiale el margen de la general a 35" es [{"lista": "general", "margen": 35}]). Si solo cambia el margen, mandá cambios vacío ({}). En un negocio con listas el margen NO va en percentage_gain (ni un precio manual en price): no mueven ningún precio de lista. Con reemplaza_a de una edición del mismo artículo, lo que mandes se SUMA a los márgenes de la tarjeta anterior (gana lo nuevo); [] los saca.'
+                        ),
                     ],
                     'required'   => ['entidad', 'registro', 'cambios'],
                 ],
@@ -1112,7 +1132,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_stock_en_deposito',
-                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 a Florida" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 a Florida" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si el negocio no tiene depósitos ni sucursales, no mandes deposito: la tarjeta deja el stock TOTAL del artículo con el mismo modo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es una carga hecha.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1126,7 +1146,7 @@ class HerramientasDeCarga
                         ],
                         'deposito'    => [
                             'type'        => 'string',
-                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito.',
+                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito. Si el negocio no tiene depósitos, no lo mandes: la tarjeta deja el stock total del artículo.',
                         ],
                         'cantidad'    => [
                             'type'        => 'number',
@@ -1139,7 +1159,14 @@ class HerramientasDeCarga
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
                     ],
-                    'required'   => ['deposito', 'cantidad', 'modo'],
+                    /*
+                     * Misión alta-por-agente-margen-y-stock (29/9/2026): `deposito` dejó de ser
+                     * obligatorio. En un negocio sin depósitos no hay ninguno que mandar (en demo3 esa
+                     * era la única herramienta de stock y cortaba con un error que el modelo leyó
+                     * como "ya está"). Con depósitos y sin mandarlo, la respuesta trae "faltan". Un
+                     * cliente MCP viejo que lo manda sigue andando igual.
+                     */
+                    'required'   => ['cantidad', 'modo'],
                 ],
             ],
             [
@@ -1202,7 +1229,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_permiso_de_empleado',
-                'description'  => 'Arma la tarjeta para DARLE o SACARLE un permiso a un empleado, por el mismo camino que la pantalla de Empleados. El empleado va por su nombre y el permiso por su nombre como lo muestra la pantalla ("Listar ventas") o por su código ("sale.index"). 🔴 SIEMPRE deja tarjeta para confirmar, aunque el dueño tenga el modo directo prendido y aunque te pidan que lo hagas sin preguntar: la pantalla reemplaza la lista entera de permisos y un cambio mal hecho deja a alguien sin poder trabajar, y nadie se entera hasta que llega. La tarjeta muestra CON QUÉ PERMISOS QUEDA el empleado: cuando la respuesta vuelva, contá eso. Solo la puede usar el dueño o un administrador. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para DARLE o SACARLE un permiso a un empleado, por el mismo camino que la pantalla de Empleados. El empleado va por su nombre y el permiso por su nombre como lo muestra la pantalla ("Ver el listado de ventas") o por su código ("sale.index"). 🔴 SIEMPRE deja tarjeta para confirmar, aunque el dueño tenga el modo directo prendido y aunque te pidan que lo hagas sin preguntar: la pantalla reemplaza la lista entera de permisos y un cambio mal hecho deja a alguien sin poder trabajar, y nadie se entera hasta que llega. La tarjeta muestra CON QUÉ PERMISOS QUEDA el empleado: cuando la respuesta vuelva, contá eso. Solo la puede usar el dueño o un administrador. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1212,7 +1239,7 @@ class HerramientasDeCarga
                         ],
                         'permiso'     => [
                             'type'        => 'string',
-                            'description' => 'Nombre del permiso como lo muestra la pantalla de Empleados, o su código. "Ver las ventas" es "Listar ventas" (sale.index).',
+                            'description' => 'Nombre del permiso como lo muestra la pantalla de Empleados, o su código. "Ver las ventas" es "Ver el listado de ventas" (sale.index).',
                         ],
                         'accion'      => [
                             'type'        => 'string',
@@ -1656,7 +1683,9 @@ class HerramientasDeCarga
              * tienen SoftDeletes y un borrado no se deshace (ver NUNCA_AUTO_CONFIRMABLES).
              */
             case 'que_puedo_cargar':
-                return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad')));
+                // Con el contexto, el de `article` dice además las listas y los depósitos de ESTE
+                // negocio (misión alta-por-agente-margen-y-stock, 29/9/2026).
+                return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad'), $contexto));
 
             case 'proponer_alta':
                 /*
@@ -1694,7 +1723,8 @@ class HerramientasDeCarga
                         EntradaDeCargaIa::valor($input, 'entidad'),
                         EntradaDeCargaIa::valor($input, 'registro'),
                         self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
-                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a'),
+                        EntradaDeCargaIa::valor($input, 'margenes_por_lista')
                     )
                 ));
 
@@ -2189,6 +2219,35 @@ class HerramientasDeCarga
         return [
             'type'        => 'integer',
             'description' => 'tarjeta_id de una tarjeta anterior que esta corrige, si la corrección cambia la subcategoría, la cuenta o la tarea.',
+        ];
+    }
+
+    /**
+     * Esquema de `margenes_por_lista`, común al alta y a la edición de un artículo (misión
+     * alta-por-agente-margen-y-stock, 29/9/2026). Lo resuelve MargenesPorListaIaHelper::resolver().
+     *
+     * @param  string  $descripcion
+     * @return array
+     */
+    protected static function esquema_de_margenes_por_lista($descripcion): array
+    {
+        return [
+            'type'        => 'array',
+            'description' => (string) $descripcion,
+            'items'       => [
+                'type'       => 'object',
+                'properties' => [
+                    'lista'  => [
+                        'type'        => 'string',
+                        'description' => 'El nombre de la lista de precios como lo dijo la persona, o "todas".',
+                    ],
+                    'margen' => [
+                        'type'        => 'number',
+                        'description' => 'El margen de ganancia en porcentaje: 30 es 30 %.',
+                    ],
+                ],
+                'required'   => ['lista', 'margen'],
+            ],
         ];
     }
 }

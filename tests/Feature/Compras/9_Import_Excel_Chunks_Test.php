@@ -268,6 +268,47 @@ class Import_Excel_Chunks_Test extends ComprasTestCase
     /**
      * @group compras
      * @test
+     *
+     * Regresion (Servian, 29/9/2026): en un worker de cola no hay sesion ni Auth, asi que
+     * UserHelper::user() da null y NewProviderOrderHelper reventaba con "Trying to get property
+     * 'iva_included' of non-object". Los otros tests corren el job con el usuario del test
+     * logueado y por eso no lo veian.
+     */
+    public function el_job_procesa_la_compra_sin_sesion_como_en_un_worker_de_cola()
+    {
+        Bus::fake([ProcessProviderOrderArticleImport::class]);
+
+        $provider_order = $this->crear_orden_vacia();
+        $archivo = $this->generar_excel_de_pedido(5);
+
+        $data = array_merge([
+            'models'             => new UploadedFile($archivo, basename($archivo), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', null, true),
+            'provider_order_id'  => $provider_order->id,
+            'start_row'          => 2,
+            'finish_row'         => 6,
+            'import_type'        => 'pedido',
+            'overwrite_articles' => 0,
+        ], $this->columnas_pedido());
+
+        $this->post('api/provider-order/excel/import', $data)->assertStatus(200);
+
+        $job = Bus::dispatched(ProcessProviderOrderArticleImport::class)->first();
+
+        // Simula el worker: sin usuario logueado ni sesion.
+        \Illuminate\Support\Facades\Auth::forgetGuards();
+        session()->flush();
+        $this->assertNull(\App\Http\Controllers\Helpers\UserHelper::user());
+
+        $job->handle();
+
+        $import_status = ImportStatus::where('provider_order_id', $provider_order->id)->first();
+        $this->assertSame('completado', $import_status->status, (string) $import_status->error_message);
+        $this->assertSame(5, $provider_order->fresh()->articles()->count());
+    }
+
+    /**
+     * @group compras
+     * @test
      */
     public function provider_order_inexistente_da_404_no_una_excepcion_cruda()
     {

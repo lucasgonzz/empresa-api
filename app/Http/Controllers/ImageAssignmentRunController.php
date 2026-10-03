@@ -118,14 +118,26 @@ class ImageAssignmentRunController extends Controller
     }
 
     /**
-     * POST image-assignment-items/{id}/aprobar
+     * POST image-assignment-items/{id}/aprobar {candidata?}
      *
+     * `candidata` es opcional: la `clave` de una de las `alternativas` del item, cuando la persona eligió
+     * otra imagen de las que se encontraron. Sin ella se aprueba la propuesta del sistema, como siempre
+     * (un cliente viejo que no manda nada sigue andando igual).
+     *
+     * @param  \Illuminate\Http\Request $request
      * @param  int $id
      * @return \Illuminate\Http\JsonResponse  {model: ItemPayload} | 422 {message}
      */
-    public function aprobar($id)
+    public function aprobar(Request $request, $id)
     {
-        return $this->respuesta_de_item(ImageAssignmentRunHelper::aprobar($this->userId(), (int) $id, $this->userId(false)));
+        $candidata = $request->input('candidata');
+
+        return $this->respuesta_de_item(ImageAssignmentRunHelper::aprobar(
+            $this->userId(),
+            (int) $id,
+            $this->userId(false),
+            is_string($candidata) && $candidata !== '' ? $candidata : null
+        ));
     }
 
     /**

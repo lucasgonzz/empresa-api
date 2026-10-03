@@ -11,6 +11,7 @@ use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Article;
 use App\Models\Budget;
+use App\Models\PdfColumnProfile;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\Sale;
@@ -129,6 +130,31 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
             'cost'        => $precio / 2,
             'stock'       => $stock,
             'iva_id'      => 2,
+        ]);
+    }
+
+    /**
+     * Una venta del dueño con número y total propios, creada adentro de la transacción del test.
+     *
+     * 🔴 No volver a tomar "la última venta del dueño" de la base: ningún seeder de
+     * `database/seeders/testing` crea ventas, así que en una base recién sembrada no hay ninguna y
+     * los tests del link daban rojo. Pasaban solo en slots con ventas residuales de corridas viejas
+     * (medido el 30/9/2026: 0 en una base limpia, 89 en s23).
+     *
+     * El número es fijo y alto, como los de los presupuestos de este archivo (990053, 990153), para
+     * que no choque con ninguna venta que haya quedado en la base: el link se busca por `num`.
+     *
+     * @param  int  $numero
+     * @return Sale
+     */
+    protected function venta_de_prueba($numero)
+    {
+        return Sale::create([
+            'num'       => $numero,
+            'user_id'   => $this->dueno->id,
+            'moneda_id' => 1,
+            'total'     => 1530,
+            'terminada' => 1,
         ]);
     }
 
@@ -417,9 +443,9 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
 
         User::where('id', $this->dueno->id)->update(['api_url' => 'https://api-p53.comerciocity.com']);
 
-        $venta = Sale::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+        $venta = $this->venta_de_prueba(990253);
 
-        $this->assertNotNull($venta, 'El fixture tiene que tener al menos una venta.');
+        $this->assertNotNull($venta, 'El test tiene que tener una venta del dueño.');
 
         list($conversation) = $this->conversacion('Pasame el PDF de esa venta');
 
@@ -463,6 +489,58 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
     }
 
     /**
+     * El link del presupuesto es el MISMO que comparte el botón de WhatsApp de la pantalla, y ese
+     * botón lleva el diseño de presupuesto marcado por defecto. Sin ese parámetro la API imprime el
+     * PDF de siempre y el cliente recibiría un documento distinto según a quién se lo pida el dueño.
+     *
+     * @test
+     */
+    public function el_link_del_presupuesto_lleva_el_diseno_por_defecto_del_dueno()
+    {
+        User::where('id', $this->dueno->id)->update(['api_url' => 'https://api-p53.comerciocity.com']);
+
+        $cliente = Client::where('user_id', $this->dueno->id)->first();
+
+        $presupuesto = Budget::create([
+            'num'              => 990054,
+            'client_id'        => $cliente->id,
+            'user_id'          => $this->dueno->id,
+            'total'            => 1234,
+            'budget_status_id' => 1,
+        ]);
+
+        /**
+         * La base del slot puede traer los diseños por defecto ya sembrados (el seeder de la misión):
+         * se parte de un dueño SIN diseños de presupuesto. Va dentro de la transacción del test.
+         */
+        PdfColumnProfile::where('user_id', $this->dueno->id)->where('model_name', 'budget')->delete();
+
+        $crear = function ($usuario, $modelo, $nombre, $default) {
+            return PdfColumnProfile::create([
+                'user_id' => $usuario, 'model_name' => $modelo, 'name' => $nombre, 'is_default' => $default,
+                'paper_width_mm' => 210, 'printable_width_mm' => 210, 'columns' => [],
+            ]);
+        };
+
+        $crear($this->dueno->id, 'budget', 'zz Presupuesto sin marca', false);
+        $crear($this->dueno->id, 'sale', 'zz Remito default', true);
+        $crear($this->dueno->id + 999999, 'budget', 'zz Presupuesto de otro dueno', true);
+
+        list($conversation) = $this->conversacion('Pasame el PDF del presupuesto');
+
+        /** Sin ningún diseño de presupuesto marcado por defecto: el link de siempre, sin query. */
+        $respuesta = $this->link_de_pdf($conversation, ['tipo' => 'presupuesto', 'numero' => 990054]);
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertStringEndsWith('/budget/pdf/' . $presupuesto->id . '/1/0', $respuesta['link'], 'Ni el de venta ni el de otro dueno ni el que no es default pueden colarse.');
+
+        /** Con el default del dueño: lleva SU id (y solo ese). */
+        $propio = $crear($this->dueno->id, 'budget', 'zz Presupuesto por defecto', true);
+
+        $respuesta = $this->link_de_pdf($conversation, ['tipo' => 'presupuesto', 'numero' => 990054]);
+        $this->assertStringEndsWith('/budget/pdf/' . $presupuesto->id . '/1/0?pdf_column_profile_id=' . $propio->id, $respuesta['link']);
+    }
+
+    /**
      * 🔴 UN `api_url` CORRUPTO NO SE PASA TAL CUAL. Hay historia de valores con `/public/public`
      * persistidos (existe el comando `normalizar_api_url` por eso), y `build_pdf_url()` los
      * concatena sin mirar.
@@ -491,7 +569,9 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
 
         config(['app.APP_URL' => '']);
 
-        $venta = Sale::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+        // La venta tiene que existir: link() la busca ANTES de mirar la URL, y sin venta el error
+        // sería "No encontré…" en vez del de la dirección pública, que es lo que se prueba acá.
+        $venta = $this->venta_de_prueba(990353);
 
         list($conversation) = $this->conversacion('Pasame el PDF');
 

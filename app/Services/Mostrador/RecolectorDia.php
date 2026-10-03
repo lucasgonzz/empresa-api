@@ -105,9 +105,8 @@ class RecolectorDia extends RecolectorBase
             ->where('sales.user_id', $owner->id)
             ->soloVentasReales()
             ->where('sales.terminada', 1)
-            ->where(function ($q) {
-                $q->whereNull('sales.moneda_id')->orWhere('sales.moneda_id', self::MONEDA_PESOS);
-            });
+            // Pesos es todo lo que no es dolares (moneda_id NULL o 0 incluidos): ver Sale::EXPRESION_EN_PESOS.
+            ->whereRaw(Sale::EXPRESION_EN_PESOS);
 
         if (Sale::fechaDeReportePorPedido($owner)) {
             return $query->enRangoDeFechas($desde, $hasta, $owner);
@@ -274,6 +273,10 @@ class RecolectorDia extends RecolectorBase
             ->where('current_acounts.user_id', $owner->id)
             ->where('current_acounts.status', 'nota_credito')
             ->whereNotNull('current_acounts.haber')
+            // Solo devoluciones de VENTA: una NC a proveedor (provider_id cargado, misión
+            // devoluciones-compras-y-rediseno, 1/10/2026) no es una devolución de un cliente, y su
+            // costo no tiene que restar del costo de lo vendido.
+            ->whereNull('current_acounts.provider_id')
             ->whereBetween('current_acounts.created_at', [$inicio, $fin])
             ->whereRaw(
                 '(CASE WHEN credit_accounts.id IS NOT NULL THEN COALESCE(credit_accounts.moneda_id, ?) ELSE COALESCE(current_acounts.moneda_id, ?) END) <> 2',

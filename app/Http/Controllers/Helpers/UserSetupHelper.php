@@ -406,13 +406,17 @@ class UserSetupHelper
                 Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de
                 columnas (tabla pdf_column_options, sin user_id) y los tres seeders
                 de perfiles que siguen lo necesitan poblado. PdfColumnProfileSeeder crea los perfiles de
-                venta (Remito, Factura comun) y PdfColumnProfileArticleSeeder el de listado de
-                articulos. No reordenar.
+                venta (Remito, Factura comun), PdfColumnProfileArticleSeeder el de listado de
+                articulos y PdfColumnProfileDocumentosSeeder los de presupuesto y pedido online
+                (itera los duenios, asi que como el de articulos necesita al usuario ya creado: el
+                foreach que corre esta lista es posterior a create_user()). No reordenar.
             */
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
+            'PdfColumnProfileDocumentosSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 
@@ -421,6 +425,20 @@ class UserSetupHelper
                 create_user(), así que el dueño ya existe cuando este llega.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                "Diseño predeterminado" de Vender (misión diseno-vender-configurable, 28/9/2026).
+                Itera los dueños (owner_id null), así que tiene que correr después de
+                create_user(): este foreach ya lo es.
+            */
+            'VenderLayoutSeeder',
+
+            /*
+                Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno
+                por lista de precios, o uno genérico. Tiene que correr después de create_user() y
+                de crear_price_types(), y este foreach ya va después de los dos.
+            */
+            'ArticleTicketDesignSeeder',
 
             /*
                 Respaldo idempotente: para cuando las 4 extensiones de IA (agregadas en

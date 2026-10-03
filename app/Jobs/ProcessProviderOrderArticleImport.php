@@ -142,11 +142,18 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
              * de precio) lee al usuario de la sesión, y en el worker no hay sesión: sin esto,
              * UserHelper::user() da null y la importación revienta en todo worker real. Ver
              * autenticado_como().
+             *
+             * Lo sufrió Servian el 29/9/2026 (Compra N° 9, cuatro intentos fallidos: 'Trying to get
+             * property 'iva_included' of non-object'), y develop lo arregló el 30/9 (ba57c328,
+             * release 4.3.4) instalando al dueño. Esto lo contiene: si el job no trae a la persona
+             * (encolado antes de este cambio) o ya no existe, persona_que_importo() devuelve al
+             * dueño, que es exactamente lo de ese arreglo; si la trae, los movimientos y los cambios
+             * de precio quedan a nombre de quien importó, como en la pantalla de compras.
              */
             $this->autenticado_como($this->persona_que_importo(), function () use ($importer) {
 
                 Excel::import($importer, $this->archivo_excel_path);
-            });
+            });
 
             $this->marcar_completado($importer);
 

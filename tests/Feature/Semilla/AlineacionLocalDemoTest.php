@@ -87,11 +87,30 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
          */
         'PdfColumnProfileArticleSeeder',
 
+        /*
+         * Los diseños de PDF de presupuesto y de pedido online. Como el de artículos, itera los
+         * dueños: en `DatabaseSeeder` va al final de `run()` y en la demo en `base_seeders()`.
+         */
+        'PdfColumnProfileDocumentosSeeder',
+
         /* Catálogos del módulo de producción, que faltaban del lado de LOCAL. */
         'OrderProductionStatusSeeder',
         'ProductionBatchStatusSeeder',
         'ProductionBatchMovementTypeSeeder',
         'RecipeRouteTypeSeeder',
+
+        /*
+         * El "Diseño predeterminado" de Vender (mision diseno-vender-configurable, 28/9/2026): corre
+         * en local (DatabaseSeeder) y en la demo, y sin el la demo arranca sin ningun diseño en el ABM.
+         */
+        'VenderLayoutSeeder',
+
+        /*
+         * Los diseños de etiquetas de góndola (mision disenos-etiquetas-gondola, 29/9/2026): corre
+         * en local (DatabaseSeeder) y en la demo, y sin el el menu de etiquetas del listado queda
+         * con la opcion de siempre y el ABM de diseños vacio.
+         */
+        'ArticleTicketDesignSeeder',
 
         /* Los que ya estaban en los dos y sostienen la aritmética de `semilla:datos`. */
         'AddressSeeder',

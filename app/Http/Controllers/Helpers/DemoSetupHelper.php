@@ -1003,7 +1003,14 @@ class DemoSetupHelper
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
+            /*
+                Disenos de PDF de presupuesto y pedido online (28/9/2026 en adelante). Itera los
+                duenios, igual que el de articulos de arriba: por eso va en esta lista y no en
+                common_seeders() de DatabaseSeeder.
+            */
+            'PdfColumnProfileDocumentosSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 
@@ -1013,6 +1020,22 @@ class DemoSetupHelper
                 dueño, y si corriera antes no agarraría a los que la demo acaba de crear.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                "Diseño predeterminado" de Vender (misión diseno-vender-configurable, 28/9/2026).
+                Itera los dueños (owner_id null), así que tiene que correr después de
+                create_demo_user(): este foreach ya lo es. Los empleados que crea EmployeeSeeder no
+                reciben diseño propio: el diseño es del dueño y lo usa todo el negocio.
+            */
+            'VenderLayoutSeeder',
+
+            /*
+                Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno
+                por lista de precios, o uno genérico. Tiene que correr DESPUÉS de que se siembran
+                las listas: run() llama a crear_price_types() antes de este foreach, así que la
+                demo con listas nace con un diseño por lista.
+            */
+            'ArticleTicketDesignSeeder',
 
             /*
                 D3 (misión 63): las dos únicas extensiones del padrón que `ExtencionSeeder` NO

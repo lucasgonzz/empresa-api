@@ -426,7 +426,10 @@ class Consulta_generica_omnisciente_Test extends TestCase
      */
     public function los_operadores_nuevos_y_la_moneda_por_etiqueta()
     {
-        Sale::create(['user_id' => $this->comercio->id, 'num' => 10, 'total' => 100, 'moneda_id' => null, 'observations' => null]);
+        $sin_moneda = Sale::create(['user_id' => $this->comercio->id, 'num' => 10, 'total' => 100, 'moneda_id' => null, 'observations' => null]);
+        // Venta vieja, sin moneda: `Sale` ya no deja CREAR una (la pasa a pesos), asi que se la deja en NULL directo
+        // en la base, como estan las de antes de la columna, que es el dato que esta prueba necesita.
+        DB::table('sales')->where('id', $sin_moneda->id)->update(['moneda_id' => null]);
         Sale::create(['user_id' => $this->comercio->id, 'num' => 11, 'total' => 200, 'moneda_id' => 1, 'observations' => 'urgente']);
         Sale::create(['user_id' => $this->comercio->id, 'num' => 12, 'total' => 300, 'moneda_id' => 2, 'observations' => 'normal']);
 

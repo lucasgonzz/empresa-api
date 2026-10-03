@@ -5,8 +5,12 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileHelper;
+use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PdfColumnProfile;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -46,13 +50,41 @@ class PdfColumnProfileController extends Controller
 
         $this->assert_sum_of_column_widths_not_exceeds_paper($request, null);
 
+        $is_afip_ticket = (bool) $request->input('is_afip_ticket', false);
+
+        /**
+         * El diseño de la hoja se normaliza ANTES de escribir nada: si no tiene forma, el 422 tiene
+         * que salir sin haber apagado los "por defecto" de los hermanos, que es lo primero que
+         * escribe este método.
+         */
+        try {
+            $page_layout = $this->normalize_page_layout(
+                $this->page_layout_from_request($request),
+                $request->model_name,
+                $is_afip_ticket
+            );
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        /** Una factura de ARCA diseñada con cajas no puede nacer en una hoja donde no entra su cuadro (A5). */
+        $hoja_chica = $this->factura_en_hoja_chica_response(
+            $request->model_name,
+            $is_afip_ticket,
+            $page_layout,
+            $request->input('paper_height_mm')
+        );
+
+        if (! is_null($hoja_chica)) {
+            return $hoja_chica;
+        }
+
         if ($request->is_default) {
             PdfColumnProfile::where('user_id', $this->userId())
                 ->where('model_name', $request->model_name)
                 ->update(['is_default' => false]);
         }
 
-        $is_afip_ticket = (bool) $request->input('is_afip_ticket', false);
         $this->clear_whatsapp_default_flags_on_siblings(
             $request->model_name,
             $is_afip_ticket,
@@ -117,6 +149,19 @@ class PdfColumnProfileController extends Controller
              */
             'show_total_in_footer' => (bool) $request->input('show_total_in_footer', true),
             /**
+             * Flag para mostrar/ocultar la línea "Sub Total" del pie. Default true (el default de la
+             * migración). Se persistía SOLO por la columna: el formulario lo mandaba y este
+             * controlador lo descartaba en silencio, así que el checkbox "Mostrar Sub Total en el pie"
+             * no hacía nada (misión pdf-presupuestos-y-pedidos-personalizables, que lo expone también
+             * para presupuestos y pedidos online).
+             */
+            'show_subtotal_in_footer' => (bool) $request->input('show_subtotal_in_footer', true),
+            /**
+             * Imprimir la fecha actual en vez de la del comprobante. Default false. Antes solo
+             * entraba por update(): un diseño creado con la casilla tildada la perdía.
+             */
+            'use_current_date' => (bool) $request->input('use_current_date', false),
+            /**
              * Modo de listado de descuentos/recargos en el pie: 'descriptivo' (monto + % + total parcial,
              * comportamiento actual) o 'simple' (solo % + nombre). Default 'descriptivo' si no se envía.
              */
@@ -143,6 +188,16 @@ class PdfColumnProfileController extends Controller
              * el esquema exacto (ver PdfColumnProfile::$casts).
              */
             'catalog_header_layout' => CatalogHeaderLayoutHelper::normalize($request->input('catalog_header_layout')),
+            /**
+             * Diseño de la hoja armado en el diseñador de PDF, ya normalizado y con los bloques
+             * fijos de ARCA si el perfil es fiscal (normalize_page_layout()). Null = el PDF de
+             * siempre: un perfil creado sin pasar por el diseñador imprime como hasta ahora.
+             */
+            'page_layout' => $page_layout,
+            /**
+             * Alto de la hoja en mm (solo lo lee el PDF con page_layout). Null = A4 (297).
+             */
+            'paper_height_mm' => $this->normalize_paper_height_mm($request->input('paper_height_mm')),
         ]);
 
         GeneralHelper::attachModels(
@@ -173,6 +228,48 @@ class PdfColumnProfileController extends Controller
 
         $new_model_name = $request->model_name ?: $model->model_name;
 
+        $is_afip_ticket = $request->has('is_afip_ticket')
+            ? (bool) $request->is_afip_ticket
+            : (bool) $model->is_afip_ticket;
+
+        /**
+         * page_layout solo se toca si el PUT lo menciona (null incluido: "volver al diseño de
+         * siempre"). Un PUT que cambia el nombre o una columna no puede convertir ni desconvertir
+         * el diseño. Se normaliza ANTES de escribir nada, por el mismo motivo que en store(): un
+         * 422 no puede dejar a los hermanos sin su "por defecto".
+         */
+        $has_page_layout = $request->has('page_layout');
+        $page_layout = null;
+
+        if ($has_page_layout) {
+            try {
+                $page_layout = $this->normalize_page_layout(
+                    $this->page_layout_from_request($request),
+                    $new_model_name,
+                    $is_afip_ticket
+                );
+            } catch (\InvalidArgumentException $e) {
+                return response()->json(['message' => $e->getMessage()], 422);
+            }
+        }
+
+        /**
+         * Una factura de ARCA diseñada con cajas no puede quedar en una hoja donde no entra su
+         * cuadro (A5). Se mira lo que QUEDA guardado: el diseño y el alto del PUT si vienen, si no
+         * los del perfil. Así se frena también tildar "Es factura de ARCA" en el formulario de un
+         * diseño armado en A5, que no pasa por el diseñador (que ya no deja elegir A5).
+         */
+        $hoja_chica = $this->factura_en_hoja_chica_response(
+            $new_model_name,
+            $is_afip_ticket,
+            $has_page_layout ? $page_layout : $model->page_layout,
+            $request->has('paper_height_mm') ? $request->input('paper_height_mm') : $model->paper_height_mm
+        );
+
+        if (! is_null($hoja_chica)) {
+            return $hoja_chica;
+        }
+
         if ($request->is_default) {
             PdfColumnProfile::where('user_id', $this->userId())
                 ->where('model_name', $new_model_name)
@@ -180,9 +277,6 @@ class PdfColumnProfileController extends Controller
                 ->update(['is_default' => false]);
         }
 
-        $is_afip_ticket = $request->has('is_afip_ticket')
-            ? (bool) $request->is_afip_ticket
-            : (bool) $model->is_afip_ticket;
         $this->clear_whatsapp_default_flags_on_siblings(
             $new_model_name,
             $is_afip_ticket,
@@ -207,6 +301,7 @@ class PdfColumnProfileController extends Controller
             'is_default_tienda',
             'paper_width_mm',
             'printable_width_mm',
+            'paper_height_mm',
             'margin_mm',
             'logo_size_mm',
             'sheet_type_id',
@@ -217,6 +312,7 @@ class PdfColumnProfileController extends Controller
             'show_client_description',
             'footer_text',
             'show_total_in_footer',
+            'show_subtotal_in_footer',
             'discount_display_mode',
             'use_current_date',
             'header_image_url',
@@ -260,6 +356,15 @@ class PdfColumnProfileController extends Controller
          */
         if (array_key_exists('catalog_header_layout', $fillable)) {
             $fillable['catalog_header_layout'] = CatalogHeaderLayoutHelper::normalize($fillable['catalog_header_layout']);
+        }
+
+        /** Ya normalizado arriba (antes de cualquier escritura). */
+        if ($has_page_layout) {
+            $fillable['page_layout'] = $page_layout;
+        }
+
+        if (array_key_exists('paper_height_mm', $fillable)) {
+            $fillable['paper_height_mm'] = $this->normalize_paper_height_mm($fillable['paper_height_mm']);
         }
 
         $model->update($fillable);
@@ -353,6 +458,91 @@ class PdfColumnProfileController extends Controller
             'company_name'   => ! is_null($user) ? (string) $user->company_name : '',
             'default_layout' => CatalogHeaderLayoutHelper::default_for_user($user),
         ], 200);
+    }
+
+    /**
+     * Lo que necesita el diseñador de PDF (cajas) al abrirse: el catálogo de campos del modelo, los
+     * bloques fijos, los formatos de hoja, los límites del diseño, el diseño derivado de los flags
+     * del perfil y un comprobante para "Ver un PDF de prueba" (misión diseno-pdf-configurable,
+     * contrato §2.3 del plan).
+     *
+     * GET api/pdf-column-profiles/page-layout-catalog?model_name=sale|budget|order&profile_id=&is_afip_ticket=0|1
+     *
+     * - model_name que no se diseña con cajas (el catálogo de artículos, o nada) → 422.
+     * - profile_id de otro dueño o de otro modelo se IGNORA, no da 404: el diseñador abre igual,
+     *   con el derivado de un perfil nuevo. Es lo que pasa también con un perfil que se está
+     *   creando y todavía no tiene id.
+     * - is_afip_ticket viaja porque el formulario puede tener tildado "Es factura de ARCA" sin
+     *   haber guardado todavía: manda el del formulario; si no viene, el del perfil guardado.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function page_layout_catalog(Request $request)
+    {
+        /**
+         * Sin cast a string: un `model_name[]=sale` llega como arreglo, y castearlo tira un notice
+         * que Laravel convierte en 500. Lo que no es texto es, simplemente, un modelo que no se
+         * diseña con cajas.
+         */
+        $model_name = $request->query('model_name');
+
+        if (! is_string($model_name) || ! CatalogoDeCamposPdf::soporta($model_name)) {
+            return response()->json(['message' => 'Ese tipo de diseño no se arma con cajas.'], 422);
+        }
+
+        $owner_id = $this->userId();
+
+        $profile = null;
+        $profile_id = $request->query('profile_id');
+
+        if (is_numeric($profile_id)) {
+            $profile = PdfColumnProfile::where('user_id', $owner_id)
+                ->where('model_name', $model_name)
+                ->where('id', (int) $profile_id)
+                ->first();
+        }
+
+        $is_afip_ticket = $request->filled('is_afip_ticket')
+            ? $request->boolean('is_afip_ticket')
+            : (! is_null($profile) && (bool) $profile->is_afip_ticket);
+
+        $es_fiscal = DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket);
+
+        return response()->json([
+            'model_name'            => $model_name,
+            'es_fiscal'             => $es_fiscal,
+            'categorias'            => CatalogoDeCamposPdf::categorias($model_name),
+            'campos'                => CatalogoDeCamposPdf::campos($model_name),
+            'fijos'                 => CatalogoDeCamposPdf::fijos($model_name, $es_fiscal),
+            'formatos_de_hoja'      => CatalogoDeCamposPdf::formatos_de_hoja(),
+            'limites'               => $this->page_layout_limits(),
+            'diseno_derivado'       => DisenoDerivadoPdf::para($model_name, $profile, $es_fiscal, User::find($owner_id)),
+            'comprobante_de_prueba' => DisenoDerivadoPdf::comprobante_de_prueba($model_name, $es_fiscal, $owner_id),
+        ], 200);
+    }
+
+    /**
+     * Los límites del diseño de la hoja que el diseñador respeta, leídos de las constantes de
+     * DisenoDePaginaPdf: el SPA no tiene una copia propia, y si un límite cambia acá, cambia allá.
+     *
+     * @return array<string, mixed>
+     */
+    protected function page_layout_limits()
+    {
+        return [
+            'max_items_por_zona'  => DisenoDePaginaPdf::MAX_ITEMS_POR_ZONA,
+            'max_campos_por_caja' => DisenoDePaginaPdf::MAX_CAMPOS_POR_CAJA,
+            'max_titulo'          => DisenoDePaginaPdf::MAX_TITULO,
+            'max_etiqueta'        => DisenoDePaginaPdf::MAX_ETIQUETA,
+            'max_texto_libre'     => DisenoDePaginaPdf::MAX_TEXTO_LIBRE,
+            'tamano_min'          => DisenoDePaginaPdf::TAMANO_MIN,
+            'tamano_max'          => DisenoDePaginaPdf::TAMANO_MAX,
+            'margen_min'          => DisenoDePaginaPdf::MARGEN_MIN,
+            'margen_max'          => DisenoDePaginaPdf::MARGEN_MAX,
+            'estilos_de_caja'     => DisenoDePaginaPdf::ESTILOS_DE_CAJA,
+            'alineaciones'        => DisenoDePaginaPdf::ALINEACIONES,
+        ];
     }
 
     /**
@@ -450,6 +640,8 @@ class PdfColumnProfileController extends Controller
             'is_default_tienda' => 'perfil predeterminado para la tienda',
             'paper_width_mm' => 'ancho de hoja (mm)',
             'printable_width_mm' => 'ancho imprimible (mm)',
+            'paper_height_mm' => 'alto de hoja (mm)',
+            'page_layout' => 'diseño de la hoja',
             'margin_mm' => 'margen lateral (mm)',
             'sheet_type_id' => 'tipo de hoja',
             'is_afip_ticket' => 'perfil fiscal AFIP',
@@ -459,6 +651,7 @@ class PdfColumnProfileController extends Controller
             'show_client_description' => 'mostrar observaciones del cliente',
             'footer_text' => 'pie de página',
             'show_total_in_footer' => 'mostrar total en el pie',
+            'show_subtotal_in_footer' => 'mostrar sub total en el pie',
             'table_header_font_size' => 'tamaño de letra del encabezado de columnas',
             'catalog_header_layout' => 'diseño del encabezado del catálogo',
             'pdf_column_options' => 'opciones de columnas',
@@ -491,6 +684,7 @@ class PdfColumnProfileController extends Controller
             'is_default_tienda' => ['sometimes', 'boolean'],
             'paper_width_mm' => ['required', 'integer', 'min:1', 'max:50000'],
             'printable_width_mm' => ['required', 'integer', 'min:1', 'max:50000', 'lte:paper_width_mm'],
+            'paper_height_mm' => $this->paper_height_mm_rules(),
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
             'sheet_type_id' => ['nullable', 'integer', Rule::exists('sheet_types', 'id')],
             'is_afip_ticket' => ['sometimes', 'boolean'],
@@ -500,9 +694,12 @@ class PdfColumnProfileController extends Controller
             'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
+            'show_subtotal_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
             /** Sin tipo: puede llegar array o string JSON; CatalogHeaderLayoutHelper::normalize() resuelve. */
             'catalog_header_layout' => ['sometimes', 'nullable'],
+            /** Sin tipo, por lo mismo: DisenoDePaginaPdf::normalizar() resuelve y, si no tiene forma, store() responde 422. */
+            'page_layout' => ['sometimes', 'nullable'],
             'pdf_column_options' => ['required', 'array', 'min:1'],
             'pdf_column_options.*.id' => [
                 'required',
@@ -541,6 +738,7 @@ class PdfColumnProfileController extends Controller
             'is_default_tienda' => ['sometimes', 'boolean'],
             'paper_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
             'printable_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
+            'paper_height_mm' => $this->paper_height_mm_rules(),
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
             'sheet_type_id' => ['sometimes', 'nullable', 'integer', Rule::exists('sheet_types', 'id')],
             'is_afip_ticket' => ['sometimes', 'boolean'],
@@ -550,9 +748,12 @@ class PdfColumnProfileController extends Controller
             'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
+            'show_subtotal_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
             /** Sin tipo: puede llegar array o string JSON; CatalogHeaderLayoutHelper::normalize() resuelve. */
             'catalog_header_layout' => ['sometimes', 'nullable'],
+            /** Sin tipo, por lo mismo: DisenoDePaginaPdf::normalizar() resuelve y, si no tiene forma, update() responde 422. */
+            'page_layout' => ['sometimes', 'nullable'],
             'pdf_column_options' => ['sometimes', 'array'],
             'pdf_column_options.*.id' => [
                 'required_with:pdf_column_options',
@@ -790,5 +991,132 @@ class PdfColumnProfileController extends Controller
         }
 
         return is_array($value) ? $value : null;
+    }
+
+    /**
+     * page_layout tal como vino en el cuerpo del pedido, SIN pasar por los middleware globales
+     * TrimStrings y ConvertEmptyStringsToNull (app/Http/Kernel.php).
+     *
+     * 🔴 No es un capricho. En el diseño, `etiqueta: ""` ("sin rótulo") y `etiqueta: null` ("la
+     * del catálogo") son dos cosas distintas, y ConvertEmptyStringsToNull convierte en null todo ""
+     * anidado, también adentro de $request->json(). Leído de $request->input(), el recuadro de
+     * observaciones (su campo va sin rótulo, debajo del título "OBSERVACIONES") se guardaría con el
+     * rótulo del catálogo y el PDF imprimiría "Observaciones: ..." adentro de esa caja. TrimStrings,
+     * por su lado, le comería los espacios del principio a un texto libre.
+     *
+     * Si el pedido no es JSON, o el cuerpo no trae la clave, vale $request->input() como siempre.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return mixed
+     */
+    protected function page_layout_from_request(Request $request)
+    {
+        if ($request->isJson()) {
+            $body = json_decode((string) $request->getContent(), true);
+
+            if (is_array($body) && array_key_exists('page_layout', $body)) {
+                return $body['page_layout'];
+            }
+        }
+
+        return $request->input('page_layout');
+    }
+
+    /**
+     * El diseño de la hoja tal como se guarda: normalizado (DisenoDePaginaPdf::normalizar()) y con
+     * los bloques fijos de ARCA puestos o sacados según el perfil sea factura o no
+     * (asegurar_fijos()). Un modelo que no se diseña con cajas (el catálogo de artículos) guarda
+     * siempre null: su PDF no lee esta columna, y un diseño ahí quedaría colgado sin que nada lo
+     * muestre.
+     *
+     * @param mixed  $value          array, string JSON o null, tal como vino.
+     * @param string $model_name
+     * @param bool   $is_afip_ticket el del request si vino, si no el del perfil guardado.
+     * @return array|null
+     * @throws \InvalidArgumentException si no tiene la forma de un diseño (el que llama responde 422).
+     */
+    protected function normalize_page_layout($value, $model_name, $is_afip_ticket)
+    {
+        if (! CatalogoDeCamposPdf::soporta($model_name)) {
+            return null;
+        }
+
+        $page_layout = DisenoDePaginaPdf::normalizar($value);
+
+        if (is_null($page_layout)) {
+            return null;
+        }
+
+        return DisenoDePaginaPdf::asegurar_fijos(
+            $page_layout,
+            DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket)
+        );
+    }
+
+    /**
+     * 422 si el perfil queda como factura de ARCA diseñada con cajas en una hoja donde no entra el
+     * cuadro de ARCA (DisenoDerivadoPdf::factura_en_hoja_chica()), o null si no.
+     *
+     * Va armada a mano y no como ValidationException: el Handler de la app le pisa el `message` a
+     * esa excepción con el genérico traducido, y acá el `message` es un título propio.
+     *
+     * 🔴 Título y detalle van SEPARADOS, y no se repiten. `message` lleva el título corto
+     * (TITULO_FACTURA_EN_HOJA_CHICA) y el detalle (MENSAJE_FACTURA_EN_HOJA_CHICA) va SOLO en
+     * `errors.paper_height_mm`, bajo la clave del alto de la hoja como el resto de la validación de
+     * este controller (printable_width_mm, pdf_column_options). El aviso global del SPA arma
+     * "<message>\n\n1. <errors…>": con el mismo texto en los dos, el formulario genérico del
+     * registro mostraba el aviso dos veces seguidas (verificación en vivo, 1/10/2026). El diseñador
+     * lee `errors` primero, así que sigue mostrando el detalle.
+     *
+     * @param string     $model_name
+     * @param bool       $is_afip_ticket
+     * @param array|null $page_layout     el que queda guardado.
+     * @param mixed      $paper_height_mm el que queda guardado.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function factura_en_hoja_chica_response($model_name, $is_afip_ticket, $page_layout, $paper_height_mm)
+    {
+        if (! DisenoDerivadoPdf::factura_en_hoja_chica($model_name, $is_afip_ticket, $page_layout, $paper_height_mm)) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => DisenoDerivadoPdf::TITULO_FACTURA_EN_HOJA_CHICA,
+            'errors'  => [
+                'paper_height_mm' => [DisenoDerivadoPdf::MENSAJE_FACTURA_EN_HOJA_CHICA],
+            ],
+        ], 422);
+    }
+
+    /**
+     * Reglas del alto de la hoja (mm), las mismas para el alta y la edición. Los topes salen de
+     * DisenoDePaginaPdf, que es donde vive el resto de los límites del diseño.
+     *
+     * @return array<int, string>
+     */
+    protected function paper_height_mm_rules()
+    {
+        return [
+            'sometimes',
+            'nullable',
+            'integer',
+            'between:'.DisenoDePaginaPdf::ALTO_DE_HOJA_MIN.','.DisenoDePaginaPdf::ALTO_DE_HOJA_MAX,
+        ];
+    }
+
+    /**
+     * Alto de la hoja tal como se guarda: null si viene vacío (el PDF con page_layout usa A4), o
+     * el entero que ya validó paper_height_mm_rules().
+     *
+     * @param mixed $value
+     * @return int|null
+     */
+    protected function normalize_paper_height_mm($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (int) $value;
     }
 }

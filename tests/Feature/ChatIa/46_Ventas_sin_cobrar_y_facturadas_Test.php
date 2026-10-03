@@ -215,7 +215,10 @@ class Ventas_sin_cobrar_y_facturadas_Test extends TestCase
         $this->venta_impaga($cliente, 300, 300, now()->subDays(50), ['credit_account_id' => $cuenta_dolares->id], ['moneda_id' => 2]);
 
         // Y una sin credit_account (dato viejo): sin moneda en ningún lado se lee como pesos.
-        $this->venta_impaga($cliente, 200, 200, now()->subDays(5));
+        $sin_cuenta = $this->venta_impaga($cliente, 200, 200, now()->subDays(5));
+        // Venta vieja, sin moneda: `Sale` ya no deja CREAR una (la pasa a pesos), asi que se la deja en NULL directo
+        // en la base, como estan las de antes de la columna, que es el dato que esta prueba necesita.
+        DB::table('sales')->where('id', $sin_cuenta->id)->update(['moneda_id' => null]);
 
         $resultado = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id);
 

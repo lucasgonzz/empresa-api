@@ -216,6 +216,15 @@ class Fecha_De_Pedido_En_Reportes_Test extends TestCase
         $this->assertEquals($this->user_id, $empleado->owner_id,
             'El fixture tiene que dar un empleado del dueño 500; si no, el test no mide nada.');
 
+        /*
+            Desde el 30/9/2026 la configuracion la escribe solo el dueño o un empleado con acceso
+            de administrador (middleware solo_administrador en PUT user/{id}): un empleado raso recibe
+            403 antes de llegar al guard. El caso que sigue vivo, y el que este test protege, es el del
+            empleado administrador que guarda el formulario.
+        */
+        $empleado->admin_access = 1;
+        $empleado->save();
+
         $this->actingAs($empleado, 'web');
 
         /* Exactamente lo que postea ModelForm: el modelo del empleado, con su propia columna en 0. */

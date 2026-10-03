@@ -588,7 +588,7 @@ class PropuestaPermisoEmpleadoIaHelper
      * feature flags por plan y por extensión: el modelo `User` ni siquiera tiene relación con ella.
      *
      * Se busca primero por slug exacto (que es lo que compara `can()`) y después por nombre, que es
-     * lo que la persona ve en la pantalla ("Listar ventas" es `sale.index`).
+     * lo que la persona ve en la pantalla ("Ver el listado de ventas" es `sale.index`).
      *
      * @param  string  $texto
      * @return \App\Models\PermissionEmpresa|array
@@ -642,7 +642,7 @@ class PropuestaPermisoEmpleadoIaHelper
 
             return RespuestaDeCargaIa::error(
                 'No encontré ningún permiso que se llame "' . $texto . '". Los permisos se llaman como en la pantalla de Empleados '
-                . '("Listar ventas", "Listar clientes"), o por su código ("sale.index").'
+                . '("Ver el listado de ventas", "Ver clientes"), o por su código ("sale.index").'
             );
         }
 

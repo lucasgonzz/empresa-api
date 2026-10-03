@@ -11,7 +11,7 @@ class PdfColumnService
     /**
      * Asegura que el catálogo en BD coincida con default_options() (altas/actualizaciones de columnas).
      *
-     * @param string $model_name sale|article
+     * @param string $model_name sale|article|budget|order
      * @return void
      */
     public static function sync_catalog_options($model_name)
@@ -142,6 +142,14 @@ class PdfColumnService
                 ],
 
                 [
+                    'name'              => 'Costo total',
+                    'label'                => 'Costo tot',
+                    'value_resolver'               => 'item_cost_total',
+                    'default_width'                => 20,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
                     'name'              => 'Precio sin IVA',
                     'label'                => 'Pre s/IVA',
                     'value_resolver'               => 'item_price_without_iva',
@@ -161,6 +169,14 @@ class PdfColumnService
                     'name'              => 'Importe IVA',
                     'label'                => 'Imp IVA',
                     'value_resolver'               => 'item_iva_amount',
+                    'default_width'                => 20,
+                    'allow_wrap_content'               => false
+                ],
+
+                [
+                    'name'              => 'Precio con IVA',
+                    'label'                => 'Pre c/IVA',
+                    'value_resolver'               => 'item_price_with_iva',
                     'default_width'                => 20,
                     'allow_wrap_content'               => false
                 ],
@@ -358,7 +374,70 @@ class PdfColumnService
             ];
         }
 
+        /**
+         * Presupuesto y pedido online: mismo catálogo salvo una columna (ver document_default_options()).
+         */
+        if ($model_name === 'budget' || $model_name === 'order') {
+            return self::document_default_options($model_name);
+        }
+
         return [];
+    }
+
+    /**
+     * Catálogo de columnas de los comprobantes que se imprimen con `ProfileDocumentPdf`
+     * (presupuesto y pedido online).
+     *
+     * 🔴 Los resolvers son PROPIOS (`document_item_*`) y no reusan los de `sale`: aquellos leen
+     * `pivot->discount` y la moneda de la venta, y el presupuesto guarda la bonificación en
+     * `pivot->bonus`. Y los `name` tienen que ser ÚNICOS dentro del modelo: el catálogo se sincroniza
+     * por (model_name, value_resolver) pero `PdfColumnProfileSeederHelper` asigna las columnas de un
+     * perfil por `name`, así que un nombre repetido hace que una de las dos columnas se pierda
+     * (le pasa a `item_discount_percentage` en `sale`, no repetir).
+     *
+     * La única diferencia entre los dos modelos: el presupuesto tiene bonificación por renglón y el
+     * pedido tiene notas por renglón (`article_order.notes`).
+     *
+     * @param string $model_name budget|order
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function document_default_options($model_name)
+    {
+        $options = [
+            ['Índice de fila', '#', 'row_index', 8, false],
+            ['Imágenes', 'Imagen', 'document_item_image', 40, false],
+            ['Número de artículo', 'Num', 'document_item_id', 15, false],
+            ['Código de barras', 'Cod. barras', 'document_item_bar_code', 30, false],
+            ['Código de proveedor', 'Cod. prov', 'document_item_provider_code', 30, false],
+            ['Nombre del artículo', 'Nombre', 'document_item_name', 72, true],
+            ['Cantidad', 'Cant', 'document_item_amount', 15, false],
+            ['Precio unitario', 'Precio', 'document_item_price', 28, false],
+        ];
+
+        if ($model_name === 'budget') {
+            $options[] = ['Bonificación porcentaje', 'Bonif', 'document_item_bonus', 15, false];
+        } else {
+            $options[] = ['Notas del renglón', 'Notas', 'document_item_notes', 28, true];
+        }
+
+        $options[] = ['Subtotal línea', 'Sub total', 'document_item_subtotal', 32, false];
+        $options[] = ['Marca', 'Marca', 'document_item_brand_name', 30, false];
+        $options[] = ['Categoría', 'Categoría', 'document_item_category_name', 35, false];
+        $options[] = ['Subcategoría', 'Subcategoría', 'document_item_sub_category_name', 35, false];
+        $options[] = ['Proveedor', 'Proveedor', 'document_item_provider_name', 35, false];
+
+        $result = [];
+        foreach ($options as $option) {
+            $result[] = [
+                'name' => $option[0],
+                'label' => $option[1],
+                'value_resolver' => $option[2],
+                'default_width' => $option[3],
+                'allow_wrap_content' => $option[4],
+            ];
+        }
+
+        return $result;
     }
 
     public static function visible_width($columns)
@@ -452,6 +531,15 @@ class PdfColumnService
         $general_helper = $context['general_helper'] ?? null;
 
         /**
+         * Presupuesto y pedido online: el contexto trae `document` (un PdfDocumentSource). Va PRIMERO
+         * y con `return`, así que ninguna rama de `sale` ni de `article` de más abajo se toca.
+         */
+        $document = $context['document'] ?? null;
+        if ($document && self::is_document_resolver($resolver)) {
+            return self::resolve_document_value($resolver, $document, $item, $index, $numbers);
+        }
+
+        /**
          * Resolvers de listado de artículos (PDF tabla sin pivot de venta).
          */
         if ($article && strpos((string) $resolver, 'article_') === 0) {
@@ -481,7 +569,9 @@ class PdfColumnService
         $es_usd = $moneda_id === 2;
         $cbte_letra = isset($context['afip_ticket']) ? (string) $context['afip_ticket']->cbte_letra : null;
         $es_exportacion = $cbte_letra === 'E';
-        $valor_dolar = ($sale && $sale->valor_dolar) ? (float) $sale->valor_dolar : 1;
+        // `(float) > 0`: `sales.valor_dolar` es DECIMAL y un '0.00' es truthy en PHP (con el INT de antes un
+        // 0 era falso y caia al 1); sin esto el PDF de una venta en USD con cotizacion 0 mostraria todo en 0.
+        $valor_dolar = ($sale && (float) $sale->valor_dolar > 0) ? (float) $sale->valor_dolar : 1;
 
         switch ($resolver) {
             case 'row_index':
@@ -505,6 +595,25 @@ class PdfColumnService
                 }
                 return self::format_sale_monetary_value(
                     (float) $item->pivot->cost,
+                    $numbers,
+                    $es_usd,
+                    $es_exportacion,
+                    $valor_dolar,
+                    $moneda_id,
+                    false
+                );
+            case 'item_cost_total':
+                /**
+                 * Costo total del renglón = costo unitario congelado × cantidad vendida. Mismo
+                 * formato (sin símbolo) y misma conversión de moneda que item_cost, para que las dos
+                 * columnas se lean juntas. Sin costo en el pivot (renglones viejos o servicios) sale
+                 * vacío, no 0: un costo desconocido no es un costo cero.
+                 */
+                if (! isset($item->pivot->cost) || ! isset($item->pivot->amount)) {
+                    return '';
+                }
+                return self::format_sale_monetary_value(
+                    (float) $item->pivot->cost * (float) $item->pivot->amount,
                     $numbers,
                     $es_usd,
                     $es_exportacion,
@@ -604,6 +713,22 @@ class PdfColumnService
                         $moneda_id
                     );
                 }
+                /**
+                 * Renglones viejos sin `price_sin_iva` congelado pero con su alícuota: se calcula el
+                 * neto igual que lo hubiera guardado SaleHelper::get_price_sin_iva(). Antes caía directo
+                 * al precio CON IVA y esta columna ("Precio sin IVA") salía con el IVA adentro.
+                 */
+                $neto_calculado = self::sale_item_price_sin_iva_calculado($item->pivot);
+                if (! is_null($neto_calculado)) {
+                    return self::format_sale_monetary_value(
+                        $neto_calculado,
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
                 if (isset($item->pivot->price)) {
                     return self::format_sale_monetary_value(
                         (float) $item->pivot->price,
@@ -632,15 +757,23 @@ class PdfColumnService
                     );
                 }
                 /**
-                 * Sin $afip_helper, se cae al snapshot unitario sin IVA del pivot × cantidad,
-                 * igual que siempre.
+                 * Sin $afip_helper, se cae al snapshot unitario sin IVA del pivot × cantidad.
+                 *
+                 * Con el descuento de línea aplicado (misión columnas-costo-y-precio-en-articulos-de-
+                 * venta, 1/10/2026): el camino de arriba (con comprobante ARCA) ya lo lleva adentro,
+                 * y esta columna se ofrece ahora como "Precio sin IVA total" al lado de "Precio total"
+                 * (item_subtotal), que SÍ descuenta. Sin esto, en un remito con un renglón bonificado
+                 * los dos totales no coincidían (el neto salía sin el descuento).
                  */
-                if (
-                    isset($item->pivot->price_sin_iva)
-                    && ! is_null($item->pivot->price_sin_iva)
-                    && isset($item->pivot->amount)
-                ) {
-                    $subtotal_sin_iva = (float) $item->pivot->price_sin_iva * (float) $item->pivot->amount;
+                $neto_unitario = (isset($item->pivot->price_sin_iva) && ! is_null($item->pivot->price_sin_iva))
+                    ? (float) $item->pivot->price_sin_iva
+                    : self::sale_item_price_sin_iva_calculado($item->pivot);
+                if (! is_null($neto_unitario) && isset($item->pivot->amount)) {
+                    $subtotal_sin_iva = self::sale_item_line_total(
+                        $neto_unitario,
+                        $item->pivot->amount,
+                        $item->pivot->discount ?? null
+                    );
                     return self::format_sale_monetary_value(
                         $subtotal_sin_iva,
                         $numbers,
@@ -665,12 +798,77 @@ class PdfColumnService
                     );
                 }
                 return '';
+            case 'item_price_with_iva':
+                /**
+                 * Precio unitario CON IVA. `article_sale.price` ya es con IVA (SaleHelper::
+                 * get_price_sin_iva() lo divide para sacar el neto), así que sin comprobante ARCA
+                 * el valor es el del pivot tal cual se registró (el descuento de línea tiene su
+                 * propia columna).
+                 *
+                 * Con comprobante: getArticlePriceWithDiscounts(), el mismo cálculo que ya usa
+                 * item_subtotal_with_iva (= esta columna × cantidad), que sí lleva los descuentos y
+                 * recargos de venta. Guarda `!$es_usd` por el mismo motivo que item_price_without_iva:
+                 * en moneda extranjera get_article_price_raw() ya convierte a pesos y
+                 * format_sale_monetary_value() volvería a convertir.
+                 */
+                if ($afip_helper && $sale && ! $es_usd && isset($item->pivot->price)) {
+                    $afip_helper->article = $item;
+                    return self::format_sale_monetary_value(
+                        (float) $afip_helper->getArticlePriceWithDiscounts(),
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
+                if (isset($item->pivot->price)) {
+                    return self::format_sale_monetary_value(
+                        (float) $item->pivot->price,
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
+                return '';
             case 'item_subtotal_with_iva':
-                if ($afip_helper && isset($item->pivot->amount)) {
+                /**
+                 * Guarda `!$es_usd` (misión columnas-costo-y-precio-en-articulos-de-venta, 1/10/2026):
+                 * en una venta en dólares get_article_price_raw() YA convierte a pesos y
+                 * format_sale_monetary_value() convertía de nuevo (USD 10 × 2, cotización 1000 salía
+                 * $20.000.000 en vez de $20.000). Esta columna ahora se ofrece como "Precio con IVA
+                 * total", y el unitario (item_price_with_iva) ya tenía la guarda: sin ella unitario ×
+                 * cantidad no cerraba contra el total. En dólares cae al snapshot de abajo, que
+                 * convierte una sola vez. item_iva_amount tiene el mismo defecto y NO se toca acá
+                 * (no es una de las columnas pedidas): queda anotado en el informe.
+                 */
+                if ($afip_helper && ! $es_usd && isset($item->pivot->amount)) {
                     $afip_helper->article = $item;
                     $total = (float) $afip_helper->getArticlePriceWithDiscounts() * (float) $item->pivot->amount;
                     return self::format_sale_monetary_value(
                         $total,
+                        $numbers,
+                        $es_usd,
+                        $es_exportacion,
+                        $valor_dolar,
+                        $moneda_id
+                    );
+                }
+                /**
+                 * Sin comprobante ARCA (remito, venta común) esta columna salía vacía. Como ahora se
+                 * ofrece como "Precio con IVA total", se cae al snapshot: `price` ya es con IVA, así
+                 * que el total es precio × cantidad menos el descuento de línea (el mismo cálculo
+                 * que item_subtotal).
+                 */
+                if (isset($item->pivot->price) && isset($item->pivot->amount)) {
+                    return self::format_sale_monetary_value(
+                        self::sale_item_line_total(
+                            $item->pivot->price,
+                            $item->pivot->amount,
+                            $item->pivot->discount ?? null
+                        ),
                         $numbers,
                         $es_usd,
                         $es_exportacion,
@@ -688,6 +886,122 @@ class PdfColumnService
             case 'item_provider_name':
                 return self::sale_item_relation_name($item, 'provider');
             default:
+                return '';
+        }
+    }
+
+    /**
+     * Neto unitario de un renglón calculado desde el precio con IVA y la alícuota congelada en el
+     * pivot, para renglones que no traen `price_sin_iva`. Mismo criterio que
+     * SaleHelper::get_price_sin_iva(): una alícuota no numérica (Exento / No Gravado) o 0 deja el
+     * precio como está, y el resultado se redondea a 2 decimales.
+     *
+     * @param  object $pivot Pivot del renglón (price, iva_percentage).
+     * @return float|null    null si falta el precio o la alícuota (no se inventa un IVA para restar).
+     */
+    protected static function sale_item_price_sin_iva_calculado($pivot)
+    {
+        if (! isset($pivot->price) || ! isset($pivot->iva_percentage) || $pivot->iva_percentage === '') {
+            return null;
+        }
+
+        if (! is_numeric($pivot->iva_percentage) || (float) $pivot->iva_percentage == 0) {
+            return (float) $pivot->price;
+        }
+
+        return round((float) $pivot->price / (((float) $pivot->iva_percentage / 100) + 1), 2);
+    }
+
+    /**
+     * Total de un renglón de venta: unitario × cantidad menos el descuento de línea (porcentaje).
+     *
+     * @param float|string|int      $unitario  Importe unitario del pivot.
+     * @param float|string|int      $cantidad  Cantidad vendida.
+     * @param float|string|int|null $descuento Descuento de línea en %, null o '' = sin descuento.
+     * @return float
+     */
+    protected static function sale_item_line_total($unitario, $cantidad, $descuento = null)
+    {
+        $total = (float) $unitario * (float) $cantidad;
+
+        if (! is_null($descuento) && $descuento !== '') {
+            $total -= $total * ((float) $descuento / 100);
+        }
+
+        return $total;
+    }
+
+    /**
+     * ¿El resolver pertenece al catálogo de presupuesto / pedido online?
+     *
+     * @param string $resolver
+     * @return bool
+     */
+    protected static function is_document_resolver($resolver)
+    {
+        return $resolver === 'row_index' || strpos((string) $resolver, 'document_item_') === 0;
+    }
+
+    /**
+     * Valor de una columna para un renglón de presupuesto o pedido online.
+     *
+     * El nombre y el importe del renglón los arma el propio comprobante (`$document`, un
+     * PdfDocumentSource): el presupuesto usa el nombre personalizado y la bonificación, el pedido
+     * usa la variante y no tiene bonificación. Todo lo demás se lee del `pivot` con guardas: los
+     * renglones no son solo artículos (también promociones, combos y servicios) y no todos
+     * declaran los mismos campos.
+     *
+     * @param string $resolver
+     * @param \App\Http\Controllers\Helpers\PdfDocument\PdfDocumentSource $document
+     * @param object|null $item Renglón del comprobante (con `pivot`).
+     * @param int|null $index Posición del renglón, desde 1.
+     * @param mixed $numbers Clase Numbers.
+     * @return string|int
+     */
+    protected static function resolve_document_value($resolver, $document, $item, $index, $numbers)
+    {
+        if ($resolver === 'row_index') {
+            return $index;
+        }
+
+        if (! $item) {
+            return '';
+        }
+
+        $pivot = $item->pivot;
+
+        switch ($resolver) {
+            case 'document_item_id':
+                return $item->id;
+            case 'document_item_bar_code':
+                return $item->bar_code ?? '';
+            case 'document_item_provider_code':
+                return $item->provider_code ?? '';
+            case 'document_item_name':
+                return $document->item_name($item);
+            case 'document_item_amount':
+                return isset($pivot->amount) ? $numbers::price($pivot->amount) : '';
+            case 'document_item_price':
+                return isset($pivot->price) ? '$'.$numbers::price($pivot->price) : '';
+            case 'document_item_bonus':
+                /** Sin bonificación (null o 0) la celda va vacía: "0%" en cada renglón es puro ruido. */
+                return (isset($pivot->bonus) && (float) $pivot->bonus != 0)
+                    ? $numbers::price($pivot->bonus).'%'
+                    : '';
+            case 'document_item_notes':
+                return isset($pivot->notes) ? (string) $pivot->notes : '';
+            case 'document_item_subtotal':
+                return '$'.$numbers::price($document->item_subtotal($item));
+            case 'document_item_brand_name':
+                return self::sale_item_relation_name($item, 'brand');
+            case 'document_item_category_name':
+                return self::sale_item_relation_name($item, 'category');
+            case 'document_item_sub_category_name':
+                return self::sale_item_relation_name($item, 'sub_category');
+            case 'document_item_provider_name':
+                return self::sale_item_relation_name($item, 'provider');
+            default:
+                /** `document_item_image` cae acá a propósito: la imagen se dibuja, no se escribe. */
                 return '';
         }
     }
@@ -911,6 +1225,38 @@ class PdfColumnService
         $general_helper = \App\Http\Controllers\Helpers\GeneralHelper::class;
 
         return $general_helper::pdf_image_path($img_url);
+    }
+
+    /**
+     * Indica si la columna del perfil corresponde a la imagen del renglón de un comprobante
+     * (presupuesto o pedido online).
+     *
+     * @param string $resolver
+     * @return bool
+     */
+    public static function is_document_image_column($resolver)
+    {
+        return $resolver === 'document_item_image';
+    }
+
+    /**
+     * Ruta LOCAL de la primera imagen del renglón de un comprobante (null si no hay o no se puede
+     * resolver). Solo los artículos y las promociones de vinoteca tienen `images`; un combo o un
+     * servicio devuelven null sin tocar la base.
+     *
+     * Va por `article_first_image_path()` (que usa GeneralHelper::pdf_image_path) y NUNCA por
+     * `getJpgImage()`: esa puede abortar el PDF entero con una .webp que no se convierte.
+     *
+     * @param object|null $item
+     * @return string|null
+     */
+    public static function document_first_image_path($item)
+    {
+        if (! $item || ! is_object($item) || ! method_exists($item, 'images')) {
+            return null;
+        }
+
+        return self::article_first_image_path($item);
     }
 }
 

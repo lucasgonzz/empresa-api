@@ -28,6 +28,13 @@ class ImageServiceCall extends Model
     const PROVEEDOR_ANTHROPIC = 'anthropic';
     const PROVEEDOR_GOOGLE    = 'google';
 
+    /**
+     * DeepSeek, desde la misión modelos-ia-por-cliente (30/9/2026): la validación con IA corre con
+     * el proveedor que el admin eligió para el cliente (default DeepSeek Flash). Mismo valor que
+     * `ai_token_usages.proveedor`, así el admin costea las dos tablas con la misma tabla de precios.
+     */
+    const PROVEEDOR_DEEPSEEK = 'deepseek';
+
     /** Días que se guarda el registro (se purga al crear una asignación). */
     const DIAS_DE_RETENCION = 180;
 

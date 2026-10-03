@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
+use App\Models\Address;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\CurrentAcount;
@@ -1547,9 +1548,10 @@ class ConsultasSistemaIaHelper
      * invoca y no se reescribe.
      *
      * 🔴 LAS UNIDADES SON EXACTAS; EL MONTO PUEDE ESTAR INCOMPLETO, Y CUÁNTO SE DICE.
-     * `ArticlePurchaseHelper::set_costo_y_price()` (`:50-67`) llena `article_purchases.price` SOLO
-     * cuando la venta tiene `moneda_id == 1`; con `== 2` llena `price_dolar`; y con null o 0 NO
-     * LLENA NINGUNO DE LOS DOS. Y `sales.moneda_id` es nullable sin default desde la migración
+     * `ArticlePurchaseHelper::set_costo_y_price()` llenaba `article_purchases.price` SOLO
+     * cuando la venta tenia `moneda_id == 1`; con `== 2` llena `price_dolar`; y con null o 0 NO
+     * LLENABA NINGUNO DE LOS DOS. (Desde el 30/9/2026 una venta sin moneda es pesos y el helper le llena
+     * `price`, pero las ventas VIEJAS ya guardadas siguen con `price` NULL: lo que sigue vale para ellas.) Y `sales.moneda_id` es nullable sin default desde la migración
      * `2025_08_29_162530`, que no hizo backfill: TODA venta anterior al 29/8/2025 lo tiene en null.
      *
      * Hasta el 16/9/2026 el monto se calculaba con `COALESCE(price, 0)`, así que esas unidades
@@ -1648,9 +1650,10 @@ class ConsultasSistemaIaHelper
                 'ultima_compra'  => self::fecha_legible($fila->ultima),
                 /*
                  * 🔴 EN PESOS Y SOLO DE LO QUE TIENE PRECIO, y por eso van las dos claves juntas.
-                 * `article_purchases.price` lo llena ArticlePurchaseHelper::set_costo_y_price()
-                 * SOLO cuando la venta tiene `moneda_id == 1`; con 2 llena `price_dolar`, y con
-                 * null o 0 NO LLENA NINGUNO. Y `sales.moneda_id` es nullable sin default desde la
+                 * `article_purchases.price` lo llenaba ArticlePurchaseHelper::set_costo_y_price()
+                 * SOLO cuando la venta tenia `moneda_id == 1`; con 2 llena `price_dolar`, y con
+                 * null o 0 NO LLENABA NINGUNO (desde el 30/9/2026 una venta sin moneda es pesos y se
+                 * llena `price`; las ventas viejas siguen con `price` NULL). Y `sales.moneda_id` es nullable sin default desde la
                  * migración del 29/8/2025, que no hizo backfill: toda venta anterior a esa fecha
                  * cae en el último caso.
                  */
@@ -2002,6 +2005,21 @@ class ConsultasSistemaIaHelper
         //
         // ⚠️ `AddressController::index()` NO hace este corte (solo filtra por `user_id`): el ABM de
         // Sucursales tiene el mismo problema y no se toca desde acá. Queda anotado en el informe.
+        $columnas = [
+            'addresses.id as address_id',
+            'addresses.street as nombre',
+            'addresses.es_deposito_origen as es_deposito_origen',
+            'address_article.amount as cantidad',
+            'address_article.stock_min as stock_min',
+            'address_article.stock_max as stock_max',
+        ];
+
+        // Misión deposito-madre: la sucursal desde la que salen primero las sugerencias. Solo si
+        // la columna ya existe (deploy a medio migrar: nombrarla tumbaría la consulta entera).
+        if (Address::columna_madre_existe()) {
+            $columnas[] = 'addresses.es_deposito_madre as es_deposito_madre';
+        }
+
         $sucursales = DB::table('addresses')
             ->leftJoin('address_article', function ($join) use ($articulo) {
                 $join->on('address_article.address_id', '=', 'addresses.id')
@@ -2010,14 +2028,7 @@ class ConsultasSistemaIaHelper
             ->where('addresses.user_id', $owner_id)
             ->whereNull('addresses.buyer_id')
             ->orderBy('addresses.id')
-            ->get([
-                'addresses.id as address_id',
-                'addresses.street as nombre',
-                'addresses.es_deposito_origen as es_deposito_origen',
-                'address_article.amount as cantidad',
-                'address_article.stock_min as stock_min',
-                'address_article.stock_max as stock_max',
-            ]);
+            ->get($columnas);
 
         $repartido = 0.0;
         $todas = [];
@@ -2034,6 +2045,7 @@ class ConsultasSistemaIaHelper
                 'stock_min'          => is_null($sucursal->stock_min) ? null : (float) $sucursal->stock_min,
                 'stock_max'          => is_null($sucursal->stock_max) ? null : (float) $sucursal->stock_max,
                 'es_deposito_origen' => (bool) $sucursal->es_deposito_origen,
+                'es_deposito_madre'  => isset($sucursal->es_deposito_madre) ? (bool) $sucursal->es_deposito_madre : false,
             ];
         }
 

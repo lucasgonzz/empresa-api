@@ -110,6 +110,23 @@ class ChequeController extends Controller
         ];
 
         foreach ($cheques as $cheque) {
+            // Si es recibido y fue endosado (a un proveedor O en un gasto: la definición es una
+            // sola y vive en ChequeHelper, no acá).
+            //
+            // 🔴 Este chequeo va ANTES de la marca manual (cobrado/rechazado) a propósito: el endoso
+            // manda sobre `estado_manual` (misión cheques-solapa-endosados, 2/10/2026). El módulo
+            // tiene una solapa de primer nivel "Endosado" que tiene que mostrar TODOS los cheques
+            // que salieron de cartera, y un recibido endosado que además tuviera la marca manual
+            // (ninguna pantalla lo deja hacer, pero la API no lo impide) caía en Cobrados o
+            // Rechazados y desaparecía de esa solapa. Es el mismo criterio de
+            // ChequeHelper::sin_endosar(): lo que ya no está en cartera no es un cheque "cobrable".
+            // Solo vale para `recibido`: la copia emitida que nace del endoso sigue su propio ciclo
+            // en Emitido (el proveedor la cobra).
+            if ($cheque->tipo === 'recibido' && !ChequeHelper::en_cartera($cheque)) {
+                $agrupados['recibido']['endosados'][] = $cheque;
+                continue;
+            }
+
             // Si está marcado manualmente, va a estado final
             if ($cheque->estado_manual === 'cobrado') {
                 $agrupados[$cheque->tipo]['cobrados'][] = $cheque;
@@ -118,13 +135,6 @@ class ChequeController extends Controller
 
             if ($cheque->estado_manual === 'rechazado') {
                 $agrupados[$cheque->tipo]['rechazados'][] = $cheque;
-                continue;
-            }
-
-            // Si es recibido y fue endosado (a un proveedor O en un gasto: la definición es una
-            // sola y vive en ChequeHelper, no acá).
-            if ($cheque->tipo === 'recibido' && !ChequeHelper::en_cartera($cheque)) {
-                $agrupados['recibido']['endosados'][] = $cheque;
                 continue;
             }
 

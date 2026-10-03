@@ -303,6 +303,13 @@ class ProcessSetFinalPrices implements ShouldQueue
                  * deja en 'sin_cambios' y la píldora lo muestra (ver
                  * FinalizeSetFinalPrices::ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS).
                  */
+                /*
+                 * Combos calculados (F5): esta rama NO recalcula combos, y es a propósito. No hay un
+                 * solo artículo en el alcance de la corrida, o sea que no se escribió ningún precio
+                 * ni costo: los combos calculados no tienen nada nuevo que reflejar. (Las otras dos
+                 * salidas de FinalizeSetFinalPrices, el cierre normal y la corrida dada por perdida,
+                 * sí encolan el recálculo.)
+                 */
                 PriceUpdateRunHelper::cerrar_sin_articulos($run);
 
                 if (FinalizeSetFinalPrices::corresponde_avisar_el_cierre($run)) {

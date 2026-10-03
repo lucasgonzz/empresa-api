@@ -392,6 +392,13 @@ class ContabilidadRepository
             ->where('current_acounts.user_id', $user_id)
             ->where('current_acounts.status', 'nota_credito')
             ->whereNotNull('current_acounts.haber')
+            /*
+                Solo devoluciones de VENTA: una nota de crédito a PROVEEDOR (provider_id cargado,
+                misión devoluciones-compras-y-rediseno, 1/10/2026) es plata que el proveedor le
+                devuelve al comercio, no una devolución de un cliente. Toda NC a proveedor nace con
+                provider_id, también la que no va a cuenta corriente (NotaCreditoProveedorHelper).
+            */
+            ->whereNull('current_acounts.provider_id')
             ->where('current_acounts.created_at', '>=', $desde)
             ->where('current_acounts.created_at', '<=', $hasta);
 
@@ -686,6 +693,14 @@ class ContabilidadRepository
             ->leftJoin('credit_accounts', 'credit_accounts.id', '=', 'current_acounts.credit_account_id')
             ->where('current_acounts.user_id', $user_id)
             ->where('current_acounts.status', 'nota_credito')
+            /*
+                Solo devoluciones de VENTA (misión devoluciones-compras-y-rediseno, 1/10/2026). Una
+                nota de crédito a PROVEEDOR también adjunta artículos con costo a
+                article_current_acount: sin este filtro, devolverle mercadería al proveedor
+                restaba ese costo del costo de mercadería vendida, como si un cliente la hubiera
+                devuelto.
+            */
+            ->whereNull('current_acounts.provider_id')
             ->where('current_acounts.created_at', '>=', $desde)
             ->where('current_acounts.created_at', '<=', $hasta);
 

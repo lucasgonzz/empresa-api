@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
@@ -35,6 +36,7 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
+use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTicketRasterHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
@@ -44,6 +46,7 @@ use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
 use App\Http\Controllers\Pdf\NewSalePdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf;
+use App\Http\Controllers\Pdf\SaleLayoutPdf;
 use App\Http\Controllers\Pdf\SalePdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
@@ -232,6 +235,37 @@ class SaleController extends Controller
 
     public function store(Request $request) {
 
+        /*
+         * Moneda y cotización (misión corregir-ventas-en-dolares, 30/9/2026).
+         *
+         * 1. La moneda se normaliza UNA vez y sobre el request, antes de cualquier validación:
+         *    ausente, null o 0 son pesos. Antes solo el null caía a pesos al crear la venta, y el 0
+         *    se guardaba como moneda 0 (que `getCost()` no convierte) mientras que
+         *    `LimiteCreditoHelper` —que lee `$request->moneda_id` y no la venta— buscaba la cuenta
+         *    de crédito de una "moneda 0" inexistente y se salteaba el tope. Normalizando el
+         *    request, el tope, el 422 de más abajo y el `Sale::create()` hablan de la misma moneda.
+         *
+         * 2. El 422 de la cotización: una venta EN DÓLARES que llega sin `valor_dolar` válido
+         *    (ausente, no numérico o <= 0) se rechaza ACÁ y no dentro de `getCost()`, donde era un
+         *    "Division by zero" (HTTP 500). Una venta en pesos con un artículo en dólares y sin
+         *    cotización NO se rechaza: `getCost()` cuenta con el dólar del dueño (antes guardaba el
+         *    costo en cero sin avisar). Mismo criterio que los 422 de más abajo: la SPA es guarda
+         *    de UX y la autoridad es este rechazo, porque un POST directo, el asistente de IA o una
+         *    PWA con datos viejos llegan igual hasta acá. No mira la base, va antes del candado y
+         *    de la transacción: un rechazo no toca nada ni consume número de venta. La regla
+         *    completa (qué es "necesita cotización") vive en CotizacionDeVentaHelper.
+         */
+        $request->merge(['moneda_id' => CotizacionDeVentaHelper::normalizar_moneda_id($request->moneda_id)]);
+
+        $error_cotizacion = CotizacionDeVentaHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_cotizacion)) {
+
+            Log::info('store sale: rechazada sin cotizacion del dolar (user_id '.$this->userId().', moneda_id '.$request->moneda_id.', valor_dolar '.var_export($request->valor_dolar, true).').');
+
+            return response()->json($error_cotizacion, 422);
+        }
+
         /**
          * Límite de crédito del cliente (misión 160). La validación de la SPA es guarda de UX; la
          * autoridad es este 422, porque un POST directo a /sale llega igual hasta acá. Es el mismo
@@ -375,7 +409,8 @@ class SaleController extends Controller
             /** Checkbox "Enviar correo" en vender: sin extensión no se persiste ni se encola mail. */
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
-            $model = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
+            $model = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
                 /*
                  * La fecha de creación elegida por el usuario, ya resuelta arriba (día elegido +
@@ -424,8 +459,16 @@ class SaleController extends Controller
                 'caja_id'                           => $request->caja_id,
                 'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
                 'fecha_entrega'                     => $request->fecha_entrega,
-                'moneda_id'                         => !is_null($request->moneda_id) ? $request->moneda_id : 1,
-                'valor_dolar'                       => $request->valor_dolar,
+                // Ya normalizada al principio de store() (ausente, null o 0 = pesos).
+                'moneda_id'                         => CotizacionDeVentaHelper::normalizar_moneda_id($request->moneda_id),
+                /*
+                 * La cotización redondeada a los 2 decimales de la columna (DECIMAL(20,2) desde la
+                 * migración `2026_09_30_130000`, antes INT: 1234,56 se guardaba como 1235 y esa
+                 * cotización es la que recibe ARCA) o null si no sirve. Ver
+                 * CotizacionDeVentaHelper::valor_dolar_para_guardar(). Con la columna vieja (el
+                 * deploy sube los archivos antes de migrar) sigue siendo solo un número: no rompe.
+                 */
+                'valor_dolar'                       => CotizacionDeVentaHelper::valor_dolar_para_guardar($request->valor_dolar),
                 'incoterms'                         => $request->incoterms,
                 'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
                 'sale_status_id'                    => $request->sale_status_id,
@@ -433,6 +476,8 @@ class SaleController extends Controller
                 'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 // Si no se envía el campo, se asume true (comportamiento por defecto: precios con IVA).
                 'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
+                // Check de Vender "Sumar IVA a los artículos sin IVA": si no se envía (SPA vieja), queda apagado.
+                'iva_en_articulos_sin_iva'          => !is_null($request->iva_en_articulos_sin_iva) ? $request->iva_en_articulos_sin_iva : 0,
                 /*
                  * `descuento` es el PORCENTAJE legacy del "forzar total" viejo, y se deja como está
                  * a propósito (auditoría del 17/9/2026, ítem A8 de la tanda 2): hoy ningún
@@ -466,7 +511,7 @@ class SaleController extends Controller
              *
              * El cero se normaliza a null en `SaleHelper::normalized_forzar_total_monto()`.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'));
 
             // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
@@ -864,6 +909,14 @@ class SaleController extends Controller
              * Mismo patrón que `BudgetController::update()`.
              */
             $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
+
+            /*
+             * iva_en_articulos_sin_iva ("Sumar IVA a los artículos sin IVA" en Vender) sigue el mismo
+             * patrón: se prende y se apaga libremente, y si no viene en el request (SPA vieja) se
+             * preserva lo guardado. La columna nació con default 0, así que nunca queda null. Pasa
+             * por la guarda de esquema: en la ventana del deploy la columna puede no estar.
+             */
+            IvaEnArticulosSinIvaEsquemaHelper::asignar_en_update($model, $request->iva_en_articulos_sin_iva, 'sales');
 
             /*
              * Flag para indicar que discount_stock se activa por primera vez en esta actualización.
@@ -1420,6 +1473,23 @@ class SaleController extends Controller
                 if ($afip_ticket) {
                     $afip_ticket_id = $afip_ticket->id;
                 }
+            }
+        }
+
+        /**
+         * Diseño de PDF armado con cajas (misión diseno-pdf-configurable, 1/10/2026): el perfil se
+         * resuelve con las MISMAS reglas que NewSalePdf y, SOLO si tiene `page_layout`, la venta
+         * sale con SaleLayoutPdf. Sin diseño (todos los perfiles hasta que alguien diseña uno), o si
+         * el diseño falla al dibujarse (`try_render()` devuelve null y deja el error en el log),
+         * sale el PDF de siempre sin ningún cambio: este link lo abre también el cliente final.
+         */
+        $perfil_con_diseno = SaleLayoutPdf::perfil_con_diseno($sale, $profile_id, $afip_ticket_id, $origin);
+
+        if (! is_null($perfil_con_diseno)) {
+            $pdf = SaleLayoutPdf::try_render($sale, $perfil_con_diseno, $afip_ticket_id);
+
+            if ($pdf) {
+                $pdf->emit();
             }
         }
 

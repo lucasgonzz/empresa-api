@@ -200,7 +200,28 @@ class CurrentAcountHelper {
     //     }
     // }
 
-    static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null, $descriptions = null) {
+    /**
+     * Crea una nota de crédito (un `CurrentAcount` con `status = 'nota_credito'` y `haber`), le
+     * adjunta artículos, servicios y descripciones, y si tiene dueño la imputa y recalcula la cadena
+     * de saldos de su cuenta.
+     *
+     * @param  int|null    $credit_account_id  Cuenta corriente donde entra (null = NC sin cuenta).
+     * @param  float       $haber
+     * @param  string|null $description
+     * @param  string|null $model_name         'client' o 'provider' (null = sin dueño).
+     * @param  int|null    $model_id
+     * @param  int|null    $sale_id            Venta de origen: dirige la imputación a su débito.
+     * @param  array|null  $items
+     * @param  array|null  $descriptions
+     * @param  int|null    $to_pay_id          Débito al que se dirige la imputación cuando el
+     *                                         llamador ya lo resolvió (la devolución de COMPRA, que
+     *                                         no tiene `sale_id`: ver NotaCreditoProveedorHelper).
+     *                                         Va al final y opcional para que ningún llamador
+     *                                         existente cambie. Si viene, gana sobre el cálculo
+     *                                         por `sale_id`.
+     * @return \App\Models\CurrentAcount
+     */
+    static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null, $descriptions = null, $to_pay_id = null) {
 
         /*
          * Candado de la cuenta corriente (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026).
@@ -227,9 +248,17 @@ class CurrentAcountHelper {
          * primera iteración y sigue en FIFO con el sobrante, que es justo la cascada pedida
          * (el remanente de la NC cae en la siguiente venta/ND sin saldar).
          */
-        $to_pay_id = null;
+        /*
+         * Imputación dirigida que manda el llamador (devolución de compra, 1/10/2026): la compra no
+         * tiene `sale_id`, así que el débito no se puede encontrar acá con el criterio de la venta;
+         * lo resuelve el llamador (el débito de la compra en esa cuenta, si sigue sin saldar) y lo
+         * pasa armado. Sin cuenta corriente no hay contra qué imputar: se ignora.
+         */
+        if (!is_null($to_pay_id) && is_null($credit_account_id)) {
+            $to_pay_id = null;
+        }
 
-        if (!is_null($sale_id) && !is_null($credit_account_id)) {
+        if (is_null($to_pay_id) && !is_null($sale_id) && !is_null($credit_account_id)) {
 
             $debito_de_la_venta = CurrentAcount::where('sale_id', $sale_id)
                                                 ->whereNull('haber')

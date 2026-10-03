@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Helpers\import\client;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
@@ -29,18 +31,22 @@ class AiClientAnalyzer
     protected const SAMPLE_ROWS = 10;
 
     /**
-     * Modelo de Claude a utilizar para el análisis.
+     * El modelo de Claude que usaba la importación ANTES de la misión modelos-ia-por-cliente
+     * (30/9/2026). Ya no se usa para la llamada: el modelo lo resuelve ModelosIaHelper y el
+     * legado de Anthropic sale de `services.importacion_excel_ia.model_anthropic`, cuyo
+     * default es este mismo valor. Queda como referencia de ese default.
      *
      * @var string
      */
     protected const CLAUDE_MODEL = 'claude-sonnet-4-5';
 
     /**
-     * Tokens máximos para la respuesta de Claude.
+     * Tokens máximos para la respuesta de Claude (primer intento). Si la respuesta llega cortada
+     * (stop_reason = max_tokens) call_claude() repite UNA vez la llamada con el doble de este techo.
      *
      * @var int
      */
-    protected const MAX_TOKENS = 2000;
+    protected const MAX_TOKENS = 8000;
 
     /*
      * ---------------------------------------------------------------------------------
@@ -63,10 +69,10 @@ class AiClientAnalyzer
     /** La API contestó un error que no es transitorio (auth, rate limit, request inválido). */
     const MENSAJE_IA_RECHAZO = 'El servicio de IA rechazó el pedido. Volvé a intentar en unos minutos; si sigue pasando, avisanos.';
 
-    /** Error transitorio de Anthropic (overloaded_error, api_error, HTTP 529). */
+    /** Error transitorio del proveedor de IA (ver ModelosIaHelper::error_transitorio_de_importacion()). */
     const MENSAJE_IA_NO_DISPONIBLE = 'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.';
 
-    /** La conexión con Anthropic se cortó o venció el timeout de 60 segundos. */
+    /** La conexión con la IA se cortó o venció el timeout (services.importacion_excel_ia.timeout). */
     const MENSAJE_IA_SIN_RESPUESTA = 'El servicio de IA no respondió a tiempo. Probá de nuevo en un minuto: los archivos grandes a veces necesitan un segundo intento.';
 
     /** Contestó, pero lo que devolvió no se puede usar: sin texto, sin JSON válido o sin column_mapping. */
@@ -721,87 +727,166 @@ PROMPT;
     }
 
     /**
-     * Realiza la llamada HTTP a la API de Claude (Anthropic) con el prompt indicado.
+     * Realiza la llamada HTTP a la IA de la importación de Excel con el prompt indicado.
+     *
+     * Misión modelos-ia-por-cliente (30/9/2026): el nombre quedó de cuando era siempre Claude, pero
+     * el proveedor y el modelo los elige el admin por cliente (`users.ia_modelo_excel`, default
+     * DeepSeek Pro) y los resuelve ModelosIaHelper::resolver($dueño, 'excel'). Sin DEEPSEEK_API_KEY
+     * cae a Anthropic con `services.importacion_excel_ia.model_anthropic` (la vieja constante
+     * CLAUDE_MODEL): la producción sin esa clave sigue llamando al mismo modelo de siempre. El
+     * cliente HTTP, la URL y el `thinking` los arma ProveedorIaHelper; el timeout sale de
+     * `services.importacion_excel_ia.timeout` (120: Pro razona antes de contestar).
+     *
+     * 🔴 LOS CINCO MENSAJES AL USUARIO Y EL ORDEN DE LOS CATCH NO CAMBIAN: los fija
+     * tests/Import/MensajesDeErrorTest.php, y tienen que ser idénticos en los tres analizadores.
      *
      * @param  string $prompt  Prompt completo a enviar
-     * @return string          Texto de respuesta devuelto por Claude
+     * @return string          Texto de respuesta devuelto por la IA
      *
      * @throws \RuntimeException  Si la llamada falla o la API devuelve error
      */
     protected function call_claude(string $prompt): string
     {
-        /* Clave de API de Anthropic (config/services.php → ANTHROPIC_API_KEY). */
-        $api_key = (string) config('services.anthropic.api_key');
+        $cortada = false;
 
-        if ($api_key === '') {
+        $text = $this->call_claude_con_techo($prompt, 1, $cortada);
+
+        if (!$cortada) {
+            return $text;
+        }
+
+        /*
+         * Cortada por el techo de salida: la planilla es ancha y el column_mapping no entró. Se
+         * repite UNA vez la misma llamada (mismo prompt, proveedor y modelo) con el doble de techo.
+         * Los errores HTTP y de conexión no pasan por acá: salen de call_claude_con_techo() con sus
+         * mismos mensajes, sin reintento propio.
+         */
+        $text = $this->call_claude_con_techo($prompt, 2, $cortada);
+
+        if ($cortada) {
+            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
+        }
+
+        return $text;
+    }
+
+    /**
+     * UNA llamada a la IA con el techo de salida base multiplicado por $factor (1 = primer intento,
+     * 2 = el reintento por corte). Hace todo lo que hacía call_claude() antes del reintento, incluido
+     * registrar el consumo de tokens: cada llamada se paga.
+     *
+     * @param  string $prompt   Prompt completo a enviar
+     * @param  int    $factor   Multiplicador del techo de salida
+     * @param  bool   $cortada  Salida: true si la respuesta llegó cortada por max_tokens (devuelve '')
+     * @return string           Texto de respuesta devuelto por la IA
+     *
+     * @throws \RuntimeException  Si la llamada falla o la API devuelve error
+     */
+    protected function call_claude_con_techo(string $prompt, int $factor, bool &$cortada): string
+    {
+        $cortada = false;
+
+        /*
+         * Con qué IA: la elegida para el DUEÑO del comercio (el user_id de este analizador ya es el
+         * owner en los tres caminos que lo crean; dueno_de() lo asegura igual). Null = no hay clave
+         * de ningún proveedor: es el "sin configurar" de siempre.
+         */
+        $ia = ModelosIaHelper::resolver(ModelosIaHelper::dueno_de($this->user_id), ModelosIaHelper::TAREA_EXCEL);
+
+        if (is_null($ia)) {
             /*
              * El nombre de la variable de entorno NO va al mensaje del usuario: contarle a un
              * tercero cómo está configurado el servidor es información nuestra, no suya. Va al log.
              */
-            Log::error('AiClientAnalyzer: falta la clave de API de Anthropic en la configuración del servidor');
+            Log::error('AiClientAnalyzer: falta la clave de API de la IA (Anthropic o DeepSeek) en la configuración del servidor');
 
             throw new \RuntimeException(self::MENSAJE_IA_SIN_CONFIGURAR);
         }
 
-        Log::info('AiClientAnalyzer: llamando a Claude API', [
-            'model'      => self::CLAUDE_MODEL,
-            'max_tokens' => self::MAX_TOKENS,
-        ]);
+        $proveedor = $ia['proveedor'];
+        $modelo    = $ia['modelo'];
 
-        /* Cliente HTTP con la misma configuración TLS que admin-api. */
-        $http = $this->build_anthropic_http_client($api_key);
+        $timeout = (int) config('services.importacion_excel_ia.timeout', 120);
+
+        /* Cliente HTTP del proveedor: clave, headers y TLS (ca_bundle / verify_ssl) de su bloque de config. */
+        $http = ProveedorIaHelper::cliente_http($proveedor, $timeout > 0 ? $timeout : 120);
 
         /*
-         * El timeout de 60 segundos y el corte de conexión llegan como ConnectionException, que
+         * Con DeepSeek Pro viaja `thinking: enabled` (y el techo de salida sube al de profundo:
+         * el razonamiento podría contar contra max_tokens); con Anthropic no viaja ninguna clave
+         * `thinking` y el body es el de siempre.
+         */
+        $payload = ProveedorIaHelper::agregar_thinking([
+            'model'      => $modelo,
+            'max_tokens' => self::MAX_TOKENS * $factor,
+            'messages'   => [
+                [
+                    'role'    => 'user',
+                    'content' => $prompt,
+                ],
+            ],
+        ], $ia['thinking']);
+
+        /*
+         * 🔴 Con el thinking PRENDIDO (DeepSeek Pro, el default de la importación) el techo de salida
+         * es `services.importacion_excel_ia.max_tokens_con_razonamiento` (16000 por defecto), no el
+         * de profundo del asistente. El razonamiento puede contar contra max_tokens, y el column_mapping
+         * de una planilla ancha es largo: con 8000 un Pro que piensa mucho puede cortar el JSON a la
+         * mitad. Sin thinking (Anthropic, Flash) el techo es el de siempre de este analizador.
+         */
+        if (is_array($ia['thinking']) && isset($ia['thinking']['type']) && (string) $ia['thinking']['type'] === 'enabled') {
+            $techo_con_razonamiento = (int) config('services.importacion_excel_ia.max_tokens_con_razonamiento', 16000);
+
+            if ($techo_con_razonamiento > 0) {
+                $payload['max_tokens'] = max(self::MAX_TOKENS, $techo_con_razonamiento) * $factor;
+            }
+        }
+
+        Log::info('AiClientAnalyzer: llamando a la IA', [
+            'proveedor'  => $proveedor,
+            'model'      => $modelo,
+            'max_tokens' => $payload['max_tokens'],
+            'intento'    => $factor,
+        ]);
+
+        /*
+         * El timeout y el corte de conexión llegan como ConnectionException, que
          * extiende \Exception y NO \RuntimeException (verificado). Sin este catch caían en el
          * \Throwable genérico del job y el usuario leía "ocurrió un error inesperado" para algo
          * que casi siempre se arregla reintentando: un archivo grande a veces necesita un
          * segundo intento.
          */
         try {
-            $response = $http->post('https://api.anthropic.com/v1/messages', [
-                'model'      => self::CLAUDE_MODEL,
-                'max_tokens' => self::MAX_TOKENS,
-                'messages'   => [
-                    [
-                        'role'    => 'user',
-                        'content' => $prompt,
-                    ],
-                ],
-            ]);
+            $response = $http->post(ProveedorIaHelper::url_messages($proveedor), $payload);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            Log::error('AiClientAnalyzer: no hubo respuesta de Claude API', [
-                'message' => $e->getMessage(),
+            Log::error('AiClientAnalyzer: no hubo respuesta de la IA', [
+                'proveedor' => $proveedor,
+                'message'   => $e->getMessage(),
             ]);
 
             throw new \RuntimeException(self::MENSAJE_IA_SIN_RESPUESTA);
         }
 
         if (!$response->successful()) {
-            Log::error('AiClientAnalyzer: error en respuesta de Claude', [
-                'status' => $response->status(),
-                'body'   => $response->body(),
+            Log::error('AiClientAnalyzer: error en respuesta de la IA', [
+                'proveedor' => $proveedor,
+                'status'    => $response->status(),
+                'body'      => $response->body(),
             ]);
 
             /*
-             * Detectar el tipo de error desde el JSON de respuesta de Anthropic.
-             * Los errores transitorios tienen type: overloaded_error, api_error, etc.
-             * Este bloque existía sólo en AiExcelAnalyzer: clientes y proveedores veían el error
-             * crudo. Es la misma copia, sin cambios.
+             * Error transitorio (el proveedor saturado) → "no disponible, esperá unos segundos".
+             * La regla por proveedor vive en ModelosIaHelper::error_transitorio_de_importacion():
+             * con Anthropic es la de siempre de este analizador; con DeepSeek, la de
+             * ProveedorIaHelper (429/500/503 son su "saturado").
              */
-            $error_body = $response->json();
-            $error_type = $error_body['error']['type'] ?? null;
-
-            $transient_error_types = ['overloaded_error', 'api_error'];
-
-            if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
+            if (ModelosIaHelper::error_transitorio_de_importacion($response, $proveedor)) {
                 throw new \RuntimeException(self::MENSAJE_IA_NO_DISPONIBLE);
             }
 
             /*
-             * Otros errores (auth, rate limit, request inválido). Hasta esta misión acá se
-             * concatenaba $response->body(): el JSON de error crudo de Anthropic terminaba en
-             * la pantalla del comerciante. El status y el body están completos en el
+             * Otros errores (auth, saldo, request inválido). El JSON de error crudo del proveedor
+             * NUNCA va a la pantalla del comerciante: el status y el body están completos en el
              * Log::error de arriba.
              */
             throw new \RuntimeException(self::MENSAJE_IA_RECHAZO);
@@ -810,36 +895,67 @@ PROMPT;
         $response_data = $response->json();
 
         /*
-         * Consumo de tokens (misión tokens-por-cliente). Mismo lugar y mismo motivo que en
-         * AiExcelAnalyzer: el body entero todavía está acá y abajo se descarta.
+         * Consumo de tokens (misión tokens-por-cliente). Va acá, con el body entero todavía
+         * en la mano: unas líneas más abajo el método se queda solo con el texto y el bloque
+         * `usage` se pierde. Si la llamada hubiera fallado, arriba ya se salió por excepción
+         * y no se registra nada — un rechazo no se paga. Con el proveedor que efectivamente
+         * contestó (el elegido o el del fallback).
+         *
+         * registrar() nunca lanza: el analizador de un Excel no puede caerse por contabilidad.
          */
         AiTokenUsageHelper::registrar([
-            'user_id' => (int) $this->user_id,
-            'proceso' => 'import_excel_clientes',
-            'body'    => is_array($response_data) ? $response_data : [],
+            'user_id'   => (int) $this->user_id,
+            'proceso'   => 'import_excel_clientes',
+            'body'      => is_array($response_data) ? $response_data : [],
+            'proveedor' => $proveedor,
 
-            // El modelo que devolvió Anthropic (viene con la fecha resuelta del alias, que es
-            // lo que el admin necesita para costear); el de la constante, solo si no vino.
+            // El modelo que devolvió el proveedor (viene con la fecha resuelta del alias, que es
+            // lo que el admin necesita para costear); el resuelto, solo si no vino.
             'modelo' => isset($response_data['model']) && (string) $response_data['model'] !== ''
                 ? (string) $response_data['model']
-                : self::CLAUDE_MODEL,
+                : $modelo,
         ]);
 
         /*
-         * La respuesta de la API de Anthropic tiene el contenido en:
-         * response.content[0].text
+         * 🔴 El texto es el del PRIMER bloque `type = text`, NO `content[0]['text']`. Con el
+         * thinking prendido (DeepSeek Pro, el default de la importación) content[0] es el bloque
+         * `thinking` y no tiene `text`: leerlo daba null y la importación decía "no pudo
+         * interpretar esta planilla" con una respuesta perfectamente buena.
          */
-        $text = $response_data['content'][0]['text'] ?? null;
+        /*
+         * Respuesta CORTADA por el techo de salida (`stop_reason = max_tokens`): lo que vino es un JSON
+         * a medias. call_claude() la reintenta una vez con el doble de techo y, si se corta de nuevo,
+         * la trata como "no se pudo interpretar" (el mismo mensaje de siempre), con un
+         * warning claro en el log, porque la causa es el techo y no la planilla: si se repite, hay que
+         * subir IMPORTACION_EXCEL_IA_MAX_TOKENS_CON_RAZONAMIENTO. La llamada ya quedó registrada arriba
+         * (se pagó igual).
+         */
+        if (is_array($response_data) && isset($response_data['stop_reason']) && (string) $response_data['stop_reason'] === 'max_tokens') {
+            Log::warning('AiClientAnalyzer: la respuesta de la IA se cortó por el techo de salida (stop_reason = max_tokens)' . ($factor === 1 ? ': se reintenta una vez con el doble de techo' : ': segundo corte, se desiste'), [
+                'proveedor'     => $proveedor,
+                'modelo'        => $modelo,
+                'max_tokens'    => isset($payload['max_tokens']) ? (int) $payload['max_tokens'] : null,
+                'output_tokens' => isset($response_data['usage']['output_tokens']) ? (int) $response_data['usage']['output_tokens'] : null,
+            ]);
+
+            $cortada = true;
+
+            return '';
+        }
+
+        $text = ModelosIaHelper::texto_de_respuesta($response_data);
 
         if (is_null($text)) {
-            Log::error('AiClientAnalyzer: Claude devolvió una respuesta sin contenido de texto', [
-                'body' => $response->body(),
+            Log::error('AiClientAnalyzer: la IA devolvió una respuesta sin contenido de texto', [
+                'proveedor' => $proveedor,
+                'body'      => $response->body(),
             ]);
 
             throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
         }
 
-        Log::info('AiClientAnalyzer: respuesta de Claude recibida', [
+        Log::info('AiClientAnalyzer: respuesta de la IA recibida', [
+            'proveedor'        => $proveedor,
             'response_preview' => substr($text, 0, 300),
         ]);
 
@@ -859,20 +975,19 @@ PROMPT;
     protected function parse_claude_response(string $claude_text): array
     {
         /*
-         * Limpiamos posibles bloques de código markdown que Claude pueda incluir
-         * a pesar de que el prompt pide JSON puro.
+         * El JSON adentro del texto de la IA (ModelosIaHelper::extraer_json(), misión
+         * modelos-ia-por-cliente): tolera el bloque cercado ```json, el JSON pelado y PROSA antes del
+         * JSON (con o sin llaves), que es lo que a veces hace DeepSeek. Antes se decodificaba el texto
+         * entero y cualquier frase antes del JSON daba "no se pudo interpretar la planilla". Solo
+         * vale un objeto que traiga `column_mapping`: una llave suelta de la prosa no lo engaña.
          */
-        $clean_text = trim($claude_text);
-        $clean_text = preg_replace('/^```(?:json)?\s*/i', '', $clean_text);
-        $clean_text = preg_replace('/\s*```$/i', '', $clean_text);
-        $clean_text = trim($clean_text);
+        $parsed = ModelosIaHelper::extraer_json($claude_text, function ($candidato) {
+            return isset($candidato['column_mapping']) && is_array($candidato['column_mapping']);
+        });
 
-        $parsed = json_decode($clean_text, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            Log::error('AiClientAnalyzer: JSON inválido en respuesta de Claude', [
+        if (is_null($parsed)) {
+            Log::error('AiClientAnalyzer: la respuesta de la IA no trae un JSON legible con column_mapping', [
                 'raw_response' => $claude_text,
-                'json_error'   => json_last_error_msg(),
             ]);
 
             /* El JSON crudo y el error de parseo ya quedaron en el Log::error de arriba. */
@@ -1145,33 +1260,5 @@ PROMPT;
         }
 
         return $column_letter;
-    }
-
-    /**
-     * Arma el cliente HTTP hacia Anthropic con headers y TLS (ca_bundle / verify_ssl).
-     *
-     * Mismo criterio que AiExcelAnalyzer::build_anthropic_http_client().
-     *
-     * @param  string $api_key  Clave ANTHROPIC_API_KEY
-     * @return \Illuminate\Http\Client\PendingRequest
-     */
-    protected function build_anthropic_http_client(string $api_key)
-    {
-        $http = Http::withHeaders([
-            'x-api-key'         => $api_key,
-            'anthropic-version' => '2023-06-01',
-            'content-type'      => 'application/json',
-        ])->timeout(60);
-
-        $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);
-        $ca_bundle  = config('services.anthropic.ca_bundle');
-
-        if (!$verify_ssl) {
-            $http = $http->withoutVerifying();
-        } elseif (is_string($ca_bundle) && $ca_bundle !== '' && is_file($ca_bundle)) {
-            $http = $http->withOptions(['verify' => $ca_bundle]);
-        }
-
-        return $http;
     }
 }
