@@ -4,6 +4,7 @@ namespace Tests\Feature\Stock;
 
 use App\Http\Controllers\Helpers\PermisosCatalogoHelper;
 use App\Models\Address;
+use App\Models\Brand;
 use App\Models\DepositMovement;
 use App\Models\DepositMovementModification;
 use App\Models\DepositMovementStatus;
@@ -30,6 +31,14 @@ use Illuminate\Support\Facades\Hash;
  *    y `deposit_movement.move_stock`. El dueño puede todo.
  *  - Estados: los fijos ("En proceso", "Recibido", `user_id` NULL) + los propios de cada comercio.
  *  - `en_curso` (alertas del empleado) = los suyos cuyo stock todavía no se movió.
+ *
+ * Ajustes tras el chequeo y la verificación en vivo (3/10/2026), casos 11 a 16:
+ *  - el buscador del ABM (`global-search` / `search`) trae los estados fijos + los propios, y
+ *    cualquier otro modelo con `user_id` sigue filtrando como siempre;
+ *  - "dos frentes": `recibido_at` (la marca de la versión anterior) también cuenta como stock
+ *    movido, "Mover stock" la llena, y el request ya no la escribe;
+ *  - el estado de un movimiento tiene que ser fijo o propio; `show` filtra por dueño; "Mover
+ *    stock" pide los dos depósitos.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -767,5 +776,305 @@ class Movimientos_de_deposito_mover_stock_y_auditoria_Test extends AuditoriaStoc
         $ids = collect($this->getJson('api/deposit-movement-en-curso')->assertStatus(200)->json('models'))
                     ->pluck('id')->sort()->values()->all();
         $this->assertEquals([$segundo->id], $ids, 'Con el stock movido deja de estar en curso.');
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Ajustes tras el chequeo y la verificación en vivo (3/10/2026)
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Otro comercio (otro dueño) de la misma base.
+     *
+     * @return \App\Models\User
+     */
+    protected function otro_duenio()
+    {
+        return User::create([
+            'name'         => 'zz Otro dueño',
+            'company_name' => 'zz Otro comercio',
+            'email'        => 'zz-otro-duenio-'.uniqid().'@test.local',
+            'password'     => Hash::make('secret'),
+        ]);
+    }
+
+    /**
+     * Simula un movimiento que trasladó la versión ANTERIOR del sistema (el otro frente del
+     * cliente, sobre la misma base): pasó a "Recibido", tiene `recibido_at` y no conoce
+     * `stock_moved_at`.
+     *
+     * @param \App\Models\DepositMovement $movimiento
+     * @param string $recibido_at
+     * @return void
+     */
+    protected function marcar_como_movido_por_la_version_anterior($movimiento, $recibido_at)
+    {
+        DB::table('deposit_movements')->where('id', $movimiento->id)->update([
+            'recibido_at'                => $recibido_at,
+            'deposit_movement_status_id' => $this->estado_fijo('Recibido')->id,
+        ]);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 11. El buscador del ABM trae fijos + propios
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Medido en vivo: el ABM de estados lista por `global-search`, y el filtro genérico
+     * `user_id = dueño` escondía los fijos (`user_id` NULL). El gancho opt-in
+     * `scopeDelDuenoConGlobales` lo arregla SOLO para este modelo.
+     *
+     * @group stock
+     * @test
+     */
+    public function el_buscador_del_abm_de_estados_trae_fijos_y_propios()
+    {
+        $en_proceso = $this->estado_fijo('En proceso');
+        $recibido = $this->estado_fijo('Recibido');
+
+        $otro_duenio = $this->otro_duenio();
+        $ajeno = DepositMovementStatus::create(['name' => 'zz Estado ajeno buscador', 'user_id' => $otro_duenio->id]);
+        $propio = DepositMovementStatus::create(['name' => 'zz Estado propio buscador', 'user_id' => $this->usuario()->id]);
+
+        // global-search (lo que usa el listado del ABM).
+        $global = $this->postJson('api/global-search/deposit-movement-status', ['per_page' => 200]);
+        $global->assertStatus(200);
+
+        $ids = collect($global->json('models.data'))->pluck('id')->all();
+
+        $this->assertContains($en_proceso->id, $ids, 'El estado fijo "En proceso" tiene que aparecer en el ABM.');
+        $this->assertContains($recibido->id, $ids, 'El estado fijo "Recibido" tiene que aparecer en el ABM.');
+        $this->assertContains($propio->id, $ids);
+        $this->assertNotContains($ajeno->id, $ids, 'El estado de otro comercio no aparece.');
+
+        // search (el otro buscador genérico).
+        $search = $this->postJson('api/search/deposit-movement-status', []);
+        $search->assertStatus(200);
+
+        $ids = collect($search->json('models'))->pluck('id')->all();
+
+        $this->assertContains($en_proceso->id, $ids);
+        $this->assertContains($recibido->id, $ids);
+        $this->assertContains($propio->id, $ids);
+        $this->assertNotContains($ajeno->id, $ids);
+
+        // Cualquier otro modelo con user_id sigue filtrando como siempre (solo lo del dueño).
+        $marca_propia = Brand::create(['name' => 'zz Marca propia buscador', 'user_id' => $this->usuario()->id]);
+        $marca_ajena = Brand::create(['name' => 'zz Marca ajena buscador', 'user_id' => $otro_duenio->id]);
+
+        $marcas = $this->postJson('api/global-search/brand', [
+            'per_page'        => 200,
+            'order_by'        => 'id',
+            'order_direction' => 'DESC',
+        ]);
+        $marcas->assertStatus(200);
+
+        $ids = collect($marcas->json('models.data'))->pluck('id')->all();
+
+        $this->assertContains($marca_propia->id, $ids);
+        $this->assertNotContains($marca_ajena->id, $ids, 'El gancho no puede aflojar el filtro de otros modelos.');
+        foreach ($marcas->json('models.data') as $marca) {
+            $this->assertEquals($this->usuario()->id, (int) $marca['user_id']);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 12. Dos frentes: lo que movió la versión anterior queda bloqueado
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * @group stock
+     * @test
+     */
+    public function un_movimiento_movido_por_la_version_anterior_queda_bloqueado()
+    {
+        $articulo = $this->crear_articulo('zz Mov dep version anterior');
+        $this->cargar_deposito($articulo, $this->origen, 10);
+
+        $empleado = $this->crear_empleado('zz Empleado dos frentes', ['deposit_movement.move_stock']);
+
+        $viejo = $this->crear_movimiento([[$articulo, 4]], ['employee_id' => $empleado->id]);
+        $pendiente = $this->crear_movimiento([[$articulo, 1]], ['employee_id' => $empleado->id]);
+
+        $this->marcar_como_movido_por_la_version_anterior($viejo, '2026-09-20 10:30:00');
+
+        // "Mover stock" no lo traslada otra vez y avisa de dónde salió.
+        $respuesta = $this->mover_stock($viejo);
+        $respuesta->assertStatus(422);
+        $this->assertSame(
+            'El stock de este movimiento ya se movió el 20/09/2026 10:30 (desde una versión anterior del sistema).',
+            $respuesta->json('message')
+        );
+        $this->assertNull(DB::table('deposit_movements')->where('id', $viejo->id)->value('stock_moved_at'));
+        $this->assertEquals(0, $this->movimientos($articulo, 'Mov entre depositos')->count());
+
+        // Los artículos quedan bloqueados.
+        $this->actualizar_movimiento($viejo, [[$articulo, 9]], [
+            'employee_id'                => $empleado->id,
+            'deposit_movement_status_id' => $this->estado_fijo('Recibido')->id,
+        ])->assertStatus(422);
+        $this->assertEquals([$articulo->id => 4.0], $this->pivot($viejo));
+
+        // Y no se borra.
+        $this->deleteJson('api/deposit-movement/'.$viejo->id)->assertStatus(422);
+        $this->assertNotNull(DepositMovement::find($viejo->id));
+
+        // No sale en las alertas del empleado; el que sigue pendiente, sí.
+        $this->actuar_como($empleado);
+
+        $ids = collect($this->getJson('api/deposit-movement-en-curso')->assertStatus(200)->json('models'))
+                    ->pluck('id')->all();
+
+        $this->assertNotContains($viejo->id, $ids, 'Lo que movió la versión anterior no está en curso.');
+        $this->assertContains($pendiente->id, $ids);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 13. Dos frentes: "Mover stock" llena recibido_at y el request no lo escribe
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * @group stock
+     * @test
+     */
+    public function mover_stock_llena_recibido_at_y_el_request_no_lo_escribe()
+    {
+        $articulo = $this->crear_articulo('zz Mov dep recibido_at');
+        $this->cargar_deposito($articulo, $this->origen, 10);
+
+        // El alta ignora el recibido_at del request: si no, nacería "movido" sin trasladar nada.
+        $movimiento = $this->crear_movimiento([[$articulo, 4]], ['recibido_at' => '2026-09-01 10:00:00']);
+        $this->assertNull(DB::table('deposit_movements')->where('id', $movimiento->id)->value('recibido_at'));
+
+        // La edición tampoco lo escribe.
+        $this->actualizar_movimiento($movimiento, [[$articulo, 4]], [
+            'recibido_at' => '2026-09-02 11:00:00',
+            'notes'       => 'zz con recibido_at en el request',
+        ])->assertStatus(200);
+
+        $fila = DB::table('deposit_movements')->where('id', $movimiento->id)->first();
+        $this->assertNull($fila->recibido_at);
+        $this->assertEquals('zz con recibido_at en el request', $fila->notes);
+
+        // Mover stock deja las DOS marcas: la nueva y la que mira la versión anterior.
+        $this->mover_stock($movimiento)->assertStatus(200);
+
+        $fila = DB::table('deposit_movements')->where('id', $movimiento->id)->first();
+        $this->assertNotNull($fila->stock_moved_at);
+        $this->assertNotNull($fila->recibido_at, 'Sin recibido_at, el frente viejo lo trasladaría otra vez al pasarlo a Recibido.');
+        $this->assertEquals($fila->stock_moved_at, $fila->recibido_at);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 14. El estado tiene que ser fijo o propio
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * @group stock
+     * @test
+     */
+    public function el_estado_del_movimiento_tiene_que_ser_fijo_o_propio()
+    {
+        $articulo = $this->crear_articulo('zz Mov dep estado valido');
+
+        $otro_duenio = $this->otro_duenio();
+        $ajeno = DepositMovementStatus::create(['name' => 'zz Estado de otro comercio', 'user_id' => $otro_duenio->id]);
+        $propio = DepositMovementStatus::create(['name' => 'zz Estado propio valido', 'user_id' => $this->usuario()->id]);
+
+        $antes = DepositMovement::where('user_id', $this->usuario()->id)->count();
+
+        // Alta con el estado de otro comercio → 422 y no se crea nada.
+        $respuesta = $this->postJson('api/deposit-movement', $this->payload_movimiento([[$articulo, 1]], [
+            'deposit_movement_status_id' => $ajeno->id,
+        ]));
+        $respuesta->assertStatus(422);
+        $this->assertSame('El estado elegido no existe.', $respuesta->json('message'));
+        $this->assertEquals($antes, DepositMovement::where('user_id', $this->usuario()->id)->count());
+
+        // Alta con un estado propio → 201.
+        $movimiento = $this->crear_movimiento([[$articulo, 1]], ['deposit_movement_status_id' => $propio->id]);
+
+        // Edición al estado de otro comercio, o a uno que no existe → 422 y queda el que estaba.
+        $this->actualizar_movimiento($movimiento, [[$articulo, 1]], ['deposit_movement_status_id' => $ajeno->id])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'El estado elegido no existe.');
+
+        $this->actualizar_movimiento($movimiento, [[$articulo, 1]], ['deposit_movement_status_id' => 999999999])
+            ->assertStatus(422);
+
+        $this->assertEquals($propio->id, (int) DB::table('deposit_movements')->where('id', $movimiento->id)->value('deposit_movement_status_id'));
+
+        // A un fijo → 200.
+        $recibido = $this->estado_fijo('Recibido');
+
+        $this->actualizar_movimiento($movimiento, [[$articulo, 1]], ['deposit_movement_status_id' => $recibido->id])
+            ->assertStatus(200);
+
+        $this->assertEquals($recibido->id, (int) DB::table('deposit_movements')->where('id', $movimiento->id)->value('deposit_movement_status_id'));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 15. show por dueño y borrado de uno sin mover
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * @group stock
+     * @test
+     */
+    public function show_filtra_por_duenio_y_un_movimiento_sin_mover_se_borra()
+    {
+        $articulo = $this->crear_articulo('zz Mov dep show y borrar');
+
+        $movimiento = $this->crear_movimiento([[$articulo, 2]]);
+
+        $this->getJson('api/deposit-movement/'.$movimiento->id)
+            ->assertStatus(200)
+            ->assertJsonPath('model.id', $movimiento->id);
+
+        $ajeno = DepositMovement::create([
+            'num'                        => 1,
+            'from_address_id'            => 1,
+            'to_address_id'              => 2,
+            'deposit_movement_status_id' => $this->estado_fijo('En proceso')->id,
+            'user_id'                    => $this->otro_duenio()->id,
+        ]);
+
+        $this->getJson('api/deposit-movement/'.$ajeno->id)
+            ->assertStatus(404)
+            ->assertJsonPath('message', 'No se encontró el movimiento de depósito.');
+
+        // Uno sin mover se borra (el destroy ahora va en transacción con la fila bloqueada).
+        $this->deleteJson('api/deposit-movement/'.$movimiento->id)->assertStatus(200);
+        $this->assertNull(DepositMovement::find($movimiento->id));
+
+        // Y el de otro comercio no se borra.
+        $this->deleteJson('api/deposit-movement/'.$ajeno->id)->assertStatus(404);
+        $this->assertNotNull(DepositMovement::find($ajeno->id));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 16. "Mover stock" pide los dos depósitos
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * @group stock
+     * @test
+     */
+    public function mover_stock_sin_alguno_de_los_depositos_da_422()
+    {
+        $articulo = $this->crear_articulo('zz Mov dep sin destino');
+        $this->cargar_deposito($articulo, $this->origen, 10);
+
+        $movimiento = $this->crear_movimiento([[$articulo, 4]]);
+
+        // Sin destino (0, que es lo que queda en la columna NOT NULL cuando no se eligió).
+        DB::table('deposit_movements')->where('id', $movimiento->id)->update(['to_address_id' => 0]);
+
+        $respuesta = $this->mover_stock($movimiento);
+        $respuesta->assertStatus(422);
+        $this->assertSame('Elegí el depósito de origen y el de destino antes de mover el stock.', $respuesta->json('message'));
+
+        $this->assertNull(DB::table('deposit_movements')->where('id', $movimiento->id)->value('stock_moved_at'));
+        $this->assertEquals(10.0, $this->stock_en_deposito($articulo, $this->origen->id));
+        $this->assertEquals(0, $this->movimientos($articulo, 'Mov entre depositos')->count());
     }
 }
