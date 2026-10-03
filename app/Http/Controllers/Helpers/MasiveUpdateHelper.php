@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
@@ -353,6 +354,9 @@ class MasiveUpdateHelper
 
         $criteria = json_decode($masive_update->criteria_json, true);
         $update_form = isset($criteria['update_form']) ? $criteria['update_form'] : [];
+
+        // Los costos declarados como BRUTOS van al final: ver ordenar_formulario_para_costo_bruto().
+        $update_form = self::ordenar_formulario_para_costo_bruto($update_form);
 
         $resolved = self::resolve_models_from_criteria($masive_update);
         $models = $resolved['models'];
@@ -804,6 +808,102 @@ class MasiveUpdateHelper
     }
 
     /**
+     * Misión `masiva-costo-neto-o-bruto` (3/10/2026) — ¿el ítem del formulario declara que el costo
+     * que se está cargando es BRUTO (con IVA incluido)?
+     *
+     * Es la quinta vía que escribe `articles.cost` a partir de un número que fijó una persona, y
+     * aplica la MISMA regla que el ABM, la compra y el import: **el que carga el costo declara si es
+     * neto o bruto; si es bruto el sistema le saca el IVA con la alícuota del artículo; siempre se
+     * guarda el neto**. La decisión final la toma el resolvedor único
+     * ArticlePricesHelper::el_costo_cargado_es_bruto(), así que un Monotributista migrado nunca
+     * descompone aunque le llegue `true`.
+     *
+     * 🔴 Solo cuenta si la clave `cost_incluye_iva` VIENE en el ítem. Ausente o null significa "como
+     * siempre" (neto): es lo que mandan el asistente de IA (PropuestaActualizacionMasivaIaHelper),
+     * las masivas que ya estaban encoladas y una SPA vieja en caché. Si acá se asumiera algo ante
+     * la ausencia, un `set_cost` que hoy se guarda tal cual pasaría a descomponerse en silencio.
+     *
+     * Solo aplica a la propiedad `cost` de un Article: cualquier otro modelo o campo ignora la clave.
+     *
+     * @param  mixed                $model     Registro que se está actualizando.
+     * @param  string               $prop_key  Propiedad que toca el ítem (`cost`, `stock`...).
+     * @param  array                $form      Ítem del formulario.
+     * @param  \App\Models\User|null $owner     Dueño del comercio (la masiva corre en cola, sin sesión).
+     * @return bool                            true si el valor del ítem hay que tratarlo como bruto.
+     */
+    protected static function costo_declarado_como_bruto($model, $prop_key, $form, $owner = null)
+    {
+        if (!($model instanceof Article) || $prop_key !== 'cost') {
+            return false;
+        }
+
+        if (!array_key_exists('cost_incluye_iva', $form) || is_null($form['cost_incluye_iva'])) {
+            return false;
+        }
+
+        return ArticlePricesHelper::el_costo_cargado_es_bruto($owner, $form['cost_incluye_iva']);
+    }
+
+    /**
+     * Aumenta o disminuye el costo de un artículo en un porcentaje, REDONDEANDO EL BRUTO.
+     *
+     * Sin redondeo, un % sobre el neto y el mismo % sobre el bruto dan exactamente el mismo costo
+     * (el IVA es un factor constante), así que apply_form_change() sigue por su camino de siempre.
+     * El redondeo es lo único que los distingue: la persona que declara "mi costo es el bruto" y
+     * pide redondear espera ver redondeado ESE número (1331 → 1330), no el neto (1100 → 1100). Por
+     * eso se va al bruto, se aplica el %, se redondea y se vuelve al neto, que es lo que se guarda.
+     *
+     * @param  \App\Models\Article $model       Artículo con el costo neto actual.
+     * @param  float               $porcentaje  Porcentaje con signo (positivo aumenta, negativo disminuye).
+     * @return float                            Nuevo costo NETO (sin IVA).
+     */
+    protected static function variar_costo_en_bruto($model, $porcentaje)
+    {
+        $bruto_actual = ArticlePricesHelper::sumar_iva($model, (float) $model->cost);
+
+        $bruto_nuevo = round($bruto_actual + ($bruto_actual * $porcentaje / 100), 0, PHP_ROUND_HALF_UP);
+
+        return ArticlePricesHelper::back_out_iva($model, $bruto_nuevo);
+    }
+
+    /**
+     * Deja al final del formulario los costos declarados como BRUTOS, respetando el orden relativo
+     * del resto.
+     *
+     * Si la misma masiva cambia la alícuota (`iva_id`) y fija un costo bruto, el back-out tiene que
+     * usar la alícuota NUEVA, igual que el ABM (que asigna `iva_id` antes de descomponer). El
+     * formulario llega en el orden de las tarjetas de la pantalla, que no garantiza eso. Los ítems
+     * sin la declaración no se mueven de lugar, así que una masiva sin costo bruto corre idéntica.
+     *
+     * @param  array $update_form Ítems del formulario tal como se guardaron al encolar.
+     * @return array              Los mismos ítems, con los de costo bruto al final.
+     */
+    protected static function ordenar_formulario_para_costo_bruto($update_form)
+    {
+        if (!is_array($update_form)) {
+            return $update_form;
+        }
+
+        $primeros = [];
+        $costos_brutos = [];
+
+        foreach ($update_form as $form) {
+            $es_costo_bruto = is_array($form)
+                && !empty($form['cost_incluye_iva'])
+                && isset($form['key'])
+                && in_array($form['key'], ['set_cost', 'increment_cost', 'decrement_cost'], true);
+
+            if ($es_costo_bruto) {
+                $costos_brutos[] = $form;
+            } else {
+                $primeros[] = $form;
+            }
+        }
+
+        return array_merge($primeros, $costos_brutos);
+    }
+
+    /**
      * Aplica un ítem del formulario de actualización y devuelve el cambio si hubo modificación.
      *
      * @param object $model
@@ -821,7 +921,10 @@ class MasiveUpdateHelper
             $old_value = $model->{$prop_key};
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
             $nuevo = $model->{$prop_key} - $value;
-            if (!empty($form['round'])) {
+            if (!empty($form['round']) && self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
+                // Costo BRUTO + redondear: se redondea el bruto, no el neto. Ver variar_costo_en_bruto().
+                $nuevo = self::variar_costo_en_bruto($model, -1 * (float) $form['value']);
+            } elseif (!empty($form['round'])) {
                 $nuevo = round($nuevo, 0, PHP_ROUND_HALF_UP);
             }
 
@@ -850,7 +953,10 @@ class MasiveUpdateHelper
             $old_value = $model->{$prop_key};
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
             $nuevo = $model->{$prop_key} + $value;
-            if (!empty($form['round'])) {
+            if (!empty($form['round']) && self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
+                // Costo BRUTO + redondear: se redondea el bruto, no el neto. Ver variar_costo_en_bruto().
+                $nuevo = self::variar_costo_en_bruto($model, (float) $form['value']);
+            } elseif (!empty($form['round'])) {
                 $nuevo = round($nuevo, 0, PHP_ROUND_HALF_UP);
             }
 
@@ -882,7 +988,17 @@ class MasiveUpdateHelper
                 return self::aplicar_stock_por_movimiento($model, (float) $form['value'], 'set', $form['key'], $owner, $employee_id);
             }
 
-            $model->{$prop_key} = (float) $form['value'];
+            /*
+             * Misión `masiva-costo-neto-o-bruto` (3/10/2026): si la persona declaró que el valor
+             * que fija es el costo BRUTO (con IVA), se le saca el IVA con la alícuota de ESTE
+             * artículo y se guarda el neto, que es la convención del sistema para `articles.cost`.
+             * Sin la declaración (o con ella en false) se guarda tal cual, como siempre.
+             */
+            if (self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
+                $model->{$prop_key} = ArticlePricesHelper::back_out_iva($model, (float) $form['value']);
+            } else {
+                $model->{$prop_key} = (float) $form['value'];
+            }
             $model->save();
 
             if ($old_value == $model->{$prop_key}) {
