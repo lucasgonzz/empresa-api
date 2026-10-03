@@ -56,6 +56,9 @@ class RecursosInicialesController extends Controller
         'article_ticket_design'                  => 'App\Http\Controllers\ArticleTicketDesignController',
         'article_ticket_info'                    => 'App\Http\Controllers\ArticleTicketInfoController',
         'article_ubication'                      => 'App\Http\Controllers\ArticleUbicationController',
+        // Balanzas del comercio (misión balanzas-configurables, 3/10/2026): la SPA las necesita en
+        // memoria para leer tickets sin conexión. index() sin parámetros y scopeado por dueño.
+        'balanza'                                => 'App\Http\Controllers\BalanzaController',
         'bodega'                                 => 'App\Http\Controllers\BodegaController',
         'brand'                                  => 'App\Http\Controllers\BrandController',
         'budget_status'                          => 'App\Http\Controllers\BudgetStatusController',

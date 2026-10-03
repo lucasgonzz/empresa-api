@@ -300,6 +300,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // cheques-endoso-y-bancos, 21/9/2026). También baja por recursos-iniciales.
     Route::resource('cheque-banco', 'ChequeBancoController');
 
+    // Balanzas del comercio: cómo leer los tickets de cada una y a qué artículo imputarlos, para la
+    // lectura "por balanza" de VENDER (misión balanzas-configurables, 3/10/2026). También baja por
+    // recursos-iniciales (la SPA las usa para leer tickets sin conexión).
+    Route::resource('balanza', 'BalanzaController')->except(['create', 'edit']);
+
     // Override de liquidación/comisión por método de pago dentro de una caja (Grupo 223 · Prompt 01)
     // 'index' y 'show' se excluyen del resource porque comparten el mismo patrón de URI
     // (`{param}` único) y colisionarían entre sí; se define el listado filtrado por caja_id
