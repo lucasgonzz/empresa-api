@@ -301,14 +301,15 @@ class Masiva_de_costo_neto_o_bruto_Test extends EmpresaTestCase
      */
     public function redondear_con_costo_neto_redondea_el_neto_como_siempre()
     {
-        $article = $this->crear_articulo_de_costo('zz Masiva redondea neto', 1000);
+        $article = $this->crear_articulo_de_costo('zz Masiva redondea neto', 1010);
 
         $this->masiva([$article], [
             ['type' => 'number', 'key' => 'increment_cost', 'value' => 5.5, 'round' => 1, 'cost_incluye_iva' => false],
         ]);
 
-        $this->assertEqualsWithDelta(1055, $this->costo($article), self::DELTA,
-            '1000 + 5,5% = 1055 neto, ya entero');
+        // 1010 + 5,5% = 1065,55: sin redondeo quedaría con decimales, así que este caso sí distingue.
+        $this->assertEqualsWithDelta(1066, $this->costo($article), self::DELTA,
+            '1010 + 5,5% = 1065,55 y redondeando el NETO queda en 1066');
         $this->assertSame(0.0, fmod($this->costo($article), 1.0), 'el neto queda redondeado');
     }
 
@@ -329,6 +330,70 @@ class Masiva_de_costo_neto_o_bruto_Test extends EmpresaTestCase
         // 1210 × 0,95 = 1149,5 → 1150 (ROUND_HALF_UP) bruto.
         $this->assertEqualsWithDelta(1150, $this->costo($article) * 1.21, self::DELTA,
             'el bruto resultante tiene que ser el entero 1150');
+    }
+
+    /**
+     * Test 8b — empate genuino en .5 sobre el bruto. `articles.cost` guarda 6 decimales, así que un
+     * bruto de 100 vive como neto 82,644628 y al volver a sumarle el IVA da 99,99999988: sin limpiar
+     * ese ruido, 100 + 5,5% = 105,5 caía a 105 (ROUND_HALF_UP promete 106). Lo midió el checker
+     * adversarial de la Fase 7, en la mitad de los empates.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function un_empate_de_medio_en_el_bruto_redondea_hacia_arriba()
+    {
+        $article = $this->crear_articulo_de_costo('zz Masiva empate bruto', 82.644628);
+
+        $this->masiva([$article], [
+            ['type' => 'number', 'key' => 'increment_cost', 'value' => 5.5, 'round' => 1, 'cost_incluye_iva' => true],
+        ]);
+
+        // El bruto exacto es 100 × 1,055 = 105,5 → 106.
+        $this->assertEqualsWithDelta(106, $this->costo($article) * 1.21, self::DELTA,
+            'el bruto 105,5 tiene que redondear a 106, no a 105');
+    }
+
+    /**
+     * Test 8c — repetir la misma masiva de costo bruto no cuenta cambios la segunda vez: el neto se
+     * redondea a los 6 decimales de la columna antes de compararlo con el guardado. Antes quedaba
+     * 826,4462809917355 contra "826.446281" y cada artículo contaba como modificado.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function repetir_una_masiva_de_costo_bruto_no_cuenta_cambios()
+    {
+        $article = $this->crear_articulo_de_costo('zz Masiva repetida bruto', 500);
+
+        $form = [['type' => 'number', 'key' => 'set_cost', 'value' => 1000, 'cost_incluye_iva' => true]];
+
+        $primera = $this->masiva([$article], $form);
+        $this->assertSame(1, (int) $primera->changes_count, 'la primera vez sí cambia el costo');
+
+        $segunda = $this->masiva([$article], $form);
+        $this->assertSame(0, (int) $segunda->changes_count,
+            'la segunda vez el costo ya es ese: no hay ningún cambio que contar');
+    }
+
+    /**
+     * Test 8d — un "false" como TEXTO (solo por API directa; la pantalla manda booleanos) no se
+     * trata como bruto ni reordena el formulario: la condición del reordenamiento y la decisión
+     * final coinciden.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function un_false_como_texto_se_trata_como_neto()
+    {
+        $article = $this->crear_articulo_de_costo('zz Masiva false texto', 500);
+
+        $this->masiva([$article], [
+            ['type' => 'number', 'key' => 'set_cost', 'value' => 1210, 'cost_incluye_iva' => 'false'],
+        ]);
+
+        $this->assertEqualsWithDelta(1210, $this->costo($article), self::DELTA,
+            '"false" es neto: el valor se guarda tal cual');
     }
 
     /**

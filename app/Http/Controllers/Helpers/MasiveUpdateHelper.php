@@ -845,12 +845,31 @@ class MasiveUpdateHelper
     }
 
     /**
+     * Costo NETO de un número que la persona declaró BRUTO, redondeado a los 6 decimales de la
+     * columna `articles.cost`.
+     *
+     * Se redondea acá y no se deja que lo haga MySQL al guardar porque `apply_form_change()` decide
+     * si hubo cambio comparando `old_value == $model->cost` ANTES de que MySQL redondee: con el
+     * neto sin redondear (826,4462809917355) contra el guardado ("826.446281") una masiva repetida
+     * contaba como cambio cada artículo, adjuntaba un pivot y metía 13 decimales en `changes_json`.
+     * No dañaba datos, pero inflaba los números del historial.
+     *
+     * @param  \App\Models\Article $model  Artículo cuya alícuota se usa.
+     * @param  float               $bruto  Costo con IVA incluido.
+     * @return float                       Costo neto, a 6 decimales.
+     */
+    protected static function costo_neto_de_un_bruto($model, $bruto)
+    {
+        return round(ArticlePricesHelper::back_out_iva($model, $bruto), 6);
+    }
+
+    /**
      * Aumenta o disminuye el costo de un artículo en un porcentaje, REDONDEANDO EL BRUTO.
      *
      * Sin redondeo, un % sobre el neto y el mismo % sobre el bruto dan exactamente el mismo costo
      * (el IVA es un factor constante), así que apply_form_change() sigue por su camino de siempre.
      * El redondeo es lo único que los distingue: la persona que declara "mi costo es el bruto" y
-     * pide redondear espera ver redondeado ESE número (1331 → 1330), no el neto (1100 → 1100). Por
+     * pide redondear espera ver redondeado ESE número (1270,5 → 1271), no el neto (1050 → 1050). Por
      * eso se va al bruto, se aplica el %, se redondea y se vuelve al neto, que es lo que se guarda.
      *
      * @param  \App\Models\Article $model       Artículo con el costo neto actual.
@@ -859,11 +878,21 @@ class MasiveUpdateHelper
      */
     protected static function variar_costo_en_bruto($model, $porcentaje)
     {
-        $bruto_actual = ArticlePricesHelper::sumar_iva($model, (float) $model->cost);
+        /*
+         * 🔴 El bruto se limpia a 4 decimales ANTES de aplicar el %, y el resultado también antes de
+         * redondearlo a entero. `articles.cost` es decimal(22,6): el neto guardado ya viene
+         * redondeado (100 / 1,21 = 82,644628) y al volver a sumarle el IVA el bruto no da exacto
+         * (99,99999988 en vez de 100). Con eso un empate genuino en .5 (100 + 5,5% = 105,5) caía
+         * a 105 en vez de 106 con ROUND_HALF_UP, y pasaba en la mitad de los empates (medido por el
+         * checker adversarial de la Fase 7). Redondear a 4 decimales absorbe ese ruido sin mover
+         * ningún valor que no sea un empate.
+         */
+        $bruto_actual = round(ArticlePricesHelper::sumar_iva($model, (float) $model->cost), 4);
 
-        $bruto_nuevo = round($bruto_actual + ($bruto_actual * $porcentaje / 100), 0, PHP_ROUND_HALF_UP);
+        $bruto_nuevo = round(round($bruto_actual + ($bruto_actual * $porcentaje / 100), 4), 0, PHP_ROUND_HALF_UP);
 
-        return ArticlePricesHelper::back_out_iva($model, $bruto_nuevo);
+        // A 6 decimales, que es lo que guarda la columna: ver costo_neto_de_un_bruto().
+        return self::costo_neto_de_un_bruto($model, $bruto_nuevo);
     }
 
     /**
@@ -888,8 +917,16 @@ class MasiveUpdateHelper
         $costos_brutos = [];
 
         foreach ($update_form as $form) {
+            /*
+             * Misma conversión que usa la decisión final (el resolvedor castea con
+             * FILTER_VALIDATE_BOOLEAN): con `!empty()` un string "false" o "off" se movía al final
+             * aunque después se tratara como neto, y eso podía cambiar el orden de dos ítems de
+             * costo en el mismo formulario. Desde la pantalla llega un booleano JSON; esto cubre la
+             * API directa.
+             */
             $es_costo_bruto = is_array($form)
-                && !empty($form['cost_incluye_iva'])
+                && isset($form['cost_incluye_iva'])
+                && filter_var($form['cost_incluye_iva'], FILTER_VALIDATE_BOOLEAN)
                 && isset($form['key'])
                 && in_array($form['key'], ['set_cost', 'increment_cost', 'decrement_cost'], true);
 
@@ -995,7 +1032,7 @@ class MasiveUpdateHelper
              * Sin la declaración (o con ella en false) se guarda tal cual, como siempre.
              */
             if (self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
-                $model->{$prop_key} = ArticlePricesHelper::back_out_iva($model, (float) $form['value']);
+                $model->{$prop_key} = self::costo_neto_de_un_bruto($model, (float) $form['value']);
             } else {
                 $model->{$prop_key} = (float) $form['value'];
             }
