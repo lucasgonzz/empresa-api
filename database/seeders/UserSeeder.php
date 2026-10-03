@@ -3,8 +3,10 @@
 namespace Database\Seeders;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\Balanza;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
@@ -450,7 +452,24 @@ class UserSeeder extends Seeder
                 'ask_save_current_acount',
                 'articles_default_in_vender',
                 'fecha_impresion_en_article_tickets',
-                'balanza_bar_code',
+                // 'balanza_bar_code' ya no se asigna (misión balanzas-configurables, 3/10/2026):
+                // las balanzas son configuración del dueño, ver las dos claves de abajo.
+            ];
+
+            // Tickets de balanza "por balanza", como Panchito después de la migración: una balanza
+            // '22' de importe apuntando al artículo que usaba el código hardcodeado de la extensión
+            // vieja (60 en local). Sin foreign key: la fila se crea antes que los artículos (el
+            // ArticleSeeder corre después) y no rompe el orden; si el seed de artículos no llega al
+            // 60, VENDER avisa "balanza sin artículo válido" en vez de imputarle el ticket a otro.
+            $models[0]['tickets_de_balanza'] = 'balanzas';
+            $models[0]['balanzas'] = [
+                [
+                    'nombre'     => 'Balanza (tickets que empiezan con 22)',
+                    'prefijo'    => '22',
+                    'article_id' => BalanzaHelper::articulo_de_la_extension_vieja_id(),
+                    'tipo_dato'  => 'importe',
+                    'digitos'    => null,
+                ],
             ];
 
         } else if ($this->for_user == 'fenix') {
@@ -803,6 +822,21 @@ class UserSeeder extends Seeder
                     if (in_array('articulo_margen_de_ganancia_segun_lista_de_precios', $model['extencions'], true)) {
                         $user->listas_de_precio = 1;
                         $user->save();
+                    }
+                }
+
+                // Cómo lee VENDER los tickets de balanza (misión balanzas-configurables): solo para
+                // los perfiles que lo declaran. Los demás quedan en NULL (no leen balanzas).
+                if (isset($model['tickets_de_balanza'])) {
+                    $user->tickets_de_balanza = $model['tickets_de_balanza'];
+                    $user->save();
+                }
+
+                // Las balanzas del ABM del perfil, si las declara.
+                if (isset($model['balanzas'])) {
+                    foreach ($model['balanzas'] as $balanza) {
+                        $balanza['user_id'] = $user->id;
+                        Balanza::create($balanza);
                     }
                 }
                 
