@@ -482,4 +482,177 @@ class BalanzaHelper
 
         return $entero;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    //  Migración desde las extensiones viejas (comando balanzas:migrar-desde-extensiones)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * El artículo al que la extensión vieja `balanza_bar_code` le imputaba los tickets '22':
+     * estaba hardcodeado en `VenderController::check_balanza()` ("Id de la carniceria", Panchito).
+     * Se conserva la misma condición para que la migración apunte exactamente a lo que hoy se usa.
+     *
+     * @return int
+     */
+    static function articulo_de_la_extension_vieja_id()
+    {
+        return config('app.APP_ENV') == 'local' ? 60 : 6346;
+    }
+
+    /**
+     * Pasa UN dueño de las extensiones viejas a `users.tickets_de_balanza`.
+     *
+     *   1. Ya tiene `tickets_de_balanza` (no null, no vacío) -> no se toca. Idempotente y respeta
+     *      lo que el dueño eligió (incluido 'ninguno').
+     *   2. Tiene `plu_balanza_bar_code` -> 'plu', AUNQUE también tenga `balanza_bar_code` (caso La
+     *      Martina: ahí la extensión de importe apuntaba a un artículo que en su base es una
+     *      hamburguesa, y un código '22…' desconocido se le cobraba como hamburguesa).
+     *   3. Solo `balanza_bar_code` -> 'balanzas' + la balanza '22' (importe, dígitos por defecto)
+     *      apuntando al artículo hardcodeado, SOLO si ese artículo existe, no está borrado y es de
+     *      ESTE dueño (en la base compartida vieja el 6346 es de un solo comercio). Si no, queda en
+     *      'balanzas' sin balanzas y la salida lo dice. Si ya tiene una balanza '22', no se duplica.
+     *   4. Ninguna de las dos -> no se toca.
+     *
+     * 🔴 NO BORRA LAS FILAS DE LAS EXTENSIONES. El pipeline del admin corre los comandos ANTES de
+     * rotar el frente (`step_run_commands` -> … -> `step_update_default_version`): mientras tanto
+     * atiende el código viejo sobre la misma base, y ese código lee las extensiones. Borrarlas acá
+     * rompería la balanza en el frente activo durante el despliegue. Quedan como basura inofensiva
+     * (el código nuevo no las lee); la limpieza es otra misión, cuando todos estén en esta versión.
+     *
+     * Escribe con el query builder y no con `$owner->save()`: no tiene por qué disparar los
+     * observers de User (auditoría, etiquetas) ni tocar `updated_at` por una migración de datos.
+     *
+     * No atrapa excepciones a propósito: si algo inesperado falla, el comando tiene que salir con
+     * exit distinto de 0 para que el despliegue frene antes de rotar y el cliente siga con el
+     * código viejo, que todavía lee sus extensiones.
+     *
+     * @param  \App\Models\User  $owner     Dueño, con la relación `extencions` cargada (o se carga).
+     * @param  bool              $simular   true = solo informa lo que haría, no escribe nada.
+     * @return array  ['accion' => 'ya_configurado'|'sin_extensiones'|'plu'|'balanzas', 'modo' => string|null,
+     *                 'tambien_importe' => bool, 'balanza' => 'creada'|'existente'|'sin_articulo'|null,
+     *                 'balanza_id' => int|null, 'article_id' => int|null, 'article_name' => string|null,
+     *                 'motivo' => string|null]
+     */
+    static function migrar_dueno_desde_extensiones($owner, $simular)
+    {
+        $resultado = array(
+            'accion'          => null,
+            'modo'            => null,
+            'tambien_importe' => false,
+            'balanza'         => null,
+            'balanza_id'      => null,
+            'article_id'      => null,
+            'article_name'    => null,
+            'motivo'          => null,
+        );
+
+        // 1. Ya configurado: no se toca.
+        $actual = $owner->tickets_de_balanza;
+
+        if (!is_null($actual) && trim((string) $actual) !== '') {
+            $resultado['accion'] = 'ya_configurado';
+            $resultado['modo'] = (string) $actual;
+            return $resultado;
+        }
+
+        $slugs = array();
+
+        foreach ($owner->extencions as $extencion) {
+            $slugs[] = $extencion->slug;
+        }
+
+        $tiene_plu     = in_array(self::EXTENCION_PLU, $slugs, true);
+        $tiene_importe = in_array(self::EXTENCION_IMPORTE, $slugs, true);
+
+        // 4. Sin ninguna de las dos: no se toca.
+        if (!$tiene_plu && !$tiene_importe) {
+            $resultado['accion'] = 'sin_extensiones';
+            return $resultado;
+        }
+
+        // 2. PLU, aunque también tenga la de importe.
+        if ($tiene_plu) {
+
+            $resultado['accion'] = 'plu';
+            $resultado['modo'] = self::MODO_PLU;
+            $resultado['tambien_importe'] = $tiene_importe;
+
+            if (!$simular) {
+                DB::table('users')
+                    ->where('id', $owner->id)
+                    ->update(array('tickets_de_balanza' => self::MODO_PLU));
+            }
+
+            return $resultado;
+        }
+
+        // 3. Solo importe.
+        $resultado['accion'] = 'balanzas';
+        $resultado['modo'] = self::MODO_BALANZAS;
+
+        $article_id = self::articulo_de_la_extension_vieja_id();
+        $resultado['article_id'] = $article_id;
+
+        // Por query builder: tiene que ver también un artículo borrado (para decir POR QUÉ no se
+        // usa) y no necesita nada del modelo.
+        $articulo = DB::table('articles')
+                        ->where('id', $article_id)
+                        ->first(array('id', 'user_id', 'name', 'deleted_at'));
+
+        if (is_null($articulo)) {
+            $resultado['motivo'] = 'el artículo '.$article_id.' no existe en esta base';
+        } else if (!is_null($articulo->deleted_at)) {
+            $resultado['motivo'] = 'el artículo '.$article_id.' ("'.$articulo->name.'") está borrado';
+        } else if ((int) $articulo->user_id !== (int) $owner->id) {
+            $resultado['motivo'] = 'el artículo '.$article_id.' ("'.$articulo->name.'") es de otro comercio (user_id '.$articulo->user_id.')';
+        }
+
+        if (!is_null($articulo)) {
+            $resultado['article_name'] = $articulo->name;
+        }
+
+        $existente = Balanza::where('user_id', $owner->id)
+                            ->where('prefijo', self::PREFIJO_EXTENSION_VIEJA)
+                            ->orderBy('id', 'ASC')
+                            ->first();
+
+        if (!is_null($existente)) {
+            $resultado['balanza'] = 'existente';
+            $resultado['balanza_id'] = $existente->id;
+        } else if (is_null($resultado['motivo'])) {
+            $resultado['balanza'] = 'creada';
+        } else {
+            $resultado['balanza'] = 'sin_articulo';
+        }
+
+        if ($simular) {
+            return $resultado;
+        }
+
+        // El modo y la balanza van juntos: un dueño en 'balanzas' con la balanza a medio crear
+        // dejaría de leer sus tickets. Si algo falla adentro, la excepción sigue de largo (ver el
+        // docblock) y una segunda corrida lo retoma, porque el modo no quedó escrito.
+        DB::transaction(function () use ($owner, &$resultado) {
+
+            DB::table('users')
+                ->where('id', $owner->id)
+                ->update(array('tickets_de_balanza' => self::MODO_BALANZAS));
+
+            if ($resultado['balanza'] === 'creada') {
+
+                $balanza = Balanza::create(array(
+                    'user_id'    => $owner->id,
+                    'nombre'     => 'Balanza (tickets que empiezan con '.self::PREFIJO_EXTENSION_VIEJA.')',
+                    'prefijo'    => self::PREFIJO_EXTENSION_VIEJA,
+                    'article_id' => $resultado['article_id'],
+                    'tipo_dato'  => self::TIPO_IMPORTE,
+                    'digitos'    => null,
+                ));
+
+                $resultado['balanza_id'] = $balanza->id;
+            }
+        });
+
+        return $resultado;
+    }
 }
