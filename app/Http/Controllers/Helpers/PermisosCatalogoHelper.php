@@ -103,7 +103,7 @@ class PermisosCatalogoHelper
                     cuenta: deja cambiar todo lo que no son artículos. Los artículos piden
                     `update_articles`, y el botón "Mover stock", `move_stock`.
                 */
-                'deposit_movement.update'                       => 'Editar movimientos de depósito (estado, depósitos y notas)',
+                'deposit_movement.update'                       => 'Editar movimientos de depósito (estado, depósitos, empleado y notas)',
                 'deposit_movement.update_articles'              => 'Editar los artículos de un movimiento de depósito',
                 'deposit_movement.move_stock'                   => 'Mover el stock de un movimiento de depósito',
                 'deposit_movement.index.previus_days'           => 'Ver movimientos de depósito de días anteriores',
