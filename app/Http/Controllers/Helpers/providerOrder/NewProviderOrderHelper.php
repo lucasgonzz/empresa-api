@@ -33,6 +33,21 @@ class NewProviderOrderHelper {
     /** Artículos por UPDATE del historial de proveedores (los ids van en el IN del SQL). */
     const ARTICULOS_POR_UPDATE_DEL_HISTORIAL = 1000;
 
+    /**
+     * Artículos por consulta en las dos pasadas en bloque del recálculo diferido
+     * (materializar_descuentos_en_bloque() y aplicar_recargos_en_bloque()): van en el IN de la
+     * consulta de existencia y en el de la de recargos existentes.
+     */
+    const ARTICULOS_POR_CONSULTA_EN_BLOQUE = 1000;
+
+    /**
+     * Filas de article_surchages por sentencia en escribir_recargos_en_bloque(): por INSERT
+     * multi-fila (7 columnas por fila, 3.500 placeholders, lejos del tope de 65.535 de MySQL) y por
+     * UPDATE ... CASE (el SQL crece con cada WHEN). Mismo valor que
+     * RecalculoDePreciosEnLote::FILAS_POR_UPDATE.
+     */
+    const RECARGOS_POR_SENTENCIA = 500;
+
     public $provider_order;
     public $new_articles;
     public $ultimos_articulos_recividos;
@@ -429,6 +444,22 @@ class NewProviderOrderHelper {
         // porcentuales o por monto fijo — se materializan tal cual en cada artículo de la compra.
         $discounts = $this->provider_order->provider_order_discounts;
 
+        /*
+         * Misión compras-precios-en-lote (§4.4 del plan, 29/9/2026): con el recálculo diferido, esta
+         * pasada va en bloque (materializar_descuentos_en_bloque()): lo mismo que el foreach de abajo,
+         * con tres consultas para toda la compra en vez de tres por artículo.
+         *
+         * 🔴 Solo en modo diferido, y el foreach sigue ahí a propósito: con el interruptor
+         * recalcular_por_articulo() prendido la compra corre EXACTAMENTE el camino de antes, que es
+         * la referencia de los tests de equivalencia. No se "unifica".
+         */
+        if ($this->se_difiere_el_recalculo()) {
+
+            $this->materializar_descuentos_en_bloque($provider_id, $discounts);
+
+            return;
+        }
+
         foreach ($this->provider_order->articles as $article) {
 
             $articulo = Article::find($article->id);
@@ -448,6 +479,71 @@ class NewProviderOrderHelper {
             // recalcular_precio().
             $this->recalcular_precio($articulo);
         }
+    }
+
+    /**
+     * materializar_descuentos_proveedor_en_articulos() EN BLOQUE, para el recálculo diferido
+     * (misión compras-precios-en-lote, §4.4 del plan, 29/9/2026).
+     *
+     * Hace lo mismo que el foreach por artículo de ese método —Article::find(),
+     * ArticleProviderDiscountHelper::sync_provider_discounts() y el pedido de recálculo— con tres
+     * consultas para toda la compra en vez de tres por artículo (medido con 1.000 artículos: 3.000
+     * consultas): una para saber qué artículos existen, un DELETE de los descuentos tagueados y un
+     * INSERT multi-fila con los de la compra. La equivalencia fila por fila (columnas, valores,
+     * orden de los ids, artículos repetidos) vive en
+     * ArticleProviderDiscountHelper::sync_provider_discounts_en_bloque(): ver su docblock.
+     *
+     * 🔴 SOLO en modo diferido, y no es un descuido que el foreach de siempre siga en el método de
+     * arriba. Con el interruptor recalcular_por_articulo() prendido la compra tiene que correr
+     * EXACTAMENTE el camino de antes: es la referencia contra la que comparan los tests de
+     * equivalencia, y la salida de emergencia si el camino nuevo diera algo raro. En modo inmediato,
+     * además, cada artículo recalcula su precio en el momento, apenas escritos sus descuentos, y ese
+     * intercalado es parte del camino de referencia. Por eso este método se niega a correr en modo
+     * inmediato.
+     *
+     * Los artículos se anotan para el recálculo con recalcular_precio(), igual que en el foreach:
+     * todos los que existen, y ninguno más. En modo diferido ese método solo lee el id, así que
+     * alcanza con el modelo de la relación y no hace falta el Article::find() de a uno.
+     *
+     * Corre adentro de la transacción del llamador, sin transacción propia: si algo tira, se
+     * revierte con la compra, como antes.
+     *
+     * @param  int      $provider_id  Proveedor de la compra (no nulo: lo garantiza el llamador).
+     * @param  iterable $discounts    provider_order_discounts de la compra, los mismos que recibía
+     *                                sync_provider_discounts() en el foreach.
+     * @return void
+     */
+    protected function materializar_descuentos_en_bloque($provider_id, $discounts)
+    {
+        if (!$this->se_difiere_el_recalculo()) {
+            throw new \LogicException('NewProviderOrderHelper: la materialización de descuentos en bloque es solo para el recálculo diferido.');
+        }
+
+        /*
+         * Los ids en el orden en que los recorre el foreach de siempre, CON repetidos si la compra
+         * los tiene (article_provider_order no tiene índice único): cuál de las apariciones manda
+         * lo decide el helper, igual que lo decidía el DELETE + INSERT por artículo.
+         */
+        $article_ids = [];
+
+        foreach ($this->provider_order->articles as $article) {
+            $article_ids[] = (int) $article->id;
+        }
+
+        $existentes = ArticleProviderDiscountHelper::sync_provider_discounts_en_bloque($article_ids, $provider_id, $discounts, ArticleDiscount::ORIGEN_COMPRA);
+
+        // [article_id => posición]: para preguntar rápido si un renglón es de un artículo que existe.
+        $existen = array_flip($existentes);
+
+        foreach ($this->provider_order->articles as $article) {
+
+            if (isset($existen[(int) $article->id])) {
+                $this->recalcular_precio($article);
+            }
+        }
+
+        // Un solo log para toda la pasada: el de siempre era uno por artículo, con su nombre.
+        Log::info('materializar_descuentos_proveedor_en_articulos (en bloque): descuentos del proveedor '.$provider_id.' materializados en '.count($existentes).' artículo(s) de la compra '.$this->provider_order->id);
     }
 
     /**
@@ -645,6 +741,24 @@ class NewProviderOrderHelper {
         }
 
         /*
+         * Misión compras-precios-en-lote (§4.4 del plan, 29/9/2026): con el recálculo diferido, el
+         * PASO 2 va en bloque (aplicar_recargos_en_bloque()): las mismas cuentas y las mismas
+         * escrituras que el foreach de abajo, con un puñado de consultas para toda la compra en vez
+         * de cuatro por artículo. El PASO 1 (la agregación por tipo) es el mismo para los dos.
+         *
+         * 🔴 Solo en modo diferido, y el foreach de abajo sigue ahí a propósito: con el interruptor
+         * recalcular_por_articulo() prendido, o en una compra sin proveedor, el PASO 2 corre
+         * EXACTAMENTE como antes, porque es el camino de referencia de los tests de equivalencia y
+         * porque ahí cada artículo recalcula su precio en el momento. No se "unifica".
+         */
+        if ($this->se_difiere_el_recalculo()) {
+
+            $this->aplicar_recargos_en_bloque($valor_por_tipo, $total_articulos);
+
+            return;
+        }
+
+        /*
          * PASO 2 — un solo pase por artículo, y adentro un pase por tipo.
          *
          * El subtotal y la cantidad del ítem se calculan UNA vez por artículo (antes se
@@ -731,6 +845,463 @@ class NewProviderOrderHelper {
 
             $this->recalcular_precio($articulo);
         }
+    }
+
+    /**
+     * El PASO 2 de aplicar_costos_extra_a_recargos_articulos() EN BLOQUE, para el recálculo diferido
+     * (misión compras-precios-en-lote, §4.4 del plan, 29/9/2026).
+     *
+     * El PASO 2 por artículo hace, por cada renglón que pasa los saltos, un Article::find(); por
+     * cada tipo, un ArticleSurchage::where(...)->first() y un save(); y al final un
+     * load('article_surchages') y el pedido de recálculo. Medido con 1.000 artículos: 4.000
+     * consultas. Acá, para toda la compra: una consulta de existencia, una de recargos existentes
+     * por TIPO de la compra (ver recargos_existentes()), un INSERT multi-fila de los nuevos y un
+     * UPDATE en bloque por conjunto de columnas de los que cambian, cada cosa en tandas acotadas.
+     *
+     * 🔴 EL INVARIANTE: article_surchages queda IDÉNTICA a como la deja el PASO 2 por artículo
+     * (mismas filas, columnas y valores, created_at y updated_at incluidos) y se anotan para el
+     * recálculo los mismos artículos. Para eso:
+     *
+     *  - Mismos saltos, en el mismo orden: subtotal <= 0 y cantidad <= 0 (con get_total_article() y
+     *    get_cantidad_efectiva(), las mismas funciones), el artículo que no existe, y
+     *    valor_total_tipo <= 0.
+     *  - Mismas cuentas: el monto sale de la MISMA expresión, con las operaciones en el mismo orden.
+     *    Es un float y tiene que dar bit a bit igual: no se "simplifica" ni se reordena.
+     *  - 🔴 Qué se escribe lo decide EL MODELO, no una comparación a mano. Se asignan amount y
+     *    percentage sobre los mismos modelos Eloquent —los existentes hidratados de la base con la
+     *    misma consulta que first(), los nuevos con new ArticleSurchage() y los mismos tres atributos
+     *    de siempre— y se le pregunta isDirty(), que es exactamente lo que decide save(). No es un
+     *    detalle: amount es DOUBLE, vuelve de la base con los 14 dígitos que le mandó PDO, y Eloquent
+     *    lo compara contra el float nuevo como texto con la precisión de PHP. Un recargo con el
+     *    mismo monto NO queda sucio y save() no emite nada, así que su updated_at viejo tiene que
+     *    quedar como está. Una comparación a mano (==, round(), un épsilon) daría otra respuesta en
+     *    algún borde y tocaría updated_at de más o de menos.
+     *      · nuevo → una fila del INSERT multi-fila: lo que manda save() al insertar, con
+     *        created_at y updated_at;
+     *      · existente con algo sucio → getDirty() más updated_at, en un UPDATE en bloque;
+     *      · existente sin nada sucio → nada, como save().
+     *  - Los nuevos se insertan en el orden en que los crea el PASO 2 por artículo (artículo por
+     *    artículo y, adentro, en el orden de los tipos): los ids salen en el mismo orden relativo, y
+     *    eso importa porque la relación article_surchages va por id y el cálculo aplica los recargos
+     *    en ese orden.
+     *  - Un artículo repetido en la compra (article_provider_order no tiene índice único) pasa dos
+     *    veces, como en el foreach, sobre el MISMO modelo: después de cada "save" que escribiría se
+     *    sincroniza el original (syncOriginal(), lo que hace save() al terminar), así la segunda
+     *    pasada decide contra lo que dejó la primera, igual que hoy cuando vuelve a leer la fila.
+     *  - Sin el load('article_surchages'): servía para que setFinalPrice() calculara en el momento
+     *    con los recargos nuevos. En modo diferido el motor relee el artículo y sus recargos de la
+     *    base al final de procesar_pedido().
+     *  - Sin transacción propia: corre adentro de la del llamador, y si algo tira se revierte con la
+     *    compra, como antes.
+     *
+     * 🔴 SOLO en modo diferido (se niega a correr en modo inmediato): el PASO 2 por artículo es la
+     * referencia de los tests de equivalencia y el camino de la compra sin proveedor. Ver
+     * materializar_descuentos_en_bloque().
+     *
+     * @param  array $valor_por_tipo   [tipo => monto neto a prorratear], el del PASO 1, en su orden.
+     * @param  float $total_articulos  sub_total de la compra: la base del prorrateo (mayor a 0).
+     * @return void
+     */
+    protected function aplicar_recargos_en_bloque(array $valor_por_tipo, $total_articulos)
+    {
+        if (!$this->se_difiere_el_recalculo()) {
+            throw new \LogicException('NewProviderOrderHelper: los recargos en bloque son solo para el recálculo diferido.');
+        }
+
+        /*
+         * 1. Los renglones que pasan los dos primeros saltos del PASO 2 por artículo, en su orden,
+         *    con las mismas funciones. El subtotal y la cantidad quedan guardados para la cuenta.
+         */
+        $renglones  = [];
+        $candidatos = [];
+
+        foreach ($this->provider_order->articles as $article) {
+
+            $res            = $this->get_total_article($article);
+            $subtotal_item  = (float)$res['sub_total_article'];
+
+            if ($subtotal_item <= 0) {
+                continue;
+            }
+
+            $cantidad = $this->get_cantidad_efectiva($article);
+
+            if ($cantidad <= 0) {
+                continue;
+            }
+
+            $renglones[] = [
+                'article'       => $article,
+                'subtotal_item' => $subtotal_item,
+                'cantidad'      => $cantidad,
+            ];
+
+            $candidatos[(int) $article->id] = (int) $article->id;
+        }
+
+        if (count($renglones) === 0) {
+            return;
+        }
+
+        /* 2. El Article::find() de cada renglón, para todos juntos: cuáles existen. */
+        $existen = $this->articulos_que_existen(array_values($candidatos));
+
+        /* 3. Los tipos que se escriben: el mismo salto de valor_total_tipo <= 0. */
+        $tipos = [];
+
+        foreach ($valor_por_tipo as $tipo => $valor_total_tipo) {
+
+            if ($valor_total_tipo > 0) {
+                $tipos[] = $tipo;
+            }
+        }
+
+        /* 4. Lo que devolvería cada ArticleSurchage::where(...)->first() del PASO 2 por artículo. */
+        $existentes = $this->recargos_existentes(array_values($existen), $tipos);
+
+        /*
+         * 5. Las asignaciones del PASO 2 por artículo, sobre los mismos modelos y en el mismo orden.
+         *
+         *    $modelos:  [clave => ArticleSurchage], uno por (artículo, tipo).
+         *    $nuevos:   claves de los que el foreach insertaría, en el orden en que los crearía.
+         *    $sucios:   [clave => [columna => true]], lo que escribiría algún save() de un existente.
+         *    $anotados: [article_id => true], los que se anotaron para el recálculo (para el log).
+         */
+        $modelos  = [];
+        $nuevos   = [];
+        $sucios   = [];
+        $anotados = [];
+
+        foreach ($renglones as $renglon) {
+
+            $article    = $renglon['article'];
+            $article_id = (int) $article->id;
+
+            if (!isset($existen[$article_id])) {
+                continue;
+            }
+
+            foreach ($valor_por_tipo as $tipo => $valor_total_tipo) {
+
+                if ($valor_total_tipo <= 0) {
+                    continue;
+                }
+
+                // 🔴 La MISMA expresión que el PASO 2 por artículo, con las operaciones en el mismo
+                // orden: el float tiene que dar bit a bit igual.
+                $monto_prorrateado_item = $valor_total_tipo * $renglon['subtotal_item'] / $total_articulos;
+                $monto_unitario         = $monto_prorrateado_item / $renglon['cantidad'];
+
+                $clave = $article_id.'|'.$tipo;
+
+                if (!isset($modelos[$clave])) {
+
+                    if (isset($existentes[$article_id][$tipo])) {
+
+                        $modelos[$clave] = $existentes[$article_id][$tipo];
+
+                    } else {
+
+                        // Los mismos tres atributos con los que lo crea el PASO 2 por artículo.
+                        $surchage                           = new ArticleSurchage();
+                        $surchage->article_id               = $article_id;
+                        $surchage->tipo                     = $tipo;
+                        $surchage->luego_del_precio_final   = 0;
+
+                        $modelos[$clave] = $surchage;
+                        $nuevos[]        = $clave;
+                    }
+                }
+
+                $surchage = $modelos[$clave];
+
+                // Es un recargo por monto fijo (unitario), no por porcentaje: las mismas dos
+                // asignaciones del PASO 2 por artículo (una ASIGNACIÓN, nunca un +=).
+                $surchage->amount      = $monto_unitario;
+                $surchage->percentage  = null;
+
+                /*
+                 * Lo que decidiría save() sobre un existente: con algo sucio, escribe esas columnas
+                 * (más updated_at) y deja el original sincronizado; sin nada sucio, no hace nada.
+                 * Sobre uno nuevo no hay nada que decidir todavía: se inserta al final con los
+                 * valores que tenga (si el artículo se repite, los de su última pasada, que es lo que
+                 * queda hoy después del INSERT y el UPDATE).
+                 */
+                if ($surchage->exists && $surchage->isDirty()) {
+
+                    foreach (array_keys($surchage->getDirty()) as $columna) {
+                        $sucios[$clave][$columna] = true;
+                    }
+
+                    $surchage->syncOriginal();
+                }
+            }
+
+            // Donde el PASO 2 por artículo pide el recálculo: los renglones que pasaron los saltos.
+            // En modo diferido recalcular_precio() solo anota el id.
+            $this->recalcular_precio($article);
+
+            $anotados[$article_id] = true;
+        }
+
+        /* 6. Las escrituras. */
+        $escritos = $this->escribir_recargos_en_bloque($modelos, $nuevos, $sucios);
+
+        // Un solo log para toda la pasada: el de siempre era uno por artículo y por tipo.
+        Log::info('aplicar_costos_extra_a_recargos_articulos (en bloque): compra '.$this->provider_order->id.', '.count($anotados).' artículo(s), tipos '.implode(', ', $tipos).': '.$escritos['insertados'].' recargo(s) nuevo(s), '.$escritos['actualizados'].' actualizado(s), '.(count($modelos) - count($nuevos) - count($sucios)).' sin cambios');
+    }
+
+    /**
+     * [article_id => article_id] de los artículos de $ids que existen: lo que decide, de a uno, el
+     * Article::find() del PASO 2 por artículo, en una consulta cada ARTICULOS_POR_CONSULTA_EN_BLOQUE
+     * ids. toBase() aplica los scopes globales, así que el borrado lógico (SoftDeletes) queda afuera,
+     * igual que en Article::find().
+     *
+     * @param  int[] $ids
+     * @return array
+     */
+    private function articulos_que_existen(array $ids)
+    {
+        $existen = [];
+
+        foreach (array_chunk($ids, self::ARTICULOS_POR_CONSULTA_EN_BLOQUE) as $lote) {
+
+            foreach (Article::whereIn('id', $lote)->toBase()->pluck('id') as $id) {
+                $existen[(int) $id] = (int) $id;
+            }
+        }
+
+        return $existen;
+    }
+
+    /**
+     * Lo que devolvería, para cada (artículo, tipo), el ArticleSurchage::where('article_id', ...)
+     * ->where('tipo', ...)->first() del PASO 2 por artículo: [article_id => [tipo => ArticleSurchage]],
+     * modelos hidratados por Eloquent como los hidrata esa consulta.
+     *
+     * 🔴 El de MENOR id, y por eso el orderBy('id') y el "me quedo con el primero". first() no tiene
+     * ORDER BY, pero va por el índice article_surchages_article_id_idx (EXPLAIN del 29/9/2026: type
+     * ref, key article_surchages_article_id_idx), y en InnoDB las entradas de un índice secundario
+     * con el mismo article_id están ordenadas por la clave primaria; si el optimizador eligiera
+     * recorrer la tabla, también sería en orden de id. Si un artículo tiene dos recargos del mismo
+     * tipo, se pisa el de menor id y el otro queda como está, igual que hoy.
+     *
+     * 🔴 UNA consulta por TIPO de la compra (de una a tres, nunca por artículo) y no un
+     * whereIn('tipo', ...) para todos, a propósito. La columna tipo es utf8mb4_unicode_ci: el
+     * where('tipo', ...) de hoy también encuentra un recargo cargado como 'Transporte' o
+     * 'transporte ' (no distingue mayúsculas, acentos ni espacios al final). Con un solo whereIn
+     * habría que decidir en PHP a qué tipo de la compra corresponde cada fila, que es reimplementar
+     * la collation; con una consulta por tipo lo decide MySQL, con el mismo predicado que first().
+     *
+     * @param  int[]    $article_ids  Artículos que existen.
+     * @param  string[] $tipos        Tipos de la compra con monto a prorratear.
+     * @return array
+     */
+    private function recargos_existentes(array $article_ids, array $tipos)
+    {
+        $recargos = [];
+
+        if (count($article_ids) === 0) {
+            return $recargos;
+        }
+
+        foreach ($tipos as $tipo) {
+
+            foreach (array_chunk($article_ids, self::ARTICULOS_POR_CONSULTA_EN_BLOQUE) as $lote) {
+
+                $filas = ArticleSurchage::whereIn('article_id', $lote)
+                                        ->where('tipo', $tipo)
+                                        ->orderBy('id')
+                                        ->get();
+
+                foreach ($filas as $surchage) {
+
+                    $article_id = (int) $surchage->article_id;
+
+                    if (!isset($recargos[$article_id][$tipo])) {
+                        $recargos[$article_id][$tipo] = $surchage;
+                    }
+                }
+            }
+        }
+
+        return $recargos;
+    }
+
+    /**
+     * Las escrituras de aplicar_recargos_en_bloque(), con los valores de los modelos.
+     *
+     * - INSERT de los nuevos: getAttributes() —exactamente las columnas que manda save() al insertar
+     *   uno nuevo: article_id, tipo, luego_del_precio_final, amount y percentage— más created_at y
+     *   updated_at, que save() le pone a todo modelo nuevo. En el orden de $nuevos (el de los ids),
+     *   en tandas de RECARGOS_POR_SENTENCIA filas y agrupados por conjunto de columnas:
+     *   Builder::insert() arma la lista de columnas con la primera fila, y aunque hoy son siempre las
+     *   mismas, el agrupado hace que eso no se pueda romper en silencio.
+     * - UPDATE de los existentes con algo sucio: las columnas que alguna pasada dejó sucias, con el
+     *   valor final del modelo, más updated_at (lo que agrega save() al actualizar). Agrupado por
+     *   conjunto de columnas, como RecalculoDePreciosEnLote::actualizar_articulos(): cada fila lleva
+     *   exactamente las suyas, `col = CASE id WHEN ... THEN ? ... ELSE col END`, o `col = ?` si todas
+     *   las filas del grupo llevan el mismo valor (updated_at, y percentage en null).
+     * - Los valores van como bindings, igual que los manda save(): un float sale como texto con la
+     *   precisión de PHP y la base guarda el mismo DOUBLE (medido el 29/9/2026 contra el UPDATE y el
+     *   INSERT de a uno, con 310 valores: idénticos). Los ids van en el SQL como enteros; los nombres
+     *   de columna salen de atributos que asigna este mismo código, y se validan igual.
+     * - created_at / updated_at: un solo instante para toda la pasada, con freshTimestampString()
+     *   del modelo (el formato de save()). Con el reloj congelado de los tests es el mismo valor que
+     *   el de antes; en la vida real, save() tomaba uno por fila, segundos más o menos.
+     *
+     * @param  array $modelos  [clave => ArticleSurchage]
+     * @param  array $nuevos   Claves de $modelos a insertar, en orden.
+     * @param  array $sucios   [clave => [columna => true]] de los existentes a actualizar.
+     * @return array ['insertados' => int, 'actualizados' => int]
+     */
+    private function escribir_recargos_en_bloque(array $modelos, array $nuevos, array $sucios)
+    {
+        $escritos = [
+            'insertados'   => 0,
+            'actualizados' => 0,
+        ];
+
+        if (count($nuevos) === 0 && count($sucios) === 0) {
+            return $escritos;
+        }
+
+        $ahora = (new ArticleSurchage())->freshTimestampString();
+
+        /* INSERT de los nuevos: [firma de columnas => filas], cada grupo en el orden de $nuevos. */
+        $inserts = [];
+
+        foreach ($nuevos as $clave) {
+
+            $modelo = $modelos[$clave];
+
+            $fila = $modelo->getAttributes();
+
+            if ($modelo->usesTimestamps()) {
+                $fila[$modelo->getCreatedAtColumn()] = $ahora;
+                $fila[$modelo->getUpdatedAtColumn()] = $ahora;
+            }
+
+            ksort($fila);
+
+            $inserts[implode(',', array_keys($fila))][] = $fila;
+        }
+
+        foreach ($inserts as $filas) {
+
+            foreach (array_chunk($filas, self::RECARGOS_POR_SENTENCIA) as $lote) {
+
+                DB::table('article_surchages')->insert($lote);
+
+                $escritos['insertados'] += count($lote);
+            }
+        }
+
+        /* UPDATE de los existentes con algo sucio: [firma de columnas => [id => [columna => valor]]]. */
+        $grupos = [];
+
+        foreach ($sucios as $clave => $columnas) {
+
+            $modelo    = $modelos[$clave];
+            $atributos = $modelo->getAttributes();
+            $valores   = [];
+
+            foreach (array_keys($columnas) as $columna) {
+                $valores[$columna] = $atributos[$columna];
+            }
+
+            if ($modelo->usesTimestamps()) {
+                $valores[$modelo->getUpdatedAtColumn()] = $ahora;
+            }
+
+            ksort($valores);
+
+            $grupos[implode(',', array_keys($valores))][(int) $modelo->getKey()] = $valores;
+        }
+
+        foreach ($grupos as $firma => $filas_del_grupo) {
+
+            $nombres = explode(',', $firma);
+
+            foreach ($nombres as $columna) {
+
+                // Van en el SQL: solo un identificador limpio.
+                if (!preg_match('/^[A-Za-z0-9_]+$/', $columna)) {
+                    throw new \RuntimeException('NewProviderOrderHelper: columna inválida para el UPDATE de recargos: '.$columna);
+                }
+            }
+
+            foreach (array_chunk($filas_del_grupo, self::RECARGOS_POR_SENTENCIA, true) as $tanda) {
+
+                $sets     = [];
+                $bindings = [];
+
+                foreach ($nombres as $columna) {
+
+                    if ($this->mismo_valor_en_todas_las_filas($tanda, $columna)) {
+
+                        $primera    = reset($tanda);
+                        $sets[]     = '`'.$columna.'` = ?';
+                        $bindings[] = $primera[$columna];
+
+                        continue;
+                    }
+
+                    $whens = [];
+
+                    foreach ($tanda as $id => $valores) {
+                        $whens[]    = 'WHEN '.(int) $id.' THEN ?';
+                        $bindings[] = $valores[$columna];
+                    }
+
+                    $sets[] = '`'.$columna.'` = CASE `id` '.implode(' ', $whens).' ELSE `'.$columna.'` END';
+                }
+
+                $ids_sql = [];
+
+                foreach (array_keys($tanda) as $id) {
+                    $ids_sql[] = (int) $id;
+                }
+
+                DB::update(
+                    'UPDATE `article_surchages` SET '.implode(', ', $sets).' WHERE `id` IN ('.implode(', ', $ids_sql).')',
+                    $bindings
+                );
+
+                $escritos['actualizados'] += count($tanda);
+            }
+        }
+
+        return $escritos;
+    }
+
+    /**
+     * ¿Todas las filas de la tanda traen el mismo valor (idéntico, ===) para esta columna? Entonces
+     * va como `col = ?` en vez de un CASE (ver escribir_recargos_en_bloque()).
+     *
+     * @param  array  $tanda    [id => [columna => valor]]
+     * @param  string $columna
+     * @return bool
+     */
+    private function mismo_valor_en_todas_las_filas(array $tanda, $columna)
+    {
+        $primero = true;
+        $valor   = null;
+
+        foreach ($tanda as $valores) {
+
+            if ($primero) {
+                $valor   = $valores[$columna];
+                $primero = false;
+                continue;
+            }
+
+            if ($valores[$columna] !== $valor) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     function set_credit_account() {

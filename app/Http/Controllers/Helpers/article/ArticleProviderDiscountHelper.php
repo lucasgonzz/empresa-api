@@ -132,6 +132,163 @@ class ArticleProviderDiscountHelper {
     }
 
     /**
+     * sync_provider_discounts() para MUCHOS artículos de una vez (misión compras-precios-en-lote,
+     * §4.4 del plan, 29/9/2026). La usa la compra con el recálculo diferido
+     * (NewProviderOrderHelper::materializar_descuentos_en_bloque()), que antes llamaba a
+     * sync_provider_discounts() una vez por artículo: con 1.000 artículos, 3.000 consultas
+     * (Article::find(), DELETE e INSERT por artículo). Acá son tres, cada una en tandas acotadas.
+     *
+     * 🔴 EL INVARIANTE. Deja la base EXACTAMENTE como la deja este código:
+     *
+     *     foreach ($article_ids as $article_id) {
+     *         self::sync_provider_discounts(Article::find($article_id), $provider_id, $discounts, $origen);
+     *     }
+     *
+     *  - Los artículos: los que existen, con la misma regla que Article::find() (el borrado lógico
+     *    queda afuera), en una consulta cada 1.000 ids (duenos_de_articulos()). Un id que no existe
+     *    no se toca, como sync_provider_discounts() con un artículo null.
+     *  - El barrido: un DELETE (por tanda de IDS_POR_DELETE artículos) de TODOS los descuentos
+     *    tagueados (provider_id no nulo) de esos artículos, de cualquier proveedor: el
+     *    delete_tagged_discounts($article, null) de cada uno, junto. Los manuales (provider_id null)
+     *    no entran nunca.
+     *  - Lo que se crea: un INSERT multi-fila (tandas de FILAS_POR_INSERT) con EXACTAMENTE las
+     *    columnas y los valores que escribía create_tagged_discounts() con ArticleDiscount::create():
+     *    article_id, provider_id, percentage, amount, tipo, show_in_online (0), origen,
+     *    provider_discount_id, nombre, created_at y updated_at. Ninguna más: el resto queda con el
+     *    default del esquema, igual que antes (ArticleDiscount no tiene casts, mutators, observers
+     *    ni SoftDeletes; ver escribir_descuentos_en_bloque(), que hace lo mismo para la ficha).
+     *  - Los datos de cada descuento salen de plantilla_de_descuentos(), o sea de
+     *    normalizar_descuento_tagueado(): la MISMA función que usa create_tagged_discounts(), con la
+     *    misma guarda de colección vacía y el mismo salto de los ítems sin porcentaje ni monto. No
+     *    hay una segunda copia de la normalización que se pueda separar con el tiempo.
+     *  - 🔴 EL ORDEN de las filas: artículo por artículo y, adentro de cada uno, el de $discounts.
+     *    No es cosmético: los ids salen en ese orden, la relación Article::article_discounts() va por
+     *    id y ArticlePricesHelper::aplicar_descuentos() los aplica EN CASCADA en ese orden (un 8 % y
+     *    después $25 no da lo mismo que al revés).
+     *  - 🔴 Un id repetido cuenta UNA vez, en su ÚLTIMA posición, y no en la primera: con el DELETE +
+     *    INSERT por artículo, la segunda pasada borra lo que creó la primera y lo vuelve a crear más
+     *    adelante, así que sobreviven las filas de la última, con ids posteriores a las de los
+     *    artículos del medio. Así el orden relativo de los ids queda igual que antes, también entre
+     *    artículos distintos.
+     *  - created_at / updated_at: un solo instante para toda la llamada, con freshTimestampString()
+     *    del modelo (el formato de create()). Con el reloj congelado de los tests es el mismo valor
+     *    que el de antes; en la vida real, create() tomaba uno por fila.
+     *
+     * No abre transacción: corre adentro de la del llamador (la compra), como sync_provider_discounts().
+     *
+     * @param  int[]         $article_ids  Ids en el orden en que se procesarían de a uno. Puede traer
+     *                                     repetidos e ids que ya no existen.
+     * @param  int|null      $provider_id  Proveedor que origina los descuentos. Si es null no hace
+     *                                     nada, como sync_provider_discounts().
+     * @param  iterable|null $discounts    Los mismos ítems que recibe sync_provider_discounts().
+     * @param  string|null   $origen       ArticleDiscount::ORIGEN_* (la compra manda ORIGEN_COMPRA).
+     * @return int[]  Los ids que existen, sin repetidos, en el orden en que se escribieron: los
+     *                artículos que se tocaron, a los que el llamador tiene que recalcularles el precio.
+     */
+    static function sync_provider_discounts_en_bloque(array $article_ids, $provider_id, $discounts, $origen = null) {
+
+        if (is_null($provider_id)) {
+            return [];
+        }
+
+        /*
+         * Sin repetidos y cada uno en su ÚLTIMA posición (ver el docblock): si ya estaba, se saca y
+         * se vuelve a poner al final.
+         */
+        $ids = [];
+
+        foreach ($article_ids as $article_id) {
+
+            $article_id = (int) $article_id;
+
+            unset($ids[$article_id]);
+
+            $ids[$article_id] = $article_id;
+        }
+
+        if (count($ids) === 0) {
+            return [];
+        }
+
+        /* Los que existen (el Article::find() de cada uno), en ese mismo orden. */
+        $existen = self::duenos_de_articulos(array_values($ids));
+
+        $existentes = [];
+
+        foreach ($ids as $article_id) {
+
+            if (isset($existen[$article_id])) {
+                $existentes[] = $article_id;
+            }
+        }
+
+        if (count($existentes) === 0) {
+            return [];
+        }
+
+        /* El barrido: todos los tagueados de esos artículos, de cualquier proveedor. */
+        foreach (array_chunk($existentes, self::IDS_POR_DELETE) as $lote) {
+
+            ArticleDiscount::whereIn('article_id', $lote)
+                            ->whereNotNull('provider_id')
+                            ->delete();
+        }
+
+        /*
+         * La guarda de create_tagged_discounts(), tal cual: sin descuentos (null, o una colección
+         * vacía) no se crea nada. plantilla_de_descuentos() devolvería vacío igual; la guarda va
+         * explícita para que se lea lo mismo que en el camino por artículo.
+         */
+        if (is_null($discounts)) {
+            return $existentes;
+        }
+
+        if ((is_array($discounts) || $discounts instanceof \Countable) && count($discounts) === 0) {
+            return $existentes;
+        }
+
+        // Normalizado UNA vez para todos: normalizar_descuento_tagueado() no depende del artículo.
+        $plantilla = self::plantilla_de_descuentos($discounts);
+
+        if (count($plantilla) === 0) {
+            return $existentes;
+        }
+
+        // El mismo instante para toda la llamada, con el formato de fechas del modelo.
+        $ahora = (new ArticleDiscount())->freshTimestampString();
+
+        $filas = [];
+
+        foreach ($existentes as $article_id) {
+
+            foreach ($plantilla as $datos) {
+
+                $filas[] = [
+                    'article_id'           => $article_id,
+                    'provider_id'          => $provider_id,
+                    'percentage'           => $datos['percentage'],
+                    'amount'               => $datos['amount'],
+                    // Siempre "bonificación de proveedor" para los que vienen de acá (Prompt 260).
+                    'tipo'                 => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+                    // El 0 fijo que sync_provider_discounts() le pasa a create_tagged_discounts().
+                    'show_in_online'       => 0,
+                    'origen'               => $origen,
+                    'provider_discount_id' => $datos['provider_discount_id'],
+                    'nombre'               => $datos['nombre'],
+                    'created_at'           => $ahora,
+                    'updated_at'           => $ahora,
+                ];
+            }
+        }
+
+        foreach (array_chunk($filas, self::FILAS_POR_INSERT) as $lote) {
+            DB::table('article_discounts')->insert($lote);
+        }
+
+        return $existentes;
+    }
+
+    /**
      * Borra los `article_discounts` tagueados (con proveedor) de un artículo.
      *
      * @param \App\Models\Article $article     Artículo a limpiar. Si es null, no hace nada.
