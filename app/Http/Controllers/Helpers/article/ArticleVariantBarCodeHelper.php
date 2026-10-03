@@ -68,7 +68,12 @@ class ArticleVariantBarCodeHelper
      */
     public static function find_available_by_code($code, $user_id)
     {
-        if (!UserHelper::hasExtencion('article_variants')) {
+        // Usuario (su duenio) una sola vez: `hasExtencion` sin usuario lo vuelve a buscar en la base
+        // en cada llamada, y este camino es el del escaneo, que se usa en cada venta. Pasandole el
+        // mismo modelo, las extensiones se cargan una sola vez para las dos preguntas de abajo.
+        $user = UserHelper::user();
+
+        if (!UserHelper::hasExtencion('article_variants', $user)) {
             return null;
         }
 
@@ -92,7 +97,7 @@ class ArticleVariantBarCodeHelper
         }
 
         // Paso 2: '0' + id, solo con la extension de numero interno.
-        if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno')) {
+        if (UserHelper::hasExtencion('codigos_de_barra_basados_en_numero_interno', $user)) {
 
             $variant_id = self::variant_id_from_internal_code($code);
 
