@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\DepositMovementModification;
+use App\Models\DepositMovementStatus;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -19,8 +20,9 @@ use Illuminate\Support\Facades\Log;
  * `stock_moved_user_id` / `stock_moved_at`. Desde ese momento los artículos y los depósitos del
  * movimiento quedan bloqueados.
  *
- * Los estados pasan a ser etiquetas configurables. `recibido_at` queda como columna vieja: el
- * sistema no la escribe más.
+ * Los estados pasan a ser etiquetas configurables. `recibido_at` deja de venir del request y pasa a
+ * ser la guarda COMPARTIDA con la versión anterior del sistema (ver `stock_movido()`): la llena
+ * `mover_stock()` y nadie más.
  *
  * PHP 7.4: sin match, str_contains, nullsafe (?->), argumentos nombrados ni union types.
  */
@@ -85,11 +87,75 @@ class DepositMovementHelper {
 	/**
 	 * ¿El stock de este movimiento ya se trasladó?
 	 *
+	 * 🔴 Son DOS marcas, no una (ajuste del 3/10/2026, "dos frentes"): un cliente puede tener a la
+	 * vez el frente nuevo y el frente viejo (código anterior) sobre la MISMA base. El código viejo
+	 * traslada al pasar a "Recibido" si `recibido_at` está vacío y no conoce `stock_moved_at`. Por
+	 * eso un movimiento cuenta como movido si tiene CUALQUIERA de las dos:
+	 *  - `stock_moved_at`: lo movió el botón "Mover stock" (este código);
+	 *  - `recibido_at`: lo movió una versión anterior del sistema.
+	 * Y `mover_stock()` llena las dos, para que el frente viejo tampoco lo traslade otra vez.
+	 *
+	 * Lo usan move-stock, update y destroy (y `en_curso` repite el mismo criterio en SQL).
+	 *
 	 * @return bool
 	 */
 	function stock_movido() {
 
-		return !is_null($this->deposit_movement->stock_moved_at);
+		return !is_null($this->deposit_movement->stock_moved_at)
+			|| !is_null($this->deposit_movement->recibido_at);
+	}
+
+	/**
+	 * ¿El estado existe y lo puede usar el dueño? Vale un estado FIJO del sistema (`user_id` NULL)
+	 * o uno PROPIO de ese dueño; nunca el de otro comercio de la misma base.
+	 *
+	 * @param  int|string  $deposit_movement_status_id
+	 * @param  int  $owner_id  Id del dueño del comercio.
+	 * @return bool
+	 */
+	static function estado_valido($deposit_movement_status_id, $owner_id) {
+
+		return DepositMovementStatus::delDuenoConGlobales($owner_id)
+									->where('id', (int) $deposit_movement_status_id)
+									->exists();
+	}
+
+	/**
+	 * Error de validación del estado que manda el request, si lo hay.
+	 *
+	 * Solo se valida un estado que VIENE con valor (no null, '' ni 0): un request sin estado sigue
+	 * igual que antes. En una edición, además, solo si CAMBIA respecto del guardado: reenviar el
+	 * estado que el movimiento ya tiene no es elegir uno nuevo.
+	 *
+	 * @param  array  $datos  `$request->all()`.
+	 * @param  int  $owner_id  Id del dueño del comercio.
+	 * @param  int|null  $estado_actual  Estado guardado (null en un alta).
+	 * @return array|null  `['status' => 422, 'message' => '...']`, o null si está bien.
+	 */
+	static function error_de_estado($datos, $owner_id, $estado_actual = null) {
+
+		if (!array_key_exists('deposit_movement_status_id', $datos)) {
+			return null;
+		}
+
+		$estado = $datos['deposit_movement_status_id'];
+
+		if (is_null($estado) || $estado === '' || (int) $estado === 0) {
+			return null;
+		}
+
+		if (!is_null($estado_actual) && (int) $estado === (int) $estado_actual) {
+			return null;
+		}
+
+		if (!self::estado_valido($estado, $owner_id)) {
+			return [
+				'status'	=> 422,
+				'message'	=> 'El estado elegido no existe.',
+			];
+		}
+
+		return null;
 	}
 
 	/**
@@ -254,8 +320,9 @@ class DepositMovementHelper {
 	 * Orden de las reglas:
 	 *  1. Si cambian los artículos: con el stock ya movido → 422; sin el permiso
 	 *     `deposit_movement.update_articles` → 403.
-	 *  2. Si cambia algún dato: sin el permiso `deposit_movement.update` → 403; con el stock ya
-	 *     movido, si cambia el depósito de origen o el de destino → 422.
+	 *  2. Si cambia algún dato: sin el permiso `deposit_movement.update` → 403; un estado nuevo
+	 *     que no es fijo ni del dueño → 422; con el stock ya movido, si cambia el depósito de
+	 *     origen o el de destino → 422.
 	 *
 	 * El estado, el empleado y las notas siguen editables con el stock movido.
 	 *
@@ -293,6 +360,16 @@ class DepositMovementHelper {
 			];
 		}
 
+		$error_de_estado = self::error_de_estado(
+			$datos,
+			$this->deposit_movement->user_id,
+			$this->deposit_movement->deposit_movement_status_id
+		);
+
+		if (!is_null($error_de_estado)) {
+			return $error_de_estado;
+		}
+
 		if ($this->stock_movido() && count(array_intersect($cambian, self::CAMPOS_DE_DEPOSITOS)) > 0) {
 			return [
 				'status'	=> 422,
@@ -307,8 +384,10 @@ class DepositMovementHelper {
 	 * Guarda los datos del movimiento que vienen en el request (solo los que vienen: un campo que
 	 * no viaja no se pisa con null). Se llama solo con el permiso `deposit_movement.update`.
 	 *
-	 * `recibido_at` se acepta igual que antes: solo un valor explícito, nunca se pisa con null.
-	 * El sistema ya no lo escribe (es una columna vieja), pero una SPA anterior todavía lo manda.
+	 * `recibido_at` NO se acepta del request (ajuste del 3/10/2026): es la marca de "stock movido"
+	 * que comparte con la versión anterior del sistema, y solo la escribe `mover_stock()`. Si el
+	 * request pudiera ponerla, un movimiento quedaría "movido" sin haber trasladado nada; si pudiera
+	 * borrarla, el frente viejo lo volvería a trasladar.
 	 *
 	 * @param  array  $datos  `$request->all()`.
 	 * @return void
@@ -320,10 +399,6 @@ class DepositMovementHelper {
 			if (array_key_exists($campo, $datos)) {
 				$this->deposit_movement->{$campo} = $datos[$campo];
 			}
-		}
-
-		if (isset($datos['recibido_at']) && !is_null($datos['recibido_at'])) {
-			$this->deposit_movement->recibido_at = $datos['recibido_at'];
 		}
 
 		$this->deposit_movement->save();
@@ -368,10 +443,19 @@ class DepositMovementHelper {
 	 */
 	function error_para_mover_stock() {
 
-		if ($this->stock_movido()) {
+		// Movido por el botón "Mover stock" de este código.
+		if (!is_null($this->deposit_movement->stock_moved_at)) {
 			return [
 				'status'	=> 422,
 				'message'	=> 'El stock de este movimiento ya se movió el '.Carbon::parse($this->deposit_movement->stock_moved_at)->format('d/m/Y H:i').'.',
+			];
+		}
+
+		// Movido por una versión anterior del sistema (al pasar a "Recibido"): solo tiene recibido_at.
+		if (!is_null($this->deposit_movement->recibido_at)) {
+			return [
+				'status'	=> 422,
+				'message'	=> 'El stock de este movimiento ya se movió el '.Carbon::parse($this->deposit_movement->recibido_at)->format('d/m/Y H:i').' (desde una versión anterior del sistema).',
 			];
 		}
 
@@ -379,6 +463,14 @@ class DepositMovementHelper {
 			return [
 				'status'	=> 422,
 				'message'	=> 'El movimiento no tiene artículos para mover.',
+			];
+		}
+
+		// Sin alguno de los dos depósitos no hay entre qué trasladar (null y 0 valen lo mismo).
+		if ((int) $this->deposit_movement->from_address_id === 0 || (int) $this->deposit_movement->to_address_id === 0) {
+			return [
+				'status'	=> 422,
+				'message'	=> 'Elegí el depósito de origen y el de destino antes de mover el stock.',
 			];
 		}
 
@@ -399,13 +491,24 @@ class DepositMovementHelper {
 	 * NO cambia el estado del movimiento. Las validaciones (`error_para_mover_stock()`) y el
 	 * bloqueo de la fila los hace el controller antes de llamar a este método.
 	 *
+	 * También llena `recibido_at` si está vacío: es la marca que mira la versión anterior del
+	 * sistema. Sin ella, si el cliente todavía tiene el frente viejo sobre la misma base y alguien
+	 * pasa este movimiento a "Recibido" desde ahí, el código viejo trasladaría el stock otra vez.
+	 *
 	 * @param  int|null  $user_id  Quién apretó el botón (el usuario autenticado).
 	 * @return void
 	 */
 	function mover_stock($user_id) {
 
-		$this->deposit_movement->stock_moved_at = Carbon::now();
+		$ahora = Carbon::now();
+
+		$this->deposit_movement->stock_moved_at = $ahora;
 		$this->deposit_movement->stock_moved_user_id = $user_id;
+
+		if (is_null($this->deposit_movement->recibido_at)) {
+			$this->deposit_movement->recibido_at = $ahora;
+		}
+
 		$this->deposit_movement->save();
 
 		$this->actualizar_stock();

@@ -54,12 +54,17 @@ class DepositMovementController extends Controller
      * ya no alcanza, y para los datos existentes es equivalente: antes de esta misión "no movido"
      * era lo mismo que "En proceso". Se suma además el filtro por dueño, que faltaba.
      *
+     * "No movido" son las DOS marcas vacías (`stock_moved_at` y `recibido_at`), el mismo criterio
+     * que `DepositMovementHelper::stock_movido()`: uno que trasladó la versión anterior del sistema
+     * solo tiene `recibido_at`.
+     *
      * @return \Illuminate\Http\JsonResponse
      */
     function en_curso() {
         $models = DepositMovement::where('user_id', $this->userId())
                                     ->where('employee_id', $this->userId(false))
                                     ->whereNull('stock_moved_at')
+                                    ->whereNull('recibido_at')
                                     ->orderBy('created_at', 'ASC')
                                     ->withAll()
                                     ->get();
@@ -71,17 +76,29 @@ class DepositMovementController extends Controller
      * Crea el movimiento con sus artículos. Crear NUNCA mueve stock, aunque el estado que venga
      * sea "Recibido": el traslado es el botón "Mover stock". Tampoco cuenta como modificación.
      *
+     * - Un estado que no es fijo ni del dueño → 422, antes de escribir nada.
+     * - `recibido_at` NO se toma del request: queda NULL. Es la marca de "stock movido" compartida
+     *   con la versión anterior del sistema y solo la escribe "Mover stock" (ver
+     *   `DepositMovementHelper::stock_movido()`).
+     *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
      */
     public function store(Request $request) {
+
+        $error = DepositMovementHelper::error_de_estado($request->all(), $this->userId());
+
+        if (!is_null($error)) {
+            return response()->json(['message' => $error['message']], $error['status']);
+        }
+
         $model = DepositMovement::create([
             'num'                   		=> $this->num('deposit_movements'),
             'from_address_id'               => $request->from_address_id,
             'to_address_id'                 => $request->to_address_id,
             'employee_id'                 	=> $request->employee_id,
             'deposit_movement_status_id'    => $request->deposit_movement_status_id,
-            'recibido_at'                 	=> $request->recibido_at,
+            'recibido_at'                 	=> null,
             'notes'                 		=> $request->notes,
             'user_id'               		=> $this->userId(),
         ]);
@@ -93,7 +110,22 @@ class DepositMovementController extends Controller
         return response()->json(['model' => $this->fullModel('DepositMovement', $model->id)], 201);
     }
 
+    /**
+     * Un movimiento del dueño autenticado. El de otro comercio de la misma base → 404.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function show($id) {
+
+        $es_del_duenio = DepositMovement::where('id', $id)
+                                    ->where('user_id', $this->userId())
+                                    ->exists();
+
+        if (!$es_del_duenio) {
+            return response()->json(['message' => 'No se encontró el movimiento de depósito.'], 404);
+        }
+
         return response()->json(['model' => $this->fullModel('DepositMovement', $id)], 200);
     }
 
@@ -104,8 +136,9 @@ class DepositMovementController extends Controller
      *  - Sin ninguno de los dos permisos de edición → 403.
      *  - Artículos distintos de los guardados: con el stock movido → 422; sin
      *    `deposit_movement.update_articles` → 403.
-     *  - Datos distintos de los guardados: sin `deposit_movement.update` → 403; con el stock movido,
-     *    si cambian los depósitos → 422.
+     *  - Datos distintos de los guardados: sin `deposit_movement.update` → 403; un estado nuevo que
+     *    no es fijo ni del dueño → 422; con el stock movido, si cambian los depósitos → 422.
+     *  - `recibido_at` no se toma del request (ver `DepositMovementHelper::guardar_datos()`).
      *
      * Todas las validaciones corren ANTES de escribir nada, dentro de una transacción y con la
      * fila bloqueada (`lockForUpdate`), para que un "Mover stock" simultáneo no se cuele entre la
@@ -183,9 +216,11 @@ class DepositMovementController extends Controller
      *
      * 1. Sin el permiso `deposit_movement.move_stock` (y sin ser dueño/admin) → 403.
      * 2. Dentro de una transacción, con la fila bloqueada: movimiento de otro dueño → 404; ya
-     *    movido, sin artículos, u origen igual a destino → 422.
-     * 3. Marca `stock_moved_at` / `stock_moved_user_id` (el usuario autenticado) y traslada: un
-     *    StockMovement "Mov entre depositos" por artículo. No cambia el estado.
+     *    movido (por este botón o por una versión anterior), sin artículos, sin alguno de los dos
+     *    depósitos, u origen igual a destino → 422.
+     * 3. Marca `stock_moved_at` / `stock_moved_user_id` (el usuario autenticado) —y `recibido_at`
+     *    si estaba vacío, para la versión anterior— y traslada: un StockMovement "Mov entre
+     *    depositos" por artículo. No cambia el estado.
      *
      * El `lockForUpdate` es lo que impide trasladar dos veces con dos clics seguidos (o dos
      * pestañas): el segundo request espera al primero y, cuando lee la fila, ya la ve movida.
@@ -235,28 +270,49 @@ class DepositMovementController extends Controller
     }
 
     /**
-     * Elimina un movimiento del dueño. Con el stock ya movido → 422: borrarlo no devuelve el
-     * stock, así que el registro del traslado tiene que quedar.
+     * Elimina un movimiento del dueño. Con el stock ya movido (por "Mover stock" o por una versión
+     * anterior del sistema) → 422: borrarlo no devuelve el stock, así que el registro del traslado
+     * tiene que quedar.
+     *
+     * Va en una transacción con la fila bloqueada (`lockForUpdate`), igual que move-stock: si los
+     * dos llegan a la vez, uno espera al otro y el segundo ve el estado real (no se borra un
+     * movimiento que se acaba de trasladar).
      *
      * @param  int  $id
      * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
      */
     public function destroy($id) {
-        $model = DepositMovement::where('id', $id)
-                                ->where('user_id', $this->userId())
-                                ->first();
 
-        if (is_null($model)) {
-            return response()->json(['message' => 'No se encontró el movimiento de depósito.'], 404);
+        $owner_id = $this->userId();
+
+        $error = DB::transaction(function () use ($id, $owner_id) {
+
+            $model = DepositMovement::where('id', $id)
+                                    ->where('user_id', $owner_id)
+                                    ->lockForUpdate()
+                                    ->first();
+
+            if (is_null($model)) {
+                return ['status' => 404, 'message' => 'No se encontró el movimiento de depósito.'];
+            }
+
+            $helper = new DepositMovementHelper($model);
+
+            if ($helper->stock_movido()) {
+                return ['status' => 422, 'message' => 'No se puede eliminar un movimiento cuyo stock ya se movió.'];
+            }
+
+            ImageController::deleteModelImages($model);
+            $model->delete();
+
+            return null;
+        });
+
+        if (!is_null($error)) {
+            return response()->json(['message' => $error['message']], $error['status']);
         }
 
-        if (!is_null($model->stock_moved_at)) {
-            return response()->json(['message' => 'No se puede eliminar un movimiento cuyo stock ya se movió.'], 422);
-        }
-
-        ImageController::deleteModelImages($model);
-        $model->delete();
-        $this->sendDeleteModelNotification('DepositMovement', $model->id);
+        $this->sendDeleteModelNotification('DepositMovement', $id);
         return response(null);
     }
 
