@@ -190,6 +190,13 @@ class NewProviderOrderHelper {
      *    diferir la "arreglaría" en silencio, cambiando precios de venta que hoy quedan de otra
      *    forma, y ese cambio no se decidió. Sin proveedor todo sigue exactamente como antes.
      *
+     *    ⚠️ Hoy esta rama es defensiva: `provider_orders.provider_id` es NOT NULL (migración
+     *    2022_06_02_172623), así que una compra guardada no llega con null (el alta y la edición
+     *    sin proveedor fallan antes, con un 1048; lo prueba tests/Feature/Compras/PreciosEnLote/
+     *    9_Compra_sin_proveedor_Test). Se deja por si la columna algún día admite null. Una compra
+     *    con `provider_id = 0` SÍ se difiere: el gate es `is_null()`, y con 0 la llamada #3 también
+     *    corría, igual que antes.
+     *
      * El gate es el mismo `is_null()` con el que materializar_descuentos_proveedor_en_articulos()
      * decide si corre, y las cuatro llamadas solo existen con `update_prices`, igual que la #3: todo
      * lo que se difiere es de una compra en la que la #3 recalculaba al final.
@@ -295,17 +302,32 @@ class NewProviderOrderHelper {
          * de develop del 2/10). setFinalPrice() recalcula los combos calculados que incluyen al
          * artículo, pero NO en modo lote, y el motor calcula en modo lote: con el recálculo
          * diferido ese gancho no corre nunca. En el camino de antes cada llamada lo disparaba, y la
-         * última de la compra ya veía todos los componentes con su precio final; acá se hace UNA
-         * vez, con los precios ya escritos, como el resto de los que usan el motor
-         * (ArticleProviderDiscountHelper::recalcular_precios_de_la_tanda(), FinalizeSetFinalPrices,
-         * la masiva). Sin esta línea, un combo calculado con un artículo de la compra queda con el
-         * precio viejo hasta el próximo cambio, sin ningún error.
+         * última de la compra ya veía todos los componentes con su precio final; acá se hace
+         * después del motor, con los precios ya escritos. Sin esto, un combo calculado con un
+         * artículo de la compra queda con el precio viejo hasta el próximo cambio, sin ningún
+         * error (lo agarra tests/Feature/Combos/11_Combo_y_compra_con_update_prices_Test).
          *
-         * Sin el dueño como segundo parámetro, igual que en los descuentos del proveedor: los ids
-         * ya son de este dueño y pasarlo suma una consulta a `users`. El helper no corta al
-         * llamador: una falla en un combo queda en el log y la compra sigue.
+         * 🔴 UNA LLAMADA POR ARTÍCULO, no una con todos los ids, y no es un descuido de
+         * rendimiento. ComboCalculadoHelper decide POR LLAMADA si recalcula en línea (hasta
+         * MAXIMO_EN_LINEA combos) o si encola RecalcularCombosCalculados, y ese dispatch no espera
+         * al commit: con redis (VPS, after_commit = false) el job puede correr antes de que esta
+         * transacción confirme y recalcular con los precios viejos. El gancho de setFinalPrice()
+         * llamaba con UN artículo, así que casi nunca pasaba el tope; con todos los ids de una
+         * compra grande se pasa enseguida (medido por los chequeos del 2/10: 26 combos → 0 al día
+         * dentro de la transacción y un job encolado). Artículo por artículo deja exactamente lo
+         * que dejaba el camino de antes.
+         *
+         * Y se pregunta UNA vez si el dueño tiene combos calculados: la enorme mayoría no tiene, y
+         * así una compra grande no paga una consulta por artículo para enterarse. Si la consulta
+         * falla, el helper devuelve true y se sigue con las llamadas (cada una vuelve a mirar). El
+         * helper no corta al llamador: una falla en un combo queda en el log y la compra sigue.
          */
-        ComboCalculadoHelper::recalcular_por_articulos($ids);
+        if (ComboCalculadoHelper::hay_combos_calculados($this->user->id)) {
+
+            foreach ($ids as $article_id) {
+                ComboCalculadoHelper::recalcular_por_articulos([$article_id]);
+            }
+        }
 
         $this->actualizar_historial_de_proveedores();
     }
