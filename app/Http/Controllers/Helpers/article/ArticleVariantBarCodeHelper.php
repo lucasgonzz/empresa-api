@@ -113,6 +113,27 @@ class ArticleVariantBarCodeHelper
     }
 
     /**
+     * Indica si la variante es de un articulo del duenio `$user_id`.
+     *
+     * `article_variants` no tiene `user_id`: el duenio sale del articulo. `withTrashed` porque las
+     * variantes de un articulo dado de baja siguen siendo del comercio (se las puede editar, y el
+     * helper de validacion tambien resuelve el duenio asi). Lo usa `ArticleVariantController::update`
+     * para no operar sobre variantes de otro comercio: `find($id)` a secas las deja pasar, y con el
+     * guardado del codigo de barras ademas el mensaje de repetido devolveria nombres ajenos.
+     *
+     * @param \App\Models\ArticleVariant $variant El modelo ya buscado.
+     * @param int                        $user_id Id del duenio del usuario logueado (`UserHelper::userId()`).
+     * @return bool
+     */
+    public static function belongs_to_owner($variant, $user_id)
+    {
+        return Article::withTrashed()
+                        ->where('id', $variant->article_id)
+                        ->where('user_id', $user_id)
+                        ->exists();
+    }
+
+    /**
      * Valida y normaliza el codigo que el comerciante escribio para una variante.
      *
      * Se llama ANTES de modificar nada: si devuelve error, el controlador responde 422 sin guardar
@@ -123,7 +144,7 @@ class ArticleVariantBarCodeHelper
      *     no son UTF-8 valido -> error. Lo que queda es lo que se valida y lo que se guarda.
      *  2. Vacio (o solo espacios) -> se restituye el codigo por defecto '0' + id de la variante.
      *  3. Mas de 20 caracteres -> error.
-     *  4. Con `/`, `\`, `?`, `#` o `%` -> error (rompen la ruta del escaneo).
+     *  4. Con `/`, `\`, `?`, `#` o `%`, o exactamente `.` o `..` -> error (rompen la ruta del escaneo).
      *  5. Igual al codigo de OTRA variante del mismo duenio (las ocultas cuentan) -> error.
      *  6. Igual al `bar_code` de un ARTICULO del mismo duenio -> error.
      *  7. Con la extension `codigos_de_barra_basados_en_numero_interno` del duenio: el codigo es el
@@ -198,9 +219,12 @@ class ArticleVariantBarCodeHelper
         // `GET vender/buscar-articulo-por-codido/{code}` sin encodeURIComponent: '/' y '\' parten la
         // ruta (404), '?' y '#' cortan el codigo (lo que sigue es query o fragmento) y '%' arma una
         // secuencia de escape. Un codigo con alguno se guardaria bien y nunca se podria escanear.
+        // Tambien '.' y '..' exactos: el servidor los toma como segmentos de ruta y normaliza la URL
+        // (`.../buscar-articulo-por-codido/..` ni llega al controlador). Un punto adentro de un codigo
+        // ('A.B') o una secuencia mas larga ('...') no es un segmento especial y se acepta.
         // strpbrk (y no una regex) para que la lista de caracteres se lea tal cual.
-        if (strpbrk($bar_code, '/\\?#%') !== false) {
-            return ['error' => 'El código de barras no puede llevar / \ ? # ni %: el lector no podría encontrarlo al escanear.'];
+        if (strpbrk($bar_code, '/\\?#%') !== false || $bar_code === '.' || $bar_code === '..') {
+            return ['error' => 'El código de barras no puede llevar / \ ? # ni %, ni ser solamente "." o "..": el lector no podría encontrarlo al escanear.'];
         }
 
         // Duenio de los datos. withTrashed: el articulo de la variante puede estar dado de baja y
@@ -352,15 +376,15 @@ class ArticleVariantBarCodeHelper
      * Si `$text` es un entero escrito en su forma canonica (solo digitos, sin ceros de relleno: '555',
      * no '0555'), devuelve ese entero; si no, `null`.
      *
-     * Lo usan las dos comparaciones numericas de este helper (el id de '0' + id y el `num` del numero
-     * interno) para no depender del cast flojo de MySQL, que da `id = '012'` y `num = '0555'` como
+     * Lo usan las comparaciones numericas de este helper (el id de '0' + id y el `num` del numero
+     * interno) y `VenderController::search_bar_code` (la busqueda de un articulo por `num`) para no depender del cast flojo de MySQL, que da `id = '012'` y `num = '0555'` como
      * verdaderos. Un texto gigante no entra en un entero: el cast se satura y deja de coincidir con
      * el texto, asi que tambien devuelve `null` (no hay un `num` ni un id tan grande).
      *
      * @param string $text Texto a evaluar.
      * @return int|null
      */
-    protected static function canonical_integer($text)
+    public static function canonical_integer($text)
     {
         // ctype_digit rechaza vacio, signos, puntos, espacios y letras.
         if (!ctype_digit($text) || $text !== (string) (int) $text) {

@@ -519,4 +519,65 @@ class Escaneo_de_codigo_de_barras_de_variante_Test extends TestCase
         $this->assertNull($propia_oculta['article'], 'El 0 + id de una variante oculta no se resuelve.');
         $this->assertArrayNotHasKey('variant_row', $propia_oculta);
     }
+
+    /**
+     * Con `codigos_de_barra_basados_en_numero_interno`, un codigo que empieza con '0' y NO resuelve
+     * como variante (oculta, inexistente) es "no encontrado": no se consulta `articles.num`. Antes
+     * caia a `num = '0345'` y MySQL casteaba el texto a 345: devolvia el articulo cuyo `num` es 345,
+     * que no tiene nada que ver con lo escaneado. El test anterior de "0 inexistente" no lo veia
+     * porque sus articulos no tenian `num`; aca si lo tienen, y coincide con el id de la variante.
+     *
+     * @group sales
+     * @group vender-scan
+     * @test
+     */
+    public function con_numero_interno_un_codigo_con_cero_que_no_es_variante_no_cae_al_num_por_el_cast_de_mysql()
+    {
+        $user = $this->usuario_de_test('e12');
+        $this->dar_extension($user, 'article_variants');
+        $this->dar_extension($user, 'codigos_de_barra_basados_en_numero_interno');
+        $this->actingAs($user, 'web');
+
+        $zapatilla = $this->articulo($user, 'Zapatilla');
+        $oculta = $this->variante($zapatilla, 'rojo 35', '7790003', true);
+
+        // Un articulo cuyo `num` es justo el id de la variante oculta, y otro con un num cualquiera.
+        $this->articulo($user, 'Clavo', ['num' => $oculta->id]);
+        $this->articulo($user, 'Tuerca', ['num' => 987654]);
+
+        $oculta_por_id = $this->escanear('0' . $oculta->id)->json();
+        $this->assertNull($oculta_por_id['article'], '0 + id de una variante oculta no puede devolver el articulo con ese num.');
+        $this->assertArrayNotHasKey('variant_row', $oculta_por_id);
+
+        $inexistente = $this->escanear('0987654')->json();
+        $this->assertNull($inexistente['article'], 'Un 0 + numero que no es variante no puede devolver el articulo con ese num.');
+        $this->assertArrayNotHasKey('variant_row', $inexistente);
+    }
+
+    /**
+     * Con `codigos_de_barra_basados_en_numero_interno`, el articulo se busca por `num` solo si el
+     * codigo es un numero canonico (solo digitos, sin ceros de relleno): '345' lo encuentra; '345abc',
+     * '345.0' o '0345' no (el cast de MySQL los habria tomado por 345).
+     *
+     * @group sales
+     * @group vender-scan
+     * @test
+     */
+    public function con_numero_interno_el_articulo_se_busca_por_num_solo_con_el_numero_canonico()
+    {
+        $user = $this->usuario_de_test('e13');
+        $this->dar_extension($user, 'article_variants');
+        $this->dar_extension($user, 'codigos_de_barra_basados_en_numero_interno');
+        $this->actingAs($user, 'web');
+
+        $clavo = $this->articulo($user, 'Clavo', ['num' => 345]);
+
+        $normal = $this->escanear('345')->json();
+        $this->assertEquals($clavo->id, $normal['article']['id'], 'El articulo normal por num se sigue resolviendo.');
+        $this->assertFalse($normal['has_variants']);
+
+        foreach (['345abc', '345.0', '0345', 'abc'] as $laxo) {
+            $this->assertNull($this->escanear($laxo)->json('article'), 'El codigo "' . $laxo . '" no tiene que matchear num = 345.');
+        }
+    }
 }

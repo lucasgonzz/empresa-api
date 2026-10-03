@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\article\ArticleVariantBarCodeHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantGeneratorHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
 
@@ -47,16 +48,29 @@ class ArticleVariantController extends Controller
      * Código de barras propio de la variante (`bar_code`, contrato C1 de la misión
      * "codigo-de-barras-de-variantes"): es OPCIONAL. Si la clave no viene en el request no se toca
      * (la SPA vieja manda solo price, image_url y oculta). Si viene, pasa por
-     * ArticleVariantBarCodeHelper (trim, vacío = '0'.id, máximo 20 caracteres, sin repetir con otra
-     * variante ni con un artículo del mismo dueño).
+     * ArticleVariantBarCodeHelper (normalizado como el lector, vacío = '0'.id, máximo 20 caracteres,
+     * sin los caracteres que rompen la ruta del escaneo, sin repetir con otra variante ni con un
+     * artículo del mismo dueño).
      *
      * @param Request $request Espera price, image_url, oculta y, opcional, bar_code (stock ya no se usa acá).
      * @param int $id Id de la ArticleVariant a actualizar.
-     * @return \Illuminate\Http\JsonResponse Variante actualizada, o 422 con `message` si el código
-     *         de barras no es válido (en ese caso no se guarda NADA: ni el código, ni el precio, ni oculta).
+     * @return \Illuminate\Http\JsonResponse Variante actualizada; 404 con `message` si la variante no
+     *         existe o no es de un artículo del dueño del usuario logueado; o 422 con `message` si el
+     *         código de barras no es válido (en ninguno de los dos casos se guarda NADA: ni el
+     *         código, ni el precio, ni oculta).
      */
     function update(Request $request, $id) {
         $model = ArticleVariant::find($id);
+
+        // La variante tiene que existir y ser de un articulo del DUENIO del usuario logueado
+        // (`UserHelper::userId()` resuelve al duenio tambien para los empleados). `article_variants`
+        // no tiene `user_id`, y `find($id)` a secas dejaba editar la variante de otro comercio con solo
+        // saber su id. Se corta ANTES de leer o escribir cualquier campo, con un mensaje fijo: si
+        // siguiera, la validacion de repetidos del codigo de barras contestaria con el nombre del
+        // articulo y la variante ajenos. Cubre de paso el id inexistente, que antes era un 500.
+        if (is_null($model) || !ArticleVariantBarCodeHelper::belongs_to_owner($model, UserHelper::userId())) {
+            return response()->json(['message' => 'No se encontró la variante.'], 404);
+        }
 
         // Se valida el código ANTES de asignar o guardar cualquier campo: con un código inválido el
         // comerciante tiene que ver el aviso y que la variante quede exactamente como estaba. Si se

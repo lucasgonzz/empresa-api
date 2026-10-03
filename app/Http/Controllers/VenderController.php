@@ -44,6 +44,10 @@ class VenderController extends Controller
 
         $article = Article::where('user_id', $user_id);
 
+        // Si hay que consultar articulos. Pasa a false cuando el codigo, por su forma, no puede ser el
+        // de ningun articulo en el modo de escaneo del comercio (ver la rama de numero interno).
+        $buscar_articulo = true;
+
         // Id de la variante encontrada por codigo de barra (caso 1: codigo de variante)
         $variant_id = null;
 
@@ -63,7 +67,24 @@ class VenderController extends Controller
             // rama de la variante y dejaba esta consulta SIN ningun filtro: devolvia un articulo
             // cualquiera del duenio. No volver a mezclar las dos ramas: "no es una variante" tiene
             // que seguir siempre por la cadena de articulo.
-            $article = $article->where('num', $code);
+            //
+            // Pero NO se compara `num = $code` a secas: `num` es un entero y MySQL castea el texto, asi
+            // que '0345' o '345abc' matchearian el articulo 345, que no tiene nada que ver con lo
+            // escaneado. Dos reglas:
+            //  - Un codigo que empieza con '0' y no resolvio como variante (oculta, borrada,
+            //    inexistente) es "no encontrado": en este modo un 0 inicial siempre fue de una
+            //    variante ('0' + id), nunca de un articulo (no hay `num` con cero de relleno).
+            //  - Para el resto, se busca por `num` solo si el codigo es un entero canonico (solo
+            //    digitos, sin ceros de relleno), comparado como entero.
+            $internal_number = substr($code, 0, 1) === '0'
+                ? null
+                : ArticleVariantBarCodeHelper::canonical_integer($code);
+
+            if (is_null($internal_number)) {
+                $buscar_articulo = false;
+            } else {
+                $article = $article->where('num', $internal_number);
+            }
         } else if (UserHelper::hasExtencion('codigo_proveedor_en_vender')) {
 
             $article = $article->where('provider_code', $code);
@@ -75,8 +96,10 @@ class VenderController extends Controller
         // withAllSinAcopio: las mismas 27 relaciones menos sales_with_deliveries_in_acopio, que es la
         // cara del paquete (join article_sale/sales por en_acopio) y que ninguna de las dos pantallas
         // que consumen este endpoint lee. Ver el docblock del scope en App\Models\Article.
-        $article = $article->withAllSinAcopio()
-                        ->first();
+        // Sin consulta cuando el codigo no puede ser de un articulo: no hay nada que traer.
+        $article = $buscar_articulo
+                    ? $article->withAllSinAcopio()->first()
+                    : null;
 
         // Si la variante existe pero su articulo no vino (no deberia pasar: la variante ya se acoto
         // a articulos del duenio), no se devuelve una variante huerfana: se sigue como "no encontrado".

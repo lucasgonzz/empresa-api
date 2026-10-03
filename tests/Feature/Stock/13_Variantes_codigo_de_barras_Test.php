@@ -701,4 +701,146 @@ class Variantes_codigo_de_barras_Test extends TestCase
         $this->assertEquals('0' . $variante->id, $fila->bar_code);
         $this->assertEquals(100, $fila->price);
     }
+
+    /**
+     * `.` y `..` exactos: el servidor los toma como segmentos de ruta al escanear
+     * (`.../buscar-articulo-por-codido/..` se normaliza y no llega al controlador), asi que se
+     * guardarian bien y no se podrian escanear. Forman parte de la regla de caracteres de la ruta.
+     * Un punto adentro de un codigo ('A.B') o una secuencia mas larga ('...') no es un segmento
+     * especial y se acepta.
+     *
+     * @group stock
+     * @test
+     */
+    public function un_codigo_que_es_solo_punto_o_dos_puntos_da_422_y_no_guarda_nada()
+    {
+        $user = $this->usuario_de_test('g21');
+        $this->actingAs($user, 'web');
+
+        $variante = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36', true, 100);
+
+        foreach (['.', '..'] as $punto) {
+            $res = $this->guardar($variante, ['bar_code' => $punto, 'price' => 999, 'oculta' => false]);
+
+            $res->assertStatus(422);
+            $this->assertIsString($res->json('message'));
+
+            $fila = DB::table('article_variants')->where('id', $variante->id)->first();
+            $this->assertEquals('0' . $variante->id, $fila->bar_code, 'No se tiene que haber guardado "' . $punto . '".');
+            $this->assertEquals(100, $fila->price);
+            $this->assertEquals(1, $fila->oculta);
+        }
+
+        foreach (['A.B', '...', '.5'] as $aceptado) {
+            $this->guardar($variante, ['bar_code' => $aceptado])->assertStatus(200);
+            $this->assertEquals($aceptado, $this->codigo_guardado($variante));
+        }
+    }
+
+    /**
+     * `PUT article-variant/{id}` solo opera sobre variantes del DUENIO del usuario logueado. Una
+     * variante de otro comercio responde 404 ANTES de tocar nada (ni codigo, ni precio, ni `oculta`)
+     * y con un mensaje fijo: si la validacion de repetidos corriera sobre una variante ajena, el 422
+     * devolveria el nombre del articulo o la variante del otro comercio (un oraculo de lectura entre
+     * comercios).
+     *
+     * @group stock
+     * @test
+     */
+    public function una_variante_de_otro_duenio_da_404_sin_escribir_nada_y_sin_filtrar_nombres()
+    {
+        $otro = $this->usuario_de_test('g22b');
+        $zapatilla_ajena = $this->articulo($otro, 'Zapatilla secreta ajena');
+        $ajena = $this->variante($zapatilla_ajena, 'azul 36 secreta', true, 100);
+        $vecina_ajena = $this->variante($zapatilla_ajena, 'rojo 35 secreta');
+
+        // La vecina tiene un codigo propio del catalogo ajeno: con ese mismo codigo en el PUT, un 422
+        // de repetido nombraria "Zapatilla secreta ajena rojo 35 secreta".
+        DB::table('article_variants')->where('id', $vecina_ajena->id)->update(['bar_code' => 'CODIGO-AJENO']);
+
+        $user = $this->usuario_de_test('g22a');
+        $this->actingAs($user, 'web');
+
+        foreach ([
+            ['bar_code' => 'CODIGO-AJENO', 'price' => 999, 'oculta' => false],
+            ['price' => 999, 'oculta' => false],
+            ['bar_code' => '7790002', 'price' => 999, 'oculta' => false],
+        ] as $cuerpo) {
+            $res = $this->guardar($ajena, $cuerpo);
+
+            $res->assertStatus(404);
+            $this->assertSame('No se encontró la variante.', $res->json('message'));
+            $this->assertStringNotContainsString('secreta', (string) $res->getContent());
+
+            $fila = DB::table('article_variants')->where('id', $ajena->id)->first();
+            $this->assertEquals('0' . $ajena->id, $fila->bar_code, 'No se tiene que haber escrito el codigo ajeno.');
+            $this->assertEquals(100, $fila->price, 'No se tiene que haber escrito el precio ajeno.');
+            $this->assertEquals(1, $fila->oculta, 'No se tiene que haber escrito la disponibilidad ajena.');
+        }
+    }
+
+    /**
+     * Un id que no existe es un 404 con el mismo mensaje (antes era un 500 por usar el modelo nulo).
+     * La variante propia sigue funcionando, tambien cuando su articulo esta dado de baja (el dueno
+     * sigue siendo el mismo); la de un articulo dado de baja de OTRO comercio no.
+     *
+     * @group stock
+     * @test
+     */
+    public function un_id_inexistente_da_404_y_la_variante_propia_sigue_andando()
+    {
+        $otro = $this->usuario_de_test('g23b');
+        $baja_ajena = $this->articulo($otro, 'Articulo ajeno de baja');
+        $variante_baja_ajena = $this->variante($baja_ajena, 'azul 36');
+        $baja_ajena->delete();
+
+        $user = $this->usuario_de_test('g23a');
+        $this->actingAs($user, 'web');
+
+        $res = $this->putJson('api/article-variant/999999999', ['price' => 1, 'image_url' => null, 'oculta' => false]);
+        $res->assertStatus(404);
+        $this->assertSame('No se encontró la variante.', $res->json('message'));
+
+        $propia = $this->variante($this->articulo($user, 'Zapatilla'), 'azul 36');
+        $this->guardar($propia, ['bar_code' => '7790002', 'price' => 250])->assertStatus(200);
+        $this->assertEquals('7790002', $this->codigo_guardado($propia));
+
+        $baja_propia = $this->articulo($user, 'Articulo propio de baja');
+        $variante_baja_propia = $this->variante($baja_propia, 'rojo 35');
+        $baja_propia->delete();
+        $this->guardar($variante_baja_propia, ['price' => 300])->assertStatus(200);
+        $this->assertEquals(300, DB::table('article_variants')->where('id', $variante_baja_propia->id)->value('price'));
+
+        $this->guardar($variante_baja_ajena, ['price' => 300])->assertStatus(404);
+        $this->assertNull(DB::table('article_variants')->where('id', $variante_baja_ajena->id)->value('price'));
+    }
+
+    /**
+     * Un empleado (usuario con `owner_id`) edita las variantes de su duenio: el dueno que cuenta es
+     * el del comercio, no el del usuario logueado.
+     *
+     * @group stock
+     * @test
+     */
+    public function un_empleado_edita_las_variantes_de_su_duenio()
+    {
+        $duenio = $this->usuario_de_test('g24');
+
+        $empleado = User::create([
+            'name'     => 'Empleado codigo variantes',
+            'email'    => 'codigo-variantes-empleado-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $duenio->id,
+        ]);
+
+        $variante = $this->variante($this->articulo($duenio, 'Zapatilla'), 'azul 36');
+
+        $this->actingAs($empleado, 'web');
+
+        $res = $this->guardar($variante, ['bar_code' => '7790002', 'price' => 250]);
+
+        $res->assertStatus(200);
+        $this->assertEquals('7790002', $this->codigo_guardado($variante));
+        $this->assertEquals(250, DB::table('article_variants')->where('id', $variante->id)->value('price'));
+    }
 }
