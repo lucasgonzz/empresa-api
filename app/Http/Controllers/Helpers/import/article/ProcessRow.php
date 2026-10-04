@@ -92,9 +92,16 @@ class ProcessRow {
     protected $conflictos = [];
 
     /**
-     * Índice de fila DE DATOS (absoluto sobre todo el archivo, no relativo al
-     * chunk), 1-based y sin contar el encabezado -- fila de datos 1 = fila 2
-     * de Excel. Se incrementa en cada llamada a procesar().
+     * Número de fila DEL EXCEL de la fila que se está procesando (absoluto sobre
+     * todo el archivo, no relativo al chunk): el mismo número que el usuario ve
+     * en su planilla y en el paso 3 del asistente ("Filas en el Excel"). Lo fija
+     * procesar() en cada fila (ver ahí).
+     *
+     * Hasta el 4/10/2026 era el "índice de fila de datos" (fila de Excel − 1,
+     * pensado para un encabezado en la fila 1) y además no contaba las filas
+     * vacías que ArticleImport saltea: con el encabezado en la fila 7 el modal
+     * de resultado decía "La fila 8 fue sobrescrita por la fila 15" para las
+     * filas 9 y 16 del Excel (misión fila-sobrescrita-corrida).
      *
      * Antes de esto (grupo 294, incidente Servian) arrancaba siempre en 0 y
      * quedaba relativo AL CHUNK: cada ProcessRow es una instancia nueva por
@@ -405,21 +412,16 @@ class ProcessRow {
          * ArticleImport::$start_row, que ya lo calcula bien por chunk -- ver
          * InitExcelImport::iniciar_procesamiento()).
          *
-         * OJO: la convencion de "fila" en todo tests/Import (ver p.ej.
-         * RepetidosEnElArchivoTest::test_se_reporta_que_fila_sobrescribio_a_cual, "indice
-         * de fila de datos") NO es el numero de fila de Excel -- es el indice 1-based de
-         * la fila DE DATOS, sin contar el encabezado (fila de datos 1 = fila 2 de Excel).
-         * Primer intento de este fix uso el numero de fila de Excel tal cual y regresiono
-         * tres tests de un solo chunk (CodigosDeBarraRepetidosTest,
-         * RepetidosEnElArchivoTest): con $start_row=2 daba fila_actual inicial=1 y la
-         * primera fila del archivo quedaba en "2" en vez de "1". La resta de 2 (no de 1)
-         * es la que hace que, para el caso de un solo chunk (start_row=2), fila_actual
-         * arranque en 0 -- exactamente el default de siempre, así que el comportamiento
-         * ya probado de un solo chunk no cambia un bit. Default 2 preserva ese mismo 0
-         * para cualquier llamador que no pase 'fila_inicial' (ninguno hoy fuera de
-         * ArticleImport).
+         * Arranca en la fila ANTERIOR a la primera del lote: ArticleImport le pasa a
+         * procesar() la fila de Excel de cada fila, y para un llamador que no la pase
+         * (los tests que usan ProcessRow suelto) el ++ de procesar() deja la primera
+         * fila en fila_inicial. Antes restaba 2 y no 1, a proposito, para sostener la
+         * convencion de "indice de fila de datos" que asertaban los tests de
+         * tests/Import (fila de datos 1 = fila 2 de Excel). Esa convencion era el
+         * defecto: el usuario lee "fila" como la fila de su planilla (4/10/2026, misión
+         * fila-sobrescrita-corrida). Default 2 = encabezado en la fila 1.
          */
-        $this->fila_actual = (int) ($data['fila_inicial'] ?? 2) - 2;
+        $this->fila_actual = (int) ($data['fila_inicial'] ?? 2) - 1;
 
         $this->set_price_types();
         $this->set_addresses();
@@ -774,15 +776,26 @@ class ProcessRow {
 
     /**
      * Procesa una fila del Excel: busca si el artículo ya existe, y lo actualiza o lo agrega.
+     *
+     * @param  mixed    $row
+     * @param  mixed    $nombres_proveedores
+     * @param  int|null $fila_excel  número de fila del Excel de esta fila. ArticleImport lo
+     *                               pasa siempre, porque es el único que ve las filas vacías
+     *                               que se saltean sin llegar acá; sin él se cuenta desde
+     *                               'fila_inicial' (ver constructor).
      */
-    function procesar($row, $nombres_proveedores) {
+    function procesar($row, $nombres_proveedores, $fila_excel = null) {
 
         $this->observations = [
             'procesos'  => [],
         ];
 
-        // Índice de fila de datos, absoluto sobre todo el archivo (ver constructor); se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
-        $this->fila_actual++;
+        // Fila del Excel, absoluta sobre todo el archivo (ver $fila_actual); es la que se reporta en los conflictos.
+        if (!is_null($fila_excel)) {
+            $this->fila_actual = (int) $fila_excel;
+        } else {
+            $this->fila_actual++;
+        }
 
         // Reset por fila: si esta fila no repite nada, no puede quedar el escalon de la anterior.
         $this->escalon_repeticion = null;
@@ -3981,7 +3994,7 @@ class ProcessRow {
      * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
      * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int    $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int    $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string $campo        campo identificador afectado (bar_code/sku/provider_code/id).
      * @param mixed  $original     valor original tal cual vino del Excel, antes de normalizar.
      * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
@@ -4011,7 +4024,7 @@ class ProcessRow {
      * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
      * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int             $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int             $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param AmbiguousMatch  $ambiguo      marcador devuelto por ArticleIndexCache::find_with_index().
      * @param string|null     $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
      * @return void
@@ -4042,7 +4055,7 @@ class ProcessRow {
      * para que el usuario lo resuelva a mano (regla de Lucas, 30/7/2026, prompt 08
      * grupo 265).
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $campo        identificador que no se pudo asignar ('bar_code'|'sku').
      * @param mixed       $valor        valor de ese identificador tal cual vino del Excel.
      * @param array       $article_ids  ids de los artículos con los que matcheó el escalón inferior.
@@ -4109,7 +4122,7 @@ class ProcessRow {
      * Lucas: sacarlo de la cuenta lo volvería invisible también en el camino donde la fila
      * SÍ se aplicó (a todos los candidatos), que es donde más importa que se vea.
      *
-     * @param int         $fila          número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila          fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $provider_code código por el que matchearon los candidatos.
      * @param array       $article_ids   ids de los artículos que quedaron empatados.
      * @param string|null $nombre_excel  nombre del producto en esa fila, tal cual vino.
@@ -4168,7 +4181,7 @@ class ProcessRow {
      * No cuenta para $filas_ambiguas ni $identificadores_descartados: es un tipo de
      * conflicto distinto, solo se acumula en $conflictos.
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
      * @return void
      */
@@ -4199,7 +4212,7 @@ class ProcessRow {
      * ActualizarBBDD::persistir_conflictos() inserta en bloque en
      * `import_conflicts` al cerrar el lote.
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $campo        campo numérico afectado (cost, price, medida, etc.).
      * @param string      $original     valor original tal cual vino del Excel, sin parsear.
      * @param string      $motivo       'no_numerico' | 'fuera_de_rango'.
@@ -4234,8 +4247,8 @@ class ProcessRow {
      * momento en que se detecta la sobrescritura, la fila ganadora es la actual y
      * la perdedora es la que ya estaba en la cola de antes.
      *
-     * @param  int|null    $fila          número de fila (relativo al chunk) que PIERDE.
-     * @param  int         $fila_ganadora número de fila que GANA (la que se está procesando).
+     * @param  int|null    $fila          fila del Excel que PIERDE.
+     * @param  int         $fila_ganadora fila del Excel que GANA (la que se está procesando).
      * @param  string|null $campo         escalón que detectó la repetición ('bar_code'|'sku'|'provider_code'|'id'|'name').
      * @param  mixed       $valor         valor del identificador que se repitió.
      * @param  string|null $nombre_excel  nombre del producto en la fila ganadora, para ubicarla en el Excel.

@@ -157,7 +157,7 @@ class ArticleImport implements ToCollection
              * Faltaba tambien (grupo 294, incidente Servian): sin esto, ProcessRow::$fila_actual
              * arrancaba en 0 en CADA chunk (una instancia de ProcessRow nueva por chunk), asi que
              * los conflictos de un chunk que no fuera el primero quedaban numerados relativos al
-             * chunk (ej. "fila 6") en vez del indice de fila de datos real (ej. "fila 46") -- el
+             * chunk (ej. "fila 6") en vez de la fila real del Excel (ej. "fila 47") -- el
              * usuario no podia ubicar la fila real en su archivo. $this->start_row ya es la fila
              * de Excel absoluta donde arranca ESTE chunk (ver InitExcelImport::iniciar_procesamiento()).
              */
@@ -316,7 +316,15 @@ class ArticleImport implements ToCollection
 
         $error_message = null;
 
-        $filas_procesada = $this->start_row;
+        /*
+         * Fila del Excel de la fila que se está recorriendo. Avanza por CADA fila del lote,
+         * también por las vacías que checkRow() saltea: get_row_from_csv() trae una fila por
+         * línea del CSV y el CSV tiene una línea por fila del Excel (filas vacías incluidas,
+         * ver InitExcelImport::armar_archivo_csv()). Antes avanzaba solo con las procesadas, así
+         * que cada fila vacía corría un lugar los números de todo lo que venía después (misión
+         * fila-sobrescrita-corrida, 4/10/2026).
+         */
+        $fila_excel = (int) $this->start_row;
         $this->filas_procesadas = 0;
 
         // $this->log('rows:');
@@ -334,7 +342,7 @@ class ArticleImport implements ToCollection
                 // $this->log('');
                 // $this->log('');
                 $this->log('');
-                $this->log('Va por fila '.($this->start_row + $this->filas_procesadas));
+                $this->log('Va por fila '.$fila_excel);
 
                 if ($this->checkRow($row)) {
 
@@ -342,22 +350,21 @@ class ArticleImport implements ToCollection
 
                     try {
 
-                        $row_observations = $this->process_row->procesar($row, $this->nombres_proveedores);
-                        
-                        $row_observations['fila'] = $filas_procesada;
+                        $row_observations = $this->process_row->procesar($row, $this->nombres_proveedores, $fila_excel);
+
+                        $row_observations['fila'] = $fila_excel;
 
                         $rows_observations[] = $row_observations;
 
                         $this->filas_procesadas++;
-                        $filas_procesada++;
-                        
+
 
                         // $obs_row = ' Info fila N° '.$this->filas_procesadas.': '.$observations.' ';
                         // $this->observations .= $obs_row;
 
                     } catch (\Throwable $e) {
 
-                        $error_message = 'Error en la linea '.$this->filas_procesadas;
+                        $error_message = 'Error en la fila '.$fila_excel.' del Excel';
 
 
                         Log::error('Error al importar, se capturó una excepción.');
@@ -380,7 +387,9 @@ class ArticleImport implements ToCollection
 
                 } else {
                     // $this->log('Se omitio una fila N° '.$this->filas_procesadas.' con nombre '.ImportHelper::getColumnValue($row, 'nombre', $this->columns));
-                } 
+                }
+
+                $fila_excel++;
 
             // } else if ($this->filas_procesadas > $this->finish_row) {
 
