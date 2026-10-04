@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Cheque;
+use App\Models\ChequeBanco;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
@@ -77,7 +78,7 @@ class ChequeHelper {
 
             'numero'                    => $payment_method['numero'] ?? null,
             'banco'                     => $payment_method['banco'] ?? null,
-            'cheque_banco_id'           => self::cheque_banco_id_de($payment_method),
+            'cheque_banco_id'           => self::cheque_banco_id_de($payment_method, UserHelper::userId()),
             'amount'                    => $payment_method['amount'] ?? null,
             'fecha_emision'             => $payment_method['fecha_emision'] ?? null,
             'fecha_pago'                => $payment_method['fecha_pago'] ?? null,
@@ -138,7 +139,9 @@ class ChequeHelper {
      *
      * @param  \App\Models\Cheque  $origen  El recibido que se endosa.
      * @param  \App\Models\CurrentAcount|\App\Models\Expense  $model  El pago al proveedor o el gasto.
-     * @param  array  $payment_method  La fila (solo para leer `cheque_banco_id` si el origen no lo tiene).
+     * @param  array  $payment_method  La fila (solo para leer `cheque_banco_id` si el origen no lo
+     *                                 tiene, por cheque_banco_id_de() con el dueño: un banco de otra
+     *                                 cuenta deja la copia sin banco).
      * @return \App\Models\Cheque  La copia emitida.
      *
      * @throws \RuntimeException  Si el origen ya no está disponible o `$model` no es un destino de endoso.
@@ -196,7 +199,7 @@ class ChequeHelper {
 
         $origen->refresh();
 
-        $cheque_banco_id = !is_null($origen->cheque_banco_id) ? $origen->cheque_banco_id : self::cheque_banco_id_de($payment_method);
+        $cheque_banco_id = !is_null($origen->cheque_banco_id) ? $origen->cheque_banco_id : self::cheque_banco_id_de($payment_method, UserHelper::userId());
 
         return Cheque::create([
             'numero'                    => $origen->numero,
@@ -250,12 +253,25 @@ class ChequeHelper {
     }
 
     /**
-     * El `cheque_banco_id` de una fila: entero mayor a 0, o null (la SPA manda 0 para "sin banco").
+     * El `cheque_banco_id` de una fila: el id de un banco del catálogo DE ESE DUEÑO, o null (la SPA
+     * manda 0 para "sin banco").
+     *
+     * Un banco de otra cuenta, o uno que no existe, se lee como "sin banco" —igual que un 0 o un
+     * 'abc'— y el cheque se guarda con su texto `banco`, que es el dato del papel. No se rechaza la
+     * fila: la arman tres pantallas y el asistente, y el único que manda un banco ajeno es alguien
+     * armando el pedido a mano.
+     *
+     * 🔴 Hasta el 3/10/2026 (misión cheques-filtro-por-dueno) el id se guardaba sin cruzarlo con el
+     * dueño: el cheque quedaba atado al banco de otro comercio y `GET cheque` (que carga
+     * `cheque_banco`), el Excel y el asistente mostraban su nombre. Un id ajeno se contesta igual
+     * que uno inexistente; en una base compartida los ids son correlativos entre comercios. Por eso
+     * `$user_id` es OBLIGATORIO: nadie puede leer el banco de una fila sin decir de qué dueño.
      *
      * @param  array  $payment_method
+     * @param  int  $user_id  El dueño de la cuenta: el mismo que se estampa en el `user_id` del cheque.
      * @return int|null
      */
-    static function cheque_banco_id_de($payment_method) {
+    static function cheque_banco_id_de($payment_method, $user_id) {
 
         if (!isset($payment_method['cheque_banco_id']) || !is_numeric($payment_method['cheque_banco_id'])) {
 
@@ -264,7 +280,16 @@ class ChequeHelper {
 
         $id = (int) $payment_method['cheque_banco_id'];
 
-        return $id > 0 ? $id : null;
+        if ($id <= 0) {
+
+            return null;
+        }
+
+        $es_del_dueno = ChequeBanco::where('user_id', $user_id)
+                                    ->where('id', $id)
+                                    ->exists();
+
+        return $es_del_dueno ? $id : null;
     }
 
     static function get_tipo($model, $from_expense) {
