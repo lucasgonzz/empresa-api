@@ -475,7 +475,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'END-' . substr(uniqid(), -6)]);
 
         $foto = $recibido->fresh()->toArray();
-        $cheques_antes = Cheque::count();
+        $max_cheque = $this->max_id_de('cheques');
         $foto_cuenta_ajena = $this->foto_de_cuenta($cuenta_ajena);
 
         $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $proveedor_ajeno->id]);
@@ -487,7 +487,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
         $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar(), 'El cheque se sigue ofreciendo para endosar.');
         $this->assertCount(0, $this->copias_de($recibido), 'No nació ninguna copia emitida.');
-        $this->assertSame($cheques_antes, Cheque::count());
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count(), 'No nació ningún cheque.');
         $this->assertEquals($foto_cuenta_ajena, $this->foto_de_cuenta($cuenta_ajena), 'La cuenta corriente del proveedor ajeno no tiene pagos nuevos y su saldo no cambió.');
         $this->assertSame(0, CurrentAcount::where('provider_id', $proveedor_ajeno->id)->count());
 
@@ -856,8 +856,10 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
      * ChequeHelper::endosar(), que verifica el destino antes de marcar nada.
      *
      * Hoy el pedido termina en 500: la excepción sale de adentro del DB::transaction de pago(), que
-     * no la atrapa (el reporte a GitHub solo actúa con APP_ENV=production). Lo que se pide es que
-     * NO sea un 2xx, que lo corte esa verificación y que no quede nada escrito.
+     * no la atrapa (el reporte a GitHub solo actúa con APP_ENV=production). Se la captura con
+     * withoutExceptionHandling() y se mira SU mensaje, no el cuerpo del 500, que con APP_DEBUG=false
+     * dice solo "Server Error" (tercera vuelta, punto 9: el .env.testing.example no declara
+     * APP_DEBUG). Y no tiene que quedar nada escrito.
      *
      * @test
      */
@@ -871,25 +873,24 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $foto = $recibido->fresh()->toArray();
         $foto_cuenta_ajena = $this->foto_de_cuenta($cuenta_ajena);
-        $current_acounts_antes = CurrentAcount::count();
-        $cheques_antes = Cheque::count();
+        $max_current_acount = $this->max_id_de('current_acounts');
+        $max_cheque = $this->max_id_de('cheques');
 
-        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor_ajeno->id, $cuenta_ajena, [$this->fila_de_pago($this->claves_de_endoso($recibido))]));
+        $payload = $this->payload_de_pago('provider', $proveedor_ajeno->id, $cuenta_ajena, [$this->fila_de_pago($this->claves_de_endoso($recibido))]);
 
-        $estado = $response->getStatusCode();
+        list($excepcion, $response) = $this->pedido_que_tiene_que_cortar(function () use ($payload) {
+            return $this->postJson('api/current-acount/pago', $payload);
+        });
 
-        $this->assertFalse($estado >= 200 && $estado < 300, 'El endoso por la fila a un proveedor de otro comercio no puede salir bien: ' . $this->resumen($response));
-
-        // En el 500 el mensaje de la excepción viaja porque el .env.testing de los slots tiene
-        // APP_DEBUG=true; si mañana pago() lo convierte en un 422, viaja igual.
-        $this->assertSame(self::MENSAJE_PROVEEDOR, $response->json('message'), 'Lo tiene que cortar la verificación del destino del endoso, y no otra falla (con APP_DEBUG=false el 500 no trae el mensaje).');
+        $this->assertNotNull($excepcion, 'El endoso por la fila a un proveedor de otro comercio no puede salir bien: ' . (is_null($response) ? '' : $this->resumen($response)));
+        $this->assertSame(self::MENSAJE_PROVEEDOR, $excepcion->getMessage(), 'Lo tiene que cortar la verificación del destino del endoso, y no otra falla.');
 
         $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque propio sigue en cartera, sin marca.');
         $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar(), 'El cheque se sigue ofreciendo para endosar.');
         $this->assertCount(0, $this->copias_de($recibido), 'No nació ninguna copia emitida.');
-        $this->assertSame($cheques_antes, Cheque::count());
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count(), 'No nació ningún cheque.');
         $this->assertEquals($foto_cuenta_ajena, $this->foto_de_cuenta($cuenta_ajena), 'La cuenta del proveedor ajeno tiene el mismo saldo y los mismos movimientos.');
-        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No quedó ningún movimiento de cuenta corriente: la excepción revierte el pago entero.');
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No quedó ningún movimiento de cuenta corriente: la excepción revierte el pago entero.');
     }
 
     /**
@@ -919,7 +920,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $this->gastos_creados_a_mano[] = $gasto_ajeno->id;
 
-        $cheques_antes = Cheque::count();
+        $max_cheque = $this->max_id_de('cheques');
         $excepcion = null;
 
         try {
@@ -931,7 +932,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertNotNull($excepcion, 'Endosar en el gasto de otro comercio tenía que cortar con una excepción.');
         $this->assertSame(self::MENSAJE_GASTO_AJENO, $excepcion->getMessage());
         $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
-        $this->assertSame($cheques_antes, Cheque::count(), 'No nació ninguna copia emitida.');
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count(), 'No nació ninguna copia emitida.');
     }
 
     /**
@@ -995,7 +996,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $foto = $recibido->fresh()->toArray();
         $movimientos_antes = $this->max_id_movimiento_caja();
-        $current_acounts_antes = CurrentAcount::count();
+        $max_current_acount = $this->max_id_de('current_acounts');
 
         $flojos = [
             'un decimal'          => $id . '.5',
@@ -1037,7 +1038,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque ' . $id . ' no se tocó: ninguno de esos textos es él.');
         $this->assertSame(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Ninguna caja se movió.');
-        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No se registró ningún pago.');
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No se registró ningún pago.');
         $this->assertCount(0, $this->copias_de($recibido), 'No se endosó.');
 
         // Un texto de solo dígitos sí es el id (es como lo puede mandar un formulario).
@@ -1103,8 +1104,8 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $foto = $recibido->fresh()->toArray();
         $foto_cuenta = $this->foto_de_cuenta($cuenta_proveedor);
-        $current_acounts_antes = CurrentAcount::count();
-        $cheques_antes = Cheque::count();
+        $max_current_acount = $this->max_id_de('current_acounts');
+        $max_cheque = $this->max_id_de('cheques');
 
         $flojos = [
             'true'               => true,
@@ -1123,8 +1124,8 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
         $this->assertCount(0, $this->copias_de($recibido));
-        $this->assertSame($cheques_antes, Cheque::count());
-        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No se registró ningún pago.');
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count(), 'No nació ningún cheque.');
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No se registró ningún pago.');
         $this->assertEquals($foto_cuenta, $this->foto_de_cuenta($cuenta_proveedor));
     }
 
@@ -1236,8 +1237,8 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $foto = $recibido->fresh()->toArray();
         $foto_cuenta = $this->foto_de_cuenta($cuenta_proveedor);
-        $cheques_antes = Cheque::count();
-        $current_acounts_antes = CurrentAcount::count();
+        $max_cheque = $this->max_id_de('cheques');
+        $max_current_acount = $this->max_id_de('current_acounts');
 
         $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $proveedor->id]);
 
@@ -1246,8 +1247,8 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
         $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
         $this->assertCount(0, $this->copias_de($recibido));
-        $this->assertSame($cheques_antes, Cheque::count());
-        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No se registró ningún pago.');
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count(), 'No nació ningún cheque.');
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No se registró ningún pago.');
         $this->assertEquals($foto_cuenta, $this->foto_de_cuenta($cuenta_proveedor));
     }
 
@@ -2323,6 +2324,11 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
     /**
      * Todas las filas de `cheques`, para comparar antes y después.
+     *
+     * Es la tabla ENTERA a propósito, y no solo lo que el test creó: la usa el caso de los ids
+     * basura, donde lo que se quiere ver es que `true` no tocó el cheque 1 ni '12abc' el 12, que
+     * pueden ser de cualquier dueño. Acotarla a los cheques del test dejaría afuera justo esos. En
+     * una base de testing de slot la tabla es chica (arranca vacía y el rollback la deja así).
      *
      * @return array
      */
