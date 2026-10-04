@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
+use App\Models\Caja;
 use App\Models\Cheque;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Models\CreditAccount;
@@ -22,6 +23,9 @@ class ChequeController extends Controller
      * mismo para un cheque ajeno y para uno que no existe: no se confirma qué hay del otro lado.
      */
     const MENSAJE_CHEQUE_AJENO = 'El cheque elegido no existe o no es de tu cuenta.';
+
+    /** El 422 de un `caja_id` del cuerpo que no es de esta cuenta (cobrar, pagar). */
+    const MENSAJE_CAJA_AJENA = 'La caja elegida no existe o no es de tu cuenta.';
 
     /**
      * Descarga un Excel con los cheques indicados por ID (los mismos que muestra el front al filtrar).
@@ -173,8 +177,8 @@ class ChequeController extends Controller
      * registra el egreso en ella.
      *
      * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda PagarCheque.vue.
-     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
-     *                                        (o no existe), sin escribir nada.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque o la caja no son de
+     *                                        esta cuenta (o no existen), sin escribir nada.
      */
     function pagar(Request $request) {
 
@@ -185,13 +189,22 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
         }
 
+        // La caja se valida ANTES de marcar el cheque: hasta el 3/10/2026 el cheque quedaba pagado
+        // aunque la caja no fuera de esta cuenta (y el egreso salía de la caja de otro comercio).
+        $caja_id = $this->caja_id_del_dueno($request->caja_id);
+
+        if (is_null($caja_id)) {
+
+            return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
+        }
+
         $cheque->estado_manual = 'cobrado';
         $cheque->cobrado_en = Carbon::now();
         $cheque->cobrado_por_id = $this->userId(false);
         $cheque->save();
 
-        if ($request->caja_id != 0) {
-            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $request->caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
+        if ($caja_id > 0) {
+            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
         }
 
         return response()->json(['model' => $cheque], 200);
@@ -201,8 +214,8 @@ class ChequeController extends Controller
      * Marca como cobrado un cheque RECIBIDO y, si viene una caja, registra el ingreso en ella.
      *
      * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda CobrarCheque.vue.
-     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
-     *                                        (o no existe), sin escribir nada.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque o la caja no son de
+     *                                        esta cuenta (o no existen), sin escribir nada.
      */
     function cobrar(Request $request) {
 
@@ -213,13 +226,22 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
         }
 
+        // La caja se valida ANTES de marcar el cheque: hasta el 3/10/2026 el cheque quedaba cobrado
+        // aunque la caja no fuera de esta cuenta (y el ingreso entraba en la caja de otro comercio).
+        $caja_id = $this->caja_id_del_dueno($request->caja_id);
+
+        if (is_null($caja_id)) {
+
+            return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
+        }
+
         $cheque->estado_manual = 'cobrado';
         $cheque->cobrado_en = Carbon::now();
         $cheque->cobrado_por_id = $this->userId(false);
         $cheque->save();
 
-        if ($request->caja_id != 0) {
-            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $request->caja_id, 'client', $cheque->current_acount, 'Cobro cheque N° '.$cheque->numero);
+        if ($caja_id > 0) {
+            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'client', $cheque->current_acount, 'Cobro cheque N° '.$cheque->numero);
         }
 
         return response()->json(['model' => $cheque], 200);
@@ -475,6 +497,60 @@ class ChequeController extends Controller
     protected function cheque_del_dueno($cheque_id) {
 
         return $this->consulta_del_cheque_del_dueno($cheque_id)->first();
+    }
+
+    /**
+     * La caja del cuerpo de cobrar y pagar, resuelta contra el dueño de la sesión ANTES de escribir.
+     *
+     * `0`, `null` y `''` son "sin caja", como siempre: el cheque se marca y ninguna caja se mueve.
+     * Cualquier otro valor tiene que ser el id de una caja de esta cuenta, como entero o como texto
+     * de solo dígitos; si no lo es (otra cuenta, inexistente, '5abc', 'abc', true, un array, un
+     * negativo), el llamador contesta 422.
+     *
+     * 🔴 No volver a pasarle `$request->caja_id` derecho a CurrentAcountCajaHelper::guardar_pago():
+     * ni ese helper ni MovimientoCajaHelper::crear_movimiento() miran de quién es la caja, y así el
+     * cobro de un cheque propio entraba como ingreso en la caja de otro comercio y le movía el saldo.
+     * Un id ajeno se contesta igual que uno inexistente; en una base compartida los ids son
+     * correlativos entre comercios.
+     *
+     * @param  mixed  $caja_id  Lo que mandó el pedido.
+     * @return int|null  0 si no hay caja; el id si la caja es del dueño; null si no lo es.
+     */
+    protected function caja_id_del_dueno($caja_id) {
+
+        if (is_null($caja_id) || $caja_id === '') {
+
+            return 0;
+        }
+
+        if (is_int($caja_id)) {
+
+            $id = $caja_id;
+
+        } elseif (is_string($caja_id) && ctype_digit($caja_id)) {
+
+            $id = (int) $caja_id;
+
+        } else {
+
+            return null;
+        }
+
+        if ($id === 0) {
+
+            return 0;
+        }
+
+        if ($id < 0) {
+
+            return null;
+        }
+
+        $es_del_dueno = Caja::where('user_id', $this->userId())
+                            ->where('id', $id)
+                            ->exists();
+
+        return $es_del_dueno ? $id : null;
     }
 }
  
