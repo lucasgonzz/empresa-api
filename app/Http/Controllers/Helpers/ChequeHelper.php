@@ -516,6 +516,14 @@ class ChequeHelper {
      */
     static function id_del_dueno($clase, $valor, $user_id, $incluir_borrados = false) {
 
+        // Sin dueño no hay nada de nadie. Con un `$user_id` null la consulta de abajo sería
+        // `where user_id is null` y devolvería una fila SIN dueño: fallaba abierta (latente: solo
+        // si UserHelper::userId() diera null, pero es tenencia).
+        if (empty($user_id)) {
+
+            return null;
+        }
+
         $id = self::id_del_pedido($valor);
 
         if ($id === 0) {
