@@ -319,8 +319,10 @@ class ArticleImport implements ToCollection
         /*
          * Fila del Excel de la fila que se está recorriendo. Avanza por CADA fila del lote,
          * también por las vacías que checkRow() saltea: get_row_from_csv() trae una fila por
-         * línea del CSV y el CSV tiene una línea por fila del Excel (filas vacías incluidas,
-         * ver InitExcelImport::armar_archivo_csv()). Antes avanzaba solo con las procesadas, así
+         * REGISTRO del CSV y el CSV tiene un registro por fila del Excel (filas vacías incluidas,
+         * ver InitExcelImport::armar_archivo_csv()). Registro, no línea: una celda con salto de
+         * línea ocupa varias líneas físicas (misión importacion-celda-multilinea, 4/10/2026; ver
+         * InitExcelImport::build_csv_chunk_offsets()). Antes avanzaba solo con las procesadas, así
          * que cada fila vacía corría un lugar los números de todo lo que venía después (misión
          * fila-sobrescrita-corrida, 4/10/2026).
          */
