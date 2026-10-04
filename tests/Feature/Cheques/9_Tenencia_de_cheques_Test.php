@@ -105,6 +105,9 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
      */
     const CENTINELA = 2000000001;
 
+    /** Marca, en las listas de valores de los tests, de "la clave no viene en la fila". */
+    const CLAVE_AUSENTE = '__la_clave_no_viene__';
+
     /** @var User|null El otro comercio: un dueño (sin owner_id) que vive en la misma base. */
     protected $otro_dueno = null;
 
@@ -1321,6 +1324,312 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Tercera vuelta, punto 1. La regla "un endoso va sin caja" de la prevalidación decidía "sin
+     * caja" con is_numeric + (int), mientras el alta (PaymentMethodHelper, fuera de esta misión)
+     * mueve caja si la fila trae `caja_id` y es `!= 0`: `true`, `0.5` y `"0.5"` pasaban la regla y el
+     * alta sacaba la plata de la caja 1 (medido: egreso de 45.000), aunque fuera de otro comercio.
+     * Ahora "sin caja" es una LISTA BLANCA en una sola función (ChequeHelper::es_sin_caja()): ausente,
+     * null, '', el entero 0 o un texto de solo ceros. Todo lo demás es "con caja" y la fila de endoso
+     * se rechaza con 422, sin escribir nada.
+     *
+     * @test
+     */
+    public function una_fila_de_endoso_con_algo_que_no_es_sin_caja_no_se_endosa()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente caja de endoso ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor caja de endoso ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'CAJE-' . substr(uniqid(), -6)]);
+
+        $foto = $recibido->fresh()->toArray();
+        $foto_cuenta = $this->foto_de_cuenta($cuenta_proveedor);
+        $max_movimiento = $this->max_id_de('movimiento_cajas');
+        $max_current_acount = $this->max_id_de('current_acounts');
+        $max_expense = $this->max_id_de('expenses');
+        $max_cheque = $this->max_id_de('cheques');
+
+        $cajas_que_no_son_sin_caja = [
+            'true'           => true,
+            'un decimal'     => 0.5,
+            'un texto 0.5'   => '0.5',
+            'un texto'       => 'abc',
+        ];
+
+        foreach ($cajas_que_no_son_sin_caja as $nombre => $caja_id) {
+
+            $fila_de_pago = $this->fila_de_pago(array_merge($this->claves_de_endoso($recibido), ['caja_id' => $caja_id]));
+
+            $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila_de_pago]));
+
+            $this->assertSame(422, $response->getStatusCode(), 'Endoso por el pago con caja_id ' . $nombre . ': ' . $this->resumen($response));
+            $this->assertStringContainsString('se endosa sin caja', (string) $response->json('message'), 'Endoso por el pago con caja_id ' . $nombre);
+
+            $fila_de_gasto = $this->fila_de_gasto(array_merge($this->claves_de_endoso($recibido), ['caja_id' => $caja_id]));
+
+            $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila_de_gasto]));
+
+            $this->assertSame(422, $response->getStatusCode(), 'Endoso por el gasto con caja_id ' . $nombre . ': ' . $this->resumen($response));
+            $this->assertStringContainsString('se endosa sin caja', (string) $response->json('message'), 'Endoso por el gasto con caja_id ' . $nombre);
+        }
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
+        $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar());
+        $this->assertCount(0, $this->copias_de($recibido), 'No nació ninguna copia.');
+        $this->assertSame(0, MovimientoCaja::where('id', '>', $max_movimiento)->count(), 'Ninguna caja se movió.');
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No se registró ningún pago.');
+        $this->assertSame(0, Expense::where('id', '>', $max_expense)->count(), 'No se registró ningún gasto.');
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count(), 'No nació ningún cheque.');
+        $this->assertEquals($foto_cuenta, $this->foto_de_cuenta($cuenta_proveedor), 'La cuenta del proveedor no se movió.');
+    }
+
+    /**
+     * Tercera vuelta, punto 1, el otro lado de la lista blanca: lo que SÍ es "sin caja" (0, '0',
+     * null, '' y la clave ausente) sigue endosando, por el pago y por el gasto, sin mover ninguna
+     * caja.
+     *
+     * @test
+     */
+    public function una_fila_de_endoso_sin_caja_sigue_endosando()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente sin caja de endoso ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor sin caja de endoso ' . uniqid(), self::DEUDA_PROVEEDOR * 10);
+
+        $max_movimiento = $this->max_id_de('movimiento_cajas');
+
+        $sin_caja = [
+            'el entero 0' => 0,
+            'el texto 0'  => '0',
+            'null'        => null,
+            'vacío'       => '',
+            'ausente'     => self::CLAVE_AUSENTE,
+        ];
+
+        foreach ($sin_caja as $nombre => $caja_id) {
+
+            foreach (['pago', 'gasto'] as $puerta) {
+
+                $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'SCE-' . substr(uniqid(), -6)]);
+
+                $fila = $puerta === 'pago'
+                    ? $this->fila_de_pago($this->claves_de_endoso($recibido))
+                    : $this->fila_de_gasto($this->claves_de_endoso($recibido));
+
+                if ($caja_id === self::CLAVE_AUSENTE) {
+                    unset($fila['caja_id']);
+                } else {
+                    $fila['caja_id'] = $caja_id;
+                }
+
+                $response = $puerta === 'pago'
+                    ? $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]))
+                    : $this->postJson('api/expense', $this->payload_de_gasto([$fila]));
+
+                $this->assertSame(201, $response->getStatusCode(), 'Endoso por el ' . $puerta . ' con caja_id ' . $nombre . ': ' . $this->resumen($response));
+
+                if ($puerta === 'pago') {
+                    $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('current_acount.id');
+                } else {
+                    $this->gastos_creados_por_escenarios[] = (int) $response->json('model.id');
+                }
+
+                $this->assertFalse(ChequeHelper::en_cartera($recibido->fresh()), 'Por el ' . $puerta . ' con caja_id ' . $nombre . ': el cheque tenía que quedar endosado.');
+                $this->assertCount(1, $this->copias_de($recibido), 'Por el ' . $puerta . ' con caja_id ' . $nombre . ': una copia.');
+            }
+        }
+
+        $this->assertSame(0, MovimientoCaja::where('id', '>', $max_movimiento)->count(), 'Ningún endoso movió una caja.');
+    }
+
+    /**
+     * Tercera vuelta, punto 2. El destino de un endoso se verificaba por el RÓTULO del pago
+     * (`provider_id`) y no por adónde va la plata (`credit_account_id`): `POST current-acount/pago`
+     * con un proveedor PROPIO en `model_id` y la cuenta corriente del proveedor de OTRO comercio en
+     * `credit_account_id`, más una fila que endosa un recibido propio, daba 201 y la cuenta ajena
+     * pasaba de 0 a -45.000. Ahora la cuenta tiene que ser una cuenta DE ese proveedor.
+     *
+     * La excepción sale de adentro del DB::transaction de pago(), que no la atrapa: se captura con
+     * withoutExceptionHandling() (así el test no depende de APP_DEBUG) y no queda nada escrito.
+     *
+     * @test
+     */
+    public function no_se_endosa_a_un_proveedor_propio_con_la_cuenta_de_otro()
+    {
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor rótulo propio ' . uniqid(), self::DEUDA_PROVEEDOR);
+        list($proveedor_ajeno, $cuenta_ajena) = $this->proveedor_ajeno_con_cuenta();
+
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente cuenta ajena ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'ROT-' . substr(uniqid(), -6)]);
+
+        $foto = $recibido->fresh()->toArray();
+        $foto_cuenta_ajena = $this->foto_de_cuenta($cuenta_ajena);
+        $foto_cuenta_propia = $this->foto_de_cuenta($cuenta_proveedor);
+        $max_current_acount = $this->max_id_de('current_acounts');
+        $max_cheque = $this->max_id_de('cheques');
+
+        // El rótulo dice el proveedor propio; la plata iría a la cuenta del otro comercio.
+        $payload = $this->payload_de_pago('provider', $proveedor->id, $cuenta_ajena, [$this->fila_de_pago($this->claves_de_endoso($recibido))]);
+
+        list($excepcion, $response) = $this->pedido_que_tiene_que_cortar(function () use ($payload) {
+            return $this->postJson('api/current-acount/pago', $payload);
+        });
+
+        $this->assertNotNull($excepcion, 'El endoso con la cuenta de otro comercio tenía que cortar con una excepción: ' . (is_null($response) ? '' : $this->resumen($response)));
+        $this->assertSame(self::MENSAJE_PROVEEDOR, $excepcion->getMessage());
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
+        $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar());
+        $this->assertCount(0, $this->copias_de($recibido), 'No nació ninguna copia.');
+        $this->assertSame(0, Cheque::where('id', '>', $max_cheque)->count());
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No quedó ningún movimiento de cuenta corriente: la excepción revierte el pago entero.');
+        $this->assertEquals($foto_cuenta_ajena, $this->foto_de_cuenta($cuenta_ajena), 'La cuenta del otro comercio tiene el mismo saldo y los mismos movimientos.');
+        $this->assertEquals($foto_cuenta_propia, $this->foto_de_cuenta($cuenta_proveedor), 'La del proveedor propio tampoco se movió.');
+    }
+
+    /**
+     * Tercera vuelta, punto 3. El `current_acount_payment_method_id` de la fila se leía flojo en la
+     * prevalidación (is_numeric + (int): "1.5" era el método 1, Cheque) y el alta lo busca crudo
+     * (find("1.5") no encuentra nada) y saltea la fila: el pago quedaba registrado SIN métodos, con
+     * el cheque en cartera y la cuenta del proveedor bajada (medido: 60.000 a 15.000). Ahora se lee
+     * con id_del_pedido(): "1.5" no es ningún método, la fila "no es de tipo cheque" y es 422.
+     *
+     * @test
+     */
+    public function una_fila_de_endoso_con_un_metodo_que_no_es_un_id_no_se_endosa()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente método flojo ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor método flojo ' . uniqid(), self::DEUDA_PROVEEDOR * 10);
+
+        $id_metodo = (int) $this->metodo_cheque->id;
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'MET-' . substr(uniqid(), -6)]);
+
+        $foto = $recibido->fresh()->toArray();
+        $foto_cuenta = $this->foto_de_cuenta($cuenta_proveedor);
+        $max_current_acount = $this->max_id_de('current_acounts');
+
+        $flojos = [
+            'un texto decimal' => $id_metodo . '.5',
+            'un número decimal' => $id_metodo + 0.5,
+        ];
+
+        foreach ($flojos as $nombre => $metodo) {
+
+            $fila = $this->fila_de_pago(array_merge($this->claves_de_endoso($recibido), ['current_acount_payment_method_id' => $metodo]));
+
+            $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
+
+            $this->assertSame(422, $response->getStatusCode(), 'Endoso con current_acount_payment_method_id ' . $nombre . ': ' . $this->resumen($response));
+            $this->assertStringContainsString('no es de tipo cheque', (string) $response->json('message'), 'Endoso con current_acount_payment_method_id ' . $nombre);
+        }
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
+        $this->assertCount(0, $this->copias_de($recibido));
+        $this->assertSame(0, CurrentAcount::where('id', '>', $max_current_acount)->count(), 'No se registró ningún pago sin métodos.');
+        $this->assertEquals($foto_cuenta, $this->foto_de_cuenta($cuenta_proveedor), 'La cuenta del proveedor no bajó.');
+
+        // El id del método como entero o como texto de dígitos sigue andando.
+        foreach (['un texto de dígitos' => (string) $id_metodo, 'un entero' => $id_metodo] as $nombre => $metodo) {
+
+            $otro = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'MOK-' . substr(uniqid(), -6)]);
+
+            $fila = $this->fila_de_pago(array_merge($this->claves_de_endoso($otro), ['current_acount_payment_method_id' => $metodo]));
+
+            $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
+
+            $this->assertSame(201, $response->getStatusCode(), 'Endoso con current_acount_payment_method_id ' . $nombre . ': ' . $this->resumen($response));
+            $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('current_acount.id');
+
+            $this->assertFalse(ChequeHelper::en_cartera($otro->fresh()), 'Con ' . $nombre . ' el cheque tenía que quedar endosado.');
+        }
+    }
+
+    /**
+     * Tercera vuelta, punto 4. id_del_pedido() decidía "solo dígitos" con ctype_digit, que depende
+     * del locale: en el PHP de esta máquina (LC_CTYPE = Spanish_Argentina.1252) `"1\xB2"` (un 1 y
+     * un "²") es "solo dígitos" y era el id 1; en el Linux de producción no. Medido: `PUT
+     * cheque/rechazar` por formulario con `cheque_id="<id>\xB2"` rechazaba el cheque. Ahora es
+     * preg_match('/\A[0-9]+\z/'): ASCII y con \z (un $ aceptaría un "\n" final).
+     *
+     * @test
+     */
+    public function la_lectura_de_un_id_no_depende_del_locale()
+    {
+        $this->assertSame(0, ChequeHelper::id_del_pedido("1\xB2"), 'Un 1 seguido de un "²" (Windows-1252) no es un id.');
+        $this->assertSame(0, ChequeHelper::id_del_pedido("12\n"), 'Un salto de línea al final no es parte de un id.');
+        $this->assertSame(0, ChequeHelper::id_del_pedido('١٢'), 'Los dígitos arábigo-índicos no son un id.');
+        $this->assertSame(12, ChequeHelper::id_del_pedido('12'));
+        $this->assertSame(12, ChequeHelper::id_del_pedido(12));
+
+        // Por la puerta de verdad: un formulario (el byte no viaja en JSON).
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente locale ' . uniqid());
+
+        $propio = $this->cobrar_con_cheque($cliente, $cuenta, ['numero' => 'LOC-' . substr(uniqid(), -6)]);
+
+        $foto = $propio->fresh()->toArray();
+
+        $response = $this->put('api/cheque/rechazar', ['cheque_id' => $propio->id . "\xB2", 'notas' => 'Por formulario']);
+
+        $this->assertSame(422, $response->getStatusCode(), 'rechazar con cheque_id "' . $propio->id . '\xB2": ' . $this->resumen($response));
+        $this->assertEquals($foto, $propio->fresh()->toArray(), 'El cheque no se rechazó.');
+    }
+
+    /**
+     * Tercera vuelta, punto 5. Lo que la copia del endoso HEREDA del origen se leía con el scope de
+     * SoftDeletes: si el cliente propio del recibido estaba borrado, la copia perdía su
+     * `endosado_desde_client_id` (y al restaurar el cliente seguía sin él; antes de esta misión lo
+     * conservaba). Borrado no es ajeno: lo heredado se lee con dueño INCLUYENDO los borrados.
+     *
+     * @test
+     */
+    public function el_endoso_conserva_el_cliente_propio_aunque_este_borrado()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente que se borra ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'CBOR-' . substr(uniqid(), -6)]);
+
+        // El cliente se borra por el endpoint real (SoftDeletes).
+        $this->deleteJson('api/client/' . $cliente->id)->assertStatus(200);
+
+        $this->assertNull(Client::find($cliente->id), 'El cliente quedó borrado.');
+        $this->assertNotNull(Client::withTrashed()->find($cliente->id), 'Borrado lógicamente, no físicamente.');
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor cliente borrado ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $proveedor->id]);
+
+        $this->assertSame(200, $response->getStatusCode(), 'Endosar el recibido de un cliente borrado: ' . $this->resumen($response));
+
+        $copia = $this->copias_de($recibido)->first();
+
+        $this->assertNotNull($copia);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $copia->current_acount_id;
+
+        $this->assertSame($cliente->id, (int) $copia->endosado_desde_client_id, 'La copia conserva el cliente propio aunque esté borrado.');
+
+        // Al restaurarlo, el listado lo vuelve a mostrar en la copia.
+        Client::withTrashed()->where('id', $cliente->id)->restore();
+
+        $this->assertSame($cliente->name, $this->cheque_del_listado($copia->id)['endosado_desde_client']['name']);
+    }
+
+    /**
+     * Tercera vuelta, punto 6. id_del_dueno() con el dueño null armaba `where user_id is null` y
+     * devolvía el id de una fila SIN dueño: fallaba abierta. Es latente (solo si
+     * UserHelper::userId() diera null), pero es tenencia: sin dueño no hay nada de nadie.
+     *
+     * @test
+     */
+    public function la_tenencia_sin_dueno_no_encuentra_nada()
+    {
+        $sin_dueno = ChequeBanco::create(['name' => 'Banco sin dueño ' . uniqid(), 'user_id' => null]);
+
+        $this->assertNull(ChequeHelper::id_del_dueno(ChequeBanco::class, $sin_dueno->id, null), 'Con el dueño null no se encuentra una fila sin dueño.');
+        $this->assertNull(ChequeHelper::id_del_dueno(ChequeBanco::class, $sin_dueno->id, 0));
+        $this->assertNull(ChequeHelper::id_del_dueno(ChequeBanco::class, $sin_dueno->id, ''));
+    }
+
+    /**
      * EL MECANISMO: toda ruta que llega a ChequeController o ChequeBancoController está declarada
      * en matriz_de_tenencia(), con cómo resuelve la tenencia de los ids que recibe y qué test lo
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
@@ -1872,6 +2181,44 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         return DB::table('cheques')->orderBy('id')->get()->map(function ($fila) {
             return (array) $fila;
         })->all();
+    }
+
+    /**
+     * El id más alto de una tabla (con los borrados lógicos), para contar lo que se creó después.
+     *
+     * @param string $tabla
+     * @return int
+     */
+    protected function max_id_de($tabla)
+    {
+        return (int) DB::table($tabla)->max('id');
+    }
+
+    /**
+     * Corre un pedido SIN el manejador de excepciones de Laravel y devuelve la excepción con la que
+     * cortó el controller (o null y la respuesta, si no cortó). Así un corte que hoy termina en 500
+     * se mira por su excepción y no por el cuerpo del 500, que con APP_DEBUG=false dice solo
+     * "Server Error".
+     *
+     * @param callable $pedido
+     * @return array{0: \RuntimeException|null, 1: \Illuminate\Testing\TestResponse|null}
+     */
+    protected function pedido_que_tiene_que_cortar(callable $pedido)
+    {
+        $excepcion = null;
+        $response = null;
+
+        $this->withoutExceptionHandling();
+
+        try {
+            $response = $pedido();
+        } catch (\RuntimeException $e) {
+            $excepcion = $e;
+        } finally {
+            $this->withExceptionHandling();
+        }
+
+        return [$excepcion, $response];
     }
 
     /**
