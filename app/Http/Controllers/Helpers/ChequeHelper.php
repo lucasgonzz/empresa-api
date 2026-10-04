@@ -351,9 +351,10 @@ class ChequeHelper {
 
     /**
      * LA lectura de un id que llega en un pedido —en la ruta, en el cuerpo o en una fila de pago—
-     * para los cuatro archivos de cheques: un entero mayor a 0, o un texto de SOLO dígitos
-     * (ctype_digit: sin espacios, signo, decimales ni exponente). Todo lo demás —un decimal, un
-     * booleano, un array, '12abc', '80e1', ' 12', '+12'— es "sin id" (0).
+     * para los cuatro archivos de cheques: un entero mayor a 0, o un texto de SOLO dígitos ASCII
+     * (sin espacios, signo, decimales ni exponente). Todo lo demás —un decimal, un booleano, un
+     * array, '12abc', '80e1', ' 12', '+12', "12
+", "1²"— es "sin id" (0).
      *
      * 🔴 Que sea UNA sola. Hasta el 3/10/2026 (segunda vuelta de la misión cheques-filtro-por-dueno)
      * convivían tres: is_numeric en cheque_id_de() ('12.5' era el 12, '80e1' el 800), un (int)
@@ -363,6 +364,13 @@ class ChequeHelper {
      * tres lecturas, el mismo texto era "sin id" en una puerta y un id en otra. La SPA manda
      * siempre enteros y el ejecutor del asistente ya rechaza decimales, booleanos y textos que no
      * son enteros: lo único que cae afuera es un pedido armado a mano.
+     *
+     * 🔴 "Solo dígitos" es preg_match('/\A[0-9]+\z/'), NO ctype_digit: ctype_digit depende del
+     * locale, y en el PHP de Windows (LC_CTYPE Spanish_Argentina.1252) "1²" —un 1 y un "²"— es
+     * "solo dígitos": hasta el 3/10/2026 `PUT cheque/rechazar` por formulario con ese cheque_id
+     * rechazaba el cheque 1, cosa que en el Linux de producción no pasa. Y con \z y no con $: un $
+     * acepta un "
+" al final.
      *
      * @param  mixed  $valor
      * @return int  El id, o 0 si lo que llegó no es un id.
@@ -374,8 +382,7 @@ class ChequeHelper {
             return $valor > 0 ? $valor : 0;
         }
 
-        // ctype_digit solo con un string: con un int, PHP 7.4 lo toma como un código ASCII.
-        if (is_string($valor) && ctype_digit($valor)) {
+        if (is_string($valor) && preg_match('/\A[0-9]+\z/', $valor) === 1) {
 
             $id = (int) $valor;
 
