@@ -13,6 +13,7 @@ use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
 use App\Models\Provider;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -253,15 +254,20 @@ class ChequeHelper {
          * que no es de esta cuenta se toma como "sin banco" (y entonces vale el de la fila, también
          * leído con dueño); el cliente, como "sin cliente". El origen no se toca: el endoso no repara
          * datos viejos.
+         *
+         * Para lo heredado, BORRADO NO ES AJENO (el `true` del final): el cliente propio de un
+         * recibido puede estar borrado (SoftDeletes) y la copia lo conserva, como antes de esta
+         * misión, para que al restaurarlo se vuelva a ver. Lo que llega en un pedido y el proveedor
+         * destino, en cambio, se leen sin los borrados.
          */
-        $cheque_banco_id = self::id_del_dueno(ChequeBanco::class, $origen->cheque_banco_id, $user_id);
+        $cheque_banco_id = self::id_del_dueno(ChequeBanco::class, $origen->cheque_banco_id, $user_id, true);
 
         if (is_null($cheque_banco_id)) {
 
             $cheque_banco_id = self::cheque_banco_id_de($payment_method, $user_id);
         }
 
-        $endosado_desde_client_id = self::id_del_dueno(Client::class, $origen->client_id, $user_id);
+        $endosado_desde_client_id = self::id_del_dueno(Client::class, $origen->client_id, $user_id, true);
 
         return Cheque::create([
             'numero'                    => $origen->numero,
@@ -502,9 +508,13 @@ class ChequeHelper {
      * @param  string  $clase  Un modelo con columna `user_id` (ChequeBanco, Client, Provider, Caja).
      * @param  mixed  $valor  El id tal como llegó (de un pedido o de una columna).
      * @param  int  $user_id  El dueño de la cuenta.
+     * @param  bool  $incluir_borrados  true para lo HEREDADO de una fila que ya existe (el cliente o
+     *                                  el banco del origen de un endoso): un borrado (SoftDeletes)
+     *                                  sigue siendo de su dueño, no es ajeno. Lo que llega en un
+     *                                  pedido y el proveedor destino se leen sin los borrados.
      * @return int|null
      */
-    static function id_del_dueno($clase, $valor, $user_id) {
+    static function id_del_dueno($clase, $valor, $user_id, $incluir_borrados = false) {
 
         $id = self::id_del_pedido($valor);
 
@@ -513,9 +523,16 @@ class ChequeHelper {
             return null;
         }
 
-        $es_del_dueno = $clase::where('user_id', $user_id)
-                                ->where('id', $id)
-                                ->exists();
+        $q = $clase::query();
+
+        if ($incluir_borrados && in_array(SoftDeletes::class, class_uses_recursive($clase), true)) {
+
+            $q = $clase::withTrashed();
+        }
+
+        $es_del_dueno = $q->where('user_id', $user_id)
+                            ->where('id', $id)
+                            ->exists();
 
         return $es_del_dueno ? $id : null;
     }
