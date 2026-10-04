@@ -1678,10 +1678,13 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
      * y para declararla tiene que pensar de quién son los ids que le llegan.
      *
-     * Y la autenticación (segunda vuelta, punto 8d): toda ruta de la matriz tiene que tener
-     * `auth:sanctum` entre sus middlewares, salvo las declaradas SIN AUTH con la referencia al
-     * hallazgo (hoy solo el Excel de routes/web.php). Si una declarada SIN AUTH pasa a tener auth, el
-     * test también se pone rojo, para que la matriz no quede diciendo algo que ya no es.
+     * Y la autenticación (segunda vuelta, punto 8d), MEDIDA y no leída (tercera vuelta, punto 8):
+     * toda ruta de la matriz, salvo las declaradas SIN AUTH con la referencia al hallazgo (hoy solo
+     * el Excel de routes/web.php) y las de método inexistente, recibe un pedido SIN sesión con ids de
+     * relleno y tiene que contestar 401. Hasta la tercera vuelta se miraba `gatherMiddleware()`, que
+     * no descuenta un `->withoutMiddleware('auth:sanctum')`: con eso puesto en `cheque/cobrar` la
+     * matriz seguía verde y el cobro sin sesión cobraba el cheque del dueño `USER_ID`. Para las SIN
+     * AUTH sigue la declaración: si una pasa a tener `auth:sanctum`, el test pide sacarle la marca.
      *
      * @test
      */
@@ -1714,23 +1717,25 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertSame([], $sobran, 'Rutas de cheques que el router tiene y la matriz de tenencia NO declara: ' . implode(', ', $sobran) . '. Declaralas en matriz_de_tenencia() diciendo de quién son los ids que reciben y cómo se resuelven (y probalo).');
         $this->assertSame([], $faltan, 'Rutas declaradas en la matriz de tenencia que ya no existen en el router: ' . implode(', ', $faltan) . '. Sacalas de la matriz.');
 
+        // Los pedidos de abajo van SIN sesión: se olvidan los guards (el de sanctum cachea al dueño
+        // del setUp) y no se loguea a nadie.
+        Auth::forgetGuards();
+
         foreach ($matriz as $clave => $fila) {
 
             $this->assertSame($fila['accion'], $en_el_router[$clave], $clave . ' apunta a otro método que el que declara la matriz: revisá su tenencia.');
 
-            $tiene_auth = in_array('auth:sanctum', $rutas[$clave]->gatherMiddleware(), true);
+            list($clase, $metodo) = explode('@', $fila['accion']);
 
             if (isset($fila['sin_auth'])) {
 
                 $this->assertNotSame('', trim($fila['sin_auth']), $clave . ': una ruta SIN AUTH tiene que decir a qué hallazgo responde.');
-                $this->assertFalse($tiene_auth, $clave . ' está declarada SIN AUTH en la matriz y ahora tiene auth:sanctum: sacale "sin_auth" a la matriz (y cerrá el hallazgo).');
+                $this->assertFalse(in_array('auth:sanctum', $rutas[$clave]->gatherMiddleware(), true), $clave . ' está declarada SIN AUTH en la matriz y ahora tiene auth:sanctum: sacale "sin_auth" a la matriz (y cerrá el hallazgo).');
+                $this->assertTrue(method_exists($clase, $metodo), $clave . ': ' . $fila['accion'] . ' no existe.');
+                $this->assertNotSame('', trim($fila['prueba']), $clave . ': falta decir qué test prueba su tenencia.');
 
-            } else {
-
-                $this->assertTrue($tiene_auth, $clave . ' no tiene auth:sanctum. Si es a propósito, declarala SIN AUTH en la matriz con la referencia al hallazgo.');
+                continue;
             }
-
-            list($clase, $metodo) = explode('@', $fila['accion']);
 
             if ($fila['tenencia'] === self::METODO_INEXISTENTE) {
 
@@ -1741,7 +1746,34 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
             $this->assertTrue(method_exists($clase, $metodo), $clave . ': ' . $fila['accion'] . ' no existe.');
             $this->assertNotSame('', trim($fila['prueba']), $clave . ': falta decir qué test prueba su tenencia.');
+
+            $response = $this->pedido_sin_sesion($rutas[$clave]);
+
+            $this->assertSame(401, $response->getStatusCode(), $clave . ' sin sesión tenía que contestar 401 y contestó ' . $this->resumen($response) . '. Si la ruta perdió la autenticación (por ejemplo, con un withoutMiddleware), devolvésela; si es a propósito, declarala SIN AUTH con la referencia al hallazgo.');
         }
+
+        $this->actuar_como($this->dueno);
+    }
+
+    /**
+     * Un pedido a la ruta SIN sesión (los guards ya olvidados por el llamador), con ids de relleno
+     * en la URI y en el cuerpo. Si la autenticación anda, no llega al controller.
+     *
+     * @param \Illuminate\Routing\Route $route
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedido_sin_sesion($route)
+    {
+        $metodos = array_values(array_diff($route->methods(), ['HEAD']));
+
+        $uri = preg_replace('/\{[^}]+\}/', '1', $route->uri());
+
+        return $this->json($metodos[0], $uri, [
+            'cheque_id'   => 1,
+            'caja_id'     => 0,
+            'provider_id' => 1,
+            'name'        => 'Relleno sin sesión',
+        ]);
     }
 
     // ---------------------------------------------------------------------------------------------
