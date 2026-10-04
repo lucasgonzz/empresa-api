@@ -18,6 +18,12 @@ use Illuminate\Support\Facades\DB;
 class ChequeController extends Controller
 {
     /**
+     * El 422 de un `cheque_id` del cuerpo que no es de esta cuenta (cobrar, pagar, rechazar). Es el
+     * mismo para un cheque ajeno y para uno que no existe: no se confirma qué hay del otro lado.
+     */
+    const MENSAJE_CHEQUE_AJENO = 'El cheque elegido no existe o no es de tu cuenta.';
+
+    /**
      * Descarga un Excel con los cheques indicados por ID (los mismos que muestra el front al filtrar).
      *
      * @param \Illuminate\Http\Request $request Query `cheque_ids` (ids separados por guión, ej. 12-45-88).
@@ -162,8 +168,23 @@ class ChequeController extends Controller
         return response()->json(['models' => $agrupados], 200);
     }
 
+    /**
+     * Marca como pagado (`estado_manual = cobrado`) un cheque EMITIDO y, si viene una caja,
+     * registra el egreso en ella.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda PagarCheque.vue.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
+     *                                        (o no existe), sin escribir nada.
+     */
     function pagar(Request $request) {
-        $cheque = Cheque::find($request->cheque_id);
+
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
         $cheque->estado_manual = 'cobrado';
         $cheque->cobrado_en = Carbon::now();
         $cheque->cobrado_por_id = $this->userId(false);
@@ -176,8 +197,22 @@ class ChequeController extends Controller
         return response()->json(['model' => $cheque], 200);
     }
 
+    /**
+     * Marca como cobrado un cheque RECIBIDO y, si viene una caja, registra el ingreso en ella.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda CobrarCheque.vue.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
+     *                                        (o no existe), sin escribir nada.
+     */
     function cobrar(Request $request) {
-        $cheque = Cheque::find($request->cheque_id);
+
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
         $cheque->estado_manual = 'cobrado';
         $cheque->cobrado_en = Carbon::now();
         $cheque->cobrado_por_id = $this->userId(false);
@@ -190,8 +225,25 @@ class ChequeController extends Controller
         return response()->json(['model' => $cheque], 200);
     }
 
+    /**
+     * Marca un cheque como rechazado.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, rechazado_observaciones}. Ojo:
+     *                                             RechazarCheque.vue manda el motivo como `notas`,
+     *                                             que acá no se lee (y la columna
+     *                                             `rechazado_observaciones` es un entero).
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
+     *                                        (o no existe), sin escribir nada.
+     */
     function rechazar(Request $request) {
-        $cheque = Cheque::find($request->cheque_id);
+
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
         $cheque->estado_manual = 'rechazado';
         $cheque->rechazado_en = Carbon::now();
         $cheque->rechazado_por_id = $this->userId(false);
@@ -226,10 +278,10 @@ class ChequeController extends Controller
      */
     function endosar(Request $request) {
 
-        // La misma lectura de `cheque_id` que la fila de pago: un '12abc' es "sin cheque", no el 12.
-        $cheque_id = ChequeHelper::cheque_id_de(['cheque_id' => $request->cheque_id]);
-
-        $cheque = $cheque_id > 0 ? Cheque::where('user_id', $this->userId())->find($cheque_id) : null;
+        // El mismo resolvedor que cobrar, pagar, rechazar y destroy: la lectura de `cheque_id` es la
+        // de la fila de pago (un '12abc' es "sin cheque", no el 12) y el cheque tiene que ser del
+        // dueño. El mensaje es el propio del endoso, el de siempre.
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
 
         if (is_null($cheque)) {
 
@@ -364,10 +416,65 @@ class ChequeController extends Controller
                             ->first();
     }
 
+    /**
+     * Borra un cheque del dueño.
+     *
+     * Hasta el 3/10/2026 era `Cheque::find($id)->delete()`: borraba el cheque de cualquier comercio
+     * y, con un id que no existía, reventaba en 500 (delete() sobre null) y se reportaba como error.
+     * Ahora un id ajeno, inexistente o que no es un id es un 404 (ModelNotFoundException, que
+     * Laravel no reporta), igual que el destroy de los bancos.
+     *
+     * @param  string  $id  El id de la ruta.
+     * @return \Illuminate\Http\Response
+     */
     function destroy($id) {
-        $model = Cheque::find($id);
+        $model = $this->consulta_del_cheque_del_dueno($id)->firstOrFail();
         $model->delete();
         return response(null, 200);
+    }
+
+    /**
+     * La consulta del cheque que nombra el pedido, scopeada por el dueño de la sesión. Es EL
+     * resolvedor de los ids de cheque de este controller: cobrar, pagar, rechazar y endosar lo usan
+     * con first() (y contestan 422 si no hay cheque) y destroy con firstOrFail() (404).
+     *
+     * 🔴 No volver a un `Cheque::find($request->cheque_id)` pelado: un id ajeno se contesta igual
+     * que uno inexistente; en una base compartida los ids son correlativos entre comercios, así que
+     * el cheque de otro comercio está a un "+1" de distancia. Hasta el 3/10/2026 cobrar, pagar,
+     * rechazar y destroy resolvían el cheque así y marcaban (o borraban) el de cualquier comercio.
+     *
+     * El id se lee con ChequeHelper::cheque_id_de(), la misma lectura que la fila de pago y el
+     * endoso: un '12abc', un true, un array o un negativo son "sin cheque" — nunca el 12, ni el 1
+     * al que resuelve `Cheque::find(true)` —, y "sin cheque" es una consulta que no encuentra nada.
+     *
+     * @param  mixed  $cheque_id  El id tal como llegó, en el cuerpo o en la ruta.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected function consulta_del_cheque_del_dueno($cheque_id) {
+
+        $id = ChequeHelper::cheque_id_de(['cheque_id' => $cheque_id]);
+
+        $q = Cheque::where('user_id', $this->userId());
+
+        if ($id <= 0) {
+
+            // "Sin cheque": ninguna fila, para que first() dé null y firstOrFail() un 404.
+            return $q->whereRaw('0 = 1');
+        }
+
+        return $q->where('id', $id);
+    }
+
+    /**
+     * El cheque que nombra el pedido si es del dueño de la sesión, o null si es de otra cuenta, no
+     * existe o lo que llegó no es un id (ver consulta_del_cheque_del_dueno()).
+     *
+     * @param  mixed  $cheque_id  El id tal como llegó en el cuerpo.
+     * @return \App\Models\Cheque|null
+     */
+    protected function cheque_del_dueno($cheque_id) {
+
+        return $this->consulta_del_cheque_del_dueno($cheque_id)->first();
     }
 }
  
