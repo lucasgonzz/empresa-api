@@ -103,9 +103,15 @@ class ExtencionEmpresaDescriptionSeeder extends Seeder
     /**
      * El padrón: una entrada por extensión descripta por la misión 53.
      *
-     * `en_desuso` en true son las que ese trabajo dejó con `estado: sin_uso`, o sea las que
-     * ningún código lee. Eran once y no las cinco que la misión 54 anticipaba: a las cinco sin
-     * referencias se sumaron seis que el rastreo automático contaba como vivas.
+     * `en_desuso` en true son las que, prendidas o apagadas, no cambian nada. Son doce:
+     *
+     *  - Once las dejó así la misión 53, con `estado: sin_uso` (ningún código las lee), y no las
+     *    cinco que la misión 54 anticipaba: a las cinco sin referencias se sumaron seis que el
+     *    rastreo automático contaba como vivas.
+     *  - La duodécima es `article_price_range`, desde la misión oferta-por-cantidad-en-el-renglon
+     *    (4/10/2026, decisión de Lucas): la oferta por cantidad pasó a recalcularse en los tres
+     *    caminos que cambian la cantidad de un renglón sin pedir ninguna extensión, y su único
+     *    gate (el input Cantidad de VENDER) desapareció. La fila y las asignaciones quedan.
      *
      * 🔴 SON 91, PERO NO SON LOS MISMOS 91 QUE TIENE EL CATÁLOGO. La coincidencia del número
      * tapa dos huecos que se compensan, y conviene saberlos antes de leer "91 de 91":
@@ -296,8 +302,8 @@ class ExtencionEmpresaDescriptionSeeder extends Seeder
             [
                 'slug'        => 'article_price_range',
                 'modulo'      => 'Precios',
-                'en_desuso'   => false,
-                'description' => 'ENCENDIDA: al editar la CANTIDAD de un renglon que YA esta cargado en la tabla del remito de VENDER se vuelve a correr check_price_range sobre ese item: recorre los article_price_ranges del articulo (\'Ofertas para VENDER\', cada oferta con modo \'Igual\' o \'Mayor o igual\', cantidad y precio), se queda con los rangos validos para esa cantidad, toma el de mayor cantidad y pisa item.price_vender_personalizado con el precio de esa oferta; si el articulo TIENE rangos cargados pero ninguno aplica, limpia el personalizado y vuelve al final_price. Ese recalculo al corregir la cantidad en la tabla es LO UNICO que enciende la extension: ArticlesTable.vue:513 es su unico gate vivo en los dos repos (grep de \'article_price_range\' como slug: solo aparece ahi, en seeders y como model_name). Si el articulo no tiene ninguna oferta cargada, check_price_range no toca nada (no limpia el personalizado). APAGADA: la oferta se sigue aplicando igual, no cambia el precio de venta en el caso normal. check_price_range corre SIN ningun hasExtencion al agregar el articulo a la venta (mixins/vender/index.js:139, dentro de add_item_to_sale, que es el camino de tipear la cantidad en el header y agregar) y al volver a agregar uno que ya estaba en el remito (repetidos.js:73, actualizar_cantidad); ademas los article_price_ranges viajan siempre en el articulo (Article.php:29, scopeWithAll, que es lo que usa el buscador de VENDER en VenderController.php:304) y el precio personalizado gana en el calculo sin gate alguno (generals.js:567-569 es la PRIMERA rama de getPriceVender). O sea: apagada, un articulo con \'Ofertas para VENDER\' cargadas se sigue vendiendo al precio de la oferta. Lo unico que se pierde es el recalculo al corregir la cantidad en la tabla: el renglon se queda con el precio de oferta que le toco por la cantidad con la que se agrego. Y aun encendida, si tambien esta prendida lista_de_precios_por_rango_de_cantidad_vendida el else-if nunca entra y ese recalculo tampoco ocurre.',
+                'en_desuso'   => true,
+                'description' => 'Hoy no hace nada, encendida o apagada (mision oferta-por-cantidad-en-el-renglon, 4/10/2026). Era el gate del recalculo de la oferta por cantidad (las \'Ofertas para VENDER\' del articulo, article_price_ranges) al corregir la CANTIDAD de un renglon que ya estaba en la tabla del remito de VENDER (ArticlesTable.vue::callSetTotal), y ni siquiera ahi corria si la cuenta tambien tenia lista_de_precios_por_rango_de_cantidad_vendida (estaban en un if / else-if): llevar el renglon a la cantidad de un tramo no aplicaba la oferta y bajarlo no la sacaba. Desde esa mision la oferta se recalcula en los TRES caminos que cambian la cantidad de un renglon -al agregar el articulo, al volver a escanearlo y al cambiar la cantidad en el renglon-, con o sin esta extension: ya ningun codigo la consulta (solo la siembran y la asignan los seeders). Un precio \'Personalizado\' escrito por el vendedor manda sobre la oferta: la oferta no lo pisa ni lo limpia, y si el vendedor lo borra la oferta vuelve a manejar el renglon en el proximo cambio de cantidad. La fila no se borra ni se le quita a nadie: queda en desuso.',
             ],
             [
                 'slug'        => 'elegir_si_incluir_lista_de_precios_de_excel',
