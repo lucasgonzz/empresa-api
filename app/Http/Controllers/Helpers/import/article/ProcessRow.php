@@ -4237,9 +4237,12 @@ class ProcessRow {
     /**
      * Registra que una fila de este Excel fue sobrescrita por otra posterior con el
      * mismo identificador ("última fila gana" — decisión de Lucas, 29/7/2026, prompt
-     * 03 grupo 265). A diferencia de los demás tipos de conflicto, ESTE no representa
-     * una fila que no se pudo procesar: se resolvió bien (la fila ganadora prevalece).
-     * Por eso NO suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()).
+     * 03 grupo 265). ESTE tipo es informativo: no hay nada que corregir, se resolvió
+     * bien (la fila ganadora prevalece). Por eso NO suma a conflicts_count (está en
+     * ImportConflict::TIPOS_QUE_NO_CUENTAN; ver ActualizarBBDD::persistir_conflictos()).
+     * Eso no quiere decir que los demás tipos sean filas que no se procesaron: el único
+     * que saltea la fila es 'ambiguo', el resto la importa sin ese dato (ver el docblock
+     * de ImportConflict).
      *
      * IMPORTANTE sobre los nombres: $fila es la fila que PIERDE (la que ya estaba
      * encolada), $fila_ganadora es la fila que se está procesando AHORA mismo
@@ -4274,11 +4277,11 @@ class ProcessRow {
      * maneja por la otra (mision 44, regla de Lucas del 12/8/2026: en la importacion gana
      * la columna que ya estaba).
      *
-     * Igual que 'fila_sobrescrita', ESTE tipo NO representa una fila que no se pudo
-     * procesar: la fila se proceso bien y se aplico todo menos esa columna. Por eso NO
-     * suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()); si sumara,
-     * cualquier Excel con una columna de precio de mas mostraria el aviso de "filas que
-     * no se pudieron procesar", que es un error, y esto no lo es.
+     * Igual que 'fila_sobrescrita', ESTE tipo es informativo: la fila se proceso bien y se
+     * aplico todo menos esa columna, no hay nada que corregir. Por eso NO suma a
+     * conflicts_count (esta en ImportConflict::TIPOS_QUE_NO_CUENTAN; ver
+     * ActualizarBBDD::persistir_conflictos()); si sumara, cualquier Excel con una columna
+     * de precio de mas mostraria "problemas para revisar" que no lo son.
      *
      * @param  int         $fila         numero de fila (absoluto sobre el archivo) donde se salteo.
      * @param  string      $campo        'price' o 'percentage_gain': la columna que NO se aplico.

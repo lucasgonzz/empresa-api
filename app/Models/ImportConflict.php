@@ -34,17 +34,53 @@ use Illuminate\Database\Eloquent\Model;
  * actualización de precios que no mapea el nombre sobre una base con códigos
  * duplicados deja cientos de conflictos idénticos que no le sirven a nadie.
  *
- * DOS de esos tipos NO representan una fila que no se pudo procesar y por eso no
- * suman a `conflicts_count`: 'fila_sobrescrita' (la repetición se resolvió bien) y
- * 'columna_de_precio_ignorada' (misión 44: la fila se aplicó entera menos la columna
- * de precio que el artículo no usa, porque se maneja por la otra). Ver
- * ActualizarBBDD::persistir_conflictos().
+ * QUÉ LE PASA A LA FILA SEGÚN EL TIPO (misión importacion-mensaje-de-problemas,
+ * 4/10/2026, leído de ProcessRow::procesar()):
+ *
+ *   - SALTEA la fila, no se crea ni se actualiza nada: 'ambiguo' (el identificador
+ *     coincide con más de un artículo). Es el ÚNICO; ver TIPOS_QUE_SALTEAN_LA_FILA.
+ *     Una fila ambigua puede traer además conflictos anteriores al match (un
+ *     numero_invalido, un placeholder_descartado, un desempate_por_nombre_sin_resolver):
+ *     igual cuenta como fila NO importada, no como "importada con datos para revisar".
+ *   - PROCESA la fila SIN un dato: 'numero_invalido' y 'numero_fuera_de_rango' (ese
+ *     campo no se toca), 'placeholder_descartado' (sin ese código),
+ *     'sin_identificador' (sin códigos: se busca por nombre o se crea),
+ *     'identificador_sin_asignar' (se aplica a los artículos que matchearon, sin ese
+ *     código único) y 'desempate_por_nombre_sin_resolver' (se aplica a todos los
+ *     candidatos).
+ *   - INFORMATIVOS, la fila se resolvió bien y no hay nada que corregir:
+ *     'fila_sobrescrita' (quedó la última fila con ese código) y
+ *     'columna_de_precio_ignorada' (misión 44: se aplicó todo menos la columna de precio
+ *     que el artículo no usa, porque se maneja por la otra). Ver TIPOS_QUE_NO_CUENTAN.
+ *
+ * `conflicts_count` (ImportHistory y ArticleImportResult) suma TODOS los tipos menos
+ * los informativos: son "problemas para revisar", no "filas que no se pudieron
+ * procesar". Cuenta problemas, no filas (una fila con costo y precio inválidos suma 2).
+ * El mensaje del resultado, en cambio, cuenta FILAS y separa las no importadas de las
+ * importadas con datos para revisar: ArticleImportHelper::contar_filas_con_problemas().
+ * Ver ActualizarBBDD::persistir_conflictos().
  *
  * Se persiste en bloque (insert masivo) al cerrar cada chunk de importación
  * desde ActualizarBBDD::persistir_conflictos(). Ver ProcessRow::get_conflictos().
  */
 class ImportConflict extends Model
 {
+    /**
+     * Tipos informativos: se persisten para el detalle del historial, pero la fila se
+     * resolvió bien y por eso NO suman a `conflicts_count` (ver el docblock de la clase y
+     * ActualizarBBDD::persistir_conflictos()). El SPA tiene el espejo de esta lista en
+     * ImportHistory.vue (`tipos_que_no_cuentan`): si se agrega un tipo acá, va allá también.
+     */
+    public const TIPOS_QUE_NO_CUENTAN = ['fila_sobrescrita', 'columna_de_precio_ignorada'];
+
+    /**
+     * Tipos con los que ProcessRow::procesar() saltea la fila entera: no crea ni actualiza
+     * nada (el `return` antes de crear o actualizar). Hoy es solo 'ambiguo'. El mensaje del
+     * resultado cuenta estas filas como "no se importó"
+     * (ArticleImportHelper::contar_filas_con_problemas()).
+     */
+    public const TIPOS_QUE_SALTEAN_LA_FILA = ['ambiguo'];
+
     /* Sin restricciones de asignación masiva: se inserta vía array desde ActualizarBBDD. */
     protected $guarded = [];
 

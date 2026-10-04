@@ -2948,19 +2948,25 @@ class ActualizarBBDD {
         $rows  = [];
 
         /*
-         * 'fila_sobrescrita' (prompt 03, grupo 265) NO es una fila que no se pudo
-         * procesar: es una fila que SE RESOLVIO bien (última fila gana). El modal de
-         * resultado usa conflicts_count para decidir si avisa "hay filas que no se
-         * pudieron procesar" (ArticleImportHelper::enviar_notificacion()); si este
-         * tipo sumara ahí, cualquier Excel con un código repetido mostraría un aviso
-         * de error que no corresponde. Se cuenta aparte y se excluye del incremento.
-         * NO "arreglar" esto sumándolo de nuevo: es a propósito.
+         * Los tipos informativos (ImportConflict::TIPOS_QUE_NO_CUENTAN) se persisten
+         * igual, para el detalle del historial, pero NO suman a conflicts_count.
+         *
+         * conflicts_count son los "problemas para revisar" que muestra el botón del
+         * historial de importaciones (y la red de seguridad del mensaje de resultado,
+         * ArticleImportHelper::mensaje_de_resultado()). NO son "filas que no se pudieron
+         * procesar": de todos los tipos, el único que saltea la fila es 'ambiguo' (ver el
+         * docblock de ImportConflict).
+         *
+         * 'fila_sobrescrita' (prompt 03, grupo 265) es una fila que SE RESOLVIO bien
+         * (última fila gana): si sumara, cualquier Excel con un código repetido mostraría
+         * problemas que no hay nada que corregir. Se cuenta aparte y se excluye del
+         * incremento. NO "arreglar" esto sumándolo de nuevo: es a propósito.
          *
          * 'columna_de_precio_ignorada' (misión 44) está en la misma situación por el
          * mismo motivo: la fila se procesó bien y se aplicó todo menos una columna de
          * precio, porque el artículo ya se maneja por la otra.
          */
-        $tipos_que_no_cuentan = ['fila_sobrescrita', 'columna_de_precio_ignorada'];
+        $tipos_que_no_cuentan = ImportConflict::TIPOS_QUE_NO_CUENTAN;
 
         $conflictos_que_cuentan_para_el_historial = 0;
 
