@@ -29,19 +29,26 @@ use App\Models\ArticleImportResultObservation;
  *   28_celda_multilinea_en_los_datos.xlsx   cabecera común en la 1, datos 2 a 26 (ML-02..ML-26,
  *                                           costo 1000 + fila); un salto en el nombre de la
  *                                           fila 5 y dos en el de la 8; costo "consultar" en
- *                                           15 y 24. Lotes [2-11], [12-21], [22-26].
+ *                                           15 y 24; el nombre de la 3 termina en barra
+ *                                           invertida (guarda del escape vacío). Lotes [2-11],
+ *                                           [12-21], [22-26].
  *   29_encabezado_multilinea.xlsx           encabezado con saltos en A1 ("codigo de barras") y
  *                                           E1 ("costo sin IVA"), datos 2 a 13 (EM-02..EM-13,
  *                                           costo 2000 + fila). Lotes [2-11], [12-13]. A1 es la
  *                                           celda pegada al BOM del CSV: ver el generador.
+ *   30_sin_encabezado_a1_multilinea.xlsx    sin encabezado (start_row = 1), A1 multilínea,
+ *                                           datos 1 a 12 (SE-01..SE-12, costo 3000 + fila),
+ *                                           columnas nombre / codigo_de_proveedor / costo / iva.
+ *                                           Lotes [1-10], [11-12].
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos
  * nombrados, union types, promoción de constructor, readonly, enum ni #[...].
  */
 class CeldaConSaltoDeLineaTest extends ImportTestCase
 {
-    const FIXTURE_DATOS      = '28_celda_multilinea_en_los_datos.xlsx';
-    const FIXTURE_ENCABEZADO = '29_encabezado_multilinea.xlsx';
+    const FIXTURE_DATOS          = '28_celda_multilinea_en_los_datos.xlsx';
+    const FIXTURE_ENCABEZADO     = '29_encabezado_multilinea.xlsx';
+    const FIXTURE_SIN_ENCABEZADO = '30_sin_encabezado_a1_multilinea.xlsx';
 
     protected function setUp(): void
     {
@@ -90,12 +97,17 @@ class CeldaConSaltoDeLineaTest extends ImportTestCase
     {
         $import = $this->importar(self::FIXTURE_DATOS);
 
-        $filas = $this->filas_del_detalle_por_lote($import);
-
+        /*
+         * Ojo: esta aserción sola NO detecta el corrimiento. ArticleImport rotula cada registro
+         * del lote como start_row + su posición, así que un lote corrido también sale rotulado
+         * 2..26 (medido sin el arreglo: daba verde). Lo que mira es que el detalle por lote tenga
+         * un renglón por fila, sin huecos ni repetidos en los rótulos. Que cada fila del Excel se
+         * haya leído una vez lo prueban los buckets y los códigos de abajo.
+         */
         $this->assertSame(
             range(2, 26),
-            $filas,
-            'El detalle por fila de los lotes tiene que tener cada fila del Excel (2 a 26) una sola vez.'
+            $this->filas_del_detalle_por_lote($import),
+            'El detalle por fila de los lotes tiene que tener un renglón por fila del Excel (2 a 26).'
         );
 
         /*
@@ -173,6 +185,16 @@ class CeldaConSaltoDeLineaTest extends ImportTestCase
             $this->assertDecimal($caso['costo'], $articulo->cost, 'El costo de ' . $codigo . ' no es el de su fila.');
         }
 
+        /*
+         * La fila 3 termina en barra invertida (la guarda del escape vacío, ver el generador): el
+         * registro se lee entero, con la barra, y la fila queda con su costo.
+         */
+        $perfil = $this->articulo_por_codigo('ML-03');
+
+        $this->assertNotNull($perfil, 'No se creó el artículo de la fila 3 (ML-03), la que termina en barra invertida.');
+        $this->assertSame('\\', substr((string) $perfil->name, -1), 'El nombre de ML-03 perdió la barra final: quedó ' . json_encode((string) $perfil->name) . '.');
+        $this->assertDecimal('1003', $perfil->cost, 'El costo de ML-03 no es el de su fila.');
+
         /* Y las filas que vienen después de las celdas multilínea quedan con su propio costo. */
         foreach ([9 => '1009', 12 => '1012', 21 => '1021', 22 => '1022'] as $fila => $costo) {
 
@@ -215,10 +237,11 @@ class CeldaConSaltoDeLineaTest extends ImportTestCase
     {
         $import = $this->importar(self::FIXTURE_ENCABEZADO);
 
+        /* Sólo los rótulos del detalle (ver test_cada_fila_del_excel_se_procesa_una_sola_vez). */
         $this->assertSame(
             range(2, 13),
             $this->filas_del_detalle_por_lote($import),
-            'El detalle por fila de los lotes tiene que tener cada fila del Excel (2 a 13) una sola vez.'
+            'El detalle por fila de los lotes tiene que tener un renglón por fila del Excel (2 a 13).'
         );
 
         $this->assertBuckets($import, ['creado_nuevo' => 12]);
@@ -271,6 +294,56 @@ class CeldaConSaltoDeLineaTest extends ImportTestCase
                 }
             }
         }
+    }
+
+    /**
+     * Sin encabezado (start_row = 1) y con la primera celda del archivo multilínea: el lote que
+     * arranca en la fila 1 lee las 10 filas que le tocan, cada una con sus datos.
+     *
+     * Es el resto del mismo defecto que encontró el chequeo independiente: con el offset de la
+     * fila 1 en el byte 0, el BOM queda pegado a la comilla de A1, fgetcsv() parte ese registro en
+     * dos, el lote 1 se corre un lugar y la fila 10 no la lee nadie.
+     *
+     * @return void
+     */
+    public function test_sin_encabezado_y_a1_multilinea_el_lote_de_la_fila_1_no_se_corre()
+    {
+        $import = $this->importar(self::FIXTURE_SIN_ENCABEZADO, [
+            'start_row'                => 1,
+            'prop_codigo_de_barras'    => -1,
+            'prop_sku'                 => -1,
+            'prop_nombre'              => 1,
+            'prop_codigo_de_proveedor' => 2,
+            'prop_costo'               => 3,
+            'prop_precio'              => -1,
+            'prop_stock_actual'        => -1,
+            'prop_iva'                 => 4,
+        ]);
+
+        $this->assertSame(2, (int) $import->total_chunks, 'El fixture 30 tiene que partirse en 2 lotes: [1-10] y [11-12].');
+
+        $this->assertBuckets($import, ['creado_nuevo' => 12]);
+
+        $this->assertCount(12, $this->articulos_creados(), 'Tienen que crearse 12 artículos, uno por fila.');
+
+        for ($fila = 1; $fila <= 12; $fila++) {
+
+            $rr       = str_pad((string) $fila, 2, '0', STR_PAD_LEFT);
+            $articulo = $this->articulo_por_codigo('SE-' . $rr);
+
+            $this->assertNotNull($articulo, 'La fila ' . $fila . ' (SE-' . $rr . ') no se importó.');
+            $this->assertDecimal((string) (3000 + $fila), $articulo->cost, 'La fila ' . $fila . ' no quedó con su costo.');
+        }
+
+        /* A1 entera: las dos partes, sin el BOM ni la comilla del CSV pegados. */
+        $nombre = (string) $this->articulo_por_codigo('SE-01')->name;
+
+        foreach (['LISTA SIN ENCABEZADO', 'ARTICULO SIN ENCABEZADO FILA 01'] as $parte) {
+            $this->assertNotFalse(strpos($nombre, $parte), 'El nombre de SE-01 perdió "' . $parte . '": quedó ' . json_encode($nombre) . '.');
+        }
+
+        $this->assertSame(0, strpos($nombre, 'LISTA'), 'El nombre de SE-01 tiene algo pegado adelante: quedó ' . json_encode($nombre) . '.');
+        $this->assertFalse(strpos($nombre, '"') !== false, 'El nombre de SE-01 se quedó con una comilla del CSV: ' . json_encode($nombre) . '.');
     }
 
     /**

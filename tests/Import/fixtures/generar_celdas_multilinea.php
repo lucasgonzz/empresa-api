@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Genera los fixtures 28 y 29: celdas con salto de línea (Alt+Enter) en una importación de
+ * Genera los fixtures 28, 29 y 30: celdas con salto de línea (Alt+Enter) en una importación de
  * varios lotes.
  *
  * Se corre desde la raiz de empresa-api:
@@ -22,6 +22,16 @@
  *        nombre de la fila 5 tiene UN salto y el de la fila 8 tiene DOS: son tres líneas
  *        físicas de más antes del lote 2. Costo no numérico ("consultar") en la fila 15
  *        (lote 2) y en la 24 (lote 3). Con lotes de 10: [2-11], [12-21], [22-26].
+ *        El nombre de la fila 3 TERMINA EN BARRA INVERTIDA a propósito: es la guarda del escape
+ *        vacío de build_csv_chunk_offsets(). Con el escape por defecto de fgetcsv() (la barra),
+ *        esa celda entrecomillada no cierra y se come los registros siguientes, así que un
+ *        arreglo que contara registros con fgetcsv($h) a secas volvería a correr los lotes
+ *        (lo encontró el chequeo independiente: sin esta celda, ese arreglo a medias pasaba).
+ *   30 - SIN encabezado (start_row = 1) y la PRIMERA celda (A1) multilínea. Columnas propias:
+ *        nombre, codigo_de_proveedor, costo, iva. Datos de la 1 a la 12. Con lotes de 10:
+ *        [1-10], [11-12]. Es el lote que arranca en la fila 1: si su offset fuera el byte 0, el
+ *        BOM quedaría pegado a la comilla de A1, fgetcsv() partiría ese registro en dos y la
+ *        fila 10 no la leería nadie.
  *   29 - el encabezado (fila 1) con saltos de línea en DOS celdas, que es el caso más común en
  *        las listas de proveedor ("Precio\nsin IVA"), y datos de la 2 a la 13. Con start_row = 2
  *        el lote 1 SIEMPRE tiene offset, y con el conteo por líneas físicas caía en el medio del
@@ -130,6 +140,8 @@ $cabecera = [
  * ------------------------------------------------------------------------ */
 
 $nombres_multilinea_28 = [
+    /* No es multilínea: termina en barra invertida (ver el docblock del archivo). */
+    3 => 'PERFIL ALUMINIO 20x20 \\',
     5 => "TORNILLO AUTOPERFORANTE 8x1\nCAJA X 100",
     8 => "MECHA ACERO RAPIDO 8mm\nPARA METAL\nBLISTER X 2",
 ];
@@ -156,7 +168,7 @@ for ($fila = 2; $fila <= 26; $fila++) {
 guardar_libro_multilinea(
     '28_celda_multilinea_en_los_datos.xlsx',
     $filas_28,
-    'datos 2 a 26, un salto en la fila 5 y dos en la 8, costo invalido en 15 y 24'
+    'datos 2 a 26, barra final en la 3, un salto en la 5 y dos en la 8, costo invalido en 15 y 24'
 );
 
 /* --------------------------------------------------------------------------
@@ -197,4 +209,30 @@ guardar_libro_multilinea(
     '29_encabezado_multilinea.xlsx',
     $filas_29,
     'encabezado con saltos en A1 ("codigo") y E1 ("costo"), datos 2 a 13'
+);
+
+/* --------------------------------------------------------------------------
+ * 30 - Sin encabezado y A1 multilínea: el lote que arranca en la fila 1.
+ *
+ * Fila r: nombre "ARTICULO SIN ENCABEZADO FILA rr", provider_code SE-rr, costo 3000 + r.
+ * Columnas: A nombre, B codigo_de_proveedor, C costo, D iva (el test las mapea así).
+ * ------------------------------------------------------------------------ */
+
+$filas_30 = [];
+
+for ($fila = 1; $fila <= 12; $fila++) {
+    $rr = str_pad((string) $fila, 2, '0', STR_PAD_LEFT);
+
+    $filas_30[$fila] = [
+        $fila === 1 ? "LISTA SIN ENCABEZADO\nARTICULO SIN ENCABEZADO FILA 01" : 'ARTICULO SIN ENCABEZADO FILA ' . $rr,
+        'SE-' . $rr,
+        (float) (3000 + $fila),
+        21.0,
+    ];
+}
+
+guardar_libro_multilinea(
+    '30_sin_encabezado_a1_multilinea.xlsx',
+    $filas_30,
+    'sin encabezado, A1 con un salto, datos 1 a 12'
 );
