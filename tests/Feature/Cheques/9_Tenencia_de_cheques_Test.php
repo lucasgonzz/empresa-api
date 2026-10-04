@@ -87,6 +87,12 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     const MENSAJE_GASTO_AJENO = 'El gasto en el que se endosa no es de tu cuenta.';
 
     /**
+     * El corte de un endoso cuyo cheque no es de esta cuenta o no existe: el texto de
+     * ChequeHelper::problemas_de_endoso() (sin punto final: así lo arma el helper).
+     */
+    const MENSAJE_CHEQUE_DE_ENDOSO = 'El cheque elegido para endosar no existe o no es de tu cuenta';
+
+    /**
      * Un id que no existe en ninguna tabla, para el test-mecanismo de los `*_id` de la fila. Entra en
      * un `int` con signo (las columnas `*_id` de `cheques` lo son) y está muy lejos de cualquier
      * autoincremental de una base de testing.
@@ -877,6 +883,41 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Segunda vuelta, punto 5. ChequeHelper::crear_cheque() buscaba el `cheque_id` de la fila con un
+     * Cheque::find() pelado y contestaba distinto un id que no existe ("ya no existe.") que uno de
+     * otro comercio ("no existe o no es de tu cuenta"): por la puerta de VENDER, que no prevalida,
+     * con APP_DEBUG=true se distinguía uno del otro. Ahora el origen se busca scopeado por dueño y
+     * los dos se contestan con el mismo texto de problemas_de_endoso(). Se prueba el helper directo
+     * porque es la puerta común (el pago y el gasto ya cortan antes, en la prevalidación, que
+     * también busca scopeado y contesta igual).
+     *
+     * @test
+     */
+    public function un_cheque_ajeno_y_uno_inexistente_se_contestan_igual_al_endosar()
+    {
+        $ajeno = $this->cheque_a_mano([
+            'user_id' => $this->otro_dueno()->id,
+            'numero'  => 'IGUAL-' . substr(uniqid(), -6),
+        ]);
+
+        $foto = $ajeno->fresh()->toArray();
+        $inexistente = $this->id_que_no_existe('cheques');
+
+        $mensaje_ajeno = $this->mensaje_de_crear_cheque($ajeno->id);
+        $mensaje_inexistente = $this->mensaje_de_crear_cheque($inexistente);
+
+        $this->assertSame(self::MENSAJE_CHEQUE_DE_ENDOSO, $mensaje_ajeno);
+        $this->assertSame($mensaje_ajeno, $mensaje_inexistente, 'Un cheque de otro comercio y uno que no existe se tienen que contestar igual.');
+        $this->assertEquals($foto, $ajeno->fresh()->toArray(), 'El cheque ajeno no se tocó.');
+
+        // La prevalidación, igual.
+        $this->assertSame(
+            ChequeHelper::problemas_de_endoso_en_payload([$this->fila_de_pago(['cheque_id' => $ajeno->id])], $this->dueno->id),
+            ChequeHelper::problemas_de_endoso_en_payload([$this->fila_de_pago(['cheque_id' => $inexistente])], $this->dueno->id)
+        );
+    }
+
+    /**
      * EL MECANISMO: toda ruta que llega a ChequeController o ChequeBancoController está declarada
      * en matriz_de_tenencia(), con cómo resuelve la tenencia de los ids que recibe y qué test lo
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
@@ -1253,6 +1294,24 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertNotNull($emitido, 'El gasto con una fila de tipo cheque tenía que dejar un cheque.');
 
         return $emitido;
+    }
+
+    /**
+     * El mensaje con el que ChequeHelper::crear_cheque() corta una fila que pide endosar ese cheque.
+     * El modelo destino es un pago sin guardar: la búsqueda del cheque corta antes de usarlo.
+     *
+     * @param mixed $cheque_id
+     * @return string
+     */
+    protected function mensaje_de_crear_cheque($cheque_id)
+    {
+        try {
+            ChequeHelper::crear_cheque(new CurrentAcount(), $this->fila_de_pago(['cheque_id' => $cheque_id]));
+        } catch (\RuntimeException $e) {
+            return $e->getMessage();
+        }
+
+        $this->fail('crear_cheque() tenía que cortar con una excepción para el cheque_id ' . json_encode($cheque_id) . '.');
     }
 
     /**

@@ -51,6 +51,13 @@ class ChequeHelper {
     const MENSAJE_GASTO_AJENO = 'El gasto en el que se endosa no es de tu cuenta.';
 
     /**
+     * Un cheque a endosar que no es de esta cuenta, o que no existe: el mismo texto para los dos, en
+     * problemas_de_endoso() y en crear_cheque(). Sin punto final: problemas_de_endoso() lo junta con
+     * otros y el punto lo pone quien arma el mensaje.
+     */
+    const CHEQUE_DE_ENDOSO_AJENO = 'El cheque elegido para endosar no existe o no es de tu cuenta';
+
+    /**
      * Crea el cheque de una fila de método de pago de tipo cheque, o —si la fila trae `cheque_id`—
      * endosa el recibido que la fila eligió en vez de crear uno desde cero.
      *
@@ -64,8 +71,9 @@ class ChequeHelper {
      *                              sea un Expense.
      * @return \App\Models\Cheque
      *
-     * @throws \RuntimeException  Si la fila pide endosar un cheque que ya no se puede endosar (la
-     *                            prevalidación del controller ya corrió, así que acá es una carrera).
+     * @throws \RuntimeException  Si la fila pide endosar un cheque que no es de esta cuenta (o no
+     *                            existe) o que ya no se puede endosar (la prevalidación del
+     *                            controller ya corrió, así que acá es una carrera).
      */
     static function crear_cheque($model, $payment_method, $from_expense = false) {
 
@@ -73,11 +81,20 @@ class ChequeHelper {
 
         if ($cheque_id > 0) {
 
-            $origen = Cheque::find($cheque_id);
+            /*
+             * Scopeado por dueño, y un cheque de otra cuenta se contesta EXACTAMENTE igual que uno
+             * que no existe, con el texto de problemas_de_endoso(). Hasta el 3/10/2026 era un
+             * Cheque::find() pelado que los distinguía ("ya no existe." / "no existe o no es de tu
+             * cuenta"): por la puerta de VENDER, que no prevalida, con APP_DEBUG=true se veía cuál
+             * de los dos era. En una base compartida los ids son correlativos entre comercios.
+             */
+            $origen = Cheque::where('user_id', UserHelper::userId())
+                            ->where('id', $cheque_id)
+                            ->first();
 
             if (is_null($origen)) {
 
-                throw new \RuntimeException('El cheque elegido para endosar ya no existe.');
+                throw new \RuntimeException(self::CHEQUE_DE_ENDOSO_AJENO);
             }
 
             return self::endosar($origen, $model, $payment_method);
@@ -520,7 +537,7 @@ class ChequeHelper {
         if (is_null($cheque) || (int) $cheque->user_id !== (int) $user_id) {
 
             // Un id ajeno se contesta igual que uno inexistente: no se confirma qué hay del otro lado.
-            return ['El cheque elegido para endosar no existe o no es de tu cuenta'];
+            return [self::CHEQUE_DE_ENDOSO_AJENO];
         }
 
         $nombre = 'El cheque N° '.$cheque->numero;
@@ -589,7 +606,11 @@ class ChequeHelper {
                 continue;
             }
 
-            $cheque = Cheque::find($cheque_id);
+            // Scopeado por dueño: un cheque de otra cuenta ni se carga (problemas_de_endoso() lo
+            // contesta igual que a uno que no existe).
+            $cheque = Cheque::where('user_id', $user_id)
+                            ->where('id', $cheque_id)
+                            ->first();
 
             $de_este_cheque = self::problemas_de_endoso($cheque, $user_id, $hoy);
 
