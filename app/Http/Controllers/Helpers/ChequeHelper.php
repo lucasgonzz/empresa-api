@@ -364,6 +364,32 @@ class ChequeHelper {
     }
 
     /**
+     * LA definición de "sin caja" de una fila de pago o de un pedido, por LISTA BLANCA: ausente
+     * (el llamador pasa null), null, '', el entero 0 o un texto de solo ceros. Todo lo demás —true,
+     * 0.5, "0.5", "abc", un id— es "con caja".
+     *
+     * 🔴 Es una sola para la regla del endoso (problemas_de_endoso_en_payload(): un endoso va sin
+     * caja) y para el cobro y el pago de un cheque (ChequeController::caja_id_del_dueno(): sin caja
+     * no se mueve ninguna). Por lista blanca y no por "lo que no parezca un número", porque el que
+     * escribe —PaymentMethodHelper::attach_payment_methods(), fuera de los archivos de cheques—
+     * mueve caja con cualquier cosa que sea `!= 0`: hasta el 3/10/2026 `true` o `0.5` pasaban por
+     * "sin caja" en la prevalidación y el alta sacaba la plata de la caja 1. Los ceros se reconocen
+     * con preg_match y no con ctype_digit, que depende del locale.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    static function es_sin_caja($valor) {
+
+        if (is_null($valor) || $valor === '' || $valor === 0) {
+
+            return true;
+        }
+
+        return is_string($valor) && preg_match('/\A0+\z/', $valor) === 1;
+    }
+
+    /**
      * El `cheque_id` de una fila: el id (por id_del_pedido()), o 0 si no pide endoso. Es LA lectura
      * de esa clave, para la prevalidación, el alta y el botón: un `'12abc'` o un `'12.5'` tienen que
      * ser "sin cheque" en los tres lados, y no "sin cheque" en la prevalidación y 12 en el alta.
@@ -682,8 +708,15 @@ class ChequeHelper {
              * del cheque nuevo, y el ABM de "caja por defecto por método de pago" se la propone al
              * método Cheque), así que con `cheque_id` la caja tiene que venir vacía. El botón del
              * módulo ya manda 0.
+             *
+             * 🔴 "Vacía" es la LISTA BLANCA de es_sin_caja(), no "lo que no parezca un número": el
+             * alta (PaymentMethodHelper::attach_payment_methods()) mueve caja si la fila trae
+             * `caja_id` y es `!= 0`, así que hasta el 3/10/2026 `true`, `0.5` o `"0.5"` pasaban esta
+             * regla y el alta sacaba la plata de la caja 1, aunque fuera de otro comercio.
              */
-            if (isset($payment_method['caja_id']) && is_numeric($payment_method['caja_id']) && (int) $payment_method['caja_id'] !== 0) {
+            $caja_id = array_key_exists('caja_id', $payment_method) ? $payment_method['caja_id'] : null;
+
+            if (!self::es_sin_caja($caja_id)) {
 
                 $problemas[] = $nombre.' se endosa sin caja: un cheque endosado no mueve plata de ninguna caja';
             }

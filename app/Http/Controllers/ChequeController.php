@@ -545,10 +545,9 @@ class ChequeController extends Controller
      */
     protected function caja_id_del_dueno($caja_id) {
 
-        // "Sin caja": null, '' o un cero escrito como entero o con dígitos (0, '0').
-        $es_cero = $caja_id === 0 || (is_string($caja_id) && ctype_digit($caja_id) && (int) $caja_id === 0);
-
-        if (is_null($caja_id) || $caja_id === '' || $es_cero) {
+        // "Sin caja": la MISMA definición que la regla del endoso (ChequeHelper::es_sin_caja(), por
+        // lista blanca: null, '', el entero 0 o un texto de solo ceros).
+        if (ChequeHelper::es_sin_caja($caja_id)) {
 
             return 0;
         }
