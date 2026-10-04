@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantBarCodeHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -37,6 +38,18 @@ class VenderController extends Controller
      * solo con la extension `article_variants`, solo entre los articulos del duenio y solo entre las
      * disponibles. Si ninguna matchea, sigue la cadena de articulo de siempre
      * (`num` / `provider_code` / `bar_code` segun las extensiones).
+     *
+     * Mision "selector-de-variantes-con-precio-propio" (3/10/2026), contrato C2: cuando el codigo es
+     * el de un ARTICULO con variantes disponibles (`has_variants: true`), cada elemento de `variants[]`
+     * trae las claves de siempre (`variant_id`, `variant_description`, `final_price`, `bar_code`,
+     * `images`, `addresses`, `oculta`), que no cambian de nombre, de forma ni de significado, y una
+     * clave NUEVA: `precios_por_metodo_pago`, el desglose por metodo de pago de la Capa 3
+     * (`ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida`) calculado sobre el
+     * `final_price` DE ESA VARIANTE (su precio propio o, si no tiene, el del articulo), o `null` si el
+     * comercio no tiene `precio_base_incluye_tarjeta`. Es aditiva y opcional: un cliente viejo la
+     * ignora y sigue como siempre, y el selector de la SPA la usa solo si llega (si no, conserva la del
+     * articulo, que es lo que hacia antes). Existe para que el item que arma el selector sea coherente:
+     * su `final_price` es el de la variante y el `price` absoluto de cada metodo tiene que serlo tambien.
      *
      * @param string $code Codigo escaneado.
      * @return \Illuminate\Http\JsonResponse
@@ -240,10 +253,22 @@ class VenderController extends Controller
                 $variants_shaped = collect();
 
                 foreach ($available_variants as $available_variant) {
+
+                    // El precio de la variante se calcula UNA sola vez: es el que va en `final_price`
+                    // y el mismo sobre el que se arma el desglose por metodo de pago. Calcularlos por
+                    // separado dejaria abierta la puerta a que los dos digan cosas distintas.
+                    $variant_final_price = VenderSearchHelper::get_variant_price($available_variant);
+
                     $variants_shaped->push((object)[
                         'variant_id'            => $available_variant->id,
                         'variant_description'   => $available_variant->variant_description,
-                        'final_price'           => VenderSearchHelper::get_variant_price($available_variant),
+                        'final_price'           => $variant_final_price,
+                        // Clave NUEVA (contrato C2, aditiva y opcional): el desglose de la Capa 3 sobre
+                        // el precio de ESTA variante, igual que lo arman `build_row` (busqueda por
+                        // nombre / escaneo de una variante). `null` sin `precio_base_incluye_tarjeta`.
+                        // El helper cachea la configuracion del comercio por request: no suma
+                        // consultas por variante.
+                        'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, $user_id),
                         'bar_code'              => $available_variant->bar_code,
                         'images'                => VenderSearchHelper::get_variant_images($available_variant),
                         'addresses'             => $available_variant->addresses,
