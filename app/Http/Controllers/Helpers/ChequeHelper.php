@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Cheque;
 use App\Models\ChequeBanco;
+use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
@@ -100,7 +101,9 @@ class ChequeHelper {
 
             // Proveedor al que se le emitió el cheque (si tipo = emitido)
             'provider_id'               => $model->provider_id,
-            'endosado_desde_client_id'               => isset($payment_method['endosado_desde_client_id']) ? $payment_method['endosado_desde_client_id'] : null,
+
+            // Con dueño, nunca crudo de la fila: ver endosado_desde_client_id_de().
+            'endosado_desde_client_id'  => self::endosado_desde_client_id_de($payment_method, UserHelper::userId()),
 
             /*
              * Cuenta corriente relacionada, o el gasto. Hasta el 21/9/2026 un cheque cargado en un
@@ -288,6 +291,46 @@ class ChequeHelper {
         $es_del_dueno = ChequeBanco::where('user_id', $user_id)
                                     ->where('id', $id)
                                     ->exists();
+
+        return $es_del_dueno ? $id : null;
+    }
+
+    /**
+     * El `endosado_desde_client_id` de una fila: el id de un cliente DE ESE DUEÑO, o null.
+     *
+     * Ninguna puerta lo manda legítimamente (ni la SPA ni el asistente: el endoso lo llena en la
+     * copia desde el cliente del origen, ver endosar()), así que en una fila es siempre alguien
+     * armando el pedido a mano. Un cliente de otra cuenta, o uno que no existe, se lee como null.
+     *
+     * 🔴 Hasta el 3/10/2026 (segunda vuelta de la misión cheques-filtro-por-dueno) se guardaba
+     * CRUDO de la fila: un cobro o un gasto propio con el id de un cliente de otro comercio daba 201
+     * y `GET cheque` —que carga `endosado_desde_client` por withAll, y Client no esconde nada—
+     * devolvía su nombre, email, teléfono, CUIT y dirección. Un id ajeno se contesta igual que uno
+     * inexistente; en una base compartida los ids son correlativos entre comercios. `$user_id` es
+     * OBLIGATORIO por lo mismo que en cheque_banco_id_de(). Y ningún `*_id` de `cheques` sale crudo
+     * de la fila: lo sostiene el test-mecanismo del centinela (9_Tenencia_de_cheques_Test).
+     *
+     * @param  array  $payment_method
+     * @param  int  $user_id  El dueño de la cuenta: el mismo que se estampa en el `user_id` del cheque.
+     * @return int|null
+     */
+    static function endosado_desde_client_id_de($payment_method, $user_id) {
+
+        if (!isset($payment_method['endosado_desde_client_id']) || !is_numeric($payment_method['endosado_desde_client_id'])) {
+
+            return null;
+        }
+
+        $id = (int) $payment_method['endosado_desde_client_id'];
+
+        if ($id <= 0) {
+
+            return null;
+        }
+
+        $es_del_dueno = Client::where('user_id', $user_id)
+                                ->where('id', $id)
+                                ->exists();
 
         return $es_del_dueno ? $id : null;
     }
