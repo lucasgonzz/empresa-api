@@ -487,11 +487,13 @@ class InitExcelImport
      * Por eso se recorre con fgetcsv() y el MISMO escape vacío que get_row_from_csv() (el del
      * writer CSV de OpenSpout): si los dos parsearan distinto, volverían a contar distinto.
      *
-     * El BOM UTF-8 del principio se saltea ANTES de parsear: pegado a una primera celda
-     * entrecomillada, fgetcsv() no reconoce la comilla de apertura (la ve en el medio del campo)
-     * y corta el registro en el primer salto de línea de esa celda — el encabezado contaría como
-     * dos registros. Pero la fila 1 se sigue anotando en el byte 0, BOM incluido, igual que
-     * antes: un lote que arranque en la fila 1 lee exactamente lo mismo que leía.
+     * El BOM UTF-8 del principio se saltea ANTES de parsear, y la fila 1 se anota DESPUÉS del
+     * BOM (byte 3), no en el byte 0. Pegado a una primera celda entrecomillada, fgetcsv() no
+     * reconoce la comilla de apertura (la ve en el medio del campo) y corta el registro en el
+     * primer salto de línea de esa celda: acá el encabezado contaría como dos registros, y un lote
+     * que arrancara en la fila 1 (start_row = 1, sin encabezado) partiría A1 en dos y no leería
+     * su última fila. Lo que se importa de la fila 1 no cambia: ImportHelper::getColumnValue()
+     * ya le sacaba el BOM a cada celda.
      *
      * El resto del contrato no cambia: clave = fila del Excel (= número de registro 1-based) y
      * se corta pasando finish_row.
@@ -524,8 +526,7 @@ class InitExcelImport
         $current_row = 1;
 
         while (!feof($handle)) {
-            /* La fila 1 en el byte 0 aunque se haya salteado el BOM (ver el docblock). */
-            $pos = $current_row === 1 ? 0 : ftell($handle);
+            $pos = ftell($handle);
             $registro = fgetcsv($handle, 0, ',', '"', '');
 
             if ($registro === false) {
