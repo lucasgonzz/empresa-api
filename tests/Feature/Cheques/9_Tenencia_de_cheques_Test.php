@@ -4,14 +4,17 @@ namespace Tests\Feature\Cheques;
 
 use App\Http\Controllers\ChequeBancoController;
 use App\Http\Controllers\ChequeController;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
 use App\Models\Cheque;
 use App\Models\ChequeBanco;
+use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\EtiquetaMedida;
+use App\Models\Expense;
 use App\Models\MovimientoCaja;
 use App\Models\Provider;
 use App\Models\User;
@@ -21,6 +24,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Misión cheques-filtro-por-dueno (3/10/2026) — la TENENCIA de los ids que llegan a los
@@ -51,6 +55,12 @@ use Illuminate\Support\Facades\Route;
  *
  * Los casos 1 a 5 se escribieron ANTES del arreglo y se corrieron contra develop: dieron rojo.
  *
+ * La segunda vuelta (lo que encontraron los verificadores) suma la misma clase por otras puertas:
+ * los `*_id` que ChequeHelper lee de la FILA de un pago o de un gasto (con un test-mecanismo que
+ * pone un centinela en cada uno), el banco viejo que el endoso propagaba, el destino del endoso
+ * por la fila de pago, una sola lectura estricta de ids y los 404 con mensaje de comerciante. Sus
+ * casos de los puntos 1 a 4 también se escribieron antes del arreglo y dieron rojo.
+ *
  * @group cheques
  */
 class Tenencia_de_cheques_Test extends ChequesTestCase
@@ -73,6 +83,16 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     /** Marca de la matriz de tenencia para las rutas de Route::resource sin método en el controller. */
     const METODO_INEXISTENTE = 'NO EXISTE EL MÉTODO: la ruta la registra Route::resource y no se llama';
 
+    /** La excepción del endoso cuando el gasto destino no es de esta cuenta (ChequeHelper::endosar()). */
+    const MENSAJE_GASTO_AJENO = 'El gasto en el que se endosa no es de tu cuenta.';
+
+    /**
+     * Un id que no existe en ninguna tabla, para el test-mecanismo de los `*_id` de la fila. Entra en
+     * un `int` con signo (las columnas `*_id` de `cheques` lo son) y está muy lejos de cualquier
+     * autoincremental de una base de testing.
+     */
+    const CENTINELA = 2000000001;
+
     /** @var User|null El otro comercio: un dueño (sin owner_id) que vive en la misma base. */
     protected $otro_dueno = null;
 
@@ -84,6 +104,12 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
     /** @var array<int, int> Proveedores creados a mano por este test (con sus cuentas corrientes). */
     protected $proveedores_creados = [];
+
+    /** @var array<int, int> Clientes creados a mano por este test. */
+    protected $clientes_creados = [];
+
+    /** @var array<int, int> Gastos creados a mano por este test (los de otro comercio). */
+    protected $gastos_creados_a_mano = [];
 
     /** @var int Marca de agua de `movimiento_cajas`, para borrar en tearDown solo lo de este test. */
     protected $max_movimiento_caja_antes = 0;
@@ -118,6 +144,14 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
             CurrentAcount::whereIn('credit_account_id', $cuentas)->delete();
             CreditAccount::whereIn('id', $cuentas)->delete();
             Provider::withTrashed()->whereIn('id', $this->proveedores_creados)->forceDelete();
+        }
+
+        if (count($this->clientes_creados)) {
+            Client::withTrashed()->whereIn('id', $this->clientes_creados)->forceDelete();
+        }
+
+        if (count($this->gastos_creados_a_mano)) {
+            Expense::whereIn('id', $this->gastos_creados_a_mano)->delete();
         }
 
         if (count($this->usuarios_creados)) {
@@ -547,6 +581,263 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Segunda vuelta, punto 1. `endosado_desde_client_id` se guardaba CRUDO de la fila en
+     * ChequeHelper::crear_cheque(): un cobro (o un gasto) propio con el id de un cliente de otro
+     * comercio daba 201 y `GET cheque` —que carga `endosado_desde_client` por withAll, y Client no
+     * esconde nada— devolvía su nombre, email, teléfono, CUIT y dirección. Nadie la manda
+     * legítimamente (ni la SPA ni el asistente): ahora se lee con dueño, como el banco, y un cliente
+     * de otra cuenta (o que no existe) es null.
+     *
+     * @test
+     */
+    public function un_cheque_no_queda_atado_al_cliente_de_otro_dueno()
+    {
+        $ajeno = $this->cliente_ajeno();
+
+        // Por el cobro a un cliente propio, con un cheque nuevo: entra (201) sin ese cliente.
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente desde ajeno ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta, [
+            'numero'                   => 'DESDE-' . substr(uniqid(), -6),
+            'endosado_desde_client_id' => $ajeno->id,
+        ]);
+
+        $this->assertNull($recibido->endosado_desde_client_id, 'Por el cobro: el cheque no puede quedar atado al cliente de otro comercio.');
+
+        // Por el gasto, lo mismo.
+        $emitido = $this->gastar_con_cheque_nuevo([
+            'numero'                   => 'DESDE-' . substr(uniqid(), -6),
+            'endosado_desde_client_id' => $ajeno->id,
+        ]);
+
+        $this->assertNull($emitido->endosado_desde_client_id, 'Por el gasto: el cheque no puede quedar atado al cliente de otro comercio.');
+
+        // Y GET cheque no cuenta nada de él.
+        $listado = $this->getJson('api/cheque');
+
+        $listado->assertStatus(200);
+        $this->assertStringNotContainsString($ajeno->name, $listado->getContent(), 'GET cheque no puede devolver el nombre del cliente de otro comercio.');
+        $this->assertStringNotContainsString($ajeno->email, $listado->getContent(), 'GET cheque no puede devolver el email del cliente de otro comercio.');
+
+        // Un cliente que no existe: lo mismo.
+        $con_inexistente = $this->cobrar_con_cheque($cliente, $cuenta, [
+            'numero'                   => 'DESDE-' . substr(uniqid(), -6),
+            'endosado_desde_client_id' => $this->id_que_no_existe('clients'),
+        ]);
+
+        $this->assertNull($con_inexistente->endosado_desde_client_id, 'Un cliente que no existe se lee como null.');
+
+        // Y un cliente PROPIO se sigue guardando: el filtro es por dueño, no "null para todos".
+        list($otro_propio, $otra_cuenta) = $this->cliente_con_cuenta('Cliente propio desde ' . uniqid());
+
+        $con_propio = $this->cobrar_con_cheque($cliente, $cuenta, [
+            'numero'                   => 'DESDE-' . substr(uniqid(), -6),
+            'endosado_desde_client_id' => $otro_propio->id,
+        ]);
+
+        $this->assertSame($otro_propio->id, (int) $con_propio->endosado_desde_client_id);
+    }
+
+    /**
+     * Segunda vuelta, punto 2 — EL MECANISMO de la clase del punto 1: ningún `*_id` de `cheques`
+     * sale crudo de la fila. Por las dos puertas que crean un cheque nuevo desde una fila (el cobro
+     * de cuenta corriente y el gasto), la fila lleva un id CENTINELA —que no existe en ninguna
+     * tabla— en CADA clave que se llama como una columna `*_id` de `cheques`, leídas del esquema
+     * (así una columna nueva entra sola). Ninguna columna del cheque creado puede valer el
+     * centinela: o la clave no se lee de la fila (la pone el sistema: el pago, el gasto, la sesión),
+     * o se lee con un lector con dueño, que a un id que no es de esta cuenta lo lee como null.
+     *
+     * `caja_id` va en 0 y no con el centinela: es la caja del movimiento de la fila, la valida la
+     * pantalla de pago (CurrentAcountCajaHelper::cajas_sin_apertura_en_payload(), fuera de los
+     * archivos de esta misión) y no la lee ChequeHelper.
+     *
+     * @test
+     */
+    public function ningun_id_de_un_cheque_sale_crudo_de_la_fila()
+    {
+        $claves = $this->claves_id_de_cheques();
+
+        // Que la lista salga del esquema y tenga lo que tiene que tener: con una lista vacía este
+        // test pasaría sin mirar nada.
+        $this->assertContains('endosado_desde_client_id', $claves);
+        $this->assertContains('cheque_banco_id', $claves);
+        $this->assertContains('client_id', $claves);
+        $this->assertNotContains('caja_id', $claves);
+
+        $centinelas = array_fill_keys($claves, self::CENTINELA);
+
+        $datos_del_cheque = [
+            'numero'        => 'CEN-' . substr(uniqid(), -6),
+            'banco'         => 'Banco del centinela',
+            'fecha_emision' => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'    => Carbon::today()->addDays(10)->format('Y-m-d'),
+        ];
+
+        // Puerta 1: el cobro a un cliente propio, con un cheque nuevo.
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente centinela ' . uniqid());
+
+        $fila = $this->fila_de_pago(array_merge($datos_del_cheque, $centinelas));
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('client', $cliente->id, $cuenta, [$fila]));
+
+        $this->assertSame(201, $response->getStatusCode(), 'El cobro con los centinelas en la fila: ' . $this->resumen($response));
+
+        $pago_id = (int) $response->json('current_acount.id');
+        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
+
+        $recibido = Cheque::where('current_acount_id', $pago_id)->first();
+
+        $this->assertNotNull($recibido, 'El cobro tenía que crear el cheque.');
+        $this->assertSame([], $this->columnas_con_el_centinela($recibido), 'Por el cobro: estas columnas del cheque salieron crudas de la fila (valen el centinela ' . self::CENTINELA . ').');
+
+        // Puerta 2: el gasto con un cheque nuevo.
+        $fila = $this->fila_de_gasto(array_merge($datos_del_cheque, ['numero' => 'CEN-' . substr(uniqid(), -6)], $centinelas));
+
+        $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila]));
+
+        $this->assertSame(201, $response->getStatusCode(), 'El gasto con los centinelas en la fila: ' . $this->resumen($response));
+
+        $gasto_id = (int) $response->json('model.id');
+        $this->gastos_creados_por_escenarios[] = $gasto_id;
+
+        $emitido = Cheque::where('expense_id', $gasto_id)->first();
+
+        $this->assertNotNull($emitido, 'El gasto tenía que crear el cheque.');
+        $this->assertSame([], $this->columnas_con_el_centinela($emitido), 'Por el gasto: estas columnas del cheque salieron crudas de la fila (valen el centinela ' . self::CENTINELA . ').');
+    }
+
+    /**
+     * Segunda vuelta, punto 3. El endoso copiaba el `cheque_banco_id` del ORIGEN sin pasarlo por el
+     * lector con dueño: un recibido que quedó atado a un banco ajeno por el hueco viejo (anterior a
+     * esta misión) le pasaba ese banco a la copia emitida nueva. Ahora el banco del origen se lee
+     * con dueño, igual que el de la fila: si no es de esta cuenta, la copia sale sin banco.
+     *
+     * El dato viejo se escribe directo en la base porque ningún endpoint lo deja escribir hoy. El
+     * propio recibido sigue atado a ese banco (este arreglo no repara datos viejos): por eso lo que
+     * se mira del listado es todo MENOS su fila.
+     *
+     * @test
+     */
+    public function el_endoso_no_propaga_el_banco_de_otro_dueno()
+    {
+        $nombre_ajeno = 'Banco ajeno viejo ' . uniqid();
+        $banco_ajeno = $this->banco_ajeno($nombre_ajeno);
+
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente banco viejo ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, [
+            'numero' => 'VIEJO-' . substr(uniqid(), -6),
+            'banco'  => 'Banco del papel',
+        ]);
+
+        // El dato de antes del arreglo: el recibido quedó atado al banco de otro comercio.
+        DB::table('cheques')->where('id', $recibido->id)->update(['cheque_banco_id' => $banco_ajeno->id]);
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor banco viejo ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $proveedor->id]);
+
+        $this->assertSame(200, $response->getStatusCode(), 'Endosar el recibido con el banco viejo: ' . $this->resumen($response));
+
+        $copia = $this->copias_de($recibido)->first();
+
+        $this->assertNotNull($copia, 'El endoso tenía que dejar la copia emitida.');
+        $this->cobros_cc_creados_por_escenarios[] = (int) $copia->current_acount_id;
+
+        $this->assertNull($copia->cheque_banco_id, 'La copia no puede heredar el banco de otro comercio que el recibido arrastraba de antes.');
+        $this->assertSame('Banco del papel', $copia->banco, 'El texto del banco viaja igual.');
+        $this->assertNull($this->cheque_del_listado($copia->id)['cheque_banco']);
+        $this->assertStringNotContainsString($nombre_ajeno, json_encode($this->listado_sin($recibido->id)), 'Fuera del propio recibido, GET cheque no puede nombrar el banco ajeno.');
+    }
+
+    /**
+     * Segunda vuelta, punto 4. El endoso por la FILA de un pago a proveedor no miraba de quién es el
+     * proveedor: `POST current-acount/pago` con la cuenta de un proveedor de otro comercio y una fila
+     * que endosa un recibido propio daba 201, dejaba el cheque endosado a ese proveedor y le bajaba
+     * la cuenta (de 0 a -45.000). La raíz —pago() y registrar() no cruzan la cuenta con el dueño— es
+     * un hallazgo abierto, fuera de esta misión; acá se cierra el endoso en su único camino,
+     * ChequeHelper::endosar(), que verifica el destino antes de marcar nada.
+     *
+     * Hoy el pedido termina en 500: la excepción sale de adentro del DB::transaction de pago(), que
+     * no la atrapa (el reporte a GitHub solo actúa con APP_ENV=production). Lo que se pide es que
+     * NO sea un 2xx, que lo corte esa verificación y que no quede nada escrito.
+     *
+     * @test
+     */
+    public function no_se_endosa_por_la_fila_de_pago_a_un_proveedor_de_otro_dueno()
+    {
+        list($proveedor_ajeno, $cuenta_ajena) = $this->proveedor_ajeno_con_cuenta();
+
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente fila ajena ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'FILA-' . substr(uniqid(), -6)]);
+
+        $foto = $recibido->fresh()->toArray();
+        $foto_cuenta_ajena = $this->foto_de_cuenta($cuenta_ajena);
+        $current_acounts_antes = CurrentAcount::count();
+        $cheques_antes = Cheque::count();
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor_ajeno->id, $cuenta_ajena, [$this->fila_de_pago($this->claves_de_endoso($recibido))]));
+
+        $estado = $response->getStatusCode();
+
+        $this->assertFalse($estado >= 200 && $estado < 300, 'El endoso por la fila a un proveedor de otro comercio no puede salir bien: ' . $this->resumen($response));
+
+        // En el 500 el mensaje de la excepción viaja porque el .env.testing de los slots tiene
+        // APP_DEBUG=true; si mañana pago() lo convierte en un 422, viaja igual.
+        $this->assertSame(self::MENSAJE_PROVEEDOR, $response->json('message'), 'Lo tiene que cortar la verificación del destino del endoso, y no otra falla (con APP_DEBUG=false el 500 no trae el mensaje).');
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque propio sigue en cartera, sin marca.');
+        $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar(), 'El cheque se sigue ofreciendo para endosar.');
+        $this->assertCount(0, $this->copias_de($recibido), 'No nació ninguna copia emitida.');
+        $this->assertSame($cheques_antes, Cheque::count());
+        $this->assertEquals($foto_cuenta_ajena, $this->foto_de_cuenta($cuenta_ajena), 'La cuenta del proveedor ajeno tiene el mismo saldo y los mismos movimientos.');
+        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No quedó ningún movimiento de cuenta corriente: la excepción revierte el pago entero.');
+    }
+
+    /**
+     * Segunda vuelta, punto 4, la otra mitad: el destino de un endoso en un GASTO también tiene que
+     * ser de esta cuenta. Ninguna puerta de hoy llega con un gasto ajeno —todas lo crean con el dueño
+     * de la sesión en `expenses.user_id`—, así que se prueba el helper directo: es el único camino
+     * del endoso y el que tiene que cortar si mañana alguien le pasa un gasto de otro comercio.
+     *
+     * @test
+     */
+    public function no_se_endosa_en_un_gasto_de_otro_dueno()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente gasto ajeno ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'GAJ-' . substr(uniqid(), -6)]);
+
+        $foto = $recibido->fresh()->toArray();
+
+        $gasto_ajeno = Expense::create([
+            'num'          => 1,
+            'amount'       => self::MONTO_CHEQUE,
+            'moneda_id'    => 1,
+            'observations' => 'Gasto de otro comercio',
+            'user_id'      => $this->otro_dueno()->id,
+            'caja_id'      => 0,
+        ]);
+
+        $this->gastos_creados_a_mano[] = $gasto_ajeno->id;
+
+        $cheques_antes = Cheque::count();
+        $excepcion = null;
+
+        try {
+            ChequeHelper::endosar($recibido->fresh(), $gasto_ajeno, $this->fila_de_gasto($this->claves_de_endoso($recibido)));
+        } catch (\RuntimeException $e) {
+            $excepcion = $e;
+        }
+
+        $this->assertNotNull($excepcion, 'Endosar en el gasto de otro comercio tenía que cortar con una excepción.');
+        $this->assertSame(self::MENSAJE_GASTO_AJENO, $excepcion->getMessage());
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
+        $this->assertSame($cheques_antes, Cheque::count(), 'No nació ninguna copia emitida.');
+    }
+
+    /**
      * EL MECANISMO: toda ruta que llega a ChequeController o ChequeBancoController está declarada
      * en matriz_de_tenencia(), con cómo resuelve la tenencia de los ids que recibe y qué test lo
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
@@ -891,6 +1182,131 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertNotNull($emitido, 'El pago a proveedor con una fila de tipo cheque tenía que dejar un cheque emitido.');
 
         return $emitido;
+    }
+
+    /**
+     * Un gasto con un cheque NUEVO por el endpoint real (`POST api/expense`) y devuelve el cheque
+     * emitido que nació colgado del gasto.
+     *
+     * @param array $cheque Claves de la fila a pisar.
+     * @return Cheque
+     */
+    protected function gastar_con_cheque_nuevo(array $cheque = [])
+    {
+        $fila = $this->fila_de_gasto(array_merge([
+            'numero'        => 'GA-' . substr(uniqid(), -6),
+            'banco'         => 'Banco Ciudad',
+            'fecha_emision' => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
+        ], $cheque));
+
+        $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila]));
+
+        if ($response->getStatusCode() !== 201) {
+            $this->fail('El gasto con cheque nuevo tenía que dar 201 y dio ' . $response->getStatusCode() . ': ' . $response->getContent());
+        }
+
+        $gasto_id = (int) $response->json('model.id');
+        $this->gastos_creados_por_escenarios[] = $gasto_id;
+
+        $emitido = Cheque::where('expense_id', $gasto_id)->first();
+
+        $this->assertNotNull($emitido, 'El gasto con una fila de tipo cheque tenía que dejar un cheque.');
+
+        return $emitido;
+    }
+
+    /**
+     * Un cliente de OTRO comercio, insertado a mano, con datos que no se repiten en ningún otro
+     * lado (para poder buscarlos en una respuesta).
+     *
+     * @return Client
+     */
+    protected function cliente_ajeno()
+    {
+        $marca = uniqid();
+
+        $cliente = Client::create([
+            'num'     => 1,
+            'name'    => 'Cliente ajeno tenencia ' . $marca,
+            'email'   => 'cliente-ajeno-' . $marca . '@test.local',
+            'phone'   => '1155550000',
+            'address' => 'Calle del otro comercio ' . $marca,
+            'user_id' => $this->otro_dueno()->id,
+        ]);
+
+        $this->clientes_creados[] = $cliente->id;
+
+        return $cliente;
+    }
+
+    /**
+     * Las columnas `*_id` de `cheques`, leídas del esquema (así una columna nueva entra sola al
+     * test-mecanismo), menos `caja_id` (ver ningun_id_de_un_cheque_sale_crudo_de_la_fila()).
+     *
+     * @return array<int, string>
+     */
+    protected function claves_id_de_cheques()
+    {
+        $claves = [];
+
+        foreach (Schema::getColumnListing('cheques') as $columna) {
+
+            if (preg_match('/_id$/', $columna) && $columna !== 'caja_id') {
+
+                $claves[] = $columna;
+            }
+        }
+
+        return $claves;
+    }
+
+    /**
+     * Las columnas de un cheque que valen el centinela.
+     *
+     * @param Cheque $cheque
+     * @return array<int, string>
+     */
+    protected function columnas_con_el_centinela(Cheque $cheque)
+    {
+        $fila = (array) DB::table('cheques')->where('id', $cheque->id)->first();
+
+        $con_el_centinela = [];
+
+        foreach ($fila as $columna => $valor) {
+
+            if (!is_null($valor) && (string) $valor === (string) self::CENTINELA) {
+
+                $con_el_centinela[] = $columna;
+            }
+        }
+
+        return $con_el_centinela;
+    }
+
+    /**
+     * Las solapas de `GET cheque` sin la fila de un cheque.
+     *
+     * @param int $cheque_id
+     * @return array
+     */
+    protected function listado_sin($cheque_id)
+    {
+        $response = $this->getJson('api/cheque');
+
+        $response->assertStatus(200);
+
+        $solapas_por_tipo = $response->json('models');
+
+        foreach ($solapas_por_tipo as $tipo => $solapas) {
+            foreach ($solapas as $solapa => $cheques) {
+                $solapas_por_tipo[$tipo][$solapa] = array_values(array_filter($cheques, function ($cheque) use ($cheque_id) {
+                    return (int) $cheque['id'] !== (int) $cheque_id;
+                }));
+            }
+        }
+
+        return $solapas_por_tipo;
     }
 
     /**
