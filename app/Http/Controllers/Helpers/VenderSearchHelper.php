@@ -337,7 +337,7 @@ class VenderSearchHelper
      *        articulo sin variante.
      * @return \App\Models\Article|object La fila de una variante es un objeto PLANO: ademas de lo propio
      *         de la variante (precio, stock, imagenes, depositos) lleva en la raiz el costo del articulo
-     *         (`cost`, `costo_real`, `cost_in_dollars`), que es lo que lee el guardado de la venta.
+     *         (`cost`, `costo_real`, `cost_in_dollars`, `presentacion`), que es lo que lee el guardado de la venta.
      */
     public static function build_row($article, $variant)
     {
@@ -368,7 +368,8 @@ class VenderSearchHelper
             'stock'                   => $variant->stock,
             // 🔴 Costo del ARTICULO y moneda de ese costo, en la RAIZ de la fila. NO sacarlas "porque
             // `article` ya las trae anidadas": el guardado de la venta lee de la raiz del item, no de
-            // `item.article`. `SaleHelper::getCost` toma `costo_real` / `cost` de la raiz y
+            // `item.article`. `SaleHelper::getCost` toma `costo_real` / `cost` / `presentacion` de la raiz
+            // (la presentacion multiplica el costo en vinoteca) y
             // `CotizacionDeVentaHelper::item_esta_en_dolares` (y la conversion de precio de la SPA,
             // `convertir_precio_a_moneda_de_la_venta`) leen `cost_in_dollars` de la raiz. La SPA arma el
             // item de una variante elegida por nombre con esta fila tal cual: sin estas tres claves la
@@ -382,6 +383,7 @@ class VenderSearchHelper
             'cost'                    => $article->cost,
             'costo_real'              => $article->costo_real,
             'cost_in_dollars'         => $article->cost_in_dollars,
+            'presentacion'            => $article->presentacion,
             'name'                    => $article->name . ' ' . $variant->variant_description,
             'article'                 => $article,
             'images'                  => self::get_variant_images($variant),

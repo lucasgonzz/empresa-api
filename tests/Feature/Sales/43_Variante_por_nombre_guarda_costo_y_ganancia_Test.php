@@ -417,6 +417,44 @@ class Variante_por_nombre_guarda_costo_y_ganancia_Test extends EmpresaTestCase
     }
 
     /**
+     * `presentacion` (vinoteca): `getCost()` multiplica el costo por la presentacion y la lee de la RAIZ
+     * del item. La API no la busca en la base, asi que si la fila no la trae la linea guarda el costo
+     * unitario aunque el precio sea el de la caja (ganancia inflada). Por nombre y por codigo, igual.
+     *
+     * @test
+     */
+    public function la_presentacion_del_articulo_multiplica_el_costo_igual_por_nombre_y_por_codigo()
+    {
+        $articulo = $this->articulo_con_costo('Vino');
+        $codigo   = 'zz' . substr(uniqid(), -9);
+        $azul     = $this->variante($articulo, 'tinto', 6000, $codigo);
+
+        Article::where('id', $articulo->id)->update(['presentacion' => 6]);
+
+        $por_nombre = $this->vender_por_nombre($articulo, $azul, 1);
+
+        $this->assertEqualsWithDelta(1000 * 6, (float) $por_nombre->cost, self::DELTA, 'El costo unitario (1000) por la presentacion (6).');
+
+        $res = $this->getJson('api/vender/buscar-articulo-por-codido/' . $codigo);
+        $res->assertStatus(200);
+        $body = $res->json();
+
+        $item = array_merge($body['article'], $body['variant_row'], [
+            'is_article'                  => true,
+            'article_variant_id'          => $body['variant_row']['variant_id'],
+            'price_type_personalizado_id' => 0,
+            'amount'                      => 1,
+            'price_vender'                => 6000,
+        ]);
+
+        $venta = $this->guardar_venta($this->payload_venta(1, $this->VALOR_DOLAR, [$item]));
+        $por_codigo = $this->pivot_de($venta, $articulo);
+
+        $this->assertEqualsWithDelta((float) $por_codigo->cost, (float) $por_nombre->cost, self::DELTA);
+        $this->assertEqualsWithDelta((float) $por_codigo->ganancia, (float) $por_nombre->ganancia, self::DELTA);
+    }
+
+    /**
      * Un articulo con `unidades_individuales`: el costo de la linea es el del bulto dividido por las
      * unidades. La fila de la variante no trae `unidades_individuales`; la API las lee de la base.
      *
