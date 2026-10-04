@@ -1148,16 +1148,195 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Segunda vuelta, punto 8a: borrar un cheque PROPIO sigue andando — 200, la fila ya no está y
+     * GET cheque no lo lista. La primera vuelta solo probaba los 404.
+     *
+     * @test
+     */
+    public function borrar_un_cheque_propio_lo_borra()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente borrar propio ' . uniqid());
+
+        $propio = $this->cobrar_con_cheque($cliente, $cuenta, ['numero' => 'BORRAR-' . substr(uniqid(), -6)]);
+
+        $this->assertNotNull($this->cheque_del_listado($propio->id), 'Antes de borrarlo, GET cheque lo lista.');
+
+        $response = $this->deleteJson('api/cheque/' . $propio->id);
+
+        $this->assertSame(200, $response->getStatusCode(), 'Borrar un cheque propio: ' . $this->resumen($response));
+        $this->assertNull(Cheque::find($propio->id), 'La fila ya no está.');
+        $this->assertNull($this->cheque_del_listado($propio->id), 'GET cheque ya no lo lista.');
+    }
+
+    /**
+     * Segunda vuelta, punto 8b: un proveedor PROPIO borrado (soft delete) cuenta como "no existe"
+     * para el endoso: 422 con el mensaje del proveedor y nada escrito. Antes de la primera vuelta era
+     * un 500 que se revertía (el morphTo de la cuenta corriente no ve los borrados).
+     *
+     * @test
+     */
+    public function no_se_endosa_a_un_proveedor_propio_borrado()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente proveedor borrado ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'PBOR-' . substr(uniqid(), -6)]);
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor borrado ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        // Borrado como lo borra el sistema: SoftDeletes.
+        $proveedor->delete();
+
+        $this->assertNotNull(Provider::withTrashed()->find($proveedor->id), 'El proveedor quedó borrado lógicamente, no físicamente.');
+
+        $foto = $recibido->fresh()->toArray();
+        $foto_cuenta = $this->foto_de_cuenta($cuenta_proveedor);
+        $cheques_antes = Cheque::count();
+        $current_acounts_antes = CurrentAcount::count();
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $proveedor->id]);
+
+        $this->assertSame(422, $response->getStatusCode(), 'Endosar a un proveedor propio borrado: ' . $this->resumen($response));
+        $this->assertSame(self::MENSAJE_PROVEEDOR, $response->json('message'));
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
+        $this->assertCount(0, $this->copias_de($recibido));
+        $this->assertSame($cheques_antes, Cheque::count());
+        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No se registró ningún pago.');
+        $this->assertEquals($foto_cuenta, $this->foto_de_cuenta($cuenta_proveedor));
+    }
+
+    /**
+     * Segunda vuelta, punto 8c: un EMPLEADO del dueño trabaja con lo de su dueño —cobra un cheque
+     * propio en una caja propia (el movimiento entra en esa caja y `cobrado_por_id` es él), endosa
+     * a un proveedor propio y borra un cheque propio— y con los ids del otro comercio recibe los
+     * mismos 422/404 que el dueño. La tenencia es por cuenta, no por persona.
+     *
+     * @test
+     */
+    public function un_empleado_trabaja_con_lo_de_su_dueno_y_no_con_lo_ajeno()
+    {
+        // Lo propio lo arma el dueño, por los endpoints reales.
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente del empleado ' . uniqid());
+
+        $a_cobrar = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'EMPC-' . substr(uniqid(), -6)]);
+        $a_endosar = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'EMPE-' . substr(uniqid(), -6)]);
+        $a_borrar = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'EMPB-' . substr(uniqid(), -6)]);
+        $otro_propio = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'EMPO-' . substr(uniqid(), -6)]);
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor del empleado ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $caja = $this->caja_propia_con_apertura();
+
+        // Lo del otro comercio, a mano.
+        $cheque_ajeno = $this->cheque_a_mano(['user_id' => $this->otro_dueno()->id, 'numero' => 'EMPAJ-' . substr(uniqid(), -6)]);
+        $caja_ajena = $this->caja_ajena_con_apertura();
+
+        list($proveedor_ajeno, $cuenta_ajena) = $this->proveedor_ajeno_con_cuenta();
+
+        $nombre_banco_ajeno = 'Banco ajeno del empleado ' . uniqid();
+        $banco_ajeno = $this->banco_ajeno($nombre_banco_ajeno);
+
+        $foto_cheque_ajeno = $cheque_ajeno->fresh()->toArray();
+        $foto_caja_ajena = $this->foto_de_caja($caja_ajena);
+        $foto_cuenta_ajena = $this->foto_de_cuenta($cuenta_ajena);
+        $foto_otro_propio = $otro_propio->fresh()->toArray();
+
+        $empleado = $this->crear_usuario('Empleado de cheques', 'cheques-tenencia-empleado-', $this->dueno->id);
+
+        $this->actuar_como($empleado);
+
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        // Cobra un cheque propio en una caja propia.
+        $response = $this->putJson('api/cheque/cobrar', ['cheque_id' => $a_cobrar->id, 'caja_id' => $caja->id]);
+
+        $this->assertSame(200, $response->getStatusCode(), 'El empleado cobra un cheque propio: ' . $this->resumen($response));
+        $this->assertSame('cobrado', $a_cobrar->fresh()->estado_manual);
+        $this->assertSame($empleado->id, (int) $a_cobrar->fresh()->cobrado_por_id, 'cobrado_por_id es la persona que cobró, no el dueño.');
+
+        $movimientos = MovimientoCaja::where('id', '>', $movimientos_antes)->get();
+
+        $this->registrar_movimientos_caja_nuevos($movimientos_antes);
+
+        $this->assertCount(1, $movimientos, 'El cobro deja un movimiento.');
+        $this->assertSame($caja->id, (int) $movimientos[0]->caja_id, 'El movimiento entra en la caja propia.');
+        $this->assertEqualsWithDelta(self::MONTO_CHEQUE, (float) $movimientos[0]->ingreso, self::DELTA);
+        $this->assertSame($empleado->id, (int) $movimientos[0]->employee_id);
+
+        // Endosa uno propio a un proveedor propio.
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $a_endosar->id, 'provider_id' => $proveedor->id]);
+
+        $this->assertSame(200, $response->getStatusCode(), 'El empleado endosa un cheque propio: ' . $this->resumen($response));
+        $this->assertSame($proveedor->id, (int) $a_endosar->fresh()->endosado_a_provider_id);
+
+        $copia = $this->copias_de($a_endosar)->first();
+
+        $this->assertNotNull($copia);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $copia->current_acount_id;
+
+        // Borra uno propio.
+        $response = $this->deleteJson('api/cheque/' . $a_borrar->id);
+
+        $this->assertSame(200, $response->getStatusCode(), 'El empleado borra un cheque propio: ' . $this->resumen($response));
+        $this->assertNull(Cheque::find($a_borrar->id));
+
+        // Con lo del otro comercio, los mismos 422/404 que el dueño.
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        foreach ($this->pedidos_sobre_un_cheque($cheque_ajeno->id, $caja->id) as $accion => $cuerpo) {
+
+            $response = $this->putJson('api/cheque/' . $accion, $cuerpo);
+
+            $this->assertSame(422, $response->getStatusCode(), 'El empleado, ' . $accion . ' con el cheque de otro comercio: ' . $this->resumen($response));
+            $this->assertSame(self::MENSAJE_CHEQUE, $response->json('message'));
+        }
+
+        $response = $this->putJson('api/cheque/cobrar', ['cheque_id' => $otro_propio->id, 'caja_id' => $caja_ajena->id]);
+
+        $this->assertSame(422, $response->getStatusCode(), 'El empleado, cobrar en la caja de otro comercio: ' . $this->resumen($response));
+        $this->assertSame(self::MENSAJE_CAJA, $response->json('message'));
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $otro_propio->id, 'provider_id' => $proveedor_ajeno->id]);
+
+        $this->assertSame(422, $response->getStatusCode(), 'El empleado, endosar a un proveedor de otro comercio: ' . $this->resumen($response));
+        $this->assertSame(self::MENSAJE_PROVEEDOR, $response->json('message'));
+
+        $response = $this->deleteJson('api/cheque/' . $cheque_ajeno->id);
+
+        $this->assertSame(404, $response->getStatusCode(), 'El empleado, borrar el cheque de otro comercio: ' . $this->resumen($response));
+        $this->assertSame(['message' => self::MENSAJE_CHEQUE_404], $response->json());
+
+        $response = $this->getJson('api/cheque-banco/' . $banco_ajeno->id);
+
+        $this->assertSame(404, $response->getStatusCode(), 'El empleado, el banco de otro comercio: ' . $this->resumen($response));
+        $this->assertStringNotContainsString($nombre_banco_ajeno, $response->getContent());
+
+        $this->assertEquals($foto_cheque_ajeno, $cheque_ajeno->fresh()->toArray(), 'El cheque ajeno no se tocó.');
+        $this->assertEquals($foto_otro_propio, $otro_propio->fresh()->toArray(), 'El cheque propio de los pedidos rechazados no se tocó.');
+        $this->assertEquals($foto_caja_ajena, $this->foto_de_caja($caja_ajena), 'La caja ajena no se movió.');
+        $this->assertEquals($foto_cuenta_ajena, $this->foto_de_cuenta($cuenta_ajena), 'La cuenta del proveedor ajeno no se movió.');
+        $this->assertSame(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Ningún pedido rechazado movió una caja.');
+
+        $this->actuar_como($this->dueno);
+    }
+
+    /**
      * EL MECANISMO: toda ruta que llega a ChequeController o ChequeBancoController está declarada
      * en matriz_de_tenencia(), con cómo resuelve la tenencia de los ids que recibe y qué test lo
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
      * y para declararla tiene que pensar de quién son los ids que le llegan.
+     *
+     * Y la autenticación (segunda vuelta, punto 8d): toda ruta de la matriz tiene que tener
+     * `auth:sanctum` entre sus middlewares, salvo las declaradas SIN AUTH con la referencia al
+     * hallazgo (hoy solo el Excel de routes/web.php). Si una declarada SIN AUTH pasa a tener auth, el
+     * test también se pone rojo, para que la matriz no quede diciendo algo que ya no es.
      *
      * @test
      */
     public function toda_ruta_de_cheques_esta_en_la_matriz_de_tenencia()
     {
         $en_el_router = [];
+        $rutas = [];
 
         foreach (Route::getRoutes() as $route) {
 
@@ -1169,8 +1348,10 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
             }
 
             $metodos = array_values(array_diff($route->methods(), ['HEAD']));
+            $clave = implode('|', $metodos) . ' ' . $route->uri();
 
-            $en_el_router[implode('|', $metodos) . ' ' . $route->uri()] = $accion;
+            $en_el_router[$clave] = $accion;
+            $rutas[$clave] = $route;
         }
 
         $matriz = $this->matriz_de_tenencia();
@@ -1184,6 +1365,18 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         foreach ($matriz as $clave => $fila) {
 
             $this->assertSame($fila['accion'], $en_el_router[$clave], $clave . ' apunta a otro método que el que declara la matriz: revisá su tenencia.');
+
+            $tiene_auth = in_array('auth:sanctum', $rutas[$clave]->gatherMiddleware(), true);
+
+            if (isset($fila['sin_auth'])) {
+
+                $this->assertNotSame('', trim($fila['sin_auth']), $clave . ': una ruta SIN AUTH tiene que decir a qué hallazgo responde.');
+                $this->assertFalse($tiene_auth, $clave . ' está declarada SIN AUTH en la matriz y ahora tiene auth:sanctum: sacale "sin_auth" a la matriz (y cerrá el hallazgo).');
+
+            } else {
+
+                $this->assertTrue($tiene_auth, $clave . ' no tiene auth:sanctum. Si es a propósito, declarala SIN AUTH en la matriz con la referencia al hallazgo.');
+            }
 
             list($clase, $metodo) = explode('@', $fila['accion']);
 
@@ -1207,7 +1400,9 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
      * Las rutas de ChequeController y ChequeBancoController, por "MÉTODOS uri" (sin HEAD), con la
      * acción a la que llegan, cómo se resuelve la tenencia de lo que reciben y qué test lo prueba.
      *
-     * @return array<string, array{accion: string, tenencia: string, prueba: string}>
+     * `sin_auth` va solo en una ruta sin `auth:sanctum`, con la referencia al hallazgo.
+     *
+     * @return array<string, array{accion: string, tenencia: string, prueba: string, sin_auth?: string}>
      */
     protected function matriz_de_tenencia()
     {
@@ -1258,7 +1453,8 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
             'GET cheque/excel/export' => [
                 'accion'   => $cheque . 'excel_export',
-                'tenencia' => 'query: cheque_ids, filtrados por user_id = userId() en get_cheques_for_excel_export(). Es una ruta WEB sin auth: sin sesión, userId() cae en config(app.USER_ID) (hallazgo de la misión cheques-filtro-por-dueno; es de todas las exportaciones de routes/web.php, no de este controller).',
+                'tenencia' => 'query: cheque_ids (leídos con ChequeHelper::id_del_pedido()), filtrados por user_id = userId() en get_cheques_for_excel_export().',
+                'sin_auth' => 'HALLAZGO de la misión cheques-filtro-por-dueno (3/10/2026): es una ruta de routes/web.php sin middleware de autenticación, y sin sesión userId() cae en config(app.USER_ID). Es de todas las exportaciones de web.php, no de este controller, y tiene su propia tarea.',
                 'prueba'   => 'sin test HTTP: la respuesta es un xlsx',
             ],
 
