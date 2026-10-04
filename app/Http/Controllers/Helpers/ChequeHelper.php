@@ -10,6 +10,7 @@ use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
+use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -39,6 +40,15 @@ class ChequeHelper {
      * plazo) y el del mostrador (RecolectorCaja::DIAS_PARA_DEPOSITAR_UN_CHEQUE).
      */
     const DIAS_PARA_DEPOSITAR = 30;
+
+    /**
+     * El corte de un endoso cuyo destino es un proveedor que no es de esta cuenta (o que no existe).
+     * Es el mismo texto del 422 de ChequeController::endosar(), que lo toma de acá.
+     */
+    const MENSAJE_PROVEEDOR_AJENO = 'El proveedor elegido no existe o no es de tu cuenta.';
+
+    /** El corte de un endoso en un gasto que no es de esta cuenta. */
+    const MENSAJE_GASTO_AJENO = 'El gasto en el que se endosa no es de tu cuenta.';
 
     /**
      * Crea el cheque de una fila de método de pago de tipo cheque, o —si la fila trae `cheque_id`—
@@ -147,11 +157,15 @@ class ChequeHelper {
      *                                 banco de otra cuenta deja la copia sin banco).
      * @return \App\Models\Cheque  La copia emitida.
      *
-     * @throws \RuntimeException  Si el origen ya no está disponible o `$model` no es un destino de endoso.
+     * @throws \RuntimeException  Si el origen ya no está disponible, si `$model` no es un destino de
+     *                            endoso o si el destino (el proveedor del pago, el gasto) no es de
+     *                            esta cuenta.
      */
     static function endosar(Cheque $origen, $model, array $payment_method) {
 
-        $problemas = self::problemas_de_endoso($origen, UserHelper::userId());
+        $user_id = UserHelper::userId();
+
+        $problemas = self::problemas_de_endoso($origen, $user_id);
 
         if (count($problemas)) {
 
@@ -177,6 +191,17 @@ class ChequeHelper {
             throw new \RuntimeException('Un cheque recibido solo se endosa en un pago a un proveedor o en un gasto.');
         }
 
+        /*
+         * 🔴 EL DESTINO TIENE QUE SER DE ESTA CUENTA, y se mira ACÁ, antes del UPDATE condicional:
+         * este es el único camino del endoso (ver el docblock de la clase), así que acá lo cubre
+         * para las tres puertas. Hasta el 3/10/2026 la fila de `POST current-acount/pago` con la
+         * cuenta de un proveedor de otro comercio endosaba un cheque propio a ese proveedor y le
+         * bajaba la cuenta: pago() y CurrentAcountPagoAltaHelper::registrar() no cruzan la cuenta
+         * con el dueño (hallazgo abierto, fuera de este archivo). pago() corre adentro de un
+         * DB::transaction, así que esta excepción revierte TODO el pago, no solo el endoso.
+         */
+        self::verificar_destino_del_endoso($model, $user_id);
+
         $marca['fecha_endoso'] = Carbon::now();
 
         /*
@@ -189,7 +214,7 @@ class ChequeHelper {
          * ACÁ, antes de crear la copia. No importa quién leyó qué ni cuándo.
          */
         $q = Cheque::where('id', $origen->id)
-                    ->where('cheques.user_id', UserHelper::userId())
+                    ->where('cheques.user_id', $user_id)
                     ->where('cheques.tipo', 'recibido')
                     ->whereNull('cheques.estado_manual');
 
@@ -211,14 +236,14 @@ class ChequeHelper {
          * leído con dueño); el cliente, como "sin cliente". El origen no se toca: el endoso no repara
          * datos viejos.
          */
-        $cheque_banco_id = self::id_del_dueno(ChequeBanco::class, $origen->cheque_banco_id, UserHelper::userId());
+        $cheque_banco_id = self::id_del_dueno(ChequeBanco::class, $origen->cheque_banco_id, $user_id);
 
         if (is_null($cheque_banco_id)) {
 
-            $cheque_banco_id = self::cheque_banco_id_de($payment_method, UserHelper::userId());
+            $cheque_banco_id = self::cheque_banco_id_de($payment_method, $user_id);
         }
 
-        $endosado_desde_client_id = self::id_del_dueno(Client::class, $origen->client_id, UserHelper::userId());
+        $endosado_desde_client_id = self::id_del_dueno(Client::class, $origen->client_id, $user_id);
 
         return Cheque::create([
             'numero'                    => $origen->numero,
@@ -240,7 +265,7 @@ class ChequeHelper {
             'expense_id'                => $model instanceof Expense ? $model->id : null,
 
             'employee_id'               => UserHelper::userId(false),
-            'user_id'                   => UserHelper::userId(),
+            'user_id'                   => $user_id,
             'caja_id'                   => null,
 
             'endosado_a_provider_id'    => null,
@@ -248,6 +273,41 @@ class ChequeHelper {
             'fecha_endoso'              => null,
             'estado_manual'             => null,
         ]);
+    }
+
+    /**
+     * Que el DESTINO de un endoso sea de esta cuenta, o corta con una excepción.
+     *
+     * - Un pago (CurrentAcount): su proveedor tiene que ser un proveedor del dueño, con la misma
+     *   consulta que el 422 de ChequeController::endosar() (id_del_dueno(): uno borrado cuenta como
+     *   inexistente).
+     * - Un gasto (Expense): `expenses.user_id` tiene que ser el dueño. Es seguro pedirlo: las tres
+     *   puertas que crean un gasto con métodos de pago (ExpenseController::store, la Agenda y el
+     *   asistente) pasan por ExpenseHelper::crear() con el dueño de la cuenta, y nada lo cambia
+     *   después. Hoy ninguna llega acá con un gasto ajeno; esto es para la que llegue mañana.
+     *
+     * @param  \App\Models\CurrentAcount|\App\Models\Expense  $model
+     * @param  int  $user_id  El dueño de la cuenta que endosa.
+     * @return void
+     *
+     * @throws \RuntimeException  Si el proveedor o el gasto no son de esta cuenta.
+     */
+    protected static function verificar_destino_del_endoso($model, $user_id) {
+
+        if ($model instanceof CurrentAcount) {
+
+            if (is_null(self::id_del_dueno(Provider::class, $model->provider_id, $user_id))) {
+
+                throw new \RuntimeException(self::MENSAJE_PROVEEDOR_AJENO);
+            }
+
+            return;
+        }
+
+        if ($model instanceof Expense && (int) $model->user_id !== (int) $user_id) {
+
+            throw new \RuntimeException(self::MENSAJE_GASTO_AJENO);
+        }
     }
 
     /**

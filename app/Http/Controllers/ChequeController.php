@@ -28,8 +28,11 @@ class ChequeController extends Controller
     /** El 422 de un `caja_id` del cuerpo que no es de esta cuenta (cobrar, pagar). */
     const MENSAJE_CAJA_AJENA = 'La caja elegida no existe o no es de tu cuenta.';
 
-    /** El 422 de un `provider_id` del cuerpo que no es de esta cuenta (endosar). */
-    const MENSAJE_PROVEEDOR_AJENO = 'El proveedor elegido no existe o no es de tu cuenta.';
+    /**
+     * El 422 de un `provider_id` del cuerpo que no es de esta cuenta (endosar). Es el texto con el
+     * que corta ChequeHelper::endosar() cuando el destino del endoso no es de esta cuenta: uno solo.
+     */
+    const MENSAJE_PROVEEDOR_AJENO = ChequeHelper::MENSAJE_PROVEEDOR_AJENO;
 
     /**
      * Descarga un Excel con los cheques indicados por ID (los mismos que muestra el front al filtrar).
@@ -583,14 +586,16 @@ class ChequeController extends Controller
      * busca por el morphTo de la cuenta corriente, que no ve los borrados (hasta el 3/10/2026 eso
      * era un 500 que se revertía; ahora es este 422, antes de escribir nada).
      *
+     * La consulta es ChequeHelper::id_del_dueno(), la MISMA con la que ChequeHelper::endosar()
+     * verifica el destino para las tres puertas del endoso: acá se adelanta para contestar 422
+     * antes de buscar la cuenta corriente.
+     *
      * @param  int  $provider_id  Ya normalizado y mayor a 0.
-     * @return \App\Models\Provider|null
+     * @return int|null  El id del proveedor si es de esta cuenta.
      */
     protected function proveedor_del_dueno($provider_id) {
 
-        return Provider::where('user_id', $this->userId())
-                        ->where('id', $provider_id)
-                        ->first();
+        return ChequeHelper::id_del_dueno(Provider::class, $provider_id, $this->userId());
     }
 }
  
