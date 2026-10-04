@@ -3994,7 +3994,7 @@ class ProcessRow {
      * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
      * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int    $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int    $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string $campo        campo identificador afectado (bar_code/sku/provider_code/id).
      * @param mixed  $original     valor original tal cual vino del Excel, antes de normalizar.
      * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
@@ -4024,7 +4024,7 @@ class ProcessRow {
      * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
      * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int             $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int             $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param AmbiguousMatch  $ambiguo      marcador devuelto por ArticleIndexCache::find_with_index().
      * @param string|null     $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
      * @return void
@@ -4055,7 +4055,7 @@ class ProcessRow {
      * para que el usuario lo resuelva a mano (regla de Lucas, 30/7/2026, prompt 08
      * grupo 265).
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $campo        identificador que no se pudo asignar ('bar_code'|'sku').
      * @param mixed       $valor        valor de ese identificador tal cual vino del Excel.
      * @param array       $article_ids  ids de los artículos con los que matcheó el escalón inferior.
@@ -4122,7 +4122,7 @@ class ProcessRow {
      * Lucas: sacarlo de la cuenta lo volvería invisible también en el camino donde la fila
      * SÍ se aplicó (a todos los candidatos), que es donde más importa que se vea.
      *
-     * @param int         $fila          número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila          fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $provider_code código por el que matchearon los candidatos.
      * @param array       $article_ids   ids de los artículos que quedaron empatados.
      * @param string|null $nombre_excel  nombre del producto en esa fila, tal cual vino.
@@ -4181,7 +4181,7 @@ class ProcessRow {
      * No cuenta para $filas_ambiguas ni $identificadores_descartados: es un tipo de
      * conflicto distinto, solo se acumula en $conflictos.
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
      * @return void
      */
@@ -4212,7 +4212,7 @@ class ProcessRow {
      * ActualizarBBDD::persistir_conflictos() inserta en bloque en
      * `import_conflicts` al cerrar el lote.
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $campo        campo numérico afectado (cost, price, medida, etc.).
      * @param string      $original     valor original tal cual vino del Excel, sin parsear.
      * @param string      $motivo       'no_numerico' | 'fuera_de_rango'.
@@ -4247,8 +4247,8 @@ class ProcessRow {
      * momento en que se detecta la sobrescritura, la fila ganadora es la actual y
      * la perdedora es la que ya estaba en la cola de antes.
      *
-     * @param  int|null    $fila          número de fila (relativo al chunk) que PIERDE.
-     * @param  int         $fila_ganadora número de fila que GANA (la que se está procesando).
+     * @param  int|null    $fila          fila del Excel que PIERDE.
+     * @param  int         $fila_ganadora fila del Excel que GANA (la que se está procesando).
      * @param  string|null $campo         escalón que detectó la repetición ('bar_code'|'sku'|'provider_code'|'id'|'name').
      * @param  mixed       $valor         valor del identificador que se repitió.
      * @param  string|null $nombre_excel  nombre del producto en la fila ganadora, para ubicarla en el Excel.

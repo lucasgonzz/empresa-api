@@ -339,7 +339,7 @@ class RepetidosEnElArchivoTest extends ImportTestCase
 
     /**
      * El conflicto guarda el campo que detectó la repetición: bar_code en la
-     * fila 1 (F2), sku en la fila 3 (F4), provider_code en la fila 7 (F8).
+     * fila 2 (F2), sku en la fila 4 (F4), provider_code en la fila 8 (F8).
      * (Ver la nota de numeración en test_se_reporta_que_fila_sobrescribio_a_cual.)
      *
      * @return void
@@ -352,17 +352,17 @@ class RepetidosEnElArchivoTest extends ImportTestCase
 
         $conflicto_bar_code = \App\Models\ImportConflict::where('import_history_id', $import->id)
             ->where('tipo', 'fila_sobrescrita')
-            ->where('fila', 1)
+            ->where('fila', 2)
             ->first();
 
         $conflicto_sku = \App\Models\ImportConflict::where('import_history_id', $import->id)
             ->where('tipo', 'fila_sobrescrita')
-            ->where('fila', 3)
+            ->where('fila', 4)
             ->first();
 
         $conflicto_provider_code = \App\Models\ImportConflict::where('import_history_id', $import->id)
             ->where('tipo', 'fila_sobrescrita')
-            ->where('fila', 7)
+            ->where('fila', 8)
             ->first();
 
         $this->assertNotNull($conflicto_bar_code);
