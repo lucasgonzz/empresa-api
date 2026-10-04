@@ -775,17 +775,28 @@ class ChequeHelper {
      * Si el método de pago de la fila es de tipo cheque, con la misma consulta que usa
      * attach_payment_methods() para decidir si crea el cheque.
      *
+     * 🔴 El id del método se lee con id_del_pedido(), no con is_numeric + (int). Hasta el 3/10/2026
+     * "1.5" era acá el método 1 (Cheque) y la fila pasaba la prevalidación, pero el alta lo busca
+     * crudo —find("1.5") no encuentra nada— y saltea la fila: quedaba un pago registrado SIN métodos,
+     * con el cheque en cartera y la cuenta del proveedor bajada, que es justo lo que esta función
+     * existe para evitar. Ahora lo que no es un id no es ningún método: la fila "no es de tipo
+     * cheque" y la prevalidación la corta.
+     *
      * @param  array  $payment_method
      * @return bool
      */
     protected static function fila_es_de_tipo_cheque($payment_method) {
 
-        if (!isset($payment_method['current_acount_payment_method_id']) || !is_numeric($payment_method['current_acount_payment_method_id'])) {
+        $valor = isset($payment_method['current_acount_payment_method_id']) ? $payment_method['current_acount_payment_method_id'] : null;
+
+        $id = self::id_del_pedido($valor);
+
+        if ($id === 0) {
 
             return false;
         }
 
-        $metodo = CurrentAcountPaymentMethod::find((int) $payment_method['current_acount_payment_method_id']);
+        $metodo = CurrentAcountPaymentMethod::find($id);
 
         return !is_null($metodo) && !is_null($metodo->type) && $metodo->type->slug == 'cheque';
     }
