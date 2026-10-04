@@ -25,6 +25,12 @@ class ChequeController extends Controller
      */
     const MENSAJE_CHEQUE_AJENO = 'El cheque elegido no existe o no es de tu cuenta.';
 
+    /**
+     * El 404 de un cheque de la ruta (destroy) que no es de esta cuenta, no existe o no es un id: un
+     * mensaje de comerciante y el mismo cuerpo para los tres.
+     */
+    const MENSAJE_CHEQUE_NO_ENCONTRADO = 'El cheque no existe o no es de tu cuenta.';
+
     /** El 422 de un `caja_id` del cuerpo que no es de esta cuenta (cobrar, pagar). */
     const MENSAJE_CAJA_AJENA = 'La caja elegida no existe o no es de tu cuenta.';
 
@@ -464,60 +470,59 @@ class ChequeController extends Controller
      *
      * Hasta el 3/10/2026 era `Cheque::find($id)->delete()`: borraba el cheque de cualquier comercio
      * y, con un id que no existía, reventaba en 500 (delete() sobre null) y se reportaba como error.
-     * Ahora un id ajeno, inexistente o que no es un id es un 404 (ModelNotFoundException, que
-     * Laravel no reporta), igual que el destroy de los bancos.
+     * Ahora un id ajeno, inexistente o que no es un id es un 404 con un mensaje de comerciante y el
+     * MISMO cuerpo para los tres, igual que los bancos.
+     *
+     * Es un JsonResponse y no un firstOrFail() ni un abort(): el 404 de Laravel traía su mensaje
+     * técnico ("No query results for model [App\Models\Cheque]."), que la SPA muestra tal cual en
+     * un aviso, y el ejecutor del asistente (EjecutorAccionDePantallaIaHelper) traduce un
+     * JsonResponse con estado >= 400 a un 422 con este mensaje.
      *
      * @param  string  $id  El id de la ruta.
-     * @return \Illuminate\Http\Response
+     * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
      */
     function destroy($id) {
-        $model = $this->consulta_del_cheque_del_dueno($id)->firstOrFail();
+        $model = $this->cheque_del_dueno($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
+        }
+
         $model->delete();
         return response(null, 200);
     }
 
     /**
-     * La consulta del cheque que nombra el pedido, scopeada por el dueño de la sesión. Es EL
-     * resolvedor de los ids de cheque de este controller: cobrar, pagar, rechazar y endosar lo usan
-     * con first() (y contestan 422 si no hay cheque) y destroy con firstOrFail() (404).
+     * El cheque que nombra el pedido —en el cuerpo o en la ruta— si es del dueño de la sesión, o
+     * null si es de otra cuenta, no existe o lo que llegó no es un id. Es EL resolvedor de los ids
+     * de cheque de este controller: cobrar, pagar, rechazar y endosar contestan 422 si da null, y
+     * destroy 404.
      *
      * 🔴 No volver a un `Cheque::find($request->cheque_id)` pelado: un id ajeno se contesta igual
      * que uno inexistente; en una base compartida los ids son correlativos entre comercios, así que
      * el cheque de otro comercio está a un "+1" de distancia. Hasta el 3/10/2026 cobrar, pagar,
      * rechazar y destroy resolvían el cheque así y marcaban (o borraban) el de cualquier comercio.
      *
-     * El id se lee con ChequeHelper::cheque_id_de(), la misma lectura que la fila de pago y el
-     * endoso: un '12abc', un true, un array o un negativo son "sin cheque" — nunca el 12, ni el 1
-     * al que resuelve `Cheque::find(true)` —, y "sin cheque" es una consulta que no encuentra nada.
+     * El id se lee con ChequeHelper::cheque_id_de() (o sea, con ChequeHelper::id_del_pedido()), la
+     * misma lectura que la fila de pago y el endoso: un '12abc', un '12.5', un true, un array o un
+     * negativo son "sin cheque" — nunca el 12, ni el 1 al que resuelve `Cheque::find(true)`.
      *
-     * @param  mixed  $cheque_id  El id tal como llegó, en el cuerpo o en la ruta.
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    protected function consulta_del_cheque_del_dueno($cheque_id) {
-
-        $id = ChequeHelper::cheque_id_de(['cheque_id' => $cheque_id]);
-
-        $q = Cheque::where('user_id', $this->userId());
-
-        if ($id <= 0) {
-
-            // "Sin cheque": ninguna fila, para que first() dé null y firstOrFail() un 404.
-            return $q->whereRaw('0 = 1');
-        }
-
-        return $q->where('id', $id);
-    }
-
-    /**
-     * El cheque que nombra el pedido si es del dueño de la sesión, o null si es de otra cuenta, no
-     * existe o lo que llegó no es un id (ver consulta_del_cheque_del_dueno()).
-     *
-     * @param  mixed  $cheque_id  El id tal como llegó en el cuerpo.
+     * @param  mixed  $cheque_id  El id tal como llegó.
      * @return \App\Models\Cheque|null
      */
     protected function cheque_del_dueno($cheque_id) {
 
-        return $this->consulta_del_cheque_del_dueno($cheque_id)->first();
+        $id = ChequeHelper::cheque_id_de(['cheque_id' => $cheque_id]);
+
+        if ($id <= 0) {
+
+            return null;
+        }
+
+        return Cheque::where('user_id', $this->userId())
+                        ->where('id', $id)
+                        ->first();
     }
 
     /**

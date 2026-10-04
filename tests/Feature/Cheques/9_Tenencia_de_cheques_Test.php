@@ -74,6 +74,12 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     /** El 422 de un `provider_id` del cuerpo que no es de esta cuenta (endosar). */
     const MENSAJE_PROVEEDOR = 'El proveedor elegido no existe o no es de tu cuenta.';
 
+    /** El 404 de un cheque de la ruta (DELETE cheque/{id}) ajeno, inexistente o que no es un id. */
+    const MENSAJE_CHEQUE_404 = 'El cheque no existe o no es de tu cuenta.';
+
+    /** El 404 de un banco de la ruta (show, update, destroy) ajeno, inexistente o que no es un id. */
+    const MENSAJE_BANCO_404 = 'El banco no existe o no es de tu cuenta.';
+
     /**
      * Saldo con el que nace la caja del otro comercio. Distinto de cero a propósito: con 0, un
      * `(float) null` compararía igual y "el saldo no cambió" pasaría aunque se hubiera pisado.
@@ -1077,6 +1083,71 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Segunda vuelta, punto 7. El 404 de un id de la ruta salía con el mensaje técnico de Laravel
+     * ("No query results for model [App\Models\Cheque]...", que la SPA muestra tal cual en un aviso,
+     * y con APP_DEBUG la traza entera). Ahora es un JsonResponse con un mensaje de comerciante, con
+     * el MISMO cuerpo para un id ajeno, uno inexistente y uno que no es un id. JsonResponse y no
+     * abort(): el ejecutor del asistente traduce un JsonResponse con estado >= 400 a un 422 con su
+     * mensaje.
+     *
+     * @test
+     */
+    public function el_404_de_una_ruta_es_igual_para_un_id_ajeno_y_uno_inexistente()
+    {
+        $ajeno = $this->cheque_a_mano([
+            'user_id' => $this->otro_dueno()->id,
+            'numero'  => 'R404-' . substr(uniqid(), -6),
+        ]);
+
+        $foto_ajeno = $ajeno->fresh()->toArray();
+
+        $nombre_banco_ajeno = 'Banco ajeno 404 ' . uniqid();
+        $banco_ajeno = $this->banco_ajeno($nombre_banco_ajeno);
+
+        // El cheque (DELETE cheque/{id}).
+        $respuestas = [
+            'ajeno'       => $this->deleteJson('api/cheque/' . $ajeno->id),
+            'inexistente' => $this->deleteJson('api/cheque/' . $this->id_que_no_existe('cheques')),
+            'no es un id' => $this->deleteJson('api/cheque/' . $ajeno->id . 'abc'),
+        ];
+
+        foreach ($respuestas as $nombre => $response) {
+
+            $this->assertSame(404, $response->getStatusCode(), 'DELETE cheque, id ' . $nombre . ': ' . $this->resumen($response));
+            $this->assertSame(['message' => self::MENSAJE_CHEQUE_404], $response->json(), 'DELETE cheque, id ' . $nombre);
+        }
+
+        $this->assertSame($respuestas['ajeno']->getContent(), $respuestas['inexistente']->getContent(), 'El cuerpo de un cheque ajeno y el de uno que no existe tienen que ser idénticos.');
+        $this->assertEquals($foto_ajeno, $ajeno->fresh()->toArray(), 'El cheque ajeno no se tocó.');
+
+        // El banco (show, update y destroy).
+        $pedidos = [
+            'GET'    => function ($id) { return $this->getJson('api/cheque-banco/' . $id); },
+            'PUT'    => function ($id) { return $this->putJson('api/cheque-banco/' . $id, ['name' => 'Pisado']); },
+            'DELETE' => function ($id) { return $this->deleteJson('api/cheque-banco/' . $id); },
+        ];
+
+        foreach ($pedidos as $metodo => $pedido) {
+
+            $respuestas = [
+                'ajeno'       => $pedido($banco_ajeno->id),
+                'inexistente' => $pedido($this->id_que_no_existe('cheque_bancos')),
+                'no es un id' => $pedido($banco_ajeno->id . 'abc'),
+            ];
+
+            foreach ($respuestas as $nombre => $response) {
+
+                $this->assertSame(404, $response->getStatusCode(), $metodo . ' cheque-banco, id ' . $nombre . ': ' . $this->resumen($response));
+                $this->assertSame(['message' => self::MENSAJE_BANCO_404], $response->json(), $metodo . ' cheque-banco, id ' . $nombre);
+            }
+
+            $this->assertSame($respuestas['ajeno']->getContent(), $respuestas['inexistente']->getContent(), $metodo . ': el cuerpo de un banco ajeno y el de uno que no existe tienen que ser idénticos.');
+        }
+
+        $this->assertSame($nombre_banco_ajeno, ChequeBanco::find($banco_ajeno->id)->name, 'El banco ajeno no se tocó.');
+    }
+
+    /**
      * EL MECANISMO: toda ruta que llega a ChequeController o ChequeBancoController está declarada
      * en matriz_de_tenencia(), con cómo resuelve la tenencia de los ids que recibe y qué test lo
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
@@ -1179,7 +1250,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
             ],
             'DELETE api/cheque/{id}' => [
                 'accion'   => $cheque . 'destroy',
-                'tenencia' => 'ruta: consulta_del_cheque_del_dueno($id)->firstOrFail() -> 404.',
+                'tenencia' => 'ruta: cheque_del_dueno($id) (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El cheque no existe o no es de tu cuenta.", el mismo cuerpo para ajeno, inexistente y basura.',
                 'prueba'   => 'Tenencia_de_cheques_Test::cobrar_pagar_rechazar_y_borrar_un_cheque_ajeno_no_lo_toca',
             ],
 
@@ -1205,17 +1276,17 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
             ],
             'GET api/cheque-banco/{cheque_banco}' => [
                 'accion'   => $banco . 'show',
-                'tenencia' => 'ruta: banco_del_dueno() -> 404.',
-                'prueba'   => 'Tenencia_de_cheques_Test::un_dueno_no_ve_el_banco_de_otro',
+                'tenencia' => 'ruta: banco_del_dueno() (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El banco no existe o no es de tu cuenta.".',
+                'prueba'   => 'Tenencia_de_cheques_Test::un_dueno_no_ve_el_banco_de_otro y ::el_404_de_una_ruta_es_igual_para_un_id_ajeno_y_uno_inexistente',
             ],
             'PUT|PATCH api/cheque-banco/{cheque_banco}' => [
                 'accion'   => $banco . 'update',
-                'tenencia' => 'ruta: banco_del_dueno() -> 404.',
-                'prueba'   => 'Bancos_de_cheques_Test::el_abm_del_catalogo_es_por_dueno',
+                'tenencia' => 'ruta: banco_del_dueno() (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El banco no existe o no es de tu cuenta.".',
+                'prueba'   => 'Bancos_de_cheques_Test::el_abm_del_catalogo_es_por_dueno; Tenencia_de_cheques_Test::el_404_de_una_ruta_es_igual_para_un_id_ajeno_y_uno_inexistente',
             ],
             'DELETE api/cheque-banco/{cheque_banco}' => [
                 'accion'   => $banco . 'destroy',
-                'tenencia' => 'ruta: banco_del_dueno() -> 404; desasocia solo los cheques del dueño.',
+                'tenencia' => 'ruta: banco_del_dueno() (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El banco no existe o no es de tu cuenta."; desasocia solo los cheques del dueño.',
                 'prueba'   => 'Bancos_de_cheques_Test::el_abm_del_catalogo_es_por_dueno',
             ],
             'GET api/cheque-banco/create' => [
