@@ -655,22 +655,30 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
     /**
      * Segunda vuelta, punto 2 — EL MECANISMO de la clase del punto 1: ningún `*_id` de `cheques`
-     * sale crudo de la fila. Por las dos puertas que crean un cheque nuevo desde una fila (el cobro
-     * de cuenta corriente y el gasto), la fila lleva un id CENTINELA —que no existe en ninguna
-     * tabla— en CADA clave que se llama como una columna `*_id` de `cheques`, leídas del esquema
-     * (así una columna nueva entra sola). Ninguna columna del cheque creado puede valer el
-     * centinela: o la clave no se lee de la fila (la pone el sistema: el pago, el gasto, la sesión),
-     * o se lee con un lector con dueño, que a un id que no es de esta cuenta lo lee como null.
+     * sale crudo de la fila. La fila lleva un valor en CADA clave que se llama como una columna
+     * `*_id` de `cheques`, leídas del esquema (así una columna nueva entra sola), y ninguna columna
+     * del cheque puede terminar valiendo eso: o la clave no se lee de la fila (la pone el sistema:
+     * el pago, el gasto, el origen del endoso, la sesión), o se lee con un lector con dueño, que a un
+     * id que no es de esta cuenta lo lee como null.
+     *
+     * Tercera vuelta, punto 7: el centinela solo (un id que no existe en ninguna tabla) medía
+     * "crudo" y no "sin dueño" —un lector que mirara solo si la fila EXISTE lo dejaba pasar— y no
+     * pasaba por el endoso. Ahora cada clave va con DOS valores, el centinela y un id AJENO QUE
+     * EXISTE en la tabla de esa columna (mapa columna → tabla: si aparece una columna `*_id` nueva
+     * que el mapa no conoce, el test falla), y por CUATRO puertas: las dos que crean un cheque nuevo
+     * (el cobro y el gasto) y las dos que endosan (la fila de un pago a proveedor y la de un gasto,
+     * con el `cheque_id` de un recibido propio), mirando la COPIA.
      *
      * `caja_id` va en 0 y no con el centinela: es la caja del movimiento de la fila, la valida la
      * pantalla de pago (CurrentAcountCajaHelper::cajas_sin_apertura_en_payload(), fuera de los
-     * archivos de esta misión) y no la lee ChequeHelper.
+     * archivos de esta misión) y en un endoso tiene que venir vacía.
      *
      * @test
      */
     public function ningun_id_de_un_cheque_sale_crudo_de_la_fila()
     {
         $claves = $this->claves_id_de_cheques();
+        $mapa = $this->tabla_de_cada_columna_id();
 
         // Que la lista salga del esquema y tenga lo que tiene que tener: con una lista vacía este
         // test pasaría sin mirar nada.
@@ -679,46 +687,81 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertContains('client_id', $claves);
         $this->assertNotContains('caja_id', $claves);
 
-        $centinelas = array_fill_keys($claves, self::CENTINELA);
+        $sin_mapa = array_values(array_diff($claves, array_keys($mapa)));
 
-        $datos_del_cheque = [
-            'numero'        => 'CEN-' . substr(uniqid(), -6),
-            'banco'         => 'Banco del centinela',
-            'fecha_emision' => Carbon::today()->format('Y-m-d'),
-            'fecha_pago'    => Carbon::today()->addDays(10)->format('Y-m-d'),
+        $this->assertSame([], $sin_mapa, 'Columnas *_id de cheques que el mapa no conoce: ' . implode(', ', $sin_mapa) . '. Sumalas a tabla_de_cada_columna_id() con su tabla, y pensá cómo se lee esa clave cuando viene en una fila.');
+
+        $ajeno_de_cada_tabla = $this->un_id_ajeno_de_cada_tabla();
+
+        $variantes = [
+            'el centinela'           => array_fill_keys($claves, self::CENTINELA),
+            'un id ajeno que existe' => [],
         ];
 
-        // Puerta 1: el cobro a un cliente propio, con un cheque nuevo.
-        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente centinela ' . uniqid());
+        foreach ($claves as $columna) {
+            $variantes['un id ajeno que existe'][$columna] = $ajeno_de_cada_tabla[$mapa[$columna]];
+        }
 
-        $fila = $this->fila_de_pago(array_merge($datos_del_cheque, $centinelas));
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente centinela ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor centinela ' . uniqid(), self::DEUDA_PROVEEDOR * 10);
 
-        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('client', $cliente->id, $cuenta, [$fila]));
+        foreach ($variantes as $variante => $valores) {
 
-        $this->assertSame(201, $response->getStatusCode(), 'El cobro con los centinelas en la fila: ' . $this->resumen($response));
+            $cheque_nuevo = [
+                'numero'        => 'CEN-' . substr(uniqid(), -6),
+                'banco'         => 'Banco del centinela',
+                'fecha_emision' => Carbon::today()->format('Y-m-d'),
+                'fecha_pago'    => Carbon::today()->addDays(10)->format('Y-m-d'),
+            ];
 
-        $pago_id = (int) $response->json('current_acount.id');
-        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
+            // Puerta 1: el cobro a un cliente propio, con un cheque nuevo.
+            $fila = $this->fila_de_pago(array_merge($cheque_nuevo, $valores));
 
-        $recibido = Cheque::where('current_acount_id', $pago_id)->first();
+            $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('client', $cliente->id, $cuenta_cliente, [$fila]));
 
-        $this->assertNotNull($recibido, 'El cobro tenía que crear el cheque.');
-        $this->assertSame([], $this->columnas_con_el_centinela($recibido), 'Por el cobro: estas columnas del cheque salieron crudas de la fila (valen el centinela ' . self::CENTINELA . ').');
+            $this->assertSame(201, $response->getStatusCode(), 'El cobro con ' . $variante . ' en la fila: ' . $this->resumen($response));
 
-        // Puerta 2: el gasto con un cheque nuevo.
-        $fila = $this->fila_de_gasto(array_merge($datos_del_cheque, ['numero' => 'CEN-' . substr(uniqid(), -6)], $centinelas));
+            $pago_id = (int) $response->json('current_acount.id');
+            $this->cobros_cc_creados_por_escenarios[] = $pago_id;
 
-        $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila]));
+            $this->assert_ningun_id_crudo($valores, Cheque::where('current_acount_id', $pago_id)->first(), 'el cobro', $variante);
 
-        $this->assertSame(201, $response->getStatusCode(), 'El gasto con los centinelas en la fila: ' . $this->resumen($response));
+            // Puerta 2: el gasto, con un cheque nuevo.
+            $fila = $this->fila_de_gasto(array_merge($cheque_nuevo, ['numero' => 'CEN-' . substr(uniqid(), -6)], $valores));
 
-        $gasto_id = (int) $response->json('model.id');
-        $this->gastos_creados_por_escenarios[] = $gasto_id;
+            $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila]));
 
-        $emitido = Cheque::where('expense_id', $gasto_id)->first();
+            $this->assertSame(201, $response->getStatusCode(), 'El gasto con ' . $variante . ' en la fila: ' . $this->resumen($response));
 
-        $this->assertNotNull($emitido, 'El gasto tenía que crear el cheque.');
-        $this->assertSame([], $this->columnas_con_el_centinela($emitido), 'Por el gasto: estas columnas del cheque salieron crudas de la fila (valen el centinela ' . self::CENTINELA . ').');
+            $gasto_id = (int) $response->json('model.id');
+            $this->gastos_creados_por_escenarios[] = $gasto_id;
+
+            $this->assert_ningun_id_crudo($valores, Cheque::where('expense_id', $gasto_id)->first(), 'el gasto', $variante);
+
+            // Puerta 3: la fila de endoso de un pago a proveedor; se mira la COPIA.
+            $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'CENE-' . substr(uniqid(), -6)]);
+
+            $fila = $this->fila_de_pago(array_merge($this->claves_de_endoso($recibido), $valores));
+
+            $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
+
+            $this->assertSame(201, $response->getStatusCode(), 'El endoso por el pago con ' . $variante . ' en la fila: ' . $this->resumen($response));
+            $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('current_acount.id');
+
+            $this->assert_ningun_id_crudo($valores, $this->copias_de($recibido)->first(), 'el endoso por el pago', $variante);
+
+            // Puerta 4: la fila de endoso de un gasto; se mira la COPIA.
+            $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'CENG-' . substr(uniqid(), -6)]);
+
+            $fila = $this->fila_de_gasto(array_merge($this->claves_de_endoso($recibido), $valores));
+
+            $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila]));
+
+            $this->assertSame(201, $response->getStatusCode(), 'El endoso por el gasto con ' . $variante . ' en la fila: ' . $this->resumen($response));
+            $this->gastos_creados_por_escenarios[] = (int) $response->json('model.id');
+
+            $this->assert_ningun_id_crudo($valores, $this->copias_de($recibido)->first(), 'el endoso por el gasto', $variante);
+        }
     }
 
     /**
@@ -2095,26 +2138,101 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
-     * Las columnas de un cheque que valen el centinela.
+     * La tabla de cada columna `*_id` de `cheques` (menos `caja_id`), para el test-mecanismo: de
+     * cada una se crea una fila de OTRO comercio y su id va en la clave de la fila. Si el esquema
+     * suma una columna que no está acá, el test-mecanismo falla y pide declararla.
      *
-     * @param Cheque $cheque
-     * @return array<int, string>
+     * @return array<string, string>
      */
-    protected function columnas_con_el_centinela(Cheque $cheque)
+    protected function tabla_de_cada_columna_id()
     {
+        return [
+            'cheque_banco_id'          => 'cheque_bancos',
+            'client_id'                => 'clients',
+            'provider_id'              => 'providers',
+            'current_acount_id'        => 'current_acounts',
+            'expense_id'               => 'expenses',
+            'employee_id'              => 'users',
+            'user_id'                  => 'users',
+            'endosado_a_provider_id'   => 'providers',
+            'endosado_en_expense_id'   => 'expenses',
+            'cobrado_por_id'           => 'users',
+            'rechazado_por_id'         => 'users',
+            'endosado_desde_client_id' => 'clients',
+            'endosado_desde_cheque_id' => 'cheques',
+        ];
+    }
+
+    /**
+     * El id de una fila de OTRO comercio en cada tabla del mapa (lo mínimo, insertado a mano):
+     * existe, pero no es de esta cuenta.
+     *
+     * @return array<string, int>
+     */
+    protected function un_id_ajeno_de_cada_tabla()
+    {
+        $otro = $this->otro_dueno();
+
+        list($proveedor_ajeno, $cuenta_ajena) = $this->proveedor_ajeno_con_cuenta();
+
+        $gasto_ajeno = Expense::create([
+            'num'          => 1,
+            'amount'       => 1,
+            'moneda_id'    => 1,
+            'observations' => 'Gasto de otro comercio (centinela)',
+            'user_id'      => $otro->id,
+            'caja_id'      => 0,
+        ]);
+
+        $this->gastos_creados_a_mano[] = $gasto_ajeno->id;
+
+        // Va en la cuenta del proveedor ajeno: el tearDown borra los movimientos de esas cuentas.
+        $movimiento_ajeno = CurrentAcount::create([
+            'haber'             => 1,
+            'status'            => 'pago_from_client',
+            'detalle'           => 'Pago de otro comercio (centinela)',
+            'user_id'           => $otro->id,
+            'provider_id'       => $proveedor_ajeno->id,
+            'credit_account_id' => $cuenta_ajena->id,
+        ]);
+
+        return [
+            'cheque_bancos'   => $this->banco_ajeno('Banco ajeno centinela ' . uniqid())->id,
+            'clients'         => $this->cliente_ajeno()->id,
+            'providers'       => $proveedor_ajeno->id,
+            'current_acounts' => $movimiento_ajeno->id,
+            'expenses'        => $gasto_ajeno->id,
+            'users'           => $otro->id,
+            'cheques'         => $this->cheque_a_mano(['user_id' => $otro->id, 'numero' => 'CENAJ-' . substr(uniqid(), -6)])->id,
+        ];
+    }
+
+    /**
+     * Que ninguna columna del cheque valga lo que la fila traía en la clave del mismo nombre.
+     *
+     * @param array $valores Columna => valor que viajó en la fila.
+     * @param Cheque|null $cheque El cheque nuevo o la copia del endoso.
+     * @param string $puerta
+     * @param string $variante
+     * @return void
+     */
+    protected function assert_ningun_id_crudo(array $valores, $cheque, $puerta, $variante)
+    {
+        $this->assertNotNull($cheque, 'Por ' . $puerta . ' con ' . $variante . ': no se encontró el cheque.');
+
         $fila = (array) DB::table('cheques')->where('id', $cheque->id)->first();
 
-        $con_el_centinela = [];
+        $crudas = [];
 
-        foreach ($fila as $columna => $valor) {
+        foreach ($valores as $columna => $valor) {
 
-            if (!is_null($valor) && (string) $valor === (string) self::CENTINELA) {
+            if (array_key_exists($columna, $fila) && !is_null($fila[$columna]) && (string) $fila[$columna] === (string) $valor) {
 
-                $con_el_centinela[] = $columna;
+                $crudas[] = $columna;
             }
         }
 
-        return $con_el_centinela;
+        $this->assertSame([], $crudas, 'Por ' . $puerta . ', con ' . $variante . ' en la fila: estas columnas del cheque salieron de la fila sin pasar por un lector con dueño.');
     }
 
     /**
