@@ -142,9 +142,9 @@ class ChequeHelper {
      *
      * @param  \App\Models\Cheque  $origen  El recibido que se endosa.
      * @param  \App\Models\CurrentAcount|\App\Models\Expense  $model  El pago al proveedor o el gasto.
-     * @param  array  $payment_method  La fila (solo para leer `cheque_banco_id` si el origen no lo
-     *                                 tiene, por cheque_banco_id_de() con el dueño: un banco de otra
-     *                                 cuenta deja la copia sin banco).
+     * @param  array  $payment_method  La fila (solo para leer `cheque_banco_id` si el origen no tiene
+     *                                 uno de esta cuenta, por cheque_banco_id_de() con el dueño: un
+     *                                 banco de otra cuenta deja la copia sin banco).
      * @return \App\Models\Cheque  La copia emitida.
      *
      * @throws \RuntimeException  Si el origen ya no está disponible o `$model` no es un destino de endoso.
@@ -202,7 +202,23 @@ class ChequeHelper {
 
         $origen->refresh();
 
-        $cheque_banco_id = !is_null($origen->cheque_banco_id) ? $origen->cheque_banco_id : self::cheque_banco_id_de($payment_method, UserHelper::userId());
+        /*
+         * 🔴 Lo que la copia HEREDA del origen también pasa por los lectores con dueño, no solo lo
+         * que trae la fila. Un recibido que quedó atado a un banco (o a un cliente) de otro comercio
+         * por los huecos de antes de la misión cheques-filtro-por-dueno (3/10/2026) le pasaba esa
+         * referencia a la copia emitida nueva, y GET cheque la mostraba de nuevo. El banco del origen
+         * que no es de esta cuenta se toma como "sin banco" (y entonces vale el de la fila, también
+         * leído con dueño); el cliente, como "sin cliente". El origen no se toca: el endoso no repara
+         * datos viejos.
+         */
+        $cheque_banco_id = self::id_del_dueno(ChequeBanco::class, $origen->cheque_banco_id, UserHelper::userId());
+
+        if (is_null($cheque_banco_id)) {
+
+            $cheque_banco_id = self::cheque_banco_id_de($payment_method, UserHelper::userId());
+        }
+
+        $endosado_desde_client_id = self::id_del_dueno(Client::class, $origen->client_id, UserHelper::userId());
 
         return Cheque::create([
             'numero'                    => $origen->numero,
@@ -217,7 +233,7 @@ class ChequeHelper {
             'tipo'                      => 'emitido',
             'client_id'                 => null,
             'provider_id'               => $model instanceof CurrentAcount ? $model->provider_id : null,
-            'endosado_desde_client_id'  => $origen->client_id,
+            'endosado_desde_client_id'  => $endosado_desde_client_id,
             'endosado_desde_cheque_id'  => $origen->id,
 
             'current_acount_id'         => $model instanceof CurrentAcount ? $model->id : null,
@@ -276,23 +292,9 @@ class ChequeHelper {
      */
     static function cheque_banco_id_de($payment_method, $user_id) {
 
-        if (!isset($payment_method['cheque_banco_id']) || !is_numeric($payment_method['cheque_banco_id'])) {
+        $valor = isset($payment_method['cheque_banco_id']) ? $payment_method['cheque_banco_id'] : null;
 
-            return null;
-        }
-
-        $id = (int) $payment_method['cheque_banco_id'];
-
-        if ($id <= 0) {
-
-            return null;
-        }
-
-        $es_del_dueno = ChequeBanco::where('user_id', $user_id)
-                                    ->where('id', $id)
-                                    ->exists();
-
-        return $es_del_dueno ? $id : null;
+        return self::id_del_dueno(ChequeBanco::class, $valor, $user_id);
     }
 
     /**
@@ -316,19 +318,41 @@ class ChequeHelper {
      */
     static function endosado_desde_client_id_de($payment_method, $user_id) {
 
-        if (!isset($payment_method['endosado_desde_client_id']) || !is_numeric($payment_method['endosado_desde_client_id'])) {
+        $valor = isset($payment_method['endosado_desde_client_id']) ? $payment_method['endosado_desde_client_id'] : null;
+
+        return self::id_del_dueno(Client::class, $valor, $user_id);
+    }
+
+    /**
+     * El id de una fila de `$clase` si es DE ESE DUEÑO; null si es de otra cuenta, si no existe (o
+     * está borrada, para los modelos con SoftDeletes) o si lo que llegó no es un id. Es la consulta
+     * de tenencia que comparten los lectores de esta clase (el banco y el cliente de una fila, lo
+     * que el endoso hereda del origen, el destino del endoso) y los de ChequeController (la caja y
+     * el proveedor del cuerpo).
+     *
+     * Un id ajeno se contesta igual que uno inexistente: en una base compartida los ids son
+     * correlativos entre comercios, y un "existe pero no es tuyo" ya es una fuga.
+     *
+     * @param  string  $clase  Un modelo con columna `user_id` (ChequeBanco, Client, Provider, Caja).
+     * @param  mixed  $valor  El id tal como llegó (de un pedido o de una columna).
+     * @param  int  $user_id  El dueño de la cuenta.
+     * @return int|null
+     */
+    static function id_del_dueno($clase, $valor, $user_id) {
+
+        if (is_null($valor) || !is_numeric($valor)) {
 
             return null;
         }
 
-        $id = (int) $payment_method['endosado_desde_client_id'];
+        $id = (int) $valor;
 
         if ($id <= 0) {
 
             return null;
         }
 
-        $es_del_dueno = Client::where('user_id', $user_id)
+        $es_del_dueno = $clase::where('user_id', $user_id)
                                 ->where('id', $id)
                                 ->exists();
 
