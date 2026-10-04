@@ -1304,8 +1304,42 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * Adjunta a la venta los renglones de articulo del request (o, con `varios_precios`, una fila
+     * por cada precio) y descuenta el stock.
+     *
+     * 🔴 EL STOCK SE DESCUENTA POR ARTICULO + VARIANTE, NO POR RENGLON (mision
+     * varios-precios-descuento-renglon, 3/10/2026). Cada renglon suma su cantidad a la clave de su
+     * articulo y su variante (juntar_stock_a_descontar()) y `ArticleHelper::discountStock()` se llama
+     * UNA vez por clave, al final. No "simplificarlo" de vuelta a un descuento por renglon: en la
+     * edicion, `get_amount_for_stock_movement()` le resta a la SUMA de los renglones previos del
+     * articulo + variante la cantidad que recibe, asi que con dos renglones del mismo articulo en el
+     * request la diferencia se contaba dos veces. Es lo que pasaba al editar una venta con varios
+     * precios desde la SPA que la reabre como un renglon por fila: guardarla sin tocar nada devolvia
+     * al stock todo lo vendido (−3 de la venta, +1 y +2 de los dos "Act Venta"). En el alta da lo
+     * mismo que antes (sin renglones previos cada clave descuenta su cantidad entera), en un solo
+     * movimiento por articulo + variante.
+     *
+     * Las condiciones para descontar son las de siempre y se miran por renglon: la venta fuera del
+     * circuito de deposito (`to_check` / `checked`), con `discount_stock`, y el articulo con stock.
+     * `check_que_este_el_articulos()` sigue siendo por renglon.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array             $articles  Los renglones del request (`items`).
+     * @param  mixed             $previus_articles  Los renglones que tenia la venta antes (edicion), o null.
+     * @param  bool              $se_esta_confirmando_por_primera_vez
+     * @param  array             $fecha_agregado_by_article_id
+     * @param  bool              $se_activando_discount_stock
+     * @return void
+     */
     static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id = [], $se_activando_discount_stock = false) {
         
+        /*
+            Lo que sale del stock, juntado por articulo + variante (ver juntar_stock_a_descontar()).
+            Se descuenta recien despues del foreach, una vez por clave.
+        */
+        $stock_a_descontar = [];
+
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
 
@@ -1359,27 +1393,16 @@ class SaleHelper extends Controller {
 
                     /*
                         Con `varios_precios` el articulo va a la venta como VARIOS renglones (uno por
-                        precio, cada uno con su cantidad) pero el descuento de stock se hace una sola
-                        vez, aca. Lo que sale del stock es la suma de esos renglones, no la cantidad
-                        del item "padre", que es la que quedo en el formulario antes de repartir.
+                        precio, cada uno con su cantidad). Lo que sale del stock es la suma de esos
+                        renglones, no la cantidad del item "padre", que es la que quedo en el
+                        formulario antes de repartir.
                     */
                     if (Self::tiene_varios_precios($article)) {
                         $amount = Self::get_amount_varios_precios($article['varios_precios']);
                     }
 
-                    if (isset($article['article_variant_id'])) {
-                        $article_variant_id = $article['article_variant_id'];
-                    } else {
-                        $article_variant_id = null;
-                    }
+                    $stock_a_descontar = Self::juntar_stock_a_descontar($stock_a_descontar, $article, $amount);
 
-                    // Si se activa discount_stock por primera vez, tratar como primera confirmación
-                    // para que se use la cantidad total y no la diferencia con artículos previos
-                    $es_primer_descuento = $se_esta_confirmando_por_primera_vez || $se_activando_discount_stock;
-                    
-                    // if ($amount > 0) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $es_primer_descuento, $article_variant_id);
-                    // }
                 } else {
                     Log::info('No se desconto stock para article_id '.$article['id']);
                 }
@@ -1388,6 +1411,58 @@ class SaleHelper extends Controller {
 
             }
         }
+
+        // Si se activa discount_stock por primera vez, tratar como primera confirmación
+        // para que se use la cantidad total y no la diferencia con artículos previos
+        $es_primer_descuento = $se_esta_confirmando_por_primera_vez || $se_activando_discount_stock;
+
+        foreach ($stock_a_descontar as $a_descontar) {
+            ArticleHelper::discountStock($a_descontar['id'], $a_descontar['amount'], $sale, $previus_articles, $es_primer_descuento, $a_descontar['article_variant_id']);
+        }
+    }
+
+    /**
+     * Suma la cantidad de un renglon a lo que hay que descontar del stock de su articulo + variante
+     * (ver attachArticles()).
+     *
+     * La clave es el id del articulo y la variante NORMALIZADA: null, 0 y '' son "sin variante", el
+     * mismo criterio de `ArticleHelper::misma_variante()`, que es con el que
+     * `get_amount_for_stock_movement()` junta los renglones previos de la venta. Se lo usa a el y no
+     * una copia de la regla: si la clave usara la variante cruda, un renglon con variante 0 y otro con
+     * null volverian a ser dos descuentos contra el mismo previo, que es justo lo que esto evita.
+     *
+     * Se guarda la variante CRUDA del primer renglon de la clave: es la que le llegaba hasta hoy a
+     * `discountStock()` y la que queda escrita en el movimiento.
+     *
+     * @param  array  $stock_a_descontar  Lo juntado hasta ahora: clave => [id, article_variant_id, amount].
+     * @param  array  $article            El renglon del request.
+     * @param  float  $amount             Lo que ese renglon saca del stock.
+     * @return array  `$stock_a_descontar` con la cantidad sumada.
+     */
+    static function juntar_stock_a_descontar($stock_a_descontar, $article, $amount) {
+
+        if (isset($article['article_variant_id'])) {
+            $article_variant_id = $article['article_variant_id'];
+        } else {
+            $article_variant_id = null;
+        }
+
+        // misma_variante(x, null) dice si x es "sin variante": la clave usa el mismo criterio.
+        $variante_de_la_clave = ArticleHelper::misma_variante($article_variant_id, null) ? '' : (int) $article_variant_id;
+
+        $clave = (int) $article['id'].'-'.$variante_de_la_clave;
+
+        if (!isset($stock_a_descontar[$clave])) {
+            $stock_a_descontar[$clave] = [
+                'id'                    => $article['id'],
+                'article_variant_id'    => $article_variant_id,
+                'amount'                => 0,
+            ];
+        }
+
+        $stock_a_descontar[$clave]['amount'] += (float) $amount;
+
+        return $stock_a_descontar;
     }
 
     /**
