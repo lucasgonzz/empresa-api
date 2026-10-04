@@ -359,8 +359,7 @@ class ChequeHelper {
      * LA lectura de un id que llega en un pedido —en la ruta, en el cuerpo o en una fila de pago—
      * para los cuatro archivos de cheques: un entero mayor a 0, o un texto de SOLO dígitos ASCII
      * (sin espacios, signo, decimales ni exponente). Todo lo demás —un decimal, un booleano, un
-     * array, '12abc', '80e1', ' 12', '+12', "12
-", "1²"— es "sin id" (0).
+     * array, '12abc', '80e1', ' 12', '+12', "12\n", "1²"— es "sin id" (0).
      *
      * 🔴 Que sea UNA sola. Hasta el 3/10/2026 (segunda vuelta de la misión cheques-filtro-por-dueno)
      * convivían tres: is_numeric en cheque_id_de() ('12.5' era el 12, '80e1' el 800), un (int)
@@ -375,8 +374,7 @@ class ChequeHelper {
      * locale, y en el PHP de Windows (LC_CTYPE Spanish_Argentina.1252) "1²" —un 1 y un "²"— es
      * "solo dígitos": hasta el 3/10/2026 `PUT cheque/rechazar` por formulario con ese cheque_id
      * rechazaba el cheque 1, cosa que en el Linux de producción no pasa. Y con \z y no con $: un $
-     * acepta un "
-" al final.
+     * acepta un "\n" al final.
      *
      * @param  mixed  $valor
      * @return int  El id, o 0 si lo que llegó no es un id.
