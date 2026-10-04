@@ -465,6 +465,34 @@ class InitExcelImport
         }
     }
 
+    /**
+     * Byte de inicio, dentro del CSV, de la primera fila de cada lote: [fila del Excel => byte].
+     * ProcessArticleChunk::get_row_from_csv() hace fseek() a ese byte y desde ahí lee registros
+     * con fgetcsv() hasta su finish_row.
+     *
+     * 🔴 Se cuenta por REGISTRO CSV, no por línea física (misión importacion-celda-multilinea,
+     * 4/10/2026). El volcado (CsvDeHoja::volcar()) escribe un registro por fila del Excel, pero
+     * una celda con salto de línea (Alt+Enter) sale entrecomillada y ocupa varias líneas del
+     * archivo. Hasta ese día esto contaba líneas con fgets() mientras el lote cuenta registros:
+     * con N saltos de línea antes de un lote, el lote arrancaba N filas antes, leía filas dos
+     * veces y las últimas N del archivo no las leía nadie. Con un encabezado multilínea —lo más
+     * común en una lista de proveedor— se rompía hasta el lote 1, cuyo offset caía en el medio
+     * del encabezado.
+     *
+     * Por eso se recorre con fgetcsv() y el MISMO escape vacío que get_row_from_csv() (el del
+     * writer CSV de OpenSpout): si los dos parsearan distinto, volverían a contar distinto.
+     *
+     * El BOM UTF-8 del principio se saltea ANTES de parsear: pegado a una primera celda
+     * entrecomillada, fgetcsv() no reconoce la comilla de apertura (la ve en el medio del campo)
+     * y corta el registro en el primer salto de línea de esa celda — el encabezado contaría como
+     * dos registros. Pero la fila 1 se sigue anotando en el byte 0, BOM incluido, igual que
+     * antes: un lote que arranque en la fila 1 lee exactamente lo mismo que leía.
+     *
+     * El resto del contrato no cambia: clave = fila del Excel (= número de registro 1-based) y
+     * se corta pasando finish_row.
+     *
+     * @return array [fila => byte]
+     */
     function build_csv_chunk_offsets(): array
     {
         $offsets = [];
@@ -484,13 +512,18 @@ class InitExcelImport
             return $offsets;
         }
 
+        if (fread($handle, 3) !== CsvDeHoja::BOM_UTF8) {
+            rewind($handle);
+        }
+
         $current_row = 1;
 
         while (!feof($handle)) {
-            $pos = ftell($handle);
-            $line = fgets($handle);
+            /* La fila 1 en el byte 0 aunque se haya salteado el BOM (ver el docblock). */
+            $pos = $current_row === 1 ? 0 : ftell($handle);
+            $registro = fgetcsv($handle, 0, ',', '"', '');
 
-            if ($line === false) {
+            if ($registro === false) {
                 break;
             }
 
