@@ -751,6 +751,45 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Segunda vuelta, punto 3, la misma clase con el CLIENTE: la copia emitida guardaba como
+     * `endosado_desde_client_id` el `client_id` del origen tal cual. Un recibido que quedó colgado
+     * del cliente de otro comercio (hoy se puede: `POST current-acount/pago` no cruza la cuenta con
+     * el dueño, hallazgo abierto fuera de esta misión) le pasaba ese cliente a la copia, y GET
+     * cheque devolvía sus datos por `endosado_desde_client`. Lo heredado se lee con dueño.
+     *
+     * @test
+     */
+    public function el_endoso_no_propaga_el_cliente_de_otro_dueno()
+    {
+        $ajeno = $this->cliente_ajeno();
+
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente heredado ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'HEREDA-' . substr(uniqid(), -6)]);
+
+        // El dato viejo: el recibido colgado del cliente de otro comercio.
+        DB::table('cheques')->where('id', $recibido->id)->update(['client_id' => $ajeno->id]);
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor cliente heredado ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $proveedor->id]);
+
+        $this->assertSame(200, $response->getStatusCode(), 'Endosar el recibido con el cliente viejo: ' . $this->resumen($response));
+
+        $copia = $this->copias_de($recibido)->first();
+
+        $this->assertNotNull($copia, 'El endoso tenía que dejar la copia emitida.');
+        $this->cobros_cc_creados_por_escenarios[] = (int) $copia->current_acount_id;
+
+        $this->assertNull($copia->endosado_desde_client_id, 'La copia no puede heredar el cliente de otro comercio que el recibido arrastraba.');
+
+        $sin_el_recibido = json_encode($this->listado_sin($recibido->id));
+
+        $this->assertStringNotContainsString($ajeno->name, $sin_el_recibido, 'Fuera del propio recibido, GET cheque no puede nombrar al cliente ajeno.');
+        $this->assertStringNotContainsString($ajeno->email, $sin_el_recibido);
+    }
+
+    /**
      * Segunda vuelta, punto 4. El endoso por la FILA de un pago a proveedor no miraba de quién es el
      * proveedor: `POST current-acount/pago` con la cuenta de un proveedor de otro comercio y una fila
      * que endosa un recibido propio daba 201, dejaba el cheque endosado a ese proveedor y le bajaba
