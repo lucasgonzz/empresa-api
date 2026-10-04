@@ -445,7 +445,10 @@ class ProcessArticleChunk implements ShouldQueue
 
         if (($handle = fopen($file_path, "r")) !== false) {
 
-            // Si tenemos offset, arrancamos directo en la fila del chunk (mucho más rápido)
+            // Si tenemos offset, arrancamos directo en la fila del chunk (mucho más rápido).
+            // El offset es el byte de inicio de un REGISTRO CSV, no de una línea física: una celda
+            // con salto de línea ocupa varias líneas, y InitExcelImport::build_csv_chunk_offsets()
+            // los cuenta con fgetcsv() igual que este loop (misión importacion-celda-multilinea).
             if (!is_null($this->start_offset) && is_numeric($this->start_offset) && $this->start_offset >= 0) {
                 fseek($handle, (int)$this->start_offset);
                 $currentRow = $this->start_row;
