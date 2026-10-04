@@ -12,6 +12,7 @@ use App\Models\Cheque;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcountPaymentMethod;
+use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -26,6 +27,9 @@ class ChequeController extends Controller
 
     /** El 422 de un `caja_id` del cuerpo que no es de esta cuenta (cobrar, pagar). */
     const MENSAJE_CAJA_AJENA = 'La caja elegida no existe o no es de tu cuenta.';
+
+    /** El 422 de un `provider_id` del cuerpo que no es de esta cuenta (endosar). */
+    const MENSAJE_PROVEEDOR_AJENO = 'El proveedor elegido no existe o no es de tu cuenta.';
 
     /**
      * Descarga un Excel con los cheques indicados por ID (los mismos que muestra el front al filtrar).
@@ -297,6 +301,9 @@ class ChequeController extends Controller
      * Responde 422 si el cheque ya no se puede endosar, y también si el proveedor no tiene cuenta
      * corriente en la moneda del cheque: antes en ese caso no se creaba nada y se devolvía 200 con
      * el cheque sin marcar, o sea un endoso que "salió bien" sin registrar nada.
+     *
+     * Y desde el 3/10/2026, 422 si el proveedor no es de esta cuenta (o no existe): hasta entonces un
+     * endoso propio registraba el pago en la cuenta corriente del proveedor de otro comercio.
      */
     function endosar(Request $request) {
 
@@ -329,6 +336,13 @@ class ChequeController extends Controller
         if ($provider_id <= 0) {
 
             return response()->json(['message' => 'Elegí el proveedor al que le endosás el cheque.'], 422);
+        }
+
+        // El proveedor tiene que ser del dueño ANTES de buscar su cuenta corriente: ni
+        // get_provider_credit_account() ni CurrentAcountPagoAltaHelper::registrar() lo miran.
+        if (is_null($this->proveedor_del_dueno($provider_id))) {
+
+            return response()->json(['message' => self::MENSAJE_PROVEEDOR_AJENO], 422);
         }
 
         $credit_account = $this->get_provider_credit_account($cheque, $provider_id);
@@ -551,6 +565,32 @@ class ChequeController extends Controller
                             ->exists();
 
         return $es_del_dueno ? $id : null;
+    }
+
+    /**
+     * El proveedor al que se endosa, si es del dueño de la sesión; null si es de otra cuenta o no
+     * existe.
+     *
+     * 🔴 No sacar este filtro confiando en que la cuenta corriente "ya es del proveedor":
+     * get_provider_credit_account() busca la cuenta por `model_id` sin mirar el dueño y
+     * CurrentAcountPagoAltaHelper::registrar() tampoco lo verifica, así que sin esto un endoso
+     * propio registraba un pago en la cuenta corriente del proveedor de otro comercio y le
+     * recalculaba el saldo. Un id ajeno se contesta igual que uno inexistente; en una base
+     * compartida los ids son correlativos entre comercios.
+     *
+     * Un proveedor borrado (soft delete) cuenta como "no existe", como en el resto del sistema: el
+     * endoso tampoco podría terminar, porque CurrentAcountHelper::update_credit_account_saldo() lo
+     * busca por el morphTo de la cuenta corriente, que no ve los borrados (hasta el 3/10/2026 eso
+     * era un 500 que se revertía; ahora es este 422, antes de escribir nada).
+     *
+     * @param  int  $provider_id  Ya normalizado y mayor a 0.
+     * @return \App\Models\Provider|null
+     */
+    protected function proveedor_del_dueno($provider_id) {
+
+        return Provider::where('user_id', $this->userId())
+                        ->where('id', $provider_id)
+                        ->first();
     }
 }
  
