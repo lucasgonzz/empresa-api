@@ -66,7 +66,8 @@ class ChequeController extends Controller
         $ids = [];
 
         foreach ($raw_ids as $raw_id) {
-            $id = (int) trim($raw_id);
+            // LA lectura de ids (ChequeHelper::id_del_pedido()): '12abc' o '12.5' no son el 12.
+            $id = ChequeHelper::id_del_pedido(trim($raw_id));
             if ($id > 0) {
                 $ids[] = $id;
             }
@@ -334,7 +335,10 @@ class ChequeController extends Controller
             return response()->json(['message' => implode('. ', $problemas).'.'], 422);
         }
 
-        $provider_id = (int) $request->provider_id;
+        // LA lectura de ids (ChequeHelper::id_del_pedido()): true, [5] o '5abc' son "sin proveedor"
+        // y caen en el 422 de siempre. Hasta el 3/10/2026 era un (int) pelado: true y [5] eran el
+        // proveedor 1, y '5abc' el 5.
+        $provider_id = ChequeHelper::id_del_pedido($request->provider_id);
 
         if ($provider_id <= 0) {
 
@@ -520,9 +524,10 @@ class ChequeController extends Controller
      * La caja del cuerpo de cobrar y pagar, resuelta contra el dueño de la sesión ANTES de escribir.
      *
      * `0`, `null` y `''` son "sin caja", como siempre: el cheque se marca y ninguna caja se mueve.
-     * Cualquier otro valor tiene que ser el id de una caja de esta cuenta, como entero o como texto
-     * de solo dígitos; si no lo es (otra cuenta, inexistente, '5abc', 'abc', true, un array, un
-     * negativo), el llamador contesta 422.
+     * Cualquier otro valor tiene que ser el id de una caja de esta cuenta, leído con LA lectura de
+     * ids (ChequeHelper::id_del_pedido(): un entero o un texto de solo dígitos); si no lo es (otra
+     * cuenta, inexistente, '5abc', 'abc', '5.0', true, un array, un negativo), el llamador contesta
+     * 422.
      *
      * 🔴 No volver a pasarle `$request->caja_id` derecho a CurrentAcountCajaHelper::guardar_pago():
      * ni ese helper ni MovimientoCajaHelper::crear_movimiento() miran de quién es la caja, y así el
@@ -535,39 +540,15 @@ class ChequeController extends Controller
      */
     protected function caja_id_del_dueno($caja_id) {
 
-        if (is_null($caja_id) || $caja_id === '') {
+        // "Sin caja": null, '' o un cero escrito como entero o con dígitos (0, '0').
+        $es_cero = $caja_id === 0 || (is_string($caja_id) && ctype_digit($caja_id) && (int) $caja_id === 0);
+
+        if (is_null($caja_id) || $caja_id === '' || $es_cero) {
 
             return 0;
         }
 
-        if (is_int($caja_id)) {
-
-            $id = $caja_id;
-
-        } elseif (is_string($caja_id) && ctype_digit($caja_id)) {
-
-            $id = (int) $caja_id;
-
-        } else {
-
-            return null;
-        }
-
-        if ($id === 0) {
-
-            return 0;
-        }
-
-        if ($id < 0) {
-
-            return null;
-        }
-
-        $es_del_dueno = Caja::where('user_id', $this->userId())
-                            ->where('id', $id)
-                            ->exists();
-
-        return $es_del_dueno ? $id : null;
+        return ChequeHelper::id_del_dueno(Caja::class, $caja_id, $this->userId());
     }
 
     /**

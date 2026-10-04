@@ -328,24 +328,57 @@ class ChequeHelper {
     }
 
     /**
-     * El `cheque_id` de una fila: entero mayor a 0, o 0 si no pide endoso. Es LA lectura de esa
-     * clave, para la prevalidación, el alta y el botón: un `'12abc'` tiene que ser "sin cheque" en
-     * los tres lados, y no "sin cheque" en la prevalidación y 12 en el alta (un `(int)` pelado lo
-     * volvía 12).
+     * LA lectura de un id que llega en un pedido —en la ruta, en el cuerpo o en una fila de pago—
+     * para los cuatro archivos de cheques: un entero mayor a 0, o un texto de SOLO dígitos
+     * (ctype_digit: sin espacios, signo, decimales ni exponente). Todo lo demás —un decimal, un
+     * booleano, un array, '12abc', '80e1', ' 12', '+12'— es "sin id" (0).
+     *
+     * 🔴 Que sea UNA sola. Hasta el 3/10/2026 (segunda vuelta de la misión cheques-filtro-por-dueno)
+     * convivían tres: is_numeric en cheque_id_de() ('12.5' era el 12, '80e1' el 800), un (int)
+     * pelado en el provider_id de ChequeController::endosar() (true era el proveedor 1, [5] el 1,
+     * '5abc' el 5) y el where('id', $id) con el texto de la ruta en
+     * ChequeBancoController::banco_del_dueno() (MySQL castea: 'cheque-banco/84abc' era el 84). Con
+     * tres lecturas, el mismo texto era "sin id" en una puerta y un id en otra. La SPA manda
+     * siempre enteros y el ejecutor del asistente ya rechaza decimales, booleanos y textos que no
+     * son enteros: lo único que cae afuera es un pedido armado a mano.
+     *
+     * @param  mixed  $valor
+     * @return int  El id, o 0 si lo que llegó no es un id.
+     */
+    static function id_del_pedido($valor) {
+
+        if (is_int($valor)) {
+
+            return $valor > 0 ? $valor : 0;
+        }
+
+        // ctype_digit solo con un string: con un int, PHP 7.4 lo toma como un código ASCII.
+        if (is_string($valor) && ctype_digit($valor)) {
+
+            $id = (int) $valor;
+
+            return $id > 0 ? $id : 0;
+        }
+
+        return 0;
+    }
+
+    /**
+     * El `cheque_id` de una fila: el id (por id_del_pedido()), o 0 si no pide endoso. Es LA lectura
+     * de esa clave, para la prevalidación, el alta y el botón: un `'12abc'` o un `'12.5'` tienen que
+     * ser "sin cheque" en los tres lados, y no "sin cheque" en la prevalidación y 12 en el alta.
      *
      * @param  array  $payment_method
      * @return int
      */
     static function cheque_id_de($payment_method) {
 
-        if (!is_array($payment_method) || !isset($payment_method['cheque_id']) || !is_numeric($payment_method['cheque_id'])) {
+        if (!is_array($payment_method) || !array_key_exists('cheque_id', $payment_method)) {
 
             return 0;
         }
 
-        $id = (int) $payment_method['cheque_id'];
-
-        return $id > 0 ? $id : 0;
+        return self::id_del_pedido($payment_method['cheque_id']);
     }
 
     /**
@@ -402,7 +435,8 @@ class ChequeHelper {
 
     /**
      * El id de una fila de `$clase` si es DE ESE DUEÑO; null si es de otra cuenta, si no existe (o
-     * está borrada, para los modelos con SoftDeletes) o si lo que llegó no es un id. Es la consulta
+     * está borrada, para los modelos con SoftDeletes) o si lo que llegó no es un id (se lee con
+     * id_del_pedido(): un decimal, '12abc' o un booleano no son ningún id). Es la consulta
      * de tenencia que comparten los lectores de esta clase (el banco y el cliente de una fila, lo
      * que el endoso hereda del origen, el destino del endoso) y los de ChequeController (la caja y
      * el proveedor del cuerpo).
@@ -417,14 +451,9 @@ class ChequeHelper {
      */
     static function id_del_dueno($clase, $valor, $user_id) {
 
-        if (is_null($valor) || !is_numeric($valor)) {
+        $id = self::id_del_pedido($valor);
 
-            return null;
-        }
-
-        $id = (int) $valor;
-
-        if ($id <= 0) {
+        if ($id === 0) {
 
             return null;
         }

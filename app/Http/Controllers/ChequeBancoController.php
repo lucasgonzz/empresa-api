@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Models\Cheque;
 use App\Models\ChequeBanco;
 use Illuminate\Http\Request;
@@ -88,8 +89,11 @@ class ChequeBancoController extends Controller
      *                                                                y no lo reporta).
      */
     protected function banco_del_dueno($id) {
+        // El id de la ruta, con LA lectura de ids (ChequeHelper::id_del_pedido()): hasta el 3/10/2026
+        // iba crudo al where y MySQL lo casteaba ('84abc' o ' 84' eran el banco 84). Un texto que no
+        // es un id se lee como 0, y ningún banco tiene el id 0: es el mismo 404.
         return ChequeBanco::where('user_id', $this->userId())
-                            ->where('id', $id)
+                            ->where('id', ChequeHelper::id_del_pedido($id))
                             ->firstOrFail();
     }
 }

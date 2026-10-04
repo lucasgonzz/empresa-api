@@ -918,6 +918,165 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Segunda vuelta, punto 6 — UNA sola lectura de un id. Convivían tres: cheque_id_de() con
+     * is_numeric ('12.5' era el 12, '80e1' el 800, '+12' el 12), el (int) del provider_id de endosar
+     * (true era el 1, [5] el 1, '5abc' el 5) y el where('id', $id) de banco_del_dueno() (MySQL
+     * castea: GET cheque-banco/84abc daba el 84). Ahora todos pasan por ChequeHelper::id_del_pedido():
+     * un entero mayor a 0, o un texto de solo dígitos; todo lo demás es "sin id".
+     *
+     * Este caso es el `cheque_id` (cuerpo y ruta). Los textos se arman con el id de un cheque PROPIO,
+     * para que una lectura floja lo encontrara —y el pedido "anduviera"— en vez de caer en un id que
+     * no existe. Los espacios no se prueban por el cuerpo: TrimStrings los saca antes del controller.
+     *
+     * @test
+     */
+    public function un_cheque_id_que_no_es_un_entero_no_es_ningun_cheque()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente lectura estricta ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'EST-' . substr(uniqid(), -6)]);
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor lectura estricta ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $caja = $this->caja_propia_con_apertura();
+        $id = $recibido->id;
+
+        $foto = $recibido->fresh()->toArray();
+        $movimientos_antes = $this->max_id_movimiento_caja();
+        $current_acounts_antes = CurrentAcount::count();
+
+        $flojos = [
+            'un decimal'          => $id . '.5',
+            'un decimal redondo'  => $id . '.0',
+            'un exponente'        => $id . 'e0',
+            'un signo'            => '+' . $id,
+            // Un número (no un texto) con decimales. Uno redondo como 12.0 no sirve: json_encode lo
+            // manda como 12 y llega entero.
+            'un número decimal'   => $id + 0.5,
+        ];
+
+        foreach ($flojos as $nombre => $flojo) {
+
+            foreach ($this->pedidos_sobre_un_cheque($flojo, $caja->id) as $accion => $cuerpo) {
+
+                $response = $this->putJson('api/cheque/' . $accion, $cuerpo);
+
+                $this->assertSame(422, $response->getStatusCode(), $accion . ' con cheque_id ' . $nombre . ': ' . $this->resumen($response));
+                $this->assertSame(self::MENSAJE_CHEQUE, $response->json('message'), $accion . ' con cheque_id ' . $nombre);
+            }
+
+            $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $flojo, 'provider_id' => $proveedor->id]);
+
+            $this->assertSame(422, $response->getStatusCode(), 'endosar con cheque_id ' . $nombre . ': ' . $this->resumen($response));
+            $this->assertSame(self::MENSAJE_CHEQUE_DE_ENDOSO . '.', $response->json('message'), 'endosar con cheque_id ' . $nombre);
+
+            if (is_string($flojo)) {
+
+                $response = $this->deleteJson('api/cheque/' . rawurlencode($flojo));
+
+                $this->assertSame(404, $response->getStatusCode(), 'DELETE cheque/' . $flojo . ': ' . $this->resumen($response));
+            }
+        }
+
+        // Y por la ruta, un espacio adelante (ahí no hay TrimStrings).
+        $response = $this->deleteJson('api/cheque/%20' . $id);
+
+        $this->assertSame(404, $response->getStatusCode(), 'DELETE cheque/" ' . $id . '": ' . $this->resumen($response));
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque ' . $id . ' no se tocó: ninguno de esos textos es él.');
+        $this->assertSame(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Ninguna caja se movió.');
+        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No se registró ningún pago.');
+        $this->assertCount(0, $this->copias_de($recibido), 'No se endosó.');
+
+        // Un texto de solo dígitos sí es el id (es como lo puede mandar un formulario).
+        $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => (string) $id, 'notas' => 'Texto de dígitos']);
+
+        $this->assertSame(200, $response->getStatusCode(), 'rechazar con el id como texto de dígitos: ' . $this->resumen($response));
+    }
+
+    /**
+     * Segunda vuelta, punto 6 — la ruta de un banco: ' 84', '84abc', '84.0' o '+84' no son el banco
+     * 84. Hasta este arreglo banco_del_dueno() hacía where('id', $id) con el texto de la ruta y MySQL
+     * lo casteaba: GET cheque-banco/84abc devolvía el banco 84 (propio, pero leído de un texto que no
+     * es un id), mientras DELETE cheque/84abc ya daba 404.
+     *
+     * @test
+     */
+    public function la_ruta_de_un_banco_que_no_es_un_entero_no_es_ningun_banco()
+    {
+        $banco_id = (int) $this->postJson('api/cheque-banco', ['name' => 'Banco lectura estricta'])->json('model.id');
+
+        $flojos = [
+            'un espacio adelante' => '%20' . $banco_id,
+            'letras atrás'        => $banco_id . 'abc',
+            'un decimal redondo'  => $banco_id . '.0',
+            'un signo'            => '%2B' . $banco_id,
+        ];
+
+        foreach ($flojos as $nombre => $flojo) {
+
+            $response = $this->getJson('api/cheque-banco/' . $flojo);
+            $this->assertSame(404, $response->getStatusCode(), 'GET cheque-banco con ' . $nombre . ': ' . $this->resumen($response));
+
+            $response = $this->putJson('api/cheque-banco/' . $flojo, ['name' => 'Pisado por ' . $nombre]);
+            $this->assertSame(404, $response->getStatusCode(), 'PUT cheque-banco con ' . $nombre . ': ' . $this->resumen($response));
+
+            $response = $this->deleteJson('api/cheque-banco/' . $flojo);
+            $this->assertSame(404, $response->getStatusCode(), 'DELETE cheque-banco con ' . $nombre . ': ' . $this->resumen($response));
+        }
+
+        $banco = ChequeBanco::find($banco_id);
+
+        $this->assertNotNull($banco, 'El banco no se borró.');
+        $this->assertSame('Banco lectura estricta', $banco->name, 'El banco no se renombró.');
+
+        // Su id de verdad sigue andando.
+        $this->getJson('api/cheque-banco/' . $banco_id)->assertStatus(200)->assertJsonPath('model.name', 'Banco lectura estricta');
+    }
+
+    /**
+     * Segunda vuelta, punto 6 — el `provider_id` de endosar: true, [N], 'Nabc' y 'N.0' son "sin
+     * proveedor" (el 422 de siempre, "Elegí el proveedor…"), no el proveedor 1 ni el N. Hasta este
+     * arreglo era un (int) pelado: true y [N] eran el proveedor 1, y 'Nabc' el N.
+     *
+     * @test
+     */
+    public function un_provider_id_que_no_es_un_entero_es_sin_proveedor()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente proveedor flojo ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => 'PFL-' . substr(uniqid(), -6)]);
+
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor flojo ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $foto = $recibido->fresh()->toArray();
+        $foto_cuenta = $this->foto_de_cuenta($cuenta_proveedor);
+        $current_acounts_antes = CurrentAcount::count();
+        $cheques_antes = Cheque::count();
+
+        $flojos = [
+            'true'               => true,
+            'un array'           => [$proveedor->id],
+            'letras atrás'       => $proveedor->id . 'abc',
+            'un decimal redondo' => $proveedor->id . '.0',
+        ];
+
+        foreach ($flojos as $nombre => $flojo) {
+
+            $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $recibido->id, 'provider_id' => $flojo]);
+
+            $this->assertSame(422, $response->getStatusCode(), 'endosar con provider_id ' . $nombre . ': ' . $this->resumen($response));
+            $this->assertSame('Elegí el proveedor al que le endosás el cheque.', $response->json('message'), 'endosar con provider_id ' . $nombre);
+        }
+
+        $this->assertEquals($foto, $recibido->fresh()->toArray(), 'El cheque sigue en cartera, sin marca.');
+        $this->assertCount(0, $this->copias_de($recibido));
+        $this->assertSame($cheques_antes, Cheque::count());
+        $this->assertSame($current_acounts_antes, CurrentAcount::count(), 'No se registró ningún pago.');
+        $this->assertEquals($foto_cuenta, $this->foto_de_cuenta($cuenta_proveedor));
+    }
+
+    /**
      * EL MECANISMO: toda ruta que llega a ChequeController o ChequeBancoController está declarada
      * en matriz_de_tenencia(), con cómo resuelve la tenencia de los ids que recibe y qué test lo
      * prueba. Una ruta nueva en esos controllers pone este test en rojo hasta que alguien la declare,
