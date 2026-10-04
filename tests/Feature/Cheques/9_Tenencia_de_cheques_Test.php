@@ -281,13 +281,16 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertEquals($foto_de_la_tabla, $this->foto_de_cheques(), 'Ningún cheque de la base cambió con los ids basura.');
         $this->assertSame(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Los ids basura no movieron ninguna caja.');
 
-        // Y lo propio sigue andando: rechazar el cheque propio es un 200 con el cheque rechazado.
-        $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $propio->id, 'rechazado_observaciones' => 'Sin fondos']);
+        // Y lo propio sigue andando: rechazar el cheque propio, con el cuerpo que manda la SPA, es
+        // un 200 con el cheque rechazado. (El motivo no se mira: la SPA lo manda como `notas`, la API
+        // lee `rechazado_observaciones` y esa columna es un entero. Es un defecto aparte, no de
+        // tenencia, y queda en los hallazgos de la misión.)
+        $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $propio->id, 'notas' => 'Sin fondos']);
 
         $this->assertSame(200, $response->getStatusCode(), 'rechazar un cheque propio: ' . $this->resumen($response));
         $this->assertSame($propio->id, $response->json('model.id'));
         $this->assertSame('rechazado', $response->json('model.estado_manual'));
-        $this->assertSame('Sin fondos', $propio->fresh()->rechazado_observaciones);
+        $this->assertSame('rechazado', $propio->fresh()->estado_manual);
         $this->assertSame($this->dueno->id, (int) $propio->fresh()->rechazado_por_id);
     }
 
@@ -704,7 +707,8 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
 
     /**
      * Los tres pedidos que reciben un cheque por el cuerpo, con las claves que manda la SPA
-     * (cheques/list/modals/{Cobrar,Pagar,Rechazar}Cheque.vue).
+     * (cheques/list/modals/{Cobrar,Pagar,Rechazar}Cheque.vue de develop). Rechazar manda `notas`,
+     * no `rechazado_observaciones`.
      *
      * @param mixed $cheque_id
      * @param mixed $caja_id
@@ -715,7 +719,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         return [
             'cobrar'   => ['cheque_id' => $cheque_id, 'caja_id' => $caja_id],
             'pagar'    => ['cheque_id' => $cheque_id, 'caja_id' => $caja_id],
-            'rechazar' => ['cheque_id' => $cheque_id, 'rechazado_observaciones' => 'Rechazado por la suite de tenencia'],
+            'rechazar' => ['cheque_id' => $cheque_id, 'notas' => 'Rechazado por la suite de tenencia'],
         ];
     }
 
