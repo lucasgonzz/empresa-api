@@ -34,8 +34,21 @@ class ChequeBancoController extends Controller
         return response()->json(['model' => $this->fullModel('ChequeBanco', $model->id)], 201);
     }
 
+    /**
+     * Un banco del catálogo, resuelto por banco_del_dueno() igual que update() y destroy(): un id
+     * de otra cuenta, o uno que no existe, es un 404.
+     *
+     * 🔴 No volver a un `fullModel('ChequeBanco', $id)` pelado (que es lo que había hasta el
+     * 3/10/2026, misión cheques-filtro-por-dueno): un id ajeno se contesta igual que uno
+     * inexistente; en una base compartida los ids son correlativos entre comercios, y así se leía
+     * el banco de cualquier comercio sumando 1 (y un id inexistente era un 200 con `model: null`).
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ChequeBanco', $id)], 200);
+        $model = $this->banco_del_dueno($id);
+        return response()->json(['model' => $this->fullModel('ChequeBanco', $model->id)], 200);
     }
 
     public function update(Request $request, $id) {
@@ -64,10 +77,15 @@ class ChequeBancoController extends Controller
     }
 
     /**
-     * El banco, scopeado por dueño: un id de otra cuenta es un 404, no un banco ajeno editado.
+     * El banco, scopeado por dueño: un id de otra cuenta es un 404, no un banco ajeno leído,
+     * editado o borrado. Es el resolvedor de show(), update() y destroy().
      *
      * @param  int  $id
      * @return \App\Models\ChequeBanco
+     *
+     * @throws \Illuminate\Database\Eloquent\ModelNotFoundException  Si el banco no es del dueño o no
+     *                                                                existe (Laravel lo contesta 404
+     *                                                                y no lo reporta).
      */
     protected function banco_del_dueno($id) {
         return ChequeBanco::where('user_id', $this->userId())
