@@ -264,6 +264,10 @@ class Variante_por_nombre_guarda_costo_y_ganancia_Test extends EmpresaTestCase
         $articulo = $this->articulo_con_costo('Zapatilla');
         $azul     = $this->variante($articulo, 'azul 36', 2000);
 
+        // `costo_real` distinto de `cost` (un articulo con descuento de proveedor o IVA al costo): asi
+        // cada clave tiene su propio valor y una no puede pasar por la otra.
+        Article::where('id', $articulo->id)->update(['costo_real' => 900]);
+
         $articulo = Article::find($articulo->id);
 
         $rutas = [
@@ -279,7 +283,9 @@ class Variante_por_nombre_guarda_costo_y_ganancia_Test extends EmpresaTestCase
             $this->assertArrayHasKey('cost_in_dollars', $fila, $ruta . ': falta `cost_in_dollars` en la raiz de la fila.');
 
             $this->assertEqualsWithDelta(1000, (float) $fila['cost'], self::DELTA, $ruta);
-            $this->assertEquals($articulo->costo_real, $fila['costo_real'], $ruta);
+            $this->assertNotNull($fila['costo_real'], $ruta . ': `costo_real` no puede venir en null si el articulo lo tiene.');
+            $this->assertEqualsWithDelta(900, (float) $fila['costo_real'], self::DELTA, $ruta);
+            $this->assertNotNull($fila['cost_in_dollars'], $ruta);
             $this->assertEquals(0, (int) $fila['cost_in_dollars'], $ruta);
 
             // El costo viaja igual que en el articulo anidado: no se expone nada nuevo.
@@ -371,6 +377,46 @@ class Variante_por_nombre_guarda_costo_y_ganancia_Test extends EmpresaTestCase
     }
 
     /**
+     * `costo_real` distinto de `cost`: `getCost()` prioriza `costo_real`, asi que la linea tiene que
+     * guardar ESE valor, tanto por nombre como escaneando el codigo (paridad). Si `build_row` mandara
+     * `cost` en la clave `costo_real` (o al reves) este test se pone rojo; con `costo_real == cost`
+     * en el fixture no se notaria.
+     *
+     * @test
+     */
+    public function el_costo_real_manda_sobre_el_costo_y_es_igual_por_nombre_y_por_codigo()
+    {
+        $articulo = $this->articulo_con_costo('Zapatilla');
+        $codigo   = 'zz' . substr(uniqid(), -9);
+        $azul     = $this->variante($articulo, 'azul 36', 2000, $codigo);
+
+        Article::where('id', $articulo->id)->update(['costo_real' => 900]);
+
+        $por_nombre = $this->vender_por_nombre($articulo, $azul, 2);
+
+        $this->assertEqualsWithDelta(900, (float) $por_nombre->cost, self::DELTA, 'La linea tiene que guardar `costo_real` (900), no `cost` (1000).');
+        $this->assertEqualsWithDelta((2000 - 900) * 2, (float) $por_nombre->ganancia, self::DELTA);
+
+        $res = $this->getJson('api/vender/buscar-articulo-por-codido/' . $codigo);
+        $res->assertStatus(200);
+        $body = $res->json();
+
+        $item = array_merge($body['article'], $body['variant_row'], [
+            'is_article'                  => true,
+            'article_variant_id'          => $body['variant_row']['variant_id'],
+            'price_type_personalizado_id' => 0,
+            'amount'                      => 2,
+            'price_vender'                => 2000,
+        ]);
+
+        $venta = $this->guardar_venta($this->payload_venta(1, $this->VALOR_DOLAR, [$item]));
+        $por_codigo = $this->pivot_de($venta, $articulo);
+
+        $this->assertEqualsWithDelta((float) $por_codigo->cost, (float) $por_nombre->cost, self::DELTA);
+        $this->assertEqualsWithDelta((float) $por_codigo->ganancia, (float) $por_nombre->ganancia, self::DELTA);
+    }
+
+    /**
      * Un articulo con `unidades_individuales`: el costo de la linea es el del bulto dividido por las
      * unidades. La fila de la variante no trae `unidades_individuales`; la API las lee de la base.
      *
@@ -452,6 +498,11 @@ class Variante_por_nombre_guarda_costo_y_ganancia_Test extends EmpresaTestCase
 
         $this->assertEqualsWithDelta(700, (float) $linea->price, self::DELTA);
         $this->assertEquals($azul->id, $linea->article_variant_id);
+
+        // Sin costo cargado no hay con que calcular: la linea queda sin costo y la ganancia es el
+        // precio. Es lo mismo que le pasa a un articulo sin variante en esa situacion.
+        $this->assertNull($linea->cost);
+        $this->assertEqualsWithDelta(700, (float) $linea->ganancia, self::DELTA);
     }
 
     /**
