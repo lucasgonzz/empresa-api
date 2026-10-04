@@ -10,14 +10,17 @@ use App\Notifications\GlobalNotification;
 use Illuminate\Support\Facades\Notification;
 
 /**
- * El mensaje del resultado de la importación dice lo que de verdad le pasó a cada fila.
+ * El mensaje del resultado de la importación dice solo lo que siempre es verdad de cada fila.
  *
  * Misión importacion-mensaje-de-problemas (4/10/2026). Importando la lista de la demo con
  * problemas, el aviso decía "La importacion termino con 3 filas que no se pudieron procesar por
  * codigos duplicados o incompletos en el Excel" y las tres filas se habían importado. De todos los
- * tipos de import_conflicts, el ÚNICO que saltea la fila es 'ambiguo' (ProcessRow::procesar()
- * corta antes de crear o actualizar); el resto la importa sin ese dato. El mensaje ahora cuenta
- * FILAS y separa las dos situaciones (ArticleImportHelper::contar_filas_con_problemas() y
+ * tipos de import_conflicts, el ÚNICO que seguro deja la fila afuera es 'ambiguo'
+ * (ProcessRow::procesar() corta antes de crear o actualizar). Con el resto el dato se descarta y
+ * la fila sigue, pero que después se cree o se actualice algo depende del resto de la importación
+ * ("Solo actualizar" sin match, otro proveedor, repetida por nombre o id) y no queda registrado:
+ * por eso el mensaje dice que esas filas "tienen datos para revisar", nunca que "se importaron".
+ * Cuenta FILAS y separa las dos situaciones (ArticleImportHelper::contar_filas_con_problemas() y
  * mensaje_de_resultado()); conflicts_count no cambia de significado: son problemas para revisar.
  *
  * Archivo 31_problemas_de_la_lista_de_la_demo.xlsx (ver generar_problemas_de_la_demo.php):
@@ -28,6 +31,10 @@ use Illuminate\Support\Facades\Notification;
  *   F6  repite PD-01 y su código de barras             -> fila_sobrescrita F2 -> F6 (no cuenta)
  *   F7  código de barras 7790007 (A7 y A8), "consultar" -> ambiguo + numero_invalido, NO se importa
  *
+ * (Lo de "se crea" vale con "Crear y actualizar". Con "Solo actualizar" ninguna de esas filas
+ * crea nada y el mensaje tiene que ser el mismo: ver
+ * test_solo_actualizar_no_afirma_que_las_filas_con_datos_para_revisar_se_importaron().)
+ *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
  */
@@ -36,6 +43,11 @@ class MensajeDeResultadoTest extends ImportTestCase
     const ARCHIVO = '31_problemas_de_la_lista_de_la_demo.xlsx';
 
     const BASE = 'Importación de Excel finalizada correctamente';
+
+    /** El mensaje del archivo entero: 1 fila no importada (F7) y 3 con datos para revisar (F3, F4, F5). */
+    const MENSAJE_DEL_ARCHIVO_ENTERO = 'Importación de Excel finalizada correctamente. 1 fila no se importó '
+        . 'porque no se pudo saber a qué artículo corresponde. 3 filas tienen datos para revisar. Revisá el '
+        . 'detalle en Historial de importaciones.';
 
     /**
      * Importa el fixture con la notificación falseada y devuelve el historial y la ÚNICA
@@ -83,12 +95,12 @@ class MensajeDeResultadoTest extends ImportTestCase
     }
 
     /**
-     * El archivo entero: una fila no se importó (F7) y tres se importaron con datos para
-     * revisar (F3, F4, F5). Y las dos cosas son verdad en la base.
+     * El archivo entero, con "Crear y actualizar": una fila no se importó (F7) y tres tienen
+     * datos para revisar (F3, F4, F5).
      *
      * @return void
      */
-    public function test_el_archivo_entero_separa_la_fila_no_importada_de_las_importadas_para_revisar()
+    public function test_el_archivo_entero_separa_la_fila_no_importada_de_las_que_tienen_datos_para_revisar()
     {
         list($import, $aviso) = $this->importar_y_capturar_el_aviso();
 
@@ -107,12 +119,7 @@ class MensajeDeResultadoTest extends ImportTestCase
             ArticleImportHelper::contar_filas_con_problemas($import->id)
         );
 
-        $this->assertSame(
-            'Importación de Excel finalizada correctamente. 1 fila no se importó porque su código coincide '
-            . 'con más de un artículo. 3 filas se importaron con datos para revisar. Revisá el detalle en '
-            . 'Historial de importaciones.',
-            $aviso->message_text
-        );
+        $this->assertSame(self::MENSAJE_DEL_ARCHIVO_ENTERO, $aviso->message_text);
 
         $this->assertStringNotContainsString('no se pudieron procesar', $aviso->message_text);
 
@@ -132,7 +139,11 @@ class MensajeDeResultadoTest extends ImportTestCase
         $this->assertSame(6, $aviso->import_stats['conflicts_count']);
         $this->assertSame((int) $import->id, $aviso->import_stats['import_history_id']);
 
-        /* "Se importaron" es verdad: F3, F4 y F5 crearon su artículo, sin el dato que no servía. */
+        /*
+         * Con "Crear y actualizar", F3, F4 y F5 crearon su artículo sin el dato que no servía.
+         * El mensaje igual no lo afirma: con "Solo actualizar" las mismas filas no crean nada
+         * (ver el test de abajo) y el aviso no puede saber cuál de las dos cosas pasó.
+         */
         $f3 = Article::where('user_id', $this->tenant->id)->where('provider_code', 'PD-03')->get();
         $this->assertCount(1, $f3, 'F3 (PD-03) se tiene que haber importado.');
         $this->assertSame('PROBLEMAS DEMO NIVEL SIN COSTO', $f3->first()->name);
@@ -164,8 +175,57 @@ class MensajeDeResultadoTest extends ImportTestCase
     }
 
     /**
-     * Solo la F5: una sola fila importada con un dato para revisar, en singular y sin la frase
-     * de "no se importó".
+     * El mismo archivo con "Solo actualizar" sobre una base que no tiene esos artículos: las
+     * filas 2 a 6 no matchean y NO crean nada (sin_match_no_creado no deja conflicto), y la F7
+     * sigue siendo ambigua. El mensaje tiene que ser el mismo que con "Crear y actualizar":
+     * hasta la segunda vuelta de la misión decía "3 filas se importaron con datos para revisar"
+     * con 0 artículos creados y 0 actualizados, y era falso.
+     *
+     * @return void
+     */
+    public function test_solo_actualizar_no_afirma_que_las_filas_con_datos_para_revisar_se_importaron()
+    {
+        list($import, $aviso) = $this->importar_y_capturar_el_aviso([
+            'create_and_edit' => false,
+        ]);
+
+        /* Los mismos problemas que con "Crear y actualizar". */
+        $this->assertSame([3, 3, 7], $this->filas_de_conflictos($import, 'numero_invalido'));
+        $this->assertSame([4], $this->filas_de_conflictos($import, 'sin_identificador'));
+        $this->assertSame([5], $this->filas_de_conflictos($import, 'placeholder_descartado'));
+        $this->assertSame([7], $this->filas_de_conflictos($import, 'ambiguo'));
+        $this->assertSame(6, (int) $import->conflicts_count);
+
+        $this->assertSame(
+            ['no_importadas' => 1, 'para_revisar' => 3],
+            ArticleImportHelper::contar_filas_con_problemas($import->id)
+        );
+
+        /* Y de verdad no se importó ninguna: ni creados ni actualizados. */
+        $this->assertCount(0, $this->articulos_creados(), 'Con "Solo actualizar" ninguna fila del archivo puede crear un artículo.');
+        $this->assertSame(0, (int) $import->created_models);
+        $this->assertSame(0, (int) $import->updated_models);
+
+        $a7 = $this->recargar('A7');
+        $a8 = $this->recargar('A8');
+        $this->assertSame('Art bar code repetido 1', $a7->name);
+        $this->assertSame('Art bar code repetido 2', $a8->name);
+        $this->assertDecimal(700, $a7->cost);
+        $this->assertDecimal(800, $a8->cost);
+
+        /*
+         * El mensaje no afirma que se importaron. Un assertStringNotContainsString('se importó')
+         * a secas no sirve: la frase de la F7 ("1 fila no se importó...") lo contiene y es
+         * verdad. Lo que no puede aparecer es un "se import..." que NO venga después de "no ".
+         */
+        $this->assertSame(self::MENSAJE_DEL_ARCHIVO_ENTERO, $aviso->message_text);
+        $this->assertStringNotContainsString('se importaron', $aviso->message_text);
+        $this->assertDoesNotMatchRegularExpression('/(?<!no )se import/u', $aviso->message_text);
+    }
+
+    /**
+     * Solo la F5: una sola fila con un dato para revisar, en singular y sin ningún "se
+     * importó" (ni afirmativo ni negativo).
      *
      * @return void
      */
@@ -184,12 +244,12 @@ class MensajeDeResultadoTest extends ImportTestCase
         );
 
         $this->assertSame(
-            'Importación de Excel finalizada correctamente. 1 fila se importó con datos para revisar. '
+            'Importación de Excel finalizada correctamente. 1 fila tiene datos para revisar. '
             . 'Revisá el detalle en Historial de importaciones.',
             $aviso->message_text
         );
 
-        $this->assertStringNotContainsString('no se import', $aviso->message_text);
+        $this->assertStringNotContainsString('se import', $aviso->message_text);
     }
 
     /**
@@ -282,8 +342,8 @@ class MensajeDeResultadoTest extends ImportTestCase
     public function test_mensaje_una_fila_no_importada_va_en_singular()
     {
         $this->assertSame(
-            'Importación de Excel finalizada correctamente. 1 fila no se importó porque su código coincide '
-            . 'con más de un artículo. Revisá el detalle en Historial de importaciones.',
+            'Importación de Excel finalizada correctamente. 1 fila no se importó porque no se pudo saber '
+            . 'a qué artículo corresponde. Revisá el detalle en Historial de importaciones.',
             ArticleImportHelper::mensaje_de_resultado(1, 1, 0)
         );
     }
@@ -296,9 +356,9 @@ class MensajeDeResultadoTest extends ImportTestCase
     public function test_mensaje_plural_de_las_dos_situaciones_con_miles()
     {
         $this->assertSame(
-            'Importación de Excel finalizada correctamente. 1.234 filas no se importaron porque su código '
-            . 'coincide con más de un artículo. 2 filas se importaron con datos para revisar. Revisá el '
-            . 'detalle en Historial de importaciones.',
+            'Importación de Excel finalizada correctamente. 1.234 filas no se importaron porque no se pudo '
+            . 'saber a qué artículo corresponden. 2 filas tienen datos para revisar. Revisá el detalle en '
+            . 'Historial de importaciones.',
             ArticleImportHelper::mensaje_de_resultado(1500, 1234, 2)
         );
     }

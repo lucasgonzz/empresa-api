@@ -13,8 +13,11 @@
  * el aviso decía "La importacion termino con 3 filas que no se pudieron procesar por codigos
  * duplicados o incompletos en el Excel", y era falso: las tres filas se habían importado (una sin
  * costo, una sin códigos, una sin código de barras). De todos los tipos de import_conflicts, el
- * único que saltea la fila es 'ambiguo'; el resto la importa sin ese dato. Este fixture tiene un
- * caso de cada situación para que el mensaje no pueda volver a mezclarlas:
+ * único que seguro deja la fila afuera es 'ambiguo'; con el resto el dato se descarta y la fila
+ * sigue, y que después cree o actualice algo depende del resto de la importación. Este fixture
+ * tiene un caso de cada situación para que el mensaje no pueda volver a mezclarlas. Lo de "se
+ * crea" de abajo vale con "Crear y actualizar"; con "Solo actualizar" las filas 2 a 6 no crean
+ * nada y el mensaje tiene que ser el mismo:
  *
  *   F2 - PD-01 con código de barras nuevo, costo 1000 ............... se crea limpio
  *   F3 - PD-03, costo "consultar" Y precio "consultar" ............... 2 numero_invalido, UNA fila;
@@ -30,8 +33,8 @@
  *                                                                      la fila NO se importa
  *
  * Esperado sobre el archivo entero: conflicts_count = 6 (los dos de F3, F4, F5 y los dos de F7),
- * 1 fila no importada (F7) y 3 filas importadas con datos para revisar (F3, F4 y F5; la F7 no
- * cuenta acá porque no se importó). Ver MensajeDeResultadoTest.
+ * 1 fila no importada (F7) y 3 filas con datos para revisar (F3, F4 y F5; la F7 no cuenta acá
+ * porque no se importó). Ver MensajeDeResultadoTest.
  *
  * Mismo criterio de tipos que generar_filas_del_excel.php:
  *
