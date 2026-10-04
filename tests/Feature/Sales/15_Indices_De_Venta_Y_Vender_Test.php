@@ -3,6 +3,7 @@
 namespace Tests\Feature\Sales;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\VenderController;
 use App\Models\Article;
@@ -30,7 +31,8 @@ use Tests\TestCase;
  *        agregarles select(): siguen devolviendo lo mismo que antes, con la misma ventana de 5
  *        segundos para la guarda anti-duplicados.
  *   5.   Que Article::scopeWithAllSinAcopio() es exactamente withAll() menos
- *        sales_with_deliveries_in_acopio, y que VenderController ya no usa withAll() en el escaneo.
+ *        sales_with_deliveries_in_acopio, y que el escaneo ya no usa withAll() (VenderController y,
+ *        desde la mision balanzas-configurables, la lectura de tickets de BalanzaHelper).
  *
  * Se prueba contra MySQL real (empresa_testing_s10): la migracion y las guardas de idempotencia leen
  * information_schema.STATISTICS, que no existe en sqlite. Con otro driver, se saltea con
@@ -345,11 +347,23 @@ class Indices_De_Venta_Y_Vender_Test extends TestCase
             'withAllSinAcopio no puede cargar nada que withAll no cargue.');
 
         // Regresion barata contra "alguien revirtio el arreglo sin querer en un merge": ninguno de
-        // los 3 metodos del escaneo puede volver a llamar ->withAll(). Patron de lectura de fuente
-        // por reflexion de Demo/AvisoDeSetupCompletadoTest.php:441-449.
-        foreach (['search_bar_code', 'check_balanza', 'check_balanza_plu'] as $metodo) {
+        // los metodos del escaneo que traen articulos puede volver a llamar ->withAll(). Patron de
+        // lectura de fuente por reflexion de Demo/AvisoDeSetupCompletadoTest.php:441-449.
+        //
+        // Cambio declarado de la mision balanzas-configurables (3/10/2026): `check_balanza` y
+        // `check_balanza_plu` dejaron de existir en VenderController (el primero se borro y el
+        // segundo se movio a BalanzaHelper::leer_ticket_por_plu), y la lectura de tickets por
+        // balanza es nueva (BalanzaHelper::leer_ticket_por_balanzas). La guardia mira esos metodos;
+        // la intencion no cambia.
+        $metodos = [
+            [VenderController::class, 'search_bar_code'],
+            [BalanzaHelper::class, 'leer_ticket_por_balanzas'],
+            [BalanzaHelper::class, 'leer_ticket_por_plu'],
+        ];
 
-            $reflexion = new ReflectionMethod(VenderController::class, $metodo);
+        foreach ($metodos as $clase_y_metodo) {
+
+            $reflexion = new ReflectionMethod($clase_y_metodo[0], $clase_y_metodo[1]);
 
             $lineas = file($reflexion->getFileName());
 
@@ -360,8 +374,8 @@ class Indices_De_Venta_Y_Vender_Test extends TestCase
             ));
 
             $this->assertStringNotContainsString('->withAll()', $cuerpo,
-                'VenderController::' . $metodo . '() no puede volver a usar withAll(): tiene que usar '
-                . 'withAllSinAcopio(), que es el arreglo de performance de esta mision.');
+                class_basename($clase_y_metodo[0]) . '::' . $clase_y_metodo[1] . '() no puede volver a usar '
+                . 'withAll(): tiene que usar withAllSinAcopio(), que es el arreglo de performance de esta mision.');
         }
     }
 }

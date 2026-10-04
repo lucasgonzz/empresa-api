@@ -1451,6 +1451,42 @@ class ArticlePricesHelper {
         return $cost_bruto / (1 + ($alicuota / 100));
     }
 
+    /**
+     * Misión `masiva-costo-neto-o-bruto` (3/10/2026) — Inverso de back_out_iva(): le SUMA el IVA a un
+     * costo NETO con la alícuota propia del artículo, para saber cuánto es ese mismo costo en BRUTO.
+     *
+     * Existe para un único uso: la actualización masiva de costos con "Redondear resultado" cuando
+     * la persona declaró que el costo es BRUTO (MasiveUpdateHelper::variar_costo_en_bruto()). Ahí lo
+     * que se quiere redondeado es el número que ella ve —el bruto—, así que hay que ir y volver:
+     * neto → bruto, aplicar el %, redondear, bruto → neto.
+     *
+     * Mismos criterios que back_out_iva(): recarga la relación `iva` (por si el `iva_id` cambió en
+     * memoria dentro de la misma masiva) y respeta hasIva(): un artículo Exento, No Gravado o al 0%
+     * no tiene IVA que sumar, y el bruto es igual al neto.
+     *
+     * Fórmula: bruto = neto × (1 + alicuota/100).
+     *
+     * @param  \App\Models\Article $article    Artículo cuya alícuota se usa.
+     * @param  float|string        $cost_neto  Costo sin IVA.
+     * @return float                           Costo con IVA incluido (o el mismo neto si no hay IVA).
+     */
+    static function sumar_iva($article, $cost_neto) {
+
+        $cost_neto = (float)$cost_neto;
+
+        if (is_null($article)) {
+            return $cost_neto;
+        }
+
+        $article->load('iva');
+
+        if (!Self::hasIva($article)) {
+            return $cost_neto;
+        }
+
+        return $cost_neto * (1 + ((float)$article->iva->percentage / 100));
+    }
+
     static function aplicar_descuentos($article, $price, $des = []) {
 
         if (count($article->article_discounts) >= 1) {

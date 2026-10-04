@@ -300,6 +300,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // cheques-endoso-y-bancos, 21/9/2026). También baja por recursos-iniciales.
     Route::resource('cheque-banco', 'ChequeBancoController');
 
+    // Balanzas del comercio: cómo leer los tickets de cada una y a qué artículo imputarlos, para la
+    // lectura "por balanza" de VENDER (misión balanzas-configurables, 3/10/2026). También baja por
+    // recursos-iniciales (la SPA las usa para leer tickets sin conexión).
+    Route::resource('balanza', 'BalanzaController')->except(['create', 'edit']);
+
     // Override de liquidación/comisión por método de pago dentro de una caja (Grupo 223 · Prompt 01)
     // 'index' y 'show' se excluyen del resource porque comparten el mismo patrón de URI
     // (`{param}` único) y colisionarían entre sí; se define el listado filtrado por caja_id
@@ -434,9 +439,18 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('deposit-movement', 'DepositMovementController');
     Route::get('deposit-movement/from-date/{from_date?}/{until_date?}', 'DepositMovementController@index');
 
+    // Botón "Mover stock" e historial de modificaciones de artículos (misión
+    // movimientos-deposito-auditoria, 3/10/2026). `{id}/move-stock` tiene tres segmentos y no
+    // choca con ninguna ruta del resource.
+    Route::post('deposit-movement/{id}/move-stock', 'DepositMovementController@move_stock');
+    Route::get('deposit-movement-modifications/{deposit_movement_id}', 'DepositMovementModificationController@index');
+
     Route::get('deposit-movement-en-curso', 'DepositMovementController@en_curso');
 
-    Route::get('deposit-movement-status', 'DepositMovementStatusController@index');
+    // ABM de estados de movimientos (misión movimientos-deposito-auditoria, 3/10/2026): fijos
+    // (En proceso / Recibido, user_id NULL) + propios de cada comercio. El GET de la misma URL
+    // sigue siendo el index de siempre (lo usa también recursos-iniciales).
+    Route::resource('deposit-movement-status', 'DepositMovementStatusController')->except(['create', 'edit']);
 
 
     // Metodos de pago para facturar
