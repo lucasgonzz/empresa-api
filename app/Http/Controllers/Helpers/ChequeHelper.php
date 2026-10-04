@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Cheque;
 use App\Models\ChequeBanco;
 use App\Models\Client;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
@@ -297,7 +298,7 @@ class ChequeHelper {
      *
      * - Un pago (CurrentAcount): su proveedor tiene que ser un proveedor del dueño, con la misma
      *   consulta que el 422 de ChequeController::endosar() (id_del_dueno(): uno borrado cuenta como
-     *   inexistente).
+     *   inexistente), y su `credit_account_id` —adonde va la plata— una cuenta DE ese proveedor.
      * - Un gasto (Expense): `expenses.user_id` tiene que ser el dueño. Es seguro pedirlo: las tres
      *   puertas que crean un gasto con métodos de pago (ExpenseController::store, la Agenda y el
      *   asistente) pasan por ExpenseHelper::crear() con el dueño de la cuenta, y nada lo cambia
@@ -316,6 +317,27 @@ class ChequeHelper {
             if (is_null(self::id_del_dueno(Provider::class, $model->provider_id, $user_id))) {
 
                 throw new \RuntimeException(self::MENSAJE_PROVEEDOR_AJENO);
+            }
+
+            /*
+             * 🔴 Y la plata va adonde dice el rótulo. El pago escribe en `credit_account_id` (el
+             * create, el saldo y el recálculo de CurrentAcountPagoAltaHelper::registrar()), no en
+             * `provider_id`: hasta el 3/10/2026 un pago con un proveedor PROPIO en `model_id` y la
+             * cuenta corriente del proveedor de OTRO comercio en `credit_account_id` endosaba el
+             * cheque y le bajaba la cuenta al otro comercio. La cuenta tiene que ser DE ese
+             * proveedor, que ya se verificó que es de esta cuenta.
+             */
+            if (!is_null($model->credit_account_id)) {
+
+                $es_su_cuenta = CreditAccount::where('id', $model->credit_account_id)
+                                                ->where('model_name', 'provider')
+                                                ->where('model_id', $model->provider_id)
+                                                ->exists();
+
+                if (!$es_su_cuenta) {
+
+                    throw new \RuntimeException(self::MENSAJE_PROVEEDOR_AJENO);
+                }
             }
 
             return;
