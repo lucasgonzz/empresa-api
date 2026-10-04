@@ -9,11 +9,13 @@ use App\Http\Controllers\Helpers\import\ArticleImportHistoryHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ArticleImportResult;
+use App\Models\ImportConflict;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Models\Provider;
 use App\Models\UnidadMedida;
 use App\Notifications\GlobalNotification;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ArticleImportHelper {
@@ -76,7 +78,11 @@ class ArticleImportHelper {
             'articulos_creados_con_codigo_repetido' => (int) $import_history->created_with_repeated_code_count,
             /* ID del historial para que el frontend pueda pedir la lista expandible. */
             'import_history_id'                     => (int) $import_history->id,
-            /* Filas con conflicto (ambiguas, placeholder descartado o sin identificador). */
+            /*
+             * Problemas para revisar: todos los tipos de import_conflicts menos los
+             * informativos (ImportConflict::TIPOS_QUE_NO_CUENTAN). Cuenta problemas, no
+             * filas, y NO son filas que no se pudieron procesar: ver ImportConflict.
+             */
             'conflicts_count'                       => (int) $import_history->conflicts_count,
         ];
 
@@ -84,17 +90,33 @@ class ArticleImportHelper {
         $import_options = Self::build_import_options_for_notification($import_history);
 
         /*
-         * Si hubo conflictos (identificadores ambiguos, placeholders descartados o filas sin
-         * identificador), se agrega una línea al mensaje avisando que hay que revisar el Excel
-         * (prompt 02, grupo 229). Si conflicts_count es 0, el mensaje queda igual que antes.
+         * El mensaje cuenta FILAS y separa las que no se importaron de las que se importaron
+         * con datos para revisar (misión importacion-mensaje-de-problemas, 4/10/2026). Hasta
+         * esa misión decía "N filas que no se pudieron procesar" con N = conflicts_count, y era
+         * falso dos veces: conflicts_count cuenta problemas y no filas, y de todos los tipos el
+         * único que saltea la fila es 'ambiguo'.
+         *
+         * El conteo es una consulta sobre import_conflicts, una sola vez por importación. Si
+         * falla, el aviso sale igual: con los dos conteos en 0, mensaje_de_resultado() cae en
+         * la red de seguridad de conflicts_count. Una importación que ya terminó no se queda
+         * sin aviso (ni se reintenta entera) por un problema de presentación.
          */
-        $message_text = 'Importacion de Excel finalizada correctamente';
+        $filas_con_problemas = ['no_importadas' => 0, 'para_revisar' => 0];
 
-        if ((int) $import_history->conflicts_count > 0) {
-            $message_text .= '. La importacion termino con ' . (int) $import_history->conflicts_count
-                . ' filas que no se pudieron procesar por codigos duplicados o incompletos en el Excel. '
-                . 'Revisalas desde Historial de importaciones para corregir el archivo.';
+        try {
+            $filas_con_problemas = Self::contar_filas_con_problemas($import_history->id);
+        } catch (\Throwable $e) {
+            Log::warning('ArticleImportHelper::enviar_notificacion: no se pudieron contar las filas con problemas, el aviso sale con conflicts_count.', [
+                'import_history_id' => $import_history->id,
+                'error'             => $e->getMessage(),
+            ]);
         }
+
+        $message_text = Self::mensaje_de_resultado(
+            $import_history->conflicts_count,
+            $filas_con_problemas['no_importadas'],
+            $filas_con_problemas['para_revisar']
+        );
 
         $user->notify(new GlobalNotification([
         	'message_text'				=> $message_text,
@@ -112,6 +134,140 @@ class ArticleImportHelper {
         Log::info('Se ejecuto ArticleImportHelper enviar_notificacion');
 
 	}
+
+    /**
+     * Cuenta las FILAS del Excel (no los problemas) que dejaron algo en import_conflicts,
+     * separadas en las dos situaciones que el mensaje del resultado distingue (misión
+     * importacion-mensaje-de-problemas, 4/10/2026):
+     *
+     *   - no_importadas: filas con algún tipo de ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA
+     *     (hoy solo 'ambiguo'): ProcessRow::procesar() corta antes de crear o actualizar.
+     *   - para_revisar: filas con algún tipo que no está en TIPOS_QUE_NO_CUENTAN ni en
+     *     TIPOS_QUE_SALTEAN_LA_FILA. Se importaron, pero sin algún dato (un número inválido,
+     *     un código descartado, sin códigos...). Una fila que ya cuenta como no importada NO
+     *     se cuenta acá aunque traiga otro problema: no se importó. Un tipo que esta versión
+     *     no conoce cae acá, igual que en conflicts_count.
+     *
+     * Los conflictos con `fila` null no se cuentan. Es UNA consulta agregada (un GROUP BY
+     * por fila adentro de una subconsulta), así que un Excel con miles de conflictos no
+     * trae miles de filas a PHP.
+     *
+     * @param  int  $import_history_id
+     * @return array  ['no_importadas' => int, 'para_revisar' => int]
+     */
+    static function contar_filas_con_problemas($import_history_id) {
+
+        $tipos_que_saltean = ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA;
+        $tipos_que_no_son_para_revisar = array_merge(
+            ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA,
+            ImportConflict::TIPOS_QUE_NO_CUENTAN
+        );
+
+        /* Las guardas de lista vacía evitan un "IN ()", que es SQL inválido. */
+        $saltea = '0';
+        if (count($tipos_que_saltean) > 0) {
+            $saltea = 'MAX(CASE WHEN tipo IN (' . implode(',', array_fill(0, count($tipos_que_saltean), '?')) . ') THEN 1 ELSE 0 END)';
+        }
+
+        $para_revisar = 'MAX(1)';
+        if (count($tipos_que_no_son_para_revisar) > 0) {
+            $para_revisar = 'MAX(CASE WHEN tipo NOT IN (' . implode(',', array_fill(0, count($tipos_que_no_son_para_revisar), '?')) . ') THEN 1 ELSE 0 END)';
+        }
+
+        /* Una fila por fila del Excel: ¿tiene algún tipo que la saltea? ¿alguno para revisar? */
+        $por_fila = DB::table('import_conflicts')
+            ->selectRaw(
+                'fila, ' . $saltea . ' AS saltea, ' . $para_revisar . ' AS para_revisar',
+                array_merge($tipos_que_saltean, $tipos_que_no_son_para_revisar)
+            )
+            ->where('import_history_id', $import_history_id)
+            ->whereNotNull('fila')
+            ->groupBy('fila');
+
+        $totales = DB::query()
+            ->fromSub($por_fila, 'por_fila')
+            ->selectRaw(
+                'COALESCE(SUM(saltea), 0) AS no_importadas, '
+                . 'COALESCE(SUM(CASE WHEN saltea = 0 AND para_revisar = 1 THEN 1 ELSE 0 END), 0) AS para_revisar'
+            )
+            ->first();
+
+        return [
+            'no_importadas' => is_null($totales) ? 0 : (int) $totales->no_importadas,
+            'para_revisar'  => is_null($totales) ? 0 : (int) $totales->para_revisar,
+        ];
+    }
+
+    /**
+     * Arma el texto del aviso de resultado de la importación. Función pura: no consulta
+     * nada (los conteos los trae contar_filas_con_problemas()).
+     *
+     *   - Base: "Importación de Excel finalizada correctamente", sin punto final si no hay
+     *     nada más que decir (como siempre).
+     *   - Filas que no se importaron (código que coincide con más de un artículo).
+     *   - Filas que se importaron con datos para revisar.
+     *   - Red de seguridad: si las dos cuentas por fila dan 0 pero conflicts_count no (los
+     *     conflictos sin fila, o el conteo falló), se dice cuántos PROBLEMAS quedaron, para
+     *     no callar algo que el historial sí va a mostrar.
+     *   - Si se agregó algo, cierra mandando al historial.
+     *
+     * Los números van con separador de miles a la argentina (1.234).
+     *
+     * @param  int  $conflicts_count       problemas para revisar del historial.
+     * @param  int  $filas_no_importadas   ver contar_filas_con_problemas().
+     * @param  int  $filas_para_revisar    ver contar_filas_con_problemas().
+     * @return string
+     */
+    static function mensaje_de_resultado($conflicts_count, $filas_no_importadas, $filas_para_revisar) {
+
+        $conflicts_count     = (int) $conflicts_count;
+        $filas_no_importadas = (int) $filas_no_importadas;
+        $filas_para_revisar  = (int) $filas_para_revisar;
+
+        $mensaje = 'Importación de Excel finalizada correctamente';
+
+        $agregados = [];
+
+        if ($filas_no_importadas > 0) {
+            if ($filas_no_importadas === 1) {
+                $agregados[] = '1 fila no se importó porque su código coincide con más de un artículo';
+            } else {
+                $agregados[] = Self::numero_es_ar($filas_no_importadas) . ' filas no se importaron porque su código coincide con más de un artículo';
+            }
+        }
+
+        if ($filas_para_revisar > 0) {
+            if ($filas_para_revisar === 1) {
+                $agregados[] = '1 fila se importó con datos para revisar';
+            } else {
+                $agregados[] = Self::numero_es_ar($filas_para_revisar) . ' filas se importaron con datos para revisar';
+            }
+        }
+
+        if (count($agregados) === 0 && $conflicts_count > 0) {
+            if ($conflicts_count === 1) {
+                $agregados[] = 'Quedó 1 problema para revisar';
+            } else {
+                $agregados[] = 'Quedaron ' . Self::numero_es_ar($conflicts_count) . ' problemas para revisar';
+            }
+        }
+
+        if (count($agregados) === 0) {
+            return $mensaje;
+        }
+
+        return $mensaje . '. ' . implode('. ', $agregados) . '. Revisá el detalle en Historial de importaciones.';
+    }
+
+    /**
+     * Entero con separador de miles a la argentina: 1234 -> "1.234".
+     *
+     * @param  int  $numero
+     * @return string
+     */
+    protected static function numero_es_ar($numero) {
+        return number_format((int) $numero, 0, ',', '.');
+    }
 
     /**
      * Arma el payload de configuración de importación para el modal del SPA.
