@@ -200,7 +200,7 @@ class RepetidosEnElArchivoTest extends ImportTestCase
 
         $this->assertNotNull($conflicto, 'Tiene que quedar registrado el conflicto de sku sin asignar.');
         $this->assertSame('SKU-NUEVO-DUP', $conflicto->valor, 'El conflicto tiene que informar el sku que no se pudo asignar.');
-        $this->assertSame(2, (int) $conflicto->fila, 'PC-DUP es la fila 2 (F3) de 01_codigos_de_proveedor.xlsx.');
+        $this->assertSame(3, (int) $conflicto->fila, 'PC-DUP es la fila 3 del Excel (F3) de 01_codigos_de_proveedor.xlsx.');
 
         $article_ids = $conflicto->article_ids;
         $this->assertIsArray($article_ids, 'El conflicto tiene que guardar los ids de los articulos que matchearon.');
@@ -291,15 +291,14 @@ class RepetidosEnElArchivoTest extends ImportTestCase
     /**
      * Cada repetición reporta qué fila sobrescribió a cuál.
      *
-     * OJO con la numeración: `fila` en ImportConflict es el índice 1-based DENTRO
-     * de las filas de datos (F2 = 1, F3 = 2, ..., F10 = 9), no el número de fila
-     * de la planilla — así lo fija ProcessRow::$fila_actual (arranca en 0 y se
-     * incrementa antes de procesar cada fila) y así lo asertan ya los tests
-     * existentes de CodigosDeBarraRepetidosTest (p.ej. F5->F6 se reporta como
-     * fila=4, fila_ganadora=5). Traducido a esa convención:
-     *   F2->F3 (bar_code)      = 1->2
-     *   F4->F5 (sku)           = 3->4
-     *   F8->F9->F10 (provider) = 7->8, 8->9
+     * `fila` y `fila_ganadora` en ImportConflict son el número de fila de la
+     * planilla, el mismo que ve el usuario: F2->F3 se reporta como 2->3. Hasta el
+     * 4/10/2026 era el "índice de fila de datos" (F2 = 1, ..., F10 = 9) y este test
+     * lo asertaba así; esa convención era el defecto de la misión
+     * fila-sobrescrita-corrida (ver FilasDelExcelEnConflictosTest).
+     *   F2->F3 (bar_code)      = 2->3
+     *   F4->F5 (sku)           = 4->5
+     *   F8->F9->F10 (provider) = 8->9, 9->10
      *
      * @return void
      */
@@ -312,9 +311,9 @@ class RepetidosEnElArchivoTest extends ImportTestCase
         $sobrescrituras = $this->sobrescrituras($import);
 
         $this->assertSame(
-            [1 => 2, 3 => 4, 7 => 8, 8 => 9],
+            [2 => 3, 4 => 5, 8 => 9, 9 => 10],
             $sobrescrituras,
-            'Las sobrescrituras tienen que ser exactamente F2->F3, F4->F5, F8->F9 y F9->F10 (en índice de fila de datos: 1->2, 3->4, 7->8, 8->9).'
+            'Las sobrescrituras tienen que ser exactamente F2->F3, F4->F5, F8->F9 y F9->F10.'
         );
     }
 
