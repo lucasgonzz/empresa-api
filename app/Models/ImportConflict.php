@@ -35,30 +35,40 @@ use Illuminate\Database\Eloquent\Model;
  * duplicados deja cientos de conflictos idénticos que no le sirven a nadie.
  *
  * QUÉ LE PASA A LA FILA SEGÚN EL TIPO (misión importacion-mensaje-de-problemas,
- * 4/10/2026, leído de ProcessRow::procesar()):
+ * 4/10/2026, leído de ProcessRow::procesar() y ArticleIndexCache::find_with_index()):
  *
- *   - SALTEA la fila, no se crea ni se actualiza nada: 'ambiguo' (el identificador
- *     coincide con más de un artículo). Es el ÚNICO; ver TIPOS_QUE_SALTEAN_LA_FILA.
- *     Una fila ambigua puede traer además conflictos anteriores al match (un
- *     numero_invalido, un placeholder_descartado, un desempate_por_nombre_sin_resolver):
- *     igual cuenta como fila NO importada, no como "importada con datos para revisar".
- *   - PROCESA la fila SIN un dato: 'numero_invalido' y 'numero_fuera_de_rango' (ese
- *     campo no se toca), 'placeholder_descartado' (sin ese código),
- *     'sin_identificador' (sin códigos: se busca por nombre o se crea),
- *     'identificador_sin_asignar' (se aplica a los artículos que matchearon, sin ese
- *     código único) y 'desempate_por_nombre_sin_resolver' (se aplica a todos los
- *     candidatos).
- *   - INFORMATIVOS, la fila se resolvió bien y no hay nada que corregir:
- *     'fila_sobrescrita' (quedó la última fila con ese código) y
- *     'columna_de_precio_ignorada' (misión 44: se aplicó todo menos la columna de precio
- *     que el artículo no usa, porque se maneja por la otra). Ver TIPOS_QUE_NO_CUENTAN.
+ *   - 'ambiguo' es el ÚNICO tipo que SEGURO deja la fila afuera: no se crea ni se
+ *     actualiza nada (ver TIPOS_QUE_SALTEAN_LA_FILA). No siempre es "el código coincide
+ *     con más de un artículo": también sale por NOMBRE en una fila sin código que
+ *     coincide con varios artículos, y cuando la fila coincide con UN solo artículo que
+ *     creó esta misma importación en otro lote (incidente Servian). Lo que tienen en
+ *     común es que no se pudo saber a qué artículo corresponde la fila. Una fila ambigua
+ *     puede traer además conflictos anteriores al match (un numero_invalido, un
+ *     placeholder_descartado, un desempate_por_nombre_sin_resolver): igual cuenta como
+ *     fila que no se importó.
+ *   - Con el resto de los tipos que cuentan, el DATO se descarta y la fila SIGUE:
+ *     'numero_invalido' y 'numero_fuera_de_rango' (ese campo no se toca),
+ *     'placeholder_descartado' (ese código se anula), 'sin_identificador' (sin códigos,
+ *     se busca por nombre), 'identificador_sin_asignar' (ese código único no se asigna)
+ *     y 'desempate_por_nombre_sin_resolver' (se aplica a todos los candidatos). Después
+ *     la fila se crea, se actualiza o NO, según el resto de la importación: "Solo
+ *     actualizar" sin match, artículo de otro proveedor, fila repetida por nombre o por
+ *     id en el mismo Excel. Ese destino NO queda registrado en import_conflicts, así que
+ *     de una fila con estos tipos no se puede afirmar que "se importó": tiene datos para
+ *     revisar, y nada más.
+ *   - INFORMATIVOS, no hay nada que corregir: 'fila_sobrescrita' (quedó la última fila
+ *     con ese código) y 'columna_de_precio_ignorada' (misión 44: al actualizar se aplicó
+ *     todo menos la columna de precio que el artículo no usa, porque se maneja por la
+ *     otra). Ver TIPOS_QUE_NO_CUENTAN.
  *
  * `conflicts_count` (ImportHistory y ArticleImportResult) suma TODOS los tipos menos
  * los informativos: son "problemas para revisar", no "filas que no se pudieron
  * procesar". Cuenta problemas, no filas (una fila con costo y precio inválidos suma 2).
- * El mensaje del resultado, en cambio, cuenta FILAS y separa las no importadas de las
- * importadas con datos para revisar: ArticleImportHelper::contar_filas_con_problemas().
- * Ver ActualizarBBDD::persistir_conflictos().
+ * El mensaje del resultado, en cambio, cuenta FILAS: las que no se importaron (los
+ * tipos que saltean la fila) y las que tienen datos para revisar (el resto), sin
+ * afirmar qué pasó después con estas últimas:
+ * ArticleImportHelper::contar_filas_con_problemas(). Ver
+ * ActualizarBBDD::persistir_conflictos().
  *
  * Se persiste en bloque (insert masivo) al cerrar cada chunk de importación
  * desde ActualizarBBDD::persistir_conflictos(). Ver ProcessRow::get_conflictos().
@@ -75,8 +85,9 @@ class ImportConflict extends Model
 
     /**
      * Tipos con los que ProcessRow::procesar() saltea la fila entera: no crea ni actualiza
-     * nada (el `return` antes de crear o actualizar). Hoy es solo 'ambiguo'. El mensaje del
-     * resultado cuenta estas filas como "no se importó"
+     * nada (el `return` antes de crear o actualizar). Hoy es solo 'ambiguo'. Es lo único
+     * que seguro deja la fila afuera, y el mensaje del resultado cuenta estas filas como
+     * "no se importó porque no se pudo saber a qué artículo corresponde"
      * (ArticleImportHelper::contar_filas_con_problemas()).
      */
     public const TIPOS_QUE_SALTEAN_LA_FILA = ['ambiguo'];

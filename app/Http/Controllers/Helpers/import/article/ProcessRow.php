@@ -4241,8 +4241,9 @@ class ProcessRow {
      * bien (la fila ganadora prevalece). Por eso NO suma a conflicts_count (está en
      * ImportConflict::TIPOS_QUE_NO_CUENTAN; ver ActualizarBBDD::persistir_conflictos()).
      * Eso no quiere decir que los demás tipos sean filas que no se procesaron: el único
-     * que saltea la fila es 'ambiguo', el resto la importa sin ese dato (ver el docblock
-     * de ImportConflict).
+     * que seguro deja la fila afuera es 'ambiguo'. Con el resto el dato se descarta y la
+     * fila sigue; que después se cree, se actualice o no depende del resto de la
+     * importación y no queda registrado (ver el docblock de ImportConflict).
      *
      * IMPORTANTE sobre los nombres: $fila es la fila que PIERDE (la que ya estaba
      * encolada), $fila_ganadora es la fila que se está procesando AHORA mismo

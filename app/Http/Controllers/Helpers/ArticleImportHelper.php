@@ -56,15 +56,22 @@ class ArticleImportHelper {
         	],
         ];
 
-        /* Compatibilidad con global-notification y modal dedicado article_import_result. */
+        /*
+         * Compatibilidad con global-notification y modal dedicado article_import_result.
+         *
+         * ⚠️ Cada párrafo tiene que seguir empezando con el número pelado, SIN separador de
+         * miles: el modal del SPA, cuando no le llegan import_stats, saca las tarjetas de acá
+         * con /^(\d+)\s+(.+)$/ (ArticleImportResultModal::parse_stats_from_info_to_show()), y
+         * un "1.234" ya no matchea.
+         */
         $info_to_show = [
         	[
-        		'title'		=> 'Resultado de la operacion',
+        		'title'		=> 'Resultado de la operación',
         		'parrafos'	=> [
-        			$import_history->filas_procesadas. ' filas procesadas',
-        			$import_history->created_models. ' articulos creados',
-        			$import_history->articles_match. ' articulos macheados',
-        			$import_history->updated_models. ' articulos actualizados',
+        			Self::cantidad_y_texto($import_history->filas_procesadas, 'fila procesada', 'filas procesadas'),
+        			Self::cantidad_y_texto($import_history->created_models, 'artículo creado', 'artículos creados'),
+        			Self::cantidad_y_texto($import_history->articles_match, 'artículo macheado', 'artículos macheados'),
+        			Self::cantidad_y_texto($import_history->updated_models, 'artículo actualizado', 'artículos actualizados'),
         		],
         	],
         ];
@@ -90,11 +97,15 @@ class ArticleImportHelper {
         $import_options = Self::build_import_options_for_notification($import_history);
 
         /*
-         * El mensaje cuenta FILAS y separa las que no se importaron de las que se importaron
-         * con datos para revisar (misión importacion-mensaje-de-problemas, 4/10/2026). Hasta
-         * esa misión decía "N filas que no se pudieron procesar" con N = conflicts_count, y era
-         * falso dos veces: conflicts_count cuenta problemas y no filas, y de todos los tipos el
-         * único que saltea la fila es 'ambiguo'.
+         * El mensaje cuenta FILAS y separa las que no se importaron de las que tienen datos
+         * para revisar (misión importacion-mensaje-de-problemas, 4/10/2026). Hasta esa misión
+         * decía "N filas que no se pudieron procesar" con N = conflicts_count, y era falso dos
+         * veces: conflicts_count cuenta problemas y no filas, y de todos los tipos el único que
+         * seguro deja la fila afuera es 'ambiguo'. De las filas con datos para revisar el
+         * mensaje NO afirma que se importaron: el dato se descartó y la fila siguió, pero que
+         * después se haya creado o actualizado algo depende del resto de la importación
+         * ("Solo actualizar" sin match, otro proveedor, repetida por nombre o id) y eso no
+         * queda registrado en import_conflicts.
          *
          * El conteo es una consulta sobre import_conflicts, una sola vez por importación. Si
          * falla, el aviso sale igual: con los dos conteos en 0, mensaje_de_resultado() cae en
@@ -142,11 +153,15 @@ class ArticleImportHelper {
      *
      *   - no_importadas: filas con algún tipo de ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA
      *     (hoy solo 'ambiguo'): ProcessRow::procesar() corta antes de crear o actualizar.
+     *     Es lo único que seguro dejó la fila afuera.
      *   - para_revisar: filas con algún tipo que no está en TIPOS_QUE_NO_CUENTAN ni en
-     *     TIPOS_QUE_SALTEAN_LA_FILA. Se importaron, pero sin algún dato (un número inválido,
-     *     un código descartado, sin códigos...). Una fila que ya cuenta como no importada NO
-     *     se cuenta acá aunque traiga otro problema: no se importó. Un tipo que esta versión
-     *     no conoce cae acá, igual que en conflicts_count.
+     *     TIPOS_QUE_SALTEAN_LA_FILA (un número inválido, un código descartado, sin
+     *     códigos...). El dato con problema se descartó y la fila siguió; si después se
+     *     creó, se actualizó o no depende del resto de la importación ("Solo actualizar"
+     *     sin match, otro proveedor, repetida por nombre o id) y eso NO queda registrado,
+     *     así que esta cuenta no dice que se hayan importado. Una fila que ya cuenta como
+     *     no importada NO se cuenta acá aunque traiga otro problema. Un tipo que esta
+     *     versión no conoce cae acá, igual que en conflicts_count.
      *
      * Los conflictos con `fila` null no se cuentan. Es UNA consulta agregada (un GROUP BY
      * por fila adentro de una subconsulta), así que un Excel con miles de conflictos no
@@ -204,8 +219,12 @@ class ArticleImportHelper {
      *
      *   - Base: "Importación de Excel finalizada correctamente", sin punto final si no hay
      *     nada más que decir (como siempre).
-     *   - Filas que no se importaron (código que coincide con más de un artículo).
-     *   - Filas que se importaron con datos para revisar.
+     *   - Filas que no se importaron porque no se pudo saber a qué artículo corresponden.
+     *     No dice "porque su código coincide con más de un artículo": 'ambiguo' también
+     *     sale por nombre en una fila sin código, y cuando la fila coincide con UN artículo
+     *     que creó esta misma importación en otro lote (ver ImportConflict).
+     *   - Filas que tienen datos para revisar. A propósito NO dice que "se importaron": de
+     *     esas filas solo se sabe que un dato se descartó (ver contar_filas_con_problemas()).
      *   - Red de seguridad: si las dos cuentas por fila dan 0 pero conflicts_count no (los
      *     conflictos sin fila, o el conteo falló), se dice cuántos PROBLEMAS quedaron, para
      *     no callar algo que el historial sí va a mostrar.
@@ -230,17 +249,17 @@ class ArticleImportHelper {
 
         if ($filas_no_importadas > 0) {
             if ($filas_no_importadas === 1) {
-                $agregados[] = '1 fila no se importó porque su código coincide con más de un artículo';
+                $agregados[] = '1 fila no se importó porque no se pudo saber a qué artículo corresponde';
             } else {
-                $agregados[] = Self::numero_es_ar($filas_no_importadas) . ' filas no se importaron porque su código coincide con más de un artículo';
+                $agregados[] = Self::numero_es_ar($filas_no_importadas) . ' filas no se importaron porque no se pudo saber a qué artículo corresponden';
             }
         }
 
         if ($filas_para_revisar > 0) {
             if ($filas_para_revisar === 1) {
-                $agregados[] = '1 fila se importó con datos para revisar';
+                $agregados[] = '1 fila tiene datos para revisar';
             } else {
-                $agregados[] = Self::numero_es_ar($filas_para_revisar) . ' filas se importaron con datos para revisar';
+                $agregados[] = Self::numero_es_ar($filas_para_revisar) . ' filas tienen datos para revisar';
             }
         }
 
@@ -267,6 +286,22 @@ class ArticleImportHelper {
      */
     protected static function numero_es_ar($numero) {
         return number_format((int) $numero, 0, ',', '.');
+    }
+
+    /**
+     * "1 fila procesada" / "N filas procesadas": el número pelado (SIN separador de miles,
+     * ver el comentario de $info_to_show en enviar_notificacion()) y el texto en singular
+     * o en plural.
+     *
+     * @param  int     $cantidad
+     * @param  string  $singular
+     * @param  string  $plural
+     * @return string
+     */
+    protected static function cantidad_y_texto($cantidad, $singular, $plural) {
+        $cantidad = (int) $cantidad;
+
+        return $cantidad . ' ' . ($cantidad === 1 ? $singular : $plural);
     }
 
     /**
@@ -418,7 +453,7 @@ class ArticleImportHelper {
         }
 
         $user->notify(new GlobalNotification([
-        	'message_text'				=> 'Hubo un error durante la importacion de articulos',
+        	'message_text'				=> 'Hubo un error durante la importación de artículos',
         	'color_variant'				=> 'danger',
         	'functions_to_execute'		=> $functions_to_execute,
         	'info_to_show'				=> $info_to_show,

@@ -2954,8 +2954,8 @@ class ActualizarBBDD {
          * conflicts_count son los "problemas para revisar" que muestra el botón del
          * historial de importaciones (y la red de seguridad del mensaje de resultado,
          * ArticleImportHelper::mensaje_de_resultado()). NO son "filas que no se pudieron
-         * procesar": de todos los tipos, el único que saltea la fila es 'ambiguo' (ver el
-         * docblock de ImportConflict).
+         * procesar": de todos los tipos, el único que seguro deja la fila afuera es
+         * 'ambiguo' (ver el docblock de ImportConflict).
          *
          * 'fila_sobrescrita' (prompt 03, grupo 265) es una fila que SE RESOLVIO bien
          * (última fila gana): si sumara, cualquier Excel con un código repetido mostraría
