@@ -97,11 +97,15 @@ class SaleController extends Controller
                                 
         } else if ($modulo == 'ventas') {
 
-            $models = $models->where('terminada', 1)
-                            ->where(function ($q) {
-                                $q->whereNull('sale_status_id')
-                                    ->orWhere('sale_status_id', 0);
-                            });
+            /*
+             * Terminadas y sin estado de venta. El criterio vive en Sale::scopeDelModuloVentas() y
+             * NO se copia aca: lo consumen tambien los dos Excel de la pantalla en su rama SIN
+             * filtro de columnas (la rama filtrada espeja a /api/search/sale y a proposito no lo
+             * usa, ver resolve_sales_for_export) y las rutas GET viejas excel_export /
+             * excel_breakdown_export. Si el listado y esos Excel no se mueven juntos, el Excel suma
+             * ventas que la pantalla no muestra (5/10/2026, ver el docblock del scope).
+             */
+            $models = $models->delModuloVentas();
         }
 
         if (!is_null($from_date)) {
@@ -1684,6 +1688,14 @@ class SaleController extends Controller
         $models = Sale::where('user_id', $this->userId())
                         /** Excluye ventas contenedoras de facturación del export Excel. */
                         ->soloVentasReales()
+                        /*
+                         * Solo las ventas del módulo Ventas (terminadas y sin estado), igual que
+                         * el listado. Ruta GET vieja de routes/web.php, sin consumidor en la SPA
+                         * desde el prompt 287, pero con el mismo defecto que el Excel de la
+                         * pantalla: va con el mismo criterio para que nadie la reviva sumando
+                         * ventas sin terminar (5/10/2026, ver Sale::scopeDelModuloVentas()).
+                         */
+                        ->delModuloVentas()
                         ->orderBy('created_at', 'DESC');
 
         if (!is_null($from_date)) {
@@ -1703,6 +1715,8 @@ class SaleController extends Controller
         $models = Sale::where('user_id', $this->userId())
                         /** Excluye ventas contenedoras de facturación del export desglosado. */
                         ->soloVentasReales()
+                        /* Mismo criterio que excel_export(): solo las ventas del módulo Ventas. */
+                        ->delModuloVentas()
                         ->with(['articles', 'client', 'employee'])
                         ->orderBy('created_at', 'DESC');
 
@@ -2140,9 +2154,16 @@ class SaleController extends Controller
     /**
      * Reconstruye el conjunto COMPLETO de ventas que corresponde a lo que el usuario ve en pantalla.
      * - Si hay filtro de columnas activo: reusa el mismo motor de búsqueda que /api/search/sale,
-     *   completo (sin paginar) y con withAll(), pasando por SearchController.
-     * - Si no: arma el rango de fechas igual que excel_export/excel_breakdown_export.
-     * Después aplica en PHP las show options y la pestaña sucursal/empleado (ver apply_view_show_option_filters).
+     *   completo (sin paginar) y con withAll(), pasando por SearchController. Esta rama NO filtra
+     *   `terminada` ni `sale_status_id`, porque la pantalla filtrada tampoco lo hace: muestra el
+     *   resultado de /api/search/sale tal cual, menos lo que saca `pasaFilaVenta` (decisión de
+     *   Lucas, 5/10/2026: el Excel espeja la pantalla; que la pantalla filtrada muestre ventas sin
+     *   terminar quedó como hallazgo aparte).
+     * - Si no: las ventas del módulo Ventas (terminadas y sin estado, Sale::scopeDelModuloVentas(),
+     *   el mismo criterio que el listado del día) en el rango de fechas, igual que
+     *   excel_export/excel_breakdown_export.
+     * Después aplica en PHP lo que la pantalla saca en las dos ramas (consolidadas, `to_check` /
+     * `checked`), las show options y la pestaña sucursal/empleado (ver apply_view_show_option_filters).
      *
      * @param Request $request
      * @return \Illuminate\Support\Collection
@@ -2162,6 +2183,13 @@ class SaleController extends Controller
             $until_date = $request->input('until_date');
 
             $query = Sale::where('user_id', $this->userId())
+                        /*
+                         * 🔴 Terminadas y sin estado, como el listado del día (5/10/2026). Sin esto
+                         * el Excel traía también las ventas sin terminar de Depósito / Por entregar
+                         * y las de Por estado: en la demo, 9 ventas y $175.890,04 en el Excel contra
+                         * 8 y $167.890,04 en pantalla. Ver Sale::scopeDelModuloVentas().
+                         */
+                        ->delModuloVentas()
                         ->withAll()
                         ->orderBy('created_at', 'DESC');
 
@@ -2181,9 +2209,13 @@ class SaleController extends Controller
     }
 
     /**
-     * Espeja el computed sales_to_show del front: aplica sobre la colección las show options
-     * (cobradas/sin cobrar, con/sin factura, método de pago) y la pestaña sucursal/empleado.
-     * Las ventas consolidadas (contenedoras de facturación) SIEMPRE se excluyen del Excel.
+     * Espeja los computed sales y sales_to_show del front (mixins/sale.js): saca lo que
+     * `pasaFilaVenta` oculta y aplica sobre la colección las show options (cobradas/sin cobrar,
+     * con/sin factura, método de pago) y la pestaña sucursal/empleado.
+     * Corre para las dos ramas de resolve_sales_for_export() (con y sin filtro de columnas).
+     * - Las ventas consolidadas (contenedoras de facturación) SIEMPRE se excluyen del Excel.
+     * - Las ventas en revisión (`to_check` / `checked`) también se excluyen, igual que en pantalla
+     *   (`!sale.to_check && !sale.checked`) y que el listado paginado (ListadoVentasHelper::aplicar_base).
      *
      * @param \Illuminate\Support\Collection $models
      * @param Request $request
@@ -2210,6 +2242,17 @@ class SaleController extends Controller
 
             /* Consolidadas: siempre excluidas del Excel (decisión fija). */
             if ((int) $sale->is_consolidacion_facturacion === 1) {
+                return false;
+            }
+
+            /*
+             * En revisión (`to_check` / `checked`): la pantalla no las muestra en ninguno de los dos
+             * modos (`pasaFilaVenta`), así que el Excel tampoco (5/10/2026). Una venta `checked`
+             * puede estar además terminada (Depósito la terminó y set_terminada no limpia
+             * `checked`): por eso no alcanza con el criterio del módulo de la rama sin filtro, y
+             * por eso va acá, que corre también para la rama filtrada.
+             */
+            if (!empty($sale->to_check) || !empty($sale->checked)) {
                 return false;
             }
 
