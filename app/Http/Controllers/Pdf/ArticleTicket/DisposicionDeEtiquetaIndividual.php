@@ -95,7 +95,7 @@ class DisposicionDeEtiquetaIndividual
          */
         $intento = self::armar($contexto, 'normal', 1, $codigo_alto, array(), array());
 
-        if ($intento['alto_total'] <= $alto_disponible) {
+        if (self::entra_sin_partir_palabras($intento, $alto_disponible)) {
             return self::resultado($contexto, $intento, false, array());
         }
 
@@ -115,7 +115,7 @@ class DisposicionDeEtiquetaIndividual
                 $intento = self::armar($contexto, 'compacto', $f, $codigo_alto, array(), array());
                 $f_final = $f;
 
-                if ($intento['alto_total'] <= $alto_disponible) {
+                if (self::entra_sin_partir_palabras($intento, $alto_disponible)) {
                     return self::resultado($contexto, $intento, true, array());
                 }
 
@@ -228,6 +228,9 @@ class DisposicionDeEtiquetaIndividual
     {
         $bloques = array();
 
+        /* Si algún texto de una sola palabra quedó partido por letras en este intento. */
+        $parte_una_palabra = false;
+
         /* Ancho útil para el texto: la etiqueta menos el margen de cada costado. */
         $ancho_texto = $contexto['ancho'] - 2 * self::MARGEN_TEXTO;
 
@@ -267,6 +270,15 @@ class DisposicionDeEtiquetaIndividual
             $pt = ($modo === 'normal') ? $font_size : max(self::FUENTE_MINIMA, $font_size * $f);
 
             $lineas = self::envolver($texto, $pt, $negrita, $ancho_texto);
+
+            /*
+             * Un texto de UNA sola palabra (precio, SKU, código, fecha) que no entra en el ancho
+             * queda partido por letras ("$15.432,1" / "0"). Mientras la letra se pueda achicar eso
+             * no cuenta como que entra (ver `entra_sin_partir_palabras`).
+             */
+            if (strpos($texto, ' ') === false && count($lineas) > 1) {
+                $parte_una_palabra = true;
+            }
 
             $recortado = false;
 
@@ -316,7 +328,29 @@ class DisposicionDeEtiquetaIndividual
             'factor'       => $f,
             'codigo_alto'  => $codigo_alto,
             'interlineado' => $inter,
+            /* Solo para decidir si el intento sirve; no viaja al resultado. */
+            'parte_una_palabra' => $parte_una_palabra,
         );
+    }
+
+    /**
+     * Si un intento de los pasos 1 y 2 sirve: entra en el alto y no parte por letras un texto de
+     * una sola palabra. Lo segundo se perdona recién con todas las letras en el mínimo, porque ahí
+     * ya no hay letra más chica que probar (y un código de 13 dígitos en una etiqueta angosta
+     * tiene que salir igual).
+     *
+     * @param array $intento Lo que devuelve `armar()`.
+     * @param float $alto_disponible Alto de la etiqueta menos los márgenes (mm).
+     *
+     * @return bool
+     */
+    protected static function entra_sin_partir_palabras(array $intento, $alto_disponible)
+    {
+        if ($intento['alto_total'] > $alto_disponible) {
+            return false;
+        }
+
+        return !$intento['parte_una_palabra'] || self::todas_las_letras_en_el_minimo($intento);
     }
 
     /**

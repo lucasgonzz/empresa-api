@@ -275,14 +275,28 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
     /**
      * @return void
      */
+    /**
+     * Orientación de la hoja según la medida: apaisada si es más ancha que alta, vertical si es más alta.
+     *
+     * FPDF ordena el tamaño de la hoja de menor a mayor y después lo gira según la orientación. Con 'L' fija,
+     * una medida vertical (p. ej. 30 × 50) salía como una hoja de 50 × 30 y la disposición, que se calcula
+     * sobre ancho × alto, quedaba afuera de la hoja.
+     *
+     * @return string 'L' o 'P'
+     */
+    protected function orientacion_de_la_hoja()
+    {
+        return $this->etiqueta_width >= $this->etiqueta_height ? 'L' : 'P';
+    }
+
     function print() {
         $prints_disponibles = $this->cant_article_x_etiqueta;
-        $this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+        $this->AddPage($this->orientacion_de_la_hoja(), [$this->etiqueta_width, $this->etiqueta_height]);
         $this->y = 0;
 
         foreach ($this->articles as $article) {
             if ($prints_disponibles == 0) {
-                $this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+                $this->AddPage($this->orientacion_de_la_hoja(), [$this->etiqueta_width, $this->etiqueta_height]);
                 $prints_disponibles = $this->cant_article_x_etiqueta;
                 $this->y = 0;
             }

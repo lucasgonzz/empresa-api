@@ -84,6 +84,36 @@ class Etiquetas_individuales_no_se_parten_Test extends EtiquetasIndividualesTest
     }
 
     /**
+     * Una medida vertical (más alta que ancha): la hoja sale con ESA medida y no girada. Con la
+     * orientación fija en 'L', FPDF armaba 30x50 como una hoja de 50x30 y, sin el salto de página
+     * automático, el contenido quedaba afuera de la hoja.
+     *
+     * @test
+     */
+    public function una_medida_vertical_sale_en_una_hoja_vertical()
+    {
+        $dueno = $this->crear_dueno();
+        $ids = $this->crear_espatulas($dueno);
+
+        $this->actingAs($dueno, 'web');
+
+        /* Puntos por mm (el `k` de FPDF): el MediaBox va en puntos. */
+        $k = 72 / 25.4;
+
+        foreach (array(array(30, 50), array(40, 60)) as $medida) {
+            list($ancho, $alto) = $medida;
+
+            $pdf = $this->pdf_plano($ids, $ancho, $alto, $this->nombre_codigo_precio(11, 16));
+
+            $this->assert_una_etiqueta_por_hoja($pdf, $ancho, $alto, $ancho.'x'.$alto.' vertical');
+
+            /* Cada hoja declara su tamaño: ancho x alto, no al revés. */
+            $media_box = sprintf('/MediaBox [0 0 %.2F %.2F]', $ancho * $k, $alto * $k);
+            $this->assertSame(4, substr_count($pdf, $media_box), $ancho.'x'.$alto.': las 4 hojas miden '.$media_box.'.');
+        }
+    }
+
+    /**
      * 80x50 con la config por defecto (nombre 11 + código): sale con la letra pedida, sin achicar.
      *
      * @test

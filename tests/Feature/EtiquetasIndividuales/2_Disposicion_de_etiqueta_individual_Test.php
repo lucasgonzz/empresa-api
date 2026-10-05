@@ -230,6 +230,36 @@ class Disposicion_de_etiqueta_individual_Test extends EtiquetasIndividualesTestC
     }
 
     /**
+     * Un precio que no entra en el ancho NO se parte por letras ("$15.432,1" / "0"): se achica la
+     * letra hasta que entre en un renglón. Un nombre con espacios sí sigue cortando por palabras.
+     *
+     * @test
+     */
+    public function un_precio_que_no_entra_en_el_ancho_achica_la_letra_en_vez_de_partirse()
+    {
+        $textos = array('nombre' => 'ESPATULA PARA JUNTAS 150MM CONST. EN SECO BIASSONI', 'precio' => '$15.432,10');
+
+        /* A 16 pt, "$15.432,10" mide 28,24 mm y en 30 mm de etiqueta hay 28 para el texto. */
+        $this->assertGreaterThan(28, DisposicionDeEtiquetaIndividual::ancho_de_texto('$15.432,10', 16, false));
+
+        $resultado = DisposicionDeEtiquetaIndividual::calcular(30, 50, $this->nombre_codigo_precio(11, 16), 8, 1, $textos, true);
+
+        $precio = null;
+        foreach ($resultado['bloques'] as $bloque) {
+            if ($bloque['key'] === 'precio') {
+                $precio = $bloque;
+            }
+        }
+
+        $this->assertNotNull($precio, 'El precio tiene que estar en la etiqueta.');
+        $this->assertSame(array('$15.432,10'), $precio['lineas'], 'El precio sale entero, en un solo renglón.');
+        $this->assertTrue($resultado['ajustado']);
+        $this->assertLessThan(1, $resultado['factor'], 'Para que entre, se achica la letra.');
+        $this->assertFalse($resultado['recortado']);
+        $this->assertSame(array(), $resultado['omitidos']);
+    }
+
+    /**
      * Sin bloques de texto el paso 2 no hace nada: con solo el código y una etiqueta donde ni el
      * código mínimo entra, el código queda afuera (modo compacto, factor 1).
      *
