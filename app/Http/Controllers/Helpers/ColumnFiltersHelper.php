@@ -581,10 +581,10 @@ class ColumnFiltersHelper
     /**
      * El nombre REAL de la columna si $key es un identificador y esta en $columnas; si no, null.
      *
-     * 🔴 Las dos condiciones van juntas. El regex solo no alcanza (un identificador valido puede
-     * no ser de esta tabla y terminar en un 500, o nombrar otra cosa), y la lista sola tampoco hace
-     * falta sin el regex, pero el regex descarta antes y barato todo lo que trae espacios,
-     * parentesis, comillas o puntos.
+     * 🔴 Lo que decide es la LISTA de columnas reales, no el regex. Un regex solo no alcanza: un
+     * identificador bien formado puede no ser una columna de esta tabla (y terminar en un 500) o ser
+     * el nombre de una funcion de SQL. El regex queda delante porque descarta barato, antes de
+     * buscar en la lista, todo lo que trae espacios, parentesis, comillas o puntos.
      *
      * @param  mixed                  $key       Lo que llego en el pedido.
      * @param  array<string, string>  $columnas  Salida de columnas_de_la_tabla().
