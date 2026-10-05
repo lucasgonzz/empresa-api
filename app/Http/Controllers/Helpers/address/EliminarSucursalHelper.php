@@ -1328,17 +1328,19 @@ class EliminarSucursalHelper {
      */
     static function articulos_con_stock($address_id, $owner_id) {
 
-        $ids = [];
+        // DISTINCT en SQL sobre las mismas consultas de siempre: se pregunta en cada pasada, y traer
+        // todas las filas a PHP solo para quedarse con los ids era cargar miles de filas dos veces.
+        $de_articulos = Self::query_filas_de_articulos_con_stock($address_id, $owner_id)
+                            ->distinct()
+                            ->pluck('aa.article_id')
+                            ->all();
 
-        foreach (Self::filas_de_articulos_con_stock($address_id, $owner_id) as $fila) {
-            $ids[(int) $fila->article_id] = true;
-        }
+        $de_variantes = Self::query_filas_de_variantes_con_stock($address_id, $owner_id)
+                            ->distinct()
+                            ->pluck('av.article_id')
+                            ->all();
 
-        foreach (Self::filas_de_variantes_con_stock($address_id, $owner_id) as $fila) {
-            $ids[(int) $fila->article_id] = true;
-        }
-
-        $ids = array_keys($ids);
+        $ids = array_values(array_unique(array_map('intval', array_merge($de_articulos, $de_variantes))));
 
         sort($ids);
 
