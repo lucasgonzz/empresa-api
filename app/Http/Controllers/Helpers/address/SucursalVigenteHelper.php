@@ -308,6 +308,13 @@ class SucursalVigenteHelper {
         'Creacion de deposito',
         'Actualizacion de deposito',
         'Eliminacion de sucursal',
+        /*
+         * La importación de Excel con una columna de stock por sucursal escribe la cantidad de ESA
+         * sucursal. Si la sucursal se borró a mitad de la importación, volcar esa cantidad en la
+         * sucursal por defecto la pisaría con un número que no es suyo: mejor no mover nada (segunda
+         * ronda de revisión, F6).
+         */
+        'Importacion de excel',
     ];
 
     /**

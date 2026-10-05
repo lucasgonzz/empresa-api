@@ -321,4 +321,38 @@ class Eliminar_sucursal_validaciones_y_bordes_Test extends SucursalesTestCase
         $this->assertEquals(5.0, $this->stock_variante_en($v1, $principal->id));
         $this->assertSame(0, $this->filas_de_pivot($muerta));
     }
+
+    /**
+     * Test 6 — "Importacion de excel" con una sucursal que se borró a mitad de la importación no mueve
+     * nada: volcar la cantidad de esa columna en la sucursal por defecto la pisaría (segunda ronda,
+     * F6).
+     *
+     * @test
+     */
+    public function la_importacion_de_excel_con_una_sucursal_muerta_no_mueve_nada()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Importacion sucursal muerta');
+
+        $articulo = $this->nuevo_articulo('zz Importacion A');
+        $this->cargar_deposito($articulo, $principal, 4);
+
+        $muerta = $borrar->id;
+        DB::table('addresses')->where('id', $muerta)->delete();
+        SucursalVigenteHelper::olvidar();
+
+        $movimientos = $this->movimientos_de($articulo)->count();
+
+        $resultado = (new StockMovementController())->crear([
+            'model_id'                     => $articulo->id,
+            'amount'                       => 30,
+            'to_address_id'                => $muerta,
+            'concepto_stock_movement_name' => 'Importacion de excel',
+        ]);
+
+        $this->assertNull($resultado, 'Con la sucursal muerta, la importación no mueve nada.');
+        $this->assertSame($movimientos, $this->movimientos_de($articulo)->count());
+        $this->assertEquals(4.0, $this->stock_en($articulo, $principal->id), 'La sucursal por defecto no recibe la cantidad de otra.');
+        $this->assertSame(0, $this->filas_de_pivot($muerta));
+    }
 }
