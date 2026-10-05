@@ -9,7 +9,9 @@ use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Provider;
+use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
 
 /**
@@ -86,6 +88,25 @@ class Saldo_inicial_Test extends EmpresaTestCase
     }
 
     /**
+     * Otro dueño, o sea otro comercio de la misma base (en el shared hay bases con decenas). Tiene
+     * que ser un usuario real: `clients.user_id` tiene FK a `users`. Lo revierte la transacción del
+     * test, igual que al resto.
+     *
+     * @return int
+     */
+    protected function otro_duenio()
+    {
+        $usuario = User::create([
+            'name'     => 'Otro comercio saldo inicial',
+            'email'    => 'saldo-inicial-otro-'.uniqid().'@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => null,
+        ]);
+
+        return $usuario->id;
+    }
+
+    /**
      * Las filas de una cuenta, provisorias incluidas (lo mismo que cuenta el endpoint).
      *
      * @param  CreditAccount  $cuenta
@@ -149,7 +170,7 @@ class Saldo_inicial_Test extends EmpresaTestCase
      */
     public function tiene_movimientos_de_una_cuenta_de_otro_duenio_da_404()
     {
-        list($ajeno, $cuenta_ajena) = $this->cliente_con_cuenta($this->user_id + 900000, 'Ajeno');
+        list($ajeno, $cuenta_ajena) = $this->cliente_con_cuenta($this->otro_duenio(), 'Ajeno');
 
         // El mensaje es el del controller: un 404 de "la ruta no existe" no alcanza para pasar.
         $this->getJson('api/credit-account/'.$cuenta_ajena->id.'/tiene-movimientos')
@@ -313,7 +334,7 @@ class Saldo_inicial_Test extends EmpresaTestCase
      */
     public function saldo_inicial_en_una_cuenta_de_otro_duenio_da_422_y_no_escribe()
     {
-        list($ajeno, $cuenta_ajena) = $this->cliente_con_cuenta($this->user_id + 900000, 'Ajeno');
+        list($ajeno, $cuenta_ajena) = $this->cliente_con_cuenta($this->otro_duenio(), 'Ajeno');
 
         $this->postJson('api/current-acount/saldo-inicial', $this->saldo_inicial($cuenta_ajena, 5000))
              ->assertStatus(422);

@@ -43,6 +43,9 @@ class Saldo_inicial_espera_el_candado_Test extends TestCase
     /** @var array<int,\Throwable> Excepciones que el handler reportó durante el request. */
     protected $reportadas = [];
 
+    /** @var array<int,string> Sentencias que llegó a ejecutar la conexión del request. */
+    protected $sentencias = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -55,6 +58,13 @@ class Saldo_inicial_espera_el_candado_Test extends TestCase
         Event::listen(MessageLogged::class, function ($mensaje) {
             if (isset($mensaje->context['error']) && $mensaje->context['error'] instanceof \Throwable) {
                 $this->reportadas[] = $mensaje->context['error'];
+            }
+        });
+
+        // Solo la conexión del request: la otra es la que retiene la cuenta.
+        DB::listen(function ($consulta) {
+            if ($consulta->connectionName == config('database.default')) {
+                $this->sentencias[] = $consulta->sql;
             }
         });
     }
@@ -119,6 +129,19 @@ class Saldo_inicial_espera_el_candado_Test extends TestCase
         $this->assertNotEmpty($esperas, 'No se reportó un lock wait timeout sobre la fila del cliente. Reportadas: '.implode(' | ', array_map(function ($e) {
             return substr($e->getMessage(), 0, 200);
         }, $this->reportadas)));
+
+        /*
+         * 🔴 La espera tiene que ser AL ENTRAR. checkSaldos() también toma el candado del cliente,
+         * pero después del insert: sin el bloquear_duenio() del principio, el pedido igual termina
+         * esperando en `clients` y cortando, y el rollback igual se lleva la fila. Lo único que
+         * distingue los dos casos es si el insert llegó a correr antes de la espera (medido el
+         * 5/10/2026 sacando el candado: sin esta aserción el test seguía en verde).
+         */
+        $inserts = array_filter($this->sentencias, function ($sql) {
+            return stripos($sql, 'insert into `current_acounts`') !== false;
+        });
+
+        $this->assertEmpty($inserts, 'El saldo inicial escribió antes de tomar el candado de la cuenta.');
 
         $this->assertEquals(0, DB::table('current_acounts')->where('credit_account_id', $cuenta->id)->count(), 'El pedido que cortó no puede dejar el saldo inicial.');
     }
