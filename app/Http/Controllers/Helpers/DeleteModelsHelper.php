@@ -34,6 +34,11 @@ class DeleteModelsHelper
         // seguía viva. Los otros 4xx de ese destroy() no llegan por acá: el 404 lo evita el find()
         // de process_delete() y el 422 de cajas cerradas exige compensar_caja, que la masiva no manda.
         'sale',
+        // Orden de producción cuya venta está facturada (misión orden-produccion-baja-de-venta,
+        // 5/10/2026): OrderProductionController::destroy() la frena con 422 sin tocar nada. Llega
+        // por el `PUT api/delete/order_production` genérico; sin esto la masiva la contaba como
+        // eliminada aunque la orden, su venta y su cuenta corriente seguían intactas.
+        'order_production',
     ];
 
     /**
