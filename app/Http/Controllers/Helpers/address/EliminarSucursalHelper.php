@@ -1016,10 +1016,25 @@ class EliminarSucursalHelper {
          */
         if (!is_null($address->buyer_id)) {
 
-            DB::table('address_article')->where('address_id', $address->id)->delete();
-            $address->delete();
+            /*
+             * Segunda ronda de revisión (F9): un domicilio de comprador SÍ puede tener filas, y con
+             * stock: los pedidos de la tienda con envío le abrían una fila negativa (ver el docblock de
+             * SucursalVigenteHelper). Se borran las de las DOS tablas y a esos artículos se les
+             * recalcula el stock global desde lo que queda, para que no siga contando una fila que ya
+             * no existe. Sin renglón en el libro: no hay a dónde mover ese stock y no es una sucursal.
+             */
+            $afectados = Self::articulos_con_filas($address->id);
+
+            DB::transaction(function () use ($address) {
+                DB::table('address_article')->where('address_id', $address->id)->delete();
+                DB::table('address_article_variant')->where('address_id', $address->id)->delete();
+                $address->delete();
+            });
+
             ImageController::deleteModelImages($address);
             SucursalVigenteHelper::olvidar($address->id);
+
+            Self::recalcular_articulos($afectados);
 
             return [
                 'status' => 200,
@@ -1826,6 +1841,35 @@ class EliminarSucursalHelper {
                             ->where('a.user_id', '!=', $owner_id)
                             ->distinct()
                             ->pluck('a.id')
+                            ->all();
+
+        $todos = array_values(array_unique(array_map('intval', array_merge($ids, $de_variantes))));
+
+        sort($todos);
+
+        return $todos;
+    }
+
+    /**
+     * Ids de TODOS los artículos que tienen alguna fila (propia o de una variante) en la dirección,
+     * sin importar su stock ni su dueño (incluye la papelera).
+     *
+     * @param  int  $address_id
+     * @return array
+     */
+    static function articulos_con_filas($address_id) {
+
+        $ids = DB::table('address_article')
+                    ->where('address_id', $address_id)
+                    ->distinct()
+                    ->pluck('article_id')
+                    ->all();
+
+        $de_variantes = DB::table('address_article_variant as aav')
+                            ->join('article_variants as av', 'av.id', '=', 'aav.article_variant_id')
+                            ->where('aav.address_id', $address_id)
+                            ->distinct()
+                            ->pluck('av.article_id')
                             ->all();
 
         $todos = array_values(array_unique(array_map('intval', array_merge($ids, $de_variantes))));

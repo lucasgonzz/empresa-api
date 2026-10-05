@@ -312,4 +312,40 @@ class Eliminar_sucursal_sin_decision_y_masivo_Test extends SucursalesTestCase
         $this->assertEquals(4.0, $this->stock_global($a));
         $this->assertSame($movimientos, $this->movimientos_de($a)->count());
     }
+
+    /**
+     * Test 7 bis — un domicilio de comprador CON filas (las que dejaban los pedidos de la tienda con
+     * envío, también de variantes): se borran las de las dos tablas y el global de esos artículos se
+     * recalcula desde lo que queda, sin movimientos (segunda ronda, F9).
+     *
+     * @test
+     */
+    public function un_domicilio_de_comprador_con_filas_las_borra_y_recalcula()
+    {
+        $principal = $this->sucursal_principal();
+
+        $buyer_id  = DB::table('buyers')->insertGetId(['name' => 'zz Comprador con filas', 'user_id' => $this->comercio()->id, 'isVerified' => 0]);
+        $domicilio = Address::create(['street' => 'zz Domicilio con filas', 'buyer_id' => $buyer_id]);
+
+        $a = $this->nuevo_articulo('zz Comprador con filas A');
+        $this->cargar_deposito($a, $principal, 5);
+        DB::table('address_article')->insert(['article_id' => $a->id, 'address_id' => $domicilio->id, 'amount' => -2]);
+        DB::table('articles')->where('id', $a->id)->update(['stock' => 3]);
+
+        $d  = $this->nuevo_articulo('zz Comprador con filas D');
+        $v1 = $this->nueva_variante($d, 'Rojo');
+        $this->cargar_variante($d, $v1, $principal, 4);
+        DB::table('address_article_variant')->insert(['article_variant_id' => $v1->id, 'address_id' => $domicilio->id, 'amount' => -1]);
+        DB::table('articles')->where('id', $d->id)->update(['stock' => 3]);
+
+        $movimientos = $this->movimientos_de($a)->count() + $this->movimientos_de($d)->count();
+
+        $this->eliminar_sucursal($domicilio->id)->assertStatus(200)->assertJsonPath('eliminada', true);
+
+        $this->assertNull(Address::find($domicilio->id));
+        $this->assertSame(0, $this->filas_de_pivot($domicilio->id), 'Sin filas del domicilio en ninguna de las dos tablas.');
+        $this->assertEquals(5.0, $this->stock_global($a), 'El global se recalcula desde lo que queda.');
+        $this->assertEquals(4.0, $this->stock_global($d), 'Idem con variantes.');
+        $this->assertSame($movimientos, $this->movimientos_de($a)->count() + $this->movimientos_de($d)->count(), 'Sin movimientos.');
+    }
 }
