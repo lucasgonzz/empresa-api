@@ -113,11 +113,21 @@ class EliminarSucursalJob implements ShouldQueue
                 'forzar_broadcast' => true,
             ]);
 
-            $address = Address::find($this->address_id);
-
             // Ya no existe (otra corrida la terminó): el pedido está cumplido.
-            if (is_null($address)) {
+            if (is_null(Address::find($this->address_id))) {
                 BackgroundProcessHelper::completar($this->background_process_id, ['ya_estaba_eliminada' => true]);
+                return;
+            }
+
+            /*
+             * La misma tenencia que el request (D15), otra vez acá: el job corre en un proceso aparte,
+             * más tarde, con datos que viajaron serializados. Una sucursal que no es de este dueño
+             * (o que dejó de serlo) no se toca.
+             */
+            $address = EliminarSucursalHelper::direccion_del_dueno($this->address_id, $this->owner_id);
+
+            if (is_null($address)) {
+                BackgroundProcessHelper::fallar($this->background_process_id, 'La sucursal no es de este comercio: no se eliminó.');
                 return;
             }
 

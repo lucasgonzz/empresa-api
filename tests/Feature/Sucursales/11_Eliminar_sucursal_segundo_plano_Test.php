@@ -273,6 +273,35 @@ class Eliminar_sucursal_segundo_plano_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 3 bis — el job vuelve a verificar la tenencia: con una sucursal de OTRO comercio no hace
+     * nada y cierra su registro en fallo (segunda ronda, F8).
+     *
+     * @test
+     */
+    public function el_job_no_toca_una_sucursal_de_otro_comercio()
+    {
+        $otro  = $this->otro_comercio();
+        $ajena = Address::create(['street' => 'zz Job sucursal ajena', 'user_id' => $otro->id, 'default_address' => 0]);
+
+        $articulo_ajeno = $this->nuevo_articulo('zz Job articulo ajeno', ['user_id' => $otro->id]);
+        $articulo_ajeno->addresses()->attach($ajena->id, ['amount' => 5]);
+
+        $proceso = \App\Http\Controllers\Helpers\BackgroundProcessHelper::iniciar(
+            $this->comercio()->id,
+            EliminarSucursalHelper::TIPO_DE_PROCESO,
+            'zz Eliminación de prueba',
+            ['status' => 'pendiente']
+        );
+
+        // El job dice "dueño = el comercio del fixture", pero la sucursal es de otro.
+        (new EliminarSucursalJob($ajena->id, $this->comercio()->id, $this->comercio()->id, ['stock_accion' => 'descartar'], $proceso->id))->handle();
+
+        $this->assertNotNull(Address::find($ajena->id), 'La sucursal ajena no se borra.');
+        $this->assertEquals(5.0, $this->stock_en($articulo_ajeno, $ajena->id), 'Ni se le toca el stock.');
+        $this->assertSame('fallo', $proceso->fresh()->status);
+    }
+
+    /**
      * Test 4 — si al salir de la cola el job encuentra el candado tomado por OTRA conexión, no hace
      * nada y cierra su registro en fallo (no lo deja `pendiente` para siempre).
      *
