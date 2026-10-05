@@ -592,7 +592,21 @@ class BudgetHelper {
 			$ct = new SaleController();
 			// Se pasa un Request vacío porque la venta se regenera por el update del presupuesto,
 			// no es una eliminación del usuario, así que compensar_caja debe quedar en false.
-			$ct->destroy(new Request(), $sale->id);
+			$respuesta = $ct->destroy(new Request(), $sale->id);
+
+			/*
+				🔴 destroy() puede NEGARSE sin lanzar (una venta facturada o incluida en una
+				consolidada facturada responde 422 desde el 5/10/2026, misión
+				venta-facturada-no-se-borra). Tirar esa respuesta dejaba al presupuesto siguiendo como
+				si la venta se hubiera borrado. Se lanza: los que llegan acá (anular() y checkStatus(),
+				desde store(), update() y duplicate()) corren adentro de una transacción y la revierten.
+			*/
+			$motivo = DeleteModelsHelper::motivo_de_rechazo($respuesta);
+
+			if (!is_null($motivo)) {
+				throw new \Exception($motivo);
+			}
+
 			// $sale->delete();
 			return true;
 		}

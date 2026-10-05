@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -930,6 +931,19 @@ class BudgetController extends Controller
                     de anulacion queda como estaba hasta que Lucas la revise.
                 */
                 $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale, true);
+
+                if (!is_null($motivo)) {
+                    DB::rollBack();
+                    return response()->json(['message' => $motivo], 422);
+                }
+
+                /*
+                    Y la regla de BORRADO, que no es la misma (mision venta-facturada-no-se-borra,
+                    5/10/2026): la de edicion no mira la consolidacion, asi que la venta original de
+                    una consolidada con tickets pasaba y llegaba a deleteSale(), donde destroy() la
+                    frena. Se pregunta aca para responder 422 antes de tocar nada.
+                */
+                $motivo = DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar($sale);
 
                 if (!is_null($motivo)) {
                     DB::rollBack();
