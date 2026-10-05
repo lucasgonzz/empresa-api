@@ -1123,6 +1123,18 @@ class EliminarSucursalHelper {
             return Self::error($resultado['mensaje'], true);
         }
 
+        /*
+         * Un resultado "cortado" (el gancho de tests de ejecutar()) NO es una eliminación: la sucursal
+         * sigue existiendo. Nunca debería llegar acá (eliminar() no pasa $maximo_articulos), pero si
+         * llegara, responder 200 "eliminada" le haría sacar a la SPA una sucursal que sigue viva.
+         */
+        if (!empty($resultado['resumen']['cortada'])) {
+            return [
+                'status' => 500,
+                'body'   => ['message' => Self::MENSAJE_SI_SE_CORTA],
+            ];
+        }
+
         return [
             'status' => 200,
             'body'   => ['eliminada' => true, 'resumen' => $resultado['resumen']],
@@ -1143,9 +1155,12 @@ class EliminarSucursalHelper {
      * @param  int|null  $auth_user_id
      * @param  array     $decision          Normalizada.
      * @param  \App\Models\BackgroundProcess|int|null  $proceso  Registro visible (solo el job).
-     * @param  int|null  $maximo_articulos  Corta la pasada después de N artículos y NO hace la fase
-     *                                      final. Solo para los tests de idempotencia ("se cortó a
-     *                                      la mitad"); en producción siempre null.
+     * @param  int|null  $maximo_articulos  @internal SOLO PARA TESTS. Corta la pasada después de N
+     *                                      artículos y NO hace la fase final ("se cortó a la
+     *                                      mitad"): devuelve ok con `resumen.cortada` y la sucursal
+     *                                      SIGUE existiendo. Ningún llamador de producción lo pasa;
+     *                                      si alguno lo hiciera, eliminar() lo trata como un corte
+     *                                      (500), nunca como "eliminada".
      * @return array  ['ok' => bool, 'mensaje' => string|null, 'resumen' => array|null]
      */
     static function ejecutar($address_id, $owner_id, $auth_user_id, $decision, $proceso = null, $maximo_articulos = null) {
