@@ -121,19 +121,6 @@ class Metodos_del_modelo_por_nombre_Test extends FiltrosDeColumnaTestCase
         return $sentencias;
     }
 
-    /**
-     * Las sentencias de la lista que escriben (todo lo que no es un SELECT).
-     *
-     * @param  string[]  $sentencias
-     * @return string[]
-     */
-    protected function escrituras($sentencias)
-    {
-        return array_values(array_filter($sentencias, function ($sql) {
-            return !preg_match('/^\s*select\b/i', $sql);
-        }));
-    }
-
     /** @test */
     public function relacion_real_solo_devuelve_relaciones_declaradas_en_app()
     {
@@ -163,6 +150,13 @@ class Metodos_del_modelo_por_nombre_Test extends FiltrosDeColumnaTestCase
             $this->assertNull($resultado, $metodo . ' no es una relación.');
             $this->assertSame([], $sentencias, $metodo . ' se invocó (ejecutó SQL) antes de descartarse.');
         }
+
+        // Control positivo: el listener SÍ ve las sentencias de este bloque. Sin esto, si quedara
+        // escuchando otra conexión, todos los assertSame([]) de arriba y de abajo pasarían en vacío.
+        $sentencias = $this->sentencias_de(function () {
+            (new ProductionBatch())->getAmountsByStatusAttribute();
+        });
+        $this->assertNotEmpty($sentencias, 'El listener no capturó las consultas del accessor invocado a mano.');
 
         // Un accessor que lee la base no se invoca, escrito como sea.
         foreach (['getAmountsByStatusAttribute', 'getAmountsByStatusattribute', 'GETAMOUNTSBYSTATUSATTRIBUTE'] as $accessor) {

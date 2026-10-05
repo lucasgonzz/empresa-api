@@ -632,9 +632,14 @@ class ColumnFiltersHelper
      *    con el resto de los filtros (verificador independiente, 5/10/2026).
      *  - checkbox: -1 (o '-1'). '' NO es vacio: la rama lo aplica (`'' != -1`).
      *  - en_blanco / no_en_blanco falsos; ordenar_de vacio; que_contenga / menor_que / mayor_que ''.
-     * La SPA nunca manda '0' ni '' como vacio en esos campos (usa 0 y -1), asi que esto no vuelve
-     * inerte nada de lo que manda. Las comparaciones son estrictas: con `==` de PHP 7.4, 'abc' == 0
-     * es verdadero y un criterio de texto pasaria por vacio.
+     * Los vacios que manda la SPA son 0 en el igual_que de select/search, '' en el de text / number /
+     * date (y en search despues de BtnRestartFilter), -1 en checkbox: todos siguen inertes. La SPA
+     * nunca manda '0' como vacio ni '' en checkbox. Unica diferencia que queda, a sabiendas: un
+     * igual_que '' en select, que su rama aplicaria (`!== 0`) y aca es vacio; solo puede llegar por
+     * los GET con los filtros en JSON (en POST/PUT ConvertEmptyStringsToNull lo vuelve null y la rama
+     * tampoco lo aplica), la SPA no lo manda y en un key que no es columna solo significa "no se
+     * filtra por eso". Las comparaciones son estrictas: con `==` de PHP 7.4, 'abc' == 0 es verdadero y
+     * un criterio de texto pasaria por vacio.
      *
      * @param  array  $filter
      * @return bool
