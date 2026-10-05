@@ -707,4 +707,103 @@ class Volver_atras_Test extends CategoryProposalsTestCase
         $this->assertSame(2, Category::onlyTrashed()->where('user_id', $this->owner->id)->count());
         $this->assertNotNull(Category::find($e['vieja']->id));
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Lo que el dueño le hizo a lo creado (B-02 del verificador)
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 🔴 Después de elegir un sistema NUEVO el dueño le puso margen a una categoría creada: ya no se puede
+     * volver atrás (`categorias_editadas`). Al elegir daba que no usaba márgenes (con márgenes el sistema nuevo
+     * está bloqueado), y deshacer mandaba la categoría con margen a la papelera sin encolar el recálculo de
+     * los precios (la pregunta por márgenes se hacía DESPUÉS de borrarla): los artículos se quedaban con el
+     * porcentaje de una categoría que ya no existe. Si el margen se saca, se puede de nuevo.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function no_se_puede_si_el_dueno_le_puso_margen_a_una_categoria_creada()
+    {
+        Queue::fake();
+
+        $s = $this->sistema_elegido_simple();
+
+        $this->assertSame(['puede' => true, 'motivo' => null], $this->puede_cambiar($s['run']));
+
+        // Lo que hace CategoryController::update: asigna `percentage_gain` y guarda (el nombre no cambia).
+        Category::where('id', $s['bisagras']->id)->update(['percentage_gain' => 10]);
+
+        $this->afirmar_que_no_se_puede_volver_atras($s, 'categorias_editadas');
+
+        // La categoría con margen no se fue a la papelera ni se tocó ningún artículo.
+        $this->assertNotNull(Category::find($s['bisagras']->id));
+        $this->assertSame($s['bisagras']->id, $this->categorias_de($s['articulos'][0])['category_id']);
+        $this->assertSame([], $this->ids_encolados_para_recalcular());
+
+        // Sin el margen, se puede otra vez.
+        Category::where('id', $s['bisagras']->id)->update(['percentage_gain' => null]);
+        $this->assertSame(['puede' => true, 'motivo' => null], $this->puede_cambiar($s['run']));
+    }
+
+    /**
+     * El dueño prendió las listas de precio por categoría (la extensión) después de elegir un sistema
+     * nuevo: es el mismo bloqueo (R2 de CategoryMargenesHelper), aunque no haya un solo porcentaje cargado.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function no_se_puede_si_el_dueno_prendio_las_listas_por_categoria_despues_de_elegir()
+    {
+        $s = $this->sistema_elegido_simple();
+
+        $this->dar_extension('lista_de_precios_por_categoria');
+
+        $this->afirmar_que_no_se_puede_volver_atras($s, 'categorias_editadas');
+    }
+
+    /**
+     * 🔴 El dueño le agregó a mano una subcategoría a una categoría que creó el aplicar: ya no se puede
+     * volver atrás (`categorias_editadas`). Si se pudiera, la categoría iría a la papelera y la subcategoría
+     * quedaría VIVA y huérfana, colgando de una categoría borrada.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function no_se_puede_si_el_dueno_agrego_una_subcategoria_a_mano_bajo_una_categoria_creada()
+    {
+        $s = $this->sistema_elegido_simple();
+
+        $manual = $this->subcategoria_real('Manual del dueno', $s['bisagras']);
+
+        $this->afirmar_que_no_se_puede_volver_atras($s, 'categorias_editadas');
+
+        // Nada se deshizo: la subcategoría manual sigue colgando de una categoría viva.
+        $this->assertNotNull(Category::find($s['bisagras']->id));
+        $this->assertNotNull(SubCategory::find($manual->id));
+
+        // Si el dueño la borra, se puede de nuevo.
+        $manual->delete();
+        $this->assertSame(['puede' => true, 'motivo' => null], $this->puede_cambiar($s['run']));
+    }
+
+    /**
+     * Las subcategorías que SÍ creó el aplicar bajo una categoría creada no cuentan como editadas: volver atrás
+     * sigue andando y manda a la papelera la categoría con sus subcategorías creadas (el caso de siempre).
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function las_subcategorias_que_creo_el_aplicar_no_impiden_volver_atras()
+    {
+        $s = $this->sistema_elegido_simple();
+
+        // Bisagras tiene la subcategoría Comunes, creada por el aplicar.
+        $this->assertSame(1, SubCategory::where('category_id', $s['bisagras']->id)->count());
+        $this->assertSame(['puede' => true, 'motivo' => null], $this->puede_cambiar($s['run']));
+
+        $this->pedir_volver_atras($s['run'])->assertStatus(200);
+
+        $this->assertNull(Category::find($s['bisagras']->id));
+        $this->assertNull(SubCategory::find($s['comunes']->id));
+    }
 }

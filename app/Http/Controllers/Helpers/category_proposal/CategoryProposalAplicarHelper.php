@@ -191,6 +191,17 @@ class CategoryProposalAplicarHelper
      */
     protected static function hay_categorias_editadas($dueno_id, $proposal_id)
     {
+        // 🔴 En un sistema NUEVO, si ahora el dueño usa margen o listas de precio por categoría (se lo puso a una
+        // categoría creada, o prendió las listas por categoría), volver atrás ya no es seguro: al elegir daba
+        // `false` (con márgenes el sistema nuevo está bloqueado, así que el cambio es POSTERIOR), y deshacer
+        // manda a la papelera una categoría con margen DESPUÉS de lo cual el recálculo de precios ya no ve
+        // márgenes y no se encola: los artículos se quedarían con el porcentaje de una categoría que no existe
+        // más (B-02 del verificador). Es la regla del bloqueo aplicada al revés, con el mismo helper.
+        if (CategoryProposal::where('id', $proposal_id)->value('tipo') === CategoryProposal::TIPO_NUEVA
+            && CategoryMargenesHelper::usa_margenes_por_categoria($dueno_id)['usa']) {
+            return true;
+        }
+
         // Los nodos de la propuesta elegida que CREÓ el aplicar (solo las columnas que hacen falta).
         $nodos = CategoryProposalNode::where('proposal_id', $proposal_id)
             ->where('user_id', $dueno_id)
@@ -245,6 +256,22 @@ class CategoryProposalAplicarHelper
                     || (int) $vivas[$id]->category_id !== $esperada['category_id']) {
                     return true;
                 }
+            }
+        }
+
+        // Subcategorías vivas colgando de una categoría que creó el aplicar y que el aplicar NO creó: las agregó
+        // el dueño a mano. Volver atrás manda a la papelera la categoría y esa subcategoría quedaría viva y
+        // huérfana (B-02 del verificador).
+        if (!empty($categorias_creadas)) {
+            // Las subcategorías vivas de esas categorías.
+            $de_las_categorias_creadas = SubCategory::where('user_id', $dueno_id)->whereIn('category_id', array_keys($categorias_creadas));
+
+            if (!empty($subcategorias_creadas)) {
+                $de_las_categorias_creadas->whereNotIn('id', array_keys($subcategorias_creadas));
+            }
+
+            if ($de_las_categorias_creadas->exists()) {
+                return true;
             }
         }
 
