@@ -577,6 +577,36 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     }
 
     /**
+     * 🔴 La puerta web NO se puede forzar: aunque el POST traiga el flag y el nombre EXACTO de la
+     * base (que es lo que autoriza el borrado total por la API), el controlador los saca antes de
+     * llegar a `run()` y la guarda se niega igual. Es la cuarta puerta, pública (el formulario es
+     * un GET abierto y el CSRF lo saca cualquiera). Confirmado en vivo en la verificación de la
+     * misión: sin este filtro, un POST web con los dos campos vaciaba la base.
+     *
+     * @test
+     */
+    public function la_puerta_web_se_niega_aunque_el_post_traiga_el_flag_y_la_confirmacion_correctas()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        $respuesta = $this->post('/user-setup', [
+            'business_type'                        => 'distribuidora',
+            'user_id'                              => self::ID_DE_USUARIO_LIBRE,
+            BorradoTotalDeBaseHelper::FLAG         => true,
+            BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
+        ]);
+
+        $respuesta->assertRedirect(route('user.form'));
+        $respuesta->assertSessionHas('error');
+        $respuesta->assertSessionMissing('status');
+
+        $this->assertStringContainsString('ya tiene datos de negocio', (string) session('error'));
+
+        $this->assert_base_intacta();
+    }
+
+    /**
      * La misma puerta web sobre una base vacía llega al `migrate:fresh`, como siempre (acá cortado
      * por el mock).
      *
