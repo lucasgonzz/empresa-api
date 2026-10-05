@@ -13,9 +13,15 @@ return [
      * corridas son de implementación (un catálogo recién cargado) y las clasifica Claude por lotes; un
      * catálogo de cientos de miles de artículos no es el caso. Por encima del tope, la ingesta
      * responde 422 `catalogo_muy_grande` y la corrida no se crea.
+     *
+     * 🔴 6.000 y no 10.000 porque elegir un sistema es SINCRÓNICO (una transacción, un solo pedido):
+     * medido el 5/10/2026 con 10.000 artículos tardó 15 a 17 segundos con la máquina libre y llegó
+     * a 55 con otras sesiones corriendo, y un hosting compartido corta mucho antes. Con 6.000 son
+     * unos 9 segundos. Un catálogo más grande se parte en dos corridas o se sube el tope sabiendo
+     * lo que se arriesga.
      * Variable de entorno: CATALOGO_IA_TOPE_ARTICULOS.
      */
-    'tope_articulos' => (int) env('CATALOGO_IA_TOPE_ARTICULOS', 10000),
+    'tope_articulos' => (int) env('CATALOGO_IA_TOPE_ARTICULOS', 6000),
 
     /*
      * Topes del contrato con la skill (admin-sync/catalogo/*). Son de forma, no de negocio: acotan
