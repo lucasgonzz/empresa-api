@@ -194,7 +194,11 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
     public function los_seleccionados_salen_con_el_saldo_de_su_cuenta_en_pesos()
     {
         // Un nombre que entra en la columna Vendedor (30 mm): uno más largo sale recortado con "...".
-        $vendedor = Seller::create(['name' => 'Ramiro Sur', 'user_id' => $this->dueno->id]);
+        $vendedor = Seller::create([
+            'name'    => 'Ramiro Sur',
+            'user_id' => $this->dueno->id,
+            'num'     => (int) Seller::where('user_id', $this->dueno->id)->max('num') + 1,
+        ]);
 
         $tucumana = $this->cliente('Ferreteria Tucumana PDF', 464808.56, [
             'phone'     => '3815551234',
