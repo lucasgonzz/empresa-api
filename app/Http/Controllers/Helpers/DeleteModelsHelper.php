@@ -28,6 +28,12 @@ class DeleteModelsHelper
         // Compra con notas de crédito a proveedor en cuenta corriente (misión
         // devoluciones-compras-y-rediseno, 1/10/2026): ProviderOrderController::destroy() la frena.
         'provider_order',
+        // Venta facturada, o incluida en una factura consolidada (misión
+        // venta-facturada-no-se-borra, 5/10/2026): SaleController::destroy() la frena con 422. Sin
+        // esto la masiva la devolvía en `deleted_models` y el listado la sacaba de pantalla aunque
+        // seguía viva. Los otros 4xx de ese destroy() no llegan por acá: el 404 lo evita el find()
+        // de process_delete() y el 422 de cajas cerradas exige compensar_caja, que la masiva no manda.
+        'sale',
     ];
 
     /**
@@ -203,7 +209,7 @@ class DeleteModelsHelper
                     2xx, sigue contando como antes.
 
                     ⚠️ Por ahora SOLO para los modelos de MODELOS_QUE_RESPETAN_RECHAZO: hay una
-                    veintena de destroy() que en algún caso responden 4xx (ventas, gastos,
+                    veintena de destroy() que en algún caso responden 4xx (gastos,
                     comprobantes...), y cambiarles a todos de una qué devuelve el borrado masivo
                     excede esta misión. Agregar uno es sumarlo a la lista.
                 */
