@@ -929,8 +929,9 @@ class CategoryProposalLecturaHelper
      * subcategoría reales del artículo: sin N+1. Los LEFT JOIN a categorías cruzan el `user_id` y
      * excluyen las borradas.
      *
-     * `actual` trae los nombres reales SOLO en los ítems aplicados o aprobados (los demás todavía no
-     * tienen la categoría que sugiere el sistema).
+     * `actual` trae los nombres de la categoría y subcategoría que el artículo tiene HOY en los ítems
+     * aplicados, aprobados y a revisar (en estos últimos es lo que "Aprobar" va a pisar: B-13); en los
+     * demás va null. Ver `payload_de_item`.
      *
      * @param  \App\Models\CategoryProposalRun $run  Con una propuesta elegida.
      * @param  string $solapa
@@ -1010,13 +1011,24 @@ class CategoryProposalLecturaHelper
     /**
      * La fila de un ítem para la SPA (§6.6).
      *
+     * 🔴 `actual` es la categoría y la subcategoría que el artículo tiene HOY (los nombres de las filas
+     * reales vivas de su dueño), y se informa en dos grupos de estados (cambio aditivo de B-13/M-2: mismo
+     * formato y mismos nombres de campo, ahora con datos donde antes iba null):
+     *   - `aplicada` y `aprobada`: el artículo ya tiene la categoría del sistema elegido.
+     *   - `a_revisar`: el artículo NO tiene todavía la categoría que sugiere el sistema, pero puede tener
+     *     una que ya traía (en "Mantener las mías" un ítem seguro cuyo artículo ganó categoría después de
+     *     la ingesta queda a revisar y conserva la suya) o que el dueño le puso a mano. "Aprobar" se la
+     *     va a PISAR con la sugerida: la fila tiene que mostrarla para que se vea qué se pisa.
+     * En `sin_asignar` y `rechazada` (la solapa "Sin categoría") va null: esa solapa promete artículos sin
+     * categoría y la fila no tiene nada que mostrar.
+     *
      * @param  object $fila  Una fila de la consulta de `items_paginados`.
      * @return array
      */
     public static function payload_de_item($fila)
     {
-        // Los nombres reales solo cuando el ítem ya se aplicó o se aprobó.
-        $esta_asignado = in_array($fila->estado, CategoryProposalItem::ESTADOS_ASIGNADOS, true);
+        // ¿Corresponde mostrar la categoría que el artículo tiene hoy? (ver el docblock.)
+        $esta_asignado = in_array($fila->estado, array_merge(CategoryProposalItem::ESTADOS_ASIGNADOS, CategoryProposalItem::ESTADOS_A_REVISAR), true);
 
         return [
             'id'        => (int) $fila->id,

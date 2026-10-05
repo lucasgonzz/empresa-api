@@ -637,7 +637,13 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
 
     /**
      * La fila de un ítem, con valores exactos: el artículo, la sugerencia con los nombres de la propuesta y
-     * `actual` con los nombres REALES solo en los ítems aplicados o aprobados.
+     * `actual` con los nombres de la categoría y subcategoría que el artículo tiene HOY.
+     *
+     * 🔴 CONTRATO (cambio aditivo de B-13/M-2, 5/10/2026): `actual` se informa en los ítems aplicados y
+     * aprobados (ya tienen la categoría del sistema) y TAMBIÉN en los a revisar (el artículo todavía no
+     * tiene la sugerida pero puede tener una propia, y es la que "Aprobar" va a pisar); va null en la
+     * solapa "Sin categoría" (sin_asignar y rechazada) y cuando la categoría o subcategoría del artículo
+     * está borrada. Antes los a revisar mandaban siempre null.
      *
      * @group categorias_ia
      * @test
@@ -646,11 +652,16 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
     {
         $real     = $this->crear_categoria_real('Bisagras reales');
         $real_sub = $this->crear_subcategoria_real('Comunes reales', $real);
+        $borrada  = $this->crear_categoria_real('Categoria que se borro');
 
         $sembrado = $this->corrida_elegida_para_revisar([
             1 => ['category_id' => $real->id, 'sub_category_id' => $real_sub->id, 'bar_code' => '7791111111111', 'provider_code' => 'BIS-1'],
-            3 => ['category_id' => $real->id],   // a revisar: tiene categoría real pero NO se muestra como actual
+            3 => ['category_id' => $real->id, 'sub_category_id' => $real_sub->id],   // a revisar con categoría y subcategoría vivas
+            5 => ['category_id' => $borrada->id],                                     // a revisar con una categoría que se borró
+            6 => ['category_id' => $real->id, 'sub_category_id' => $real_sub->id],   // sin asignar, aunque el artículo tenga categoría
         ]);
+
+        $borrada->delete();
 
         $run   = $sembrado['run'];
         $items = $sembrado['items'];
@@ -675,19 +686,66 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
             'actual'     => ['categoria' => 'Bisagras reales', 'subcategoria' => 'Comunes reales'],
         ], $fila);
 
-        // El ítem a revisar: sugiere, pero `actual` va vacío aunque el artículo tenga una categoría.
-        $a_revisar = $this->items($run->id, 'solapa=a_revisar')->assertStatus(200)->json()['models']['data'][0];
+        // El ítem a revisar: sugiere una categoría y `actual` muestra la que el artículo tiene hoy (es la
+        // que "Aprobar" va a pisar).
+        $filas = $this->items($run->id, 'solapa=a_revisar')->assertStatus(200)->json()['models']['data'];
+
+        $a_revisar = $filas[0];
 
         $this->assertSame((int) $items[3]->id, $a_revisar['id']);
         $this->assertSame('a_revisar', $a_revisar['estado']);
         $this->assertSame('dudosa', $a_revisar['confianza']);
         $this->assertSame('no queda claro', $a_revisar['motivo']);
         $this->assertSame(['categoria' => 'Bisagras', 'subcategoria' => null], $a_revisar['sugerencia']);
-        $this->assertSame(['categoria' => null, 'subcategoria' => null], $a_revisar['actual']);
+        $this->assertSame(['categoria' => 'Bisagras reales', 'subcategoria' => 'Comunes reales'], $a_revisar['actual']);
+
+        // Otro a revisar, pero la categoría del artículo se borró: no hay nada vivo que mostrar.
+        $this->assertSame((int) $items[5]->id, $filas[1]['id']);
+        $this->assertSame(['categoria' => null, 'subcategoria' => null], $filas[1]['actual']);
+
+        // Un a revisar cuyo artículo no tiene categoría: null (lo que había antes de este cambio).
+        $sin_categoria_previa = $this->crear_articulo('A revisar sin categoria');
+
+        CategoryProposalItem::create([
+            'proposal_id' => $sembrado['propuestas']['A']['proposal']->id,
+            'user_id'     => $this->owner->id,
+            'article_id'  => $sin_categoria_previa->id,
+            'node_id'     => $sembrado['propuestas']['A']['nodos']['Correderas']->id,
+            'confianza'   => 'dudosa',
+            'estado'      => 'a_revisar',
+        ]);
+
+        $ultima = array_slice($this->items($run->id, 'solapa=a_revisar')->json()['models']['data'], -1)[0];
+
+        $this->assertSame($sin_categoria_previa->id, $ultima['articulo']['id']);
+        $this->assertSame(['categoria' => null, 'subcategoria' => null], $ultima['actual']);
+
+        // La solapa "Sin categoría" (sin asignar y rechazada) no muestra categoría actual aunque el artículo
+        // la tenga: esa solapa promete artículos sin categoría.
+        $rechazado = $this->crear_articulo('Rechazado con categoria', ['category_id' => $real->id]);
+
+        CategoryProposalItem::create([
+            'proposal_id' => $sembrado['propuestas']['A']['proposal']->id,
+            'user_id'     => $this->owner->id,
+            'article_id'  => $rechazado->id,
+            'node_id'     => $sembrado['propuestas']['A']['nodos']['Correderas']->id,
+            'confianza'   => 'dudosa',
+            'estado'      => 'rechazada',
+        ]);
+
+        $sin_categoria = $this->items($run->id, 'solapa=sin_categoria')->assertStatus(200)->json()['models']['data'];
+
+        $this->assertCount(2, $sin_categoria);
+
+        foreach ($sin_categoria as $fila_sin_categoria) {
+
+            $this->assertSame(['categoria' => null, 'subcategoria' => null], $fila_sin_categoria['actual'], 'Estado '.$fila_sin_categoria['estado'].'.');
+        }
 
         // El sin asignar no sugiere nada.
-        $sin = $this->items($run->id, 'solapa=sin_categoria')->assertStatus(200)->json()['models']['data'][0];
+        $sin = $sin_categoria[0];
 
+        $this->assertSame((int) $items[6]->id, $sin['id']);
         $this->assertSame(['categoria' => null, 'subcategoria' => null], $sin['sugerencia']);
         $this->assertSame('ambiguo', $sin['motivo']);
     }
