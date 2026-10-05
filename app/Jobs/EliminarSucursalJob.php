@@ -156,10 +156,8 @@ class EliminarSucursalJob implements ShouldQueue
                 'archivo'  => $e->getFile().':'.$e->getLine(),
             ]);
 
-            BackgroundProcessHelper::fallar(
-                $this->background_process_id,
-                'No se pudo terminar de eliminar la sucursal. Volvé a intentarlo: continúa desde donde quedó. ('.$e->getMessage().')'
-            );
+            // Mensaje fijo hacia el usuario; el detalle de la excepción quedó en el Log::error de arriba.
+            BackgroundProcessHelper::fallar($this->background_process_id, EliminarSucursalHelper::MENSAJE_SI_SE_CORTA);
 
         } finally {
             EliminarSucursalHelper::liberar_candado($this->owner_id, $this->address_id);
@@ -200,9 +198,12 @@ class EliminarSucursalJob implements ShouldQueue
      */
     public function failed($e)
     {
-        $motivo = !is_null($e) ? $e->getMessage() : 'El proceso se interrumpió sin dejar traza.';
+        // El detalle va al log; el usuario lee el mensaje fijo (puede traer SQL o rutas).
+        Log::error('EliminarSucursalJob::failed: se interrumpió la eliminación de la sucursal '.$this->address_id.': '.(!is_null($e) ? $e->getMessage() : 'sin traza'), [
+            'owner_id' => $this->owner_id,
+        ]);
 
-        BackgroundProcessHelper::fallar($this->background_process_id, 'No se pudo terminar de eliminar la sucursal. Volvé a intentarlo: continúa desde donde quedó. ('.$motivo.')');
+        BackgroundProcessHelper::fallar($this->background_process_id, EliminarSucursalHelper::MENSAJE_SI_SE_CORTA);
 
         EliminarSucursalHelper::liberar_candado($this->owner_id, $this->address_id);
     }

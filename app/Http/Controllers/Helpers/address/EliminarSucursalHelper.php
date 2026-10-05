@@ -101,6 +101,13 @@ class EliminarSucursalHelper {
     const CONCEPTO_TRANSFERIR = 'Mov entre depositos';
     const CONCEPTO_DESCARTAR  = 'Eliminacion de sucursal';
 
+    /**
+     * Lo que lee el usuario si la eliminación se corta por un error (500 en línea, registro en fallo
+     * en segundo plano). FIJO a propósito: el mensaje de la excepción puede traer SQL, rutas de archivos
+     * o nombres de tablas, y eso va solo al log (Log::error), nunca a la pantalla.
+     */
+    const MENSAJE_SI_SE_CORTA = 'No se pudo terminar de eliminar la sucursal. Volvé a intentarlo: continúa donde quedó.';
+
     /** Tipo del registro visible del proceso en segundo plano (`background_processes.tipo`). */
     const TIPO_DE_PROCESO = 'eliminacion_sucursal';
 
@@ -1103,7 +1110,8 @@ class EliminarSucursalHelper {
             return [
                 'status' => 500,
                 'body'   => [
-                    'message' => 'No se pudo terminar de eliminar la sucursal. Volvé a intentarlo: continúa desde donde quedó. ('.$e->getMessage().')',
+                    // Mensaje FIJO: el de la excepción (SQL, rutas, nombres de tabla) va solo al log de arriba.
+                    'message' => Self::MENSAJE_SI_SE_CORTA,
                 ],
             ];
 

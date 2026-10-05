@@ -205,6 +205,51 @@ class Eliminar_sucursal_sin_decision_y_masivo_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 5 ter — si la eliminación en línea se corta por un error, el 500 dice un mensaje FIJO (el
+     * de la excepción, que puede traer SQL o rutas, va solo al log) y el candado queda libre (segunda
+     * ronda, F2).
+     *
+     * El error se provoca con una sucursal que no deja de recibir stock: cada movimiento de la
+     * eliminación "vende" otro artículo desde ella, y después de MAXIMO_DE_PASADAS se rinde.
+     *
+     * @test
+     */
+    public function un_corte_en_linea_responde_un_mensaje_fijo()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Corte en linea');
+        $destino   = $this->nueva_sucursal('zz Corte en linea destino');
+
+        $a = $this->nuevo_articulo('zz Corte en linea A');
+        $this->cargar_deposito($a, $borrar, 1);
+
+        $pool = [];
+        for ($i = 0; $i < EliminarSucursalHelper::MAXIMO_DE_PASADAS + 1; $i++) {
+            $articulo = $this->nuevo_articulo('zz Corte en linea pool '.$i);
+            $this->cargar_deposito($articulo, $principal, 5);
+            $pool[] = $articulo->id;
+        }
+
+        \Illuminate\Support\Facades\Event::listen('eloquent.created: '.\App\Models\StockMovement::class, function () use (&$pool, $borrar) {
+            if (count($pool) == 0) {
+                return;
+            }
+            DB::table('address_article')->insert(['article_id' => array_shift($pool), 'address_id' => $borrar->id, 'amount' => -1]);
+        });
+
+        $respuesta = $this->eliminar_sucursal($borrar->id, [
+            'stock_accion'     => 'transferir',
+            'stock_destino_id' => $destino->id,
+        ]);
+
+        $respuesta->assertStatus(500);
+        $this->assertSame(EliminarSucursalHelper::MENSAJE_SI_SE_CORTA, $respuesta->json('message'));
+        $this->assertStringNotContainsString('pasadas', $respuesta->json('message'), 'El texto de la excepción no llega al usuario.');
+        $this->assertNotNull(Address::find($borrar->id), 'Cortada, la sucursal no se borra.');
+        $this->assertFalse($this->candado_tomado($borrar->id), 'El candado queda libre después del corte.');
+    }
+
+    /**
      * Test 6 — el candado: con un borrado en curso EN OTRA CONEXIÓN (otro proceso), el segundo
      * recibe 422 y no toca nada. El candado es `GET_LOCK` de MySQL, por conexión y re-entrante: por
      * eso "el otro" se simula con una segunda conexión PDO.

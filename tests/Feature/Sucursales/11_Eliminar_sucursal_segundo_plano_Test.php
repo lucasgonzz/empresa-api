@@ -262,7 +262,9 @@ class Eliminar_sucursal_segundo_plano_Test extends SucursalesTestCase
         $proceso = $proceso->fresh();
 
         $this->assertSame('fallo', $proceso->status);
-        $this->assertStringContainsString('worker muerto', $proceso->error_message);
+        // Mensaje fijo hacia el usuario (segunda ronda, F2): el de la excepción va solo al log.
+        $this->assertSame(EliminarSucursalHelper::MENSAJE_SI_SE_CORTA, $proceso->error_message);
+        $this->assertStringNotContainsString('worker muerto', $proceso->error_message);
         $this->assertNotNull(Address::find($borrar->id), 'failed() no borra nada.');
 
         // Y no queda nada colgado: la sucursal se puede volver a eliminar.
