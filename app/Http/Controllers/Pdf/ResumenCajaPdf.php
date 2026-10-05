@@ -61,9 +61,12 @@ class ResumenCajaPdf extends fpdf {
 		
 		$this->SetFont('Arial', 'BI', 14);
 
-		// Sucursal
+		// Sucursal. Puede no existir más (misión eliminar-sucursal-con-stock, 5/10/2026): el resumen
+		// guarda el address_id y la sucursal se puede eliminar después. Sin la guarda, `->street`
+		// sobre null tumbaba el PDF con un 500. Sin `?->`: PHP 7.4 en producción.
+		$sucursal_del_resumen = $this->resumen_caja->address;
 		$this->x = $this->x_incial;
-		$this->Cell($this->cell_ancho, 10, $this->resumen_caja->address->street, 0, 1);
+		$this->Cell($this->cell_ancho, 10, is_null($sucursal_del_resumen) ? 'Sucursal eliminada' : $sucursal_del_resumen->street, 0, 1);
 
 
 

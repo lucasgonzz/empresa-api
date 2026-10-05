@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use Carbon\Carbon;
@@ -24,8 +25,13 @@ class UpdateAddressesStockHelper {
 
         foreach ($this->addresses as $address) {
 
+            // Una sucursal que ya no existe se saltea (ver sucursal_viva()).
+            if (!$this->sucursal_viva($address)) {
+                continue;
+            }
+
             $this->address = $address;
-            
+
             $article_address = $this->get_article_address();
 
             if (!is_null($article_address)) {
@@ -49,6 +55,11 @@ class UpdateAddressesStockHelper {
 
     function set_stock_min_max() {
         foreach ($this->addresses as $address_data) {
+
+            // Idem update_addresses(): el mínimo y el máximo tampoco le abren fila a una sucursal muerta.
+            if (!$this->sucursal_viva($address_data)) {
+                continue;
+            }
 
             $address_id = $address_data['id'];
             $stock_min = isset($address_data['pivot']['stock_min']) ? $address_data['pivot']['stock_min'] : null;
@@ -102,6 +113,32 @@ class UpdateAddressesStockHelper {
 
         
         $ct_stock_movement->crear($data, false, null, null, $segundos);
+    }
+
+    /**
+     * ¿La sucursal del renglón sigue existiendo para el comercio del artículo? (misión
+     * eliminar-sucursal-con-stock, 5/10/2026).
+     *
+     * La SPA arma la lista de sucursales de su store, y una pestaña abierta desde antes de que
+     * alguien borrara una sucursal la sigue mandando. Sin esta guarda, `attach()` le abría al
+     * artículo una fila para la sucursal borrada (stock fantasma). Se SALTEA sin error a propósito:
+     * el resto de las sucursales del mismo guardado son válidas y el usuario no puede hacer nada con
+     * un 422 por una fila que ni ve.
+     *
+     * @param  array  $address  Renglón del request (`id`, `pivot`).
+     * @return bool
+     */
+    function sucursal_viva($address) {
+
+        $address_id = isset($address['id']) ? $address['id'] : null;
+
+        if (SucursalVigenteHelper::existe($address_id, $this->article->user_id)) {
+            return true;
+        }
+
+        Log::warning('UpdateAddressesStockHelper: se saltea la sucursal '.$address_id.' del artículo '.$this->article->id.': ya no existe.');
+
+        return false;
     }
 
     function get_article_address() {

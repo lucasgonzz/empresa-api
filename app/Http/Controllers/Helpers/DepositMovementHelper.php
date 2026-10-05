@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\DepositMovementModification;
 use App\Models\DepositMovementStatus;
@@ -478,6 +479,29 @@ class DepositMovementHelper {
 			return [
 				'status'	=> 422,
 				'message'	=> 'El depósito de origen y el de destino son el mismo.',
+			];
+		}
+
+		/*
+		 * Un depósito que ya no existe (misión eliminar-sucursal-con-stock, 5/10/2026). La eliminación
+		 * nueva no deja borrar una sucursal con traslados pendientes, pero un traslado cargado antes
+		 * (o desde un frente viejo) puede apuntar a una sucursal ya borrada. Mover el stock ahí le
+		 * abriría al artículo una fila fantasma (y el motor ya no lo deja: no movería nada y el
+		 * traslado quedaría "movido" sin haber trasladado). Se frena con un mensaje que dice cuál.
+		 */
+		$owner_id = $this->deposit_movement->user_id;
+
+		if (!SucursalVigenteHelper::existe($this->deposit_movement->from_address_id, $owner_id)) {
+			return [
+				'status'	=> 422,
+				'message'	=> 'El depósito de origen ya no existe (se eliminó la sucursal). Elegí otro antes de mover el stock.',
+			];
+		}
+
+		if (!SucursalVigenteHelper::existe($this->deposit_movement->to_address_id, $owner_id)) {
+			return [
+				'status'	=> 422,
+				'message'	=> 'El depósito de destino ya no existe (se eliminó la sucursal). Elegí otro antes de mover el stock.',
 			];
 		}
 

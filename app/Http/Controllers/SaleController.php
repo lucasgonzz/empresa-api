@@ -423,7 +423,14 @@ class SaleController extends Controller
                 'sale_type_id'                      => $request->sale_type_id,
                 'observations'                      => $request->observations,
                 'observations_ocultas'              => $request->observations_ocultas,
-                'address_id'                        => $request->address_id,
+                /*
+                 * Una sucursal borrada (la cookie de Vender la recuerda 3 años, o el empleado la
+                 * tiene elegida) se reemplaza por una viva: así la venta y su movimiento de stock
+                 * hablan de la misma sucursal (misión eliminar-sucursal-con-stock, D12). Nombre
+                 * completo a propósito: no tocar los `use` de este controller, que otras misiones
+                 * editan en paralelo.
+                 */
+                'address_id'                        => \App\Http\Controllers\Helpers\address\SucursalVigenteHelper::resolver($request->address_id, $this->userId(), $this->userId(false), 'SaleController@store'),
                 'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
                 'afip_information_id'               => $request->afip_information_id,
                 /*
@@ -793,8 +800,9 @@ class SaleController extends Controller
 
             $model->afip_information_id                 = $request->afip_information_id;
             
-            $model->address_id                          = $request->address_id;
-            
+            // Misma guarda que en store(): una sucursal borrada se reemplaza por una viva (D12).
+            $model->address_id                          = \App\Http\Controllers\Helpers\address\SucursalVigenteHelper::resolver($request->address_id, $this->userId(), $this->userId(false), 'SaleController@update');
+
             $model->sale_type_id                        = $request->sale_type_id;
             
             $model->observations                        = $request->observations;
