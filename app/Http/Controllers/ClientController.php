@@ -416,10 +416,15 @@ class ClientController extends Controller
 
         $user_id = $this->userId();
 
-        if ($request->has('clients_id') && $request->query('clients_id') !== '') {
+        // Los dos parámetros se leen solo como texto: `clients_id[]=1` o `filters[]=x` llegan como
+        // array y no son ninguno de los dos caminos (antes, "Array to string conversion" → 500).
+        $clients_id = $request->query('clients_id');
+        $filters_json = $request->query('filters');
+
+        if (is_string($clients_id) && $clients_id !== '') {
 
             // Solo enteros positivos: '12abc', '-3' o '1.5' no son ningún id.
-            $ids = array_values(array_filter(explode('-', (string) $request->query('clients_id')), function ($id) {
+            $ids = array_values(array_filter(explode('-', $clients_id), function ($id) {
                 return ctype_digit($id) && (int) $id > 0;
             }));
 
@@ -435,7 +440,7 @@ class ClientController extends Controller
             return $this->responder_pdf_de_clientes($models);
         }
 
-        $filters = json_decode((string) $request->query('filters'), true);
+        $filters = is_string($filters_json) ? json_decode($filters_json, true) : null;
 
         // Sin filtros no hay PDF: antes un pedido sin `filters` llegaba con null al buscador y
         // daba 500. La SPA ya lo frena del otro lado ("No hay filtros activos para exportar").
@@ -456,6 +461,9 @@ class ClientController extends Controller
 
         $search_ct = new SearchController();
         $models = $search_ct->search($request, 'client', $filters);
+
+        // El withAll() del cliente no trae el vendedor: sin esto, una consulta por fila.
+        $models->loadMissing('seller');
 
         return $this->responder_pdf_de_clientes($models);
     }

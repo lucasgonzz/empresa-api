@@ -81,6 +81,9 @@ class ClientsPdf extends fpdf {
 	function Header() {
 		$data = [
 			'title' 			=> 'Clientes',
+			// Sin tamaño, el título va a 30 pt y "Clientes" no entra en el recuadro del medio:
+			// se parte en dos renglones encima del cuadrante derecho. 12 pt, como la cuenta corriente.
+			'title_font_size'	=> 12,
 			'fields' 			=> $this->getFields(),
 			'user' 				=> $this->user,
 		];
@@ -91,16 +94,94 @@ class ClientsPdf extends fpdf {
 	}
 
 	/**
-	 * Una fila por cliente. Al pasar el final de la hoja abre otra; el encabezado de la hoja nueva
-	 * (Header(), que corre solo con el AddPage) deja el cursor debajo de la fila de títulos.
+	 * Una fila por cliente. Si la fila entera (con todos los renglones de su descripción) no entra
+	 * en lo que queda de la hoja, abre otra antes de empezarla: así ninguna fila queda partida entre
+	 * dos hojas. El encabezado de la hoja nueva (Header(), que corre solo con el AddPage) deja el
+	 * cursor debajo de la fila de títulos.
 	 */
 	function clients() {
+		// Hasta dónde se puede escribir, en mm: la hoja A4 mide 297 y el corte automático del FPDF
+		// (SetAutoPageBreak(true, 1)) está en 296. Se deja aire para que la última fila no toque el borde.
+		$limite_inferior = 290;
+
 		foreach ($this->clients as $client) {
-			if ($this->y >= 280) {
+			// La fuente de las filas, para medir la descripción con la misma que se va a imprimir.
+			$this->SetFont('Arial', '', 10);
+
+			$alto_de_la_fila = $this->line_height * $this->renglones_de($client->description, $this->getFields()['Descripcion']);
+
+			if ($this->y + $alto_de_la_fila > $limite_inferior) {
 				$this->AddPage();
 			}
 			$this->printClient($client);
 		}
+	}
+
+	/**
+	 * Cuántos renglones va a ocupar un texto en un MultiCell de ese ancho, con la fuente actual.
+	 * Repite el mismo corte que hace MultiCell() del fpdf del proyecto (por espacios, por saltos de
+	 * línea y, si una palabra no entra, por caracteres), sin imprimir nada.
+	 *
+	 * @param  string|null  $texto
+	 * @param  int  $ancho  Ancho de la columna en mm.
+	 * @return int  Al menos 1: un MultiCell vacío también ocupa un renglón.
+	 */
+	function renglones_de($texto, $ancho) {
+		// Ancho de cada carácter de la fuente actual, en milésimas del tamaño.
+		$cw = &$this->CurrentFont['cw'];
+		// Ancho útil del renglón en las mismas unidades que $cw.
+		$wmax = ($ancho - 2 * $this->cMargin) * 1000 / $this->FontSize;
+
+		$s = str_replace("\r", '', (string) $texto);
+		$nb = strlen($s);
+		if ($nb > 0 && $s[$nb - 1] == "\n") {
+			$nb--;
+		}
+
+		$sep = -1;
+		$i = 0;
+		$j = 0;
+		$l = 0;
+		$renglones = 1;
+
+		while ($i < $nb) {
+			$c = $s[$i];
+
+			// Salto de línea escrito en la descripción.
+			if ($c == "\n") {
+				$i++;
+				$sep = -1;
+				$j = $i;
+				$l = 0;
+				$renglones++;
+				continue;
+			}
+
+			if ($c == ' ') {
+				$sep = $i;
+			}
+
+			$l += $cw[$c];
+
+			// No entra más en el renglón: corta en el último espacio o, si no hubo, en este carácter.
+			if ($l > $wmax) {
+				if ($sep == -1) {
+					if ($i == $j) {
+						$i++;
+					}
+				} else {
+					$i = $sep + 1;
+				}
+				$sep = -1;
+				$j = $i;
+				$l = 0;
+				$renglones++;
+			} else {
+				$i++;
+			}
+		}
+
+		return $renglones;
 	}
 
 	function printClient($client) {

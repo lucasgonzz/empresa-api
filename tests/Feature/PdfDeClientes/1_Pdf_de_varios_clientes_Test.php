@@ -121,6 +121,48 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
     }
 
     /**
+     * El contenido de cada hoja, en orden. El FPDF escribe primero las hojas (cada una con su
+     * stream de contenido, que es el único con textos `Tj`) y después las fuentes e imágenes.
+     *
+     * @param  string  $pdf
+     * @return string[]
+     */
+    protected function hojas($pdf)
+    {
+        $hojas = [];
+
+        preg_match_all('/stream\r?\n(.*?)\r?\nendstream/s', $pdf, $streams);
+
+        foreach ($streams[1] as $stream) {
+            $plano = @gzuncompress($stream);
+            $plano = $plano === false ? $stream : $plano;
+
+            if (strpos($plano, ') Tj') !== false) {
+                $hojas[] = str_replace(['\\(', '\\)', '\\\\'], ['(', ')', '\\'], $plano);
+            }
+        }
+
+        return $hojas;
+    }
+
+    /**
+     * La altura (en puntos, contada desde ABAJO de la hoja, como la escribe el PDF) del primer texto
+     * de la hoja que empieza con `$inicio`. Los Cell() del FPDF salen como `BT x y Td (texto) Tj ET`.
+     *
+     * @param  string  $hoja
+     * @param  string  $inicio
+     * @return float|null
+     */
+    protected function altura_del_texto($hoja, $inicio)
+    {
+        if (!preg_match('/BT [\d.]+ ([\d.]+) Td \(' . preg_quote($inicio, '/') . '/', $hoja, $m)) {
+            return null;
+        }
+
+        return (float) $m[1];
+    }
+
+    /**
      * @param  string  $pdf
      * @return int
      */
@@ -151,7 +193,8 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
     /** @test */
     public function los_seleccionados_salen_con_el_saldo_de_su_cuenta_en_pesos()
     {
-        $vendedor = Seller::create(['name' => 'Vendedor Ruta Sur', 'user_id' => $this->dueno->id]);
+        // Un nombre que entra en la columna Vendedor (30 mm): uno más largo sale recortado con "...".
+        $vendedor = Seller::create(['name' => 'Ramiro Sur', 'user_id' => $this->dueno->id]);
 
         $tucumana = $this->cliente('Ferreteria Tucumana PDF', 464808.56, [
             'phone'     => '3815551234',
@@ -169,7 +212,7 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
         // El saldo vivo, con el formato de los PDF del sistema. Con `clients.saldo` (NULL) salía $0.
         $this->assertStringContainsString('$464.808,56', $texto);
         $this->assertStringContainsString('3815551234', $texto);
-        $this->assertStringContainsString('Vendedor Ruta Sur', $texto);
+        $this->assertStringContainsString('Ramiro Sur', $texto);
 
         // Sin la extensión de ventas en dólares no hay columna en dólares.
         $this->assertStringNotContainsString('Saldo USD', $texto);
@@ -180,7 +223,7 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
     {
         $this->cliente('Ferreteria Filtro Uno PDF', 537738.31);
         $this->cliente('Ferreteria Filtro Dos PDF', 297664.03);
-        $this->cliente('Corralon Fuera Del Filtro PDF', 5000);
+        $this->cliente('Corralon Otro Rubro PDF', 5000);
 
         $texto = $this->texto_del_pdf($this->pedir_pdf('filters=' . urlencode($this->filtro_nombre_que_contenga('Filtro'))));
 
@@ -188,7 +231,7 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
         $this->assertStringContainsString('$537.738,31', $texto);
         $this->assertStringContainsString('Ferreteria Filtro Dos PDF', $texto);
         $this->assertStringContainsString('$297.664,03', $texto);
-        $this->assertStringNotContainsString('Corralon Fuera Del Filtro PDF', $texto);
+        $this->assertStringNotContainsString('Corralon Otro Rubro PDF', $texto);
     }
 
     /** @test */
@@ -258,7 +301,13 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
         $this->assertSame(422, $this->get('client/pdf')->getStatusCode());
         $this->assertSame(422, $this->get('client/pdf?filters=' . urlencode('[]'))->getStatusCode());
         $this->assertSame(422, $this->get('client/pdf?filters=no-es-json')->getStatusCode());
-        $this->assertSame(422, $this->get('client/pdf?clients_id=abc-0--1')->getStatusCode());
+        // Ninguno es un id: ni texto, ni cero, ni un número con letras. (Un "-1" no se puede
+        // expresar: el guion es el separador.)
+        $this->assertSame(422, $this->get('client/pdf?clients_id=abc-0-1x')->getStatusCode());
+
+        // Los parámetros como array daban "Array to string conversion" (500).
+        $this->assertSame(422, $this->get('client/pdf?clients_id[]=1')->getStatusCode());
+        $this->assertSame(422, $this->get('client/pdf?filters[]=x')->getStatusCode());
     }
 
     /** @test */
@@ -278,7 +327,7 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
 
         $this->assertStringContainsString('Saldo USD', $texto);
         $this->assertStringContainsString('$1.500', $texto);
-        $this->assertStringContainsString('USD 320,5', $texto);
+        $this->assertStringContainsString('USD 320,50', $texto);
     }
 
     /** @test */
@@ -301,5 +350,70 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
 
         // Cada hoja repite la fila de títulos.
         $this->assertSame($this->paginas($pdf), substr_count($texto, '(Descripcion) Tj'));
+
+        // Y en la hoja 2 la primera fila queda DEBAJO de los títulos (en el PDF la altura se cuenta
+        // desde abajo: más abajo en la hoja es un número menor). Antes la hoja nueva forzaba y = 40
+        // sin mirar dónde terminaba el encabezado.
+        $hojas = $this->hojas($pdf);
+        $this->assertCount($this->paginas($pdf), $hojas);
+
+        $altura_titulos = $this->altura_del_texto($hojas[1], 'Descripcion');
+        $altura_primera_fila = $this->altura_del_texto($hojas[1], 'Cliente Hoja');
+
+        $this->assertNotNull($altura_titulos);
+        $this->assertNotNull($altura_primera_fila);
+        $this->assertLessThan($altura_titulos, $altura_primera_fila);
+    }
+
+    /** @test */
+    public function un_nombre_que_no_entra_en_la_columna_sale_recortado()
+    {
+        $largo = $this->cliente('Ferreteria Con Un Nombre Larguisimo Que No Entra En La Columna PDF', 10);
+
+        $texto = $this->texto_del_pdf($this->pedir_pdf('clients_id=' . $largo->id));
+
+        // Antes un Cell() no cortaba: el nombre se imprimía encima del saldo.
+        $this->assertStringContainsString('(Ferreteria Con Un Nombre', $texto);
+        $this->assertStringNotContainsString('Que No Entra En La Columna PDF', $texto);
+        $this->assertStringContainsString('...) Tj', $texto);
+        $this->assertStringContainsString('$10', $texto);
+    }
+
+    /** @test */
+    public function una_fila_con_descripcion_larga_no_queda_partida_entre_dos_hojas()
+    {
+        $ids = [];
+
+        // 30 filas de 5 renglones (35 mm cada una): son varias hojas, y con el corte viejo (solo
+        // mirar si el cursor pasó los 280 mm) más de una fila empezaba al pie y seguía en la otra.
+        for ($i = 1; $i <= 30; $i++) {
+            $numero = str_pad($i, 2, '0', STR_PAD_LEFT);
+            $ids[] = $this->cliente('Cliente Largo ' . $numero . ' PDF', $i, [
+                'description' => "Linea uno\nLinea dos\nLinea tres\nLinea cuatro\nFin " . $numero,
+            ])->id;
+        }
+
+        $pdf = $this->pedir_pdf('clients_id=' . implode('-', $ids));
+        $hojas = $this->hojas($pdf);
+
+        $this->assertGreaterThanOrEqual(3, count($hojas));
+
+        for ($i = 1; $i <= 30; $i++) {
+            $numero = str_pad($i, 2, '0', STR_PAD_LEFT);
+            $hoja_del_nombre = null;
+            $hoja_del_final = null;
+
+            foreach ($hojas as $indice => $hoja) {
+                if (strpos($hoja, '(Cliente Largo ' . $numero . ' PDF) Tj') !== false) {
+                    $hoja_del_nombre = $indice;
+                }
+                if (strpos($hoja, '(Fin ' . $numero . ') Tj') !== false) {
+                    $hoja_del_final = $indice;
+                }
+            }
+
+            $this->assertNotNull($hoja_del_nombre, 'No está el cliente ' . $numero);
+            $this->assertSame($hoja_del_nombre, $hoja_del_final, 'La fila del cliente ' . $numero . ' quedó partida entre dos hojas.');
+        }
     }
 }
