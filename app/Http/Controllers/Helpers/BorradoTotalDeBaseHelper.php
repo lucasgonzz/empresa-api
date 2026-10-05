@@ -151,7 +151,9 @@ class BorradoTotalDeBaseHelper
      *
      * Las dos ramas con datos dejan rastro en el log (con el nombre de la base y los conteos, que
      * son para el servidor y no viajan en ninguna respuesta): el borrado total autorizado queda
-     * registrado, y el rechazado también, para poder reconstruir quién golpeó una base viva.
+     * registrado, y el rechazado también, para poder reconstruir quién golpeó una base viva. Por
+     * eso el contexto lleva además la IP y el user agent del request (ver datos_del_request()):
+     * el 5/10/2026 costó reconstruir quién había pegado, y la forense empieza por ahí.
      *
      * @param  array<string, mixed> $data Payload del setup.
      * @return void
@@ -170,10 +172,10 @@ class BorradoTotalDeBaseHelper
         $base = self::nombre_de_la_base();
 
         if (self::esta_autorizado($data)) {
-            Log::warning('BorradoTotalDeBaseHelper: borrado total AUTORIZADO sobre una base con datos.', [
+            Log::warning('BorradoTotalDeBaseHelper: borrado total AUTORIZADO sobre una base con datos.', array_merge([
                 'base'      => $base,
                 'con_datos' => $resumen,
-            ]);
+            ], self::datos_del_request()));
 
             return;
         }
@@ -182,12 +184,52 @@ class BorradoTotalDeBaseHelper
             'BorradoTotalDeBaseHelper: se rechazó un setup que vaciaría una base con datos de negocio. '
             . 'Para forzarlo, el payload tiene que traer "' . self::FLAG . '" y "' . self::CONFIRMACION
             . '" con el nombre exacto de la base.',
-            [
+            array_merge([
                 'base'      => $base,
                 'con_datos' => $resumen,
-            ]
+            ], self::datos_del_request())
         );
 
         throw new BaseConDatosException($base, $resumen);
+    }
+
+    /**
+     * Quién pegó: la IP y el user agent del request HTTP en curso, para el log (forense de un
+     * rechazo o de un borrado total autorizado). Si no hay request HTTP, los dos valen null.
+     *
+     * 🔴 SOLO esos dos datos. Nunca los headers (ahí viaja X-Admin-Api-Key, la clave de admin) ni el
+     * payload (trae las claves de Serper y de Google del cliente): este contexto va al log de la
+     * instancia y no se tacha. El user agent se recorta a 120 caracteres para que un cliente
+     * malicioso no pueda inflar el log.
+     *
+     * "Sin request" incluye la consola: ahí Laravel arma un request FICTICIO (SetRequestForConsole:
+     * 127.0.0.1 y el agente "Symfony") que no es nadie, y registrarlo sería mentir. Los tests corren
+     * en consola pero hacen requests HTTP de verdad, por eso `runningUnitTests()` los exceptúa.
+     *
+     * @return array{ip: string|null, user_agent: string|null}
+     */
+    protected static function datos_del_request()
+    {
+        $datos = ['ip' => null, 'user_agent' => null];
+
+        if (!app()->bound('request')) {
+            return $datos;
+        }
+
+        if (app()->runningInConsole() && !app()->runningUnitTests()) {
+            return $datos;
+        }
+
+        $request = app('request');
+
+        $datos['ip'] = $request->ip();
+
+        $agente = $request->userAgent();
+
+        if (is_string($agente)) {
+            $datos['user_agent'] = mb_substr($agente, 0, 120, 'UTF-8');
+        }
+
+        return $datos;
     }
 }

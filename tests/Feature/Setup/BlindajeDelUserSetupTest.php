@@ -886,6 +886,103 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     }
 
     // ------------------------------------------------------------------------------------------
+    // Forense: quién pegó (IP y user agent en el log)
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * El rechazo deja en el log la IP y el user agent (recortado a 120) del request, y NADA más del
+     * request: ni la clave del header X-Admin-Api-Key ni un solo dato del payload.
+     *
+     * @test
+     */
+    public function el_rechazo_deja_en_el_log_la_ip_y_el_user_agent_y_nada_mas_del_request()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        $agente_largo = 'Forense/1.0 ' . str_repeat('x', 200);
+        $clave_del_header = 'clave-secreta-del-header-forense-0123456789';
+        $dato_del_payload = 'Nombre-Distintivo-Del-Payload-Forense';
+
+        $respuesta = $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.7'])->postJson(
+            '/api/admin-sync/user-setup',
+            $this->payload(['user_name' => $dato_del_payload]),
+            ['User-Agent' => $agente_largo, 'X-Admin-Api-Key' => $clave_del_header]
+        );
+
+        $this->assert_409_por_base_con_datos($respuesta);
+
+        $rechazos = $this->logs_que_contienen(['se rechazó un setup']);
+
+        $this->assertCount(1, $rechazos);
+        $this->assertStringContainsString('"ip":"203.0.113.7"', $rechazos[0]['texto']);
+        $this->assertStringContainsString('"user_agent":"' . substr($agente_largo, 0, 120) . '"', $rechazos[0]['texto']);
+        // Recortado a 120: el carácter 121 del agente no está.
+        $this->assertStringNotContainsString(substr($agente_largo, 0, 121), $rechazos[0]['texto']);
+
+        // Nada más del request, en ninguna línea de log de ningún nivel.
+        foreach ($this->logs as $log) {
+            $this->assertStringNotContainsString($clave_del_header, $log['texto'], 'La clave del header salió en el log.');
+            $this->assertStringNotContainsString($dato_del_payload, $log['texto'], 'Un dato del payload salió en el log.');
+        }
+    }
+
+    /**
+     * El borrado total autorizado también deja la IP y el user agent.
+     *
+     * @test
+     */
+    public function el_borrado_autorizado_deja_en_el_log_la_ip_y_el_user_agent()
+    {
+        $this->exigir_base_con_datos();
+        $this->migrate_fresh_cortado();
+
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.9'])->postJson(
+            '/api/admin-sync/user-setup',
+            $this->payload([
+                BorradoTotalDeBaseHelper::FLAG         => true,
+                BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
+            ]),
+            ['User-Agent' => 'Forense-Autorizado/2.0']
+        );
+
+        $autorizados = $this->logs_que_contienen(['AUTORIZADO']);
+
+        $this->assertCount(1, $autorizados);
+        $this->assertStringContainsString('"ip":"198.51.100.9"', $autorizados[0]['texto']);
+        $this->assertStringContainsString('"user_agent":"Forense-Autorizado/2.0"', $autorizados[0]['texto']);
+
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * Sin request HTTP (consola, un job) la IP y el user agent quedan en null: no se inventan.
+     *
+     * @test
+     */
+    public function sin_request_http_la_ip_y_el_user_agent_quedan_en_null()
+    {
+        $this->exigir_base_con_datos();
+
+        // Se saca el request del contenedor para simular "no hay request HTTP".
+        app()->forgetInstance('request');
+        $this->assertFalse(app()->bound('request'), 'El request tenía que dejar de estar en el contenedor.');
+
+        try {
+            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
+            $this->fail('Una base con datos y sin autorización tenía que tirar BaseConDatosException.');
+        } catch (BaseConDatosException $e) {
+            $rechazos = $this->logs_que_contienen(['se rechazó un setup']);
+
+            $this->assertCount(1, $rechazos);
+            $this->assertStringContainsString('"ip":null', $rechazos[0]['texto']);
+            $this->assertStringContainsString('"user_agent":null', $rechazos[0]['texto']);
+        }
+
+        $this->assert_base_intacta();
+    }
+
+    // ------------------------------------------------------------------------------------------
     // 10: el orden dentro de run()
     // ------------------------------------------------------------------------------------------
 
