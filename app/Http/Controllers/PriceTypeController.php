@@ -155,6 +155,31 @@ class PriceTypeController extends Controller
         return response()->json(PriceTypeHelper::preview_sincronizar_margen($model), 200);
     }
 
+    /**
+     * El contador "X habilitados de Y" del interruptor "Catálogo restringido en la tienda" de la
+     * lista (misión catalogo-por-lista-tienda, 5/10/2026): cuántos artículos ven en la tienda los
+     * compradores de esta lista si se la restringe.
+     *
+     * `GET api/price-type/{id}/habilitados-en-tienda` → `200 {"habilitados": int, "total": int}`.
+     * Solo listas del dueño; ajena o inexistente → 404 (y no se cuenta nada). El conteo vive en
+     * CatalogoPorListaHelper::contar_habilitados().
+     *
+     * @param  int $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function habilitados_en_tienda($id) {
+
+        $model = PriceType::where('user_id', $this->userId())
+                            ->where('id', $id)
+                            ->first();
+
+        if (is_null($model)) {
+            return response()->json(['message' => 'No se encontro la lista de precios.'], 404);
+        }
+
+        return response()->json(CatalogoPorListaHelper::contar_habilitados($model), 200);
+    }
+
     public function update(Request $request, $id) {
         /**
          * Notificaciones para la respuesta (la SPA muestra `response.data.notifications`): hoy solo
