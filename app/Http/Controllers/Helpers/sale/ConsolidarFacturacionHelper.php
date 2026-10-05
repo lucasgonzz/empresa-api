@@ -124,7 +124,8 @@ class ConsolidarFacturacionHelper extends Controller
 
             /** Carga las ventas con sus artículos y datos de pivot para copiarlos. */
             $ventas_originales = Sale::whereIn('id', $sale_ids)
-                                     ->with('articles', 'combos', 'services', 'discounts', 'surchages', 'client')
+                                     /* articles.iva: la alicuota actual del articulo, para la clave de agrupacion (ver clave_de_agrupacion). */
+                                     ->with('articles.iva', 'combos', 'services', 'discounts', 'surchages', 'client')
                                      ->get();
 
             /** Acumula los totales de las ventas originales para el campo total de la consolidada. */
@@ -313,7 +314,7 @@ class ConsolidarFacturacionHelper extends Controller
                 $pivot = $article->pivot;
 
                 if ($agrupar) {
-                    $clave = self::clave_de_agrupacion($article->id, $pivot);
+                    $clave = self::clave_de_agrupacion($article);
 
                     if (isset($items_a_adjuntar[$clave])) {
                         /**
@@ -326,6 +327,19 @@ class ConsolidarFacturacionHelper extends Controller
                         $items_a_adjuntar[$clave]['returned_amount']  += (float)($pivot->returned_amount ?? 0);
                         $items_a_adjuntar[$clave]['delivered_amount'] = self::sumar_cantidad_opcional($items_a_adjuntar[$clave]['delivered_amount'], $pivot->delivered_amount);
                         $items_a_adjuntar[$clave]['checked_amount']   = self::sumar_cantidad_opcional($items_a_adjuntar[$clave]['checked_amount'], $pivot->checked_amount);
+
+                        /**
+                         * Si el primer renglón no traía alícuota o neto (las ventas que nacen de un
+                         * presupuesto o de producción no los guardan) y este sí, se completan: la
+                         * clave ya garantiza que la alícuota efectiva es la misma, así que no cambia
+                         * lo que se factura y la consolidada guarda el dato en vez de un null.
+                         */
+                        if (is_null($items_a_adjuntar[$clave]['iva_percentage']) && !is_null($pivot->iva_percentage)) {
+                            $items_a_adjuntar[$clave]['iva_percentage'] = $pivot->iva_percentage;
+                        }
+                        if (is_null($items_a_adjuntar[$clave]['price_sin_iva']) && !is_null($pivot->price_sin_iva)) {
+                            $items_a_adjuntar[$clave]['price_sin_iva'] = $pivot->price_sin_iva;
+                        }
                         continue;
                     }
 
@@ -403,34 +417,50 @@ class ConsolidarFacturacionHelper extends Controller
      *     un comprobante fiscal un precio que nunca existió, y el redondeo movería centavos. Si el
      *     precio cambió entre una venta y otra quedan dos renglones, a propósito.
      *   - descuento del renglón: se aplica sobre ese precio (AfipItemCalculator).
-     *   - with_dolar: la cotización con la que se guardó el renglón.
-     *   - alícuota y neto (iva_percentage, price_sin_iva): son la alícuota y el neto del renglón en
-     *     la factura; dos alícuotas distintas no se pueden fundir.
+     *   - alícuota EFECTIVA: la que va a usar la factura, con la misma regla que
+     *     `AfipItemCalculator::resolve_article_iva_percentage()` (la del renglón; si no hay, la
+     *     actual del artículo; si tampoco, 21). Efectiva y no la del pivot a secas porque las ventas
+     *     que nacen de un presupuesto o de producción no guardan la alícuota: con la del pivot, el
+     *     mismo artículo al mismo precio no se juntaría entre una de esas y una de VENDER.
+     *   - with_dolar: valor heredado; hoy ningún camino de venta lo escribe (queda null), pero en
+     *     renglones viejos puede venir cargado, y dos valores distintos no se mezclan.
      *   - nombre personalizado: se imprime en lugar del del catálogo.
+     *
+     * El neto (`price_sin_iva`) NO entra: es `round(precio / (1 + alícuota), 2)`
+     * (`SaleHelper::get_price_sin_iva()`), o sea que con el mismo precio y la misma alícuota es el
+     * mismo, y como las ventas de presupuesto no lo guardan, separaría renglones iguales.
      *
      * El costo NO entra: no se ve en la factura y el del mismo artículo cambia entre ventas, así
      * que separaría justo los renglones que la opción existe para juntar. El renglón fundido lleva
      * el costo del primero; la ganancia, que es lo que se suma, se suma exacta. Tampoco entran la
-     * lista de precios, la descripción de la variante ni la fecha: no cambian el renglón facturado.
+     * lista de precios, la descripción de la variante (sale de la variante, que sí está) ni la
+     * fecha: no cambian el renglón facturado.
      *
      * serialize de un array y no un join con separador: el nombre es texto libre y podría traer
      * cualquier separador adentro. Y no json_encode: con un nombre en UTF-8 inválido devuelve false,
      * y todos esos renglones caerían en la misma clave.
      *
-     * @param int    $article_id Id del artículo del renglón.
-     * @param object $pivot      Pivot del renglón original (article_sale).
+     * @param \App\Models\Article $article Artículo de la venta original, con su pivot (article_sale)
+     *                                       y la relación `iva` cargada.
      * @return string
      */
-    private static function clave_de_agrupacion($article_id, $pivot): string
+    private static function clave_de_agrupacion($article): string
     {
+        $pivot = $article->pivot;
+
+        $alicuota = $pivot->iva_percentage;
+
+        if (is_null($alicuota) || trim((string)$alicuota) === '') {
+            $alicuota = !is_null($article->iva) ? $article->iva->percentage : 21;
+        }
+
         return serialize([
-            (int)$article_id,
+            (int)$article->id,
             self::id_opcional($pivot->article_variant_id),
             (float)$pivot->price,
             (float)($pivot->discount ?? 0),
             self::numero_opcional($pivot->with_dolar),
-            self::alicuota_normalizada($pivot->iva_percentage),
-            self::numero_opcional($pivot->price_sin_iva),
+            self::alicuota_normalizada($alicuota),
             self::texto_opcional($pivot->name),
         ]);
     }

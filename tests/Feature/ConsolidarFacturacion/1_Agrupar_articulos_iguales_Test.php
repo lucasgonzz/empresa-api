@@ -164,7 +164,7 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
             [$martillo->id, array_merge($pivot, ['amount' => 4, 'returned_amount' => 1])],
         ]);
         $venta_2 = $this->venta_con_renglones([
-            [$martillo->id, array_merge($pivot, ['amount' => 6, 'returned_amount' => 2])],
+            [$martillo->id, array_merge($pivot, ['amount' => 6, 'returned_amount' => 2, 'delivered_amount' => 3])],
         ]);
 
         $renglones = $this->consolidar([$venta_1->id, $venta_2->id], true);
@@ -173,13 +173,53 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
 
         $this->assertEqualsWithDelta(10, (float) $renglones[0]->amount, self::DELTA);
         $this->assertEqualsWithDelta(3, (float) $renglones[0]->returned_amount, self::DELTA, 'Lo devuelto se suma: 1 + 2.');
+        $this->assertEqualsWithDelta(3, (float) $renglones[0]->delivered_amount, self::DELTA, 'Lo entregado se suma aunque el primer renglon no lo tuviera cargado.');
         $this->assertEqualsWithDelta(10.5, (float) $renglones[0]->iva_percentage, self::DELTA, 'La alicuota es la del renglon, no la actual del articulo.');
         $this->assertEqualsWithDelta(904.98, (float) $renglones[0]->price_sin_iva, self::DELTA);
         $this->assertSame('Martillo acero forjado', $renglones[0]->name);
     }
 
     /**
-     * Test 5 — Sin agrupar, no se pierde ningun renglon.
+     * Test 5 — Agrupando, la alicuota que se compara es la EFECTIVA, la que va a usar la factura.
+     *
+     * Las ventas que nacen de un presupuesto o de produccion no guardan `iva_percentage` ni
+     * `price_sin_iva` en el renglon; la factura usa entonces la alicuota actual del articulo
+     * (`AfipItemCalculator::resolve_article_iva_percentage()`). Un renglon asi y uno de VENDER al 21%
+     * del mismo articulo (que esta al 21% en el fixture) se facturan igual: se juntan, y el fundido
+     * se queda con la alicuota y el neto del que los tenia. Uno al 10,5% queda aparte.
+     *
+     * @test
+     */
+    public function agrupando_compara_la_alicuota_efectiva_del_renglon()
+    {
+        $martillo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+
+        $this->assertEqualsWithDelta(21, (float) $martillo->iva->percentage, self::DELTA, 'El fixture tiene el martillo al 21%.');
+
+        $venta_de_presupuesto = $this->venta_con_renglones([
+            [$martillo->id, ['amount' => 4, 'price' => 1000]],
+        ]);
+        $venta_de_vender = $this->venta_con_renglones([
+            [$martillo->id, ['amount' => 6, 'price' => 1000, 'iva_percentage' => '21', 'price_sin_iva' => 826.45]],
+        ]);
+        $venta_al_diez_y_medio = $this->venta_con_renglones([
+            [$martillo->id, ['amount' => 1, 'price' => 1000, 'iva_percentage' => '10.5', 'price_sin_iva' => 904.98]],
+        ]);
+
+        $renglones = $this->consolidar([$venta_de_presupuesto->id, $venta_de_vender->id, $venta_al_diez_y_medio->id], true);
+
+        $this->assertCount(2, $renglones, 'Sin alicuota en el renglon vale la del articulo (21%): se junta con el de VENDER; el de 10,5% no.');
+
+        $fundido = $this->renglon_con_cantidad($renglones, 10);
+
+        $this->assertEqualsWithDelta(21, (float) $fundido->iva_percentage, self::DELTA, 'El fundido completa la alicuota que el primero no tenia.');
+        $this->assertEqualsWithDelta(826.45, (float) $fundido->price_sin_iva, self::DELTA, 'Y el neto.');
+
+        $this->assertEqualsWithDelta(10.5, (float) $this->renglon_con_cantidad($renglones, 1)->iva_percentage, self::DELTA);
+    }
+
+    /**
+     * Test 6 — Sin agrupar, no se pierde ningun renglon.
      *
      * Una venta con DOS renglones del mismo articulo (varios precios) y otra con el mismo articulo:
      * tienen que quedar los TRES. Antes, los dos de la primera venta compartian clave y el segundo
@@ -216,7 +256,7 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 6 — Sin agrupar, el mismo articulo de dos ventas tambien queda en dos renglones.
+     * Test 7 — Sin agrupar, el mismo articulo de dos ventas tambien queda en dos renglones.
      *
      * Es el comportamiento que ya tenia la opcion destildada entre ventas distintas; se deja escrito
      * para que el arreglo de la clave al agrupar no lo cambie.
