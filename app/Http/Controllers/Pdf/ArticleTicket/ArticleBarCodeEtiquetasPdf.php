@@ -273,9 +273,6 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
     }
 
     /**
-     * @return void
-     */
-    /**
      * Orientación de la hoja según la medida: apaisada si es más ancha que alta, vertical si es más alta.
      *
      * FPDF ordena el tamaño de la hoja de menor a mayor y después lo gira según la orientación. Con 'L' fija,
@@ -289,6 +286,12 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
         return $this->etiqueta_width >= $this->etiqueta_height ? 'L' : 'P';
     }
 
+    /**
+     * Dibuja las etiquetas: una hoja del tamaño de la medida por cada `cant_article_x_etiqueta`
+     * artículos (1 por defecto).
+     *
+     * @return void
+     */
     function print() {
         $prints_disponibles = $this->cant_article_x_etiqueta;
         $this->AddPage($this->orientacion_de_la_hoja(), [$this->etiqueta_width, $this->etiqueta_height]);
@@ -422,7 +425,9 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
      * Dibuja el código de barras (C128) en `(x, y)` con el tamaño que dio la disposición.
      *
      * El PNG se escribe en un archivo temporal del directorio actual (FPDF lo lee de ahí) y se
-     * borra apenas se dibuja.
+     * borra apenas se dibuja, aunque `Image()` falle. El nombre lleva un sufijo al azar: con el
+     * nombre fijo por código, dos pedidos simultáneos del mismo artículo se borraban el archivo
+     * uno al otro ("Can't open image file").
      *
      * @param string $code
      * @param float $x
@@ -440,11 +445,18 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
         $barcode = $this->barcodeGenerator->getBarcodePNG($code, 'C128');
         $imgData = base64_decode($barcode);
-        $file = 'temp_barcode'.str_replace('/', '_', $code).'.png';
+        /* Solo letras, números, guion y guion bajo del código en el nombre del archivo. */
+        $codigo_para_archivo = preg_replace('/[^A-Za-z0-9_-]/', '_', (string) $code);
+        $file = 'temp_barcode'.$codigo_para_archivo.'_'.bin2hex(random_bytes(4)).'.png';
         file_put_contents($file, $imgData);
 
-        $this->Image($file, $x, $y, $ancho, $alto);
-        unlink($file);
+        try {
+            $this->Image($file, $x, $y, $ancho, $alto);
+        } finally {
+            if (file_exists($file)) {
+                unlink($file);
+            }
+        }
     }
 }
 

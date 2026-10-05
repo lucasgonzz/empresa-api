@@ -228,7 +228,7 @@ class DisposicionDeEtiquetaIndividual
     {
         $bloques = array();
 
-        /* Si algún texto de una sola palabra quedó partido por letras en este intento. */
+        /* Si alguna palabra quedó partida por letras en este intento (y a la letra mínima entraría). */
         $parte_una_palabra = false;
 
         /* Ancho útil para el texto: la etiqueta menos el margen de cada costado. */
@@ -272,12 +272,18 @@ class DisposicionDeEtiquetaIndividual
             $lineas = self::envolver($texto, $pt, $negrita, $ancho_texto);
 
             /*
-             * Un texto de UNA sola palabra (precio, SKU, código, fecha) que no entra en el ancho
-             * queda partido por letras ("$15.432,1" / "0"). Mientras la letra se pueda achicar eso
-             * no cuenta como que entra (ver `entra_sin_partir_palabras`).
+             * Una palabra más ancha que la etiqueta queda partida por letras: "$15.432,1" / "0" en
+             * un precio, o "ESP" / "ATUL" / "A" en un nombre. Mientras la letra se pueda achicar eso
+             * no cuenta como que entra (ver `entra_sin_partir_palabras`). Si esa palabra ni a
+             * FUENTE_MINIMA entra, se parte igual: no tiene sentido llevar todas las letras al
+             * mínimo por ella. (envolver() corta por letras exactamente las palabras más anchas que
+             * la línea.)
              */
-            if (strpos($texto, ' ') === false && count($lineas) > 1) {
-                $parte_una_palabra = true;
+            foreach (explode(' ', $texto) as $palabra) {
+                if (self::ancho_de_texto($palabra, $pt, $negrita) > $ancho_texto
+                    && self::ancho_de_texto($palabra, self::FUENTE_MINIMA, $negrita) <= $ancho_texto) {
+                    $parte_una_palabra = true;
+                }
             }
 
             $recortado = false;
@@ -334,8 +340,8 @@ class DisposicionDeEtiquetaIndividual
     }
 
     /**
-     * Si un intento de los pasos 1 y 2 sirve: entra en el alto y no parte por letras un texto de
-     * una sola palabra. Lo segundo se perdona recién con todas las letras en el mínimo, porque ahí
+     * Si un intento de los pasos 1 y 2 sirve: entra en el alto y no parte por letras una palabra
+     * que a la letra mínima entraría. Lo segundo se perdona recién con todas las letras en el mínimo, porque ahí
      * ya no hay letra más chica que probar (y un código de 13 dígitos en una etiqueta angosta
      * tiene que salir igual).
      *
@@ -509,7 +515,9 @@ class DisposicionDeEtiquetaIndividual
      * se sacan los de los extremos.
      *
      * Primero el reemplazo y después el `trim`: con `/u`, `\s` también agarra el espacio duro
-     * (U+00A0), que el `trim` de PHP no saca y el de JS sí. En este orden los dos lados dan igual.
+     * (U+00A0), que el `trim` de PHP no saca y el de JS sí. En este orden los dos lados dan igual
+     * para todo espacio común; difieren solo en tres caracteres raros (U+0085 y U+180E los toma
+     * PHP y no JS; U+FEFF, al revés), donde la vista previa puede cortar distinto que el PDF.
      *
      * @param  string|null  $texto
      * @return string

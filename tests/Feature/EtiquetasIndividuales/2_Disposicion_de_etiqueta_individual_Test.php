@@ -260,6 +260,37 @@ class Disposicion_de_etiqueta_individual_Test extends EtiquetasIndividualesTestC
     }
 
     /**
+     * Una palabra que ni a 5 pt entra en el ancho (un SKU largo en una etiqueta angosta) se parte
+     * igual, pero NO arrastra todas las letras al mínimo; y un nombre con espacios tampoco se parte
+     * por letras ("ESP" / "ATUL" / "A") mientras achicar la letra lo deje entero.
+     *
+     * @test
+     */
+    public function una_palabra_que_ni_al_minimo_entra_no_lleva_todo_al_minimo()
+    {
+        $propiedades = array(
+            array('key' => 'nombre', 'font_size' => 24, 'negrita' => false),
+            array('key' => 'sku', 'font_size' => 6, 'negrita' => false),
+        );
+        $textos = array('nombre' => 'ESPATULA 80mm', 'sku' => '7798312201729-ROJO-XL');
+
+        /* El SKU a 5 pt mide ~21 mm y en 20 mm de etiqueta hay 18 para el texto. */
+        $this->assertGreaterThan(18, DisposicionDeEtiquetaIndividual::ancho_de_texto($textos['sku'], 5, false));
+
+        $resultado = DisposicionDeEtiquetaIndividual::calcular(20, 50, $propiedades, 8, 1, $textos, false);
+
+        $por_key = array();
+        foreach ($resultado['bloques'] as $bloque) {
+            $por_key[$bloque['key']] = $bloque;
+        }
+
+        $this->assertSame(array('ESPATULA', '80mm'), $por_key['nombre']['lineas'], 'El nombre sale con sus palabras enteras.');
+        $this->assertGreaterThan(5, $por_key['nombre']['tamano'], 'El nombre no baja al mínimo por culpa del SKU.');
+        $this->assertGreaterThan(1, count($por_key['sku']['lineas']), 'El SKU, que ni a 5 pt entra, se parte.');
+        $this->assertSame(array(), $resultado['omitidos']);
+    }
+
+    /**
      * Sin bloques de texto el paso 2 no hace nada: con solo el código y una etiqueta donde ni el
      * código mínimo entra, el código queda afuera (modo compacto, factor 1).
      *
