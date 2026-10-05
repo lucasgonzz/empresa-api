@@ -591,4 +591,101 @@ class Doble_pedido_y_tenencia_de_la_eleccion_Test extends CategoryProposalsTestC
             $this->assertSame(401, $respuesta->getStatusCode(), $clave.' sin sesión tenía que contestar 401.');
         }
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Dos procesos reales: la skill vuelve a correr mientras el dueño elige
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 🔴 `crear` con `reemplazar` (la skill volviendo a correr) y `elegir` (el dueño tocando "Elegir este") a
+     * la vez, en DOS PROCESOS REALES: no hay deadlock, y una corrida ya elegida no se descarta.
+     *
+     * La falla que protege (B-06 del verificador): `crear` tomaba la fila de `users` y después las corridas,
+     * mientras `elegir` tomaba la corrida y recién después `users` (por el `num` de la primera categoría que
+     * crea). Cada uno se quedaba con el candado que el otro esperaba: MySQL mataba a uno con el error 1213 (el
+     * dueño veía "Server Error") y, sin el deadlock, `crear` descartaba una corrida que el dueño acababa de
+     * elegir. Ahora todo el flujo toma los candados en el mismo orden (users del dueño, después la corrida) y
+     * `crear` relee el estado ya bloqueado.
+     *
+     * Los dos casos, con los procesos esperándose de verdad (uno se queda con su candado puesto unos
+     * segundos mientras el otro entra):
+     *  1. `elegir` llega primero: termina 200, y `crear` responde 409 `ya_hay_una_elegida` sin tocar nada.
+     *  2. `crear` llega primero: descarta la corrida lista y crea la nueva; `elegir` responde 409 `no_esta_lista`
+     *     y no escribe nada.
+     *
+     * Este test COMMITEA sus datos (los hijos solo ven lo commiteado) y los borra al final.
+     *
+     * @test
+     * @group categorias_ia
+     * @group categorias_ia_procesos
+     */
+    public function crear_reemplazando_y_elegir_a_la_vez_no_dan_deadlock_ni_descartan_una_corrida_elegida()
+    {
+        // Los dos comercios del test: lo commiteado hay que borrarlo a mano.
+        $a_limpiar = [(int) $this->owner->id, (int) $this->vecino->id];
+
+        try {
+            // Caso 1: ELEGIR llega primero. El comercio del test.
+            $uno = $this->sistema_listo();
+
+            // Lo sembrado y los dos comercios quedan commiteados: los procesos hijos solo ven eso.
+            $this->salir_de_la_transaccion_del_test();
+
+            $elegir = $this->iniciar_hijo('elegir', ['user' => $this->owner->id, 'run' => $uno['run']->id, 'propuesta' => $uno['proposal']->id, 'demora' => 4]);
+
+            // Se le da tiempo a `elegir` de arrancar y tomar sus candados antes de lanzar `crear`.
+            usleep(2000000);
+
+            $crear = $this->iniciar_hijo('crear', ['user' => $this->owner->id, 'demora' => 0]);
+
+            $r_elegir = $this->terminar_hijo($elegir);
+            $r_crear  = $this->terminar_hijo($crear);
+
+            $this->assertArrayNotHasKey('sin_resultado', $r_elegir, 'El proceso de elegir no informó: '.json_encode($r_elegir));
+            $this->assertArrayNotHasKey('sin_resultado', $r_crear, 'El proceso de crear no informó: '.json_encode($r_crear));
+            $this->assertNull($r_elegir['excepcion'], 'Elegir no puede morir por un deadlock: '.json_encode($r_elegir));
+            $this->assertNull($r_crear['excepcion'], 'Crear no puede morir por un deadlock: '.json_encode($r_crear));
+
+            $this->assertSame(200, $r_elegir['status']);
+            $this->assertSame(409, $r_crear['status'], 'Crear contra una corrida ya elegida: '.json_encode($r_crear));
+            $this->assertSame('ya_hay_una_elegida', $r_crear['error']);
+
+            $corrida = CategoryProposalRun::find($uno['run']->id);
+            $this->assertSame('elegida', $corrida->estado, 'La corrida elegida no se descarta.');
+            $this->assertSame($uno['proposal']->id, (int) $corrida->propuesta_elegida_id);
+            $this->assertSame(1, CategoryProposalRun::where('user_id', $this->owner->id)->count(), 'Crear no dejó una corrida nueva.');
+            $this->assertSame(1, $this->categorias_llamadas('Bisagras')->count(), 'Lo que creó elegir sigue en pie.');
+
+            // Caso 2: CREAR llega primero, ahora en el comercio vecino.
+            $dos = $this->sistema_listo($this->vecino);
+
+            $crear = $this->iniciar_hijo('crear', ['user' => $this->vecino->id, 'demora' => 4]);
+
+            // Se le da tiempo a `crear` de tomar el candado de `users` antes de lanzar `elegir`.
+            usleep(2000000);
+
+            $elegir = $this->iniciar_hijo('elegir', ['user' => $this->vecino->id, 'run' => $dos['run']->id, 'propuesta' => $dos['proposal']->id, 'demora' => 0]);
+
+            $r_crear  = $this->terminar_hijo($crear);
+            $r_elegir = $this->terminar_hijo($elegir);
+
+            $this->assertArrayNotHasKey('sin_resultado', $r_crear, 'El proceso de crear no informó: '.json_encode($r_crear));
+            $this->assertArrayNotHasKey('sin_resultado', $r_elegir, 'El proceso de elegir no informó: '.json_encode($r_elegir));
+            $this->assertNull($r_crear['excepcion'], 'Crear no puede morir por un deadlock: '.json_encode($r_crear));
+            $this->assertNull($r_elegir['excepcion'], 'Elegir no puede morir por un deadlock: '.json_encode($r_elegir));
+
+            $this->assertSame(201, $r_crear['status'], 'Crear con reemplazar sobre una corrida lista: '.json_encode($r_crear));
+            $this->assertSame(409, $r_elegir['status'], 'Elegir una corrida que acaban de reemplazar: '.json_encode($r_elegir));
+            $this->assertSame('no_esta_lista', $r_elegir['error']);
+
+            $this->assertSame('descartada', CategoryProposalRun::find($dos['run']->id)->estado, 'La que reemplazó crear.');
+            $this->assertSame(1, CategoryProposalRun::where('user_id', $this->vecino->id)->where('estado', 'preparando')->count(), 'La corrida nueva de crear.');
+            $this->assertSame(0, Category::where('user_id', $this->vecino->id)->count(), 'Elegir no creó nada en la corrida reemplazada.');
+            $this->assertSame(['category_id' => null, 'sub_category_id' => null], $this->categorias_de($dos['articulos'][0]));
+        } finally {
+            foreach ($a_limpiar as $user_id) {
+                $this->limpiar_comercio_commiteado($user_id);
+            }
+        }
+    }
 }

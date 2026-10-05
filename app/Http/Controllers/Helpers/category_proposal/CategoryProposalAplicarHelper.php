@@ -345,6 +345,11 @@ class CategoryProposalAplicarHelper
      */
     protected static function elegir_con_candado(User $dueno, $run_id, $propuesta_id, $eliminar_categorias_vacias, $auth_user_id, $acceso_maestro)
     {
+        // Primero el candado del dueño y después el de la corrida: el orden es el mismo en todo el flujo (ver
+        // `bloquear_al_dueno`). Con el orden al revés, `crear --reemplazar` de la ingesta y esta acción se
+        // trababan entre sí (deadlock 1213 reproducido con dos procesos).
+        self::bloquear_al_dueno($dueno->id);
+
         // El candado: dos pedidos a la vez (el doble clic) se serializan acá, y el segundo lee el estado
         // que dejó el primero. El estado se decide SOBRE ESTA FILA, no sobre la lectura de antes.
         $run = CategoryProposalRun::where('user_id', $dueno->id)
@@ -1059,6 +1064,10 @@ class CategoryProposalAplicarHelper
 
         // Lo que devuelve la transacción: la corrida deshecha o el error de dominio.
         $resultado = DB::transaction(function () use ($dueno, $run_id) {
+            // Primero el candado del dueño y después el de la corrida: el mismo orden que en todo el flujo
+            // (ver `bloquear_al_dueno`).
+            self::bloquear_al_dueno($dueno->id);
+
             // El candado de la corrida: el estado y la pregunta `puede_cambiar` se leen de ESTA fila.
             $run = CategoryProposalRun::where('user_id', $dueno->id)
                 ->where('id', (int) $run_id)
@@ -1476,9 +1485,9 @@ class CategoryProposalAplicarHelper
     /**
      * El cuerpo de `revisar`, ya adentro de la transacción.
      *
-     * Orden de los candados (siempre el mismo, para no entrar en deadlock con `elegir` y `volver_atras`):
-     * primero las corridas, por id ascendente, y después los ítems, por id ascendente. El estado de cada
-     * ítem se lee DESPUÉS de bloquearlo.
+     * Orden de los candados (siempre el mismo, para no entrar en deadlock con `elegir`, `volver_atras` ni
+     * con `crear` de la ingesta): primero la fila de `users` del dueño, después las corridas, por id
+     * ascendente, y al final los ítems, por id ascendente. El estado de cada ítem se lee DESPUÉS de bloquearlo.
      *
      * @param  string $accion
      * @param  \App\Models\User $dueno
@@ -1488,6 +1497,10 @@ class CategoryProposalAplicarHelper
      */
     protected static function revisar_con_candado($accion, User $dueno, array $por_id, $auth_user_id)
     {
+        // Primero el candado del dueño (el mismo orden que en todo el flujo, ver `bloquear_al_dueno`): aprobar
+        // puede crear categorías, y ahí `Controller::num()` lo pide de todos modos.
+        self::bloquear_al_dueno($dueno->id);
+
         // Los ids de ítems que se pidieron.
         $ids = array_keys($por_id);
 
@@ -2002,6 +2015,28 @@ class CategoryProposalAplicarHelper
     protected static function error($status, $codigo, $mensaje, array $extra = [])
     {
         return array_merge(['status' => $status, 'error' => $codigo, 'message' => $mensaje], $extra);
+    }
+
+    /**
+     * Toma el candado de la fila de `users` del dueño. Va PRIMERO en toda transacción del flujo (elegir, volver
+     * atrás, aprobar, rechazar y también `crear` de la ingesta), antes del candado de la corrida.
+     *
+     * 🔴 El ORDEN de los candados es el mismo en todos lados (users del dueño, después la corrida, después los
+     * ítems): con órdenes distintos dos procesos se esperan el uno al otro y MySQL mata a uno con el error 1213
+     * (deadlock). Se reprodujo con dos procesos reales: `crear --reemplazar` tomaba `users` y después las
+     * corridas, mientras `elegir` tomaba la corrida y recién después `users` (el correlativo `num` de la primera
+     * categoría que crea); el dueño veía un "Server Error" y la corrida quedaba descartada.
+     *
+     * La fila de `users` es la MISMA que bloquea `Controller::num()`, así que pedirla de entrada no suma
+     * ninguna espera nueva: solo adelanta la que `elegir` ya tenía a la primera categoría que crea, y la
+     * ordena antes de la corrida.
+     *
+     * @param  int $dueno_id
+     * @return void
+     */
+    protected static function bloquear_al_dueno($dueno_id)
+    {
+        User::where('id', (int) $dueno_id)->lockForUpdate()->first(['id']);
     }
 
     /**

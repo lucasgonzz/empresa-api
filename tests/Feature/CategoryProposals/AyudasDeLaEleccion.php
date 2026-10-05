@@ -366,6 +366,107 @@ trait AyudasDeLaEleccion
         ];
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Dos procesos reales (las pruebas de carrera)
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Lanza un proceso PHP hijo (ProcesoHijoDeLaCarrera.php) que ejecuta UNA acción del flujo. Hereda el
+     * entorno del test (APP_ENV=testing y la misma base de datos).
+     *
+     * 🔴 El hijo solo ve lo que está COMMITEADO: el test tiene que haber salido de su transacción
+     * (`salir_de_la_transaccion_del_test`) antes de sembrar lo que el hijo va a usar.
+     *
+     * @param  string $accion  `elegir` | `crear` | `volver_atras`.
+     * @param  array  $args    Los argumentos del hijo (user, run, propuesta, demora...).
+     * @return array  ['proceso' => recurso, 'tuberias' => [...]] para `terminar_hijo`.
+     */
+    protected function iniciar_hijo($accion, array $args)
+    {
+        // La base que usa este test: el hijo tiene que usar exactamente la misma.
+        $base = DB::connection()->getDatabaseName();
+
+        // El entorno del hijo: el del proceso actual (solo las variables de texto) más lo que lo apunta a la base del test.
+        $entorno = array_merge(array_filter(getenv(), 'is_string'), [
+            'APP_ENV'     => 'testing',
+            'DB_DATABASE' => $base,
+            'XDEBUG_MODE' => 'off',
+        ]);
+
+        $tuberias = [];
+
+        $proceso = proc_open(
+            [PHP_BINARY, __DIR__.'/ProcesoHijoDeLaCarrera.php', $accion, json_encode($args)],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $tuberias,
+            base_path(),
+            $entorno
+        );
+
+        return ['proceso' => $proceso, 'tuberias' => $tuberias];
+    }
+
+    /**
+     * Espera a que termine un hijo y devuelve lo que informó.
+     *
+     * @param  array $hijo  Lo que devolvió `iniciar_hijo`.
+     * @return array  ['status' => .., 'error' => .., 'ya_estaba' => bool, 'excepcion' => ..] o, si el hijo ni
+     *                llegó a informar, ['sin_resultado' => true, 'salida' => texto, 'errores' => texto].
+     */
+    protected function terminar_hijo(array $hijo)
+    {
+        $salida  = stream_get_contents($hijo['tuberias'][1]);
+        $errores = stream_get_contents($hijo['tuberias'][2]);
+
+        proc_close($hijo['proceso']);
+
+        if (preg_match('/RESULTADO:(.*)/', $salida, $coincidencia)) {
+            return json_decode($coincidencia[1], true);
+        }
+
+        return ['sin_resultado' => true, 'salida' => $salida, 'errores' => $errores];
+    }
+
+    /**
+     * Cierra la transacción del test (DatabaseTransactions) para que lo sembrado hasta acá, y lo que se siembre
+     * después, quede COMMITEADO y lo vean los procesos hijos. Quien la use tiene que limpiar lo que dejó
+     * (`limpiar_comercio_commiteado`) en un `finally`: nada de esto se revierte solo.
+     *
+     * @return void
+     */
+    protected function salir_de_la_transaccion_del_test()
+    {
+        while (DB::transactionLevel() > 0) {
+            DB::commit();
+        }
+    }
+
+    /**
+     * Borra TODO lo que un comercio dejó commiteado: filas de cada tabla con `user_id` y el usuario. Es la
+     * limpieza de las pruebas de carrera (que no pueden apoyarse en el rollback del test). Solo sirve en una
+     * base de testing (EmpresaTestCase ya lo exige antes de cada test).
+     *
+     * @param  int $user_id
+     * @return void
+     */
+    protected function limpiar_comercio_commiteado($user_id)
+    {
+        DB::statement('SET FOREIGN_KEY_CHECKS=0');
+
+        $tablas = DB::select(
+            'SELECT DISTINCT table_name AS t FROM information_schema.columns WHERE table_schema = DATABASE() AND column_name = ?',
+            ['user_id']
+        );
+
+        foreach ($tablas as $tabla) {
+            DB::table($tabla->t)->where('user_id', (int) $user_id)->delete();
+        }
+
+        DB::table('users')->where('id', (int) $user_id)->delete();
+
+        DB::statement('SET FOREIGN_KEY_CHECKS=1');
+    }
+
     /**
      * Las categorías vivas del comercio con ese nombre (con la collation de la columna: sin distinguir
      * mayúsculas ni acentos, igual que el sistema).
