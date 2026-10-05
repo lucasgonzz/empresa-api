@@ -79,6 +79,77 @@ class UserHelper {
         return (bool) $candidate->listas_de_precio;
     }
 
+    /**
+     * Cómo lee VENDER los tickets de balanza en este comercio (misión balanzas-configurables,
+     * 3/10/2026): 'plu', 'balanzas' o null (no lee ninguno).
+     *
+     * Es preferencia del COMERCIO y vive en el usuario dueño (`users.tickets_de_balanza`), mismo
+     * patrón que `uses_listas_de_precio()`: para un empleado se lee la fila del dueño. Reemplaza a
+     * las extensiones `plu_balanza_bar_code` / `balanza_bar_code`, que el código ya no mira.
+     *
+     * NULL (nunca se configuró), 'ninguno' y cualquier valor desconocido devuelven null: un valor
+     * raro en la columna no puede prender una lectura que nadie eligió.
+     *
+     * Sin `$user` usa `self::user(true)`, o sea la foto del dueño que guarda la sesión: se refresca
+     * en cada arranque de la SPA (`auth/me`) y cuando el dueño guarda la configuración, igual que
+     * las extensiones que reemplaza. Si esa foto es anterior a la columna, se relee de la base (ver
+     * el comentario de adentro).
+     *
+     * @param User|null $user Usuario autenticado, dueño o cualquier modelo User; se resuelve al dueño si tiene owner_id.
+     * @return string|null 'plu' | 'balanzas' | null
+     */
+    static function modo_tickets_de_balanza($user = null) {
+        $candidate = $user ?? self::user(true);
+        if (!$candidate) {
+            return null;
+        }
+
+        $owner = $candidate;
+
+        if ($candidate->owner_id) {
+            $owner = $candidate->owner ?? User::find($candidate->owner_id);
+            if (!$owner) {
+                return null;
+            }
+        }
+
+        /*
+         * 🔴 La foto del dueño que guarda la sesión puede ser ANTERIOR a la columna: una sesión
+         * abierta antes del despliegue, en un frente que recibe el código nuevo con gente adentro.
+         * Ahí el atributo directamente no existe, leerlo da null y VENDER dejaría de leer los
+         * tickets hasta que la SPA se recargue (el comando ya migró al comercio, pero la sesión no
+         * se entera). Solo en ese caso se relee de la base; con la columna en la foto, que es el
+         * caso normal, no cuesta ninguna consulta.
+         */
+        if (array_key_exists('tickets_de_balanza', $owner->getAttributes())) {
+            $modo = $owner->tickets_de_balanza;
+        } else {
+            $modo = self::tickets_de_balanza_de_la_base($owner->id);
+        }
+
+        if ($modo === BalanzaHelper::MODO_PLU || $modo === BalanzaHelper::MODO_BALANZAS) {
+            return $modo;
+        }
+
+        return null;
+    }
+
+    /**
+     * `users.tickets_de_balanza` del dueño, leído de la base. Si la columna todavía no existe (el
+     * código llegó antes que la migración) no hay modo: devuelve null en vez de tumbar el escaneo.
+     *
+     * @param int $owner_id
+     * @return string|null
+     */
+    private static function tickets_de_balanza_de_la_base($owner_id) {
+        try {
+            return User::where('id', $owner_id)->value('tickets_de_balanza');
+        } catch (\Throwable $e) {
+            Log::warning('modo_tickets_de_balanza: no se pudo leer users.tickets_de_balanza del dueño '.$owner_id.': '.$e->getMessage());
+            return null;
+        }
+    }
+
     static function set_sessions($auth_user) {
         $auth_user = User::where('id', $auth_user->id)->withAll()->first();
         $owner = $auth_user->owner_id

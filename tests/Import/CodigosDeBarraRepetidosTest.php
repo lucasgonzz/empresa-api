@@ -69,8 +69,8 @@ class CodigosDeBarraRepetidosTest extends ImportTestCase
 
         $conflicto = $sobrescrituras->first();
 
-        $this->assertSame(4, (int) $conflicto->fila, 'La fila perdedora tiene que ser F5.');
-        $this->assertSame(5, (int) $conflicto->fila_ganadora, 'La fila ganadora tiene que ser F6.');
+        $this->assertSame(5, (int) $conflicto->fila, 'La fila perdedora tiene que ser F5.');
+        $this->assertSame(6, (int) $conflicto->fila_ganadora, 'La fila ganadora tiene que ser F6.');
 
         /*
          * conflicts_count SÍ incluye los 2 conflictos 'ambiguo' de F7/F8 (esos son
@@ -87,8 +87,8 @@ class CodigosDeBarraRepetidosTest extends ImportTestCase
     /**
      * Tres filas repiten el bar_code de un artículo YA EXISTENTE en base (A1).
      * Cada repetición tiene que reportar el conflicto contra la fila
-     * INMEDIATAMENTE anterior, no siempre contra la primera: 1→2 y 2→3, no
-     * 1→2 y 1→3.
+     * INMEDIATAMENTE anterior, no siempre contra la primera: F2→F3 y F3→F4, no
+     * F2→F3 y F2→F4.
      *
      * Este es el caso puntual que reprodujo el bug del intento anterior: al
      * recargar el Article real y delegar en procesar_articulo_ya_creado(), la
@@ -113,13 +113,13 @@ class CodigosDeBarraRepetidosTest extends ImportTestCase
 
         $this->assertCount(2, $sobrescrituras, 'Tres filas repitiendo el mismo bar_code tienen que dejar 2 conflictos encadenados.');
 
-        $this->assertSame(1, (int) $sobrescrituras[0]->fila, 'El primer conflicto tiene que ser fila 1.');
-        $this->assertSame(2, (int) $sobrescrituras[0]->fila_ganadora, 'El primer conflicto tiene que ganarlo la fila 2.');
+        $this->assertSame(2, (int) $sobrescrituras[0]->fila, 'El primer conflicto tiene que ser F2.');
+        $this->assertSame(3, (int) $sobrescrituras[0]->fila_ganadora, 'El primer conflicto tiene que ganarlo F3.');
 
-        $this->assertSame(2, (int) $sobrescrituras[1]->fila, 'El segundo conflicto tiene que ser fila 2 (no la fila 1 de nuevo).');
-        $this->assertSame(3, (int) $sobrescrituras[1]->fila_ganadora, 'El segundo conflicto tiene que ganarlo la fila 3.');
+        $this->assertSame(3, (int) $sobrescrituras[1]->fila, 'El segundo conflicto tiene que ser F3 (no F2 de nuevo).');
+        $this->assertSame(4, (int) $sobrescrituras[1]->fila_ganadora, 'El segundo conflicto tiene que ganarlo F4.');
 
-        /* El artículo real queda con los valores de la ÚLTIMA fila (fila 3, "v3"). */
+        /* El artículo real queda con los valores de la ÚLTIMA fila (F4, "v3"). */
         $a1 = $this->recargar('A1');
         $this->assertSame('Cadena existente v3', $a1->name);
         $this->assertDecimal(130, $a1->cost);

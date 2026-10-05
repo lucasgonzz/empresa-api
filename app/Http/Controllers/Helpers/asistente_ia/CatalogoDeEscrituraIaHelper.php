@@ -914,6 +914,8 @@ class CatalogoDeEscrituraIaHelper
         'platform_connector'           => 'credenciales de plataforma',
         'payment_method'               => 'credenciales (public_key, access_token)',
         'deposit_movement'             => 'el stock se mueve por sus pantallas',
+        // Misión movimientos-deposito-auditoria (3/10/2026): el ABM de estados sumó store().
+        'deposit_movement_status'      => 'estados de movimientos de depósito: se configuran desde ABM > Inventario y los fijos del sistema (En proceso, Recibido) no se tocan',
         'stock_movement'               => 'el stock se mueve por sus pantallas',
         // Técnicas, de flujo o sin formulario propio (revisadas el 21/9/2026).
         'ai_conversations'             => 'estado del propio asistente',

@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\RecargosEnPrecios;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Models\Article;
 use App\Models\BudgetStatus;
 use App\Models\Client;
 use App\Models\Combo;
@@ -112,6 +114,72 @@ abstract class RecargosEnPreciosTestCase extends EmpresaTestCase
         $this->assertNotNull($articulo, 'Falta el articulo centinela del fixture.');
 
         return $articulo;
+    }
+
+    /**
+     * Un articulo PROPIO del test (prefijo "zz"), con el precio calculado por el camino real del
+     * formulario. Para los tests que miden costo, variante o stock y no pueden depender de lo que
+     * tenga el centinela del fixture. La transaccion del test lo revierte.
+     *
+     * @param  string  $nombre
+     * @param  array   $atributos  Columnas a pisar (cost, stock...).
+     * @return \App\Models\Article
+     */
+    protected function articulo_propio($nombre, $atributos = [])
+    {
+        $user_id = $this->comercio()->id;
+
+        $article = Article::create(array_merge([
+            'name'            => 'zz '.$nombre.' '.uniqid(),
+            'user_id'         => $user_id,
+            'cost'            => 100,
+            'percentage_gain' => 50,
+        ], $atributos));
+
+        ArticleHelper::setFinalPrice(Article::find($article->id), $user_id);
+
+        return $article->fresh();
+    }
+
+    /**
+     * Un renglon de VENDER con `varios_precios`, con la forma con la que lo manda la SPA: el padre
+     * con el precio de lista del articulo, la cantidad del formulario y `price_vender_personalizado`
+     * vacio, mas lo que pida el test (descuento, costo, variante...); y las filas tal cual las
+     * escribe el test, a mano.
+     *
+     * @param  \App\Models\Article  $articulo
+     * @param  array  $filas  Las filas de `varios_precios`.
+     * @param  array  $extra  Claves del padre a agregar o pisar.
+     * @return array
+     */
+    protected function renglon_con_varios_precios($articulo, $filas, $extra = [])
+    {
+        return array_merge([
+            'is_article'                 => true,
+            'id'                         => $articulo->id,
+            'name'                       => $articulo->name,
+            'price_vender'               => (float) $articulo->final_price,
+            'amount'                     => 1,
+            'price_vender_personalizado' => '',
+            'varios_precios'             => $filas,
+        ], $extra);
+    }
+
+    /**
+     * Las filas de `article_sale` de un articulo en una venta, leidas DIRECTO de la tabla y
+     * ordenadas por precio, de menor a mayor.
+     *
+     * @param  int  $sale_id
+     * @param  int  $article_id
+     * @return \Illuminate\Support\Collection
+     */
+    protected function filas_de_la_venta($sale_id, $article_id)
+    {
+        return DB::table('article_sale')
+                    ->where('sale_id', $sale_id)
+                    ->where('article_id', $article_id)
+                    ->orderBy('price')
+                    ->get();
     }
 
     /**

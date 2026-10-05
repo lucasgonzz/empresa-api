@@ -64,6 +64,20 @@ class LimpiarInventarioHelper
                 'label' => 'Movimientos artículo ↔ depósito',
                 'type' => 'article_id',
             ],
+            // Fotos de artículos de las modificaciones de movimientos de depósito (misión
+            // movimientos-deposito-auditoria, 3/10/2026). Mismo criterio que las de ventas.
+            [
+                'key' => 'article_deposit_movement_modification_antes',
+                'table' => 'article_deposit_movement_modification_antes',
+                'label' => 'Modificación de movimiento de depósito (antes)',
+                'type' => 'article_id',
+            ],
+            [
+                'key' => 'article_deposit_movement_modification_despues',
+                'table' => 'article_deposit_movement_modification_despues',
+                'label' => 'Modificación de movimiento de depósito (después)',
+                'type' => 'article_id',
+            ],
             [
                 'key' => 'price_changes',
                 'table' => 'price_changes',

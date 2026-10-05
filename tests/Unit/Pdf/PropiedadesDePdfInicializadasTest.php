@@ -52,6 +52,9 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'ArticleTicket/2rBarCodeEtiquetas.php' => [],
         'ArticleTicket/ArticleBarCodeEtiquetasPdf.php' => ['articles'],
         'ArticleTicket/ArticleTicketDesignPdf.php' => [],
+        // Alta del 4/10/2026 (misión etiquetas-individuales-sin-partir): la disposición de la
+        // etiqueta individual. Es una clase pura y estática (no usa $this), así que entra con [].
+        'ArticleTicket/DisposicionDeEtiquetaIndividual.php' => [],
         'ArticleTicket/Golonorte.php' => ['start_x', 'start_y'],
         'ArticleTicketPdf.php' => ['articles', 'start_x', 'start_y'],
         'BudgetPdf.php' => [],

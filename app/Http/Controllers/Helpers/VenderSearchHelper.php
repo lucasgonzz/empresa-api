@@ -335,7 +335,9 @@ class VenderSearchHelper
      * @param \App\Models\Article $article Articulo completo, con `withAllSinAcopio()` cargado.
      * @param \App\Models\ArticleVariant|null $variant Variante a mostrar, o `null` para la fila del
      *        articulo sin variante.
-     * @return \App\Models\Article|object
+     * @return \App\Models\Article|object La fila de una variante es un objeto PLANO: ademas de lo propio
+     *         de la variante (precio, stock, imagenes, depositos) lleva en la raiz el costo del articulo
+     *         (`cost`, `costo_real`, `cost_in_dollars`, `presentacion`), que es lo que lee el guardado de la venta.
      */
     public static function build_row($article, $variant)
     {
@@ -358,6 +360,30 @@ class VenderSearchHelper
             'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, UserHelper::userId()),
             'price_types'             => $article->price_types,
             'bar_code'                => $variant->bar_code,
+            // Stock de la variante (`article_variants.stock`, null si no tiene). Sin esta clave, con la
+            // extension `check_article_stock_en_vender` la SPA bloquea TODAS las variantes con "Articulo
+            // sin stock": `check_stock_mayor_a_cero` pregunta `item.stock === null || item.stock > 0` y
+            // una fila sin `stock` queda `undefined`, que no es null ni es mayor a cero. Clave aditiva:
+            // nada de lo que ya lee la fila cambia.
+            'stock'                   => $variant->stock,
+            // 🔴 Costo del ARTICULO y moneda de ese costo, en la RAIZ de la fila. NO sacarlas "porque
+            // `article` ya las trae anidadas": el guardado de la venta lee de la raiz del item, no de
+            // `item.article`. `SaleHelper::getCost` toma `costo_real` / `cost` / `presentacion` de la raiz
+            // (la presentacion multiplica el costo en vinoteca) y
+            // `CotizacionDeVentaHelper::item_esta_en_dolares` (y la conversion de precio de la SPA,
+            // `convertir_precio_a_moneda_de_la_venta`) leen `cost_in_dollars` de la raiz. La SPA arma el
+            // item de una variante elegida por nombre con esta fila tal cual: sin estas tres claves la
+            // linea se guardaba con `cost` null y ganancia = precio, y el costo/precio de un articulo en
+            // dolares no se convertia (mision variante-por-nombre-con-costo, 3/10/2026).
+            // La variante no tiene costo propio (`article_variants` solo trae precio, stock, imagen y
+            // codigo): el costo es el del articulo, igual que cuando se escanea el codigo de la variante
+            // (donde la SPA arma `Object.assign({}, article, variant_row)`). Claves aditivas: la fila de
+            // siempre no cambia, y el resto de lo que necesita el costo (`unidades_individuales`, `iva_id`)
+            // la API ya lo lee de la base cuando el item no lo trae.
+            'cost'                    => $article->cost,
+            'costo_real'              => $article->costo_real,
+            'cost_in_dollars'         => $article->cost_in_dollars,
+            'presentacion'            => $article->presentacion,
             'name'                    => $article->name . ' ' . $variant->variant_description,
             'article'                 => $article,
             'images'                  => self::get_variant_images($variant),

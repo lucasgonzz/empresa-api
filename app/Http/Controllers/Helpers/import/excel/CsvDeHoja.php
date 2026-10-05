@@ -21,14 +21,18 @@ use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
  *
  * Son tres archivos al lado del XLSX, para la hoja $indice (0-based):
  *
- *   <excel>.hoja<indice>.csv    la hoja, UNA LÍNEA POR FILA FÍSICA del Excel, con el mismo
- *                               código y las mismas reglas que tenía
+ *   <excel>.hoja<indice>.csv    la hoja, UN REGISTRO CSV POR FILA FÍSICA del Excel, con el
+ *                               mismo código y las mismas reglas que tenía
  *                               InitExcelImport::armar_archivo_csv(): filas vacías
  *                               preservadas, \DateTime como 'Y-m-d H:i:s', null como '',
  *                               una fila sin celdas como una única celda vacía. Es el MISMO
  *                               archivo que después consume la importación por lotes (que lo
- *                               navega por número de línea), así que línea = fila no se
- *                               negocia.
+ *                               navega por número de registro), así que registro = fila no se
+ *                               negocia. Registro, NO línea: una celda con salto de línea
+ *                               (Alt+Enter) sale entrecomillada y ocupa varias líneas físicas,
+ *                               así que quien navegue por posición cuenta con fgetcsv() (con
+ *                               escape vacío y salteando el BOM), nunca con fgets() (misión
+ *                               importacion-celda-multilinea, 4/10/2026).
  *   <excel>.hoja<indice>.tipos  una línea por fila, un carácter por celda con el tipo PHP que
  *                               devolvió OpenSpout: s texto, i entero, f flotante, d fecha,
  *                               b booleano, e vacía/null. Una línea vacía es una fila SIN

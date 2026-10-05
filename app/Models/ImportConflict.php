@@ -34,10 +34,40 @@ use Illuminate\Database\Eloquent\Model;
  * actualización de precios que no mapea el nombre sobre una base con códigos
  * duplicados deja cientos de conflictos idénticos que no le sirven a nadie.
  *
- * DOS de esos tipos NO representan una fila que no se pudo procesar y por eso no
- * suman a `conflicts_count`: 'fila_sobrescrita' (la repetición se resolvió bien) y
- * 'columna_de_precio_ignorada' (misión 44: la fila se aplicó entera menos la columna
- * de precio que el artículo no usa, porque se maneja por la otra). Ver
+ * QUÉ LE PASA A LA FILA SEGÚN EL TIPO (misión importacion-mensaje-de-problemas,
+ * 4/10/2026, leído de ProcessRow::procesar() y ArticleIndexCache::find_with_index()):
+ *
+ *   - 'ambiguo' es el ÚNICO tipo que SEGURO deja la fila afuera: no se crea ni se
+ *     actualiza nada (ver TIPOS_QUE_SALTEAN_LA_FILA). No siempre es "el código coincide
+ *     con más de un artículo": también sale por NOMBRE en una fila sin código que
+ *     coincide con varios artículos, y cuando la fila coincide con UN solo artículo que
+ *     creó esta misma importación en otro lote (incidente Servian). Lo que tienen en
+ *     común es que no se pudo saber a qué artículo corresponde la fila. Una fila ambigua
+ *     puede traer además conflictos anteriores al match (un numero_invalido, un
+ *     placeholder_descartado, un desempate_por_nombre_sin_resolver): igual cuenta como
+ *     fila que no se importó.
+ *   - Con el resto de los tipos que cuentan, el DATO se descarta y la fila SIGUE:
+ *     'numero_invalido' y 'numero_fuera_de_rango' (ese campo no se toca),
+ *     'placeholder_descartado' (ese código se anula), 'sin_identificador' (sin códigos,
+ *     se busca por nombre), 'identificador_sin_asignar' (ese código único no se asigna)
+ *     y 'desempate_por_nombre_sin_resolver' (se aplica a todos los candidatos). Después
+ *     la fila se crea, se actualiza o NO, según el resto de la importación: "Solo
+ *     actualizar" sin match, artículo de otro proveedor, fila repetida por nombre o por
+ *     id en el mismo Excel. Ese destino NO queda registrado en import_conflicts, así que
+ *     de una fila con estos tipos no se puede afirmar que "se importó": tiene datos para
+ *     revisar, y nada más.
+ *   - INFORMATIVOS, no hay nada que corregir: 'fila_sobrescrita' (quedó la última fila
+ *     con ese código) y 'columna_de_precio_ignorada' (misión 44: al actualizar se aplicó
+ *     todo menos la columna de precio que el artículo no usa, porque se maneja por la
+ *     otra). Ver TIPOS_QUE_NO_CUENTAN.
+ *
+ * `conflicts_count` (ImportHistory y ArticleImportResult) suma TODOS los tipos menos
+ * los informativos: son "problemas para revisar", no "filas que no se pudieron
+ * procesar". Cuenta problemas, no filas (una fila con costo y precio inválidos suma 2).
+ * El mensaje del resultado, en cambio, cuenta FILAS: las que no se importaron (los
+ * tipos que saltean la fila) y las que tienen datos para revisar (el resto), sin
+ * afirmar qué pasó después con estas últimas:
+ * ArticleImportHelper::contar_filas_con_problemas(). Ver
  * ActualizarBBDD::persistir_conflictos().
  *
  * Se persiste en bloque (insert masivo) al cerrar cada chunk de importación
@@ -45,6 +75,23 @@ use Illuminate\Database\Eloquent\Model;
  */
 class ImportConflict extends Model
 {
+    /**
+     * Tipos informativos: se persisten para el detalle del historial, pero la fila se
+     * resolvió bien y por eso NO suman a `conflicts_count` (ver el docblock de la clase y
+     * ActualizarBBDD::persistir_conflictos()). El SPA tiene el espejo de esta lista en
+     * ImportHistory.vue (`tipos_que_no_cuentan`): si se agrega un tipo acá, va allá también.
+     */
+    public const TIPOS_QUE_NO_CUENTAN = ['fila_sobrescrita', 'columna_de_precio_ignorada'];
+
+    /**
+     * Tipos con los que ProcessRow::procesar() saltea la fila entera: no crea ni actualiza
+     * nada (el `return` antes de crear o actualizar). Hoy es solo 'ambiguo'. Es lo único
+     * que seguro deja la fila afuera, y el mensaje del resultado cuenta estas filas como
+     * "no se importó porque no se pudo saber a qué artículo corresponde"
+     * (ArticleImportHelper::contar_filas_con_problemas()).
+     */
+    public const TIPOS_QUE_SALTEAN_LA_FILA = ['ambiguo'];
+
     /* Sin restricciones de asignación masiva: se inserta vía array desde ActualizarBBDD. */
     protected $guarded = [];
 

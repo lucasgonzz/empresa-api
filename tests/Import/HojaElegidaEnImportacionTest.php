@@ -241,7 +241,7 @@ class HojaElegidaEnImportacionTest extends ImportTestCase
      *
      * Se mira el CSV y no los artículos creados porque el CSV es el artefacto del que
      * después leen los chunks: build_csv_chunk_offsets() y armar_jobs_de_chunks() navegan
-     * ese archivo por número de línea. Si ahí adentro está la hoja que no era, todo lo que
+     * ese archivo por número de registro CSV. Si ahí adentro está la hoja que no era, todo lo que
      * viene después está mal por más que cada paso individual funcione.
      *
      * @return void

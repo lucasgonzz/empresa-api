@@ -2,10 +2,13 @@
 
 namespace Tests\Feature\Puntos;
 
+use App\Http\Controllers\Helpers\DemoSetupHelper;
+use App\Http\Controllers\Helpers\UserSetupHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\Sale;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use ReflectionMethod;
 
 /**
  * Archivo 1 — el esquema del módulo, el bloqueante que se arregló y el gate por extensión.
@@ -341,6 +344,104 @@ class Esquema_y_extencion_Test extends PuntosTestCase
     }
 
     /**
+     * 🔴 La extensión tiene que salir también del seeder GENERAL, no solo del standalone.
+     *
+     * `UserSetupHelper` y `DemoSetupHelper` corren SOLO `ExtencionSeeder` antes de asignar
+     * extensiones: una que no esté en su array no existe para una instancia nueva. Hasta el
+     * 4/10/2026 `puntos_clientes` vivía solo en el standalone, que entró al camino de upgrade
+     * con la 4.0.0 — así que toda demo y todo cliente instalado de cero después de esa versión
+     * quedó sin la fila y sin forma de prender el programa de puntos (la demo listaba 97
+     * extensiones y ninguna era esta).
+     *
+     * La fila se borra antes de sembrar para que el `count` mida lo que hizo el seeder general y
+     * no una fila que ya estaba en la base. Después se corre el standalone encima, que es lo que
+     * pasa cuando una instancia nueva recibe más tarde el seeder por el camino de upgrade: tiene
+     * que seguir habiendo una sola.
+     *
+     * @group puntos
+     * @test
+     */
+    public function el_seeder_general_de_extensiones_trae_puntos_clientes_con_el_nombre_del_standalone()
+    {
+        ExtencionEmpresa::where('slug', self::SLUG)->delete();
+
+        // Por artisan, mismo motivo que en correr_seeder(): sin el Model::unguarded() del
+        // comando, ExtencionEmpresa no acepta asignación masiva.
+        $this->artisan('db:seed', [
+            '--class' => 'Database\Seeders\ExtencionSeeder',
+            '--force' => true,
+        ])->assertExitCode(0);
+
+        $this->assertEquals(
+            1,
+            ExtencionEmpresa::where('slug', self::SLUG)->count(),
+            'ExtencionSeeder no sembró puntos_clientes: una demo o un cliente instalado de cero nace sin la extensión.'
+        );
+        $this->assertEquals(
+            self::NOMBRE_EXTENCION,
+            ExtencionEmpresa::where('slug', self::SLUG)->value('name'),
+            'El nombre de puntos_clientes en ExtencionSeeder no coincide con el del standalone.'
+        );
+
+        $this->correr_seeder();
+
+        $this->assertEquals(
+            1,
+            ExtencionEmpresa::where('slug', self::SLUG)->count(),
+            'El standalone duplicó la fila que ya había sembrado ExtencionSeeder.'
+        );
+    }
+
+    /**
+     * La extensión se siembra pero NO se prende: ni el alta de un negocio ni el armado de una
+     * demo la incluyen en las extensiones que le asignan al dueño, con ninguna combinación del
+     * formulario. Prenderla es una decisión comercial, comercio por comercio.
+     *
+     * Se resuelve la lista por el mismo camino que `run()` —la base más las dos reglas— con todas
+     * las casillas prendidas y cada tipo de negocio que los helpers distinguen. El contraste con
+     * `motor_de_ofertas`, que sí se otorga de base, prueba que la lista se resolvió de verdad: sin
+     * él, una lista vacía haría pasar el test sin medir nada.
+     *
+     * @group puntos
+     * @test
+     */
+    public function ningun_setup_prende_puntos_clientes_por_defecto()
+    {
+        $casillas = [
+            'produccion'                   => 1,
+            'codigos_de_barra_por_defecto' => 1,
+            'ventas_con_fecha_de_entrega'  => 1,
+            'use_deposits'                 => 1,
+            'use_price_lists'              => 1,
+            'costos_en_dolares'            => 1,
+            'ventas_en_dolares'            => 1,
+            'consultora_de_precios'        => 1,
+            'usar_codigos_de_barra'        => 1,
+            'cajas'                        => 1,
+            'imagenes'                     => 1,
+        ];
+
+        foreach ([UserSetupHelper::class, DemoSetupHelper::class] as $clase) {
+
+            foreach ([null, 'ropa', 'ferreteria', 'forrajeria'] as $tipo) {
+
+                $extencions = $this->extenciones_que_asigna($clase, array_merge($casillas, ['business_type' => $tipo]));
+
+                $this->assertContains(
+                    'motor_de_ofertas',
+                    $extencions,
+                    $clase.' no resolvió las extensiones de base: la aserción de abajo no mediría nada.'
+                );
+                $this->assertNotContains(
+                    self::SLUG,
+                    $extencions,
+                    $clase.' prende puntos_clientes (tipo '.var_export($tipo, true).'): tiene que nacer apagada.'
+                );
+            }
+        }
+    }
+
+    /**
      * 🔴 Con la extensión APAGADA, los seis endpoints del módulo devuelven 403.
      *
      * Es la única aserción que prueba que el gate está conectado. Y se chequea uno por uno a
@@ -472,6 +573,33 @@ class Esquema_y_extencion_Test extends PuntosTestCase
             '--class' => 'Database\Seeders\ExtencionPuntosClientesSeeder',
             '--force' => true,
         ])->assertExitCode(0);
+    }
+
+    /**
+     * Las extensiones que un setup le asigna al dueño, resueltas por el mismo camino que su
+     * `run()`: `base_extencions()` más las reglas por tipo de negocio y por casillas. Por
+     * reflexión porque los tres métodos son privados, igual que en `AlineacionLocalDemoTest`; las
+     * reglas solo mutan los arrays por referencia y no escriben en la base.
+     *
+     * @param  string  $clase
+     * @param  array   $data
+     * @return array
+     */
+    protected function extenciones_que_asigna($clase, array $data)
+    {
+        $base = new ReflectionMethod($clase, 'base_extencions');
+        $base->setAccessible(true);
+
+        $extencions = $base->invoke(null);
+        $seeders    = [];
+
+        foreach (['apply_business_type_rules', 'apply_flag_rules'] as $regla) {
+            $metodo = new ReflectionMethod($clase, $regla);
+            $metodo->setAccessible(true);
+            $metodo->invokeArgs(null, [$data, &$extencions, &$seeders]);
+        }
+
+        return $extencions;
     }
 
     /**

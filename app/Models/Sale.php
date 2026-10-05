@@ -309,6 +309,35 @@ class Sale extends Model
     }
 
     /**
+     * Scope: las ventas que pertenecen al módulo Ventas — terminadas y sin estado de venta.
+     *
+     * Es el criterio con el que la pantalla de Ventas arma su listado del día
+     * (`SaleController::index`, `modulo == 'ventas'`): una venta sin terminar vive en Depósito /
+     * Por entregar, y una con `sale_status_id` vive en Por estado. Ninguna de las dos se ve en
+     * Ventas.
+     *
+     * 🔴 EL LISTADO Y LOS EXCEL DE VENTAS TIENEN QUE MOVERSE JUNTOS (5/10/2026). Hasta esta fecha
+     * el listado filtraba esto a mano y los Excel no: en la demo el día tenía 8 ventas en pantalla
+     * ($167.890,04) y el Excel traía 9 ($175.890,04), con una venta sin terminar que el dueño nunca
+     * vio en el listado. Por eso el criterio vive acá y lo consumen los dos; si alguien lo vuelve a
+     * copiar en un solo lado, el Excel vuelve a sumar plata que la pantalla no muestra.
+     *
+     * Columnas calificadas con `sales.` por el mismo motivo que `scopeSoloVentasReales()`: un
+     * query que joinee otra vez `sales` no puede quedar con una columna ambigua. Para el listado
+     * de siempre es el mismo SQL que tenía escrito a mano, solo cambia la calificación.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeDelModuloVentas($query) {
+        return $query->where('sales.terminada', 1)
+                     ->where(function ($q) {
+                         $q->whereNull('sales.sale_status_id')
+                           ->orWhere('sales.sale_status_id', 0);
+                     });
+    }
+
+    /**
      * Indica si el comercio fecha sus ventas por FECHA DE PEDIDO en vez de por fecha de carga.
      *
      * La preferencia (`users.fechar_ventas_por_fecha_de_entrega`) es del comercio, no de cada

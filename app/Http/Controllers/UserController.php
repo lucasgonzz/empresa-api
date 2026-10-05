@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
 use App\Jobs\ProcessSetFinalPrices;
@@ -392,6 +393,31 @@ class UserController extends Controller
             && $request->has('aplicar_descuentos_proveedor_al_asignar')
             && !is_null($request->aplicar_descuentos_proveedor_al_asignar)) {
             $owner_user->aplicar_descuentos_proveedor_al_asignar = (int) $request->aplicar_descuentos_proveedor_al_asignar;
+            $owner_user->save();
+        }
+
+        /**
+         * Cómo lee VENDER los tickets de balanza (misión balanzas-configurables, 3/10/2026):
+         * 'ninguno', 'plu' o 'balanzas'. Reemplaza a las extensiones `plu_balanza_bar_code` /
+         * `balanza_bar_code` (ver UserHelper::modo_tickets_de_balanza()).
+         *
+         * 🔴 Los tres guards de `aplicar_descuentos_proveedor_al_asignar`, por los mismos motivos:
+         *
+         * 1. Va en `$owner_user`: es preferencia del comercio y la lectura siempre resuelve al dueño.
+         * 2. `has()` + descarte del null: `ModelForm` postea el modelo entero, y un request viejo
+         *    sin esta clave (o con la columna en null porque nunca se configuró) no puede borrarle
+         *    la elección al comercio.
+         * 3. SOLO SI QUIEN GUARDA ES EL DUEÑO: el modelo que la SPA tiene para un empleado trae la
+         *    columna PROPIA del empleado (NULL, nadie la escribe), y `ModelForm` la postearía.
+         *
+         * Y además lista blanca (BalanzaHelper::MODOS): cualquier otro valor se ignora. Un valor
+         * desconocido en la columna dejaría al comercio sin leer sus tickets sin ningún error.
+         */
+        if ($owner_user && is_null($model->owner_id)
+            && $request->has('tickets_de_balanza')
+            && !is_null($request->tickets_de_balanza)
+            && in_array($request->tickets_de_balanza, BalanzaHelper::MODOS, true)) {
+            $owner_user->tickets_de_balanza = $request->tickets_de_balanza;
             $owner_user->save();
         }
 

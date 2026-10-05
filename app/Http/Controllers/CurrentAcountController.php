@@ -584,18 +584,173 @@ class CurrentAcountController extends Controller
         // $client_controller->checkSaldoss($current_acount->client_id);
     }
 
+    /**
+     * Saldo inicial de una cuenta corriente: el primer movimiento de una cuenta vacía, con la deuda
+     * (debe) o el saldo a favor (haber) que el cliente o el proveedor ya traía de antes de usar el
+     * sistema.
+     *
+     * 🔴 Reescrito en la misión saldo-inicial-cuenta-corriente (5/10/2026). La versión anterior era
+     * de antes de las cuentas por moneda y estaba rota de dos formas: creaba el movimiento SIN
+     * `credit_account_id` ni `user_id` —una fila huérfana, que el listado de la cuenta no muestra
+     * porque filtra por `credit_account_id`—, y después llamaba a `updateModelSaldo()`, que le pasa
+     * ('client', $id) a `getSaldo()` con la firma vieja y revienta con un 500. Nadie lo notaba porque
+     * el botón de la SPA tampoco aparecía nunca.
+     *
+     * Request: `credit_account_id` (la cuenta de la moneda que está abierta), `model_name`,
+     * `model_id`, `is_for_debe` y `saldo_inicial`. Sin `credit_account_id` —una SPA anterior a esta
+     * misión— se usa la cuenta en PESOS de `model_name` / `model_id`, que era la única que existía
+     * cuando se escribió el botón. Si vienen las dos cosas, la cuenta tiene que ser de ese modelo.
+     *
+     * El movimiento va SIN `user_id`, como el de la importación de Excel: ver el comentario en el
+     * create (recibos y reportes de caja).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse  201 `{ current_acount, credit_account }`, o 422 `{ message }`.
+     */
     function saldoInicial(Request $request) {
-        $current_acount = CurrentAcount::create([
-            'detalle'       => 'Saldo inicial',
-            'status'        => $request->is_for_debe ? 'sin_pagar' : 'pago_from_client',
-            'client_id'     => $request->model_name == 'client' ? $request->model_id : null,
-            'provider_id'   => $request->model_name == 'provider' ? $request->model_id : null,
-            'debe'          => $request->is_for_debe ? $request->saldo_inicial : null,
-            'haber'         => !$request->is_for_debe ? $request->saldo_inicial : null,
-            'saldo'         => $request->is_for_debe ? $request->saldo_inicial : -$request->saldo_inicial,
-        ]);
-        CurrentAcountHelper::updateModelSaldo($current_acount, $request->model_name, $request->model_id);
-        return response()->json(['current_acount' => $current_acount], 201);
+
+        $credit_account = $this->cuenta_del_saldo_inicial($request);
+
+        if (is_null($credit_account)) {
+            return response()->json(['message' => 'No existe la cuenta corriente.'], 422);
+        }
+
+        /*
+         * 🔴 La cuenta tiene que ser del cliente o proveedor que la pantalla dice. Hay caminos que
+         * abren el modal con un modelo y SIN cambiar la cuenta (`showProviderCurrentAcount()` de
+         * Alertas, al 5/10/2026): queda la última que se abrió, que puede ser la de otro cliente, y
+         * el saldo inicial se grabaría ahí con el nombre del proveedor en el título. Si el pedido
+         * dice de quién es, tiene que coincidir con la cuenta.
+         */
+        if (!empty($request->model_name) && !empty($request->model_id)
+            && ($request->model_name != $credit_account->model_name || $request->model_id != $credit_account->model_id)) {
+
+            return response()->json(['message' => 'La cuenta corriente abierta no es de ese cliente o proveedor. Cerrá la cuenta y volvé a abrirla.'], 422);
+        }
+
+        // El monto va siempre positivo: el lado (debe o haber) lo elige el radio del modal, no el
+        // signo. Un negativo en el debe sería un haber disfrazado y la cadena lo sumaría al revés.
+        $monto = is_numeric($request->saldo_inicial) ? round((float) $request->saldo_inicial, 2) : 0;
+
+        if ($monto <= 0) {
+            return response()->json(['message' => 'Ingresá un saldo inicial mayor a 0.'], 422);
+        }
+
+        // true = el cliente/proveedor debe ese monto; false = lo tiene a favor.
+        $is_for_debe = $request->boolean('is_for_debe');
+
+        // El dueño sale de la CUENTA y no del request: así el candado, el client_id/provider_id y la
+        // cuenta no pueden apuntar a dos dueños distintos. Se lee antes de la transacción (ver
+        // CuentaCorrienteLock: el dueño de una cuenta no cambia nunca).
+        $duenio = [
+            'model_name'    => $credit_account->model_name,
+            'model_id'      => $credit_account->model_id,
+        ];
+
+        // Mismo tratamiento que notaDebito(): transacción y candado de la cuenta al entrar.
+        DB::beginTransaction();
+
+        try {
+
+            CuentaCorrienteLock::bloquear_duenio($duenio);
+
+            /*
+             * 🔴 El saldo inicial es el PRIMER movimiento de la cuenta o no es. Se pregunta con el
+             * candado ya tomado y con una lectura que también bloquea: dos clics seguidos (o dos
+             * pestañas, o una pestaña vieja con el botón todavía a la vista) se esperan acá, y el
+             * segundo ve el saldo inicial del primero y se niega. Sin esta guarda, la cuenta quedaba
+             * con dos saldos iniciales y la deuda duplicada.
+             */
+            $primer_movimiento = CurrentAcount::where('credit_account_id', $credit_account->id)
+                                                ->lockForUpdate()
+                                                ->first(['id']);
+
+            if (!is_null($primer_movimiento)) {
+
+                DB::rollBack();
+
+                return response()->json([
+                    'message' => 'La cuenta ya tiene movimientos: el saldo inicial va solo en una cuenta vacía. Para ajustarla usá una nota de crédito o de débito.',
+                ], 422);
+            }
+
+            $current_acount = CurrentAcount::create([
+                'detalle'           => 'Saldo inicial',
+                'status'            => $is_for_debe ? 'sin_pagar' : 'pago_from_client',
+                'client_id'         => $credit_account->model_name == 'client' ? $credit_account->model_id : null,
+                'provider_id'       => $credit_account->model_name == 'provider' ? $credit_account->model_id : null,
+                'debe'              => $is_for_debe ? $monto : null,
+                'haber'             => !$is_for_debe ? $monto : null,
+                'saldo'             => $is_for_debe ? $monto : -$monto,
+                /*
+                 * 🔴 SIN `user_id`, a propósito, igual que el saldo inicial de la importación de
+                 * Excel (LocalImportHelper::crearSaldoInicialPorImportacion). Todo lo que toca este
+                 * movimiento va por `credit_account_id` (el listado, tiene_movimientos(), la cadena de
+                 * saldos), y la tenencia la da la cuenta. Con `user_id`, un saldo inicial en el haber
+                 * —status `pago_from_client`, sin `num_receipt`— entra en todo lo que cuenta "los
+                 * cobros del dueño": `CurrentAcountHelper::getNumReceipt()` lo toma como el último
+                 * recibo y el próximo cobro de CUALQUIER cliente sale "Pago N°1", y los reportes de
+                 * caja y de rendimiento lo suman como plata que entró ese día. No es un cobro: es
+                 * plata que el cliente ya tenía a favor antes de usar el sistema.
+                 */
+                'credit_account_id' => $credit_account->id,
+                'moneda_id'         => $credit_account->moneda_id,
+            ]);
+
+            // Deja el saldo de la cadena, el de la cuenta y el `saldo_pesos`/`saldo_dolares` del
+            // cliente o proveedor. Reemplaza a updateModelSaldo(), que escribía `clients.saldo`, la
+            // columna de antes de las cuentas por moneda que ya no lee nadie.
+            CurrentAcountHelper::checkSaldos($credit_account->id);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
+            report($e);
+
+            return response()->json(['error' => true], 500);
+        }
+
+        $this->sendAddModelNotification($credit_account->model_name, $credit_account->model_id);
+
+        return response()->json([
+            'current_acount'    => $current_acount,
+            // Clave nueva (5/10/2026): la cuenta con el saldo ya recalculado, para que la franja
+            // "Saldo actual" del modal se actualice sin cerrar y volver a abrir la cuenta.
+            'credit_account'    => $credit_account->fresh(),
+        ], 201);
+    }
+
+    /**
+     * La cuenta corriente donde va un saldo inicial, siempre del dueño de la sesión.
+     *
+     * 🔴 El cruce con el dueño no es opcional: en las bases compartidas los ids son correlativos
+     * entre comercios, y un `credit_account_id` ajeno escribiría un movimiento en la cuenta de un
+     * cliente de otro negocio.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \App\Models\CreditAccount|null  null si no existe o no es del dueño.
+     */
+    protected function cuenta_del_saldo_inicial(Request $request) {
+
+        $query = CreditAccount::where('user_id', $this->userId());
+
+        if (!empty($request->credit_account_id)) {
+            return $query->where('id', $request->credit_account_id)->first();
+        }
+
+        // SPA anterior a la misión: no manda la cuenta, solo el cliente o el proveedor.
+        if (empty($request->model_name) || empty($request->model_id)) {
+            return null;
+        }
+
+        return $query->where('model_name', $request->model_name)
+                     ->where('model_id', $request->model_id)
+                     ->where('moneda_id', 1)
+                     ->first();
     }
 
     function updateSaldo($client_id, $current_acounts) {

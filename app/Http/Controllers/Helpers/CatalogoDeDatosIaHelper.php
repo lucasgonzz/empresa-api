@@ -51,6 +51,30 @@ use Illuminate\Support\Facades\DB;
 class CatalogoDeDatosIaHelper
 {
     /**
+     * 🔴 TABLAS CON FILAS GLOBALES (misión movimientos-deposito-auditoria, 3/10/2026). Tablas que
+     * mezclan filas del sistema (`user_id` NULL, compartidas por todos los comercios de la base)
+     * con filas propias de cada dueño. Para ESTAS, y solo para estas, el scope por dueño pasa a ser
+     * `(user_id = dueño OR user_id IS NULL)`: en el listado de la entidad (consulta_base()) y en el
+     * filtro por nombre de una relación que apunta a ellas (condicion_por_nombre()). Para cualquier
+     * otra tabla, nada cambia.
+     *
+     * Es una lista explícita porque este helper trabaja con nombres de tabla (`DB::table()`), no
+     * con modelos. Es el mismo opt-in que el modelo declara con `scopeDelDuenoConGlobales` para el
+     * buscador de la SPA (`SearchController::query_base_del_modelo()`): si se suma una tabla acá,
+     * su modelo tiene que definir ese scope, y al revés. El test 13 de Stock lo verifica para la
+     * que hay.
+     *
+     * - `deposit_movement_statuses`: "En proceso" y "Recibido" son fijos (`user_id` NULL) y cada
+     *   comercio suma los suyos. Sin esto, "movimientos en estado Recibido" no encontraba nada y el
+     *   listado de estados salía sin los fijos.
+     *
+     * @var array<int, string>
+     */
+    const TABLAS_CON_FILAS_GLOBALES = [
+        'deposit_movement_statuses',
+    ];
+
+    /**
      * LAS DIECISIETE CURADAS. entidad => declaración.
      *
      * Ya no son la whitelist: son los OVERRIDES sobre el esquema derivado (ver
@@ -612,6 +636,14 @@ class CatalogoDeDatosIaHelper
             // de OTRO dueño no aparece porque su venta no es del dueño.
             $query->join($padre['tabla'], $tabla . '.' . $padre['columna_local'], '=', $padre['tabla'] . '.' . $padre['columna_padre'])
                 ->where($padre['tabla'] . '.user_id', $owner_id);
+        } elseif (self::tiene_filas_globales($tabla)) {
+            // Opt-in (ver TABLAS_CON_FILAS_GLOBALES): las filas del dueño más las del sistema.
+            $columna_dueno = $tabla . '.' . $declaracion['columna_dueno'];
+
+            $query->where(function ($sub) use ($columna_dueno, $owner_id) {
+                $sub->where($columna_dueno, $owner_id)
+                    ->orWhereNull($columna_dueno);
+            });
         } else {
             $query->where($tabla . '.' . $declaracion['columna_dueno'], $owner_id);
         }
@@ -625,6 +657,18 @@ class CatalogoDeDatosIaHelper
         }
 
         return ['query' => $query, 'aplicados' => $traducidos['aplicados']];
+    }
+
+    /**
+     * ¿La tabla mezcla filas del sistema (`user_id` NULL) con filas de cada dueño? Ver
+     * TABLAS_CON_FILAS_GLOBALES: es un opt-in explícito, para el resto de las tablas es false.
+     *
+     * @param  string|null  $tabla
+     * @return bool
+     */
+    protected static function tiene_filas_globales($tabla): bool
+    {
+        return ! is_null($tabla) && in_array($tabla, self::TABLAS_CON_FILAS_GLOBALES, true);
     }
 
     /**
@@ -943,6 +987,8 @@ class CatalogoDeDatosIaHelper
      * también podría colar un nombre repetido entre comercios en una tabla global.
      *
      * Para `users` (empleados) el scope es `id = dueño OR owner_id = dueño`, que es la cuenta entera.
+     * Para una tabla con filas globales (TABLAS_CON_FILAS_GLOBALES) es `user_id = dueño OR user_id
+     * IS NULL`, así el nombre de un estado fijo del sistema también matchea.
      * Para las etiquetas fijas (moneda) se resuelve contra la lista de etiquetas, sin subconsulta.
      *
      * @param  int     $owner_id
@@ -1004,6 +1050,11 @@ class CatalogoDeDatosIaHelper
         if ($relacion['tabla'] === 'users') {
             $sub .= ' AND (`id` = ? OR `owner_id` = ?)';
             $bindings[] = $owner_id;
+            $bindings[] = $owner_id;
+        } elseif (! empty($relacion['con_user_id']) && self::tiene_filas_globales($relacion['tabla'])) {
+            // Opt-in (ver TABLAS_CON_FILAS_GLOBALES): también matchean las filas del sistema, como
+            // el estado fijo "Recibido" de los movimientos de depósito.
+            $sub .= ' AND (`user_id` = ? OR `user_id` IS NULL)';
             $bindings[] = $owner_id;
         } elseif (! empty($relacion['con_user_id'])) {
             $sub .= ' AND `user_id` = ?';
