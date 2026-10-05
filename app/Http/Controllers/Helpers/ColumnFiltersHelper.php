@@ -2,6 +2,11 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Exceptions\FiltroDeColumnaInvalidoException;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -12,17 +17,52 @@ use Illuminate\Support\Facades\Log;
  * columna visible de una relacion, no por el id del FK). La comparten `SearchController::search()`
  * y `SearchController::globalSearch()`: cualquiera que este tentado de reimplementar un pedacito
  * de esto en otro controller tiene que leer aca que ya existe y por que no se duplica.
+ *
+ * 🔴 EL `key` DE CADA FILTRO SALE DEL PEDIDO Y ES UN NOMBRE DE COLUMNA, NADA MAS (mision
+ * filtros-key-sin-inyeccion, 5/10/2026). Hasta esa fecha el "que contenga" se armaba con
+ * `whereRaw($filter['key'].' LIKE ?')`, sin parentesis: un key como "1=1 OR name" dejaba
+ * `user_id = <dueño> AND 1=1 OR name LIKE ?` y traia las filas de TODOS los comercios de una base
+ * compartida. Por aca pasan ocho caminos (search, global-search, la exportacion a Excel, el PDF del
+ * catalogo, el PDF de clientes, la eliminacion y la actualizacion masivas por filtro, el asistente),
+ * y por las dos masivas eso BORRABA o MODIFICABA filas ajenas. Por eso la guarda vive aca, una sola
+ * vez, y no en cada controller: ver columna_del_filtro(), tiene_criterio() y relacion_real().
  */
 class ColumnFiltersHelper
 {
     /**
+     * Forma de un identificador SQL simple: letras, numeros y guion bajo, sin empezar con numero.
+     * Es el primer filtro (barato) de un key; el que decide es que el nombre este en la lista de
+     * columnas reales de la tabla (ver columna_valida()).
+     */
+    const PATRON_IDENTIFICADOR = '/^[A-Za-z_][A-Za-z0-9_]*$/';
+
+    /**
+     * Ruta real de app/ (cacheada por proceso), para relacion_real(). null = todavia no se calculo.
+     *
+     * @var string|false|null
+     */
+    protected static $ruta_de_app = null;
+
+    /**
      * Aplica los filtros de columna del listado sobre el query builder.
+     *
+     * Orden de cada filtro (mision filtros-key-sin-inyeccion):
+     *  1. Un filtro que no es array o no trae `type` se saltea (igual que siempre).
+     *  2. `images`: rama propia (presencia de una relacion, no una columna).
+     *  3. `afip_ticket_cbte_numero` de venta: rama propia (su key no es una columna de sales).
+     *  4. El resto: el key tiene que ser una columna real de la tabla. Si no lo es y el filtro trae un
+     *     criterio puesto → FiltroDeColumnaInvalidoException (422). Si no lo es y el filtro es inerte
+     *     → se saltea, como hasta ahora.
+     *  5. De ahi en adelante, a SQL entra SOLO la columna validada ($columna), nunca $filter['key'].
      *
      * @param  \Illuminate\Database\Eloquent\Builder $models          Query en construccion.
      * @param  array|null                            $filters         Filtros tal cual los manda el SPA.
      * @param  string                                $model_name_param Nombre snake_case del modelo (ruta).
      * @param  string                                $model_name       Clase Eloquent del modelo.
      * @return array  ['models' => Builder, 'used_filters' => array]
+     *
+     * @throws \App\Exceptions\FiltroDeColumnaInvalidoException  Key que no es columna con un criterio
+     *         puesto, o una direccion de orden que no es ASC ni DESC.
      */
     public static function apply($models, $filters, $model_name_param, $model_name)
     {
@@ -32,12 +72,18 @@ class ColumnFiltersHelper
 
         $used_filters = [];
 
+        // Columnas reales de la tabla del modelo (minuscula => nombre real). Se piden UNA sola vez
+        // por apply() y recien cuando el primer filtro las necesita: un pedido sin filtros, o solo
+        // con el de imagenes, no paga la consulta a information_schema.
+        $columnas = null;
+
         foreach ($filters as $filter) {
 
             // Log::info('Va con ');
             // Log::info($filter);
 
-            if (isset($filter['type'])) {
+            // Un filtro que no es array o no trae type se saltea, igual que siempre.
+            if (is_array($filter) && isset($filter['type'])) {
 
                 /*
                  * "Sin imágenes" / "Con imágenes" en la columna de imágenes del listado (misión
@@ -45,7 +91,8 @@ class ColumnFiltersHelper
                  * relación (morphMany), así que "en blanco" es que no tenga ninguna y "no en blanco"
                  * que tenga al menos una. Va ANTES y con `continue` porque ninguna de las ramas de
                  * abajo sirve para este tipo: la genérica de en_blanco haría `images IS NULL` sobre
-                 * una columna que no existe (error de SQL), y ordenar por `images` también.
+                 * una columna que no existe (error de SQL), y ordenar por `images` también. Su key se
+                 * valida como relación real (is_own_relation()), no como columna.
                  */
                 if ($filter['type'] == 'images') {
                     $presencia = self::apply_images_presence_filter($models, $filter, $model_name);
@@ -58,12 +105,96 @@ class ColumnFiltersHelper
                     continue;
                 }
 
+                /**
+                 * Ventas: filtro por N° de comprobante en afip_tickets (relación hasMany).
+                 * No aplica sobre columna de sales; usa whereHas en afip_tickets.cbte_numero.
+                 *
+                 * Va adelantado y con `continue` (mision filtros-key-sin-inyeccion): su key
+                 * (`afip_ticket_cbte_numero`, lo arma store/sale/index.js de la SPA) NO es una columna
+                 * de sales y no entra a ningun SQL, asi que no puede pasar por la guarda de columnas de
+                 * abajo. Solo lee el que_contenga: ni en_blanco ni orden (los dos daban 500 sobre esa
+                 * columna inexistente).
+                 */
+                if ($filter['type'] == 'afip_ticket_cbte_numero' && $model_name_param == 'sale') {
+
+                    if (isset($filter['que_contenga'])
+                        && is_scalar($filter['que_contenga'])
+                        && trim($filter['que_contenga']) != '') {
+
+                        $cbte_numero_search = trim($filter['que_contenga']);
+                        $models = $models->whereHas('afip_tickets', function ($q) use ($cbte_numero_search) {
+                            $q->where('cbte_numero', 'like', '%' . $cbte_numero_search . '%');
+                        });
+
+                        $used_filters[] = [
+                            'key'       => isset($filter['key']) ? $filter['key'] : 'afip_ticket_cbte_numero',
+                            'operator'  => 'que_contenga',
+                            'value'     => $filter['que_contenga'],
+                            'type'      => $filter['type'],
+                        ];
+                    }
+
+                    continue;
+                }
+
+                if (is_null($columnas)) {
+                    $columnas = self::columnas_de_la_tabla($model_name);
+                }
+
+                /*
+                 * 🔴 LA GUARDA. $columna es el nombre REAL de una columna de la tabla, o null.
+                 *
+                 * No alcanza con un regex de "parece un identificador": la lista de columnas reales es
+                 * lo que garantiza que lo que entra al SQL es una columna de ESTA tabla y no, por
+                 * ejemplo, el nombre de otra columna de otra tabla o una funcion. El regex solo descarta
+                 * rapido lo que ni siquiera puede ser un nombre.
+                 */
+                $columna = self::columna_del_filtro($filter, $columnas);
+
+                if (is_null($columna)) {
+
+                    /*
+                     * 🔴 Inerte se saltea, con criterio da 422. No "simplificar" a rechazar todo key
+                     * que no sea columna: la SPA manda TODOS los filtros de la tabla en cada busqueda y
+                     * en el filter_form de las masivas, tambien los que el usuario no toco, y varios
+                     * modelos declaran columnas que no son de la tabla (article_purchase.bar_code,
+                     * employee.*, client.limites_credito...). Rechazarlos rompe el listado entero.
+                     *
+                     * Y tampoco "simplificar" a saltear siempre: un filtro CON criterio que no se puede
+                     * aplicar no puede desaparecer en silencio, porque en una masiva eso es operar sobre
+                     * mas filas de las que la persona pidio. Hoy ese caso daba 500 (SQL sobre una
+                     * columna inexistente); ahora da 422 y la operacion no corre.
+                     */
+                    if (self::tiene_criterio($filter)) {
+                        throw new FiltroDeColumnaInvalidoException(
+                            isset($filter['key']) ? $filter['key'] : null,
+                            $model_name,
+                            'key_no_es_columna'
+                        );
+                    }
+
+                    continue;
+                }
+
                 if (isset($filter['ordenar_de'])
                 && $filter['ordenar_de'] != '') {
+
+                    // La direccion tambien sale del pedido: solo asc o desc. Antes cualquier otra cosa
+                    // era un InvalidArgumentException de Laravel (500).
+                    $direccion = self::direccion_de_orden($filter['ordenar_de']);
+
+                    if (is_null($direccion)) {
+                        throw new FiltroDeColumnaInvalidoException(
+                            $filter['key'],
+                            $model_name,
+                            'direccion_de_orden'
+                        );
+                    }
+
                     // Delegamos el ordenamiento en un helper que sabe ordenar tanto por columnas
                     // propias del modelo como por la columna visible de una relacion belongsTo
                     // (categoria, proveedor, marca, etc). Ver apply_order_filter mas abajo.
-                    $models = self::apply_order_filter($models, $model_name, $filter);
+                    $models = self::apply_order_filter($models, $model_name, $filter, $columna, $direccion);
 
                     $used_filters[] = [
                         'key'       => $filter['key'],
@@ -87,15 +218,15 @@ class ColumnFiltersHelper
                         // "En blanco" tiene que coincidir con lo que el listado MUESTRA en blanco:
                         // ademas de FK nulo o 0, un FK que apunta a un registro borrado (soft
                         // delete) o inexistente. Ver relation_for_blank_check().
-                        $relation_info = self::relation_for_blank_check($model_name, $filter['key']);
+                        $relation_info = self::relation_for_blank_check($model_name, $columna);
 
-                        $models = $models->where(function ($subquery) use ($filter, $relation_info) {
-                            $subquery->whereNull($filter['key'])
-                                        ->orWhere($filter['key'], 0);
+                        $models = $models->where(function ($subquery) use ($columna, $relation_info) {
+                            $subquery->whereNull($columna)
+                                        ->orWhere($columna, 0);
 
                             if ($relation_info) {
-                                $subquery->orWhereNotExists(function ($related_query) use ($filter, $relation_info) {
-                                    self::where_related_is_alive($related_query, $filter['key'], $relation_info);
+                                $subquery->orWhereNotExists(function ($related_query) use ($columna, $relation_info) {
+                                    self::where_related_is_alive($related_query, $columna, $relation_info);
                                 });
                             }
                         });
@@ -112,7 +243,7 @@ class ColumnFiltersHelper
                     } else if ($filter['type'] == 'date') {
 
                         // Fechas vacías en BD: normalmente NULL (no cadena vacía).
-                        $models = $models->whereNull($filter['key']);
+                        $models = $models->whereNull($columna);
 
                         $used_filters[] = [
                             'key'       => $filter['key'],
@@ -123,9 +254,9 @@ class ColumnFiltersHelper
 
                     } else {
 
-                        $models = $models->where(function ($subquery) use ($filter) {
-                            $subquery->whereNull($filter['key'])
-                                        ->orWhere($filter['key'], '');
+                        $models = $models->where(function ($subquery) use ($columna) {
+                            $subquery->whereNull($columna)
+                                        ->orWhere($columna, '');
                         });
 
                         $used_filters[] = [
@@ -143,15 +274,15 @@ class ColumnFiltersHelper
 
                         // Inverso exacto de en_blanco: FK cargado Y el registro relacionado existe y
                         // no esta borrado (ver relation_for_blank_check()).
-                        $relation_info = self::relation_for_blank_check($model_name, $filter['key']);
+                        $relation_info = self::relation_for_blank_check($model_name, $columna);
 
-                        $models = $models->where(function ($subquery) use ($filter, $relation_info) {
-                            $subquery->whereNotNull($filter['key'])
-                                        ->where($filter['key'], '!=', 0);
+                        $models = $models->where(function ($subquery) use ($columna, $relation_info) {
+                            $subquery->whereNotNull($columna)
+                                        ->where($columna, '!=', 0);
 
                             if ($relation_info) {
-                                $subquery->whereExists(function ($related_query) use ($filter, $relation_info) {
-                                    self::where_related_is_alive($related_query, $filter['key'], $relation_info);
+                                $subquery->whereExists(function ($related_query) use ($columna, $relation_info) {
+                                    self::where_related_is_alive($related_query, $columna, $relation_info);
                                 });
                             }
                         });
@@ -166,7 +297,7 @@ class ColumnFiltersHelper
                     } else if ($filter['type'] == 'date') {
 
                         // Inverso de en_blanco en date: columna con fecha cargada (NOT NULL).
-                        $models = $models->whereNotNull($filter['key']);
+                        $models = $models->whereNotNull($columna);
 
                         $used_filters[] = [
                             'key'       => $filter['key'],
@@ -177,11 +308,11 @@ class ColumnFiltersHelper
 
                     } else {
 
-                        $models = $models->where(function ($subquery) use ($filter) {
-                            $subquery->whereNotNull($filter['key'])
-                                        ->where($filter['key'], '!=', '');
+                        $models = $models->where(function ($subquery) use ($filter, $columna) {
+                            $subquery->whereNotNull($columna)
+                                        ->where($columna, '!=', '');
                             if ($filter['type'] == 'number') {
-                                $subquery->where($filter['key'], '!=', 0);
+                                $subquery->where($columna, '!=', 0);
                             }
                         });
 
@@ -193,40 +324,20 @@ class ColumnFiltersHelper
                         ];
                     }
 
-                } else if (isset($filter['key'])) {
+                } else {
 
                     // Log::info('Entro');
                     // Log::info($filter['type'] == 'select');
                     // Log::info(isset($filter['igual_que']));
                     // Log::info($filter['igual_que'] !== 0);
 
-                    $key = $filter['key'];
+                    $key = $columna;
 
                     if ($key == 'num' && $model_name_param == 'article') {
                         $key = 'id';
                     }
 
-                    /**
-                     * Ventas: filtro por N° de comprobante en afip_tickets (relación hasMany).
-                     * No aplica sobre columna de sales; usa whereHas en afip_tickets.cbte_numero.
-                     */
-                    if ($filter['type'] == 'afip_ticket_cbte_numero'
-                        && $model_name_param == 'sale'
-                        && isset($filter['que_contenga'])
-                        && trim($filter['que_contenga']) != '') {
-
-                        $cbte_numero_search = trim($filter['que_contenga']);
-                        $models = $models->whereHas('afip_tickets', function ($q) use ($cbte_numero_search) {
-                            $q->where('cbte_numero', 'like', '%' . $cbte_numero_search . '%');
-                        });
-
-                        $used_filters[] = [
-                            'key'       => $filter['key'],
-                            'operator'  => 'que_contenga',
-                            'value'     => $filter['que_contenga'],
-                            'type'      => $filter['type'],
-                        ];
-                    } else if ($filter['type'] == 'number') {
+                    if ($filter['type'] == 'number') {
                         if (isset($filter['menor_que'])
                             && $filter['menor_que'] != '') {
 
@@ -273,7 +384,7 @@ class ColumnFiltersHelper
                         if (isset($filter['igual_que'])
                             && $filter['igual_que'] != '') {
 
-                            $models = $models->where($filter['key'], trim($filter['igual_que']));
+                            $models = $models->where($columna, trim($filter['igual_que']));
                             // Log::info('Que '.$filter['key'].' sea igual que: '.$filter['igual_que']);
 
 
@@ -291,8 +402,14 @@ class ColumnFiltersHelper
 
                             // Log::info('Que '.$filter['key'].' contenga '.$filter['que_contenga'].':');
                             foreach ($keywords as $keyword) {
-                                $query = $filter['key'].' LIKE ?';
-                                $models->whereRaw($query, ["%$keyword%"]);
+                                /*
+                                 * 🔴 Por la columna VALIDADA y con where(), que la envuelve en backticks.
+                                 * Aca vivia `whereRaw($filter['key'].' LIKE ?')`: el key del pedido
+                                 * concatenado en el SQL, sin parentesis, era la puerta de la inyeccion
+                                 * (mision filtros-key-sin-inyeccion). No volver a concatenar nada que
+                                 * venga del pedido en un whereRaw.
+                                 */
+                                $models->where($columna, 'LIKE', "%$keyword%");
                                 // Log::info('keyword: '.$keyword);
                             }
 
@@ -315,7 +432,7 @@ class ColumnFiltersHelper
 
                         // Log::info('Filtrando por search '.$filter['key'].' igual_que '.$filter['igual_que']);
 
-                        $models = $models->where($filter['key'], $filter['igual_que']);
+                        $models = $models->where($columna, $filter['igual_que']);
 
                         $used_filters[] = [
                             'key'       => $filter['key'],
@@ -336,7 +453,7 @@ class ColumnFiltersHelper
 
                             $models = self::apply_date_filter_operator(
                                 $models,
-                                $filter['key'],
+                                $columna,
                                 '<',
                                 $filter['menor_que']
                             );
@@ -353,7 +470,7 @@ class ColumnFiltersHelper
 
                             $models = self::apply_date_filter_operator(
                                 $models,
-                                $filter['key'],
+                                $columna,
                                 '=',
                                 $filter['igual_que']
                             );
@@ -370,7 +487,7 @@ class ColumnFiltersHelper
 
                             $models = self::apply_date_filter_operator(
                                 $models,
-                                $filter['key'],
+                                $columna,
                                 '>',
                                 $filter['mayor_que']
                             );
@@ -388,7 +505,7 @@ class ColumnFiltersHelper
                         && $filter['igual_que'] !== 0
                     ) {
 
-                        $models = $models->where($filter['key'], $filter['igual_que']);
+                        $models = $models->where($columna, $filter['igual_que']);
                         // Log::info('Filtrando por select '.$filter['key'].' igual_que '.$filter['igual_que']);
 
                         $used_filters[] = [
@@ -402,8 +519,8 @@ class ColumnFiltersHelper
                         && isset($filter['checkbox'])
                         && $filter['checkbox'] != -1
                     ) {
-                        // Clave del filtro (columna booleana/tinyint). Valor pedido por el cliente (1/0, true/false, '0', etc.).
-                        $checkboxKey = $filter['key'];
+                        // Clave del filtro (columna booleana/tinyint, ya validada). Valor pedido por el cliente (1/0, true/false, '0', etc.).
+                        $checkboxKey = $columna;
                         $checkboxVal = $filter['checkbox'];
 
                         // Desactivado: en SQL `col = 0` no coincide con NULL; tratamos NULL como desactivado igual que 0/false.
@@ -433,6 +550,253 @@ class ColumnFiltersHelper
     }
 
     /**
+     * Columnas reales de la tabla de un modelo, en un mapa minuscula => nombre real. Una sola
+     * consulta (information_schema), por la conexion del propio modelo.
+     *
+     * Es publica para que otros buscadores que reciben nombres de columna del pedido
+     * (SearchController::searchFromModal) validen con EXACTAMENTE la misma regla, sin copiarla.
+     *
+     * @param  string|\Illuminate\Database\Eloquent\Model  $modelo  Clase Eloquent o una instancia.
+     * @return array<string, string>
+     */
+    public static function columnas_de_la_tabla($modelo)
+    {
+        $instancia = $modelo instanceof Model ? $modelo : new $modelo();
+
+        $listado = $instancia->getConnection()
+                            ->getSchemaBuilder()
+                            ->getColumnListing($instancia->getTable());
+
+        $columnas = [];
+
+        foreach ($listado as $nombre) {
+            // MySQL compara nombres de columna sin distinguir mayusculas: se indexa en minuscula
+            // y se devuelve el nombre tal como lo declara la tabla.
+            $columnas[strtolower($nombre)] = $nombre;
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * El nombre REAL de la columna si $key es un identificador y esta en $columnas; si no, null.
+     *
+     * 🔴 Las dos condiciones van juntas. El regex solo no alcanza (un identificador valido puede
+     * no ser de esta tabla y terminar en un 500, o nombrar otra cosa), y la lista sola tampoco hace
+     * falta sin el regex, pero el regex descarta antes y barato todo lo que trae espacios,
+     * parentesis, comillas o puntos.
+     *
+     * @param  mixed                  $key       Lo que llego en el pedido.
+     * @param  array<string, string>  $columnas  Salida de columnas_de_la_tabla().
+     * @return string|null
+     */
+    public static function columna_valida($key, array $columnas)
+    {
+        if (!is_string($key) || !preg_match(self::PATRON_IDENTIFICADOR, $key)) {
+            return null;
+        }
+
+        $minuscula = strtolower($key);
+
+        return isset($columnas[$minuscula]) ? $columnas[$minuscula] : null;
+    }
+
+    /**
+     * La columna validada del key de un filtro, o null (ver columna_valida()).
+     *
+     * @param  array                  $filter
+     * @param  array<string, string>  $columnas
+     * @return string|null
+     */
+    protected static function columna_del_filtro(array $filter, array $columnas)
+    {
+        return self::columna_valida(isset($filter['key']) ? $filter['key'] : null, $columnas);
+    }
+
+    /**
+     * ¿El filtro trae algun criterio puesto? Solo se usa para decidir que hacer con un filtro cuyo
+     * key NO es columna: con criterio → 422; sin criterio → se saltea.
+     *
+     * Es conservadora a proposito: cuenta como criterio todo lo que alguna rama de apply() lee como
+     * criterio, salvo los valores que la SPA usa para "vacio" en cada campo (los de
+     * build_table_filters_from_props() y limpiar_filtro() de common-vue): '' en los de texto y
+     * numero, 0 en el igual_que de select/search, -1 en checkbox, 0/false en en_blanco y
+     * no_en_blanco. Esos tienen que seguir siendo inertes, porque la SPA manda los filtros que nadie
+     * toco tambien. Las comparaciones son estrictas: con `==` de PHP 7.4, 'abc' == 0 es verdadero y
+     * un criterio de texto pasaria por vacio.
+     *
+     * @param  array  $filter
+     * @return bool
+     */
+    protected static function tiene_criterio(array $filter)
+    {
+        if (isset($filter['ordenar_de']) && $filter['ordenar_de'] != '') {
+            return true;
+        }
+
+        if (isset($filter['en_blanco']) && (boolean) $filter['en_blanco']) {
+            return true;
+        }
+
+        if (isset($filter['no_en_blanco']) && (boolean) $filter['no_en_blanco']) {
+            return true;
+        }
+
+        foreach (['que_contenga', 'menor_que', 'mayor_que'] as $campo) {
+            if (isset($filter[$campo]) && $filter[$campo] !== '') {
+                return true;
+            }
+        }
+
+        if (isset($filter['igual_que']) && !in_array($filter['igual_que'], ['', 0, '0'], true)) {
+            return true;
+        }
+
+        if (isset($filter['checkbox']) && !in_array($filter['checkbox'], ['', -1, '-1'], true)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Direccion de orden normalizada ('asc' / 'desc'), o null si el pedido trae otra cosa.
+     *
+     * @param  mixed  $valor  ordenar_de tal como llego (la SPA manda 'ASC' / 'DESC').
+     * @return string|null
+     */
+    protected static function direccion_de_orden($valor)
+    {
+        if (!is_string($valor)) {
+            return null;
+        }
+
+        $direccion = strtolower(trim($valor));
+
+        return ($direccion === 'asc' || $direccion === 'desc') ? $direccion : null;
+    }
+
+    /**
+     * La UNICA guarda para invocar un metodo del modelo por un nombre que sale del pedido: devuelve
+     * la relacion de Eloquent si $metodo es una relacion real del modelo, o null.
+     *
+     * Por que hace falta: `whereHas($key)`, el "en blanco" de un FK (`<relacion>_id`), el orden por
+     * la columna visible de una relacion y las relation_props de global-search INVOCAN el metodo cuyo
+     * nombre manda el pedido sobre una instancia nueva del modelo. Sin guarda, `save` / `touch` /
+     * `push` (Model) o `restore` (SoftDeletes) escriben en la base.
+     *
+     * Las condiciones, en orden, y todas antes de invocar nada:
+     *  - identificador valido;
+     *  - no es un accessor/mutator (`get...Attribute` / `set...Attribute`) ni un scope;
+     *  - existe, es publico, no estatico y sin parametros obligatorios;
+     *  - 🔴 esta DECLARADO EN UN ARCHIVO DENTRO DE app/. Esta es la condicion que importa y la que
+     *    alguien estaria tentado de "simplificar" a mirar la clase declarante: para un metodo de un
+     *    trait (SoftDeletes::restore, HasFactory...) PHP reporta como clase declarante AL MODELO,
+     *    pero como archivo el del trait, en vendor/. Mirar la clase dejaba pasar `restore`. Mirar el
+     *    archivo excluye Model, todos los traits de Illuminate y cualquier cosa de vendor/;
+     *  - si declara un tipo de retorno, que sea una Relation;
+     *  - recien ahi se invoca (en try/catch: un metodo que tira se descarta) y lo que devuelve
+     *    tiene que ser una Relation.
+     *
+     * Medido el 5/10/2026: en app/Models no hay metodos publicos sin parametros con efectos que
+     * pasen todas las condiciones de antes de invocar salvo relaciones (y accessors, que se excluyen
+     * por nombre). Si alguien agrega uno, la ultima condicion igual lo descarta, pero ya lo habra
+     * ejecutado: no declarar en un modelo metodos publicos sin parametros que escriban.
+     *
+     * @param  string  $model_name  Clase Eloquent del modelo.
+     * @param  mixed   $metodo      Nombre del metodo tal como llego del pedido.
+     * @return \Illuminate\Database\Eloquent\Relations\Relation|null
+     */
+    public static function relacion_real($model_name, $metodo)
+    {
+        if (!is_string($metodo) || !preg_match(self::PATRON_IDENTIFICADOR, $metodo)) {
+            return null;
+        }
+
+        if (preg_match('/^(get|set)[A-Za-z0-9_]*Attribute$/', $metodo) || preg_match('/^scope[A-Z_]/', $metodo)) {
+            return null;
+        }
+
+        if (!is_string($model_name) || !class_exists($model_name)) {
+            return null;
+        }
+
+        $instancia = new $model_name();
+
+        if (!method_exists($instancia, $metodo)) {
+            return null;
+        }
+
+        try {
+            $reflexion = new \ReflectionMethod($instancia, $metodo);
+        } catch (\ReflectionException $e) {
+            return null;
+        }
+
+        if (!$reflexion->isPublic()
+            || $reflexion->isStatic()
+            || $reflexion->getNumberOfRequiredParameters() > 0
+            || !self::declarado_en_app($reflexion)) {
+            return null;
+        }
+
+        // Un tipo de retorno declarado que no es una relacion alcanza para descartarlo sin invocar.
+        if ($reflexion->hasReturnType()) {
+            $tipo = $reflexion->getReturnType();
+
+            if (!($tipo instanceof \ReflectionNamedType)
+                || $tipo->isBuiltin()
+                || !is_a($tipo->getName(), Relation::class, true)) {
+                return null;
+            }
+        }
+
+        try {
+            $relacion = $instancia->{$metodo}();
+        } catch (\Throwable $e) {
+            return null;
+        }
+
+        return $relacion instanceof Relation ? $relacion : null;
+    }
+
+    /**
+     * ¿El metodo esta escrito en un archivo de app/? (ver relacion_real()).
+     *
+     * @param  \ReflectionMethod  $reflexion
+     * @return bool
+     */
+    protected static function declarado_en_app(\ReflectionMethod $reflexion)
+    {
+        $archivo = $reflexion->getFileName();
+
+        // Metodos internos de PHP (sin archivo).
+        if (!is_string($archivo) || $archivo === '') {
+            return false;
+        }
+
+        $archivo = realpath($archivo);
+
+        if (is_null(self::$ruta_de_app)) {
+            self::$ruta_de_app = realpath(app_path());
+        }
+
+        if ($archivo === false || self::$ruta_de_app === false) {
+            return false;
+        }
+
+        $archivo = str_replace('\\', '/', $archivo);
+        $app     = rtrim(str_replace('\\', '/', self::$ruta_de_app), '/') . '/';
+
+        // En Windows (las maquinas de desarrollo) el sistema de archivos no distingue mayusculas.
+        if (DIRECTORY_SEPARATOR === '\\') {
+            return strncasecmp($archivo, $app, strlen($app)) === 0;
+        }
+
+        return strncmp($archivo, $app, strlen($app)) === 0;
+    }
+
+    /**
      * Filtro de presencia sobre una relacion (tipo `images`): `en_blanco` = sin ningun registro de
      * la relacion (whereDoesntHave), `no_en_blanco` = con al menos uno (whereHas). Misión
      * imagenes-catalogo-completo (27/9/2026): "Sin imágenes" / "Con imágenes" del listado.
@@ -448,7 +812,7 @@ class ColumnFiltersHelper
      */
     protected static function apply_images_presence_filter($models, $filter, $model_name)
     {
-        $key = isset($filter['key']) ? (string) $filter['key'] : '';
+        $key = isset($filter['key']) && is_string($filter['key']) ? $filter['key'] : '';
 
         $en_blanco    = isset($filter['en_blanco']) && (boolean) $filter['en_blanco'];
         $no_en_blanco = !$en_blanco && isset($filter['no_en_blanco']) && (boolean) $filter['no_en_blanco'];
@@ -471,13 +835,11 @@ class ColumnFiltersHelper
     }
 
     /**
-     * ¿La key es una relacion declarada en el PROPIO archivo del modelo?
+     * ¿La key es una relacion real del modelo?
      *
      * La key sale del request y whereHas() la invoca como metodo sobre una instancia nueva del
-     * modelo: sin estas guardas, una key como `restore` (SoftDeletes) o `save` terminaria llamando
-     * a ese metodo. Por eso, ademas de publico, no estatico y sin parametros obligatorios (el mismo
-     * criterio que relation_for_blank_check()), se exige que este declarado en el archivo del modelo
-     * y no en un trait ni en Eloquent, y que lo que devuelva sea una Relation.
+     * modelo: sin guarda, una key como `restore` (SoftDeletes) o `save` terminaria llamando a ese
+     * metodo. La guarda es relacion_real(), la misma para todo lo que invoca un metodo por nombre.
      *
      * @param  string $model_name
      * @param  string $key
@@ -489,22 +851,7 @@ class ColumnFiltersHelper
             return false;
         }
 
-        $instance = new $model_name();
-
-        if (!method_exists($instance, $key)) {
-            return false;
-        }
-
-        $reflection = new \ReflectionMethod($instance, $key);
-
-        if (!$reflection->isPublic()
-            || $reflection->isStatic()
-            || $reflection->getNumberOfRequiredParameters() > 0
-            || $reflection->getFileName() !== (new \ReflectionClass($model_name))->getFileName()) {
-            return false;
-        }
-
-        return $instance->$key() instanceof \Illuminate\Database\Eloquent\Relations\Relation;
+        return !is_null(self::relacion_real($model_name, $key));
     }
 
     /**
@@ -515,13 +862,13 @@ class ColumnFiltersHelper
      * registro borrado con soft delete no se carga, asi que la celda se ve vacia — pero el FK sigue
      * apuntando al registro borrado (`ProviderController::destroy` no toca los articulos). El filtro
      * miraba solo `FK IS NULL OR FK = 0` y esos articulos no aparecian nunca. En servian2 eran
-     * 29.682 articulos con proveedor borrado.
+     * 29.682 articulos.
      *
      * Devuelve null cuando la key no es un belongsTo resoluble cuyo FK sea justamente la key: en
      * ese caso el filtro se comporta exactamente como antes.
      *
      * @param string $model_name Clase Eloquent del modelo filtrado.
-     * @param string $key        Key del filtro (ej: provider_id).
+     * @param string $key        Key del filtro (ej: provider_id), ya validada como columna.
      * @return array|null ['table' => tabla relacionada, 'owner_key' => pk referenciada,
      *                     'own_table' => tabla filtrada, 'deleted_at' => columna soft delete o null]
      */
@@ -531,34 +878,19 @@ class ColumnFiltersHelper
             return null;
         }
 
-        $relation_method = substr($key, 0, -3);
-        $instance = new $model_name();
-
-        if (!method_exists($instance, $relation_method)) {
-            return null;
-        }
-
-        // La key sale del request: no se invoca cualquier metodo publico del modelo. Un `save_id`
-        // o `touch_id` llamaria a save()/touch() heredados de Eloquent y escribiria en la base.
-        // Solo se acepta un metodo publico declarado en el propio modelo, sin parametros obligatorios.
-        $reflection = new \ReflectionMethod($instance, $relation_method);
-
-        if (!$reflection->isPublic()
-            || $reflection->isStatic()
-            || $reflection->getNumberOfRequiredParameters() > 0
-            || $reflection->getDeclaringClass()->getName() === \Illuminate\Database\Eloquent\Model::class) {
-            return null;
-        }
-
-        $relation = $instance->$relation_method();
+        // La key sale del request: el metodo `<relacion>` se invoca SOLO si es una relacion real
+        // (ver relacion_real()). Un `save_id` o `touch_id` llamaria a save()/touch() de Eloquent, y
+        // un `restore_id` a SoftDeletes::restore(), que hace save().
+        $relation = self::relacion_real($model_name, substr($key, 0, -3));
 
         // MorphTo extiende BelongsTo pero no tiene una tabla ni un owner key fijos.
-        if (!($relation instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo)
-            || $relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
+        if (!($relation instanceof BelongsTo)
+            || $relation instanceof MorphTo
             || $relation->getForeignKeyName() !== $key) {
             return null;
         }
 
+        $instance = $relation->getParent();
         $related = $relation->getRelated();
 
         // Auto-referencia (ej: users.owner_id -> users): la subconsulta pisaria el nombre de la
@@ -589,7 +921,7 @@ class ColumnFiltersHelper
      * Condiciones de la subconsulta EXISTS: el registro relacionado existe y no esta borrado.
      *
      * @param \Illuminate\Database\Query\Builder $related_query Subconsulta del EXISTS.
-     * @param string                             $key           FK en la tabla filtrada.
+     * @param string                             $key           FK en la tabla filtrada (validada).
      * @param array                              $relation_info Salida de relation_for_blank_check().
      * @return void
      */
@@ -619,65 +951,67 @@ class ColumnFiltersHelper
      *
      * @param \Illuminate\Database\Eloquent\Builder $models     Query en construccion.
      * @param string                                $model_name Clase Eloquent del modelo filtrado.
-     * @param array                                 $filter     Filtro con key, type y ordenar_de.
+     * @param array                                 $filter     Filtro (type y order_relation_prop).
+     * @param string                                $columna    Key del filtro YA VALIDADA como columna.
+     * @param string                                $direccion  'asc' o 'desc', ya normalizada.
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    protected static function apply_order_filter($models, $model_name, $filter)
+    protected static function apply_order_filter($models, $model_name, $filter, $columna, $direccion)
     {
-        // Direccion de orden pedida (ASC o DESC).
-        $direction = $filter['ordenar_de'];
-        // Columna o FK sobre la que se pidio ordenar.
-        $key = $filter['key'];
         // Tipo del filtro (number, text, date, select, search, ...).
         $type = isset($filter['type']) ? $filter['type'] : null;
 
         // Solo intentamos orden por relacion cuando el filtro es de relacion (select/search) y su
         // key tiene forma de FK "<algo>_id". El resto ordena directo por la columna.
         $is_relation_filter = ($type === 'select' || $type === 'search')
-            && strlen($key) > 3
-            && substr($key, -3) === '_id';
+            && strlen($columna) > 3
+            && substr($columna, -3) === '_id';
 
         if ($is_relation_filter) {
-            // Nombre del metodo de relacion por convencion: category_id -> category.
-            $relation_method = substr($key, 0, -3);
+            // Nombre del metodo de relacion por convencion: category_id -> category. Se invoca SOLO
+            // si es una relacion real (relacion_real()): un `save_id` con ordenar_de ejecutaba
+            // (new Modelo)->save() antes de esta guarda.
+            $relation = self::relacion_real($model_name, substr($columna, 0, -3));
 
-            // Instancia del modelo para resolver la relacion real via Eloquent (sin adivinar plurales).
-            $instance = new $model_name();
+            // Solo belongsTo tiene un unico FK ordenable de forma correlacionada. MorphTo extiende
+            // BelongsTo pero no tiene una tabla relacionada fija: cae al orden directo.
+            if ($relation instanceof BelongsTo && !($relation instanceof MorphTo)) {
+                // Modelo y tabla relacionados (ej: categories), tomados del propio Eloquent.
+                $related = $relation->getRelated();
+                $related_table = $related->getTable();
+                // Clave primaria referenciada en la tabla relacionada (normalmente id).
+                $related_key = $relation->getOwnerKeyName();
+                // Tabla del modelo que se esta filtrando (ej: articles).
+                $own_table = $relation->getParent()->getTable();
 
-            if (method_exists($instance, $relation_method)) {
-                // Resolvemos la relacion declarada en el modelo.
-                $relation = $instance->$relation_method();
+                // Columna visible de la relacion: la que manda el front (order_relation_prop)
+                // o "name" por defecto. Para el IVA, por ejemplo, el front manda "percentage".
+                $pedida = (isset($filter['order_relation_prop']) && $filter['order_relation_prop'] != '')
+                    ? $filter['order_relation_prop']
+                    : 'name';
 
-                // Solo belongsTo tiene un unico FK ordenable de forma correlacionada.
-                if ($relation instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo) {
-                    // Tabla del modelo relacionado (ej: categories) tomada del propio Eloquent.
-                    $related_table = $relation->getRelated()->getTable();
-                    // Clave primaria referenciada en la tabla relacionada (normalmente id).
-                    $related_key = $relation->getOwnerKeyName();
-                    // Tabla del modelo que se esta filtrando (ej: articles).
-                    $own_table = $instance->getTable();
+                // 🔴 order_relation_prop tambien sale del pedido y entra al SQL de la subconsulta:
+                // tiene que ser una columna real de la tabla RELACIONADA. Si no lo es (o la tabla
+                // no tiene `name`, como afip_informations o addresses), se ordena por el FK en vez
+                // de dar 500 como hasta el 5/10/2026.
+                $order_column = self::columna_valida($pedida, self::columnas_de_la_tabla($related));
 
-                    // Columna visible de la relacion: la que manda el front (order_relation_prop)
-                    // o "name" por defecto. Para el IVA, por ejemplo, el front manda "percentage".
-                    $order_column = (isset($filter['order_relation_prop']) && $filter['order_relation_prop'] != '')
-                        ? $filter['order_relation_prop']
-                        : 'name';
-
+                if (!is_null($order_column)) {
                     // Subconsulta correlacionada: por cada fila del modelo trae el valor visible de
                     // su relacion (ej: el name de su categoria) para usarlo como criterio de orden.
                     $order_subquery = \Illuminate\Support\Facades\DB::table($related_table)
                         ->select($related_table.'.'.$order_column)
-                        ->whereColumn($related_table.'.'.$related_key, $own_table.'.'.$key)
+                        ->whereColumn($related_table.'.'.$related_key, $own_table.'.'.$columna)
                         ->limit(1);
 
                     // Ordenamos por el resultado de la subconsulta (por el nombre de la relacion).
-                    return $models->orderBy($order_subquery, $direction);
+                    return $models->orderBy($order_subquery, $direccion);
                 }
             }
         }
 
         // Comportamiento previo: orden directo por la columna propia del modelo.
-        return $models->orderBy($key, $direction);
+        return $models->orderBy($columna, $direccion);
     }
 
     /**
