@@ -125,4 +125,41 @@ class CreditAccountController extends Controller
             'model'          => $this->fullModel($model_name, $model_id),
         ], 200);
     }
+
+    /**
+     * Si una cuenta corriente tiene algún movimiento. Lo pide el botón "Saldo inicial" de la
+     * pantalla de cuenta corriente, que se ofrece solo en una cuenta vacía.
+     *
+     * 🔴 Existe porque la SPA NO puede decidirlo con la lista que ya tiene cargada. Esa lista es una
+     * ventana (los últimos N movimientos, o un período por fechas), y "la ventana vino vacía" no es
+     * "la cuenta está vacía". Y tampoco se resuelve con un `withCount('current_acounts')` en el
+     * cliente o el proveedor: está comentado en los dos `scopeWithAll` a propósito, porque se corre
+     * por cada fila del listado, y además contaba por cliente —sumando las dos monedas— cuando el
+     * saldo inicial va por cuenta. Por eso el botón esperaba un `current_acounts_count` que nunca
+     * llegaba y no aparecía nunca (misión saldo-inicial-cuenta-corriente, 5/10/2026).
+     *
+     * Cuenta cualquier fila de la cuenta, provisoria o no: es lo mismo que muestra el listado
+     * (`index()`), y es lo mismo que mira `CurrentAcountController::saldoInicial()` para negarse.
+     *
+     * 🔴 La cuenta tiene que ser del dueño de la sesión: en las bases compartidas los ids son
+     * correlativos entre comercios, y un id sin cruzar con el dueño contesta por la cuenta de otro.
+     *
+     * @param  int  $credit_account_id
+     * @return \Illuminate\Http\JsonResponse  200 `{ tiene_movimientos: bool }`, o 404 si la cuenta
+     *                                        no existe o no es del dueño.
+     */
+    public function tiene_movimientos($credit_account_id) {
+
+        $credit_account = CreditAccount::where('id', $credit_account_id)
+                                        ->where('user_id', $this->userId())
+                                        ->first();
+
+        if (is_null($credit_account)) {
+            return response()->json(['message' => 'No existe la cuenta corriente.'], 404);
+        }
+
+        $tiene_movimientos = CurrentAcount::where('credit_account_id', $credit_account->id)->exists();
+
+        return response()->json(['tiene_movimientos' => $tiene_movimientos], 200);
+    }
 }

@@ -10,10 +10,30 @@ use Carbon\Carbon;
 use Milon\Barcode\DNS1D;
 use fpdf;
 
-require(__DIR__.'/../../CommonLaravel/fpdf/fpdf.php');
+/*
+ * `require_once` y no `require` pelado: con `require`, dos clases de PDF no pueden convivir en un
+ * mismo proceso (la segunda vuelve a declarar FPDF). Pasa en la suite de tests, donde esta clase se
+ * carga después de `ArticleTicketDesignPdf`.
+ */
+require_once(__DIR__.'/../../CommonLaravel/fpdf/fpdf.php');
 
 /**
  * PDF de etiquetas con medida y propiedades configurables (tamaño y negrita por campo).
+ *
+ * Una etiqueta = una hoja del tamaño de la etiqueta. 🔴 Una etiqueta NUNCA se parte en dos hojas
+ * (misión etiquetas-individuales-sin-partir, 4/10/2026): el salto de página automático está
+ * apagado y lo que se dibuja sale de `DisposicionDeEtiquetaIndividual`, que ya garantiza que todo
+ * entra en la etiqueta (achicando la letra, el código de barras, recortando con "..." o, como
+ * último recurso, dejando afuera los bloques de abajo). La vista previa del modal de la SPA usa el
+ * mismo algoritmo portado a JS.
+ *
+ * Cómo se usa:
+ *
+ *     new ArticleBarCodeEtiquetasPdf($ids, $ancho, $alto, $propiedades, $codigo_alto, $interlineado);
+ *         // manda el PDF y corta con exit (el controlador)
+ *
+ *     $pdf = new ArticleBarCodeEtiquetasPdf($ids, $ancho, $alto, $propiedades, $codigo_alto, $interlineado, false);
+ *     $binario = $pdf->generar();   // Output('S'), para los tests
  */
 class ArticleBarCodeEtiquetasPdf extends fpdf {
 
@@ -27,11 +47,14 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
      * @param array|null $propiedades Lista de claves o configs [{key, font_size, negrita}]
      * @param int|null $codigo_barras_alto Alto de la imagen del código de barras (mm)
      * @param int|null $interlineado Espacio vertical entre bloques (mm)
+     * @param bool $enviar Con true (lo de siempre) dibuja, manda el PDF al navegador y corta con
+     *                     `exit`. Con false solo prepara: el PDF se pide con `generar()`.
      */
-    function __construct($ids, $ancho = null, $alto = null, $propiedades = null, $codigo_barras_alto = null, $interlineado = null) {
+    function __construct($ids, $ancho = null, $alto = null, $propiedades = null, $codigo_barras_alto = null, $interlineado = null, $enviar = true) {
         parent::__construct();
-        $this->SetAutoPageBreak(true, 1);
-        $this->b = 0;
+
+        /* Sin salto de página automático: la disposición ya entra en la etiqueta. */
+        $this->SetAutoPageBreak(false);
 
         $this->user = UserHelper::user();
         $this->barcodeGenerator = new DNS1D();
@@ -44,12 +67,29 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
 
         $this->code_height = $this->resolve_code_height($codigo_barras_alto);
         $this->interlineado = $this->resolve_interlineado($interlineado);
-        $this->code_width = min($this->etiqueta_width - 4, 75);
 
-        $this->setArticles($ids);
+        /* Los ids pedidos, tal cual llegan de la ruta: `generar()` los carga. */
+        $this->ids = $ids;
+
+        if ($enviar) {
+            $this->setArticles($ids);
+            $this->print();
+            $this->Output();
+            exit;
+        }
+    }
+
+    /**
+     * Dibuja las etiquetas y devuelve el binario del PDF (sin mandarlo ni cortar el proceso).
+     *
+     * @return string
+     */
+    function generar()
+    {
+        $this->setArticles($this->ids);
         $this->print();
-        $this->Output();
-        exit;
+
+        return $this->Output('S');
     }
 
     /**
@@ -92,14 +132,6 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
         }
 
         return self::DEFAULT_INTERLINEADO;
-    }
-
-    /**
-     * @return void
-     */
-    protected function spacing_after_block()
-    {
-        $this->y += $this->interlineado;
     }
 
     /**
@@ -241,16 +273,33 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
     }
 
     /**
+     * Orientación de la hoja según la medida: apaisada si es más ancha que alta, vertical si es más alta.
+     *
+     * FPDF ordena el tamaño de la hoja de menor a mayor y después lo gira según la orientación. Con 'L' fija,
+     * una medida vertical (p. ej. 30 × 50) salía como una hoja de 50 × 30 y la disposición, que se calcula
+     * sobre ancho × alto, quedaba afuera de la hoja.
+     *
+     * @return string 'L' o 'P'
+     */
+    protected function orientacion_de_la_hoja()
+    {
+        return $this->etiqueta_width >= $this->etiqueta_height ? 'L' : 'P';
+    }
+
+    /**
+     * Dibuja las etiquetas: una hoja del tamaño de la medida por cada `cant_article_x_etiqueta`
+     * artículos (1 por defecto).
+     *
      * @return void
      */
     function print() {
         $prints_disponibles = $this->cant_article_x_etiqueta;
-        $this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+        $this->AddPage($this->orientacion_de_la_hoja(), [$this->etiqueta_width, $this->etiqueta_height]);
         $this->y = 0;
 
         foreach ($this->articles as $article) {
             if ($prints_disponibles == 0) {
-                $this->AddPage('L', [$this->etiqueta_width, $this->etiqueta_height]);
+                $this->AddPage($this->orientacion_de_la_hoja(), [$this->etiqueta_width, $this->etiqueta_height]);
                 $prints_disponibles = $this->cant_article_x_etiqueta;
                 $this->y = 0;
             }
@@ -262,76 +311,64 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
     }
 
     /**
+     * Dibuja la etiqueta de un artículo según su disposición: cada línea de texto en su `y`, con su
+     * letra, centrada en el ancho de la etiqueta; el código de barras en su `(x, y)`.
+     *
      * @param Article $article
      *
      * @return void
      */
     function print_info($article) {
-        $content_height = $this->estimate_content_height_for_article($article);
-        $start_y = ($this->etiqueta_height - $content_height) / 2;
+        $disposicion = DisposicionDeEtiquetaIndividual::calcular(
+            $this->etiqueta_width,
+            $this->etiqueta_height,
+            $this->propiedades,
+            $this->code_height,
+            $this->interlineado,
+            $this->textos_de_articulo($article),
+            (bool) $article->bar_code
+        );
 
-        if ($start_y < 0) {
-            $start_y = 0;
-        }
-
-        $this->y = $start_y;
-
-        foreach ($this->propiedades as $propiedad_config) {
-            $this->render_propiedad($article, $propiedad_config);
-        }
-    }
-
-    /**
-     * @param Article $article
-     *
-     * @return float
-     */
-    protected function estimate_content_height_for_article($article)
-    {
-        $total = 0;
-
-        foreach ($this->propiedades as $propiedad_config) {
-            $block_height = $this->estimate_block_height($article, $propiedad_config);
-
-            if ($block_height <= 0) {
+        foreach ($disposicion['bloques'] as $bloque) {
+            if ($bloque['tipo'] === 'codigo') {
+                $this->print_bar_code($article->bar_code, $bloque['x'], $bloque['y'], $bloque['ancho'], $bloque['alto']);
                 continue;
             }
 
-            $total += $block_height + $this->interlineado;
-        }
+            $this->SetFont('Arial', $bloque['negrita'] ? 'B' : '', $bloque['tamano']);
 
-        if ($total > 0) {
-            $total -= $this->interlineado;
-        }
+            foreach ($bloque['lineas'] as $indice => $linea) {
+                $this->x = 0;
+                $this->y = $bloque['y'] + $indice * $bloque['alto_linea'];
 
-        return max(0, $total);
+                /* Cell hace su propio utf8_decode: se le pasa el texto en UTF-8. */
+                $this->Cell($this->etiqueta_width, $bloque['alto_linea'], $linea, 0, 2, 'C');
+            }
+        }
     }
 
     /**
-     * @param Article $article
-     * @param array{key: string, font_size: int, negrita: bool} $propiedad_config
+     * El texto de cada propiedad configurada (menos el código de barras, que es una imagen).
      *
-     * @return float
+     * @param Article $article
+     *
+     * @return array<string, string> `key => texto` en UTF-8
      */
-    protected function estimate_block_height($article, $propiedad_config)
+    protected function textos_de_articulo($article)
     {
-        $key = $propiedad_config['key'];
+        $textos = [];
 
-        if ($key === 'codigo_barras') {
-            if (!$article->bar_code) {
-                return 0;
+        foreach ($this->propiedades as $propiedad_config) {
+            $key = $propiedad_config['key'];
+
+            if ($key === 'codigo_barras') {
+                continue;
             }
 
-            return $this->code_height;
+            $textos[$key] = $this->text_for_propiedad($article, $key);
         }
 
-        $text = $this->text_for_propiedad($article, $key);
-
-        return $this->estimate_text_height(
-            $text,
-            $propiedad_config['font_size'],
-            $propiedad_config['negrita']
-        );
+        return $textos;
     }
 
     /**
@@ -365,38 +402,6 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
     }
 
     /**
-     * @param string $text
-     * @param int $font_size
-     * @param bool $negrita
-     *
-     * @return float
-     */
-    protected function estimate_text_height($text, $font_size, $negrita = false)
-    {
-        if ($text === '' || $text === null) {
-            return 0;
-        }
-
-        $font_style = $negrita ? 'B' : '';
-        $this->SetFont('Arial', $font_style, $font_size);
-        $line_height = max(4, (int) floor($font_size * 0.55));
-        $effective_width = $this->etiqueta_width - 2;
-
-        if ($effective_width <= 0) {
-            $effective_width = $this->etiqueta_width;
-        }
-
-        $text_width = $this->GetStringWidth($text);
-        $lines = 1;
-
-        if ($text_width > $effective_width) {
-            $lines = (int) ceil($text_width / $effective_width);
-        }
-
-        return $lines * $line_height;
-    }
-
-    /**
      * @param int $line_count
      *
      * @return int
@@ -417,82 +422,41 @@ class ArticleBarCodeEtiquetasPdf extends fpdf {
     }
 
     /**
-     * @param Article $article
-     * @param array{key: string, font_size: int, negrita: bool} $propiedad_config
+     * Dibuja el código de barras (C128) en `(x, y)` con el tamaño que dio la disposición.
+     *
+     * El PNG se escribe en un archivo temporal del directorio actual (FPDF lo lee de ahí) y se
+     * borra apenas se dibuja, aunque `Image()` falle. El nombre lleva un sufijo al azar: con el
+     * nombre fijo por código, dos pedidos simultáneos del mismo artículo se borraban el archivo
+     * uno al otro ("Can't open image file").
+     *
+     * @param string $code
+     * @param float $x
+     * @param float $y
+     * @param float $ancho
+     * @param float $alto
      *
      * @return void
      */
-    protected function render_propiedad($article, $propiedad_config)
-    {
-        $key = $propiedad_config['key'];
-        $font_size = $propiedad_config['font_size'];
-        $negrita = $propiedad_config['negrita'];
-
-        if ($key === 'codigo_barras') {
-            if ($article->bar_code) {
-                $this->print_bar_code($article->bar_code);
-                $this->spacing_after_block();
-            }
-
+    function print_bar_code($code, $x, $y, $ancho, $alto) {
+        /* Con ancho o alto en 0 FPDF calcula el tamaño de la imagen solo: en una etiqueta tan chica no se dibuja. */
+        if ($ancho <= 0 || $alto <= 0) {
             return;
         }
 
-        $text = $this->text_for_propiedad($article, $key);
-
-        if ($this->print_text_line($text, $font_size, $negrita)) {
-            $this->spacing_after_block();
-        }
-    }
-
-    /**
-     * @param string $text
-     * @param int $font_size
-     * @param bool $negrita
-     *
-     * @return bool
-     */
-    protected function print_text_line($text, $font_size, $negrita = false)
-    {
-        if ($text === '' || $text === null) {
-            return false;
-        }
-
-        $font_style = $negrita ? 'B' : '';
-        $this->SetFont('Arial', $font_style, $font_size);
-        $this->x = 0;
-        $line_height = max(4, (int) floor($font_size * 0.55));
-
-        $this->MultiCell(
-            $this->etiqueta_width,
-            $line_height,
-            $text,
-            $this->b,
-            'C',
-            false
-        );
-
-        return true;
-    }
-
-    /**
-     * @param string $code
-     *
-     * @return void
-     */
-    function print_bar_code($code) {
-        $this->x = 0;
         $barcode = $this->barcodeGenerator->getBarcodePNG($code, 'C128');
         $imgData = base64_decode($barcode);
-        $file = 'temp_barcode'.str_replace('/', '_', $code).'.png';
+        /* Solo letras, números, guion y guion bajo del código en el nombre del archivo. */
+        $codigo_para_archivo = preg_replace('/[^A-Za-z0-9_-]/', '_', (string) $code);
+        $file = 'temp_barcode'.$codigo_para_archivo.'_'.bin2hex(random_bytes(4)).'.png';
         file_put_contents($file, $imgData);
 
-        $img_width = min($this->code_width, $this->etiqueta_width - 6);
-        $start_x = ($this->etiqueta_width / 2) - ($img_width / 2);
-
-        $this->Image($file, $start_x, $this->y, $img_width, $this->code_height);
-        unlink($file);
-
-        $this->y += $this->code_height;
+        try {
+            $this->Image($file, $x, $y, $ancho, $alto);
+        } finally {
+            if (file_exists($file)) {
+                unlink($file);
+            }
+        }
     }
 }
 
