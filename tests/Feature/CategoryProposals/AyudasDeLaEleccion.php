@@ -409,6 +409,37 @@ trait AyudasDeLaEleccion
     }
 
     /**
+     * Espera a que un hijo avise que YA tiene su candado puesto: la línea `CANDADO_TOMADO` que imprime
+     * `ProcesoHijoDeLaCarrera.php` justo antes de quedarse esperando (solo los hijos lanzados con `demora`).
+     *
+     * 🔴 Reemplaza a dormir un tiempo fijo "para darle tiempo de arrancar": cada hijo arranca todo Laravel, y con
+     * la máquina cargada por otras sesiones eso tarda más que cualquier espera fija razonable. Si el otro proceso
+     * se lanza antes de que el primero tenga el candado, entra primero y el test mide otra cosa (se vio: `crear`
+     * recibía 409 `ya_hay_una_elegida` porque `elegir` le ganó). Con el aviso el orden no depende del reloj.
+     *
+     * Lee la tubería con una lectura que bloquea (en Windows una tubería de `proc_open` no admite lectura sin
+     * bloqueo): vuelve cuando llega el aviso, o `false` si el hijo terminó sin darlo. Lo leído queda en
+     * `$hijo['leido']` para que `terminar_hijo` no pierda nada.
+     *
+     * @param  array $hijo  Lo que devolvió `iniciar_hijo` (se completa con `leido`).
+     * @return bool  Si el hijo avisó que tiene el candado.
+     */
+    protected function esperar_que_el_hijo_tenga_el_candado(array &$hijo)
+    {
+        $hijo['leido'] = isset($hijo['leido']) ? $hijo['leido'] : '';
+
+        while (($linea = fgets($hijo['tuberias'][1])) !== false) {
+            $hijo['leido'] .= $linea;
+
+            if (trim($linea) === 'CANDADO_TOMADO') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Espera a que termine un hijo y devuelve lo que informó.
      *
      * @param  array $hijo  Lo que devolvió `iniciar_hijo`.
@@ -417,7 +448,8 @@ trait AyudasDeLaEleccion
      */
     protected function terminar_hijo(array $hijo)
     {
-        $salida  = stream_get_contents($hijo['tuberias'][1]);
+        // Lo que ya se leyó mientras se esperaba el aviso del candado (`esperar_que_el_hijo_tenga_el_candado`) más el resto.
+        $salida  = (isset($hijo['leido']) ? $hijo['leido'] : '').stream_get_contents($hijo['tuberias'][1]);
         $errores = stream_get_contents($hijo['tuberias'][2]);
 
         proc_close($hijo['proceso']);

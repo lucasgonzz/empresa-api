@@ -633,8 +633,8 @@ class Doble_pedido_y_tenencia_de_la_eleccion_Test extends CategoryProposalsTestC
 
             $elegir = $this->iniciar_hijo('elegir', ['user' => $this->owner->id, 'run' => $uno['run']->id, 'propuesta' => $uno['proposal']->id, 'demora' => 4]);
 
-            // Se le da tiempo a `elegir` de arrancar y tomar sus candados antes de lanzar `crear`.
-            usleep(2000000);
+            // `crear` se lanza recién cuando `elegir` avisa que ya tiene sus candados (no por un tiempo fijo).
+            $this->assertTrue($this->esperar_que_el_hijo_tenga_el_candado($elegir), 'El proceso de elegir terminó sin tomar el candado.');
 
             $crear = $this->iniciar_hijo('crear', ['user' => $this->owner->id, 'demora' => 0]);
 
@@ -661,8 +661,8 @@ class Doble_pedido_y_tenencia_de_la_eleccion_Test extends CategoryProposalsTestC
 
             $crear = $this->iniciar_hijo('crear', ['user' => $this->vecino->id, 'demora' => 4]);
 
-            // Se le da tiempo a `crear` de tomar el candado de `users` antes de lanzar `elegir`.
-            usleep(2000000);
+            // `elegir` se lanza recién cuando `crear` avisa que ya tiene el candado de `users` (no por un tiempo fijo).
+            $this->assertTrue($this->esperar_que_el_hijo_tenga_el_candado($crear), 'El proceso de crear terminó sin tomar el candado.');
 
             $elegir = $this->iniciar_hijo('elegir', ['user' => $this->vecino->id, 'run' => $dos['run']->id, 'propuesta' => $dos['proposal']->id, 'demora' => 0]);
 

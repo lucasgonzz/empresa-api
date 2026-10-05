@@ -57,6 +57,13 @@ if ($demora > 0) {
 
         if (strpos($consulta->sql, $tabla) !== false) {
             $ya_espero = true;
+
+            // Le avisa al test que el candado YA está tomado (este evento corre cuando la consulta ya se ejecutó). El
+            // test lanza al otro proceso recién con este aviso: así el orden no depende de cuánto tardó en arrancar
+            // Laravel acá, que con la máquina cargada pasa de los 2 segundos fijos que se esperaban antes.
+            fwrite(STDOUT, "CANDADO_TOMADO\n");
+            fflush(STDOUT);
+
             usleep((int) ($demora * 1000000));
         }
     });
