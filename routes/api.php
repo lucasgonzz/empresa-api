@@ -644,6 +644,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
     Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CreditAccountController@index');
     Route::post('/credit-account/limite-credito', 'CreditAccountController@update_limite_credito');
+    // Si la cuenta corriente (de una moneda) tiene algún movimiento: decide si la SPA ofrece "Saldo inicial".
+    Route::get('/credit-account/{credit_account_id}/tiene-movimientos', 'CreditAccountController@tiene_movimientos');
 
     Route::post('/current-acount/pago', 'CurrentAcountController@pago');
     Route::post('/current-acount/nota-credito', 'CurrentAcountController@notaCredito');
