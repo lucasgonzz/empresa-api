@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
@@ -953,6 +954,20 @@ class MasiveUpdateHelper
             return null;
         }
 
+        /*
+         * "Visible en la tienda, lista X" (misión catalogo-por-lista-tienda, 5/10/2026): la clave
+         * `visible_en_tienda_lista_{id}` (checkbox, 0 o 1) no es una columna de `articles` sino
+         * del pivote `article_price_type` de ESA lista, así que tiene su propia rama, y va ANTES
+         * que todas las genéricas: la de checkbox de abajo haría `$model->visible_en_tienda_lista_5
+         * = 1; $model->save()` y la masiva entera terminaría en "Unknown column". La rama valida
+         * que la lista sea del dueño (con el `$owner` que llega, porque en la cola no hay sesión),
+         * escribe el pivote y devuelve el cambio con la forma de siempre para poder revertirlo
+         * (ver revert_article_pivot_changes()). Detalle en CatalogoPorListaHelper::aplicar_en_masiva().
+         */
+        if (CatalogoPorListaHelper::es_clave_de_masiva($form['key'])) {
+            return CatalogoPorListaHelper::aplicar_en_masiva($model, $form, $owner);
+        }
+
         if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
@@ -1182,6 +1197,23 @@ class MasiveUpdateHelper
                 if (!is_array($change) || !array_key_exists('old', $change)) {
                     continue;
                 }
+
+                /*
+                 * Espejo de la rama de apply_form_change() (misión catalogo-por-lista-tienda,
+                 * 5/10/2026): "visible en la tienda, lista X" vive en el pivote, no en `articles`.
+                 * Sin esta rama, la línea de abajo asignaría `$model->visible_en_tienda_lista_5` y
+                 * el save() reventaría con "Unknown column", dejando la reversión en fallo. Se
+                 * restaura el `old` exacto (NULL vuelve a NULL, nunca a 0).
+                 */
+                if (CatalogoPorListaHelper::es_clave_de_masiva($prop_key)) {
+                    $revertido = CatalogoPorListaHelper::revertir_en_masiva($model, $prop_key, $change['old'], $user_del_comercio);
+
+                    if (!is_null($revertido)) {
+                        $revert_changes[$prop_key] = $revertido;
+                    }
+                    continue;
+                }
+
                 $old_before_revert = $model->{$prop_key};
 
                 /*
