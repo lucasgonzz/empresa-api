@@ -70,12 +70,15 @@ class StockMovementController extends Controller
          * (existe_para_stock): la fila de un domicilio de comprador que dejó un pedido de la tienda se
          * tiene que poder corregir a mano desde este mismo modal.
          */
+        // El dueño que recibe store() si lo pasan (la firma lo admite), si no el de la sesión.
+        $owner_id = is_null($owner) ? $this->userId() : $owner->id;
+
         foreach (['from_address_id', 'to_address_id'] as $clave) {
 
             $address_id = $request->input($clave);
 
             if (!SucursalVigenteHelper::es_vacio($address_id)
-                && !SucursalVigenteHelper::existe_para_stock($address_id, $this->userId())) {
+                && !SucursalVigenteHelper::existe_para_stock($address_id, $owner_id)) {
 
                 return response()->json([
                     'message' => 'La sucursal ya no existe. Recargá la página y elegí otra.',
