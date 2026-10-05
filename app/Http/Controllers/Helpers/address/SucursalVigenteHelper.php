@@ -295,4 +295,30 @@ class SucursalVigenteHelper {
 
         return $reemplazo;
     }
+
+    /**
+     * Como `resolver()`, pero para la EDICIÓN de un comprobante que ya existe (venta o presupuesto).
+     *
+     * 🔴 Si el request trae la MISMA sucursal que el comprobante ya tiene guardada, se deja tal cual
+     * aunque esa sucursal ya no exista (segunda ronda de revisión, 5/10/2026). D2 del plan: las ventas
+     * y presupuestos viejos NO se reescriben (cambiaría la atribución por sucursal de los reportes). El
+     * stock igual queda bien: el motor redirige el movimiento por D12 (`crear()`), así que la venta
+     * conserva su historia y ninguna fila fantasma se abre. Solo se reemplaza si el usuario MANDA un id
+     * distinto del guardado y ese id está muerto (la cookie vieja de Vender, por ejemplo).
+     *
+     * @param  mixed     $address_id  El que trae el request.
+     * @param  mixed     $guardado    El que tiene hoy el comprobante.
+     * @param  int       $owner_id
+     * @param  int|null  $employee_id
+     * @param  string    $donde
+     * @return mixed
+     */
+    static function resolver_al_editar($address_id, $guardado, $owner_id, $employee_id = null, $donde = '') {
+
+        if (!Self::es_vacio($address_id) && !Self::es_vacio($guardado) && (int) $address_id === (int) $guardado) {
+            return (int) $address_id;
+        }
+
+        return Self::resolver($address_id, $owner_id, $employee_id, $donde);
+    }
 }

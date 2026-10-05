@@ -800,8 +800,9 @@ class SaleController extends Controller
 
             $model->afip_information_id                 = $request->afip_information_id;
             
-            // Misma guarda que en store(): una sucursal borrada se reemplaza por una viva (D12).
-            $model->address_id                          = \App\Http\Controllers\Helpers\address\SucursalVigenteHelper::resolver($request->address_id, $this->userId(), $this->userId(false), 'SaleController@update');
+            // Una sucursal borrada se reemplaza solo si el request trae una DISTINTA de la guardada: la
+            // venta vieja conserva la suya (D2) y el motor redirige el stock (D12). Ver resolver_al_editar().
+            $model->address_id                          = \App\Http\Controllers\Helpers\address\SucursalVigenteHelper::resolver_al_editar($request->address_id, $model->address_id, $this->userId(), $this->userId(false), 'SaleController@update');
 
             $model->sale_type_id                        = $request->sale_type_id;
             

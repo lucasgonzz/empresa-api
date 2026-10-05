@@ -281,6 +281,80 @@ class Sucursal_borrada_ids_viejos_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 2 bis — editar una venta y un presupuesto VIEJOS que ya tenían la sucursal borrada, con el
+     * request trayendo esa MISMA sucursal: el comprobante la conserva (D2, la historia no se reescribe;
+     * segunda ronda, F3) y el stock igual no abre filas fantasma (el motor lo redirige por D12).
+     *
+     * @test
+     */
+    public function editar_un_comprobante_viejo_con_su_misma_sucursal_borrada_la_conserva()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Ids viejos comprobante viejo');
+
+        $articulo = $this->nuevo_articulo('zz Ids viejos comprobante viejo A');
+        $this->cargar_deposito($articulo, $principal, 10);
+        $this->cargar_deposito($articulo, $borrar, 5);
+
+        $venta = $this->crear_venta([['article' => $articulo, 'amount' => 1, 'price' => 100]], $borrar->id);
+
+        $budget_id = $this->postJson('api/budget', [
+            'client_id'                  => $this->cliente_cc()->id,
+            'observations'               => 'zz presupuesto viejo',
+            'discount_stock'             => 0,
+            'iva_aplicado'               => 1,
+            'total'                      => 0,
+            'budget_status_id'           => DB::table('budget_statuses')->where('name', 'Sin confirmar')->orderBy('id')->value('id'),
+            'address_id'                 => $borrar->id,
+            'surchages_in_services'      => 1,
+            'discounts_in_services'      => 1,
+            'moneda_id'                  => 1,
+            'omitir_en_cuenta_corriente' => 0,
+            'discounts'                  => [],
+            'surchages'                  => [],
+            'services'                   => [],
+            'promocion_vinotecas'        => [],
+            'articles'                   => [],
+        ])->assertStatus(201)->json('model.id');
+
+        $muerta = $this->borrar_a_lo_bruto($borrar);
+
+        // La edición manda la misma sucursal que el comprobante ya tiene (la SPA la carga del comprobante).
+        $this->putJson('api/sale/'.$venta->id, $this->payload_venta(
+            [['article' => $articulo, 'amount' => 2, 'price' => 100]],
+            $muerta,
+            ['id' => $venta->id]
+        ))->assertStatus(200);
+
+        $this->assertSame($muerta, (int) $venta->fresh()->address_id, 'La venta vieja conserva su sucursal (D2).');
+        $this->assertSame(0, $this->filas_de_pivot($muerta), 'Y el stock no abre filas fantasma: lo redirige el motor.');
+        $this->assert_global_cuadra($articulo);
+
+        $presupuesto = Budget::find($budget_id);
+
+        $this->putJson('api/budget/'.$budget_id, [
+            'client_id'                  => $presupuesto->client_id,
+            'observations'               => 'zz presupuesto viejo editado',
+            'total'                      => 0,
+            'budget_status_id'           => $presupuesto->budget_status_id,
+            'address_id'                 => $muerta,
+            'surchages_in_services'      => 1,
+            'discounts_in_services'      => 1,
+            'moneda_id'                  => 1,
+            'sale_status_id'             => null,
+            'discount_stock'             => 0,
+            'iva_aplicado'               => 1,
+            'articles'                   => [],
+            'services'                   => [],
+            'promocion_vinotecas'        => [],
+            'discounts'                  => [],
+            'surchages'                  => [],
+        ])->assertStatus(200);
+
+        $this->assertSame($muerta, (int) Budget::find($budget_id)->address_id, 'El presupuesto viejo conserva su sucursal (D2).');
+    }
+
+    /**
      * Test 3 — anular una venta vieja de la sucursal borrada devuelve el stock al reemplazo.
      *
      * @test

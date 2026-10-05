@@ -613,8 +613,9 @@ class BudgetController extends Controller
                 $model->forzar_total_monto    = SaleHelper::normalized_forzar_total_monto($request);
             }
             $model->budget_status_id          = $request->budget_status_id;
-            // Misma guarda que en store(): una sucursal borrada se reemplaza por una viva (D12).
-            $model->address_id                = SucursalVigenteHelper::resolver($request->address_id, $this->userId(), $this->userId(false), 'BudgetController@update');
+            // Una sucursal borrada se reemplaza solo si el request trae una DISTINTA de la guardada: el
+            // presupuesto viejo conserva la suya (D2). Ver SucursalVigenteHelper::resolver_al_editar().
+            $model->address_id                = SucursalVigenteHelper::resolver_al_editar($request->address_id, $model->address_id, $this->userId(), $this->userId(false), 'BudgetController@update');
             // Misma guarda que en SaleController::update(): sin la clave, la lista guardada no se toca.
             if ($actualizar_price_type_id) {
                 $model->price_type_id         = $price_type_id_nuevo;
