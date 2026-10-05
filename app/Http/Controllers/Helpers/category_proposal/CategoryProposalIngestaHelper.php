@@ -202,6 +202,25 @@ class CategoryProposalIngestaHelper
     }
 
     /**
+     * ¿El texto lleva `<` o `>`?
+     *
+     * 🔴 Los NOMBRES (de la propuesta, de las categorías y de las subcategorías) y el `motivo` de cada
+     * asignación no pueden llevarlos. Los escribe un modelo de lenguaje que lee nombres de artículos y
+     * de proveedores del catálogo, o sea texto de terceros; un nombre como `<img src=x onerror=...>`
+     * terminaría en `categories.name` y en pantallas que lo pintan como HTML (por ejemplo un aviso que
+     * interpola el nombre del sistema elegido). Rechazarlos acá cierra el XSS guardado en el origen,
+     * sin depender de que cada pantalla futura se acuerde de escapar. `resumen` y `descripcion` sí
+     * pueden llevarlos: la SPA los muestra con interpolación, que escapa.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    protected static function lleva_marcas_de_html($texto)
+    {
+        return strpbrk((string) $texto, '<>') !== false;
+    }
+
+    /**
      * Un campo de texto OPCIONAL de una propuesta (`resumen`, `descripcion`): null si falta o viene
      * vacío; error si no es un texto o pasa el largo de la columna.
      *
@@ -349,6 +368,10 @@ class CategoryProposalIngestaHelper
         } elseif (mb_strlen($nombre) > self::LARGO_NOMBRE_DE_PROPUESTA) {
 
             self::agregar_error($detalle, "{$campo}.nombre", 'El nombre de la propuesta tiene '.mb_strlen($nombre).' caracteres y el máximo es '.self::LARGO_NOMBRE_DE_PROPUESTA.'.');
+        } elseif (self::lleva_marcas_de_html($nombre)) {
+
+            // El nombre de la tarjeta se muestra en avisos de la SPA (por ejemplo "Listo: elegiste «...»").
+            self::agregar_error($detalle, "{$campo}.nombre", "El nombre de la propuesta '".self::recortado($nombre)."' no puede llevar los caracteres < ni >.");
         }
 
         // Resumen y descripción son opcionales: null si faltan o vienen vacíos.
@@ -526,6 +549,13 @@ class CategoryProposalIngestaHelper
         if (mb_strlen($nombre) > $maximo) {
 
             self::agregar_error($detalle, $campo, "El nombre '".self::recortado($nombre)."' tiene ".mb_strlen($nombre)." caracteres y el máximo es {$maximo}.");
+
+            return null;
+        }
+
+        if (self::lleva_marcas_de_html($nombre)) {
+
+            self::agregar_error($detalle, $campo, "El nombre '".self::recortado($nombre)."' no puede llevar los caracteres < ni >.");
 
             return null;
         }
@@ -1034,6 +1064,20 @@ class CategoryProposalIngestaHelper
             } elseif (count($lista) > $maximo) {
 
                 self::agregar_error($detalle, 'asignaciones', 'Hay '.count($lista)." asignaciones y el máximo por pedido es {$maximo}.");
+            }
+
+            // 🔴 El `motivo` de cada renglón tampoco puede llevar `<` ni `>` (ver lleva_marcas_de_html()).
+            // Se mira acá, con el pedido entero, y no renglón por renglón: un texto así es una falla de
+            // quien lo escribió y tiene que cortar el pedido en voz alta, con el lugar exacto en `detalle`.
+            if (is_array($lista) && count($lista) <= $maximo) {
+
+                foreach (array_values($lista) as $indice => $renglon) {
+
+                    if (is_array($renglon) && isset($renglon['motivo']) && is_string($renglon['motivo']) && self::lleva_marcas_de_html($renglon['motivo'])) {
+
+                        self::agregar_error($detalle, "asignaciones.{$indice}.motivo", 'El motivo no puede llevar los caracteres < ni >.');
+                    }
+                }
             }
 
             if (!empty($detalle)) {

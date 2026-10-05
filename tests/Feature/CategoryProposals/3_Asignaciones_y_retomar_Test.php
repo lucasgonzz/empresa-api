@@ -492,6 +492,42 @@ class Asignaciones_y_retomar_Test extends CategoryProposalsTestCase
     }
 
     /**
+     * 🔴 B-01 (verificador, 5/10/2026): el `motivo` no puede llevar `<` ni `>`. Corta el pedido ENTERO con
+     * 422 `validacion` y el lugar exacto en `detalle` (`asignaciones.N.motivo`), y no guarda nada (ni los
+     * renglones buenos): es una falla de quien escribió el texto y tiene que verse. Con `&`, comillas,
+     * barras y acentos el mismo pedido entra.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function un_motivo_con_signos_de_html_corta_el_pedido_y_no_guarda_nada()
+    {
+        list($ids, $run_id) = $this->preparar(3);
+
+        $respuesta = $this->asignar($run_id, 'A', [
+            $this->renglon($ids[0], 'Bisagras', null, 'segura'),
+            $this->renglon($ids[1], 'Correderas', null, 'dudosa', '<img src=x onerror=alert(1)>'),
+            $this->renglon($ids[2], 'Correderas', null, 'dudosa', 'mide 5 > 3'),
+        ]);
+
+        $respuesta->assertStatus(422);
+
+        $json = $respuesta->json();
+
+        $this->assertSame('validacion', $json['error']);
+        $this->assertSame(['asignaciones.1.motivo', 'asignaciones.2.motivo'], array_keys($json['detalle']));
+        $this->assertSame(0, $this->items_de($this->propuesta_id($run_id, 'A')), 'El pedido se corta entero: ni el renglón bueno se guarda.');
+
+        // Sin esos signos el mismo pedido entra.
+        $this->asignar($run_id, 'A', [
+            $this->renglon($ids[0], 'Bisagras'),
+            $this->renglon($ids[1], 'Correderas', null, 'dudosa', 'Podría ser "cajón" & puerta / tirador'),
+        ])->assertStatus(200)->assertJson(['guardadas' => 2, 'rechazadas' => []]);
+
+        $this->assertSame('Podría ser "cajón" & puerta / tirador', CategoryProposalItem::where('article_id', $ids[1])->value('motivo'));
+    }
+
+    /**
      * El tope de 500 renglones por pedido: 501 es 422 y no se guarda NADA; 500 se guardan todos.
      *
      * @group categorias_ia

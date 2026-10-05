@@ -321,6 +321,15 @@ class Ingesta_de_propuestas_Test extends CategoryProposalsTestCase
             ['LA  DE SIEMPRE como categoría', $this->cuerpo([$con(['arbol' => [['nombre' => 'Otra'], ['nombre' => 'LA  DE   SIEMPRE']]])]), 'propuestas.0.arbol.1.nombre'],
             ['La de siempre como subcategoría', $this->cuerpo([$con(['arbol' => [['nombre' => 'Cat', 'subcategorias' => ['la de siempre']], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.subcategorias.0'],
             ['mantener con árbol', $this->cuerpo([['clave' => 'mantener', 'tipo' => 'mantener', 'nombre' => 'Mantener', 'arbol' => [['nombre' => 'X']]]]), 'propuestas.0.arbol'],
+
+            // B-01 (verificador, 5/10/2026): ni `<` ni `>` en los NOMBRES (XSS guardado).
+            ['nombre de la propuesta con una etiqueta', $this->cuerpo([$con(['nombre' => '<img src=x onerror=alert(document.domain)>'])]), 'propuestas.0.nombre'],
+            ['nombre de la propuesta con solo un >', $this->cuerpo([$con(['nombre' => 'Por rubro > por uso'])]), 'propuestas.0.nombre'],
+            ['nombre de la propuesta mantener con una etiqueta', $this->cuerpo([['clave' => 'mantener', 'tipo' => 'mantener', 'nombre' => 'Mantener <b>mis</b> categorias']]), 'propuestas.0.nombre'],
+            ['nombre de categoría con una etiqueta', $this->cuerpo([$con(['arbol' => [['nombre' => 'Bisagras <b>negrita</b>'], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.nombre'],
+            ['nombre de categoría con solo un <', $this->cuerpo([$con(['arbol' => [['nombre' => 'Otra'], ['nombre' => 'Menos de 5 <mm']]])]), 'propuestas.0.arbol.1.nombre'],
+            ['nombre de subcategoría con una etiqueta', $this->cuerpo([$con(['arbol' => [['nombre' => 'Cat', 'subcategorias' => ['<script>alert(1)</script>']], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.subcategorias.0'],
+            ['nombre de subcategoría con solo un >', $this->cuerpo([$con(['arbol' => [['nombre' => 'Cat', 'subcategorias' => ['Comunes', 'Mas de 3 >mm']], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.subcategorias.1'],
         ];
 
         foreach ($casos as $caso) {
@@ -343,6 +352,38 @@ class Ingesta_de_propuestas_Test extends CategoryProposalsTestCase
             $this->assertSame(0, CategoryProposal::where('user_id', $this->owner->id)->count(), $descripcion);
             $this->assertSame(0, CategoryProposalNode::where('user_id', $this->owner->id)->count(), $descripcion);
         }
+    }
+
+    /**
+     * 🔴 B-01 (verificador, 5/10/2026): el `resumen` y la `descripcion` SÍ pueden llevar `<` y `>` (la SPA los
+     * muestra con interpolación, que escapa) y llegan tal cual a `actual`; en los NOMBRES, los demás signos
+     * (`&`, comillas, barras, acentos) son válidos: solo `<` y `>` abren una etiqueta.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function el_resumen_y_la_descripcion_pueden_llevar_signos_de_html_y_los_nombres_otros_signos()
+    {
+        $this->crear_articulos_en_masa(2);
+
+        $json = $this->crear_corrida_por_api([[
+            'clave'       => 'A',
+            'tipo'        => 'nueva',
+            'nombre'      => 'Pinturas & barnices "premium" / línea \'pro\'',
+            'resumen'     => 'Lo que sigue es <b>texto</b>, no HTML.',
+            'descripcion' => 'Se basa en <rubros> de ferretería: 5 > 3 y 2 < 4.',
+            'arbol'       => [
+                ['nombre' => 'Pinturas & esmaltes', 'subcategorias' => ['Látex 100% (interior)', 'Sintético "brillante"']],
+                ['nombre' => 'Tornillos / bulones'],
+            ],
+        ]]);
+
+        $proposal = CategoryProposal::find($json['propuestas'][0]['id']);
+
+        $this->assertSame('Lo que sigue es <b>texto</b>, no HTML.', $proposal->resumen);
+        $this->assertSame('Se basa en <rubros> de ferretería: 5 > 3 y 2 < 4.', $proposal->descripcion);
+        $this->assertSame('Pinturas & barnices "premium" / línea \'pro\'', $proposal->nombre);
+        $this->assertSame(['Pinturas & esmaltes', 'Tornillos / bulones'], array_column($json['propuestas'][0]['categorias'], 'nombre'));
     }
 
     /**
