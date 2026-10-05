@@ -71,6 +71,14 @@ class CategoryProposalIngestaHelper
     /** Tope de mensajes de error que devuelve una validación (con 400 nombres repetidos no se manda un JSON enorme). */
     const MAXIMO_DE_ERRORES = 40;
 
+    /**
+     * Largo máximo de la CLAVE de comparación de un nombre (`category_proposal_nodes.clave_nombre` es un
+     * varchar de 128). Es distinto del largo del nombre: la clave pasa por `Str::ascii`, que expande
+     * algunas letras (la ß pasa a `ss`, la Æ a `ae`), así que un nombre de 128 caracteres puede dar una
+     * clave de 256 y reventar el INSERT con un 500. Tiene que coincidir con la migración de los nodos.
+     */
+    const LARGO_DE_LA_CLAVE = 128;
+
     // ------------------------------------------------------------------------------------------
     // Respuestas
     // ------------------------------------------------------------------------------------------
@@ -567,7 +575,19 @@ class CategoryProposalIngestaHelper
             return null;
         }
 
-        return ['nombre' => $nombre, 'clave' => CategoryProposalNombreHelper::clave_de($nombre)];
+        // La clave de comparación (minúsculas, sin acentos, espacios colapsados).
+        $clave = CategoryProposalNombreHelper::clave_de($nombre);
+
+        // 🔴 B-12: la clave también tiene que entrar en su columna. Se rechaza acá con un 422 claro; si no,
+        // el INSERT de los nodos daría un 500 "Data too long" sin decir qué nombre fue.
+        if (mb_strlen($clave) > self::LARGO_DE_LA_CLAVE) {
+
+            self::agregar_error($detalle, $campo, "El nombre '".self::recortado($nombre)."' es demasiado largo una vez normalizado: su clave de comparación tiene ".mb_strlen($clave).' caracteres y el máximo es '.self::LARGO_DE_LA_CLAVE.' (algunas letras ocupan más al normalizarse: la ß pasa a ss).');
+
+            return null;
+        }
+
+        return ['nombre' => $nombre, 'clave' => $clave];
     }
 
     // ------------------------------------------------------------------------------------------
@@ -787,6 +807,13 @@ class CategoryProposalIngestaHelper
             // Su clave de comparación (minúsculas, sin acentos, espacios colapsados).
             $clave = CategoryProposalNombreHelper::clave_de($nombre);
 
+            // Una clave que no entra en `clave_nombre` (B-12: el nombre se expande al normalizarse) no se
+            // puede representar como nodo: se saltea, igual que un nombre que no entra en `nombre`.
+            if (mb_strlen($clave) > self::LARGO_DE_LA_CLAVE) {
+
+                continue;
+            }
+
             if (isset($por_clave[$clave])) {
 
                 continue;
@@ -825,6 +852,12 @@ class CategoryProposalIngestaHelper
             // La clave de la categoría padre y la de la subcategoría (para detectar un nombre repetido).
             $clave_padre = $clave_de_id[$categoria_id];
             $clave       = CategoryProposalNombreHelper::clave_de($nombre);
+
+            // Misma regla que en las categorías: una clave que no entra en su columna no es un nodo.
+            if (mb_strlen($clave) > self::LARGO_DE_LA_CLAVE) {
+
+                continue;
+            }
 
             if (isset($claves_de_subs[$clave_padre][$clave])) {
 

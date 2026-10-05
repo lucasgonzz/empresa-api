@@ -330,6 +330,12 @@ class Ingesta_de_propuestas_Test extends CategoryProposalsTestCase
             ['nombre de categoría con solo un <', $this->cuerpo([$con(['arbol' => [['nombre' => 'Otra'], ['nombre' => 'Menos de 5 <mm']]])]), 'propuestas.0.arbol.1.nombre'],
             ['nombre de subcategoría con una etiqueta', $this->cuerpo([$con(['arbol' => [['nombre' => 'Cat', 'subcategorias' => ['<script>alert(1)</script>']], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.subcategorias.0'],
             ['nombre de subcategoría con solo un >', $this->cuerpo([$con(['arbol' => [['nombre' => 'Cat', 'subcategorias' => ['Comunes', 'Mas de 3 >mm']], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.subcategorias.1'],
+
+            // B-12 (verificador, 5/10/2026): el largo que importa es el de la CLAVE normalizada. 128 "ß"
+            // son 128 caracteres pero su clave (`ss` por letra) mide 256 y no entra en `clave_nombre`.
+            ['categoría cuya clave normalizada pasa de 128', $this->cuerpo([$con(['arbol' => [['nombre' => str_repeat('ß', 128)], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.nombre'],
+            ['categoría de 65 "ß" (clave de 130)', $this->cuerpo([$con(['arbol' => [['nombre' => 'Otra'], ['nombre' => str_repeat('ß', 65)]]])]), 'propuestas.0.arbol.1.nombre'],
+            ['subcategoría cuya clave normalizada pasa de 128', $this->cuerpo([$con(['arbol' => [['nombre' => 'Cat', 'subcategorias' => [str_repeat('ß', 100)]], ['nombre' => 'Otra']]])]), 'propuestas.0.arbol.0.subcategorias.0'],
         ];
 
         foreach ($casos as $caso) {
@@ -384,6 +390,43 @@ class Ingesta_de_propuestas_Test extends CategoryProposalsTestCase
         $this->assertSame('Se basa en <rubros> de ferretería: 5 > 3 y 2 < 4.', $proposal->descripcion);
         $this->assertSame('Pinturas & barnices "premium" / línea \'pro\'', $proposal->nombre);
         $this->assertSame(['Pinturas & esmaltes', 'Tornillos / bulones'], array_column($json['propuestas'][0]['categorias'], 'nombre'));
+    }
+
+    /**
+     * 🔴 B-12: el borde de la clave. 64 "ß" tienen una clave de exactamente 128 caracteres (`ss` por letra) y
+     * entran; el 422 de arriba es de la 65.ª. En "Mantener las mías" una categoría o subcategoría real
+     * cuya clave no entra en `clave_nombre` se saltea (no hay forma de representarla como nodo) en vez de
+     * romper la propuesta con un 500; las demás entran.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function el_borde_de_la_clave_normalizada_y_los_nombres_reales_que_no_entran()
+    {
+        $json = $this->crear_corrida_por_api([[
+            'clave' => 'A', 'tipo' => 'nueva', 'nombre' => 'Borde de la clave', 'arbol' => [['nombre' => str_repeat('ß', 64)], ['nombre' => 'Otra']],
+        ]]);
+
+        $nodo = CategoryProposalNode::find($json['propuestas'][0]['categorias'][0]['id']);
+
+        $this->assertSame(str_repeat('ß', 64), $nodo->nombre);
+        $this->assertSame(128, strlen($nodo->clave_nombre));
+
+        // "Mantener las mías": las que no entran se saltean, sin 500.
+        $larga = $this->crear_categoria_real(str_repeat('ß', 100));
+        $this->crear_subcategoria_real(str_repeat('ß', 100), $larga);
+        $normal = $this->crear_categoria_real('Herrajes');
+        $this->crear_subcategoria_real(str_repeat('ß', 100), $normal);
+        $this->crear_subcategoria_real('Bisagras', $normal);
+
+        $json = $this->crear_corrida_por_api([
+            ['clave' => 'mantener', 'tipo' => 'mantener', 'nombre' => 'Mantener mis categorias'],
+        ], true);
+
+        $arbol = $json['propuestas'][0]['categorias'];
+
+        $this->assertSame(['Herrajes'], array_column($arbol, 'nombre'));
+        $this->assertSame(['Bisagras'], array_column($arbol[0]['subcategorias'], 'nombre'));
     }
 
     /**
