@@ -1588,11 +1588,20 @@ class AiExcelAnalyzer
             return [];
         }
 
+        /*
+         * `catalogo_restringido_en_tienda` (misión catalogo-por-lista-tienda, 5/10/2026): la
+         * columna "visible en la tienda" solo se le ofrece a la IA para las listas restringidas, y
+         * solo para ellas se acepta en parse_claude_response(). Va como 0/1.
+         */
         return \App\Models\PriceType::where('user_id', $this->user_id)
             ->orderBy('position', 'ASC')
-            ->get(['id', 'name'])
+            ->get(['id', 'name', 'catalogo_restringido_en_tienda'])
             ->map(function ($pt) {
-                return ['id' => $pt->id, 'name' => $pt->name];
+                return [
+                    'id'                             => $pt->id,
+                    'name'                           => $pt->name,
+                    'catalogo_restringido_en_tienda' => (int) $pt->catalogo_restringido_en_tienda === 1 ? 1 : 0,
+                ];
             })
             ->values()
             ->all();
@@ -1689,8 +1698,34 @@ ADDR;
         if (!empty($price_types)) {
             /* Listado de listas de precio en formato "- ID {id}: {name}". */
             $price_types_lines = '';
+
+            /*
+             * Misión catalogo-por-lista-tienda (5/10/2026): la columna "visible en la tienda" se le
+             * explica a la IA SOLO si hay alguna lista con el catálogo restringido, y solo para esas
+             * listas (van marcadas en el listado). Sin listas restringidas —hoy, el 100% de los
+             * comercios— el prompt queda byte a byte igual que antes: las dos líneas nuevas se
+             * pegan al final de una línea existente y, vacías, no agregan nada.
+             */
+            $hay_listas_restringidas = false;
+
             foreach ($price_types as $price_type) {
-                $price_types_lines .= "- ID {$price_type['id']}: {$price_type['name']}\n";
+                $marca_restringida = '';
+
+                if (!empty($price_type['catalogo_restringido_en_tienda'])) {
+                    $hay_listas_restringidas = true;
+                    $marca_restringida = ' (catálogo restringido en la tienda)';
+                }
+
+                $price_types_lines .= "- ID {$price_type['id']}: {$price_type['name']}{$marca_restringida}\n";
+            }
+
+            /* Instrucción y patrones de la columna de visibilidad; vacíos si no hay listas restringidas. */
+            $instruccion_visible_en_tienda = '';
+            $patron_visible_en_tienda      = '';
+
+            if ($hay_listas_restringidas) {
+                $instruccion_visible_en_tienda = "\n- Columna que indica (Si/No) si el artículo se muestra en la tienda online a los clientes de la lista \"{name}\", SOLO para las listas marcadas como catálogo restringido en la tienda → system_property: \"price_type_{id}_visible_en_tienda\"";
+                $patron_visible_en_tienda      = "\n- \"Visible {nombre_lista}\", \"Tienda {nombre_lista}\", \"Web {nombre_lista}\", \"Online {nombre_lista}\" → visible_en_tienda";
             }
 
             $price_types_section = <<<PT
@@ -1701,12 +1736,12 @@ ADDR;
 Si detectás columnas del Excel relacionadas con listas de precio, mapeá cada una así:
 - Columna de precio final para la lista "{name}" → system_property: "price_type_{id}_final_price"
 - Columna de porcentaje/margen para la lista "{name}" → system_property: "price_type_{id}_percentage"
-- Columna que indica si setear precio manualmente (Si/No) para la lista "{name}" → system_property: "price_type_{id}_setear"
+- Columna que indica si setear precio manualmente (Si/No) para la lista "{name}" → system_property: "price_type_{id}_setear"{$instruccion_visible_en_tienda}
 
 Patrones comunes de nombre de columna en Excel:
 - "\$ Final {nombre_lista}", "Precio {nombre_lista}", "PVP {nombre_lista}" → final_price
 - "% {nombre_lista}", "Margen {nombre_lista}", "Ganancia {nombre_lista}" → percentage
-- "Setear {nombre_lista}", "Manual {nombre_lista}", "Fijar {nombre_lista}" → setear
+- "Setear {nombre_lista}", "Manual {nombre_lista}", "Fijar {nombre_lista}" → setear{$patron_visible_en_tienda}
 
 PT;
         }
@@ -2175,6 +2210,18 @@ PROMPT;
         $valid_address_ids    = array_column($addresses, 'id');
         $valid_price_type_ids = array_column($price_types, 'id');
 
+        /*
+         * Listas con el catálogo restringido en la tienda (misión catalogo-por-lista-tienda,
+         * 5/10/2026): las únicas para las que vale `price_type_{id}_visible_en_tienda`. Si la clave
+         * no viene en el array de listas (quien llama armó solo id y name), ninguna es restringida.
+         */
+        $restricted_price_type_ids = [];
+        foreach ($price_types as $price_type) {
+            if (!empty($price_type['catalogo_restringido_en_tienda'])) {
+                $restricted_price_type_ids[] = $price_type['id'];
+            }
+        }
+
         foreach ($parsed['column_mapping'] as &$col) {
             $prop = $col['system_property'] ?? null;
             if (is_null($prop)) continue;
@@ -2189,10 +2236,14 @@ PROMPT;
             }
 
             // Validar price_type_{id}_{sub_tipo}
-            if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear)$/', $prop, $m)) {
+            if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear|visible_en_tienda)$/', $prop, $m)) {
                 $pt_id = (int) $m[1];
                 if (!in_array($pt_id, $valid_price_type_ids, true)) {
                     $col['system_property'] = null; // ID inválido → ignorar
+                } elseif ($m[2] === 'visible_en_tienda' && !in_array($pt_id, $restricted_price_type_ids, true)) {
+                    // Visible en la tienda para una lista SIN catálogo restringido: el SPA no ofrece
+                    // esa opción para ella (misión catalogo-por-lista-tienda, 5/10/2026) → ignorar.
+                    $col['system_property'] = null;
                 }
                 continue;
             }

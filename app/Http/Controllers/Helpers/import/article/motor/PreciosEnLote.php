@@ -1057,6 +1057,10 @@ class PreciosEnLote
             'setear_precio_final'            => 0,
             'precio_luego_de_recargos'       => null,
             'monto_ganancia'                 => null,
+            // Paridad con el withPivot de Article::price_types() (misión catalogo-por-lista-tienda,
+            // 5/10/2026): un par recién atado nace sin habilitar en la tienda. Ningún helper de
+            // precios la registra (no está en COLUMNAS_DEL_PIVOT) ni se inserta desde acá.
+            'visible_en_tienda'              => null,
         ];
     }
 

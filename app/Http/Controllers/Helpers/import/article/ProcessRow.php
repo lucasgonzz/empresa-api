@@ -41,6 +41,16 @@ class ProcessRow {
      */
     const IVA_ID_POR_DEFECTO = 2;
 
+    /**
+     * Prefijo de la columna "visible en la tienda para la lista X" (misión catalogo-por-lista-tienda,
+     * 5/10/2026): `visible_en_tienda_<nombre de la lista normalizado>`, con el MISMO normalizado
+     * que `%_`, `$_final_` y `setear_precio_final_` (get_price_type_row_name(): minúsculas y
+     * espacios a `_`). Es el contrato con empresa-spa (ai-excel-import arma la columna así).
+     *
+     * @var string
+     */
+    const PREFIJO_COLUMNA_VISIBLE_EN_TIENDA = 'visible_en_tienda_';
+
     protected $columns;
     protected $user;
     protected $ct;
@@ -187,6 +197,24 @@ class ProcessRow {
     protected $property_types = [];
     protected $unidad_medidas = [];
     protected $se_importaron_price_types = false;
+
+    /**
+     * Si el mapeo trae alguna columna de PRECIO de lista (`%_<lista>`, `$_final_<lista>` o
+     * `setear_precio_final_<lista>`).
+     *
+     * Hasta la misión catalogo-por-lista-tienda (5/10/2026) era lo mismo que
+     * $se_importaron_price_types. Desde entonces aquél se prende TAMBIÉN con una columna
+     * `visible_en_tienda_<lista>` (sin eso, un Excel que solo trae esa columna nunca llegaría a
+     * los artículos que ya existen), y éste sigue mirando solo las de precio.
+     *
+     * 🔴 No unificarlos: este es el que decide la marca `sin_datos_de_lista_en_el_excel` de
+     * add_price_type_data(). Si un Excel que solo habla de la tienda contara como "habla de
+     * precios", a los artículos que crea se les propagaría el `setear_precio_final` de la lista y
+     * el precio de esa lista quedaría CONGELADO (el defecto medido el 24/8/2026, ver ahí).
+     *
+     * @var bool
+     */
+    protected $se_importaron_precios_de_listas = false;
 
     protected $brand_cache = [];
 
@@ -765,6 +793,19 @@ class ProcessRow {
                 || !ImportHelper::isIgnoredColumn($row_percentage_name, $this->columns)
                 || !ImportHelper::isIgnoredColumn($row_final_price_name, $this->columns)
             ) {
+                $this->se_importaron_price_types = true;
+                $this->se_importaron_precios_de_listas = true;
+            }
+
+            /*
+             * La columna `visible_en_tienda_<lista>` (misión catalogo-por-lista-tienda, 5/10/2026)
+             * también cuenta como "el Excel habla de listas": sin esto, un Excel que solo trae esa
+             * columna no le llegaría a ningún artículo que ya existe (obtener_price_types() corta
+             * antes). Pero NO prende $se_importaron_precios_de_listas: ver su comentario.
+             */
+            $row_visible_name = $this->get_price_type_row_name(self::PREFIJO_COLUMNA_VISIBLE_EN_TIENDA, $price_type);
+
+            if (!ImportHelper::isIgnoredColumn($row_visible_name, $this->columns)) {
                 $this->se_importaron_price_types = true;
             }
         }
@@ -3653,6 +3694,10 @@ class ProcessRow {
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
                 $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns), 2, $this->interpretacion_punto);
 
+                // "Visible en la tienda para esta lista": 1, 0 o null = no informado (misión
+                // catalogo-por-lista-tienda, 5/10/2026). Ver leer_visible_en_tienda().
+                $visible_en_tienda = $this->leer_visible_en_tienda($row, $price_type);
+
                 $this->log('setear: '.$setear);
                 $this->log('percentage: '.$percentage);
                 $this->log('final_price: '.$final_price);
@@ -3686,7 +3731,7 @@ class ProcessRow {
                             && !$setear
                         ) {
                             $this->log('Entro con percentage');    
-                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage);
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, null, $visible_en_tienda);
 
                         } else if (
                             $price_type_ya_relacionado->pivot->final_price != $final_price
@@ -3694,24 +3739,37 @@ class ProcessRow {
                         ) {
 
                             $this->log('Entro con final_price');    
-                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, null, $final_price);
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, null, $final_price, $visible_en_tienda);
 
                         } else {
 
-                            $this->log('No entro con ninguno');    
+                            $this->log('No entro con ninguno');
+
+                            /*
+                             * Misión catalogo-por-lista-tienda (5/10/2026): ni el margen ni el
+                             * precio cambiaron, pero la visibilidad en la tienda sí. Sin esta rama
+                             * un Excel que solo cambia "visible en la tienda" no le llegaba a
+                             * ningún artículo que ya existía. La fila viaja con el resto de los
+                             * valores tal como vinieron (iguales a los guardados) y
+                             * filter_only_changed_price_types() la marca como "solo visibilidad",
+                             * para que ActualizarBBDD no reescriba margen ni precio.
+                             */
+                            if ($this->visible_en_tienda_cambia($price_type_ya_relacionado->pivot->visible_en_tienda, $visible_en_tienda)) {
+                                $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price, $visible_en_tienda);
+                            }
                         }
 
                     } else {
 
                         $this->log('No estaba relacionado con price_type');
 
-                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
+                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price, $visible_en_tienda);
 
                     }
 
                 } else {
 
-                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
+                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price, $visible_en_tienda);
                 }
 
             }
@@ -3722,7 +3780,19 @@ class ProcessRow {
         return $price_types_data;
     }
 
-    function add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price = null) {
+    /**
+     * Agrega a `$price_types_data` la fila de una lista para esta fila del Excel.
+     *
+     * @param  array    $price_types_data
+     * @param  mixed    $price_type
+     * @param  int|null $setear
+     * @param  mixed    $percentage
+     * @param  mixed    $final_price
+     * @param  int|null $visible_en_tienda  1, 0 o null = el Excel no lo informó (misión
+     *                                      catalogo-por-lista-tienda, 5/10/2026).
+     * @return array
+     */
+    function add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price = null, $visible_en_tienda = null) {
 
         $price_types_data[] = [
             'id'            => $price_type->id,
@@ -3730,6 +3800,13 @@ class ProcessRow {
                 'setear_precio_final'   => !is_null($setear) ? $setear : null,
                 'percentage'            => !is_null($percentage) ? $percentage : null,
                 'final_price'           => !is_null($final_price) ? $final_price : null,
+
+                /*
+                 * Visible en la tienda para esta lista (misión catalogo-por-lista-tienda,
+                 * 5/10/2026). null = no informado: ActualizarBBDD inserta NULL en un artículo
+                 * nuevo y NO toca el valor guardado de uno que ya existía.
+                 */
+                'visible_en_tienda'     => !is_null($visible_en_tienda) ? (int) $visible_en_tienda : null,
 
                 /*
                  * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). Marca las filas
@@ -3751,10 +3828,82 @@ class ProcessRow {
                  * precio final. Cuando el Excel SI trae columnas de lista, el flag queda en false
                  * y se propaga el default de la lista, exactamente como antes.
                  */
-                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_price_types,
+                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_precios_de_listas,
             ]
         ];
         return $price_types_data;
+    }
+
+    /**
+     * Lee la columna `visible_en_tienda_<lista>` de una fila del Excel (misión
+     * catalogo-por-lista-tienda, 5/10/2026).
+     *
+     *  - Columna sin mapear, o celda vacía → null = no informado: el artículo nuevo nace en NULL
+     *    (no habilitado) y el que ya existía conserva lo que tenía.
+     *  - Un sí reconocible (Si, Sí, S, 1, yes, y, true, verdadero; sin importar mayúsculas) → 1.
+     *  - Cualquier otro valor → 0, igual que la columna `setear_precio_final_<lista>`: lo que no
+     *    es un sí, es un no.
+     *
+     * ⚠️ La celda vacía es "no informado" y no "No" (a diferencia de setear_precio_final_<lista>,
+     * donde vacía es 0): así se puede reimportar una planilla parcial sin sacarle de la tienda a
+     * los mayoristas los artículos que no vinieron marcados. Para un artículo nuevo da igual: NULL
+     * y 0 son los dos "no habilitado".
+     *
+     * @param  array $row
+     * @param  mixed $price_type
+     * @return int|null
+     */
+    private function leer_visible_en_tienda($row, $price_type)
+    {
+        $columna = $this->get_price_type_row_name(self::PREFIJO_COLUMNA_VISIBLE_EN_TIENDA, $price_type);
+
+        if (ImportHelper::isIgnoredColumn($columna, $this->columns)) {
+            return null;
+        }
+
+        $valor = ImportHelper::getColumnValue($row, $columna, $this->columns);
+
+        if (is_null($valor)) {
+            return null;
+        }
+
+        // mb_strtolower y no strtolower: "SÍ" con tilde en mayúscula también es un sí.
+        $normalizado = mb_strtolower(trim((string) $valor), 'UTF-8');
+
+        if ($normalizado === '') {
+            return null;
+        }
+
+        if (in_array($normalizado, ['si', 'sí', 's', '1', 'yes', 'y', 'true', 'verdadero'], true)) {
+            return 1;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Si la visibilidad en la tienda que trae el Excel CAMBIA la guardada (misión
+     * catalogo-por-lista-tienda, 5/10/2026).
+     *
+     * Se mide en visibilidad y no en el valor crudo: NULL y 0 son los dos "no habilitado" (la
+     * tienda compara con `= 1`), así que un "No" sobre un artículo que nunca se habilitó no es un
+     * cambio — si lo fuera, reimportar una planilla con "No" en miles de filas dejaría miles de
+     * artículos "actualizados" sin que nada cambie. Mismo criterio que la masiva
+     * (CatalogoPorListaHelper::aplicar_en_masiva()).
+     *
+     * @param  mixed    $guardado  El `visible_en_tienda` del pivote (null, 0, 1, '0', '1').
+     * @param  int|null $nuevo     El de la fila del Excel (null = no informado).
+     * @return bool
+     */
+    private function visible_en_tienda_cambia($guardado, $nuevo)
+    {
+        if (is_null($nuevo)) {
+            return false;
+        }
+
+        $guardado_habilitado = !is_null($guardado) && (int) $guardado === 1;
+
+        return $guardado_habilitado !== ((int) $nuevo === 1);
     }
 
 
@@ -4847,6 +4996,8 @@ class ProcessRow {
                     'percentage'      => $pt->pivot->percentage ?? null,
                     'final_price'           => $pt->pivot->final_price ?? null,
                     'setear_precio_final' => $pt->pivot->setear_precio_final ?? null,
+                    // Misión catalogo-por-lista-tienda (5/10/2026): llega por el withPivot de Article::price_types().
+                    'visible_en_tienda'   => $pt->pivot->visible_en_tienda ?? null,
                 ],
             ];
         }
@@ -4875,8 +5026,34 @@ class ProcessRow {
                 }
             }
 
+            /*
+             * Visible en la tienda (misión catalogo-por-lista-tienda, 5/10/2026). Hasta acá una
+             * lista sin cambio de margen, precio ni "setear" se descartaba: sin este bloque la
+             * columna nueva nunca llegaba a los artículos que ya existen. El cambio se mide en
+             * visibilidad (NULL y 0 son lo mismo, ver visible_en_tienda_cambia()).
+             */
+            $visible_guardado = $prev['pivot']['visible_en_tienda'] ?? null;
+            $visible_nuevo    = $row_pt['pivot']['visible_en_tienda'] ?? null;
+            $cambia_visible   = $this->visible_en_tienda_cambia($visible_guardado, $visible_nuevo);
+
+            if ($cambia_visible) {
+                $diff['__diff__visible_en_tienda'] = ['old' => $visible_guardado, 'new' => $visible_nuevo];
+            } else if (isset($row_pt['pivot'])) {
+                // Informado pero igual al guardado: que ActualizarBBDD no lo reescriba.
+                $row_pt['pivot']['visible_en_tienda'] = null;
+            }
+
             if ($changed) {
                 $only_changed[] = array_merge($row_pt, $diff);
+            } else if ($cambia_visible) {
+                /*
+                 * 🔴 SOLO cambió la visibilidad: la marca le dice a ActualizarBBDD que NO pase esta
+                 * fila por el UPDATE de margen/precio. Ese UPDATE escribe percentage, final_price,
+                 * setear_precio_final e incluir_en_excel_para_clientes con lo que trae la fila, y
+                 * con los tres primeros en null le pondría al artículo el margen POR DEFECTO de la
+                 * lista, borrándole un margen propio o un precio fijado a mano que nadie pidió tocar.
+                 */
+                $only_changed[] = array_merge($row_pt, $diff, ['__solo_visible_en_tienda' => true]);
             } else {
                 // $this->log('No cambio el precio');
             }

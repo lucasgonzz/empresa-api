@@ -979,7 +979,8 @@ SECCION;
             return in_array((int) $m[1], $ids_validos['addresses'], true) ? $propiedad : null;
         }
 
-        if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear)$/', $propiedad, $m)) {
+        // `visible_en_tienda`: misión catalogo-por-lista-tienda (5/10/2026), misma validación por id de lista.
+        if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear|visible_en_tienda)$/', $propiedad, $m)) {
             return in_array((int) $m[1], $ids_validos['price_types'], true) ? $propiedad : null;
         }
 
