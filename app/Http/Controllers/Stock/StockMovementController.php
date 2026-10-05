@@ -163,9 +163,9 @@ class StockMovementController extends Controller
          * Un id de una sucursal borrada (cookie de la SPA, empleado, venta vieja que se anula...)
          * hacía que CheckFromAddress / CheckToAddress / CheckVariants le abrieran al artículo una
          * fila de depósito para esa sucursal: invisible en pantalla, pero sumada en articles.stock.
-         * Ver aplicar_guarda_de_sucursales_vivas(). null = no se mueve nada.
+         * Ver SucursalVigenteHelper::aplicar_guarda_del_motor(). null = no se mueve nada.
          */
-        $data = $this->aplicar_guarda_de_sucursales_vivas($data, $concepto_id, $employee_id);
+        $data = SucursalVigenteHelper::aplicar_guarda_del_motor($data, $concepto_id, $this->user_id, $employee_id);
 
         if (is_null($data)) return null;
 
@@ -216,91 +216,6 @@ class StockMovementController extends Controller
         TiendaNubeSyncArticleService::add_article_to_sync($article);
 
         return $stock_movement;
-    }
-
-    /**
-     * Conceptos que NOMBRAN depósitos a propósito: el usuario (o el sistema) eligió ESA sucursal y
-     * no otra. Con una sucursal muerta, cambiarla por otra movería stock entre depósitos que nadie
-     * eligió; lo correcto es no mover nada (ver aplicar_guarda_de_sucursales_vivas()).
-     */
-    const CONCEPTOS_QUE_NOMBRAN_DEPOSITOS = [
-        'Mov entre depositos',
-        'Mov manual entre depositos',
-        'Creacion de deposito',
-        'Actualizacion de deposito',
-        'Eliminacion de sucursal',
-    ];
-
-    /**
-     * La guarda contra sucursales muertas del motor de stock (misión eliminar-sucursal-con-stock,
-     * 5/10/2026, decisión D12 del plan). Es la capa que cubre a TODOS los caminos, porque todos
-     * terminan acá: ventas, devoluciones, notas de crédito, compras, producción, ingresos manuales,
-     * traslados, importaciones por movimiento.
-     *
-     * Para cada `from_address_id` / `to_address_id` que venga con valor y que el motor no pueda usar
-     * (SucursalVigenteHelper::existe_para_stock(): la fila no existe, o es de OTRO comercio). Un
-     * domicilio de comprador SÍ pasa: es el comportamiento histórico de los pedidos de la tienda con
-     * envío, y "Poner stock en 0" tiene que poder llevar a 0 las filas que esos pedidos dejaron:
-     *
-     *  - si el concepto NOMBRA depósitos a propósito (CONCEPTOS_QUE_NOMBRAN_DEPOSITOS) → no se mueve
-     *    nada: devuelve null y queda un Log::warning;
-     *  - si no (venta, devolución, nota de crédito, compra, producción, ingreso manual...) → se
-     *    reemplaza por una sucursal viva (la del empleado, la por defecto, la madre o la de menor id;
-     *    si no queda ninguna, null = stock global), con Log::warning. El comprobante ya ocurrió: el
-     *    stock tiene que moverse en ALGÚN lado real, nunca en una fila fantasma.
-     *
-     * 🔴 No sacar esta guarda "porque la SPA ya valida la sucursal": el id muerto no viene solo de la
-     * SPA (una venta vieja que se anula trae el suyo, un traslado viejo, un empleado con la sucursal
-     * borrada elegida, un navegador que recuerda la cookie por 3 años).
-     *
-     * Barato en el camino normal: dos consultas memoizadas por proceso (SucursalVigenteHelper) y el
-     * concepto solo se busca si hay un id muerto.
-     *
-     * @param  array     $data         Los datos del movimiento (los de crear()).
-     * @param  int|null  $concepto_id  El concepto ya resuelto por SetConcepto::get_concepto().
-     * @param  int|null  $employee_id  Usuario que opera (para elegir su sucursal como reemplazo).
-     * @return array|null  Los datos con las sucursales resueltas, o null si no hay que mover nada.
-     */
-    function aplicar_guarda_de_sucursales_vivas($data, $concepto_id, $employee_id) {
-
-        $muertas = [];
-
-        foreach (['from_address_id', 'to_address_id'] as $clave) {
-
-            if (!isset($data[$clave]) || SucursalVigenteHelper::es_vacio($data[$clave])) {
-                continue;
-            }
-
-            if (!SucursalVigenteHelper::existe_para_stock($data[$clave], $this->user_id)) {
-                $muertas[] = $clave;
-            }
-        }
-
-        if (count($muertas) == 0) {
-            return $data;
-        }
-
-        $concepto = is_null($concepto_id) ? null : ConceptoStockMovement::find($concepto_id);
-
-        $nombre_del_concepto = is_null($concepto) ? null : $concepto->name;
-
-        if (in_array($nombre_del_concepto, Self::CONCEPTOS_QUE_NOMBRAN_DEPOSITOS)) {
-
-            Log::warning('StockMovementController::crear: "'.$nombre_del_concepto.'" del artículo '.$data['model_id'].' nombra una sucursal que ya no existe ('.implode(', ', $muertas).': '.(isset($data['from_address_id']) ? $data['from_address_id'] : '-').' / '.(isset($data['to_address_id']) ? $data['to_address_id'] : '-').'). No se mueve nada.');
-
-            return null;
-        }
-
-        foreach ($muertas as $clave) {
-            $data[$clave] = SucursalVigenteHelper::resolver(
-                $data[$clave],
-                $this->user_id,
-                $employee_id,
-                'StockMovementController::crear, '.$clave.', concepto '.(is_null($nombre_del_concepto) ? 'sin concepto' : $nombre_del_concepto).', artículo '.$data['model_id']
-            );
-        }
-
-        return $data;
     }
 
     /**
