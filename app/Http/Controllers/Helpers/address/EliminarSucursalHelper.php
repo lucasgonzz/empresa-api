@@ -306,7 +306,7 @@ class EliminarSucursalHelper {
 
         $es_la_ultima = count($otras) === 0;
 
-        $stock = Self::conteo_de_stock($address->id);
+        $stock = Self::conteo_de_stock($address->id, $owner_id);
 
         $marcas = Self::marcas_de($address);
 
@@ -380,11 +380,12 @@ class EliminarSucursalHelper {
      * esas no tienen stock que mover y la fase final las borra igual.
      *
      * @param  int  $address_id
+     * @param  int  $owner_id    Solo artículos de este dueño (ver query_filas_de_articulos_con_stock()).
      * @return \Illuminate\Support\Collection  {id, article_id, amount, deleted_at}
      */
-    static function filas_de_articulos_con_stock($address_id) {
+    static function filas_de_articulos_con_stock($address_id, $owner_id) {
 
-        return Self::query_filas_de_articulos_con_stock($address_id)
+        return Self::query_filas_de_articulos_con_stock($address_id, $owner_id)
                     ->get(['aa.id', 'aa.article_id', 'aa.amount', 'a.deleted_at']);
     }
 
@@ -393,11 +394,12 @@ class EliminarSucursalHelper {
      * artículo. Mismo criterio de joins que `filas_de_articulos_con_stock()`.
      *
      * @param  int  $address_id
+     * @param  int  $owner_id    Solo artículos de este dueño (ver query_filas_de_articulos_con_stock()).
      * @return \Illuminate\Support\Collection  {id, article_variant_id, article_id, amount, deleted_at}
      */
-    static function filas_de_variantes_con_stock($address_id) {
+    static function filas_de_variantes_con_stock($address_id, $owner_id) {
 
-        return Self::query_filas_de_variantes_con_stock($address_id)
+        return Self::query_filas_de_variantes_con_stock($address_id, $owner_id)
                     ->get(['aav.id', 'aav.article_variant_id', 'av.article_id', 'aav.amount', 'a.deleted_at']);
     }
 
@@ -408,37 +410,47 @@ class EliminarSucursalHelper {
      * existe (borrado físico) la contaba la fase final pero no la pasada, que nunca la iba a mover, y
      * la sucursal quedaba IMBORRABLE ("sigue recibiendo stock" y 500 en cada intento). Si hace falta
      * cambiar el criterio, se cambia ACÁ y vale para los tres.
+     *
+     * 🔴 Y solo artículos DEL DUEÑO (`articles.user_id`). En una base compartida por varios comercios
+     * (u767360347_empresa), un artículo de OTRO comercio puede tener una fila en esta sucursal (una
+     * cookie vieja, un dato cruzado): moverlo usaría la identidad de este dueño en el libro de otro
+     * comercio y le abriría una fila en NUESTRA sucursal de destino. Esas filas ajenas no se mueven:
+     * la fase final las borra sin movimiento (ver fase_final()).
      */
 
     /**
-     * Query de las filas de artículos con stock ≠ 0 en la sucursal (artículo existente, incluida la
-     * papelera).
+     * Query de las filas de artículos del dueño con stock ≠ 0 en la sucursal (artículo existente,
+     * incluida la papelera).
      *
      * @param  int  $address_id
+     * @param  int  $owner_id
      * @return \Illuminate\Database\Query\Builder
      */
-    static function query_filas_de_articulos_con_stock($address_id) {
+    static function query_filas_de_articulos_con_stock($address_id, $owner_id) {
 
         return DB::table('address_article as aa')
                     ->join('articles as a', 'a.id', '=', 'aa.article_id')
                     ->where('aa.address_id', $address_id)
+                    ->where('a.user_id', $owner_id)
                     ->whereNotNull('aa.amount')
                     ->where('aa.amount', '!=', 0);
     }
 
     /**
-     * Query de las filas de variantes con stock ≠ 0 en la sucursal (variante y artículo existentes,
-     * incluida la papelera).
+     * Query de las filas de variantes de artículos del dueño con stock ≠ 0 en la sucursal (variante y
+     * artículo existentes, incluida la papelera).
      *
      * @param  int  $address_id
+     * @param  int  $owner_id
      * @return \Illuminate\Database\Query\Builder
      */
-    static function query_filas_de_variantes_con_stock($address_id) {
+    static function query_filas_de_variantes_con_stock($address_id, $owner_id) {
 
         return DB::table('address_article_variant as aav')
                     ->join('article_variants as av', 'av.id', '=', 'aav.article_variant_id')
                     ->join('articles as a', 'a.id', '=', 'av.article_id')
                     ->where('aav.address_id', $address_id)
+                    ->where('a.user_id', $owner_id)
                     ->whereNotNull('aav.amount')
                     ->where('aav.amount', '!=', 0);
     }
@@ -458,12 +470,13 @@ class EliminarSucursalHelper {
      * - `articulos_en_papelera`: artículos en la papelera con stock acá (D7: se mueven sin libro).
      *
      * @param  int  $address_id
+     * @param  int  $owner_id    Solo artículos de este dueño (ver query_filas_de_articulos_con_stock()).
      * @return array
      */
-    static function conteo_de_stock($address_id) {
+    static function conteo_de_stock($address_id, $owner_id) {
 
-        $filas_articulo = Self::filas_de_articulos_con_stock($address_id);
-        $filas_variante = Self::filas_de_variantes_con_stock($address_id);
+        $filas_articulo = Self::filas_de_articulos_con_stock($address_id, $owner_id);
+        $filas_variante = Self::filas_de_variantes_con_stock($address_id, $owner_id);
 
         $articulos            = [];
         $articulos_papelera   = [];
@@ -1132,7 +1145,7 @@ class EliminarSucursalHelper {
 
             if (!$es_la_ultima) {
 
-                $hay_stock = count(Self::articulos_con_stock($address->id)) > 0;
+                $hay_stock = count(Self::articulos_con_stock($address->id, $owner_id)) > 0;
 
                 /*
                  * Stock que apareció después de validar sin que haya decisión para él (la sucursal no
@@ -1229,17 +1242,18 @@ class EliminarSucursalHelper {
      * la papelera).
      *
      * @param  int  $address_id
+     * @param  int  $owner_id    Solo artículos de este dueño (ver query_filas_de_articulos_con_stock()).
      * @return array  ids de artículo, ordenados.
      */
-    static function articulos_con_stock($address_id) {
+    static function articulos_con_stock($address_id, $owner_id) {
 
         $ids = [];
 
-        foreach (Self::filas_de_articulos_con_stock($address_id) as $fila) {
+        foreach (Self::filas_de_articulos_con_stock($address_id, $owner_id) as $fila) {
             $ids[(int) $fila->article_id] = true;
         }
 
-        foreach (Self::filas_de_variantes_con_stock($address_id) as $fila) {
+        foreach (Self::filas_de_variantes_con_stock($address_id, $owner_id) as $fila) {
             $ids[(int) $fila->article_id] = true;
         }
 
@@ -1269,7 +1283,7 @@ class EliminarSucursalHelper {
         $movimientos = 0;
         $papelera    = 0;
 
-        foreach (Self::articulos_con_stock($address->id) as $article_id) {
+        foreach (Self::articulos_con_stock($address->id, $address->user_id) as $article_id) {
 
             if (!is_null($maximo_articulos) && $articulos >= $maximo_articulos) {
                 break;
@@ -1612,8 +1626,8 @@ class EliminarSucursalHelper {
              */
             if (!$es_la_ultima) {
 
-                $con_stock = Self::query_filas_de_articulos_con_stock($address->id)->lockForUpdate()->count()
-                           + Self::query_filas_de_variantes_con_stock($address->id)->lockForUpdate()->count();
+                $con_stock = Self::query_filas_de_articulos_con_stock($address->id, $owner_id)->lockForUpdate()->count()
+                           + Self::query_filas_de_variantes_con_stock($address->id, $owner_id)->lockForUpdate()->count();
 
                 if ($con_stock > 0) {
                     return null;
@@ -1672,6 +1686,14 @@ class EliminarSucursalHelper {
                                     ->where('address_id', $address->id)
                                     ->delete();
 
+            /*
+             * Artículos de OTRO comercio con fila en esta sucursal (base compartida, dato cruzado): la
+             * pasada no los movió a propósito (ver query_filas_de_articulos_con_stock()). Sus filas
+             * se borran acá abajo SIN movimiento, y después del commit se les recalcula el stock global
+             * con su propio dueño, para que no quede contando una fila que ya no existe.
+             */
+            $articulos_ajenos = Self::articulos_ajenos_con_filas($address->id, $owner_id);
+
             // Las filas de pivot que quedan (en 0, o con stock en el caso D6) y la sucursal.
             $filas_articulo = DB::table('address_article')->where('address_id', $address->id)->delete();
             $filas_variante = DB::table('address_article_variant')->where('address_id', $address->id)->delete();
@@ -1687,6 +1709,7 @@ class EliminarSucursalHelper {
                 'clientes'               => (int) $clientes,
                 'metodos_por_defecto'    => (int) $metodos_por_defecto,
                 'filas_de_pivot_borradas' => (int) $filas_articulo + (int) $filas_variante,
+                'articulos_ajenos'       => $articulos_ajenos,
             ];
         });
 
@@ -1698,6 +1721,84 @@ class EliminarSucursalHelper {
         ImageController::deleteModelImages($address);
         SucursalVigenteHelper::olvidar($address->id);
 
+        if (count($resultado['articulos_ajenos']) > 0) {
+
+            Log::warning('EliminarSucursalHelper: la sucursal '.$address->id.' del comercio '.$owner_id.' tenía filas de '.count($resultado['articulos_ajenos']).' artículo(s) de OTRO comercio; se borraron sin movimiento y se les recalculó el stock.', [
+                'articulos' => $resultado['articulos_ajenos'],
+            ]);
+
+            Self::recalcular_articulos($resultado['articulos_ajenos']);
+        }
+
+        $resultado['articulos_ajenos'] = count($resultado['articulos_ajenos']);
+
         return $resultado;
+    }
+
+    /**
+     * Ids de los artículos de OTRO comercio que tienen alguna fila (propia o de una variante) en la
+     * sucursal.
+     *
+     * @param  int  $address_id
+     * @param  int  $owner_id
+     * @return array
+     */
+    static function articulos_ajenos_con_filas($address_id, $owner_id) {
+
+        $ids = DB::table('address_article as aa')
+                    ->join('articles as a', 'a.id', '=', 'aa.article_id')
+                    ->where('aa.address_id', $address_id)
+                    ->where('a.user_id', '!=', $owner_id)
+                    ->distinct()
+                    ->pluck('a.id')
+                    ->all();
+
+        $de_variantes = DB::table('address_article_variant as aav')
+                            ->join('article_variants as av', 'av.id', '=', 'aav.article_variant_id')
+                            ->join('articles as a', 'a.id', '=', 'av.article_id')
+                            ->where('aav.address_id', $address_id)
+                            ->where('a.user_id', '!=', $owner_id)
+                            ->distinct()
+                            ->pluck('a.id')
+                            ->all();
+
+        $todos = array_values(array_unique(array_map('intval', array_merge($ids, $de_variantes))));
+
+        sort($todos);
+
+        return $todos;
+    }
+
+    /**
+     * Recalcula `articles.stock` (y el de sus variantes) desde las filas que quedan, con el dueño de
+     * CADA artículo (no el de la sucursal): `setArticleStockFromAddresses()` arma la lista de
+     * sucursales con ese dueño. Sin renglón en el libro: no hubo un movimiento, se borró una fila que
+     * ya no correspondía. Incluye la papelera.
+     *
+     * @param  array  $article_ids
+     * @return void
+     */
+    static function recalcular_articulos($article_ids) {
+
+        foreach ($article_ids as $article_id) {
+
+            $article = Article::withTrashed()->find($article_id);
+
+            if (is_null($article)) {
+                continue;
+            }
+
+            /*
+             * Corre DESPUÉS del commit de la eliminación: si el recálculo de un artículo falla (un
+             * dato cruzado de otro comercio puede tener filas en sucursales que su dueño no tiene, y
+             * setArticleStockFromAddresses() no lo tolera), la sucursal ya está eliminada y eso no
+             * puede volverse un 500. Se deja en el log y se sigue con el resto.
+             */
+            try {
+                ArticleHelper::setArticleStockFromAddresses($article, false, $article->user_id);
+            } catch (\Throwable $e) {
+                Log::warning('EliminarSucursalHelper: no se pudo recalcular el stock del artículo '.$article_id.': '.$e->getMessage());
+            }
+        }
     }
 }

@@ -171,6 +171,40 @@ class Eliminar_sucursal_sin_decision_y_masivo_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 5 bis — un artículo de OTRO comercio con fila en esta sucursal (base compartida, dato
+     * cruzado) NO se mueve con la identidad de este dueño ni se le abre fila en el destino: su fila se
+     * borra sin movimiento (segunda ronda, hallazgo D).
+     *
+     * @test
+     */
+    public function un_articulo_de_otro_comercio_no_se_mueve_y_su_fila_se_borra()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Fila ajena a borrar');
+        $destino   = $this->nueva_sucursal('zz Fila ajena destino');
+
+        $propio = $this->nuevo_articulo('zz Fila ajena propio');
+        $this->cargar_deposito($propio, $borrar, 2);
+        $this->cargar_deposito($propio, $principal, 1);
+
+        $otro  = $this->otro_comercio();
+        $ajeno = $this->nuevo_articulo('zz Fila ajena de otro comercio', ['user_id' => $otro->id, 'stock' => 5]);
+        DB::table('address_article')->insert(['article_id' => $ajeno->id, 'address_id' => $borrar->id, 'amount' => 5]);
+
+        $this->assertSame(1, $this->getJson('api/address/'.$borrar->id.'/eliminar-resumen')->json('stock.articulos'), 'El resumen no cuenta el artículo ajeno.');
+
+        $this->eliminar_sucursal($borrar->id, [
+            'stock_accion'     => 'transferir',
+            'stock_destino_id' => $destino->id,
+        ])->assertStatus(200)->assertJsonPath('resumen.articulos', 1);
+
+        $this->assertSame(0, $this->filas_de_pivot($borrar->id), 'La fila ajena también se borra.');
+        $this->assertCount(0, $this->movimientos_de($ajeno), 'El artículo de otro comercio no tiene movimientos.');
+        $this->assertNull($this->stock_en($ajeno, $destino->id), 'Ni se le abre fila en el destino de este comercio.');
+        $this->assertEquals(2.0, $this->stock_en($propio, $destino->id), 'El propio sí se mueve.');
+    }
+
+    /**
      * Test 6 — el candado: con un borrado en curso EN OTRA CONEXIÓN (otro proceso), el segundo
      * recibe 422 y no toca nada. El candado es `GET_LOCK` de MySQL, por conexión y re-entrante: por
      * eso "el otro" se simula con una segunda conexión PDO.
