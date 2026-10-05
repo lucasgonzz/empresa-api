@@ -58,14 +58,15 @@ abstract class EtiquetasIndividualesTestCase extends TestCase
     protected function tearDown(): void
     {
         /*
-         * El PDF escribe el PNG del código de barras en el directorio actual y lo borra apenas lo
-         * dibuja. Si un test se corta a la mitad, que no quede basura.
+         * El PDF escribe el PNG del código de barras en el directorio actual
+         * (`temp_barcode<código>_<sufijo>.png`) y lo borra apenas lo dibuja. Si un test se corta a
+         * la mitad, que no quede basura.
          */
         foreach (self::ESPATULAS as $codigo) {
-            $archivo = getcwd().DIRECTORY_SEPARATOR.'temp_barcode'.$codigo.'.png';
-
-            if (is_file($archivo)) {
-                @unlink($archivo);
+            foreach ((array) glob(getcwd().DIRECTORY_SEPARATOR.'temp_barcode'.$codigo.'_*.png') as $archivo) {
+                if (is_file($archivo)) {
+                    @unlink($archivo);
+                }
             }
         }
 
