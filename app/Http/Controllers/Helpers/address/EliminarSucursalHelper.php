@@ -15,6 +15,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Eliminar una sucursal sin dejar basura (misión eliminar-sucursal-con-stock, 5/10/2026).
@@ -631,15 +632,21 @@ class EliminarSucursalHelper {
 
         $bloqueos = [];
 
-        $traslados = DB::table('deposit_movements')
+        $query = DB::table('deposit_movements')
                         ->where('user_id', $owner_id)
                         ->where(function ($q) use ($address_id) {
                             $q->where('from_address_id', $address_id)
                               ->orWhere('to_address_id', $address_id);
                         })
-                        ->whereNull('stock_moved_at')
-                        ->whereNull('recibido_at')
-                        ->count();
+                        ->whereNull('recibido_at');
+
+        // Sin la columna (deploy a medio migrar) la única marca de "movido" es recibido_at: ver
+        // hay_columna_stock_moved_at().
+        if (Self::hay_columna_stock_moved_at()) {
+            $query->whereNull('stock_moved_at');
+        }
+
+        $traslados = $query->count();
 
         if ($traslados > 0) {
             $bloqueos[] = [
@@ -652,6 +659,42 @@ class EliminarSucursalHelper {
         }
 
         return $bloqueos;
+    }
+
+    /**
+     * Memo de la guarda de esquema de `deposit_movements.stock_moved_at`. Solo se memoiza el SÍ.
+     *
+     * @var bool|null
+     */
+    protected static $columna_stock_moved_at = null;
+
+    /**
+     * ¿`deposit_movements` ya tiene `stock_moved_at` (misión movimientos-deposito-auditoria)?
+     *
+     * 🔴 Guarda de esquema (segunda ronda de revisión, 5/10/2026): un deploy de empresa sube los
+     * archivos ANTES de migrar. Sin la guarda, en esa ventana el resumen y la eliminación de
+     * CUALQUIER sucursal daban 500 (`Unknown column`), tengan o no traslados. Mismo patrón que
+     * `Address::columna_madre_existe()`: se memoiza solo el SÍ, así un `queue:work` booteado dentro de
+     * la ventana se entera en cuanto la columna aparece.
+     *
+     * @return bool
+     */
+    static function hay_columna_stock_moved_at() {
+
+        if (Self::$columna_stock_moved_at !== true) {
+            Self::$columna_stock_moved_at = Schema::hasColumn('deposit_movements', 'stock_moved_at');
+        }
+
+        return Self::$columna_stock_moved_at;
+    }
+
+    /**
+     * Borra el memo de la guarda de esquema (los tests que esconden la columna).
+     *
+     * @return void
+     */
+    static function olvidar_esquema() {
+        Self::$columna_stock_moved_at = null;
     }
 
     // ------------------------------------------------------------------------------------------
