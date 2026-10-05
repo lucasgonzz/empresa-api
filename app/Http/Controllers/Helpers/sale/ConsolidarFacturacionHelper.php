@@ -283,80 +283,246 @@ class ConsolidarFacturacionHelper extends Controller
 
     /**
      * Copia los artículos de todas las ventas originales a la venta consolidada.
-     * Si $agrupar es true, suma cantidades de artículos repetidos (mismo id + variante).
+     *
+     * Sin agrupar, cada renglón de cada venta original es un renglón de la consolidada, aunque
+     * se repita el artículo (dos renglones del mismo artículo en una misma venta, por ejemplo con
+     * varios precios, siguen siendo dos).
+     *
+     * Agrupando, los renglones que son el MISMO renglón de factura salvo la cantidad se funden en
+     * uno solo, vengan de la venta que vengan: ver clave_de_agrupacion().
      *
      * @param Sale       $consolidada       Venta contenedora destino.
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'articles'.
-     * @param bool       $agrupar           Si true, agrupa ítems iguales sumando amounts.
+     * @param bool       $agrupar           Si true, agrupa renglones iguales sumando cantidades.
      */
     private static function copiar_articulos(Sale $consolidada, $ventas_originales, bool $agrupar): void
     {
         /**
-         * Colección acumuladora de ítems a adjuntar.
-         * Clave: "article_id-variant_id" para detectar duplicados cuando se agrupa.
+         * Renglones a adjuntar, en el orden en que aparecen en las ventas originales.
+         *
+         * 🔴 Sin agrupar la clave es la posición (`[]`), una por renglón. Hasta el 5/10/2026 la
+         * clave era "artículo-venta" en los dos casos: agrupando no juntaba nada entre ventas (que
+         * es justo para lo que existe la opción), y sin agrupar dos renglones del mismo artículo en
+         * una venta compartían clave y el segundo pisaba al primero, que desaparecía de la factura.
          */
         $items_a_adjuntar = [];
-
-        Log::info('agrupar: '.$agrupar);
 
         foreach ($ventas_originales as $venta) {
             foreach ($venta->articles as $article) {
                 /** Extrae todos los datos del pivot para reproducirlos en la consolidada. */
                 $pivot = $article->pivot;
 
-                /** Clave de agrupación: artículo + variante (null si no tiene). */
-                $clave = $article->id . '-' . $venta->id;
+                if ($agrupar) {
+                    $clave = self::clave_de_agrupacion($article->id, $pivot);
 
-                if ($agrupar && isset($items_a_adjuntar[$clave])) {
-                    /** Suma la cantidad al ítem ya existente en el acumulador. */
-                    $items_a_adjuntar[$clave]['amount']   += (float)$pivot->amount;
-                    $items_a_adjuntar[$clave]['ganancia'] += (float)$pivot->ganancia;
+                    if (isset($items_a_adjuntar[$clave])) {
+                        /**
+                         * Mismo renglón de factura: se suman las cantidades y la ganancia. Lo demás
+                         * (costo, lista de precios, fecha) queda el del primer renglón; ver
+                         * clave_de_agrupacion() para el porqué de cada campo.
+                         */
+                        $items_a_adjuntar[$clave]['amount']           += (float)$pivot->amount;
+                        $items_a_adjuntar[$clave]['ganancia']         += (float)$pivot->ganancia;
+                        $items_a_adjuntar[$clave]['returned_amount']  += (float)($pivot->returned_amount ?? 0);
+                        $items_a_adjuntar[$clave]['delivered_amount'] = self::sumar_cantidad_opcional($items_a_adjuntar[$clave]['delivered_amount'], $pivot->delivered_amount);
+                        $items_a_adjuntar[$clave]['checked_amount']   = self::sumar_cantidad_opcional($items_a_adjuntar[$clave]['checked_amount'], $pivot->checked_amount);
+                        continue;
+                    }
 
-                    Log::info('Sobreescribiendo article '.$article->name.' con amount actualizada de : '.$items_a_adjuntar[$clave]['amount']);
-                } else {
-                    Log::info('Agregando article '.$article->name.' con amount: '.$pivot->amount);
-                    /**
-                     * Primera aparición del ítem: lo registra con todos los datos de pivot.
-                     *
-                     * 🔴 MENOS `price_sin_recargos_de_venta`, A PROPOSITO, y no es un olvido (mision
-                     * recargos-en-precios-editable, 28/9/2026). La base dice "este precio trae
-                     * adentro los recargos de ESTE comprobante", y la consolidada no tiene recargos
-                     * ni la opcion `aplicar_recargos_directo_a_items`: `consolidar()` no copia ni
-                     * `surchages` ni el flag de las originales (que ademas pueden tener la opcion
-                     * distinta entre si). Para la consolidada, `price` es el precio final y punto.
-                     * Si la base se copiara, VENDER —que con el flag en 0 muestra la base cuando la
-                     * hay— le bajaria el precio a cada renglon al abrirla y el recargo no apareceria
-                     * en ningun lado. NULL es la verdad de este comprobante. Lo mismo en combos y
-                     * servicios, mas abajo.
-                     */
-                    $items_a_adjuntar[$clave] = [
-                        'article_id'                  => $article->id,
-                        'amount'                      => (float)$pivot->amount,
-                        'cost'                        => (float)$pivot->cost,
-                        'price'                       => (float)$pivot->price,
-                        'ganancia'                    => (float)$pivot->ganancia,
-                        'returned_amount'             => (float)($pivot->returned_amount ?? 0),
-                        'delivered_amount'            => $pivot->delivered_amount,
-                        'discount'                    => (float)($pivot->discount ?? 0),
-                        'with_dolar'                  => $pivot->with_dolar,
-                        'checked_amount'              => $pivot->checked_amount,
-                        'variant_description'         => $pivot->variant_description,
-                        'article_variant_id'          => $pivot->article_variant_id,
-                        'price_type_personalizado_id' => $pivot->price_type_personalizado_id,
-                        'fecha_agregado'              => $pivot->fecha_agregado,
-                        'created_at'                  => Carbon::now(),
-                    ];
+                    $items_a_adjuntar[$clave] = self::item_desde_pivot($article->id, $pivot);
+                    continue;
                 }
+
+                $items_a_adjuntar[] = self::item_desde_pivot($article->id, $pivot);
             }
         }
 
-        /** Adjunta todos los ítems acumulados a la venta consolidada. */
+        /** Adjunta todos los ítems acumulados a la venta consolidada, un renglón por ítem. */
         foreach ($items_a_adjuntar as $item) {
             $article_id = $item['article_id'];
-            Log::info('Se adjunto '.$item['article_id'].' con amount: '.$item['amount']);
             unset($item['article_id']);
             $consolidada->articles()->attach($article_id, $item);
         }
+    }
+
+    /**
+     * Arma el renglón de la consolidada a partir del pivot de un renglón original.
+     *
+     * 🔴 MENOS `price_sin_recargos_de_venta`, A PROPOSITO, y no es un olvido (mision
+     * recargos-en-precios-editable, 28/9/2026). La base dice "este precio trae adentro los recargos
+     * de ESTE comprobante", y la consolidada no tiene recargos ni la opcion
+     * `aplicar_recargos_directo_a_items`: `consolidar()` no copia ni `surchages` ni el flag de las
+     * originales (que ademas pueden tener la opcion distinta entre si). Para la consolidada, `price`
+     * es el precio final y punto. Si la base se copiara, VENDER —que con el flag en 0 muestra la base
+     * cuando la hay— le bajaria el precio a cada renglon al abrirla y el recargo no apareceria en
+     * ningun lado. NULL es la verdad de este comprobante. Lo mismo en combos y servicios, mas abajo.
+     *
+     * `name`, `iva_percentage` y `price_sin_iva` se copian desde el 5/10/2026 (decisión de Lucas).
+     * Antes no, y la factura consolidada salía con el IVA ACTUAL del artículo en vez del del momento
+     * de la venta (`AfipItemCalculator::resolve_article_iva_percentage()` prioriza el del pivot y
+     * cae al del artículo si no hay) y con el nombre del catálogo en vez del nombre personalizado del
+     * renglón (`GeneralHelper` imprime el del pivot si lo hay).
+     *
+     * @param int    $article_id Id del artículo del renglón.
+     * @param object $pivot      Pivot del renglón original (article_sale).
+     * @return array Datos del renglón, con `article_id` para el attach.
+     */
+    private static function item_desde_pivot($article_id, $pivot): array
+    {
+        return [
+            'article_id'                  => $article_id,
+            'amount'                      => (float)$pivot->amount,
+            'cost'                        => (float)$pivot->cost,
+            'price'                       => (float)$pivot->price,
+            'ganancia'                    => (float)$pivot->ganancia,
+            'returned_amount'             => (float)($pivot->returned_amount ?? 0),
+            'delivered_amount'            => $pivot->delivered_amount,
+            'discount'                    => (float)($pivot->discount ?? 0),
+            'with_dolar'                  => $pivot->with_dolar,
+            'checked_amount'              => $pivot->checked_amount,
+            'variant_description'         => $pivot->variant_description,
+            'name'                        => $pivot->name,
+            'article_variant_id'          => $pivot->article_variant_id,
+            'price_type_personalizado_id' => $pivot->price_type_personalizado_id,
+            'iva_percentage'              => $pivot->iva_percentage,
+            'price_sin_iva'               => $pivot->price_sin_iva,
+            'fecha_agregado'              => $pivot->fecha_agregado,
+            'created_at'                  => Carbon::now(),
+        ];
+    }
+
+    /**
+     * Clave con la que se funden renglones al consolidar agrupando.
+     *
+     * Dos renglones se funden solo si, puestos uno al lado del otro en la factura, son
+     * indistinguibles salvo la cantidad:
+     *
+     *   - artículo y variante: qué se vendió.
+     *   - precio: el renglón de la factura es cantidad × precio unitario. Fundir 4 a $1.000 con 6 a
+     *     $1.100 facturaría 10 a $1.000 contra una contenedora de $10.600; promediar imprimiría en
+     *     un comprobante fiscal un precio que nunca existió, y el redondeo movería centavos. Si el
+     *     precio cambió entre una venta y otra quedan dos renglones, a propósito.
+     *   - descuento del renglón: se aplica sobre ese precio (AfipItemCalculator).
+     *   - with_dolar: la cotización con la que se guardó el renglón.
+     *   - alícuota y neto (iva_percentage, price_sin_iva): son la alícuota y el neto del renglón en
+     *     la factura; dos alícuotas distintas no se pueden fundir.
+     *   - nombre personalizado: se imprime en lugar del del catálogo.
+     *
+     * El costo NO entra: no se ve en la factura y el del mismo artículo cambia entre ventas, así
+     * que separaría justo los renglones que la opción existe para juntar. El renglón fundido lleva
+     * el costo del primero; la ganancia, que es lo que se suma, se suma exacta. Tampoco entran la
+     * lista de precios, la descripción de la variante ni la fecha: no cambian el renglón facturado.
+     *
+     * serialize de un array y no un join con separador: el nombre es texto libre y podría traer
+     * cualquier separador adentro. Y no json_encode: con un nombre en UTF-8 inválido devuelve false,
+     * y todos esos renglones caerían en la misma clave.
+     *
+     * @param int    $article_id Id del artículo del renglón.
+     * @param object $pivot      Pivot del renglón original (article_sale).
+     * @return string
+     */
+    private static function clave_de_agrupacion($article_id, $pivot): string
+    {
+        return serialize([
+            (int)$article_id,
+            self::id_opcional($pivot->article_variant_id),
+            (float)$pivot->price,
+            (float)($pivot->discount ?? 0),
+            self::numero_opcional($pivot->with_dolar),
+            self::alicuota_normalizada($pivot->iva_percentage),
+            self::numero_opcional($pivot->price_sin_iva),
+            self::texto_opcional($pivot->name),
+        ]);
+    }
+
+    /**
+     * Suma dos cantidades que pueden no estar cargadas (entregada, chequeada). Si ninguna está, la
+     * suma tampoco: "no se registró" es null, no 0.
+     *
+     * @param mixed $acumulada Cantidad ya acumulada en el renglón fundido.
+     * @param mixed $nueva     Cantidad del renglón que se suma.
+     * @return float|null
+     */
+    private static function sumar_cantidad_opcional($acumulada, $nueva)
+    {
+        if (is_null($acumulada) && is_null($nueva)) {
+            return null;
+        }
+
+        return (float)$acumulada + (float)$nueva;
+    }
+
+    /**
+     * Id opcional para la clave: vacío o 0 es "sin id".
+     *
+     * @param mixed $valor
+     * @return int|null
+     */
+    private static function id_opcional($valor)
+    {
+        if (empty($valor)) {
+            return null;
+        }
+
+        return (int)$valor;
+    }
+
+    /**
+     * Número opcional para la clave: el pivot devuelve los decimales como texto ('1000.00'), así
+     * que se pasan a float para que '1000.00' y '1000' den la misma clave. Vacío es null.
+     *
+     * @param mixed $valor
+     * @return float|null
+     */
+    private static function numero_opcional($valor)
+    {
+        if (is_null($valor) || $valor === '') {
+            return null;
+        }
+
+        return (float)$valor;
+    }
+
+    /**
+     * Alícuota para la clave. El pivot la guarda como TEXTO a propósito ('21.00', 'Exento', 'No
+     * Gravado'): las numéricas se pasan a float ('21.00' y '21' son la misma) y las otras quedan
+     * como texto, para no confundir Exento con 0%.
+     *
+     * @param mixed $valor
+     * @return float|string|null
+     */
+    private static function alicuota_normalizada($valor)
+    {
+        if (is_null($valor) || $valor === '') {
+            return null;
+        }
+
+        if (is_numeric($valor)) {
+            return (float)$valor;
+        }
+
+        return trim((string)$valor);
+    }
+
+    /**
+     * Texto opcional para la clave: recortado, y vacío es null.
+     *
+     * @param mixed $valor
+     * @return string|null
+     */
+    private static function texto_opcional($valor)
+    {
+        if (is_null($valor)) {
+            return null;
+        }
+
+        $texto = trim((string)$valor);
+
+        if ($texto === '') {
+            return null;
+        }
+
+        return $texto;
     }
 
     /**
