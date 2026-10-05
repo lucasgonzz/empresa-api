@@ -379,7 +379,11 @@ class CatalogoDeEscrituraIaHelper
             // los artículos" ya no se ofrece (misión sincronizar-margen-lista-precios, 1/10/2026). El
             // controller lo sigue LEYENDO en update() solo para el SPA viejo cacheado, y si el asistente
             // lo mandara volvería a disparar la actualización masiva que el SPA nuevo ya no hace sola.
-            'solo_lectura'       => ['apply_percentage_on_existing_articles', 'update_existing_articles_percentage_mode'],
+            // catalogo_restringido_en_tienda (misión catalogo-por-lista-tienda, 5/10/2026): prenderlo
+            // le saca la tienda entera a todos los compradores de esa lista (mayoristas, por ejemplo)
+            // hasta que se habiliten los artículos uno por uno. Es una decisión del comerciante desde
+            // el ABM, con el contador "X habilitados de Y" a la vista; el asistente no la toma.
+            'solo_lectura'       => ['apply_percentage_on_existing_articles', 'update_existing_articles_percentage_mode', 'catalogo_restringido_en_tienda'],
             'claves_de_pantalla' => ['categories' => [], 'sub_categories' => [], 'childrens' => []],
             // El formulario nace con "incluir en la lista de precios de Excel" prendido (la columna no tiene default).
             'defaults_de_pantalla' => ['incluir_en_lista_de_precios_de_excel' => 1],
