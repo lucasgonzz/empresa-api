@@ -99,9 +99,11 @@ class SaleController extends Controller
 
             /*
              * Terminadas y sin estado de venta. El criterio vive en Sale::scopeDelModuloVentas() y
-             * NO se copia aca: los dos Excel de la pantalla lo consumen igual, y si el listado y
-             * los Excel no se mueven juntos el Excel suma ventas que la pantalla no muestra
-             * (5/10/2026, ver el docblock del scope).
+             * NO se copia aca: lo consumen tambien los dos Excel de la pantalla en su rama SIN
+             * filtro de columnas (la rama filtrada espeja a /api/search/sale y a proposito no lo
+             * usa, ver resolve_sales_for_export) y las rutas GET viejas excel_export /
+             * excel_breakdown_export. Si el listado y esos Excel no se mueven juntos, el Excel suma
+             * ventas que la pantalla no muestra (5/10/2026, ver el docblock del scope).
              */
             $models = $models->delModuloVentas();
         }

@@ -146,6 +146,25 @@ class Excel_De_Ventas_Solo_Terminadas_Test extends TestCase
 
         $this->assertSame($ids_del_listado, $this->ids_del_excel($excel_full),
             'El Excel full tiene que traer exactamente las ventas que muestra el listado del dia.');
+
+        /*
+         * Las tarjetas de la pantalla cierran con el Excel: es justo el sintoma que vio Lucas
+         * ($167.890,04 en pantalla contra $175.890,04 en el Excel). `totales` sale de
+         * ListadoVentasHelper::totales_de_los_agregados() (`cantidad` y `pesos.total`, que suma
+         * `sales.total` de las ventas en pesos), y las filas de Total de los dos Excel suman
+         * `$sale->total` de cada venta en pesos (columna 2 en el resumen, 9 en el full).
+         */
+        $cantidad_del_listado = $listado->json('totales.cantidad');
+        $total_del_listado = $listado->json('totales.pesos.total');
+
+        $this->assertSame(count($this->ids_del_excel($excel)), $cantidad_del_listado,
+            'La tarjeta de cantidad de ventas tiene que cerrar con la cantidad de ventas del Excel.');
+
+        $this->assertEquals($total_del_listado, $this->fila_de_total($excel)[2],
+            'La tarjeta de total en pesos tiene que cerrar con la fila de Total del Excel.');
+
+        $this->assertEquals($total_del_listado, $this->fila_de_total($excel_full)[9],
+            'La tarjeta de total en pesos tiene que cerrar con la fila de Total del Excel full.');
     }
 
     /**
@@ -154,11 +173,17 @@ class Excel_De_Ventas_Solo_Terminadas_Test extends TestCase
      * `pasaFilaVenta`. Por eso la sin terminar y la de estado SI vienen (decision de Lucas,
      * 5/10/2026) y las dos en revision NO.
      *
+     * La venta "testigo" (terminada, del mismo dia, creada ANTES y fuera del rango de ids del
+     * filtro) prueba que el filtro de columnas se aplica de verdad, sin depender de que la base del
+     * slot tenga otras ventas del usuario 500: si el filtro se ignorara, el testigo vendria.
+     *
      * @group sales
      * @test
      */
     public function con_filtro_de_columnas_espeja_la_pantalla_filtrada()
     {
+        $testigo = $this->crear_venta();
+
         $terminada = $this->crear_venta(['total' => $this->total_terminada]);
         $sin_terminar = $this->crear_venta_sin_terminar();
         $con_estado = $this->crear_venta(['sale_status_id' => $this->crear_estado_de_venta()->id]);
@@ -166,6 +191,9 @@ class Excel_De_Ventas_Solo_Terminadas_Test extends TestCase
         $para_chequear = $this->crear_venta_sin_terminar(['to_check' => 1]);
 
         $ids_creados = [$terminada->id, $sin_terminar->id, $con_estado->id, $chequeada->id, $para_chequear->id];
+
+        $this->assertLessThan(min($ids_creados), $testigo->id,
+            'Precondicion: el testigo se creo antes, asi que queda fuera del rango de ids del filtro.');
 
         $esperados = [$terminada->id, $sin_terminar->id, $con_estado->id];
         sort($esperados);
@@ -180,11 +208,17 @@ class Excel_De_Ventas_Solo_Terminadas_Test extends TestCase
         $this->assertSame($esperados, $this->ids_del_excel($excel),
             'Con filtro de columnas el Excel trae lo que muestra la pantalla filtrada: sin las ventas en revision (checked / to_check), y sin filtrar terminada ni estado.');
 
+        $this->assertNotContains($testigo->id, $this->ids_del_excel($excel),
+            'El testigo queda fuera del filtro de columnas: si viene, el Excel filtrado ignoro el filtro.');
+
         $this->actuar_como_el_usuario();
         $excel_full = $this->excel_de_la_pantalla('api/sales/excel/breakdown-export', $body);
 
         $this->assertSame($esperados, $this->ids_del_excel($excel_full),
             'El Excel full filtrado tiene que traer las mismas ventas que el Excel filtrado.');
+
+        $this->assertNotContains($testigo->id, $this->ids_del_excel($excel_full),
+            'El testigo queda fuera del filtro de columnas: si viene, el Excel full filtrado ignoro el filtro.');
     }
 
     /**
