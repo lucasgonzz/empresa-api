@@ -71,6 +71,10 @@ return [
         \App\Models\WhatsappChatMessage::class          => 'Se excluye por volumen: es una fila por cada mensaje de cada chat. El contenido no se pierde, vive en el propio chat y en su tabla; WhatsappChat sí se audita.',
         \App\Models\ImageAssignmentRun::class           => 'Estado de una corrida de asignación de imágenes: se actualiza sin parar mientras corre. La operación ya queda en su propia fila de corrida.',
         \App\Models\ImageAssignmentItem::class          => 'Un renglón por artículo dentro de una corrida de asignación de imágenes: estado de proceso, el volumen pesaría más que el dato.',
+        \App\Models\CategoryProposalRun::class          => 'Staging de la categorización con IA: la corrida cambia de estado mientras la skill carga y el dueño elige. Quién eligió, cuándo y qué resultó queda en su propia fila; lo que se crea en `categories` sí se audita.',
+        \App\Models\CategoryProposal::class             => 'Staging de la categorización con IA: cada sistema de categorías que propuso la skill (una fila por tarjeta). No es un dato del negocio hasta que el dueño elige.',
+        \App\Models\CategoryProposalNode::class         => 'Staging de la categorización con IA: el árbol de cada sistema propuesto (hasta cientos de nodos por tarjeta). No es un dato del negocio hasta que el dueño elige.',
+        \App\Models\CategoryProposalItem::class         => 'Staging de la categorización con IA: a qué categoría cae cada artículo en cada sistema (una fila por artículo y por tarjeta). El volumen pesaría más que el dato.',
 
         /* ---- Telemetría / tracking de alto volumen ---- */
         \App\Models\BuyerTrackingEvent::class           => 'Telemetría de la tienda: una fila por evento de cada visitante.',
