@@ -16,6 +16,15 @@ use Illuminate\Http\Request;
  * protegería nada. Y prender esa variable global rompería rutas que hoy andan. Esta es la
  * versión que se puede prender SOLA para user-setup.
  *
+ * 🔴 SE PRENDE SOLO CON SU VARIABLE PROPIA, NUNCA CON LA GLOBAL
+ * -------------------------------------------------------------
+ * Este middleware mira únicamente `services.admin_api.require_key_for_setup`
+ * (ADMIN_SYNC_SETUP_REQUIRE_API_KEY). El flag global ADMIN_SYNC_REQUIRE_API_KEY NO lo activa, a
+ * propósito y por compatibilidad hacia atrás: si algún cliente del VPS tuviera el global en true
+ * (para las rutas del grupo `admin.api.key`), user-setup pasaría a dar 401 de un día para el otro
+ * porque admin-api no manda la clave a esta ruta, y se rompería el alta de clientes. Si te tienta
+ * agregar el OR con el global "porque es lo mismo", leé esto: es una decisión de diseño, no un olvido.
+ *
  * 🔴 POR QUÉ LA CLAVE ESTÁ APAGADA POR DEFECTO
  * -------------------------------------------
  * Ninguno de los dos llamadores de admin-api (`RunUserSetupService` e
@@ -27,14 +36,13 @@ use Illuminate\Http\Request;
  *
  * Con la variable prendida FALLA CERRADO: si la instancia no tiene clave cargada
  * (ADMIN_API_INBOUND_KEY vacía) todo da 401, porque "prendida" significa "exijo clave" y una
- * instancia sin clave no puede validar a nadie. Prender el flag global
- * ADMIN_SYNC_REQUIRE_API_KEY también la exige: el día que se prenda, user-setup queda cubierto
- * sin tocar nada.
+ * instancia sin clave no puede validar a nadie.
  */
 class ClaveDeAdminEnSetup
 {
     /**
-     * Deja pasar el request si la exigencia de clave está apagada, o si trae la clave correcta.
+     * Deja pasar el request si la exigencia de clave está apagada (su variable propia, no la
+     * global), o si trae la clave correcta.
      *
      * @param  Request $request Request HTTP entrante.
      * @param  Closure $next    Siguiente middleware / controlador.
@@ -42,9 +50,9 @@ class ClaveDeAdminEnSetup
      */
     public function handle(Request $request, Closure $next)
     {
-        // Apagada (hoy, por defecto): la ruta se comporta igual que antes de esta misión.
-        if (!config('services.admin_api.require_api_key', false)
-            && !config('services.admin_api.require_key_for_setup', false)) {
+        // Apagada (hoy, por defecto): la ruta se comporta igual que antes de esta misión. Solo mira
+        // la variable propia: el flag global `require_api_key` NO cuenta (ver el docblock de la clase).
+        if (!config('services.admin_api.require_key_for_setup', false)) {
             return $next($request);
         }
 

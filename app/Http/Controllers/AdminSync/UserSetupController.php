@@ -18,8 +18,8 @@ use Illuminate\Support\Facades\Log;
  * responde JSON para que admin-api registre el resultado en el Lead.
  *
  * Autenticación: la ruta lleva el middleware `admin.setup.key` (ClaveDeAdminEnSetup), que
- * exige el header X-Admin-Api-Key SOLO si ADMIN_SYNC_SETUP_REQUIRE_API_KEY (o la global
- * ADMIN_SYNC_REQUIRE_API_KEY) está en true. Hoy está apagada por defecto porque admin-api
+ * exige el header X-Admin-Api-Key SOLO si ADMIN_SYNC_SETUP_REQUIRE_API_KEY está en true (el
+ * flag global ADMIN_SYNC_REQUIRE_API_KEY NO la activa, a propósito). Hoy está apagada por defecto porque admin-api
  * todavía no manda ese header a esta ruta: exigirla ya mismo rompería el alta de clientes.
  * Mientras esté apagada, la ruta sigue siendo pública, y por eso lo que la protege de verdad
  * es la guarda de datos que vive dentro de UserSetupHelper::run() (ver BorradoTotalDeBaseHelper).

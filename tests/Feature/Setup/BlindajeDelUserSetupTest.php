@@ -953,19 +953,86 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     }
 
     /**
+     * Lo que valdría `services.admin_api.require_key_for_setup` si la variable de entorno
+     * ADMIN_SYNC_SETUP_REQUIRE_API_KEY tuviera ese valor: se evalúa el config/services.php de verdad
+     * con la variable puesta (putenv, que `env()` lee) y se restaura la que había. Con `null` la
+     * variable no existe (el caso "sin tocar nada").
+     *
+     * No toca la configuración global de la app ni el .env: solo el entorno del proceso, y lo deja
+     * como estaba aunque algo reviente.
+     *
+     * @param  string|null $valor Texto de la variable, o null para "sin definir".
+     * @return mixed Lo que dejó el config/services.php en esa clave.
+     */
+    protected function clave_de_setup_segun_la_variable($valor)
+    {
+        $nombre   = 'ADMIN_SYNC_SETUP_REQUIRE_API_KEY';
+        $anterior = getenv($nombre);
+
+        try {
+            if ($valor === null) {
+                putenv($nombre);
+            } else {
+                putenv($nombre . '=' . $valor);
+            }
+
+            $services = require config_path('services.php');
+
+            return $services['admin_api']['require_key_for_setup'];
+        } finally {
+            if ($anterior === false) {
+                putenv($nombre);
+            } else {
+                putenv($nombre . '=' . $anterior);
+            }
+        }
+    }
+
+    /**
      * La variable nueva nace apagada: es lo que garantiza que esta misión no rompe el alta de clientes.
      *
      * @test
      */
     public function la_variable_de_la_clave_nace_apagada_por_defecto()
     {
-        $services = require config_path('services.php');
-
-        $this->assertArrayHasKey('require_key_for_setup', $services['admin_api']);
-        $this->assertFalse(
-            (bool) $services['admin_api']['require_key_for_setup'],
+        $this->assertSame(
+            false,
+            $this->clave_de_setup_segun_la_variable(null),
             'ADMIN_SYNC_SETUP_REQUIRE_API_KEY tiene que estar apagada por defecto: admin-api todavía no manda el header.'
         );
+    }
+
+    /**
+     * La variable de entorno se lee como un booleano REAL: `env()` de Laravel solo convierte
+     * 'true'/'false'/'null'/'empty' y devuelve cualquier otro texto tal cual, así que un 'off' o un
+     * 'no' (string no vacío, truthy) dejaría la clave PRENDIDA y rompería el alta de clientes.
+     * Por eso config/services.php la pasa por filter_var con FILTER_VALIDATE_BOOLEAN.
+     *
+     * @test
+     */
+    public function la_variable_de_entorno_se_lee_como_booleano_real()
+    {
+        $apagadas = ['false', 'FALSE', '0', 'off', 'OFF', 'no', 'No', '', 'cualquier cosa', '2'];
+        $prendidas = ['true', 'TRUE', '1', 'on', 'On', 'yes', 'Yes'];
+
+        foreach ($apagadas as $valor) {
+            $this->assertSame(
+                false,
+                $this->clave_de_setup_segun_la_variable($valor),
+                'ADMIN_SYNC_SETUP_REQUIRE_API_KEY=' . var_export($valor, true) . ' tenía que dejarla APAGADA.'
+            );
+        }
+
+        foreach ($prendidas as $valor) {
+            $this->assertSame(
+                true,
+                $this->clave_de_setup_segun_la_variable($valor),
+                'ADMIN_SYNC_SETUP_REQUIRE_API_KEY=' . var_export($valor, true) . ' tenía que dejarla PRENDIDA.'
+            );
+        }
+
+        // Y el entorno del proceso quedó como estaba: la variable sigue sin existir.
+        $this->assertFalse(getenv('ADMIN_SYNC_SETUP_REQUIRE_API_KEY'));
     }
 
     /**
@@ -1048,23 +1115,27 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     }
 
     /**
-     * Prender el flag GLOBAL (ADMIN_SYNC_REQUIRE_API_KEY) también exige la clave en user-setup,
-     * aunque la variable propia siga apagada: el día que Lucas lo prenda, user-setup queda cubierto
-     * sin tocar nada.
+     * 🔴 El flag GLOBAL (ADMIN_SYNC_REQUIRE_API_KEY) NO exige la clave en user-setup: la ruta solo
+     * mira su variable propia. Es una decisión de diseño por compatibilidad hacia atrás (cambió
+     * respecto de la primera versión de esta misión, que sí lo contemplaba): si un cliente del VPS
+     * tuviera el global en true, user-setup pasaría a dar 401 porque admin-api no manda la clave a
+     * esa ruta, y se rompería el alta de clientes. Con el global prendido y sin header, el request
+     * llega a la guarda de datos (409 por datos, no 401).
      *
      * @test
      */
-    public function prender_el_flag_global_tambien_exige_la_clave_en_user_setup()
+    public function el_flag_global_no_exige_la_clave_en_user_setup()
     {
         $this->exigir_base_con_datos();
         $this->sin_migrate_fresh_jamas();
         $this->configurar_la_clave(false, true, self::CLAVE_DE_ADMIN);
 
         $sin_header = $this->postJson('/api/admin-sync/user-setup', $this->payload());
-        $sin_header->assertStatus(401);
+        $this->assert_409_por_base_con_datos($sin_header);
 
-        $correcto = $this->postJson('/api/admin-sync/user-setup', $this->payload(), ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
-        $this->assert_409_por_base_con_datos($correcto);
+        // Tampoco con un header equivocado: con la variable propia apagada, la clave no se mira.
+        $equivocado = $this->postJson('/api/admin-sync/user-setup', $this->payload(), ['X-Admin-Api-Key' => 'otra-cosa']);
+        $this->assert_409_por_base_con_datos($equivocado);
 
         $this->assert_base_intacta();
     }
