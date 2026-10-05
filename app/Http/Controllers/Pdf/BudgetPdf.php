@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf; 
 
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
+use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
@@ -370,7 +371,17 @@ class BudgetPdf extends fpdf {
 				presupuesto forzado SIN bonificacion imprimia un renglon de 12mm que nadie habia
 				reservado.
 			*/
-			$imprime_sub_total = $monto_forzado != 0;
+			/*
+				El ajuste por metodo de pago (mision presupuesto-contado-o-cuenta-corriente,
+				1/10/2026) abre la misma diferencia entre el sub total y el total que el forzado: con
+				un descuento por transferencia el sub total (la suma de los renglones) es MAYOR que el
+				total y el renglon "Sub Total sin descuentos" se imprime; con un recargo por cuotas es
+				MENOR y, como en el forzado hacia arriba, se imprime igual: sin el, la fila del recargo
+				del pie explicaria una diferencia de la que nunca se dijo el origen.
+			*/
+			$ajuste_por_metodo_de_pago = BudgetCobroHelper::ajuste_por_metodos_de_pago($this->budget);
+
+			$imprime_sub_total = $monto_forzado != 0 || $ajuste_por_metodo_de_pago != 0;
 
 			if (!$imprime_sub_total) {
 
@@ -392,7 +403,11 @@ class BudgetPdf extends fpdf {
 				$height += count($this->budget->surchages) * 7;
 			}
 
-			/* La fila del ajuste del total forzado, con el mismo alto que las de arriba. */
+			/* La fila del ajuste por metodo de pago, con el mismo alto que las de arriba. */
+			if ($ajuste_por_metodo_de_pago != 0) {
+				$height += 7;
+			}
+
 			/* La fila del ajuste del total forzado, con el mismo alto que las de arriba. */
 			if ($monto_forzado != 0) {
 				$height += 7;
@@ -528,6 +543,7 @@ class BudgetPdf extends fpdf {
 		    if (
 		    	$this->total_original > $this->budget->total
 		    	|| SaleHelper::get_forzar_total_monto($this->budget) != 0
+		    	|| BudgetCobroHelper::ajuste_por_metodos_de_pago($this->budget) != 0
 		    ) {
 
 		    	$this->SetFont('Arial', 'B', 12);
@@ -568,6 +584,33 @@ class BudgetPdf extends fpdf {
 			    	$this->x = 5;
 					$this->Cell(200, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'R');
 			    }
+		    }
+
+		    /*
+		    	EL RENGLON DEL AJUSTE POR METODO DE PAGO (mision presupuesto-contado-o-cuenta-
+		    	corriente, 1/10/2026).
+
+		    	🔴 Un presupuesto "de contado" guarda un `total` NETO, con el descuento (transferencia)
+		    	o el recargo (cuotas) de sus metodos de pago adentro, y el "Total:" del pie sale de
+		    	`getTotal()`, que ya lo incluye. Sin esta fila el pie no suma: "Sub Total sin
+		    	descuentos: $200" y abajo "Total: $190" sin que nada explique los diez pesos del
+		    	medio, que es lo que el cliente lee como un error del presupuesto.
+
+		    	Va ANTES del ajuste del total forzado porque es el orden en que se aplican en
+		    	`getTotal()` (metodos de pago -> forzado), y el conteo de `footerHeight()` tiene que
+		    	seguir esta misma condicion fila por fila (ver el aviso de arriba).
+
+		    	El texto nombra el efecto, no el metodo: el reparto puede mezclar un descuento y un
+		    	recargo y lo que se imprime es el neto de los dos.
+		    */
+		    $ajuste_por_metodo_de_pago = BudgetCobroHelper::ajuste_por_metodos_de_pago($this->budget);
+
+		    if ($ajuste_por_metodo_de_pago != 0) {
+
+		    	$this->x = 5;
+		    	$etiqueta = $ajuste_por_metodo_de_pago < 0 ? 'Descuento por método de pago' : 'Recargo por método de pago';
+		    	$signo = $ajuste_por_metodo_de_pago < 0 ? '- ' : '+ ';
+		    	$this->Cell(200, 7, $signo.'$'.Numbers::price(abs($ajuste_por_metodo_de_pago)).' '.$etiqueta, 0, 1, 'R');
 		    }
 
 		    /*

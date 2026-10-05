@@ -179,6 +179,7 @@ class CatalogoDeEscrituraIaHelper
         'province'                  => 'provincia',
         'default_address'           => 'sucursal por defecto',
         'es_deposito_origen'        => 'es depósito de origen',
+        'es_deposito_madre'         => 'es depósito madre',
         'link_google_maps'          => 'link de Google Maps',
         'pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar' => 'pasa las ventas a cuenta corriente sin esperar a facturar',
         'porcentaje_comision_negro' => 'comisión en negro (%)',
@@ -374,7 +375,11 @@ class CatalogoDeEscrituraIaHelper
             'genero'             => 'f',
             'descripcion'        => 'Las listas de precio ("tipos de precio" en ABM > Precios): un porcentaje sobre el precio base. Crear una recalcula los precios de los artículos en segundo plano si la cuenta usa listas.',
             'operaciones'        => null,
-            'solo_lectura'       => ['apply_percentage_on_existing_articles'],
+            // update_existing_articles_percentage_mode: el modo viejo de "al cambiar el margen, actualizar
+            // los artículos" ya no se ofrece (misión sincronizar-margen-lista-precios, 1/10/2026). El
+            // controller lo sigue LEYENDO en update() solo para el SPA viejo cacheado, y si el asistente
+            // lo mandara volvería a disparar la actualización masiva que el SPA nuevo ya no hace sola.
+            'solo_lectura'       => ['apply_percentage_on_existing_articles', 'update_existing_articles_percentage_mode'],
             'claves_de_pantalla' => ['categories' => [], 'sub_categories' => [], 'childrens' => []],
             // El formulario nace con "incluir en la lista de precios de Excel" prendido (la columna no tiene default).
             'defaults_de_pantalla' => ['incluir_en_lista_de_precios_de_excel' => 1],
@@ -382,7 +387,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => 'Se borra la lista y los artículos dejan de tener precio en ella.',
             'aviso_de_alta'      => 'Si la cuenta usa listas de precio, los precios de los artículos se recalculan en segundo plano.',
             'extension'          => null,
-            'revisado'           => 'PriceTypeController: store() fuerza apply_percentage_on_existing_articles = 1 y encola ProcessSetFinalPrices si el dueño usa listas; store()/update() iteran categories y sub_categories sin guarda (claves_de_pantalla; withAll() las trae para la edición). destroy() desengancha artículos.',
+            'revisado'           => 'PriceTypeController: store() fuerza apply_percentage_on_existing_articles = 1 y encola ProcessSetFinalPrices si el dueño usa listas; store()/update() iteran categories y sub_categories sin guarda (claves_de_pantalla; withAll() las trae para la edición). destroy() desengancha artículos. update() ya no actualiza los artículos al cambiar el margen salvo pedido explícito (`sincronizar_margen`, el botón "Sincronizar artículos" del modal) o el modo que mande el SPA viejo; el modo no se persiste (1/10/2026).',
         ],
         'discount' => [
             'etiqueta'           => 'descuentos',
@@ -483,7 +488,7 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'sucursales',
             'singular'           => 'sucursal',
             'genero'             => 'f',
-            'descripcion'        => 'Las sucursales del comercio (ABM > Sucursales). El nombre de la sucursal es el campo street. El teléfono y el email se cargan editándola, no al crearla.',
+            'descripcion'        => 'Las sucursales del comercio (ABM > Sucursales). El nombre de la sucursal es el campo street. El teléfono y el email se cargan editándola, no al crearla. Solo una sucursal puede ser el depósito madre: marcar otra desmarca la anterior.',
             'operaciones'        => null,
             'solo_lectura'       => ['image_url', 'lat', 'lng', 'buyer_id', 'default_afip_information_id'],
             'claves_de_pantalla' => [],
@@ -909,6 +914,8 @@ class CatalogoDeEscrituraIaHelper
         'platform_connector'           => 'credenciales de plataforma',
         'payment_method'               => 'credenciales (public_key, access_token)',
         'deposit_movement'             => 'el stock se mueve por sus pantallas',
+        // Misión movimientos-deposito-auditoria (3/10/2026): el ABM de estados sumó store().
+        'deposit_movement_status'      => 'estados de movimientos de depósito: se configuran desde ABM > Inventario y los fijos del sistema (En proceso, Recibido) no se tocan',
         'stock_movement'               => 'el stock se mueve por sus pantallas',
         // Técnicas, de flujo o sin formulario propio (revisadas el 21/9/2026).
         'ai_conversations'             => 'estado del propio asistente',

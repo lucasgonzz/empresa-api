@@ -87,6 +87,49 @@ class VenderSearchHelper
     }
 
     /**
+     * Callback POR PALABRA que extiende la propiedad `name` con la descripcion de las variantes
+     * ("azul 36"), para que el criterio "zapatilla azul" encuentre el articulo "Zapatilla" cuyas
+     * variantes se llaman "azul 35" y "azul 36".
+     *
+     * Por que hace falta: la fase SQL de la busqueda (`GlobalSearchQueryHelper::apply`) exige que
+     * CADA palabra aparezca en alguna propiedad del articulo, y "azul" no esta en `name`: vive solo
+     * en `article_variants.variant_description`. El articulo moria en SQL antes de que
+     * `match_descriptors` -- que ya filtra bien las variantes por las palabras restantes -- llegara
+     * a verlo. Por eso "zapatilla" funcionaba (la palabra esta en el nombre) y "zapatilla azul" no.
+     * La fase SQL pasa a ser un SUPERCONJUNTO (cada palabra en el articulo o en alguna variante) y
+     * el filtro fino sigue siendo `match_descriptors`.
+     *
+     * Decisiones de rendimiento -- no simplificar:
+     * - Devuelve `null` si el comercio no tiene la extension `article_variants`: el SQL generado
+     *   queda EXACTAMENTE igual al de antes, sin ninguna condicion de mas.
+     * - Es un EXISTS correlacionado contra `article_variants.article_id` (indexado desde la
+     *   migracion del 19/8/2026), no un IN con ids precalculados ni un JOIN: `article_variants` no
+     *   tiene `user_id`, asi que cualquier scan propio de esa tabla mezclaria variantes de otros
+     *   comercios en las bases compartidas. Colgado del articulo, el aislamiento sale gratis.
+     *   El caller lo pone ULTIMO en el OR de cada palabra, asi MySQL solo lo evalua para los
+     *   articulos que no matchearon ya por nombre o codigo.
+     * - Solo variantes disponibles (`oculta = 0`): las ocultas no se ofrecen en Vender
+     *   (`match_descriptors` las descarta) y un articulo no tiene que aparecer por una variante que
+     *   despues no va a mostrar.
+     *
+     * @return \Closure|null function(\Illuminate\Database\Eloquent\Builder $sub, string $keyword): void
+     *         `$sub` recibe un `orWhereHas` mas, para la palabra puntual `$keyword`.
+     */
+    public static function variant_description_condition_callback()
+    {
+        if (!UserHelper::hasExtencion('article_variants')) {
+            return null;
+        }
+
+        return function ($sub, $keyword) {
+            $sub->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
+                $variant_query->where('oculta', 0)
+                              ->where('variant_description', 'LIKE', '%' . $keyword . '%');
+            });
+        };
+    }
+
+    /**
      * Decide que pares (articulo, variante|null) son el resultado de la busqueda, SIN construir el
      * objeto final de cada fila. Extraido de lo que antes era la mitad "decision" del loop de
      * `expand_variants()` (mismo orden de casos: coincidencia exacta por barcode de variante
@@ -123,16 +166,28 @@ class VenderSearchHelper
         // y de variantes) participa de la coincidencia de palabras sueltas y del match exacto.
         $search_bar_code_en_vender = UserHelper::hasExtencion('search_bar_code_en_vender');
 
-        // Palabras del criterio de busqueda, mismo criterio de separacion que search_nombre.
-        $keywords = explode(' ', trim($query_value));
+        // Palabras del criterio de busqueda. Se separa por cualquier cantidad de espacios en blanco y
+        // se descartan las vacias (la fase SQL, GlobalSearchQueryHelper::apply, tambien descarta las
+        // vacias). Con explode(' ') un doble espacio -o un criterio vacio, que es una busqueda solo
+        // por filtros fijos- dejaba una palabra '' y strpos(..., '') tira un warning en PHP 7.4 que
+        // Laravel convierte en un 500 ("strpos(): Empty needle"): medido el 1/10/2026 con la
+        // extension de variantes prendida.
+        $keywords = preg_split('/\s+/', trim($query_value), -1, PREG_SPLIT_NO_EMPTY);
+
+        // Sin palabras no hay nada que filtrar por texto: todo articulo es resultado.
+        $sin_palabras = empty($keywords);
 
         $descriptors = collect();
 
         foreach ($articles as $article) {
 
-            // Detectar que palabras de la busqueda coincidieron con el nombre, codigo o barcode del
-            // articulo/variante.
-            $matched_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
+            // Palabras de la busqueda que cubre el propio ARTICULO por si solo: su nombre, su codigo
+            // de proveedor y (con la extension de codigo de barras) su codigo de barras. Valen para
+            // TODAS sus variantes. El codigo de barras de una variante NO entra aca: cubre solo a esa
+            // variante (ver mas abajo). Antes entraba, y como los codigos de variante nacen como
+            // '0' + id ("01360"), un talle como "36" quedaba "cubierto" por el codigo de cualquier
+            // variante y dejaba de filtrar a las demas: "zapatilla azul 36" devolvia las dos azules.
+            $article_keywords = collect($keywords)->filter(function ($word) use ($article, $search_bar_code_en_vender) {
                 $word_lower = mb_strtolower($word, 'UTF-8');
 
                 if (strpos(
@@ -153,22 +208,14 @@ class VenderSearchHelper
                         ) !== false) {
                         return true;
                     }
-
-                    foreach ($article->article_variants as $variant) {
-                        if (strpos(
-                                mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
-                                $word_lower
-                            ) !== false) {
-                            return true;
-                        }
-                    }
                 }
 
                 return false;
             })->values();
 
-            // Palabras restantes para buscar dentro de variant_description.
-            $remaining_keywords = array_diff($keywords, $matched_keywords->toArray());
+            // Palabras restantes: las que el articulo no cubre y por lo tanto tiene que cubrir cada
+            // variante (en su descripcion o, con la extension, en su propio codigo de barras).
+            $remaining_keywords = array_diff($keywords, $article_keywords->toArray());
 
             // Solo las variantes disponibles (oculta = false) se ofrecen para vender.
             // Portado del modulo de variantes de develop en el merge develop -> refractor.
@@ -195,13 +242,46 @@ class VenderSearchHelper
                     }
                 }
 
-                // Filtrar variantes que coincidan con todas las palabras restantes.
-                $matching_variants = $available_variants->filter(function ($variant) use ($remaining_keywords) {
+                // Con la extension de codigo de barras, una palabra que aparece en la descripcion de
+                // ALGUNA variante del articulo es una palabra de VARIANTE (color, talle): se exige en la
+                // descripcion y no vale un codigo de barras que la contenga por casualidad ("36" dentro
+                // de "01362", porque los codigos de variante nacen como '0' + id). Solo una palabra que
+                // no esta en ninguna descripcion se interpreta como fragmento de codigo de barras.
+                // Se mira TODAS las variantes, ocultas incluidas: el generador crea cada combinacion
+                // nueva oculta hasta que el dueno la habilita, y "azul 36" oculta tambien dice que "36"
+                // es un talle (si no, "zapatilla azul 36" devolveria "azul 35" por su codigo).
+                $palabras_de_variante = [];
+
+                if ($search_bar_code_en_vender) {
                     foreach ($remaining_keywords as $word) {
-                        if (strpos(
+                        $word_lower = mb_strtolower($word, 'UTF-8');
+
+                        $palabras_de_variante[$word] = $article->article_variants->contains(function ($variant) use ($word_lower) {
+                            return strpos(mb_strtolower($variant->variant_description ?? '', 'UTF-8'), $word_lower) !== false;
+                        });
+                    }
+                }
+
+                // Filtrar variantes que coincidan con todas las palabras restantes: cada una tiene que
+                // estar en la descripcion de la variante o, si no es una palabra de variante y la
+                // extension esta activa, en su propio codigo de barras.
+                $matching_variants = $available_variants->filter(function ($variant) use ($remaining_keywords, $search_bar_code_en_vender, $palabras_de_variante) {
+                    foreach ($remaining_keywords as $word) {
+                        $word_lower = mb_strtolower($word, 'UTF-8');
+
+                        $en_la_descripcion = strpos(
                                 mb_strtolower($variant->variant_description ?? '', 'UTF-8'),
-                                mb_strtolower($word, 'UTF-8')
-                            ) === false) {
+                                $word_lower
+                            ) !== false;
+
+                        $en_su_codigo_de_barras = $search_bar_code_en_vender
+                            && empty($palabras_de_variante[$word])
+                            && strpos(
+                                mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
+                                $word_lower
+                            ) !== false;
+
+                        if (!$en_la_descripcion && !$en_su_codigo_de_barras) {
                             return false;
                         }
                     }
@@ -213,8 +293,26 @@ class VenderSearchHelper
                 }
 
             } else {
-                // Si no tiene variantes, y al menos una keyword matcheo, agregar el articulo.
-                if ($matched_keywords->isNotEmpty()) {
+                // Si no tiene variantes disponibles, y al menos una keyword matcheo (o no hay criterio
+                // de texto), agregar el articulo. "Matcheo" incluye, como siempre, el codigo de barras
+                // de alguna de sus variantes (ocultas incluidas) con la extension de codigo de barras.
+                $matcheo_algo = $article_keywords->isNotEmpty();
+
+                if (!$matcheo_algo && $search_bar_code_en_vender) {
+                    foreach ($article->article_variants as $variant) {
+                        foreach ($keywords as $word) {
+                            if (strpos(
+                                    mb_strtolower($variant->bar_code ?? '', 'UTF-8'),
+                                    mb_strtolower($word, 'UTF-8')
+                                ) !== false) {
+                                $matcheo_algo = true;
+                                break 2;
+                            }
+                        }
+                    }
+                }
+
+                if ($sin_palabras || $matcheo_algo) {
                     $descriptors->push((object) ['article_id' => $article->id, 'variant_id' => null]);
                 }
             }
@@ -237,7 +335,9 @@ class VenderSearchHelper
      * @param \App\Models\Article $article Articulo completo, con `withAllSinAcopio()` cargado.
      * @param \App\Models\ArticleVariant|null $variant Variante a mostrar, o `null` para la fila del
      *        articulo sin variante.
-     * @return \App\Models\Article|object
+     * @return \App\Models\Article|object La fila de una variante es un objeto PLANO: ademas de lo propio
+     *         de la variante (precio, stock, imagenes, depositos) lleva en la raiz el costo del articulo
+     *         (`cost`, `costo_real`, `cost_in_dollars`, `presentacion`), que es lo que lee el guardado de la venta.
      */
     public static function build_row($article, $variant)
     {
@@ -260,6 +360,30 @@ class VenderSearchHelper
             'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, UserHelper::userId()),
             'price_types'             => $article->price_types,
             'bar_code'                => $variant->bar_code,
+            // Stock de la variante (`article_variants.stock`, null si no tiene). Sin esta clave, con la
+            // extension `check_article_stock_en_vender` la SPA bloquea TODAS las variantes con "Articulo
+            // sin stock": `check_stock_mayor_a_cero` pregunta `item.stock === null || item.stock > 0` y
+            // una fila sin `stock` queda `undefined`, que no es null ni es mayor a cero. Clave aditiva:
+            // nada de lo que ya lee la fila cambia.
+            'stock'                   => $variant->stock,
+            // 🔴 Costo del ARTICULO y moneda de ese costo, en la RAIZ de la fila. NO sacarlas "porque
+            // `article` ya las trae anidadas": el guardado de la venta lee de la raiz del item, no de
+            // `item.article`. `SaleHelper::getCost` toma `costo_real` / `cost` / `presentacion` de la raiz
+            // (la presentacion multiplica el costo en vinoteca) y
+            // `CotizacionDeVentaHelper::item_esta_en_dolares` (y la conversion de precio de la SPA,
+            // `convertir_precio_a_moneda_de_la_venta`) leen `cost_in_dollars` de la raiz. La SPA arma el
+            // item de una variante elegida por nombre con esta fila tal cual: sin estas tres claves la
+            // linea se guardaba con `cost` null y ganancia = precio, y el costo/precio de un articulo en
+            // dolares no se convertia (mision variante-por-nombre-con-costo, 3/10/2026).
+            // La variante no tiene costo propio (`article_variants` solo trae precio, stock, imagen y
+            // codigo): el costo es el del articulo, igual que cuando se escanea el codigo de la variante
+            // (donde la SPA arma `Object.assign({}, article, variant_row)`). Claves aditivas: la fila de
+            // siempre no cambia, y el resto de lo que necesita el costo (`unidades_individuales`, `iva_id`)
+            // la API ya lo lee de la base cuando el item no lo trae.
+            'cost'                    => $article->cost,
+            'costo_real'              => $article->costo_real,
+            'cost_in_dollars'         => $article->cost_in_dollars,
+            'presentacion'            => $article->presentacion,
             'name'                    => $article->name . ' ' . $variant->variant_description,
             'article'                 => $article,
             'images'                  => self::get_variant_images($variant),

@@ -1304,27 +1304,54 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * Adjunta a la venta los renglones de articulo del request (o, con `varios_precios`, una fila
+     * por cada precio) y descuenta el stock.
+     *
+     * 🔴 EL STOCK SE DESCUENTA POR ARTICULO + VARIANTE, NO POR RENGLON (mision
+     * varios-precios-descuento-renglon, 3/10/2026). Cada renglon suma su cantidad a la clave de su
+     * articulo y su variante (juntar_stock_a_descontar()) y `ArticleHelper::discountStock()` se llama
+     * UNA vez por clave, al final. No "simplificarlo" de vuelta a un descuento por renglon: en la
+     * edicion, `get_amount_for_stock_movement()` le resta a la SUMA de los renglones previos del
+     * articulo + variante la cantidad que recibe, asi que con dos renglones del mismo articulo en el
+     * request la diferencia se contaba dos veces. Es lo que pasaba al editar una venta con varios
+     * precios desde la SPA que la reabre como un renglon por fila: guardarla sin tocar nada devolvia
+     * al stock todo lo vendido (−3 de la venta, +1 y +2 de los dos "Act Venta"). En el alta da lo
+     * mismo que antes (sin renglones previos cada clave descuenta su cantidad entera), en un solo
+     * movimiento por articulo + variante.
+     *
+     * Las condiciones para descontar son las de siempre y se miran por renglon: la venta fuera del
+     * circuito de deposito (`to_check` / `checked`), con `discount_stock`, y el articulo con stock.
+     * `check_que_este_el_articulos()` sigue siendo por renglon.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array             $articles  Los renglones del request (`items`).
+     * @param  mixed             $previus_articles  Los renglones que tenia la venta antes (edicion), o null.
+     * @param  bool              $se_esta_confirmando_por_primera_vez
+     * @param  array             $fecha_agregado_by_article_id
+     * @param  bool              $se_activando_discount_stock
+     * @return void
+     */
     static function attachArticles($sale, $articles, $previus_articles, $se_esta_confirmando_por_primera_vez, $fecha_agregado_by_article_id = [], $se_activando_discount_stock = false) {
         
+        /*
+            Lo que sale del stock, juntado por articulo + variante (ver juntar_stock_a_descontar()).
+            Se descuenta recien despues del foreach, una vez por clave.
+        */
+        $stock_a_descontar = [];
+
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
 
-                if (isset($article['varios_precios']) && is_array($article['varios_precios'])) {
+                if (Self::tiene_varios_precios($article)) {
 
                     foreach ($article['varios_precios'] as $otro_precio) {
 
-                        $otro_precio['id'] = $article['id'];
-                        $otro_precio['name'] = $article['name'] ?? null;
-                        $otro_precio['name_vender_personalizado'] = $article['name_vender_personalizado'] ?? null;
-
-                        if ($otro_precio['amount'] == '') {
-                            $otro_precio['amount'] = 1;
-                        }
-
-                        $otro_precio = Self::precio_y_base_de_varios_precios($otro_precio);
+                        // Cada fila ES el renglon con otro precio y otra cantidad: ver fila_de_varios_precios().
+                        $fila = Self::fila_de_varios_precios($article, $otro_precio);
 
                         // $fecha_agregado = Self::get_fecha_agregado_for_item($otro_precio, $fecha_agregado_map);
-                        Self::attachArticle($sale, $otro_precio, null);
+                        Self::attachArticle($sale, $fila, null);
 
                     }
                 } else {
@@ -1366,27 +1393,16 @@ class SaleHelper extends Controller {
 
                     /*
                         Con `varios_precios` el articulo va a la venta como VARIOS renglones (uno por
-                        precio, cada uno con su cantidad) pero el descuento de stock se hace una sola
-                        vez, aca. Lo que sale del stock es la suma de esos renglones, no la cantidad
-                        del item "padre", que es la que quedo en el formulario antes de repartir.
+                        precio, cada uno con su cantidad). Lo que sale del stock es la suma de esos
+                        renglones, no la cantidad del item "padre", que es la que quedo en el
+                        formulario antes de repartir.
                     */
-                    if (isset($article['varios_precios']) && is_array($article['varios_precios'])) {
+                    if (Self::tiene_varios_precios($article)) {
                         $amount = Self::get_amount_varios_precios($article['varios_precios']);
                     }
 
-                    if (isset($article['article_variant_id'])) {
-                        $article_variant_id = $article['article_variant_id'];
-                    } else {
-                        $article_variant_id = null;
-                    }
+                    $stock_a_descontar = Self::juntar_stock_a_descontar($stock_a_descontar, $article, $amount);
 
-                    // Si se activa discount_stock por primera vez, tratar como primera confirmación
-                    // para que se use la cantidad total y no la diferencia con artículos previos
-                    $es_primer_descuento = $se_esta_confirmando_por_primera_vez || $se_activando_discount_stock;
-                    
-                    // if ($amount > 0) {
-                        ArticleHelper::discountStock($article['id'], $amount, $sale, $previus_articles, $es_primer_descuento, $article_variant_id);
-                    // }
                 } else {
                     Log::info('No se desconto stock para article_id '.$article['id']);
                 }
@@ -1395,11 +1411,189 @@ class SaleHelper extends Controller {
 
             }
         }
+
+        // Si se activa discount_stock por primera vez, tratar como primera confirmación
+        // para que se use la cantidad total y no la diferencia con artículos previos
+        $es_primer_descuento = $se_esta_confirmando_por_primera_vez || $se_activando_discount_stock;
+
+        foreach ($stock_a_descontar as $a_descontar) {
+            ArticleHelper::discountStock($a_descontar['id'], $a_descontar['amount'], $sale, $previus_articles, $es_primer_descuento, $a_descontar['article_variant_id']);
+        }
     }
 
     /**
-     * Cantidad total que sale del stock con `varios_precios`: la suma de las cantidades de cada
-     * renglon de precio. Un renglon sin cantidad cuenta como 1, igual que en attachArticles().
+     * Suma la cantidad de un renglon a lo que hay que descontar del stock de su articulo + variante
+     * (ver attachArticles()).
+     *
+     * La clave es el id del articulo y la variante NORMALIZADA: null, 0 y '' son "sin variante", el
+     * mismo criterio de `ArticleHelper::misma_variante()`, que es con el que
+     * `get_amount_for_stock_movement()` junta los renglones previos de la venta. Se lo usa a el y no
+     * una copia de la regla: si la clave usara la variante cruda, un renglon con variante 0 y otro con
+     * null volverian a ser dos descuentos contra el mismo previo, que es justo lo que esto evita.
+     *
+     * Se guarda la variante CRUDA del primer renglon de la clave: es la que le llegaba hasta hoy a
+     * `discountStock()` y la que queda escrita en el movimiento.
+     *
+     * @param  array  $stock_a_descontar  Lo juntado hasta ahora: clave => [id, article_variant_id, amount].
+     * @param  array  $article            El renglon del request.
+     * @param  float  $amount             Lo que ese renglon saca del stock.
+     * @return array  `$stock_a_descontar` con la cantidad sumada.
+     */
+    static function juntar_stock_a_descontar($stock_a_descontar, $article, $amount) {
+
+        if (isset($article['article_variant_id'])) {
+            $article_variant_id = $article['article_variant_id'];
+        } else {
+            $article_variant_id = null;
+        }
+
+        // misma_variante(x, null) dice si x es "sin variante": la clave usa el mismo criterio.
+        $variante_de_la_clave = ArticleHelper::misma_variante($article_variant_id, null) ? '' : (int) $article_variant_id;
+
+        $clave = (int) $article['id'].'-'.$variante_de_la_clave;
+
+        if (!isset($stock_a_descontar[$clave])) {
+            $stock_a_descontar[$clave] = [
+                'id'                    => $article['id'],
+                'article_variant_id'    => $article_variant_id,
+                'amount'                => 0,
+            ];
+        }
+
+        $stock_a_descontar[$clave]['amount'] += (float) $amount;
+
+        return $stock_a_descontar;
+    }
+
+    /**
+     * ¿El renglon esta en modo "varios precios"? Tiene que traer `varios_precios` con AL MENOS una
+     * fila.
+     *
+     * 🔴 Un `varios_precios` VACIO es un renglon NORMAL, igual que en la SPA
+     * (`mixins/vender/varios_precios.js::tiene_varios_precios()`). Queda vacio cuando el vendedor borra
+     * todas las filas con el tachito, y ahi el renglon vuelve a valer su precio de lista por su
+     * cantidad. Si la API lo tomara como "varios precios" (un `is_array` a secas, como hasta el
+     * 3/10/2026) no adjunta ninguna fila, el stock descuenta 0, y el renglon solo llega a la venta
+     * porque `check_que_este_el_articulos()` lo adjunta despues, por casualidad a su precio de lista.
+     *
+     * @param  array  $article  Un renglon del request.
+     * @return bool
+     */
+    static function tiene_varios_precios($article) {
+        return isset($article['varios_precios'])
+            && is_array($article['varios_precios'])
+            && count($article['varios_precios']) > 0;
+    }
+
+    /**
+     * Una fila de `varios_precios` lista para `attachArticle()`: ES EL RENGLON, con otro precio y otra
+     * cantidad (mision varios-precios-descuento-renglon, 3/10/2026).
+     *
+     * Parte del renglon padre ENTERO y le saca solo lo que es de la cantidad o del precio del padre;
+     * despues le pone lo de la fila (precio, cantidad y bases) y recien ahi resuelve el precio que se
+     * guarda con `precio_y_base_de_varios_precios()`.
+     *
+     * 🔴 LISTA NEGRA Y NO LISTA BLANCA, a proposito. Hasta esta mision la fila se armaba al reves: con
+     * una lista blanca de tres claves del padre (`id`, `name`, `name_vender_personalizado`) mas el
+     * precio y la cantidad de la fila, y todo lo demas se perdia en silencio. Lo que se perdia era
+     * justo lo que importa: el `discount` del renglon (las filas quedaban sin descuento, la factura y
+     * los PDF cobraban de mas y la suma de las filas no daba `sales.total`), el costo (`getCost()`
+     * daba null y la ganancia era el 100 % del precio) y la variante (al borrar o editar la venta, el
+     * stock volvia al articulo padre aunque se habia descontado de la variante). No volver a una lista
+     * blanca "para estar seguros": se repetiria este mismo defecto con el proximo dato por-articulo que
+     * se le agregue al renglon. Con la lista negra ese dato llega solo a las filas.
+     *
+     * Lo que se saca del padre, y por que:
+     *  - `varios_precios`: la fila es un renglon comun, no otro renglon con filas.
+     *  - `calculated_price_vender` y `price_vender_personalizado`: son el total y el input del padre.
+     *  - `checked_amount`, `returned_amount` y `delivered_amount`: son cantidades del PADRE y no se
+     *    copian (decision de Lucas). Heredada, la chequeada le ganaria a la cantidad de la fila en
+     *    `getAmount()`, y la entregada prenderia `en_acopio` en una venta que nadie acopio.
+     *  - `price_vender_con_recargos` y `price_vender_sin_recargos`: son el precio y la base del PADRE;
+     *    la fila trae los suyos.
+     *
+     * Queda heredado: `discount`, el costo (`cost`, `costo_real`, `cost_in_dollars`, `presentacion`,
+     * `unidades_individuales`), `iva` / `iva_id`, `article_variant_id`, `price_type_personalizado_id`,
+     * `name`, `name_vender_personalizado` y el `pivot` (en la edicion congela el costo, como en
+     * cualquier renglon).
+     *
+     * @param  array  $article      El renglon padre, tal cual vino en el request.
+     * @param  array  $otro_precio  Una fila de su `varios_precios`.
+     * @return array  La fila armada como renglon.
+     */
+    static function fila_de_varios_precios($article, $otro_precio) {
+
+        $fila = $article;
+
+        // La lista negra: lo que es de la cantidad o del precio del padre (ver el PHPDoc).
+        $claves_del_padre = [
+            'varios_precios',
+            'calculated_price_vender',
+            'price_vender_personalizado',
+            'checked_amount',
+            'returned_amount',
+            'delivered_amount',
+            'price_vender_con_recargos',
+            'price_vender_sin_recargos',
+        ];
+
+        foreach ($claves_del_padre as $clave) {
+            unset($fila[$clave]);
+        }
+
+        /*
+            El precio sale SIEMPRE de la fila, como hasta hoy (una fila sin `price_vender` ya era un
+            error). No se completa con el del padre: ese es el precio de lista, no el de esta fila.
+        */
+        $fila['price_vender'] = $otro_precio['price_vender'];
+
+        $fila['amount'] = Self::cantidad_de_fila_de_varios_precios($otro_precio);
+
+        // Solo si la fila lo trae: sin el, precio_y_base_de_varios_precios() guarda el tipeado.
+        if (array_key_exists('price_vender_con_recargos', $otro_precio)) {
+            $fila['price_vender_con_recargos'] = $otro_precio['price_vender_con_recargos'];
+        }
+
+        /*
+            🔴 La base es la de la FILA o null, NUNCA la del padre (por eso se saco arriba):
+            `RecargosEnPreciosEsquemaHelper::base_del_item()` la lee con `array_key_exists`, y una base
+            del padre que quedara en la fila se guardaria como si fuera la de este precio.
+        */
+        if (array_key_exists('price_vender_sin_recargos', $otro_precio)) {
+            $fila['price_vender_sin_recargos'] = $otro_precio['price_vender_sin_recargos'];
+        } else {
+            $fila['price_vender_sin_recargos'] = null;
+        }
+
+        return Self::precio_y_base_de_varios_precios($fila);
+    }
+
+    /**
+     * La cantidad de UNA fila de `varios_precios`: la que se guarda en su renglon Y la que sale del
+     * stock (`get_amount_varios_precios()` suma estas). Una sola regla para las dos cosas, a
+     * proposito: hasta el 3/10/2026 eran dos, y una fila con cantidad 0 se guardaba con 1 pero
+     * descontaba 0 del stock.
+     *
+     * Vacia cuenta como 1, la regla de siempre al guardar la fila y la misma de la SPA
+     * (`recalcular_varios_precios()`: `amount != ''`). El `== ''` suelto es el de siempre y es a
+     * proposito: en PHP 7.4 tambien da true para null, 0 y false (y false para '0'). Una fila sin la
+     * clave cuenta como vacia, como ya la contaba el stock.
+     *
+     * @param  array  $otro_precio  Una fila de `varios_precios`.
+     * @return mixed  La cantidad tal cual vino, o 1.
+     */
+    static function cantidad_de_fila_de_varios_precios($otro_precio) {
+
+        if (!array_key_exists('amount', $otro_precio) || $otro_precio['amount'] == '') {
+            return 1;
+        }
+
+        return $otro_precio['amount'];
+    }
+
+    /**
+     * Cantidad total que sale del stock con `varios_precios`: la suma de las cantidades de cada fila,
+     * resueltas con la MISMA regla con la que se guardan (`cantidad_de_fila_de_varios_precios()`).
      *
      * @param  array  $varios_precios
      * @return float
@@ -1407,11 +1601,7 @@ class SaleHelper extends Controller {
     static function get_amount_varios_precios($varios_precios) {
         $total = 0;
         foreach ($varios_precios as $otro_precio) {
-            if (!isset($otro_precio['amount']) || $otro_precio['amount'] === '' || is_null($otro_precio['amount'])) {
-                $total += 1;
-            } else {
-                $total += (float)$otro_precio['amount'];
-            }
+            $total += (float) Self::cantidad_de_fila_de_varios_precios($otro_precio);
         }
         return $total;
     }
@@ -1436,8 +1626,9 @@ class SaleHelper extends Controller {
      * ese caso el precio guardado es el tipeado, que no tiene el recargo adentro, y una base NO NULL
      * diria lo contrario. La invariante de la columna manda sobre lo que diga el payload.
      *
-     * @param  array  $otro_precio  Un elemento de `varios_precios`, ya con `id`, `name` y `amount`.
-     * @return array  El mismo elemento, con `price_vender` y `price_vender_sin_recargos` resueltos.
+     * @param  array  $otro_precio  La fila ya armada como renglon por `fila_de_varios_precios()`: con
+     *                              el precio, la cantidad y las bases de la fila, nunca las del padre.
+     * @return array  La misma fila, con `price_vender` y `price_vender_sin_recargos` resueltos.
      */
     static function precio_y_base_de_varios_precios($otro_precio) {
 
@@ -2957,7 +3148,8 @@ class SaleHelper extends Controller {
             if (!isset($item['is_article'])) {
                 continue;
             }
-            if (isset($item['varios_precios']) && is_array($item['varios_precios'])) {
+            // Con el mismo criterio que attachArticles(): un varios_precios VACIO es un renglon normal.
+            if (Self::tiene_varios_precios($item)) {
                 // NO nos interesa para fecha_agregado
                 continue;
             }

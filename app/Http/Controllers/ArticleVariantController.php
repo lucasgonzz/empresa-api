@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\article\ArticleVariantBarCodeHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantGeneratorHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\ArticleVariant;
 use Illuminate\Http\Request;
 
@@ -43,15 +45,60 @@ class ArticleVariantController extends Controller
      * registrar. Si en el futuro hace falta permitir cambiar stock desde este endpoint, debe
      * hacerse generando un StockMovement, no escribiendo la columna directo.
      *
-     * @param Request $request Espera price, image_url, oculta (stock ya no se usa acá).
+     * Código de barras propio de la variante (`bar_code`, contrato C1 de la misión
+     * "codigo-de-barras-de-variantes"): es OPCIONAL. Si la clave no viene en el request no se toca
+     * (la SPA vieja manda solo price, image_url y oculta). Si viene, pasa por
+     * ArticleVariantBarCodeHelper (normalizado como el lector, vacío = '0'.id, máximo 20 caracteres,
+     * sin los caracteres que rompen la ruta del escaneo, sin repetir con otra variante ni con un
+     * artículo del mismo dueño).
+     *
+     * @param Request $request Espera price, image_url, oculta y, opcional, bar_code (stock ya no se usa acá).
      * @param int $id Id de la ArticleVariant a actualizar.
-     * @return \Illuminate\Http\JsonResponse Variante actualizada.
+     * @return \Illuminate\Http\JsonResponse Variante actualizada; 404 con `message` si la variante no
+     *         existe o no es de un artículo del dueño del usuario logueado; o 422 con `message` si el
+     *         código de barras no es válido (en ninguno de los dos casos se guarda NADA: ni el
+     *         código, ni el precio, ni oculta).
      */
     function update(Request $request, $id) {
         $model = ArticleVariant::find($id);
+
+        // La variante tiene que existir y ser de un articulo del DUENIO del usuario logueado
+        // (`UserHelper::userId()` resuelve al duenio tambien para los empleados). `article_variants`
+        // no tiene `user_id`, y `find($id)` a secas dejaba editar la variante de otro comercio con solo
+        // saber su id. Se corta ANTES de leer o escribir cualquier campo, con un mensaje fijo: si
+        // siguiera, la validacion de repetidos del codigo de barras contestaria con el nombre del
+        // articulo y la variante ajenos. Cubre de paso el id inexistente, que antes era un 500.
+        if (is_null($model) || !ArticleVariantBarCodeHelper::belongs_to_owner($model, UserHelper::userId())) {
+            return response()->json(['message' => 'No se encontró la variante.'], 404);
+        }
+
+        // Se valida el código ANTES de asignar o guardar cualquier campo: con un código inválido el
+        // comerciante tiene que ver el aviso y que la variante quede exactamente como estaba. Si se
+        // validara después de asignar price/oculta, un cambio de orden futuro podría guardar el
+        // precio y rechazar solo el código, dejando la grilla a medio guardar.
+        // `has` y no `filled`: un código vacío es un pedido válido (volver a '0'.id), no una omisión.
+        $tiene_bar_code = $request->has('bar_code');
+        $bar_code_final = null;
+
+        if ($tiene_bar_code) {
+            $resultado = ArticleVariantBarCodeHelper::validate_bar_code_for_update($model, $request->bar_code);
+
+            if (isset($resultado['error'])) {
+                return response()->json(['message' => $resultado['error']], 422);
+            }
+
+            $bar_code_final = $resultado['bar_code'];
+        }
+
         $model->price = $request->price;
         $model->image_url = $request->image_url;
         $model->oculta = $request->oculta;
+
+        // Solo se escribe el código si el request lo trajo: sin la clave queda el que tenía.
+        if ($tiene_bar_code) {
+            $model->bar_code = $bar_code_final;
+        }
+
         $model->save();
 
         // Se devuelve con las mismas relaciones que el resto de los endpoints de variantes (withAll):
@@ -78,25 +125,35 @@ class ArticleVariantController extends Controller
         // Acción elegida por el usuario para la disponibilidad masiva.
         $accion = $request->accion;
 
+        // Variantes que corresponden a las propiedades actuales. Las huérfanas (combinaciones que
+        // dejaron de ser válidas) se ocultan pero no se borran, y la grilla del SPA no las muestra:
+        // habilitarlas desde acá las dejaría vendiéndose en Vender y en la tienda sin que nadie las vea.
+        $generator = new ArticleVariantGeneratorHelper($article_id);
+        $valid_ids = $generator->valid_variant_ids();
+
         if ($accion == 'todas') {
-            // Todas las variantes del artículo pasan a estar disponibles.
-            ArticleVariant::where('article_id', $article_id)->update(['oculta' => false]);
+            // Todas las variantes vigentes del artículo pasan a estar disponibles.
+            ArticleVariant::where('article_id', $article_id)
+                            ->whereIn('id', $valid_ids)
+                            ->update(['oculta' => false]);
 
         } else if ($accion == 'ninguna') {
             // Ninguna variante del artículo queda disponible.
             ArticleVariant::where('article_id', $article_id)->update(['oculta' => true]);
 
         } else if ($accion == 'con_stock') {
-            // Disponibles las que tienen stock > 0...
+            // Disponibles las vigentes que tienen stock > 0...
             ArticleVariant::where('article_id', $article_id)
+                            ->whereIn('id', $valid_ids)
                             ->where('stock', '>', 0)
                             ->update(['oculta' => false]);
 
             // ...y ocultas el resto (sin stock cargado o stock <= 0).
             ArticleVariant::where('article_id', $article_id)
-                            ->where(function ($query) {
+                            ->where(function ($query) use ($valid_ids) {
                                 $query->whereNull('stock')
-                                        ->orWhere('stock', '<=', 0);
+                                        ->orWhere('stock', '<=', 0)
+                                        ->orWhereNotIn('id', $valid_ids);
                             })
                             ->update(['oculta' => true]);
         }

@@ -7,16 +7,39 @@ use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
+use App\Models\Caja;
 use App\Models\Cheque;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcountPaymentMethod;
+use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ChequeController extends Controller
 {
+    /**
+     * El 422 de un `cheque_id` del cuerpo que no es de esta cuenta (cobrar, pagar, rechazar). Es el
+     * mismo para un cheque ajeno y para uno que no existe: no se confirma qué hay del otro lado.
+     */
+    const MENSAJE_CHEQUE_AJENO = 'El cheque elegido no existe o no es de tu cuenta.';
+
+    /**
+     * El 404 de un cheque de la ruta (destroy) que no es de esta cuenta, no existe o no es un id: un
+     * mensaje de comerciante y el mismo cuerpo para los tres.
+     */
+    const MENSAJE_CHEQUE_NO_ENCONTRADO = 'El cheque no existe o no es de tu cuenta.';
+
+    /** El 422 de un `caja_id` del cuerpo que no es de esta cuenta (cobrar, pagar). */
+    const MENSAJE_CAJA_AJENA = 'La caja elegida no existe o no es de tu cuenta.';
+
+    /**
+     * El 422 de un `provider_id` del cuerpo que no es de esta cuenta (endosar). Es el texto con el
+     * que corta ChequeHelper::endosar() cuando el destino del endoso no es de esta cuenta: uno solo.
+     */
+    const MENSAJE_PROVEEDOR_AJENO = ChequeHelper::MENSAJE_PROVEEDOR_AJENO;
+
     /**
      * Descarga un Excel con los cheques indicados por ID (los mismos que muestra el front al filtrar).
      *
@@ -49,7 +72,8 @@ class ChequeController extends Controller
         $ids = [];
 
         foreach ($raw_ids as $raw_id) {
-            $id = (int) trim($raw_id);
+            // LA lectura de ids (ChequeHelper::id_del_pedido()): '12abc' o '12.5' no son el 12.
+            $id = ChequeHelper::id_del_pedido(trim($raw_id));
             if ($id > 0) {
                 $ids[] = $id;
             }
@@ -110,6 +134,23 @@ class ChequeController extends Controller
         ];
 
         foreach ($cheques as $cheque) {
+            // Si es recibido y fue endosado (a un proveedor O en un gasto: la definición es una
+            // sola y vive en ChequeHelper, no acá).
+            //
+            // 🔴 Este chequeo va ANTES de la marca manual (cobrado/rechazado) a propósito: el endoso
+            // manda sobre `estado_manual` (misión cheques-solapa-endosados, 2/10/2026). El módulo
+            // tiene una solapa de primer nivel "Endosado" que tiene que mostrar TODOS los cheques
+            // que salieron de cartera, y un recibido endosado que además tuviera la marca manual
+            // (ninguna pantalla lo deja hacer, pero la API no lo impide) caía en Cobrados o
+            // Rechazados y desaparecía de esa solapa. Es el mismo criterio de
+            // ChequeHelper::sin_endosar(): lo que ya no está en cartera no es un cheque "cobrable".
+            // Solo vale para `recibido`: la copia emitida que nace del endoso sigue su propio ciclo
+            // en Emitido (el proveedor la cobra).
+            if ($cheque->tipo === 'recibido' && !ChequeHelper::en_cartera($cheque)) {
+                $agrupados['recibido']['endosados'][] = $cheque;
+                continue;
+            }
+
             // Si está marcado manualmente, va a estado final
             if ($cheque->estado_manual === 'cobrado') {
                 $agrupados[$cheque->tipo]['cobrados'][] = $cheque;
@@ -118,13 +159,6 @@ class ChequeController extends Controller
 
             if ($cheque->estado_manual === 'rechazado') {
                 $agrupados[$cheque->tipo]['rechazados'][] = $cheque;
-                continue;
-            }
-
-            // Si es recibido y fue endosado (a un proveedor O en un gasto: la definición es una
-            // sola y vive en ChequeHelper, no acá).
-            if ($cheque->tipo === 'recibido' && !ChequeHelper::en_cartera($cheque)) {
-                $agrupados['recibido']['endosados'][] = $cheque;
                 continue;
             }
 
@@ -152,36 +186,100 @@ class ChequeController extends Controller
         return response()->json(['models' => $agrupados], 200);
     }
 
+    /**
+     * Marca como pagado (`estado_manual = cobrado`) un cheque EMITIDO y, si viene una caja,
+     * registra el egreso en ella.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda PagarCheque.vue.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque o la caja no son de
+     *                                        esta cuenta (o no existen), sin escribir nada.
+     */
     function pagar(Request $request) {
-        $cheque = Cheque::find($request->cheque_id);
+
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
+        // La caja se valida ANTES de marcar el cheque: hasta el 3/10/2026 el cheque quedaba pagado
+        // aunque la caja no fuera de esta cuenta (y el egreso salía de la caja de otro comercio).
+        $caja_id = $this->caja_id_del_dueno($request->caja_id);
+
+        if (is_null($caja_id)) {
+
+            return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
+        }
+
         $cheque->estado_manual = 'cobrado';
         $cheque->cobrado_en = Carbon::now();
         $cheque->cobrado_por_id = $this->userId(false);
         $cheque->save();
 
-        if ($request->caja_id != 0) {
-            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $request->caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
+        if ($caja_id > 0) {
+            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
         }
 
         return response()->json(['model' => $cheque], 200);
     }
 
+    /**
+     * Marca como cobrado un cheque RECIBIDO y, si viene una caja, registra el ingreso en ella.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda CobrarCheque.vue.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque o la caja no son de
+     *                                        esta cuenta (o no existen), sin escribir nada.
+     */
     function cobrar(Request $request) {
-        $cheque = Cheque::find($request->cheque_id);
+
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
+        // La caja se valida ANTES de marcar el cheque: hasta el 3/10/2026 el cheque quedaba cobrado
+        // aunque la caja no fuera de esta cuenta (y el ingreso entraba en la caja de otro comercio).
+        $caja_id = $this->caja_id_del_dueno($request->caja_id);
+
+        if (is_null($caja_id)) {
+
+            return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
+        }
+
         $cheque->estado_manual = 'cobrado';
         $cheque->cobrado_en = Carbon::now();
         $cheque->cobrado_por_id = $this->userId(false);
         $cheque->save();
 
-        if ($request->caja_id != 0) {
-            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $request->caja_id, 'client', $cheque->current_acount, 'Cobro cheque N° '.$cheque->numero);
+        if ($caja_id > 0) {
+            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'client', $cheque->current_acount, 'Cobro cheque N° '.$cheque->numero);
         }
 
         return response()->json(['model' => $cheque], 200);
     }
 
+    /**
+     * Marca un cheque como rechazado.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, rechazado_observaciones}. Ojo:
+     *                                             RechazarCheque.vue manda el motivo como `notas`,
+     *                                             que acá no se lee (y la columna
+     *                                             `rechazado_observaciones` es un entero).
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
+     *                                        (o no existe), sin escribir nada.
+     */
     function rechazar(Request $request) {
-        $cheque = Cheque::find($request->cheque_id);
+
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
         $cheque->estado_manual = 'rechazado';
         $cheque->rechazado_en = Carbon::now();
         $cheque->rechazado_por_id = $this->userId(false);
@@ -213,13 +311,16 @@ class ChequeController extends Controller
      * Responde 422 si el cheque ya no se puede endosar, y también si el proveedor no tiene cuenta
      * corriente en la moneda del cheque: antes en ese caso no se creaba nada y se devolvía 200 con
      * el cheque sin marcar, o sea un endoso que "salió bien" sin registrar nada.
+     *
+     * Y desde el 3/10/2026, 422 si el proveedor no es de esta cuenta (o no existe): hasta entonces un
+     * endoso propio registraba el pago en la cuenta corriente del proveedor de otro comercio.
      */
     function endosar(Request $request) {
 
-        // La misma lectura de `cheque_id` que la fila de pago: un '12abc' es "sin cheque", no el 12.
-        $cheque_id = ChequeHelper::cheque_id_de(['cheque_id' => $request->cheque_id]);
-
-        $cheque = $cheque_id > 0 ? Cheque::where('user_id', $this->userId())->find($cheque_id) : null;
+        // El mismo resolvedor que cobrar, pagar, rechazar y destroy: la lectura de `cheque_id` es la
+        // de la fila de pago (un '12abc' es "sin cheque", no el 12) y el cheque tiene que ser del
+        // dueño. El mensaje es el propio del endoso, el de siempre.
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
 
         if (is_null($cheque)) {
 
@@ -240,11 +341,21 @@ class ChequeController extends Controller
             return response()->json(['message' => implode('. ', $problemas).'.'], 422);
         }
 
-        $provider_id = (int) $request->provider_id;
+        // LA lectura de ids (ChequeHelper::id_del_pedido()): true, [5] o '5abc' son "sin proveedor"
+        // y caen en el 422 de siempre. Hasta el 3/10/2026 era un (int) pelado: true y [5] eran el
+        // proveedor 1, y '5abc' el 5.
+        $provider_id = ChequeHelper::id_del_pedido($request->provider_id);
 
         if ($provider_id <= 0) {
 
             return response()->json(['message' => 'Elegí el proveedor al que le endosás el cheque.'], 422);
+        }
+
+        // El proveedor tiene que ser del dueño ANTES de buscar su cuenta corriente: ni
+        // get_provider_credit_account() ni CurrentAcountPagoAltaHelper::registrar() lo miran.
+        if (is_null($this->proveedor_del_dueno($provider_id))) {
+
+            return response()->json(['message' => self::MENSAJE_PROVEEDOR_AJENO], 422);
         }
 
         $credit_account = $this->get_provider_credit_account($cheque, $provider_id);
@@ -354,10 +465,122 @@ class ChequeController extends Controller
                             ->first();
     }
 
+    /**
+     * Borra un cheque del dueño.
+     *
+     * Hasta el 3/10/2026 era `Cheque::find($id)->delete()`: borraba el cheque de cualquier comercio
+     * y, con un id que no existía, reventaba en 500 (delete() sobre null) y se reportaba como error.
+     * Ahora un id ajeno, inexistente o que no es un id es un 404 con un mensaje de comerciante y el
+     * MISMO cuerpo para los tres, igual que los bancos.
+     *
+     * Es un JsonResponse y no un firstOrFail() ni un abort(): el 404 de Laravel traía su mensaje
+     * técnico ("No query results for model [App\Models\Cheque]."), que la SPA muestra tal cual en
+     * un aviso, y el ejecutor del asistente (EjecutorAccionDePantallaIaHelper) traduce un
+     * JsonResponse con estado >= 400 a un 422 con este mensaje.
+     *
+     * @param  string  $id  El id de la ruta.
+     * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
+     */
     function destroy($id) {
-        $model = Cheque::find($id);
+        $model = $this->cheque_del_dueno($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
+        }
+
         $model->delete();
         return response(null, 200);
+    }
+
+    /**
+     * El cheque que nombra el pedido —en el cuerpo o en la ruta— si es del dueño de la sesión, o
+     * null si es de otra cuenta, no existe o lo que llegó no es un id. Es EL resolvedor de los ids
+     * de cheque de este controller: cobrar, pagar, rechazar y endosar contestan 422 si da null, y
+     * destroy 404.
+     *
+     * 🔴 No volver a un `Cheque::find($request->cheque_id)` pelado: un id ajeno se contesta igual
+     * que uno inexistente; en una base compartida los ids son correlativos entre comercios, así que
+     * el cheque de otro comercio está a un "+1" de distancia. Hasta el 3/10/2026 cobrar, pagar,
+     * rechazar y destroy resolvían el cheque así y marcaban (o borraban) el de cualquier comercio.
+     *
+     * El id se lee con ChequeHelper::cheque_id_de() (o sea, con ChequeHelper::id_del_pedido()), la
+     * misma lectura que la fila de pago y el endoso: un '12abc', un '12.5', un true, un array o un
+     * negativo son "sin cheque" — nunca el 12, ni el 1 al que resuelve `Cheque::find(true)`.
+     *
+     * @param  mixed  $cheque_id  El id tal como llegó.
+     * @return \App\Models\Cheque|null
+     */
+    protected function cheque_del_dueno($cheque_id) {
+
+        $id = ChequeHelper::cheque_id_de(['cheque_id' => $cheque_id]);
+
+        if ($id <= 0) {
+
+            return null;
+        }
+
+        return Cheque::where('user_id', $this->userId())
+                        ->where('id', $id)
+                        ->first();
+    }
+
+    /**
+     * La caja del cuerpo de cobrar y pagar, resuelta contra el dueño de la sesión ANTES de escribir.
+     *
+     * `0`, `null` y `''` son "sin caja", como siempre: el cheque se marca y ninguna caja se mueve.
+     * Cualquier otro valor tiene que ser el id de una caja de esta cuenta, leído con LA lectura de
+     * ids (ChequeHelper::id_del_pedido(): un entero o un texto de solo dígitos); si no lo es (otra
+     * cuenta, inexistente, '5abc', 'abc', '5.0', true, un array, un negativo), el llamador contesta
+     * 422.
+     *
+     * 🔴 No volver a pasarle `$request->caja_id` derecho a CurrentAcountCajaHelper::guardar_pago():
+     * ni ese helper ni MovimientoCajaHelper::crear_movimiento() miran de quién es la caja, y así el
+     * cobro de un cheque propio entraba como ingreso en la caja de otro comercio y le movía el saldo.
+     * Un id ajeno se contesta igual que uno inexistente; en una base compartida los ids son
+     * correlativos entre comercios.
+     *
+     * @param  mixed  $caja_id  Lo que mandó el pedido.
+     * @return int|null  0 si no hay caja; el id si la caja es del dueño; null si no lo es.
+     */
+    protected function caja_id_del_dueno($caja_id) {
+
+        // "Sin caja": la MISMA definición que la regla del endoso (ChequeHelper::es_sin_caja(), por
+        // lista blanca: null, '', el entero 0 o un texto de solo ceros).
+        if (ChequeHelper::es_sin_caja($caja_id)) {
+
+            return 0;
+        }
+
+        return ChequeHelper::id_del_dueno(Caja::class, $caja_id, $this->userId());
+    }
+
+    /**
+     * El proveedor al que se endosa, si es del dueño de la sesión; null si es de otra cuenta o no
+     * existe.
+     *
+     * 🔴 No sacar este filtro confiando en que la cuenta corriente "ya es del proveedor":
+     * get_provider_credit_account() busca la cuenta por `model_id` sin mirar el dueño y
+     * CurrentAcountPagoAltaHelper::registrar() tampoco lo verifica, así que sin esto un endoso
+     * propio registraba un pago en la cuenta corriente del proveedor de otro comercio y le
+     * recalculaba el saldo. Un id ajeno se contesta igual que uno inexistente; en una base
+     * compartida los ids son correlativos entre comercios.
+     *
+     * Un proveedor borrado (soft delete) cuenta como "no existe", como en el resto del sistema: el
+     * endoso tampoco podría terminar, porque CurrentAcountHelper::update_credit_account_saldo() lo
+     * busca por el morphTo de la cuenta corriente, que no ve los borrados (hasta el 3/10/2026 eso
+     * era un 500 que se revertía; ahora es este 422, antes de escribir nada).
+     *
+     * La consulta es ChequeHelper::id_del_dueno(), la MISMA con la que ChequeHelper::endosar()
+     * verifica el destino para las tres puertas del endoso: acá se adelanta para contestar 422
+     * antes de buscar la cuenta corriente.
+     *
+     * @param  int  $provider_id  Ya normalizado y mayor a 0.
+     * @return int|null  El id del proveedor si es de esta cuenta.
+     */
+    protected function proveedor_del_dueno($provider_id) {
+
+        return ChequeHelper::id_del_dueno(Provider::class, $provider_id, $this->userId());
     }
 }
  

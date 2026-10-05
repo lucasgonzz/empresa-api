@@ -493,6 +493,17 @@ class ExtencionSeeder extends Seeder
                 'name' => 'Motor de ofertas por cliente',
                 'slug' => 'motor_de_ofertas',
             ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                // Nació solo en ExtencionPuntosClientesSeeder (misión puntos-clientes-mvp) y por
+                // eso ninguna demo ni ningún cliente instalado de cero la tenía: medido el
+                // 4/10/2026, la demo listaba 97 extensiones y ninguna era esta. Mismo nombre que
+                // el standalone, que sigue siendo el que se corre en las bases que ya existen.
+                // Queda APAGADA: ningún setup la incluye en las extensiones que asigna.
+                'name' => 'Sistema de puntos para clientes',
+                'slug' => 'puntos_clientes',
+            ],
 
         ];
         foreach ($extencions as $extencion) {

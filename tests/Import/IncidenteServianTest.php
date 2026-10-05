@@ -254,7 +254,7 @@ class IncidenteServianTest extends ImportTestCase
     {
         $filas = $this->filas_de_conflictos($this->import, 'ambiguo');
 
-        $this->assertContains(46, $filas, 'La fila 46 (THOMPSON, lote 5) tenia que reportarse como ambigua.');
+        $this->assertContains(47, $filas, 'La fila 47 del Excel (THOMPSON, lote 5) tenia que reportarse como ambigua.');
     }
 
     /**

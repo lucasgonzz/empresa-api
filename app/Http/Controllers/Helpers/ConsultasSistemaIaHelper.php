@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
+use App\Models\Address;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\CurrentAcount;
@@ -2004,6 +2005,21 @@ class ConsultasSistemaIaHelper
         //
         // ⚠️ `AddressController::index()` NO hace este corte (solo filtra por `user_id`): el ABM de
         // Sucursales tiene el mismo problema y no se toca desde acá. Queda anotado en el informe.
+        $columnas = [
+            'addresses.id as address_id',
+            'addresses.street as nombre',
+            'addresses.es_deposito_origen as es_deposito_origen',
+            'address_article.amount as cantidad',
+            'address_article.stock_min as stock_min',
+            'address_article.stock_max as stock_max',
+        ];
+
+        // Misión deposito-madre: la sucursal desde la que salen primero las sugerencias. Solo si
+        // la columna ya existe (deploy a medio migrar: nombrarla tumbaría la consulta entera).
+        if (Address::columna_madre_existe()) {
+            $columnas[] = 'addresses.es_deposito_madre as es_deposito_madre';
+        }
+
         $sucursales = DB::table('addresses')
             ->leftJoin('address_article', function ($join) use ($articulo) {
                 $join->on('address_article.address_id', '=', 'addresses.id')
@@ -2012,14 +2028,7 @@ class ConsultasSistemaIaHelper
             ->where('addresses.user_id', $owner_id)
             ->whereNull('addresses.buyer_id')
             ->orderBy('addresses.id')
-            ->get([
-                'addresses.id as address_id',
-                'addresses.street as nombre',
-                'addresses.es_deposito_origen as es_deposito_origen',
-                'address_article.amount as cantidad',
-                'address_article.stock_min as stock_min',
-                'address_article.stock_max as stock_max',
-            ]);
+            ->get($columnas);
 
         $repartido = 0.0;
         $todas = [];
@@ -2036,6 +2045,7 @@ class ConsultasSistemaIaHelper
                 'stock_min'          => is_null($sucursal->stock_min) ? null : (float) $sucursal->stock_min,
                 'stock_max'          => is_null($sucursal->stock_max) ? null : (float) $sucursal->stock_max,
                 'es_deposito_origen' => (bool) $sucursal->es_deposito_origen,
+                'es_deposito_madre'  => isset($sucursal->es_deposito_madre) ? (bool) $sucursal->es_deposito_madre : false,
             ];
         }
 

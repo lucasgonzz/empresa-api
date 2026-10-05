@@ -1157,6 +1157,12 @@ class PerformanceHelper
         $notas_de_credito = CurrentAcount::where('user_id', $this->user_id)
                                         ->whereNotNull('haber')
                                         ->where('status', 'nota_credito')
+                                        // Solo devoluciones de VENTA: una NC a proveedor
+                                        // (provider_id cargado, misión
+                                        // devoluciones-compras-y-rediseno, 1/10/2026) no es una
+                                        // devolución de un cliente, y sus costos no tienen que
+                                        // restar de la utilidad.
+                                        ->whereNull('provider_id')
                                         ->whereDate('created_at', '>=', $this->mes_inicio)
                                         ->whereDate('created_at', '<=', $this->mes_fin)
                                         ->get();

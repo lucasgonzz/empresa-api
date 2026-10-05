@@ -225,6 +225,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Devolciones
     Route::get('devoluciones/search-sale/{num}', 'DevolucionesController@search_sale');
+    Route::get('devoluciones/search-provider-order/{num}', 'DevolucionesController@search_provider_order');
     Route::post('devoluciones/', 'DevolucionesController@store');
 
 
@@ -298,6 +299,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Bancos de cheques: el catálogo que reemplaza al texto libre del banco (misión
     // cheques-endoso-y-bancos, 21/9/2026). También baja por recursos-iniciales.
     Route::resource('cheque-banco', 'ChequeBancoController');
+
+    // Balanzas del comercio: cómo leer los tickets de cada una y a qué artículo imputarlos, para la
+    // lectura "por balanza" de VENDER (misión balanzas-configurables, 3/10/2026). También baja por
+    // recursos-iniciales (la SPA las usa para leer tickets sin conexión).
+    Route::resource('balanza', 'BalanzaController')->except(['create', 'edit']);
 
     // Override de liquidación/comisión por método de pago dentro de una caja (Grupo 223 · Prompt 01)
     // 'index' y 'show' se excluyen del resource porque comparten el mismo patrón de URI
@@ -433,9 +439,18 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('deposit-movement', 'DepositMovementController');
     Route::get('deposit-movement/from-date/{from_date?}/{until_date?}', 'DepositMovementController@index');
 
+    // Botón "Mover stock" e historial de modificaciones de artículos (misión
+    // movimientos-deposito-auditoria, 3/10/2026). `{id}/move-stock` tiene tres segmentos y no
+    // choca con ninguna ruta del resource.
+    Route::post('deposit-movement/{id}/move-stock', 'DepositMovementController@move_stock');
+    Route::get('deposit-movement-modifications/{deposit_movement_id}', 'DepositMovementModificationController@index');
+
     Route::get('deposit-movement-en-curso', 'DepositMovementController@en_curso');
 
-    Route::get('deposit-movement-status', 'DepositMovementStatusController@index');
+    // ABM de estados de movimientos (misión movimientos-deposito-auditoria, 3/10/2026): fijos
+    // (En proceso / Recibido, user_id NULL) + propios de cada comercio. El GET de la misma URL
+    // sigue siendo el index de siempre (lo usa también recursos-iniciales).
+    Route::resource('deposit-movement-status', 'DepositMovementStatusController')->except(['create', 'edit']);
 
 
     // Metodos de pago para facturar
@@ -520,6 +535,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::patch('client/{id}/phone', 'ClientController@update_phone');
 
     Route::resource('seller', 'SellerController');
+    // Los números del modal "Sincronizar artículos" del margen de una lista (la sincronización
+    // viaja en el PUT del resource, clave `sincronizar_margen`). Misión sincronizar-margen-lista-precios.
+    Route::get('price-type/{id}/sincronizar-margen/preview', 'PriceTypeController@sincronizar_margen_preview');
     Route::resource('price-type', 'PriceTypeController');
 
     Route::resource('provider-order', 'ProviderOrderController');
@@ -626,6 +644,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
     Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CreditAccountController@index');
     Route::post('/credit-account/limite-credito', 'CreditAccountController@update_limite_credito');
+    // Si la cuenta corriente (de una moneda) tiene algún movimiento: decide si la SPA ofrece "Saldo inicial".
+    Route::get('/credit-account/{credit_account_id}/tiene-movimientos', 'CreditAccountController@tiene_movimientos');
 
     Route::post('/current-acount/pago', 'CurrentAcountController@pago');
     Route::post('/current-acount/nota-credito', 'CurrentAcountController@notaCredito');
@@ -854,6 +874,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // catálogo de artículos. Va ANTES del resource: si no, el GET lo captura show/{id} con
     // id = "catalog-header-sources" y responde 404.
     Route::get('pdf-column-profiles/catalog-header-sources', 'PdfColumnProfileController@catalog_header_sources');
+    // Catálogo de campos, límites y diseño derivado para el diseñador de PDF con cajas (misión
+    // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
+    Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');

@@ -49,12 +49,26 @@ class SearchController extends Controller
      * cliente tiene su propia base de datos. El `user_id` de estas tablas separa a los usuarios de
      * UN mismo comercio, y las que no lo tienen es porque su contenido es del comercio entero.
      *
+     * 🔴 GANCHO OPT-IN `scopeDelDuenoConGlobales($query, $user_id)` (misión
+     * movimientos-deposito-auditoria, 3/10/2026). Hay tablas que mezclan filas GLOBALES del
+     * sistema (`user_id` NULL) con filas propias de cada dueño: `deposit_movement_statuses` tiene los
+     * fijos "En proceso" y "Recibido" con `user_id` NULL más los estados que crea cada comercio.
+     * Con el filtro de siempre (`user_id = dueño`) los fijos no salían, y el ABM de estados —que
+     * lista por `global-search`— quedaba vacío (medido en vivo). El modelo que define ese scope
+     * decide su propio filtro (dueño + globales); para CUALQUIER otro modelo esto no cambia nada:
+     * sigue exactamente el camino de abajo.
+     *
      * @param  string  $model_name  Clase del modelo, con namespace.
      * @return \Illuminate\Database\Eloquent\Builder
      */
     private function query_base_del_modelo($model_name)
     {
         $instancia = new $model_name();
+
+        // Opt-in: solo los modelos que definen el scope (hoy, DepositMovementStatus).
+        if (method_exists($instancia, 'scopeDelDuenoConGlobales')) {
+            return $model_name::delDuenoConGlobales($this->userId());
+        }
 
         if (! Schema::hasColumn($instancia->getTable(), 'user_id')) {
             return $model_name::query();
@@ -252,14 +266,55 @@ class SearchController extends Controller
     }
 
 
+    /**
+     * Buscador de los modales (el input con lupa de un select/search de formulario): texto libre
+     * contra las columnas que manda la SPA en `props_to_filter`, OR entre columnas y AND de palabras
+     * adentro de cada una (num y bar_code por igualdad).
+     *
+     * 🔴 `props_to_filter` SALE DEL PEDIDO Y SON NOMBRES DE COLUMNA (mision
+     * filtros-key-sin-inyeccion, 5/10/2026). Hasta esa fecha cada prop se concatenaba en un
+     * `whereRaw($prop.' LIKE ?')`: estar adentro de un where(closure) no alcanzaba, porque una prop
+     * como "name)) OR ((1=1" cierra los parentesis del closure y la condicion de dueño queda afuera.
+     * Ahora cada prop tiene que ser una columna real de la tabla (la misma regla de
+     * ColumnFiltersHelper, una sola consulta de columnas) y la que no lo es SE IGNORA: es un
+     * buscador de texto libre, no una masiva, y es el mismo criterio que ya aplica
+     * GlobalSearchQueryHelper a sus props. `depends_on_key` va por where(), que envuelve el
+     * identificador: no tiene el mismo problema.
+     *
+     * @param  Request  $request
+     * @param  string   $model_name_param
+     * @return \Illuminate\Http\JsonResponse
+     */
     function searchFromModal(Request $request, $model_name_param) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $this->query_base_del_modelo($model_name)
                                 ->withAll();
 
-        $models = $models->where(function ($query) use ($request, $model_name_param) {
+        // Solo las props que son columnas reales, con su nombre real.
+        $columnas_del_modelo = ColumnFiltersHelper::columnas_de_la_tabla($model_name);
+        $props_validas = [];
 
-            foreach ($request->props_to_filter as $prop_to_filter) {
+        foreach ((array) $request->props_to_filter as $prop_pedida) {
+            $columna = ColumnFiltersHelper::columna_valida($prop_pedida, $columnas_del_modelo);
+
+            if (!is_null($columna)) {
+                $props_validas[] = $columna;
+            }
+        }
+
+        // El pedido nombro props pero ninguna es columna: no hay donde buscar el texto, asi que no
+        // matchea nada. Sin esto el where(closure) quedaba vacio, Laravel lo descarta y el modal
+        // devolvia la lista entera del dueño como si hubiera coincidido. Sin props en el pedido el
+        // comportamiento es el de siempre.
+        $pidio_props = count((array) $request->props_to_filter) > 0;
+
+        $models = $models->where(function ($query) use ($request, $props_validas, $pidio_props) {
+
+            if ($pidio_props && !count($props_validas)) {
+                $query->whereRaw('1 = 0');
+            }
+
+            foreach ($props_validas as $prop_to_filter) {
 
                 $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
                     if ($prop_to_filter == 'num' || $prop_to_filter == 'bar_code') {
@@ -268,7 +323,9 @@ class SearchController extends Controller
                     } else {
                         $keywords = explode(' ', $request->query_value);
                         foreach ($keywords as $keyword) {
-                            $subQuery->whereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
+                            // where() y no whereRaw(): la columna ya esta validada, y ademas
+                            // Laravel la envuelve en backticks. No volver a concatenarla.
+                            $subQuery->where($prop_to_filter, 'LIKE', "%$keyword%");
                             // Log::info($prop_to_filter.' contenga '.$keyword);
                         }
                     }
@@ -368,7 +425,9 @@ class SearchController extends Controller
      *                   grupo de coincidencia de texto. Delegado en ExtraFiltersHelper::apply.
      *                   Whitelist de operadores: '=' (igualdad, admite 0 como valor legítimo),
      *                   'like' (contains), '>' / '<' / '>=' / '<=' (comparación numérica, solo si la
-     *                   columna es numérica y el valor también lo es), 'numeric_presence' (solo
+     *                   columna es numérica y el valor también lo es), 'in' (el valor es un array
+     *                   de números, típicamente ids: solo columnas numéricas; un array vacío = ninguna
+     *                   fila; lo usa Tesorería > Cheques para acotar la búsqueda a la solapa), 'numeric_presence' (solo
      *                   columnas numéricas; valores 'con_valor' = no nula, 'positivo' = mayor a
      *                   cero, 'todos' = sin filtro), 'address_stock_seteado' (filtra por RELACIÓN y
      *                   no por columna: deja pasar los modelos a los que se les cargó la sucursal
@@ -496,15 +555,22 @@ class SearchController extends Controller
         // para que quede DENTRO del mismo grupo de coincidencia de texto (no como un AND aparte).
         $extra_text_conditions = $usar_contexto_vender ? VenderSearchHelper::bar_code_condition_callback() : null;
 
+        // Extension de la propiedad `name` con la descripcion de las variantes (mision
+        // busqueda-vender-por-variantes, 1/10/2026): "zapatilla azul" encuentra el articulo
+        // "Zapatilla" con variantes "azul 35" y "azul 36". Solo con contexto Vender valido, y el
+        // helper devuelve null si el comercio no tiene la extension `article_variants`: en ese caso
+        // el SQL queda exactamente como antes.
+        $name_extension_condition = $usar_contexto_vender ? VenderSearchHelper::variant_description_condition_callback() : null;
+
         // Grupo de coincidencia de texto (props + relaciones, con su keyword_mode y el conector),
         // delegado en GlobalSearchQueryHelper. Reemplaza el armado inline que antes mezclaba OR de
         // props con AND de palabras adentro de cada una (ver PHPDoc del helper para la lógica de
         // los dos modos y su combinación).
-        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions);
+        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions, $name_extension_condition);
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
-        // comparación numérica '>','<','>=','<=', 'numeric_presence', 'address_stock_seteado', y los
+        // comparación numérica '>','<','>=','<=', 'in' (lista de números/ids), 'numeric_presence', 'address_stock_seteado', y los
         // legacy 'category' y 'stock_option'). Cualquier operador fuera de la whitelist se ignora en silencio (no se
         // ejecuta SQL arbitrario con la key/valor que venga del request).
         $models = ExtraFiltersHelper::apply($models, $table, $extra_filters);

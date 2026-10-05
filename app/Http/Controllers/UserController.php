@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\AuthController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\BalanzaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
 use App\Jobs\ProcessSetFinalPrices;
@@ -17,6 +18,7 @@ use App\Models\UserConfiguration;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Notifications\GlobalNotification;
+use App\Services\StockSuggestion\CoberturaService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
@@ -261,6 +263,18 @@ class UserController extends Controller
         if ($request->has('sugerencias_limite_origen') && !is_null($request->sugerencias_limite_origen)) {
             $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
         }
+        /**
+         * Prioridad al repartir desde el depósito madre (misión deposito-madre): mismo guard que
+         * las de arriba, más LISTA BLANCA. Este valor decide quién se lleva el stock cuando el
+         * madre no alcanza; uno desconocido se ignora (queda el que estaba) en vez de guardarse y
+         * caer en silencio al default en cada cálculo. Y sin la columna todavía (deploy a medio
+         * migrar, CoberturaService::columna_prioridad_existe()) no se asigna: el save sería un 500.
+         */
+        if (CoberturaService::columna_prioridad_existe()
+            && $request->has('sugerencias_prioridad_destino') && !is_null($request->sugerencias_prioridad_destino)
+            && in_array($request->sugerencias_prioridad_destino, CoberturaService::PRIORIDADES_DESTINO, true)) {
+            $model->sugerencias_prioridad_destino = $request->sugerencias_prioridad_destino;
+        }
 
         /**
          * Configuración de sugerencias de compra a proveedores: periodicidad
@@ -379,6 +393,31 @@ class UserController extends Controller
             && $request->has('aplicar_descuentos_proveedor_al_asignar')
             && !is_null($request->aplicar_descuentos_proveedor_al_asignar)) {
             $owner_user->aplicar_descuentos_proveedor_al_asignar = (int) $request->aplicar_descuentos_proveedor_al_asignar;
+            $owner_user->save();
+        }
+
+        /**
+         * Cómo lee VENDER los tickets de balanza (misión balanzas-configurables, 3/10/2026):
+         * 'ninguno', 'plu' o 'balanzas'. Reemplaza a las extensiones `plu_balanza_bar_code` /
+         * `balanza_bar_code` (ver UserHelper::modo_tickets_de_balanza()).
+         *
+         * 🔴 Los tres guards de `aplicar_descuentos_proveedor_al_asignar`, por los mismos motivos:
+         *
+         * 1. Va en `$owner_user`: es preferencia del comercio y la lectura siempre resuelve al dueño.
+         * 2. `has()` + descarte del null: `ModelForm` postea el modelo entero, y un request viejo
+         *    sin esta clave (o con la columna en null porque nunca se configuró) no puede borrarle
+         *    la elección al comercio.
+         * 3. SOLO SI QUIEN GUARDA ES EL DUEÑO: el modelo que la SPA tiene para un empleado trae la
+         *    columna PROPIA del empleado (NULL, nadie la escribe), y `ModelForm` la postearía.
+         *
+         * Y además lista blanca (BalanzaHelper::MODOS): cualquier otro valor se ignora. Un valor
+         * desconocido en la columna dejaría al comercio sin leer sus tickets sin ningún error.
+         */
+        if ($owner_user && is_null($model->owner_id)
+            && $request->has('tickets_de_balanza')
+            && !is_null($request->tickets_de_balanza)
+            && in_array($request->tickets_de_balanza, BalanzaHelper::MODOS, true)) {
+            $owner_user->tickets_de_balanza = $request->tickets_de_balanza;
             $owner_user->save();
         }
 

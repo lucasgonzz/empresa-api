@@ -25,11 +25,16 @@ class EmployeeController extends Controller
         $model = User::where('id', $request->id)
                         ->first();
         
-        $model->permissions()->sync([]);
-        foreach ($request->permissions as $permission) {
-            $model->permissions()->attach($permission['id']);
+        // Si el request no trae 'permissions' (array) no se tocan los permisos: antes el sync([]) los
+        // borraba y el foreach reventaba con un 500, dejando al empleado sin ninguno.
+        if (is_array($request->permissions)) {
+            $ids = [];
+            foreach ($request->permissions as $permission) {
+                $ids[] = $permission['id'];
+            }
+            $model->permissions()->sync($ids);
         }
-        
+
         $model->name                                            = $request->name;
         $model->phone                                           = $request->phone;
         $model->address_id                                      = $request->address_id;

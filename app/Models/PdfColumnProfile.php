@@ -133,6 +133,22 @@ class PdfColumnProfile extends Model
          * siempre que el cliente tenga observaciones cargadas).
          */
         'show_client_description' => 'boolean',
+        /**
+         * Diseño de la hoja armado en el diseñador de PDF (misión diseno-pdf-configurable,
+         * 1/10/2026): las cajas de arriba de la tabla ("superior") y las del pie ("pie"), con sus
+         * campos y su estilo. Esquema, límites y normalización en
+         * App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf; catálogo de campos en
+         * CatalogoDeCamposPdf.
+         *
+         * 🔴 NULL NO ES "VACÍO": es "este diseño nunca se armó en el diseñador", y el PDF sale
+         * exactamente como siempre (NewSalePdf / ProfileDocumentPdf de antes, con los flags show_*).
+         * Un diseño con page_layout ignora esos flags: lo que se imprime lo dicen las cajas.
+         */
+        'page_layout' => 'array',
+        /**
+         * Alto de la hoja en mm. Solo lo usa el PDF con page_layout; null = 297 (A4).
+         */
+        'paper_height_mm' => 'integer',
     ];
 
     /**
