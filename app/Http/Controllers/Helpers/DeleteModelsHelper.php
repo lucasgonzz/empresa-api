@@ -81,6 +81,10 @@ class DeleteModelsHelper
                 return 'proveedores';
             case 'sale':
                 return 'ventas';
+            case 'order_production':
+                // Misión orden-produccion-baja-de-venta (5/10/2026): el aviso decía "eliminación
+                // masiva de order_production".
+                return 'órdenes de producción';
         }
 
         return $model_name;
