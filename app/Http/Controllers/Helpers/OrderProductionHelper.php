@@ -28,14 +28,46 @@ class OrderProductionHelper {
 		}
 	}
 
+	/**
+	 * Borra TODOS los movimientos de cuenta corriente de la orden y los devuelve.
+	 *
+	 * Misión orden-produccion-baja-de-venta (5/10/2026):
+	 *  - Todos, no el primero: un terminar fallido puede haber dejado más de uno, y el que quedaba
+	 *    seguía sumándole la orden al cliente aunque la orden ya no existiera.
+	 *  - Antes de cada delete() se liberan los pagos dirigidos y las imputaciones, igual que
+	 *    SaleHelper::deleteCurrentAcountFromSale(). `CurrentAcount` no usa SoftDeletes: sin esto un
+	 *    pago queda apuntando con `to_pay_id` a una fila que no existe y deja de imputarse, sin
+	 *    error visible.
+	 *  - NO recalcula ninguna cadena: eso le toca al llamador, que sabe qué cuentas tocó (por el
+	 *    `credit_account_id` de lo que se devuelve). checkFinieshed() ignora el retorno.
+	 *
+	 * @param  \App\Models\OrderProduction  $order_production
+	 * @return \App\Models\CurrentAcount[]  Los movimientos borrados; vacío (falsy) si no había.
+	 */
 	static function deleteCurrentAcount($order_production) {
-		$current_acount = CurrentAcount::where('order_production_id', $order_production->id)
-										->first();
-		if (!is_null($current_acount)) {
+		$current_acounts = CurrentAcount::where('order_production_id', $order_production->id)
+										->orderBy('id')
+										->get();
+
+		$borrados = [];
+
+		foreach ($current_acounts as $current_acount) {
+
+			$pagos_dirigidos = CurrentAcount::where('to_pay_id', $current_acount->id)
+											->get();
+
+			foreach ($pagos_dirigidos as $pago_dirigido) {
+				$pago_dirigido->to_pay_id = null;
+				$pago_dirigido->save();
+			}
+
+			$current_acount->pagado_por()->detach();
 			$current_acount->delete();
-			return true;
+
+			$borrados[] = $current_acount;
 		}
-		return false;
+
+		return $borrados;
 	}
 
 	static function saveCurrentAcount($order_production) {
