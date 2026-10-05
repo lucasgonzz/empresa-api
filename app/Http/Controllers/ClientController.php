@@ -448,17 +448,21 @@ class ClientController extends Controller
             return response()->json(['message' => 'No hay filtros activos para armar el PDF.'], 422);
         }
 
-        // 🔴 Cada `key` tiene que ser un nombre de columna y nada más. ColumnFiltersHelper arma el
-        // "que contenga" con `whereRaw($filter['key'].' LIKE ?')`, sin paréntesis: un key como
-        // "1=1 OR name" deja `user_id = <dueño> AND 1=1 OR name LIKE ?` y trae los clientes de
-        // TODOS los comercios de una base compartida. La SPA solo manda keys del modelo de cliente.
+        // 🔴 Cada `key` tiene que ser una columna real de la tabla, y eso lo valida
+        // ColumnFiltersHelper::apply() para TODOS sus caminos, no este controller (misión
+        // filtros-key-sin-inyeccion, 5/10/2026): un key como "1=1 OR name" con criterio sale con
+        // FiltroDeColumnaInvalidoException, que contesta 422 en JSON aunque esta ruta sea de web.php.
+        // Hasta esa fecha acá había un regex propio de keys: no volver a copiar la guarda en cada
+        // entrada, porque la próxima entrada nueva se olvida de copiarla.
+        //
+        // Lo que SÍ queda acá es la forma del pedido de este PDF: cada filtro es un objeto con su
+        // `key`. El helper saltea en silencio lo que no tiene esa forma, y acá eso dejaría salir el
+        // PDF con TODOS los clientes del dueño por un pedido mal armado (`filters=[1]`).
         foreach ($filters as $filter) {
-            if (!is_array($filter) || !isset($filter['key']) || !is_string($filter['key'])
-                || !preg_match('/^[A-Za-z0-9_]+$/', $filter['key'])) {
+            if (!is_array($filter) || !isset($filter['key']) || !is_string($filter['key'])) {
                 return response()->json(['message' => 'Filtro inválido.'], 422);
             }
         }
-
         $search_ct = new SearchController();
         $models = $search_ct->search($request, 'client', $filters);
 

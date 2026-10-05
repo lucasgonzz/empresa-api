@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Busqueda;
 
+use App\Exceptions\FiltroDeColumnaInvalidoException;
 use App\Http\Controllers\Helpers\ColumnFiltersHelper;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
@@ -176,6 +177,13 @@ class Filtro_En_Blanco_Con_Relacion_Borrada_Test extends BusquedaTestCase
     /**
      * La key sale del request: un `save_id` no puede terminar llamando a Model::save().
      *
+     * Contrato actualizado por la misión filtros-key-sin-inyeccion (5/10/2026): `save_id` no es una
+     * columna de articles y el filtro trae un criterio ("en blanco"), así que el helper lo rechaza
+     * con FiltroDeColumnaInvalidoException (422 por HTTP) ANTES de armar ningún SQL. Hasta esa fecha
+     * devolvía un SQL con `save_id IS NULL` sin el chequeo de relación (que al ejecutarse daba 500),
+     * y eso era lo que miraba la primera aserción. Lo que este test protege —que no se invoque
+     * save()— se sigue verificando igual, y ahora además se exige el rechazo.
+     *
      * @group busqueda
      * @test
      */
@@ -183,9 +191,15 @@ class Filtro_En_Blanco_Con_Relacion_Borrada_Test extends BusquedaTestCase
     {
         $antes = Article::withTrashed()->count();
 
-        $sql = $this->sql_en_blanco(Article::class, 'article', 'save_id');
+        $rechazado = false;
 
-        $this->assertStringNotContainsString('not exists', $sql);
+        try {
+            $this->sql_en_blanco(Article::class, 'article', 'save_id');
+        } catch (FiltroDeColumnaInvalidoException $e) {
+            $rechazado = true;
+        }
+
+        $this->assertTrue($rechazado, 'save_id no es una columna de articles: con un criterio puesto el filtro se rechaza');
         $this->assertEquals($antes, Article::withTrashed()->count(), 'no debe insertarse ninguna fila');
     }
 

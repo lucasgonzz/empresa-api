@@ -266,14 +266,55 @@ class SearchController extends Controller
     }
 
 
+    /**
+     * Buscador de los modales (el input con lupa de un select/search de formulario): texto libre
+     * contra las columnas que manda la SPA en `props_to_filter`, OR entre columnas y AND de palabras
+     * adentro de cada una (num y bar_code por igualdad).
+     *
+     * 🔴 `props_to_filter` SALE DEL PEDIDO Y SON NOMBRES DE COLUMNA (mision
+     * filtros-key-sin-inyeccion, 5/10/2026). Hasta esa fecha cada prop se concatenaba en un
+     * `whereRaw($prop.' LIKE ?')`: estar adentro de un where(closure) no alcanzaba, porque una prop
+     * como "name)) OR ((1=1" cierra los parentesis del closure y la condicion de dueño queda afuera.
+     * Ahora cada prop tiene que ser una columna real de la tabla (la misma regla de
+     * ColumnFiltersHelper, una sola consulta de columnas) y la que no lo es SE IGNORA: es un
+     * buscador de texto libre, no una masiva, y es el mismo criterio que ya aplica
+     * GlobalSearchQueryHelper a sus props. `depends_on_key` va por where(), que envuelve el
+     * identificador: no tiene el mismo problema.
+     *
+     * @param  Request  $request
+     * @param  string   $model_name_param
+     * @return \Illuminate\Http\JsonResponse
+     */
     function searchFromModal(Request $request, $model_name_param) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $this->query_base_del_modelo($model_name)
                                 ->withAll();
 
-        $models = $models->where(function ($query) use ($request, $model_name_param) {
+        // Solo las props que son columnas reales, con su nombre real.
+        $columnas_del_modelo = ColumnFiltersHelper::columnas_de_la_tabla($model_name);
+        $props_validas = [];
 
-            foreach ($request->props_to_filter as $prop_to_filter) {
+        foreach ((array) $request->props_to_filter as $prop_pedida) {
+            $columna = ColumnFiltersHelper::columna_valida($prop_pedida, $columnas_del_modelo);
+
+            if (!is_null($columna)) {
+                $props_validas[] = $columna;
+            }
+        }
+
+        // El pedido nombro props pero ninguna es columna: no hay donde buscar el texto, asi que no
+        // matchea nada. Sin esto el where(closure) quedaba vacio, Laravel lo descarta y el modal
+        // devolvia la lista entera del dueño como si hubiera coincidido. Sin props en el pedido el
+        // comportamiento es el de siempre.
+        $pidio_props = count((array) $request->props_to_filter) > 0;
+
+        $models = $models->where(function ($query) use ($request, $props_validas, $pidio_props) {
+
+            if ($pidio_props && !count($props_validas)) {
+                $query->whereRaw('1 = 0');
+            }
+
+            foreach ($props_validas as $prop_to_filter) {
 
                 $query->orWhere(function ($subQuery) use ($prop_to_filter, $request) {
                     if ($prop_to_filter == 'num' || $prop_to_filter == 'bar_code') {
@@ -282,7 +323,9 @@ class SearchController extends Controller
                     } else {
                         $keywords = explode(' ', $request->query_value);
                         foreach ($keywords as $keyword) {
-                            $subQuery->whereRaw($prop_to_filter . ' LIKE ?', ["%$keyword%"]);
+                            // where() y no whereRaw(): la columna ya esta validada, y ademas
+                            // Laravel la envuelve en backticks. No volver a concatenarla.
+                            $subQuery->where($prop_to_filter, 'LIKE', "%$keyword%");
                             // Log::info($prop_to_filter.' contenga '.$keyword);
                         }
                     }
