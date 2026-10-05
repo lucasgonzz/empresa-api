@@ -98,23 +98,83 @@ class Metodos_del_modelo_por_nombre_Test extends FiltrosDeColumnaTestCase
         $this->assertNull(Sale::withTrashed()->find($venta)->deleted_at, 'La venta del dueño quedó borrada.');
     }
 
+    /**
+     * Corre $accion y devuelve las sentencias SQL que ejecutó (con DB::listen).
+     *
+     * Contar filas de una tabla no alcanza para probar que un método NO se invocó: en `articles` un
+     * `(new Article)->save()` vacío falla por el user_id obligatorio y no deja rastro, y `restore()` o
+     * `delete()` sobre un modelo nuevo no escriben nada. Lo que sí se ve siempre es la sentencia.
+     *
+     * @param  callable  $accion
+     * @return string[]
+     */
+    protected function sentencias_de(callable $accion)
+    {
+        $sentencias = [];
+
+        DB::listen(function ($consulta) use (&$sentencias) {
+            $sentencias[] = $consulta->sql;
+        });
+
+        $accion();
+
+        return $sentencias;
+    }
+
+    /**
+     * Las sentencias de la lista que escriben (todo lo que no es un SELECT).
+     *
+     * @param  string[]  $sentencias
+     * @return string[]
+     */
+    protected function escrituras($sentencias)
+    {
+        return array_values(array_filter($sentencias, function ($sql) {
+            return !preg_match('/^\s*select\b/i', $sql);
+        }));
+    }
+
     /** @test */
     public function relacion_real_solo_devuelve_relaciones_declaradas_en_app()
     {
-        $articulos_antes = Article::withTrashed()->count();
-
-        // Relaciones de verdad.
+        // Relaciones de verdad (también con otras mayúsculas: PHP resuelve el método igual).
         $this->assertInstanceOf(BelongsTo::class, ColumnFiltersHelper::relacion_real(Article::class, 'category'));
+        $this->assertInstanceOf(BelongsTo::class, ColumnFiltersHelper::relacion_real(Article::class, 'CATEGORY'));
         $this->assertInstanceOf(MorphMany::class, ColumnFiltersHelper::relacion_real(Article::class, 'images'));
 
-        // Métodos de Eloquent (Model) y de traits de Illuminate (SoftDeletes::restore, que PHP
-        // reporta con el modelo como clase declarante).
-        foreach (['save', 'touch', 'push', 'delete', 'forceDelete', 'restore', 'refresh', 'replicate', 'getTable'] as $metodo) {
-            $this->assertNull(ColumnFiltersHelper::relacion_real(Article::class, $metodo), $metodo . ' no es una relación.');
+        /*
+         * Métodos de Eloquent (Model) y de traits de Illuminate (SoftDeletes::restore, que PHP reporta
+         * con el modelo como clase declarante), en cualquier combinación de mayúsculas. Se prueba
+         * sobre Sale, donde un save() vacío SÍ inserta. Tienen que descartarse SIN invocarse: cero
+         * sentencias, no solo cero escrituras.
+         */
+        $metodos_de_eloquent = [
+            'save', 'SAVE', 'Save', 'touch', 'push', 'delete', 'forceDelete', 'restore', 'RESTORE',
+            'refresh', 'replicate', 'getTable', 'newQuery', '__construct', '__call',
+        ];
+
+        foreach ($metodos_de_eloquent as $metodo) {
+            $resultado = 'sin correr';
+
+            $sentencias = $this->sentencias_de(function () use ($metodo, &$resultado) {
+                $resultado = ColumnFiltersHelper::relacion_real(Sale::class, $metodo);
+            });
+
+            $this->assertNull($resultado, $metodo . ' no es una relación.');
+            $this->assertSame([], $sentencias, $metodo . ' se invocó (ejecutó SQL) antes de descartarse.');
         }
 
-        // Un accessor con efectos (lee la base) no se invoca.
-        $this->assertNull(ColumnFiltersHelper::relacion_real(ProductionBatch::class, 'getAmountsByStatusAttribute'));
+        // Un accessor que lee la base no se invoca, escrito como sea.
+        foreach (['getAmountsByStatusAttribute', 'getAmountsByStatusattribute', 'GETAMOUNTSBYSTATUSATTRIBUTE'] as $accessor) {
+            $resultado = 'sin correr';
+
+            $sentencias = $this->sentencias_de(function () use ($accessor, &$resultado) {
+                $resultado = ColumnFiltersHelper::relacion_real(ProductionBatch::class, $accessor);
+            });
+
+            $this->assertNull($resultado);
+            $this->assertSame([], $sentencias, 'El accessor ' . $accessor . ' se invocó.');
+        }
 
         // Nombres que ni siquiera son identificadores, o que no son texto.
         foreach (['category; drop', 'category()', 'category ', '../category', '', '1category'] as $nombre) {
@@ -126,7 +186,6 @@ class Metodos_del_modelo_por_nombre_Test extends FiltrosDeColumnaTestCase
         // Un método que no existe, y una clase que no existe.
         $this->assertNull(ColumnFiltersHelper::relacion_real(Article::class, 'no_existe_esta_relacion'));
         $this->assertNull(ColumnFiltersHelper::relacion_real('App\\Models\\NoExisteEsteModelo', 'category'));
-
-        $this->assertSame($articulos_antes, Article::withTrashed()->count(), 'Validar nombres escribió en articles.');
+        $this->assertNull(ColumnFiltersHelper::relacion_real(Article::class, "category\n"), 'Un "\n" final no puede pasar por identificador.');
     }
 }

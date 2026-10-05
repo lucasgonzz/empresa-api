@@ -23,7 +23,9 @@ use Illuminate\Support\Facades\Queue;
  * andando y traer solo lo propio.
  *
  * ⚠️ El de `article/table-pdf` va ÚLTIMO a propósito: sin la guarda, ese pedido llega a
- * ArticleTablePdf, que hace `exit` después de mandar el PDF y corta el proceso de PHPUnit.
+ * ArticleTablePdf, que hace `exit` después de mandar el PDF y corta el proceso de PHPUnit. Y el de
+ * la papelera va anteúltimo: sin la guarda, su `while (true)` no termina. Si alguno de los dos se
+ * rompe, la corrida no da un rojo prolijo: se corta o se cuelga. Es la señal.
  *
  * @group filtros_key_sin_inyeccion
  */
@@ -242,6 +244,189 @@ class Key_de_filtro_por_entrada_Test extends FiltrosDeColumnaTestCase
 
         $respuesta->assertStatus(200);
         $this->assertSame([(int) $propio->id], $this->ids_de($respuesta));
+
+        // Si NINGUNA prop del pedido es columna no hay dónde buscar el texto: no matchea nada (antes
+        // el where vacío se descartaba y salía la lista entera del dueño).
+        $respuesta = $this->postJson('api/search-from-modal/client', [
+            'props_to_filter' => ['name)) OR ((name', 'no_es_columna'],
+            'query_value'     => $texto,
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame([], $this->ids_de($respuesta), 'Con todas las props inválidas el modal no tiene que devolver nada.');
+    }
+
+    /** @test */
+    public function el_excel_de_ventas_rechaza_el_key_inyectado()
+    {
+        $otro = $this->otro_dueno();
+        $texto = 'ZZKEYVENTAS' . uniqid();
+
+        foreach ([$this->dueno->id, $otro->id] as $user_id) {
+            DB::table('sales')->insert([
+                'user_id'      => $user_id,
+                'observations' => $texto,
+                'created_at'   => date('Y-m-d H:i:s'),
+                'updated_at'   => date('Y-m-d H:i:s'),
+            ]);
+        }
+
+        // Los dos botones de Excel de la pantalla de Ventas (POST api/sales/excel/*) pasan los filtros
+        // de columna al mismo buscador cuando la pantalla está filtrada.
+        foreach (['api/sales/excel/export', 'api/sales/excel/breakdown-export'] as $ruta) {
+            foreach (self::KEYS_INYECTADOS as $key) {
+                $respuesta = $this->postJson($ruta, [
+                    'is_filtered' => true,
+                    'filters'     => [$this->filtro_spa($key, 'text', ['que_contenga' => $texto])],
+                ]);
+
+                $this->assert_rechazo_de_la_guarda($respuesta, $ruta . ' con key "' . $key . '"');
+            }
+        }
+
+        $respuesta = $this->postJson('api/sales/excel/export', [
+            'is_filtered' => true,
+            'filters'     => [$this->filtro_spa('observations', 'text', ['que_contenga' => $texto])],
+        ]);
+
+        $respuesta->assertStatus(200);
+    }
+
+    /** @test */
+    public function una_masiva_no_corre_si_un_filtro_con_criterio_no_se_puede_aplicar()
+    {
+        Queue::fake();
+
+        $otro = $this->otro_dueno();
+        $texto = 'ZZKEYCERO' . uniqid();
+
+        $propio = $this->articulo_de($this->dueno->id, $texto . ' propio');
+        $ajeno = $this->articulo_de($otro->id, $texto . ' ajeno');
+
+        /*
+         * Un filtro válido más uno cuyo key no es columna PERO trae un criterio real ("igual a 0" en
+         * texto, número o select; el checkbox en "desactivado"). Las ramas del helper aplican esos
+         * valores sobre una columna, así que no pueden contar como vacíos: si el segundo filtro se
+         * descartara en silencio, el borrado correría con el primero solo (DeleteController pide al
+         * menos UN filtro efectivo, no que estén todos aplicados). Lo encontró el verificador
+         * independiente el 5/10/2026.
+         *
+         * (Un '' no sirve para esto por HTTP: el middleware ConvertEmptyStringsToNull lo convierte en
+         * null antes de llegar al helper, y con null la rama tampoco aplica nada.)
+         */
+        $criterios_reales = [
+            $this->filtro_spa('no_es_columna', 'text', ['igual_que' => '0']),
+            $this->filtro_spa('no_es_columna', 'number', ['igual_que' => '0']),
+            $this->filtro_spa('no_es_columna', 'select', ['igual_que' => '0']),
+            $this->filtro_spa('no_es_columna', 'checkbox', ['checkbox' => 0]),
+        ];
+
+        foreach ($criterios_reales as $criterio) {
+            $respuesta = $this->putJson('api/delete/article', [
+                'from_filter' => 1,
+                'filter_form' => [$this->filtro_nombre_articulo('name', $texto), $criterio],
+            ]);
+
+            $this->assert_rechazo_de_la_guarda($respuesta, 'delete con ' . json_encode(array_intersect_key($criterio, array_flip(['type', 'igual_que', 'checkbox']))));
+        }
+
+        Queue::assertNothingPushed();
+        $this->assertNotNull(Article::find($propio), 'El borrado corrió sin el filtro que no se podía aplicar.');
+        $this->assertNotNull(Article::find($ajeno));
+
+        // Y los vacíos de la SPA siguen siendo inertes: el mismo pedido con el segundo filtro sin
+        // tocar (igual_que '' / 0, checkbox -1) no se rechaza.
+        $inertes = [
+            $this->filtro_spa('no_es_columna', 'text'),
+            $this->filtro_spa('no_es_columna', 'select'),
+            $this->filtro_spa('no_es_columna', 'checkbox'),
+        ];
+
+        $respuesta = $this->postJson('api/search/article', [
+            'filters' => array_merge([$this->filtro_nombre_articulo('name', $texto)], $inertes),
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame([$propio], $this->ids_de($respuesta));
+    }
+
+    /** @test */
+    public function el_orden_con_direccion_o_columna_de_relacion_hostiles_no_llega_al_sql()
+    {
+        $otro = $this->otro_dueno();
+        $texto = 'ZZKEYORDEN' . uniqid();
+
+        $propio = $this->articulo_de($this->dueno->id, $texto . ' propio');
+        $ajeno = $this->articulo_de($otro->id, $texto . ' ajeno');
+
+        // La dirección también sale del pedido: solo asc / desc.
+        $respuesta = $this->postJson('api/search/article', [
+            'filters' => [
+                $this->filtro_nombre_articulo('name', $texto),
+                $this->filtro_spa('name', 'textarea', ['ordenar_de' => 'ASC, (SELECT 1)']),
+            ],
+        ]);
+        $this->assert_rechazo_de_la_guarda($respuesta, 'ordenar_de hostil');
+
+        // La columna visible de la relación (order_relation_prop) tiene que ser una columna de la
+        // tabla relacionada; si no, se ordena por el FK. Nunca entra al SQL.
+        foreach (['name) OR (1=1', 'name`, (SELECT 1) AS `x', 'no_es_columna'] as $prop) {
+            $respuesta = $this->postJson('api/search/article', [
+                'filters' => [
+                    $this->filtro_nombre_articulo('name', $texto),
+                    $this->filtro_spa('category_id', 'search', ['ordenar_de' => 'DESC'], $prop),
+                ],
+            ]);
+
+            $respuesta->assertStatus(200);
+            $this->assertSame([$propio], $this->ids_de($respuesta), 'order_relation_prop "' . $prop . '"');
+            $this->assertNotContains($ajeno, $this->ids_de($respuesta));
+        }
+    }
+
+    /** @test */
+    public function el_pdf_de_clientes_rechaza_filtros_mal_armados()
+    {
+        // La forma del pedido sigue siendo de ClientController::pdf (cada filtro, un objeto con su
+        // key): el helper saltearía estos en silencio y saldría el PDF con todos los clientes.
+        foreach (['[1]', '[{"type":"text","que_contenga":"x"}]', '[{"key":["name"],"type":"text"}]'] as $filtros) {
+            $respuesta = $this->get('client/pdf?filters=' . urlencode($filtros));
+
+            $this->assertSame(422, $respuesta->getStatusCode(), 'client/pdf con filters=' . $filtros);
+        }
+
+        // Y un key inyectado lo rechaza la guarda del helper, también en esta ruta de web.php.
+        $filtros = json_encode([$this->filtro_nombre_cliente('1=1 OR name', 'x')]);
+        $this->assert_rechazo_de_la_guarda($this->get('client/pdf?filters=' . urlencode($filtros)), 'client/pdf con key inyectado');
+    }
+
+    /**
+     * Va anteúltimo, por lo mismo que el de table-pdf: sin la guarda, `restaurar_filtrados()` drena
+     * la papelera con un `while (true)` sobre la página 1 y SALTEA (sin restaurar) lo que no es del
+     * dueño; con el key inyectado la página 1 trae siempre filas ajenas y el bucle no termina.
+     *
+     * @test
+     */
+    public function zy_restaurar_filtrados_de_la_papelera_rechaza_el_key_inyectado()
+    {
+        $otro = $this->otro_dueno();
+        $texto = 'ZZKEYPAPELERA' . uniqid();
+        $borrado = date('Y-m-d H:i:s');
+
+        $propio = $this->articulo_de($this->dueno->id, $texto . ' propio', ['deleted_at' => $borrado]);
+        $ajeno = $this->articulo_de($otro->id, $texto . ' ajeno', ['deleted_at' => $borrado]);
+
+        foreach (self::KEYS_INYECTADOS as $key) {
+            $respuesta = $this->postJson('api/papelera/restaurar-filtrados/article', [
+                'filters' => [$this->filtro_nombre_articulo($key, $texto)],
+            ]);
+
+            $this->assert_rechazo_de_la_guarda($respuesta, 'papelera con key "' . $key . '"');
+        }
+
+        // La operación no corrió: los dos siguen en la papelera.
+        $this->assertNotNull(DB::table('articles')->where('id', $propio)->value('deleted_at'));
+        $this->assertNotNull(DB::table('articles')->where('id', $ajeno)->value('deleted_at'));
     }
 
     /**
