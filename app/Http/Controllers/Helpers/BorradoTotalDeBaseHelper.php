@@ -136,6 +136,18 @@ class BorradoTotalDeBaseHelper
      * `''`, `'si'`, null ni ausente, que un `(bool)` o un `!empty()` dejarían pasar o confundirían)
      * y el nombre se compara con `hash_equals`, sensible a mayúsculas.
      *
+     * 🔴 Dos aclaraciones para no sobreestimar lo que esto protege:
+     * - Por HTTP, el middleware global `TrimStrings` le recorta los espacios al nombre ANTES de que
+     *   llegue acá: " panchito" o "panchito " autorizan igual que "panchito" (verificado en vivo). Es
+     *   aceptable, porque de todos modos hay que saber el nombre exacto; con el dato crudo (sin
+     *   pasar por HTTP) un espacio de más sí lo rechaza.
+     * - La confirmación NO es autenticación: es un freno contra los accidentes, no contra un
+     *   atacante. El nombre de la base suele coincidir con el subdominio del cliente (la base de
+     *   Panchito se llama `panchito`), o sea que cualquiera que sepa a qué cliente le pega lo puede
+     *   adivinar. Lo que la hace valer es que un POST perdido, un payload armado con un spread o un
+     *   test mal apuntado NO traen el nombre de la base correcta por casualidad. La defensa contra
+     *   alguien que apunta a propósito es la clave de admin (ClaveDeAdminEnSetup), cuando se prenda.
+     *
      * @param  array<string, mixed> $data Payload del setup.
      * @return bool
      */

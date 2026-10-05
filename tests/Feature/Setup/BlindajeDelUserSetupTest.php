@@ -68,6 +68,11 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     /** @var resource|false Handle del candado cuando el test lo toma a mano; se suelta en tearDown. */
     protected $candado = false;
 
+    /**
+     * Planta el marcador en `migrations`, fotografía los conteos y engancha el listener que junta las líneas de log.
+     *
+     * @return void
+     */
     protected function setUp(): void
     {
         parent::setUp();
@@ -92,6 +97,11 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         });
     }
 
+    /**
+     * Suelta el candado si el test lo dejó tomado, para que no trabe a los que siguen.
+     *
+     * @return void
+     */
     protected function tearDown(): void
     {
         // Un candado que queda tomado por un test traba los que siguen.
