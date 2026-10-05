@@ -203,9 +203,13 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
      * comprueba que haya una transacción abierta, y se apagan las FK solo para poder borrar en
      * cualquier orden (es una variable de sesión: no cierra la transacción).
      *
+     * Con `$excepto` se vacían TODAS LAS DEMÁS (para probar una tabla por vez): en ese caso no se
+     * afirma nada sobre el estado final, lo afirma el que llama.
+     *
+     * @param  string[] $excepto Tablas de la lista que NO se vacían.
      * @return void
      */
-    protected function vaciar_las_tablas_de_negocio()
+    protected function vaciar_las_tablas_de_negocio(array $excepto = [])
     {
         $this->assertGreaterThanOrEqual(
             1,
@@ -217,22 +221,30 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
         try {
             foreach (BorradoTotalDeBaseHelper::TABLAS_DE_NEGOCIO as $tabla) {
+                if (in_array($tabla, $excepto, true)) {
+                    continue;
+                }
+
                 DB::table($tabla)->delete();
             }
         } finally {
             Schema::enableForeignKeyConstraints();
         }
 
-        $this->assertSame([], BorradoTotalDeBaseHelper::resumen_de_datos(), 'La base de testing tenía que quedar vacía dentro de la transacción.');
+        if (empty($excepto)) {
+            $this->assertSame([], BorradoTotalDeBaseHelper::resumen_de_datos(), 'La base de testing tenía que quedar vacía dentro de la transacción.');
+        }
     }
 
     /**
      * Lo que se verifica de TODO 409 por base con datos.
      *
      * @param  \Illuminate\Testing\TestResponse $respuesta
+     * @param  string|null                      $exactamente Si se pasa, `con_datos` tiene que ser
+     *                                                       EXACTAMENTE esa tabla y ninguna otra.
      * @return void
      */
-    protected function assert_409_por_base_con_datos($respuesta)
+    protected function assert_409_por_base_con_datos($respuesta, $exactamente = null)
     {
         $respuesta->assertStatus(409);
         $respuesta->assertJson(['base_con_datos' => true, 'en_curso' => false]);
@@ -242,7 +254,12 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         $con_datos = $respuesta->json('con_datos');
 
         $this->assertIsArray($con_datos);
-        $this->assertContains('users', $con_datos, 'La base de testing tiene usuarios: tiene que figurar.');
+
+        if ($exactamente === null) {
+            $this->assertContains('users', $con_datos, 'La base de testing tiene usuarios: tiene que figurar.');
+        } else {
+            $this->assertSame([$exactamente], $con_datos, 'Con solo esa tabla con datos, es la única que tiene que figurar.');
+        }
 
         // Una lista de nombres de tabla, sin conteos (nada de tabla => filas).
         $this->assertSame(array_values($con_datos), $con_datos, 'con_datos es una lista, no un mapa con conteos.');
@@ -883,6 +900,83 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
         $this->assertTrue($se_propago, 'Un error de conexión se tragó y la guarda habría contestado "base vacía".');
         $this->assertSame($original, DB::getDefaultConnection());
+    }
+
+    /**
+     * Toda tabla de TABLAS_DE_NEGOCIO existe en la base de testing. Es la red contra una errata o un
+     * renombre: un nombre mal escrito sería una tabla ausente, que la guarda trata como "vacía" en
+     * silencio, y dejaría de ver esos datos sin avisar. (`current_acounts`, con una sola "c", es el
+     * nombre real del esquema.) Y que no haya repetidas.
+     *
+     * @test
+     */
+    public function todas_las_tablas_de_negocio_existen_en_la_base()
+    {
+        $schema = DB::connection()->getSchemaBuilder();
+
+        foreach (BorradoTotalDeBaseHelper::TABLAS_DE_NEGOCIO as $tabla) {
+            $this->assertTrue($schema->hasTable($tabla), 'La tabla "' . $tabla . '" de TABLAS_DE_NEGOCIO no existe: ¿errata o renombre?');
+        }
+
+        $this->assertSame(
+            array_values(array_unique(BorradoTotalDeBaseHelper::TABLAS_DE_NEGOCIO)),
+            BorradoTotalDeBaseHelper::TABLAS_DE_NEGOCIO,
+            'TABLAS_DE_NEGOCIO tiene una tabla repetida.'
+        );
+    }
+
+    /**
+     * 🔴 CADA TABLA CUENTA POR SÍ SOLA, no solo `users`: por cada tabla de la lista que tiene filas
+     * en la base de testing, se vacían TODAS LAS DEMÁS (DELETE dentro de un savepoint, que se
+     * deshace en cada vuelta; jamás truncate) y se comprueba que el resumen es exactamente esa tabla
+     * y que el POST da 409 con solo esa tabla en `con_datos`. Si alguien saca una tabla de la lista
+     * o la deja de contar, la vuelta de esa tabla da "base vacía" y este test cae.
+     *
+     * (Las tablas de la lista sin filas en la base de testing quedan cubiertas por el test de que
+     * existen; probarlas una por una pediría armar una fila válida de cada una.)
+     *
+     * @test
+     */
+    public function cada_tabla_de_negocio_alcanza_por_si_sola_para_rechazar_el_setup()
+    {
+        $this->sin_migrate_fresh_jamas();
+
+        $con_filas = [];
+
+        foreach (BorradoTotalDeBaseHelper::TABLAS_DE_NEGOCIO as $tabla) {
+            $filas = (int) DB::table($tabla)->count();
+
+            if ($filas > 0) {
+                $con_filas[$tabla] = $filas;
+            }
+        }
+
+        $this->assertArrayHasKey('users', $con_filas, 'La base de testing tiene que tener usuarios.');
+        $this->assertGreaterThanOrEqual(2, count($con_filas), 'Con una sola tabla con datos esta prueba no distingue nada: hay que sembrar la base de testing.');
+
+        foreach ($con_filas as $tabla => $filas) {
+            // Un savepoint dentro de la transacción del test: lo que se borra acá se deshace al salir.
+            DB::beginTransaction();
+
+            try {
+                $this->vaciar_las_tablas_de_negocio([$tabla]);
+
+                $this->assertSame(
+                    [$tabla => $filas],
+                    BorradoTotalDeBaseHelper::resumen_de_datos(),
+                    'Con solo "' . $tabla . '" con datos, el resumen tenía que ser exactamente esa tabla.'
+                );
+
+                $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload());
+
+                $this->assertSame(409, $respuesta->getStatusCode(), 'Con solo "' . $tabla . '" con datos, el setup tenía que rebotar.');
+                $this->assert_409_por_base_con_datos($respuesta, $tabla);
+            } finally {
+                DB::rollBack();
+            }
+        }
+
+        $this->assert_base_intacta();
     }
 
     // ------------------------------------------------------------------------------------------

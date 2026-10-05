@@ -59,10 +59,23 @@ class BorradoTotalDeBaseHelper
     /**
      * Tablas cuyo contenido es "datos de negocio": con una sola fila en cualquiera, la base NO
      * está vacía. Una tabla que no existe (base sin migrar) cuenta como vacía.
+     *
+     * 🔴 Criterio para agregar una: tiene que ser un dato de negocio INEQUÍVOCO (lo cargó o lo generó
+     * el cliente al operar) y NINGÚN seeder ni paso de `UserSetupHelper::run()` puede poblarla. Si
+     * una instalación recién hecha ya la dejara con filas, un re-run legítimo se rechazaría siempre.
+     * Hay un test que exige que todas existan (un nombre mal escrito sería una tabla ausente, o sea
+     * "vacía" en silencio: la guarda dejaría de ver esos datos sin avisar), y otro que prueba cada
+     * tabla por separado.
+     *
+     * - `current_acounts` es la errata real del esquema (una sola "c"), no un error de tipeo acá.
+     * - Se suman a las del negocio central: `afip_tickets` (comprobantes fiscales emitidos),
+     *   `buyers` (compradores de la tienda), `cheques` y `stock_movements`, por si alguien borró los
+     *   usuarios y quedó el negocio.
      */
     const TABLAS_DE_NEGOCIO = [
         'users', 'articles', 'sales', 'clients', 'providers',
         'current_acounts', 'budgets', 'orders', 'provider_orders',
+        'afip_tickets', 'buyers', 'cheques', 'stock_movements',
     ];
 
     /**
