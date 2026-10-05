@@ -3,6 +3,8 @@
 namespace Tests\Feature\CuentaCorriente;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -149,8 +151,14 @@ class Saldo_inicial_Test extends EmpresaTestCase
     {
         list($ajeno, $cuenta_ajena) = $this->cliente_con_cuenta($this->user_id + 900000, 'Ajeno');
 
+        // El mensaje es el del controller: un 404 de "la ruta no existe" no alcanza para pasar.
         $this->getJson('api/credit-account/'.$cuenta_ajena->id.'/tiene-movimientos')
-             ->assertStatus(404);
+             ->assertStatus(404)
+             ->assertExactJson(['message' => 'No existe la cuenta corriente.']);
+
+        // Y la misma ruta, con una cuenta propia, contesta.
+        $this->getJson('api/credit-account/'.$this->cuenta->id.'/tiene-movimientos')
+             ->assertStatus(200);
     }
 
     /**
@@ -180,7 +188,9 @@ class Saldo_inicial_Test extends EmpresaTestCase
         $this->assertNull($saldo_inicial->haber);
         $this->assertEquals($this->cliente->id, $saldo_inicial->client_id);
         $this->assertNull($saldo_inicial->provider_id);
-        $this->assertEquals($this->user_id, $saldo_inicial->user_id);
+        // Sin user_id a propósito (igual que la importación): con user_id, un saldo inicial en el
+        // haber entra en los recibos y en los reportes de caja. Ver saldo_inicial_en_el_haber_no_toca_la_numeracion_de_recibos.
+        $this->assertNull($saldo_inicial->user_id);
         $this->assertEquals(1, $saldo_inicial->getAttributes()['moneda_id']);
 
         $saldo = $this->assert_cadena_cierra($this->cuenta->id, 'Saldo inicial en el debe');
@@ -325,6 +335,80 @@ class Saldo_inicial_Test extends EmpresaTestCase
         }
 
         $this->assertCount(0, $this->movimientos_de($this->cuenta));
+    }
+
+    /**
+     * La cuenta abierta tiene que ser del cliente o proveedor del pedido. Alertas abre el modal de
+     * un proveedor sin cambiar la cuenta (queda la última que se abrió): el saldo inicial no puede
+     * caer en la cuenta de otro.
+     *
+     * @test
+     */
+    public function saldo_inicial_con_una_cuenta_de_otro_cliente_da_422_y_no_escribe()
+    {
+        list($otro_cliente, $otra_cuenta) = $this->cliente_con_cuenta($this->user_id, 'Otro cliente');
+
+        $payload = $this->saldo_inicial($otra_cuenta, 5000);
+
+        // La pantalla dice "este cliente", pero la cuenta que quedó abierta es la del otro.
+        $payload['model_id'] = $this->cliente->id;
+
+        $this->postJson('api/current-acount/saldo-inicial', $payload)
+             ->assertStatus(422);
+
+        $this->assertCount(0, $this->movimientos_de($otra_cuenta));
+        $this->assertCount(0, $this->movimientos_de($this->cuenta));
+    }
+
+    /**
+     * El defecto que encontró el chequeo de la misión: con `user_id`, un saldo inicial en el haber
+     * (status `pago_from_client`, sin `num_receipt`) era el "último recibo" del dueño y el próximo
+     * cobro de cualquier cliente salía "Pago N°1".
+     *
+     * @test
+     */
+    public function saldo_inicial_en_el_haber_no_toca_la_numeracion_de_recibos()
+    {
+        // Un cobro con recibo N°41, el último del comercio.
+        list($otro_cliente, $otra_cuenta) = $this->cliente_con_cuenta($this->user_id, 'Cobro previo');
+
+        $this->movimiento($otra_cuenta, [
+            'haber'         => 100,
+            'num_receipt'   => 41,
+            'created_at'    => Carbon::now()->subSeconds(30),
+        ]);
+
+        $this->assertEquals(42, CurrentAcountHelper::getNumReceipt());
+
+        $this->postJson('api/current-acount/saldo-inicial', $this->saldo_inicial($this->cuenta, 2500, false))
+             ->assertStatus(201);
+
+        $this->assertEquals(42, CurrentAcountHelper::getNumReceipt(), 'El saldo inicial no es un recibo: el próximo cobro tiene que seguir siendo el 42.');
+    }
+
+    /**
+     * Un saldo a favor se comporta como cualquier pago: la venta que entra después queda saldada
+     * con él.
+     *
+     * @test
+     */
+    public function una_venta_despues_de_un_saldo_inicial_a_favor_queda_pagada()
+    {
+        $this->postJson('api/current-acount/saldo-inicial', $this->saldo_inicial($this->cuenta, 2500, false))
+             ->assertStatus(201);
+
+        $venta = $this->venta($this->cliente, 1000, Carbon::now()->addMinute());
+
+        SaleHelper::create_current_acount($venta);
+
+        $debito = CurrentAcount::where('sale_id', $venta->id)->first();
+
+        $this->assertNotNull($debito);
+        $this->assertEquals('pagado', $debito->status);
+
+        $saldo = $this->assert_cadena_cierra($this->cuenta->id, 'Saldo a favor y una venta');
+
+        $this->assertEqualsWithDelta(-1500, $saldo, 0.01);
     }
 
     /**

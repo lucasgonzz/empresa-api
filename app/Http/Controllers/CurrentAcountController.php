@@ -599,7 +599,10 @@ class CurrentAcountController extends Controller
      * Request: `credit_account_id` (la cuenta de la moneda que está abierta), `model_name`,
      * `model_id`, `is_for_debe` y `saldo_inicial`. Sin `credit_account_id` —una SPA anterior a esta
      * misión— se usa la cuenta en PESOS de `model_name` / `model_id`, que era la única que existía
-     * cuando se escribió el botón.
+     * cuando se escribió el botón. Si vienen las dos cosas, la cuenta tiene que ser de ese modelo.
+     *
+     * El movimiento va SIN `user_id`, como el de la importación de Excel: ver el comentario en el
+     * create (recibos y reportes de caja).
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse  201 `{ current_acount, credit_account }`, o 422 `{ message }`.
@@ -610,6 +613,19 @@ class CurrentAcountController extends Controller
 
         if (is_null($credit_account)) {
             return response()->json(['message' => 'No existe la cuenta corriente.'], 422);
+        }
+
+        /*
+         * 🔴 La cuenta tiene que ser del cliente o proveedor que la pantalla dice. Hay caminos que
+         * abren el modal con un modelo y SIN cambiar la cuenta (`showProviderCurrentAcount()` de
+         * Alertas, al 5/10/2026): queda la última que se abrió, que puede ser la de otro cliente, y
+         * el saldo inicial se grabaría ahí con el nombre del proveedor en el título. Si el pedido
+         * dice de quién es, tiene que coincidir con la cuenta.
+         */
+        if (!empty($request->model_name) && !empty($request->model_id)
+            && ($request->model_name != $credit_account->model_name || $request->model_id != $credit_account->model_id)) {
+
+            return response()->json(['message' => 'La cuenta corriente abierta no es de ese cliente o proveedor. Cerrá la cuenta y volvé a abrirla.'], 422);
         }
 
         // El monto va siempre positivo: el lado (debe o haber) lo elige el radio del modal, no el
@@ -666,7 +682,17 @@ class CurrentAcountController extends Controller
                 'debe'              => $is_for_debe ? $monto : null,
                 'haber'             => !$is_for_debe ? $monto : null,
                 'saldo'             => $is_for_debe ? $monto : -$monto,
-                'user_id'           => $this->userId(),
+                /*
+                 * 🔴 SIN `user_id`, a propósito, igual que el saldo inicial de la importación de
+                 * Excel (LocalImportHelper::crearSaldoInicialPorImportacion). Todo lo que toca este
+                 * movimiento va por `credit_account_id` (el listado, tiene_movimientos(), la cadena de
+                 * saldos), y la tenencia la da la cuenta. Con `user_id`, un saldo inicial en el haber
+                 * —status `pago_from_client`, sin `num_receipt`— entra en todo lo que cuenta "los
+                 * cobros del dueño": `CurrentAcountHelper::getNumReceipt()` lo toma como el último
+                 * recibo y el próximo cobro de CUALQUIER cliente sale "Pago N°1", y los reportes de
+                 * caja y de rendimiento lo suman como plata que entró ese día. No es un cobro: es
+                 * plata que el cliente ya tenía a favor antes de usar el sistema.
+                 */
                 'credit_account_id' => $credit_account->id,
                 'moneda_id'         => $credit_account->moneda_id,
             ]);
