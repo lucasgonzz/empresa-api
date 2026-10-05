@@ -447,6 +447,48 @@ class Eliminar_sucursal_stock_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 10 — una venta que escribe JUSTO DESPUÉS del commit de la fase final (validó la sucursal
+     * como viva antes) le abre una fila tardía a la sucursal borrada: el barrido posterior la borra y
+     * recalcula el global (segunda ronda, G). Se simula con el gancho de tests del barrido.
+     *
+     * @test
+     */
+    public function el_barrido_borra_una_fila_tardia_y_recalcula_el_global()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Fila tardia');
+
+        $a = $this->nuevo_articulo('zz Fila tardia A');
+        $this->cargar_deposito($a, $borrar, 2);
+        $this->cargar_deposito($a, $principal, 1);
+
+        // El artículo de la venta tardía: reparte por depósitos, sin fila en la sucursal que se borra.
+        $tardio = $this->nuevo_articulo('zz Fila tardia venta');
+        $this->cargar_deposito($tardio, $principal, 5);
+
+        EliminarSucursalHelper::$antes_del_barrido = function ($address) use ($tardio) {
+            // Lo que hace el motor con una venta en vuelo: abre la fila (attach) y recalcula el global
+            // con SUM crudo, que incluye la fila de la sucursal que ya no existe.
+            DB::table('address_article')->insert(['article_id' => $tardio->id, 'address_id' => $address->id, 'amount' => -1]);
+            DB::table('articles')->where('id', $tardio->id)->update(['stock' => 4]);
+        };
+
+        try {
+
+            $this->eliminar_sucursal($borrar->id, ['stock_accion' => 'descartar'])
+                 ->assertStatus(200)
+                 ->assertJsonPath('resumen.filas_tardias', 1);
+
+        } finally {
+            EliminarSucursalHelper::$antes_del_barrido = null;
+        }
+
+        $this->assert_eliminada_sin_rastro($borrar->id);
+        $this->assertEqualsWithDelta($this->suma_de_sucursales_vivas($tardio), $this->stock_global($tardio), self::DELTA, 'El global vuelve a ser la suma de las sucursales que existen.');
+        $this->assertEquals(5.0, $this->stock_global($tardio));
+    }
+
+    /**
      * Test 8 — idempotencia: se corta a la mitad (un artículo de tres) y volver a eliminar termina
      * bien, sin mover nada dos veces.
      *

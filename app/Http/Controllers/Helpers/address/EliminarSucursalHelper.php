@@ -1804,6 +1804,13 @@ class EliminarSucursalHelper {
         ImageController::deleteModelImages($address);
         SucursalVigenteHelper::olvidar($address->id);
 
+        // Gancho SOLO para tests (simula una venta que escribió entre el commit y el barrido).
+        if (!is_null(Self::$antes_del_barrido)) {
+            call_user_func(Self::$antes_del_barrido, $address);
+        }
+
+        $resultado['filas_tardias'] = Self::barrer_filas_tardias($address);
+
         if (count($resultado['articulos_ajenos']) > 0) {
 
             Log::warning('EliminarSucursalHelper: la sucursal '.$address->id.' del comercio '.$owner_id.' tenía filas de '.count($resultado['articulos_ajenos']).' artículo(s) de OTRO comercio; se borraron sin movimiento y se les recalculó el stock.', [
@@ -1850,6 +1857,55 @@ class EliminarSucursalHelper {
         sort($todos);
 
         return $todos;
+    }
+
+    /**
+     * @internal SOLO PARA TESTS: se llama con la sucursal entre el commit de la fase final y el
+     * barrido de filas tardías, para simular una venta que escribió justo en ese momento. En
+     * producción siempre null.
+     *
+     * @var callable|null
+     */
+    public static $antes_del_barrido = null;
+
+    /**
+     * El barrido de filas tardías, justo DESPUÉS del commit de la fase final (segunda ronda de
+     * revisión, G).
+     *
+     * 🔴 POR QUÉ HACE FALTA Y QUÉ NO CUBRE. La fase final relee el stock con las filas bloqueadas y
+     * repite la pasada si encuentra algo, pero el camino de las ventas NO toma candados sobre
+     * `addresses` (y no se le agregan: es el camino más caliente del sistema y el riesgo de deadlock no
+     * se justifica). Una venta que validó la sucursal como viva ANTES del commit (con el memo de
+     * SucursalVigenteHelper, hasta SEGUNDOS_DE_MEMO) y escribe DESPUÉS puede:
+     *  - abrir una fila nueva para la sucursal ya borrada (`attach()` en CheckFromAddress, porque la
+     *    relación ya no la ve) → este barrido la borra y recalcula el global de ese artículo;
+     *  - sumar sobre una fila que ya no existe (el UPDATE no toca nada) → ese descuento se pierde, y
+     *    ningún barrido lo puede recuperar.
+     * El barrido corre milisegundos después del commit: lo que se escriba DESPUÉS de él (dentro de
+     * los segundos del memo o de una transacción de venta ya en vuelo) queda sin barrer. Es la
+     * ventana residual declarada en el informe de la misión.
+     *
+     * @param  \App\Models\Address  $address  Ya borrada.
+     * @return int  Filas barridas.
+     */
+    static function barrer_filas_tardias($address) {
+
+        $afectados = Self::articulos_con_filas($address->id);
+
+        $filas = DB::table('address_article')->where('address_id', $address->id)->delete()
+               + DB::table('address_article_variant')->where('address_id', $address->id)->delete();
+
+        if ($filas == 0) {
+            return 0;
+        }
+
+        Log::warning('EliminarSucursalHelper: después de eliminar la sucursal '.$address->id.' aparecieron '.$filas.' fila(s) de stock tardías (una venta que la seguía usando); se borraron y se recalculó el stock de '.count($afectados).' artículo(s).', [
+            'articulos' => $afectados,
+        ]);
+
+        Self::recalcular_articulos($afectados);
+
+        return $filas;
     }
 
     /**
