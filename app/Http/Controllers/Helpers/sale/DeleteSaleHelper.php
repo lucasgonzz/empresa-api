@@ -24,6 +24,113 @@ class DeleteSaleHelper {
 
 
 	/**
+	 * Devuelve el motivo por el que una venta NO se puede eliminar, o null si se puede.
+	 *
+	 * Gemelo de `SaleHelper::motivo_por_el_que_no_se_puede_editar()`, pero para la baja. Lo pregunta
+	 * `SaleController::destroy()` antes de tocar nada (antes incluso de mirar las cajas).
+	 *
+	 * 🔴 Por que existe (mision venta-facturada-no-se-borra, 5/10/2026). En la demo `demo` (4.3.6),
+	 * `DELETE api/sale/375?compensar_caja=1` sobre una venta con la Factura B N° 140 autorizada
+	 * devolvio 200 y la dejo con `deleted_at`. No es cosmetico: el Libro IVA
+	 * (`AfipController::comprobantes_del_libro_iva_ventas()`) y los TXT arman la lista con
+	 * `AfipTicket::whereHas('sale')`, asi que al borrar la venta su factura desaparece del sistema
+	 * mientras sigue vigente en ARCA. Es el mismo sintoma que el de masquito
+	 * (informe 20260911-bloquear-borrado-afip-ticket-con-cae), que se cerro del lado del ticket pero
+	 * no del lado de la venta.
+	 *
+	 * La SPA ya esconde "Eliminar" en una venta con tickets (`SaleModal.vue::show_btn_delete`), pero
+	 * eso no alcanza: el borrado masivo y la baja generica del asistente llegan igual a `destroy()`.
+	 *
+	 * Lo que frena, en este orden (decisiones de Lucas del 5/10/2026):
+	 *
+	 *  1. CUALQUIER `AfipTicket` vivo de la venta, tenga CAE o no. Es el criterio conservador, el
+	 *     mismo que la SPA y que `BudgetController::anular()`: un intento sin respuesta puede terminar
+	 *     autorizado en ARCA, y entonces la factura quedaria huerfana. El mensaje cambia segun haya
+	 *     CAE (se anula con nota de credito) o no (primero se resuelve la factura). `AfipTicket` usa
+	 *     SoftDeletes, asi que un intento ya eliminado desde la factura no cuenta.
+	 *     Una factura con CAE que ya tiene su nota de credito TAMBIEN frena: borrar la venta saca del
+	 *     Libro IVA la factura y la NC, y las dos siguen en ARCA.
+	 *  2. Una venta ORIGINAL incluida en una factura consolidada: el comprobante lo tiene la venta
+	 *     contenedora (`consolidacion_facturacion_id`), no ella. Si la contenedora sigue viva y tiene
+	 *     algun ticket, se frena con un mensaje que la nombra.
+	 *
+	 * ⚠️ NO mira `is_cerrada`, a proposito: cerrar una venta congela la edicion, no el borrado
+	 * (decision de Lucas). Lo fija `tests/Feature/Facturacion/10_Destroy_Venta_Facturada_Bloquea_Test`.
+	 *
+	 * @param  \App\Models\Sale  $sale
+	 * @return string|null
+	 */
+	static function motivo_por_el_que_no_se_puede_eliminar($sale) {
+
+		$facturacion = Self::estado_de_facturacion($sale);
+
+		if ($facturacion === 'con_cae') {
+
+			return 'La venta tiene factura autorizada: para anularla, hacé una devolución con nota de crédito.';
+		}
+
+		if ($facturacion === 'sin_cae') {
+
+			return 'La venta tiene una factura sin CAE (rechazada o sin respuesta de ARCA). Consultala o eliminala desde la factura de la venta, y después borrá la venta.';
+		}
+
+		if (!is_null($sale->consolidacion_facturacion_id)) {
+
+			// Solo la contenedora viva: si ya se borro, su factura no la sostiene esta venta.
+			$consolidada = Sale::find($sale->consolidacion_facturacion_id);
+
+			if (!is_null($consolidada)) {
+
+				$num = !is_null($consolidada->num) ? $consolidada->num : $consolidada->id;
+
+				$facturacion_de_la_consolidada = Self::estado_de_facturacion($consolidada);
+
+				if ($facturacion_de_la_consolidada === 'con_cae') {
+
+					return 'La venta está incluida en la factura de la venta consolidada N° '.$num.': para anularla, hacé una devolución con nota de crédito sobre esa venta.';
+				}
+
+				if ($facturacion_de_la_consolidada === 'sin_cae') {
+
+					return 'La venta está incluida en la venta consolidada N° '.$num.', que tiene una factura sin CAE. Resolvé esa factura antes de borrar esta venta.';
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Que tan facturada esta una venta segun sus `AfipTicket` vivos: 'con_cae' si alguno tiene CAE,
+	 * 'sin_cae' si tiene tickets pero ninguno con CAE, null si no tiene ninguno.
+	 *
+	 * "Tiene CAE" es no nulo y distinto de '': el mismo criterio que
+	 * `SaleHelper::motivo_por_el_que_no_se_puede_editar()` y `AfipTicketController::destroy()`.
+	 * Nunca `is_null($cae)` a secas, que tomaria un `''` como CAE.
+	 *
+	 * @param  \App\Models\Sale  $sale
+	 * @return string|null
+	 */
+	static function estado_de_facturacion($sale) {
+
+		$sale->loadMissing('afip_tickets');
+
+		$tiene_tickets = false;
+
+		foreach ($sale->afip_tickets as $afip_ticket) {
+
+			if (!is_null($afip_ticket->cae) && $afip_ticket->cae !== '') {
+
+				return 'con_cae';
+			}
+
+			$tiene_tickets = true;
+		}
+
+		return $tiene_tickets ? 'sin_cae' : null;
+	}
+
+	/**
 	 * Baja completa de una venta: es TODO lo que hace `SaleController@destroy`, en un solo lugar.
 	 *
 	 * 🔴 Vive aca y no adentro del controlador porque tiene DOS entradas: el `destroy()` del recurso
@@ -35,8 +142,11 @@ class DeleteSaleHelper {
 	 * ⚠️ Lo que este metodo hace es identico para las dos entradas, pero las entradas NO son
 	 * identicas entre si, y conviene saberlo antes de tocar cualquiera:
 	 *
-	 *  - `destroy()` borra una venta facturada igual (solo se saltea la cuenta corriente si hay
-	 *    nota de credito). La cancelacion de un pedido la frena antes con un 422.
+	 *  - Las dos frenan antes una venta facturada, pero con criterios distintos: `destroy()` con
+	 *    `motivo_por_el_que_no_se_puede_eliminar()` (cualquier ticket, tenga o no nota de credito,
+	 *    desde el 5/10/2026) y la cancelacion de un pedido solo si la factura no tiene NC. Por eso
+	 *    el salteo de la cuenta corriente cuando hay nota de credito, mas abajo, en la practica
+	 *    solo lo alcanza la cancelacion.
 	 *  - La cancelacion siempre pasa `compensar_caja = false`; `destroy()` lo lee del request.
 	 *  - `destroy()` corre fuera de toda transaccion; la cancelacion corre adentro de la de
 	 *    `update()`, asi que la notificacion de borrado sale ANTES del commit.
