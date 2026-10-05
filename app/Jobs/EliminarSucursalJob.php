@@ -30,10 +30,11 @@ use Illuminate\Support\Facades\Log;
  *  - Deja el registro visible (`BackgroundProcessHelper`): nace `pendiente` en el request, pasa a
  *    `en_proceso` acá, y se cierra `completado` o `fallo` con el motivo.
  *
- * 🔴 El candado de la sucursal (D13) lo tomó el request y lo libera ESTE job, pase lo que pase:
- * en el `finally` de `handle()` y en `failed()` (que corre en un proceso fresco si el worker murió
- * por OOM o timeout). Si nadie lo liberara, la sucursal quedaría "ya se está eliminando" hasta que
- * venza el candado (2 horas).
+ * 🔴 El candado de la sucursal (D13) es un `GET_LOCK` de MySQL y lo toma ESTE job al arrancar (no
+ * el request: es por conexión y moriría con él). Si otra conexión lo tiene, el job no hace nada y
+ * cierra su registro en fallo. Lo libera en el `finally`; si el worker muere (OOM, timeout), MySQL lo
+ * suelta solo al cerrarse la conexión, y `failed()` (proceso fresco) cierra el registro. Mientras el
+ * job está encolado, lo que dice "ya se está eliminando" es su registro visible activo.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union types,
  * promoción de constructor, readonly, enum ni #[...].
@@ -93,6 +94,18 @@ class EliminarSucursalJob implements ShouldQueue
      */
     public function handle()
     {
+        /*
+         * El candado primero: si otra conexión está eliminando esta sucursal (un camino en línea que
+         * arrancó antes de que este job saliera de la cola), este no hace nada. Se cierra el registro
+         * en fallo con el motivo: dejarlo `pendiente` lo haría pasar por "ya en proceso" para siempre.
+         */
+        if (!EliminarSucursalHelper::tomar_candado($this->owner_id, $this->address_id)) {
+
+            BackgroundProcessHelper::fallar($this->background_process_id, 'Otra eliminación de esta sucursal ya estaba en curso: esta no hizo nada.');
+
+            return;
+        }
+
         try {
 
             $proceso = BackgroundProcessHelper::avanzar($this->background_process_id, 0, [
@@ -149,7 +162,7 @@ class EliminarSucursalJob implements ShouldQueue
             );
 
         } finally {
-            EliminarSucursalHelper::liberar_candado($this->address_id);
+            EliminarSucursalHelper::liberar_candado($this->owner_id, $this->address_id);
         }
     }
 
@@ -178,7 +191,9 @@ class EliminarSucursalJob implements ShouldQueue
 
     /**
      * Lo que el catch de `handle()` no ve (un worker muerto por OOM o timeout): cierra el registro y
-     * libera el candado. Idempotente: si `handle()` ya lo cerró, `fallar()` no lo pisa.
+     * suelta el candado. Idempotente: si `handle()` ya lo cerró, `fallar()` no lo pisa. En un proceso
+     * fresco esta conexión no tiene el candado (MySQL lo soltó al morir la otra) y `RELEASE_LOCK` no
+     * hace nada; se llama igual por si `failed()` corre en el mismo proceso que lo tomó.
      *
      * @param  \Throwable|null  $e
      * @return void
@@ -189,6 +204,6 @@ class EliminarSucursalJob implements ShouldQueue
 
         BackgroundProcessHelper::fallar($this->background_process_id, 'No se pudo terminar de eliminar la sucursal. Volvé a intentarlo: continúa desde donde quedó. ('.$motivo.')');
 
-        EliminarSucursalHelper::liberar_candado($this->address_id);
+        EliminarSucursalHelper::liberar_candado($this->owner_id, $this->address_id);
     }
 }

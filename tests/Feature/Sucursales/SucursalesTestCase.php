@@ -443,6 +443,52 @@ abstract class SucursalesTestCase extends EmpresaTestCase
     }
 
     /**
+     * Una SEGUNDA conexión a la base de testing, por fuera de Laravel. Para el candado de la
+     * eliminación (`GET_LOCK` de MySQL): es por conexión y re-entrante, así que tomarlo desde la
+     * conexión del test no simula a "otro proceso" (la misma conexión lo vuelve a tomar).
+     *
+     * @return \PDO
+     */
+    protected function otra_conexion()
+    {
+        $config = config('database.connections.'.config('database.default'));
+
+        $dsn = 'mysql:host='.$config['host'].';port='.$config['port'].';dbname='.$config['database'];
+
+        return new \PDO($dsn, $config['username'], $config['password']);
+    }
+
+    /**
+     * Toma el candado de eliminación de una sucursal desde otra conexión ("otro proceso").
+     *
+     * @param  \PDO  $pdo
+     * @param  int   $address_id
+     * @return bool
+     */
+    protected function tomar_candado_desde($pdo, $address_id)
+    {
+        $nombre = \App\Http\Controllers\Helpers\address\EliminarSucursalHelper::nombre_del_candado($this->comercio()->id, $address_id);
+
+        $sentencia = $pdo->prepare('SELECT GET_LOCK(?, 0)');
+        $sentencia->execute([$nombre]);
+
+        return (int) $sentencia->fetchColumn() === 1;
+    }
+
+    /**
+     * ¿Alguna conexión tiene tomado el candado de eliminación de la sucursal?
+     *
+     * @param  int  $address_id
+     * @return bool
+     */
+    protected function candado_tomado($address_id)
+    {
+        $nombre = \App\Http\Controllers\Helpers\address\EliminarSucursalHelper::nombre_del_candado($this->comercio()->id, $address_id);
+
+        return !is_null(DB::selectOne('SELECT IS_USED_LOCK(?) AS conexion', [$nombre])->conexion);
+    }
+
+    /**
      * Deja al comercio con UNA sola sucursal viva (la dada), borrando las otras en la transacción
      * del test (se revierte al terminar). Para probar "la última sucursal" (D6).
      *

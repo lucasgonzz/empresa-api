@@ -7,7 +7,6 @@ use App\Jobs\ProcessDeleteModelsJob;
 use App\Models\Address;
 use App\Models\BackgroundProcess;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 
@@ -172,7 +171,9 @@ class Eliminar_sucursal_sin_decision_y_masivo_Test extends SucursalesTestCase
     }
 
     /**
-     * Test 6 — el candado: con un borrado en curso, el segundo recibe 422 y no toca nada.
+     * Test 6 — el candado: con un borrado en curso EN OTRA CONEXIÓN (otro proceso), el segundo
+     * recibe 422 y no toca nada. El candado es `GET_LOCK` de MySQL, por conexión y re-entrante: por
+     * eso "el otro" se simula con una segunda conexión PDO.
      *
      * @test
      */
@@ -183,7 +184,9 @@ class Eliminar_sucursal_sin_decision_y_masivo_Test extends SucursalesTestCase
         $a = $this->nuevo_articulo('zz Candado A');
         $this->cargar_deposito($a, $borrar, 3);
 
-        $this->assertTrue(EliminarSucursalHelper::tomar_candado($borrar->id), 'El escenario: "otro" borrado ya tomó el candado.');
+        $otro_proceso = $this->otra_conexion();
+
+        $this->assertTrue($this->tomar_candado_desde($otro_proceso, $borrar->id), 'El escenario: "otro" borrado ya tomó el candado.');
 
         $respuesta = $this->eliminar_sucursal($borrar->id, ['stock_accion' => 'descartar']);
 
@@ -193,14 +196,18 @@ class Eliminar_sucursal_sin_decision_y_masivo_Test extends SucursalesTestCase
         $this->assertEquals(3.0, $this->stock_en($a, $borrar->id));
         $this->assertTrue($this->getJson('api/address/'.$borrar->id.'/eliminar-resumen')->json('ya_en_proceso'));
 
-        // El candado sigue siendo del otro: el 422 no lo libera.
-        $this->assertTrue(Cache::has(EliminarSucursalHelper::clave_del_candado($borrar->id)));
+        // El otro "termina": se cierra su conexión, y MySQL suelta el candado solo (el servidor procesa
+        // la desconexión en unos milisegundos: se espera hasta 2 segundos a que lo haga).
+        $otro_proceso = null;
 
-        EliminarSucursalHelper::liberar_candado($borrar->id);
+        for ($intento = 0; $intento < 40 && $this->candado_tomado($borrar->id); $intento++) {
+            usleep(50000);
+        }
 
-        // Y cuando el otro termina, se puede.
+        $this->assertFalse($this->getJson('api/address/'.$borrar->id.'/eliminar-resumen')->json('ya_en_proceso'), 'Muerta la otra conexión, el candado se libera solo.');
+
         $this->eliminar_sucursal($borrar->id, ['stock_accion' => 'descartar'])->assertStatus(200);
-        $this->assertFalse(Cache::has(EliminarSucursalHelper::clave_del_candado($borrar->id)), 'El borrado en línea libera su candado al terminar.');
+        $this->assertFalse($this->candado_tomado($borrar->id), 'El borrado en línea libera su candado al terminar.');
     }
 
     /**

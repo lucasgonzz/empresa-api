@@ -13,7 +13,6 @@ use App\Models\ConceptoStockMovement;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -80,13 +79,6 @@ class EliminarSucursalHelper {
      * @var int|null
      */
     public static $filas_en_linea = null;
-
-    /**
-     * Vida del candado (D13). Tiene que cubrir la espera en cola más el `$timeout` del job (3600 s):
-     * si el candado venciera antes de que el job termine, un segundo "Eliminar" arrancaría en
-     * paralelo. Si el worker muere sin pasar por `failed()`, el candado se libera solo a las 2 horas.
-     */
-    const SEGUNDOS_DEL_CANDADO = 7200;
 
     /**
      * Cuántas veces se repite "mover el stock → intentar la fase final" antes de rendirse. Cada
@@ -306,7 +298,7 @@ class EliminarSucursalHelper {
                 'requiere_reemplazo'        => false,
                 'bloqueos'                  => [],
                 'en_segundo_plano'          => false,
-                'ya_en_proceso'             => Self::esta_en_proceso($address->id),
+                'ya_en_proceso'             => Self::esta_en_proceso($owner_id, $address),
             ];
         }
 
@@ -336,7 +328,7 @@ class EliminarSucursalHelper {
             'bloqueos'                  => Self::bloqueos($address->id, $owner_id),
             // D14, y solo si hay movimientos que hacer: en la última sucursal (D6) no se mueve nada.
             'en_segundo_plano'          => !$es_la_ultima && $stock['filas'] > Self::umbral(),
-            'ya_en_proceso'             => Self::esta_en_proceso($address->id),
+            'ya_en_proceso'             => Self::esta_en_proceso($owner_id, $address),
         ];
     }
 
@@ -809,39 +801,98 @@ class EliminarSucursalHelper {
     // El candado (D13)
     // ------------------------------------------------------------------------------------------
 
+    /*
+     * 🔴 POR QUÉ UN CANDADO DE MYSQL Y NO DE CACHE (segunda ronda de revisión, 5/10/2026).
+     *
+     * Antes era `Cache::add()` con 2 horas de vida. Dos problemas: con el driver `array` (cada
+     * proceso tiene su propia memoria) no excluía NADA entre dos requests; y con `file`, un proceso que
+     * moría por `max_execution_time` no llegaba al `finally`, y la sucursal quedaba "ya se está
+     * eliminando" dos horas. `GET_LOCK` de MySQL se libera SOLO cuando la conexión se cierra (el
+     * proceso termina, bien o mal), funciona con cualquier driver de cache, y el motor ya depende de
+     * MySQL (lo usa también la creación de ventas, `crear_venta_{dueño}`).
+     *
+     * El nombre lleva dueño e id (máximo 64 caracteres en MySQL: sobra). `GET_LOCK` con espera 0: el
+     * segundo "Eliminar" no espera, recibe un 422 al instante.
+     *
+     * ⚠️ El candado es por CONEXIÓN y re-entrante: la misma conexión lo vuelve a tomar sin esperar.
+     * Por eso "ya en proceso" pregunta si lo tiene OTRA conexión (`IS_USED_LOCK` ≠ `CONNECTION_ID`), y
+     * los tests lo prueban tomándolo desde una segunda conexión PDO.
+     *
+     * Mientras el job está ENCOLADO nadie tiene el candado (lo toma el job al arrancar): en esa
+     * ventana "ya en proceso" lo dice el registro visible activo del proceso
+     * (`background_processes`, tipo `eliminacion_sucursal`, referenciando la sucursal).
+     */
+
     /**
+     * @param  int  $owner_id
      * @param  int  $address_id
      * @return string
      */
-    static function clave_del_candado($address_id) {
-        return 'eliminando_sucursal:'.(int) $address_id;
+    static function nombre_del_candado($owner_id, $address_id) {
+        return 'eliminar_sucursal_'.(int) $owner_id.'_'.(int) $address_id;
     }
 
     /**
-     * Toma el candado de la sucursal. `Cache::add` escribe solo si la clave no existe (atómico en
-     * los drivers de producción): el segundo "Eliminar" simultáneo recibe false.
+     * Toma el candado sin esperar.
      *
+     * @param  int  $owner_id
      * @param  int  $address_id
-     * @return bool
+     * @return bool  true si quedó tomado por ESTA conexión.
      */
-    static function tomar_candado($address_id) {
-        return Cache::add(Self::clave_del_candado($address_id), Carbon::now()->toDateTimeString(), Self::SEGUNDOS_DEL_CANDADO);
+    static function tomar_candado($owner_id, $address_id) {
+
+        $fila = DB::selectOne('SELECT GET_LOCK(?, 0) AS tomado', [Self::nombre_del_candado($owner_id, $address_id)]);
+
+        return !is_null($fila) && (int) $fila->tomado === 1;
     }
 
     /**
+     * Libera el candado (si esta conexión no lo tiene, MySQL no hace nada).
+     *
+     * @param  int  $owner_id
      * @param  int  $address_id
      * @return void
      */
-    static function liberar_candado($address_id) {
-        Cache::forget(Self::clave_del_candado($address_id));
+    static function liberar_candado($owner_id, $address_id) {
+        DB::select('SELECT RELEASE_LOCK(?) AS liberado', [Self::nombre_del_candado($owner_id, $address_id)]);
     }
 
     /**
+     * ¿Otra conexión tiene tomado el candado de esta sucursal?
+     *
+     * @param  int  $owner_id
      * @param  int  $address_id
      * @return bool
      */
-    static function esta_en_proceso($address_id) {
-        return Cache::has(Self::clave_del_candado($address_id));
+    static function candado_tomado_por_otro($owner_id, $address_id) {
+
+        $fila = DB::selectOne('SELECT IS_USED_LOCK(?) AS conexion, CONNECTION_ID() AS mia', [Self::nombre_del_candado($owner_id, $address_id)]);
+
+        return !is_null($fila) && !is_null($fila->conexion) && (int) $fila->conexion !== (int) $fila->mia;
+    }
+
+    /**
+     * ¿Hay una eliminación en segundo plano de esta sucursal todavía abierta (encolada o corriendo)?
+     *
+     * @param  \App\Models\Address  $address
+     * @return bool
+     */
+    static function proceso_activo($address) {
+
+        $proceso = BackgroundProcessHelper::por_referencia($address);
+
+        return !is_null($proceso) && $proceso->tipo === Self::TIPO_DE_PROCESO;
+    }
+
+    /**
+     * ¿Ya se está eliminando? Candado tomado por otra conexión, o un job de eliminación abierto.
+     *
+     * @param  int                  $owner_id
+     * @param  \App\Models\Address  $address
+     * @return bool
+     */
+    static function esta_en_proceso($owner_id, $address) {
+        return Self::candado_tomado_por_otro($owner_id, $address->id) || Self::proceso_activo($address);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -880,6 +931,11 @@ class EliminarSucursalHelper {
             ];
         }
 
+        // D13: un segundo "Eliminar" mientras otro corre (o está encolado) no toca nada.
+        if (Self::esta_en_proceso($owner_id, $address)) {
+            return Self::error('La sucursal "'.$address->street.'" ya se está eliminando. Esperá a que termine.', false);
+        }
+
         $resumen = Self::resumen($address, $owner_id);
 
         $error = Self::validar($address, $owner_id, $decision, $resumen);
@@ -888,48 +944,38 @@ class EliminarSucursalHelper {
             return $error;
         }
 
-        if (!Self::tomar_candado($address->id)) {
-            return Self::error('La sucursal "'.$address->street.'" ya se está eliminando. Esperá a que termine.', false);
-        }
-
         /*
          * D14: muchas filas con stock → segundo plano. El registro visible nace ACÁ, en `pendiente`
          * (mismo criterio que DeleteController): en el shared hosting el worker pasa una vez por
-         * minuto y sin esto el usuario no vería nada hasta entonces. El candado queda tomado: lo
-         * libera el job al terminar (o su failed()).
+         * minuto y sin esto el usuario no vería nada hasta entonces. Referencia a la sucursal: es lo
+         * que hace que un segundo "Eliminar" vea que ya está encolada (esta_en_proceso()). El
+         * candado de MySQL NO se toma acá: es por conexión y moriría con este request; lo toma el job
+         * al arrancar.
          */
         if ($resumen['en_segundo_plano']) {
 
-            try {
+            $proceso = BackgroundProcessHelper::iniciar(
+                $owner_id,
+                Self::TIPO_DE_PROCESO,
+                'Eliminación de la sucursal '.$address->street,
+                [
+                    'auth_user_id' => $auth_user_id,
+                    'total'        => $resumen['stock']['articulos'],
+                    'unidad'       => 'artículos',
+                    'detalle'      => $resumen['stock']['articulos'].' artículos con stock',
+                    'status'       => 'pendiente',
+                    'etapa'        => 'En espera del procesador',
+                    'referencia'   => $address,
+                ]
+            );
 
-                $proceso = BackgroundProcessHelper::iniciar(
-                    $owner_id,
-                    Self::TIPO_DE_PROCESO,
-                    'Eliminación de la sucursal '.$address->street,
-                    [
-                        'auth_user_id' => $auth_user_id,
-                        'total'        => $resumen['stock']['articulos'],
-                        'unidad'       => 'artículos',
-                        'detalle'      => $resumen['stock']['articulos'].' artículos con stock',
-                        'status'       => 'pendiente',
-                        'etapa'        => 'En espera del procesador',
-                    ]
-                );
-
-                EliminarSucursalJob::dispatch(
-                    $address->id,
-                    $owner_id,
-                    $auth_user_id,
-                    $decision,
-                    is_null($proceso) ? null : $proceso->id
-                );
-
-            } catch (\Throwable $e) {
-
-                // Si no se pudo encolar, nadie va a liberar el candado: se libera acá.
-                Self::liberar_candado($address->id);
-                throw $e;
-            }
+            EliminarSucursalJob::dispatch(
+                $address->id,
+                $owner_id,
+                $auth_user_id,
+                $decision,
+                is_null($proceso) ? null : $proceso->id
+            );
 
             return [
                 'status' => 202,
@@ -939,6 +985,20 @@ class EliminarSucursalHelper {
                     'background_process_id' => is_null($proceso) ? null : $proceso->id,
                 ],
             ];
+        }
+
+        /*
+         * El camino en línea termina lo que empezó aunque el usuario cierre la pestaña o se corte la
+         * conexión (`ignore_user_abort`), y sin el límite de tiempo de PHP (`set_time_limit(0)`): un
+         * corte por `max_execution_time` a mitad de la pasada no rompe nada (cada artículo es su
+         * transacción y volver a eliminar continúa), pero dejaría al usuario con una sucursal a medio
+         * vaciar sin motivo. Hasta FILAS_EN_LINEA filas, el trabajo entra cómodo.
+         */
+        set_time_limit(0);
+        ignore_user_abort(true);
+
+        if (!Self::tomar_candado($owner_id, $address->id)) {
+            return Self::error('La sucursal "'.$address->street.'" ya se está eliminando. Esperá a que termine.', false);
         }
 
         try {
@@ -959,7 +1019,7 @@ class EliminarSucursalHelper {
             ];
 
         } finally {
-            Self::liberar_candado($address->id);
+            Self::liberar_candado($owner_id, $address->id);
         }
 
         if (!$resultado['ok']) {

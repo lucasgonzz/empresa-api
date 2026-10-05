@@ -7,7 +7,6 @@ use App\Jobs\EliminarSucursalJob;
 use App\Models\Address;
 use App\Models\BackgroundProcess;
 use App\Models\StockMovement;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -130,7 +129,14 @@ class Eliminar_sucursal_segundo_plano_Test extends SucursalesTestCase
         $this->assertSame('pendiente', $proceso->status);
 
         $this->assertNotNull(Address::find($en_cola->id), 'Encolada, la sucursal todavía existe.');
-        $this->assertTrue(Cache::has(EliminarSucursalHelper::clave_del_candado($en_cola->id)), 'El candado queda tomado hasta que termine el job.');
+
+        /*
+         * Encolada, nadie tiene el candado de MySQL (lo toma el job al arrancar): lo que dice "ya se
+         * está eliminando" es el registro visible activo, y un segundo "Eliminar" recibe 422.
+         */
+        $this->assertTrue($this->getJson('api/address/'.$en_cola->id.'/eliminar-resumen')->json('ya_en_proceso'));
+        $this->eliminar_sucursal($en_cola->id, $decision)->assertStatus(422);
+        Queue::assertPushed(EliminarSucursalJob::class, 1);
 
         $job = null;
 
@@ -155,7 +161,7 @@ class Eliminar_sucursal_segundo_plano_Test extends SucursalesTestCase
 
         $this->assertSame('completado', $proceso->status);
         $this->assertSame(3, (int) $proceso->resultado()['movimientos']);
-        $this->assertFalse(Cache::has(EliminarSucursalHelper::clave_del_candado($en_cola->id)), 'El job libera el candado.');
+        $this->assertFalse($this->candado_tomado($en_cola->id), 'El job libera el candado.');
     }
 
     /**
@@ -235,25 +241,67 @@ class Eliminar_sucursal_segundo_plano_Test extends SucursalesTestCase
     {
         $borrar = $this->nueva_sucursal('zz Failed');
 
-        $this->assertTrue(EliminarSucursalHelper::tomar_candado($borrar->id));
+        // Como lo haría el job en ESTE proceso antes de morir.
+        $this->assertTrue(EliminarSucursalHelper::tomar_candado($this->comercio()->id, $borrar->id));
 
         $proceso = \App\Http\Controllers\Helpers\BackgroundProcessHelper::iniciar(
             $this->comercio()->id,
             EliminarSucursalHelper::TIPO_DE_PROCESO,
             'zz Eliminación de prueba',
-            ['status' => 'pendiente']
+            ['status' => 'pendiente', 'referencia' => $borrar]
         );
+
+        $this->assertTrue($this->getJson('api/address/'.$borrar->id.'/eliminar-resumen')->json('ya_en_proceso'), 'El escenario: el registro abierto dice "ya en proceso".');
 
         $job = new EliminarSucursalJob($borrar->id, $this->comercio()->id, $this->comercio()->id, ['stock_accion' => 'descartar'], $proceso->id);
 
         $job->failed(new \Exception('worker muerto'));
 
-        $this->assertFalse(Cache::has(EliminarSucursalHelper::clave_del_candado($borrar->id)), 'failed() tiene que liberar el candado.');
+        $this->assertFalse($this->candado_tomado($borrar->id), 'failed() no deja el candado tomado.');
 
         $proceso = $proceso->fresh();
 
         $this->assertSame('fallo', $proceso->status);
         $this->assertStringContainsString('worker muerto', $proceso->error_message);
         $this->assertNotNull(Address::find($borrar->id), 'failed() no borra nada.');
+
+        // Y no queda nada colgado: la sucursal se puede volver a eliminar.
+        $this->assertFalse($this->getJson('api/address/'.$borrar->id.'/eliminar-resumen')->json('ya_en_proceso'));
+        $this->eliminar_sucursal($borrar->id)->assertStatus(200);
+    }
+
+    /**
+     * Test 4 — si al salir de la cola el job encuentra el candado tomado por OTRA conexión, no hace
+     * nada y cierra su registro en fallo (no lo deja `pendiente` para siempre).
+     *
+     * @test
+     */
+    public function el_job_no_hace_nada_si_otra_conexion_tiene_el_candado()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Job con candado ajeno');
+
+        $articulo = $this->nuevo_articulo('zz Job con candado ajeno A');
+        $this->cargar_deposito($articulo, $borrar, 4);
+        $this->cargar_deposito($articulo, $principal, 1);
+
+        $proceso = \App\Http\Controllers\Helpers\BackgroundProcessHelper::iniciar(
+            $this->comercio()->id,
+            EliminarSucursalHelper::TIPO_DE_PROCESO,
+            'zz Eliminación de prueba',
+            ['status' => 'pendiente', 'referencia' => $borrar]
+        );
+
+        $otro_proceso = $this->otra_conexion();
+
+        $this->assertTrue($this->tomar_candado_desde($otro_proceso, $borrar->id));
+
+        (new EliminarSucursalJob($borrar->id, $this->comercio()->id, $this->comercio()->id, ['stock_accion' => 'descartar'], $proceso->id))->handle();
+
+        $this->assertNotNull(Address::find($borrar->id), 'Con el candado ajeno, el job no borra nada.');
+        $this->assertEquals(4.0, $this->stock_en($articulo, $borrar->id), 'Ni mueve stock.');
+        $this->assertSame('fallo', $proceso->fresh()->status, 'Y cierra su registro: no queda "pendiente" para siempre.');
+
+        $otro_proceso = null;
     }
 }
