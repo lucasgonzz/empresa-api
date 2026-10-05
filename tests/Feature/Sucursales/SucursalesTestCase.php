@@ -147,4 +147,316 @@ abstract class SucursalesTestCase extends EmpresaTestCase
     {
         return Address::where('user_id', $this->comercio()->id)->count();
     }
+
+    // ==========================================================================================
+    //  ELIMINAR UNA SUCURSAL (misión eliminar-sucursal-con-stock, 5/10/2026)
+    //
+    //  Helpers de los archivos 7 a 12. Mismo criterio que el resto de la suite: todo lo guardado se
+    //  lee DIRECTO de las tablas, y el stock se carga por el endpoint real de movimientos (el modal
+    //  de crear depósitos) cuando se puede, para que lo medido sea el camino de siempre.
+    // ==========================================================================================
+
+    /**
+     * Sucursal principal del fixture (la de menor id del comercio).
+     *
+     * @return \App\Models\Address
+     */
+    protected function sucursal_principal()
+    {
+        $address = Address::where('user_id', $this->comercio()->id)->whereNull('buyer_id')->orderBy('id')->first();
+
+        $this->assertNotNull($address, 'El fixture no tiene ninguna sucursal.');
+
+        return $address;
+    }
+
+    /**
+     * Una sucursal propia del test, creada directo en la tabla (sin pasar por el alta, que no es lo
+     * que se prueba acá).
+     *
+     * @param  string  $nombre
+     * @param  array   $extra
+     * @return \App\Models\Address
+     */
+    protected function nueva_sucursal($nombre, $extra = [])
+    {
+        return Address::create(array_merge([
+            'street'          => $nombre,
+            'user_id'         => $this->comercio()->id,
+            'default_address' => 0,
+        ], $extra));
+    }
+
+    /**
+     * Un artículo propio del test (prefijo "zz").
+     *
+     * @param  string  $nombre
+     * @param  array   $extra
+     * @return \App\Models\Article
+     */
+    protected function nuevo_articulo($nombre, $extra = [])
+    {
+        return \App\Models\Article::create(array_merge([
+            'name'    => $nombre,
+            'user_id' => $this->comercio()->id,
+        ], $extra));
+    }
+
+    /**
+     * Le carga stock a un depósito por el endpoint real, como el modal de crear depósitos.
+     *
+     * @param  \App\Models\Article  $articulo
+     * @param  \App\Models\Address  $address
+     * @param  float                $cantidad  Puede ser negativa.
+     * @return void
+     */
+    protected function cargar_deposito($articulo, $address, $cantidad)
+    {
+        $this->postJson('api/stock-movement', [
+            'model_id'                     => $articulo->id,
+            'amount'                       => $cantidad,
+            'to_address_id'                => $address->id,
+            'concepto_stock_movement_name' => 'Creacion de deposito',
+        ])->assertStatus(201);
+    }
+
+    /**
+     * Una variante del artículo, sin stock.
+     *
+     * @param  \App\Models\Article  $articulo
+     * @param  string               $descripcion
+     * @return \App\Models\ArticleVariant
+     */
+    protected function nueva_variante($articulo, $descripcion)
+    {
+        return \App\Models\ArticleVariant::create([
+            'article_id'          => $articulo->id,
+            'variant_description' => $descripcion,
+            'stock'               => 0,
+        ]);
+    }
+
+    /**
+     * Le pone stock a una variante en un depósito y recalcula el artículo como lo hace el motor
+     * (mismo armado que los tests 12 de la carpeta Stock: la fila de la variante y el recálculo, que
+     * reconstruye las filas del artículo desde las variantes).
+     *
+     * @param  \App\Models\Article         $articulo
+     * @param  \App\Models\ArticleVariant  $variante
+     * @param  \App\Models\Address         $address
+     * @param  int                         $cantidad
+     * @return void
+     */
+    protected function cargar_variante($articulo, $variante, $address, $cantidad)
+    {
+        DB::table('address_article_variant')->insert([
+            'article_variant_id' => $variante->id,
+            'address_id'         => $address->id,
+            'amount'             => $cantidad,
+        ]);
+
+        \App\Http\Controllers\Helpers\ArticleHelper::setArticleStockFromAddresses(
+            \App\Models\Article::withTrashed()->find($articulo->id),
+            false,
+            $this->comercio()->id
+        );
+    }
+
+    /**
+     * `articles.stock`, leído de la tabla (incluye la papelera).
+     *
+     * @param  \App\Models\Article|int  $articulo
+     * @return float|null
+     */
+    protected function stock_global($articulo)
+    {
+        $id = is_object($articulo) ? $articulo->id : $articulo;
+
+        $stock = DB::table('articles')->where('id', $id)->value('stock');
+
+        return is_null($stock) ? null : (float) $stock;
+    }
+
+    /**
+     * Stock del artículo en un depósito (suma de sus filas), o null si no tiene fila.
+     *
+     * @param  \App\Models\Article|int  $articulo
+     * @param  int                      $address_id
+     * @return float|null
+     */
+    protected function stock_en($articulo, $address_id)
+    {
+        $id = is_object($articulo) ? $articulo->id : $articulo;
+
+        $query = DB::table('address_article')->where('article_id', $id)->where('address_id', $address_id);
+
+        if (!$query->exists()) {
+            return null;
+        }
+
+        return (float) $query->sum('amount');
+    }
+
+    /**
+     * Stock de la variante en un depósito, o null si no tiene fila.
+     *
+     * @param  \App\Models\ArticleVariant|int  $variante
+     * @param  int                             $address_id
+     * @return float|null
+     */
+    protected function stock_variante_en($variante, $address_id)
+    {
+        $id = is_object($variante) ? $variante->id : $variante;
+
+        $query = DB::table('address_article_variant')->where('article_variant_id', $id)->where('address_id', $address_id);
+
+        if (!$query->exists()) {
+            return null;
+        }
+
+        return (float) $query->sum('amount');
+    }
+
+    /**
+     * `article_variants.stock`, leído de la tabla.
+     *
+     * @param  \App\Models\ArticleVariant|int  $variante
+     * @return float
+     */
+    protected function stock_de_variante($variante)
+    {
+        $id = is_object($variante) ? $variante->id : $variante;
+
+        return (float) DB::table('article_variants')->where('id', $id)->value('stock');
+    }
+
+    /**
+     * Cantidad de filas de pivot (artículos + variantes) que nombran la sucursal, sin importar su
+     * stock. Después de eliminarla tiene que dar 0 SIEMPRE.
+     *
+     * @param  int  $address_id
+     * @return int
+     */
+    protected function filas_de_pivot($address_id)
+    {
+        return DB::table('address_article')->where('address_id', $address_id)->count()
+             + DB::table('address_article_variant')->where('address_id', $address_id)->count();
+    }
+
+    /**
+     * Suma del stock del artículo en las sucursales que EXISTEN (INNER JOIN con addresses). El
+     * invariante de la misión: tiene que ser igual a `articles.stock` en un artículo que reparte.
+     *
+     * @param  \App\Models\Article|int  $articulo
+     * @return float
+     */
+    protected function suma_de_sucursales_vivas($articulo)
+    {
+        $id = is_object($articulo) ? $articulo->id : $articulo;
+
+        return (float) DB::table('address_article')
+                            ->join('addresses', 'addresses.id', '=', 'address_article.address_id')
+                            ->where('address_article.article_id', $id)
+                            ->sum('address_article.amount');
+    }
+
+    /**
+     * Movimientos de stock del artículo, en orden, opcionalmente de un concepto.
+     *
+     * @param  \App\Models\Article|int  $articulo
+     * @param  string|null              $concepto
+     * @return \Illuminate\Support\Collection
+     */
+    protected function movimientos_de($articulo, $concepto = null)
+    {
+        $id = is_object($articulo) ? $articulo->id : $articulo;
+
+        $query = \App\Models\StockMovement::where('article_id', $id)->orderBy('id');
+
+        if (!is_null($concepto)) {
+            $query->where('concepto_stock_movement_id', $this->concepto_id($concepto));
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * @param  string  $nombre
+     * @return int
+     */
+    protected function concepto_id($nombre)
+    {
+        $id = DB::table('concepto_stock_movements')->where('name', $nombre)->value('id');
+
+        $this->assertNotNull($id, 'El fixture no tiene el concepto de stock "'.$nombre.'".');
+
+        return (int) $id;
+    }
+
+    /**
+     * `DELETE api/address/{id}` con los parámetros de la decisión (o sin nada, como la SPA vieja).
+     *
+     * @param  int    $address_id
+     * @param  array  $parametros
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function eliminar_sucursal($address_id, $parametros = [])
+    {
+        return $this->json('DELETE', 'api/address/'.$address_id, $parametros);
+    }
+
+    /**
+     * Un empleado del comercio del fixture con una sucursal elegida.
+     *
+     * @param  string    $nombre
+     * @param  int|null  $address_id
+     * @param  int|null  $owner_id    null = el dueño del fixture.
+     * @return \App\Models\User
+     */
+    protected function nuevo_empleado($nombre, $address_id, $owner_id = null)
+    {
+        return User::create([
+            'name'         => $nombre,
+            'company_name' => 'zz Ferreteria sucursales',
+            'email'        => 'zz-sucursal-'.uniqid().'@test.local',
+            'password'     => bcrypt('secret'),
+            'owner_id'     => is_null($owner_id) ? $this->comercio()->id : $owner_id,
+            'admin_access' => 0,
+            'address_id'   => $address_id,
+        ]);
+    }
+
+    /**
+     * Otro comercio de la misma base (un dueño sin owner_id).
+     *
+     * @return \App\Models\User
+     */
+    protected function otro_comercio()
+    {
+        return User::create([
+            'name'         => 'zz Otro comercio',
+            'company_name' => 'zz Otro comercio',
+            'email'        => 'zz-otro-'.uniqid().'@test.local',
+            'password'     => bcrypt('secret'),
+            'admin_access' => 1,
+        ]);
+    }
+
+    /**
+     * Deja al comercio con UNA sola sucursal viva (la dada), borrando las otras en la transacción
+     * del test (se revierte al terminar). Para probar "la última sucursal" (D6).
+     *
+     * @param  \App\Models\Address  $la_que_queda
+     * @return void
+     */
+    protected function dejar_solo($la_que_queda)
+    {
+        DB::table('addresses')
+            ->where('user_id', $this->comercio()->id)
+            ->whereNull('buyer_id')
+            ->where('id', '!=', $la_que_queda->id)
+            ->delete();
+
+        \App\Http\Controllers\Helpers\address\SucursalVigenteHelper::olvidar();
+    }
 }
