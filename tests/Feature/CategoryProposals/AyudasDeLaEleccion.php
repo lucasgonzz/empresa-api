@@ -1,0 +1,383 @@
+<?php
+
+namespace Tests\Feature\CategoryProposals;
+
+use App\Jobs\ProcessChunkSetFinalPrices;
+use App\Models\Category;
+use App\Models\ExtencionEmpresa;
+use App\Models\SubCategory;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+
+/**
+ * Las ayudas de los tests de elegir, revisar y volver atrás (misión categorizacion-tres-modelos,
+ * 5/10/2026): categorías REALES del comercio, extensiones, los pedidos HTTP de cada acción y un par de
+ * lecturas para comparar contra la base.
+ *
+ * Es un trait propio y no parte de CategoryProposalsTestCase porque esa base la edita solo el
+ * orquestador: dos constructores en el mismo worktree no pueden pisarse una clase compartida.
+ *
+ * IMPORTANTE (PHP 7.4): nada de `?->`, `match`, `str_contains` ni argumentos nombrados.
+ */
+trait AyudasDeLaEleccion
+{
+    /**
+     * Correlativo de `num` para las categorías que se siembran a mano (la columna admite NULL, pero un
+     * `num` real se parece más a lo que hay en producción).
+     *
+     * @var int
+     */
+    protected $num_sembrado = 0;
+
+    // ---------------------------------------------------------------------------------------------
+    // Datos del comercio
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Una categoría REAL (de `categories`) del comercio dado (por defecto el del test).
+     *
+     * @param  string $nombre
+     * @param  \App\Models\User|null $dueno
+     * @param  array  $extra  Columnas extra (`percentage_gain`, `deleted_at`...).
+     * @return \App\Models\Category
+     */
+    protected function categoria_real($nombre, $dueno = null, array $extra = [])
+    {
+        $dueno = is_null($dueno) ? $this->owner : $dueno;
+
+        $this->num_sembrado++;
+
+        return Category::create(array_merge([
+            'name'    => $nombre,
+            'user_id' => $dueno->id,
+            'num'     => $this->num_sembrado,
+        ], $extra));
+    }
+
+    /**
+     * Una subcategoría REAL colgada de una categoría real.
+     *
+     * @param  string $nombre
+     * @param  \App\Models\Category $categoria
+     * @param  \App\Models\User|null $dueno
+     * @return \App\Models\SubCategory
+     */
+    protected function subcategoria_real($nombre, Category $categoria, $dueno = null)
+    {
+        $dueno = is_null($dueno) ? $this->owner : $dueno;
+
+        $this->num_sembrado++;
+
+        return SubCategory::create([
+            'name'        => $nombre,
+            'category_id' => $categoria->id,
+            'user_id'     => $dueno->id,
+            'num'         => $this->num_sembrado,
+        ]);
+    }
+
+    /**
+     * Le da una extensión al comercio (la crea si el slot no la tiene sembrada: un slot arranca con
+     * `extencion_empresas` vacía).
+     *
+     * @param  string $slug
+     * @param  \App\Models\User|null $dueno
+     * @return void
+     */
+    protected function dar_extension($slug, $dueno = null)
+    {
+        $dueno = is_null($dueno) ? $this->owner : $dueno;
+
+        $extencion = ExtencionEmpresa::where('slug', $slug)->first();
+
+        if (!$extencion) {
+            $extencion = ExtencionEmpresa::forceCreate(['name' => $slug, 'slug' => $slug]);
+        }
+
+        $dueno->extencions()->syncWithoutDetaching([$extencion->id]);
+    }
+
+    /**
+     * Lo que tiene hoy un artículo (fila fresca, aunque esté borrado): categoría y subcategoría como
+     * enteros o NULL.
+     *
+     * @param  \App\Models\Article $articulo
+     * @return array  ['category_id' => int|null, 'sub_category_id' => int|null]
+     */
+    protected function categorias_de($articulo)
+    {
+        $fila = DB::table('articles')->where('id', $articulo->id)->first(['category_id', 'sub_category_id']);
+
+        return [
+            'category_id'     => is_null($fila->category_id) ? null : (int) $fila->category_id,
+            'sub_category_id' => is_null($fila->sub_category_id) ? null : (int) $fila->sub_category_id,
+        ];
+    }
+
+    /**
+     * Le pone una fecha vieja a `updated_at` de los artículos, para comprobar después si algo los tocó.
+     *
+     * @param  array $articulos
+     * @return void
+     */
+    protected function envejecer($articulos)
+    {
+        $ids = [];
+
+        foreach ($articulos as $articulo) {
+            $ids[] = $articulo->id;
+        }
+
+        DB::table('articles')->whereIn('id', $ids)->update(['updated_at' => '2020-01-01 00:00:00']);
+    }
+
+    /**
+     * El `updated_at` de un artículo como texto (leído de la base).
+     *
+     * @param  \App\Models\Article $articulo
+     * @return string|null
+     */
+    protected function actualizado_el($articulo)
+    {
+        return DB::table('articles')->where('id', $articulo->id)->value('updated_at');
+    }
+
+    /**
+     * Cuántas consultas SQL hace una acción.
+     *
+     * @param  callable $accion
+     * @return int
+     */
+    protected function cantidad_de_consultas(callable $accion)
+    {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $accion();
+
+        $cantidad = count(DB::getQueryLog());
+
+        DB::disableQueryLog();
+        DB::flushQueryLog();
+
+        return $cantidad;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Los pedidos HTTP de cada acción (contrato B del plan, §6)
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * POST category-proposal-runs/{id}/elegir.
+     *
+     * @param  \App\Models\CategoryProposalRun $run
+     * @param  \App\Models\CategoryProposal    $propuesta
+     * @param  bool|null $eliminar  `eliminar_categorias_vacias` (null = no se manda).
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_elegir($run, $propuesta, $eliminar = null)
+    {
+        $cuerpo = ['propuesta_id' => $propuesta->id];
+
+        if (!is_null($eliminar)) {
+            $cuerpo['eliminar_categorias_vacias'] = $eliminar;
+        }
+
+        return $this->postJson('api/category-proposal-runs/'.$run->id.'/elegir', $cuerpo);
+    }
+
+    /**
+     * POST category-proposal-runs/{id}/volver-atras.
+     *
+     * @param  \App\Models\CategoryProposalRun $run
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_volver_atras($run)
+    {
+        return $this->postJson('api/category-proposal-runs/'.$run->id.'/volver-atras');
+    }
+
+    /**
+     * POST category-proposal-items/{id}/aprobar.
+     *
+     * @param  \App\Models\CategoryProposalItem $item
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_aprobar($item)
+    {
+        return $this->postJson('api/category-proposal-items/'.$item->id.'/aprobar');
+    }
+
+    /**
+     * POST category-proposal-items/{id}/rechazar.
+     *
+     * @param  \App\Models\CategoryProposalItem $item
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_rechazar($item)
+    {
+        return $this->postJson('api/category-proposal-items/'.$item->id.'/rechazar');
+    }
+
+    /**
+     * POST category-proposal-items/aprobar-varios o rechazar-varios.
+     *
+     * @param  string $accion  'aprobar' | 'rechazar'
+     * @param  array  $ids
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_en_lote($accion, array $ids)
+    {
+        return $this->postJson('api/category-proposal-items/'.$accion.'-varios', ['ids' => $ids]);
+    }
+
+    /**
+     * Los ids de artículos que quedaron encolados para recalcular precios (con `Queue::fake()`
+     * prendida), ordenados. Los lotes guardan sus ids en una propiedad protegida: se leen por reflexión,
+     * igual que en los tests del recálculo en lote.
+     *
+     * @return array  [int, ...]
+     */
+    protected function ids_encolados_para_recalcular()
+    {
+        $ids = [];
+
+        foreach (Queue::pushed(ProcessChunkSetFinalPrices::class) as $lote) {
+            $propiedad = new \ReflectionProperty($lote, 'article_ids');
+            $propiedad->setAccessible(true);
+
+            foreach ($propiedad->getValue($lote) as $id) {
+                $ids[] = (int) $id;
+            }
+        }
+
+        sort($ids);
+
+        return $ids;
+    }
+
+    /**
+     * Prende `USA_TIENDA_NUBE` en el entorno del proceso (los observers y `add_article_to_sync` leen
+     * `env()` directo). Hay que apagarla con `restaurar_tienda_nube()` en un `finally`: el entorno es
+     * del proceso, no del test.
+     *
+     * @return array  Lo que había antes, para `restaurar_tienda_nube()`.
+     */
+    protected function prender_tienda_nube()
+    {
+        $anterior = [
+            'server' => array_key_exists('USA_TIENDA_NUBE', $_SERVER) ? $_SERVER['USA_TIENDA_NUBE'] : null,
+            'env'    => array_key_exists('USA_TIENDA_NUBE', $_ENV) ? $_ENV['USA_TIENDA_NUBE'] : null,
+            'putenv' => getenv('USA_TIENDA_NUBE'),
+        ];
+
+        $_SERVER['USA_TIENDA_NUBE'] = 'true';
+        $_ENV['USA_TIENDA_NUBE']    = 'true';
+        putenv('USA_TIENDA_NUBE=true');
+
+        return $anterior;
+    }
+
+    /**
+     * Deja `USA_TIENDA_NUBE` como estaba antes de `prender_tienda_nube()`.
+     *
+     * @param  array $anterior
+     * @return void
+     */
+    protected function restaurar_tienda_nube(array $anterior)
+    {
+        if (is_null($anterior['server'])) {
+            unset($_SERVER['USA_TIENDA_NUBE']);
+        } else {
+            $_SERVER['USA_TIENDA_NUBE'] = $anterior['server'];
+        }
+
+        if (is_null($anterior['env'])) {
+            unset($_ENV['USA_TIENDA_NUBE']);
+        } else {
+            $_ENV['USA_TIENDA_NUBE'] = $anterior['env'];
+        }
+
+        if ($anterior['putenv'] === false) {
+            putenv('USA_TIENDA_NUBE');
+        } else {
+            putenv('USA_TIENDA_NUBE='.$anterior['putenv']);
+        }
+    }
+
+    /**
+     * Veinticinco artículos y un sistema A, para probar que elegir y volver atrás recorren VARIOS lotes
+     * (con `catalogo_ia.articulos_por_lote_de_escritura` chico) sin saltearse ni repetir a nadie.
+     *
+     * El artículo `i` (de 0 a 24):
+     *  - tiene la categoría `Vieja` si `i % 3 == 0` (el resto no tiene ninguna);
+     *  - según `i % 5`: 0 = sin ubicar, 1 = dudoso (Bisagras), 2, 3 y 4 = seguro (los pares en
+     *    Bisagras / Comunes y los impares en Correderas).
+     *
+     * @return array  ['vieja', 'articulos', 'run', 'proposal', 'items', 'nodos']
+     */
+    protected function sembrar_veinticinco()
+    {
+        // La categoría que tienen de antes los artículos múltiplos de tres.
+        $vieja = $this->categoria_real('Vieja');
+
+        $articulos = [];
+
+        for ($i = 0; $i < 25; $i++) {
+            $articulos[] = $this->crear_articulo('Articulo '.$i, ($i % 3 === 0) ? ['category_id' => $vieja->id] : []);
+        }
+
+        // Los ítems de la propuesta A, uno por artículo.
+        $items = [];
+
+        foreach ($articulos as $i => $articulo) {
+            switch ($i % 5) {
+                case 0:
+                    $items[] = [$articulo, null, null, 'ninguna', 'nombre ambiguo'];
+                    break;
+
+                case 1:
+                    $items[] = [$articulo, 'Bisagras', null, 'dudosa', 'no queda claro'];
+                    break;
+
+                default:
+                    $items[] = ($i % 2 === 0)
+                        ? [$articulo, 'Bisagras', 'Comunes', 'segura']
+                        : [$articulo, 'Correderas', null, 'segura'];
+            }
+        }
+
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    'arbol' => ['Bisagras' => ['Comunes'], 'Correderas' => []],
+                    'items' => $items,
+                ],
+            ],
+        ]);
+
+        return [
+            'vieja'     => $vieja,
+            'articulos' => $articulos,
+            'run'       => $sembrado['run'],
+            'proposal'  => $sembrado['propuestas']['A']['proposal'],
+            'items'     => $sembrado['propuestas']['A']['items'],
+            'nodos'     => $sembrado['propuestas']['A']['nodos'],
+        ];
+    }
+
+    /**
+     * Las categorías vivas del comercio con ese nombre (con la collation de la columna: sin distinguir
+     * mayúsculas ni acentos, igual que el sistema).
+     *
+     * @param  string $nombre
+     * @param  \App\Models\User|null $dueno
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    protected function categorias_llamadas($nombre, $dueno = null)
+    {
+        $dueno = is_null($dueno) ? $this->owner : $dueno;
+
+        return Category::where('user_id', $dueno->id)->where('name', $nombre)->orderBy('id')->get();
+    }
+}
