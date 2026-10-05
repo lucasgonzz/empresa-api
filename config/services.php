@@ -63,6 +63,12 @@ return [
         'inbound_key'       => env('ADMIN_API_OUTBOUND_KEY'),
         'client_uuid'       => env('ADMIN_API_CLIENT_UUID'),
         'require_api_key'   => env('ADMIN_SYNC_REQUIRE_API_KEY', false),
+        /**
+         * Exige X-Admin-Api-Key SOLO en admin-sync/user-setup (middleware ClaveDeAdminEnSetup).
+         * Apagada por defecto a propósito: admin-api todavía no manda el header a esa ruta y
+         * prenderla antes rompería el alta de clientes. No la prendas hasta que lo mande.
+         */
+        'require_key_for_setup' => env('ADMIN_SYNC_SETUP_REQUIRE_API_KEY', false),
     ],
 
     /**
