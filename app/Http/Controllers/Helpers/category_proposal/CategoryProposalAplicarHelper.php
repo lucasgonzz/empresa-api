@@ -415,7 +415,14 @@ class CategoryProposalAplicarHelper
         $eliminadas = [];
 
         if (!$es_mantener && $eliminar_categorias_vacias) {
-            $eliminadas = self::mandar_a_la_papelera_las_vacias($dueno, $resolucion['reales_categorias'], $resolucion['reales_subcategorias']);
+            // Los nombres (normalizados) de TODOS los nodos de la propuesta, resueltos o no: una categoría vieja
+            // con uno de esos nombres la reutiliza el nodo (al aplicar o al aprobar), así que no se manda a la papelera.
+            $claves_de_la_propuesta = array_flip(CategoryProposalNode::where('proposal_id', $propuesta->id)
+                ->where('user_id', $dueno->id)
+                ->pluck('clave_nombre')
+                ->all());
+
+            $eliminadas = self::mandar_a_la_papelera_las_vacias($dueno, $resolucion['reales_categorias'], $resolucion['reales_subcategorias'], $claves_de_la_propuesta);
         }
 
         // Cuántas CATEGORÍAS (no subcategorías) se mandaron a la papelera: es lo que muestra el resumen.
@@ -917,12 +924,22 @@ class CategoryProposalAplicarHelper
      * papelera si quedó vacía. Se respeta `La de siempre` (la tienda la esconde por nombre) y se usa
      * `->delete()` de Eloquent (soft delete, con su auditoría; no hay observers de `deleted`).
      *
+     * 🔴 Tampoco se toca una categoría o subcategoría vieja cuyo NOMBRE (normalizado) coincide con algún nodo
+     * de la propuesta elegida, aunque ese nodo no se haya resuelto al aplicar (solo tenía dudosos, que se
+     * crean o reutilizan recién al aprobar). Si se la mandara a la papelera, al aprobar el primer dudoso el
+     * nodo no la encontraría y crearía OTRA con el mismo nombre y otro id, y la original perdería su imagen,
+     * su descripción y su `num` (B-03 del verificador: "Eliminar vacías" viene tildado por defecto).
+     * Como esa categoría se reutiliza por nombre al aprobar, se conserva con el mismo id.
+     * Una subcategoría protegida también protege a su categoría: no queda una subcategoría viva colgando de
+     * una categoría que se mandó a la papelera.
+     *
      * @param  \App\Models\User $dueno
-     * @param  array $reales_categorias    [id => true] de las categorías del sistema elegido.
-     * @param  array $reales_subcategorias [id => true] de las subcategorías del sistema elegido.
+     * @param  array $reales_categorias      [id => true] de las categorías del sistema elegido.
+     * @param  array $reales_subcategorias   [id => true] de las subcategorías del sistema elegido.
+     * @param  array $claves_de_la_propuesta [clave normalizada => true] de TODOS los nodos de la propuesta elegida.
      * @return array  [['tipo' => 'categoria'|'subcategoria', 'id' => n], ...] lo que se mandó a la papelera.
      */
-    protected static function mandar_a_la_papelera_las_vacias(User $dueno, array $reales_categorias, array $reales_subcategorias)
+    protected static function mandar_a_la_papelera_las_vacias(User $dueno, array $reales_categorias, array $reales_subcategorias, array $claves_de_la_propuesta = [])
     {
         // Las categorías que se podrían eliminar (no son del sistema elegido ni `La de siempre`): [id => ids de sus subcategorías].
         $categorias_candidatas = [];
@@ -931,19 +948,31 @@ class CategoryProposalAplicarHelper
             // El id de la categoría, como entero.
             $id = (int) $categoria->id;
 
-            // La del sistema elegido y `La de siempre` se conservan.
-            if (isset($reales_categorias[$id]) || CategoryProposalNombreHelper::clave_de($categoria->name) === CategoryProposalNombreHelper::CLAVE_RESERVADA) {
+            // La clave de su nombre: lo que se compara con `La de siempre` y con los nodos de la propuesta.
+            $clave = CategoryProposalNombreHelper::clave_de($categoria->name);
+
+            // La del sistema elegido, la que un nodo de la propuesta va a reutilizar por nombre y `La de siempre` se conservan.
+            if (isset($reales_categorias[$id]) || isset($claves_de_la_propuesta[$clave]) || $clave === CategoryProposalNombreHelper::CLAVE_RESERVADA) {
                 continue;
             }
 
             $categorias_candidatas[$id] = [];
         }
 
+        // Las categorías que NO se pueden eliminar porque cuelga de ellas una subcategoría protegida: [id => true].
+        $categorias_protegidas = [];
+
         // Todas las subcategorías vivas del dueño con su categoría, menos las del sistema elegido.
         $subcategorias_candidatas = [];
 
-        foreach (SubCategory::where('user_id', $dueno->id)->get(['id', 'category_id']) as $sub) {
+        foreach (SubCategory::where('user_id', $dueno->id)->get(['id', 'name', 'category_id']) as $sub) {
             $id = (int) $sub->id;
+
+            // Una subcategoría que un nodo de la propuesta va a reutilizar por nombre se conserva, y con ella su categoría.
+            if (isset($claves_de_la_propuesta[CategoryProposalNombreHelper::clave_de($sub->name)])) {
+                $categorias_protegidas[(int) $sub->category_id] = true;
+                continue;
+            }
 
             if (isset($reales_subcategorias[$id])) {
                 continue;
@@ -993,7 +1022,8 @@ class CategoryProposalAplicarHelper
         }
 
         foreach ($categorias_candidatas as $category_id => $subs) {
-            if (isset($categorias_con_articulos[$category_id])) {
+            // Con artículos, o con una subcategoría protegida colgando: se conserva.
+            if (isset($categorias_con_articulos[$category_id]) || isset($categorias_protegidas[$category_id])) {
                 continue;
             }
 

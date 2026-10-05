@@ -1511,4 +1511,137 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
         $this->assertSame(['category_id' => $vieja->id, 'sub_category_id' => null], $this->categorias_de($suelto));
         $this->assertSame('elegida', CategoryProposalRun::find($sembrado['run']->id)->estado);
     }
+
+    /**
+     * 🔴 "Eliminar vacías" (viene tildado por defecto en el modal) NO manda a la papelera una categoría o
+     * subcategoría vieja que un nodo del sistema elegido todavía necesita, aunque ese nodo solo tenga dudosos
+     * y por eso no se haya resuelto al elegir (B-03 del verificador). Si la mandara, al aprobar el primer
+     * dudoso el nodo no la encontraría y crearía OTRA con el mismo nombre y otro id: la original perdería su
+     * imagen, su descripción y su `num` sin que el cartel lo dijera.
+     *
+     * Se compara por nombre normalizado (el nodo se llama FERRETERIA y la categoría Ferretería), vale para
+     * categorías y para subcategorías, y una subcategoría protegida protege a su categoría. Lo que no
+     * coincide con ningún nodo y quedó vacío sí se manda a la papelera (el control).
+     *
+     * Y al aprobar el primer dudoso se REUTILIZA la original: mismo id, con su imagen y su descripción.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function eliminar_vacias_no_manda_a_la_papelera_una_categoria_que_un_nodo_todavia_necesita()
+    {
+        // Dos categorías viejas con identidad propia (imagen y descripción), una de ellas con una subcategoría.
+        $pinturas   = $this->categoria_real('Pinturas', null, ['image_url' => 'pinturas.png', 'descripcion' => 'Las pinturas de la casa']);
+        $ferreteria = $this->categoria_real('Ferretería', null, ['image_url' => 'ferreteria.png', 'descripcion' => 'Todo para ferretería']);
+        $tornillos  = $this->subcategoria_real('Tornillos', $ferreteria);
+
+        // El control: una categoría vieja que ningún nodo nombra y que queda vacía (con una subcategoría vacía).
+        $sin_uso     = $this->categoria_real('Sin uso en el sistema nuevo');
+        $sub_sin_uso = $this->subcategoria_real('Sub sin uso', $sin_uso);
+
+        // Una categoría vieja que ningún nodo nombra, pero cuya subcategoría SÍ la nombra un nodo (Herrajes / Bulones):
+        // la subcategoría protegida protege a su categoría, que si no quedaría borrada con la subcategoría viva colgando.
+        $cajon   = $this->categoria_real('Cajon de sastre');
+        $bulones = $this->subcategoria_real('Bulones', $cajon);
+
+        $latex    = $this->crear_articulo('Latex 4L', ['category_id' => $pinturas->id]);
+        $tornillo = $this->crear_articulo('Tornillo 8mm', ['category_id' => $ferreteria->id, 'sub_category_id' => $tornillos->id]);
+        $bulon    = $this->crear_articulo('Bulon', ['category_id' => $cajon->id, 'sub_category_id' => $bulones->id]);
+        $martillo = $this->crear_articulo('Martillo');
+
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    // Los nodos que solo tienen dudosos (Pinturas, Ferretería / Tornillos y Herrajes / Bulones) no se
+                    // resuelven al elegir.
+                    'arbol' => ['Pinturas' => [], 'FERRETERIA' => ['tornillos'], 'Herrajes' => ['BULONES'], 'Herramientas' => []],
+                    'items' => [
+                        [$latex, 'Pinturas', null, 'dudosa', 'no queda claro'],
+                        [$tornillo, 'FERRETERIA', 'tornillos', 'dudosa', 'no queda claro'],
+                        [$bulon, 'Herrajes', 'BULONES', 'dudosa', 'no queda claro'],
+                        [$martillo, 'Herramientas', null, 'segura'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $respuesta = $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['A']['proposal'], true);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(1, $respuesta->json('resultado.categorias_eliminadas'), 'Solo la que ningún nodo nombra.');
+
+        // En la papelera, solo el control (con su subcategoría).
+        $this->assertSame([$sin_uso->id], Category::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+        $this->assertSame([$sub_sin_uso->id], SubCategory::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+
+        // Las que un nodo todavía necesita siguen vivas, con su identidad.
+        foreach ([$pinturas, $ferreteria] as $categoria) {
+            $this->assertNotNull(Category::find($categoria->id), $categoria->name.' sigue viva.');
+        }
+        $this->assertNotNull(SubCategory::find($tornillos->id));
+
+        // La categoría que ningún nodo nombra se conserva porque su subcategoría sí está nombrada.
+        $this->assertNotNull(Category::find($cajon->id), 'La subcategoría protegida protege a su categoría.');
+        $this->assertNotNull(SubCategory::find($bulones->id));
+
+        // Los artículos dudosos quedaron sin categoría (es un sistema nuevo), así que las originales están vacías.
+        $this->assertSame(['category_id' => null, 'sub_category_id' => null], $this->categorias_de($latex));
+
+        // Aprobar el primer dudoso REUTILIZA la original: mismo id, con su imagen y su descripción.
+        $items = $sembrado['propuestas']['A']['items'];
+
+        $this->pedir_aprobar($items[0])->assertStatus(200);
+
+        $viva = $this->categorias_llamadas('Pinturas');
+        $this->assertSame(1, $viva->count(), 'No se recreó con otro id.');
+        $this->assertSame($pinturas->id, $viva->first()->id);
+        $this->assertSame('pinturas.png', $viva->first()->image_url);
+        $this->assertSame('Las pinturas de la casa', $viva->first()->descripcion);
+        $this->assertSame(['category_id' => $pinturas->id, 'sub_category_id' => null], $this->categorias_de($latex));
+
+        $nodo = CategoryProposalNode::find($sembrado['propuestas']['A']['nodos']['Pinturas']->id);
+        $this->assertSame($pinturas->id, (int) $nodo->real_category_id);
+        $this->assertFalse($nodo->real_creado, 'La reutilizó, no la creó.');
+
+        // Lo mismo con la categoría y la subcategoría que se nombran con otras mayúsculas y sin tilde.
+        $this->pedir_aprobar($items[1])->assertStatus(200);
+
+        $this->assertSame(1, $this->categorias_llamadas('Ferretería')->count());
+        $this->assertSame(1, SubCategory::where('user_id', $this->owner->id)->where('name', 'Tornillos')->count());
+        $this->assertSame(['category_id' => $ferreteria->id, 'sub_category_id' => $tornillos->id], $this->categorias_de($tornillo));
+        $this->assertSame('ferreteria.png', Category::find($ferreteria->id)->image_url);
+    }
+
+    /**
+     * Si el dudoso se RECHAZA, la categoría vieja que el nodo necesitaba sigue existiendo (vacía): lo único
+     * que se pierde es la asignación, no la categoría del comercio.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function si_se_rechaza_el_dudoso_la_categoria_vieja_que_el_nodo_necesitaba_sigue_existiendo()
+    {
+        $pinturas = $this->categoria_real('Pinturas', null, ['image_url' => 'pinturas.png']);
+        $latex    = $this->crear_articulo('Latex 4L', ['category_id' => $pinturas->id]);
+        $martillo = $this->crear_articulo('Martillo');
+
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    'arbol' => ['Pinturas' => [], 'Herramientas' => []],
+                    'items' => [
+                        [$latex, 'Pinturas', null, 'dudosa', 'no queda claro'],
+                        [$martillo, 'Herramientas', null, 'segura'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['A']['proposal'], true)->assertStatus(200);
+        $this->pedir_rechazar($sembrado['propuestas']['A']['items'][0])->assertStatus(200);
+
+        $this->assertNotNull(Category::find($pinturas->id), 'La categoría original sigue en pie.');
+        $this->assertSame('pinturas.png', Category::find($pinturas->id)->image_url);
+        $this->assertSame(0, Category::onlyTrashed()->where('user_id', $this->owner->id)->count());
+    }
 }
