@@ -224,17 +224,20 @@ class GlobalSearchMatchesHelper
      */
     protected static function valid_relation_props($model_instance, $relation, $props)
     {
-        if (empty($relation) || !is_string($relation) || !method_exists($model_instance, $relation)) {
+        if (empty($relation) || !is_string($relation)) {
             return [];
         }
 
-        try {
-            $relation_instance = $model_instance->{$relation}();
-        } catch (\Throwable $e) {
-            return [];
-        }
+        /*
+         * 🔴 El nombre de la relacion sale del pedido de global-search y se INVOCA como metodo del
+         * modelo. Antes alcanzaba con method_exists + try/catch: `relation = "save"` / `"touch"`
+         * ejecutaba (new Modelo)->save() y el catch se tragaba el error. Pasa por
+         * ColumnFiltersHelper::relacion_real(), la unica guarda para invocar un metodo por un nombre
+         * del pedido (mision filtros-key-sin-inyeccion, 5/10/2026): no copiar otra validacion aca.
+         */
+        $relation_instance = ColumnFiltersHelper::relacion_real(get_class($model_instance), $relation);
 
-        if (!($relation_instance instanceof Relation)) {
+        if (is_null($relation_instance)) {
             return [];
         }
 
