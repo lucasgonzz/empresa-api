@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Helpers;
 use App\Exceptions\BaseConDatosException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * Guarda de "no vaciar una base que ya tiene datos de negocio" para todo lo que corre un
@@ -91,16 +90,21 @@ class BorradoTotalDeBaseHelper
     {
         $resumen = [];
 
+        // Una sola conexión para todo (la por defecto, la misma que vaciaría `migrate:fresh`): el
+        // schema builder se pide a ella y no a la fachada Schema, que cachea el primero que resolvió.
+        $conexion = DB::connection();
+        $schema   = $conexion->getSchemaBuilder();
+
         foreach (self::TABLAS_DE_NEGOCIO as $tabla) {
-            if (!Schema::hasTable($tabla)) {
+            if (!$schema->hasTable($tabla)) {
                 continue;
             }
 
-            if (!DB::table($tabla)->exists()) {
+            if (!$conexion->table($tabla)->exists()) {
                 continue;
             }
 
-            $resumen[$tabla] = (int) DB::table($tabla)->count();
+            $resumen[$tabla] = (int) $conexion->table($tabla)->count();
         }
 
         return $resumen;
