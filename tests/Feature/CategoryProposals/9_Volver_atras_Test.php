@@ -3,6 +3,7 @@
 namespace Tests\Feature\CategoryProposals;
 
 use App\Http\Controllers\Helpers\category_proposal\CategoryProposalAplicarHelper;
+use App\Http\Controllers\Helpers\category_proposal\CategoryProposalEscrituraHelper;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\CategoryProposalItem;
@@ -394,8 +395,10 @@ class Volver_atras_Test extends CategoryProposalsTestCase
     }
 
     /**
-     * Un artículo borrado después de elegir no cuenta como "editado": no impide volver atrás, y los demás se
-     * restauran igual (al borrado no se le escribe).
+     * Un artículo borrado después de elegir no cuenta como "editado": no impide volver atrás. A los demás se les
+     * devuelve lo que tenían y TAMBIÉN al borrado (B-09 del verificador): si no, el día que el dueño lo trajera de
+     * la papelera quedaría apuntando a una categoría que volver atrás mandó a la papelera. Antes de ese arreglo
+     * este test afirmaba "al borrado no se le escribe": cambió a propósito, no para que pase.
      *
      * @test
      * @group categorias_ia
@@ -414,6 +417,136 @@ class Volver_atras_Test extends CategoryProposalsTestCase
 
         $this->assertSame(['category_id' => null, 'sub_category_id' => null], $this->categorias_de($a3), 'Los demás sí se restauran.');
         $this->assertSame(['category_id' => $e['vieja']->id, 'sub_category_id' => null], $this->categorias_de($a4));
+
+        // El borrado recupera lo que tenía (Vieja / Sub vieja) y sigue en la papelera.
+        $this->assertSame(['category_id' => $e['vieja']->id, 'sub_category_id' => $e['sub_vieja']->id], $this->categorias_de($a1), 'Al borrado también se le devuelve lo que tenía.');
+        $this->assertNotNull(DB::table('articles')->where('id', $a1->id)->value('deleted_at'), 'Y sigue en la papelera.');
+    }
+
+    /**
+     * El caso completo de B-09: el dueño elige eliminando las vacías (la categoría de antes se va a la papelera),
+     * borra un artículo, cambia de sistema (la categoría de antes vuelve) y después trae el artículo de la
+     * papelera: aparece con la categoría y la subcategoría que tenía antes de elegir, y esas existen.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function un_articulo_borrado_y_restaurado_despues_de_volver_atras_conserva_su_categoria_anterior()
+    {
+        $e = $this->escenario();
+        $a1 = $e['articulos'][0];
+
+        // Con "eliminar las vacías": Vieja y Sub vieja quedan sin artículos y el aplicar las manda a la papelera.
+        $this->pedir_elegir($e['run'], $e['a']['proposal'], true)->assertStatus(200);
+        $this->assertNull(Category::find($e['vieja']->id), 'Vieja se fue a la papelera al elegir.');
+
+        $a1->delete();
+        $this->pedir_volver_atras($e['run'])->assertStatus(200);
+
+        // El dueño trae el artículo de la papelera.
+        Article::withTrashed()->where('id', $a1->id)->first()->restore();
+
+        $this->assertSame(['category_id' => $e['vieja']->id, 'sub_category_id' => $e['sub_vieja']->id], $this->categorias_de($a1));
+        $this->assertNotNull(Category::find($e['vieja']->id), 'La categoría de antes volvió a estar viva.');
+        $this->assertNotNull(SubCategory::find($e['sub_vieja']->id), 'Y su subcategoría también.');
+    }
+
+    /**
+     * B-09 con margen por categoría ("mantener" es el único caso donde se puede): al volver atrás el artículo
+     * borrado se reescribe (queda sin la categoría que le puso el aplicar) pero NO entra en el recálculo de
+     * precios, que es un efecto de los artículos vivos.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function volver_atras_reescribe_al_articulo_borrado_pero_no_lo_manda_a_recalcular()
+    {
+        Queue::fake();
+
+        $herrajes = $this->categoria_real('Herrajes', null, ['percentage_gain' => 10]);
+        $articulos = $this->crear_articulos(['a1', 'a2', 'a3']);
+
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'mantener' => [
+                    'tipo'  => 'mantener',
+                    'arbol' => ['Herrajes' => ['subs' => [], 'existing_category_id' => $herrajes->id]],
+                    'items' => [
+                        [$articulos[0], 'Herrajes', null, 'segura'],
+                        [$articulos[1], 'Herrajes', null, 'segura'],
+                        [$articulos[2], 'Herrajes', null, 'segura'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['mantener']['proposal'])->assertStatus(200);
+
+        // El dueño borra a3 después de elegir, y se vacía lo encolado por elegir para medir solo lo de volver atrás.
+        $articulos[2]->delete();
+        Queue::fake();
+
+        $this->pedir_volver_atras($sembrado['run'])->assertStatus(200);
+
+        // Los tres vuelven a no tener categoría, también el borrado.
+        foreach ($articulos as $articulo) {
+            $this->assertSame(['category_id' => null, 'sub_category_id' => null], $this->categorias_de($articulo));
+        }
+
+        // El recálculo de precios es solo de los vivos.
+        $esperados = [$articulos[0]->id, $articulos[1]->id];
+        sort($esperados);
+        $this->assertSame($esperados, $this->ids_encolados_para_recalcular());
+    }
+
+    /**
+     * El contrato de `leer_articulos`: por defecto un artículo borrado "no existe" (así lo trata todo el flujo de
+     * elegir y aprobar); con `$con_borrados` aparece marcado como borrado (solo lo pide "volver atrás"); y un
+     * artículo de OTRO dueño nunca aparece, esté borrado o no.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function leer_articulos_solo_ve_los_borrados_si_se_lo_piden_y_nunca_los_de_otro_dueno()
+    {
+        $vivo    = $this->crear_articulo('vivo');
+        $borrado = $this->crear_articulo('borrado');
+        $del_vecino_vivo    = $this->crear_articulo('del vecino vivo', [], $this->vecino);
+        $del_vecino_borrado = $this->crear_articulo('del vecino borrado', [], $this->vecino);
+
+        $borrado->delete();
+        $del_vecino_borrado->delete();
+
+        $ids = [$vivo->id, $borrado->id, $del_vecino_vivo->id, $del_vecino_borrado->id];
+
+        // Por defecto: solo el vivo propio.
+        $sin = CategoryProposalEscrituraHelper::leer_articulos($this->owner->id, $ids);
+        $this->assertSame([$vivo->id], array_keys($sin));
+        $this->assertFalse($sin[$vivo->id]['borrado']);
+
+        // Pidiendo los borrados: el vivo y el borrado propios, cada uno marcado; nada del vecino.
+        $con = CategoryProposalEscrituraHelper::leer_articulos($this->owner->id, $ids, true);
+        ksort($con);
+        $this->assertSame([$vivo->id, $borrado->id], array_keys($con));
+        $this->assertFalse($con[$vivo->id]['borrado']);
+        $this->assertTrue($con[$borrado->id]['borrado']);
+
+        // Y escribir con `$con_borrados` tampoco toca al borrado del vecino ni al vivo del vecino.
+        $categoria = $this->categoria_real('Herrajes');
+        $grupos = [];
+        CategoryProposalEscrituraHelper::sumar_a_grupo($grupos, $categoria->id, null, $borrado->id);
+        CategoryProposalEscrituraHelper::sumar_a_grupo($grupos, $categoria->id, null, $del_vecino_borrado->id);
+        CategoryProposalEscrituraHelper::sumar_a_grupo($grupos, $categoria->id, null, $del_vecino_vivo->id);
+
+        $this->assertSame(1, CategoryProposalEscrituraHelper::escribir_destinos($this->owner->id, array_values($grupos), true), 'Solo el borrado propio.');
+        $this->assertSame($categoria->id, $this->categorias_de($borrado)['category_id']);
+        $this->assertNotSame($categoria->id, $this->categorias_de($del_vecino_borrado)['category_id']);
+        $this->assertNotSame($categoria->id, $this->categorias_de($del_vecino_vivo)['category_id']);
+
+        // Sin `$con_borrados` (lo de siempre) un borrado propio no se escribe.
+        $grupos_2 = [];
+        CategoryProposalEscrituraHelper::sumar_a_grupo($grupos_2, null, null, $borrado->id);
+        $this->assertSame(0, CategoryProposalEscrituraHelper::escribir_destinos($this->owner->id, array_values($grupos_2)));
     }
 
     /**

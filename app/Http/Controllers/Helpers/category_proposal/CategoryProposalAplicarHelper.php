@@ -1291,10 +1291,16 @@ class CategoryProposalAplicarHelper
      * `sin_asignar` (el aplicar los dejó sin categoría). En "mantener" el aplicar no tocó esos, así que
      * tampoco se restauran. `puede_cambiar` ya comprobó que ninguno fue editado a mano.
      *
+     * 🔴 También se les devuelve lo que tenían a los artículos que el dueño BORRÓ después de elegir (están en la
+     * papelera): `puede_cambiar` no los cuenta como editados, así que "volver atrás" procede, y si a esos no se les
+     * escribiera quedarían apuntando a una categoría que acá mismo se manda a la papelera; el día que el dueño los
+     * restaure no tendrían ni la categoría de antes ni la nueva (B-09 del verificador). Esos borrados NO entran en el
+     * resultado: el recálculo de precios y Tienda Nube son efectos de los artículos vivos.
+     *
      * @param  int              $proposal_id
      * @param  \App\Models\User $dueno
      * @param  bool             $es_mantener
-     * @return array  Los ids de los artículos que se reescribieron.
+     * @return array  Los ids de los artículos VIVOS que se reescribieron.
      */
     protected static function restaurar_articulos($proposal_id, User $dueno, $es_mantener)
     {
@@ -1337,8 +1343,8 @@ class CategoryProposalAplicarHelper
             $cantidad = $items->count();
             $ultimo_id = (int) $items->last()->id;
 
-            // Lo que tiene hoy cada artículo del lote (los borrados y los ajenos no aparecen).
-            $articulos = CategoryProposalEscrituraHelper::leer_articulos($dueno->id, $items->pluck('article_id')->all());
+            // Lo que tiene hoy cada artículo del lote, también los que el dueño mandó a la papelera (los ajenos no aparecen).
+            $articulos = CategoryProposalEscrituraHelper::leer_articulos($dueno->id, $items->pluck('article_id')->all(), true);
 
             foreach ($items as $item) {
                 // El artículo del ítem, como entero.
@@ -1360,11 +1366,16 @@ class CategoryProposalAplicarHelper
                 }
 
                 CategoryProposalEscrituraHelper::sumar_a_grupo($grupos, $antes_categoria, $antes_sub, $article_id);
-                $ids_restaurados[] = $article_id;
+
+                // Los efectos de después del commit (precios, Tienda Nube) son de los artículos vivos: el borrado se
+                // reescribe igual, pero no entra en esa lista.
+                if (!$articulos[$article_id]['borrado']) {
+                    $ids_restaurados[] = $article_id;
+                }
             }
         } while ($cantidad >= $tam);
 
-        CategoryProposalEscrituraHelper::escribir_destinos($dueno->id, array_values($grupos));
+        CategoryProposalEscrituraHelper::escribir_destinos($dueno->id, array_values($grupos), true);
 
         return $ids_restaurados;
     }

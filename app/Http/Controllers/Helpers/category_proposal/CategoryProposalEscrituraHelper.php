@@ -49,29 +49,40 @@ class CategoryProposalEscrituraHelper
      * poder volver atrás, porque el UPDATE masivo no deja historial) y no reescribir los artículos
      * que ya están donde tienen que estar (cada escritura mueve `updated_at` y dispara sincronizaciones).
      * Un artículo borrado o de otro dueño NO aparece en el resultado: quien llama lo trata como "ya no existe".
+     * La única excepción es `$con_borrados` (ver abajo), que solo usa "volver atrás"; el de otro dueño nunca aparece.
      *
      * @param  int   $dueno_id
      * @param  array $article_ids
-     * @return array  [article_id => ['category_id' => int|null, 'sub_category_id' => int|null]]
+     * @param  bool  $con_borrados  Si también se leen los artículos que están en la papelera. Solo para devolverle a un
+     *                              artículo borrado después de elegir lo que tenía antes (B-09 del verificador); en el
+     *                              resto del flujo un borrado "ya no existe". Con `true`, cada fila trae `borrado`.
+     * @return array  [article_id => ['category_id' => int|null, 'sub_category_id' => int|null, 'borrado' => bool]]
      */
-    public static function leer_articulos($dueno_id, array $article_ids)
+    public static function leer_articulos($dueno_id, array $article_ids, $con_borrados = false)
     {
         if (empty($article_ids)) {
             return [];
         }
 
-        // `select` explícito: nunca se trae la fila entera de un artículo (tiene el vector de embeddings).
-        $articulos = Article::where('user_id', (int) $dueno_id)
-            ->whereIn('id', $article_ids)
-            ->get(['id', 'category_id', 'sub_category_id']);
+        // Los artículos del dueño pedidos; con `$con_borrados` se saca el filtro de soft delete (el de otro dueño sigue
+        // afuera por el `user_id`).
+        $consulta = Article::where('user_id', (int) $dueno_id)->whereIn('id', $article_ids);
 
-        // El resultado: [article_id => categoría y subcategoría que tiene hoy].
+        if ($con_borrados) {
+            $consulta->withTrashed();
+        }
+
+        // `select` explícito: nunca se trae la fila entera de un artículo (tiene el vector de embeddings).
+        $articulos = $consulta->get(['id', 'category_id', 'sub_category_id', 'deleted_at']);
+
+        // El resultado: [article_id => categoría y subcategoría que tiene hoy, y si está en la papelera].
         $mapa = [];
 
         foreach ($articulos as $articulo) {
             $mapa[(int) $articulo->id] = [
                 'category_id'     => is_null($articulo->category_id) ? null : (int) $articulo->category_id,
                 'sub_category_id' => is_null($articulo->sub_category_id) ? null : (int) $articulo->sub_category_id,
+                'borrado'         => !is_null($articulo->deleted_at),
             ];
         }
 
@@ -111,13 +122,17 @@ class CategoryProposalEscrituraHelper
      * y de a `catalogo_ia.articulos_por_lote_de_escritura` ids.
      *
      * Todo acotado por el `user_id` del dueño y por los artículos vivos: un id ajeno o borrado simplemente
-     * no se toca. NULL se escribe como NULL (nunca 0: "sin categoría" por esta vía es NULL).
+     * no se toca (salvo `$con_borrados`, ver abajo). NULL se escribe como NULL (nunca 0: "sin categoría" por esta vía es NULL).
      *
      * @param  int   $dueno_id
-     * @param  array $grupos  Los grupos que arma sumar_a_grupo().
+     * @param  array $grupos        Los grupos que arma sumar_a_grupo().
+     * @param  bool  $con_borrados  Si también se escribe a los artículos de la papelera. Solo para "volver atrás": un
+     *                              artículo borrado después de elegir tiene que recuperar lo que tenía, porque si el
+     *                              dueño lo restaura de la papelera no puede quedar apuntando a una categoría que "volver
+     *                              atrás" mandó a la papelera (B-09 del verificador). Siempre acotado por el dueño.
      * @return int  Cuántos artículos se actualizaron en total.
      */
-    public static function escribir_destinos($dueno_id, array $grupos)
+    public static function escribir_destinos($dueno_id, array $grupos, $con_borrados = false)
     {
         // De a cuántos ids se escribe por UPDATE.
         $tam = max(1, (int) config('catalogo_ia.articulos_por_lote_de_escritura'));
@@ -127,8 +142,16 @@ class CategoryProposalEscrituraHelper
 
         foreach ($grupos as $grupo) {
             foreach (array_chunk($grupo['ids'], $tam) as $tanda) {
-                $escritos += Article::where('user_id', (int) $dueno_id)
-                    ->whereNull('deleted_at')
+                // Los artículos del dueño de esta tanda: solo los vivos, o también los de la papelera.
+                $consulta = Article::where('user_id', (int) $dueno_id);
+
+                if ($con_borrados) {
+                    $consulta->withTrashed();
+                } else {
+                    $consulta->whereNull('deleted_at');
+                }
+
+                $escritos += $consulta
                     ->whereIn('id', $tanda)
                     ->update([
                         'category_id'     => $grupo['category_id'],
