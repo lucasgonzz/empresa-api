@@ -66,14 +66,16 @@ class StockMovementController extends Controller
          * Alta MANUAL con una sucursal que ya no existe (misión eliminar-sucursal-con-stock,
          * 5/10/2026): el usuario la eligió explícitamente en el modal, así que no se le cambia por
          * otra en silencio (eso hace crear() con los comprobantes): se le avisa. Pasa con una
-         * pestaña abierta desde antes de que alguien borrara la sucursal.
+         * pestaña abierta desde antes de que alguien borrara la sucursal. Con el criterio del motor
+         * (existe_para_stock): la fila de un domicilio de comprador que dejó un pedido de la tienda se
+         * tiene que poder corregir a mano desde este mismo modal.
          */
         foreach (['from_address_id', 'to_address_id'] as $clave) {
 
             $address_id = $request->input($clave);
 
             if (!SucursalVigenteHelper::es_vacio($address_id)
-                && !SucursalVigenteHelper::existe($address_id, $this->userId())) {
+                && !SucursalVigenteHelper::existe_para_stock($address_id, $this->userId())) {
 
                 return response()->json([
                     'message' => 'La sucursal ya no existe. Recargá la página y elegí otra.',
@@ -232,9 +234,10 @@ class StockMovementController extends Controller
      * terminan acá: ventas, devoluciones, notas de crédito, compras, producción, ingresos manuales,
      * traslados, importaciones por movimiento.
      *
-     * Para cada `from_address_id` / `to_address_id` que venga con valor y NO sea una sucursal viva
-     * del comercio (SucursalVigenteHelper::existe(): existe, es del dueño y no es un domicilio de
-     * comprador):
+     * Para cada `from_address_id` / `to_address_id` que venga con valor y que el motor no pueda usar
+     * (SucursalVigenteHelper::existe_para_stock(): la fila no existe, o es de OTRO comercio). Un
+     * domicilio de comprador SÍ pasa: es el comportamiento histórico de los pedidos de la tienda con
+     * envío, y "Poner stock en 0" tiene que poder llevar a 0 las filas que esos pedidos dejaron:
      *
      *  - si el concepto NOMBRA depósitos a propósito (CONCEPTOS_QUE_NOMBRAN_DEPOSITOS) → no se mueve
      *    nada: devuelve null y queda un Log::warning;
@@ -265,7 +268,7 @@ class StockMovementController extends Controller
                 continue;
             }
 
-            if (!SucursalVigenteHelper::existe($data[$clave], $this->user_id)) {
+            if (!SucursalVigenteHelper::existe_para_stock($data[$clave], $this->user_id)) {
                 $muertas[] = $clave;
             }
         }

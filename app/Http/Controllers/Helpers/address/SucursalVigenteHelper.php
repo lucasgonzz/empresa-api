@@ -32,10 +32,22 @@ use Illuminate\Support\Facades\Log;
  *  QUÉ ES "VIVA"
  * ─────────────────────────────────────────────────────────────────────────────
  *
- *  Una fila de `addresses` que (a) existe, (b) es del dueño del comercio (`user_id` = dueño) y
- *  (c) NO es un domicilio de comprador de la tienda (`buyer_id` nulo: la tabla es compartida con
- *  tienda-api, que guarda ahí los domicilios de envío). Un id de otro comercio de la misma base cuenta
- *  como muerto a propósito: mover stock contra la sucursal de otro comercio es el mismo fantasma.
+ *  Hay DOS definiciones, a propósito (segunda ronda de revisión, 5/10/2026):
+ *
+ *  - `existe()` (ESTRICTA): la fila existe, es del dueño (`user_id` = dueño) y NO es un domicilio de
+ *    comprador de la tienda (`buyer_id` nulo: la tabla es compartida con tienda-api, que guarda ahí los
+ *    domicilios de envío). Es "una sucursal de verdad del comercio". La usan la validación de los
+ *    destinos y reemplazos de la eliminación, y la elección de un reemplazo (`reemplazo_para()`).
+ *
+ *  - `existe_para_stock()` (la del MOTOR y de la entrada de comprobantes): la fila existe y NO es de
+ *    OTRO comercio (`user_id` nulo o = dueño). Deja pasar los domicilios de comprador. 🔴 Por qué no se
+ *    usa la estricta acá: un pedido de la tienda con envío graba en la venta `sales.address_id` =
+ *    domicilio del COMPRADOR (tienda-api `OrderHelper::getAddressId` → `CreateSaleOrderHelper`), y
+ *    durante años `CheckFromAddress` le abrió una fila negativa a ese domicilio. Esas filas existen en
+ *    producción, y "Poner stock en 0" (`ResetStockHelper`) las recorre con su id: si el motor tratara
+ *    ese id como muerto, lo mandaría a la sucursal por defecto y la fila negativa quedaría intacta.
+ *    Para el motor, lo que hay que frenar es un id que NO EXISTE (sucursal borrada) o que es de OTRO
+ *    comercio de la misma base; el resto es el comportamiento histórico y no se toca.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  🔴 EL MEMO Y POR QUÉ VENCE RÁPIDO
@@ -61,7 +73,8 @@ class SucursalVigenteHelper {
     const SEGUNDOS_DE_MEMO = 10;
 
     /**
-     * Memo por proceso: `[owner_id][address_id] => ['viva' => bool, 'hasta' => timestamp]`.
+     * Memo por proceso: `[criterio][owner_id][address_id] => ['viva' => bool, 'hasta' => timestamp]`,
+     * con `criterio` = 'estricto' (existe()) o 'stock' (existe_para_stock()).
      *
      * @var array
      */
@@ -98,6 +111,31 @@ class SucursalVigenteHelper {
      * @return bool
      */
     static function existe($address_id, $owner_id) {
+        return Self::consultar('estricto', $address_id, $owner_id);
+    }
+
+    /**
+     * ¿El motor de stock puede usar este id tal cual? La fila existe en `addresses` y NO es de otro
+     * comercio (`user_id` nulo o igual al dueño). Un domicilio de comprador pasa (comportamiento
+     * histórico: ver el docblock de la clase, "qué es viva"); un id inexistente o ajeno, no.
+     *
+     * @param  mixed  $address_id
+     * @param  int    $owner_id
+     * @return bool
+     */
+    static function existe_para_stock($address_id, $owner_id) {
+        return Self::consultar('stock', $address_id, $owner_id);
+    }
+
+    /**
+     * La consulta memoizada de los dos criterios.
+     *
+     * @param  string  $criterio    'estricto' | 'stock'
+     * @param  mixed   $address_id
+     * @param  int     $owner_id
+     * @return bool
+     */
+    protected static function consultar($criterio, $address_id, $owner_id) {
 
         if (Self::es_vacio($address_id) || !is_numeric($address_id) || is_null($owner_id)) {
             return false;
@@ -108,19 +146,29 @@ class SucursalVigenteHelper {
 
         $ahora = time();
 
-        if (isset(Self::$memo[$owner_id][$address_id])
-            && Self::$memo[$owner_id][$address_id]['hasta'] >= $ahora) {
+        if (isset(Self::$memo[$criterio][$owner_id][$address_id])
+            && Self::$memo[$criterio][$owner_id][$address_id]['hasta'] >= $ahora) {
 
-            return Self::$memo[$owner_id][$address_id]['viva'];
+            return Self::$memo[$criterio][$owner_id][$address_id]['viva'];
         }
 
-        $viva = DB::table('addresses')
-                    ->where('id', $address_id)
-                    ->where('user_id', $owner_id)
-                    ->whereNull('buyer_id')
-                    ->exists();
+        $query = DB::table('addresses')->where('id', $address_id);
 
-        Self::$memo[$owner_id][$address_id] = [
+        if ($criterio === 'estricto') {
+
+            $query->where('user_id', $owner_id)->whereNull('buyer_id');
+
+        } else {
+
+            // Existe y no es de OTRO comercio: user_id nulo (domicilio de comprador) o el dueño.
+            $query->where(function ($q) use ($owner_id) {
+                $q->whereNull('user_id')->orWhere('user_id', $owner_id);
+            });
+        }
+
+        $viva = $query->exists();
+
+        Self::$memo[$criterio][$owner_id][$address_id] = [
             'viva'  => $viva,
             'hasta' => $ahora + Self::SEGUNDOS_DE_MEMO,
         ];
@@ -143,8 +191,10 @@ class SucursalVigenteHelper {
             return;
         }
 
-        foreach (Self::$memo as $owner_id => $por_sucursal) {
-            unset(Self::$memo[$owner_id][(int) $address_id]);
+        foreach (Self::$memo as $criterio => $por_dueno) {
+            foreach ($por_dueno as $owner_id => $por_sucursal) {
+                unset(Self::$memo[$criterio][$owner_id][(int) $address_id]);
+            }
         }
     }
 
@@ -212,8 +262,13 @@ class SucursalVigenteHelper {
     }
 
     /**
-     * El id que hay que usar en lugar del que llegó: el mismo si está vivo, el reemplazo si está
-     * muerto, y el vacío tal cual si no se eligió sucursal.
+     * El id que hay que usar en lugar del que llegó: el mismo si sirve, el reemplazo si está muerto,
+     * y el vacío tal cual si no se eligió sucursal.
+     *
+     * "Sirve" con el criterio del MOTOR (`existe_para_stock()`), no el estricto: lo usan el motor y la
+     * entrada de los comprobantes, y un domicilio de comprador (pedido de la tienda con envío) tiene
+     * que conservar su comportamiento histórico. Solo se reemplaza un id inexistente o de otro
+     * comercio. El reemplazo, en cambio, siempre es una sucursal de verdad (`reemplazo_para()`).
      *
      * Deja un `Log::warning` cada vez que reemplaza: es la única pista de que todavía hay algo (una
      * cookie, un empleado, un comprobante viejo) apuntando a una sucursal borrada.
@@ -230,7 +285,7 @@ class SucursalVigenteHelper {
             return $address_id;
         }
 
-        if (Self::existe($address_id, $owner_id)) {
+        if (Self::existe_para_stock($address_id, $owner_id)) {
             return (int) $address_id;
         }
 

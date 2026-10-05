@@ -481,6 +481,71 @@ class Sucursal_borrada_ids_viejos_Test extends SucursalesTestCase
     }
 
     /**
+     * Un domicilio de envío de un comprador del comercio (lo escribe tienda-api: `buyer_id` y SIN
+     * `user_id`).
+     *
+     * @param  string  $calle
+     * @return \App\Models\Address
+     */
+    protected function domicilio_de_comprador($calle)
+    {
+        $buyer_id = DB::table('buyers')->insertGetId(['name' => 'zz Comprador '.$calle, 'user_id' => $this->comercio()->id, 'isVerified' => 0]);
+
+        return Address::create(['street' => $calle, 'buyer_id' => $buyer_id]);
+    }
+
+    /**
+     * Test 9 — "Poner stock en 0" con una fila NEGATIVA en el domicilio de un comprador (la dejaban
+     * los pedidos de la tienda con envío): todo queda en 0. Con el criterio estricto, el motor mandaba
+     * ese id a la sucursal por defecto y la fila negativa quedaba intacta (segunda ronda, hallazgo A).
+     *
+     * @test
+     */
+    public function poner_stock_en_0_lleva_a_0_la_fila_de_un_domicilio_de_comprador()
+    {
+        $principal = $this->sucursal_principal();
+        $domicilio = $this->domicilio_de_comprador('zz Domicilio reseteo');
+
+        $articulo = $this->nuevo_articulo('zz Reseteo con domicilio');
+        $this->cargar_deposito($articulo, $principal, 5);
+
+        // La fila histórica: un pedido con envío descontó 2 "desde" el domicilio del comprador.
+        DB::table('address_article')->insert(['article_id' => $articulo->id, 'address_id' => $domicilio->id, 'amount' => -2]);
+        DB::table('articles')->where('id', $articulo->id)->update(['stock' => 3]);
+
+        $this->putJson('api/article/reset-stock/to-0', ['articles_id' => [$articulo->id]])->assertStatus(200);
+
+        $this->assertEquals(0.0, $this->stock_en($articulo, $principal->id), 'La sucursal queda en 0.');
+        $this->assertEquals(0.0, $this->stock_en($articulo, $domicilio->id), 'La fila del domicilio del comprador también queda en 0.');
+        $this->assertEquals(0.0, $this->stock_global($articulo));
+    }
+
+    /**
+     * Test 10 — una venta con el `address_id` de un domicilio de comprador (pedido de la tienda con
+     * envío) conserva el comportamiento histórico: no se reemplaza por otra sucursal.
+     *
+     * @test
+     */
+    public function una_venta_con_un_domicilio_de_comprador_conserva_el_comportamiento_historico()
+    {
+        $principal = $this->sucursal_principal();
+        $domicilio = $this->domicilio_de_comprador('zz Domicilio venta');
+
+        $articulo = $this->nuevo_articulo('zz Venta con domicilio');
+        $this->cargar_deposito($articulo, $principal, 10);
+
+        $venta = $this->crear_venta([['article' => $articulo, 'amount' => 2, 'price' => 100]], $domicilio->id);
+
+        $this->assertSame($domicilio->id, (int) $venta->fresh()->address_id, 'La venta conserva el domicilio del comprador.');
+
+        $movimiento = StockMovement::where('sale_id', $venta->id)->where('article_id', $articulo->id)->first();
+
+        $this->assertSame($domicilio->id, (int) $movimiento->from_address_id, 'El movimiento conserva el domicilio (no se redirige).');
+        $this->assertEquals(10.0, $this->stock_en($articulo, $principal->id), 'La sucursal no se toca.');
+        $this->assertEquals(-2.0, $this->stock_en($articulo, $domicilio->id), 'Comportamiento histórico: la fila del domicilio queda en −2.');
+    }
+
+    /**
      * Test 8 — el PDF del resumen de caja de una sucursal borrada no da 500.
      *
      * El constructor de ResumenCajaPdf hace `Output(); exit;` (mataría PHPUnit), así que se arma el

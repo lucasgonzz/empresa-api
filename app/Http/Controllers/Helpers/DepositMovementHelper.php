@@ -488,17 +488,18 @@ class DepositMovementHelper {
 		 * (o desde un frente viejo) puede apuntar a una sucursal ya borrada. Mover el stock ahí le
 		 * abriría al artículo una fila fantasma (y el motor ya no lo deja: no movería nada y el
 		 * traslado quedaría "movido" sin haber trasladado). Se frena con un mensaje que dice cuál.
+		 * Criterio del motor (existe_para_stock): el mismo con el que crear() decide si mueve.
 		 */
 		$owner_id = $this->deposit_movement->user_id;
 
-		if (!SucursalVigenteHelper::existe($this->deposit_movement->from_address_id, $owner_id)) {
+		if (!SucursalVigenteHelper::existe_para_stock($this->deposit_movement->from_address_id, $owner_id)) {
 			return [
 				'status'	=> 422,
 				'message'	=> 'El depósito de origen ya no existe (se eliminó la sucursal). Elegí otro antes de mover el stock.',
 			];
 		}
 
-		if (!SucursalVigenteHelper::existe($this->deposit_movement->to_address_id, $owner_id)) {
+		if (!SucursalVigenteHelper::existe_para_stock($this->deposit_movement->to_address_id, $owner_id)) {
 			return [
 				'status'	=> 422,
 				'message'	=> 'El depósito de destino ya no existe (se eliminó la sucursal). Elegí otro antes de mover el stock.',

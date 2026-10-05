@@ -55,7 +55,7 @@ class UpdateVariantsStockHelper {
                  */
                 $address_id = isset($address['id']) ? $address['id'] : null;
 
-                if (!SucursalVigenteHelper::existe($address_id, $this->article->user_id)) {
+                if (!SucursalVigenteHelper::existe_para_stock($address_id, $this->article->user_id)) {
 
                     Log::warning('UpdateVariantsStockHelper: se saltea la sucursal '.$address_id.' de la variante '.$variant['id'].': ya no existe.');
 

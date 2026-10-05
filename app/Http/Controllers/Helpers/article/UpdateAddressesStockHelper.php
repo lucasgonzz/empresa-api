@@ -125,6 +125,10 @@ class UpdateAddressesStockHelper {
      * el resto de las sucursales del mismo guardado son válidas y el usuario no puede hacer nada con
      * un 422 por una fila que ni ve.
      *
+     * Criterio del motor (existe_para_stock), no el estricto: la fila que un pedido de la tienda con
+     * envío le dejó al domicilio del comprador aparece en la ficha del artículo y se tiene que poder
+     * corregir desde ahí.
+     *
      * @param  array  $address  Renglón del request (`id`, `pivot`).
      * @return bool
      */
@@ -132,7 +136,7 @@ class UpdateAddressesStockHelper {
 
         $address_id = isset($address['id']) ? $address['id'] : null;
 
-        if (SucursalVigenteHelper::existe($address_id, $this->article->user_id)) {
+        if (SucursalVigenteHelper::existe_para_stock($address_id, $this->article->user_id)) {
             return true;
         }
 
