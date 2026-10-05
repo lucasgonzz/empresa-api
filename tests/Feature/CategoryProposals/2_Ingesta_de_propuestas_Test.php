@@ -662,6 +662,103 @@ class Ingesta_de_propuestas_Test extends CategoryProposalsTestCase
     }
 
     /**
+     * La posición (en el log de consultas) de la primera que cumple el patrón, o null.
+     *
+     * @param  string[] $consultas
+     * @param  string   $patron
+     * @return int|null
+     */
+    protected function posicion_de(array $consultas, $patron)
+    {
+        foreach ($consultas as $posicion => $consulta) {
+
+            if (preg_match($patron, $consulta)) {
+
+                return $posicion;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔴 M-1 / B-06 (verificador, 5/10/2026): `crear --reemplazar` toma los candados en el MISMO orden que
+     * elegir, volver atrás, aprobar y rechazar: la fila de `users` del dueño, después las filas de las
+     * corridas vigentes (lectura con candado), y recién después el UPDATE que las descarta, con la
+     * condición de estado además de los ids. Con otro orden, `crear` y `elegir` sobre la misma corrida se
+     * esperaban entre sí y MySQL mataba a uno con un deadlock 1213 (reproducido con dos procesos): el dueño
+     * veía un "Server Error" y su corrida quedaba descartada.
+     *
+     * Un test de un solo proceso no puede provocar el deadlock; lo que sí puede afirmar es el orden y la
+     * condición, que es lo que lo evita.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function crear_con_reemplazar_toma_los_candados_en_el_mismo_orden_que_elegir()
+    {
+        $this->crear_articulos_en_masa(2);
+        $vieja = $this->crear_corrida_por_api();
+
+        $medicion = $this->medir_consultas(function () {
+            $this->post_admin('categorias/propuestas', $this->cuerpo($this->propuestas_de_ejemplo(), true))->assertStatus(201);
+        });
+
+        $consultas = $medicion['consultas'];
+
+        $del_dueno = $this->posicion_de($consultas, '/from `users` where `id` = \? limit 1 for update$/i');
+        $de_las_corridas = $this->posicion_de($consultas, '/^select .* from `category_proposal_runs` where .* for update$/i');
+        $del_descarte = $this->posicion_de($consultas, '/^update `category_proposal_runs` set /i');
+
+        $this->assertNotNull($del_dueno, 'Falta el candado de la fila de users del dueño: '.implode("\n", $consultas));
+        $this->assertNotNull($de_las_corridas, 'Falta la lectura con candado de las corridas vigentes.');
+        $this->assertNotNull($del_descarte, 'Falta el UPDATE que descarta la corrida vieja.');
+
+        $this->assertLessThan($de_las_corridas, $del_dueno, 'Primero la fila de users del dueño, después las corridas.');
+        $this->assertLessThan($del_descarte, $de_las_corridas, 'Las corridas se bloquean ANTES de descartarlas.');
+
+        // El UPDATE solo toca lo descartable.
+        $this->assertMatchesRegularExpression('/and `estado` in \(\?, \?\)$/', $consultas[$del_descarte], 'El UPDATE de descarte tiene que llevar la condición de estado.');
+
+        $this->assertSame('descartada', CategoryProposalRun::find($vieja['run_id'])->estado);
+    }
+
+    /**
+     * 🔴 M-1 (verificador, 5/10/2026): una corrida elegida (o aplicándose) se detecta con las filas ya
+     * bloqueadas y el 409 sale ANTES de escribir nada: ni una corrida nueva, ni propuestas, ni nodos, ni un
+     * UPDATE sobre las corridas. Vale con y sin `reemplazar`.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function una_corrida_elegida_da_409_antes_de_escribir_nada()
+    {
+        $this->crear_articulos_en_masa(2);
+
+        $elegida = CategoryProposalRun::create(['user_id' => $this->owner->id, 'estado' => 'elegida', 'origen' => 'skill']);
+
+        foreach ([true, false] as $reemplazar) {
+
+            $medicion = $this->medir_consultas(function () use ($reemplazar) {
+                $this->post_admin('categorias/propuestas', $this->cuerpo($this->propuestas_de_ejemplo(), $reemplazar))->assertStatus(409);
+            });
+
+            foreach ($medicion['consultas'] as $consulta) {
+
+                $this->assertSame(0, preg_match('/^(insert into|update|delete from) `category_proposal/i', $consulta), 'Antes del 409 se escribió: '.$consulta);
+            }
+
+            $this->assertNotNull(
+                $this->posicion_de($medicion['consultas'], '/^select .* from `category_proposal_runs` where .* for update$/i'),
+                'El estado se tiene que leer de las corridas bloqueadas.'
+            );
+        }
+
+        $this->assertSame('elegida', CategoryProposalRun::find($elegida->id)->estado);
+        $this->assertSame(1, $this->corridas_de());
+    }
+
+    /**
      * Una corrida descartada no estorba, y la corrida de otro comercio ni estorba ni se descarta.
      *
      * @group categorias_ia

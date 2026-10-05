@@ -32,7 +32,10 @@ use Illuminate\Support\Facades\DB;
  *
  * Idempotencia y concurrencia:
  *   - `crear` se serializa con un candado sobre la fila del dueño en `users`: dos pedidos a la vez no
- *     pueden dejar dos corridas vigentes.
+ *     pueden dejar dos corridas vigentes. Después de ese candado lee las corridas vigentes CON candado
+ *     (`lockForUpdate`) y recién ahí decide: es el mismo orden que usan elegir, volver atrás, aprobar y
+ *     rechazar (users del dueño, después la corrida), y cualquier otro orden entre dos procesos que
+ *     comparten corrida termina en un deadlock 1213.
  *   - `asignaciones`, `listo` y `descartar` toman `lockForUpdate()` sobre la fila de la corrida y leen
  *     el estado de la fila BLOQUEADA: un `listo` concurrente no se cuela entre la verificación del
  *     estado y la escritura de las asignaciones.
@@ -640,16 +643,28 @@ class CategoryProposalIngestaHelper
 
             // 3) El candado del dueño: serializa los `crear` del mismo comercio. Sin esto, dos pedidos
             // simultáneos pasarían los dos la verificación de "no hay corrida vigente" y quedarían dos.
+            //
+            // 🔴 Y es el PRIMER candado, el mismo orden que usan elegir, volver atrás, aprobar y rechazar
+            // (CategoryProposalAplicarHelper::bloquear_al_dueno): la fila de `users` del dueño, después las
+            // filas de las corridas. Con órdenes distintos `crear --reemplazar` y `elegir` se esperaban
+            // el uno al otro y MySQL mataba a uno con el 1213 (deadlock): el dueño veía un "Server Error"
+            // y su corrida quedaba descartada (M-1 / B-06 del verificador, reproducido con dos procesos).
             User::where('id', $owner_id)->lockForUpdate()->first(['id']);
 
-            // Las corridas no descartadas del dueño, la más nueva primero (a lo sumo una, pero se miran todas).
+            // Las corridas no descartadas del dueño, la más nueva primero (a lo sumo una, pero se miran todas),
+            // BLOQUEADAS: es una lectura con candado, así que trae el estado ya confirmado de cada fila y
+            // nadie puede cambiárselo hasta que termine esta transacción. Sin el candado, el dueño podía
+            // tocar "Elegir este" entre esta lectura y el UPDATE de más abajo y `crear` descartaba una
+            // corrida que acababa de elegirse.
             $vigentes = CategoryProposalRun::where('user_id', $owner_id)
                 ->vigentes()
                 ->orderBy('id', 'desc')
+                ->lockForUpdate()
                 ->get(['id', 'estado']);
 
             // Una corrida elegida (o en pleno aplicar) NUNCA se reemplaza: el dueño ya decidió y tocó
-            // su catálogo. Va primero, aunque la skill haya mandado `reemplazar`.
+            // su catálogo. Va primero, aunque la skill haya mandado `reemplazar`, y ANTES de escribir nada.
+            // El estado se mira sobre las filas ya bloqueadas de arriba.
             foreach ($vigentes as $vigente) {
 
                 if (in_array($vigente->estado, [CategoryProposalRun::ESTADO_ELEGIDA, CategoryProposalRun::ESTADO_APLICANDO], true)) {
@@ -697,8 +712,13 @@ class CategoryProposalIngestaHelper
             // descarta (la skill rehace la propuesta: lo que el dueño ya podía ver no se edita en vivo).
             if ($vigentes->count() > 0) {
 
+                // Solo se descarta lo descartable (preparando o lista): el UPDATE lleva la condición de
+                // estado además de los ids. Con las filas ya bloqueadas no debería cambiar nada, pero un
+                // UPDATE que pudiera pasar una corrida elegida a descartada sin deshacer lo que aplicó es
+                // un daño de datos, y la condición cuesta una línea.
                 CategoryProposalRun::where('user_id', $owner_id)
                     ->whereIn('id', $vigentes->pluck('id')->all())
+                    ->whereIn('estado', [CategoryProposalRun::ESTADO_PREPARANDO, CategoryProposalRun::ESTADO_LISTA])
                     ->update([
                         'estado'        => CategoryProposalRun::ESTADO_DESCARTADA,
                         'descartada_at' => Carbon::now(),
