@@ -713,12 +713,12 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
 
     /**
      * La baja genérica del asistente (`proponer_baja` + confirmar la tarjeta) llega al mismo
-     * `destroy()`: la venta tiene que quedar intacta, y la tarjeta tendría que quedarse con el
-     * rechazo (422 con el mensaje de la guarda, tal cual). Mismo camino que `ChatIa/35` (la baja
-     * de una venta por su número).
+     * `destroy()`: la venta queda intacta y la tarjeta se queda con el rechazo (422 con el mensaje
+     * de la guarda, tal cual). Mismo camino que `ChatIa/35` (la baja de una venta por su número).
      *
-     * ⚠️ Hoy solo se cumple la primera mitad: ver el 🔴 de adentro. Por eso puede terminar
-     * incompleto.
+     * 🔴 Hasta el 5/10/2026 `EjecutorGenericoIaHelper::ejecutar()` solo miraba el status en el
+     * alta: el 422 de `destroy()` se perdía y la tarjeta decía "Venta N° X anulada" sobre una venta
+     * viva. Este test lo fija: si la confirmación vuelve a dar 200, falla.
      *
      * @test
      */
@@ -782,26 +782,11 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
 
         $confirmacion = $this->postJson('api/ai-conversations/'.$conversation->id.'/acciones/'.$respuesta['tarjeta_id'].'/confirmar');
 
-        // Lo que garantiza la guarda de destroy(): la venta no se tocó.
-        $this->assert_nada_tocado($antes, $venta, 'Baja del asistente');
-
-        /*
-            🔴 Hueco medido el 5/10/2026, fuera del alcance de esta misión: en una BAJA (y en una
-            edición), EjecutorGenericoIaHelper::ejecutar() no mira el status de lo que devolvió el
-            controller —solo el alta pasa por cuerpo_de(), que corta con status >= 400—. El 422 de
-            destroy() se pierde y la tarjeta queda "confirmada" con el texto "Venta N° X anulada"
-            sobre una venta que sigue viva. Hasta que se arregle el ejecutor, este test queda
-            incompleto en vez de rojo; cuando se arregle, las dos aserciones de abajo pasan a regir
-            solas.
-        */
-        if ($confirmacion->getStatusCode() === 200) {
-            $this->markTestIncomplete(
-                'EjecutorGenericoIaHelper ignora el 422 de SaleController::destroy() en una baja: la '.
-                'venta queda intacta pero la tarjeta dice "'.$confirmacion->json('model.resultado.texto').'".'
-            );
-        }
-
-        $this->assertSame(422, $confirmacion->getStatusCode(), 'La baja del asistente tenía que rechazarse. Cuerpo: '.$confirmacion->getContent());
+        $this->assertSame(422, $confirmacion->getStatusCode(), 'La baja del asistente tenía que rechazarse, no salir como "anulada". Cuerpo: '.$confirmacion->getContent());
         $this->assertSame(self::MENSAJE_CON_CAE, $confirmacion->json('model.error_mensaje'), 'El mensaje es el de SaleController::destroy(), tal cual.');
+        $this->assertSame(self::MENSAJE_CON_CAE, $confirmacion->json('message'));
+        $this->assertSame('propuesta', $confirmacion->json('model.estado'), 'La tarjeta rechazada no puede quedar confirmada.');
+
+        $this->assert_nada_tocado($antes, $venta, 'Baja del asistente');
     }
 }
