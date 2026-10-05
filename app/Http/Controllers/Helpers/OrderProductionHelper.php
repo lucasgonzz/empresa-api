@@ -121,8 +121,13 @@ class OrderProductionHelper {
 
 			/*
 				3. 🔴 La guarda va ACÁ ADENTRO, con las ventas ya bloqueadas, y no antes de abrir la
-				transacción: así ninguna escritura que tome el candado de la venta puede colarse entre
-				la pregunta y la baja. Una venta con comprobante de ARCA no se borra (su factura
+				transacción: así ninguna escritura que tome el candado de la venta (editarla, cambiarle
+				precios, borrarla) puede colarse entre la pregunta y la baja.
+				⚠️ Facturar NO toma ese candado (MakeAfipTicket hace un Sale::find común y crea el
+				AfipTicket en autocommit, y afip_tickets no tiene FK a sales): un ticket que se commitea
+				mientras corre esta baja no se ve y la venta se borra igual. La ventana es la misma que
+				la de SaleController::destroy(); cerrarla del todo pide que facturar bloquee la venta.
+				Una venta con comprobante de ARCA no se borra (su factura
 				desaparecería del Libro IVA mientras sigue vigente en ARCA), así que la orden tampoco.
 				El criterio es el de SaleController::destroy().
 
