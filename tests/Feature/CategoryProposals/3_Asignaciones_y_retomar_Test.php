@@ -927,6 +927,43 @@ class Asignaciones_y_retomar_Test extends CategoryProposalsTestCase
     }
 
     /**
+     * 🔴 B-14 (verificador, 5/10/2026): un parámetro que se espera escalar y llega como ARREGLO (`propuesta[]`,
+     * `limite[]`, o `reemplazar` / `forzar` / `propuesta` como arreglo en el cuerpo) nunca da 500: o se lo
+     * trata como si no estuviera (los números y los booleanos) o es un 422 (los textos).
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function los_parametros_escalares_que_llegan_como_arreglo_no_dan_500()
+    {
+        list($ids, $run_id) = $this->preparar(2);
+
+        $base = 'categorias/propuestas/'.$run_id.'/pendientes';
+
+        // Query: la clave de la propuesta es texto (422); el límite, un número ((int) de un arreglo no tira).
+        $this->get_admin($base.'?propuesta[]=A')->assertStatus(422);
+        $this->assertCount(2, $this->get_admin($base.'?propuesta=A&limite[]=1')->assertStatus(200)->json()['pendientes'], 'Un `limite` en arreglo es el límite por defecto, no un 1.');
+        $this->get_admin($base.'?propuesta[]=A&limite[]=5')->assertStatus(422);
+
+        // Cuerpo: `reemplazar` y `forzar` como arreglo son "no" (el booleano de un arreglo es falso).
+        $this->post_admin('categorias/propuestas', ['reemplazar' => ['x'], 'propuestas' => $this->propuestas_de_ejemplo()])
+            ->assertStatus(409)->assertJson(['error' => 'ya_hay_una_propuesta']);
+
+        $this->post_admin('categorias/propuestas/'.$run_id.'/listo', ['forzar' => ['x']])
+            ->assertStatus(422)->assertJson(['error' => 'incompleto']);
+
+        // La clave de la propuesta, las asignaciones y sus campos como arreglo: 422 o renglón rechazado.
+        $this->post_admin('categorias/propuestas/'.$run_id.'/asignaciones', ['propuesta' => ['A'], 'asignaciones' => []])->assertStatus(422);
+
+        $this->asignar($run_id, 'A', [
+            ['articulo_id' => [$ids[0]], 'categoria' => 'Bisagras', 'confianza' => 'segura'],
+            ['articulo_id' => $ids[1], 'categoria' => ['Bisagras'], 'subcategoria' => ['Comunes'], 'confianza' => ['segura'], 'motivo' => ['x']],
+        ])->assertStatus(200)->assertJson(['guardadas' => 0]);
+
+        $this->assertSame(0, $this->items_de($this->propuesta_id($run_id, 'A')));
+    }
+
+    /**
      * `pendientes` sin la propuesta o con una que la corrida no tiene es 422 `validacion`.
      *
      * @group categorias_ia

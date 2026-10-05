@@ -1603,8 +1603,8 @@ class CategoryProposalIngestaHelper
 
         // El tope de artículos por página (sale de la configuración).
         $maximo = max(1, (int) config('catalogo_ia.articulos_por_pagina_maximo'));
-        // Cuántos pidió la skill (si pidió cero, negativo o no es número: los de por defecto).
-        $limite = (int) $limite;
+        // Cuántos pidió la skill (si pidió cero, negativo, no es número o llegó como arreglo: los de por defecto).
+        $limite = is_scalar($limite) ? (int) $limite : 0;
 
         if ($limite < 1) {
 

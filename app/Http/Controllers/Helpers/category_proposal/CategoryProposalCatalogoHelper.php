@@ -311,15 +311,17 @@ class CategoryProposalCatalogoHelper
      */
     public static function articulos($owner_id, $despues_de, $limite, $solo_sin_categoria)
     {
-        // El cursor: un valor que no es número o es negativo es "desde el principio".
-        $despues_de = max(0, (int) $despues_de);
+        // El cursor: un valor que no es número, es negativo o llegó como arreglo (`despues_de[]=1`: un
+        // `(int)` de un arreglo da 1, que no es lo que quiso decir nadie) es "desde el principio".
+        $despues_de = is_scalar($despues_de) ? max(0, (int) $despues_de) : 0;
 
         // El tope sale de config (1000): una página más grande es un pedido que la skill no necesita
         // y un JSON que ningún proxy del hosting tiene por qué aguantar.
         $maximo = max(1, (int) config('catalogo_ia.articulos_por_pagina_maximo'));
 
-        // El tamaño de la página que pidió la skill (en cero, negativo o sin número: el de por defecto).
-        $limite = (int) $limite;
+        // El tamaño de la página que pidió la skill (en cero, negativo, sin número o como arreglo: el de
+        // por defecto).
+        $limite = is_scalar($limite) ? (int) $limite : 0;
 
         if ($limite < 1) {
 

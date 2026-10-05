@@ -83,10 +83,13 @@ class CategoryProposalRunController extends Controller
         return $this->responder(CategoryProposalLecturaHelper::items(
             $this->userId(),
             $id,
-            (string) $request->query('solapa', CategoryProposalLecturaHelper::SOLAPA_POR_DEFECTO),
+            // `solapa` y `buscar` van SIN `(string)`: un arreglo en la query string (`solapa[]=x`) daría un
+            // 500 al convertirlo; el helper los valida y contesta 422 (B-14). `page` y `per_page` son
+            // números: el `(int)` de un arreglo no tira.
+            $request->query('solapa', CategoryProposalLecturaHelper::SOLAPA_POR_DEFECTO),
             (int) $request->query('page', 1),
             (int) $request->query('per_page', CategoryProposalLecturaHelper::POR_PAGINA_DEFECTO),
-            (string) $request->query('buscar', '')
+            $request->query('buscar', '')
         ));
     }
 

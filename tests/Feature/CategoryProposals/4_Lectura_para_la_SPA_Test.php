@@ -839,6 +839,49 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
     }
 
     /**
+     * 🔴 B-14 (verificador, 5/10/2026): `solapa` y `buscar` que llegan como ARREGLO en la query string
+     * (`solapa[]=x`, `buscar[]=x`) son 422 `validacion` con su campo en `detalle`, no un 500 "Array to
+     * string conversion". `page[]` y `per_page[]` siguen dando 200 (un `(int)` de un arreglo no tira), y
+     * un `buscar=` vacío es "sin búsqueda".
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function solapa_y_buscar_con_forma_de_arreglo_son_422_y_no_500()
+    {
+        $sembrado = $this->corrida_elegida_para_revisar();
+        $run      = $sembrado['run'];
+
+        $casos = [
+            'solapa[]'          => ['solapa[]=a_revisar', ['solapa']],
+            'solapa[a] y [b]'   => ['solapa[a]=x&solapa[b]=y', ['solapa']],
+            'buscar[]'          => ['solapa=a_revisar&buscar[]=x', ['buscar']],
+            'las dos a la vez'  => ['solapa[]=a_revisar&buscar[]=x', ['solapa', 'buscar']],
+            'solapa vacía'      => ['solapa=', ['solapa']],
+        ];
+
+        foreach ($casos as $descripcion => $caso) {
+
+            list($query, $campos) = $caso;
+
+            $respuesta = $this->items($run->id, $query);
+
+            $this->assertSame(422, $respuesta->getStatusCode(), $descripcion.': '.$respuesta->getContent());
+
+            $json = $respuesta->json();
+
+            $this->assertSame('validacion', $json['error'], $descripcion);
+            $this->assertNotEmpty($json['message'], $descripcion);
+            $this->assertSame($campos, array_keys($json['detalle']), $descripcion);
+        }
+
+        // Los números como arreglo y la búsqueda vacía no rompen nada.
+        $this->items($run->id, 'solapa=a_revisar&page[]=2')->assertStatus(200);
+        $this->items($run->id, 'solapa=a_revisar&per_page[]=50')->assertStatus(200)->assertJsonPath('models.per_page', 25);
+        $this->items($run->id, 'solapa=a_revisar&buscar=')->assertStatus(200)->assertJsonPath('models.total', 2);
+    }
+
+    /**
      * Una corrida `preparando` tampoco tiene nada para revisar (todavía no se eligió).
      *
      * @group categorias_ia

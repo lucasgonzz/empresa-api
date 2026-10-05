@@ -441,6 +441,26 @@ class Catalogo_para_la_skill_Test extends CategoryProposalsTestCase
     }
 
     /**
+     * 🔴 B-14 (verificador, 5/10/2026): `despues_de`, `limite` y `solo_sin_categoria` que llegan como ARREGLO
+     * en la query string no dan 500: se tratan como si no estuvieran.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function los_parametros_de_articulos_con_forma_de_arreglo_no_dan_500()
+    {
+        $ids = $this->crear_articulos_en_masa(3);
+
+        foreach (['despues_de[]=1', 'limite[]=5', 'solo_sin_categoria[]=1', 'despues_de[a]=1&limite[b]=2&solo_sin_categoria[c]=1'] as $query) {
+
+            $respuesta = $this->get_admin('articulos?'.$query);
+
+            $this->assertSame(200, $respuesta->getStatusCode(), $query.': '.$respuesta->getContent());
+            $this->assertSame($ids, array_column($respuesta->json()['articulos'], 'id'), $query);
+        }
+    }
+
+    /**
      * Cantidad de consultas constante: el resumen y las páginas cuestan lo mismo con 30 que con 300
      * artículos, y ninguna lee la columna `embedding` (29 KB por fila).
      *

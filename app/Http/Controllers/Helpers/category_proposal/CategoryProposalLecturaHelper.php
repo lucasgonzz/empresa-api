@@ -866,14 +866,17 @@ class CategoryProposalLecturaHelper
      * revisión de la propuesta ELEGIDA, de una solapa, paginados en el servidor (§6.6).
      *
      * Orden de los chequeos: corrida del dueño (404, sin distinguir una ajena de una inexistente) →
-     * solapa válida (422) → propuesta elegida (409 `todavia_no_elegida`).
+     * solapa y búsqueda con la forma correcta (422: `solapa` tiene que ser uno de los tres nombres y
+     * `buscar`, un texto; llegan SIN convertir, tal como los trae la query string, que también puede
+     * traer arreglos) → propuesta elegida (409 `todavia_no_elegida`).
      *
-     * @param  int    $owner_id
-     * @param  int    $run_id
-     * @param  string $solapa
-     * @param  int    $pagina
-     * @param  int    $por_pagina  25, 50 o 100 (cualquier otro valor es 25).
-     * @param  string $buscar      Por nombre, código de barras y código de proveedor del artículo.
+     * @param  int         $owner_id
+     * @param  int         $run_id
+     * @param  mixed       $solapa      Lo que vino en `solapa` (texto, o cualquier otra cosa si vino mal).
+     * @param  int         $pagina
+     * @param  int         $por_pagina  25, 50 o 100 (cualquier otro valor es 25).
+     * @param  mixed       $buscar      Lo que vino en `buscar`: texto (o null) para buscar por nombre,
+     *                                  código de barras y código de proveedor del artículo.
      * @return array
      */
     public static function items($owner_id, $run_id, $solapa, $pagina, $por_pagina, $buscar)
@@ -889,11 +892,26 @@ class CategoryProposalLecturaHelper
             return self::no_encontrado();
         }
 
-        if (!array_key_exists($solapa, self::SOLAPAS)) {
+        // 🔴 B-14: `solapa` y `buscar` se esperan como texto, pero la query string también puede traerlos
+        // como arreglo (`solapa[]=x`, `buscar[]=x`): un `(string)` de un arreglo es un 500 "Array to string
+        // conversion". Se miran con `is_string` y, si no son texto, son un 422 como cualquier otro valor
+        // inválido. `page` y `per_page` no hacen falta: un `(int)` de un arreglo no tira.
+        $detalle = [];
 
-            return self::error(422, 'validacion', 'Los datos enviados no son válidos. La solapa tiene que ser a_revisar, asignados o sin_categoria.', [
-                'detalle' => ['solapa' => ['La solapa tiene que ser a_revisar, asignados o sin_categoria.']],
-            ]);
+        if (!is_string($solapa) || !array_key_exists($solapa, self::SOLAPAS)) {
+
+            $detalle['solapa'] = ['La solapa tiene que ser a_revisar, asignados o sin_categoria.'];
+        }
+
+        // `buscar=` vacío llega como null (ConvertEmptyStringsToNull): es "sin búsqueda".
+        if (!is_null($buscar) && !is_string($buscar)) {
+
+            $detalle['buscar'] = ['La búsqueda tiene que ser un texto.'];
+        }
+
+        if (!empty($detalle)) {
+
+            return self::error(422, 'validacion', 'Los datos enviados no son válidos. '.reset($detalle)[0], ['detalle' => $detalle]);
         }
 
         if (empty($run->propuesta_elegida_id)) {
