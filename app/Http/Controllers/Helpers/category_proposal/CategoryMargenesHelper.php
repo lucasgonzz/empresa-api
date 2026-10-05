@@ -114,10 +114,12 @@ class CategoryMargenesHelper
     }
 
     /**
-     * ¿El dueño usa Tienda Nube? Dos señales, cualquiera alcanza:
+     * ¿El dueño usa Tienda Nube? Tres señales, cualquiera alcanza:
      *  - `config('app.USA_TIENDA_NUBE')`: el flag que el plan nombra. 🔴 Hoy `config/app.php` NO define
      *    esa clave (devuelve null en toda la flota) y los observers leen `env('USA_TIENDA_NUBE')`
      *    directo; se consulta igual porque es lo que el plan especifica y lo que simulan los tests.
+     *  - `env('USA_TIENDA_NUBE')`: lo que de verdad leen los observers de categoría y subcategoría para
+     *    decidir si al crear una categoría se llama a la API de Tienda Nube (ver el comentario del cuerpo).
      *  - La extensión `usa_tienda_nube` del dueño: es la que usa el scheduler para sincronizar con TN,
      *    vive en la base y no depende de `.env` ni de `config:cache`. Es la señal confiable.
      *
@@ -127,6 +129,21 @@ class CategoryMargenesHelper
     public static function usa_tienda_nube($user_id)
     {
         if (config('app.USA_TIENDA_NUBE')) {
+            return true;
+        }
+
+        // 🔴 Excepción puntual a "config() y nunca env() fuera de config/", con el MISMO criterio que los
+        // observers de categoría y subcategoría (`CategoryObserver`, `SubCategoryObserver`): lo que decide si
+        // al CREAR una categoría sale un pedido de red a Tienda Nube es `env('USA_TIENDA_NUBE')`, no la
+        // extensión ni `config('app.USA_TIENDA_NUBE')` (que no existe). Un comercio con la variable prendida y
+        // sin la extensión (una configuración a medias) quedaba sin bloquear y cada categoría que crea el
+        // aplicar llamaba a Tienda Nube DENTRO de la transacción, con el candado de `users` tomado: con 2
+        // categorías salían 4 pedidos, con 360 serían 720 (B-11 del verificador). Se lee con la MISMA expresión
+        // literal que los observers (`env('USA_TIENDA_NUBE', false)`), no con otra "equivalente": así la guarda y
+        // los observers no pueden discrepar nunca ("false", "0" y vacío son apagado para los dos). Si la
+        // configuración está cacheada, `env()` devuelve el valor por defecto (apagado) y los observers
+        // tampoco llaman a Tienda Nube: coinciden también ahí.
+        if (env('USA_TIENDA_NUBE', false)) {
             return true;
         }
 

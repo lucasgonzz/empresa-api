@@ -446,6 +446,55 @@ class Margenes_y_bloqueos_Test extends CategoryProposalsTestCase
         $this->assertTrue(CategoryMargenesHelper::usa_tienda_nube($this->owner->id));
     }
 
+    /**
+     * 🔴 Tienda Nube también se detecta por `env('USA_TIENDA_NUBE')`, que es lo que leen los observers de
+     * categoría y subcategoría (B-11 del verificador). Un comercio con la variable prendida y SIN la extensión
+     * (configuración a medias) no quedaba bloqueado y cada categoría que creaba el aplicar llamaba a Tienda
+     * Nube adentro de la transacción. "false", "0" y vacío cuentan como apagado.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function tienda_nube_se_detecta_tambien_por_el_env_que_leen_los_observers()
+    {
+        // Sin extensión, sin flag de config y con el env apagado (el .env.testing lo tiene en false).
+        $this->assertFalse(CategoryMargenesHelper::usa_tienda_nube($this->owner->id));
+
+        // Un empleado del comercio, para comprobar que se resuelve a su dueño.
+        $empleado_del_test = $this->crear_empleado_de($this->owner);
+
+        // Los valores que cuentan como apagado.
+        foreach (['false', '0', ''] as $apagado) {
+            $anterior = $this->prender_tienda_nube($apagado);
+
+            try {
+                $this->assertFalse(CategoryMargenesHelper::usa_tienda_nube($this->owner->id), 'USA_TIENDA_NUBE="'.$apagado.'" es apagado.');
+                $this->assertFalse(CategoryMargenesHelper::bloqueo_para($this->owner->id)['nuevo_modelo_bloqueado'], 'USA_TIENDA_NUBE="'.$apagado.'" no bloquea.');
+            } finally {
+                $this->restaurar_tienda_nube($anterior);
+            }
+        }
+
+        // Los que cuentan como prendido: lo detecta para el dueño y para el empleado, y el bloqueo lo informa.
+        foreach (['true', '1'] as $prendido) {
+            $anterior = $this->prender_tienda_nube($prendido);
+
+            try {
+                $this->assertTrue(CategoryMargenesHelper::usa_tienda_nube($this->owner->id), 'USA_TIENDA_NUBE="'.$prendido.'" es prendido.');
+                $this->assertTrue(CategoryMargenesHelper::usa_tienda_nube($empleado_del_test->id));
+                $this->assertSame(
+                    ['nuevo_modelo_bloqueado' => true, 'motivos' => [['codigo' => 'tienda_nube', 'cantidad' => 1]]],
+                    CategoryMargenesHelper::bloqueo_para($this->owner->id)
+                );
+            } finally {
+                $this->restaurar_tienda_nube($anterior);
+            }
+        }
+
+        // Ya restaurado el entorno, vuelve a estar apagado.
+        $this->assertFalse(CategoryMargenesHelper::usa_tienda_nube($this->owner->id));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // El bloqueo
     // ---------------------------------------------------------------------------------------------

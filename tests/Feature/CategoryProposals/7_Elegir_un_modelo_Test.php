@@ -13,6 +13,7 @@ use App\Models\SyncToTNArticle;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 
 /**
@@ -1082,6 +1083,50 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
             [['codigo' => 'R1', 'cantidad' => 1], ['codigo' => 'tienda_nube', 'cantidad' => 1]],
             $doble->json('motivos')
         );
+    }
+
+    /**
+     * 🔴 B-11 del verificador: Tienda Nube prendida SOLO por la variable de entorno (sin la extensión) bloquea un
+     * sistema NUEVO igual que con la extensión. Antes el bloqueo no la veía y cada categoría que creaba el
+     * aplicar disparaba a los observers de Tienda Nube DENTRO de la transacción (2 categorías = 4 pedidos de red,
+     * con el candado de `users` tomado). Ahora responde 422 `bloqueado_por_tienda_nube`, no crea ninguna categoría
+     * y no sale ningún pedido.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function tienda_nube_prendida_solo_por_el_env_bloquea_lo_nuevo_y_no_sale_ningun_pedido()
+    {
+        // Cualquier pedido de red a Tienda Nube durante el test queda registrado (y contestado) por el fake.
+        Http::fake(['*' => Http::response(['id' => 777], 200)]);
+
+        $s = $this->sistema_basico();
+
+        // Cuántas categorías llegaron a crearse desde acá: el observer de Tienda Nube corre al crear cada una.
+        // El contador se registra DESPUÉS de sembrar, que también crea categorías.
+        $categorias_creadas = 0;
+
+        Event::listen('eloquent.created: '.Category::class, function ($categoria) use (&$categorias_creadas) {
+            $categorias_creadas++;
+        });
+
+        // La variable prendida y el dueño SIN la extensión `usa_tienda_nube`.
+        $anterior = $this->prender_tienda_nube();
+
+        try {
+            $respuesta = $this->pedir_elegir($s['run'], $s['proposal']);
+        } finally {
+            $this->restaurar_tienda_nube($anterior);
+        }
+
+        $respuesta->assertStatus(422)
+            ->assertJsonPath('error', 'bloqueado_por_tienda_nube')
+            ->assertJsonPath('motivos', [['codigo' => 'tienda_nube', 'cantidad' => 1]]);
+
+        $this->assertSame(0, $categorias_creadas, 'No se creó ninguna categoría.');
+        Http::assertNothingSent();
+        $this->assertSame('lista', CategoryProposalRun::find($s['run']->id)->estado);
+        $this->assertSame(0, $this->categorias_llamadas('Bisagras')->count());
     }
 
     /**

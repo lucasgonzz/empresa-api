@@ -257,13 +257,15 @@ trait AyudasDeLaEleccion
     }
 
     /**
-     * Prende `USA_TIENDA_NUBE` en el entorno del proceso (los observers y `add_article_to_sync` leen
-     * `env()` directo). Hay que apagarla con `restaurar_tienda_nube()` en un `finally`: el entorno es
-     * del proceso, no del test.
+     * Pone `USA_TIENDA_NUBE` en el entorno del proceso (los observers y `add_article_to_sync` leen
+     * `env()` directo). Hay que dejarla como estaba con `restaurar_tienda_nube()` en un `finally`: el
+     * entorno es del proceso, no del test.
      *
+     * @param  string $valor  Lo que se escribe en la variable; por defecto 'true' (prendida). Se puede
+     *                        pasar 'false', '0' o '' para probar cómo se leen los apagados.
      * @return array  Lo que había antes, para `restaurar_tienda_nube()`.
      */
-    protected function prender_tienda_nube()
+    protected function prender_tienda_nube($valor = 'true')
     {
         $anterior = [
             'server' => array_key_exists('USA_TIENDA_NUBE', $_SERVER) ? $_SERVER['USA_TIENDA_NUBE'] : null,
@@ -271,9 +273,9 @@ trait AyudasDeLaEleccion
             'putenv' => getenv('USA_TIENDA_NUBE'),
         ];
 
-        $_SERVER['USA_TIENDA_NUBE'] = 'true';
-        $_ENV['USA_TIENDA_NUBE']    = 'true';
-        putenv('USA_TIENDA_NUBE=true');
+        $_SERVER['USA_TIENDA_NUBE'] = $valor;
+        $_ENV['USA_TIENDA_NUBE']    = $valor;
+        putenv('USA_TIENDA_NUBE='.$valor);
 
         return $anterior;
     }
