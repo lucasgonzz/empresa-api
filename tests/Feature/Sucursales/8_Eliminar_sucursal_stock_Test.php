@@ -416,6 +416,37 @@ class Eliminar_sucursal_stock_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 9 — una fila de variante HUÉRFANA (su artículo se borró físicamente) con stock no deja la
+     * sucursal imborrable: la pasada no la mueve (no hay artículo) y la fase final la tiene que contar
+     * igual que la pasada, o sea no contarla (segunda ronda, hallazgo C). Se borra con la sucursal.
+     *
+     * @test
+     */
+    public function una_variante_huerfana_con_stock_no_deja_la_sucursal_imborrable()
+    {
+        $principal = $this->sucursal_principal();
+        $borrar    = $this->nueva_sucursal('zz Variante huerfana');
+
+        $articulo = $this->nuevo_articulo('zz Variante huerfana A');
+        $variante = $this->nueva_variante($articulo, 'Talle huerfano');
+
+        $this->cargar_variante($articulo, $variante, $borrar, 3);
+
+        // Un artículo con stock de verdad, para que haya una pasada.
+        $otro = $this->nuevo_articulo('zz Variante huerfana B');
+        $this->cargar_deposito($otro, $borrar, 2);
+        $this->cargar_deposito($otro, $principal, 1);
+
+        // El borrado FÍSICO del artículo (dato viejo): la variante y su fila quedan huérfanas.
+        DB::table('articles')->where('id', $articulo->id)->delete();
+
+        $this->eliminar_sucursal($borrar->id, ['stock_accion' => 'descartar'])->assertStatus(200);
+
+        $this->assert_eliminada_sin_rastro($borrar->id);
+        $this->assertEquals(1.0, $this->stock_global($otro));
+    }
+
+    /**
      * Test 8 — idempotencia: se corta a la mitad (un artículo de tres) y volver a eliminar termina
      * bien, sin mover nada dos veces.
      *

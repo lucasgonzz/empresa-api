@@ -384,11 +384,7 @@ class EliminarSucursalHelper {
      */
     static function filas_de_articulos_con_stock($address_id) {
 
-        return DB::table('address_article as aa')
-                    ->join('articles as a', 'a.id', '=', 'aa.article_id')
-                    ->where('aa.address_id', $address_id)
-                    ->whereNotNull('aa.amount')
-                    ->where('aa.amount', '!=', 0)
+        return Self::query_filas_de_articulos_con_stock($address_id)
                     ->get(['aa.id', 'aa.article_id', 'aa.amount', 'a.deleted_at']);
     }
 
@@ -401,13 +397,50 @@ class EliminarSucursalHelper {
      */
     static function filas_de_variantes_con_stock($address_id) {
 
+        return Self::query_filas_de_variantes_con_stock($address_id)
+                    ->get(['aav.id', 'aav.article_variant_id', 'av.article_id', 'aav.amount', 'a.deleted_at']);
+    }
+
+    /*
+     * 🔴 LA ÚNICA DEFINICIÓN DE "FILA CON STOCK QUE HAY QUE MOVER" (segunda ronda de revisión,
+     * 5/10/2026). La usan el resumen, la pasada de stock Y la última mirada de la fase final. Antes la
+     * fase final tenía su propia consulta con otros joins: una fila de variante cuyo artículo ya no
+     * existe (borrado físico) la contaba la fase final pero no la pasada, que nunca la iba a mover, y
+     * la sucursal quedaba IMBORRABLE ("sigue recibiendo stock" y 500 en cada intento). Si hace falta
+     * cambiar el criterio, se cambia ACÁ y vale para los tres.
+     */
+
+    /**
+     * Query de las filas de artículos con stock ≠ 0 en la sucursal (artículo existente, incluida la
+     * papelera).
+     *
+     * @param  int  $address_id
+     * @return \Illuminate\Database\Query\Builder
+     */
+    static function query_filas_de_articulos_con_stock($address_id) {
+
+        return DB::table('address_article as aa')
+                    ->join('articles as a', 'a.id', '=', 'aa.article_id')
+                    ->where('aa.address_id', $address_id)
+                    ->whereNotNull('aa.amount')
+                    ->where('aa.amount', '!=', 0);
+    }
+
+    /**
+     * Query de las filas de variantes con stock ≠ 0 en la sucursal (variante y artículo existentes,
+     * incluida la papelera).
+     *
+     * @param  int  $address_id
+     * @return \Illuminate\Database\Query\Builder
+     */
+    static function query_filas_de_variantes_con_stock($address_id) {
+
         return DB::table('address_article_variant as aav')
                     ->join('article_variants as av', 'av.id', '=', 'aav.article_variant_id')
                     ->join('articles as a', 'a.id', '=', 'av.article_id')
                     ->where('aav.address_id', $address_id)
                     ->whereNotNull('aav.amount')
-                    ->where('aav.amount', '!=', 0)
-                    ->get(['aav.id', 'aav.article_variant_id', 'av.article_id', 'aav.amount', 'a.deleted_at']);
+                    ->where('aav.amount', '!=', 0);
     }
 
     /**
@@ -1572,24 +1605,15 @@ class EliminarSucursalHelper {
              * Última mirada al stock, con las filas bloqueadas: si entró una venta después de la
              * pasada, no se borra nada y se repite. En la última sucursal (D6) el stock de las filas
              * se descarta a propósito (los artículos conservan su stock total), así que no se mira.
+             *
+             * 🔴 Con las MISMAS consultas que la pasada (query_filas_de_*_con_stock): si contara algo
+             * que la pasada no mueve (una variante de un artículo borrado físicamente), la sucursal
+             * quedaría imborrable.
              */
             if (!$es_la_ultima) {
 
-                $con_stock = DB::table('address_article')
-                                ->join('articles', 'articles.id', '=', 'address_article.article_id')
-                                ->where('address_article.address_id', $address->id)
-                                ->whereNotNull('address_article.amount')
-                                ->where('address_article.amount', '!=', 0)
-                                ->lockForUpdate()
-                                ->count();
-
-                $con_stock += DB::table('address_article_variant')
-                                ->join('article_variants', 'article_variants.id', '=', 'address_article_variant.article_variant_id')
-                                ->where('address_article_variant.address_id', $address->id)
-                                ->whereNotNull('address_article_variant.amount')
-                                ->where('address_article_variant.amount', '!=', 0)
-                                ->lockForUpdate()
-                                ->count();
+                $con_stock = Self::query_filas_de_articulos_con_stock($address->id)->lockForUpdate()->count()
+                           + Self::query_filas_de_variantes_con_stock($address->id)->lockForUpdate()->count();
 
                 if ($con_stock > 0) {
                     return null;
