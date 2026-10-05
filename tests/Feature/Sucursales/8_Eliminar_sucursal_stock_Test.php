@@ -352,6 +352,36 @@ class Eliminar_sucursal_stock_Test extends SucursalesTestCase
     }
 
     /**
+     * Test 6 bis — la última sucursal con `stock_accion=descartar` (lo que puede mandar la SPA): se
+     * acepta y se trata igual que sin decisión (D6): el global queda intacto y no hay movimientos.
+     * "Descartar" en la última sucursal no puede dejar todo el catálogo en 0.
+     *
+     * @test
+     */
+    public function la_ultima_sucursal_con_descartar_tambien_conserva_el_stock_total()
+    {
+        $borrar = $this->nueva_sucursal('zz Ultima sucursal descartar');
+
+        $a = $this->nuevo_articulo('zz Ultima descartar A');
+        $this->cargar_deposito($a, $borrar, 10);
+
+        $this->dejar_solo($borrar);
+
+        $movimientos = $this->movimientos_de($a)->count();
+
+        $this->eliminar_sucursal($borrar->id, ['stock_accion' => 'descartar'])
+             ->assertStatus(200)
+             ->assertJsonPath('eliminada', true)
+             ->assertJsonPath('resumen.es_la_ultima', true)
+             ->assertJsonPath('resumen.movimientos', 0);
+
+        $this->assert_eliminada_sin_rastro($borrar->id);
+
+        $this->assertEquals(10.0, $this->stock_global($a), 'D6: en la última sucursal "descartar" conserva el stock total.');
+        $this->assertSame($movimientos, $this->movimientos_de($a)->count(), 'D6: sin movimientos.');
+    }
+
+    /**
      * Test 7 — filas repetidas del mismo par (el pivot no tiene índice único): se juntan antes de
      * mover, y la sucursal queda en 0 exacto (sin juntarlas, el motor le restaba a cada una).
      *
