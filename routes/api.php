@@ -909,6 +909,25 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('image-assignment-items/{id}/rechazar', 'ImageAssignmentRunController@rechazar')->where('id', '[0-9]+');
     Route::post('image-assignment-items/{id}/quitar', 'ImageAssignmentRunController@quitar')->where('id', '[0-9]+');
 
+    /*
+        Categorización con IA en tres modelos (misión categorizacion-tres-modelos, 5/10/2026): Alertas →
+        Catálogo → Categorías. Contrato B del plan (§6). Las rutas fijas (resumen, actual,
+        aprobar-varios, rechazar-varios) van ANTES de las que llevan {id}, y los {id} van restringidos a
+        números: si no, "resumen" o "actual" se leerían como un id. Elegir, volver atrás, aprobar y
+        rechazar son solo para el dueño o el acceso maestro (403 `solo_el_dueno`, lo valida el
+        controlador); un id de otro comercio responde 404 igual que uno inexistente.
+    */
+    Route::get('category-proposal-runs/resumen', 'CategoryProposalRunController@resumen');
+    Route::get('category-proposal-runs/actual', 'CategoryProposalRunController@actual');
+    Route::put('category-proposal-runs/{id}/visto', 'CategoryProposalRunController@visto')->where('id', '[0-9]+');
+    Route::get('category-proposal-runs/{id}/items', 'CategoryProposalRunController@items')->where('id', '[0-9]+');
+    Route::post('category-proposal-runs/{id}/elegir', 'CategoryProposalEleccionController@elegir')->where('id', '[0-9]+');
+    Route::post('category-proposal-runs/{id}/volver-atras', 'CategoryProposalEleccionController@volver_atras')->where('id', '[0-9]+');
+    Route::post('category-proposal-items/aprobar-varios', 'CategoryProposalItemController@aprobar_varios');
+    Route::post('category-proposal-items/rechazar-varios', 'CategoryProposalItemController@rechazar_varios');
+    Route::post('category-proposal-items/{id}/aprobar', 'CategoryProposalItemController@aprobar')->where('id', '[0-9]+');
+    Route::post('category-proposal-items/{id}/rechazar', 'CategoryProposalItemController@rechazar')->where('id', '[0-9]+');
+
     // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
     Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
     // Resumen reconstruido de una corrida (grupo 217, prompt 03): mismo objeto que el payload de Pusher.
@@ -1493,6 +1512,24 @@ Route::middleware('admin.api.key')
         // muestra como "versión anterior" sin romper.
         Route::get('modelos-ia', 'AdminSync\\ModelosIaController@show');
         Route::put('modelos-ia', 'AdminSync\\ModelosIaController@update');
+
+        // Categorización con IA en tres modelos (misión categorizacion-tres-modelos, 5/10/2026): lo que
+        // la skill /categorizar lee del catálogo de un cliente y escribe en sus tablas de propuestas.
+        // Contrato A del plan (§5). La clave X-Admin-Api-Key se exige SIEMPRE, ADENTRO de cada
+        // controlador (trait ClaveEstrictaDeAdmin: "no hay clave" nunca es pase libre), aunque
+        // ADMIN_SYNC_REQUIRE_API_KEY esté apagado en toda la flota; el dueño sale de
+        // AsistenteCanalHelper::dueno() (409 si no se puede resolver). Nada de esto toca `categories` ni
+        // `articles`. Un cliente viejo sin estas rutas responde 404 y la skill lo traduce a "actualizalo
+        // primero". Las rutas fijas (actual) van ANTES de las que llevan {run_id}.
+        Route::get('catalogo/resumen', 'AdminSync\\CatalogoController@resumen');
+        Route::get('catalogo/articulos', 'AdminSync\\CatalogoController@articulos');
+        Route::post('catalogo/categorias/propuestas', 'AdminSync\\CatalogoCategoriasController@crear');
+        Route::get('catalogo/categorias/propuestas/actual', 'AdminSync\\CatalogoCategoriasController@actual');
+        Route::get('catalogo/categorias/propuestas/{run_id}', 'AdminSync\\CatalogoCategoriasController@mostrar')->where('run_id', '[0-9]+');
+        Route::post('catalogo/categorias/propuestas/{run_id}/asignaciones', 'AdminSync\\CatalogoCategoriasController@asignaciones')->where('run_id', '[0-9]+');
+        Route::get('catalogo/categorias/propuestas/{run_id}/pendientes', 'AdminSync\\CatalogoCategoriasController@pendientes')->where('run_id', '[0-9]+');
+        Route::post('catalogo/categorias/propuestas/{run_id}/listo', 'AdminSync\\CatalogoCategoriasController@listo')->where('run_id', '[0-9]+');
+        Route::post('catalogo/categorias/propuestas/{run_id}/descartar', 'AdminSync\\CatalogoCategoriasController@descartar')->where('run_id', '[0-9]+');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
