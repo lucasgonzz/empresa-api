@@ -632,6 +632,78 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         }
 
         $this->assertTrue($llego, 'La puerta web sobre una base vacía tenía que llegar al migrate:fresh.');
+
+        // Aunque el setup reventó a mitad de camino, el `finally` soltó el candado.
+        $libre = DemoSetupLockHelper::tomar();
+        $this->assertNotFalse($libre, 'La puerta web dejó el candado tomado después de reventar.');
+        DemoSetupLockHelper::soltar($libre);
+    }
+
+    /**
+     * La cuarta puerta TOMA el candado, como las otras tres: con el candado tomado (otro setup en
+     * pleno `migrate:fresh`) el POST web vuelve al formulario con el aviso y no llama a Artisan.
+     * Sin esto, ese POST veía las tablas ausentes, pasaba la guarda de datos y le pisaba la corrida.
+     *
+     * @test
+     */
+    public function con_el_candado_tomado_la_puerta_web_vuelve_al_formulario_con_el_aviso_y_no_toca_nada()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        $this->candado = DemoSetupLockHelper::tomar();
+        $this->assertNotFalse($this->candado, 'El candado tenía que estar libre al empezar el test.');
+
+        $respuesta = $this->post('/user-setup', [
+            'business_type' => 'distribuidora',
+            'user_id'       => self::ID_DE_USUARIO_LIBRE,
+        ]);
+
+        $respuesta->assertRedirect(route('user.form'));
+        $respuesta->assertSessionHas('error');
+        $respuesta->assertSessionMissing('status');
+
+        $mensaje = (string) session('error');
+
+        $this->assertStringContainsString('setup corriendo', $mensaje);
+        // Es el aviso del candado, no el de la base con datos (ese caso no llegó ni a evaluarse).
+        $this->assertStringNotContainsString('datos de negocio', $mensaje);
+
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * El candado se suelta después de un rechazo por base con datos en la puerta web: un segundo
+     * POST vuelve a rebotar POR DATOS (no por el candado), y el candado queda libre.
+     *
+     * @test
+     */
+    public function el_candado_se_suelta_despues_de_un_rechazo_por_datos_en_la_puerta_web()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        foreach ([1, 2] as $intento) {
+            $respuesta = $this->post('/user-setup', [
+                'business_type' => 'distribuidora',
+                'user_id'       => self::ID_DE_USUARIO_LIBRE,
+            ]);
+
+            $respuesta->assertRedirect(route('user.form'));
+            $respuesta->assertSessionHas('error');
+
+            $this->assertStringContainsString(
+                'datos de negocio',
+                (string) session('error'),
+                'Intento ' . $intento . ': tenía que rebotar por la base con datos, no por el candado.'
+            );
+        }
+
+        $libre = DemoSetupLockHelper::tomar();
+        $this->assertNotFalse($libre, 'El candado quedó tomado después de un rechazo por datos en la puerta web.');
+        DemoSetupLockHelper::soltar($libre);
+
+        $this->assert_base_intacta();
     }
 
     // ------------------------------------------------------------------------------------------

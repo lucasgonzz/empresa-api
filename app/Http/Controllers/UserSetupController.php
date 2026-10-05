@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Helpers\BorradoTotalDeBaseHelper;
+use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use App\Http\Controllers\Helpers\UserSetupHelper;
 use Illuminate\Http\Request;
 
@@ -25,6 +26,9 @@ class UserSetupController extends Controller
 
     /**
      * Recibe el POST del formulario, valida los mínimos y delega al helper.
+     *
+     * Toma el candado de DemoSetupLockHelper como las otras tres puertas al `migrate:fresh`: si
+     * ya hay un setup corriendo vuelve al formulario con el aviso y no toca nada.
      *
      * Si la base ya tiene datos de negocio, UserSetupHelper::run() se niega antes de borrar nada
      * y acá se vuelve al formulario con el motivo. Este formulario NO tiene forma de forzar el
@@ -52,6 +56,21 @@ class UserSetupController extends Controller
          */
         $datos = $request->except([BorradoTotalDeBaseHelper::FLAG, BorradoTotalDeBaseHelper::CONFIRMACION]);
 
+        /*
+         * Mismo candado que la API de user-setup y las dos puertas de demo (ver DemoSetupLockHelper):
+         * esta es la cuarta puerta al mismo `migrate:fresh` y no lo tomaba. Sin él, mientras un setup
+         * por API está en pleno `migrate:fresh` (las tablas ausentes), un POST web veía la base "vacía",
+         * pasaba la guarda de datos y le pisaba la corrida. La guarda de datos y el candado se
+         * complementan: una mira QUÉ hay en la base, el otro QUIÉN la está tocando ahora.
+         * El mensaje va por session('error'), que es lo que muestra la vista user.setup.
+         */
+        $candado = DemoSetupLockHelper::tomar();
+
+        if ($candado === false) {
+            return redirect()->route('user.form')
+                ->with('error', 'Ya hay un setup corriendo en esta instancia. Esperá a que termine.');
+        }
+
         try {
             UserSetupHelper::run($datos);
         } catch (BaseConDatosException $e) {
@@ -60,6 +79,10 @@ class UserSetupController extends Controller
                 'error',
                 $e->getMessage() . ' Tablas con datos: ' . implode(', ', $e->con_datos()) . '.'
             );
+        } finally {
+            // Se suelta siempre, salga bien, rebote por datos o reviente: un candado que queda tomado
+            // traba todos los setups de la instancia.
+            DemoSetupLockHelper::soltar($candado);
         }
 
         return redirect()->route('user.form')->with('status', 'Usuario creado correctamente.');
