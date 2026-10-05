@@ -29,6 +29,18 @@ class CategoryProposalRun extends Model
         self::ESTADO_ELEGIDA,
     ];
 
+    /**
+     * Estados en los que el DUEÑO ve la corrida en Alertas → Catálogo → Categorías. `preparando` no está:
+     * mientras la skill la está cargando (y hasta que alguien da el ok con `listo`) es del equipo, no del
+     * dueño; plan §5.6: "desde `listo` el dueño la ve". La skill y el admin, en cambio, ven todas las
+     * vigentes (ESTADOS_VIGENTES).
+     */
+    const ESTADOS_VISIBLES_PARA_EL_DUENO = [
+        self::ESTADO_LISTA,
+        self::ESTADO_APLICANDO,
+        self::ESTADO_ELEGIDA,
+    ];
+
     /** Quién originó la corrida. Hoy solo la skill. */
     const ORIGEN_SKILL = 'skill';
 
@@ -64,6 +76,20 @@ class CategoryProposalRun extends Model
     public function scopeVigentes($query)
     {
         return $query->whereIn('estado', self::ESTADOS_VIGENTES);
+    }
+
+    /**
+     * Las corridas que el dueño puede ver: lista, aplicando y elegida. Una `preparando` es de la skill
+     * hasta el `listo`; una `descartada` no se ve nunca. Es el filtro de todo lo que lee la SPA (el
+     * badge, las tarjetas, marcar vista y los ítems de la revisión). Se llama
+     * `CategoryProposalRun::visibles_para_el_dueno()`.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeVisibles_para_el_dueno($query)
+    {
+        return $query->whereIn('estado', self::ESTADOS_VISIBLES_PARA_EL_DUENO);
     }
 
     /**

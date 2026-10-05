@@ -119,7 +119,16 @@ class CategoryProposalLecturaHelper
     }
 
     /**
-     * La corrida vigente del dueño: la última que no está descartada.
+     * La corrida vigente que el DUEÑO puede ver: la última en estado lista, aplicando o elegida.
+     *
+     * 🔴 CAMBIO DELIBERADO DE CONTRATO (B-07 del verificador, 5/10/2026): una corrida `preparando` NO se
+     * ve. Mientras la skill la está cargando es del equipo, no del dueño: el plan (§5.6) dice "desde
+     * `listo` el dueño la ve". Antes la SPA la veía y mostraba "Estamos preparando tus propuestas" (con
+     * un refresco cada 30 s); ahora, con una corrida `preparando`, `resumen` contesta `hay_propuestas:
+     * false` y `estado: null`, `actual` contesta `run: null`, y `visto` e `items` contestan 404
+     * `no_encontrado`. Las demás rutas de la SPA (elegir, aprobar...) ya exigen una corrida lista o
+     * elegida. Una `descartada` tampoco se ve nunca. La skill y el admin (`admin-sync/catalogo/*`) sí ven
+     * la `preparando`: es su corrida.
      *
      * @param  int $owner_id
      * @return \App\Models\CategoryProposalRun|null
@@ -127,7 +136,7 @@ class CategoryProposalLecturaHelper
     public static function corrida_vigente($owner_id)
     {
         return CategoryProposalRun::where('user_id', (int) $owner_id)
-            ->vigentes()
+            ->visibles_para_el_dueno()
             ->orderBy('id', 'desc')
             ->first();
     }
@@ -297,8 +306,10 @@ class CategoryProposalLecturaHelper
      * - Quien no es el dueño ni el acceso maestro recibe la forma vacía (`run: null`) y nada más: no
      *   se calcula ni se filtra nada.
      * - Sin corrida: `run: null`, el bloqueo, si ya tiene categorías, y todo lo demás en cero/vacío.
-     * - Corrida `preparando`: el `run` con `propuestas: []` (la SPA muestra "Estamos preparando tus
-     *   propuestas"). Una `descartada` nunca se devuelve.
+     * - 🔴 Una corrida `preparando` NO se ve (cambio deliberado, B-07 del verificador): mientras la skill
+     *   la carga es del equipo y no del dueño ("desde `listo` el dueño la ve", plan §5.6), así que
+     *   contesta lo mismo que sin corrida. Una `descartada` tampoco se devuelve nunca. Ver
+     *   `corrida_vigente()`.
      *
      * `advertencias` del nivel superior es la UNIÓN de las que valen para las tarjetas que hay (las
      * genéricas más las de cada tipo): la SPA las muestra en el cartel de confirmar. Cada tarjeta trae
@@ -347,42 +358,37 @@ class CategoryProposalLecturaHelper
             ];
         }
 
-        // Las tarjetas y las advertencias que se van a devolver.
-        $propuestas   = [];
-        $advertencias = [];
+        // Las tarjetas de la corrida. La corrida que llega hasta acá es siempre una que el dueño puede ver
+        // (lista, aplicando o elegida): la `preparando` no pasa de `corrida_vigente()`.
+        $propuestas = self::propuestas_payload($run);
 
-        // Una corrida que la skill todavía está cargando no muestra tarjetas.
-        if ($run->estado !== CategoryProposalRun::ESTADO_PREPARANDO) {
+        // Las advertencias, una vez por tipo de tarjeta que haya (cada llamada son varias consultas del
+        // otro helper): las genéricas valen para todas.
+        $genericas = array_values(CategoryMargenesHelper::advertencias_para($owner_id));
+        $por_tipo  = [];
 
-            $propuestas = self::propuestas_payload($run);
+        foreach ($propuestas as $indice => $tarjeta) {
 
-            // Las advertencias, una vez por tipo de tarjeta que haya (cada llamada son varias
-            // consultas del otro helper): las genéricas valen para todas.
-            $genericas = array_values(CategoryMargenesHelper::advertencias_para($owner_id));
-            $por_tipo  = [];
+            // El tipo de esta tarjeta (nueva o mantener).
+            $tipo = $tarjeta['tipo'];
 
-            foreach ($propuestas as $indice => $tarjeta) {
+            if (!isset($por_tipo[$tipo])) {
 
-                // El tipo de esta tarjeta (nueva o mantener).
-                $tipo = $tarjeta['tipo'];
-
-                if (!isset($por_tipo[$tipo])) {
-
-                    $por_tipo[$tipo] = array_values(CategoryMargenesHelper::advertencias_para($owner_id, $tipo));
-                }
-
-                $propuestas[$indice]['advertencias'] = array_values(array_unique(array_merge($genericas, $por_tipo[$tipo])));
+                $por_tipo[$tipo] = array_values(CategoryMargenesHelper::advertencias_para($owner_id, $tipo));
             }
 
-            $advertencias = $genericas;
-
-            foreach ($por_tipo as $codigos) {
-
-                $advertencias = array_merge($advertencias, $codigos);
-            }
-
-            $advertencias = array_values(array_unique($advertencias));
+            $propuestas[$indice]['advertencias'] = array_values(array_unique(array_merge($genericas, $por_tipo[$tipo])));
         }
+
+        // La unión de todas, para el cartel de confirmar.
+        $advertencias = $genericas;
+
+        foreach ($por_tipo as $codigos) {
+
+            $advertencias = array_merge($advertencias, $codigos);
+        }
+
+        $advertencias = array_values(array_unique($advertencias));
 
         return [
             'run'                      => self::run_payload($run),
@@ -826,9 +832,10 @@ class CategoryProposalLecturaHelper
     /**
      * PUT category-proposal-runs/{id}/visto — el dueño abrió la solapa con la corrida lista (§6.3).
      *
-     * Marca `visto_at` solo si la corrida está `lista` y todavía no estaba vista: con la corrida en
-     * preparación no se marca (las tarjetas no se vieron) y repetirlo no cambia nada. En cualquier
-     * caso contesta `{"ok": true}` si la corrida es del dueño.
+     * Marca `visto_at` solo si la corrida está `lista` y todavía no estaba vista; repetirlo no cambia
+     * nada. Contesta `{"ok": true}` si la corrida es del dueño y él puede verla (lista, aplicando o
+     * elegida); una `preparando` (todavía de la skill), una descartada, una ajena o una inexistente dan
+     * el mismo 404 `no_encontrado`.
      *
      * @param  int $owner_id
      * @param  int $run_id
@@ -836,9 +843,10 @@ class CategoryProposalLecturaHelper
      */
     public static function marcar_visto($owner_id, $run_id)
     {
-        // La corrida vigente del dueño (la ajena, la inexistente y la descartada dan lo mismo: null).
+        // La corrida del dueño que él puede ver (la ajena, la inexistente, la descartada y la que la skill
+        // todavía está preparando dan lo mismo: null).
         $run = CategoryProposalRun::where('user_id', (int) $owner_id)
-            ->vigentes()
+            ->visibles_para_el_dueno()
             ->where('id', (int) $run_id)
             ->first(['id']);
 
@@ -881,9 +889,10 @@ class CategoryProposalLecturaHelper
      */
     public static function items($owner_id, $run_id, $solapa, $pagina, $por_pagina, $buscar)
     {
-        // La corrida vigente del dueño (la ajena, la inexistente y la descartada dan lo mismo: null).
+        // La corrida del dueño que él puede ver (la ajena, la inexistente, la descartada y la que la skill
+        // todavía está preparando dan lo mismo: null).
         $run = CategoryProposalRun::where('user_id', (int) $owner_id)
-            ->vigentes()
+            ->visibles_para_el_dueno()
             ->where('id', (int) $run_id)
             ->first();
 

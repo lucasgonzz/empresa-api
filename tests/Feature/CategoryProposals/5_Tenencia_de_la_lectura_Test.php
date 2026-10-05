@@ -184,7 +184,9 @@ class Tenencia_de_la_lectura_Test extends CategoryProposalsTestCase
     /**
      * 🔴 Un id ajeno que EXISTE se contesta IGUAL que uno inexistente en las dos rutas con id: 404
      * `no_encontrado` con el mismo cuerpo, sin 403 que confirme que existe. Y la corrida ajena no se toca.
-     * Una corrida descartada propia también es 404 (nunca se devuelve).
+     * Una corrida descartada propia también es 404 (nunca se devuelve), y una `preparando` propia también
+     * (B-07: hasta el `listo` es de la skill y el dueño no sabe que existe; un 409 "todavía no elegida" lo
+     * delataría).
      *
      * @group categorias_ia
      * @test
@@ -195,6 +197,7 @@ class Tenencia_de_la_lectura_Test extends CategoryProposalsTestCase
         $lista_ajena = $this->corrida_con_a('lista', $this->vecino);
 
         $descartada_propia = $this->corrida_con_a('descartada');
+        $preparando_propia = $this->corrida_con_a('preparando');
 
         $pedidos = function ($id) {
 
@@ -215,7 +218,7 @@ class Tenencia_de_la_lectura_Test extends CategoryProposalsTestCase
         $this->assertSame('no_encontrado', $de_referencia[0]->json()['error']);
         $this->assertSame(['error', 'message'], array_keys($de_referencia[0]->json()));
 
-        foreach ([(int) $ajena['run']->id, (int) $lista_ajena['run']->id, (int) $descartada_propia['run']->id] as $id) {
+        foreach ([(int) $ajena['run']->id, (int) $lista_ajena['run']->id, (int) $descartada_propia['run']->id, (int) $preparando_propia['run']->id] as $id) {
 
             foreach ($pedidos($id) as $indice => $respuesta) {
 

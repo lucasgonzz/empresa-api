@@ -58,9 +58,9 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
     }
 
     /**
-     * El badge en cada estado de la corrida: `preparando` no suma (las tarjetas no se ven), `lista` suma 1
-     * y sigue sumando 1 aunque ya se haya visto (todavía hay que elegir), `elegida` suma los dudosos a
-     * revisar, y una descartada no existe.
+     * El badge en cada estado de la corrida: una `preparando` no existe para el dueño (es de la skill hasta
+     * el `listo`: B-07), `lista` suma 1 y sigue sumando 1 aunque ya se haya visto (todavía hay que
+     * elegir), `elegida` suma los dudosos a revisar, y una descartada no existe.
      *
      * @group categorias_ia
      * @test
@@ -70,11 +70,13 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
         $sembrado = $this->corrida_con_a('preparando');
         $run      = $sembrado['run'];
 
-        // Preparando: hay corrida, pero ni badge ni nada que elegir.
+        // 🔴 Preparando (CAMBIO DELIBERADO DE CONTRATO, B-07 del verificador, 5/10/2026): la skill todavía la
+        // está cargando y es del equipo, no del dueño ("desde `listo` el dueño la ve", plan §5.6). Para él es
+        // como si no hubiera nada: ni siquiera dice que existe.
         $this->assertSame([
-            'hay_propuestas'       => true,
-            'estado'               => 'preparando',
-            'run_id'               => (int) $run->id,
+            'hay_propuestas'       => false,
+            'estado'               => null,
+            'run_id'               => null,
             'pendientes_de_elegir' => false,
             'a_revisar'            => 0,
             'sin_ver'              => false,
@@ -175,26 +177,80 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
     }
 
     /**
-     * Con la corrida `preparando` se devuelve el `run` y `propuestas: []` (la SPA muestra "Estamos
-     * preparando tus propuestas"), aunque las tarjetas ya existan en la base.
+     * 🔴 CAMBIO DELIBERADO DE CONTRATO (B-07 del verificador, 5/10/2026): con la corrida `preparando` `actual`
+     * contesta `run: null` y nada más, igual que sin corrida (antes devolvía el `run` con `propuestas: []`
+     * y la SPA mostraba "Estamos preparando tus propuestas"). Mientras la skill la carga es del equipo,
+     * no del dueño: plan §5.6, "desde `listo` el dueño la ve". Las tarjetas existen en la base y no
+     * se ven.
      *
      * @group categorias_ia
      * @test
      */
-    public function actual_con_la_corrida_preparando_no_trae_tarjetas()
+    public function actual_no_muestra_la_corrida_que_la_skill_todavia_esta_preparando()
+    {
+        $this->crear_articulos_en_masa(2);
+        $this->crear_categoria_real('Una categoria del dueno');
+
+        $this->crear_corrida_por_api();
+
+        $json = $this->actual();
+
+        $this->assertSame(['run', 'bloqueo', 'advertencias', 'tiene_categorias_previas', 'conteos', 'propuestas'], array_keys($json));
+        $this->assertNull($json['run']);
+        $this->assertSame(CategoryMargenesHelper::bloqueo_para($this->owner->id), $json['bloqueo']);
+        $this->assertSame([], $json['advertencias']);
+        $this->assertTrue($json['tiene_categorias_previas']);
+        $this->assertSame(['a_revisar' => 0, 'asignados' => 0, 'sin_categoria' => 0], $json['conteos']);
+        $this->assertSame([], $json['propuestas']);
+    }
+
+    /**
+     * 🔴 B-07: la corrida aparece para el dueño recién con el `listo`, de punta a punta con la ingesta real:
+     * mientras está `preparando` el resumen, `actual`, `visto` e `items` no la conocen (404 `no_encontrado`
+     * en los dos que llevan id, el mismo cuerpo que un id inexistente); con `listo` pasa a verse, sin ver y
+     * con su badge.
+     *
+     * @group categorias_ia
+     * @test
+     */
+    public function la_corrida_aparece_para_el_dueno_recien_con_el_listo()
     {
         $this->crear_articulos_en_masa(2);
 
         $creada = $this->crear_corrida_por_api();
+        $run_id = $creada['run_id'];
 
-        $json = $this->actual();
+        $this->assertFalse($this->resumen()['hay_propuestas']);
+        $this->assertNull($this->actual()['run']);
 
-        $this->assertSame((int) $creada['run_id'], $json['run']['id']);
-        $this->assertSame('preparando', $json['run']['estado']);
-        $this->assertSame([], $json['propuestas']);
-        $this->assertSame([], $json['advertencias']);
-        $this->assertFalse($json['run']['puede_cambiar']);
-        $this->assertNull($json['run']['motivo_no_puede_cambiar']);
+        $inexistente = $this->putJson('api/category-proposal-runs/987654321/visto');
+
+        $inexistente->assertStatus(404);
+        $this->assertSame($inexistente->json(), $this->putJson('api/category-proposal-runs/'.$run_id.'/visto')->assertStatus(404)->json());
+        $this->assertSame(
+            $this->getJson('api/category-proposal-runs/987654321/items')->assertStatus(404)->json(),
+            $this->items($run_id, 'solapa=a_revisar')->assertStatus(404)->json()
+        );
+        $this->assertNull(CategoryProposalRun::find($run_id)->visto_at);
+
+        // Con el ok de `listo` (la skill lo da con el visto bueno de Lucas) el dueño la ve.
+        $this->post_admin('categorias/propuestas/'.$run_id.'/listo', ['forzar' => true])->assertStatus(200);
+
+        $resumen = $this->resumen();
+
+        $this->assertTrue($resumen['hay_propuestas']);
+        $this->assertSame('lista', $resumen['estado']);
+        $this->assertSame((int) $run_id, $resumen['run_id']);
+        $this->assertTrue($resumen['sin_ver']);
+        $this->assertSame(1, $resumen['badge']);
+
+        $actual = $this->actual();
+
+        $this->assertSame((int) $run_id, $actual['run']['id']);
+        $this->assertSame(['A', 'B'], array_column($actual['propuestas'], 'clave'));
+
+        $this->putJson('api/category-proposal-runs/'.$run_id.'/visto')->assertStatus(200)->assertExactJson(['ok' => true]);
+        $this->assertNotNull(CategoryProposalRun::find($run_id)->visto_at);
     }
 
     /**
@@ -543,8 +599,9 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
     // ------------------------------------------------------------------------------------------
 
     /**
-     * `visto` marca `visto_at` solo con la corrida `lista` y solo la primera vez; con la corrida en
-     * preparación no se marca (las tarjetas no se vieron). Siempre `{"ok": true}`.
+     * `visto` marca `visto_at` solo con la corrida `lista` y solo la primera vez, y contesta
+     * `{"ok": true}`. Con la corrida `preparando` (todavía de la skill: B-07) es un 404 `no_encontrado` y
+     * no marca nada.
      *
      * @group categorias_ia
      * @test
@@ -554,7 +611,7 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
         $sembrado = $this->corrida_con_a('preparando');
         $run      = $sembrado['run'];
 
-        $this->putJson('api/category-proposal-runs/'.$run->id.'/visto')->assertStatus(200)->assertExactJson(['ok' => true]);
+        $this->putJson('api/category-proposal-runs/'.$run->id.'/visto')->assertStatus(404)->assertJson(['error' => 'no_encontrado']);
         $this->assertNull($run->fresh()->visto_at, 'Con la corrida preparando no se marca como vista.');
 
         $run->estado = 'lista';
@@ -940,15 +997,16 @@ class Lectura_para_la_SPA_Test extends CategoryProposalsTestCase
     }
 
     /**
-     * Una corrida `preparando` tampoco tiene nada para revisar (todavía no se eligió).
+     * Una corrida `preparando` no existe para el dueño (B-07): sus ítems son un 404 `no_encontrado`, no un
+     * 409 "todavía no elegida" (que confirmaría que hay una corrida en preparación).
      *
      * @group categorias_ia
      * @test
      */
-    public function una_corrida_preparando_no_tiene_items_para_revisar()
+    public function una_corrida_preparando_no_tiene_items_para_el_dueno()
     {
         $preparando = $this->corrida_con_a('preparando');
 
-        $this->items($preparando['run']->id)->assertStatus(409);
+        $this->items($preparando['run']->id)->assertStatus(404)->assertJson(['error' => 'no_encontrado']);
     }
 }
