@@ -247,7 +247,15 @@ class Article extends Model
     }
 
     function price_types() {
-        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price', 'previus_final_price', 'incluir_en_excel_para_clientes', 'setear_precio_final', 'precio_luego_de_recargos', 'monto_ganancia');
+        /*
+         * `visible_en_tienda` (misión catalogo-por-lista-tienda, 5/10/2026): si el artículo se ve en
+         * la tienda para los compradores de esa lista cuando la lista es restringida
+         * (`price_types.catalogo_restringido_en_tienda = 1`; `= 1` es "habilitado", NULL y 0 no).
+         * Va en el withPivot para que viaje de ida y vuelta con la ficha
+         * (`article.price_types[].pivot.visible_en_tienda`) y para que la importación lo compare
+         * contra lo guardado: sin esto nadie lo lee. Ver CatalogoPorListaHelper.
+         */
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price', 'previus_final_price', 'incluir_en_excel_para_clientes', 'setear_precio_final', 'precio_luego_de_recargos', 'monto_ganancia', 'visible_en_tienda');
     }
 
     function cart() {

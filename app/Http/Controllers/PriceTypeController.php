@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Models\ArticleTicketDesign;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
@@ -51,6 +52,12 @@ class PriceTypeController extends Controller
             'setear_precio_final'    => $request->setear_precio_final,
             'se_usa_en_tienda_nube'    => $request->se_usa_en_tienda_nube,
             'se_usa_en_ml'    => $request->se_usa_en_ml,
+            // Interruptor "Catálogo restringido en la tienda" (misión catalogo-por-lista-tienda,
+            // 5/10/2026). Sin la clave (SPA viejo) la lista nace en NULL = sin restricción; con la
+            // clave, saneada a 1 o 0.
+            'catalogo_restringido_en_tienda' => $request->has('catalogo_restringido_en_tienda')
+                ? CatalogoPorListaHelper::interruptor_de_lista($request->input('catalogo_restringido_en_tienda'))
+                : null,
             'user_id'               => $this->userId(),
         ]);
 
@@ -174,7 +181,19 @@ class PriceTypeController extends Controller
         $model->setear_precio_final  = $request->setear_precio_final;
         $model->se_usa_en_tienda_nube  = $request->se_usa_en_tienda_nube;
         $model->se_usa_en_ml  = $request->se_usa_en_ml;
-        
+
+        /*
+         * 🔴 CONDICIONAL, a diferencia de los campos de arriba (misión catalogo-por-lista-tienda,
+         * 5/10/2026). Este update() asigna campo por campo lo que venga en el request: un SPA viejo
+         * (cacheado en la PWA) no conoce `catalogo_restringido_en_tienda` y no lo manda, y con la
+         * asignación de siempre la lista quedaría en NULL — o sea, le APAGARÍA la restricción a un
+         * comercio que la prendió desde otra pestaña ya actualizada, y sus mayoristas pasarían a
+         * ver todo el catálogo sin que nadie lo note. Solo se escribe si el request trae la clave.
+         */
+        if ($request->has('catalogo_restringido_en_tienda')) {
+            $model->catalogo_restringido_en_tienda = CatalogoPorListaHelper::interruptor_de_lista($request->input('catalogo_restringido_en_tienda'));
+        }
+
         $model->save();
 
         /*
