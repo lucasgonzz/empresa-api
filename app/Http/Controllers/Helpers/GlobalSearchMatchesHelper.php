@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Helpers;
 
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
-use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\Schema;
 
 /**

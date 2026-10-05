@@ -33,8 +33,12 @@ class ColumnFiltersHelper
      * Forma de un identificador SQL simple: letras, numeros y guion bajo, sin empezar con numero.
      * Es el primer filtro (barato) de un key; el que decide es que el nombre este en la lista de
      * columnas reales de la tabla (ver columna_valida()).
+     *
+     * Termina en `\z` y no en `$`: en PCRE `$` también acepta un "\n" final, así que "name\n" pasaba
+     * por identificador. Hoy lo frenaba la lista de columnas igual, pero el patrón tiene que decir
+     * lo que promete.
      */
-    const PATRON_IDENTIFICADOR = '/^[A-Za-z_][A-Za-z0-9_]*$/';
+    const PATRON_IDENTIFICADOR = '/^[A-Za-z_][A-Za-z0-9_]*\z/';
 
     /**
      * Ruta real de app/ (cacheada por proceso), para relacion_real(). null = todavia no se calculo.
@@ -617,13 +621,20 @@ class ColumnFiltersHelper
      * ¿El filtro trae algun criterio puesto? Solo se usa para decidir que hacer con un filtro cuyo
      * key NO es columna: con criterio → 422; sin criterio → se saltea.
      *
-     * Es conservadora a proposito: cuenta como criterio todo lo que alguna rama de apply() lee como
-     * criterio, salvo los valores que la SPA usa para "vacio" en cada campo (los de
-     * build_table_filters_from_props() y limpiar_filtro() de common-vue): '' en los de texto y
-     * numero, 0 en el igual_que de select/search, -1 en checkbox, 0/false en en_blanco y
-     * no_en_blanco. Esos tienen que seguir siendo inertes, porque la SPA manda los filtros que nadie
-     * toco tambien. Las comparaciones son estrictas: con `==` de PHP 7.4, 'abc' == 0 es verdadero y
-     * un criterio de texto pasaria por vacio.
+     * 🔴 Tiene que FALLAR CERRADO: todo valor que alguna rama de apply() aplicaria sobre una columna
+     * cuenta como criterio. Los unicos inertes son los que la SPA usa para "vacio"
+     * (build_table_filters_from_props() y limpiar_filtro() de common-vue), que la SPA manda tambien
+     * en los filtros que nadie toco:
+     *  - igual_que: null, '' o el ENTERO 0 (el vacio de select/search). El texto '0' es un criterio
+     *    real en texto, numero y select (esas ramas arman `columna = '0'`); solo en search su rama
+     *    lo ignora (`!= 0`). Antes se lo trataba como vacio en todos los tipos, y en una masiva un
+     *    "igual a 0" sobre un key que no es columna desaparecia en silencio y la operacion corria
+     *    con el resto de los filtros (verificador independiente, 5/10/2026).
+     *  - checkbox: -1 (o '-1'). '' NO es vacio: la rama lo aplica (`'' != -1`).
+     *  - en_blanco / no_en_blanco falsos; ordenar_de vacio; que_contenga / menor_que / mayor_que ''.
+     * La SPA nunca manda '0' ni '' como vacio en esos campos (usa 0 y -1), asi que esto no vuelve
+     * inerte nada de lo que manda. Las comparaciones son estrictas: con `==` de PHP 7.4, 'abc' == 0
+     * es verdadero y un criterio de texto pasaria por vacio.
      *
      * @param  array  $filter
      * @return bool
@@ -648,11 +659,18 @@ class ColumnFiltersHelper
             }
         }
 
-        if (isset($filter['igual_que']) && !in_array($filter['igual_que'], ['', 0, '0'], true)) {
-            return true;
+        if (isset($filter['igual_que'])) {
+            $tipo = isset($filter['type']) ? $filter['type'] : null;
+
+            // El vacio de igual_que; '0' solo en search, la unica rama que lo ignora.
+            $vacios = ($tipo === 'search') ? ['', 0, '0'] : ['', 0];
+
+            if (!in_array($filter['igual_que'], $vacios, true)) {
+                return true;
+            }
         }
 
-        if (isset($filter['checkbox']) && !in_array($filter['checkbox'], ['', -1, '-1'], true)) {
+        if (isset($filter['checkbox']) && !in_array($filter['checkbox'], [-1, '-1'], true)) {
             return true;
         }
 
@@ -713,7 +731,11 @@ class ColumnFiltersHelper
             return null;
         }
 
-        if (preg_match('/^(get|set)[A-Za-z0-9_]*Attribute$/', $metodo) || preg_match('/^scope[A-Z_]/', $metodo)) {
+        // Sin distinguir mayusculas (`/i`): PHP resuelve los metodos sin distinguirlas, asi que
+        // "getAmountsByStatusattribute" invoca el mismo accessor que "getAmountsByStatusAttribute"
+        // (medido por el verificador: 3 SELECT). En app/Models no hay relaciones que empiecen con
+        // "scope" ni terminen en "attribute", asi que el /i no deja afuera ninguna.
+        if (preg_match('/^(get|set)[A-Za-z0-9_]*Attribute\z/i', $metodo) || preg_match('/^scope[A-Z_]/i', $metodo)) {
             return null;
         }
 
@@ -801,9 +823,11 @@ class ColumnFiltersHelper
      * la relacion (whereDoesntHave), `no_en_blanco` = con al menos uno (whereHas). Misión
      * imagenes-catalogo-completo (27/9/2026): "Sin imágenes" / "Con imágenes" del listado.
      *
-     * Solo se aplica si la key es de verdad una relacion declarada en el propio modelo (ver
-     * is_own_relation()); si no, el filtro se ignora sin romper la busqueda y no se anota en
-     * used_filters. Sin en_blanco ni no_en_blanco tampoco hace nada.
+     * Solo se aplica si la key es una relacion real del modelo, declarada en un archivo de app/ (el
+     * modelo o un trait propio; ver is_own_relation() y relacion_real()); si no, el filtro se ignora
+     * sin romper la busqueda y no se anota en used_filters. Sin en_blanco ni no_en_blanco tampoco
+     * hace nada. Hasta el 5/10/2026 se exigia el archivo del modelo; desde la mision
+     * filtros-key-sin-inyeccion la regla es la de relacion_real(), la misma para todas las entradas.
      *
      * @param  \Illuminate\Database\Eloquent\Builder $models
      * @param  array                                 $filter
@@ -835,7 +859,9 @@ class ColumnFiltersHelper
     }
 
     /**
-     * ¿La key es una relacion real del modelo?
+     * ¿La key es una relacion real del modelo? (Conserva el nombre de antes, pero ya no exige que
+     * este declarada en el archivo del propio modelo: vale cualquier archivo de app/, como en
+     * relacion_real().)
      *
      * La key sale del request y whereHas() la invoca como metodo sobre una instancia nueva del
      * modelo: sin guarda, una key como `restore` (SoftDeletes) o `save` terminaria llamando a ese
@@ -847,7 +873,7 @@ class ColumnFiltersHelper
      */
     protected static function is_own_relation($model_name, $key)
     {
-        if (!is_string($key) || !preg_match('/^[a-z_][a-z0-9_]*$/i', $key) || !class_exists($model_name)) {
+        if (!is_string($key) || !preg_match(self::PATRON_IDENTIFICADOR, $key) || !class_exists($model_name)) {
             return false;
         }
 

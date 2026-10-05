@@ -454,6 +454,15 @@ class ClientController extends Controller
         // FiltroDeColumnaInvalidoException, que contesta 422 en JSON aunque esta ruta sea de web.php.
         // Hasta esa fecha acá había un regex propio de keys: no volver a copiar la guarda en cada
         // entrada, porque la próxima entrada nueva se olvida de copiarla.
+        //
+        // Lo que SÍ queda acá es la forma del pedido de este PDF: cada filtro es un objeto con su
+        // `key`. El helper saltea en silencio lo que no tiene esa forma, y acá eso dejaría salir el
+        // PDF con TODOS los clientes del dueño por un pedido mal armado (`filters=[1]`).
+        foreach ($filters as $filter) {
+            if (!is_array($filter) || !isset($filter['key']) || !is_string($filter['key'])) {
+                return response()->json(['message' => 'Filtro inválido.'], 422);
+            }
+        }
         $search_ct = new SearchController();
         $models = $search_ct->search($request, 'client', $filters);
 

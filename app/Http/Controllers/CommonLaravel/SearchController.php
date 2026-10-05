@@ -302,7 +302,17 @@ class SearchController extends Controller
             }
         }
 
-        $models = $models->where(function ($query) use ($request, $props_validas) {
+        // El pedido nombro props pero ninguna es columna: no hay donde buscar el texto, asi que no
+        // matchea nada. Sin esto el where(closure) quedaba vacio, Laravel lo descarta y el modal
+        // devolvia la lista entera del dueño como si hubiera coincidido. Sin props en el pedido el
+        // comportamiento es el de siempre.
+        $pidio_props = count((array) $request->props_to_filter) > 0;
+
+        $models = $models->where(function ($query) use ($request, $props_validas, $pidio_props) {
+
+            if ($pidio_props && !count($props_validas)) {
+                $query->whereRaw('1 = 0');
+            }
 
             foreach ($props_validas as $prop_to_filter) {
 
