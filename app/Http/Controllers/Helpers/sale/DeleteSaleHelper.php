@@ -50,7 +50,9 @@ class DeleteSaleHelper {
 	 *     SoftDeletes, asi que un intento ya eliminado desde la factura no cuenta.
 	 *     Una factura con CAE que ya tiene su nota de credito TAMBIEN frena: borrar la venta saca del
 	 *     Libro IVA la factura y la NC, y las dos siguen en ARCA.
-	 *  2. Una venta ORIGINAL incluida en una factura consolidada: el comprobante lo tiene la venta
+	 *  2. Una nota de credito viva (`nota_credito_afip_tickets`) aunque su factura ya no este: pasa
+	 *     en datos de antes del 11/9/2026, y el Libro IVA la lee por la venta igual.
+	 *  3. Una venta ORIGINAL incluida en una factura consolidada: el comprobante lo tiene la venta
 	 *     contenedora (`consolidacion_facturacion_id`), no ella. Si la contenedora sigue viva y tiene
 	 *     algun ticket, se frena con un mensaje que la nombra.
 	 *
@@ -72,6 +74,18 @@ class DeleteSaleHelper {
 		if ($facturacion === 'sin_cae') {
 
 			return 'La venta tiene una factura sin CAE (rechazada o sin respuesta de ARCA). Consultala o eliminala desde la factura de la venta, y después borrá la venta.';
+		}
+
+		/*
+			Una nota de credito viva sin su factura: datos de antes del 11/9/2026, cuando todavia se
+			podia borrar una factura con CAE. La NC cuelga de la venta por sale_nota_credito_id, y el
+			Libro IVA la encuentra por whereHas('sale_nota_credito'): borrar la venta la sacaria igual.
+		*/
+		$sale->loadMissing('nota_credito_afip_tickets');
+
+		if (count($sale->nota_credito_afip_tickets) >= 1) {
+
+			return 'La venta tiene una nota de crédito emitida ante ARCA: no se puede borrar.';
 		}
 
 		if (!is_null($sale->consolidacion_facturacion_id)) {

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -44,7 +45,23 @@ class UpdateVariantsStockHelper {
             $addresses = isset($variant['addresses']) ? $variant['addresses'] : [];
 
             foreach ($addresses as $address) {
-                
+
+                /*
+                 * Una sucursal que ya no existe se saltea sin error (misión eliminar-sucursal-con-stock,
+                 * 5/10/2026): una pestaña abierta desde antes del borrado la sigue mandando. Sin esto,
+                 * attach_address() le abría a la variante una fila para la sucursal borrada y después
+                 * get_variant_address() no la encontraba (la relación es un INNER JOIN con addresses):
+                 * `$variant_address->pivot` sobre null tumbaba el guardado con un 500.
+                 */
+                $address_id = isset($address['id']) ? $address['id'] : null;
+
+                if (!SucursalVigenteHelper::existe_para_stock($address_id, $this->article->user_id)) {
+
+                    Log::warning('UpdateVariantsStockHelper: se saltea la sucursal '.$address_id.' de la variante '.$variant['id'].': ya no existe.');
+
+                    continue;
+                }
+
                 $this->address = $address;
 
                 $variant_address = $this->get_variant_address();

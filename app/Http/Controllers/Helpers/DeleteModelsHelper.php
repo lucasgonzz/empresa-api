@@ -39,6 +39,11 @@ class DeleteModelsHelper
         // por el `PUT api/delete/order_production` genérico; sin esto la masiva la contaba como
         // eliminada aunque la orden, su venta y su cuenta corriente seguían intactas.
         'order_production',
+        // Sucursal con stock, empleados o marcas y sin decisión (misión eliminar-sucursal-con-stock,
+        // 5/10/2026): AddressController::destroy() responde 422 `requiere_decision`. El masivo no
+        // trae decisión, así que sin esto contaba la sucursal como eliminada y la SPA la sacaba de
+        // la lista aunque seguía existiendo con su stock.
+        'address',
     ];
 
     /**
@@ -85,6 +90,10 @@ class DeleteModelsHelper
                 // Misión orden-produccion-baja-de-venta (5/10/2026): el aviso decía "eliminación
                 // masiva de order_production".
                 return 'órdenes de producción';
+            // La eliminación masiva de sucursales (misión eliminar-sucursal-con-stock): sin este caso
+            // el aviso decía "La eliminación masiva de address finalizó correctamente".
+            case 'address':
+                return 'sucursales';
         }
 
         return $model_name;

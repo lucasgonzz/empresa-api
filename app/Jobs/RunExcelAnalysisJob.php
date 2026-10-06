@@ -439,6 +439,31 @@ class RunExcelAnalysisJob implements ShouldQueue
         /* Parámetros con los que el controller creó esta corrida (ver getRecomendacion()). */
         $payload = $run->payload ?? [];
 
+        /*
+         * La recomendación (políticas de colisión por código de proveedor, duplicados por código
+         * de barras, formatos de costo y precio) es de ARTÍCULOS. Antes corría igual para clientes
+         * y proveedores: sus Excel no tienen esas columnas, las estadísticas daban todo en 0 y
+         * Claude contestaba "el archivo contiene 0 filas, no se importará ningún artículo".
+         * Para ellos se cierra la corrida sin recorrer el archivo ni llamar a la IA: la SPA nueva
+         * ni siquiera la pide, esto cubre a la SPA que todavía no se desplegó.
+         */
+        if ($this->modelo_de_la_recomendacion($run) !== 'article') {
+            $run->update([
+                'estado'    => 'listo',
+                'progreso'  => 100,
+                'paso'      => null,
+                'resultado' => [
+                    'recomendacion_configuracion'                 => null,
+                    'provider_codes_existentes_mismo_proveedor'   => 0,
+                    'provider_codes_existentes_otros_proveedores' => 0,
+                    'formatos_numericos'                          => null,
+                ],
+            ]);
+
+            $this->notificar_fin($run);
+            return;
+        }
+
         /* Proveedor confirmado por el usuario (puede ser null si no aplica). */
         $provider_id = $payload['provider_id'] ?? null;
 
@@ -619,6 +644,37 @@ class RunExcelAnalysisJob implements ShouldQueue
             /* Mismo criterio que handle_analisis(): la ruta del servidor va al log, no a la pantalla. */
             $this->finalizar_con_error($run, 'Ocurrió un error inesperado al generar la recomendación. Volvé a intentar; si sigue pasando, avisanos.');
         }
+    }
+
+    /**
+     * Modelo al que pertenece una corrida de recomendación: 'article', 'client' o 'provider'.
+     *
+     * Primero lo que guardó el controller en el payload; si la SPA que la encoló no lo mandaba,
+     * el del análisis del que salió (analysis_uuid). Sin ninguno de los dos, 'article': es lo que
+     * hacía siempre este job, y una corrida vieja sigue por el mismo camino de antes.
+     *
+     * @param  \App\Models\ExcelAnalysisRun $run
+     * @return string
+     */
+    protected function modelo_de_la_recomendacion(ExcelAnalysisRun $run): string
+    {
+        $payload = $run->payload ?? [];
+
+        if (!empty($payload['model'])) {
+            return (string) $payload['model'];
+        }
+
+        if (!empty($payload['analysis_uuid'])) {
+            $padre = ExcelAnalysisRun::where('uuid', $payload['analysis_uuid'])
+                ->where('user_id', $run->user_id)
+                ->first();
+
+            if (!is_null($padre) && !empty(($padre->payload ?? [])['model'])) {
+                return (string) $padre->payload['model'];
+            }
+        }
+
+        return 'article';
     }
 
     /**

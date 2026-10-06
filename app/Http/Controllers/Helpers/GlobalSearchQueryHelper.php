@@ -315,25 +315,22 @@ class GlobalSearchQueryHelper
      */
     protected static function valid_relation_props($model_instance, $relation, $props)
     {
-        // Relacion vacia, de tipo invalido, o que ni siquiera existe como metodo del modelo:
-        // no hay nada que resolver.
-        if (empty($relation) || !is_string($relation) || !method_exists($model_instance, $relation)) {
+        // Relacion vacia o de tipo invalido: no hay nada que resolver.
+        if (empty($relation) || !is_string($relation)) {
             return [];
         }
 
-        // Invocar el metodo puede lanzar cualquier cosa (ej: un metodo que no es una relacion y
-        // espera argumentos, o que hace algo distinto adentro); si eso pasa, la relacion se
-        // descarta sin romper la busqueda.
-        try {
-            $relation_instance = $model_instance->{$relation}();
-        } catch (\Throwable $e) {
-            return [];
-        }
+        /*
+         * 🔴 El nombre de la relacion sale del pedido y se INVOCA como metodo del modelo. Antes
+         * alcanzaba con method_exists + try/catch: `relation = "save"` o `"touch"` ejecutaba
+         * (new Modelo)->save() y el catch se tragaba el error del INSERT (o no habia error y la
+         * fila quedaba). No volver a invocar nada sin pasar por relacion_real(), que es la unica
+         * guarda para esto en todo el sistema (mision filtros-key-sin-inyeccion, 5/10/2026): solo
+         * acepta una relacion de Eloquent declarada en un archivo de app/, y recien ahi la invoca.
+         */
+        $relation_instance = ColumnFiltersHelper::relacion_real(get_class($model_instance), $relation);
 
-        // Lo devuelto tiene que ser una relacion de Eloquent real. Esto cubre el caso de un
-        // metodo publico que existe en el modelo pero no es una relacion (method_exists por si
-        // solo no alcanza para saber si orWhereHas es seguro).
-        if (!($relation_instance instanceof \Illuminate\Database\Eloquent\Relations\Relation)) {
+        if (is_null($relation_instance)) {
             return [];
         }
 

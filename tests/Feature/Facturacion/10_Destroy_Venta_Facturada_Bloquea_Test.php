@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Facturacion;
 
+use App\Console\Commands\SembrarDatosDePrueba;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
 use App\Models\Address;
@@ -10,6 +12,8 @@ use App\Models\AfipTicket;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\Article;
+use App\Models\Budget;
+use App\Models\BudgetStatus;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\ExtencionEmpresa;
@@ -35,9 +39,12 @@ use Tests\EmpresaTestCase;
  *
  *  - CUALQUIER ticket vivo frena, tenga CAE o no (mensaje distinto); uno ya eliminado no cuenta.
  *  - Una factura con CAE que ya tiene su nota de crédito frena igual.
+ *  - Una nota de crédito viva frena aunque su factura ya no esté (datos de antes del 11/9/2026).
  *  - Una venta original incluida en una consolidada viva con tickets frena, nombrando la consolidada.
+ *    Si la contenedora ya se borró, no frena; si la original tiene ticket propio, manda ese.
  *  - Una venta CERRADA sin factura se sigue borrando: cerrar congela la edición, no el borrado.
- *  - El borrado masivo y la baja genérica del asistente respetan el freno.
+ *  - El borrado masivo, la baja genérica del asistente y la anulación de un presupuesto respetan el
+ *    freno, y el reseteo de la semilla borra primero los comprobantes.
  *
  * 🔴 Cada rechazo verifica que no se tocó NADA, no solo el 422: la venta sin `deleted_at`, los
  * tickets idénticos, el stock y el libro de movimientos iguales, la cuenta corriente intacta y
@@ -48,10 +55,13 @@ use Tests\EmpresaTestCase;
  * (la de `AuditoriaStockTestCase`), para que el stock y la cuenta corriente sean los de verdad. Los
  * tickets se crean a mano: facturar sale a la red.
  *
- * Con la llamada a la guarda comentada en `destroy()` tienen que dar rojo todos los de rechazo
- * (CAE con y sin compensar caja, sin CAE null y '', factura con NC, consolidada con CAE y sin CAE,
- * masiva y asistente); los de control (ticket eliminado, sin tickets, cerrada, consolidada sin
- * tickets) quedan en verde en los dos casos.
+ * Verificado en rojo el 5/10/2026: con la llamada a la guarda comentada en `destroy()` dan rojo
+ * los rechazos que pasan por `destroy()` (CAE con y sin compensar caja, sin CAE null y '', factura
+ * con NC, consolidada con CAE y sin CAE, masiva y asistente) y los de control quedan en verde. El
+ * del presupuesto da rojo con la pregunta nueva de `anular()` revertida (500 en vez de 422), el
+ * de la NC sin factura con el chequeo de NC revertido, y el de la semilla con el borrado de los
+ * comprobantes vuelto a su lugar viejo. El de `BudgetHelper::deleteSale()` da rojo con ese archivo
+ * vuelto a `develop` (el de `anular()` pasa igual: lo frena antes de llegar a `deleteSale()`).
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -67,6 +77,12 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
     const MENSAJE_CON_CAE = 'La venta tiene factura autorizada: para anularla, hacé una devolución con nota de crédito.';
 
     const MENSAJE_SIN_CAE = 'La venta tiene una factura sin CAE (rechazada o sin respuesta de ARCA). Consultala o eliminala desde la factura de la venta, y después borrá la venta.';
+
+    const MENSAJE_NC = 'La venta tiene una nota de crédito emitida ante ARCA: no se puede borrar.';
+
+    /** Ids de `budget_statuses` (tabla global, sembrada por `BudgetStatusSeeder`). */
+    const PRESUPUESTO_SIN_CONFIRMAR = 1;
+    const PRESUPUESTO_CONFIRMADO = 2;
 
     /** Número fijo y alto de la venta contenedora, para poder leerlo en el mensaje. */
     const NUM_CONSOLIDADA = 990510;
@@ -275,6 +291,56 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
     }
 
     /**
+     * La nota de crédito de una factura: cuelga de la venta por `sale_nota_credito_id`, no por
+     * `sale_id` (ver `AfipNotaCreditoHelper::create_afip_ticket()`).
+     *
+     * @param \App\Models\Sale $venta
+     * @param \App\Models\AfipTicket $factura
+     * @return \App\Models\AfipTicket
+     */
+    protected function nota_de_credito($venta, $factura)
+    {
+        return AfipTicket::create([
+            'sale_id'              => null,
+            'sale_nota_credito_id' => $venta->id,
+            'sale_afip_ticket_id'  => $factura->id,
+            'resultado'            => 'A',
+            'cbte_tipo'            => 8,
+            'cbte_letra'           => 'B',
+            'punto_venta'          => TestingFerreteriaSeeder::PUNTO_VENTA,
+            'cbte_numero'          => '12',
+            'importe_total'        => $venta->total,
+            'cae'                  => '70123456789013',
+        ]);
+    }
+
+    /**
+     * Siembra los dos estados de presupuesto si la base no los tiene: `budget_statuses` es una tabla
+     * global que la base del slot puede traer vacía (mismo arreglo que
+     * `Presupuestos/1_Confirmar_y_anular_presupuesto_Test::setUp()`). Lo revierte la transacción.
+     *
+     * @return void
+     */
+    protected function sembrar_estados_de_presupuesto()
+    {
+        $estados = [
+            self::PRESUPUESTO_SIN_CONFIRMAR => 'Sin confirmar',
+            self::PRESUPUESTO_CONFIRMADO    => 'Confirmado',
+        ];
+
+        foreach ($estados as $id => $name) {
+
+            if (is_null(BudgetStatus::find($id))) {
+
+                $estado = new BudgetStatus();
+                $estado->id = $id;
+                $estado->name = $name;
+                $estado->save();
+            }
+        }
+    }
+
+    /**
      * Venta contenedora de una consolidación, armada con las mismas marcas que le pone
      * `ConsolidarFacturacionHelper::consolidar()` (no descuenta stock, no va a cuenta corriente,
      * `is_consolidacion_facturacion = 1`), y la original apuntándole con
@@ -301,6 +367,39 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
         Sale::where('id', $original->id)->update(['consolidacion_facturacion_id' => $contenedora->id]);
 
         return $contenedora;
+    }
+
+    /**
+     * Presupuesto confirmado (así nace su venta, por el endpoint real) cuya venta es la ORIGINAL de
+     * una consolidada con factura autorizada: la regla de edición que pregunta `anular()` no la
+     * frena (no mira la consolidación), la de borrado sí.
+     *
+     * @return array [\App\Models\Budget, \App\Models\Sale]
+     */
+    protected function presupuesto_con_venta_en_consolidada_facturada()
+    {
+        $this->sembrar_estados_de_presupuesto();
+
+        $budget = Budget::create([
+            'user_id'               => $this->usuario()->id,
+            'client_id'             => $this->cliente_cc()->id,
+            'budget_status_id'      => self::PRESUPUESTO_SIN_CONFIRMAR,
+            'total'                 => 100,
+            'discount_stock'        => 0,
+            'discounts_in_services' => 1,
+            'surchages_in_services' => 1,
+        ]);
+
+        $this->post('api/budget/'.$budget->id.'/confirmar')->assertStatus(200);
+
+        $venta = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertNotNull($venta, 'Precondición: confirmar tenía que crear la venta.');
+
+        $contenedora = $this->consolidar($venta);
+        $this->facturar($contenedora, self::CAE);
+
+        return [$budget, $venta];
     }
 
     /**
@@ -507,20 +606,7 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
         $venta = $this->crear_venta_cc('zz-v10 Factura con NC');
         $factura = $this->facturar($venta, self::CAE);
 
-        // La NC cuelga de la venta por sale_nota_credito_id, no por sale_id (ver
-        // AfipNotaCreditoHelper::create_afip_ticket()).
-        AfipTicket::create([
-            'sale_id'              => null,
-            'sale_nota_credito_id' => $venta->id,
-            'sale_afip_ticket_id'  => $factura->id,
-            'resultado'            => 'A',
-            'cbte_tipo'            => 8,
-            'cbte_letra'           => 'B',
-            'punto_venta'          => TestingFerreteriaSeeder::PUNTO_VENTA,
-            'cbte_numero'          => '12',
-            'importe_total'        => $venta->total,
-            'cae'                  => '70123456789013',
-        ]);
+        $this->nota_de_credito($venta, $factura);
 
         $antes = $this->foto($venta);
 
@@ -530,6 +616,33 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
 
         $this->assert_rechazo($response, self::MENSAJE_CON_CAE);
         $this->assert_nada_tocado($antes, $venta, 'Factura con NC');
+    }
+
+    /**
+     * Datos de antes del 11/9/2026: la factura con CAE se borró (soft delete) y quedó viva su nota
+     * de crédito. El Libro IVA lee la NC por la venta (`whereHas('sale_nota_credito')`), así que
+     * borrar la venta la sacaría igual: frena con su propio mensaje.
+     *
+     * @test
+     */
+    public function una_venta_con_la_factura_borrada_y_la_nota_de_credito_viva_no_se_borra()
+    {
+        $venta = $this->crear_venta_cc('zz-v10 NC viva sin factura');
+        $factura = $this->facturar($venta, self::CAE);
+
+        $this->nota_de_credito($venta, $factura);
+
+        $factura->delete();
+
+        $antes = $this->foto($venta);
+
+        $this->assertNotNull($antes['tickets'][0]['deleted_at'], 'Precondición: la factura tiene que estar borrada.');
+        $this->assertNull($antes['tickets'][1]['deleted_at'], 'Precondición: la NC tiene que estar viva.');
+
+        $response = $this->deleteJson('api/sale/'.$venta->id, ['compensar_caja' => 1]);
+
+        $this->assert_rechazo($response, self::MENSAJE_NC);
+        $this->assert_nada_tocado($antes, $venta, 'NC viva sin factura');
     }
 
     // -------------------------------------------------------------------------------------------
@@ -657,9 +770,150 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
         $this->assert_borrada($response, $original, $articulo);
     }
 
+    /**
+     * La guarda mira solo la contenedora VIVA: si la consolidada ya se borró (aunque tenga su
+     * factura con CAE), la original se borra. Fija la decisión del plan.
+     *
+     * @test
+     */
+    public function una_venta_incluida_en_una_consolidada_ya_borrada_se_borra()
+    {
+        $original = $this->crear_venta_cc('zz-v10 Original de consolidada borrada');
+        $articulo = $this->articulo_de($original);
+
+        $contenedora = $this->consolidar($original);
+        $this->facturar($contenedora, self::CAE);
+
+        $contenedora->delete();
+
+        $this->assertSoftDeleted('sales', ['id' => $contenedora->id]);
+
+        $response = $this->deleteJson('api/sale/'.$original->id, ['compensar_caja' => 1]);
+
+        $this->assert_borrada($response, $original, $articulo);
+    }
+
+    /**
+     * Si la original tiene un ticket PROPIO, ése manda aunque la contenedora también esté
+     * facturada: la factura que hay que resolver primero es la de esta venta.
+     *
+     * @test
+     */
+    public function una_venta_con_ticket_propio_incluida_en_una_consolidada_dice_el_de_su_ticket()
+    {
+        $original = $this->crear_venta_cc('zz-v10 Original con ticket propio');
+        $this->facturar($original, null);
+
+        $contenedora = $this->consolidar($original);
+        $this->facturar($contenedora, self::CAE);
+
+        $antes = $this->foto($original);
+
+        $response = $this->deleteJson('api/sale/'.$original->id, ['compensar_caja' => 1]);
+
+        $this->assert_rechazo($response, self::MENSAJE_SIN_CAE);
+        $this->assert_nada_tocado($antes, $original, 'Original con ticket propio y contenedora con CAE');
+    }
+
     // -------------------------------------------------------------------------------------------
-    // Las otras dos entradas a destroy()
+    // Las otras entradas que borran una venta
     // -------------------------------------------------------------------------------------------
+
+    /**
+     * Regresión que trajo la guarda (verificador 2, 5/10/2026): anular un presupuesto cuya venta es
+     * la original de una consolidada facturada. La regla de edición que pregunta `anular()` no mira
+     * la consolidación; la venta llegaba a `BudgetHelper::deleteSale()`, `destroy()` respondía 422,
+     * la respuesta se tiraba y el presupuesto quedaba "sin confirmar" con la venta viva. Ahora
+     * `anular()` pregunta también la regla de borrado: 422 con su mensaje, y nada se mueve.
+     *
+     * @test
+     */
+    public function anular_el_presupuesto_cuya_venta_esta_en_una_consolidada_facturada_se_rechaza()
+    {
+        list($budget, $venta) = $this->presupuesto_con_venta_en_consolidada_facturada();
+
+        $antes = $this->foto($venta);
+
+        $response = $this->post('api/budget/'.$budget->id.'/anular');
+
+        $this->assertSame(422, $response->getStatusCode(), 'Anular tenía que rechazarse antes de tocar nada. Cuerpo: '.$response->getContent());
+        $this->assertSame(
+            'La venta está incluida en la factura de la venta consolidada N° '.self::NUM_CONSOLIDADA.': para anularla, hacé una devolución con nota de crédito sobre esa venta.',
+            $response->json('message')
+        );
+
+        $this->assertEquals(self::PRESUPUESTO_CONFIRMADO, (int) $budget->fresh()->budget_status_id, 'Un 422 no puede dejar el presupuesto sin confirmar.');
+        $this->assert_nada_tocado($antes, $venta, 'Anular presupuesto');
+    }
+
+    /**
+     * `BudgetHelper::deleteSale()` no lo llama solo `anular()`: también `checkStatus()` (desde
+     * store, update y duplicate), SIN la pregunta previa que le agregó la misión. Si `destroy()` se
+     * niega, `deleteSale()` tiene que lanzar con el motivo: antes tiraba la respuesta y el
+     * presupuesto seguía como si la venta se hubiera borrado, con la venta viva (los llamadores
+     * corren dentro de una transacción y la revierten).
+     *
+     * Es el test que muerde el cambio de `BudgetHelper`: el de `anular()` de arriba pasa igual sin
+     * él, porque `anular()` frena antes de llegar a `deleteSale()`.
+     *
+     * @test
+     */
+    public function borrar_la_venta_de_un_presupuesto_en_una_consolidada_facturada_lanza_y_no_toca_nada()
+    {
+        list($budget, $venta) = $this->presupuesto_con_venta_en_consolidada_facturada();
+
+        $antes = $this->foto($venta);
+
+        $lanzo = false;
+        $mensaje = '';
+
+        try {
+            BudgetHelper::deleteSale($budget->fresh());
+        } catch (\Exception $e) {
+            $lanzo = true;
+            $mensaje = $e->getMessage();
+        }
+
+        $this->assertTrue($lanzo, 'deleteSale() tenía que lanzar: destroy() se negó y el presupuesto no puede seguir como si la venta se hubiera borrado.');
+        $this->assertSame(
+            'La venta está incluida en la factura de la venta consolidada N° '.self::NUM_CONSOLIDADA.': para anularla, hacé una devolución con nota de crédito sobre esa venta.',
+            $mensaje
+        );
+
+        $this->assertEquals(self::PRESUPUESTO_CONFIRMADO, (int) $budget->fresh()->budget_status_id, 'El presupuesto no tenía que moverse.');
+        $this->assert_nada_tocado($antes, $venta, 'BudgetHelper::deleteSale');
+    }
+
+    /**
+     * `semilla:datos --reset` borra las ventas por `destroy()`. Con la guarda, una venta con
+     * comprobante sobrevivía al reseteo: los `AfipTicket` (facturas y notas de crédito) ahora se
+     * borran ANTES del lazo de ventas. Una de las dos ventas tiene la factura ya borrada y la NC
+     * viva: sin el `orWhereHas('sale_nota_credito')` la NC la sostendría.
+     *
+     * @test
+     */
+    public function el_reset_de_la_semilla_borra_tambien_las_ventas_facturadas()
+    {
+        $user_id = (int) $this->usuario()->id;
+
+        $this->assertSame($user_id, (int) config('semilla.user_id'), 'Precondición: la semilla tiene que apuntar al usuario del fixture.');
+
+        $con_factura = $this->crear_venta_cc('zz-v10 Semilla con factura');
+        $this->facturar($con_factura, self::CAE);
+
+        $con_nc = $this->crear_venta_cc('zz-v10 Semilla con NC sin factura');
+        $factura = $this->facturar($con_nc, self::CAE);
+        $this->nota_de_credito($con_nc, $factura);
+        $factura->delete();
+
+        $comando = new SembrarDatosDePrueba();
+        $comando->preparar_para_test();
+        $comando->limpiar_para_test();
+
+        $this->assertSoftDeleted('sales', ['id' => $con_factura->id]);
+        $this->assertSoftDeleted('sales', ['id' => $con_nc->id]);
+        $this->assertSame(0, Sale::where('user_id', $user_id)->count(), 'El reseteo tenía que dejar al usuario sin ventas vivas.');
+    }
 
     /**
      * El borrado MASIVO respeta el freno: la facturada no vuelve como eliminada (el listado no la

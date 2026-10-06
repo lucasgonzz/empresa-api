@@ -72,6 +72,8 @@ class Kernel extends HttpKernel
         'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
         // 'set.user.database' => \App\Http\Middleware\SetUserDatabaseConnection::class,
         'admin.api.key' => \App\Http\Middleware\AdminApiKey::class,
+        /* Clave de admin SOLO para admin-sync/user-setup, detrás de una variable de transición apagada por defecto. */
+        'admin.setup.key' => \App\Http\Middleware\ClaveDeAdminEnSetup::class,
         /* Verifica que el usuario tenga una extensión de empresa activa por su slug. */
         'check_extencion_empresa' => \App\Http\Middleware\CheckExtencionEmpresa::class,
         /* Valida vigencia del token de ingreso demo en cada request (grupo 233, prompt 03). */

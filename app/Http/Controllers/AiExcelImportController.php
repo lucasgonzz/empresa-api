@@ -1022,6 +1022,12 @@ class AiExcelImportController extends Controller
                     'provider_code_column_index'  => $provider_code_column_index,
                     'column_mapping'              => $column_mapping,
                     /*
+                     * Modelo que se está importando ('article', 'client', 'provider'). Opcional: la SPA
+                     * sin desplegar no lo manda, y entonces el job lo resuelve por el análisis padre
+                     * (analysis_uuid) y, sin eso, asume 'article', que es lo que hacía siempre.
+                     */
+                    'model'                       => $request->filled('model') ? (string) $request->input('model') : null,
+                    /*
                      * uuid de la corrida de análisis de la que salió este paso 2.
                      * La recomendación sola no alcanza para rearmar el paso 3: la
                      * pantalla también muestra duplicados, placeholders y cadena de
