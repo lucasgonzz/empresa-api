@@ -95,6 +95,16 @@ class EliminarSucursalJob implements ShouldQueue
     public function handle()
     {
         /*
+         * Sin límite de tiempo de PHP (tercera ronda de revisión, 5/10/2026). Con una cola `database` o
+         * `redis` el worker no lo aplica igual, pero `QUEUE_CONNECTION=sync` (el valor por defecto de
+         * config/queue.php) corre el job DENTRO del request del usuario, y ahí rige `max_execution_time`:
+         * un corte a mitad dejaba el registro `en_proceso` y la sucursal "ya se está eliminando" hasta que
+         * `cerrar_colgados()` lo limpiara, 3 horas después. Cada artículo es su propia transacción, así
+         * que ni siquiera hace falta terminar para no romper nada: esto solo evita el corte sin motivo.
+         */
+        set_time_limit(0);
+
+        /*
          * El candado primero: si otra conexión está eliminando esta sucursal (un camino en línea que
          * arrancó antes de que este job saliera de la cola), este no hace nada. Se cierra el registro
          * en fallo con el motivo: dejarlo `pendiente` lo haría pasar por "ya en proceso" para siempre.

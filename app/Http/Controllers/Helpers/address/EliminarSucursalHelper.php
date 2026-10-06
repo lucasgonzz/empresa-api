@@ -1080,13 +1080,35 @@ class EliminarSucursalHelper {
                 ]
             );
 
-            EliminarSucursalJob::dispatch(
-                $address->id,
-                $owner_id,
-                $auth_user_id,
-                $decision,
-                is_null($proceso) ? null : $proceso->id
-            );
+            /*
+             * Si la cola no acepta el trabajo (tabla `jobs` caída, Redis sin conexión...), el registro que
+             * acaba de nacer en `pendiente` quedaría como "ya en proceso": todo nuevo "Eliminar" daría 422
+             * hasta que `cerrar_colgados()` lo limpie (3 horas, y solo cuando alguien abre la SPA). Se
+             * cierra en fallo ahora y se responde con el mismo mensaje fijo de los demás cortes.
+             */
+            try {
+
+                EliminarSucursalJob::dispatch(
+                    $address->id,
+                    $owner_id,
+                    $auth_user_id,
+                    $decision,
+                    is_null($proceso) ? null : $proceso->id
+                );
+
+            } catch (\Throwable $e) {
+
+                Log::error('EliminarSucursalHelper: no se pudo encolar la eliminación de la sucursal '.$address->id.': '.$e->getMessage(), [
+                    'archivo' => $e->getFile().':'.$e->getLine(),
+                ]);
+
+                BackgroundProcessHelper::fallar($proceso, Self::MENSAJE_SI_SE_CORTA);
+
+                return [
+                    'status' => 500,
+                    'body'   => ['message' => Self::MENSAJE_SI_SE_CORTA],
+                ];
+            }
 
             return [
                 'status' => 202,
@@ -1266,6 +1288,15 @@ class EliminarSucursalHelper {
 
             $final = Self::fase_final($address, $owner_id, $decision, $es_la_ultima);
 
+            // La sucursal que hereda (o la de los empleados) se eliminó mientras corría: no se escribió nada.
+            if (!is_null($final) && isset($final['error'])) {
+                return [
+                    'ok'      => false,
+                    'mensaje' => $final['error'],
+                    'resumen' => null,
+                ];
+            }
+
             if (!is_null($final)) {
 
                 Log::info('EliminarSucursalHelper: se eliminó la sucursal '.$address->id.' ('.$address->street.') del comercio '.$owner_id.' en '.$pasada.' pasada(s).');
@@ -1409,6 +1440,11 @@ class EliminarSucursalHelper {
      *  4. Después, lo que haya quedado en la fila del ARTÍCULO (artículos sin variantes, o con
      *     variantes que no reparten por depósitos).
      *
+     * Si MySQL elige a esta transacción como víctima de un deadlock (1213), `DB::transaction` la
+     * reintenta sola hasta 3 veces (segundo argumento) en vez de cortar la eliminación con un 500. Es
+     * seguro porque el cuerpo es idempotente: un intento que no llegó a confirmar no dejó nada, y uno
+     * que sí confirmó dejó las filas en 0, que `articulos_con_stock()` ya no vuelve a pedir.
+     *
      * @param  \App\Models\Address       $address
      * @param  int                       $article_id
      * @param  \App\Models\User|null     $owner
@@ -1424,6 +1460,26 @@ class EliminarSucursalHelper {
             $destino_id = is_null($destino) ? null : (int) $destino->id;
 
             $sucursales = array_values(array_filter([(int) $address->id, $destino_id]));
+
+            /*
+             * 🔴 ORDEN DE LOS CANDADOS: primero las filas de las VARIANTES y DESPUÉS las del artículo
+             * (tercera ronda de revisión, 5/10/2026). Es el mismo orden en el que escribe la venta de una
+             * variante: `CheckVariants` hace el UPDATE de `address_article_variant` y recién después
+             * `setArticleStockFromAddresses` reconstruye `address_article` con un `sync([])`. Con el orden
+             * inverso (artículo primero, variantes después) una venta de esa variante y esta pasada se
+             * esperan mutuamente: deadlock (1213), y la víctima puede ser el cajero. Con el mismo orden, la
+             * que llega segunda espera a que la primera termine. No tocar el orden sin mirar CheckVariants.
+             */
+            $variantes = DB::table('article_variants')->where('article_id', $article_id)->pluck('id')->all();
+
+            if (count($variantes) > 0) {
+
+                DB::table('address_article_variant')
+                    ->whereIn('article_variant_id', $variantes)
+                    ->whereIn('address_id', $sucursales)
+                    ->lockForUpdate()
+                    ->get(['id']);
+            }
 
             DB::table('address_article')
                 ->where('article_id', $article_id)
@@ -1448,18 +1504,10 @@ class EliminarSucursalHelper {
 
             $movimientos = 0;
 
-            // 3. Variantes.
-            $variantes = DB::table('article_variants')->where('article_id', $article_id)->pluck('id')->all();
-
+            // 3. Variantes (sus filas ya quedaron bloqueadas arriba, antes que las del artículo).
             $filas_variante = collect();
 
             if (count($variantes) > 0) {
-
-                DB::table('address_article_variant')
-                    ->whereIn('article_variant_id', $variantes)
-                    ->whereIn('address_id', $sucursales)
-                    ->lockForUpdate()
-                    ->get(['id']);
 
                 foreach ($variantes as $variant_id) {
 
@@ -1511,7 +1559,7 @@ class EliminarSucursalHelper {
             }
 
             return ['movimientos' => $movimientos, 'en_papelera' => $en_papelera];
-        });
+        }, 3);
     }
 
     /**
@@ -1686,7 +1734,9 @@ class EliminarSucursalHelper {
      * @param  int                  $owner_id
      * @param  array                $decision
      * @param  bool                 $es_la_ultima
-     * @return array|null  Conteos de lo hecho.
+     * @return array|null  Conteos de lo hecho; null si la sucursal volvió a tener stock (el llamador
+     *                     repite la pasada); o ['error' => mensaje] si la sucursal que hereda o la que
+     *                     recibe a los empleados ya no existe (no se escribió nada).
      */
     static function fase_final($address, $owner_id, $decision, $es_la_ultima) {
 
@@ -1697,6 +1747,47 @@ class EliminarSucursalHelper {
             : null;
 
         $resultado = DB::transaction(function () use ($address, $owner_id, $es_la_ultima, $reemplazo_id, $usuarios_destino_id) {
+
+            /*
+             * 🔴 PRIMERO se bloquean TODAS las filas de la sucursal, también las que están en 0 (tercera
+             * ronda de revisión, 5/10/2026). El conteo de más abajo filtra por `amount != 0` y, con el
+             * aislamiento READ COMMITTED que usa este sistema (config/database.php), InnoDB SUELTA el
+             * candado de las filas que no cumplen el WHERE: las filas en 0 quedaban libres. Una venta de un
+             * navegador con la sucursal todavía elegida podía escribir en una de esas filas justo después
+             * del conteo y antes del DELETE: el DELETE esperaba su commit y borraba la fila ya modificada,
+             * y el barrido de después no la veía porque ya no existía (stock global ≠ suma de sucursales,
+             * para siempre). Con todas las filas bloqueadas, esa venta espera a que esta transacción
+             * termine y su UPDATE cae sobre cero filas, con el global recalculado sobre lo que queda.
+             *
+             * El orden es el de la pasada: variantes y después artículo (ver procesar_articulo()). No
+             * frena el camino de venta en lo más mínimo: solo la espera una venta que justo escribe en
+             * esta sucursal mientras se borra.
+             */
+            DB::table('address_article_variant')->where('address_id', $address->id)->lockForUpdate()->pluck('id');
+            DB::table('address_article')->where('address_id', $address->id)->lockForUpdate()->pluck('id');
+
+            /*
+             * La sucursal que hereda y la que recibe a los empleados se validaron al pedir la eliminación
+             * (y el job las vuelve a validar al arrancar), pero esto puede correr minutos después. Si
+             * alguien las eliminó mientras tanto, seguir dejaba las marcas (por defecto, madre, origen)
+             * sin sucursal, y las cajas, los puntos de venta, los clientes y los empleados apuntando a un
+             * id muerto, en silencio. Se releen ACÁ, bloqueadas: de paso, nadie las puede eliminar hasta
+             * que esta transacción termine. Si faltan no se escribe nada y se pide elegir otra: el stock
+             * ya movido queda donde está y volver a apretar Eliminar continúa desde ahí.
+             */
+            foreach (array_values(array_unique(array_filter([$reemplazo_id, $usuarios_destino_id]))) as $id_heredero) {
+
+                $sigue_viva = DB::table('addresses')
+                                ->where('id', $id_heredero)
+                                ->where('user_id', $owner_id)
+                                ->whereNull('buyer_id')
+                                ->lockForUpdate()
+                                ->value('id');
+
+                if (is_null($sigue_viva)) {
+                    return ['error' => 'La sucursal elegida para heredar la configuración o recibir a los empleados ya no existe. Volvé a intentarlo eligiendo otra.'];
+                }
+            }
 
             /*
              * Última mirada al stock, con las filas bloqueadas: si entró una venta después de la
@@ -1794,10 +1885,15 @@ class EliminarSucursalHelper {
                 'filas_de_pivot_borradas' => (int) $filas_articulo + (int) $filas_variante,
                 'articulos_ajenos'       => $articulos_ajenos,
             ];
-        });
+        }, 3);
 
         if (is_null($resultado)) {
             return null;
+        }
+
+        // La sucursal heredera desapareció (ver arriba): no se escribió nada y el llamador lo informa.
+        if (isset($resultado['error'])) {
+            return $resultado;
         }
 
         // Fuera de la transacción: nada de esto se puede deshacer con un rollback.

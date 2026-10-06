@@ -10,6 +10,19 @@ use Illuminate\Http\Request;
 class AddressController extends Controller
 {
 
+    /**
+     * Mensaje del 404 de "eliminar-resumen" y de "destroy" cuando la sucursal no existe o es de otro
+     * comercio.
+     *
+     * 🔴 CONTRATO CON LA SPA: `empresa-spa/src/store/address.js` distingue este 404 del de una API
+     * VIEJA (que no tiene la ruta de resumen, y responde sin esta palabra) buscando "sucursal" en el
+     * mensaje. Si se reformula, la palabra "sucursal" tiene que seguir adentro: el test
+     * `Eliminar_sucursal_concurrencia_y_bordes_Test` lo fija. Sin ella, la SPA nueva tomaría "ya está
+     * eliminada" por "API vieja" y caería al modo clásico (seguro: el DELETE sin decisión lo frena un 422,
+     * pero se pierde el aviso).
+     */
+    const MENSAJE_SUCURSAL_INEXISTENTE = 'La sucursal no existe o no es de este comercio.';
+
     public function index() {
         $models = Address::where('user_id', $this->userId())
                             ->orderBy('created_at', 'ASC')
@@ -137,7 +150,7 @@ class AddressController extends Controller
         $model = EliminarSucursalHelper::direccion_del_dueno($id, $owner_id);
 
         if (is_null($model)) {
-            return response()->json(['message' => 'La sucursal no existe o no es de este comercio.'], 404);
+            return response()->json(['message' => Self::MENSAJE_SUCURSAL_INEXISTENTE], 404);
         }
 
         return response()->json(EliminarSucursalHelper::resumen($model, $owner_id), 200);
@@ -173,7 +186,7 @@ class AddressController extends Controller
 
         // D15: id de otro comercio o inexistente → 404 (antes: borraba la ajena, o 500 con un id viejo).
         if (is_null($model)) {
-            return response()->json(['message' => 'La sucursal no existe o no es de este comercio.'], 404);
+            return response()->json(['message' => Self::MENSAJE_SUCURSAL_INEXISTENTE], 404);
         }
 
         $decision = EliminarSucursalHelper::decision_del_request(request());

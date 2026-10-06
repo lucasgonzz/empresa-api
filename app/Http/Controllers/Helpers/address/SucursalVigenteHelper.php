@@ -315,7 +315,40 @@ class SucursalVigenteHelper {
          * ronda de revisión, F6).
          */
         'Importacion de excel',
+        /*
+         * "Poner stock en 0": el monto sale del pivot de ESE depósito (ResetStockHelper itera las filas
+         * del artículo y manda una por una). Si el depósito ya no existe (una carrera con la eliminación),
+         * redirigir ese monto a OTRA sucursal le aplicaría a ella un número que no es suyo. Mejor no
+         * mover nada: la fila ya no existe y la eliminación recalculó el global (tercera ronda, A.2). OJO:
+         * el nombre se compara sin distinguir mayúsculas (ver nombra_depositos()), porque el helper lo
+         * pide como 'Reseteo de stock' y la tabla lo guarda como 'Reseteo de Stock'.
+         */
+        'Reseteo de Stock',
     ];
+
+    /**
+     * ¿El concepto nombra depósitos a propósito? Se compara sin distinguir mayúsculas: los conceptos se
+     * piden por nombre desde muchos lados y la tabla `concepto_stock_movements` no siempre los guarda
+     * con la misma grafía que el código ('Reseteo de stock' vs 'Reseteo de Stock').
+     *
+     * @param  string|null  $nombre
+     * @return bool
+     */
+    static function nombra_depositos($nombre) {
+
+        if (is_null($nombre)) {
+            return false;
+        }
+
+        foreach (Self::CONCEPTOS_QUE_NOMBRAN_DEPOSITOS as $concepto) {
+
+            if (mb_strtolower($concepto) === mb_strtolower($nombre)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /**
      * La guarda contra sucursales muertas del motor de stock (misión eliminar-sucursal-con-stock,
@@ -351,6 +384,16 @@ class SucursalVigenteHelper {
      */
     static function aplicar_guarda_del_motor($data, $concepto_id, $owner_id, $employee_id = null) {
 
+        /*
+         * Sin dueño no se puede decidir qué sucursales existen (`consultar()` devuelve false con un dueño
+         * nulo y TODO id quedaría "muerto"): un movimiento de consola o de una cola sin dueño en el
+         * entorno terminaría redirigido o descartado sin motivo. Se deja pasar como antes de la guarda
+         * (tercera ronda de revisión, A.4).
+         */
+        if (is_null($owner_id)) {
+            return $data;
+        }
+
         $muertas = [];
 
         foreach (['from_address_id', 'to_address_id'] as $clave) {
@@ -372,7 +415,7 @@ class SucursalVigenteHelper {
 
         $nombre_del_concepto = is_null($concepto) ? null : $concepto->name;
 
-        if (in_array($nombre_del_concepto, Self::CONCEPTOS_QUE_NOMBRAN_DEPOSITOS)) {
+        if (Self::nombra_depositos($nombre_del_concepto)) {
 
             Log::warning('SucursalVigenteHelper::aplicar_guarda_del_motor: "'.$nombre_del_concepto.'" del artículo '.$data['model_id'].' nombra una sucursal que ya no existe ('.implode(', ', $muertas).': '.(isset($data['from_address_id']) ? $data['from_address_id'] : '-').' / '.(isset($data['to_address_id']) ? $data['to_address_id'] : '-').'). No se mueve nada.');
 
