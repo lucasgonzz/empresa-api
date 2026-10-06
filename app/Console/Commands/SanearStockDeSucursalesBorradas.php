@@ -581,6 +581,17 @@ class SanearStockDeSucursalesBorradas extends Command
     {
         $this->line('');
 
+        // Lo que este comando puede tocar: los `recalcular` y los `solo_fantasmas`.
+        $trabajo = $m['trabajo'];
+
+        // Sin nada para escribir no hay precondición que pedir: un `--aplicar` sobre una base limpia
+        // (o con solo artículos que el comando no toca) termina bien aunque falte el concepto.
+        if (count($trabajo) === 0) {
+            $this->info('No hay nada para sanear: ninguna fila fantasma en artículos que el comando pueda tocar.');
+
+            return 0;
+        }
+
         // Precondición 1: el concepto del movimiento. Sin él NO se escribe nada, ni siquiera los
         // artículos que no necesitarían movimiento: un saneo a medias que después no puede dejar
         // el rastro de lo que hizo es peor que no empezar.
@@ -601,14 +612,6 @@ class SanearStockDeSucursalesBorradas extends Command
 
                 return 1;
             }
-        }
-
-        $trabajo = $m['trabajo'];
-
-        if (count($trabajo) === 0) {
-            $this->info('No hay nada para sanear: ninguna fila fantasma en artículos que el comando pueda tocar.');
-
-            return 0;
         }
 
         // 🔴 Antes de escribir la PRIMERA fila: la carpeta y los dos archivos. Si no se pueden abrir,
