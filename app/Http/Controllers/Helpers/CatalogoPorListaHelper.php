@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\Article;
 use App\Models\PriceType;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -35,6 +36,8 @@ use Illuminate\Support\Facades\Log;
  *
  * Lo que vive acá:
  *   - sanear_booleano(): el saneo a 0/1 de lo que llega del request (ficha, lista, masiva).
+ *   - interruptor_a_escribir_en_update(): qué hay que escribir (o no) del interruptor de la lista
+ *     en el PUT de PriceTypeController.
  *   - contar_habilitados(): el contador "X habilitados de Y" del ABM de la lista.
  *   - aplicar_en_masiva() / revertir_en_masiva(): la clave `visible_en_tienda_lista_{id}` de la
  *     actualización masiva de artículos y su reversión.
@@ -44,6 +47,13 @@ use Illuminate\Support\Facades\Log;
  */
 class CatalogoPorListaHelper
 {
+    /**
+     * Clave del interruptor en el payload de la lista (`price_types.catalogo_restringido_en_tienda`).
+     *
+     * @var string
+     */
+    const CLAVE_DEL_INTERRUPTOR = 'catalogo_restringido_en_tienda';
+
     /**
      * Prefijo de la clave de la actualización masiva: `visible_en_tienda_lista_{price_type_id}`.
      * Es el contrato con empresa-spa (`opciones-filtrados-seleccion/Update.vue` arma una tarjeta
@@ -97,6 +107,69 @@ class CatalogoPorListaHelper
     public static function interruptor_de_lista($valor)
     {
         return self::sanear_booleano($valor) === 1 ? 1 : 0;
+    }
+
+    /**
+     * Qué hay que escribir del interruptor de la lista en el PUT de PriceTypeController@update:
+     * 1 o 0, o null = NO escribir nada (el valor guardado se conserva).
+     *
+     *  - Sin la clave en el request (un SPA viejo, cacheado en la PWA, que no conoce el
+     *    interruptor): no se escribe. Si se escribiera, le APAGARÍA la restricción a un comercio
+     *    que la prendió desde otra pestaña ya actualizada.
+     *  - Con un valor explícito (0, 1, true, false, '1', 'true', ...): se escribe saneado a 1 o 0.
+     *  - 🔴 Con la clave en `null`: NO se escribe (M2 de la revisión independiente, 6/10/2026). El ABM
+     *    de la SPA reenvía `{...this.model}` entero al guardar, y el JSON de una lista cuyo
+     *    interruptor todavía es NULL —o que se cargó antes de que el dueño lo prendiera desde otra
+     *    pestaña— lleva la clave en `null`: eso es un eco de lo que se cargó, no un "apagalo". Antes
+     *    escribía 0 y los mayoristas volvían a ver todo el catálogo sin que nadie lo notara.
+     *
+     * ⚠️ Un `''` explícito sigue apagando (lo fija 1_Interruptor_de_la_lista_Test), pero llega acá
+     * como `null`: el middleware global `ConvertEmptyStringsToNull` (Kernel.php:23) lo convierte
+     * antes de que el request llegue al controlador, también adentro de `$request->json()`, así
+     * que con `$request->input()` ya no se lo puede distinguir del eco de un NULL. Por eso, cuando
+     * llega `null`, se mira el cuerpo JSON CRUDO (mismo recurso que usa
+     * PdfColumnProfileController::page_layout_from_request()): si ahí venía `""`, es un vacío
+     * explícito y apaga; si venía `null`, es el eco y no se escribe. En un request que no es JSON no
+     * hay cuerpo crudo que mirar y el `null` cuenta siempre como "no informado". No "simplificar"
+     * esto a `!is_null($request->input(...))`: rompe el caso del vacío.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @return int|null  1, 0 o null = no escribir.
+     */
+    public static function interruptor_a_escribir_en_update(Request $request)
+    {
+        $clave = self::CLAVE_DEL_INTERRUPTOR;
+
+        if (!$request->has($clave)) {
+            return null;
+        }
+
+        $valor = $request->input($clave);
+
+        if (!is_null($valor)) {
+            return self::interruptor_de_lista($valor);
+        }
+
+        return self::la_clave_vino_vacia_en_el_cuerpo($request, $clave) ? 0 : null;
+    }
+
+    /**
+     * Si el cuerpo JSON CRUDO del request trae la clave con `""` (y no con `null`), antes de que
+     * `ConvertEmptyStringsToNull` la convirtiera. Ver interruptor_a_escribir_en_update().
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  string                   $clave
+     * @return bool
+     */
+    protected static function la_clave_vino_vacia_en_el_cuerpo(Request $request, $clave)
+    {
+        if (!$request->isJson()) {
+            return false;
+        }
+
+        $cuerpo = json_decode((string) $request->getContent(), true);
+
+        return is_array($cuerpo) && array_key_exists($clave, $cuerpo) && $cuerpo[$clave] === '';
     }
 
     /**

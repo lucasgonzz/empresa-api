@@ -172,6 +172,64 @@ class Interruptor_de_la_lista_Test extends CatalogoPorListaTestCase
     }
 
     /**
+     * 🔴 M2 de la revisión independiente (6/10/2026): el ABM de la SPA reenvía `{...this.model}`
+     * entero al guardar, y el JSON que cargó trae `catalogo_restringido_en_tienda: null` si cuando
+     * se cargó la lista el interruptor todavía no estaba prendido. Ese eco NO es un "apagalo": el
+     * `null` es "no sé nada de este campo" y no pisa lo guardado. Pasa de verdad cuando una pestaña
+     * cargó las listas antes de que el dueño prendiera el interruptor desde otra, y alguien edita el
+     * margen en la pestaña vieja: antes el PUT con `null` escribía 0 y los mayoristas volvían a ver
+     * todo el catálogo sin que nadie lo notara.
+     *
+     * @return void
+     */
+    public function test_un_put_con_la_clave_en_null_no_apaga_la_restriccion()
+    {
+        $this->putJson('api/price-type/' . $this->mayorista->id, $this->payload_de_edicion($this->mayorista, [
+            'name'                           => 'zz Mayorista editada desde una pestaña vieja',
+            'catalogo_restringido_en_tienda' => null,
+        ]))->assertStatus(200);
+
+        $this->assertSame('zz Mayorista editada desde una pestaña vieja', DB::table('price_types')->where('id', $this->mayorista->id)->value('name'), 'El guardado tenía que ocurrir.');
+        $this->assertSame(1, $this->interruptor($this->mayorista->id), 'El eco de un null no apaga la restricción.');
+    }
+
+    /**
+     * M2, la otra punta: una lista que nunca tuvo el interruptor (NULL) y un PUT con la clave en
+     * `null` (el SPA nuevo guardando una lista cuyo valor es NULL) sigue en NULL: no se convierte en 0.
+     *
+     * @return void
+     */
+    public function test_un_put_con_la_clave_en_null_deja_una_lista_en_null_en_null()
+    {
+        $this->putJson('api/price-type/' . $this->minorista->id, $this->payload_de_edicion($this->minorista, [
+            'catalogo_restringido_en_tienda' => null,
+        ]))->assertStatus(200);
+
+        $this->assertNull($this->interruptor($this->minorista->id), 'Un null con la clave presente no escribe nada: NULL sigue siendo NULL.');
+    }
+
+    /**
+     * M2: lo que SÍ es un pedido explícito sigue escribiendo como siempre — `false` apaga igual que
+     * 0, y `true` prende. (El vacío `''` lo fija test_el_update_con_la_clave_la_prende_y_la_apaga.)
+     *
+     * @return void
+     */
+    public function test_un_put_con_false_apaga_y_con_true_prende()
+    {
+        $this->putJson('api/price-type/' . $this->mayorista->id, $this->payload_de_edicion($this->mayorista, [
+            'catalogo_restringido_en_tienda' => false,
+        ]))->assertStatus(200);
+
+        $this->assertSame(0, $this->interruptor($this->mayorista->id), 'false es un apagado explícito.');
+
+        $this->putJson('api/price-type/' . $this->mayorista->id, $this->payload_de_edicion($this->mayorista, [
+            'catalogo_restringido_en_tienda' => true,
+        ]))->assertStatus(200);
+
+        $this->assertSame(1, $this->interruptor($this->mayorista->id), 'true prende.');
+    }
+
+    /**
      * El interruptor viaja en el payload de la lista: en el listado y en la respuesta del PUT.
      *
      * @return void

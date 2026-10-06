@@ -214,9 +214,15 @@ class PriceTypeController extends Controller
          * asignación de siempre la lista quedaría en NULL — o sea, le APAGARÍA la restricción a un
          * comercio que la prendió desde otra pestaña ya actualizada, y sus mayoristas pasarían a
          * ver todo el catálogo sin que nadie lo note. Solo se escribe si el request trae la clave.
+         *
+         * Y tampoco con la clave en `null`: es el eco de un modelo cargado (el ABM reenvía
+         * `{...this.model}` entero) y no un pedido de apagarlo. Qué cuenta como "escribir" lo decide
+         * CatalogoPorListaHelper::interruptor_a_escribir_en_update(), con el porqué.
          */
-        if ($request->has('catalogo_restringido_en_tienda')) {
-            $model->catalogo_restringido_en_tienda = CatalogoPorListaHelper::interruptor_de_lista($request->input('catalogo_restringido_en_tienda'));
+        $interruptor = CatalogoPorListaHelper::interruptor_a_escribir_en_update($request);
+
+        if (!is_null($interruptor)) {
+            $model->catalogo_restringido_en_tienda = $interruptor;
         }
 
         $model->save();
