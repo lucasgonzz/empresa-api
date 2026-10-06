@@ -7,11 +7,11 @@ use Illuminate\Support\Facades\Log;
 /**
  * Candado de exclusión mutua para todo lo que corra `migrate:fresh` en esta instancia.
  *
- * 🔴 LAS TRES PUERTAS AL MISMO `migrate:fresh` — SI AGREGÁS UNA CUARTA, PONELE ESTE CANDADO
+ * 🔴 LAS CUATRO PUERTAS AL MISMO `migrate:fresh` — SI AGREGÁS UNA NUEVA, PONELE ESTE CANDADO
  * ---------------------------------------------------------------------------------------
  * El candado es UNO SOLO (un único archivo) a propósito: lo que hay que serializar no es
  * "un demo setup contra otro demo setup", es cualquier cosa que vacíe la base contra
- * cualquier otra. Hoy las puertas son tres, y las tres toman este mismo candado:
+ * cualquier otra. Hoy las puertas son cuatro, y las cuatro toman este mismo candado:
  *
  * 1. `App\Http\Controllers\AdminSync\DemoSetupController::store()`
  *    — POST /api/admin-sync/demo-setup, lo dispara admin-api al dar de alta un Lead.
@@ -22,9 +22,28 @@ use Illuminate\Support\Facades\Log;
  *      convierte en Cliente. Corre `UserSetupHelper::run()`, que arranca con el MISMO
  *      `migrate:fresh` que el de demo. El momento realista en que se pisa con la puerta 1
  *      es justamente la conversión: la demo todavía está viva y sembrando.
+ * 4. `App\Http\Controllers\UserSetupController::setup()`
+ *    — POST /user-setup, el form web legacy del setup del sistema real. Corre el mismo
+ *      `UserSetupHelper::run()`. 🔴 Esta NO estaba en la lista original y NO tomaba el
+ *      candado hasta la misión blindar-user-setup (5/10/2026): mientras un setup por API estaba
+ *      en pleno `migrate:fresh` (tablas ausentes), un POST web veía la base "vacía", pasaba la
+ *      guarda de datos y le pisaba la corrida. Apareció al contrastar esta lista con
+ *      `php artisan route:list --path=setup`. Además, esa ruta es pública (el formulario es un
+ *      GET abierto y el token CSRF lo saca cualquiera).
  *
- * Un candado que cierra dos de tres puertas no cierra nada. Si mañana aparece una cuarta
+ * Un candado que cierra tres de cuatro puertas no cierra nada. Si mañana aparece otra
  * (un comando de consola, un job, otro endpoint), va acá también y se anota en esta lista.
+ *
+ * 🔴 EL CANDADO Y LA GUARDA DE DATOS SON DOS PROTECCIONES DISTINTAS Y NO SE REEMPLAZAN
+ * ------------------------------------------------------------------------------------
+ * - ESTE candado serializa corridas entre sí: que dos `migrate:fresh` no se pisen. Lo toman las
+ *   cuatro puertas.
+ * - La guarda de datos (`BorradoTotalDeBaseHelper`, llamada desde el principio de
+ *   `UserSetupHelper::run()`) impide que `migrate:fresh` vacíe una base que YA tiene datos de
+ *   negocio. Cubre las dos puertas de user-setup (la 3 y la 4) porque vive en `run()`. Fue lo que
+ *   faltó el 5/10/2026, cuando un POST perdido de un test de admin-api le dejó en cero la base de
+ *   Panchito (102.754 ventas). Las dos puertas de DEMO (1 y 2) NO la tienen: una demo se re-siembra
+ *   a propósito sobre datos de demo, así que el criterio "base con datos" no sirve ahí.
  *
  * POR QUÉ EXISTE
  * --------------
