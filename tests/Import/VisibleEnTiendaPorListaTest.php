@@ -3,6 +3,7 @@
 namespace Tests\Import;
 
 use App\Models\Article;
+use App\Models\ImportHistory;
 use App\Models\PriceType;
 use Illuminate\Support\Facades\DB;
 
@@ -411,6 +412,222 @@ class VisibleEnTiendaPorListaTest extends ImportTestCase
 
         foreach (['PC-VIS-1', 'PC-VIS-2', 'PC-VIS-3'] as $codigo) {
             $this->assertNull($this->visible($this->creado($codigo)->id, $this->mayorista->id), $codigo . ': un texto raro es "no informado", el artículo nace en NULL');
+        }
+    }
+
+    /* ==================================================================
+     * El endpoint que usa el modal con IA (columns en JSON)
+     * ================================================================== */
+
+    /**
+     * 🔴 EL CAMINO QUE USA LA SPA ES OTRO ENDPOINT. Los tests de arriba entran por el import clásico
+     * (`/api/article/excel/import`, con las claves `prop_*`, que PHP baja a minúsculas), pero el
+     * modal del paso 3 postea a `/api/ai-excel-import/import`, que recibe `columns` en JSON y se lo
+     * pasa a InitExcelImport tal cual. Ahí la columna ya viene como la arma la SPA
+     * (`columns['visible_en_tienda_' + name_key]`, con `name_key` = nombre en minúsculas y los
+     * espacios a `_`): si la API la leyera distinto, los tests del import clásico seguirían verdes y
+     * la columna se ignoraría en silencio justo en el único camino que el usuario usa.
+     *
+     * Misma planilla que el import clásico (`32_visible_en_tienda.xlsx`), mapeo 0-based y sin
+     * columnas de costo, precio, stock ni IVA, así lo único que puede cambiar son las listas.
+     *
+     * @param  array $columnas  Columnas extra (propiedad => índice 0-based).
+     * @param  array $extra     Overrides del cuerpo del request.
+     * @return \App\Models\ImportHistory
+     */
+    protected function importar_por_el_modal(array $columnas, array $extra = [])
+    {
+        $origen = __DIR__ . '/fixtures/' . self::ARCHIVO;
+
+        $this->assertFileExists($origen, 'Falta el fixture ' . self::ARCHIVO);
+
+        $carpeta = storage_path('app/imported_files');
+
+        if (!is_dir($carpeta)) {
+            mkdir($carpeta, 0777, true);
+        }
+
+        /* Nombre único: el CSV que arma InitExcelImport se deriva del nombre del Excel más time(). */
+        $base   = uniqid('visible_en_tienda_modal_');
+        $nombre = $base . '.xlsx';
+
+        copy($origen, $carpeta . '/' . $nombre);
+
+        $data = array_merge(
+            [
+                'excel_path'      => 'imported_files/' . $nombre,
+                'model'           => 'article',
+                'columns'         => array_merge([
+                    'codigo_de_barras'    => 0,
+                    'sku'                 => 1,
+                    'codigo_de_proveedor' => 2,
+                    'nombre'              => 3,
+                ], $columnas),
+                'start_row'       => 2,
+                /* InitExcelImport::ajustar_finish_row_segun_excel_real() lo baja al real. */
+                'finish_row'      => 99999,
+                'provider_id'     => null,
+                'create_and_edit' => true,
+                'registrar_art_cre'                                  => true,
+                'registrar_art_act'                                  => true,
+                'actualizar_por_provider_code'                       => true,
+                'actualizar_proveedor'                               => true,
+                'permitir_provider_code_repetido'                    => false,
+                'permitir_provider_code_repetido_en_multi_providers' => true,
+                'actualizar_articulos_de_otro_proveedor'             => false,
+            ],
+            $extra
+        );
+
+        try {
+            $this->postJson('/api/ai-excel-import/import', $data)->assertStatus(200);
+        } finally {
+            // La copia del Excel y el CSV que se deriva de ella no tienen por qué quedar en storage.
+            foreach (glob($carpeta . '/' . $base . '*') ?: [] as $residuo) {
+                @unlink($residuo);
+            }
+        }
+
+        $import = ImportHistory::where('user_id', $this->tenant->id)
+                                ->orderBy('id', 'DESC')
+                                ->first();
+
+        $this->assertNotNull($import, 'La importación por el endpoint del modal no dejó ImportHistory.');
+
+        $this->assertInvariantesDeConteo($import);
+
+        return $import;
+    }
+
+    /**
+     * Por el endpoint del modal, con `columns` en JSON: la columna plana `visible_en_tienda_mayorista`
+     * (la que arma la SPA a partir de `price_type_{id}_visible_en_tienda`) llega a los creados y a
+     * los existentes igual que por el import clásico.
+     *
+     * @return void
+     */
+    public function test_por_el_endpoint_del_modal_la_columna_plana_llega_a_los_creados_y_a_los_existentes()
+    {
+        $this->importar_por_el_modal(['visible_en_tienda_mayorista' => 8]);
+
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->mayorista->id), 'A1: "Si" lo habilita');
+        $this->assertSame(0, $this->visible($this->seed['A2']->id, $this->mayorista->id), 'A2: "No" lo deshabilita');
+        $this->assertSame(1, $this->visible($this->seed['A12']->id, $this->mayorista->id), 'A12: celda vacía, conserva el 1');
+        $this->assertSame(1, $this->visible($this->seed['A15']->id, $this->mayorista->id), 'A15: "SÍ" con tilde y en mayúscula lo habilita');
+
+        // 🔴 El margen propio de A1 (55) no se pisa: solo cambió la visibilidad.
+        $this->assertDecimal(55, $this->fila($this->seed['A1']->id, $this->mayorista->id)->percentage, 'A1 conserva su margen propio');
+
+        $this->assertSame(1, $this->visible($this->creado('PC-VIS-1')->id, $this->mayorista->id), 'VIS-1: "sí"');
+        $this->assertSame(0, $this->visible($this->creado('PC-VIS-2')->id, $this->mayorista->id), 'VIS-2: "no"');
+        $this->assertNull($this->visible($this->creado('PC-VIS-3')->id, $this->mayorista->id), 'VIS-3: celda vacía, nace en NULL');
+
+        // La lista sin columna no se toca.
+        $this->assertNull($this->visible($this->seed['A1']->id, $this->minorista->id));
+    }
+
+    /**
+     * Una lista de DOS palabras: la SPA arma `visible_en_tienda_lista_mayorista` (nombre en
+     * minúsculas y los espacios a `_`) y la API tiene que armar la misma clave a partir del nombre
+     * "Lista Mayorista". Si las dos normalizaciones se separaran, la columna se ignoraría sin ningún
+     * error. (Con la clave de una sola palabra de siempre no alcanza: no ejercita el espacio.)
+     *
+     * @return void
+     */
+    public function test_por_el_endpoint_del_modal_una_lista_de_dos_palabras_se_arma_con_guion_bajo()
+    {
+        DB::table('price_types')->where('id', $this->mayorista->id)->update(['name' => 'Lista Mayorista']);
+
+        $this->importar_por_el_modal(['visible_en_tienda_lista_mayorista' => 8]);
+
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->mayorista->id), 'A1: "Si" lo habilita en "Lista Mayorista"');
+        $this->assertSame(0, $this->visible($this->seed['A2']->id, $this->mayorista->id), 'A2: "No" lo deshabilita');
+        $this->assertSame(1, $this->visible($this->creado('PC-VIS-1')->id, $this->mayorista->id), 'VIS-1: "sí"');
+    }
+
+    /**
+     * `vaciar_valores_en_blanco` (el checkbox único del modal: una celda vacía borra la propiedad)
+     * NO deshabilita un artículo por una celda vacía de la columna de la tienda. Lo que "vaciar"
+     * vacía son propiedades del artículo; la visibilidad en el catálogo de los mayoristas es otra
+     * decisión, y una planilla parcial no tiene que sacar artículos de la tienda de nadie. Lo fija
+     * la celda vacía de A12 (habilitado) con el checkbox prendido.
+     *
+     * @return void
+     */
+    public function test_vaciar_valores_en_blanco_no_deshabilita_por_una_celda_vacia()
+    {
+        $this->importar_por_el_modal(['visible_en_tienda_mayorista' => 8], ['vaciar_valores_en_blanco' => true]);
+
+        $this->assertSame(1, $this->visible($this->seed['A12']->id, $this->mayorista->id), 'A12: celda vacía, sigue habilitado aunque se vacíen los blancos');
+        $this->assertNull($this->visible($this->creado('PC-VIS-3')->id, $this->mayorista->id), 'VIS-3: celda vacía, nace en NULL');
+
+        // Y lo que sí trae un valor se aplica igual.
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->mayorista->id));
+        $this->assertSame(0, $this->visible($this->seed['A2']->id, $this->mayorista->id));
+    }
+
+    /**
+     * Una columna mapeada a una lista SIN restricción también se escribe: el interruptor es de la
+     * tienda, no de la importación. (La pantalla solo ofrece la columna para las listas restringidas,
+     * pero la API la acepta para cualquiera: sirve para cargar la habilitación ANTES de prender el
+     * interruptor y mirar el contador "X habilitados de Y"; mientras la lista no esté restringida la
+     * tienda ignora el valor.)
+     *
+     * @return void
+     */
+    public function test_una_lista_sin_restriccion_tambien_recibe_la_columna()
+    {
+        $this->importar(self::ARCHIVO, $this->config([
+            'prop_visible_en_tienda_minorista' => 9,
+        ]));
+
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->minorista->id), 'A1: "Si" en la lista sin restricción');
+        $this->assertSame(1, $this->visible($this->seed['A15']->id, $this->minorista->id), 'A15: "SÍ"');
+
+        // Un "No" sobre un NULL no es un cambio (NULL y 0 son lo mismo): sigue en NULL.
+        $this->assertNull($this->visible($this->seed['A2']->id, $this->minorista->id), 'A2: "No" sobre NULL no escribe');
+
+        // La lista restringida, sin columna, no se toca.
+        $this->assertSame(1, $this->visible($this->seed['A2']->id, $this->mayorista->id), 'Mayorista no tenía columna');
+    }
+
+    /**
+     * Dos listas a la vez: cada una con su columna (acá las dos apuntan a la misma columna del
+     * Excel) y cada una se escribe por su cuenta. Un "No" sobre una lista deshabilitada y sobre
+     * otra en NULL da resultados distintos, y el UPDATE de visibilidad no mezcla los pares.
+     *
+     * @return void
+     */
+    public function test_dos_listas_a_la_vez_se_escriben_cada_una_por_su_cuenta()
+    {
+        $this->importar(self::ARCHIVO, $this->config([
+            'prop_visible_en_tienda_mayorista' => 9,
+            'prop_visible_en_tienda_minorista' => 9,
+        ]));
+
+        // A1 ("Si"): las dos listas pasan de NULL a 1.
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->mayorista->id));
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->minorista->id));
+
+        // A2 ("No"): Mayorista pasa de 1 a 0; Minorista, que estaba en NULL, no cambia.
+        $this->assertSame(0, $this->visible($this->seed['A2']->id, $this->mayorista->id), 'A2 en Mayorista: de 1 a 0');
+        $this->assertNull($this->visible($this->seed['A2']->id, $this->minorista->id), 'A2 en Minorista: "No" sobre NULL no escribe');
+
+        // A12 (vacía): ninguna de las dos se toca.
+        $this->assertSame(1, $this->visible($this->seed['A12']->id, $this->mayorista->id));
+        $this->assertNull($this->visible($this->seed['A12']->id, $this->minorista->id));
+
+        // A15 ("SÍ"): las dos pasan a 1.
+        $this->assertSame(1, $this->visible($this->seed['A15']->id, $this->mayorista->id));
+        $this->assertSame(1, $this->visible($this->seed['A15']->id, $this->minorista->id));
+
+        // Los creados toman el valor de la planilla en las dos listas.
+        foreach (['mayorista', 'minorista'] as $lista) {
+            $id = $this->{$lista}->id;
+
+            $this->assertSame(1, $this->visible($this->creado('PC-VIS-1')->id, $id), 'VIS-1 en ' . $lista);
+            $this->assertSame(0, $this->visible($this->creado('PC-VIS-2')->id, $id), 'VIS-2 en ' . $lista);
+            $this->assertNull($this->visible($this->creado('PC-VIS-3')->id, $id), 'VIS-3 en ' . $lista);
         }
     }
 

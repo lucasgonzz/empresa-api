@@ -156,8 +156,12 @@ fila "solo visibilidad" pasara por él. Las columnas de costo, precio, stock e I
 la celda vacía no toca nada, que un "No" sobre un NULL no cuenta como cambio, que un existente **sin fila
 de pivote** para la lista recibe la fila con el "Sí" (sin inventarle margen ni duplicar un par que ya
 tenía dos filas), y que un texto que no es ni "Sí" ni "No" —una columna mal mapeada— no deshabilita a
-nadie. Se lee con `DB::table('article_price_type')`: el pivote no tiene índice único y lo que se mide son
-filas. `SiONoDeLaCeldaTest.php` es parseo puro (sin base) de qué celda vale 1, 0 o "no informado".
+nadie. Lo prueba también por el endpoint del modal con IA (`/api/ai-excel-import/import`, con `columns` en
+JSON y los índices 0-based: es el único camino que usa la SPA, y ahí la columna llega con el nombre ya
+normalizado, incluida una lista de **dos palabras** que ejercita el espacio), con `vaciar_valores_en_blanco`
+(una celda vacía no deshabilita), con una lista sin restricción mapeada y con dos listas a la vez. Se lee con
+`DB::table('article_price_type')`: el pivote no tiene índice único y lo que se mide son filas.
+`SiONoDeLaCeldaTest.php` es parseo puro (sin base) de qué celda vale 1, 0 o "no informado".
 
 ## Repetidos del archivo vs. repetidos contra la base (2/9/2026)
 

@@ -227,6 +227,33 @@ class Masiva_visible_en_tienda_Test extends CatalogoPorListaTestCase
     }
 
     /**
+     * Un valor vacío no es un pedido: ni el `''` del "No modificar" (si llegara), ni el `null` en que
+     * lo convierte el middleware global ConvertEmptyStringsToNull. No cambia nada, no deja un
+     * cambio en el historial y no le ata la lista a un artículo que no la tenía; un NULL sigue en
+     * NULL (no pasa a 0) y un 1 sigue en 1 (no se deshabilita).
+     *
+     * @return void
+     */
+    public function test_un_valor_vacio_no_cambia_nada()
+    {
+        $en_null     = $this->crear_articulo($this->dueno, ['cost' => 100]);
+        $habilitado  = $this->crear_articulo($this->dueno, ['cost' => 100]);
+        $sin_fila    = $this->crear_articulo($this->dueno, ['cost' => 100]);
+
+        $this->atar($en_null->id, $this->mayorista->id, null, 20);
+        $this->atar($habilitado->id, $this->mayorista->id, 1, 20);
+
+        $masiva = $this->masiva([$en_null->id, $habilitado->id, $sin_fila->id], [
+            ['type' => 'checkbox', 'key' => 'visible_en_tienda_lista_' . $this->mayorista->id, 'value' => ''],
+        ]);
+
+        $this->assertSame(0, (int) $masiva->changes_count, 'Un valor vacío no es un cambio.');
+        $this->assertNull($this->visible($en_null->id, $this->mayorista->id), 'NULL sigue en NULL: no pasa a 0.');
+        $this->assertSame(1, $this->visible($habilitado->id, $this->mayorista->id), 'Un habilitado no se deshabilita por un vacío.');
+        $this->assertCount(0, $this->filas($sin_fila->id, $this->mayorista->id), 'No se le ata la lista a quien no la tenía.');
+    }
+
+    /**
      * Cuenta, de acá en adelante, las consultas con las que el helper valida que una lista exista y
      * sea del dueño (`select exists(select * from price_types where id = ? and user_id = ?)`).
      *
