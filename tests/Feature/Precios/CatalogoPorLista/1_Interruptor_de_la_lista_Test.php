@@ -140,7 +140,8 @@ class Interruptor_de_la_lista_Test extends CatalogoPorListaTestCase
     }
 
     /**
-     * Con la clave, el PUT la prende y la apaga (saneada: '1' y true son 1; 0 y '' son 0).
+     * Con la clave, el PUT la prende y la apaga (saneada: '1' y true son 1; 0 es 0). El vacío `''` NO
+     * apaga: ver test_un_valor_que_no_se_entiende_no_apaga_la_restriccion().
      *
      * @return void
      */
@@ -164,11 +165,46 @@ class Interruptor_de_la_lista_Test extends CatalogoPorListaTestCase
 
         $this->assertSame(1, $this->interruptor($this->minorista->id));
 
-        $this->putJson('api/price-type/' . $this->minorista->id, $this->payload_de_edicion($this->minorista, [
-            'catalogo_restringido_en_tienda' => '',
+    }
+
+    /**
+     * 🔴 Cambio de decisión (6/10/2026, revisión independiente de empresa-api, M2 y H2): hasta esta
+     * ronda este test fijaba que un `''` con la clave presente APAGABA la restricción. Ya no: el
+     * middleware `ConvertEmptyStringsToNull` entrega el `''` como `null`, que es lo mismo que el eco
+     * de un modelo cargado, y apagar la restricción de los mayoristas sin que nadie lo pida es el
+     * daño que M2 cerró. "Apagar" es una decisión explícita (0, false, '0', 'false', que es lo que
+     * manda el toggle del ABM); un valor vacío o que no se entiende no escribe nada. No es un
+     * aserto ajustado para pasar: cambió lo que el producto tiene que hacer, y por eso el caso
+     * vive en su propio test con su porqué.
+     *
+     * @return void
+     */
+    public function test_un_valor_que_no_se_entiende_no_apaga_la_restriccion()
+    {
+        $this->putJson('api/price-type/' . $this->mayorista->id, $this->payload_de_edicion($this->mayorista, [
+            'catalogo_restringido_en_tienda' => 1,
         ]))->assertStatus(200);
 
-        $this->assertSame(0, $this->interruptor($this->minorista->id), 'Un valor vacío con la clave presente es "no restringida".');
+        $this->assertSame(1, $this->interruptor($this->mayorista->id), 'Precondición: la lista está restringida.');
+
+        foreach (['', '   ', 'abc', 2, 1.5, []] as $valor) {
+            $this->putJson('api/price-type/' . $this->mayorista->id, $this->payload_de_edicion($this->mayorista, [
+                'catalogo_restringido_en_tienda' => $valor,
+            ]))->assertStatus(200);
+
+            $this->assertSame(
+                1,
+                $this->interruptor($this->mayorista->id),
+                'Un valor que no se entiende (' . json_encode($valor) . ') no apaga la restricción: no escribe nada.'
+            );
+        }
+
+        // Y el apagado explícito sigue funcionando (lo fija test_el_update_con_la_clave_la_prende_y_la_apaga).
+        $this->putJson('api/price-type/' . $this->mayorista->id, $this->payload_de_edicion($this->mayorista, [
+            'catalogo_restringido_en_tienda' => 0,
+        ]))->assertStatus(200);
+
+        $this->assertSame(0, $this->interruptor($this->mayorista->id));
     }
 
     /**

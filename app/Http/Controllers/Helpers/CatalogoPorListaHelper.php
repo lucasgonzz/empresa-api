@@ -117,10 +117,10 @@ class CatalogoPorListaHelper
 
     /**
      * El interruptor "Catálogo restringido en la tienda" de una lista tal como llega en el request
-     * de PriceTypeController (store/update), saneado a 1 o 0: 1 solo con un sí explícito (1, '1',
-     * true, 'true'); cualquier otra cosa —0, null, '', un texto— es 0. A diferencia de
-     * sanear_booleano() acá no hay "no escribir": quien llama ya decidió escribir porque el request
-     * trae la clave, y una lista solo puede quedar restringida o no.
+     * de `PriceTypeController@store`, saneado a 1 o 0: 1 solo con un sí explícito (1, '1', true,
+     * 'true'); cualquier otra cosa —0, null, '', un texto— es 0. A diferencia de sanear_booleano()
+     * acá no hay "no escribir": en el alta quien llama ya decidió escribir porque el request trae la
+     * clave. (El PUT NO usa esto: ver interruptor_a_escribir_en_update().)
      *
      * @param  mixed $valor
      * @return int  1 o 0.
@@ -137,60 +137,35 @@ class CatalogoPorListaHelper
      *  - Sin la clave en el request (un SPA viejo, cacheado en la PWA, que no conoce el
      *    interruptor): no se escribe. Si se escribiera, le APAGARÍA la restricción a un comercio
      *    que la prendió desde otra pestaña ya actualizada.
-     *  - Con un valor explícito (0, 1, true, false, '1', 'true', ...): se escribe saneado a 1 o 0.
-     *  - 🔴 Con la clave en `null`: NO se escribe (M2 de la revisión independiente, 6/10/2026). El ABM
-     *    de la SPA reenvía `{...this.model}` entero al guardar, y el JSON de una lista cuyo
-     *    interruptor todavía es NULL —o que se cargó antes de que el dueño lo prendiera desde otra
-     *    pestaña— lleva la clave en `null`: eso es un eco de lo que se cargó, no un "apagalo". Antes
-     *    escribía 0 y los mayoristas volvían a ver todo el catálogo sin que nadie lo notara.
+     *  - Con un valor explícito (0, 1, true, false, '0', '1', 'true', 'false'): se escribe saneado
+     *    a 1 o 0, que es lo que manda el toggle de la SPA.
+     *  - 🔴 Con cualquier otra cosa —`null`, `''` o un texto o número que no se entiende—: NO se
+     *    escribe (M2 y H2 de la revisión independiente, 6/10/2026). El ABM de la SPA reenvía
+     *    `{...this.model}` entero al guardar, y el JSON de una lista cuyo interruptor todavía es
+     *    NULL —o que se cargó antes de que el dueño lo prendiera desde otra pestaña— lleva la clave
+     *    en `null`: eso es un eco de lo que se cargó, no un "apagalo". Antes escribía 0 y los
+     *    mayoristas volvían a ver todo el catálogo sin que nadie lo notara.
      *
-     * ⚠️ Un `''` explícito sigue apagando (lo fija 1_Interruptor_de_la_lista_Test), pero llega acá
-     * como `null`: el middleware global `ConvertEmptyStringsToNull` (Kernel.php:23) lo convierte
-     * antes de que el request llegue al controlador, también adentro de `$request->json()`, así
-     * que con `$request->input()` ya no se lo puede distinguir del eco de un NULL. Por eso, cuando
-     * llega `null`, se mira el cuerpo JSON CRUDO (mismo recurso que usa
-     * PdfColumnProfileController::page_layout_from_request()): si ahí venía `""`, es un vacío
-     * explícito y apaga; si venía `null`, es el eco y no se escribe. En un request que no es JSON no
-     * hay cuerpo crudo que mirar y el `null` cuenta siempre como "no informado". No "simplificar"
-     * esto a `!is_null($request->input(...))`: rompe el caso del vacío.
+     * El `''` cuenta como "no informado" por la misma razón y por una más práctica: el middleware
+     * global `ConvertEmptyStringsToNull` (Kernel.php) lo convierte en `null` antes de que el request
+     * llegue al controlador, también adentro de `$request->json()`, así que ni siquiera se lo puede
+     * distinguir del eco de un NULL sin leer el cuerpo crudo del request (se probó, y es frágil:
+     * depende de que el request sea JSON). Además es la convención de este helper: sanear_booleano()
+     * ya trata `''` como "no modificar" en la masiva y en la ficha. Y el error va para el lado
+     * barato: un falso "no escribir" es un no-op visible (el toggle no cambia), un falso "apagar" le
+     * saca el catálogo de la tienda a los compradores de esa lista sin avisarle a nadie. No hay
+     * emisor real de `''`: el toggle del ABM escribe 1 o 0.
      *
      * @param  \Illuminate\Http\Request $request
      * @return int|null  1, 0 o null = no escribir.
      */
     public static function interruptor_a_escribir_en_update(Request $request)
     {
-        $clave = self::CLAVE_DEL_INTERRUPTOR;
-
-        if (!$request->has($clave)) {
+        if (!$request->has(self::CLAVE_DEL_INTERRUPTOR)) {
             return null;
         }
 
-        $valor = $request->input($clave);
-
-        if (!is_null($valor)) {
-            return self::interruptor_de_lista($valor);
-        }
-
-        return self::la_clave_vino_vacia_en_el_cuerpo($request, $clave) ? 0 : null;
-    }
-
-    /**
-     * Si el cuerpo JSON CRUDO del request trae la clave con `""` (y no con `null`), antes de que
-     * `ConvertEmptyStringsToNull` la convirtiera. Ver interruptor_a_escribir_en_update().
-     *
-     * @param  \Illuminate\Http\Request $request
-     * @param  string                   $clave
-     * @return bool
-     */
-    protected static function la_clave_vino_vacia_en_el_cuerpo(Request $request, $clave)
-    {
-        if (!$request->isJson()) {
-            return false;
-        }
-
-        $cuerpo = json_decode((string) $request->getContent(), true);
-
-        return is_array($cuerpo) && array_key_exists($clave, $cuerpo) && $cuerpo[$clave] === '';
+        return self::sanear_booleano($request->input(self::CLAVE_DEL_INTERRUPTOR));
     }
 
     /**
