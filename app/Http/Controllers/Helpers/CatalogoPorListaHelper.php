@@ -83,9 +83,13 @@ class CatalogoPorListaHelper
     /**
      * Expresión de la clave completa de la masiva; el grupo 1 es el id de la lista.
      *
+     * Se arma desde PREFIJO_CLAVE_DE_MASIVA para que el prefijo viva en un solo lugar (B5 de la
+     * revisión independiente: la constante del prefijo no la usaba nadie y el texto estaba repetido
+     * acá). El prefijo solo tiene letras y guiones bajos, así que no hace falta escaparlo.
+     *
      * @var string
      */
-    const REGEX_CLAVE_DE_MASIVA = '/^visible_en_tienda_lista_(\d+)$/';
+    const REGEX_CLAVE_DE_MASIVA = '/^' . self::PREFIJO_CLAVE_DE_MASIVA . '(\d+)$/';
 
     /**
      * Sanea un valor booleano tal como puede llegar en un request (JSON, form-data o la cola de
