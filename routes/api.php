@@ -619,6 +619,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('order-production', 'OrderProductionController');
     Route::resource('order-production-status', 'OrderProductionStatusController');
+    // Resumen de lo que pasa si se elimina una sucursal (misión eliminar-sucursal-con-stock). Va ANTES
+    // del resource para que nada lo confunda con una acción del recurso.
+    Route::get('address/{id}/eliminar-resumen', 'AddressController@eliminar_resumen');
     Route::resource('address', 'AddressController');
 
     Route::resource('title', 'TitleController');

@@ -100,8 +100,13 @@ class Eliminar_sucursal_deja_movimiento_Test extends TestCase
 
         $articulo_sin_stock->addresses()->attach($sucursal->id, ['amount' => 0]);
 
-        /* El borrado, por el endpoint real. */
-        $this->deleteJson('api/address/'.$sucursal->id)->assertStatus(200);
+        /*
+         * El borrado, por el endpoint real. Desde la misión eliminar-sucursal-con-stock (5/10/2026)
+         * una sucursal con stock no se borra sin decir qué hacer con él (sin decisión → 422): este
+         * test prueba el descarte, así que lo pide explícito. Solo cambia el armado; las aserciones
+         * de abajo son las mismas.
+         */
+        $this->json('DELETE', 'api/address/'.$sucursal->id, ['stock_accion' => 'descartar'])->assertStatus(200);
 
         /** El movimiento que deja el rastro del stock evaporado. */
         $movimiento = StockMovement::where('article_id', $articulo_con_stock->id)
