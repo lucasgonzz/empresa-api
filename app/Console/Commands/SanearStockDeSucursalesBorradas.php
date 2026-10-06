@@ -62,8 +62,8 @@ use Illuminate\Support\Facades\Schema;
  *  6. El comando no avisa a Tienda Nube ni a Mercado Libre del cambio de stock (un barrido masivo
  *     encolaría cientos de sincronizaciones): el stock publicado se corrige con la próxima
  *     sincronización o movimiento del artículo.
- *  7. Una opción numérica que llega VACÍA (`--user_id=`, típico de un script con una variable sin
- *     valor) es un error, no "sin filtro".
+ *  7. Una opción numérica que llega VACÍA (`--user_id=`) o PELADA (`--user_id` sin valor), típico de un
+ *     script con una variable sin valor, es un error, no "sin filtro".
  *  8. `--aplicar` sin `--user_id` ni `--articulo_id` sobre VARIOS dueños se niega (exit 1): hay que
  *     elegir uno o decir `--todos`. Con un solo dueño con trabajo no pide nada.
  *  9. Antes de escribir se verifica que las cinco tablas sean InnoDB (el rollback por artículo lo
@@ -104,7 +104,7 @@ class SanearStockDeSucursalesBorradas extends Command
     protected $signature = 'stock:sanear-sucursales-borradas
                             {--ver : Solo lee y reporta. Es el modo por defecto; no escribe nada (ni archivos).}
                             {--aplicar : Borra las filas fantasma, recalcula articles.stock y deja un movimiento por artículo cuyo stock cambió.}
-                            {--user_id= : Acota a un dueño (articles.user_id). Vacío es un error.}
+                            {--user_id= : Acota a un dueño (articles.user_id). Vacío o sin valor es un error.}
                             {--articulo_id= : Acota a un artículo.}
                             {--todos : Con --aplicar y sin --user_id, permite sanear a VARIOS dueños de una base compartida a la vez. Con un solo dueño con trabajo no hace falta.}
                             {--solo_explicados : Con --aplicar, saltea los artículos cuyo stock hay que corregir y esa corrección tiene una parte que no explican los fantasmas (se listan con --ver --detalle).}
@@ -479,8 +479,10 @@ class SanearStockDeSucursalesBorradas extends Command
     /**
      * Totales en cero de un dueño (o del total general).
      *
-     * Las tres últimas claves parten el desfase por causa (ver `desfase_explicado` en el helper):
-     * `desfase_fantasmas` es lo que explican las filas fantasma y `desfase_otra_causa` lo que no.
+     * Las tres últimas claves parten el desfase por causa (ver `acumular()`): `desfase_otra_causa` es la
+     * parte de la corrección que NO explican las filas fantasma (solo de los artículos con
+     * `es_desvio_ajeno()`), `desfase_fantasmas` es el resto del desfase (`desfase − otra causa`) y
+     * `articulos_otra_causa` cuenta esos artículos. Los dos montos suman siempre el desfase.
      * No son columnas de la tabla por dueño (esa tiene su forma fija): salen en una tabla aparte.
      *
      * @return array
