@@ -34,7 +34,9 @@ use Illuminate\Support\Facades\DB;
  *  11. con `--limite` solo se marcan los que se sanearon;
  *  12. un artículo con variantes también se marca;
  *  13. con `--solo_explicados` lo que no se sana no se marca;
- *  14. con varios dueños cada fila va a nombre del suyo.
+ *  14. con varios dueños cada fila va a nombre del suyo;
+ *  15. la negativa es solo con trabajo (sin nada para sanear, exit 0);
+ *  16. `--ver` recuerda sumar `--sincronizar` solo con Tienda Nube prendida y algo para sanear.
  *
  * Cada test fija `USA_TIENDA_NUBE` explícitamente (prendida o apagada): no depende del `.env.testing`.
  * Todo se afirma leyendo las tablas con `DB::table()`.
@@ -305,7 +307,8 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(1, $codigo, 'Con USA_TIENDA_NUBE apagado --sincronizar tiene que negarse (exit 1). Salida:' . "\n" . $this->salida);
         $this->assertStringContainsString('USA_TIENDA_NUBE está apagado en esta instalación', $this->salida, 'El error tiene que decir por qué.');
         $this->assertStringContainsString('NO se tocó nada', $this->salida);
-        $this->assertStringContainsString('Corré sin --sincronizar', $this->salida, 'Y qué hacer.');
+        $this->assertStringContainsString('Si este cliente usa Tienda Nube, arreglá la variable', $this->salida, 'Y qué hacer si el cliente sí usa Tienda Nube (sin la opción no hay segunda chance).');
+        $this->assertStringContainsString('Si no usa Tienda Nube, sacá --sincronizar', $this->salida, 'Y si no la usa.');
 
         $this->assertFotosIguales($antes, $this->foto_de_tablas(), 'Un --aplicar --sincronizar que se niega por Tienda Nube apagado no puede escribir');
         $this->assertFalse(is_dir($this->carpeta_de_salida), 'Ni dejar la carpeta del respaldo.');
@@ -346,6 +349,66 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
         // Sin la opción no avisa de nada de esto.
         $this->assertSame(0, $this->ver($e['dueno']), 'Salida:' . "\n" . $this->salida);
         $this->assertStringNotContainsString('se negaría', $this->salida, 'Sin --sincronizar no hay nada que anticipar.');
+    }
+
+    /**
+     * La negativa es de `--aplicar --sincronizar` CON trabajo: sin nada para sanear, `--aplicar` sale con
+     * exit 0 ("No hay nada para sanear") ANTES de cualquier precondición, aunque Tienda Nube esté apagada,
+     * y `--ver` no anticipa una negativa que no va a pasar.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function sin_nada_para_sanear_sincronizar_con_tienda_nube_apagada_sale_con_cero_y_no_avisa()
+    {
+        $this->prender_tienda_nube('false');
+
+        $sin_trabajo = $this->dueno('tn-sin-trabajo');
+
+        $this->assertSame(0, $this->aplicar($sin_trabajo, ['--sincronizar' => true]), 'Sin nada para sanear no hay precondición que negar: exit 0. Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('No hay nada para sanear', $this->salida);
+        $this->assertStringNotContainsString('USA_TIENDA_NUBE', $this->salida, 'Y no habla de Tienda Nube.');
+
+        $this->assertSame(0, $this->ver($sin_trabajo, ['--sincronizar' => true]), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('se negaría', $this->salida, '--ver no anticipa una negativa que no va a pasar.');
+    }
+
+    /**
+     * El recordatorio de la otra punta, SOLO en `--ver` (el paso 1 del flujo recomendado): con Tienda Nube
+     * prendida y sin `--sincronizar`, un `--aplicar` deja los artículos limpios sin marcar y el comando ya
+     * no los ve. No sale con la opción, ni con Tienda Nube apagada, ni sin nada para sanear, y la salida de
+     * `--aplicar` sin la opción no cambia.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function ver_recuerda_sumar_sincronizar_solo_si_la_instalacion_usa_tienda_nube_y_hay_algo_para_sanear()
+    {
+        $e = $this->escenario('tn-recordatorio');
+        $this->articulo_saneable_en_tienda_nube($e, 'En TN, recordatorio');
+        $sin_trabajo = $this->dueno('tn-recordatorio-sin-trabajo');
+
+        $this->prender_tienda_nube('true');
+
+        $this->assertSame(0, $this->ver($e['dueno']), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('Esta instalación usa Tienda Nube (USA_TIENDA_NUBE prendido): si vas a aplicar, sumá --sincronizar', $this->salida, '--ver tiene que recordar la opción.');
+
+        $this->assertSame(0, $this->ver($e['dueno'], ['--sincronizar' => true]), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('sumá --sincronizar', $this->salida, 'Con la opción no hay nada que recordar.');
+
+        $this->assertSame(0, $this->ver($sin_trabajo), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('sumá --sincronizar', $this->salida, 'Sin nada para sanear tampoco.');
+
+        $this->prender_tienda_nube('false');
+
+        $this->assertSame(0, $this->ver($e['dueno']), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('sumá --sincronizar', $this->salida, 'Con la instalación sin Tienda Nube tampoco.');
+
+        // Y --aplicar sin la opción no dice nada de Tienda Nube (su salida no cambió).
+        $this->prender_tienda_nube('true');
+
+        $this->assertSame(0, $this->aplicar($e['dueno']), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('Tienda Nube', $this->salida, 'La salida de --aplicar sin la opción sigue idéntica.');
     }
 
     /**
@@ -605,7 +668,10 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
         $articulo_a = $this->articulo_saneable_en_tienda_nube($a, 'Del dueño A');
         $articulo_b = $this->articulo_saneable_en_tienda_nube($b, 'Del dueño B');
 
-        // Sin --user_id: la base del slot tiene además el trabajo del artículo centinela, que se sanea igual.
+        // Sin --user_id: se sacan los fantasmas ajenos que trae la base del slot (el artículo centinela), para
+        // que el trabajo sean solo estos dos dueños y la corrida sea determinista.
+        $this->limpiar_fantasmas_ajenos([$articulo_a->id, $articulo_b->id]);
+
         $codigo = $this->sanear(['--aplicar' => true, '--todos' => true, '--sincronizar' => true, '--salida' => $this->carpeta_de_salida]);
 
         $this->assertSame(0, $codigo, 'Salida:' . "\n" . $this->salida);
