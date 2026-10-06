@@ -39,6 +39,18 @@ class Pdf_de_varios_clientes_Test extends EmpresaTestCase
         parent::setUp();
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+
+        /*
+         * 🔴 Sin logo REMOTO. El dueño del fixture trae `image_url` = `https://comerciocity.com/img/logo.95c86b81.jpg` (el logo de la demo en el
+         * sitio real), y cada PDF lo pide por la red (`PdfHelper::coordenadas_y_ancho_de_imagen()` mide con `getimagesize($url)` y
+         * `GeneralHelper::file_exists_2()` pregunta con `get_headers($url)`). Medido el 6/10/2026 con el freno de internet puesto: 7 de 10 tests de
+         * este archivo bajaban el logo de comerciocity.com de verdad. Lo que se prueba acá es la lista de clientes, no el logo: se le saca la
+         * imagen al dueño (dentro de la transacción del test, que se revierte sola) y se lo vuelve a loguear con el modelo ya actualizado.
+         */
+        $this->dueno->image_url = null;
+        $this->dueno->save();
+
+        $this->actingAs($this->dueno, 'web');
     }
 
     /**
