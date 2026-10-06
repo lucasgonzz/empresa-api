@@ -33,7 +33,12 @@ class DatabaseProviderHelper {
                 'iva_condition_id'      => $provider->iva_condition_id,  
                 'percentage_gain'       => $provider->percentage_gain,   
                 'dolar'                 => $provider->dolar, 
-                'saldo'                 => $provider->saldo, 
+                // El saldo se copia en las dos columnas del espejo de `credit_accounts.saldo`
+                // (`saldo_pesos` y `saldo_dolares`) y no en `saldo`: esa es la columna de antes de las
+                // cuentas por moneda y ningún movimiento la actualiza, así que copiarla dejaba al
+                // proveedor de la base destino con un valor congelado en vez de su saldo.
+                'saldo_pesos'           => $provider->saldo_pesos,
+                'saldo_dolares'         => $provider->saldo_dolares,
                 'comercio_city_user_id' => $provider->comercio_city_user_id, 
                 'user_id'               => $provider->user_id,
                 'created_at'            => $provider->created_at,
