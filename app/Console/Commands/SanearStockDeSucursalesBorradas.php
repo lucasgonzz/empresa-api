@@ -450,7 +450,7 @@ class SanearStockDeSucursalesBorradas extends Command
             }
 
             foreach ($m['saltados'] as $motivo => $cantidad) {
-                $this->warn('  no_recalculable / ' . $motivo . ': ' . $cantidad . ' artículos. --aplicar NO los toca (el motor tiraría Undefined index): revisalos a mano.');
+                $this->warn('  no_recalculable / ' . $motivo . ': ' . $cantidad . ' artículos. --aplicar NO los toca (el motor tiraría Undefined index): revisalos a mano (se listan con --ver --detalle).');
             }
 
             $this->reportar_sucursales_muertas($m['muertas']);

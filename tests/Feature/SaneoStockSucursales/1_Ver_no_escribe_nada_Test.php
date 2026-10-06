@@ -221,6 +221,50 @@ class Ver_no_escribe_nada_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
+     * `--detalle` lista artículo por artículo, pero con tope: en una base con miles de afectados un
+     * volcado entero ahogaría la consola y escondería el resumen. Corta a las 200 líneas y avisa.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function el_detalle_se_corta_a_las_200_lineas_y_avisa_cuantos_articulos_faltan()
+    {
+        $dueno = $this->dueno('detalle-tope');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        // 205 artículos con un fantasma cada uno. Se arman con inserts masivos: esto prueba el
+        // formato del reporte y no el motor, y 205 `Article::create` serían segundos al pedo.
+        $filas_de_articulos = [];
+
+        for ($i = 1; $i <= 205; $i++) {
+            $filas_de_articulos[] = ['name' => 'zz Detalle tope ' . $i . ' ' . uniqid(), 'user_id' => $dueno->id, 'stock' => 9];
+        }
+
+        DB::table('articles')->insert($filas_de_articulos);
+
+        $ids = DB::table('articles')->where('user_id', $dueno->id)->orderBy('id')->pluck('id')->all();
+
+        $this->assertCount(205, $ids, 'El escenario no quedó armado.');
+
+        $filas_de_pivot = [];
+
+        foreach ($ids as $id) {
+            $filas_de_pivot[] = ['article_id' => $id, 'address_id' => $s1->id, 'amount' => 10];
+            $filas_de_pivot[] = ['article_id' => $id, 'address_id' => $muerta, 'amount' => -1];
+        }
+
+        DB::table('address_article')->insert($filas_de_pivot);
+
+        $this->assertSame(0, $this->ver($dueno, ['--detalle' => true]), 'Salida:' . "\n" . $this->salida);
+
+        $this->assertSame(205, $this->fila_del_reporte($dueno->id)['articulos'], 'La tabla cuenta TODOS los artículos aunque el detalle se corte.');
+
+        $this->assertSame(200, preg_match_all('/^  art \d+ · dueño /mu', $this->salida), 'El detalle tiene que listar exactamente 200 artículos.');
+        $this->assertStringContainsString('... y 5 artículos más (el detalle se corta a las 200 líneas)', $this->salida);
+    }
+
+    /**
      * @group saneo-stock-sucursales
      * @test
      */
