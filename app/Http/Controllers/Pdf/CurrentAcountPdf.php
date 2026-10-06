@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Pdf;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrientePeriodoHelper;
 use App\Models\User;
 use Carbon\Carbon;
 use fpdf;
@@ -14,9 +15,18 @@ class CurrentAcountPdf extends fpdf {
     
     protected $printType = 'simple';
 
-	function __construct($credit_account, $models, $printType = 'simple') {
+    /**
+     * Período impreso (misión cuenta-corriente-periodo, 1/10/2026): ['desde' => 'Y-m-d', 'hasta' =>
+     * 'Y-m-d'|null], o null para el PDF de siempre (los últimos N movimientos), que no cambia.
+     *
+     * @var array|null
+     */
+    protected $periodo = null;
+
+	function __construct($credit_account, $models, $printType = 'simple', $periodo = null) {
 		parent::__construct();
         $this->printType = $printType;
+        $this->periodo = $periodo;
 		$this->SetAutoPageBreak(true, 1);
 		$this->b = 0;
 		$this->line_height = 7;
@@ -80,6 +90,13 @@ class CurrentAcountPdf extends fpdf {
 			'fields' 			=> $this->getFields(),
 		];
 
+		// El título va en un cuadro de 30 mm de ancho: un texto largo con las fechas lo desborda y
+		// pisa el encabezado, así que el período se imprime en su propia línea (extra_info) y el
+		// cuadro conserva 'Cuenta corriente'.
+		if (!is_null($this->periodo)) {
+			$data['extra_info'] = ['Periodo' => CuentaCorrientePeriodoHelper::texto_del_periodo($this->periodo)];
+		}
+
 		$data['user'] = $this->user;
 
 		$res = PdfHelper::header($this, $data);
@@ -99,11 +116,31 @@ class CurrentAcountPdf extends fpdf {
 			$this->x = 105;
 			$this->SetFont('Arial', 'B', 16);
 
-			$saldo = $this->models[count($this->models)-1]->saldo;
-			// $saldo = $this->models[0]->saldo;
-			$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
+			if (is_null($this->periodo)) {
 
-			$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
+				$saldo = $this->models[count($this->models)-1]->saldo;
+				// $saldo = $this->models[0]->saldo;
+				$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
+
+				$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
+
+				return;
+			}
+
+			// Con período, el saldo es el del movimiento más nuevo DEL PERÍODO y no el último del
+			// arreglo: con cc_ultimas_arriba el último del arreglo es el más viejo.
+			$saldo = Numbers::price(CuentaCorrientePeriodoHelper::saldo_del_periodo($this->models), true, $this->credit_account->moneda_id);
+			$texto = CuentaCorrientePeriodoHelper::leyenda_del_saldo($this->periodo).': '.$saldo;
+
+			// 'Saldo al cierre' es más larga que 'Saldo actual': si el importe es grande el texto no
+			// entra en los 100 mm de la celda, así que se achica la letra hasta que entre.
+			$tamanio = 16;
+			while ($tamanio > 8 && $this->GetStringWidth($texto) > 96) {
+				$tamanio--;
+				$this->SetFont('Arial', 'B', $tamanio);
+			}
+
+			$this->Cell(100, 15, $texto, 1, 0, 'C');
 		}
 	}
 

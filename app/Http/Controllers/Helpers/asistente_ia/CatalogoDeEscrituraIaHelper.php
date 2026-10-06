@@ -497,10 +497,10 @@ class CatalogoDeEscrituraIaHelper
             'solo_lectura'       => ['image_url', 'lat', 'lng', 'buyer_id', 'default_afip_information_id'],
             'claves_de_pantalla' => [],
             'ruta'               => ['name' => 'abm', 'params' => ['view' => 'sucursales', 'sub_view' => 'sucursales'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => 'Se borra la sucursal y el stock que tenía se da de baja con un movimiento por artículo.',
+            'aviso_de_baja'      => 'Solo se puede eliminar así si no tiene nada que decidir: si tiene stock, empleados asignados o es la sucursal por defecto, madre o de origen, hay que eliminarla desde ABM > Sucursales eligiendo qué hacer con cada cosa (pasar el stock a otra sucursal o descartarlo, a dónde van los empleados y qué sucursal la reemplaza).',
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'AddressController: store() no lee phone ni email (update() sí); destroy() genera un movimiento de stock negativo por artículo con stock en la sucursal y después la borra.',
+            'revisado'           => 'AddressController: store() no lee phone ni email (update() sí); destroy() delega en EliminarSucursalHelper (misión eliminar-sucursal-con-stock, 5/10/2026): sin decisión (el genérico no la manda) responde 422 si la sucursal tiene stock, empleados o marcas; sin nada que decidir la borra y deja sus cajas, puntos de venta y clientes para todas las sucursales.',
         ],
         'location' => [
             'etiqueta'           => 'localidades',
@@ -879,7 +879,7 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'ventas',
             'singular'           => 'venta',
             'genero'             => 'f',
-            'descripcion'        => 'Las ventas (pantalla Ventas). Por acá solo se anulan; para vender está proponer_venta. Se ubican por su número.',
+            'descripcion'        => 'Las ventas (pantalla Ventas). Por acá solo se anulan; para vender está proponer_venta. Se ubican por su número. Una venta facturada (o incluida en una factura consolidada) no se anula por acá: va por devolución con nota de crédito.',
             'operaciones'        => [self::OP_BAJA],
             'solo_lectura'       => [],
             'claves_de_pantalla' => [],
@@ -887,7 +887,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => 'Se anula la venta como desde la pantalla de Ventas: va a la papelera, vuelve al stock lo que descontó, se borra su movimiento de cuenta corriente (salvo que tenga nota de crédito de AFIP) y las comisiones del vendedor. La plata que entró en caja NO se compensa.',
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'SaleController::destroy(Request, $id) → DeleteSaleHelper::eliminar_venta con candado: soft delete, regresar_stock() por el libro de movimientos, deleteCurrentAcountFromSale salvo nota de crédito AFIP, deleteSellerCommissionsFromSale, puntos revertidos. compensar_caja solo si el request lo manda en true (el genérico no lo manda).',
+            'revisado'           => 'SaleController::destroy(Request, $id) → DeleteSaleHelper::eliminar_venta con candado: soft delete, regresar_stock() por el libro de movimientos, deleteCurrentAcountFromSale salvo nota de crédito AFIP, deleteSellerCommissionsFromSale, puntos revertidos. compensar_caja solo si el request lo manda en true (el genérico no lo manda). Desde el 5/10/2026 destroy() responde 422 sin tocar nada si la venta tiene algún AfipTicket (con o sin CAE) o está incluida en una consolidada con tickets (DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar); el ejecutor lo muestra como rechazo con ese message.',
         ],
     ];
 

@@ -15,9 +15,11 @@ use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Budget;
@@ -145,7 +147,9 @@ class BudgetController extends Controller
                 'iva_en_articulos_sin_iva'  => !is_null($request->iva_en_articulos_sin_iva) ? $request->iva_en_articulos_sin_iva : 0,
                 'total'                     => $request->total,
                 'budget_status_id'          => $request->budget_status_id,
-                'address_id'                => $request->address_id,
+                // Una sucursal borrada se reemplaza por una viva: al confirmar, el presupuesto le pasa
+                // esta sucursal a la venta y a su stock (misión eliminar-sucursal-con-stock, D12).
+                'address_id'                => SucursalVigenteHelper::resolver($request->address_id, $this->userId(), $this->userId(false), 'BudgetController@store'),
                 'surchages_in_services'     => $request->surchages_in_services,
                 'discounts_in_services'     => $request->discounts_in_services,
                 'aplicar_recargos_directo_a_items' => $request->aplicar_recargos_directo_a_items,
@@ -610,7 +614,9 @@ class BudgetController extends Controller
                 $model->forzar_total_monto    = SaleHelper::normalized_forzar_total_monto($request);
             }
             $model->budget_status_id          = $request->budget_status_id;
-            $model->address_id                = $request->address_id;
+            // Una sucursal borrada se reemplaza solo si el request trae una DISTINTA de la guardada: el
+            // presupuesto viejo conserva la suya (D2). Ver SucursalVigenteHelper::resolver_al_editar().
+            $model->address_id                = SucursalVigenteHelper::resolver_al_editar($request->address_id, $model->address_id, $this->userId(), $this->userId(false), 'BudgetController@update');
             // Misma guarda que en SaleController::update(): sin la clave, la lista guardada no se toca.
             if ($actualizar_price_type_id) {
                 $model->price_type_id         = $price_type_id_nuevo;
@@ -930,6 +936,19 @@ class BudgetController extends Controller
                     de anulacion queda como estaba hasta que Lucas la revise.
                 */
                 $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale, true);
+
+                if (!is_null($motivo)) {
+                    DB::rollBack();
+                    return response()->json(['message' => $motivo], 422);
+                }
+
+                /*
+                    Y la regla de BORRADO, que no es la misma (mision venta-facturada-no-se-borra,
+                    5/10/2026): la de edicion no mira la consolidacion, asi que la venta original de
+                    una consolidada con tickets pasaba y llegaba a deleteSale(), donde destroy() la
+                    frena. Se pregunta aca para responder 422 antes de tocar nada.
+                */
+                $motivo = DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar($sale);
 
                 if (!is_null($motivo)) {
                     DB::rollBack();

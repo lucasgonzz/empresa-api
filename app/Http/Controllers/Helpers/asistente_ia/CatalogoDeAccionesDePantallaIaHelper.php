@@ -176,6 +176,17 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#masive-update/.*/revert#'                   => 'masiva: revierte una actualización masiva entera',
         '#import-history/rollback#'                   => 'masiva: revierte una importación entera',
         '#articles-pre-import/update-articles#'       => 'masiva: aplica el pre-import a todos los artículos alcanzados',
+        /*
+         * Categorización con IA (misión categorizacion-tres-modelos, 5/10/2026). Todo lo que ESCRIBE
+         * queda afuera: elegir un sistema (o volver atrás) crea categorías y cambia la categoría de
+         * miles de artículos de un saque, y revisar los dudosos solo tiene sentido mirando la
+         * sugerencia de cada uno en Alertas → Catálogo → Categorías. Con el dueño en "directo" cualquiera
+         * de estas correría sin tarjeta. Las lecturas (`resumen`, `actual`, `items`) siguen entrando.
+         */
+        '#^POST api/category-proposal-runs/\{id\}/(elegir|volver-atras)$#' => 'masiva: elegir un sistema de categorías (o volver atrás) crea categorías y cambia la categoría de miles de artículos de un saque; se hace desde Alertas → Catálogo → Categorías, mirando las tarjetas y confirmando',
+        '#^POST api/category-proposal-items/(aprobar|rechazar)-varios$#'   => 'masiva por POST: aprobar o rechazar los dudosos de la categorización de un saque',
+        '#^POST api/category-proposal-items/\{id\}/(aprobar|rechazar)$#'   => 'revisión de la categorización: cada dudoso se decide mirando la sugerencia en Alertas → Catálogo → Categorías',
+        '#^PUT api/category-proposal-runs/\{id\}/visto$#'                  => 'marca de pantalla (la propuesta de categorías ya se vio): no tiene sentido por chat',
         // ── Ya tienen herramienta propia (las de recurso van por HERRAMIENTAS_PROPIAS) ────────
         '#api/pdf-column-profiles#'                   => 'tiene su herramienta: proponer_cambio_en_diseno_pdf',
         /*

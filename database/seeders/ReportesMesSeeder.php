@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Address;
+use App\Models\AfipTicket;
 use App\Models\CompanyPerformance;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -417,6 +418,20 @@ class ReportesMesSeeder extends Seeder
         config(['app.suppress_delete_notifications' => true]);
 
         try {
+            /*
+                0) Los comprobantes de las ventas, ANTES que las ventas (misión
+                venta-facturada-no-se-borra, 5/10/2026): SaleController::destroy rechaza con 422 la
+                venta con un AfipTicket vivo (factura o nota de crédito), y el lazo de abajo tira la
+                respuesta. Sin esto las ventas facturadas sobrevivían al truncado.
+            */
+            AfipTicket::where(function ($q) use ($user_id) {
+                $q->whereHas('sale', function ($q) use ($user_id) {
+                    $q->where('user_id', $user_id);
+                })->orWhereHas('sale_nota_credito', function ($q) use ($user_id) {
+                    $q->where('user_id', $user_id);
+                });
+            })->delete();
+
             // 1) Ventas del usuario con el flujo completo de SaleController::destroy (relaciones, CC, stock)
             $sale_controller = new SaleController();
             $sale_ids = Sale::where('user_id', $user_id)->pluck('id')->toArray();

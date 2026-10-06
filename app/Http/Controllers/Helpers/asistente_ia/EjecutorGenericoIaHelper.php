@@ -154,6 +154,15 @@ class EjecutorGenericoIaHelper
 
         $respuesta = self::llamar_al_controller($controller, $operacion, $payload, $id);
 
+        /*
+         * 🔴 El status >= 400 corta en las TRES operaciones (misión venta-facturada-no-se-borra,
+         * 5/10/2026), como ya prometía el docblock de la clase. Hasta acá solo lo miraba el alta (por
+         * id_creado()), y una baja rechazada salía como éxito: la venta facturada que destroy() se
+         * negó a borrar quedaba en la tarjeta como "Venta N° X anulada". Los 4xx de los update() y
+         * destroy() del catálogo cortan antes de escribir nada (revisado el 5/10/2026).
+         */
+        self::cuerpo_de($respuesta);
+
         if ($operacion === Catalogo::OP_ALTA) {
 
             $id = self::id_creado($contexto, $declaracion, $respuesta);

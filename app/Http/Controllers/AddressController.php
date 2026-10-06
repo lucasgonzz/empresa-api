@@ -2,14 +2,26 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\address\AjusteDePreciosDeSucursalHelper;
-use App\Http\Controllers\Stock\StockMovementController;
+use App\Http\Controllers\Helpers\address\EliminarSucursalHelper;
 use App\Models\Address;
 use Illuminate\Http\Request;
 
 class AddressController extends Controller
 {
+
+    /**
+     * Mensaje del 404 de "eliminar-resumen" y de "destroy" cuando la sucursal no existe o es de otro
+     * comercio.
+     *
+     * 🔴 CONTRATO CON LA SPA: `empresa-spa/src/store/address.js` distingue este 404 del de una API
+     * VIEJA (que no tiene la ruta de resumen, y responde sin esta palabra) buscando "sucursal" en el
+     * mensaje. Si se reformula, la palabra "sucursal" tiene que seguir adentro: el test
+     * `Eliminar_sucursal_concurrencia_y_bordes_Test` lo fija. Sin ella, la SPA nueva tomaría "ya está
+     * eliminada" por "API vieja" y caería al modo clásico (seguro: el DELETE sin decisión lo frena un 422,
+     * pero se pierde el aviso).
+     */
+    const MENSAJE_SUCURSAL_INEXISTENTE = 'La sucursal no existe o no es de este comercio.';
 
     public function index() {
         $models = Address::where('user_id', $this->userId())
@@ -120,47 +132,71 @@ class AddressController extends Controller
         return response()->json(['model' => $this->fullModel('Address', $model->id)], 200);
     }
 
-    public function destroy($id) {
-        $model = Address::find($id);
+    /**
+     * Lo que pasa si se elimina la sucursal: stock (con signo, variantes, papelera), usuarios que la
+     * tienen elegida, marcas, ventas, cajas, puntos de venta, clientes, bloqueos y si iría a segundo
+     * plano. Es lo que lee el modal de eliminar de la SPA para preguntar (misión
+     * eliminar-sucursal-con-stock, 5/10/2026). Solo lee.
+     *
+     * 404 si la sucursal no existe o es de otro comercio (D15: antes no había scope por dueño).
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function eliminar_resumen($id) {
 
-        /*
-         * Tanda correctivos 2408, ítem 7: antes del detach se deja un StockMovement por
-         * cada artículo con stock en esta sucursal. Hasta hoy el detach evaporaba ese
-         * stock sin dejar rastro: el pivot desaparecía, el stock global del artículo
-         * quedaba inflado hasta el próximo recálculo, y en el historial de movimientos no
-         * había nada que explicara el salto.
-         *
-         * El movimiento (from_address_id = la sucursal, amount negativo, concepto
-         * "Eliminacion de sucursal") hace las dos cosas por el camino normal de
-         * StockMovementController::crear(): deja el pivot de esta sucursal en 0 y
-         * recalcula el stock global desde los depósitos, así el detach posterior borra
-         * filas que ya están en cero y el número final es consistente.
-         */
-        foreach ($model->articles()->get() as $article) {
+        $owner_id = $this->userId();
 
-            /** Stock del artículo en ESTA sucursal (pivot del belongsToMany). */
-            $stock_en_sucursal = (float) $article->pivot->amount;
+        $model = EliminarSucursalHelper::direccion_del_dueno($id, $owner_id);
 
-            if ($stock_en_sucursal == 0) {
-                continue;
-            }
-
-            $ct_stock_movement = new StockMovementController();
-
-            $ct_stock_movement->crear([
-                'model_id'                     => $article->id,
-                'amount'                       => -$stock_en_sucursal,
-                'from_address_id'              => $model->id,
-                'concepto_stock_movement_name' => 'Eliminacion de sucursal',
-                'observations'                 => 'Eliminacion de sucursal '.$model->street,
-            ]);
+        if (is_null($model)) {
+            return response()->json(['message' => Self::MENSAJE_SUCURSAL_INEXISTENTE], 404);
         }
 
-        $model->articles()->detach();
+        return response()->json(EliminarSucursalHelper::resumen($model, $owner_id), 200);
+    }
 
-        $model->delete();
-        ImageController::deleteModelImages($model);
-        $this->sendDeleteModelNotification('Address', $model->id);
-        return response(null);
+    /**
+     * Elimina la sucursal (misión eliminar-sucursal-con-stock, 5/10/2026). Delgado a propósito: valida
+     * la tenencia, arma la decisión y delega todo en EliminarSucursalHelper.
+     *
+     * La decisión viaja en el request (query string o cuerpo), toda OPCIONAL: `stock_accion`
+     * (transferir | descartar), `stock_destino_id`, `usuarios_accion` (reasignar | dejar_sin_sucursal),
+     * `usuarios_destino_id`, `reemplazo_id`. Sin decisión y con algo que decidir → 422
+     * `requiere_decision` (así la SPA vieja, el borrado masivo y el asistente IA reciben un mensaje
+     * claro en vez de perder stock en silencio); sin nada que decidir, se borra como siempre.
+     *
+     * 🔴 La firma sigue siendo `destroy($id)` y la decisión se lee de `request()`: el borrado masivo
+     * (`DeleteModelsHelper::process_delete`, también desde su job) y el asistente IA llaman a este
+     * método con UN solo argumento. Ver EliminarSucursalHelper::decision_del_request().
+     *
+     * Respuestas: 200 `{eliminada, resumen}` (antes era un cuerpo vacío: la SPA vieja no lo lee),
+     * 202 `{queued, message, background_process_id}` (muchas filas: segundo plano), 404, 422
+     * `{message, requiere_decision, bloqueos, faltan}`, 500 si el trabajo se cortó (volver a eliminar
+     * continúa donde quedó).
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function destroy($id) {
+
+        $owner_id = $this->userId();
+
+        $model = EliminarSucursalHelper::direccion_del_dueno($id, $owner_id);
+
+        // D15: id de otro comercio o inexistente → 404 (antes: borraba la ajena, o 500 con un id viejo).
+        if (is_null($model)) {
+            return response()->json(['message' => Self::MENSAJE_SUCURSAL_INEXISTENTE], 404);
+        }
+
+        $decision = EliminarSucursalHelper::decision_del_request(request());
+
+        $resultado = EliminarSucursalHelper::eliminar($model, $owner_id, $this->userId(false), $decision);
+
+        if ($resultado['status'] === 200) {
+            $this->sendDeleteModelNotification('Address', $model->id);
+        }
+
+        return response()->json($resultado['body'], $resultado['status']);
     }
 }

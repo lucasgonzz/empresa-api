@@ -75,6 +75,12 @@
             text-align: center;
             margin-bottom: 20px;
         }
+
+        .error {
+            color: #b00020;
+            text-align: center;
+            margin-bottom: 20px;
+        }
     </style>
 </head>
 <body>
@@ -84,6 +90,10 @@
 
         @if(session('status'))
             <p class="status">{{ session('status') }}</p>
+        @endif
+
+        @if(session('error'))
+            <p class="error">{{ session('error') }}</p>
         @endif
 
         <form method="POST" action="{{ route('user.setup') }}">
