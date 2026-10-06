@@ -702,8 +702,8 @@ class CurrentAcountController extends Controller
             // cliente o proveedor. Reemplaza a updateModelSaldo(), que escribía la columna vieja `saldo`.
             //
             // 🔴 `clients.saldo` / `providers.saldo` es la columna de antes de las cuentas por moneda y
-            // NO es el saldo vivo: ningún movimiento la mantiene, así que guarda un valor congelado (o
-            // NULL). El vivo es `credit_accounts.saldo` (una fila por moneda), que se espeja en
+            // NO es el saldo vivo: `set_model_saldo()` no la escribe, así que guarda un valor congelado
+            // (o NULL). El vivo es `credit_accounts.saldo` (una fila por moneda), que se espeja en
             // `saldo_pesos` / `saldo_dolares` del cliente o proveedor. Para MOSTRAR un saldo se usa el
             // espejo, que es lo que ve la lista; para DECIDIR plata se lee `credit_accounts.saldo`, la
             // fuente. Ojo: `ClientController` todavía le asigna a `clients.saldo` lo que venga en el
