@@ -174,4 +174,81 @@ class Mapeo_de_la_columna_por_ia_Test extends CatalogoPorListaTestCase
         $this->assertSame($propiedad, $valida);
         $this->assertNull($de_una_lista_que_ya_no_esta);
     }
+
+    /**
+     * I1 de la revisión independiente (6/10/2026): el mapeo guardado por proveedor valida que la
+     * lista sea del dueño pero no validaba que SIGUIERA restringida, y el analizador sí
+     * (test_la_respuesta_de_la_ia_se_valida_contra_las_listas_restringidas). Una configuración
+     * guardada cuando la lista era restringida y aplicada después de que el dueño la dejó sin
+     * restricción seguía importando una columna que la pantalla ya no ofrece para ella.
+     *
+     * Se prueba la composición real: ids_validos_para() contra la base y propiedad_guardada_valida()
+     * con lo que devuelve. Solo `visible_en_tienda` pide la restricción; las otras propiedades de la
+     * lista valen igual para una lista sin restringir.
+     *
+     * @return void
+     */
+    public function test_el_mapeo_guardado_descarta_visible_en_tienda_de_una_lista_que_dejo_de_estar_restringida()
+    {
+        $ids_validos_para = new \ReflectionMethod(ProviderImportMappingHelper::class, 'ids_validos_para');
+        $ids_validos_para->setAccessible(true);
+
+        $propiedad_valida = new \ReflectionMethod(ProviderImportMappingHelper::class, 'propiedad_guardada_valida');
+        $propiedad_valida->setAccessible(true);
+
+        $mapeo = (object) ['user_id' => $this->dueno->id];
+
+        $visible_mayorista = 'price_type_' . $this->mayorista->id . '_visible_en_tienda';
+        $visible_minorista = 'price_type_' . $this->minorista->id . '_visible_en_tienda';
+        $visible_ajena     = 'price_type_' . $this->lista_ajena->id . '_visible_en_tienda';
+        $precio_minorista  = 'price_type_' . $this->minorista->id . '_final_price';
+
+        $guardadas = [
+            ['system_property' => $visible_mayorista],
+            ['system_property' => $visible_minorista],
+            ['system_property' => $visible_ajena],
+            ['system_property' => $precio_minorista],
+        ];
+
+        $ids = $ids_validos_para->invoke(null, $mapeo, $guardadas);
+
+        // Por referencia: más abajo se recalculan los ids con la restricción apagada.
+        $aplicar = function ($propiedad) use ($propiedad_valida, &$ids) {
+            return $propiedad_valida->invoke(null, ['system_property' => $propiedad], $ids);
+        };
+
+        $this->assertSame($visible_mayorista, $aplicar($visible_mayorista), 'Restringida y del dueño: se aplica.');
+        $this->assertNull($aplicar($visible_minorista), 'Una lista que no está restringida: ya no se ofrece, se descarta.');
+        $this->assertNull($aplicar($visible_ajena), 'Una lista ajena: se descarta, como siempre.');
+        $this->assertSame($precio_minorista, $aplicar($precio_minorista), 'El resto de las propiedades de la lista no piden la restricción.');
+
+        // Si el dueño apaga la restricción de Mayorista, el mapeo que la usaba deja de aplicarse.
+        DB::table('price_types')->where('id', $this->mayorista->id)->update(['catalogo_restringido_en_tienda' => 0]);
+
+        $ids = $ids_validos_para->invoke(null, $mapeo, $guardadas);
+
+        $this->assertNull($aplicar($visible_mayorista), 'Ya no está restringida: se descarta.');
+    }
+
+    /**
+     * I1, compatibilidad: quien arma `ids_validos` a mano sin la clave de las listas restringidas
+     * (el test de arriba, o código viejo) no la necesita; sin ella no se exige la restricción y
+     * vale lo de siempre. La que arma ids_validos_para() en producción sí la trae.
+     *
+     * @return void
+     */
+    public function test_sin_la_clave_de_listas_restringidas_no_se_exige_la_restriccion()
+    {
+        $reflexion = new \ReflectionMethod(ProviderImportMappingHelper::class, 'propiedad_guardada_valida');
+        $reflexion->setAccessible(true);
+
+        $propiedad = 'price_type_' . $this->minorista->id . '_visible_en_tienda';
+
+        $valida = $reflexion->invoke(null, ['system_property' => $propiedad], [
+            'addresses'   => [],
+            'price_types' => [(int) $this->minorista->id],
+        ]);
+
+        $this->assertSame($propiedad, $valida);
+    }
 }
