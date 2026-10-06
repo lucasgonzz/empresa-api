@@ -1152,6 +1152,30 @@ class SaleController extends Controller
             return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
         }
 
+        /**
+         * Una venta facturada no se borra (misión venta-facturada-no-se-borra, 5/10/2026): su
+         * factura desaparecería del Libro IVA y de los TXT mientras sigue vigente en ARCA. El
+         * criterio entero vive en DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar().
+         *
+         * 🔴 Vive en la API aunque la SPA esconda "Eliminar" en una venta con tickets: a este
+         * destroy() también llegan el borrado masivo (DeleteModelsHelper::process_delete) y la
+         * baja genérica del asistente (EjecutorGenericoIaHelper), y ninguno de los dos pasa por
+         * ese botón. Va ANTES del chequeo de cajas: no tiene sentido pedir que se abran cajas
+         * para algo que no se va a poder borrar.
+         *
+         * `error_venta_facturada` es la misma clave que ya usa OrderController para su 422 al
+         * cancelar un pedido facturado. Es opcional: una SPA que no la lee muestra el `message`
+         * con el interceptor global.
+         */
+        $motivo = DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar($model);
+
+        if (!is_null($motivo)) {
+
+            Log::info('destroy sale id '.$id.': rechazado. '.$motivo);
+
+            return response()->json(['message' => $motivo, 'error_venta_facturada' => true], 422);
+        }
+
         /** Si el cliente pidió compensar caja, se valida que todas las cajas involucradas estén abiertas antes de tocar la venta. */
         $compensar_caja = $request->boolean('compensar_caja');
         /** Helper reutilizable para verificación y movimientos compensatorios al borrar. */
