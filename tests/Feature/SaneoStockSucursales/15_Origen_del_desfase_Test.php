@@ -293,7 +293,7 @@ class Origen_del_desfase_Test extends SaneoStockSucursalesTestCase
 
         $this->assertSame(0, $this->ver($e['dueno'], ['--detalle' => true]), 'Salida:' . "\n" . $this->salida);
 
-        $this->assertStringContainsString('Artículos con variantes con depósitos y desfase: 1', $this->salida, 'Z es el único artículo con variantes con depósitos y desfase (W tiene el stock bien: no se reconstruye).');
+        $this->assertStringContainsString('Artículos con variantes con depósitos y desfase: 1', $this->salida, 'Z es el único artículo con variantes con depósitos y desfase.');
         $this->assertStringContainsString('RECONSTRUYE el pivot', $this->salida);
 
         // El detalle de Z lo marca, con la parte del desfase que viene de otra causa.
@@ -303,5 +303,42 @@ class Origen_del_desfase_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(1, preg_match('/^  art ' . (int) $e['x']->id . ' .*$/mu', $this->salida, $linea_x));
         $this->assertStringNotContainsString('de otra causa', $linea_x[0]);
         $this->assertStringNotContainsString('reconstruye', $linea_x[0]);
+    }
+
+    /**
+     * 🔴 Un artículo cuyo stock YA está bien (alguien lo corrigió a mano) no tiene corrección que
+     * repartir: no aporta ni a "por filas fantasma" ni a "por otra causa", ni lleva la marca "de otra
+     * causa" en el detalle. Sin esto la tabla de origen mostraba "−2,00 por fantasmas / +2,00 por otra
+     * causa" para ese artículo: suma cero, pero deja un monto de otra causa sin ningún artículo detrás
+     * (y el detalle lo marca como lo que `--solo_explicados` deja afuera cuando NO lo deja).
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function un_articulo_con_el_stock_ya_corregido_no_aporta_monto_de_otra_causa()
+    {
+        $e = $this->escenario();
+
+        // W: vive 10, fantasma −2 y el stock YA está en 10 (corregido a mano): desfase 0, pero el stock
+        // difiere de la suma cruda de sus filas (8).
+        $w = $this->articulo_con_fantasmas($e['dueno'], 'W corregido a mano', [$e['s1']->id => 10], [[$e['muerta'], -2]], 10)['articulo'];
+
+        $this->assertEquals(10.0, $this->stock($w), 'El escenario no quedó armado: W tiene el stock ya corregido.');
+
+        $this->assertSame(0, $this->ver($e['dueno'], ['--detalle' => true]), 'Salida:' . "\n" . $this->salida);
+
+        // La tabla es la del escenario: W no cambia ni un número.
+        $fila = $this->fila_de_origen($e['dueno']->id);
+
+        $this->assertEquals(93.0, $fila['desfase'], 'W no tiene desfase: no suma.');
+        $this->assertEquals(-4.0, $fila['fantasmas'], 'W no aporta a "por filas fantasma" (sin la regla daría −6).');
+        $this->assertEquals(97.0, $fila['otra_causa'], 'W no aporta a "por otra causa" (sin la regla daría 99: un monto sin artículo detrás).');
+        $this->assertSame(2, $fila['articulos'], 'Y y Z; W no es un artículo con otra causa.');
+        $this->assertEquals($fila['desfase'], $fila['fantasmas'] + $fila['otra_causa'], 'Las dos causas siguen sumando el desfase.');
+
+        // Y su línea de detalle no lleva la marca.
+        $this->assertSame(1, preg_match('/^  art ' . (int) $w->id . ' .*$/mu', $this->salida, $linea_w), 'El detalle tiene que traer la línea de W. Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('(desfase 0.00)', $linea_w[0], 'W: desfase cero.');
+        $this->assertStringNotContainsString('de otra causa', $linea_w[0], 'W no tiene corrección: la marca "de otra causa" sería falsa.');
     }
 }

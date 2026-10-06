@@ -935,9 +935,10 @@ class FilasFantasmaDeSucursalHelper
      * @param  int            $concepto_id          Id del concepto CONCEPTO (lo resuelve el llamador una vez).
      * @param  callable|null  $antes_de_escribir
      * @param  callable|null  $antes_de_confirmar
-     * @param  bool           $solo_explicados      true: un artículo cuyo desfase NO lo explican los fantasmas
-     *                                              (`desfase_inexplicado` ≠ 0) se saltea sin tocar nada
-     *                                              (motivo MOTIVO_DESVIO_NO_EXPLICADO).
+     * @param  bool           $solo_explicados      true: un artículo cuya corrección de stock tiene una parte que
+     *                                              NO explican los fantasmas (`es_desvio_ajeno()`) se saltea sin
+     *                                              tocar nada (motivo MOTIVO_DESVIO_NO_EXPLICADO). Uno que ya
+     *                                              tiene el stock bien no se saltea: solo se le borra el fantasma.
      * @return array  Resumen: `resultado` (saneado | ya_limpio | saltado), `motivo`, `article_id`, y, si se
      *                saneó: `user_id`, `clase`, `en_papelera`, `filas_borradas_articulo`,
      *                `filas_borradas_variante`, `unidades_fantasma_articulo`, `unidades_fantasma_variante`,

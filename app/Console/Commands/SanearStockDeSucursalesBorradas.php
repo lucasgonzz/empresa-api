@@ -71,8 +71,11 @@ use Illuminate\Support\Facades\Schema;
  * 10. La función del sistema (`setArticleStockFromAddresses`) solo se llama si el stock global TIENE
  *     que cambiar. Con el desfase en cero se borran los fantasmas y nada más (ver el helper).
  * 11. El reporte parte el desfase en lo que explican las filas fantasma y lo que NO (carga manual,
- *     importación, versión vieja). `--solo_explicados` deja afuera lo segundo: la corrección de un
- *     desvío ajeno a las sucursales borradas llevaría la etiqueta "Baja de sucursal eliminada".
+ *     importación, versión vieja), solo en los artículos que tienen algo que corregir.
+ *     `--solo_explicados` deja afuera los artículos cuya corrección tiene una parte de lo segundo: esa
+ *     parte llevaría la etiqueta "Baja de sucursal eliminada" sin tener nada que ver con las
+ *     sucursales borradas. Un artículo que ya tiene el stock bien NO se saltea: solo hay que borrarle
+ *     el fantasma (si quedara, el próximo movimiento del artículo lo volvería a sumar).
  * 12. Tras 10 artículos que fallan SEGUIDOS se corta: es un error del entorno, no del artículo.
  *
  * ─── Cómo conviene correrlo en un cliente real ────────────────────────────────────────────────
@@ -104,7 +107,7 @@ class SanearStockDeSucursalesBorradas extends Command
                             {--user_id= : Acota a un dueño (articles.user_id). Vacío es un error.}
                             {--articulo_id= : Acota a un artículo.}
                             {--todos : Con --aplicar y sin --user_id, permite sanear a VARIOS dueños de una base compartida a la vez. Con un solo dueño con trabajo no hace falta.}
-                            {--solo_explicados : Con --aplicar, saltea los artículos cuyo stock difiere de la suma de sus filas por una causa que no son los fantasmas (se listan con --ver --detalle).}
+                            {--solo_explicados : Con --aplicar, saltea los artículos cuyo stock hay que corregir y esa corrección tiene una parte que no explican los fantasmas (se listan con --ver --detalle).}
                             {--limite= : Corta después de N artículos saneados o fallidos (solo --aplicar). Los saltados y los ya limpios no cuentan.}
                             {--lote=200 : Artículos por tanda (con artículos de decenas de miles de filas fantasma, uno chico: 20).}
                             {--detalle : Lista artículo por artículo (hasta 200 líneas).}
@@ -234,20 +237,26 @@ class SanearStockDeSucursalesBorradas extends Command
         $this->reportar_medicion($medicion, $opciones);
 
         if (!$aplicar) {
-            // Mejor enterarse acá que con --aplicar: sin el concepto el comando se niega a escribir.
-            if ($medicion['total']['articulos'] > 0 && is_null(ConceptoStockMovement::where('name', FilasFantasmaDeSucursalHelper::CONCEPTO)->value('id'))) {
-                $this->warn('Ojo: no existe el concepto de stock "' . FilasFantasmaDeSucursalHelper::CONCEPTO . '" en esta base: --aplicar se negaría a escribir (exit 1) hasta que se cargue.');
-            }
+            // Lo que le impediría escribir a `--aplicar`, anticipado: que el dry-run diga "todo bien" y
+            // `--aplicar` se niegue después es peor que avisar acá. Con la MISMA condición que `--aplicar`:
+            // sin `trabajo` (artículos que puede tocar) sale con "No hay nada para sanear" antes de
+            // cualquier precondición, así que no hay negativa que anticipar. Los `no_recalculable` y los
+            // saltados son artículos afectados pero no son trabajo.
+            if (count($medicion['trabajo']) > 0) {
+                // Sin el concepto el comando se niega a escribir.
+                if (is_null(ConceptoStockMovement::where('name', FilasFantasmaDeSucursalHelper::CONCEPTO)->value('id'))) {
+                    $this->warn('Ojo: no existe el concepto de stock "' . FilasFantasmaDeSucursalHelper::CONCEPTO . '" en esta base: --aplicar se negaría a escribir (exit 1) hasta que se cargue.');
+                }
 
-            // Y lo mismo con el motor de las tablas y los índices (la precondición 3 de --aplicar): que
-            // el dry-run diga "todo bien" y --aplicar se niegue después es peor que avisar acá.
-            $problemas = $this->problemas_de_motor_e_indices();
+                // Y lo mismo con el motor de las tablas y los índices (la precondición 3 de --aplicar).
+                $problemas = $this->problemas_de_motor_e_indices();
 
-            if ($medicion['total']['articulos'] > 0 && count($problemas) > 0) {
-                $this->warn('Ojo: --aplicar se negaría a escribir en esta base (exit 1) hasta que se resuelva:');
+                if (count($problemas) > 0) {
+                    $this->warn('Ojo: --aplicar se negaría a escribir en esta base (exit 1) hasta que se resuelva:');
 
-                foreach ($problemas as $problema) {
-                    $this->line('  - ' . $problema . '.');
+                    foreach ($problemas as $problema) {
+                        $this->line('  - ' . $problema . '.');
+                    }
                 }
             }
 
@@ -512,13 +521,20 @@ class SanearStockDeSucursalesBorradas extends Command
         $fila['unidades_articulo'] = round($fila['unidades_articulo'] + $a['unidades_fantasma_articulo'], 2);
         $fila['unidades_variante'] = round($fila['unidades_variante'] + $a['unidades_fantasma_variante'], 2);
         $fila['desfase'] = round($fila['desfase'] + $a['desfase'], 2);
-        $fila['desfase_fantasmas'] = round($fila['desfase_fantasmas'] + $a['desfase_explicado'], 2);
-        $fila['desfase_otra_causa'] = round($fila['desfase_otra_causa'] + $a['desfase_inexplicado'], 2);
 
-        // Se cuenta con el mismo criterio que `--solo_explicados` (una sola definición): un artículo
-        // cuya CORRECCIÓN de stock tiene una parte que no explican los fantasmas. Uno sin desfase no
-        // tiene corrección, aunque su stock difiera de la suma cruda de sus filas.
-        if (FilasFantasmaDeSucursalHelper::es_desvio_ajeno($a)) {
+        // El desfase se parte por causa SOLO donde hay una corrección que repartir, con el mismo criterio
+        // que `--solo_explicados` (una sola definición: `es_desvio_ajeno()`). Un artículo cuyo stock ya
+        // está bien (alguien lo corrigió a mano) no tiene corrección: sumaría "−2 por fantasmas, +2 por
+        // otra causa", que da cero pero deja un monto de otra causa sin ningún artículo detrás. Así las
+        // dos causas siguen sumando el desfase y "otra causa" es distinto de cero solo si hay artículos
+        // con otra causa.
+        $desvio_ajeno = FilasFantasmaDeSucursalHelper::es_desvio_ajeno($a);
+        $otra_causa = $desvio_ajeno ? $a['desfase_inexplicado'] : 0.0;
+
+        $fila['desfase_otra_causa'] = round($fila['desfase_otra_causa'] + $otra_causa, 2);
+        $fila['desfase_fantasmas'] = round($fila['desfase_fantasmas'] + $a['desfase'] - $otra_causa, 2);
+
+        if ($desvio_ajeno) {
             $fila['articulos_otra_causa']++;
         }
     }
@@ -531,9 +547,10 @@ class SanearStockDeSucursalesBorradas extends Command
      */
     private function linea_de_detalle_de_medicion(array $a)
     {
-        // Si el desfase tiene una parte que NO explican los fantasmas, la línea la muestra: es lo que
-        // `--solo_explicados` deja afuera y lo que conviene mirar antes de `--aplicar`.
-        $otra_causa = abs($a['desfase_inexplicado']) >= FilasFantasmaDeSucursalHelper::TOLERANCIA
+        // Si la corrección tiene una parte que NO explican los fantasmas, la línea la muestra: es lo que
+        // `--solo_explicados` deja afuera (mismo criterio, `es_desvio_ajeno()`) y lo que conviene mirar
+        // antes de `--aplicar`.
+        $otra_causa = FilasFantasmaDeSucursalHelper::es_desvio_ajeno($a)
             ? ', de otra causa ' . $this->con_signo($a['desfase_inexplicado'])
             : '';
 
@@ -619,7 +636,7 @@ class SanearStockDeSucursalesBorradas extends Command
             }
 
             if ($m['detalle_omitido'] > 0) {
-                $this->comment('  ... y ' . $m['detalle_omitido'] . ' artículos más (el detalle se corta a las ' . self::TOPE_DETALLE . ' líneas).');
+                $this->comment('  ... y ' . $m['detalle_omitido'] . ' artículos más (el detalle se corta a las ' . self::TOPE_DETALLE . ' líneas; --sin_tope las lista todas).');
             }
         }
     }
@@ -992,10 +1009,11 @@ class SanearStockDeSucursalesBorradas extends Command
                     continue;
                 }
 
-                // Solo un artículo que SE SANEÓ prueba que el entorno anda. Uno `ya_limpio` o `saltado` no
-                // escribió nada: no dice nada de la salud del entorno y no reinicia el contador (si lo
-                // reiniciara, una falla que solo pega en artículos con movimiento nunca cortaría con
-                // artículos sin desfase intercalados).
+                // Solo un artículo que SE SANEÓ reinicia la cuenta: prueba que borrar y recalcular andan. Uno
+                // `ya_limpio` o `saltado` no escribió nada y no dice nada de la salud del entorno.
+                // Lo que NO promete: un artículo que se sanea SIN movimiento (su stock ya estaba bien) también
+                // reinicia aunque no ejercite la creación del movimiento, así que una falla que solo pega ahí
+                // corta más tarde, no nunca (cada artículo se revierte solo y queda anotado: la demora no daña).
                 $fallidos_seguidos = 0;
 
                 $intentados++;
@@ -1366,9 +1384,13 @@ class SanearStockDeSucursalesBorradas extends Command
     }
 
     /**
-     * Anota en el respaldo que un artículo falló y se revirtió.
+     * Anota que un artículo falló y se revirtió: en el .sql (si su bloque ya estaba escrito) y en el
+     * respaldo JSONL.
      *
-     * Mejor esfuerzo: si el respaldo mismo está roto, ya hay un error de más arriba que lo dice.
+     * Mejor esfuerzo: si el respaldo mismo está roto, ya hay un error de más arriba que lo dice. Cada
+     * escritura va en su propio `try` para que si una falla (disco lleno, un mensaje que no se pueda
+     * serializar) la otra se escriba igual, y el aviso del .sql va primero: es lo único que le dice a
+     * quien abra ese archivo que un bloque NO se aplicó.
      *
      * @param  int         $article_id
      * @param  \Throwable  $e
@@ -1376,6 +1398,17 @@ class SanearStockDeSucursalesBorradas extends Command
      */
     private function escribir_error_de_articulo($article_id, \Throwable $e)
     {
+        // A la vista de quien abra el .sql: el bloque de ese artículo ya está escrito más arriba y no se
+        // puede sacar, pero este aviso le dice que no lo corra (en un artículo con pivot reconstruido
+        // pisaría ventas posteriores con las filas de antes).
+        if ($this->bloque_sql_escrito) {
+            try {
+                $this->volcar($this->manejador_sql, '-- ⚠ ATENCIÓN: el bloque del artículo ' . (int) $article_id . ' de arriba NO se aplicó (la transacción se revirtió): no lo corras.' . "\n\n");
+            } catch (\Throwable $ignorado) {
+                // Ver el docblock.
+            }
+        }
+
         try {
             $this->escribir_linea_json([
                 'evento' => 'revertido_por_error',
@@ -1384,13 +1417,6 @@ class SanearStockDeSucursalesBorradas extends Command
                 // Si es true el commit falló DESPUÉS de escribir el bloque: ese bloque no corresponde a nada.
                 'bloque_sql_escrito' => $this->bloque_sql_escrito,
             ]);
-
-            // Lo mismo, a la vista de quien abra el .sql: el bloque de ese artículo ya está escrito
-            // más arriba y no se puede sacar, pero este aviso le dice que no lo corra (en un artículo
-            // con pivot reconstruido pisaría ventas posteriores con las filas de antes).
-            if ($this->bloque_sql_escrito) {
-                $this->volcar($this->manejador_sql, '-- ⚠ ATENCIÓN: el bloque del artículo ' . (int) $article_id . ' de arriba NO se aplicó (la transacción se revirtió): no lo corras.' . "\n\n");
-            }
         } catch (\Throwable $ignorado) {
             // Ver el docblock.
         }
@@ -1399,13 +1425,17 @@ class SanearStockDeSucursalesBorradas extends Command
     /**
      * Una línea JSON al respaldo, con flush.
      *
+     * `JSON_INVALID_UTF8_SUBSTITUTE`: el mensaje de un error de la base puede traer un byte que no es
+     * UTF-8 (un dato mal codificado que el motor repite en su mensaje); sin la opción `json_encode`
+     * devuelve false y la línea de ese artículo no se escribe.
+     *
      * @param  array  $datos
      * @return void
      * @throws \RuntimeException  Con CODIGO_RESPALDO.
      */
     private function escribir_linea_json(array $datos)
     {
-        $json = json_encode($datos, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $json = json_encode($datos, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
 
         if ($json === false) {
             throw new \RuntimeException('No se pudo serializar el respaldo a JSON: ' . json_last_error_msg(), self::CODIGO_RESPALDO);

@@ -28,9 +28,10 @@ use Illuminate\Support\Facades\DB;
  *      entero a como estaba (las filas que ya había borrado también);
  *   6. `--sin_tope` lista todos los artículos del `--detalle`, en `--ver` y en `--aplicar` (el tope
  *      de 200 es de la consola);
- *   7. `--ver` avisa de antemano cuando `--aplicar` se negaría por el motor o por los índices;
+ *   7. `--ver` avisa de antemano cuando `--aplicar` se negaría por el motor o por los índices (solo si
+ *      `--aplicar` tendría algo que escribir: sin trabajo sale con exit 0 antes de las precondiciones);
  *   8. si el commit de un artículo falla después de escribir su bloque de reversión, el respaldo lo
- *      anota y el `.sql` avisa que ese bloque no se corra;
+ *      anota y el `.sql` avisa que ese bloque no se corra (aunque el mensaje del error no sea UTF-8);
  *   9. el borde numérico: un centavo de desfase se corrige, y un stock NULL con suma cero no
  *      recibe un recálculo ni un movimiento de cantidad cero.
  *
@@ -143,13 +144,24 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
      * PRIMER artículo que se sanea: es lo que pasa si el commit falla, y dentro de la transacción de
      * un test no se puede provocar de otra forma. Los artículos siguientes andan normalmente.
      *
+     * @param  string  $mensaje  El mensaje de la excepción (un test lo usa con un byte que no es UTF-8).
      * @return void
      */
-    protected function registrar_comando_que_falla_despues_del_bloque_sql()
+    protected function registrar_comando_que_falla_despues_del_bloque_sql($mensaje = 'falla de prueba después de escribir el bloque (como un commit que falla)')
     {
-        $comando = new class extends SanearStockDeSucursalesBorradas {
+        $comando = new class($mensaje) extends SanearStockDeSucursalesBorradas {
             /** @var int */
             private $bloques_escritos = 0;
+
+            /** @var string */
+            private $mensaje;
+
+            public function __construct($mensaje)
+            {
+                parent::__construct();
+
+                $this->mensaje = $mensaje;
+            }
 
             protected function escribir_bloque_sql($sql)
             {
@@ -159,7 +171,7 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
 
                 // Solo el primer artículo: los que vienen después andan normalmente.
                 if ($this->bloques_escritos === 1) {
-                    throw new \RuntimeException('falla de prueba después de escribir el bloque (como un commit que falla)');
+                    throw new \RuntimeException($this->mensaje);
                 }
             }
         };
@@ -565,6 +577,25 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
             $this->assertFalse(is_dir($this->carpeta_de_salida), $opcion . ' pelado no puede dejar ni la carpeta del respaldo.');
         }
 
+        // Y por el camino REAL de la consola: `Artisan::call()` con el comando como texto y sin parámetros
+        // lo arma con un `StringInput`, que hereda de `ArgvInput` (el del `php artisan`). La rama de
+        // `ArrayInput` de arriba es la de los tests; esta es la que corre en producción. La ruta va entre
+        // comillas y con barras normales: el tokenizador se come las invertidas de una ruta de Windows.
+        $carpeta = str_replace('\\', '/', $this->carpeta_de_salida);
+
+        foreach (['--aplicar --user_id', '--user_id --aplicar', '--aplicar --articulo_id', '--aplicar --limite', '--aplicar --lote'] as $forma) {
+            $antes = $this->foto_de_tablas();
+
+            $codigo = Artisan::call(self::COMANDO . ' ' . $forma . ' --salida="' . $carpeta . '"');
+            $this->salida = Artisan::output();
+
+            $this->assertSame(1, $codigo, '`' . $forma . '` tiene que ser un error de uso (exit 1). Salida:' . "\n" . $this->salida);
+            $this->assertStringContainsString('tiene que ser un entero positivo. Llegó: (sin valor)', $this->salida, '`' . $forma . '`: el error tiene que decir que la opción llegó sin valor.');
+
+            $this->assertFotosIguales($antes, $this->foto_de_tablas(), '`' . $forma . '` no puede escribir');
+            $this->assertFalse(is_dir($this->carpeta_de_salida), '`' . $forma . '` no puede dejar ni la carpeta del respaldo.');
+        }
+
         $this->assertSame(1, $this->filas_en($e['articulo'], $e['muerta']), 'El fantasma tiene que seguir ahí.');
     }
 
@@ -602,7 +633,9 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
     /**
      * 🔴 Un dry-run que dice "todo bien" y un `--aplicar` que después se niega es peor que avisar en el
      * dry-run: `--ver` anticipa la precondición del motor y de los índices (exit 0 igual: no escribe).
-     * Y no avisa de lo que no aplica: base sana, o dueño sin nada para sanear.
+     * Y no avisa de lo que no aplica: base sana, dueño sin nada para sanear, o dueño cuyos únicos
+     * artículos `--aplicar` no toca (`no_recalculable`): sin trabajo `--aplicar` sale con exit 0 y
+     * "No hay nada para sanear" ANTES de cualquier precondición, así que no se negaría a nada.
      *
      * @group saneo-stock-sucursales
      * @test
@@ -611,6 +644,11 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
     {
         $e = $this->dueno_con_un_fantasma('ver-avisa');
         $limpio = $this->dueno('ver-sin-trabajo');
+
+        // Un dueño con un artículo afectado que --aplicar no puede tocar: hay artículos, pero no hay trabajo.
+        $solo_saltados = $this->dueno('ver-solo-saltados');
+        $ajena = $this->sucursal($this->dueno('ver-solo-saltados-ajena'), 'zz Sucursal ajena');
+        $this->articulo_no_recalculable($solo_saltados, $ajena, $this->sucursal_muerta($solo_saltados));
 
         // Base sana: ni una palabra de más.
         $this->assertSame(0, $this->ver($e['dueno']), 'Salida:' . "\n" . $this->salida);
@@ -629,6 +667,15 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
         // Sin nada para sanear no hay negativa que anticipar.
         $this->assertSame(0, $this->ver($limpio), 'Salida:' . "\n" . $this->salida);
         $this->assertStringNotContainsString('--aplicar se negaría', $this->salida, 'Sin artículos afectados --aplicar no se negaría a nada: no se avisa.');
+
+        // Con artículos afectados pero ninguno que --aplicar pueda tocar tampoco: sale con "No hay nada
+        // para sanear" antes de las precondiciones.
+        $this->assertSame(0, $this->ver($solo_saltados), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('no_recalculable 1', $this->salida, 'El escenario no quedó armado: tiene que haber un artículo afectado que --aplicar no toca.');
+        $this->assertStringNotContainsString('--aplicar se negaría', $this->salida, 'Sin trabajo --aplicar sale con exit 0 antes de las precondiciones: no se avisa de una negativa que no va a pasar.');
+
+        $this->assertSame(0, $this->aplicar($solo_saltados, ['--salida' => $this->carpeta_nueva()]), 'Y --aplicar, con la base rota, igual sale bien: no tiene nada para escribir. Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('No hay nada para sanear', $this->salida);
 
         $this->assertFotosIguales($antes, $this->foto_de_tablas(), '--ver no puede escribir');
         $this->assertFalse(is_dir($this->carpeta_de_salida), '--ver no deja carpeta de respaldo.');
@@ -762,5 +809,49 @@ class Alcance_y_precondiciones_Test extends SaneoStockSucursalesTestCase
         $this->assertNull($this->stock($e['articulo']), 'Sin desfase no se llama a la función del sistema (escribiría 0): el stock sigue NULL.');
         $this->assertCount(0, $this->movimientos($e['articulo']), 'Sin cambio de stock no hay movimiento.');
         $this->assertStringContainsString('Artículos saneados: 1 (con movimiento de stock: 0, sin movimiento: 1)', $this->salida);
+    }
+
+    /**
+     * El mensaje de un error de la base puede traer un byte que no es UTF-8 (un dato mal codificado que
+     * el motor repite). Sin `JSON_INVALID_UTF8_SUBSTITUTE`, `json_encode` devuelve false, la línea
+     * `revertido_por_error` de ese artículo no se escribe y el aviso del `.sql` (que iba en el mismo
+     * `try`) se perdía con ella. Las dos cosas quedan escritas: la línea con el byte reemplazado y el
+     * aviso, que va primero y en su propio `try`.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function un_mensaje_de_error_con_bytes_invalidos_no_pierde_la_linea_del_respaldo_ni_el_aviso_del_sql()
+    {
+        $dueno = $this->dueno('bytes-invalidos');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $articulo = $this->articulo_con_fantasmas($dueno, 'Falla con bytes invalidos', [$s1->id => 10], [[$muerta, -1]])['articulo'];
+
+        // "\xB1" suelto no es UTF-8 válido (es un byte de continuación sin su inicio).
+        $this->registrar_comando_que_falla_despues_del_bloque_sql("falla con un byte \xB1 que no es UTF-8");
+
+        $codigo = $this->aplicar($dueno);
+
+        $this->assertSame(1, $codigo, 'Con un fallido el comando termina con 1. Salida:' . "\n" . $this->salida);
+        $this->assertSame(1, $this->filas_en($articulo, $muerta), 'El artículo falló: tiene que conservar su fantasma.');
+
+        // `lineas_del_respaldo()` decodifica cada línea y falla si alguna no es JSON válido.
+        $errores = [];
+
+        foreach ($this->lineas_del_respaldo($this->carpeta_de_salida) as $linea) {
+            if ($linea['evento'] === 'revertido_por_error') {
+                $errores[] = $linea;
+            }
+        }
+
+        $this->assertCount(1, $errores, 'La línea revertido_por_error tiene que estar aunque el mensaje no sea UTF-8 válido.');
+        $this->assertSame((int) $articulo->id, (int) $errores[0]['article_id']);
+        $this->assertStringContainsString('falla con un byte', $errores[0]['error'], 'El mensaje se conserva, con el byte inválido reemplazado.');
+        $this->assertStringContainsString('que no es UTF-8', $errores[0]['error']);
+        $this->assertTrue($errores[0]['bloque_sql_escrito'], 'Falló después de escribir su bloque: el respaldo lo dice.');
+
+        $this->assertStringContainsString('-- ⚠ ATENCIÓN: el bloque del artículo ' . $articulo->id . ' de arriba NO se aplicó', $this->sql_de_reversion($this->carpeta_de_salida));
     }
 }

@@ -261,7 +261,7 @@ class Ver_no_escribe_nada_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(205, $this->fila_del_reporte($dueno->id)['articulos'], 'La tabla cuenta TODOS los artículos aunque el detalle se corte.');
 
         $this->assertSame(200, preg_match_all('/^  art \d+ · dueño /mu', $this->salida), 'El detalle tiene que listar exactamente 200 artículos.');
-        $this->assertStringContainsString('... y 5 artículos más (el detalle se corta a las 200 líneas)', $this->salida);
+        $this->assertStringContainsString('... y 5 artículos más (el detalle se corta a las 200 líneas; --sin_tope las lista todas)', $this->salida, 'El aviso del corte tiene que decir cómo listar todos.');
     }
 
     /**
