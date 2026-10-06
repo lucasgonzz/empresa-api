@@ -446,11 +446,11 @@ class CategoryProposalAplicarHelper
             // categoría vieja con el nombre de un nodo raíz, o una subcategoría vieja con el nombre de un nodo hijo de la
             // categoría que reutiliza su padre, la reutiliza el nodo (al aplicar o al aprobar), así que no se manda a la
             // papelera. Un mismo nombre en OTRO nivel no cuenta (D3): la reutilización por nombre es por nivel.
-            $claves_de_la_propuesta = self::claves_de_la_propuesta_por_nivel(CategoryProposalNode::where('proposal_id', $propuesta->id)
+            $claves_por_nivel = self::claves_de_la_propuesta_por_nivel(CategoryProposalNode::where('proposal_id', $propuesta->id)
                 ->where('user_id', $dueno->id)
                 ->get(['id', 'parent_id', 'clave_nombre']));
 
-            $eliminadas = self::mandar_a_la_papelera_las_vacias($dueno, $resolucion['reales_categorias'], $resolucion['reales_subcategorias'], $claves_de_la_propuesta);
+            $eliminadas = self::mandar_a_la_papelera_las_vacias($dueno, $resolucion['reales_categorias'], $resolucion['reales_subcategorias'], $claves_por_nivel);
         }
 
         // Cuántas CATEGORÍAS (no subcategorías) se mandaron a la papelera: es lo que muestra el resumen.
@@ -1000,6 +1000,7 @@ class CategoryProposalAplicarHelper
             // La clave de su nombre: lo que se compara con `La de siempre` y con los nodos raíz de la propuesta.
             $clave = CategoryProposalNombreHelper::clave_de($categoria->name);
 
+            // Se anota la clave de esta categoría (candidata o no) para las subcategorías que cuelgan de ella.
             $clave_de_cada_categoria[$id] = $clave;
 
             // La del sistema elegido, la que un nodo RAÍZ de la propuesta va a reutilizar por nombre y `La de siempre` se conservan.

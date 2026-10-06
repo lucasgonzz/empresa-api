@@ -1729,6 +1729,15 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
         $this->assertNotNull($sub);
         $this->assertSame($herrajes->id, (int) $sub->category_id);
         $this->assertSame(['category_id' => $herrajes->id, 'sub_category_id' => $sub->id], $this->categorias_de($bisagra));
+
+        // Y el viaje de ida y vuelta: volver atrás deja todo como estaba. La "Bisagras" del primer nivel vuelve de la papelera
+        // con su mismo id, el artículo vuelve a ella y lo que creó el sistema nuevo (Herrajes y su "Bisagras") se quita.
+        $this->pedir_volver_atras($sembrado['run'])->assertStatus(200);
+
+        $this->assertNotNull(Category::find($bisagras_vieja->id), 'La "Bisagras" vieja volvió de la papelera.');
+        $this->assertSame(['category_id' => $bisagras_vieja->id, 'sub_category_id' => null], $this->categorias_de($bisagra));
+        $this->assertSame(0, $this->categorias_llamadas('Herrajes')->count(), 'Lo que creó el sistema nuevo se quitó.');
+        $this->assertSame(0, SubCategory::where('user_id', $this->owner->id)->where('name', 'Bisagras')->count());
     }
 
     /**
@@ -1779,7 +1788,7 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
      * 🔴 D3, con el mismo nombre pero bajo OTRO padre. La subcategoría vieja "Bulones" cuelga de "Cajon de sastre" y el
      * sistema nuevo trae un nodo hijo "BULONES" bajo "Herrajes": al aprobar, ese nodo busca la subcategoría DENTRO de
      * "Herrajes" y crea otra; la vieja no se reutiliza nunca. Protegerla por el nombre dejaba "Cajon de sastre / Bulones"
-     * vivos y vacíos. (Es el escenario que antes de D3 quedaba protegido a propósito: ver el test de B-03.)
+     * vivos y vacíos. (Es el escenario que antes de D3 quedaba protegido a propósito, por el nombre solo.)
      *
      * @test
      * @group categorias_ia
@@ -1821,5 +1830,57 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
         $this->assertSame(1, $subs_vivas->count(), 'Una sola subcategoría "Bulones" viva.');
         $this->assertNotSame($bulones->id, $subs_vivas->first()->id, 'Es la nueva, no la vieja que se mandó a la papelera.');
         $this->assertSame($herrajes->id, (int) $subs_vivas->first()->category_id);
+    }
+
+    /**
+     * 🔴 D3 (hallazgo del revisor): de las subcategorías viejas de una categoría que se conserva, solo se protege la que un
+     * nodo HIJO de ese padre todavía necesita (se llama igual). Las demás, si quedaron vacías, se quitan: no alcanza con que
+     * la categoría se conserve. "Ferretería" (que un nodo raíz reutiliza) tiene "Tornillos", que el nodo hijo
+     * Ferretería / Tornillos todavía necesita (solo tiene un dudoso, no se resuelve al elegir), y "Clavos", vacía y que
+     * ningún nodo pide: esa va a la papelera.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function eliminar_vacias_solo_conserva_la_subcategoria_que_un_nodo_hijo_todavia_necesita()
+    {
+        $ferreteria = $this->categoria_real('Ferretería');
+        $tornillos  = $this->subcategoria_real('Tornillos', $ferreteria);
+        $clavos     = $this->subcategoria_real('Clavos', $ferreteria);
+
+        $tornillo = $this->crear_articulo('Tornillo 8mm', ['category_id' => $ferreteria->id, 'sub_category_id' => $tornillos->id]);
+        $martillo = $this->crear_articulo('Martillo');
+
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    'arbol' => ['Ferretería' => ['Tornillos'], 'Herramientas' => []],
+                    'items' => [
+                        [$tornillo, 'Ferretería', 'Tornillos', 'dudosa', 'no queda claro'],
+                        [$martillo, 'Herramientas', null, 'segura'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $respuesta = $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['A']['proposal'], true);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(0, $respuesta->json('resultado.categorias_eliminadas'), 'Ninguna categoría: Ferretería se conserva.');
+
+        // Solo "Clavos" (vacía y que ningún nodo pide) está en la papelera, y anotada en la corrida.
+        $this->assertSame([$clavos->id], SubCategory::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+        $this->assertSame([['tipo' => 'subcategoria', 'id' => $clavos->id]], CategoryProposalRun::find($sembrado['run']->id)->categorias_eliminadas);
+        $this->assertSame(0, Category::onlyTrashed()->where('user_id', $this->owner->id)->count());
+
+        // Siguen vivas la categoría y la subcategoría que el nodo hijo necesita.
+        $this->assertNotNull(Category::find($ferreteria->id));
+        $this->assertNotNull(SubCategory::find($tornillos->id));
+
+        // Al aprobar el dudoso se REUTILIZA "Tornillos" con su mismo id (no se crea otra).
+        $this->pedir_aprobar($sembrado['propuestas']['A']['items'][0])->assertStatus(200);
+
+        $this->assertSame(1, SubCategory::where('user_id', $this->owner->id)->where('name', 'Tornillos')->count());
+        $this->assertSame(['category_id' => $ferreteria->id, 'sub_category_id' => $tornillos->id], $this->categorias_de($tornillo));
     }
 }
