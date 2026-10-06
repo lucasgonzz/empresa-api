@@ -707,6 +707,34 @@ abstract class SaneoStockSucursalesTestCase extends EmpresaTestCase
         }
     }
 
+    /**
+     * Borra las filas fantasma de los artículos que NO son de la lista: los 12 fantasmas del
+     * artículo centinela que la base del slot ya trae, y lo que haya dejado cualquier corrida vieja.
+     * Sirve para afirmar sobre "hay UN solo dueño con trabajo" (sin esto el dueño 500 siempre tiene
+     * trabajo ajeno a lo que el test sembró). Todo ocurre dentro de la transacción del test.
+     *
+     * @param  int[]  $article_ids_propios  Artículos del test, que NO se tocan.
+     * @return void
+     */
+    protected function limpiar_fantasmas_ajenos(array $article_ids_propios)
+    {
+        $variantes_propias = DB::table('article_variants')->whereIn('article_id', $article_ids_propios)->pluck('id')->all();
+
+        DB::table('address_article')
+            ->whereNotExists(function ($consulta) {
+                $consulta->select(DB::raw(1))->from('addresses')->whereColumn('addresses.id', 'address_article.address_id');
+            })
+            ->whereNotIn('article_id', $article_ids_propios)
+            ->delete();
+
+        DB::table('address_article_variant')
+            ->whereNotExists(function ($consulta) {
+                $consulta->select(DB::raw(1))->from('addresses')->whereColumn('addresses.id', 'address_article_variant.address_id');
+            })
+            ->whereNotIn('article_variant_id', $variantes_propias)
+            ->delete();
+    }
+
     // ═════════════════════════════════════════════════════════════════════════════════════════
     //  UTILIDADES
     // ═════════════════════════════════════════════════════════════════════════════════════════

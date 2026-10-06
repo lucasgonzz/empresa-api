@@ -12,13 +12,17 @@ use Illuminate\Support\Facades\DB;
  * `ArticleHelper::setArticleStockFromAddresses()` (`sync([])` + un `attach` por sucursal del
  * dueño) sumando las filas de las variantes. Los fantasmas de `address_article_variant` no suman
  * en `articles.stock` (la relación `addresses` de la variante es un INNER JOIN), pero ensucian el
- * pivot y, sobre todo, nadie los borra: `AddressController::destroy()` nunca toca ese pivot.
+ * pivot: el borrado de sucursal anterior a la misión `eliminar-sucursal-con-stock` nunca los
+ * limpiaba (el nuevo sí, pero los que ya existen siguen ahí).
  *
  * Lo que el saneo tiene que dejar:
  *
  *   1. los fantasmas de variante y los del artículo borrados, y las filas vivas de las variantes
  *      intactas (mismo id, mismo amount);
- *   2. el pivot del artículo reconstruido desde las variantes (suma por sucursal);
+ *   2. 🔴 regla R: la función del sistema (que RECONSTRUYE el pivot del artículo) se llama SOLO si
+ *      el stock global tiene que cambiar. Con el stock bien el pivot del artículo no se toca (mismos
+ *      ids, mismos `stock_min`/`stock_max`); con desvío se reconstruye desde las variantes (suma por
+ *      sucursal) y esos `stock_min`/`stock_max` se pierden (el respaldo los guarda);
  *   3. `article_variants.stock` = suma de sus filas vivas y `articles.stock` = suma de las
  *      variantes;
  *   4. una variante SIN filas vivas aporta su propio `article_variants.stock` (no se la pisa);
@@ -85,7 +89,7 @@ class Con_variantes_Test extends SaneoStockSucursalesTestCase
      * @group saneo-stock-sucursales
      * @test
      */
-    public function aplicar_borra_los_fantasmas_de_los_dos_pivots_y_reconstruye_el_pivot_del_articulo()
+    public function aplicar_borra_los_fantasmas_de_los_dos_pivots_y_no_toca_el_pivot_del_articulo_si_el_stock_ya_esta_bien()
     {
         $e = $this->escenario();
 
@@ -95,6 +99,11 @@ class Con_variantes_Test extends SaneoStockSucursalesTestCase
         $this->assertEquals(15.0, $this->stock($e['articulo']), 'El escenario no quedó armado: el motor tenía que dejar articles.stock en 15.');
         $this->assertSame(3, DB::table('address_article_variant')->where('address_id', $e['muerta'])->whereIn('article_variant_id', [$v1->id, $v2->id])->count(), 'Faltan los fantasmas de variante.');
         $this->assertSame(1, $this->filas_en($e['articulo'], $e['muerta']), 'Falta el fantasma del artículo.');
+
+        // El pivot del artículo tal cual está, SIN la fila fantasma: eso es lo único que tiene que cambiar.
+        $pivot_vivo_antes = array_values(array_filter($this->pivot($e['articulo']), function ($fila) use ($e) {
+            return (int) $fila['address_id'] !== $e['muerta'];
+        }));
 
         // Las filas vivas de las variantes, tal cual.
         $vivas_antes = [
@@ -111,18 +120,22 @@ class Con_variantes_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(0, $codigo, 'Salida:' . "\n" . $this->salida);
 
         // 1. Los fantasmas se fueron de los dos pivots.
-        $this->assertSame(0, DB::table('address_article_variant')->where('address_id', $e['muerta'])->whereIn('article_variant_id', [$v1->id, $v2->id])->count(), 'Quedaron fantasmas en address_article_variant: AddressController::destroy nunca los borra y el saneo tiene que hacerlo.');
+        $this->assertSame(0, DB::table('address_article_variant')->where('address_id', $e['muerta'])->whereIn('article_variant_id', [$v1->id, $v2->id])->count(), 'Quedaron fantasmas en address_article_variant: el saneo tiene que borrarlos.');
         $this->assertSame(0, $this->filas_en($e['articulo'], $e['muerta']), 'Quedó el fantasma de address_article del artículo.');
 
         // Y las filas vivas de las variantes, intactas.
         $this->assertSame($vivas_antes[$v1->id], $this->pivot_de_variante($v1), 'Las filas vivas de la variante V1 tienen que quedar intactas.');
         $this->assertSame($vivas_antes[$v2->id], $this->pivot_de_variante($v2), 'Las filas vivas de la variante V2 tienen que quedar intactas.');
 
-        // 2. El pivot del artículo, derivado de las variantes.
+        // 2. Regla R: el stock ya estaba bien (15 = suma de las variantes), así que la función del
+        //    sistema NO se llamó y el pivot del artículo es el mismo, fila por fila y con los mismos
+        //    ids (una reconstrucción habría creado filas nuevas), menos el fantasma.
+        $this->assertSame($pivot_vivo_antes, $this->pivot($e['articulo']), 'Con el stock bien el pivot del artículo no se toca: mismos ids, mismos montos. Solo se va la fila fantasma.');
+
         $this->assertEquals(
             [$e['s1']->id => 11.0, $e['s2']->id => 4.0],
             $this->pivot_por_sucursal($e['articulo']),
-            'El pivot del artículo se reconstruye sumando las variantes: S1 = 6 + 5, S2 = 4.'
+            'El pivot del artículo (que dejó el motor) sigue sumando las variantes: S1 = 6 + 5, S2 = 4.'
         );
 
         // 3. Los stocks.
@@ -133,7 +146,8 @@ class Con_variantes_Test extends SaneoStockSucursalesTestCase
         // El stock global no cambió: no hay nada que explicar con un movimiento.
         $this->assertCount(0, $this->movimientos($e['articulo']), 'Con el stock global igual no tiene que haber movimiento.');
 
-        $this->assertStringContainsString('pivot reconstruido en 1', $this->salida, 'El resultado tiene que decir que se reconstruyó el pivot del artículo.');
+        $this->assertStringNotContainsString('pivot reconstruido', $this->salida, 'Sin desfase no se reconstruye nada: el resultado no puede decir que sí.');
+        $this->assertStringNotContainsStringIgnoringCase('reconstruye', $this->salida, 'Y el reporte no tiene que anunciar una reconstrucción que no va a pasar.');
     }
 
     /**
@@ -229,9 +243,41 @@ class Con_variantes_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
-     * 🔴 Límite declarado en el plan: con variantes el pivot del artículo se RECONSTRUYE (como hace
-     * el motor en cada movimiento de variante), así que se pierden los `stock_min` / `stock_max` por
-     * sucursal de esas filas. El respaldo los tiene que guardar.
+     * 🔴 Regla R, el caso que protege algo: con el stock bien el pivot del artículo NO se reconstruye
+     * y conserva el `stock_min` / `stock_max` por sucursal (configuración del usuario) y los mismos
+     * ids de fila. Solo se van los fantasmas.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function sin_desfase_el_pivot_del_articulo_conserva_stock_min_y_max()
+    {
+        $e = $this->escenario();
+
+        DB::table('address_article')
+            ->where('article_id', $e['articulo']->id)
+            ->where('address_id', $e['s1']->id)
+            ->update(['stock_min' => 2, 'stock_max' => 20]);
+
+        $fila_antes = DB::table('address_article')->where('article_id', $e['articulo']->id)->where('address_id', $e['s1']->id)->first();
+
+        $this->assertSame(0, $this->aplicar($e['dueno']), 'Salida:' . "\n" . $this->salida);
+
+        $fila_despues = DB::table('address_article')->where('article_id', $e['articulo']->id)->where('address_id', $e['s1']->id)->first();
+
+        $this->assertNotNull($fila_despues, 'La fila viva del artículo en S1 tiene que seguir ahí.');
+        $this->assertSame((int) $fila_antes->id, (int) $fila_despues->id, 'Misma fila (mismo id): el pivot no se reconstruyó.');
+        $this->assertEquals(2, $fila_despues->stock_min, 'El stock_min por sucursal sobrevive: el stock estaba bien y no hay nada que recalcular.');
+        $this->assertEquals(20, $fila_despues->stock_max);
+
+        $this->assertCount(0, $this->movimientos($e['articulo']), 'Sin cambio de stock no hay movimiento.');
+        $this->assertSame(0, $this->filas_en($e['articulo'], $e['muerta']), 'Y el fantasma del artículo se fue igual.');
+    }
+
+    /**
+     * 🔴 Límite declarado en el plan: con variantes Y CON DESFASE el pivot del artículo se
+     * RECONSTRUYE (como hace el motor en cada movimiento de variante), así que se pierden los
+     * `stock_min` / `stock_max` por sucursal de esas filas. El respaldo los tiene que guardar.
      *
      * @group saneo-stock-sucursales
      * @test
@@ -245,7 +291,13 @@ class Con_variantes_Test extends SaneoStockSucursalesTestCase
             ->where('address_id', $e['s1']->id)
             ->update(['stock_min' => 2, 'stock_max' => 20]);
 
+        // El desvío que hace falta para que se llame a la función del sistema (regla R): 20 cuando la
+        // suma de las variantes es 15.
+        DB::table('articles')->where('id', $e['articulo']->id)->update(['stock' => 20]);
+
         $this->assertSame(0, $this->aplicar($e['dueno']), 'Salida:' . "\n" . $this->salida);
+
+        $this->assertStringContainsString('pivot reconstruido en 1', $this->salida, 'El resultado tiene que decir que se reconstruyó el pivot del artículo.');
 
         $fila_nueva = DB::table('address_article')->where('article_id', $e['articulo']->id)->where('address_id', $e['s1']->id)->first();
 

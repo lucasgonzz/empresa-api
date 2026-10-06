@@ -17,10 +17,12 @@ use Illuminate\Support\Facades\DB;
  * Es la garantía de que el criterio del saneo (qué es un fantasma, qué stock queda) se midió sobre
  * lo que de verdad pasa en producción y no sobre un fixture cómodo.
  *
- * 🔴 Es condicional. La misión hermana `eliminar-sucursal-con-stock` agrega una guarda al motor que
- * IMPIDE que nazcan fantasmas nuevos; cuando se mergee, este test se saltea con un mensaje claro
- * (el motor ya no abre filas fantasma) y los demás siguen valiendo, porque ninguno depende de que
- * el motor las abra.
+ * 🔴 Es condicional. La misión hermana `eliminar-sucursal-con-stock` agregó una guarda al motor
+ * (`SucursalVigenteHelper::aplicar_guarda_del_motor()`, mergeada a `develop` el 5/10/2026) que
+ * IMPIDE que nazcan fantasmas nuevos: con ella este test se saltea con un mensaje claro (el motor
+ * ya no abre filas fantasma) y los demás siguen valiendo, porque ninguno depende de que el motor las
+ * abra. Queda como documentación de la forma real de la fila, y corre de verdad contra un código
+ * sin la guarda (una rama vieja, o si alguien la sacara).
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].

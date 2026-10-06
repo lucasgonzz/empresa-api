@@ -62,6 +62,27 @@ use Illuminate\Support\Facades\Schema;
  *  6. El comando no avisa a Tienda Nube ni a Mercado Libre del cambio de stock (un barrido masivo
  *     encolaría cientos de sincronizaciones): el stock publicado se corrige con la próxima
  *     sincronización o movimiento del artículo.
+ *  7. Una opción numérica que llega VACÍA (`--user_id=`, típico de un script con una variable sin
+ *     valor) es un error, no "sin filtro".
+ *  8. `--aplicar` sin `--user_id` ni `--articulo_id` sobre VARIOS dueños se niega (exit 1): hay que
+ *     elegir uno o decir `--todos`. Con un solo dueño con trabajo no pide nada.
+ *  9. Antes de escribir se verifica que las cinco tablas sean InnoDB (el rollback por artículo lo
+ *     supone) y que existan los índices de los caminos de bloqueo; si no, no se escribe nada.
+ * 10. La función del sistema (`setArticleStockFromAddresses`) solo se llama si el stock global TIENE
+ *     que cambiar. Con el desfase en cero se borran los fantasmas y nada más (ver el helper).
+ * 11. El reporte parte el desfase en lo que explican las filas fantasma y lo que NO (carga manual,
+ *     importación, versión vieja). `--solo_explicados` deja afuera lo segundo: la corrección de un
+ *     desvío ajeno a las sucursales borradas llevaría la etiqueta "Baja de sucursal eliminada".
+ * 12. Tras 10 artículos que fallan SEGUIDOS se corta: es un error del entorno, no del artículo.
+ *
+ * ─── Cómo conviene correrlo en un cliente real ────────────────────────────────────────────────
+ *
+ * 1. `--ver --user_id=N --detalle --sin_tope > detalle.txt`: mirar qué cambia y de dónde sale el desfase.
+ * 2. Con `--aplicar --user_id=N --limite=20` en un cliente chico, bajar los dos archivos y mirarlos.
+ * 3. Recién después, sin `--limite`. Con artículos de decenas de miles de filas fantasma: `--lote=20` y
+ *    `php -d memory_limit=1G artisan ...` (el análisis de una tanda trae todas las filas de sus artículos).
+ * 4. El detalle de los movimientos queda con la observación "Baja de sucursal eliminada - <stock>" (el
+ *    motor le agrega el stock resultante): filtrar con `LIKE 'Baja de sucursal eliminada%'`.
  *
  * ─── Los archivos ─────────────────────────────────────────────────────────────────────────────
  *
@@ -80,11 +101,14 @@ class SanearStockDeSucursalesBorradas extends Command
     protected $signature = 'stock:sanear-sucursales-borradas
                             {--ver : Solo lee y reporta. Es el modo por defecto; no escribe nada (ni archivos).}
                             {--aplicar : Borra las filas fantasma, recalcula articles.stock y deja un movimiento por artículo cuyo stock cambió.}
-                            {--user_id= : Acota a un dueño (articles.user_id).}
+                            {--user_id= : Acota a un dueño (articles.user_id). Vacío es un error.}
                             {--articulo_id= : Acota a un artículo.}
-                            {--limite= : Corta después de N artículos saneados (solo --aplicar). Los saltados y los ya limpios no cuentan.}
-                            {--lote=200 : Artículos por tanda.}
+                            {--todos : Con --aplicar y sin --user_id, permite sanear a VARIOS dueños de una base compartida a la vez. Con un solo dueño con trabajo no hace falta.}
+                            {--solo_explicados : Con --aplicar, saltea los artículos cuyo stock difiere de la suma de sus filas por una causa que no son los fantasmas (se listan con --ver --detalle).}
+                            {--limite= : Corta después de N artículos saneados o fallidos (solo --aplicar). Los saltados y los ya limpios no cuentan.}
+                            {--lote=200 : Artículos por tanda (con artículos de decenas de miles de filas fantasma, uno chico: 20).}
                             {--detalle : Lista artículo por artículo (hasta 200 líneas).}
+                            {--sin_tope : Con --detalle, lista TODOS los artículos (sin cortar a las 200 líneas).}
                             {--salida= : Carpeta del respaldo y del SQL de reversión (solo --aplicar). Por defecto storage/app/saneo-stock-sucursales-borradas.}';
 
     /**
@@ -106,6 +130,35 @@ class SanearStockDeSucursalesBorradas extends Command
 
     /** Cuántos ids de usuario se listan por dueño en el aviso de `users.address_id` colgado. */
     const TOPE_USUARIOS_COLGADOS = 10;
+
+    /** Cuántos dueños se listan en el error de `--aplicar` sin `--user_id` sobre varios dueños. */
+    const TOPE_DUENOS_LISTADOS = 10;
+
+    /**
+     * Artículos que fallan SEGUIDOS antes de cortar la corrida. Una falla de a un artículo se
+     * descarta y se sigue; pero una falla sistemática (una columna que falta, un permiso, un
+     * concepto) recorrería toda la lista dejando dos líneas de respaldo por artículo y nada hecho.
+     */
+    const TOPE_FALLIDOS_SEGUIDOS = 10;
+
+    /**
+     * Las tablas que cada artículo toca dentro de su transacción. Si alguna no es InnoDB (en MyISAM
+     * `BEGIN` y `ROLLBACK` son no-ops) el "falló y se revirtió" sería mentira: un error después del
+     * `DELETE` dejaría filas borradas y stock reescrito.
+     */
+    const TABLAS_TRANSACCIONALES = ['articles', 'article_variants', 'address_article', 'address_article_variant', 'stock_movements'];
+
+    /**
+     * Las columnas por las que se bloquea (`FOR UPDATE ... WHERE <columna> IN (...)`): sin un índice
+     * que empiece por esa columna cada artículo escanea y bloquea el pivot entero y frena las
+     * ventas del cliente (la migración `2026_08_19_120000_add_indexes_to_address_article_tables` los
+     * crea).
+     */
+    const COLUMNAS_DE_BLOQUEO = [
+        ['address_article', 'article_id'],
+        ['address_article_variant', 'article_variant_id'],
+        ['article_variants', 'article_id'],
+    ];
 
     /** @var resource|null  Manejador de `…-respaldo.jsonl`. */
     private $manejador_respaldo = null;
@@ -155,7 +208,8 @@ class SanearStockDeSucursalesBorradas extends Command
 
         $this->line('Alcance: dueño ' . (is_null($opciones['user_id']) ? 'todos' : $opciones['user_id'])
             . ' · artículo ' . (is_null($opciones['articulo_id']) ? 'todos' : $opciones['articulo_id'])
-            . ' · lote ' . $opciones['lote'] . '.');
+            . ' · lote ' . $opciones['lote']
+            . ($opciones['solo_explicados'] ? ' · solo explicados' : '') . '.');
 
         if (!$aplicar) {
             if (!is_null($opciones['limite'])) {
@@ -165,13 +219,17 @@ class SanearStockDeSucursalesBorradas extends Command
             if (!is_null($opciones['salida'])) {
                 $this->comment('--salida solo cuenta en --aplicar: --ver no escribe archivos.');
             }
+
+            if ($opciones['todos']) {
+                $this->comment('--todos solo cuenta en --aplicar: --ver siempre mide a todos los dueños.');
+            }
         }
 
         // Ids de los artículos con al menos un fantasma. Solo ids: el análisis va por tandas.
         $ids = FilasFantasmaDeSucursalHelper::ids_de_articulos_afectados($opciones['user_id'], $opciones['articulo_id']);
 
         // La medición es la MISMA en los dos modos (misma función del helper que usa el saneo).
-        $medicion = $this->medir($ids, $opciones['lote'], !$aplicar && $opciones['detalle']);
+        $medicion = $this->medir($ids, $opciones, !$aplicar && $opciones['detalle']);
 
         $this->reportar_medicion($medicion, $opciones);
 
@@ -218,15 +276,22 @@ class SanearStockDeSucursalesBorradas extends Command
             'aplicar' => (bool) $this->option('aplicar'),
             'user_id' => $user_id,
             'articulo_id' => $articulo_id,
+            'todos' => (bool) $this->option('todos'),
+            'solo_explicados' => (bool) $this->option('solo_explicados'),
             'limite' => $limite,
             'lote' => is_null($lote) ? 200 : $lote,
             'detalle' => (bool) $this->option('detalle'),
+            'sin_tope' => (bool) $this->option('sin_tope'),
             'salida' => ($salida === null || $salida === '') ? null : (string) $salida,
         ];
     }
 
     /**
      * Una opción numérica que tiene que ser un entero positivo.
+     *
+     * 🔴 Una opción que LLEGA VACÍA (`--user_id=`, típico de un script con una variable sin valor)
+     * es un error, no "no se pasó": si valiera como ausente, `--aplicar --user_id=$ID` con `$ID`
+     * vacío saneaba a TODOS los dueños de la base (51 comercios en la base compartida del shared).
      *
      * @param  string  $nombre
      * @return int|null|false  null si no vino, false si es inválida (con el error ya impreso).
@@ -235,12 +300,12 @@ class SanearStockDeSucursalesBorradas extends Command
     {
         $valor = $this->option($nombre);
 
-        if ($valor === null || $valor === '') {
+        if ($valor === null) {
             return null;
         }
 
-        if (!is_scalar($valor) || !ctype_digit((string) $valor) || (int) $valor < 1) {
-            $this->error('--' . $nombre . ' tiene que ser un entero positivo. Llegó: ' . (is_scalar($valor) ? $valor : gettype($valor)));
+        if ($valor === '' || !is_scalar($valor) || !ctype_digit((string) $valor) || (int) $valor < 1) {
+            $this->error('--' . $nombre . ' tiene que ser un entero positivo. Llegó: ' . ($valor === '' ? '(vacío)' : (is_scalar($valor) ? $valor : gettype($valor))));
 
             return false;
         }
@@ -256,18 +321,25 @@ class SanearStockDeSucursalesBorradas extends Command
      * Mide los artículos afectados por tandas y acumula los totales por dueño.
      *
      * @param  int[]  $ids          Ids de `ids_de_articulos_afectados()`.
-     * @param  int    $lote         Artículos por tanda.
+     * @param  array  $opciones     Las opciones leídas (`lote`, `solo_explicados`, `sin_tope`).
      * @param  bool   $con_detalle  Si se juntan las líneas de `--detalle` (solo en `--ver`).
      * @return array  Ver las claves en el cuerpo.
      */
-    private function medir(array $ids, $lote, $con_detalle)
+    private function medir(array $ids, array $opciones, $con_detalle)
     {
         $medicion = [
             // dueño => totales (ver fila_vacia()).
             'por_dueno' => [],
             'total' => $this->fila_vacia(),
-            // Ids que `--aplicar` va a trabajar: los `recalcular` y `solo_fantasmas`.
+            // Ids que `--aplicar` va a trabajar: los `recalcular` y `solo_fantasmas` (menos los que
+            // `--solo_explicados` saltea).
             'trabajo' => [],
+            // dueño => cantidad de artículos de `trabajo`. Es lo que mira `--aplicar` sin
+            // `--user_id` para negarse a tocar a varios dueños de una base compartida a la vez.
+            'duenos_con_trabajo' => [],
+            // Artículos de `trabajo` en los que la función del sistema reconstruiría el pivot del
+            // artículo (tienen variantes con depósitos y desfase): pierden stock_min/stock_max.
+            'reconstruyen_pivot' => 0,
             'clases' => [
                 FilasFantasmaDeSucursalHelper::CLASE_RECALCULAR => 0,
                 FilasFantasmaDeSucursalHelper::CLASE_SOLO_FANTASMAS => 0,
@@ -283,7 +355,7 @@ class SanearStockDeSucursalesBorradas extends Command
             'detalle_omitido' => 0,
         ];
 
-        foreach (array_chunk($ids, $lote) as $tanda) {
+        foreach (array_chunk($ids, $opciones['lote']) as $tanda) {
 
             // Una lectura por tanda, sin candados: --ver no puede frenar a nadie.
             $analisis = FilasFantasmaDeSucursalHelper::analizar($tanda, false);
@@ -309,13 +381,26 @@ class SanearStockDeSucursalesBorradas extends Command
                 $medicion['clases'][$a['clase']]++;
 
                 if ($a['clase'] === FilasFantasmaDeSucursalHelper::CLASE_NO_RECALCULABLE) {
-                    if (!isset($medicion['saltados'][$a['motivo']])) {
-                        $medicion['saltados'][$a['motivo']] = 0;
-                    }
-
-                    $medicion['saltados'][$a['motivo']]++;
+                    $this->anotar_salteado($medicion, $a['motivo']);
+                } elseif (
+                    $opciones['solo_explicados']
+                    && $a['clase'] === FilasFantasmaDeSucursalHelper::CLASE_RECALCULAR
+                    && abs($a['desfase_inexplicado']) >= FilasFantasmaDeSucursalHelper::TOLERANCIA
+                ) {
+                    // Mismo criterio que aplica el helper bajo el candado: acá solo adelanta el reporte.
+                    $this->anotar_salteado($medicion, FilasFantasmaDeSucursalHelper::MOTIVO_DESVIO_NO_EXPLICADO);
                 } else {
                     $medicion['trabajo'][] = $id;
+
+                    if (!isset($medicion['duenos_con_trabajo'][$dueno])) {
+                        $medicion['duenos_con_trabajo'][$dueno] = 0;
+                    }
+
+                    $medicion['duenos_con_trabajo'][$dueno]++;
+
+                    if ($a['reconstruye_pivot']) {
+                        $medicion['reconstruyen_pivot']++;
+                    }
                 }
 
                 if ($a['clase'] === FilasFantasmaDeSucursalHelper::CLASE_SOLO_FANTASMAS) {
@@ -332,7 +417,7 @@ class SanearStockDeSucursalesBorradas extends Command
                 }
 
                 if ($con_detalle) {
-                    if (count($medicion['detalle']) < self::TOPE_DETALLE) {
+                    if ($opciones['sin_tope'] || count($medicion['detalle']) < self::TOPE_DETALLE) {
                         $medicion['detalle'][] = $this->linea_de_detalle_de_medicion($a);
                     } else {
                         $medicion['detalle_omitido']++;
@@ -347,7 +432,27 @@ class SanearStockDeSucursalesBorradas extends Command
     }
 
     /**
+     * Anota un artículo que `--aplicar` NO va a tocar, con su motivo.
+     *
+     * @param  array   $medicion  La medición en curso (por referencia: se le suma el motivo).
+     * @param  string  $motivo
+     * @return void
+     */
+    private function anotar_salteado(array &$medicion, $motivo)
+    {
+        if (!isset($medicion['saltados'][$motivo])) {
+            $medicion['saltados'][$motivo] = 0;
+        }
+
+        $medicion['saltados'][$motivo]++;
+    }
+
+    /**
      * Totales en cero de un dueño (o del total general).
+     *
+     * Las tres últimas claves parten el desfase por causa (ver `desfase_explicado` en el helper):
+     * `desfase_fantasmas` es lo que explican las filas fantasma y `desfase_otra_causa` lo que no.
+     * No son columnas de la tabla por dueño (esa tiene su forma fija): salen en una tabla aparte.
      *
      * @return array
      */
@@ -361,6 +466,9 @@ class SanearStockDeSucursalesBorradas extends Command
             'unidades_articulo' => 0.0,
             'unidades_variante' => 0.0,
             'desfase' => 0.0,
+            'desfase_fantasmas' => 0.0,
+            'desfase_otra_causa' => 0.0,
+            'articulos_otra_causa' => 0,
         ];
     }
 
@@ -384,6 +492,12 @@ class SanearStockDeSucursalesBorradas extends Command
         $fila['unidades_articulo'] = round($fila['unidades_articulo'] + $a['unidades_fantasma_articulo'], 2);
         $fila['unidades_variante'] = round($fila['unidades_variante'] + $a['unidades_fantasma_variante'], 2);
         $fila['desfase'] = round($fila['desfase'] + $a['desfase'], 2);
+        $fila['desfase_fantasmas'] = round($fila['desfase_fantasmas'] + $a['desfase_explicado'], 2);
+        $fila['desfase_otra_causa'] = round($fila['desfase_otra_causa'] + $a['desfase_inexplicado'], 2);
+
+        if (abs($a['desfase_inexplicado']) >= FilasFantasmaDeSucursalHelper::TOLERANCIA) {
+            $fila['articulos_otra_causa']++;
+        }
     }
 
     /**
@@ -394,9 +508,17 @@ class SanearStockDeSucursalesBorradas extends Command
      */
     private function linea_de_detalle_de_medicion(array $a)
     {
+        // Si el desfase tiene una parte que NO explican los fantasmas, la línea la muestra: es lo que
+        // `--solo_explicados` deja afuera y lo que conviene mirar antes de `--aplicar`.
+        $otra_causa = abs($a['desfase_inexplicado']) >= FilasFantasmaDeSucursalHelper::TOLERANCIA
+            ? ', de otra causa ' . $this->con_signo($a['desfase_inexplicado'])
+            : '';
+
         $stock = is_null($a['stock_proyectado'])
             ? 'stock ' . $this->numero($a['stock_actual']) . ' (no se recalcula)'
-            : 'stock ' . $this->numero($a['stock_actual']) . ' → ' . $this->numero($a['stock_proyectado']) . ' (desfase ' . $this->con_signo($a['desfase']) . ')';
+            : 'stock ' . $this->numero($a['stock_actual']) . ' → ' . $this->numero($a['stock_proyectado'])
+                . ' (desfase ' . $this->con_signo($a['desfase']) . $otra_causa . ')'
+                . ($a['reconstruye_pivot'] ? ' · reconstruye el pivot' : '');
 
         return '  art ' . $a['article_id']
             . ' · dueño ' . $a['user_id']
@@ -449,8 +571,15 @@ class SanearStockDeSucursalesBorradas extends Command
                     . $this->con_signo($m['unidades_solo_fantasmas']) . ' unidades en esas filas).');
             }
 
+            $this->reportar_origen_del_desfase($m);
+
+            if ($m['reconstruyen_pivot'] > 0) {
+                $this->line('  Artículos con variantes con desfase: ' . $m['reconstruyen_pivot'] . '. --aplicar los recalcula con la función del sistema, que RECONSTRUYE el pivot del artículo desde sus variantes'
+                    . ' (pierden stock_min/stock_max por sucursal y las filas del artículo en domicilios de comprador; el respaldo las guarda).');
+            }
+
             foreach ($m['saltados'] as $motivo => $cantidad) {
-                $this->warn('  no_recalculable / ' . $motivo . ': ' . $cantidad . ' artículos. --aplicar NO los toca (el motor tiraría Undefined index): revisalos a mano (se listan con --ver --detalle).');
+                $this->warn($this->texto_de_salteados($motivo, $cantidad));
             }
 
             $this->reportar_sucursales_muertas($m['muertas']);
@@ -470,6 +599,74 @@ class SanearStockDeSucursalesBorradas extends Command
                 $this->comment('  ... y ' . $m['detalle_omitido'] . ' artículos más (el detalle se corta a las ' . self::TOPE_DETALLE . ' líneas).');
             }
         }
+    }
+
+    /**
+     * Parte el desfase por causa: cuánto lo explican las filas fantasma y cuánto viene de otra cosa
+     * (carga manual, importación, una versión vieja). Es lo que permite decidir si conviene
+     * `--solo_explicados`: sin esto, un desvío que no tiene nada que ver con las sucursales borradas
+     * se corregiría con la etiqueta "Baja de sucursal eliminada" y nadie lo vería venir.
+     *
+     * @param  array  $m  Resultado de `medir()`.
+     * @return void
+     */
+    private function reportar_origen_del_desfase(array $m)
+    {
+        if ($m['total']['articulos_otra_causa'] === 0) {
+            $this->line('Origen del desfase: lo explican por completo las filas fantasma (cada artículo tenía como stock la suma cruda de sus filas).');
+
+            return;
+        }
+
+        $filas = [];
+
+        foreach ($m['por_dueno'] as $dueno => $totales) {
+            $filas[] = $this->fila_de_origen($dueno === 0 ? '(sin dueño)' : (string) $dueno, $totales);
+        }
+
+        $filas[] = $this->fila_de_origen('TOTAL', $m['total']);
+
+        $this->line('');
+        $this->line('Origen del desfase:');
+        $this->table(['dueño', 'desfase', 'por filas fantasma', 'por otra causa', 'artículos con otra causa'], $filas);
+
+        $this->warn('  ' . $m['total']['articulos_otra_causa'] . ' artículos tenían el stock distinto de la suma de sus filas ANTES de los fantasmas (carga manual, importación, versión vieja).'
+            . ' --aplicar los corrige igual y con la misma etiqueta ("' . FilasFantasmaDeSucursalHelper::OBSERVACION . '");'
+            . ' con --solo_explicados se saltean y quedan para revisar (se listan con --ver --detalle --sin_tope).');
+    }
+
+    /**
+     * Una fila de la tabla "Origen del desfase".
+     *
+     * @param  string  $titulo
+     * @param  array   $t       Totales (ver fila_vacia()).
+     * @return array
+     */
+    private function fila_de_origen($titulo, array $t)
+    {
+        return [
+            $titulo,
+            $this->con_signo($t['desfase']),
+            $this->con_signo($t['desfase_fantasmas']),
+            $this->con_signo($t['desfase_otra_causa']),
+            $t['articulos_otra_causa'],
+        ];
+    }
+
+    /**
+     * El aviso de los artículos que `--aplicar` no va a tocar, según el motivo.
+     *
+     * @param  string  $motivo
+     * @param  int     $cantidad
+     * @return string
+     */
+    private function texto_de_salteados($motivo, $cantidad)
+    {
+        if ($motivo === FilasFantasmaDeSucursalHelper::MOTIVO_DESVIO_NO_EXPLICADO) {
+            return '  --solo_explicados: ' . $cantidad . ' artículos con un desvío de stock que no explican los fantasmas. --aplicar NO los toca (quedan con sus filas fantasma): revisalos con --ver --detalle.';
+        }
+
+        return '  no_recalculable / ' . $motivo . ': ' . $cantidad . ' artículos. --aplicar NO los toca (el motor tiraría Undefined index): revisalos a mano (se listan con --ver --detalle).';
     }
 
     /**
@@ -592,6 +789,24 @@ class SanearStockDeSucursalesBorradas extends Command
             return 0;
         }
 
+        // Precondición 0: el alcance. 🔴 Sin `--user_id` ni `--articulo_id`, `--aplicar` sanea a TODOS
+        // los dueños con trabajo; en una base compartida (51 comercios en `u767360347_empresa`) eso es
+        // mucho más de lo que alguien quiere por un tipeo. Con un solo dueño con trabajo no hay
+        // ambigüedad y no se pide nada; con varios hay que elegir uno (`--user_id`) o decir `--todos`.
+        if (is_null($opciones['user_id']) && is_null($opciones['articulo_id']) && !$opciones['todos'] && count($m['duenos_con_trabajo']) > 1) {
+            $partes = [];
+
+            foreach (array_slice($m['duenos_con_trabajo'], 0, self::TOPE_DUENOS_LISTADOS, true) as $dueno => $cantidad) {
+                $partes[] = $dueno . ' (' . $cantidad . ' artículos)';
+            }
+
+            $this->error('--aplicar sin --user_id ni --articulo_id tocaría a ' . count($m['duenos_con_trabajo']) . ' dueños a la vez: '
+                . implode(', ', $partes) . (count($m['duenos_con_trabajo']) > self::TOPE_DUENOS_LISTADOS ? ', ...' : '') . '. NO se tocó nada.');
+            $this->line('Corrélo de a un dueño con --user_id=<N>. Si de verdad querés sanearlos a todos juntos, sumá --todos.');
+
+            return 1;
+        }
+
         // Precondición 1: el concepto del movimiento. Sin él NO se escribe nada, ni siquiera los
         // artículos que no necesitarían movimiento: un saneo a medias que después no puede dejar
         // el rastro de lo que hizo es peor que no empezar.
@@ -612,6 +827,11 @@ class SanearStockDeSucursalesBorradas extends Command
 
                 return 1;
             }
+        }
+
+        // Precondición 3: que la base pueda hacer lo que el comando promete (transacciones e índices).
+        if (!$this->verificar_motor_e_indices()) {
+            return 1;
         }
 
         // 🔴 Antes de escribir la PRIMERA fila: la carpeta y los dos archivos. Si no se pueden abrir,
@@ -649,8 +869,11 @@ class SanearStockDeSucursalesBorradas extends Command
         // Posición en la lista de trabajo del próximo artículo, para informar cuántos quedan.
         $posicion = 0;
 
-        // true si la corrida se cortó por un error de respaldo.
+        // true si la corrida se cortó por un error de respaldo o por demasiados fallidos seguidos.
         $fatal = false;
+
+        // Artículos que fallaron SEGUIDOS: lo reinicia cualquier artículo que no falla.
+        $fallidos_seguidos = 0;
 
         // true si la corrida se cortó por --limite.
         $cortada = false;
@@ -688,7 +911,8 @@ class SanearStockDeSucursalesBorradas extends Command
                         },
                         function ($sql, $resumen_del_articulo) {
                             $this->escribir_bloque_sql($sql);
-                        }
+                        },
+                        $opciones['solo_explicados']
                     );
                 } catch (\Throwable $e) {
                     // Sin respaldo no se sigue: lo que venga después tampoco se podría revertir.
@@ -704,13 +928,25 @@ class SanearStockDeSucursalesBorradas extends Command
                     $intentados++;
                     $resumen['fallidos']++;
                     $tanda_fallidos++;
+                    $fallidos_seguidos++;
 
                     $this->error('Artículo ' . $article_id . ': falló y se revirtió ("' . $e->getMessage() . '"). Seguimos con el próximo.');
 
                     $this->escribir_error_de_articulo($article_id, $e);
 
+                    // Una falla sistemática (una columna, un permiso) recorrería toda la lista sin hacer nada.
+                    if ($fallidos_seguidos >= self::TOPE_FALLIDOS_SEGUIDOS) {
+                        $this->error('Se cortó la corrida: ' . self::TOPE_FALLIDOS_SEGUIDOS . ' artículos SEGUIDOS fallaron, así que el error no es de un artículo sino del entorno. Revisá el mensaje de arriba y volvé a correrlo: continúa donde quedó.');
+
+                        $fatal = true;
+
+                        break 2;
+                    }
+
                     continue;
                 }
+
+                $fallidos_seguidos = 0;
 
                 if ($resultado['resultado'] === FilasFantasmaDeSucursalHelper::RESULTADO_YA_LIMPIO) {
                     $resumen['ya_limpios']++;
@@ -807,7 +1043,9 @@ class SanearStockDeSucursalesBorradas extends Command
 
         foreach ($r['saltados'] as $motivo => $cantidad) {
             $saltados += $cantidad;
-            $this->line('  Saltados (' . $motivo . '): ' . $cantidad . '.');
+            // Advertencia y no una línea más: quien mire solo el código de salida (0) creería que
+            // quedó limpio, y esos artículos siguen con sus filas fantasma.
+            $this->warn('  Saltados (' . $motivo . '): ' . $cantidad . '. NO se tocaron: siguen con sus filas fantasma.');
         }
 
         if ($saltados === 0) {
@@ -837,6 +1075,112 @@ class SanearStockDeSucursalesBorradas extends Command
         $this->comment('Para revertir (artículo por artículo, cada bloque es una transacción): mysql <base> < ' . $this->ruta_sql);
 
         return ($fatal || $r['fallidos'] > 0) ? 1 : 0;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    //  PRECONDICIONES DE LA BASE
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Que la base pueda hacer lo que el comando promete: transacciones por artículo e índices en los
+     * caminos de bloqueo. Si no, NO se escribe nada (exit 1).
+     *
+     * 🔴 InnoDB: el "falló y se revirtió" de cada artículo, el respaldo y la reversión suponen que un
+     * error después del `DELETE` deshace el `DELETE`. En MyISAM no pasa (`BEGIN` y `ROLLBACK` son
+     * no-ops: `config/database.php` lo documenta y `EmpresaTestCase` lo verifica en testing): el
+     * reporte diría "se revirtió" sobre filas ya borradas.
+     *
+     * 🔴 Índices: los `FOR UPDATE ... WHERE article_id IN (...)` del helper suponen un índice que
+     * empiece por esa columna (los crea la migración `2026_08_19_120000`). Sin él cada artículo
+     * escanea y bloquea el pivot entero y frena las ventas del cliente mientras corre el saneo.
+     *
+     * @return bool  true si se puede escribir; false si no (el error ya está impreso).
+     */
+    private function verificar_motor_e_indices()
+    {
+        $problemas = [];
+
+        $motores = $this->motores_de_las_tablas();
+
+        foreach (self::TABLAS_TRANSACCIONALES as $tabla) {
+            $motor = isset($motores[$tabla]) ? $motores[$tabla] : null;
+
+            if (is_null($motor)) {
+                $problemas[] = 'la tabla ' . $tabla . ' no existe o no tiene motor';
+            } elseif (strtoupper($motor) !== 'INNODB') {
+                $problemas[] = 'la tabla ' . $tabla . ' es ' . $motor . ' y no InnoDB: sin transacciones no hay rollback por artículo';
+            }
+        }
+
+        foreach ($this->indices_que_faltan() as $faltante) {
+            $problemas[] = 'falta un índice que empiece por ' . $faltante . ' (migración 2026_08_19_120000): cada bloqueo escanearía la tabla entera y frenaría las ventas';
+        }
+
+        if (count($problemas) === 0) {
+            return true;
+        }
+
+        $this->error('La base no cumple lo que este comando necesita para escribir con seguridad. NO se tocó nada:');
+
+        foreach ($problemas as $problema) {
+            $this->line('  - ' . $problema . '.');
+        }
+
+        $this->line('Corré las migraciones pendientes (php artisan migrate) o convertí la tabla a InnoDB, y volvé a correrlo.');
+
+        return false;
+    }
+
+    /**
+     * El motor de cada tabla que toca la transacción de un artículo.
+     *
+     * Es `protected` para que un test la pise en una subclase y simule una tabla MyISAM sin hacer
+     * DDL: un `ALTER TABLE` adentro de la transacción de un test hace COMMIT implícito de todo lo
+     * sembrado y lo deja grabado en la base del slot.
+     *
+     * @return array  tabla => motor ('InnoDB', 'MyISAM'...). Una tabla que no existe no figura.
+     */
+    protected function motores_de_las_tablas()
+    {
+        $filas = DB::table('information_schema.TABLES')
+            ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
+            ->whereIn('TABLE_NAME', self::TABLAS_TRANSACCIONALES)
+            ->selectRaw('TABLE_NAME as tabla, ENGINE as motor')
+            ->get();
+
+        $motores = [];
+
+        foreach ($filas as $fila) {
+            $motores[$fila->tabla] = $fila->motor;
+        }
+
+        return $motores;
+    }
+
+    /**
+     * Las columnas de bloqueo (`COLUMNAS_DE_BLOQUEO`) que no tienen ningún índice que EMPIECE por
+     * ellas. Alcanza con cualquier índice que arranque por la columna, no hace falta el nombre de la
+     * migración: lo que importa es que el bloqueo no escanee la tabla. `protected` por el mismo
+     * motivo que `motores_de_las_tablas()`.
+     *
+     * @return string[]  'tabla.columna'
+     */
+    protected function indices_que_faltan()
+    {
+        $faltan = [];
+
+        foreach (self::COLUMNAS_DE_BLOQUEO as $par) {
+            $hay = DB::select(
+                'SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? AND SEQ_IN_INDEX = 1 LIMIT 1',
+                [DB::connection()->getDatabaseName(), $par[0], $par[1]]
+            );
+
+            if (count($hay) === 0) {
+                $faltan[] = $par[0] . '.' . $par[1];
+            }
+        }
+
+        return $faltan;
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════
@@ -992,6 +1336,13 @@ class SanearStockDeSucursalesBorradas extends Command
                 // Si es true el commit falló DESPUÉS de escribir el bloque: ese bloque no corresponde a nada.
                 'bloque_sql_escrito' => $this->bloque_sql_escrito,
             ]);
+
+            // Lo mismo, a la vista de quien abra el .sql: el bloque de ese artículo ya está escrito
+            // más arriba y no se puede sacar, pero este aviso le dice que no lo corra (en un artículo
+            // con pivot reconstruido pisaría ventas posteriores con las filas de antes).
+            if ($this->bloque_sql_escrito) {
+                $this->volcar($this->manejador_sql, '-- ⚠ ATENCIÓN: el bloque del artículo ' . (int) $article_id . ' de arriba NO se aplicó (la transacción se revirtió): no lo corras.' . "\n\n");
+            }
         } catch (\Throwable $ignorado) {
             // Ver el docblock.
         }

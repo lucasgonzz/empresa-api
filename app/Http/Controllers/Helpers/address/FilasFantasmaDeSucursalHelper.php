@@ -50,9 +50,11 @@ use Illuminate\Support\Facades\Schema;
  * ─── Las tres clases de artículo (D5 del plan) ────────────────────────────────────────────────
  *
  *  - `recalcular`: tiene variantes, o al menos una fila de `address_article` en una sucursal que
- *    existe. Se borran los fantasmas y se llama a `ArticleHelper::setArticleStockFromAddresses()`
- *    —la función del sistema, no una fórmula copiada—, que deja `articles.stock` como lo dejaría
- *    el próximo movimiento. Si el stock global cambia, queda UN movimiento que lo explica.
+ *    existe. Se borran los fantasmas y, si el stock global no es el que quedaría (hay desfase), se
+ *    llama a `ArticleHelper::setArticleStockFromAddresses()` —la función del sistema, no una
+ *    fórmula copiada—, que deja `articles.stock` como lo dejaría el próximo movimiento (ver "Cuándo
+ *    se llama a la función del sistema"). Si el stock global cambia, queda UN movimiento que lo
+ *    explica.
  *  - `solo_fantasmas`: sin variantes y sin ninguna fila viva. Se borran las filas pero
  *    `articles.stock` NO se toca: un artículo sin sucursales vivas lleva el stock global
  *    (`CheckGlobalStock` solo mueve `articles.stock` cuando no hay sucursales ni variantes, y
@@ -79,11 +81,25 @@ use Illuminate\Support\Facades\Schema;
  *    movimiento y el saneo podrían esperarse mutuamente (deadlock). Cada lectura con candado es una
  *    consulta simple por tabla, NUNCA un join: un join bloquea las tablas en el orden que elija el
  *    optimizador, no en el nuestro.
- *  - 🔴 la PRIMERA sentencia de la transacción es una lectura con candado. En REPEATABLE READ la
- *    foto de lectura (snapshot) nace en la primera lectura SIN candado; si naciera antes de los
- *    candados, las lecturas siguientes (`SetStockPorDeposito::foto()`, las de la función del
- *    sistema) verían datos anteriores a lo que los candados protegen. Por eso los ids de las
- *    variantes se leen FUERA de la transacción (ver `sanear_articulo()`).
+ *  - 🔴 la PRIMERA sentencia de la transacción es una lectura con candado. En producción la conexión
+ *    corre en READ COMMITTED (`config/database.php`, `isolation_level`, desde el 23/9/2026): sin
+ *    candados de hueco y con cada lectura viendo lo último commiteado, así que ahí esto es
+ *    inocuo. Se mantiene igual porque `DB_ISOLATION_LEVEL` permite fijar REPEATABLE READ por
+ *    instancia, y en REPEATABLE READ la foto de lectura (snapshot) nace en la primera lectura SIN
+ *    candado: si naciera antes de los candados, las lecturas siguientes
+ *    (`SetStockPorDeposito::foto()`, las de la función del sistema) verían datos anteriores a lo
+ *    que los candados protegen. Por eso los ids de las variantes se leen FUERA de la transacción
+ *    (ver `sanear_articulo()`).
+ *
+ * ─── Cuándo se llama a la función del sistema (regla R) ───────────────────────────────────────
+ *
+ * 🔴 `ArticleHelper::setArticleStockFromAddresses()` solo se llama cuando el stock global TIENE que
+ * cambiar (|desfase| ≥ TOLERANCIA). Con el desfase en cero no hay nada que recalcular, y la función
+ * hace cosas que un saneo no debería hacer de gusto: en un artículo con variantes con depósitos
+ * RECONSTRUYE el pivot del artículo (`sync([])` + un `attach` por sucursal del dueño), así que
+ * pierde `stock_min`/`stock_max` por sucursal y las filas del artículo en domicilios de comprador o
+ * de otro dueño, y crea una fila en cero por cada sucursal. Las filas fantasma se borran siempre
+ * y a mano, por id; lo único que la función aporta es el stock, y si ya está bien no se la llama.
  *  - dentro de la transacción se vuelve a leer todo: si otra corrida o un movimiento ya limpió el
  *    artículo, se saltea (`ya_limpio`). Eso da la idempotencia.
  *
@@ -111,9 +127,18 @@ use Illuminate\Support\Facades\Schema;
  *    ya no serían fantasma (MySQL 8 y MariaDB 10.2+ no reutilizan ids tras un reinicio).
  *  - No repara los otros huérfanos de una sucursal borrada (`article_ubications`,
  *    `stock_suggestion_articles`, ...).
- *  - Con variantes, `address_article` del artículo se RECONSTRUYE (como hace el motor en cada
- *    movimiento de variante), así que se pierden los `stock_min`/`stock_max` por sucursal de esas
- *    filas. El respaldo los guarda.
+ *  - Con variantes y con desfase, `address_article` del artículo se RECONSTRUYE (como hace el motor
+ *    en cada movimiento de variante), así que se pierden los `stock_min`/`stock_max` por sucursal y
+ *    también las filas del ARTÍCULO en domicilios de comprador o de otro dueño (el próximo
+ *    movimiento de una variante las borraría igual). El respaldo las guarda.
+ *  - No se puede dejar el respaldo en disco con garantía de energía: PHP 7.4 no tiene `fsync()` y se
+ *    usa `fflush()`. Un corte de luz en el instante justo puede perder la última línea.
+ *  - La reversión usa `INSERT IGNORE` con el id original: si el motor de base reutiliza ids de
+ *    AUTO_INCREMENT tras un reinicio (MySQL anterior al 8, MariaDB anterior al 10.2) y alguien ya
+ *    ocupó ese id, la fila no vuelve y no hay error.
+ *  - Memoria: el análisis de una tanda trae TODAS las filas de pivot de sus artículos. Cada venta
+ *    contra la sucursal muerta abre una fila nueva, así que un artículo muy vendido puede tener
+ *    decenas de miles de fantasmas: con `--lote` chico (y `php -d memory_limit=1G`) alcanza.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promoción de constructor, readonly, enum ni #[...].
@@ -137,6 +162,13 @@ class FilasFantasmaDeSucursalHelper
 
     /** Motivo de `saltado` cuando el artículo desapareció entre la medición y el saneo. */
     const MOTIVO_ARTICULO_INEXISTENTE = 'articulo_inexistente';
+
+    /**
+     * Motivo de `saltado` con `--solo_explicados`: el stock del artículo difiere de la suma de sus
+     * filas por una causa que NO son las filas fantasma (carga manual, importación, versión vieja).
+     * No se toca nada: la corrección tendría la etiqueta "Baja de sucursal eliminada" sin serlo.
+     */
+    const MOTIVO_DESVIO_NO_EXPLICADO = 'desvio_no_explicado_por_los_fantasmas';
 
     /** Resultado de `sanear_articulo()`: se borraron los fantasmas (y se recalculó si correspondía). */
     const RESULTADO_SANEADO = 'saneado';
@@ -425,6 +457,16 @@ class FilasFantasmaDeSucursalHelper
      *  - `stock_proyectado`: lo que dejaría `setArticleStockFromAddresses()`, calculado SIN escribir
      *    (null si la clase no recalcula).
      *  - `desfase`: `stock_actual` (NULL→0) − `stock_proyectado`. Es lo que sobra (o falta) hoy.
+     *  - `desfase_explicado` / `desfase_inexplicado`: cuánto de ese desfase lo explican las filas
+     *    fantasma y cuánto viene de otra causa (carga manual, importación, versión vieja). Sin
+     *    variantes el motor deja `articles.stock` = suma CRUDA de las filas, así que si el dato es
+     *    coherente el desfase es exactamente la suma de los fantasmas del artículo y lo inexplicado
+     *    es 0. Con variantes los fantasmas nunca entran en el stock (la función suma solo filas
+     *    visibles), así que ahí TODO el desfase es de otra causa.
+     *  - `necesita_recalculo`: la clase es `recalcular` y |desfase| ≥ TOLERANCIA: solo entonces se
+     *    llama a la función del sistema (regla R, ver el encabezado).
+     *  - `reconstruye_pivot`: si se la llamara, reconstruiría el pivot del artículo (tiene variantes
+     *    y alguna reparte por depósitos).
      *  - `variantes`: id => ['id', 'stock', 'updated_at', 'filas_vivas', 'suma_viva', 'aporte'].
      *
      * @param  int[]      $ids                Ids de artículos. Se parten internamente en tandas de TOPE_IN.
@@ -682,6 +724,10 @@ class FilasFantasmaDeSucursalHelper
         // true si alguna variante tiene una fila VIVA en una sucursal que no es del dueño.
         $fila_en_sucursal_ajena = false;
 
+        // true si alguna variante tiene al menos una fila VIVA: es el `$variants_con_addresses` de la
+        // función del sistema, y lo que dispara la reconstrucción del pivot del artículo.
+        $alguna_variante_reparte = false;
+
         foreach ($variantes as $variant_id => $variante) {
             $filas_de_la_variante = isset($filas_por_variante[$variant_id]) ? $filas_por_variante[$variant_id] : [];
 
@@ -708,6 +754,10 @@ class FilasFantasmaDeSucursalHelper
                 $fantasmas_variante[] = $fila;
                 $unidades_variante += self::numero($fila['amount']);
                 self::anotar_sucursal_muerta($muertas, $address_id, $fila['amount']);
+            }
+
+            if ($cantidad_viva >= 1) {
+                $alguna_variante_reparte = true;
             }
 
             // Como el motor: una variante con filas vivas aporta la suma de esas filas; una sin
@@ -777,6 +827,19 @@ class FilasFantasmaDeSucursalHelper
             ? 0.0
             : round((is_null($stock_actual) ? 0.0 : $stock_actual) - $stock_proyectado, 2);
 
+        // Regla R: la función del sistema solo se llama si el stock global tiene que cambiar.
+        $necesita_recalculo = $clase === self::CLASE_RECALCULAR && abs($desfase) >= self::TOLERANCIA;
+
+        // Cuánto del desfase lo explican los fantasmas. Sin variantes el motor deja el stock como la
+        // suma CRUDA de las filas, fantasmas incluidos: si el dato es coherente, desfase = suma de
+        // los fantasmas del artículo. Con variantes los fantasmas nunca entran en `articles.stock`
+        // (la función suma solo filas visibles), así que no explican nada.
+        $desfase_explicado = ($clase === self::CLASE_RECALCULAR && !$tiene_variantes)
+            ? round($unidades_articulo, 2)
+            : 0.0;
+
+        $desfase_inexplicado = round($desfase - $desfase_explicado, 2);
+
         return [
             'article_id' => $id,
             'user_id' => $dueno,
@@ -795,6 +858,10 @@ class FilasFantasmaDeSucursalHelper
             'sucursales_muertas' => $muertas,
             'stock_proyectado' => $stock_proyectado,
             'desfase' => $desfase,
+            'desfase_explicado' => $desfase_explicado,
+            'desfase_inexplicado' => $desfase_inexplicado,
+            'necesita_recalculo' => $necesita_recalculo,
+            'reconstruye_pivot' => $necesita_recalculo && $tiene_variantes && $alguna_variante_reparte,
             'variantes' => $info_variantes,
         ];
     }
@@ -843,6 +910,9 @@ class FilasFantasmaDeSucursalHelper
      * @param  int            $concepto_id          Id del concepto CONCEPTO (lo resuelve el llamador una vez).
      * @param  callable|null  $antes_de_escribir
      * @param  callable|null  $antes_de_confirmar
+     * @param  bool           $solo_explicados      true: un artículo cuyo desfase NO lo explican los fantasmas
+     *                                              (`desfase_inexplicado` ≠ 0) se saltea sin tocar nada
+     *                                              (motivo MOTIVO_DESVIO_NO_EXPLICADO).
      * @return array  Resumen: `resultado` (saneado | ya_limpio | saltado), `motivo`, `article_id`, y, si se
      *                saneó: `user_id`, `clase`, `en_papelera`, `filas_borradas_articulo`,
      *                `filas_borradas_variante`, `unidades_fantasma_articulo`, `unidades_fantasma_variante`,
@@ -850,20 +920,21 @@ class FilasFantasmaDeSucursalHelper
      *                `movimiento_id`, `movimiento_amount`, `pivot_reconstruido`, `variantes_actualizadas`.
      * @throws \Throwable Cualquier error de la base o de un callback (la transacción ya se revirtió).
      */
-    public static function sanear_articulo($article_id, $concepto_id, $antes_de_escribir = null, $antes_de_confirmar = null)
+    public static function sanear_articulo($article_id, $concepto_id, $antes_de_escribir = null, $antes_de_confirmar = null, $solo_explicados = false)
     {
         $article_id = (int) $article_id;
 
         // 🔴 FUERA de la transacción, a propósito. Para bloquear primero los pivots de variante
         // (orden del motor) hay que saber los ids de las variantes, y leerlos con una consulta sin
-        // candado DENTRO de la transacción haría nacer el snapshot de REPEATABLE READ antes de los
-        // candados. Leídos acá (autocommit), la primera sentencia de la transacción es un `FOR UPDATE`.
+        // candado DENTRO de la transacción haría nacer el snapshot de REPEATABLE READ (si la
+        // instancia lo fija) antes de los candados. Leídos acá (autocommit), la primera sentencia de
+        // la transacción es un `FOR UPDATE`.
         $variantes_previas = self::ids_de_variantes([$article_id]);
 
         // Cuenta los intentos de la transacción (un reintento por deadlock vuelve a ejecutar el closure).
         $intento = 0;
 
-        return DB::transaction(function () use ($article_id, $concepto_id, $antes_de_escribir, $antes_de_confirmar, $variantes_previas, &$intento) {
+        return DB::transaction(function () use ($article_id, $concepto_id, $antes_de_escribir, $antes_de_confirmar, $solo_explicados, $variantes_previas, &$intento) {
 
             $intento++;
 
@@ -900,13 +971,29 @@ class FilasFantasmaDeSucursalHelper
                 ];
             }
 
+            // `--solo_explicados`: el desfase tiene otra causa además de (o en vez de) los fantasmas.
+            // Se decide ACÁ, bajo el candado, y no solo en la medición: el stock pudo cambiar en el medio.
+            if ($solo_explicados && $a['clase'] === self::CLASE_RECALCULAR && abs($a['desfase_inexplicado']) >= self::TOLERANCIA) {
+                return [
+                    'resultado' => self::RESULTADO_SALTADO,
+                    'motivo' => self::MOTIVO_DESVIO_NO_EXPLICADO,
+                    'article_id' => $article_id,
+                    'user_id' => $a['user_id'],
+                    'clase' => $a['clase'],
+                ];
+            }
+
             $dueno = $a['user_id'];
 
+            // Regla R (ver el encabezado): la función del sistema solo se llama si el stock global
+            // tiene que cambiar. Si el desfase es cero se borran los fantasmas y nada más.
+            $recalcula = $a['necesita_recalculo'];
+
             // Foto de los depósitos ANTES de tocar nada (la necesita el movimiento). Solo si va a
-            // haber recálculo: un artículo "solo fantasmas" no genera movimiento.
+            // haber recálculo: sin él el stock no cambia y no hay movimiento.
             $foto_antes = null;
 
-            if ($a['clase'] === self::CLASE_RECALCULAR) {
+            if ($recalcula) {
                 $foto_antes = SetStockPorDeposito::foto($article_id);
             }
 
@@ -927,7 +1014,7 @@ class FilasFantasmaDeSucursalHelper
             // `articles.stock` tal cual estaba (string|null), para la reversión.
             $stock_antes_crudo = $a['stock_crudo'];
 
-            if ($a['clase'] === self::CLASE_RECALCULAR) {
+            if ($recalcula) {
                 // La función del sistema, con el dueño del ARTÍCULO y sin `$check_linkage` (como hace
                 // `SetArticleStock`): el aviso de agotado/ingreso es del movimiento real, no de un saneo.
                 // Con la papelera: `find()` a secas no devuelve un artículo borrado.
@@ -947,7 +1034,7 @@ class FilasFantasmaDeSucursalHelper
             $movimiento_id = null;
             $movimiento_amount = 0.0;
 
-            if ($a['clase'] === self::CLASE_RECALCULAR && abs($stock_nuevo - $stock_viejo) >= self::TOLERANCIA) {
+            if ($recalcula && abs($stock_nuevo - $stock_viejo) >= self::TOLERANCIA) {
                 $movimiento_amount = round($stock_nuevo - $stock_viejo, 2);
 
                 $movimiento_id = self::crear_movimiento($article_id, $dueno, $movimiento_amount, $concepto_id, $foto_antes);
