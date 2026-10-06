@@ -4,6 +4,7 @@ namespace Tests\Feature\Facturacion;
 
 use App\Console\Commands\SembrarDatosDePrueba;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
 use App\Models\Address;
@@ -59,7 +60,8 @@ use Tests\EmpresaTestCase;
  * con NC, consolidada con CAE y sin CAE, masiva y asistente) y los de control quedan en verde. El
  * del presupuesto da rojo con la pregunta nueva de `anular()` revertida (500 en vez de 422), el
  * de la NC sin factura con el chequeo de NC revertido, y el de la semilla con el borrado de los
- * comprobantes vuelto a su lugar viejo.
+ * comprobantes vuelto a su lugar viejo. El de `BudgetHelper::deleteSale()` da rojo con ese archivo
+ * vuelto a `develop` (el de `anular()` pasa igual: lo frena antes de llegar a `deleteSale()`).
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -365,6 +367,39 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
         Sale::where('id', $original->id)->update(['consolidacion_facturacion_id' => $contenedora->id]);
 
         return $contenedora;
+    }
+
+    /**
+     * Presupuesto confirmado (así nace su venta, por el endpoint real) cuya venta es la ORIGINAL de
+     * una consolidada con factura autorizada: la regla de edición que pregunta `anular()` no la
+     * frena (no mira la consolidación), la de borrado sí.
+     *
+     * @return array [\App\Models\Budget, \App\Models\Sale]
+     */
+    protected function presupuesto_con_venta_en_consolidada_facturada()
+    {
+        $this->sembrar_estados_de_presupuesto();
+
+        $budget = Budget::create([
+            'user_id'               => $this->usuario()->id,
+            'client_id'             => $this->cliente_cc()->id,
+            'budget_status_id'      => self::PRESUPUESTO_SIN_CONFIRMAR,
+            'total'                 => 100,
+            'discount_stock'        => 0,
+            'discounts_in_services' => 1,
+            'surchages_in_services' => 1,
+        ]);
+
+        $this->post('api/budget/'.$budget->id.'/confirmar')->assertStatus(200);
+
+        $venta = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertNotNull($venta, 'Precondición: confirmar tenía que crear la venta.');
+
+        $contenedora = $this->consolidar($venta);
+        $this->facturar($contenedora, self::CAE);
+
+        return [$budget, $venta];
     }
 
     /**
@@ -795,26 +830,7 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
      */
     public function anular_el_presupuesto_cuya_venta_esta_en_una_consolidada_facturada_se_rechaza()
     {
-        $this->sembrar_estados_de_presupuesto();
-
-        $budget = Budget::create([
-            'user_id'               => $this->usuario()->id,
-            'client_id'             => $this->cliente_cc()->id,
-            'budget_status_id'      => self::PRESUPUESTO_SIN_CONFIRMAR,
-            'total'                 => 100,
-            'discount_stock'        => 0,
-            'discounts_in_services' => 1,
-            'surchages_in_services' => 1,
-        ]);
-
-        $this->post('api/budget/'.$budget->id.'/confirmar')->assertStatus(200);
-
-        $venta = Sale::where('budget_id', $budget->id)->first();
-
-        $this->assertNotNull($venta, 'Precondición: confirmar tenía que crear la venta.');
-
-        $contenedora = $this->consolidar($venta);
-        $this->facturar($contenedora, self::CAE);
+        list($budget, $venta) = $this->presupuesto_con_venta_en_consolidada_facturada();
 
         $antes = $this->foto($venta);
 
@@ -828,6 +844,44 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
 
         $this->assertEquals(self::PRESUPUESTO_CONFIRMADO, (int) $budget->fresh()->budget_status_id, 'Un 422 no puede dejar el presupuesto sin confirmar.');
         $this->assert_nada_tocado($antes, $venta, 'Anular presupuesto');
+    }
+
+    /**
+     * `BudgetHelper::deleteSale()` no lo llama solo `anular()`: también `checkStatus()` (desde
+     * store, update y duplicate), SIN la pregunta previa que le agregó la misión. Si `destroy()` se
+     * niega, `deleteSale()` tiene que lanzar con el motivo: antes tiraba la respuesta y el
+     * presupuesto seguía como si la venta se hubiera borrado, con la venta viva (los llamadores
+     * corren dentro de una transacción y la revierten).
+     *
+     * Es el test que muerde el cambio de `BudgetHelper`: el de `anular()` de arriba pasa igual sin
+     * él, porque `anular()` frena antes de llegar a `deleteSale()`.
+     *
+     * @test
+     */
+    public function borrar_la_venta_de_un_presupuesto_en_una_consolidada_facturada_lanza_y_no_toca_nada()
+    {
+        list($budget, $venta) = $this->presupuesto_con_venta_en_consolidada_facturada();
+
+        $antes = $this->foto($venta);
+
+        $lanzo = false;
+        $mensaje = '';
+
+        try {
+            BudgetHelper::deleteSale($budget->fresh());
+        } catch (\Exception $e) {
+            $lanzo = true;
+            $mensaje = $e->getMessage();
+        }
+
+        $this->assertTrue($lanzo, 'deleteSale() tenía que lanzar: destroy() se negó y el presupuesto no puede seguir como si la venta se hubiera borrado.');
+        $this->assertSame(
+            'La venta está incluida en la factura de la venta consolidada N° '.self::NUM_CONSOLIDADA.': para anularla, hacé una devolución con nota de crédito sobre esa venta.',
+            $mensaje
+        );
+
+        $this->assertEquals(self::PRESUPUESTO_CONFIRMADO, (int) $budget->fresh()->budget_status_id, 'El presupuesto no tenía que moverse.');
+        $this->assert_nada_tocado($antes, $venta, 'BudgetHelper::deleteSale');
     }
 
     /**
