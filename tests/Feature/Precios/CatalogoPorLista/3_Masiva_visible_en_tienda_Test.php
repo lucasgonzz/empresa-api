@@ -328,7 +328,9 @@ class Masiva_visible_en_tienda_Test extends CatalogoPorListaTestCase
 
     /**
      * B2: una lista ajena deja UN aviso en el log por corrida, no uno por artículo. Con 3000
-     * artículos eran 3000 líneas idénticas. Lo que se escribe no cambia: nada.
+     * artículos eran 3000 líneas idénticas. Lo que se escribe no cambia: nada. Y la consulta de
+     * validación también es una sola: la memoria de la corrida recuerda el "no" igual que el "sí"
+     * (si solo recordara los "sí", una lista ajena se volvería a consultar por cada artículo).
      *
      * @return void
      */
@@ -336,9 +338,13 @@ class Masiva_visible_en_tienda_Test extends CatalogoPorListaTestCase
     {
         $ids = $this->crear_articulos(4);
 
+        $validaciones = $this->contador_de_validaciones_de_lista();
+
         Log::spy();
 
         $masiva = $this->masiva($ids, [$this->clave($this->lista_ajena->id, 1)]);
+
+        $this->assertSame(1, $validaciones->cantidad, 'La lista ajena se consulta una vez, no una por artículo.');
 
         $this->assertSame(0, (int) $masiva->changes_count);
 
