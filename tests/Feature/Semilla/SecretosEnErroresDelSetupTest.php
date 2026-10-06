@@ -172,6 +172,12 @@ class SecretosEnErroresDelSetupTest extends EmpresaTestCase
 
         $respuesta = $this->postJson('/api/admin-sync/user-setup', [
             'business_type'                => 'ferreteria',
+            // La base de testing TIENE datos (y la guarda de UserSetupHelper::run() se niega a vaciar
+            // una base con datos): para llegar al `migrate:fresh` mockeado hay que autorizar el
+            // borrado como lo haría un operador, con el flag y el nombre exacto de la base. Es seguro
+            // porque Artisan está mockeado y verificado ANTES de postear (sin_migrate_fresh()).
+            'forzar_borrado_total'         => true,
+            'confirmar_base_de_datos'      => DB::connection()->getDatabaseName(),
             // Un id que ya existe: el INSERT del dueño falla con el QueryException real.
             'user_id'                      => $this->existente->id,
             'user_name'                    => 'Cliente del test de secretos',

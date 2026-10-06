@@ -63,6 +63,18 @@ return [
         'inbound_key'       => env('ADMIN_API_OUTBOUND_KEY'),
         'client_uuid'       => env('ADMIN_API_CLIENT_UUID'),
         'require_api_key'   => env('ADMIN_SYNC_REQUIRE_API_KEY', false),
+        /**
+         * Exige X-Admin-Api-Key SOLO en admin-sync/user-setup (middleware ClaveDeAdminEnSetup).
+         * Apagada por defecto a propósito: admin-api todavía no manda el header a esa ruta y
+         * prenderla antes rompería el alta de clientes. No la prendas hasta que lo mande.
+         * Es independiente del flag global `require_api_key`: prender el global NO la activa.
+         *
+         * Pasa por filter_var BOOLEAN y no se deja el valor crudo: `env()` de Laravel solo convierte
+         * 'true'/'false'/'null'/'empty' y devuelve cualquier otro texto tal cual, y un 'off' o un 'no'
+         * (string no vacío) es truthy: la dejaría PRENDIDA y rompería el alta de clientes. Con
+         * FILTER_VALIDATE_BOOLEAN, 'off'/'no'/'0'/''/false => false y 'on'/'yes'/'1'/'true'/true => true.
+         */
+        'require_key_for_setup' => filter_var(env('ADMIN_SYNC_SETUP_REQUIRE_API_KEY', false), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /**
