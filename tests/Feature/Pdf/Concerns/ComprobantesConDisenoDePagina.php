@@ -931,10 +931,9 @@ trait ComprobantesConDisenoDePagina
         try {
             return $callback();
         } finally {
-            stream_wrapper_unregister('https');
-            if ($tenia_https) {
-                stream_wrapper_restore('https');
-            }
+            // 🔴 NO `stream_wrapper_restore('https')`: devolvería el wrapper NATIVO y dejaría apagada la barrera de streams
+            // (`Tests\Fakes\StreamHttpSinSalida`) para el resto del proceso de PHPUnit. Se vuelve a poner la barrera.
+            \Tests\Fakes\StreamHttpSinSalida::instalar();
         }
     }
 }

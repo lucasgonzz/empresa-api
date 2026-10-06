@@ -138,7 +138,7 @@ class Ajustes_del_motor_y_el_tramo_Test extends ImagenesInteligentesTestCase
         $orden = [];
         $test  = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         $imagenes = [
             $this->url_imagen('grande-celeste') => $this->png(1200, 1200, 'rojo', self::FONDO_CELESTE),
             $this->url_imagen('media-blanca')   => $this->png(700, 700, 'azul'),
@@ -409,7 +409,7 @@ class Ajustes_del_motor_y_el_tramo_Test extends ImagenesInteligentesTestCase
         $test     = $this;
         $imagen   = $this->png(900, 900, 'rojo');
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) use ($test, $imagen) {
             $url = $request->url();
 

@@ -122,7 +122,7 @@ class SaldoDeProveedorTest extends TestCase
         config(['services.anthropic.api_key' => 'fake-key']);
 
         /* Factory nueva: los stubs de Http::fake() se acumulan entre llamadas. */
-        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake([
             'api.anthropic.com/*' => Http::response([

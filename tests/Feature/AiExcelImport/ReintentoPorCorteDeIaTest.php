@@ -120,7 +120,7 @@ class ReintentoPorCorteDeIaTest extends EmpresaTestCase
     protected function fakear_dos($texto_1, $stop_1, $texto_2, $stop_2)
     {
         /* Factory nueva: Http::fake() acumula stubs y gana el primero registrado (ver MensajesDeErrorTest). */
-        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake([
             'api.anthropic.com/*' => Http::sequence()

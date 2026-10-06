@@ -789,7 +789,7 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
         $web = isset($escenario['web']) ? $escenario['web'] : [];
 
         /* Un fake nuevo por escenario: Http::fake() acumula callbacks y ganaría el del anterior. */
-        Http::swap(new HttpFactory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function (Request $request) use ($escenario, &$web) {
             $url = $request->url();

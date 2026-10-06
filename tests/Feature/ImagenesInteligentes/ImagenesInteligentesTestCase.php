@@ -281,7 +281,7 @@ abstract class ImagenesInteligentesTestCase extends EmpresaTestCase
 
         // Un cliente HTTP nuevo en cada llamada: Http::fake() ACUMULA los stubs y el primero que
         // responde gana, así que un segundo falsear() en el mismo test no pisaría al primero.
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request) use ($test, $serper, $imagenes, $ia, $al_buscar) {
             $url = $request->url();

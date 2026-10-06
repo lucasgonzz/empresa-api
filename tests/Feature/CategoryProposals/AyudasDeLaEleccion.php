@@ -388,8 +388,10 @@ trait AyudasDeLaEleccion
         // La base que usa este test: el hijo tiene que usar exactamente la misma.
         $base = DB::connection()->getDatabaseName();
 
-        // El entorno del hijo: el del proceso actual (solo las variables de texto) más lo que lo apunta a la base del test.
-        $entorno = array_merge(array_filter(getenv(), 'is_string'), [
+        // El entorno del hijo: el del proceso actual (solo las variables de texto) más lo que lo apunta a la base del test. Las
+        // credenciales neutralizadas van aparte y con valores NO vacíos: `proc_open` descarta los vacíos de un entorno armado a
+        // mano, y el hijo volvería a leer la clave real de su `.env.testing`.
+        $entorno = array_merge(array_filter(getenv(), 'is_string'), \Tests\Fakes\EntornoSinCredenciales::para_procesos_hijos(), [
             'APP_ENV'     => 'testing',
             'DB_DATABASE' => $base,
             'XDEBUG_MODE' => 'off',
