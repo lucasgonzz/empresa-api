@@ -1564,10 +1564,13 @@ class AiExcelAnalyzer
     /**
      * Retorna las listas de precio (price types) del usuario como array simple.
      *
-     * Solo se cargan id y name para minimizar el tamaño del prompt y para que
-     * Claude pueda mapear columnas de precio/margen por lista de precio.
+     * Solo se cargan id, name y el interruptor `catalogo_restringido_en_tienda` para minimizar el
+     * tamaño del prompt y para que Claude pueda mapear columnas de precio/margen por lista de
+     * precio. El interruptor (misión catalogo-por-lista-tienda, 5/10/2026) va como 0/1 y es lo que
+     * decide si se le ofrece la columna "visible en la tienda" para esa lista: solo para las
+     * restringidas (build_prompt()) y solo de ellas se acepta en parse_claude_response().
      *
-     * @return array  Array de ['id' => int, 'name' => string]
+     * @return array  Array de ['id' => int, 'name' => string, 'catalogo_restringido_en_tienda' => int (0|1)]
      */
     protected function get_available_price_types(): array
     {
@@ -1614,7 +1617,8 @@ class AiExcelAnalyzer
      * @param  array  $providers          Lista de proveedores disponibles
      * @param  string $original_filename  Nombre original del archivo subido por el usuario
      * @param  array  $addresses          Sucursales del usuario (['id' => int, 'street' => string]); vacío si no tiene
-     * @param  array  $price_types        Listas de precio del usuario (['id' => int, 'name' => string]); vacío si no tiene
+     * @param  array  $price_types        Listas de precio del usuario (['id' => int, 'name' => string, 'catalogo_restringido_en_tienda' => 0|1]);
+     *                                    vacío si no tiene. La tercera clave es opcional: sin ella la lista cuenta como no restringida.
      * @param  string $seccion_mapeo_guardado  Sección con la configuración confirmada por el usuario para este
      *                                         proveedor (ProviderImportMappingHelper::seccion_para_prompt()); '' si no hay.
      *                                         Con default, como todo parámetro nuevo de este archivo: AdminSync y
