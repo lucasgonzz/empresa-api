@@ -230,6 +230,50 @@ class Interruptor_de_la_lista_Test extends CatalogoPorListaTestCase
     }
 
     /**
+     * 🔴 M3: el interruptor solo se escribe sobre una lista PROPIA. `update()` busca la lista por id
+     * sin mirar el dueño (ya era así antes de esta misión y no se cambia acá: es otro frente), pero
+     * esta misión suma un campo cuyo efecto es sacarle el catálogo ENTERO de la tienda a todos los
+     * compradores de esa lista, y con ids secuenciales en una base compartida no puede quedar al
+     * alcance de un id ajeno. El resto del update sigue como estaba (responde 200).
+     *
+     * @return void
+     */
+    public function test_el_interruptor_no_se_escribe_sobre_una_lista_de_otro_dueno()
+    {
+        \Illuminate\Support\Facades\Log::spy();
+
+        $this->putJson('api/price-type/' . $this->lista_ajena->id, $this->payload_de_edicion($this->lista_ajena, [
+            'catalogo_restringido_en_tienda' => 1,
+        ]))->assertStatus(200);
+
+        $this->assertNull($this->interruptor($this->lista_ajena->id), 'Una lista de otro comercio no se puede restringir.');
+
+        \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje) {
+                return strpos((string) $mensaje, 'PriceTypeController@update') !== false
+                    && strpos((string) $mensaje, 'otro dueño') !== false
+                    && strpos((string) $mensaje, 'interruptor') !== false;
+            })
+            ->once();
+    }
+
+    /**
+     * M3, el espejo: tampoco se le puede APAGAR la restricción a la lista de otro comercio.
+     *
+     * @return void
+     */
+    public function test_el_interruptor_de_una_lista_ajena_no_se_apaga()
+    {
+        DB::table('price_types')->where('id', $this->lista_ajena->id)->update(['catalogo_restringido_en_tienda' => 1]);
+
+        $this->putJson('api/price-type/' . $this->lista_ajena->id, $this->payload_de_edicion($this->lista_ajena, [
+            'catalogo_restringido_en_tienda' => 0,
+        ]))->assertStatus(200);
+
+        $this->assertSame(1, $this->interruptor($this->lista_ajena->id), 'La restricción de otro comercio no se apaga desde acá.');
+    }
+
+    /**
      * El interruptor viaja en el payload de la lista: en el listado y en la respuesta del PUT.
      *
      * @return void

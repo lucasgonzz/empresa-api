@@ -221,6 +221,21 @@ class PriceTypeController extends Controller
          */
         $interruptor = CatalogoPorListaHelper::interruptor_a_escribir_en_update($request);
 
+        /*
+         * 🔴 Y solo sobre una lista PROPIA (M3 de la revisión independiente, 6/10/2026). `update()`
+         * busca la lista por id sin mirar el dueño —ya era así antes de esta misión y NO se cambia
+         * acá: es otro frente abierto, el de los ids del pedido que se resuelven sin cruzarlos con
+         * el dueño—, pero este campo tiene un efecto que ningún otro de la lista tiene: sacarle el
+         * catálogo ENTERO de la tienda a todos los compradores de esa lista. Con ids secuenciales en
+         * una base compartida eso no puede quedar al alcance de un id ajeno. Mismo criterio y misma
+         * forma que la guarda de "Sincronizar artículos" más abajo: la lista de otro dueño no se
+         * toca y queda el aviso en el log; el resto del update sigue como estaba.
+         */
+        if (!is_null($interruptor) && (int) $model->user_id !== (int) $this->userId()) {
+            Log::warning('PriceTypeController@update: pedido de cambiar el interruptor "catálogo restringido en la tienda" de la lista '.$model->id.' de otro dueño; se ignora.');
+            $interruptor = null;
+        }
+
         if (!is_null($interruptor)) {
             $model->catalogo_restringido_en_tienda = $interruptor;
         }
