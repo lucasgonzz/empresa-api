@@ -140,7 +140,7 @@ class Origen_del_desfase_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(0, $this->ver($dueno), 'Salida:' . "\n" . $this->salida);
 
         $this->assertEquals(2.0, $this->fila_del_reporte($dueno->id)['desfase'], 'Desfase: −2 + 4.');
-        $this->assertStringContainsString('Origen del desfase: lo explican por completo las filas fantasma', $this->salida);
+        $this->assertStringContainsString('Origen del desfase: lo que hay para corregir lo explican por completo las filas fantasma', $this->salida);
         $this->assertStringNotContainsString('por otra causa', $this->salida, 'Sin desvíos de otra causa no hay tabla de origen.');
     }
 
@@ -165,6 +165,11 @@ class Origen_del_desfase_Test extends SaneoStockSucursalesTestCase
 
         // 1. Con --solo_explicados.
         $this->assertSame(0, $this->aplicar($e['dueno'], ['--solo_explicados' => true]), 'Salida:' . "\n" . $this->salida);
+
+        // El resumen final tiene que decir TODO lo que quedó sin tocar (no "Saltados: 0."): quien mire
+        // solo el exit code (0) creería que quedó limpio.
+        $this->assertStringContainsString('Saltados (' . FilasFantasmaDeSucursalHelper::MOTIVO_DESVIO_NO_EXPLICADO . '): 2.', $this->salida, 'El resumen final tiene que contar los 2 artículos que --solo_explicados dejó afuera.');
+        $this->assertStringNotContainsString('Saltados: 0.', $this->salida, 'Con artículos sin tocar el resumen no puede decir "Saltados: 0.".');
 
         // X (explicado): saneado, con su movimiento.
         $this->assertSame(0, $this->filas_en($e['x'], $e['muerta']), 'X: el fantasma tiene que haberse borrado.');
@@ -201,6 +206,41 @@ class Origen_del_desfase_Test extends SaneoStockSucursalesTestCase
         $movimientos_z = $this->movimientos($e['z']['articulo']);
         $this->assertCount(1, $movimientos_z);
         $this->assertEquals(-5.0, (float) $movimientos_z[0]->amount, 'Z: 6 − 11.');
+    }
+
+    /**
+     * 🔴 `--solo_explicados` NO saltea un artículo cuyo stock ya está bien, aunque difiera de la suma
+     * CRUDA de sus filas (alguien lo corrigió a mano): no hay corrección que etiquetar mal, solo hay
+     * que borrar la fila fantasma. Dejarla es peor: el próximo movimiento del artículo la vuelve a
+     * sumar (`SUM` crudo) y el stock se rompe de nuevo.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function solo_explicados_no_saltea_un_articulo_cuyo_stock_ya_esta_bien_y_le_borra_el_fantasma()
+    {
+        $dueno = $this->dueno('stock-ya-corregido');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        // Vive 10, fantasma −2 y el stock YA está en 10 (alguien lo corrigió a mano): desfase 0, pero el
+        // stock difiere de la suma cruda (8): el diagnóstico "otra causa" sería +2 sin la condición.
+        $e = $this->articulo_con_fantasmas($dueno, 'Corregido a mano', [$s1->id => 10], [[$muerta, -2]], 10);
+
+        $this->assertEquals(10.0, $this->stock($e['articulo']));
+
+        // La vista previa no lo cuenta como "otra causa" ni avisa de un salteo.
+        $this->assertSame(0, $this->ver($dueno, ['--solo_explicados' => true]), 'Salida:' . "\n" . $this->salida);
+        $this->assertEquals(0.0, $this->fila_del_reporte($dueno->id)['desfase'], 'Sin desfase: no hay nada que corregir.');
+        $this->assertStringNotContainsString('--solo_explicados:', $this->salida, 'Este artículo no se saltea: no hay corrección con una parte ajena.');
+        $this->assertStringContainsString('Origen del desfase: lo que hay para corregir lo explican por completo las filas fantasma', $this->salida);
+
+        $this->assertSame(0, $this->aplicar($dueno, ['--solo_explicados' => true]), 'Salida:' . "\n" . $this->salida);
+
+        $this->assertSame(0, $this->filas_en($e['articulo'], $muerta), 'El fantasma tiene que borrarse aunque se pida --solo_explicados: dejarlo rompería el stock en el próximo movimiento.');
+        $this->assertEquals(10.0, $this->stock($e['articulo']), 'El stock ya estaba bien: no cambia.');
+        $this->assertCount(0, $this->movimientos($e['articulo']), 'Sin cambio de stock no hay movimiento (y por lo tanto ninguna etiqueta que mienta).');
+        $this->assertStringContainsString('Artículos saneados: 1', $this->salida);
     }
 
     /**
@@ -253,7 +293,7 @@ class Origen_del_desfase_Test extends SaneoStockSucursalesTestCase
 
         $this->assertSame(0, $this->ver($e['dueno'], ['--detalle' => true]), 'Salida:' . "\n" . $this->salida);
 
-        $this->assertStringContainsString('Artículos con variantes con desfase: 1', $this->salida, 'Z es el único artículo con variantes y desfase.');
+        $this->assertStringContainsString('Artículos con variantes con depósitos y desfase: 1', $this->salida, 'Z es el único artículo con variantes con depósitos y desfase (W tiene el stock bien: no se reconstruye).');
         $this->assertStringContainsString('RECONSTRUYE el pivot', $this->salida);
 
         // El detalle de Z lo marca, con la parte del desfase que viene de otra causa.

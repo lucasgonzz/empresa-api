@@ -205,6 +205,36 @@ class Bordes_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
+     * 🔴 Con trabajo para hacer Y un artículo que el comando no toca, el resumen final tiene que decir
+     * lo que quedó sin tocar. Antes arrancaba en cero y solo contaba lo que salteaba el helper por una
+     * carrera: "Saltados: 0." y exit 0 con un artículo que seguía con su fantasma.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function el_resumen_final_de_aplicar_cuenta_los_no_recalculables_que_la_medicion_dejo_afuera()
+    {
+        $dueno = $this->dueno('resumen-saltados');
+        $s1 = $this->sucursal($dueno);
+        $ajena = $this->sucursal($this->dueno('resumen-saltados-ajena'), 'zz Sucursal ajena');
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $sano = $this->articulo_con_fantasmas($dueno, 'Con trabajo', [$s1->id => 10], [[$muerta, -3]]);
+        $no_recalculable = $this->articulo_no_recalculable($dueno, $ajena, $muerta);
+
+        $this->assertSame(0, $this->aplicar($dueno), 'Un artículo saltado no es un error: exit 0. Salida:' . "\n" . $this->salida);
+
+        $this->assertSame(0, $this->filas_en($sano['articulo'], $muerta), 'El que sí se puede recalcular se sanó.');
+        $this->assertStringContainsString('Artículos saneados: 1', $this->salida);
+
+        $this->assertStringContainsString('Saltados (variante_con_fila_en_sucursal_ajena): 1.', $this->salida, 'El resumen tiene que decir que un artículo quedó sin tocar y por qué.');
+        $this->assertStringNotContainsString('Saltados: 0.', $this->salida, '"Saltados: 0." sería mentira: el no recalculable sigue con su fantasma.');
+
+        $this->assertSame(1, DB::table('address_article_variant')->where('id', $no_recalculable['fila_fantasma'])->count(), 'El no recalculable conserva su fila fantasma.');
+        $this->assertCount(0, $this->movimientos($no_recalculable['articulo']), 'Y no deja movimiento.');
+    }
+
+    /**
      * La premisa de la clase `no_recalculable`: con el dueño CORRECTO la función del sistema
      * revienta con `Undefined index`. Si algún día el motor deja de reventar, el test se saltea y
      * avisa: la clase habría que repensarla.
@@ -274,8 +304,10 @@ class Bordes_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(0, $this->ver($dueno), 'Salida:' . "\n" . $this->salida);
         $this->assertStringNotContainsString('SIN dueño', $this->salida);
 
-        // Y --aplicar (aun sin acotar) no las toca.
-        $this->sanear(['--aplicar' => true, '--salida' => $this->carpeta_de_salida]);
+        // Y --aplicar (aun sin acotar) no las toca. Con --todos: una base con VARIOS dueños con trabajo
+        // (la de otro slot, la de un cliente compartido) haría que el freno cortara el comando y el
+        // test pasaría en vacío sin probar nada. Se afirma el exit 0 por lo mismo.
+        $this->assertSame(0, $this->sanear(['--aplicar' => true, '--todos' => true, '--salida' => $this->carpeta_de_salida]), 'Salida:' . "\n" . $this->salida);
 
         $this->assertSame(2, DB::table('address_article')->whereIn('id', $ids_articulo)->count(), 'El saneo borró filas que no tienen dueño: no hay con qué recalcularlas.');
         $this->assertSame(1, DB::table('address_article_variant')->where('id', $id_variante)->count(), 'El saneo borró una fila de una variante inexistente.');

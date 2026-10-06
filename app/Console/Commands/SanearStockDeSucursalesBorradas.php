@@ -221,7 +221,7 @@ class SanearStockDeSucursalesBorradas extends Command
             }
 
             if ($opciones['todos']) {
-                $this->comment('--todos solo cuenta en --aplicar: --ver siempre mide a todos los dueños.');
+                $this->comment('--todos solo cuenta en --aplicar: el alcance de --ver lo fijan --user_id y --articulo_id.');
             }
         }
 
@@ -237,6 +237,18 @@ class SanearStockDeSucursalesBorradas extends Command
             // Mejor enterarse acá que con --aplicar: sin el concepto el comando se niega a escribir.
             if ($medicion['total']['articulos'] > 0 && is_null(ConceptoStockMovement::where('name', FilasFantasmaDeSucursalHelper::CONCEPTO)->value('id'))) {
                 $this->warn('Ojo: no existe el concepto de stock "' . FilasFantasmaDeSucursalHelper::CONCEPTO . '" en esta base: --aplicar se negaría a escribir (exit 1) hasta que se cargue.');
+            }
+
+            // Y lo mismo con el motor de las tablas y los índices (la precondición 3 de --aplicar): que
+            // el dry-run diga "todo bien" y --aplicar se niegue después es peor que avisar acá.
+            $problemas = $this->problemas_de_motor_e_indices();
+
+            if ($medicion['total']['articulos'] > 0 && count($problemas) > 0) {
+                $this->warn('Ojo: --aplicar se negaría a escribir en esta base (exit 1) hasta que se resuelva:');
+
+                foreach ($problemas as $problema) {
+                    $this->line('  - ' . $problema . '.');
+                }
             }
 
             $this->line('');
@@ -293,6 +305,11 @@ class SanearStockDeSucursalesBorradas extends Command
      * es un error, no "no se pasó": si valiera como ausente, `--aplicar --user_id=$ID` con `$ID`
      * vacío saneaba a TODOS los dueños de la base (51 comercios en la base compartida del shared).
      *
+     * 🔴 Lo mismo si llega PELADA (`--user_id` sin `=` ni valor: lo que pasa con `--user_id $ID` y
+     * `$ID` vacío sin comillas). Laravel declara estas opciones como VALUE_OPTIONAL y la pelada llega
+     * como `null`, igual que si no se hubiera escrito: por eso se distingue mirando si figura en la
+     * línea de comandos.
+     *
      * @param  string  $nombre
      * @return int|null|false  null si no vino, false si es inválida (con el error ya impreso).
      */
@@ -301,6 +318,12 @@ class SanearStockDeSucursalesBorradas extends Command
         $valor = $this->option($nombre);
 
         if ($valor === null) {
+            if ($this->input->hasParameterOption('--' . $nombre)) {
+                $this->error('--' . $nombre . ' tiene que ser un entero positivo. Llegó: (sin valor)');
+
+                return false;
+            }
+
             return null;
         }
 
@@ -382,12 +405,9 @@ class SanearStockDeSucursalesBorradas extends Command
 
                 if ($a['clase'] === FilasFantasmaDeSucursalHelper::CLASE_NO_RECALCULABLE) {
                     $this->anotar_salteado($medicion, $a['motivo']);
-                } elseif (
-                    $opciones['solo_explicados']
-                    && $a['clase'] === FilasFantasmaDeSucursalHelper::CLASE_RECALCULAR
-                    && abs($a['desfase_inexplicado']) >= FilasFantasmaDeSucursalHelper::TOLERANCIA
-                ) {
-                    // Mismo criterio que aplica el helper bajo el candado: acá solo adelanta el reporte.
+                } elseif ($opciones['solo_explicados'] && FilasFantasmaDeSucursalHelper::es_desvio_ajeno($a)) {
+                    // El MISMO criterio que aplica el helper bajo el candado (una sola definición):
+                    // acá solo adelanta el reporte.
                     $this->anotar_salteado($medicion, FilasFantasmaDeSucursalHelper::MOTIVO_DESVIO_NO_EXPLICADO);
                 } else {
                     $medicion['trabajo'][] = $id;
@@ -495,7 +515,10 @@ class SanearStockDeSucursalesBorradas extends Command
         $fila['desfase_fantasmas'] = round($fila['desfase_fantasmas'] + $a['desfase_explicado'], 2);
         $fila['desfase_otra_causa'] = round($fila['desfase_otra_causa'] + $a['desfase_inexplicado'], 2);
 
-        if (abs($a['desfase_inexplicado']) >= FilasFantasmaDeSucursalHelper::TOLERANCIA) {
+        // Se cuenta con el mismo criterio que `--solo_explicados` (una sola definición): un artículo
+        // cuya CORRECCIÓN de stock tiene una parte que no explican los fantasmas. Uno sin desfase no
+        // tiene corrección, aunque su stock difiera de la suma cruda de sus filas.
+        if (FilasFantasmaDeSucursalHelper::es_desvio_ajeno($a)) {
             $fila['articulos_otra_causa']++;
         }
     }
@@ -574,7 +597,7 @@ class SanearStockDeSucursalesBorradas extends Command
             $this->reportar_origen_del_desfase($m);
 
             if ($m['reconstruyen_pivot'] > 0) {
-                $this->line('  Artículos con variantes con desfase: ' . $m['reconstruyen_pivot'] . '. --aplicar los recalcula con la función del sistema, que RECONSTRUYE el pivot del artículo desde sus variantes'
+                $this->line('  Artículos con variantes con depósitos y desfase: ' . $m['reconstruyen_pivot'] . '. --aplicar los recalcula con la función del sistema, que RECONSTRUYE el pivot del artículo desde sus variantes'
                     . ' (pierden stock_min/stock_max por sucursal y las filas del artículo en domicilios de comprador; el respaldo las guarda).');
             }
 
@@ -613,7 +636,7 @@ class SanearStockDeSucursalesBorradas extends Command
     private function reportar_origen_del_desfase(array $m)
     {
         if ($m['total']['articulos_otra_causa'] === 0) {
-            $this->line('Origen del desfase: lo explican por completo las filas fantasma (cada artículo tenía como stock la suma cruda de sus filas).');
+            $this->line('Origen del desfase: lo que hay para corregir lo explican por completo las filas fantasma.');
 
             return;
         }
@@ -850,8 +873,11 @@ class SanearStockDeSucursalesBorradas extends Command
             'saneados' => 0,
             'con_movimiento' => 0,
             'ya_limpios' => 0,
-            // motivo => cantidad.
-            'saltados' => [],
+            // motivo => cantidad. Arranca con lo que la medición ya dejó afuera (los `no_recalculable` y,
+            // con --solo_explicados, los desvíos de otra causa): el resumen final tiene que decir TODO lo
+            // que quedó sin tocar, no solo lo que el helper salteó por una carrera. Si no, "Saltados: 0."
+            // y exit 0 con artículos que siguen con sus fantasmas.
+            'saltados' => $m['saltados'],
             'fallidos' => 0,
             'filas_articulo' => 0,
             'filas_variante' => 0,
@@ -946,8 +972,6 @@ class SanearStockDeSucursalesBorradas extends Command
                     continue;
                 }
 
-                $fallidos_seguidos = 0;
-
                 if ($resultado['resultado'] === FilasFantasmaDeSucursalHelper::RESULTADO_YA_LIMPIO) {
                     $resumen['ya_limpios']++;
                     $tanda_otros++;
@@ -967,6 +991,12 @@ class SanearStockDeSucursalesBorradas extends Command
 
                     continue;
                 }
+
+                // Solo un artículo que SE SANEÓ prueba que el entorno anda. Uno `ya_limpio` o `saltado` no
+                // escribió nada: no dice nada de la salud del entorno y no reinicia el contador (si lo
+                // reiniciara, una falla que solo pega en artículos con movimiento nunca cortaría con
+                // artículos sin desfase intercalados).
+                $fallidos_seguidos = 0;
 
                 $intentados++;
                 $tanda_saneados++;
@@ -991,7 +1021,7 @@ class SanearStockDeSucursalesBorradas extends Command
                     $this->warn('  art ' . $article_id . ': el stock que dejó el sistema (' . $this->numero($resultado['stock_despues']) . ') no coincide con el proyectado (' . $this->numero($resultado['stock_proyectado']) . '). Está en el log.');
                 }
 
-                if ($opciones['detalle'] && $lineas_detalle < self::TOPE_DETALLE) {
+                if ($opciones['detalle'] && ($opciones['sin_tope'] || $lineas_detalle < self::TOPE_DETALLE)) {
                     $lineas_detalle++;
 
                     $this->line('  art ' . $article_id . ' → saneado · ' . $resultado['clase']
@@ -999,8 +1029,8 @@ class SanearStockDeSucursalesBorradas extends Command
                         . ' · stock ' . $this->numero($resultado['stock_antes']) . ' → ' . $this->numero($resultado['stock_despues'])
                         . (is_null($resultado['movimiento_id']) ? ' · sin movimiento' : ' · movimiento #' . $resultado['movimiento_id'] . ' (' . $this->con_signo($resultado['movimiento_amount']) . ')'));
 
-                    if ($lineas_detalle === self::TOPE_DETALLE) {
-                        $this->comment('  (el detalle se corta a las ' . self::TOPE_DETALLE . ' líneas)');
+                    if (!$opciones['sin_tope'] && $lineas_detalle === self::TOPE_DETALLE) {
+                        $this->comment('  (el detalle se corta a las ' . self::TOPE_DETALLE . ' líneas; --sin_tope las lista todas)');
                     }
                 }
             }
@@ -1098,6 +1128,32 @@ class SanearStockDeSucursalesBorradas extends Command
      */
     private function verificar_motor_e_indices()
     {
+        $problemas = $this->problemas_de_motor_e_indices();
+
+        if (count($problemas) === 0) {
+            return true;
+        }
+
+        $this->error('La base no cumple lo que este comando necesita para escribir con seguridad. NO se tocó nada:');
+
+        foreach ($problemas as $problema) {
+            $this->line('  - ' . $problema . '.');
+        }
+
+        $this->line('Corré las migraciones pendientes (php artisan migrate) o convertí la tabla a InnoDB, y volvé a correrlo.');
+
+        return false;
+    }
+
+    /**
+     * Lo que le impide a esta base dejar que el comando escriba: tablas que no son InnoDB e índices de
+     * bloqueo que faltan. Solo LEE (`information_schema`): por eso lo puede llamar también `--ver`
+     * para avisar de antemano.
+     *
+     * @return string[]  Un texto por problema (sin el punto final). Vacío si la base está bien.
+     */
+    private function problemas_de_motor_e_indices()
+    {
         $problemas = [];
 
         $motores = $this->motores_de_las_tablas();
@@ -1116,19 +1172,7 @@ class SanearStockDeSucursalesBorradas extends Command
             $problemas[] = 'falta un índice que empiece por ' . $faltante . ' (migración 2026_08_19_120000): cada bloqueo escanearía la tabla entera y frenaría las ventas';
         }
 
-        if (count($problemas) === 0) {
-            return true;
-        }
-
-        $this->error('La base no cumple lo que este comando necesita para escribir con seguridad. NO se tocó nada:');
-
-        foreach ($problemas as $problema) {
-            $this->line('  - ' . $problema . '.');
-        }
-
-        $this->line('Corré las migraciones pendientes (php artisan migrate) o convertí la tabla a InnoDB, y volvé a correrlo.');
-
-        return false;
+        return $problemas;
     }
 
     /**
@@ -1304,11 +1348,15 @@ class SanearStockDeSucursalesBorradas extends Command
      * Bloque de reversión de un artículo, ANTES del commit. Lo llama el helper adentro de la
      * transacción: si lanza, el artículo se revierte.
      *
+     * Es `protected` y no `private` a propósito: el test del aviso del `.sql` la pisa en una subclase
+     * para fallar DESPUÉS de escribir el bloque (que es lo que pasa si falla el commit), cosa que
+     * dentro de la transacción de un test no se puede provocar de otra forma.
+     *
      * @param  string  $sql
      * @return void
      * @throws \RuntimeException  Con CODIGO_RESPALDO si no se pudo escribir.
      */
-    private function escribir_bloque_sql($sql)
+    protected function escribir_bloque_sql($sql)
     {
         if (!$this->volcar($this->manejador_sql, $sql)) {
             throw new \RuntimeException('No se pudo escribir el SQL de reversión en ' . $this->ruta_sql, self::CODIGO_RESPALDO);

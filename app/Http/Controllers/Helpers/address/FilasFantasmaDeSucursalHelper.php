@@ -462,7 +462,9 @@ class FilasFantasmaDeSucursalHelper
      *    variantes el motor deja `articles.stock` = suma CRUDA de las filas, así que si el dato es
      *    coherente el desfase es exactamente la suma de los fantasmas del artículo y lo inexplicado
      *    es 0. Con variantes los fantasmas nunca entran en el stock (la función suma solo filas
-     *    visibles), así que ahí TODO el desfase es de otra causa.
+     *    visibles), así que ahí TODO el desfase es de otra causa. Es un diagnóstico: puede ser
+     *    distinto de cero en un artículo SIN desfase (stock corregido a mano); lo que decide
+     *    `--solo_explicados` es `es_desvio_ajeno()`, que además exige que haya algo que corregir.
      *  - `necesita_recalculo`: la clase es `recalcular` y |desfase| ≥ TOLERANCIA: solo entonces se
      *    llama a la función del sistema (regla R, ver el encabezado).
      *  - `reconstruye_pivot`: si se la llamara, reconstruiría el pivot del artículo (tiene variantes
@@ -867,6 +869,29 @@ class FilasFantasmaDeSucursalHelper
     }
 
     /**
+     * ¿Este artículo se saltea con `--solo_explicados`? Es la ÚNICA definición del criterio: la usan
+     * la medición del comando (el reporte y el plan de `--aplicar`), el conteo "artículos con otra
+     * causa" y el saneo del artículo bajo el candado, así los tres dicen lo mismo.
+     *
+     * Se saltea cuando la CORRECCIÓN de stock que se le va a hacer (necesita recálculo) tiene una
+     * parte que NO explican las filas fantasma.
+     *
+     * 🔴 Un artículo cuyo stock ya está bien (desfase cero: por ejemplo alguien lo corrigió a mano)
+     * NO se saltea aunque su stock difiera de la suma CRUDA de sus filas: no hay ninguna corrección
+     * que etiquetar mal, solo hay que borrar la fila fantasma. Y dejarla es peor que borrarla: el
+     * próximo movimiento del artículo la vuelve a sumar (`SUM` crudo) y el stock se rompe de nuevo.
+     *
+     * @param  array  $a  Análisis del artículo (ver `analizar()`).
+     * @return bool
+     */
+    public static function es_desvio_ajeno(array $a)
+    {
+        return $a['clase'] === self::CLASE_RECALCULAR
+            && $a['necesita_recalculo']
+            && abs($a['desfase_inexplicado']) >= self::TOLERANCIA;
+    }
+
+    /**
      * Suma una fila fantasma al conteo por sucursal muerta.
      *
      * @param  array       $muertas     address_id => ['filas', 'unidades'] (por referencia).
@@ -973,7 +998,7 @@ class FilasFantasmaDeSucursalHelper
 
             // `--solo_explicados`: el desfase tiene otra causa además de (o en vez de) los fantasmas.
             // Se decide ACÁ, bajo el candado, y no solo en la medición: el stock pudo cambiar en el medio.
-            if ($solo_explicados && $a['clase'] === self::CLASE_RECALCULAR && abs($a['desfase_inexplicado']) >= self::TOLERANCIA) {
+            if ($solo_explicados && self::es_desvio_ajeno($a)) {
                 return [
                     'resultado' => self::RESULTADO_SALTADO,
                     'motivo' => self::MOTIVO_DESVIO_NO_EXPLICADO,
