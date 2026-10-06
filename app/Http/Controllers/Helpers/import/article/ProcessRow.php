@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -3841,13 +3842,16 @@ class ProcessRow {
      *  - Columna sin mapear, o celda vacía → null = no informado: el artículo nuevo nace en NULL
      *    (no habilitado) y el que ya existía conserva lo que tenía.
      *  - Un sí reconocible (Si, Sí, S, 1, yes, y, true, verdadero; sin importar mayúsculas) → 1.
-     *  - Cualquier otro valor → 0, igual que la columna `setear_precio_final_<lista>`: lo que no
-     *    es un sí, es un no.
+     *  - Un no reconocible (No, N, 0, false, falso) → 0.
+     *  - 🔴 Cualquier OTRO texto ("Sii", una "x", el contenido de una columna mal mapeada) → null,
+     *    igual que la celda vacía: no se escribe nada. Antes valía 0, y reimportar una planilla con
+     *    un typo deshabilitaba artículos de la tienda sin avisar (B1 de la revisión independiente,
+     *    6/10/2026). Lo decide CatalogoPorListaHelper::interpretar_si_no(), con el porqué.
      *
-     * ⚠️ La celda vacía es "no informado" y no "No" (a diferencia de setear_precio_final_<lista>,
-     * donde vacía es 0): así se puede reimportar una planilla parcial sin sacarle de la tienda a
-     * los mayoristas los artículos que no vinieron marcados. Para un artículo nuevo da igual: NULL
-     * y 0 son los dos "no habilitado".
+     * ⚠️ Ni la celda vacía ni un texto raro son "No" (a diferencia de setear_precio_final_<lista>,
+     * donde todo lo que no es un sí es 0): así se puede reimportar una planilla parcial, o con
+     * errores de tipeo, sin sacarle de la tienda a los mayoristas los artículos que no vinieron
+     * marcados. Para un artículo nuevo da igual: NULL y 0 son los dos "no habilitado".
      *
      * @param  array $row
      * @param  mixed $price_type
@@ -3863,22 +3867,7 @@ class ProcessRow {
 
         $valor = ImportHelper::getColumnValue($row, $columna, $this->columns);
 
-        if (is_null($valor)) {
-            return null;
-        }
-
-        // mb_strtolower y no strtolower: "SÍ" con tilde en mayúscula también es un sí.
-        $normalizado = mb_strtolower(trim((string) $valor), 'UTF-8');
-
-        if ($normalizado === '') {
-            return null;
-        }
-
-        if (in_array($normalizado, ['si', 'sí', 's', '1', 'yes', 'y', 'true', 'verdadero'], true)) {
-            return 1;
-        }
-
-        return 0;
+        return CatalogoPorListaHelper::interpretar_si_no($valor);
     }
 
     /**

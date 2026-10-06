@@ -38,6 +38,7 @@ use Illuminate\Support\Facades\Log;
  *   - sanear_booleano(): el saneo a 0/1 de lo que llega del request (ficha, lista, masiva).
  *   - interruptor_a_escribir_en_update(): qué hay que escribir (o no) del interruptor de la lista
  *     en el PUT de PriceTypeController.
+ *   - interpretar_si_no(): el Sí/No de una celda del Excel de la importación (1, 0 o no informado).
  *   - contar_habilitados(): el contador "X habilitados de Y" del ABM de la lista.
  *   - aplicar_en_masiva() / revertir_en_masiva(): la clave `visible_en_tienda_lista_{id}` de la
  *     actualización masiva de artículos y su reversión.
@@ -53,6 +54,22 @@ class CatalogoPorListaHelper
      * @var string
      */
     const CLAVE_DEL_INTERRUPTOR = 'catalogo_restringido_en_tienda';
+
+    /**
+     * Lo que vale como un "Sí" en una celda del Excel, ya en minúsculas (ver interpretar_si_no()).
+     * Es la misma lista que reconoce el parser de las columnas Sí/No del importador
+     * (ProcessRow::get_boolean_column()).
+     *
+     * @var string[]
+     */
+    const VALORES_SI = ['si', 'sí', 's', '1', 'yes', 'y', 'true', 'verdadero'];
+
+    /**
+     * Lo que vale como un "No" en una celda del Excel, ya en minúsculas (ver interpretar_si_no()).
+     *
+     * @var string[]
+     */
+    const VALORES_NO = ['no', 'n', '0', 'false', 'falso'];
 
     /**
      * Prefijo de la clave de la actualización masiva: `visible_en_tienda_lista_{price_type_id}`.
@@ -170,6 +187,66 @@ class CatalogoPorListaHelper
         $cuerpo = json_decode((string) $request->getContent(), true);
 
         return is_array($cuerpo) && array_key_exists($clave, $cuerpo) && $cuerpo[$clave] === '';
+    }
+
+    /**
+     * Lo que dice una celda Sí/No del Excel: 1, 0 o null = no informado. Es el parser de la columna
+     * `visible_en_tienda_<lista>` de la importación (ProcessRow::leer_visible_en_tienda()).
+     *
+     *  - Un sí reconocible (VALORES_SI: si, sí, s, 1, yes, y, true, verdadero) → 1.
+     *  - Un no reconocible (VALORES_NO: no, n, 0, false, falso) → 0.
+     *  - 🔴 TODO LO DEMÁS → null, y quien llama NO escribe nada: la celda vacía, un typo ("Sii"), una
+     *    "x", un número cualquiera, el texto de una columna mal mapeada. Antes lo que no era un sí
+     *    valía 0 (como la columna `setear_precio_final_<lista>`), y reimportar una planilla con un
+     *    typo DESHABILITABA artículos de la tienda sin avisar (B1 de la revisión independiente,
+     *    6/10/2026). Acá no se puede imitar a `setear_precio_final_<lista>`: ese 0 es "no fijar el
+     *    precio" y sobre el margen no hace daño; este 0 le saca un artículo a un comprador.
+     *
+     * Sin importar mayúsculas ("SÍ" con la tilde en mayúscula también es un sí: por eso
+     * mb_strtolower y no strtolower, que en PHP 7.4 no toca las letras acentuadas) y con los
+     * espacios de alrededor recortados, incluido el espacio de no separación (NBSP, U+00A0) que
+     * trae lo copiado de una web y que trim() no recorta. Una celda ya numérica (1, 0, 1.0) vale
+     * como su texto.
+     *
+     * No se reusa ProcessRow::get_boolean_column(): devuelve int (no puede devolver null), usa
+     * strtolower y no recorta el NBSP — con "SÍ" no andaría.
+     *
+     * @param  mixed $valor  El texto o número de la celda, o null si la columna no está mapeada.
+     * @return int|null  1, 0 o null = no informado.
+     */
+    public static function interpretar_si_no($valor)
+    {
+        if (is_null($valor)) {
+            return null;
+        }
+
+        if (is_bool($valor)) {
+            return $valor ? 1 : 0;
+        }
+
+        if (!is_scalar($valor)) {
+            return null;
+        }
+
+        // \p{Z} son los espacios Unicode (NBSP incluido); \s los de siempre (tab, salto de línea).
+        $texto = preg_replace('/^[\p{Z}\s]+|[\p{Z}\s]+$/u', '', (string) $valor);
+
+        // preg_replace da null con un texto que no es UTF-8 válido: no se puede leer, no se informa.
+        if (is_null($texto)) {
+            return null;
+        }
+
+        $normalizado = mb_strtolower($texto, 'UTF-8');
+
+        if (in_array($normalizado, self::VALORES_SI, true)) {
+            return 1;
+        }
+
+        if (in_array($normalizado, self::VALORES_NO, true)) {
+            return 0;
+        }
+
+        return null;
     }
 
     /**

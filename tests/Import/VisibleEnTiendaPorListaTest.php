@@ -387,6 +387,34 @@ class VisibleEnTiendaPorListaTest extends ImportTestCase
     }
 
     /**
+     * 🔴 B1 de la revisión independiente (6/10/2026): lo que no es un "Sí" ni un "No" reconocible es
+     * "no informado" y NO se escribe. Antes cualquier texto raro valía 0 y un typo ("Sii"), o una
+     * columna mal mapeada, DESHABILITABA artículos al reimportar.
+     *
+     * Acá la columna "visible" se apunta, por error, a la del NOMBRE (la 4): ningún nombre es un Sí
+     * ni un No, así que ningún artículo cambia su visibilidad. Con el parser anterior A2 y A12, que
+     * arrancaban habilitados, quedaban en 0, y los nuevos nacían con un 0 en vez de NULL.
+     * (El detalle de qué texto vale qué lo fija SiONoDeLaCeldaTest.)
+     *
+     * @return void
+     */
+    public function test_un_texto_que_no_es_si_ni_no_no_deshabilita_a_nadie()
+    {
+        $this->importar(self::ARCHIVO, $this->config([
+            'prop_visible_en_tienda_mayorista' => 4,
+        ]));
+
+        $this->assertSame(1, $this->visible($this->seed['A2']->id, $this->mayorista->id), 'A2 estaba habilitado y un texto raro no lo deshabilita');
+        $this->assertSame(1, $this->visible($this->seed['A12']->id, $this->mayorista->id), 'A12 estaba habilitado y un texto raro no lo deshabilita');
+        $this->assertNull($this->visible($this->seed['A1']->id, $this->mayorista->id), 'A1 sigue en NULL: no se le escribe un 0');
+        $this->assertNull($this->visible($this->seed['A15']->id, $this->mayorista->id), 'A15 sigue en NULL: no se le escribe un 0');
+
+        foreach (['PC-VIS-1', 'PC-VIS-2', 'PC-VIS-3'] as $codigo) {
+            $this->assertNull($this->visible($this->creado($codigo)->id, $this->mayorista->id), $codigo . ': un texto raro es "no informado", el artículo nace en NULL');
+        }
+    }
+
+    /**
      * M1: el INSERT de los pares sin fila no duplica a los que ya tienen. El pivote no tiene índice
      * único (un artículo puede tener la lista atada dos veces) y un INSERT a ciegas le sumaría una
      * tercera fila: acá A1 ya tiene dos, con la visibilidad en NULL, y las dos terminan en 1.
