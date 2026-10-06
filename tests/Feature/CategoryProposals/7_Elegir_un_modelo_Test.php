@@ -1564,9 +1564,11 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
      * dudoso el nodo no la encontraría y crearía OTRA con el mismo nombre y otro id: la original perdería su
      * imagen, su descripción y su `num` sin que el cartel lo dijera.
      *
-     * Se compara por nombre normalizado (el nodo se llama FERRETERIA y la categoría Ferretería), vale para
-     * categorías y para subcategorías, y una subcategoría protegida protege a su categoría. Lo que no
-     * coincide con ningún nodo y quedó vacío sí se manda a la papelera (el control).
+     * Se compara por nombre normalizado (el nodo se llama FERRETERIA y la categoría Ferretería) y POR NIVEL
+     * (D3): una categoría vieja se conserva por el nombre de un nodo raíz y una subcategoría vieja por el de un
+     * nodo hijo cuyo padre tiene el nombre de su categoría (Ferretería / Tornillos). Lo que no coincide con ningún
+     * nodo y quedó vacío sí se manda a la papelera (el control). Los nombres que coinciden en OTRO nivel o bajo
+     * OTRO padre no se reutilizan nunca y se quitan: ver los tres tests de D3 más abajo.
      *
      * Y al aprobar el primer dudoso se REUTILIZA la original: mismo id, con su imagen y su descripción.
      *
@@ -1584,26 +1586,18 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
         $sin_uso     = $this->categoria_real('Sin uso en el sistema nuevo');
         $sub_sin_uso = $this->subcategoria_real('Sub sin uso', $sin_uso);
 
-        // Una categoría vieja que ningún nodo nombra, pero cuya subcategoría SÍ la nombra un nodo (Herrajes / Bulones):
-        // la subcategoría protegida protege a su categoría, que si no quedaría borrada con la subcategoría viva colgando.
-        $cajon   = $this->categoria_real('Cajon de sastre');
-        $bulones = $this->subcategoria_real('Bulones', $cajon);
-
         $latex    = $this->crear_articulo('Latex 4L', ['category_id' => $pinturas->id]);
         $tornillo = $this->crear_articulo('Tornillo 8mm', ['category_id' => $ferreteria->id, 'sub_category_id' => $tornillos->id]);
-        $bulon    = $this->crear_articulo('Bulon', ['category_id' => $cajon->id, 'sub_category_id' => $bulones->id]);
         $martillo = $this->crear_articulo('Martillo');
 
         $sembrado = $this->sembrar_corrida([
             'propuestas' => [
                 'A' => [
-                    // Los nodos que solo tienen dudosos (Pinturas, Ferretería / Tornillos y Herrajes / Bulones) no se
-                    // resuelven al elegir.
-                    'arbol' => ['Pinturas' => [], 'FERRETERIA' => ['tornillos'], 'Herrajes' => ['BULONES'], 'Herramientas' => []],
+                    // Los nodos que solo tienen dudosos (Pinturas y Ferretería / Tornillos) no se resuelven al elegir.
+                    'arbol' => ['Pinturas' => [], 'FERRETERIA' => ['tornillos'], 'Herramientas' => []],
                     'items' => [
                         [$latex, 'Pinturas', null, 'dudosa', 'no queda claro'],
                         [$tornillo, 'FERRETERIA', 'tornillos', 'dudosa', 'no queda claro'],
-                        [$bulon, 'Herrajes', 'BULONES', 'dudosa', 'no queda claro'],
                         [$martillo, 'Herramientas', null, 'segura'],
                     ],
                 ],
@@ -1623,11 +1617,7 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
         foreach ([$pinturas, $ferreteria] as $categoria) {
             $this->assertNotNull(Category::find($categoria->id), $categoria->name.' sigue viva.');
         }
-        $this->assertNotNull(SubCategory::find($tornillos->id));
-
-        // La categoría que ningún nodo nombra se conserva porque su subcategoría sí está nombrada.
-        $this->assertNotNull(Category::find($cajon->id), 'La subcategoría protegida protege a su categoría.');
-        $this->assertNotNull(SubCategory::find($bulones->id));
+        $this->assertNotNull(SubCategory::find($tornillos->id), 'La subcategoría que un nodo hijo de la categoría reutilizada todavía necesita.');
 
         // Los artículos dudosos quedaron sin categoría (es un sistema nuevo), así que las originales están vacías.
         $this->assertSame(['category_id' => null, 'sub_category_id' => null], $this->categorias_de($latex));
@@ -1688,5 +1678,148 @@ class Elegir_un_modelo_Test extends CategoryProposalsTestCase
         $this->assertNotNull(Category::find($pinturas->id), 'La categoría original sigue en pie.');
         $this->assertSame('pinturas.png', Category::find($pinturas->id)->image_url);
         $this->assertSame(0, Category::onlyTrashed()->where('user_id', $this->owner->id)->count());
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // "Eliminar vacías" compara por NIVEL (D3 de la revisión de los arreglos)
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 🔴 D3: pasar de una estructura PLANA a una JERÁRQUICA. "Bisagras" era una categoría y el sistema nuevo la
+     * deja como subcategoría de "Herrajes". La "Bisagras" vieja queda vacía y tiene que ir a la papelera: un nodo
+     * hijo no reutiliza una categoría del primer nivel, así que protegerla por el nombre dejaba una categoría
+     * vacía y viva (el menú de la tienda mostraría "Bisagras (0 prod.)", justo lo que la casilla prometía sacar).
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function eliminar_vacias_quita_la_categoria_vieja_cuyo_nombre_pasa_a_ser_una_subcategoria()
+    {
+        // Estructura plana de hoy: "Bisagras" es una categoría con su artículo.
+        $bisagras_vieja = $this->categoria_real('Bisagras');
+        $bisagra        = $this->crear_articulo('Bisagra comun', ['category_id' => $bisagras_vieja->id]);
+
+        // El sistema nuevo es jerárquico: Herrajes / Bisagras. El artículo pasa a esa subcategoría.
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    'arbol' => ['Herrajes' => ['Bisagras']],
+                    'items' => [[$bisagra, 'Herrajes', 'Bisagras', 'segura']],
+                ],
+            ],
+        ]);
+
+        $respuesta = $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['A']['proposal'], true);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(1, $respuesta->json('resultado.categorias_eliminadas'), 'La "Bisagras" del primer nivel quedó vacía.');
+
+        // La vieja está en la papelera y anotada en la corrida (para poder volver atrás).
+        $this->assertSame([$bisagras_vieja->id], Category::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+        $this->assertSame([['tipo' => 'categoria', 'id' => $bisagras_vieja->id]], CategoryProposalRun::find($sembrado['run']->id)->categorias_eliminadas);
+
+        // No queda ninguna "Bisagras" viva en el primer nivel (el menú de la tienda la mostraría vacía).
+        $this->assertSame(0, $this->categorias_llamadas('Bisagras')->count(), 'Ninguna categoría "Bisagras" viva y vacía.');
+
+        // El sistema nuevo quedó armado: Herrajes con su subcategoría Bisagras, y el artículo adentro.
+        $herrajes = $this->categorias_llamadas('Herrajes')->first();
+        $this->assertNotNull($herrajes);
+
+        $sub = SubCategory::where('user_id', $this->owner->id)->where('name', 'Bisagras')->first();
+        $this->assertNotNull($sub);
+        $this->assertSame($herrajes->id, (int) $sub->category_id);
+        $this->assertSame(['category_id' => $herrajes->id, 'sub_category_id' => $sub->id], $this->categorias_de($bisagra));
+    }
+
+    /**
+     * 🔴 D3, al revés: pasar de una estructura JERÁRQUICA a una PLANA. "Bisagras" era una subcategoría de "Herrajes"
+     * y el sistema nuevo la deja como categoría del primer nivel. Un nodo raíz no reutiliza una subcategoría, así
+     * que la "Bisagras" vieja (vacía) y su "Herrajes" (que queda sin nada) van a la papelera; protegerlas por el
+     * nombre dejaba las dos vivas y vacías.
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function eliminar_vacias_quita_la_subcategoria_vieja_cuyo_nombre_pasa_a_ser_una_categoria()
+    {
+        // Estructura jerárquica de hoy: Herrajes / Bisagras, con su artículo.
+        $herrajes_vieja = $this->categoria_real('Herrajes');
+        $sub_vieja      = $this->subcategoria_real('Bisagras', $herrajes_vieja);
+        $bisagra        = $this->crear_articulo('Bisagra comun', ['category_id' => $herrajes_vieja->id, 'sub_category_id' => $sub_vieja->id]);
+
+        // El sistema nuevo es plano: "Bisagras" es una categoría.
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    'arbol' => ['Bisagras' => []],
+                    'items' => [[$bisagra, 'Bisagras', null, 'segura']],
+                ],
+            ],
+        ]);
+
+        $respuesta = $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['A']['proposal'], true);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(1, $respuesta->json('resultado.categorias_eliminadas'), 'Herrajes quedó sin nada.');
+
+        // La subcategoría vieja y su categoría están en la papelera.
+        $this->assertSame([$herrajes_vieja->id], Category::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+        $this->assertSame([$sub_vieja->id], SubCategory::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+
+        // Lo vivo es solo lo del sistema nuevo: una categoría "Bisagras" y ninguna subcategoría.
+        $this->assertSame([1, 0], $this->cantidades_de_categorias());
+
+        $nueva = $this->categorias_llamadas('Bisagras')->first();
+        $this->assertNotNull($nueva);
+        $this->assertNotSame($herrajes_vieja->id, $nueva->id);
+        $this->assertSame(['category_id' => $nueva->id, 'sub_category_id' => null], $this->categorias_de($bisagra));
+    }
+
+    /**
+     * 🔴 D3, con el mismo nombre pero bajo OTRO padre. La subcategoría vieja "Bulones" cuelga de "Cajon de sastre" y el
+     * sistema nuevo trae un nodo hijo "BULONES" bajo "Herrajes": al aprobar, ese nodo busca la subcategoría DENTRO de
+     * "Herrajes" y crea otra; la vieja no se reutiliza nunca. Protegerla por el nombre dejaba "Cajon de sastre / Bulones"
+     * vivos y vacíos. (Es el escenario que antes de D3 quedaba protegido a propósito: ver el test de B-03.)
+     *
+     * @test
+     * @group categorias_ia
+     */
+    public function eliminar_vacias_quita_la_subcategoria_vieja_que_el_nodo_busca_bajo_otro_padre()
+    {
+        $cajon    = $this->categoria_real('Cajon de sastre');
+        $bulones  = $this->subcategoria_real('Bulones', $cajon);
+        $bulon    = $this->crear_articulo('Bulon', ['category_id' => $cajon->id, 'sub_category_id' => $bulones->id]);
+        $martillo = $this->crear_articulo('Martillo');
+
+        $sembrado = $this->sembrar_corrida([
+            'propuestas' => [
+                'A' => [
+                    // Herrajes / BULONES solo tiene un dudoso: no se resuelve al elegir, sino al aprobar.
+                    'arbol' => ['Herrajes' => ['BULONES'], 'Herramientas' => []],
+                    'items' => [
+                        [$bulon, 'Herrajes', 'BULONES', 'dudosa', 'no queda claro'],
+                        [$martillo, 'Herramientas', null, 'segura'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $respuesta = $this->pedir_elegir($sembrado['run'], $sembrado['propuestas']['A']['proposal'], true);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(1, $respuesta->json('resultado.categorias_eliminadas'), 'Cajon de sastre quedó vacía.');
+        $this->assertSame([$cajon->id], Category::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+        $this->assertSame([$bulones->id], SubCategory::onlyTrashed()->where('user_id', $this->owner->id)->pluck('id')->all());
+
+        // Al aprobar el dudoso, el nodo crea SU subcategoría dentro de la "Herrajes" nueva: no era la vieja.
+        $this->pedir_aprobar($sembrado['propuestas']['A']['items'][0])->assertStatus(200);
+
+        $herrajes = $this->categorias_llamadas('Herrajes')->first();
+        $this->assertNotNull($herrajes);
+
+        $subs_vivas = SubCategory::where('user_id', $this->owner->id)->where('name', 'Bulones')->get();
+        $this->assertSame(1, $subs_vivas->count(), 'Una sola subcategoría "Bulones" viva.');
+        $this->assertNotSame($bulones->id, $subs_vivas->first()->id, 'Es la nueva, no la vieja que se mandó a la papelera.');
+        $this->assertSame($herrajes->id, (int) $subs_vivas->first()->category_id);
     }
 }

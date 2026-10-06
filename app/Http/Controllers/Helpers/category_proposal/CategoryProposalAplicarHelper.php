@@ -442,12 +442,13 @@ class CategoryProposalAplicarHelper
         $eliminadas = [];
 
         if (!$es_mantener && $eliminar_categorias_vacias) {
-            // Los nombres (normalizados) de TODOS los nodos de la propuesta, resueltos o no: una categoría vieja
-            // con uno de esos nombres la reutiliza el nodo (al aplicar o al aprobar), así que no se manda a la papelera.
-            $claves_de_la_propuesta = array_flip(CategoryProposalNode::where('proposal_id', $propuesta->id)
+            // Los nombres (normalizados) de TODOS los nodos de la propuesta, resueltos o no, separados por NIVEL: una
+            // categoría vieja con el nombre de un nodo raíz, o una subcategoría vieja con el nombre de un nodo hijo de la
+            // categoría que reutiliza su padre, la reutiliza el nodo (al aplicar o al aprobar), así que no se manda a la
+            // papelera. Un mismo nombre en OTRO nivel no cuenta (D3): la reutilización por nombre es por nivel.
+            $claves_de_la_propuesta = self::claves_de_la_propuesta_por_nivel(CategoryProposalNode::where('proposal_id', $propuesta->id)
                 ->where('user_id', $dueno->id)
-                ->pluck('clave_nombre')
-                ->all());
+                ->get(['id', 'parent_id', 'clave_nombre']));
 
             $eliminadas = self::mandar_a_la_papelera_las_vacias($dueno, $resolucion['reales_categorias'], $resolucion['reales_subcategorias'], $claves_de_la_propuesta);
         }
@@ -951,43 +952,63 @@ class CategoryProposalAplicarHelper
      * papelera si quedó vacía. Se respeta `La de siempre` (la tienda la esconde por nombre) y se usa
      * `->delete()` de Eloquent (soft delete, con su auditoría; no hay observers de `deleted`).
      *
-     * 🔴 Tampoco se toca una categoría o subcategoría vieja cuyo NOMBRE (normalizado) coincide con algún nodo
-     * de la propuesta elegida, aunque ese nodo no se haya resuelto al aplicar (solo tenía dudosos, que se
-     * crean o reutilizan recién al aprobar). Si se la mandara a la papelera, al aprobar el primer dudoso el
-     * nodo no la encontraría y crearía OTRA con el mismo nombre y otro id, y la original perdería su imagen,
-     * su descripción y su `num` (B-03 del verificador: "Eliminar vacías" viene tildado por defecto).
-     * Como esa categoría se reutiliza por nombre al aprobar, se conserva con el mismo id.
-     * Una subcategoría protegida también protege a su categoría: no queda una subcategoría viva colgando de
-     * una categoría que se mandó a la papelera.
+     * 🔴 Tampoco se toca una categoría o subcategoría vieja que un nodo de la propuesta elegida va a reutilizar
+     * por nombre, aunque ese nodo no se haya resuelto al aplicar (solo tenía dudosos, que se crean o reutilizan
+     * recién al aprobar). Si se la mandara a la papelera, al aprobar el primer dudoso el nodo no la encontraría y
+     * crearía OTRA con el mismo nombre y otro id, y la original perdería su imagen, su descripción y su `num`
+     * (B-03 del verificador: "Eliminar vacías" viene tildado por defecto).
+     *
+     * 🔴 La reutilización por nombre es POR NIVEL (D3 de la revisión): un nodo raíz reutiliza una CATEGORÍA vieja
+     * (`buscar_o_crear_categoria`) y un nodo hijo reutiliza una SUBCATEGORÍA vieja pero solo DENTRO de la categoría
+     * que reutiliza su padre (`buscar_o_crear_subcategoria`). Por eso una categoría vieja se conserva solo si su
+     * nombre es el de un nodo RAÍZ, y una subcategoría vieja solo si su nombre es el de un nodo HIJO cuyo padre
+     * tiene el nombre de la categoría de la que ella cuelga. Un mismo nombre en otro nivel no se reutiliza nunca:
+     * al pasar de una estructura plana a una jerárquica ("Bisagras" pasa de categoría a subcategoría de
+     * "Herrajes") la "Bisagras" vieja queda vacía y SE QUITA; si se la protegiera, el menú de la tienda (que no
+     * esconde las categorías vacías) mostraría "Bisagras (0 prod.)", justo lo que la casilla prometía sacar.
+     * Una subcategoría protegida cuelga de una categoría con nombre de nodo raíz, que tampoco se toca: no queda una
+     * subcategoría viva colgando de una categoría que se mandó a la papelera.
      *
      * @param  \App\Models\User $dueno
      * @param  array $reales_categorias      [id => true] de las categorías del sistema elegido.
      * @param  array $reales_subcategorias   [id => true] de las subcategorías del sistema elegido.
-     * @param  array $claves_de_la_propuesta [clave normalizada => true] de TODOS los nodos de la propuesta elegida.
+     * @param  array $claves_por_nivel       Lo que arma `claves_de_la_propuesta_por_nivel` con TODOS los nodos de la
+     *                                       propuesta elegida: ['categorias' => [clave => true],
+     *                                       'subcategorias' => [clave del padre => [clave del hijo => true]]].
      * @return array  [['tipo' => 'categoria'|'subcategoria', 'id' => n], ...] lo que se mandó a la papelera.
      */
-    protected static function mandar_a_la_papelera_las_vacias(User $dueno, array $reales_categorias, array $reales_subcategorias, array $claves_de_la_propuesta = [])
+    protected static function mandar_a_la_papelera_las_vacias(User $dueno, array $reales_categorias, array $reales_subcategorias, array $claves_por_nivel = [])
     {
+        // Los nombres de los nodos raíz: una categoría vieja con uno de esos nombres la reutiliza el nodo.
+        $claves_de_categorias = isset($claves_por_nivel['categorias']) ? $claves_por_nivel['categorias'] : [];
+
+        // Los nombres de los nodos hijo agrupados por el nombre de su padre: una subcategoría vieja con uno de esos
+        // nombres, colgada de una categoría con el nombre del padre, la reutiliza el nodo hijo.
+        $claves_de_subcategorias = isset($claves_por_nivel['subcategorias']) ? $claves_por_nivel['subcategorias'] : [];
+
         // Las categorías que se podrían eliminar (no son del sistema elegido ni `La de siempre`): [id => ids de sus subcategorías].
         $categorias_candidatas = [];
+
+        // La clave del nombre de TODAS las categorías vivas del dueño, candidatas o no: [id => clave]. Sirve para saber
+        // de qué categoría (por nombre) cuelga cada subcategoría vieja.
+        $clave_de_cada_categoria = [];
 
         foreach (Category::where('user_id', $dueno->id)->get(['id', 'name']) as $categoria) {
             // El id de la categoría, como entero.
             $id = (int) $categoria->id;
 
-            // La clave de su nombre: lo que se compara con `La de siempre` y con los nodos de la propuesta.
+            // La clave de su nombre: lo que se compara con `La de siempre` y con los nodos raíz de la propuesta.
             $clave = CategoryProposalNombreHelper::clave_de($categoria->name);
 
-            // La del sistema elegido, la que un nodo de la propuesta va a reutilizar por nombre y `La de siempre` se conservan.
-            if (isset($reales_categorias[$id]) || isset($claves_de_la_propuesta[$clave]) || $clave === CategoryProposalNombreHelper::CLAVE_RESERVADA) {
+            $clave_de_cada_categoria[$id] = $clave;
+
+            // La del sistema elegido, la que un nodo RAÍZ de la propuesta va a reutilizar por nombre y `La de siempre` se conservan.
+            if (isset($reales_categorias[$id]) || isset($claves_de_categorias[$clave]) || $clave === CategoryProposalNombreHelper::CLAVE_RESERVADA) {
                 continue;
             }
 
             $categorias_candidatas[$id] = [];
         }
-
-        // Las categorías que NO se pueden eliminar porque cuelga de ellas una subcategoría protegida: [id => true].
-        $categorias_protegidas = [];
 
         // Todas las subcategorías vivas del dueño con su categoría, menos las del sistema elegido.
         $subcategorias_candidatas = [];
@@ -995,9 +1016,12 @@ class CategoryProposalAplicarHelper
         foreach (SubCategory::where('user_id', $dueno->id)->get(['id', 'name', 'category_id']) as $sub) {
             $id = (int) $sub->id;
 
-            // Una subcategoría que un nodo de la propuesta va a reutilizar por nombre se conserva, y con ella su categoría.
-            if (isset($claves_de_la_propuesta[CategoryProposalNombreHelper::clave_de($sub->name)])) {
-                $categorias_protegidas[(int) $sub->category_id] = true;
+            // La categoría de la que cuelga, como entero, y la clave de su nombre (null si esa categoría ya no está viva).
+            $category_id = (int) $sub->category_id;
+            $clave_de_su_categoria = isset($clave_de_cada_categoria[$category_id]) ? $clave_de_cada_categoria[$category_id] : null;
+
+            // Una subcategoría que un nodo HIJO va a reutilizar por nombre dentro de la categoría que reutiliza su padre se conserva.
+            if (!is_null($clave_de_su_categoria) && isset($claves_de_subcategorias[$clave_de_su_categoria][CategoryProposalNombreHelper::clave_de($sub->name)])) {
                 continue;
             }
 
@@ -1005,10 +1029,10 @@ class CategoryProposalAplicarHelper
                 continue;
             }
 
-            $subcategorias_candidatas[$id] = (int) $sub->category_id;
+            $subcategorias_candidatas[$id] = $category_id;
 
-            if (isset($categorias_candidatas[(int) $sub->category_id])) {
-                $categorias_candidatas[(int) $sub->category_id][] = $id;
+            if (isset($categorias_candidatas[$category_id])) {
+                $categorias_candidatas[$category_id][] = $id;
             }
         }
 
@@ -1049,8 +1073,8 @@ class CategoryProposalAplicarHelper
         }
 
         foreach ($categorias_candidatas as $category_id => $subs) {
-            // Con artículos, o con una subcategoría protegida colgando: se conserva.
-            if (isset($categorias_con_articulos[$category_id]) || isset($categorias_protegidas[$category_id])) {
+            // Con artículos propios: se conserva.
+            if (isset($categorias_con_articulos[$category_id])) {
                 continue;
             }
 
@@ -1088,6 +1112,47 @@ class CategoryProposalAplicarHelper
         }
 
         return $eliminadas;
+    }
+
+    /**
+     * Arma los nombres (claves normalizadas) de los nodos de una propuesta SEPARADOS POR NIVEL, que es lo que necesita
+     * `mandar_a_la_papelera_las_vacias` para saber qué categoría o subcategoría vieja va a reutilizar un nodo (D3).
+     *
+     * Un nodo raíz (sin `parent_id`) reutiliza una categoría vieja por nombre; un nodo hijo reutiliza una subcategoría
+     * vieja por nombre pero solo dentro de la categoría que reutiliza su padre (la subcategoría se busca entre las de
+     * esa categoría). Por eso las claves de los hijos van agrupadas por la clave de su nodo padre.
+     *
+     * @param  \Illuminate\Support\Collection|\App\Models\CategoryProposalNode[] $nodos  Los nodos de la propuesta, con `id`, `parent_id` y `clave_nombre`.
+     * @return array  ['categorias' => [clave => true], 'subcategorias' => [clave del padre => [clave del hijo => true]]]
+     */
+    protected static function claves_de_la_propuesta_por_nivel($nodos)
+    {
+        // Los nombres de los nodos raíz: [clave => true].
+        $categorias = [];
+
+        // La clave de cada nodo raíz por su id, para poder nombrar al padre de cada nodo hijo.
+        $clave_del_padre = [];
+
+        foreach ($nodos as $nodo) {
+            if (is_null($nodo->parent_id)) {
+                $categorias[(string) $nodo->clave_nombre] = true;
+                $clave_del_padre[(int) $nodo->id]         = (string) $nodo->clave_nombre;
+            }
+        }
+
+        // Los nombres de los nodos hijo agrupados por el nombre de su padre: [clave del padre => [clave del hijo => true]].
+        $subcategorias = [];
+
+        foreach ($nodos as $nodo) {
+            // Un hijo cuyo padre no está entre los nodos de la propuesta (dato roto) no protege nada.
+            if (is_null($nodo->parent_id) || !isset($clave_del_padre[(int) $nodo->parent_id])) {
+                continue;
+            }
+
+            $subcategorias[$clave_del_padre[(int) $nodo->parent_id]][(string) $nodo->clave_nombre] = true;
+        }
+
+        return ['categorias' => $categorias, 'subcategorias' => $subcategorias];
     }
 
     // ---------------------------------------------------------------------------------------------
