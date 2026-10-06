@@ -340,13 +340,20 @@ class CatalogoPorListaHelper
      *    atada, se ata (con el resto de las columnas en NULL = margen por defecto de la lista,
      *    igual que el alta de una lista desde la ficha); si la tenía atada dos veces, se escriben
      *    las dos filas.
+     *  - 🔴 La lista se valida UNA vez por corrida, no una vez por artículo (B2 de la revisión
+     *    independiente, 6/10/2026): una masiva llega a 3000 artículos y la consulta de validación se
+     *    sumaba a las que ya necesita cada uno. Y lo mismo el aviso del log de una lista inválida o
+     *    de un artículo ajeno: uno por corrida, no uno por artículo. Para eso quien llama pasa la
+     *    `$memoria` de la corrida (nueva_memoria_de_corrida()). Sin ella se valida y se avisa en
+     *    cada llamada, como antes.
      *
-     * @param  mixed                  $model  El artículo (cualquier otro modelo se ignora).
-     * @param  array                  $form   ['type', 'key', 'value'] tal como viene del SPA.
-     * @param  \App\Models\User|null  $owner  Dueño de la masiva, resuelto una vez por corrida.
+     * @param  mixed                  $model    El artículo (cualquier otro modelo se ignora).
+     * @param  array                  $form     ['type', 'key', 'value'] tal como viene del SPA.
+     * @param  \App\Models\User|null  $owner    Dueño de la masiva, resuelto una vez por corrida.
+     * @param  \ArrayObject|null      $memoria  Memoria de ESTA corrida (nueva_memoria_de_corrida()).
      * @return array|null  ['prop_key', 'old_value', 'new_value', 'operation', 'form_key'] o null.
      */
-    public static function aplicar_en_masiva($model, array $form, $owner = null)
+    public static function aplicar_en_masiva($model, array $form, $owner = null, $memoria = null)
     {
         $price_type_id = self::lista_de_la_clave_de_masiva(isset($form['key']) ? $form['key'] : null);
 
@@ -368,12 +375,20 @@ class CatalogoPorListaHelper
         $owner_id = !is_null($owner) ? (int) $owner->id : (int) $model->user_id;
 
         if ((int) $model->user_id !== $owner_id) {
-            Log::warning('CatalogoPorListaHelper: masiva sobre el articulo '.$model->id.' de otro dueño; no se toca su visibilidad en la tienda.');
+            self::avisar_una_vez(
+                $memoria,
+                'articulo-ajeno:' . $owner_id,
+                'CatalogoPorListaHelper: masiva sobre el articulo '.$model->id.' de otro dueño; no se toca su visibilidad en la tienda (ni la de los demás artículos ajenos de esta corrida).'
+            );
             return null;
         }
 
-        if (!self::lista_es_del_dueno($price_type_id, $owner_id)) {
-            Log::warning('CatalogoPorListaHelper: la lista '.$price_type_id.' no existe o no es del dueño '.$owner_id.'; se ignora la clave de la masiva.');
+        if (!self::lista_es_del_dueno($price_type_id, $owner_id, $memoria)) {
+            self::avisar_una_vez(
+                $memoria,
+                'lista-invalida:' . $owner_id . ':' . $price_type_id,
+                'CatalogoPorListaHelper: la lista '.$price_type_id.' no existe o no es del dueño '.$owner_id.'; se ignora la clave de la masiva en todos los artículos de esta corrida.'
+            );
             return null;
         }
 
@@ -406,15 +421,18 @@ class CatalogoPorListaHelper
      * ...` y `$model->save()`: "Unknown column" y la reversión entera en fallo.
      *
      * Si la lista ya no existe (se borró después de la masiva, y con ella sus filas de pivote) o
-     * dejó de ser del dueño, no hay nada que restaurar: se saltea y queda en el log.
+     * dejó de ser del dueño, no hay nada que restaurar: se saltea y queda UN aviso en el log por
+     * corrida (con la `$memoria` de la reversión; sin ella, uno por llamada). La validación de la
+     * lista también se hace una vez por corrida y no por artículo, igual que al aplicar.
      *
      * @param  \App\Models\Article    $model     El artículo, ya acotado al dueño de la masiva.
      * @param  string                 $prop_key  `visible_en_tienda_lista_{id}`.
      * @param  mixed                  $viejo     El `old` guardado en el historial de la masiva.
      * @param  \App\Models\User|null  $owner     Dueño de la masiva.
+     * @param  \ArrayObject|null      $memoria   Memoria de ESTA corrida (nueva_memoria_de_corrida()).
      * @return array|null  ['old', 'new', 'operation' => 'revert'] para el historial, o null.
      */
-    public static function revertir_en_masiva($model, $prop_key, $viejo, $owner = null)
+    public static function revertir_en_masiva($model, $prop_key, $viejo, $owner = null, $memoria = null)
     {
         $price_type_id = self::lista_de_la_clave_de_masiva($prop_key);
 
@@ -424,8 +442,12 @@ class CatalogoPorListaHelper
 
         $owner_id = !is_null($owner) ? (int) $owner->id : (int) $model->user_id;
 
-        if (!self::lista_es_del_dueno($price_type_id, $owner_id)) {
-            Log::warning('CatalogoPorListaHelper: no se revierte la visibilidad del articulo '.$model->id.' en la lista '.$price_type_id.': la lista ya no existe o no es del dueño.');
+        if (!self::lista_es_del_dueno($price_type_id, $owner_id, $memoria)) {
+            self::avisar_una_vez(
+                $memoria,
+                'reversion-lista-invalida:' . $owner_id . ':' . $price_type_id,
+                'CatalogoPorListaHelper: no se revierte la visibilidad en la tienda de la lista '.$price_type_id.' (primer artículo: '.$model->id.'): la lista ya no existe o no es del dueño; se saltea en todos los artículos de esta reversión.'
+            );
             return null;
         }
 
@@ -449,17 +471,74 @@ class CatalogoPorListaHelper
     }
 
     /**
-     * Si la lista existe y es del dueño indicado.
+     * La memoria de UNA corrida de la masiva (process_update() o la reversión): qué listas ya se
+     * validaron y qué avisos ya se dejaron en el log.
      *
-     * @param  int $price_type_id
-     * @param  int $owner_id
+     * 🔴 La memoria la crea quien arma la corrida y vive en una variable local: NO es una estática
+     * de la clase a propósito. Un worker de cola corre muchas masivas en el mismo proceso, y una
+     * lista que se borró, o un artículo ajeno de una corrida, no pueden seguir valiendo en la
+     * siguiente. Con una estática habría que acordarse de vaciarla en cada entrada, y el día que
+     * alguien se olvide queda un permiso viejo valiendo sin que nada lo avise.
+     *
+     * @return \ArrayObject
+     */
+    public static function nueva_memoria_de_corrida()
+    {
+        return new \ArrayObject();
+    }
+
+    /**
+     * Si la lista existe y es del dueño indicado. Con la memoria de la corrida, la consulta se hace
+     * UNA vez por (dueño, lista) y el resultado —también el "no"— se recuerda.
+     *
+     * @param  int                $price_type_id
+     * @param  int                $owner_id
+     * @param  \ArrayObject|null  $memoria
      * @return bool
      */
-    protected static function lista_es_del_dueno($price_type_id, $owner_id)
+    protected static function lista_es_del_dueno($price_type_id, $owner_id, $memoria = null)
     {
-        return PriceType::where('id', $price_type_id)
-                        ->where('user_id', $owner_id)
-                        ->exists();
+        $clave = 'lista:' . (int) $owner_id . ':' . (int) $price_type_id;
+
+        if (!is_null($memoria) && $memoria->offsetExists($clave)) {
+            return (bool) $memoria[$clave];
+        }
+
+        $es_del_dueno = PriceType::where('id', $price_type_id)
+                                    ->where('user_id', $owner_id)
+                                    ->exists();
+
+        if (!is_null($memoria)) {
+            $memoria[$clave] = $es_del_dueno;
+        }
+
+        return $es_del_dueno;
+    }
+
+    /**
+     * Deja un aviso en el log UNA vez por corrida y por `$clave` (sin memoria, en cada llamada).
+     * Con 3000 artículos de una lista ajena eran 3000 líneas idénticas; el primer aviso ya dice lo
+     * que pasó.
+     *
+     * @param  \ArrayObject|null $memoria
+     * @param  string            $clave    Qué aviso es (ej. 'lista-invalida:5:9').
+     * @param  string            $mensaje
+     * @return void
+     */
+    protected static function avisar_una_vez($memoria, $clave, $mensaje)
+    {
+        if (!is_null($memoria)) {
+
+            $clave_del_aviso = 'aviso:' . $clave;
+
+            if ($memoria->offsetExists($clave_del_aviso)) {
+                return;
+            }
+
+            $memoria[$clave_del_aviso] = true;
+        }
+
+        Log::warning($mensaje);
     }
 
     /**

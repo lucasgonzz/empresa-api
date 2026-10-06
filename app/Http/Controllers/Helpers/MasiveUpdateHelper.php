@@ -405,6 +405,15 @@ class MasiveUpdateHelper
         $user_del_comercio = $model_name == 'article' ? User::find($masive_update->user_id) : null;
 
         /*
+         * Memoria de ESTA corrida para la clave "visible en la tienda, lista X" (misión
+         * catalogo-por-lista-tienda, B2 de la revisión independiente, 6/10/2026): la lista se valida
+         * una vez y los avisos del log salen una vez, en lugar de una consulta y una línea por
+         * artículo (hasta 3000). Es una variable local a propósito y no una estática: ver
+         * CatalogoPorListaHelper::nueva_memoria_de_corrida().
+         */
+        $memoria_de_la_corrida = CatalogoPorListaHelper::nueva_memoria_de_corrida();
+
+        /*
          * Articulos que ya tienen sus cambios guardados y a los que les falta el precio (mision
          * recalculo-precios-motor-rapido, 28/9/2026). Ver recalcular_precios_de_la_masiva(): el
          * setFinalPrice() por articulo paso a correr en tandas con el motor en bloque.
@@ -438,7 +447,7 @@ class MasiveUpdateHelper
             $provider_id_previo = $model_name == 'article' ? $model->provider_id : null;
 
             foreach ($update_form as $form) {
-                $change = self::apply_form_change($model, $form, $user_del_comercio, $masive_update->employee_id);
+                $change = self::apply_form_change($model, $form, $user_del_comercio, $masive_update->employee_id, $memoria_de_la_corrida);
                 if ($change) {
                     $model_had_changes = true;
                     $changes_count++;
@@ -946,9 +955,14 @@ class MasiveUpdateHelper
      *
      * @param object $model
      * @param array $form
+     * @param \App\Models\User|null $owner
+     * @param int|null $employee_id
+     * @param \ArrayObject|null $memoria_de_la_corrida  Memoria de la corrida para "visible en la tienda,
+     *        lista X" (CatalogoPorListaHelper::nueva_memoria_de_corrida()). Opcional: sin ella la lista
+     *        se valida en cada llamada, como antes.
      * @return array|null
      */
-    public static function apply_form_change($model, $form, $owner = null, $employee_id = null)
+    public static function apply_form_change($model, $form, $owner = null, $employee_id = null, $memoria_de_la_corrida = null)
     {
         if (!is_array($form) || !isset($form['type']) || !isset($form['key'])) {
             return null;
@@ -965,7 +979,7 @@ class MasiveUpdateHelper
          * (ver revert_article_pivot_changes()). Detalle en CatalogoPorListaHelper::aplicar_en_masiva().
          */
         if (CatalogoPorListaHelper::es_clave_de_masiva($form['key'])) {
-            return CatalogoPorListaHelper::aplicar_en_masiva($model, $form, $owner);
+            return CatalogoPorListaHelper::aplicar_en_masiva($model, $form, $owner, $memoria_de_la_corrida);
         }
 
         if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
@@ -1150,6 +1164,9 @@ class MasiveUpdateHelper
         /* Mismo motivo que en process_update(): resuelto una vez, cero queries por articulo. */
         $user_del_comercio = User::find($parent_masive_update->user_id);
 
+        /* Memoria de ESTA reversión para "visible en la tienda, lista X": ver process_update(). */
+        $memoria_de_la_corrida = CatalogoPorListaHelper::nueva_memoria_de_corrida();
+
         /* El registro visible de la reversión, buscado una vez; el avance va cada CADA_CUANTAS_UNIDADES. */
         $proceso = BackgroundProcessHelper::por_referencia($revert_masive_update);
         $recorridos = 0;
@@ -1206,7 +1223,7 @@ class MasiveUpdateHelper
                  * restaura el `old` exacto (NULL vuelve a NULL, nunca a 0).
                  */
                 if (CatalogoPorListaHelper::es_clave_de_masiva($prop_key)) {
-                    $revertido = CatalogoPorListaHelper::revertir_en_masiva($model, $prop_key, $change['old'], $user_del_comercio);
+                    $revertido = CatalogoPorListaHelper::revertir_en_masiva($model, $prop_key, $change['old'], $user_del_comercio, $memoria_de_la_corrida);
 
                     if (!is_null($revertido)) {
                         $revert_changes[$prop_key] = $revertido;
