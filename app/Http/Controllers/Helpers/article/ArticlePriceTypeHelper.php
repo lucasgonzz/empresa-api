@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PriceType;
 use Carbon\Carbon;
@@ -41,13 +42,51 @@ class ArticlePriceTypeHelper {
             $setear_precio_final = Self::get_setear_precio_final($price_type, $price_type_model);
 
 
-            $article->price_types()->updateExistingPivot($price_type['id'], [
+            // Columnas del pivote que se escriben en cada guardado, como siempre.
+            $columnas_del_pivot = [
                 'percentage'                        => $percentage,
                 'final_price'                       => $final_price,
                 'incluir_en_excel_para_clientes'    => $incluir_en_excel_para_clientes,
                 'setear_precio_final'               => $setear_precio_final,
-            ]);
+            ];
+
+            /*
+             * `visible_en_tienda` (misión catalogo-por-lista-tienda, 5/10/2026): SOLO si el request
+             * lo trae con un valor válido. Sin la clave, el valor guardado se conserva; en una fila
+             * recién atada queda en NULL (= no habilitado), que es como nace un artículo en una
+             * lista restringida (decisión de Lucas).
+             *
+             * 🔴 No "simplificar" copiando el patrón de `incluir_en_excel_para_clientes` de arriba:
+             * ése se escribe SIEMPRE y, si el request no lo trae, pisa con el default de la lista.
+             * Acá eso sería que un SPA viejo cacheado (que no conoce el check) o el asistente de IA
+             * (que arma `price_types` sin esta clave) le saquen el artículo de la tienda a todos los
+             * mayoristas en cada guardado de la ficha, sin que nadie lo vea.
+             */
+            $visible_en_tienda = Self::get_visible_en_tienda($price_type);
+
+            if (!is_null($visible_en_tienda)) {
+                $columnas_del_pivot['visible_en_tienda'] = $visible_en_tienda;
+            }
+
+            $article->price_types()->updateExistingPivot($price_type['id'], $columnas_del_pivot);
         }
+    }
+
+    /**
+     * El `visible_en_tienda` que trae una lista del request de la ficha, saneado a 1 o 0, o null
+     * si no hay que escribirlo: la clave no vino, vino en null o en '' (que en MySQL estricto
+     * revienta al guardarse en un tinyint), o no es un sí/no reconocible. Ver attach_price_types().
+     *
+     * @param  array $price_type  Una lista del request: ['id' => int, 'pivot' => [...]].
+     * @return int|null
+     */
+    static function get_visible_en_tienda($price_type) {
+
+        if (!isset($price_type['pivot']['visible_en_tienda'])) {
+            return null;
+        }
+
+        return CatalogoPorListaHelper::sanear_booleano($price_type['pivot']['visible_en_tienda']);
     }
 
     static function get_setear_precio_final($price_type, $price_type_model) {

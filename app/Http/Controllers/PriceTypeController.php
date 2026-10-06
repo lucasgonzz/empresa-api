@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Models\ArticleTicketDesign;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
@@ -51,6 +52,12 @@ class PriceTypeController extends Controller
             'setear_precio_final'    => $request->setear_precio_final,
             'se_usa_en_tienda_nube'    => $request->se_usa_en_tienda_nube,
             'se_usa_en_ml'    => $request->se_usa_en_ml,
+            // Interruptor "Catálogo restringido en la tienda" (misión catalogo-por-lista-tienda,
+            // 5/10/2026). Sin la clave (SPA viejo) la lista nace en NULL = sin restricción; con la
+            // clave, saneada a 1 o 0.
+            'catalogo_restringido_en_tienda' => $request->has('catalogo_restringido_en_tienda')
+                ? CatalogoPorListaHelper::interruptor_de_lista($request->input('catalogo_restringido_en_tienda'))
+                : null,
             'user_id'               => $this->userId(),
         ]);
 
@@ -148,6 +155,31 @@ class PriceTypeController extends Controller
         return response()->json(PriceTypeHelper::preview_sincronizar_margen($model), 200);
     }
 
+    /**
+     * El contador "X habilitados de Y" del interruptor "Catálogo restringido en la tienda" de la
+     * lista (misión catalogo-por-lista-tienda, 5/10/2026): cuántos artículos ven en la tienda los
+     * compradores de esta lista si se la restringe.
+     *
+     * `GET api/price-type/{id}/habilitados-en-tienda` → `200 {"habilitados": int, "total": int}`.
+     * Solo listas del dueño; ajena o inexistente → 404 (y no se cuenta nada). El conteo vive en
+     * CatalogoPorListaHelper::contar_habilitados().
+     *
+     * @param  int $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function habilitados_en_tienda($id) {
+
+        $model = PriceType::where('user_id', $this->userId())
+                            ->where('id', $id)
+                            ->first();
+
+        if (is_null($model)) {
+            return response()->json(['message' => 'No se encontro la lista de precios.'], 404);
+        }
+
+        return response()->json(CatalogoPorListaHelper::contar_habilitados($model), 200);
+    }
+
     public function update(Request $request, $id) {
         /**
          * Notificaciones para la respuesta (la SPA muestra `response.data.notifications`): hoy solo
@@ -174,7 +206,40 @@ class PriceTypeController extends Controller
         $model->setear_precio_final  = $request->setear_precio_final;
         $model->se_usa_en_tienda_nube  = $request->se_usa_en_tienda_nube;
         $model->se_usa_en_ml  = $request->se_usa_en_ml;
-        
+
+        /*
+         * 🔴 CONDICIONAL, a diferencia de los campos de arriba (misión catalogo-por-lista-tienda,
+         * 5/10/2026). Este update() asigna campo por campo lo que venga en el request: un SPA viejo
+         * (cacheado en la PWA) no conoce `catalogo_restringido_en_tienda` y no lo manda, y con la
+         * asignación de siempre la lista quedaría en NULL — o sea, le APAGARÍA la restricción a un
+         * comercio que la prendió desde otra pestaña ya actualizada, y sus mayoristas pasarían a
+         * ver todo el catálogo sin que nadie lo note. Solo se escribe si el request trae la clave.
+         *
+         * Y tampoco con la clave en `null`: es el eco de un modelo cargado (el ABM reenvía
+         * `{...this.model}` entero) y no un pedido de apagarlo. Qué cuenta como "escribir" lo decide
+         * CatalogoPorListaHelper::interruptor_a_escribir_en_update(), con el porqué.
+         */
+        $interruptor = CatalogoPorListaHelper::interruptor_a_escribir_en_update($request);
+
+        /*
+         * 🔴 Y solo sobre una lista PROPIA (M3 de la revisión independiente, 6/10/2026). `update()`
+         * busca la lista por id sin mirar el dueño —ya era así antes de esta misión y NO se cambia
+         * acá: es otro frente abierto, el de los ids del pedido que se resuelven sin cruzarlos con
+         * el dueño—, pero este campo tiene un efecto que ningún otro de la lista tiene: sacarle el
+         * catálogo ENTERO de la tienda a todos los compradores de esa lista. Con ids secuenciales en
+         * una base compartida eso no puede quedar al alcance de un id ajeno. Mismo criterio y misma
+         * forma que la guarda de "Sincronizar artículos" más abajo: la lista de otro dueño no se
+         * toca y queda el aviso en el log; el resto del update sigue como estaba.
+         */
+        if (!is_null($interruptor) && (int) $model->user_id !== (int) $this->userId()) {
+            Log::warning('PriceTypeController@update: pedido de cambiar el interruptor "catálogo restringido en la tienda" de la lista '.$model->id.' de otro dueño; se ignora.');
+            $interruptor = null;
+        }
+
+        if (!is_null($interruptor)) {
+            $model->catalogo_restringido_en_tienda = $interruptor;
+        }
+
         $model->save();
 
         /*

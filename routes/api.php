@@ -538,6 +538,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Los números del modal "Sincronizar artículos" del margen de una lista (la sincronización
     // viaja en el PUT del resource, clave `sincronizar_margen`). Misión sincronizar-margen-lista-precios.
     Route::get('price-type/{id}/sincronizar-margen/preview', 'PriceTypeController@sincronizar_margen_preview');
+    // El contador "X habilitados de Y" del catálogo restringido en la tienda de una lista
+    // (misión catalogo-por-lista-tienda, 5/10/2026). Contrato C2 con empresa-spa.
+    Route::get('price-type/{id}/habilitados-en-tienda', 'PriceTypeController@habilitados_en_tienda');
     Route::resource('price-type', 'PriceTypeController');
 
     Route::resource('provider-order', 'ProviderOrderController');

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\ArticleDiscount;
@@ -1469,6 +1470,13 @@ class ActualizarBBDD {
         $rows_create = [];
         $updates = [];
 
+        /*
+         * Visible en la tienda de los artículos que se ACTUALIZAN (misión catalogo-por-lista-tienda,
+         * 5/10/2026): "article_id-price_type_id" => [article_id, price_type_id, 1|0]. Va en un
+         * UPDATE propio, ver actualizar_visible_en_tienda().
+         */
+        $updates_visible = [];
+
         /* Pares (article_id, price_type_id) ya agregados al INSERT. Ver el comentario del guard
            mas abajo: la tabla no tiene indice unico y el INSERT IGNORE no deduplica nada. */
         $pares_ya_agregados = [];
@@ -1537,8 +1545,16 @@ class ActualizarBBDD {
 
                 $pares_ya_agregados[$clave_par] = true;
 
+                /*
+                 * Visible en la tienda (misión catalogo-por-lista-tienda, 5/10/2026): el valor del
+                 * Excel, o NULL si no lo informó — un artículo nace sin habilitar en las listas
+                 * restringidas (decisión de Lucas). Nunca un default de la lista: no lo hay.
+                 */
+                $visible_en_tienda = $this->get_visible_en_tienda($price_type);
+                $visible_en_tienda = is_null($visible_en_tienda) ? 'NULL' : (int) $visible_en_tienda;
+
                 // Almacenamos los valores para construir el SQL
-                $rows_create[] = "({$article_id}, {$price_type['id']}, {$percentage}, {$final_price}, {$incluir}, {$setear_precio_final})";
+                $rows_create[] = "({$article_id}, {$price_type['id']}, {$percentage}, {$final_price}, {$incluir}, {$setear_precio_final}, {$visible_en_tienda})";
 
             }
         }
@@ -1548,7 +1564,7 @@ class ActualizarBBDD {
 
             $sql = "
                 INSERT IGNORE INTO article_price_type (
-                    article_id, price_type_id, percentage, final_price, incluir_en_excel_para_clientes, setear_precio_final
+                    article_id, price_type_id, percentage, final_price, incluir_en_excel_para_clientes, setear_precio_final, visible_en_tienda
                 )
                 VALUES
                 {$values}
@@ -1582,6 +1598,28 @@ class ActualizarBBDD {
             $price_types_data = $article_cache['price_types_data'];
 
             foreach ($price_types_data as $price_type) {
+
+                /*
+                 * Visible en la tienda (misión catalogo-por-lista-tienda, 5/10/2026): solo los pares
+                 * que el Excel informó y que CAMBIAN (ProcessRow::filter_only_changed_price_types()
+                 * deja en null los que vinieron iguales). Última fila gana, como el resto del lote.
+                 */
+                $visible_en_tienda = $this->get_visible_en_tienda($price_type);
+
+                if (!is_null($visible_en_tienda)) {
+                    $updates_visible[$article_id . '-' . (int) $price_type['id']] = [$article_id, (int) $price_type['id'], (int) $visible_en_tienda];
+                }
+
+                /*
+                 * 🔴 Una lista donde SOLO cambió la visibilidad no pasa por el UPDATE de abajo ni por
+                 * el registro del historial: ese UPDATE reescribe margen, precio, "setear" e
+                 * "incluir en Excel" con lo que trae la fila, y con margen y precio en null le
+                 * pondría el margen POR DEFECTO de la lista a un artículo que tenía uno propio. Ver
+                 * la marca en ProcessRow::filter_only_changed_price_types().
+                 */
+                if (!empty($price_type['__solo_visible_en_tienda'])) {
+                    continue;
+                }
 
                 $percentage = $this->get_price_type_percetange($price_type);
 
@@ -1665,8 +1703,145 @@ class ActualizarBBDD {
             // if (app()->environment('local')) { $this->log(''); }
         }
 
+        $this->actualizar_visible_en_tienda($updates_visible);
+
         $this->terminar('price_types de articulos actualizados');
 
+    }
+
+    /**
+     * El `visible_en_tienda` que trae una fila de `price_types_data` (ProcessRow::add_price_type_data()),
+     * como 1, 0 o null = el Excel no lo informó (misión catalogo-por-lista-tienda, 5/10/2026).
+     *
+     * @param  array $price_type
+     * @return int|null
+     */
+    function get_visible_en_tienda($price_type) {
+
+        if (!isset($price_type['pivot']['visible_en_tienda'])) {
+            return null;
+        }
+
+        return CatalogoPorListaHelper::sanear_booleano($price_type['pivot']['visible_en_tienda']);
+    }
+
+    /**
+     * Escribe `visible_en_tienda` en el pivote de los artículos ACTUALIZADOS que lo traen (misión
+     * catalogo-por-lista-tienda, 5/10/2026), en UPDATEs de a 1000 pares.
+     *
+     * 🔴 UPDATE aparte, con `ELSE visible_en_tienda` y solo para los pares con valor: el CASE de
+     * `incluir_en_excel_para_clientes` del UPDATE de asignar_price_types() PISA con el default de
+     * la lista a todo par que pasa por ahí, y copiar ese patrón le sacaría de la tienda a los
+     * mayoristas cada artículo que una importación toque por otro motivo (un costo, un margen).
+     * Si ningún par trae valor, no se ejecuta ningún UPDATE.
+     *
+     * Escribe TODAS las filas del par: el pivote no tiene índice único y puede tener la lista atada
+     * dos veces.
+     *
+     * 🔴 Un par SIN fila se crea antes del UPDATE (revisión independiente, 6/10/2026). Un UPDATE
+     * sobre cero filas no escribe nada y no avisa: con una lista recién creada (cuyos pares todavía
+     * no los ató el recálculo encolado) o un artículo viejo que nunca la tuvo, un "Sí" del Excel se
+     * perdía en silencio y el importador igual decía "actualizado". Ver crear_pares_sin_fila_de_visible().
+     * Y va DESPUÉS del UPDATE de margen y precio de asignar_price_types(), a propósito: ese UPDATE
+     * sigue sin ver los pares nuevos, así que esta fila nace con la visibilidad y nada más (el
+     * margen y el precio los escribe el recálculo de precios como a cualquier par recién nacido).
+     *
+     * @param  array $updates_visible  "article_id-price_type_id" => [article_id, price_type_id, 1|0]
+     * @return void
+     */
+    protected function actualizar_visible_en_tienda(array $updates_visible) {
+
+        if (count($updates_visible) === 0) {
+            return;
+        }
+
+        foreach (array_chunk(array_values($updates_visible), 1000) as $tanda) {
+
+            $this->crear_pares_sin_fila_de_visible($tanda);
+
+            $whens = [];
+            $pares = [];
+
+            foreach ($tanda as $par) {
+
+                // Todo entero: ningún valor del Excel llega crudo al SQL.
+                $article_id    = (int) $par[0];
+                $price_type_id = (int) $par[1];
+                $valor         = (int) $par[2] === 1 ? 1 : 0;
+
+                $whens[] = "WHEN article_id = {$article_id} AND price_type_id = {$price_type_id} THEN {$valor}";
+                $pares[] = "({$article_id}, {$price_type_id})";
+            }
+
+            DB::statement(
+                "UPDATE article_price_type SET visible_en_tienda = CASE " . implode(' ', $whens) . " ELSE visible_en_tienda END"
+                . " WHERE (article_id, price_type_id) IN (" . implode(',', $pares) . ")"
+            );
+        }
+    }
+
+    /**
+     * Crea la fila del pivote de los pares (artículo, lista) de una tanda que todavía no tienen
+     * NINGUNA, con la visibilidad que trae el Excel (revisión independiente, 6/10/2026).
+     *
+     * Solo inserta (artículo, lista, visible_en_tienda): el resto de las columnas queda con los
+     * defaults de la base, que es exactamente lo que deja syncWithoutDetaching() — y lo que el
+     * recálculo de precios usa para llenar margen y precio de un par nuevo. 🔴 No se copia el
+     * INSERT de los artículos CREADOS (asignar_price_types(), arriba): ese lleva el margen, el
+     * precio y los defaults de la lista, y acá no hay ningún margen propio que respetar ni que
+     * inventar.
+     *
+     * Antes de insertar se mira qué pares existen (un SELECT por tanda, contra la base y no contra
+     * la relación cargada): la tabla no tiene índice único, así que un INSERT a ciegas sobre un par
+     * que ya existe lo DUPLICARÍA. Un par con cualquier fila, aunque tenga la visibilidad en NULL,
+     * no se crea: lo escribe el UPDATE de abajo en actualizar_visible_en_tienda().
+     *
+     * @param  array $tanda  [[article_id, price_type_id, 1|0], ...]
+     * @return void
+     */
+    protected function crear_pares_sin_fila_de_visible(array $tanda) {
+
+        $article_ids    = [];
+        $price_type_ids = [];
+
+        foreach ($tanda as $par) {
+            $article_ids[(int) $par[0]]    = true;
+            $price_type_ids[(int) $par[1]] = true;
+        }
+
+        $existentes = [];
+
+        $filas = DB::table('article_price_type')
+                    ->whereIn('article_id', array_keys($article_ids))
+                    ->whereIn('price_type_id', array_keys($price_type_ids))
+                    ->get(['article_id', 'price_type_id']);
+
+        foreach ($filas as $fila) {
+            $existentes[(int) $fila->article_id . '-' . (int) $fila->price_type_id] = true;
+        }
+
+        $a_crear = [];
+
+        foreach ($tanda as $par) {
+
+            // Todo entero: ningún valor del Excel llega crudo al INSERT.
+            $article_id    = (int) $par[0];
+            $price_type_id = (int) $par[1];
+
+            if (isset($existentes[$article_id . '-' . $price_type_id])) {
+                continue;
+            }
+
+            $a_crear[] = [
+                'article_id'        => $article_id,
+                'price_type_id'     => $price_type_id,
+                'visible_en_tienda' => (int) $par[2] === 1 ? 1 : 0,
+            ];
+        }
+
+        if (count($a_crear) > 0) {
+            DB::table('article_price_type')->insertOrIgnore($a_crear);
+        }
     }
 
 
