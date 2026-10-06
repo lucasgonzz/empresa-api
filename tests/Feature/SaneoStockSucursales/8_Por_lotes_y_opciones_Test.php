@@ -167,6 +167,12 @@ class Por_lotes_y_opciones_Test extends SaneoStockSucursalesTestCase
 
         $this->assertSame(0, $this->filas_en($elegido, $e['muerta']), 'El artículo pedido tenía que sanearse.');
 
+        $respaldos = $this->archivos_de($this->carpeta_de_salida, '-respaldo.jsonl');
+
+        $this->assertCount(1, $respaldos);
+        $this->assertStringContainsString('-user' . $e['dueno']->id . '-art' . $elegido->id . '-', basename($respaldos[0]), 'El nombre del respaldo tiene que decir el artículo al que se acotó la corrida.');
+        $this->assertCount(1, $this->lineas_del_respaldo($this->carpeta_de_salida), 'Acotado a un artículo, el respaldo tiene una sola línea.');
+
         foreach ($e['articulos'] as $articulo) {
             if ($articulo->id === $elegido->id) {
                 continue;

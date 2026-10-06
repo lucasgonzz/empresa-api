@@ -172,6 +172,55 @@ class Ver_no_escribe_nada_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
+     * Las sucursales borradas se listan de la que más filas tiene a la que menos, y como mucho diez
+     * (una base vieja puede tener decenas de sucursales borradas con filas).
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function las_sucursales_borradas_se_listan_de_mas_filas_a_menos_y_hasta_diez()
+    {
+        $dueno = $this->dueno('top-muertas');
+        $s1 = $this->sucursal($dueno);
+
+        // Doce sucursales borradas; la k-ésima con k filas fantasma de −1.
+        $muertas = [];
+        $fantasmas = [];
+
+        for ($k = 1; $k <= 12; $k++) {
+            $muertas[$k] = $this->sucursal_muerta($dueno);
+
+            for ($fila = 0; $fila < $k; $fila++) {
+                $fantasmas[] = [$muertas[$k], -1];
+            }
+        }
+
+        $this->articulo_con_fantasmas($dueno, 'Top de muertas', [$s1->id => 200], $fantasmas);
+
+        $this->assertSame(0, $this->ver($dueno), 'Salida:' . "\n" . $this->salida);
+
+        $this->assertStringContainsString('Sucursales borradas con filas (12, se listan las 10 con más filas)', $this->salida);
+
+        // Las 10 con más filas (k = 12 ... 3), en ese orden.
+        $posicion_anterior = -1;
+
+        for ($k = 12; $k >= 3; $k--) {
+            $texto = '#' . $muertas[$k] . ': ' . $k . ' filas (-' . $k . '.00 u)';
+
+            $posicion = strpos($this->salida, $texto);
+
+            $this->assertNotFalse($posicion, 'Falta en el reporte: ' . $texto);
+            $this->assertGreaterThan($posicion_anterior, $posicion, 'La sucursal con ' . $k . ' filas tiene que ir después de la que tiene más.');
+
+            $posicion_anterior = $posicion;
+        }
+
+        // Las dos con menos filas quedan afuera.
+        $this->assertStringNotContainsString('#' . $muertas[2] . ': ', $this->salida, 'Solo se listan las diez con más filas.');
+        $this->assertStringNotContainsString('#' . $muertas[1] . ': ', $this->salida, 'Solo se listan las diez con más filas.');
+    }
+
+    /**
      * @group saneo-stock-sucursales
      * @test
      */

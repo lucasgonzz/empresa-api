@@ -77,6 +77,19 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
         $this->assertStringContainsString('-reversion.sql', $this->salida);
         $this->assertStringContainsString('DEL SERVIDOR', $this->salida, 'El aviso de bajar los archivos del servidor es parte del contrato del comando.');
 
+        // Los nombres dicen de qué corrida son: el dueño y el sello de fecha.
+        foreach (['-respaldo.jsonl', '-reversion.sql'] as $sufijo) {
+            $archivos = $this->archivos_de($this->carpeta_de_salida, $sufijo);
+
+            $this->assertCount(1, $archivos);
+            $this->assertMatchesRegularExpression(
+                '/^saneo-stock-sucursales-borradas-user' . $e['dueno']->id . '-\d{8}-\d{6}' . preg_quote($sufijo, '/') . '$/',
+                basename($archivos[0]),
+                'El nombre del archivo tiene que decir el dueño y la fecha de la corrida.'
+            );
+            $this->assertGreaterThan(0, filesize($archivos[0]), 'El archivo de salida está vacío.');
+        }
+
         $lineas = $this->lineas_del_respaldo($this->carpeta_de_salida);
 
         $this->assertCount(2, $lineas, 'Un artículo, una línea de respaldo.');
@@ -186,13 +199,57 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
 
         $this->assertEquals(14.0, $this->stock($articulo));
 
-        // Una venta posterior al saneo (−2): el stock pasa a 12.
-        DB::table('articles')->where('id', $articulo->id)->update(['stock' => 12]);
+        // Una venta posterior al saneo (−3): el stock pasa a 11. Es a propósito un valor DISTINTO del
+        // que tenía antes del saneo (12): con el mismo número un UPDATE sin guarda dejaría el mismo
+        // resultado que uno guardado y el test no distinguiría una cosa de la otra.
+        DB::table('articles')->where('id', $articulo->id)->update(['stock' => 11]);
 
         $this->correr_reversion($this->sql_de_reversion($this->carpeta_de_salida));
 
-        $this->assertEquals(12.0, $this->stock($articulo), 'La reversión pisó un cambio de stock posterior al saneo: el UPDATE tiene que estar guardado con AND stock = <el que dejó el saneo>.');
+        $this->assertEquals(11.0, $this->stock($articulo), 'La reversión pisó un cambio de stock posterior al saneo: el UPDATE tiene que estar guardado con AND stock = <el que dejó el saneo>.');
         $this->assertSame(3, $this->filas_en($articulo, $e['muerta']), 'Las filas sí se devuelven.');
+    }
+
+    /**
+     * Sin `--salida` los archivos van a `storage/app/saneo-stock-sucursales-borradas/`, que es donde
+     * el equipo los va a buscar. Se limpia lo que la corrida deje (y la carpeta, si la creó ella).
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function sin_salida_el_respaldo_va_a_storage_app_en_su_propia_carpeta()
+    {
+        $dueno = $this->dueno('salida-por-defecto');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $this->articulo_con_fantasmas($dueno, 'Salida por defecto', [$s1->id => 10], [[$muerta, -1]]);
+
+        $carpeta = storage_path('app' . DIRECTORY_SEPARATOR . 'saneo-stock-sucursales-borradas');
+        $existia = is_dir($carpeta);
+        $antes = (array) glob($carpeta . DIRECTORY_SEPARATOR . '*');
+
+        try {
+            $codigo = $this->sanear(['--aplicar' => true, '--user_id' => $dueno->id]);
+
+            $this->assertSame(0, $codigo, 'Salida:' . "\n" . $this->salida);
+
+            $nuevos = array_values(array_diff((array) glob($carpeta . DIRECTORY_SEPARATOR . '*'), $antes));
+
+            $this->assertCount(2, $nuevos, 'Sin --salida el respaldo y el SQL de reversión tienen que quedar en storage/app/saneo-stock-sucursales-borradas.');
+
+            foreach ($nuevos as $archivo) {
+                $this->assertStringContainsString('-user' . $dueno->id . '-', basename($archivo));
+            }
+        } finally {
+            foreach (array_diff((array) glob($carpeta . DIRECTORY_SEPARATOR . '*'), $antes) as $archivo) {
+                @unlink($archivo);
+            }
+
+            if (!$existia) {
+                @rmdir($carpeta);
+            }
+        }
     }
 
     /**
@@ -247,6 +304,26 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
 
         $this->assertFotosIguales($antes, $this->foto_de_tablas(), 'Sin el concepto el comando escribió en la base (etiquetar con un concepto ajeno corrompe el libro)');
         $this->assertDirectoryDoesNotExist($this->carpeta_de_salida, 'Sin el concepto el comando dejó archivos de respaldo.');
+    }
+
+    /**
+     * La precondición del concepto solo se pide cuando hay algo para escribir: sobre una base limpia
+     * `--aplicar` termina bien aunque el concepto no exista.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function sin_nada_para_sanear_el_comando_no_exige_el_concepto()
+    {
+        $dueno = $this->dueno('limpio-sin-concepto');
+        $s1 = $this->sucursal($dueno);
+
+        $this->articulo_con_fantasmas($dueno, 'Limpio', [$s1->id => 10], []);
+
+        DB::table('concepto_stock_movements')->where('name', self::CONCEPTO)->delete();
+
+        $this->assertSame(0, $this->aplicar($dueno), 'Sin fantasmas no hay nada que escribir: tiene que terminar bien. Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('No hay nada para sanear', $this->salida);
     }
 
     /**

@@ -103,6 +103,11 @@ class Base_compartida_Test extends SaneoStockSucursalesTestCase
         // otras corridas: todo dentro de la transacción del test, que se revierte).
         $this->sanear(['--aplicar' => true, '--salida' => $this->carpeta_de_salida]);
 
+        $respaldos = $this->archivos_de($this->carpeta_de_salida, '-respaldo.jsonl');
+
+        $this->assertCount(1, $respaldos, 'La corrida tenía que dejar su respaldo.');
+        $this->assertStringContainsString('-todos-', basename($respaldos[0]), 'Sin --user_id el nombre del respaldo dice que la corrida fue sobre todos los dueños.');
+
         $variantes_b = $e['b_con_variantes'];
 
         // El artículo CON VARIANTES del dueño B: con el dueño equivocado revienta (Undefined index) y

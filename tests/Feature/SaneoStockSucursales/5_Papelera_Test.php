@@ -90,6 +90,13 @@ class Papelera_Test extends SaneoStockSucursalesTestCase
         $this->assertCount(1, $movimientos, 'El artículo de la papelera también deja su movimiento.');
         $this->assertEquals(5.0, (float) $movimientos[0]->amount);
         $this->assertSame((int) $dueno->id, (int) $movimientos[0]->user_id);
+
+        // Las columnas que completa el motor salen de `articles`: con un artículo de la papelera, un
+        // `Article::find()` común devuelve null y el movimiento quedaría con el stock_resultante
+        // equivocado (el amount, en vez del stock real).
+        $this->assertEquals(5.0, (float) $movimientos[0]->stock_anterior);
+        $this->assertEquals(10.0, (float) $movimientos[0]->stock_resultante, 'stock_resultante tiene que ser el stock real del artículo de la papelera después del saneo.');
+        $this->assertSame(self::OBSERVACION . ' - 10', $movimientos[0]->observations);
     }
 
     /**
