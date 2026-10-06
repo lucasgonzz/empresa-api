@@ -317,16 +317,6 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function deleteSaleFrom($model_name, $model_id, $instance) {
-        $sale = Sale::where($model_name.'_id', $model_id)
-                        ->first();
-        if (!is_null($sale)) {
-            Log::info('Se quiere eliminar sale N° '.$sale->num.'. id: '.$sale->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
-            $sale->delete();
-            $instance->sendDeleteModelNotification('sale', $sale->id, false);
-        }
-    }
-
     static function get_confirmed($to_check) {
         if (UserHelper::hasExtencion('check_sales') && $to_check) {
             return 0;
