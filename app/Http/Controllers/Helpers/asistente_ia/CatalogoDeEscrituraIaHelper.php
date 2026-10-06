@@ -979,6 +979,34 @@ class CatalogoDeEscrituraIaHelper
          * en el editor del ABM. Por chat no hay forma razonable de ubicarlos.
          */
         'article_ticket_design'        => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
+        /*
+         * Balanzas (misión balanzas-configurables, 3/10/2026; clasificadas el 6/10/2026, cuando el test 34
+         * las denunció sin revisar). Es un catálogo por dueño como `cheque_banco` y su controller es
+         * prolijo (tenencia por dueño, 422 con mensaje), pero el ABM genérico no las puede ofrecer:
+         *
+         *   - `store()` y `update()` leen el request con `BalanzaHelper::datos_desde_request()`, no con
+         *     `$request->campo`: `claves_que_lee()` no ve ningún campo (medido: []) y el test 34 exige que
+         *     el store() de toda entidad con alta lea alguno. Declararla en LEIDOS_POR_HELPER no alcanza,
+         *     porque ese test mira el resultado crudo de la regex: entrarla es tocar el controller, tocar
+         *     el test o dejarla sin alta. Le pasa lo mismo a `order`.
+         *   - No rige hasta que el dueño elige "Por balanza" en Configuración (módulo de VENDER,
+         *     `users.tickets_de_balanza`), y esa configuración la guarda `PUT api/user/{id}`, que está
+         *     afuera de las acciones de pantalla. El catálogo solo sabe exigir una extensión, no una
+         *     configuración del dueño: se ofrecería a comercios que crearían balanzas inertes, con la
+         *     solapa del ABM oculta.
+         *   - `tipo_dato` es texto y el genérico no puede validarlo: BalanzaHelper::normalizar_tipo_dato()
+         *     guarda como 'importe' todo lo que no sea 'peso' (sin mirar mayúsculas ni espacios; 'por
+         *     peso', 'kilos' y 'Peso (kg)' dan importe) y el ejecutor recién lo cuenta después, en
+         *     campos_que_no_quedaron. Además el código, los dígitos y si el ticket trae importe o peso
+         *     son los de la etiqueta de la balanza física: un dato mal cargado cambia lo que se cobra en
+         *     cada ticket.
+         *
+         * Esto las deja afuera del ABM genérico (proponer_alta / proponer_edicion / proponer_baja), no del
+         * asistente: al 6/10/2026, igual que `caja` o `deposit`, sus rutas siguen ofrecidas por el
+         * catálogo de acciones de pantalla (el alta y la edición pasan por el modo de confianza del
+         * dueño; la baja siempre deja tarjeta).
+         */
+        'balanza'                      => 'balanzas: su store() lee el request por un helper (la guarda no ve campos), no rige sin "Por balanza" en Configuración y sus datos salen de la etiqueta de la balanza física',
     ];
 
     /**
