@@ -71,6 +71,14 @@ abstract class SaneoStockSucursalesTestCase extends EmpresaTestCase
      */
     protected $carpetas_a_borrar = [];
 
+    /**
+     * Lo que había en `USA_TIENDA_NUBE` antes de que un test la tocara con `prender_tienda_nube()`
+     * (null = no se tocó). `tearDown` lo restaura: el entorno es del proceso, no del test.
+     *
+     * @var array|null
+     */
+    protected $tienda_nube_anterior = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -80,11 +88,104 @@ abstract class SaneoStockSucursalesTestCase extends EmpresaTestCase
 
     protected function tearDown(): void
     {
+        $this->restaurar_tienda_nube();
+
         foreach ($this->carpetas_a_borrar as $carpeta) {
             $this->borrar_carpeta($carpeta);
         }
 
         parent::tearDown();
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    //  TIENDA NUBE (--sincronizar)
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Pone `USA_TIENDA_NUBE` en el entorno del proceso: `add_article_to_sync()` lee `env()` directo, y
+     * `env()` mira `$_SERVER`, `$_ENV` y `getenv()` (la misma técnica de los tests de categorización
+     * con IA). `tearDown` la deja como estaba. Cada test que mira la cola de Tienda Nube la fija
+     * explícitamente, prendida o apagada, para no depender de lo que traiga el `.env.testing`.
+     *
+     * @param  string  $valor  'true' (prendida) por defecto; 'false' la apaga.
+     * @return void
+     */
+    protected function prender_tienda_nube($valor = 'true')
+    {
+        if (is_null($this->tienda_nube_anterior)) {
+            $this->tienda_nube_anterior = [
+                'server' => array_key_exists('USA_TIENDA_NUBE', $_SERVER) ? $_SERVER['USA_TIENDA_NUBE'] : null,
+                'env' => array_key_exists('USA_TIENDA_NUBE', $_ENV) ? $_ENV['USA_TIENDA_NUBE'] : null,
+                'putenv' => getenv('USA_TIENDA_NUBE'),
+            ];
+        }
+
+        $_SERVER['USA_TIENDA_NUBE'] = $valor;
+        $_ENV['USA_TIENDA_NUBE'] = $valor;
+        putenv('USA_TIENDA_NUBE=' . $valor);
+    }
+
+    /**
+     * Deja `USA_TIENDA_NUBE` como estaba antes del primer `prender_tienda_nube()` del test.
+     *
+     * @return void
+     */
+    protected function restaurar_tienda_nube()
+    {
+        if (is_null($this->tienda_nube_anterior)) {
+            return;
+        }
+
+        $anterior = $this->tienda_nube_anterior;
+
+        if (is_null($anterior['server'])) {
+            unset($_SERVER['USA_TIENDA_NUBE']);
+        } else {
+            $_SERVER['USA_TIENDA_NUBE'] = $anterior['server'];
+        }
+
+        if (is_null($anterior['env'])) {
+            unset($_ENV['USA_TIENDA_NUBE']);
+        } else {
+            $_ENV['USA_TIENDA_NUBE'] = $anterior['env'];
+        }
+
+        if ($anterior['putenv'] === false) {
+            putenv('USA_TIENDA_NUBE');
+        } else {
+            putenv('USA_TIENDA_NUBE=' . $anterior['putenv']);
+        }
+
+        $this->tienda_nube_anterior = null;
+    }
+
+    /**
+     * Deja el artículo "en Tienda Nube" (con su `tiendanube_product_id`), que es lo que mira
+     * `add_article_to_sync()` para encolarlo. Se escribe con el query builder, como el resto de los fixtures.
+     *
+     * @param  \App\Models\Article|int  $articulo
+     * @param  int                      $product_id
+     * @return void
+     */
+    protected function articulo_en_tienda_nube($articulo, $product_id = 4242)
+    {
+        $id = is_object($articulo) ? $articulo->id : $articulo;
+
+        DB::table('articles')->where('id', $id)->update(['tiendanube_product_id' => $product_id]);
+    }
+
+    /**
+     * Las filas de la cola de Tienda Nube (`sync_to_t_n_articles`) de un artículo, del más viejo al
+     * más nuevo, como arreglos.
+     *
+     * @param  \App\Models\Article|int  $articulo
+     * @return array
+     */
+    protected function cola_tienda_nube($articulo)
+    {
+        $id = is_object($articulo) ? $articulo->id : $articulo;
+
+        return $this->filas(DB::table('sync_to_t_n_articles')->where('article_id', $id)->orderBy('id')->get());
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════
