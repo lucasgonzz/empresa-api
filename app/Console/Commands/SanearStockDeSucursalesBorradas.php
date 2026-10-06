@@ -91,6 +91,10 @@ use Illuminate\Support\Facades\Schema;
  *    `php -d memory_limit=1G artisan ...` (el análisis de una tanda trae todas las filas de sus artículos).
  * 4. El detalle de los movimientos queda con la observación "Baja de sucursal eliminada - <stock>" (el
  *    motor le agrega el stock resultante): filtrar con `LIKE 'Baja de sucursal eliminada%'`.
+ * 5. Si el cliente usa Tienda Nube, sumar `--sincronizar` desde la primera corrida (`--aplicar
+ *    --sincronizar --limite=20`): una corrida SIN la opción deja los artículos limpios y este comando ya
+ *    no los ve, así que después no hay cómo marcarlos con él (ver "Tienda Nube"). Y no subir el
+ *    `--limite` hasta ver cuánto tarda el scheduler en vaciar la cola (ver "Lo que carga" más abajo).
  *
  * ─── Los archivos ─────────────────────────────────────────────────────────────────────────────
  *
@@ -108,22 +112,53 @@ use Illuminate\Support\Facades\Schema;
  *
  *  - Eso NO llama a la API: inserta una fila pendiente en `sync_to_t_n_articles`. La API la llama
  *    después el scheduler del cliente (`sync_articles_to_tienda_nube`, cada minuto, solo si el dueño de
- *    la instancia tiene la extensión), con TODAS las pendientes en serie y sin pausa, y cada fallo le
- *    llega al dueño como notificación. Con un saneo grande conviene `--limite`.
+ *    la instancia tiene la extensión `usa_tienda_nube`).
  *  - Se marca DESPUÉS del commit de cada artículo y fuera de su transacción: un artículo que falla y
  *    se revierte no se marca, y un corte (`--limite`, fallidos seguidos, error de respaldo) no deja
  *    artículos ya saneados sin marcar.
  *  - No se marcan los artículos de la papelera: el scheduler carga el artículo de la fila sin la
- *    papelera, le llega `null` y le tumba la corrida a todas las pendientes de ese dueño.
- *  - Solo los de dueños que usan Tienda Nube (`CategoryMargenesHelper::usa_tienda_nube()`, el mismo
- *    criterio que la categorización con IA). Si el artículo está o no en Tienda Nube lo decide
- *    `add_article_to_sync()`; el comando solo cuenta cuántos quedaron con una fila pendiente.
- *  - Un fallo al marcar NO revierte ni frena nada (el artículo ya está saneado): se cuenta, se anota
- *    en el respaldo (`tn_error`) y se lista al final; la corrida termina con exit 1. Re-correr no los
- *    reintenta (ya están limpios): están en el respaldo.
+ *    papelera y le pasa `null` a `crearOActualizarProducto(Article $article)`: un `TypeError` que
+ *    `sync_article()` no atrapa (solo atrapa `\Exception`), así que aborta esa corrida del scheduler y
+ *    deja la fila en `en_progreso`.
+ *  - 🔴 Con `USA_TIENDA_NUBE` apagado en la instalación, `--sincronizar` SE NIEGA a escribir (exit 1,
+ *    como una precondición más): `add_article_to_sync()` no encolaría nada, el saneo se haría igual y
+ *    después los artículos quedarían limpios, así que este comando ya no los vería y no habría cómo
+ *    marcarlos con él. La condición es la misma expresión que lee el servicio
+ *    (`env('USA_TIENDA_NUBE', false)`); con `config:cache` esa variable da apagado también para el servicio.
+ *  - Lo demás —que el artículo esté o no en Tienda Nube (`tiendanube_product_id` o
+ *    `disponible_tienda_nube`)— lo decide `add_article_to_sync()`; el comando solo cuenta cuántos
+ *    quedaron con una fila pendiente. No hay filtro por dueño: en una base compartida con `--todos`,
+ *    lo que se marca depende de cada artículo y no de si su dueño usa Tienda Nube.
+ *  - Un fallo al marcar NO revierte ni frena nada (el artículo ya está saneado): se cuenta, se intenta
+ *    anotar en el respaldo (`tn_error`) y se lista al final con los ids; la corrida termina con exit 1.
+ *    Re-correr no los reintenta (ya están limpios): se vuelven a marcar a mano con
+ *    `TiendaNubeSyncArticleService::add_article_to_sync(Article::find($id))` desde `php artisan tinker`.
  *  - Mercado Libre no entra (`ProductService::add_article_to_sync()` sería el análogo).
  *  - Si después se corre el `.sql` de reversión, el stock vuelve a quedar desfasado en Tienda Nube:
  *    no se automatiza.
+ *
+ * Lo que carga (leído del código del scheduler y del servicio de Tienda Nube, NO medido):
+ *
+ *  - Cada artículo marcado son varias llamadas a la API (el producto, su variante, las descripciones y
+ *    las imágenes), y el scheduler las hace en serie y sin pausa. Cada fallo le llega al dueño como
+ *    notificación.
+ *  - El scheduler corre en primer plano con `withoutOverlapping(15)`: si una corrida tarda más de 15
+ *    minutos el candado vence, arranca otra y reprocesa filas que la anterior no alcanzó (un artículo
+ *    que está solo `disponible_tienda_nube`, o sea que todavía no está en Tienda Nube, podría
+ *    crearse dos veces). En el shared hosting además se mata el proceso a los 30 minutos y la fila
+ *    queda en `en_progreso` para siempre.
+ *  - Por eso: `--limite` chico, y esperar a que las pendientes bajen a 0 entre una corrida y la
+ *    siguiente (`SELECT status, COUNT(*) FROM sync_to_t_n_articles WHERE user_id = N GROUP BY status`).
+ *
+ * Dos salvedades del lado de Tienda Nube (previas a este comando, valen para cualquier movimiento):
+ *
+ *  - El stock viaja en el PUT de la VARIANTE, y `actualizar()` lo hace solo si el artículo tiene
+ *    `tiendanube_variant_id`: uno con `tiendanube_product_id` y sin variante se sincroniza sin stock.
+ *  - Un artículo con solo `disponible_tienda_nube` (no está en Tienda Nube todavía) se CREA allá al
+ *    sincronizarlo.
+ *  - Se marcan todos los que cambiaron de stock aunque lo que ve Tienda Nube (un entero, con el
+ *    negativo en 0) no cambie: cuesta llamadas de más y no deja nada desfasado. No se copia esa regla
+ *    acá para no quedar desfasados el día que el servicio la cambie.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promoción de constructor, readonly, enum ni #[...].
@@ -140,7 +175,7 @@ class SanearStockDeSucursalesBorradas extends Command
                             {--articulo_id= : Acota a un artículo.}
                             {--todos : Con --aplicar y sin --user_id, permite sanear a VARIOS dueños de una base compartida a la vez. Con un solo dueño con trabajo no hace falta.}
                             {--solo_explicados : Con --aplicar, saltea los artículos cuyo stock hay que corregir y esa corrección tiene una parte que no explican los fantasmas (se listan con --ver --detalle).}
-                            {--sincronizar : Con --aplicar, marca para sincronizar con Tienda Nube los artículos cuyo stock cambió (solo los de dueños que la usan y que están en Tienda Nube). El scheduler del cliente los sube en serie: con un saneo grande conviene --limite.}
+                            {--sincronizar : Con --aplicar, marca para sincronizar con Tienda Nube los artículos cuyo stock cambió (los que están en Tienda Nube; se niega si USA_TIENDA_NUBE está apagado). El scheduler del cliente los sube en serie y sin pausa: conviene --limite chico.}
                             {--limite= : Corta después de N artículos saneados o fallidos (solo --aplicar). Los saltados y los ya limpios no cuentan.}
                             {--lote=200 : Artículos por tanda (con artículos de decenas de miles de filas fantasma, uno chico: 20).}
                             {--detalle : Lista artículo por artículo (hasta 200 líneas).}
@@ -301,6 +336,11 @@ class SanearStockDeSucursalesBorradas extends Command
                     foreach ($problemas as $problema) {
                         $this->line('  - ' . $problema . '.');
                     }
+                }
+
+                // Y la precondición 4: con `--sincronizar` y la instalación sin Tienda Nube.
+                if ($opciones['sincronizar'] && !$this->tienda_nube_prendida()) {
+                    $this->warn('Ojo: --aplicar --sincronizar se negaría a escribir (exit 1): USA_TIENDA_NUBE está apagado en esta instalación y add_article_to_sync() no encolaría nada.');
                 }
             }
 
@@ -921,6 +961,18 @@ class SanearStockDeSucursalesBorradas extends Command
             return 1;
         }
 
+        // Precondición 4 (solo con `--sincronizar`): que la instalación pueda marcar para Tienda Nube.
+        // 🔴 `add_article_to_sync()` se corta sola con `USA_TIENDA_NUBE` apagado: el saneo se haría igual
+        // y no se marcaría NADA, y después los artículos quedarían limpios: este comando ya no los ve y
+        // no habría cómo marcarlos con él (Tienda Nube se quedaría con el stock viejo, que es justo lo
+        // que la opción viene a evitar). Mejor no escribir nada.
+        if ($opciones['sincronizar'] && !$this->tienda_nube_prendida()) {
+            $this->error('--sincronizar pide marcar artículos para Tienda Nube, pero USA_TIENDA_NUBE está apagado en esta instalación: add_article_to_sync() no encola nada. NO se tocó nada.');
+            $this->line('Corré sin --sincronizar (el stock se corrige igual, sin avisar a Tienda Nube) o prendé USA_TIENDA_NUBE en el .env de esta instalación y volvé a correrlo.');
+
+            return 1;
+        }
+
         // 🔴 Antes de escribir la PRIMERA fila: la carpeta y los dos archivos. Si no se pueden abrir,
         // el comando se niega a escribir (es la única forma de volver atrás).
         if (!$this->abrir_respaldos($opciones)) {
@@ -932,13 +984,6 @@ class SanearStockDeSucursalesBorradas extends Command
         $this->line('Respaldo JSONL:     ' . $this->ruta_respaldo);
         $this->line('SQL de reversión:  ' . $this->ruta_sql);
         $this->line('Artículos a sanear: ' . count($trabajo) . ' en tandas de ' . $opciones['lote'] . '.');
-
-        // `add_article_to_sync()` se corta sola con la instalación sin Tienda Nube: se avisa ANTES de
-        // empezar, para que no se descubra recién en el resumen final. No frena el saneo (es lo que se pidió
-        // y es lo mismo que sin `--sincronizar`).
-        if ($opciones['sincronizar'] && !$this->tienda_nube_prendida()) {
-            $this->warn('Ojo: --sincronizar pide marcar artículos para Tienda Nube, pero USA_TIENDA_NUBE está apagado en esta instalación: add_article_to_sync() no encola nada y no se va a marcar ninguno.');
-        }
 
         $resumen = [
             'saneados' => 0,
@@ -1222,7 +1267,8 @@ class SanearStockDeSucursalesBorradas extends Command
     {
         $article_id = (int) $resultado['article_id'];
 
-        // El scheduler carga el artículo de la fila sin la papelera y le llega null: tumba la corrida.
+        // El scheduler carga el artículo de la fila sin la papelera y le pasa null a una función que pide
+        // un `Article` (`TypeError`, que `sync_article()` no atrapa): aborta su corrida. Ver el encabezado.
         if ($resultado['en_papelera']) {
             $tn['papelera']++;
 
@@ -1234,7 +1280,7 @@ class SanearStockDeSucursalesBorradas extends Command
         } catch (\Throwable $e) {
             $tn['fallidos'][] = $article_id;
 
-            $this->warn('  art ' . $article_id . ': ya está saneado pero no se pudo marcar para Tienda Nube ("' . $e->getMessage() . '"). Quedó anotado en el respaldo (tn_error).');
+            $this->warn('  art ' . $article_id . ': ya está saneado pero no se pudo marcar para Tienda Nube ("' . $e->getMessage() . '"). Se intentó anotar en el respaldo (tn_error).');
 
             $this->anotar_en_el_respaldo(['evento' => 'tn_error', 'article_id' => $article_id, 'error' => $e->getMessage()]);
 
@@ -1325,15 +1371,16 @@ class SanearStockDeSucursalesBorradas extends Command
     {
         $this->line('  Tienda Nube (--sincronizar): marcados para sincronizar ' . $tn['marcados']
             . ' · con movimiento pero que no se suben ' . ($tn['no_se_suben'] + $tn['papelera'])
-            . ' (artículo que no está en Tienda Nube o instalación sin ella: ' . $tn['no_se_suben'] . ' · papelera: ' . $tn['papelera'] . ')'
+            . ' (artículos que no están en Tienda Nube: ' . $tn['no_se_suben'] . ' · papelera: ' . $tn['papelera'] . ')'
             . ' · fallidos al marcar ' . count($tn['fallidos']) . '.');
 
         if ($tn['marcados'] > 0) {
-            $this->line('  Los marcados son filas pendientes (sync_to_t_n_articles, status "pendiente"): el scheduler del cliente los sube a la API de Tienda Nube en serie y sin pausa, y cada fallo le llega al dueño como notificación.');
+            $this->line('  Los marcados son filas pendientes (sync_to_t_n_articles, status "pendiente"): el scheduler del cliente los sube a la API de Tienda Nube en serie y sin pausa (si el dueño de la instancia tiene la extensión), y cada fallo le llega al dueño como notificación.');
+            $this->line('  Esperá a que las pendientes bajen a 0 antes de la próxima corrida: SELECT status, COUNT(*) FROM sync_to_t_n_articles WHERE user_id = <N> GROUP BY status;');
         }
 
         if (count($tn['fallidos']) > 0) {
-            $this->error('  No se pudieron marcar (ya están saneados y re-correr no los reintenta): ' . $this->lista_acotada($tn['fallidos'], 20) . '. Están en el respaldo como tn_error.');
+            $this->error('  No se pudieron marcar (ya están saneados y re-correr no los reintenta): ' . $this->lista_acotada($tn['fallidos'], 20) . '. Se vuelven a marcar a mano desde php artisan tinker: App\\Services\\TiendaNube\\TiendaNubeSyncArticleService::add_article_to_sync(App\\Models\\Article::find(<id>));');
         }
     }
 

@@ -23,14 +23,18 @@ use Illuminate\Support\Facades\DB;
  *   3. que el artículo esté o no en Tienda Nube lo decide `add_article_to_sync()` (`tiendanube_product_id`
  *      o `disponible_tienda_nube`); el comando cuenta aparte los que no se suben;
  *   4. un artículo saneado SIN movimiento (su stock ya estaba bien) no se marca;
- *   5. un artículo de la papelera no se marca (al scheduler le llegaría `null` y le tumbaría la cola);
- *   6. con la instalación sin Tienda Nube (`USA_TIENDA_NUBE` apagado) no se marca nada y se avisa AL EMPEZAR;
+ *   5. un artículo de la papelera no se marca (al scheduler le llegaría `null` y abortaría su corrida);
+ *   6. con la instalación sin Tienda Nube (`USA_TIENDA_NUBE` apagado) `--sincronizar` SE NIEGA a escribir
+ *      (exit 1, no toca nada: después los artículos quedarían limpios y sin marcar), `--ver` lo anticipa y
+ *      sin la opción el saneo anda igual;
  *   7. no se duplica una fila pendiente que ya había, y una ya terminada no la reemplaza;
  *   8. un artículo que falla y se revierte no se marca, y el resto sí;
  *   9. `--ver --sincronizar` no marca nada;
  *  10. si el marcado falla, el artículo queda saneado, la corrida sigue, se anota en el respaldo y sale con 1;
  *  11. con `--limite` solo se marcan los que se sanearon;
- *  12. un artículo con variantes también se marca.
+ *  12. un artículo con variantes también se marca;
+ *  13. con `--solo_explicados` lo que no se sana no se marca;
+ *  14. con varios dueños cada fila va a nombre del suyo.
  *
  * Cada test fija `USA_TIENDA_NUBE` explícitamente (prendida o apagada): no depende del `.env.testing`.
  * Todo se afirma leyendo las tablas con `DB::table()`.
@@ -219,7 +223,7 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
 
         $this->assertStringContainsString('marcados para sincronizar 2', $this->salida);
         $this->assertStringContainsString('con movimiento pero que no se suben 1', $this->salida);
-        $this->assertStringContainsString('(artículo que no está en Tienda Nube o instalación sin ella: 1 · papelera: 0)', $this->salida);
+        $this->assertStringContainsString('(artículos que no están en Tienda Nube: 1 · papelera: 0)', $this->salida);
     }
 
     /**
@@ -251,8 +255,9 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
 
     /**
      * 🔴 Un artículo de la papelera NO se marca: el scheduler carga el artículo de la fila sin la
-     * papelera, le llega `null` y le tumba la corrida a todas las pendientes de ese dueño. El saneo sí
-     * lo toca (con su movimiento) y el reporte lo cuenta aparte.
+     * papelera y le pasa `null` a `crearOActualizarProducto(Article $article)` (un `TypeError` que
+     * `sync_article()` no atrapa): aborta esa corrida. El saneo sí lo toca (con su movimiento) y el
+     * reporte lo cuenta aparte.
      *
      * @group saneo-stock-sucursales
      * @test
@@ -278,29 +283,69 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
-     * Con la instalación sin Tienda Nube (`USA_TIENDA_NUBE` apagado) `add_article_to_sync()` no encola
-     * nada: el saneo se hace igual, no se marca ninguno y se AVISA al empezar (no recién en el resumen).
+     * 🔴 Con la instalación sin Tienda Nube (`USA_TIENDA_NUBE` apagado) `add_article_to_sync()` no encola
+     * nada: sanear igual dejaría los artículos limpios sin marcar y este comando ya no los vería (no habría
+     * cómo marcarlos con él). Por eso `--sincronizar` se NIEGA a escribir, como una precondición más.
+     * Sin la opción el mismo saneo anda normalmente: la negativa es solo de `--sincronizar`.
      *
      * @group saneo-stock-sucursales
      * @test
      */
-    public function con_la_instalacion_sin_tienda_nube_no_se_marca_nada_y_se_avisa_al_empezar()
+    public function con_la_instalacion_sin_tienda_nube_sincronizar_se_niega_y_no_toca_nada()
     {
         $this->prender_tienda_nube('false');
 
         $e = $this->escenario('tn-apagada');
         $articulo = $this->articulo_saneable_en_tienda_nube($e, 'En TN con la instalacion apagada');
 
-        $this->assertSame(0, $this->aplicar($e['dueno'], ['--sincronizar' => true]), 'Salida:' . "\n" . $this->salida);
+        $antes = $this->foto_de_tablas();
 
-        $this->assertCount(1, $this->movimientos($articulo), 'El saneo se hizo igual.');
-        $this->assertCount(0, $this->cola_tienda_nube($articulo), 'Con USA_TIENDA_NUBE apagado no se encola nada.');
+        $codigo = $this->aplicar($e['dueno'], ['--sincronizar' => true]);
 
-        $aviso = strpos($this->salida, 'USA_TIENDA_NUBE está apagado en esta instalación');
-        $this->assertNotFalse($aviso, 'Tiene que avisar que la instalación no usa Tienda Nube. Salida:' . "\n" . $this->salida);
-        $this->assertLessThan(strpos($this->salida, 'Tanda 1/'), $aviso, 'Y avisarlo ANTES de empezar con las tandas.');
+        $this->assertSame(1, $codigo, 'Con USA_TIENDA_NUBE apagado --sincronizar tiene que negarse (exit 1). Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('USA_TIENDA_NUBE está apagado en esta instalación', $this->salida, 'El error tiene que decir por qué.');
+        $this->assertStringContainsString('NO se tocó nada', $this->salida);
+        $this->assertStringContainsString('Corré sin --sincronizar', $this->salida, 'Y qué hacer.');
 
-        $this->assertStringContainsString('marcados para sincronizar 0 · con movimiento pero que no se suben 1', $this->salida);
+        $this->assertFotosIguales($antes, $this->foto_de_tablas(), 'Un --aplicar --sincronizar que se niega por Tienda Nube apagado no puede escribir');
+        $this->assertFalse(is_dir($this->carpeta_de_salida), 'Ni dejar la carpeta del respaldo.');
+        $this->assertSame(1, $this->filas_en($articulo, $e['muerta']), 'El fantasma tiene que seguir ahí.');
+        $this->assertCount(0, $this->cola_tienda_nube($articulo), 'Y la cola vacía.');
+
+        // Sin la opción, la misma corrida sanea normalmente (y no marca nada, como siempre).
+        $this->assertSame(0, $this->aplicar($e['dueno'], ['--salida' => $this->carpeta_nueva()]), 'Salida:' . "\n" . $this->salida);
+
+        $this->assertSame(0, $this->filas_en($articulo, $e['muerta']), 'Sin --sincronizar el saneo se hace.');
+        $this->assertCount(1, $this->movimientos($articulo));
+        $this->assertCount(0, $this->cola_tienda_nube($articulo));
+    }
+
+    /**
+     * `--ver` anticipa esa negativa (como anticipa la del concepto o la del motor): que el dry-run diga
+     * "todo bien" y `--aplicar --sincronizar` se niegue después es peor que avisar. Y no avisa si la
+     * instalación tiene Tienda Nube prendida.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function ver_con_sincronizar_avisa_que_aplicar_se_negaria_si_la_instalacion_no_usa_tienda_nube()
+    {
+        $e = $this->escenario('tn-ver-apagada');
+        $this->articulo_saneable_en_tienda_nube($e, 'En TN, instalacion apagada');
+
+        $this->prender_tienda_nube('true');
+
+        $this->assertSame(0, $this->ver($e['dueno'], ['--sincronizar' => true]), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('se negaría', $this->salida, 'Con Tienda Nube prendida no hay negativa que anticipar.');
+
+        $this->prender_tienda_nube('false');
+
+        $this->assertSame(0, $this->ver($e['dueno'], ['--sincronizar' => true]), '--ver sigue siendo de solo lectura: avisa pero sale con 0. Salida:' . "\n" . $this->salida);
+        $this->assertStringContainsString('Ojo: --aplicar --sincronizar se negaría a escribir (exit 1): USA_TIENDA_NUBE está apagado', $this->salida);
+
+        // Sin la opción no avisa de nada de esto.
+        $this->assertSame(0, $this->ver($e['dueno']), 'Salida:' . "\n" . $this->salida);
+        $this->assertStringNotContainsString('se negaría', $this->salida, 'Sin --sincronizar no hay nada que anticipar.');
     }
 
     /**
@@ -435,9 +480,12 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
         $this->assertStringContainsString('Fallidos: 0.', $this->salida, 'El saneo no tuvo ningún fallido: es el marcado.');
         $this->assertStringContainsString('marcados para sincronizar 1', $this->salida);
         $this->assertStringContainsString('fallidos al marcar 1', $this->salida);
-        $this->assertStringContainsString('No se pudieron marcar', $this->salida);
         $this->assertStringContainsString('falla de prueba al marcar', $this->salida, 'El motivo tiene que estar a la vista.');
-        $this->assertStringContainsString((string) $falla->id, $this->salida, 'Y el id del artículo.');
+
+        // La lista final de los que no se pudieron marcar: exactamente el id del que falló.
+        $this->assertSame(1, preg_match('/No se pudieron marcar \(ya están saneados y re-correr no los reintenta\): (.*?)\. Se vuelven a marcar a mano/u', $this->salida, $lista), 'El reporte tiene que listar los ids que no se pudieron marcar. Salida:' . "\n" . $this->salida);
+        $this->assertSame((string) $falla->id, trim($lista[1]), 'Y ser el del artículo que falló, no otro.');
+        $this->assertStringContainsString('TiendaNubeSyncArticleService::add_article_to_sync(App\Models\Article::find(<id>))', $this->salida, 'Y decir cómo volver a marcarlo a mano.');
 
         $eventos = $this->eventos_tienda_nube_del_respaldo();
 
@@ -508,5 +556,66 @@ class Sincronizar_tienda_nube_Test extends SaneoStockSucursalesTestCase
         $this->assertEquals(6.0, $this->stock($articulo), 'El saneo lo llevó a la suma de su variante.');
         $this->assertCount(1, $this->movimientos($articulo), 'Con un movimiento.');
         $this->assertCount(1, $this->cola_tienda_nube($articulo), 'Y se marcó para Tienda Nube.');
+    }
+
+    /**
+     * Con `--solo_explicados` el comando deja sin tocar a los artículos cuyo desvío no explican los
+     * fantasmas: lo que no se sanea no se marca (el stock de ese artículo no cambió).
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function con_solo_explicados_lo_que_no_se_sana_tampoco_se_marca()
+    {
+        $this->prender_tienda_nube('true');
+
+        $e = $this->escenario('tn-solo-explicados');
+
+        $explicado = $this->articulo_saneable_en_tienda_nube($e, 'Explicado');
+
+        // Vive 10, fantasma −2 y el stock cargado a mano en 100: el desvío no lo explican los fantasmas.
+        $otra_causa = $this->articulo_con_fantasmas($e['dueno'], 'Otra causa', [$e['s1']->id => 10], [[$e['muerta'], -2]], 100)['articulo'];
+        $this->articulo_en_tienda_nube($otra_causa);
+
+        $this->assertSame(0, $this->aplicar($e['dueno'], ['--sincronizar' => true, '--solo_explicados' => true]), 'Salida:' . "\n" . $this->salida);
+
+        $this->assertCount(1, $this->cola_tienda_nube($explicado), 'El explicado se sanó y se marcó.');
+
+        $this->assertSame(1, $this->filas_en($otra_causa, $e['muerta']), 'El de otra causa quedó sin tocar.');
+        $this->assertEquals(100.0, $this->stock($otra_causa));
+        $this->assertCount(0, $this->cola_tienda_nube($otra_causa), 'Y sin marcar: su stock no cambió.');
+
+        $this->assertStringContainsString('marcados para sincronizar 1', $this->salida);
+    }
+
+    /**
+     * Con varios dueños (`--todos`) cada fila de la cola va a nombre de SU dueño (`articles.user_id`),
+     * no del primero ni del de la instancia.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function con_varios_duenos_cada_fila_va_a_nombre_de_su_dueno()
+    {
+        $this->prender_tienda_nube('true');
+
+        $a = $this->escenario('tn-dueno-a');
+        $b = $this->escenario('tn-dueno-b');
+
+        $articulo_a = $this->articulo_saneable_en_tienda_nube($a, 'Del dueño A');
+        $articulo_b = $this->articulo_saneable_en_tienda_nube($b, 'Del dueño B');
+
+        // Sin --user_id: la base del slot tiene además el trabajo del artículo centinela, que se sanea igual.
+        $codigo = $this->sanear(['--aplicar' => true, '--todos' => true, '--sincronizar' => true, '--salida' => $this->carpeta_de_salida]);
+
+        $this->assertSame(0, $codigo, 'Salida:' . "\n" . $this->salida);
+
+        $cola_a = $this->cola_tienda_nube($articulo_a);
+        $cola_b = $this->cola_tienda_nube($articulo_b);
+
+        $this->assertCount(1, $cola_a);
+        $this->assertCount(1, $cola_b);
+        $this->assertSame((int) $a['dueno']->id, (int) $cola_a[0]['user_id'], 'La fila de A va a nombre de A.');
+        $this->assertSame((int) $b['dueno']->id, (int) $cola_b[0]['user_id'], 'La fila de B va a nombre de B.');
     }
 }
