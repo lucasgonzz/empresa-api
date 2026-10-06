@@ -309,4 +309,132 @@ class VisibleEnTiendaPorListaTest extends ImportTestCase
         $this->assertNull($this->visible($this->seed['A2']->id, $this->mayorista->id), 'A2 queda en NULL: no se reescribe a 0');
         $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->mayorista->id), 'Y el resto del lote se aplica igual');
     }
+
+    /**
+     * Cuántas filas de pivote tiene un artículo en una lista con un `visible_en_tienda` dado.
+     *
+     * @param  int      $article_id
+     * @param  int      $price_type_id
+     * @param  int|null $visible       null = filas con la columna en NULL.
+     * @return int
+     */
+    protected function filas_con_visible($article_id, $price_type_id, $visible)
+    {
+        $consulta = DB::table('article_price_type')
+                        ->where('article_id', $article_id)
+                        ->where('price_type_id', $price_type_id);
+
+        if (is_null($visible)) {
+            $consulta->whereNull('visible_en_tienda');
+        } else {
+            $consulta->where('visible_en_tienda', $visible);
+        }
+
+        return $consulta->count();
+    }
+
+    /**
+     * 🔴 M1 de la revisión independiente (6/10/2026): un artículo EXISTENTE que no tiene fila de
+     * pivote para la lista (una lista recién creada, cuyos pares todavía no los ató el recálculo
+     * encolado, o un artículo viejo que nunca la tuvo) y un Excel con "Sí".
+     *
+     * El UPDATE de visibilidad solo tocaba filas que ya existían: con cero filas el importador
+     * decía "actualizado" y el artículo quedaba sin habilitar, sin ningún aviso. Ahora la fila se
+     * crea con la visibilidad del Excel, y NADA más: el margen y el precio de la lista los pone el
+     * recálculo de precios como a cualquier par recién nacido (el margen por defecto de la lista),
+     * no la importación.
+     *
+     * @return void
+     */
+    public function test_un_si_sobre_un_existente_sin_fila_de_pivote_crea_la_fila_habilitada_sin_inventar_margen()
+    {
+        // Una lista "recién creada": ningún artículo la tiene atada todavía.
+        DB::table('article_price_type')->where('price_type_id', $this->mayorista->id)->delete();
+
+        $this->importar(self::ARCHIVO, $this->config([
+            'prop_visible_en_tienda_mayorista' => 9,
+        ]));
+
+        // A1 ("Si") y A15 ("SÍ"): la fila existe, una sola, y habilitada.
+        foreach (['A1', 'A15'] as $clave) {
+            $fila = $this->fila($this->seed[$clave]->id, $this->mayorista->id);
+
+            $this->assertSame(1, (int) $fila->visible_en_tienda, $clave . ': el "Sí" del Excel tiene que habilitarlo aunque no tuviera fila');
+
+            // Sin margen inventado: el 40 es el margen POR DEFECTO de la lista, que escribe el recálculo
+            // de precios (como en cualquier par nuevo). El 55 que A1 tenía en el setUp() no existe más.
+            $this->assertDecimal(40, $fila->percentage, $clave . ': el margen lo pone el recálculo, no la importación');
+            $this->assertSame(0, (int) $fila->setear_precio_final, $clave . ': no se le fija el precio a mano');
+            $this->assertSame(0, (int) $fila->incluir_en_excel_para_clientes, $clave . ': el par nace con los defaults de la base');
+        }
+
+        // A2 ("No") y A12 (celda vacía): nada que habilitar.
+        $this->assertSame(0, $this->filas_con_visible($this->seed['A2']->id, $this->mayorista->id, 1), 'A2: "No" no habilita');
+        $this->assertSame(0, $this->filas_con_visible($this->seed['A12']->id, $this->mayorista->id, 1), 'A12: celda vacía no habilita');
+
+        // La lista sin columna en el Excel no se toca.
+        $this->assertNull($this->visible($this->seed['A1']->id, $this->minorista->id), 'Minorista no tenía columna');
+
+        // Y la fila nueva no se duplicó por haberla creado antes del recálculo: a lo sumo una por par
+        // (A2 y A12 no traen ningún cambio, así que la importación ni los toca y siguen sin fila).
+        foreach (['A1', 'A2', 'A12', 'A15'] as $clave) {
+            $this->assertLessThanOrEqual(
+                1,
+                DB::table('article_price_type')->where('article_id', $this->seed[$clave]->id)->where('price_type_id', $this->mayorista->id)->count(),
+                $clave . ': nunca dos filas en Mayorista'
+            );
+        }
+    }
+
+    /**
+     * M1: el INSERT de los pares sin fila no duplica a los que ya tienen. El pivote no tiene índice
+     * único (un artículo puede tener la lista atada dos veces) y un INSERT a ciegas le sumaría una
+     * tercera fila: acá A1 ya tiene dos, con la visibilidad en NULL, y las dos terminan en 1.
+     *
+     * @return void
+     */
+    public function test_un_si_sobre_un_par_que_ya_tiene_dos_filas_no_suma_una_tercera()
+    {
+        $this->atar('A1', $this->mayorista->id, 55, null);
+
+        $this->importar(self::ARCHIVO, $this->config([
+            'prop_visible_en_tienda_mayorista' => 9,
+        ]));
+
+        $valores = DB::table('article_price_type')
+                        ->where('article_id', $this->seed['A1']->id)
+                        ->where('price_type_id', $this->mayorista->id)
+                        ->pluck('visible_en_tienda')
+                        ->map(function ($valor) {
+                            return is_null($valor) ? null : (int) $valor;
+                        })
+                        ->all();
+
+        $this->assertSame([1, 1], $valores, 'Las dos filas existentes se habilitan y no nace una tercera');
+    }
+
+    /**
+     * M1, el mismo caso con "No": un existente sin fila de pivote y un "No" no habilita nada ni
+     * inventa un 0. NULL y 0 son los dos "no habilitado" y reimportar una planilla llena de "No" no
+     * tiene que escribir nada (mismo criterio que el "No" sobre un NULL).
+     *
+     * @return void
+     */
+    public function test_un_no_sobre_un_existente_sin_fila_de_pivote_no_habilita_ni_escribe_un_cero()
+    {
+        DB::table('article_price_type')
+            ->where('article_id', $this->seed['A2']->id)
+            ->where('price_type_id', $this->mayorista->id)
+            ->delete();
+
+        $this->importar(self::ARCHIVO, $this->config([
+            'prop_visible_en_tienda_mayorista' => 9,
+        ]));
+
+        $this->assertSame(0, $this->filas_con_visible($this->seed['A2']->id, $this->mayorista->id, 1), 'A2: un "No" no lo habilita');
+        $this->assertSame(0, $this->filas_con_visible($this->seed['A2']->id, $this->mayorista->id, 0), 'A2: un "No" sobre nada no escribe un 0');
+
+        // El resto del lote se aplica igual.
+        $this->assertSame(1, $this->visible($this->seed['A1']->id, $this->mayorista->id), 'A1 se habilita igual');
+    }
 }
