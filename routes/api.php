@@ -1403,11 +1403,14 @@ Route::get('plan-feature', 'PlanFeatureController@index');
 // - publish-version: publicación de versión + notificaciones
 // - demo-setup:      disparo remoto del setup de demo
 // - user-setup:      disparo remoto del setup del sistema real (cliente que ya compró)
-// demo-setup y user-setup sin middleware para integración directa desde admin-api sin API key.
+// demo-setup sin middleware para integración directa desde admin-api sin API key.
+// user-setup lleva `admin.setup.key` (ClaveDeAdminEnSetup): hoy es una pasada libre porque la clave
+// está apagada por defecto (ADMIN_SYNC_SETUP_REQUIRE_API_KEY) hasta que admin-api mande el header;
+// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run().
 Route::prefix('admin-sync')
     ->group(function () {
         Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');
-        Route::post('user-setup', 'AdminSync\\UserSetupController@store');
+        Route::post('user-setup', 'AdminSync\\UserSetupController@store')->middleware('admin.setup.key');
     });
 
 // Ingreso a la demo con la sesion ya iniciada (token emitido por admin-api).

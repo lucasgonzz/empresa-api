@@ -412,7 +412,14 @@ class ProviderOrderController extends Controller
                 $hoja_nombre,
                 $archivo_excel_path,
                 $import_status->id,
-                $import_history->id
+                $import_history->id,
+                /*
+                 * Quién importó (el empleado o el dueño): el worker no tiene sesión, y el job corre
+                 * la importación autenticado como esta persona (ver
+                 * ProcessProviderOrderArticleImport::autenticado_como()). Va último y es opcional
+                 * en el job: un job encolado antes de este cambio llega sin él y usa al dueño.
+                 */
+                $this->userId(false)
             );
 
         } catch (\Throwable $exception) {
