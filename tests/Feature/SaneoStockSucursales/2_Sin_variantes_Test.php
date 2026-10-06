@@ -216,4 +216,30 @@ class Sin_variantes_Test extends SaneoStockSucursalesTestCase
         $this->assertStringContainsString('Filas borradas: address_article 3 · address_article_variant 0', $this->salida);
         $this->assertStringContainsString('Suma de los movimientos: +2.00 unidades', $this->salida, 'Σ de los movimientos: +3 del primero y −1 del segundo.');
     }
+
+    /**
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function aplicar_con_detalle_lista_cada_articulo_saneado_con_su_movimiento()
+    {
+        $dueno = $this->dueno('detalle-aplicar');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $uno = $this->articulo_con_fantasmas($dueno, 'Detalle uno', [$s1->id => 10], [[$muerta, -2]])['articulo'];
+        $dos = $this->articulo_con_fantasmas($dueno, 'Detalle dos', [], [[$muerta, -1]], 6)['articulo'];
+
+        $this->assertSame(0, $this->aplicar($dueno, ['--detalle' => true]), 'Salida:' . "\n" . $this->salida);
+
+        $movimiento = $this->movimientos($uno)[0];
+
+        $this->assertStringContainsString(
+            'art ' . $uno->id . ' → saneado · recalcular · filas borradas 1+0 · stock 8.00 → 10.00 · movimiento #' . $movimiento->id . ' (+2.00)',
+            $this->salida,
+            'El detalle de --aplicar tiene que mostrar las filas borradas, el stock antes y después y el movimiento.'
+        );
+
+        $this->assertStringContainsString('art ' . $dos->id . ' → saneado · solo_fantasmas · filas borradas 1+0 · stock 6.00 → 6.00 · sin movimiento', $this->salida);
+    }
 }

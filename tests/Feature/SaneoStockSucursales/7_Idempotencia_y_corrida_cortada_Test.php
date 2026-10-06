@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\SaneoStockSucursales;
 
+use App\Http\Controllers\Helpers\address\FilasFantasmaDeSucursalHelper;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -181,6 +182,131 @@ class Idempotencia_y_corrida_cortada_Test extends SaneoStockSucursalesTestCase
         // Y retomarla otra vez no encuentra nada.
         $this->assertSame(0, $this->aplicar($cortado['dueno'], ['--salida' => $carpeta_cortada]));
         $this->assertStringContainsString('No hay nada para sanear', $this->salida);
+    }
+
+    /**
+     * Id del concepto del movimiento, como lo resuelve el comando.
+     *
+     * @return int
+     */
+    protected function concepto_id()
+    {
+        return (int) DB::table('concepto_stock_movements')->where('name', self::CONCEPTO)->value('id');
+    }
+
+    /**
+     * La seguridad ante dos corridas a la vez o una medición vieja: cada artículo se vuelve a leer
+     * ADENTRO de su transacción, y si ya no tiene fantasmas (otro proceso los sacó) no escribe nada.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function el_helper_sanea_un_articulo_y_la_segunda_vez_dice_ya_limpio_sin_escribir()
+    {
+        $dueno = $this->dueno('helper-dos-veces');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $articulo = $this->articulo_con_fantasmas($dueno, 'Helper dos veces', [$s1->id => 10], [[$muerta, -2]])['articulo'];
+
+        $primera = FilasFantasmaDeSucursalHelper::sanear_articulo($articulo->id, $this->concepto_id());
+
+        $this->assertSame(FilasFantasmaDeSucursalHelper::RESULTADO_SANEADO, $primera['resultado']);
+        $this->assertSame(1, $primera['filas_borradas_articulo']);
+        $this->assertSame(0, $this->filas_en($articulo, $muerta));
+        $this->assertCount(1, $this->movimientos($articulo));
+
+        $despues_de_la_primera = $this->foto_de_tablas();
+
+        $segunda = FilasFantasmaDeSucursalHelper::sanear_articulo($articulo->id, $this->concepto_id());
+
+        $this->assertSame(FilasFantasmaDeSucursalHelper::RESULTADO_YA_LIMPIO, $segunda['resultado'], 'Un artículo que ya no tiene fantasmas tiene que dar ya_limpio.');
+        $this->assertFotosIguales($despues_de_la_primera, $this->foto_de_tablas(), 'La segunda llamada al helper escribió algo');
+    }
+
+    /**
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function el_helper_saltea_un_articulo_inexistente_y_uno_no_recalculable_sin_escribir()
+    {
+        $dueno = $this->dueno('helper-saltos');
+        $ajena = $this->sucursal($this->dueno('helper-saltos-ajena'));
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $no_recalculable = $this->articulo_no_recalculable($dueno, $ajena, $muerta);
+
+        $antes = $this->foto_de_tablas();
+
+        $inexistente = FilasFantasmaDeSucursalHelper::sanear_articulo((int) DB::table('articles')->max('id') + 9000, $this->concepto_id());
+
+        $this->assertSame(FilasFantasmaDeSucursalHelper::RESULTADO_SALTADO, $inexistente['resultado']);
+        $this->assertSame(FilasFantasmaDeSucursalHelper::MOTIVO_ARTICULO_INEXISTENTE, $inexistente['motivo']);
+
+        $intocable = FilasFantasmaDeSucursalHelper::sanear_articulo($no_recalculable['articulo']->id, $this->concepto_id());
+
+        $this->assertSame(FilasFantasmaDeSucursalHelper::RESULTADO_SALTADO, $intocable['resultado']);
+        $this->assertSame(FilasFantasmaDeSucursalHelper::MOTIVO_VARIANTE_EN_SUCURSAL_AJENA, $intocable['motivo']);
+
+        $this->assertFotosIguales($antes, $this->foto_de_tablas(), 'Un artículo saltado se tocó');
+    }
+
+    /**
+     * El orden de las escrituras del saneo de un artículo, visto desde sus dos callbacks:
+     *
+     *  - el respaldo (write-ahead) se escribe ANTES de borrar la primera fila: si el callback ve el
+     *    fantasma todavía en la base, el orden es el correcto;
+     *  - el bloque de reversión se escribe cuando las escrituras YA están hechas pero ANTES del
+     *    commit: ya no está el fantasma, el stock es el nuevo y el movimiento existe.
+     *
+     * @group saneo-stock-sucursales
+     * @test
+     */
+    public function el_respaldo_se_escribe_antes_de_borrar_y_la_reversion_despues_de_escribir()
+    {
+        $dueno = $this->dueno('helper-orden');
+        $s1 = $this->sucursal($dueno);
+        $muerta = $this->sucursal_muerta($dueno);
+
+        $articulo = $this->articulo_con_fantasmas($dueno, 'Helper orden', [$s1->id => 10], [[$muerta, -2]])['articulo'];
+
+        // Lo que ve cada callback en la base en el momento en que lo llaman.
+        $en_el_respaldo = null;
+        $en_la_reversion = null;
+        $sql_recibido = null;
+
+        FilasFantasmaDeSucursalHelper::sanear_articulo(
+            $articulo->id,
+            $this->concepto_id(),
+            function ($estado) use (&$en_el_respaldo, $articulo, $muerta) {
+                $en_el_respaldo = [
+                    'fantasmas' => $this->filas_en($articulo, $muerta),
+                    'stock' => $this->stock($articulo),
+                    'movimientos' => $this->movimientos($articulo)->count(),
+                    'estado' => $estado,
+                ];
+            },
+            function ($sql, $resumen) use (&$en_la_reversion, &$sql_recibido, $articulo, $muerta) {
+                $sql_recibido = $sql;
+                $en_la_reversion = [
+                    'fantasmas' => $this->filas_en($articulo, $muerta),
+                    'stock' => $this->stock($articulo),
+                    'movimientos' => $this->movimientos($articulo)->count(),
+                    'resumen' => $resumen,
+                ];
+            }
+        );
+
+        $this->assertSame(1, $en_el_respaldo['fantasmas'], 'El respaldo se escribió DESPUÉS de borrar el fantasma: tiene que ser write-ahead.');
+        $this->assertEquals(8.0, $en_el_respaldo['stock'], 'Al escribir el respaldo el stock tiene que ser todavía el viejo.');
+        $this->assertSame(0, $en_el_respaldo['movimientos'], 'Al escribir el respaldo todavía no hay movimiento.');
+        $this->assertSame((int) $articulo->id, (int) $en_el_respaldo['estado']['article_id']);
+
+        $this->assertSame(0, $en_la_reversion['fantasmas'], 'La reversión se escribió ANTES de borrar: tiene que ir cuando las escrituras ya están hechas.');
+        $this->assertEquals(10.0, $en_la_reversion['stock']);
+        $this->assertSame(1, $en_la_reversion['movimientos']);
+        $this->assertSame((int) $en_la_reversion['resumen']['movimiento_id'], (int) $this->movimientos($articulo)[0]->id);
+        $this->assertStringContainsString('DELETE FROM stock_movements WHERE id = ' . $en_la_reversion['resumen']['movimiento_id'], $sql_recibido);
     }
 
     /**

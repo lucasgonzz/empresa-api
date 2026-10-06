@@ -338,9 +338,9 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
         $segundo = $this->articulo_con_fantasmas($dueno, 'Disco dos', [$s1->id => 10], [[$muerta, -2]]);
         $tercero = $this->articulo_con_fantasmas($dueno, 'Disco tres', [$s1->id => 10], [[$muerta, -3]]);
 
-        // Escrituras que salen bien: 1 encabezado del SQL, 2 respaldo del primero, 3 bloque del
-        // primero. La 4 (el respaldo del segundo) falla: disco lleno.
-        $this->registrar_comando_con_disco_que_se_llena(3);
+        // Escrituras: 1 encabezado del SQL, 2 respaldo del primero, 3 bloque del primero, 4 respaldo
+        // del segundo. La 4 falla (una sola vez); la 5 y las siguientes saldrían bien.
+        $this->registrar_comando_con_falla_en_la_escritura(4);
 
         $codigo = $this->aplicar($dueno);
 
@@ -352,7 +352,9 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
         $this->assertSame(0, $this->filas_en($primero['articulo'], $muerta));
         $this->assertEquals(10.0, $this->stock($primero['articulo']));
 
-        // ...el segundo NO se tocó (no hubo respaldo) y el tercero tampoco (la corrida se cortó).
+        // ...el segundo NO se tocó (no hubo respaldo) y el tercero tampoco: la corrida se cortó. Las
+        // escrituras de después de la falla habrían salido bien, así que si el tercero está intacto es
+        // porque el comando NO siguió.
         foreach ([$segundo, $tercero] as $intacto) {
             $this->assertSame(1, $this->filas_en($intacto['articulo'], $muerta), 'Sin respaldo no se toca el artículo ni se sigue con el próximo.');
             $this->assertCount(0, $this->movimientos($intacto['articulo']));
@@ -363,7 +365,7 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
-     * Con un disco que se llena en la PRIMERA escritura de un artículo no se toca nada.
+     * Con una falla en la PRIMERA escritura de un artículo no se toca nada: ni ese ni los que siguen.
      *
      * @group saneo-stock-sucursales
      * @test
@@ -377,8 +379,8 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
         $this->articulo_con_fantasmas($dueno, 'Disco ya uno', [$s1->id => 10], [[$muerta, -1]]);
         $this->articulo_con_fantasmas($dueno, 'Disco ya dos', [$s1->id => 10], [[$muerta, -2]]);
 
-        // Solo el encabezado del SQL sale bien.
-        $this->registrar_comando_con_disco_que_se_llena(1);
+        // La escritura 1 (el encabezado del SQL) sale bien; la 2 (el respaldo del primer artículo) falla.
+        $this->registrar_comando_con_falla_en_la_escritura(2);
 
         $antes = $this->foto_de_tablas();
 
@@ -455,32 +457,43 @@ class Respaldo_y_reversion_Test extends SaneoStockSucursalesTestCase
     }
 
     /**
-     * Registra en Artisan una versión del comando donde, después de `$escrituras_que_salen_bien`
-     * escrituras a los archivos de respaldo, todas las siguientes fallan (un disco que se llena).
+     * Registra en Artisan una versión del comando donde SOLO la escritura número `$numero_que_falla`
+     * a los archivos de respaldo falla (una falla de disco), y las demás salen bien.
      *
-     * @param  int  $escrituras_que_salen_bien
+     * Falla UNA sola vez a propósito: si fallaran todas desde la N, un comando que no cortara la
+     * corrida al primer error de respaldo seguiría con el artículo siguiente, fallaría de nuevo y
+     * el test pasaría igual. Con una falla única, lo que se escriba DESPUÉS de ella prueba que el
+     * comando no siguió.
+     *
+     * Las escrituras de una corrida, en orden: 1 es el encabezado del SQL; después, por cada
+     * artículo, la línea del respaldo y el bloque del SQL.
+     *
+     * @param  int  $numero_que_falla
      * @return void
      */
-    protected function registrar_comando_con_disco_que_se_llena($escrituras_que_salen_bien)
+    protected function registrar_comando_con_falla_en_la_escritura($numero_que_falla)
     {
-        $comando = new class($escrituras_que_salen_bien) extends SanearStockDeSucursalesBorradas {
+        $comando = new class($numero_que_falla) extends SanearStockDeSucursalesBorradas {
             /** @var int */
-            private $escrituras_restantes;
+            private $numero_que_falla;
 
-            public function __construct($escrituras)
+            /** @var int */
+            private $escrituras = 0;
+
+            public function __construct($numero)
             {
                 parent::__construct();
 
-                $this->escrituras_restantes = $escrituras;
+                $this->numero_que_falla = $numero;
             }
 
             protected function volcar($manejador, $texto)
             {
-                if ($this->escrituras_restantes <= 0) {
+                $this->escrituras++;
+
+                if ($this->escrituras === $this->numero_que_falla) {
                     return false;
                 }
-
-                $this->escrituras_restantes--;
 
                 return parent::volcar($manejador, $texto);
             }
