@@ -26,16 +26,19 @@ use Tests\EmpresaTestCase;
  * 🔴 El saldo vivo se produce SIEMPRE por el camino real —el endpoint de saldo inicial, que crea el
  * movimiento y llama a `CurrentAcountHelper::checkSaldos()`— y nunca escribiendo `saldo_pesos` a mano:
  * un fixture armado a mano puede dar verde sin probar nada (el espejo podría no existir en producción
- * con esa forma). La columna vieja, en cambio, sí se escribe a mano, porque no hay ningún camino del
- * sistema que la mantenga: dejarla puesta con un valor congelado es exactamente lo que hay en las bases
- * reales.
+ * con esa forma). La columna vieja, en cambio, sí se escribe a mano: ningún movimiento de cuenta
+ * corriente la mantiene, así que dejarla puesta con un valor congelado es exactamente lo que hay en las
+ * bases reales.
  *
- * Qué protege cada caso:
- *  - A y B son los que fallan con la columna vieja: el vivo gana sobre el valor congelado, y un
- *    proveedor sin movimientos no exporta lo que quedó en la columna vieja.
- *  - C y D son guardas contra el arreglo equivocado: C que la forma del Excel no cambie (11 columnas,
- *    "Saldo actual" en el mismo lugar) y D que el saldo en dólares no se cuele en una columna que es
- *    en pesos, como el Excel de clientes.
+ * Qué protege cada caso (medido con el export leyendo la columna vieja `saldo`):
+ *  - A y B son los que exige el arreglo: el vivo gana sobre el valor congelado, y un proveedor sin
+ *    movimientos no exporta lo que quedó en la columna vieja. Los dos fallan con la columna vieja.
+ *  - C y D (bis) también llevan un saldo vivo y también fallan con la columna vieja: C verifica que la
+ *    forma del Excel no cambie (11 columnas, "Saldo actual" en el mismo lugar) y D (bis) que, con saldo
+ *    en las dos monedas, la celda sea solo el de pesos.
+ *  - D (solo dólares) pasa con la columna vieja y con el arreglo correcto: es la guarda contra un
+ *    arreglo equivocado (leer `saldo_dolares` o sumar las dos monedas en una columna que es en pesos,
+ *    como la del Excel de clientes).
  *
  * Las aserciones van siempre sobre los proveedores que crea el propio test: la base del slot trae
  * proveedores sembrados (dos de ellos con la columna vieja cargada) y el total global no es de nadie.
