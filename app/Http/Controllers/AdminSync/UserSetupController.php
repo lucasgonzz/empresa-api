@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\AdminSync;
 
+use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use App\Http\Controllers\Helpers\SetupErrorHelper;
@@ -11,10 +12,17 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Endpoint llamado por admin-api cuando desde el panel de Leads se ejecuta
- * user setup (sin autenticación por API key en esta ruta).
+ * user setup.
  *
  * Equivale al POST del formulario legacy user/setup pero recibe JSON y
  * responde JSON para que admin-api registre el resultado en el Lead.
+ *
+ * Autenticación: la ruta lleva el middleware `admin.setup.key` (ClaveDeAdminEnSetup), que
+ * exige el header X-Admin-Api-Key SOLO si ADMIN_SYNC_SETUP_REQUIRE_API_KEY está en true (el
+ * flag global ADMIN_SYNC_REQUIRE_API_KEY NO la activa, a propósito). Hoy está apagada por defecto porque admin-api
+ * todavía no manda ese header a esta ruta: exigirla ya mismo rompería el alta de clientes.
+ * Mientras esté apagada, la ruta sigue siendo pública, y por eso lo que la protege de verdad
+ * es la guarda de datos que vive dentro de UserSetupHelper::run() (ver BorradoTotalDeBaseHelper).
  */
 class UserSetupController extends Controller
 {
@@ -27,6 +35,12 @@ class UserSetupController extends Controller
      * El 409 es una respuesta NUEVA de este endpoint (25/8/2026), compatible hacia atrás:
      * un admin-api viejo la lee como no exitosa y registra el error en el Lead, que es lo
      * correcto. Lo importante es que en ese caso la base NO se toca.
+     *
+     * Hay DOS 409 distintos, y se distinguen por el cuerpo (no por el código):
+     * - `en_curso: true`        → ya hay otro setup corriendo (el candado).
+     * - `base_con_datos: true`  → la base ya tiene datos de negocio y el payload no trae
+     *   `forzar_borrado_total` + `confirmar_base_de_datos` (misión blindar-user-setup, 5/10/2026).
+     *   Con `en_curso: false` y `con_datos` (qué tablas), sin el nombre de la base ni conteos.
      *
      * @param Request $request
      */
@@ -58,6 +72,25 @@ class UserSetupController extends Controller
 
         try {
             $user = UserSetupHelper::run($request->all());
+        } catch (BaseConDatosException $e) {
+            /*
+             * La guarda de UserSetupHelper::run() se negó ANTES del `migrate:fresh`: no se tocó nada.
+             * Va ANTES del catch (\Throwable) a propósito: un rechazo esperado no es un error de
+             * servidor y no tiene que salir como 500 `internal error` (admin-api lo guardaría en el
+             * lead como una falla). El candado se suelta igual, por el `finally`.
+             *
+             * 🔴 El cuerpo NO lleva el nombre de la base ni cuántas filas tiene cada tabla: esta ruta
+             * es pública hasta que se prenda la clave, y esa respuesta le llegaría a cualquiera que
+             * le pegue. Solo se dice QUÉ familias de tablas tienen datos. El detalle con conteos ya
+             * quedó en el log de la instancia (lo escribe el helper). `en_curso: false` es para
+             * que un admin-api que lee ese campo no confunda este 409 con el del candado.
+             */
+            return response()->json([
+                'error'          => $e->getMessage(),
+                'base_con_datos' => true,
+                'en_curso'       => false,
+                'con_datos'      => $e->con_datos(),
+            ], 409);
         } catch (\Throwable $e) {
             /*
              * 🔴 Sin secretos ANTES de loguear y de responder (misión serper-en-user-setup, revisión
