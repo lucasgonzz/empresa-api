@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use Illuminate\Support\Facades\Mail;
 use App\Mail\Advise as AdviseMail;
+use App\Mail\Helpers\RechazosDeCorreoHelper;
 use App\Http\Controllers\Helpers\ClientMailConfigHelper;
 use App\Http\Controllers\Helpers\MailNotificationConfigHelper;
 use Illuminate\Bus\Queueable;
@@ -91,6 +92,11 @@ class ProcessSendAdviseMail implements ShouldQueue
 
             // Si send() tira excepción, el catch de abajo la atrapa y NO se borra la fila.
             Mail::to($email)->send(new AdviseMail($this->article));
+
+            // 🔴 Que send() no haya tirado NO quiere decir que el mail haya salido: si el servidor SMTP rechaza la casilla del comprador (un 550 en el RCPT TO),
+            // SwiftMailer no tira nada y, sin esta línea, el job borraba el aviso: el comprador perdía su "avisame cuando haya stock" sin haber recibido
+            // nada y sin que nadie lo supiera. Convertido en excepción, lo atrapa el catch de abajo: el aviso queda pendiente para el próximo ingreso de stock.
+            RechazosDeCorreoHelper::fallar_si_hubo_rechazos();
 
             // Recien acá, con el mail mandado con éxito, se borra el aviso.
             $this->advise->delete();

@@ -2,8 +2,10 @@
 
 namespace App\Console\Commands;
 
+use App\Exceptions\MailRechazadoPorElServidorException;
 use App\Mail\ComercioCityMail;
 use App\Mail\ComercioCityMailPayload;
+use App\Mail\Helpers\RechazosDeCorreoHelper;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\PagadoPor;
@@ -210,6 +212,17 @@ class CheckCurrentAcountsIntegrity extends Command
         }
 
         Mail::to($mail_to)->send(new ComercioCityMail($payload));
+
+        // 🔴 Que send() no haya tirado NO quiere decir que el mail haya salido: si el servidor SMTP rechaza la casilla del owner (un 550 en el RCPT TO), SwiftMailer no
+        // tira nada y este comando imprimía "Mail enviado a …" y devolvía 0 sobre un mail que nunca salió. Le escribe al owner del comercio (no a Lucas): si no le
+        // llegó, nadie se enteró de las inconsistencias. Se trata igual que la rama de "email inválido" de arriba: error en la consola, en el log y código de salida 1.
+        $rechazadas = RechazosDeCorreoHelper::del_ultimo_envio();
+
+        if (!empty($rechazadas)) {
+            $this->error("El mail NO salió: ".MailRechazadoPorElServidorException::MOTIVO." ({$mail_to}). Se detectaron {$total} inconsistencia(s) que el owner no recibió.");
+            Log::error("[CheckCurrentAcountsIntegrity] El servidor de correo rechazó la casilla del owner ({$mail_to}): el mail NO salió. user_id={$user_id}, inconsistencias={$total}.");
+            return 1;
+        }
 
         Log::info("[CheckCurrentAcountsIntegrity] Mail enviado a {$mail_to} con {$total} inconsistencia(s). user_id={$user_id}.");
         $this->info("Mail enviado a {$mail_to}.");
