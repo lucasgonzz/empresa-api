@@ -27,6 +27,9 @@ class EmisorDeNotaDeCreditoSinRed extends AfipNotaCreditoHelper
     /** @var int Cuántas veces se llamó a init() en el test (para medir el doble clic). */
     public static $emisiones = 0;
 
+    /** @var bool true = después de autorizar, el emisor lanza una excepción (falla posterior a ARCA). */
+    public static $falla_despues_de_autorizar = false;
+
     function init()
     {
         self::$emisiones++;
@@ -58,6 +61,10 @@ class EmisorDeNotaDeCreditoSinRed extends AfipNotaCreditoHelper
             'importe_iva'        => 0,
             'afip_fecha_emision' => '2026-10-07',
         ]);
+
+        if (self::$falla_despues_de_autorizar) {
+            throw new \RuntimeException('Falla posterior a la autorización de ARCA');
+        }
     }
 }
 
@@ -92,6 +99,7 @@ class Facturar_nota_de_credito_existente_Test extends EmpresaTestCase
 
         EmisorDeNotaDeCreditoSinRed::$autoriza = true;
         EmisorDeNotaDeCreditoSinRed::$emisiones = 0;
+        EmisorDeNotaDeCreditoSinRed::$falla_despues_de_autorizar = false;
 
         $this->app->bind(AfipNotaCreditoHelper::class, function ($app, $parametros) {
             return new EmisorDeNotaDeCreditoSinRed($parametros['afip_ticket'], $parametros['nota_credito']);
@@ -413,6 +421,109 @@ class Facturar_nota_de_credito_existente_Test extends EmpresaTestCase
         $this->post('api/nota-credito/987654321/facturar', [])->assertStatus(422);
 
         $this->assertEquals(0, EmisorDeNotaDeCreditoSinRed::$emisiones);
+    }
+
+    /**
+     * 🔴 Si ARCA ya autorizó la nota y falla algo posterior, el CAE NO se pierde: la nota existe en
+     * ARCA y revertir dejaría al usuario reintentando sobre algo que ya salió.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function un_fallo_posterior_a_la_autorizacion_no_pierde_el_cae()
+    {
+        $e = $this->escenario_de_cf();
+
+        EmisorDeNotaDeCreditoSinRed::$falla_despues_de_autorizar = true;
+
+        $response = $this->post('api/nota-credito/'.$e['nota']->id.'/facturar', []);
+
+        $response->assertStatus(200);
+        $response->assertJson(['facturada' => true]);
+
+        $ticket = AfipTicket::where('nota_credito_id', $e['nota']->id)->first();
+
+        $this->assertNotNull($ticket, 'El comprobante autorizado tiene que quedar guardado aunque falle algo después.');
+        $this->assertNotEmpty($ticket->cae);
+    }
+
+    /**
+     * Una falla SIN CAE sí se revierte por completo (no queda ningún comprobante a medias).
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function una_falla_sin_cae_no_deja_comprobante_a_medias()
+    {
+        $e = $this->escenario_de_cf();
+
+        $this->app->bind(AfipNotaCreditoHelper::class, function ($app, $parametros) {
+            return new class($parametros['afip_ticket'], $parametros['nota_credito']) extends AfipNotaCreditoHelper {
+                function init()
+                {
+                    $this->create_afip_ticket();
+                    throw new \RuntimeException('ARCA no contestó');
+                }
+            };
+        });
+
+        $response = $this->post('api/nota-credito/'.$e['nota']->id.'/facturar', []);
+
+        $response->assertStatus(500);
+        $this->assertEquals(0, AfipTicket::where('nota_credito_id', $e['nota']->id)->count(), 'Sin CAE se revierte todo: ni siquiera queda el comprobante vacío.');
+    }
+
+    /**
+     * En una venta en dólares con factura interna, la factura está en PESOS y la NC en dólares: el
+     * tope tiene que comparar en la misma moneda.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function el_tope_compara_en_pesos_una_nota_en_dolares_sobre_factura_interna()
+    {
+        $e = $this->escenario_de_cf(100);
+
+        $e['venta']->update(['moneda_id' => 2, 'valor_dolar' => 1000]);
+        $e['factura']->update(['importe_total' => 100000]);
+
+        // Ya hay $99.000 acreditados sobre esa factura por otra nota.
+        AfipTicket::create([
+            'nota_credito_id'     => CurrentAcount::create(['detalle' => 'NC previa', 'haber' => 99, 'status' => 'nota_credito', 'sale_id' => $e['venta']->id, 'client_id' => $e['cliente']->id, 'user_id' => $this->usuario_de_testing()->id, 'moneda_id' => 2])->id,
+            'sale_afip_ticket_id' => $e['factura']->id,
+            'afip_information_id' => $e['info']->id,
+            'cbte_tipo'           => '3',
+            'cbte_numero'         => '5',
+            'importe_total'       => 99000,
+            'cae'                 => '71234567890000',
+        ]);
+
+        // 100 USD = $100.000: sumados a los $99.000 ya acreditados superan la factura de $100.000.
+        $response = $this->post('api/nota-credito/'.$e['nota']->id.'/facturar', []);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('supera el total de la factura', $response->json('message'));
+    }
+
+    /**
+     * El aviso del rechazo por "ya devueltas" también sale si la nota tiene un intento rechazado
+     * (comprobante sin CAE): sigue estando sin facturar.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function el_aviso_tambien_sale_con_un_intento_fallido_de_la_nota()
+    {
+        $e = $this->escenario_de_cf();
+
+        AfipTicket::create([
+            'nota_credito_id'     => $e['nota']->id,
+            'afip_information_id' => $e['info']->id,
+        ]);
+
+        $aviso = \App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper::aviso_de_nota_sin_facturar($e['venta']);
+
+        $this->assertStringContainsString('Facturar con ARCA', $aviso);
     }
 
     /**

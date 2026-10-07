@@ -81,7 +81,30 @@ class FacturarNotaCreditoExistenteHelper {
                 'nota_credito'  => $nota_credito,
             ]);
 
-            $emisor->init();
+            try {
+
+                $emisor->init();
+
+            } catch (\Throwable $e) {
+
+                /*
+                 * 🔴 Si ARCA ya autorizó la nota (el comprobante tiene CAE) y lo que falló es algo
+                 * posterior (por ejemplo restar el total facturado de la venta), revertir la
+                 * transacción borraría el rastro de una nota que YA existe en ARCA, y el "volvé a
+                 * intentar" empujaría a emitir otra encima. Se conserva lo que ya quedó escrito y el
+                 * fallo se reporta aparte. Sin CAE no hay nada que conservar: se relanza.
+                 */
+                $con_cae = AfipTicket::where('nota_credito_id', $nota_credito->id)
+                                ->whereNotNull('cae')
+                                ->where('cae', '<>', '')
+                                ->exists();
+
+                if (!$con_cae) {
+                    throw $e;
+                }
+
+                report($e);
+            }
 
             DB::commit();
 
@@ -178,6 +201,34 @@ class FacturarNotaCreditoExistenteHelper {
     }
 
     /**
+     * El `haber` de la NC está en la moneda de su cuenta; el `importe_total` de una factura interna
+     * (A, B, C) está en PESOS aunque la venta sea en dólares (el calculador convierte con
+     * `valor_dolar`). Solo la factura de exportación (tipo 19) queda en dólares. Sin cotización
+     * (venta vieja) no se inventa una: queda el valor tal cual.
+     *
+     * @param  \App\Models\CurrentAcount  $nota_credito
+     * @param  \App\Models\AfipTicket     $factura
+     * @return float
+     */
+    static function total_en_la_moneda_de_la_factura($nota_credito, $factura) {
+
+        $total = (float) $nota_credito->haber;
+
+        $venta = $nota_credito->sale;
+
+        if (
+            !is_null($venta)
+            && (int) $venta->moneda_id == 2
+            && (string) $factura->cbte_tipo !== '19'
+            && (float) $venta->valor_dolar > 0
+        ) {
+            return $total * (float) $venta->valor_dolar;
+        }
+
+        return $total;
+    }
+
+    /**
      * El total de la NC más lo ya facturado en notas de crédito sobre esa misma factura no puede
      * superar el total de la factura (más la tolerancia de redondeo).
      *
@@ -193,7 +244,7 @@ class FacturarNotaCreditoExistenteHelper {
                                 ->where('cae', '<>', '')
                                 ->sum('importe_total');
 
-        $total_de_la_nota = (float) $nota_credito->haber;
+        $total_de_la_nota = Self::total_en_la_moneda_de_la_factura($nota_credito, $factura);
 
         $tope = (float) $factura->importe_total + Self::TOLERANCIA_SOBRE_LA_FACTURA;
 

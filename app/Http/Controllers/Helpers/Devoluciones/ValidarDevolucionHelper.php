@@ -119,6 +119,7 @@ class ValidarDevolucionHelper {
         $venta_facturada = AfipTicket::where('sale_id', $sale->id)
                                 ->whereNull('nota_credito_id')
                                 ->whereNotNull('cae')
+                                ->where('cae', '<>', '')
                                 ->exists();
 
         if (!$venta_facturada) {
@@ -127,7 +128,9 @@ class ValidarDevolucionHelper {
 
         $hay_nota_sin_facturar = CurrentAcount::where('sale_id', $sale->id)
                                     ->where('status', 'nota_credito')
-                                    ->whereDoesntHave('afip_ticket')
+                                    ->whereDoesntHave('afip_ticket', function ($q) {
+                                        $q->whereNotNull('cae')->where('cae', '<>', '');
+                                    })
                                     ->exists();
 
         if (!$hay_nota_sin_facturar) {
