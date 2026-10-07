@@ -21,7 +21,9 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
  *  - una columna "Stock <sucursal>" por sucursal del DUEÑO DE LA COMPRA. La ruta se abre con
  *    window.open y no lleva sesión, así que el dueño sale de `provider_orders.user_id`;
  *  - un artículo que no tiene fila en una sucursal muestra 0 ahí, no una celda vacía;
- *  - un comercio sin sucursales no recibe ninguna columna de más.
+ *  - un comercio sin sucursales no recibe ninguna columna de más;
+ *  - los domicilios de compradores de la tienda (addresses con buyer_id, que llevan el user_id del
+ *    dueño) no cuentan como sucursales.
  *
  * Hereda de `ComprasTestCase` (guards de entorno + fixture de la ferretería). La compra se arma
  * directo en la base, sin pasar por `POST api/provider-order`: ese camino mueve el stock y acá el
@@ -242,5 +244,61 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
 
         $this->assertNotContains('Stock Sucursal Ajena', $filas[0]);
         $this->assertContains('Stock '.TestingFerreteriaSeeder::DEPOSITO, $filas[0]);
+    }
+
+    /**
+     * Caso 6: un domicilio de comprador de la tienda (`buyer_id` no nulo, con el `user_id` del
+     * dueño) no es una sucursal y no genera columna.
+     *
+     * @group compras
+     * @return void
+     */
+    public function test_los_domicilios_de_compradores_no_son_sucursales()
+    {
+        $principal = Address::where('street', TestingFerreteriaSeeder::DEPOSITO)->first();
+
+        Address::create([
+            'street'   => 'Calle de un comprador',
+            'user_id'  => $principal->user_id,
+            'buyer_id' => 987654,
+        ]);
+
+        $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 1]));
+
+        $this->assertNotContains('Stock Calle de un comprador', $filas[0]);
+        $this->assertContains('Stock '.TestingFerreteriaSeeder::DEPOSITO, $filas[0]);
+    }
+
+    /**
+     * Caso 7: un artículo sin stock sale con 0 en "Stock actual" (no en blanco), tanto si el stock
+     * global es 0 como si nunca se cargó (null).
+     *
+     * @group compras
+     * @return void
+     */
+    public function test_stock_global_en_cero_o_sin_cargar_sale_como_cero()
+    {
+        $pinza = $this->articulo('Pinza');
+        $pinza->stock = 0;
+        $pinza->timestamps = false;
+        $pinza->save();
+
+        $alicate = $this->articulo('Alicate');
+        $alicate->stock = null;
+        $alicate->timestamps = false;
+        $alicate->save();
+
+        $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 1, 'Alicate' => 1], self::DUENO_SIN_SUCURSALES));
+
+        $por_nombre = [];
+        foreach (array_slice($filas, 1) as $fila) {
+            $por_nombre[$fila[0]] = $fila;
+        }
+
+        // assertEquals(0, null) pasaría: el assertNotNull es el que distingue "0" de "celda vacía".
+        $this->assertNotNull($por_nombre['Pinza'][4], 'Stock 0 = 0, no celda vacía.');
+        $this->assertEquals(0, $por_nombre['Pinza'][4]);
+        $this->assertNotNull($por_nombre['Alicate'][4], 'Stock sin cargar = 0, no celda vacía.');
+        $this->assertEquals(0, $por_nombre['Alicate'][4]);
     }
 }

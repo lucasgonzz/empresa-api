@@ -59,12 +59,18 @@ class ProviderOrderExport implements FromArray, WithHeadings, WithStrictNullComp
      * window.open y no lleva autenticación, así que no hay usuario logueado de dónde sacarlo.
      * Mismo criterio que ArticleExport: con una sola sucursal ya cuenta como "tiene sucursales".
      *
+     * 🔴 El whereNull('buyer_id') no es decoración: `addresses` guarda también los domicilios de los
+     * compradores de la tienda (los escribe tienda-api, que comparte la base) con el user_id del
+     * dueño. Sin el filtro, un comercio con tienda online recibía una columna de stock por cada
+     * domicilio de comprador. Mismo corte que RecolectorStock y Address::deposito_madre_de().
+     *
      * @return \Illuminate\Support\Collection
      */
     protected function addresses()
     {
         if (is_null($this->addresses)) {
             $this->addresses = Address::where('user_id', $this->provider_order()->user_id)
+                                        ->whereNull('buyer_id')
                                         ->orderBy('id', 'ASC')
                                         ->get();
         }
@@ -101,7 +107,7 @@ class ProviderOrderExport implements FromArray, WithHeadings, WithStrictNullComp
                 $article->bar_code,
                 $article->provider_code,
                 $article->pivot->amount,
-                $article->stock,
+                (float) $article->stock,
             ];
 
             // Un artículo sin fila en una sucursal tiene 0 ahí, no celda vacía.
