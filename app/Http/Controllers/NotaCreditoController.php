@@ -3,7 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Exports\NotasCreditoFullExport;
+use App\Http\Controllers\Helpers\Devoluciones\FacturarNotaCreditoExistenteHelper;
+use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoNoFacturableException;
 use App\Models\CurrentAcount;
+use Illuminate\Http\Request;
 use Carbon\Carbon;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -25,9 +28,53 @@ class NotaCreditoController extends Controller
             // proveedor (devolución de compra) no tiene cliente, y el listado tiene que poder
             // mostrar a quién se le hizo. Aditivo: el front que no lo lee no se entera.
             ->with('afip_ticket.afip_errors', 'afip_ticket.afip_observations', 'sale', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions', 'client', 'provider')
+            // Las facturas de la venta: la pantalla las ofrece para facturar una NC guardada sin facturar.
+            ->with('sale.afip_tickets')
             ->get();
 
         return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Factura ante ARCA una nota de crédito de cliente que se guardó sin facturar.
+     *
+     * Contrato: `POST nota-credito/{id}/facturar` con `afip_ticket_id` opcional (la factura de la
+     * venta sobre la que se emite; sin él, la única autorizada). Responde 200 con
+     * `{model, facturada, message}` (`facturada` es false si ARCA no la autorizó, y el motivo viaja
+     * en `model.afip_ticket.afip_errors`), 422 `{message}` si una regla de negocio no la deja
+     * facturar y 500 `{message}` si falla el emisor. Ver FacturarNotaCreditoExistenteHelper.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int                        $id  movimiento de cuenta corriente (status nota_credito)
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function facturar(Request $request, $id)
+    {
+        try {
+
+            $nota_credito = FacturarNotaCreditoExistenteHelper::facturar($id, $this->userId(), $request->afip_ticket_id);
+
+        } catch (NotaCreditoNoFacturableException $e) {
+
+            return response()->json(['message' => $e->getMessage()], 422);
+
+        } catch (\Throwable $e) {
+
+            // El handler global solo reporta lo que no se captura: se empuja a mano.
+            report($e);
+
+            return response()->json(['message' => 'No se pudo emitir la nota de crédito ante ARCA. Volvé a intentar en unos minutos.'], 500);
+        }
+
+        $facturada = !is_null($nota_credito->afip_ticket) && !empty($nota_credito->afip_ticket->cae);
+
+        return response()->json([
+            'model'     => $nota_credito,
+            'facturada' => $facturada,
+            'message'   => $facturada
+                            ? 'Nota de crédito facturada ante ARCA.'
+                            : 'ARCA no autorizó la nota de crédito. Revisá los errores del comprobante.',
+        ], 200);
     }
 
     /**

@@ -523,8 +523,8 @@ class AfipNotaCreditoHelper
 
 
     function create_afip_ticket() {
-            
-        $this->created_afip_ticket = AfipTicket::create([
+
+        $datos = [
             'afip_information_id'               => $this->afip_ticket->afip_information_id,
             'afip_tipo_comprobante_id'          => $this->afip_ticket->afip_tipo_comprobante_id,
             'iva_negocio'                       => $this->afip_ticket->afip_information->iva_condition->name,
@@ -533,7 +533,28 @@ class AfipNotaCreditoHelper
             'iva_cliente'                       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'sale_nota_credito_id'              => $this->sale->id,
             'sale_afip_ticket_id'               => $this->afip_ticket->id,
-        ]);
+        ];
+
+        /*
+         * Una NC que ya tuvo un intento que no llego a ARCA (ticket sin CAE ni numero, tipico de un
+         * rechazo o de un corte de conexion) y se vuelve a facturar desde Comprobantes reutiliza ese
+         * mismo ticket: si se creara otro, `CurrentAcount::afip_ticket()` (hasOne por nota_credito_id)
+         * podria seguir apuntando al fallido. En la devolucion de siempre la NC es nueva y no hay
+         * ninguno: se crea como antes.
+         */
+        $fallido = AfipTicket::where('nota_credito_id', $this->nota_credito->id)
+                        ->whereNull('cae')
+                        ->whereNull('cbte_numero')
+                        ->orderBy('id')
+                        ->first();
+
+        if (!is_null($fallido)) {
+            $fallido->update($datos);
+            $this->created_afip_ticket = $fallido;
+            return;
+        }
+
+        $this->created_afip_ticket = AfipTicket::create($datos);
     }
 
     function update_sale_total_facturado($data) {
