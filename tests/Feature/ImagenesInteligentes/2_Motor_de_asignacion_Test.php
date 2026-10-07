@@ -704,7 +704,7 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
         $articulo = $this->nuevo_articulo('Pala ancha con cabo', self::CODIGO_REAL);
         $run      = $this->asignacion([$articulo], ['proveedor' => ImageAssignmentRun::PROVEEDOR_GOOGLE]);
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) {
             if (strpos($request->url(), 'googleapis.com') !== false) {
                 throw new ConnectException(

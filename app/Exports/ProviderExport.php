@@ -50,7 +50,17 @@ class ProviderExport implements FromCollection, WithHeadings, WithMapping
             $provider->razon_social,
             $provider->cuit,
             $provider->observations,
-            $provider->saldo,
+            /*
+             * "Saldo actual" sale de `saldo_pesos` y no de `saldo`. El saldo vivo está en
+             * `credit_accounts.saldo` (una fila por moneda) y `CurrentAcountHelper::set_model_saldo()`
+             * lo espeja en `saldo_pesos` / `saldo_dolares` del proveedor en cada movimiento: es lo que
+             * muestra la lista de Proveedores. `saldo` es la columna de antes de las cuentas por
+             * moneda: `set_model_saldo()` no la escribe, y en una base real trae un valor congelado
+             * (o NULL).
+             * El Excel es en pesos, como el de clientes (`ClientExport` ya lee `saldo_pesos`): lo que
+             * se debe en dólares vive en `saldo_dolares` y no se mezcla en esta columna.
+             */
+            $provider->saldo_pesos,
         ];
     }
 

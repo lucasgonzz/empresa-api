@@ -108,7 +108,7 @@ class Importacion_excel_Test extends TestCase
         $this->enviados = [];
         $test = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request, $options) use ($test, $body, $status) {
             $test->enviados[] = [

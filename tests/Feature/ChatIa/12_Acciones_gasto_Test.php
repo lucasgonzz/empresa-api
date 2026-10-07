@@ -19,6 +19,7 @@ use App\Services\AsistenteIa\AsistenteIaService;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Tests\Concerns\EscenariosDePlata;
 use Tests\EmpresaTestCase;
 
@@ -1049,6 +1050,15 @@ class Acciones_gasto_Test extends EmpresaTestCase
     public function toda_herramienta_declarada_responde_algo_que_no_sea_tool_desconocida()
     {
         list($conversation, $assistant) = $this->conversacion();
+
+        /*
+         * 🔴 Ninguna herramienta sale a internet en este test. Medido el 6/10/2026 con el freno de internet puesto: con input vacío, una de las
+         * herramientas declaradas (la de fotos de artículos) salía DE VERDAD a `www.googleapis.com/customsearch/v1` —5 GET, uno por artículo del
+         * fixture: Martillo, Pinza, Alicate, Cuchillo, Cuchara— y el test pasaba igual, porque el servicio atrapa la excepción. Es la misma
+         * clase del 27/9 (salió a Serper, que cobra). Un resultado vacío del buscador es lo que ve la herramienta ante una búsqueda sin
+         * candidatas: no escribe nada, que es lo que este test supone.
+         */
+        Http::fake(['https://www.googleapis.com/*' => Http::response(['items' => []], 200)]);
 
         $definiciones = \App\Services\AsistenteIa\HerramientasDeCarga::definiciones();
 

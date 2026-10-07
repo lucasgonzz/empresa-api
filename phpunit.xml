@@ -68,6 +68,37 @@
             config(), asi que no dependen de este valor.
         -->
         <server name="SERPER_API_KEY" value=""/>
+        <!--
+            🔴 Los tests NO salen a internet (6/10/2026; el 5/10 un test de admin-api hizo un POST real al user setup de
+            un cliente en producción y le vació la base). Capas, de adentro hacia afuera:
+              1. tests/TestCase.php instala Tests\Fakes\HttpFactorySinSalida: un pedido por la fachada Http que ningún
+                 Http::fake() atiende se frena, se anota y hace FALLAR al test aunque el código se haya tragado la
+                 excepción.
+              2. Tests\Fakes\StreamHttpSinSalida frena file_get_contents/get_headers/getimagesize/copy sobre http(s)://.
+              3. Esta: un proxy que no existe. curl nativo (MercadoPagoController, Afip\WS) y Guzzle armado a mano (el
+                 de BroadcastServiceProvider) terminan en "conexión rechazada" en vez de en el servidor real. Va como
+                 <env force> y no solo como <server> porque los procesos hijos que lanzan algunos tests
+                 (CategoryProposals) heredan getenv(), no $_SERVER. El puerto 9 (discard) no tiene a nadie escuchando.
+              4. Tests\Fakes\EntornoSinCredenciales deja las credenciales reales del .env.testing (Anthropic, OpenAI,
+                 Tienda Nube, Mercado Libre/Pago, SMTP, Pusher) reemplazadas por valores de mentira en cada arranque.
+        -->
+        <server name="HTTP_PROXY" value="http://127.0.0.1:9"/>
+        <server name="HTTPS_PROXY" value="http://127.0.0.1:9"/>
+        <server name="NO_PROXY" value="localhost,127.0.0.1,::1"/>
+        <env name="HTTP_PROXY" value="http://127.0.0.1:9" force="true"/>
+        <env name="HTTPS_PROXY" value="http://127.0.0.1:9" force="true"/>
+        <env name="NO_PROXY" value="localhost,127.0.0.1,::1" force="true"/>
+        <!-- En minúsculas también: libcurl en Linux ignora HTTP_PROXY en mayúsculas para http:// (en Windows es la misma variable). -->
+        <env name="http_proxy" value="http://127.0.0.1:9" force="true"/>
+        <env name="https_proxy" value="http://127.0.0.1:9" force="true"/>
+        <env name="no_proxy" value="localhost,127.0.0.1,::1" force="true"/>
+        <!--
+            El broadcast y el mailer de los tests no dependen del .env.testing de cada slot: config/broadcasting.php
+            tiene 'pusher' como default y config/mail.php, 'smtp'. En <env force> también, para los procesos hijos.
+        -->
+        <server name="BROADCAST_DRIVER" value="log"/>
+        <env name="BROADCAST_DRIVER" value="log" force="true"/>
+        <env name="MAIL_MAILER" value="array" force="true"/>
         <server name="SESSION_DRIVER" value="array"/>
         <server name="TELESCOPE_ENABLED" value="false"/>
     </php>

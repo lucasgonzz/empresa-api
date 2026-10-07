@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\CartArticleAmountInsificienteHelper;
 use App\Http\Controllers\Helpers\GlobalHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Stock\SetArticleStock\SetArticleStock;
 use App\Http\Controllers\Stock\SetConcepto;
 use App\Http\Controllers\Stock\SetProvider;
@@ -60,6 +61,30 @@ class StockMovementController extends Controller
     */
 
     function store(Request $request, $set_updated_at = true, $owner = null, $auth_user_id = null, $segundos_para_agregar = null) {
+
+        /*
+         * Alta MANUAL con una sucursal que ya no existe (misión eliminar-sucursal-con-stock,
+         * 5/10/2026): el usuario la eligió explícitamente en el modal, así que no se le cambia por
+         * otra en silencio (eso hace crear() con los comprobantes): se le avisa. Pasa con una
+         * pestaña abierta desde antes de que alguien borrara la sucursal. Con el criterio del motor
+         * (existe_para_stock): la fila de un domicilio de comprador que dejó un pedido de la tienda se
+         * tiene que poder corregir a mano desde este mismo modal.
+         */
+        // El dueño que recibe store() si lo pasan (la firma lo admite), si no el de la sesión.
+        $owner_id = is_null($owner) ? $this->userId() : $owner->id;
+
+        foreach (['from_address_id', 'to_address_id'] as $clave) {
+
+            $address_id = $request->input($clave);
+
+            if (!SucursalVigenteHelper::es_vacio($address_id)
+                && !SucursalVigenteHelper::existe_para_stock($address_id, $owner_id)) {
+
+                return response()->json([
+                    'message' => 'La sucursal ya no existe. Recargá la página y elegí otra.',
+                ], 422);
+            }
+        }
 
         $data = [
             'model_id'              => $request->model_id,
@@ -132,7 +157,18 @@ class StockMovementController extends Controller
         if (!$article) return;
 
         $concepto_id = SetConcepto::get_concepto($data);
-        
+
+        /*
+         * 🔴 Guarda contra sucursales muertas (misión eliminar-sucursal-con-stock, 5/10/2026, D12).
+         * Un id de una sucursal borrada (cookie de la SPA, empleado, venta vieja que se anula...)
+         * hacía que CheckFromAddress / CheckToAddress / CheckVariants le abrieran al artículo una
+         * fila de depósito para esa sucursal: invisible en pantalla, pero sumada en articles.stock.
+         * Ver SucursalVigenteHelper::aplicar_guarda_del_motor(). null = no se mueve nada.
+         */
+        $data = SucursalVigenteHelper::aplicar_guarda_del_motor($data, $concepto_id, $this->user_id, $employee_id);
+
+        if (is_null($data)) return null;
+
         $amount = $this->check_unidades_individuales($article, (float)$data['amount'], $concepto_id, $data);
 
         // Log::info('observations: '.$data['observations']);

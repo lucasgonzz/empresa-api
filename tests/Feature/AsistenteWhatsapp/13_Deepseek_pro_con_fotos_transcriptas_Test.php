@@ -512,7 +512,7 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
          * A medias: sección para la foto 1 y nada para la 2 → no se usa. Http::swap() primero: en
          * Laravel 8 Http::fake() ACUMULA stubs, y el sequence de arriba (ya vacío) ganaría el match.
          */
-        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake([
             'api.deepseek.com/*' => Http::sequence()
@@ -644,7 +644,7 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->assertSame('enabled', $bodies[0]['thinking']['type']);
 
         /* Sin tarjeta pendiente, el mismo texto sigue en el Ágil. */
-        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake([
             'api.deepseek.com/*' => Http::response($this->end_turn('Ok.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
@@ -661,7 +661,7 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->assertSame('deepseek-flash-p13', $bodies[0]['model']);
 
         /* Una PREGUNTA con la tarjeta todavía abierta no corrige nada: sigue en el Ágil. */
-        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake([
             'api.deepseek.com/*' => Http::response($this->end_turn('Hoy vendiste 10.000.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),

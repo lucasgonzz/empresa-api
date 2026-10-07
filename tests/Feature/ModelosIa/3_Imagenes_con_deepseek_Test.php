@@ -69,7 +69,7 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
 
         $test = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request) use ($test, $serper, $imagenes, $ia, $mensaje_de_error) {
             $url = $request->url();
@@ -245,7 +245,7 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
         $this->requests_ia = [];
         $test = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) use ($test) {
             $test->requests_ia[] = ['url' => $request->url(), 'body' => $request->data()];
 
@@ -284,7 +284,7 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
         $this->requests_ia = [];
         $test = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) use ($test) {
             $test->requests_ia[] = ['url' => $request->url(), 'body' => $request->data()];
 
@@ -421,7 +421,7 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
         $this->requests_ia = [];
         $test = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) use ($test) {
             $test->requests_ia[] = ['url' => $request->url(), 'body' => $request->data()];
 
@@ -448,7 +448,7 @@ class Imagenes_con_deepseek_Test extends ImagenesInteligentesTestCase
     {
         $articulo = $this->nuevo_articulo('Yerba mate 1 kg', self::CODIGO);
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) {
             return Http::response([
                 'model'   => 'deepseek-flash-test',

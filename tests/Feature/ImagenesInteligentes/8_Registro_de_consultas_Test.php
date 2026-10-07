@@ -154,7 +154,7 @@ class Registro_de_consultas_Test extends ImagenesInteligentesTestCase
         $imagen = $this->png(1000, 1000, 'rojo');
         $url    = $this->url_imagen('balde');
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) use ($test, $imagen, $url) {
             if (strpos($request->url(), 'googleapis.com') !== false) {
                 // El artículo "bien" responde con un resultado; cualquier otra consulta, 403.
@@ -339,7 +339,7 @@ class Registro_de_consultas_Test extends ImagenesInteligentesTestCase
         $articulo = $this->nuevo_articulo('Llave francesa 10 pulgadas', self::CODIGO_REAL);
         $run      = $this->asignacion([$articulo], ['proveedor' => ImageAssignmentRun::PROVEEDOR_GOOGLE]);
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) {
             if (strpos($request->url(), 'googleapis.com') !== false) {
                 throw new ConnectException(
@@ -499,7 +499,7 @@ class Registro_de_consultas_Test extends ImagenesInteligentesTestCase
      */
     protected function falsear_validate($estado)
     {
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request) use ($estado) {
             if (strpos($request->url(), 'api.anthropic.com') === false) {

@@ -139,7 +139,7 @@ class MensajesDeErrorTest extends ImportTestCase
          * medir algo que no es lo que dicen medir. Medido: la causa "529 sobrecargado"
          * seguía recibiendo el 400 de la causa anterior.
          */
-        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         /* Nunca sale a internet: intercepta el POST que hace call_claude(). */
         Http::fake($fake);

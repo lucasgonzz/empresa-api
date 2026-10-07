@@ -292,7 +292,7 @@ class Techo_de_ia_y_cortes_de_la_corrida_Test extends ImagenesInteligentesTestCa
         $run  = $this->asignacion($articulos);
         $test = $this;
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) use ($test, $serper, $imagenes) {
             $url = $request->url();
 

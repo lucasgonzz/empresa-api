@@ -84,7 +84,7 @@ class Otro_frente_buscador_y_registro_Test extends ImagenesInteligentesTestCase
      */
     protected function servir(array $urls)
     {
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request) use ($urls) {
             if (isset($urls[$request->url()])) {
@@ -220,7 +220,7 @@ class Otro_frente_buscador_y_registro_Test extends ImagenesInteligentesTestCase
 
         $run = $this->asignacion($articulos);
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) {
             if (strpos($request->url(), 'google.serper.dev') !== false) {
                 throw new ConnectException('cURL error 28: Operation timed out after 15001 milliseconds with 0 bytes received for '.$request->url(), $request->toPsrRequest());
@@ -257,7 +257,7 @@ class Otro_frente_buscador_y_registro_Test extends ImagenesInteligentesTestCase
         $otro     = $this->nuevo_articulo('Escalera de aluminio', $this->con_verificador('779000980001'));
         $otro_run = $this->asignacion([$otro]);
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) {
             if (strpos($request->url(), 'google.serper.dev') !== false) {
                 throw new ConnectException('cURL error 6: Could not resolve host: google.serper.dev', $request->toPsrRequest());

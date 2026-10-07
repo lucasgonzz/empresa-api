@@ -379,7 +379,11 @@ class CatalogoDeEscrituraIaHelper
             // los artículos" ya no se ofrece (misión sincronizar-margen-lista-precios, 1/10/2026). El
             // controller lo sigue LEYENDO en update() solo para el SPA viejo cacheado, y si el asistente
             // lo mandara volvería a disparar la actualización masiva que el SPA nuevo ya no hace sola.
-            'solo_lectura'       => ['apply_percentage_on_existing_articles', 'update_existing_articles_percentage_mode'],
+            // catalogo_restringido_en_tienda (misión catalogo-por-lista-tienda, 5/10/2026): prenderlo
+            // le saca la tienda entera a todos los compradores de esa lista (mayoristas, por ejemplo)
+            // hasta que se habiliten los artículos uno por uno. Es una decisión del comerciante desde
+            // el ABM, con el contador "X habilitados de Y" a la vista; el asistente no la toma.
+            'solo_lectura'       => ['apply_percentage_on_existing_articles', 'update_existing_articles_percentage_mode', 'catalogo_restringido_en_tienda'],
             'claves_de_pantalla' => ['categories' => [], 'sub_categories' => [], 'childrens' => []],
             // El formulario nace con "incluir en la lista de precios de Excel" prendido (la columna no tiene default).
             'defaults_de_pantalla' => ['incluir_en_lista_de_precios_de_excel' => 1],
@@ -493,10 +497,10 @@ class CatalogoDeEscrituraIaHelper
             'solo_lectura'       => ['image_url', 'lat', 'lng', 'buyer_id', 'default_afip_information_id'],
             'claves_de_pantalla' => [],
             'ruta'               => ['name' => 'abm', 'params' => ['view' => 'sucursales', 'sub_view' => 'sucursales'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => 'Se borra la sucursal y el stock que tenía se da de baja con un movimiento por artículo.',
+            'aviso_de_baja'      => 'Solo se puede eliminar así si no tiene nada que decidir: si tiene stock, empleados asignados o es la sucursal por defecto, madre o de origen, hay que eliminarla desde ABM > Sucursales eligiendo qué hacer con cada cosa (pasar el stock a otra sucursal o descartarlo, a dónde van los empleados y qué sucursal la reemplaza).',
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'AddressController: store() no lee phone ni email (update() sí); destroy() genera un movimiento de stock negativo por artículo con stock en la sucursal y después la borra.',
+            'revisado'           => 'AddressController: store() no lee phone ni email (update() sí); destroy() delega en EliminarSucursalHelper (misión eliminar-sucursal-con-stock, 5/10/2026): sin decisión (el genérico no la manda) responde 422 si la sucursal tiene stock, empleados o marcas; sin nada que decidir la borra y deja sus cajas, puntos de venta y clientes para todas las sucursales.',
         ],
         'location' => [
             'etiqueta'           => 'localidades',
@@ -875,7 +879,7 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'ventas',
             'singular'           => 'venta',
             'genero'             => 'f',
-            'descripcion'        => 'Las ventas (pantalla Ventas). Por acá solo se anulan; para vender está proponer_venta. Se ubican por su número.',
+            'descripcion'        => 'Las ventas (pantalla Ventas). Por acá solo se anulan; para vender está proponer_venta. Se ubican por su número. Una venta facturada (o incluida en una factura consolidada) no se anula por acá: va por devolución con nota de crédito.',
             'operaciones'        => [self::OP_BAJA],
             'solo_lectura'       => [],
             'claves_de_pantalla' => [],
@@ -883,7 +887,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => 'Se anula la venta como desde la pantalla de Ventas: va a la papelera, vuelve al stock lo que descontó, se borra su movimiento de cuenta corriente (salvo que tenga nota de crédito de AFIP) y las comisiones del vendedor. La plata que entró en caja NO se compensa.',
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'SaleController::destroy(Request, $id) → DeleteSaleHelper::eliminar_venta con candado: soft delete, regresar_stock() por el libro de movimientos, deleteCurrentAcountFromSale salvo nota de crédito AFIP, deleteSellerCommissionsFromSale, puntos revertidos. compensar_caja solo si el request lo manda en true (el genérico no lo manda).',
+            'revisado'           => 'SaleController::destroy(Request, $id) → DeleteSaleHelper::eliminar_venta con candado: soft delete, regresar_stock() por el libro de movimientos, deleteCurrentAcountFromSale salvo nota de crédito AFIP, deleteSellerCommissionsFromSale, puntos revertidos. compensar_caja solo si el request lo manda en true (el genérico no lo manda). Desde el 5/10/2026 destroy() responde 422 sin tocar nada si la venta tiene algún AfipTicket (con o sin CAE) o está incluida en una consolidada con tickets (DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar); el ejecutor lo muestra como rechazo con ese message.',
         ],
     ];
 
@@ -979,6 +983,34 @@ class CatalogoDeEscrituraIaHelper
          * en el editor del ABM. Por chat no hay forma razonable de ubicarlos.
          */
         'article_ticket_design'        => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
+        /*
+         * Balanzas (misión balanzas-configurables, 3/10/2026; clasificadas el 6/10/2026, cuando el test 34
+         * las denunció sin revisar). Es un catálogo por dueño como `cheque_banco` y su controller es
+         * prolijo (tenencia por dueño, 422 con mensaje), pero el ABM genérico no las puede ofrecer:
+         *
+         *   - `store()` y `update()` leen el request con `BalanzaHelper::datos_desde_request()`, no con
+         *     `$request->campo`: `claves_que_lee()` no ve ningún campo (medido: []) y el test 34 exige que
+         *     el store() de toda entidad con alta lea alguno. Declararla en LEIDOS_POR_HELPER no alcanza,
+         *     porque ese test mira el resultado crudo de la regex: entrarla es tocar el controller, tocar
+         *     el test o dejarla sin alta. Le pasa lo mismo a `order`.
+         *   - No rige hasta que el dueño elige "Por balanza" en Configuración (módulo de VENDER,
+         *     `users.tickets_de_balanza`), y esa configuración la guarda `PUT api/user/{id}`, que está
+         *     afuera de las acciones de pantalla. El catálogo solo sabe exigir una extensión, no una
+         *     configuración del dueño: se ofrecería a comercios que crearían balanzas inertes, con la
+         *     solapa del ABM oculta.
+         *   - `tipo_dato` es texto y el genérico no puede validarlo: BalanzaHelper::normalizar_tipo_dato()
+         *     guarda como 'importe' todo lo que no sea 'peso' (sin mirar mayúsculas ni espacios; 'por
+         *     peso', 'kilos' y 'Peso (kg)' dan importe) y el ejecutor recién lo cuenta después, en
+         *     campos_que_no_quedaron. Además el código, los dígitos y si el ticket trae importe o peso
+         *     son los de la etiqueta de la balanza física: un dato mal cargado cambia lo que se cobra en
+         *     cada ticket.
+         *
+         * Esto las deja afuera del ABM genérico (proponer_alta / proponer_edicion / proponer_baja), no del
+         * asistente: al 6/10/2026, igual que `caja` o `deposit`, sus rutas siguen ofrecidas por el
+         * catálogo de acciones de pantalla (el alta y la edición pasan por el modo de confianza del
+         * dueño; la baja siempre deja tarjeta).
+         */
+        'balanza'                      => 'balanzas: su store() lee el request por un helper (la guarda no ve campos), no rige sin "Por balanza" en Configuración y sus datos salen de la etiqueta de la balanza física',
     ];
 
     /**

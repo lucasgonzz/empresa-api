@@ -28,6 +28,22 @@ class DeleteModelsHelper
         // Compra con notas de crédito a proveedor en cuenta corriente (misión
         // devoluciones-compras-y-rediseno, 1/10/2026): ProviderOrderController::destroy() la frena.
         'provider_order',
+        // Venta facturada, o incluida en una factura consolidada (misión
+        // venta-facturada-no-se-borra, 5/10/2026): SaleController::destroy() la frena con 422. Sin
+        // esto la masiva la devolvía en `deleted_models` y el listado la sacaba de pantalla aunque
+        // seguía viva. Los otros 4xx de ese destroy() no llegan por acá: el 404 lo evita el find()
+        // de process_delete() y el 422 de cajas cerradas exige compensar_caja, que la masiva no manda.
+        'sale',
+        // Orden de producción cuya venta está facturada (misión orden-produccion-baja-de-venta,
+        // 5/10/2026): OrderProductionController::destroy() la frena con 422 sin tocar nada. Llega
+        // por el `PUT api/delete/order_production` genérico; sin esto la masiva la contaba como
+        // eliminada aunque la orden, su venta y su cuenta corriente seguían intactas.
+        'order_production',
+        // Sucursal con stock, empleados o marcas y sin decisión (misión eliminar-sucursal-con-stock,
+        // 5/10/2026): AddressController::destroy() responde 422 `requiere_decision`. El masivo no
+        // trae decisión, así que sin esto contaba la sucursal como eliminada y la SPA la sacaba de
+        // la lista aunque seguía existiendo con su stock.
+        'address',
     ];
 
     /**
@@ -70,6 +86,14 @@ class DeleteModelsHelper
                 return 'proveedores';
             case 'sale':
                 return 'ventas';
+            case 'order_production':
+                // Misión orden-produccion-baja-de-venta (5/10/2026): el aviso decía "eliminación
+                // masiva de order_production".
+                return 'órdenes de producción';
+            // La eliminación masiva de sucursales (misión eliminar-sucursal-con-stock): sin este caso
+            // el aviso decía "La eliminación masiva de address finalizó correctamente".
+            case 'address':
+                return 'sucursales';
         }
 
         return $model_name;
@@ -203,7 +227,7 @@ class DeleteModelsHelper
                     2xx, sigue contando como antes.
 
                     ⚠️ Por ahora SOLO para los modelos de MODELOS_QUE_RESPETAN_RECHAZO: hay una
-                    veintena de destroy() que en algún caso responden 4xx (ventas, gastos,
+                    veintena de destroy() que en algún caso responden 4xx (gastos,
                     comprobantes...), y cambiarles a todos de una qué devuelve el borrado masivo
                     excede esta misión. Agregar uno es sumarlo a la lista.
                 */

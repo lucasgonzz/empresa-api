@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\ExtencionEmpresa;
@@ -31,6 +32,15 @@ use Illuminate\Support\Facades\Log;
  *
  * Nota: ejecuta `migrate:fresh`, por lo tanto vacía toda la base del sistema
  * destino. Solo debe correrse sobre instancias recién instaladas.
+ *
+ * 🔴 Y ESO YA NO ES UNA PROMESA, ES UNA GUARDA (misión blindar-user-setup, 5/10/2026):
+ * `run()` empieza llamando a `BorradoTotalDeBaseHelper`, que se niega —con una
+ * BaseConDatosException y sin tocar nada— si la base ya tiene datos de negocio, salvo que el
+ * payload traiga `forzar_borrado_total` + `confirmar_base_de_datos` (el nombre exacto de la
+ * base). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
+ * producción de Panchito y este método le vació la base entera (102.754 ventas, 6.952
+ * artículos) porque la ruta es pública y `migrate:fresh` no pregunta. La guarda está ACÁ y no
+ * en los controladores a propósito; el porqué completo está en BorradoTotalDeBaseHelper.
  */
 class UserSetupHelper
 {
@@ -60,12 +70,31 @@ class UserSetupHelper
      *                                   cajas, usar_codigos_de_barra, codigos_de_barra_por_defecto,
      *                                   consultora_de_precios, imagenes, produccion,
      *                                   address_1..3, price_type_1..3,
-     *                                   serper_api_key (opcional, misión serper-en-user-setup)
+     *                                   serper_api_key (opcional, misión serper-en-user-setup),
+     *                                   forzar_borrado_total + confirmar_base_de_datos (opcionales: solo
+     *                                   para re-correr el setup sobre una base que YA tiene datos, ver
+     *                                   BorradoTotalDeBaseHelper)
      *
      * @return User Usuario creado
+     *
+     * @throws BaseConDatosException Si la base ya tiene datos de negocio y el payload no autoriza el
+     *                               borrado total. No se tocó nada.
      */
     public static function run(array $data)
     {
+        /*
+            🔴 PRIMERA SENTENCIA, ANTES DE CUALQUIER OTRA COSA y antes del `migrate:fresh` de abajo
+            (hay un test que lee este código y falla si alguien las reordena).
+
+            Va acá adentro y no en los controladores porque `run()` es el único punto por el que pasan
+            TODAS las puertas de user-setup, las de hoy y las que se agreguen mañana. Una base con
+            datos NO se vacía sin autorización explícita: el 5/10/2026 un POST perdido de un test de
+            admin-api le dejó en cero la base de Panchito (102.754 ventas) justamente porque acá no
+            se miraba nada. Si te tienta sacarla "porque el controlador ya valida", no: el
+            controlador no ve lo que mañana llame a run().
+        */
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);
+
         // `migrate:fresh` limpia la base antes de cualquier inserción
         Artisan::call('migrate:fresh', ['--force' => true]);
 

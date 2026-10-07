@@ -36,7 +36,14 @@ class DatabaseClientsHelper {
                 'price_type_id'               => $client->price_type_id,
                 'location_id'                 => $client->location_id,
                 'description'                 => $client->description,
-                'saldo'                       => $client->saldo,
+                // El saldo se copia en las dos columnas del espejo de `credit_accounts.saldo`
+                // (`saldo_pesos` y `saldo_dolares`) y no en `saldo`: esa es la columna de antes de las
+                // cuentas por moneda y `set_model_saldo()` no la escribe, así que copiarla dejaba al
+                // cliente de la base destino con un valor congelado en vez de su saldo.
+                // Ojo: se copia el espejo, no las cuentas que lo respaldan (esta herramienta no copia
+                // `credit_accounts`).
+                'saldo_pesos'                 => $client->saldo_pesos,
+                'saldo_dolares'               => $client->saldo_dolares,
                 'comercio_city_user_id'       => $client->comercio_city_user_id,
                 'seller_id'                   => $client->seller_id,
                 'user_id'                     => $client->user_id,

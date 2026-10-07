@@ -373,11 +373,16 @@ class InitExcelImport
              * la lista de precios en la hoja 2 se volcaba a un CSV con la hoja de notas y se
              * importaba cualquier cosa sin un solo error en pantalla.
              *
-             * Todo lo demás del volcado queda igual: preservar_filas_vacias en true, una línea de
-             * CSV por cada fila del Excel. Eso es lo que hace que línea de CSV = fila del Excel,
-             * y de eso dependen build_csv_chunk_offsets() y armar_jobs_de_chunks(), que navegan
-             * el archivo por número de línea. Si esto dejara de ser 1:1, start_row y finish_row
-             * pasarían a apuntar a filas equivocadas.
+             * Todo lo demás del volcado queda igual: preservar_filas_vacias en true, un REGISTRO
+             * CSV por cada fila del Excel. Eso es lo que hace que registro N del CSV = fila N del
+             * Excel, y de eso dependen build_csv_chunk_offsets() y armar_jobs_de_chunks(), que
+             * navegan el archivo por número de registro. Si esto dejara de ser 1:1, start_row y
+             * finish_row pasarían a apuntar a filas equivocadas.
+             *
+             * Registro, no línea: una celda con salto de línea (Alt+Enter) sale entrecomillada y
+             * ocupa varias líneas físicas del archivo. Quien cuente filas tiene que contarlas con
+             * fgetcsv() (misión importacion-celda-multilinea, 4/10/2026: los offsets contaban
+             * líneas con fgets() y los lotes se corrían).
              */
             /*
              * Si vino el nombre de la hoja, manda el nombre.
@@ -408,7 +413,7 @@ class InitExcelImport
              * genera ahora y de paso queda para la próxima.
              *
              * El CSV de la importación es una COPIA del sidecar con el nombre de siempre
-             * (imported_files/<nombre>_<time>.csv): los lotes lo navegan por número de línea
+             * (imported_files/<nombre>_<time>.csv): los lotes lo navegan por número de registro
              * y HojaElegidaEnImportacionTest lo lee, así que ni el nombre ni el contenido
              * cambian respecto de antes.
              */
@@ -465,6 +470,36 @@ class InitExcelImport
         }
     }
 
+    /**
+     * Byte de inicio, dentro del CSV, de la primera fila de cada lote: [fila del Excel => byte].
+     * ProcessArticleChunk::get_row_from_csv() hace fseek() a ese byte y desde ahí lee registros
+     * con fgetcsv() hasta su finish_row.
+     *
+     * 🔴 Se cuenta por REGISTRO CSV, no por línea física (misión importacion-celda-multilinea,
+     * 4/10/2026). El volcado (CsvDeHoja::volcar()) escribe un registro por fila del Excel, pero
+     * una celda con salto de línea (Alt+Enter) sale entrecomillada y ocupa varias líneas del
+     * archivo. Hasta ese día esto contaba líneas con fgets() mientras el lote cuenta registros:
+     * con N saltos de línea antes de un lote, el lote arrancaba N filas antes, leía filas dos
+     * veces y las últimas N del archivo no las leía nadie. Con un encabezado multilínea —lo más
+     * común en una lista de proveedor— se rompía hasta el lote 1, cuyo offset caía en el medio
+     * del encabezado.
+     *
+     * Por eso se recorre con fgetcsv() y el MISMO escape vacío que get_row_from_csv() (el del
+     * writer CSV de OpenSpout): si los dos parsearan distinto, volverían a contar distinto.
+     *
+     * El BOM UTF-8 del principio se saltea ANTES de parsear, y la fila 1 se anota DESPUÉS del
+     * BOM (byte 3), no en el byte 0. Pegado a una primera celda entrecomillada, fgetcsv() no
+     * reconoce la comilla de apertura (la ve en el medio del campo) y corta el registro en el
+     * primer salto de línea de esa celda: acá el encabezado contaría como dos registros, y un lote
+     * que arrancara en la fila 1 (start_row = 1, sin encabezado) partiría A1 en dos y no leería
+     * su última fila. Lo que se importa de la fila 1 no cambia: ImportHelper::getColumnValue()
+     * ya le sacaba el BOM a cada celda.
+     *
+     * El resto del contrato no cambia: clave = fila del Excel (= número de registro 1-based) y
+     * se corta pasando finish_row.
+     *
+     * @return array [fila => byte]
+     */
     function build_csv_chunk_offsets(): array
     {
         $offsets = [];
@@ -484,13 +519,17 @@ class InitExcelImport
             return $offsets;
         }
 
+        if (fread($handle, 3) !== CsvDeHoja::BOM_UTF8) {
+            rewind($handle);
+        }
+
         $current_row = 1;
 
         while (!feof($handle)) {
             $pos = ftell($handle);
-            $line = fgets($handle);
+            $registro = fgetcsv($handle, 0, ',', '"', '');
 
-            if ($line === false) {
+            if ($registro === false) {
                 break;
             }
 
@@ -527,12 +566,14 @@ class InitExcelImport
      * el nombre. Si acá se normalizara distinto, una clave del archivo no entraría al índice y
      * la fila crearía un duplicado en silencio.
      *
-     * Se leen con fgetcsv() todas las filas desde start_row hasta el final del CSV (no hasta
-     * finish_row): es un superconjunto barato y evita cualquier desalineación entre el conteo
-     * por líneas físicas de los offsets (fgets) y el conteo por filas CSV de los lotes
-     * (fgetcsv) si una celda trae un salto de línea. Una clave de más en el índice no cambia
-     * ningún resultado; una de menos, sí. Las filas anteriores a start_row (el encabezado)
-     * quedan afuera: sus textos no son identificadores de nada.
+     * Se leen con fgetcsv() todos los registros desde start_row hasta el final del CSV (no hasta
+     * finish_row): es un superconjunto barato. Nació así para esquivar la desalineación entre los
+     * offsets, que contaban líneas físicas con fgets(), y los lotes, que cuentan registros con
+     * fgetcsv(), cuando una celda traía un salto de línea; desde la misión
+     * importacion-celda-multilinea (4/10/2026) build_csv_chunk_offsets() también cuenta registros
+     * y esa desalineación ya no existe, pero leer hasta el final sigue siendo lo seguro: una clave
+     * de más en el índice no cambia ningún resultado; una de menos, sí. Los registros anteriores a
+     * start_row (el encabezado) quedan afuera: sus textos no son identificadores de nada.
      *
      * Serializado con serialize() (no JSON): las claves numéricas del archivo ("123") tienen que
      * volver como llegaron, y json_encode/json_decode de un array con esas claves las mezcla con

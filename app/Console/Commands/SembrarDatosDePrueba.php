@@ -2822,6 +2822,22 @@ class SembrarDatosDePrueba extends Command
         config(['app.suppress_delete_notifications' => true]);
 
         try {
+            /*
+                🔴 Los comprobantes de las ventas van ANTES que las ventas (misión
+                venta-facturada-no-se-borra, 5/10/2026). SaleController@destroy rechaza con 422 la
+                venta con un AfipTicket vivo (factura o nota de crédito) y este lazo tira la
+                respuesta: la demo quedaba con sus ventas facturadas después del reseteo. Hasta acá
+                este borrado iba más abajo, con las ventas ya borradas, y su whereHas('sale') no
+                encontraba nada.
+            */
+            AfipTicket::where(function ($q) use ($user_id) {
+                $q->whereHas('sale', function ($q) use ($user_id) {
+                    $q->where('user_id', $user_id);
+                })->orWhereHas('sale_nota_credito', function ($q) use ($user_id) {
+                    $q->where('user_id', $user_id);
+                });
+            })->delete();
+
             $sale_controller = new SaleController();
             $sale_ids = Sale::where('user_id', $user_id)->pluck('id')->toArray();
             foreach ($sale_ids as $sale_id) {
@@ -2872,9 +2888,6 @@ class SembrarDatosDePrueba extends Command
             // seguro acá.
             Cheque::where('user_id', $user_id)->delete();
             Budget::whereIn('num', range(900000, 900010))->where('user_id', $user_id)->delete();
-            AfipTicket::whereHas('sale', function ($q) use ($user_id) {
-                $q->where('user_id', $user_id);
-            })->delete();
             ProviderOrderAfipTicket::where('user_id', $user_id)->delete();
 
             CompanyPerformance::where('user_id', $user_id)->delete();

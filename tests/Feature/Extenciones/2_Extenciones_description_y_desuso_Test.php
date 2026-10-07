@@ -44,6 +44,14 @@ class Extenciones_description_y_desuso_Test extends TestCase
     const SLUG_EN_DESUSO = 'ai_excel_import';
 
     /**
+     * La duodécima en desuso: la oferta por cantidad dejó de pedirla en la misión
+     * oferta-por-cantidad-en-el-renglon (4/10/2026, decisión de Lucas).
+     *
+     * @var string
+     */
+    const SLUG_OFERTA_POR_CANTIDAD = 'article_price_range';
+
+    /**
      * Deja la base sin los slugs que el test siembra.
      *
      * La base de testing del slot puede tener el catálogo ya sembrado —lo estuvo y lo va a estar
@@ -60,6 +68,7 @@ class Extenciones_description_y_desuso_Test extends TestCase
         ExtencionEmpresa::whereIn('slug', [
             self::SLUG_VIVA,
             self::SLUG_EN_DESUSO,
+            self::SLUG_OFERTA_POR_CANTIDAD,
             'testigo_ajeno_al_padron_del_test',
         ])->delete();
     }
@@ -99,10 +108,15 @@ class Extenciones_description_y_desuso_Test extends TestCase
      * Sin esta aserción, alguien que borre media lista del array deja un seeder que corre verde
      * y describe la mitad del catálogo: la falla no se ve en ningún lado.
      *
+     * Las en desuso son 12 y no 11 porque el requisito cambió, no para que el test pase: a las 11
+     * que la misión 53 dejó como sin_uso se sumó `article_price_range` en la misión
+     * oferta-por-cantidad-en-el-renglon (4/10/2026, decisión de Lucas), cuando la oferta por
+     * cantidad dejó de pedir la extensión.
+     *
      * @test
      * @return void
      */
-    public function el_padron_tiene_las_91_extensiones_y_las_11_en_desuso()
+    public function el_padron_tiene_las_91_extensiones_y_las_12_en_desuso_las_11_de_la_mision_53_mas_article_price_range()
     {
         $padron = ExtencionEmpresaDescriptionSeeder::padron();
 
@@ -123,7 +137,51 @@ class Extenciones_description_y_desuso_Test extends TestCase
         }
 
         $this->assertCount(91, array_unique($slugs), 'Hay slugs repetidos en el padrón.');
-        $this->assertEquals(11, $en_desuso, 'Las marcadas en desuso no son las 11 que la misión 53 dejó como sin_uso.');
+        $this->assertEquals(12, $en_desuso, 'Las marcadas en desuso no son 12: las 11 que la misión 53 dejó como sin_uso más article_price_range (misión oferta-por-cantidad-en-el-renglon, 4/10/2026).');
+    }
+
+    /**
+     * `article_price_range` está en desuso: desde la misión oferta-por-cantidad-en-el-renglon
+     * (4/10/2026, decisión de Lucas) la oferta por cantidad se recalcula al agregar, al
+     * re-escanear y al cambiar la cantidad en el renglón, con o sin la extensión, así que
+     * prenderla o apagarla ya no cambia nada.
+     *
+     * Se mide en el padrón y en la base: la fila arranca VIVA, como está hoy en las bases de los
+     * clientes, y el seeder la tiene que dejar en desuso con la descripción nueva, sin borrarla.
+     *
+     * @test
+     * @return void
+     */
+    public function article_price_range_queda_en_desuso_porque_la_oferta_por_cantidad_ya_no_la_pide()
+    {
+        $entrada = null;
+
+        foreach (ExtencionEmpresaDescriptionSeeder::padron() as $fila) {
+            if ($fila['slug'] == self::SLUG_OFERTA_POR_CANTIDAD) {
+                $entrada = $fila;
+            }
+        }
+
+        $this->assertNotNull($entrada, 'article_price_range no está en el padrón.');
+        $this->assertTrue($entrada['en_desuso'], 'article_price_range no está marcada en desuso en el padrón.');
+        $this->assertStringContainsString(
+            'oferta-por-cantidad-en-el-renglon',
+            $entrada['description'],
+            'La descripción de article_price_range no dice desde qué misión quedó en desuso.'
+        );
+
+        $extencion = $this->sembrar(self::SLUG_OFERTA_POR_CANTIDAD);
+
+        $this->assertFalse($extencion->fresh()->en_desuso, 'La fila arrancó ya en desuso: el test no mediría nada.');
+
+        $this->correr_seeder();
+
+        $extencion = $extencion->fresh();
+
+        $this->assertNotNull($extencion, 'El seeder borró la fila de article_price_range.');
+        $this->assertTrue($extencion->en_desuso, 'El seeder no dejó article_price_range en desuso.');
+        $this->assertEquals('Precios', $extencion->modulo);
+        $this->assertEquals($entrada['description'], $extencion->description);
     }
 
     /**

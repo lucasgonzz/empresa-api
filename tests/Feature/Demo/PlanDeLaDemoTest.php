@@ -9,7 +9,9 @@ use App\Models\DemoTrackingConfig;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -62,6 +64,18 @@ class PlanDeLaDemoTest extends TestCase
         DemoEvento::query()->delete();
 
         DemoTrackingConfigHelper::olvidar_cache();
+
+        /*
+         * 🔴 El admin de la demo NO existe en este test: `https://admin.test/...` es el canal que arma `configurar_canal()`. Medido el 6/10/2026
+         * con el freno de internet puesto: `DemoMediaUrlsFetcher::frescas()` le pedía por GET las URL de los videos en cada request al plan (7 GET
+         * sin falsear) y el test pasaba porque `admin.test` no resuelve y el fetcher se traga cualquier fallo de red y sigue con lo guardado. Se
+         * falsea EXACTAMENTE eso —la red caída— para que lo que se prueba (el plan con las URL guardadas) no dependa de que un DNS falle.
+         */
+        Http::fake([
+            'https://admin.test/*' => function () {
+                throw new ConnectionException('Could not resolve host: admin.test');
+            },
+        ]);
 
         /** Sin este header no hay sesion en el request (ver BusDeEventosTest). */
         $this->withHeader('Referer', rtrim((string) config('app.url'), '/') . '/');

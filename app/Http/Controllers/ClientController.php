@@ -390,23 +390,101 @@ class ClientController extends Controller
         ]);
     }
 
+    /**
+     * PDF con el estado de cuenta de varios clientes (`GET client/pdf`, en routes/web.php: la SPA
+     * lo abre en una pestaña nueva desde el embudo del listado). Dos caminos, los dos acotados al
+     * dueño de la sesión:
+     *  - `?clients_id=21-17`: los seleccionados. Un id de otro comercio se ignora igual que uno
+     *    inexistente (en una base compartida los ids son correlativos entre comercios).
+     *  - `?filters=[...]`: los filtros de lupa activos, con el mismo buscador del listado
+     *    (SearchController::search(), que ya arranca de `user_id` = dueño).
+     *
+     * 🔴 Sin sesión responde 401 y NO cae en el `USER_ID` del `.env`, que es lo que hace
+     * userId() cuando no hay nadie logueado: este PDF lista nombres, saldos y teléfonos. Hasta el
+     * 5/10/2026 la ruta daba 500 siempre (ClientsPdf no le pasaba el dueño al encabezado), así que
+     * ese hueco no se podía usar; al arreglar el 500 se habría abierto.
+     *
+     * @param  Request  $request
+     * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
+     */
     function pdf(Request $request) {
 
-        if ($request->has('clients_id') && $request->query('clients_id') !== '') {
-            $ids = explode('-', $request->query('clients_id'));
-            $models = Client::where('user_id', $this->userId())
-                ->whereIn('id', $ids)
-                ->get();
-            new ClientsPdf($models);
-            return;
+        // El dueño de la sesión, o nadie. UserHelper::user() no tiene el fallback al USER_ID.
+        if (is_null(UserHelper::user())) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $jsonData = $request->query('filters');
-        $filters = json_decode($jsonData, true);
+        $user_id = $this->userId();
 
+        // Los dos parámetros se leen solo como texto: `clients_id[]=1` o `filters[]=x` llegan como
+        // array y no son ninguno de los dos caminos (antes, "Array to string conversion" → 500).
+        $clients_id = $request->query('clients_id');
+        $filters_json = $request->query('filters');
+
+        if (is_string($clients_id) && $clients_id !== '') {
+
+            // Solo enteros positivos: '12abc', '-3' o '1.5' no son ningún id.
+            $ids = array_values(array_filter(explode('-', $clients_id), function ($id) {
+                return ctype_digit($id) && (int) $id > 0;
+            }));
+
+            $models = Client::where('user_id', $user_id)
+                ->whereIn('id', $ids)
+                ->with('seller')
+                ->get();
+
+            if (!count($models)) {
+                return response()->json(['message' => 'Ninguno de los clientes pedidos existe.'], 422);
+            }
+
+            return $this->responder_pdf_de_clientes($models);
+        }
+
+        $filters = is_string($filters_json) ? json_decode($filters_json, true) : null;
+
+        // Sin filtros no hay PDF: antes un pedido sin `filters` llegaba con null al buscador y
+        // daba 500. La SPA ya lo frena del otro lado ("No hay filtros activos para exportar").
+        if (!is_array($filters) || !count($filters)) {
+            return response()->json(['message' => 'No hay filtros activos para armar el PDF.'], 422);
+        }
+
+        // 🔴 Cada `key` tiene que ser una columna real de la tabla, y eso lo valida
+        // ColumnFiltersHelper::apply() para TODOS sus caminos, no este controller (misión
+        // filtros-key-sin-inyeccion, 5/10/2026): un key como "1=1 OR name" con criterio sale con
+        // FiltroDeColumnaInvalidoException, que contesta 422 en JSON aunque esta ruta sea de web.php.
+        // Hasta esa fecha acá había un regex propio de keys: no volver a copiar la guarda en cada
+        // entrada, porque la próxima entrada nueva se olvida de copiarla.
+        //
+        // Lo que SÍ queda acá es la forma del pedido de este PDF: cada filtro es un objeto con su
+        // `key`. El helper saltea en silencio lo que no tiene esa forma, y acá eso dejaría salir el
+        // PDF con TODOS los clientes del dueño por un pedido mal armado (`filters=[1]`).
+        foreach ($filters as $filter) {
+            if (!is_array($filter) || !isset($filter['key']) || !is_string($filter['key'])) {
+                return response()->json(['message' => 'Filtro inválido.'], 422);
+            }
+        }
         $search_ct = new SearchController();
         $models = $search_ct->search($request, 'client', $filters);
 
-        new ClientsPdf($models);
+        // El withAll() del cliente no trae el vendedor: sin esto, una consulta por fila.
+        $models->loadMissing('seller');
+
+        return $this->responder_pdf_de_clientes($models);
+    }
+
+    /**
+     * Arma el PDF de clientes con el dueño de la sesión (logo, nombre del negocio, extensiones) y
+     * lo responde inline, para que el navegador lo abra en la pestaña.
+     *
+     * @param  \Illuminate\Support\Collection  $models  Los clientes, ya acotados al dueño.
+     * @return \Illuminate\Http\Response
+     */
+    private function responder_pdf_de_clientes($models) {
+        $pdf = new ClientsPdf($models, UserHelper::getFullModel());
+
+        return response($pdf->generar(), 200, [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="clientes.pdf"',
+        ]);
     }
 }

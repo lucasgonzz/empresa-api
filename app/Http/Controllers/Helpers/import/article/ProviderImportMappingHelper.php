@@ -912,7 +912,9 @@ SECCION;
      *
      * @param  \App\Models\ProviderImportMapping $mapeo
      * @param  array                             $guardadas
-     * @return array  ['addresses' => [int...], 'price_types' => [int...]]
+     * @return array  ['addresses' => [int...], 'price_types' => [int...], 'price_types_restringidas' => [int...]]
+     *                (la última, el subconjunto de listas con el catálogo restringido en la tienda: es la
+     *                única para la que vale `price_type_{id}_visible_en_tienda`)
      */
     protected static function ids_validos_para($mapeo, array $guardadas)
     {
@@ -930,8 +932,9 @@ SECCION;
         }
 
         $ids = [
-            'addresses'   => [],
-            'price_types' => [],
+            'addresses'                => [],
+            'price_types'              => [],
+            'price_types_restringidas' => [],
         ];
 
         if ($necesita_addresses) {
@@ -951,12 +954,19 @@ SECCION;
             $owner = User::find((int) $mapeo->user_id);
 
             if (UserHelper::uses_listas_de_precio($owner)) {
-                $ids['price_types'] = PriceType::where('user_id', (int) $mapeo->user_id)
-                    ->pluck('id')
-                    ->map(function ($id) {
-                        return (int) $id;
-                    })
-                    ->all();
+
+                $listas = PriceType::where('user_id', (int) $mapeo->user_id)
+                    ->get(['id', 'catalogo_restringido_en_tienda']);
+
+                foreach ($listas as $lista) {
+
+                    $ids['price_types'][] = (int) $lista->id;
+
+                    // Siempre `= 1`, nunca `!= 0`: NULL y 0 son las dos "sin restricción".
+                    if ((int) $lista->catalogo_restringido_en_tienda === 1) {
+                        $ids['price_types_restringidas'][] = (int) $lista->id;
+                    }
+                }
             }
         }
 
@@ -968,7 +978,9 @@ SECCION;
      * el usuario ya no tiene.
      *
      * @param  array $guardada
-     * @param  array $ids_validos  Salida de ids_validos_para()
+     * @param  array $ids_validos  Salida de ids_validos_para(). La clave `price_types_restringidas` es
+     *                             opcional: quien arma este arreglo a mano sin ella no pide que la
+     *                             lista siga restringida (ver abajo).
      * @return string|null
      */
     protected static function propiedad_guardada_valida(array $guardada, array $ids_validos)
@@ -979,8 +991,33 @@ SECCION;
             return in_array((int) $m[1], $ids_validos['addresses'], true) ? $propiedad : null;
         }
 
-        if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear)$/', $propiedad, $m)) {
-            return in_array((int) $m[1], $ids_validos['price_types'], true) ? $propiedad : null;
+        // `visible_en_tienda`: misión catalogo-por-lista-tienda (5/10/2026), misma validación por id de lista.
+        if (preg_match('/^price_type_(\d+)_(final_price|percentage|setear|visible_en_tienda)$/', $propiedad, $m)) {
+
+            if (!in_array((int) $m[1], $ids_validos['price_types'], true)) {
+                return null;
+            }
+
+            /*
+             * `visible_en_tienda` solo vale para una lista que SIGUE restringida (I1 de la revisión
+             * independiente, 6/10/2026): es lo que valida el analizador de la IA
+             * (AiExcelAnalyzer::parse_claude_response()) y lo único que la pantalla le ofrece al
+             * usuario. Una configuración guardada cuando la lista era restringida, y aplicada después
+             * de que el dueño la dejó sin restricción, importaría una columna que ya no se ve.
+             *
+             * La clave es opcional: ids_validos_para() siempre la trae, pero quien arma el arreglo a
+             * mano (un test, código viejo) puede no traerla, y ahí no se exige. Las otras propiedades
+             * de la lista (margen, precio, "setear") no dependen de la restricción.
+             */
+            if (
+                $m[2] === 'visible_en_tienda'
+                && array_key_exists('price_types_restringidas', $ids_validos)
+                && !in_array((int) $m[1], $ids_validos['price_types_restringidas'], true)
+            ) {
+                return null;
+            }
+
+            return $propiedad;
         }
 
         /* Cualquier otra codificada que no tenga la forma esperada no se aplica. */

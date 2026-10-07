@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -40,6 +41,16 @@ class ProcessRow {
      * que confirma la convención que el sistema ya tenía.
      */
     const IVA_ID_POR_DEFECTO = 2;
+
+    /**
+     * Prefijo de la columna "visible en la tienda para la lista X" (misión catalogo-por-lista-tienda,
+     * 5/10/2026): `visible_en_tienda_<nombre de la lista normalizado>`, con el MISMO normalizado
+     * que `%_`, `$_final_` y `setear_precio_final_` (get_price_type_row_name(): minúsculas y
+     * espacios a `_`). Es el contrato con empresa-spa (ai-excel-import arma la columna así).
+     *
+     * @var string
+     */
+    const PREFIJO_COLUMNA_VISIBLE_EN_TIENDA = 'visible_en_tienda_';
 
     protected $columns;
     protected $user;
@@ -92,9 +103,16 @@ class ProcessRow {
     protected $conflictos = [];
 
     /**
-     * Índice de fila DE DATOS (absoluto sobre todo el archivo, no relativo al
-     * chunk), 1-based y sin contar el encabezado -- fila de datos 1 = fila 2
-     * de Excel. Se incrementa en cada llamada a procesar().
+     * Número de fila DEL EXCEL de la fila que se está procesando (absoluto sobre
+     * todo el archivo, no relativo al chunk): el mismo número que el usuario ve
+     * en su planilla y en el paso 3 del asistente ("Filas en el Excel"). Lo fija
+     * procesar() en cada fila (ver ahí).
+     *
+     * Hasta el 4/10/2026 era el "índice de fila de datos" (fila de Excel − 1,
+     * pensado para un encabezado en la fila 1) y además no contaba las filas
+     * vacías que ArticleImport saltea: con el encabezado en la fila 7 el modal
+     * de resultado decía "La fila 8 fue sobrescrita por la fila 15" para las
+     * filas 9 y 16 del Excel (misión fila-sobrescrita-corrida).
      *
      * Antes de esto (grupo 294, incidente Servian) arrancaba siempre en 0 y
      * quedaba relativo AL CHUNK: cada ProcessRow es una instancia nueva por
@@ -180,6 +198,24 @@ class ProcessRow {
     protected $property_types = [];
     protected $unidad_medidas = [];
     protected $se_importaron_price_types = false;
+
+    /**
+     * Si el mapeo trae alguna columna de PRECIO de lista (`%_<lista>`, `$_final_<lista>` o
+     * `setear_precio_final_<lista>`).
+     *
+     * Hasta la misión catalogo-por-lista-tienda (5/10/2026) era lo mismo que
+     * $se_importaron_price_types. Desde entonces aquél se prende TAMBIÉN con una columna
+     * `visible_en_tienda_<lista>` (sin eso, un Excel que solo trae esa columna nunca llegaría a
+     * los artículos que ya existen), y éste sigue mirando solo las de precio.
+     *
+     * 🔴 No unificarlos: este es el que decide la marca `sin_datos_de_lista_en_el_excel` de
+     * add_price_type_data(). Si un Excel que solo habla de la tienda contara como "habla de
+     * precios", a los artículos que crea se les propagaría el `setear_precio_final` de la lista y
+     * el precio de esa lista quedaría CONGELADO (el defecto medido el 24/8/2026, ver ahí).
+     *
+     * @var bool
+     */
+    protected $se_importaron_precios_de_listas = false;
 
     protected $brand_cache = [];
 
@@ -405,21 +441,16 @@ class ProcessRow {
          * ArticleImport::$start_row, que ya lo calcula bien por chunk -- ver
          * InitExcelImport::iniciar_procesamiento()).
          *
-         * OJO: la convencion de "fila" en todo tests/Import (ver p.ej.
-         * RepetidosEnElArchivoTest::test_se_reporta_que_fila_sobrescribio_a_cual, "indice
-         * de fila de datos") NO es el numero de fila de Excel -- es el indice 1-based de
-         * la fila DE DATOS, sin contar el encabezado (fila de datos 1 = fila 2 de Excel).
-         * Primer intento de este fix uso el numero de fila de Excel tal cual y regresiono
-         * tres tests de un solo chunk (CodigosDeBarraRepetidosTest,
-         * RepetidosEnElArchivoTest): con $start_row=2 daba fila_actual inicial=1 y la
-         * primera fila del archivo quedaba en "2" en vez de "1". La resta de 2 (no de 1)
-         * es la que hace que, para el caso de un solo chunk (start_row=2), fila_actual
-         * arranque en 0 -- exactamente el default de siempre, así que el comportamiento
-         * ya probado de un solo chunk no cambia un bit. Default 2 preserva ese mismo 0
-         * para cualquier llamador que no pase 'fila_inicial' (ninguno hoy fuera de
-         * ArticleImport).
+         * Arranca en la fila ANTERIOR a la primera del lote: ArticleImport le pasa a
+         * procesar() la fila de Excel de cada fila, y para un llamador que no la pase
+         * (los tests que usan ProcessRow suelto) el ++ de procesar() deja la primera
+         * fila en fila_inicial. Antes restaba 2 y no 1, a proposito, para sostener la
+         * convencion de "indice de fila de datos" que asertaban los tests de
+         * tests/Import (fila de datos 1 = fila 2 de Excel). Esa convencion era el
+         * defecto: el usuario lee "fila" como la fila de su planilla (4/10/2026, misión
+         * fila-sobrescrita-corrida). Default 2 = encabezado en la fila 1.
          */
-        $this->fila_actual = (int) ($data['fila_inicial'] ?? 2) - 2;
+        $this->fila_actual = (int) ($data['fila_inicial'] ?? 2) - 1;
 
         $this->set_price_types();
         $this->set_addresses();
@@ -764,6 +795,19 @@ class ProcessRow {
                 || !ImportHelper::isIgnoredColumn($row_final_price_name, $this->columns)
             ) {
                 $this->se_importaron_price_types = true;
+                $this->se_importaron_precios_de_listas = true;
+            }
+
+            /*
+             * La columna `visible_en_tienda_<lista>` (misión catalogo-por-lista-tienda, 5/10/2026)
+             * también cuenta como "el Excel habla de listas": sin esto, un Excel que solo trae esa
+             * columna no le llegaría a ningún artículo que ya existe (obtener_price_types() corta
+             * antes). Pero NO prende $se_importaron_precios_de_listas: ver su comentario.
+             */
+            $row_visible_name = $this->get_price_type_row_name(self::PREFIJO_COLUMNA_VISIBLE_EN_TIENDA, $price_type);
+
+            if (!ImportHelper::isIgnoredColumn($row_visible_name, $this->columns)) {
+                $this->se_importaron_price_types = true;
             }
         }
             
@@ -774,15 +818,26 @@ class ProcessRow {
 
     /**
      * Procesa una fila del Excel: busca si el artículo ya existe, y lo actualiza o lo agrega.
+     *
+     * @param  mixed    $row
+     * @param  mixed    $nombres_proveedores
+     * @param  int|null $fila_excel  número de fila del Excel de esta fila. ArticleImport lo
+     *                               pasa siempre, porque es el único que ve las filas vacías
+     *                               que se saltean sin llegar acá; sin él se cuenta desde
+     *                               'fila_inicial' (ver constructor).
      */
-    function procesar($row, $nombres_proveedores) {
+    function procesar($row, $nombres_proveedores, $fila_excel = null) {
 
         $this->observations = [
             'procesos'  => [],
         ];
 
-        // Índice de fila de datos, absoluto sobre todo el archivo (ver constructor); se usa para identificar conflictos (ambiguos/placeholders) en los reportes.
-        $this->fila_actual++;
+        // Fila del Excel, absoluta sobre todo el archivo (ver $fila_actual); es la que se reporta en los conflictos.
+        if (!is_null($fila_excel)) {
+            $this->fila_actual = (int) $fila_excel;
+        } else {
+            $this->fila_actual++;
+        }
 
         // Reset por fila: si esta fila no repite nada, no puede quedar el escalon de la anterior.
         $this->escalon_repeticion = null;
@@ -3640,6 +3695,10 @@ class ProcessRow {
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
                 $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns), 2, $this->interpretacion_punto);
 
+                // "Visible en la tienda para esta lista": 1, 0 o null = no informado (misión
+                // catalogo-por-lista-tienda, 5/10/2026). Ver leer_visible_en_tienda().
+                $visible_en_tienda = $this->leer_visible_en_tienda($row, $price_type);
+
                 $this->log('setear: '.$setear);
                 $this->log('percentage: '.$percentage);
                 $this->log('final_price: '.$final_price);
@@ -3673,7 +3732,7 @@ class ProcessRow {
                             && !$setear
                         ) {
                             $this->log('Entro con percentage');    
-                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage);
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, null, $visible_en_tienda);
 
                         } else if (
                             $price_type_ya_relacionado->pivot->final_price != $final_price
@@ -3681,24 +3740,37 @@ class ProcessRow {
                         ) {
 
                             $this->log('Entro con final_price');    
-                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, null, $final_price);
+                            $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, null, $final_price, $visible_en_tienda);
 
                         } else {
 
-                            $this->log('No entro con ninguno');    
+                            $this->log('No entro con ninguno');
+
+                            /*
+                             * Misión catalogo-por-lista-tienda (5/10/2026): ni el margen ni el
+                             * precio cambiaron, pero la visibilidad en la tienda sí. Sin esta rama
+                             * un Excel que solo cambia "visible en la tienda" no le llegaba a
+                             * ningún artículo que ya existía. La fila viaja con el resto de los
+                             * valores tal como vinieron (iguales a los guardados) y
+                             * filter_only_changed_price_types() la marca como "solo visibilidad",
+                             * para que ActualizarBBDD no reescriba margen ni precio.
+                             */
+                            if ($this->visible_en_tienda_cambia($price_type_ya_relacionado->pivot->visible_en_tienda, $visible_en_tienda)) {
+                                $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price, $visible_en_tienda);
+                            }
                         }
 
                     } else {
 
                         $this->log('No estaba relacionado con price_type');
 
-                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
+                        $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price, $visible_en_tienda);
 
                     }
 
                 } else {
 
-                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price);
+                    $price_types_data = $this->add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price, $visible_en_tienda);
                 }
 
             }
@@ -3709,7 +3781,19 @@ class ProcessRow {
         return $price_types_data;
     }
 
-    function add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price = null) {
+    /**
+     * Agrega a `$price_types_data` la fila de una lista para esta fila del Excel.
+     *
+     * @param  array    $price_types_data
+     * @param  mixed    $price_type
+     * @param  int|null $setear
+     * @param  mixed    $percentage
+     * @param  mixed    $final_price
+     * @param  int|null $visible_en_tienda  1, 0 o null = el Excel no lo informó (misión
+     *                                      catalogo-por-lista-tienda, 5/10/2026).
+     * @return array
+     */
+    function add_price_type_data($price_types_data, $price_type, $setear, $percentage, $final_price = null, $visible_en_tienda = null) {
 
         $price_types_data[] = [
             'id'            => $price_type->id,
@@ -3717,6 +3801,13 @@ class ProcessRow {
                 'setear_precio_final'   => !is_null($setear) ? $setear : null,
                 'percentage'            => !is_null($percentage) ? $percentage : null,
                 'final_price'           => !is_null($final_price) ? $final_price : null,
+
+                /*
+                 * Visible en la tienda para esta lista (misión catalogo-por-lista-tienda,
+                 * 5/10/2026). null = no informado: ActualizarBBDD inserta NULL en un artículo
+                 * nuevo y NO toca el valor guardado de uno que ya existía.
+                 */
+                'visible_en_tienda'     => !is_null($visible_en_tienda) ? (int) $visible_en_tienda : null,
 
                 /*
                  * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). Marca las filas
@@ -3738,10 +3829,70 @@ class ProcessRow {
                  * precio final. Cuando el Excel SI trae columnas de lista, el flag queda en false
                  * y se propaga el default de la lista, exactamente como antes.
                  */
-                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_price_types,
+                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_precios_de_listas,
             ]
         ];
         return $price_types_data;
+    }
+
+    /**
+     * Lee la columna `visible_en_tienda_<lista>` de una fila del Excel (misión
+     * catalogo-por-lista-tienda, 5/10/2026).
+     *
+     *  - Columna sin mapear, o celda vacía → null = no informado: el artículo nuevo nace en NULL
+     *    (no habilitado) y el que ya existía conserva lo que tenía.
+     *  - Un sí reconocible (Si, Sí, S, 1, yes, y, true, verdadero; sin importar mayúsculas) → 1.
+     *  - Un no reconocible (No, N, 0, false, falso) → 0.
+     *  - 🔴 Cualquier OTRO texto ("Sii", una "x", el contenido de una columna mal mapeada) → null,
+     *    igual que la celda vacía: no se escribe nada. Antes valía 0, y reimportar una planilla con
+     *    un typo deshabilitaba artículos de la tienda sin avisar (B1 de la revisión independiente,
+     *    6/10/2026). Lo decide CatalogoPorListaHelper::interpretar_si_no(), con el porqué.
+     *
+     * ⚠️ Ni la celda vacía ni un texto raro son "No" (a diferencia de setear_precio_final_<lista>,
+     * donde todo lo que no es un sí es 0): así se puede reimportar una planilla parcial, o con
+     * errores de tipeo, sin sacarle de la tienda a los mayoristas los artículos que no vinieron
+     * marcados. Para un artículo nuevo da igual: NULL y 0 son los dos "no habilitado".
+     *
+     * @param  array $row
+     * @param  mixed $price_type
+     * @return int|null
+     */
+    private function leer_visible_en_tienda($row, $price_type)
+    {
+        $columna = $this->get_price_type_row_name(self::PREFIJO_COLUMNA_VISIBLE_EN_TIENDA, $price_type);
+
+        if (ImportHelper::isIgnoredColumn($columna, $this->columns)) {
+            return null;
+        }
+
+        $valor = ImportHelper::getColumnValue($row, $columna, $this->columns);
+
+        return CatalogoPorListaHelper::interpretar_si_no($valor);
+    }
+
+    /**
+     * Si la visibilidad en la tienda que trae el Excel CAMBIA la guardada (misión
+     * catalogo-por-lista-tienda, 5/10/2026).
+     *
+     * Se mide en visibilidad y no en el valor crudo: NULL y 0 son los dos "no habilitado" (la
+     * tienda compara con `= 1`), así que un "No" sobre un artículo que nunca se habilitó no es un
+     * cambio — si lo fuera, reimportar una planilla con "No" en miles de filas dejaría miles de
+     * artículos "actualizados" sin que nada cambie. Mismo criterio que la masiva
+     * (CatalogoPorListaHelper::aplicar_en_masiva()).
+     *
+     * @param  mixed    $guardado  El `visible_en_tienda` del pivote (null, 0, 1, '0', '1').
+     * @param  int|null $nuevo     El de la fila del Excel (null = no informado).
+     * @return bool
+     */
+    private function visible_en_tienda_cambia($guardado, $nuevo)
+    {
+        if (is_null($nuevo)) {
+            return false;
+        }
+
+        $guardado_habilitado = !is_null($guardado) && (int) $guardado === 1;
+
+        return $guardado_habilitado !== ((int) $nuevo === 1);
     }
 
 
@@ -3981,7 +4132,7 @@ class ProcessRow {
      * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
      * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int    $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int    $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string $campo        campo identificador afectado (bar_code/sku/provider_code/id).
      * @param mixed  $original     valor original tal cual vino del Excel, antes de normalizar.
      * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
@@ -4011,7 +4162,7 @@ class ProcessRow {
      * a $conflictos, que ActualizarBBDD::persistir_conflictos() inserta en bloque
      * en `import_conflicts` al cerrar el lote (prompt 02, grupo 229).
      *
-     * @param int             $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int             $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param AmbiguousMatch  $ambiguo      marcador devuelto por ArticleIndexCache::find_with_index().
      * @param string|null     $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
      * @return void
@@ -4042,7 +4193,7 @@ class ProcessRow {
      * para que el usuario lo resuelva a mano (regla de Lucas, 30/7/2026, prompt 08
      * grupo 265).
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $campo        identificador que no se pudo asignar ('bar_code'|'sku').
      * @param mixed       $valor        valor de ese identificador tal cual vino del Excel.
      * @param array       $article_ids  ids de los artículos con los que matcheó el escalón inferior.
@@ -4109,7 +4260,7 @@ class ProcessRow {
      * Lucas: sacarlo de la cuenta lo volvería invisible también en el camino donde la fila
      * SÍ se aplicó (a todos los candidatos), que es donde más importa que se vea.
      *
-     * @param int         $fila          número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila          fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $provider_code código por el que matchearon los candidatos.
      * @param array       $article_ids   ids de los artículos que quedaron empatados.
      * @param string|null $nombre_excel  nombre del producto en esa fila, tal cual vino.
@@ -4168,7 +4319,7 @@ class ProcessRow {
      * No cuenta para $filas_ambiguas ni $identificadores_descartados: es un tipo de
      * conflicto distinto, solo se acumula en $conflictos.
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
      * @return void
      */
@@ -4199,7 +4350,7 @@ class ProcessRow {
      * ActualizarBBDD::persistir_conflictos() inserta en bloque en
      * `import_conflicts` al cerrar el lote.
      *
-     * @param int         $fila         número de fila (relativo al chunk) donde se detectó.
+     * @param int         $fila         fila del Excel donde se detectó (ver $fila_actual).
      * @param string      $campo        campo numérico afectado (cost, price, medida, etc.).
      * @param string      $original     valor original tal cual vino del Excel, sin parsear.
      * @param string      $motivo       'no_numerico' | 'fuera_de_rango'.
@@ -4224,9 +4375,13 @@ class ProcessRow {
     /**
      * Registra que una fila de este Excel fue sobrescrita por otra posterior con el
      * mismo identificador ("última fila gana" — decisión de Lucas, 29/7/2026, prompt
-     * 03 grupo 265). A diferencia de los demás tipos de conflicto, ESTE no representa
-     * una fila que no se pudo procesar: se resolvió bien (la fila ganadora prevalece).
-     * Por eso NO suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()).
+     * 03 grupo 265). ESTE tipo es informativo: no hay nada que corregir, se resolvió
+     * bien (la fila ganadora prevalece). Por eso NO suma a conflicts_count (está en
+     * ImportConflict::TIPOS_QUE_NO_CUENTAN; ver ActualizarBBDD::persistir_conflictos()).
+     * Eso no quiere decir que los demás tipos sean filas que no se procesaron: el único
+     * que seguro deja la fila afuera es 'ambiguo'. Con el resto el dato se descarta y la
+     * fila sigue; que después se cree, se actualice o no depende del resto de la
+     * importación y no queda registrado (ver el docblock de ImportConflict).
      *
      * IMPORTANTE sobre los nombres: $fila es la fila que PIERDE (la que ya estaba
      * encolada), $fila_ganadora es la fila que se está procesando AHORA mismo
@@ -4234,8 +4389,8 @@ class ProcessRow {
      * momento en que se detecta la sobrescritura, la fila ganadora es la actual y
      * la perdedora es la que ya estaba en la cola de antes.
      *
-     * @param  int|null    $fila          número de fila (relativo al chunk) que PIERDE.
-     * @param  int         $fila_ganadora número de fila que GANA (la que se está procesando).
+     * @param  int|null    $fila          fila del Excel que PIERDE.
+     * @param  int         $fila_ganadora fila del Excel que GANA (la que se está procesando).
      * @param  string|null $campo         escalón que detectó la repetición ('bar_code'|'sku'|'provider_code'|'id'|'name').
      * @param  mixed       $valor         valor del identificador que se repitió.
      * @param  string|null $nombre_excel  nombre del producto en la fila ganadora, para ubicarla en el Excel.
@@ -4261,11 +4416,11 @@ class ProcessRow {
      * maneja por la otra (mision 44, regla de Lucas del 12/8/2026: en la importacion gana
      * la columna que ya estaba).
      *
-     * Igual que 'fila_sobrescrita', ESTE tipo NO representa una fila que no se pudo
-     * procesar: la fila se proceso bien y se aplico todo menos esa columna. Por eso NO
-     * suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()); si sumara,
-     * cualquier Excel con una columna de precio de mas mostraria el aviso de "filas que
-     * no se pudieron procesar", que es un error, y esto no lo es.
+     * Igual que 'fila_sobrescrita', ESTE tipo es informativo: la fila se proceso bien y se
+     * aplico todo menos esa columna, no hay nada que corregir. Por eso NO suma a
+     * conflicts_count (esta en ImportConflict::TIPOS_QUE_NO_CUENTAN; ver
+     * ActualizarBBDD::persistir_conflictos()); si sumara, cualquier Excel con una columna
+     * de precio de mas mostraria "problemas para revisar" que no lo son.
      *
      * @param  int         $fila         numero de fila (absoluto sobre el archivo) donde se salteo.
      * @param  string      $campo        'price' o 'percentage_gain': la columna que NO se aplico.
@@ -4830,6 +4985,8 @@ class ProcessRow {
                     'percentage'      => $pt->pivot->percentage ?? null,
                     'final_price'           => $pt->pivot->final_price ?? null,
                     'setear_precio_final' => $pt->pivot->setear_precio_final ?? null,
+                    // Misión catalogo-por-lista-tienda (5/10/2026): llega por el withPivot de Article::price_types().
+                    'visible_en_tienda'   => $pt->pivot->visible_en_tienda ?? null,
                 ],
             ];
         }
@@ -4858,8 +5015,34 @@ class ProcessRow {
                 }
             }
 
+            /*
+             * Visible en la tienda (misión catalogo-por-lista-tienda, 5/10/2026). Hasta acá una
+             * lista sin cambio de margen, precio ni "setear" se descartaba: sin este bloque la
+             * columna nueva nunca llegaba a los artículos que ya existen. El cambio se mide en
+             * visibilidad (NULL y 0 son lo mismo, ver visible_en_tienda_cambia()).
+             */
+            $visible_guardado = $prev['pivot']['visible_en_tienda'] ?? null;
+            $visible_nuevo    = $row_pt['pivot']['visible_en_tienda'] ?? null;
+            $cambia_visible   = $this->visible_en_tienda_cambia($visible_guardado, $visible_nuevo);
+
+            if ($cambia_visible) {
+                $diff['__diff__visible_en_tienda'] = ['old' => $visible_guardado, 'new' => $visible_nuevo];
+            } else if (isset($row_pt['pivot'])) {
+                // Informado pero igual al guardado: que ActualizarBBDD no lo reescriba.
+                $row_pt['pivot']['visible_en_tienda'] = null;
+            }
+
             if ($changed) {
                 $only_changed[] = array_merge($row_pt, $diff);
+            } else if ($cambia_visible) {
+                /*
+                 * 🔴 SOLO cambió la visibilidad: la marca le dice a ActualizarBBDD que NO pase esta
+                 * fila por el UPDATE de margen/precio. Ese UPDATE escribe percentage, final_price,
+                 * setear_precio_final e incluir_en_excel_para_clientes con lo que trae la fila, y
+                 * con los tres primeros en null le pondría al artículo el margen POR DEFECTO de la
+                 * lista, borrándole un margen propio o un precio fijado a mano que nadie pidió tocar.
+                 */
+                $only_changed[] = array_merge($row_pt, $diff, ['__solo_visible_en_tienda' => true]);
             } else {
                 // $this->log('No cambio el precio');
             }

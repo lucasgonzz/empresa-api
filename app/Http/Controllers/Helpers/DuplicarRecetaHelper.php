@@ -288,6 +288,9 @@ class DuplicarRecetaHelper
                 'setear_precio_final'            => $price_type->pivot->setear_precio_final,
                 'precio_luego_de_recargos'       => $price_type->pivot->precio_luego_de_recargos,
                 'monto_ganancia'                 => $price_type->pivot->monto_ganancia,
+                // Misión catalogo-por-lista-tienda (5/10/2026): duplicar una receta es copiar su
+                // configuración, incluida en qué listas restringidas se ve en la tienda.
+                'visible_en_tienda'              => $price_type->pivot->visible_en_tienda,
             ]);
         }
     }

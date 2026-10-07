@@ -128,7 +128,7 @@ class Compatibilidad_y_registro_Test extends ImagenesInteligentesTestCase
     {
         config(['services.google_search.api_key' => 'AIzaCLAVE-DE-GOOGLE-DE-PRUEBA']);
 
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
         Http::fake(function ($request) {
             if (strpos($request->url(), 'googleapis.com/customsearch') !== false) {
                 // Por código: responde sin imágenes. Por nombre: la clave rechazada (403).

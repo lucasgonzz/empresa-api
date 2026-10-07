@@ -93,7 +93,7 @@ class Json_con_prosa_Test extends ImagenesInteligentesTestCase
             $this->falsear([$codigo => [$this->resultado($url, 1000, 1000, 1)]], [$url => $this->png(1000, 1000, 'rojo')], []);
 
             /* Se re-falsea la IA: el veredicto real envuelto en la forma de este caso. */
-            Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+            Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
             Http::fake(function ($request) use ($test, $codigo, $url, $forma) {
                 $destino = $request->url();
 
@@ -136,7 +136,7 @@ class Json_con_prosa_Test extends ImagenesInteligentesTestCase
         $json     = json_encode(['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Se ve el paquete.']);
 
         foreach ($this->formas($json) as $forma => $texto) {
-            Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+            Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
             Http::fake(function ($request) use ($texto) {
                 return Http::response(['content' => [['type' => 'text', 'text' => $texto]], 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]], 200);
             });

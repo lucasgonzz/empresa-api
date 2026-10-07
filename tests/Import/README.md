@@ -27,6 +27,14 @@ php tests/Import/fixtures/generar_hojas_y_fusiones.php
 
 Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout**, que no sabe escribir celdas fusionadas ni el formato `.xls` viejo (BIFF), que es justamente lo que esos cinco fixtures necesitan. `generar_hojas_y_fusiones.php` escribe con **PhpSpreadsheet**. Mezclarlos en un solo archivo obligaría a cambiarle la librería a los once fixtures viejos. Ninguno de los dos toca los archivos del otro.
 
+Los fixtures `26_` y `27_` (encabezado corrido y filas vacías entre los datos, para los números de fila de los conflictos) tienen su propio generador, también con PhpSpreadsheet, para no regenerar los de `generar_hojas_y_fusiones.php`:
+
+```
+php tests/Import/fixtures/generar_filas_del_excel.php
+```
+
+🔴 **Los números de fila de `import_conflicts` (`fila`, `fila_ganadora`) son la fila de la planilla**, la misma que ve el usuario (y la misma que muestra el paso 3 del asistente). Hasta el 4/10/2026 los tests de esta carpeta asertaban el "índice de fila de datos" (F2 = 1): esa convención era un defecto y se corrigió en la misión `fila-sobrescrita-corrida`. Un test nuevo que aserte una fila la escribe como fila del Excel.
+
 ⚠️ En PhpSpreadsheet hay que ser **explícito con el tipo de celda**: `setCellValueExplicit($ref, '7790101', DataType::TYPE_STRING)` para el texto con contenido numérico, y `setCellValue()` a secas para las numéricas. `setCellValue('7790101')` adivina y lo guarda como número.
 
 | Archivo | Filas | Qué cubre |
@@ -52,9 +60,34 @@ Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout
 | `22_desempate_por_nombre.xlsx` | 4 | **Cabecera propia**: la común de 8 columnas más `descuentos` y `recargos`, que son las que hacen visible el defecto de `get_article_model_from_cache()`. Reproduce el caso de DobleP Herrajes con la lista de Bronzen: `PC-PACK` en dos filas con **nombres distintos** (el suelto y su pack x15), más `PC-IGUAL` (dos artículos de base con el mismo código **y** el mismo nombre) y `PC-REDACT` (dos artículos de base cuyos nombres no coinciden con la fila). Ver `DesempatePorNombreTest`. |
 | `23_desempate_otro_proveedor.xlsx` | 2 | Cabecera común. `PC-XPROV` (el nombre de la fila coincide con el artículo de **otro** proveedor y no con el del proveedor que se está importando) y `PC-XPROV2` (coincide con el del proveedor de la importación). Existe porque con `actualizar_articulos_de_otro_proveedor` prendido el desempate podía quedarse con el artículo ajeno y dejar sin actualizar el correcto — antes se actualizaban los dos, así que era una **regresión silenciosa**. Ver `DesempatePorNombreTest`. |
 | `24_crear_mismo_codigo_y_mismo_nombre.xlsx` | 2 | **Cabecera de 10 columnas**, igual que el 22. Dos filas con el mismo `provider_code` **nuevo** y el **mismo nombre**, con descuentos y recargos distintos. Es el caso que el fixture 22 no puede reproducir: ahí `PC-IGUAL` y `PC-REDACT` aparecen una sola vez cada uno, así que su ambigüedad es contra la **base** y sólo ejercita el camino de reimportación. Acá las dos filas chocan al **crear**. Ver `DesempatePorNombreTest`. |
+| `26_repetidos_con_encabezado_corrido.xlsx` | 10 | Réplica de la hoja "Lista Agosto" de `multimedia/captura/material/lista-proveedor-demo.xlsx` (la de la demo): membrete en las filas 1 a 5, **encabezado en la 7**, datos de la 8 a la 17 y los mismos repetidos (FR-1002 en 9 y 16, FR-1003 en 10 y 14). Se importa con `start_row = 8`. Generado por `generar_filas_del_excel.php`. Ver `FilasDelExcelEnConflictosTest`. |
+| `27_filas_vacias_entre_los_datos.xlsx` | 5 (+2 vacías) | Encabezado en la fila 3 y **dos filas vacías (6 y 7)** entre los datos, con un repetido que las cruza (EX-02 en 5 y 9) y un costo no numérico después de ellas (fila 8). Se importa con `start_row = 4`. Generado por `generar_filas_del_excel.php`. Ver `FilasDelExcelEnConflictosTest`. |
 | `16_viejo.xls` | 2 | Un `.xls` **BIFF de verdad** (writer `Xls` de PhpSpreadsheet, no un `.xlsx` renombrado): no es un zip, así que `ZipArchive::open()` falla y se ejercita el mensaje limpio de `ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE`. |
+| `28_celda_multilinea_en_los_datos.xlsx` | 25 | Cabecera común y datos de la 2 a la 26 (`ML-02` a `ML-26`, costo 1000 + fila): **un salto de línea** en el nombre de la fila 5 y **dos** en el de la 8 (tres líneas físicas de más en el CSV antes del lote 2), costo `"consultar"` en la 15 y en la 24, y el nombre de la fila 3 **termina en barra invertida** (la guarda del escape vacío: con el escape por defecto de `fgetcsv()` esa celda no cierra y un arreglo a medias volvería a correr los lotes). Se importa con lotes de 10: [2–11], [12–21], [22–26]. Generado por `generar_celdas_multilinea.php`. Ver `CeldaConSaltoDeLineaTest`. |
+| `29_encabezado_multilinea.xlsx` | 12 | **Encabezado con saltos de línea** en A1 (`"codigo\nde barras"`) y E1 (`"costo\nsin IVA"`), datos de la 2 a la 13 (`EM-02` a `EM-13`). A1 es a propósito: es la celda pegada al BOM del CSV, y `fgetcsv()` leyendo desde el byte 0 no reconoce su comilla de apertura. Lotes de 10: [2–11], [12–13]. Generado por `generar_celdas_multilinea.php`. Ver `CeldaConSaltoDeLineaTest`. |
+| `30_sin_encabezado_a1_multilinea.xlsx` | 12 | **Sin encabezado** (`start_row = 1`) y **A1 multilínea**; columnas propias: nombre, `codigo_de_proveedor`, costo, iva (el test las mapea así). Datos de la 1 a la 12 (`SE-01` a `SE-12`, costo 3000 + fila). Es el lote que arranca en la fila 1: con su offset en el byte 0 el BOM queda pegado a la comilla de A1 y `fgetcsv()` parte ese registro en dos. Lotes de 10: [1–10], [11–12]. Generado por `generar_celdas_multilinea.php`. Ver `CeldaConSaltoDeLineaTest`. |
+| `31_problemas_de_la_lista_de_la_demo.xlsx` | 6 | Cabecera común. Un caso de cada situación del mensaje de resultado: F2 limpia (`PD-01`), F3 con costo **y** precio `"consultar"` (2 `numero_invalido`, una sola fila), F4 sin ningún código (`sin_identificador`), F5 con código de barras `S/N` (`placeholder_descartado`), F6 que repite `PD-01` (`fila_sobrescrita` F2→F6, informativo) y F7 con `7790007` (duplicado en base: A7 y A8) y costo `"consultar"` (`ambiguo` + `numero_invalido`). Sobre el archivo entero: `conflicts_count = 6`, 1 fila no importada (F7) y 3 con datos para revisar (F3, F4, F5), tanto con "Crear y actualizar" como con "Solo actualizar" (donde las filas 2 a 6 no crean nada). Existe porque el aviso decía "3 filas que no se pudieron procesar" cuando las tres se habían importado (demo2, 4.3.6): el único tipo que seguro deja la fila afuera es `ambiguo`, y del resto no se puede afirmar que la fila se importó. Generado por `generar_problemas_de_la_demo.php`. Ver `MensajeDeResultadoTest`. |
+| `32_visible_en_tienda.xlsx` | 7 | **La columna "visible en la tienda" de una lista** (misión `catalogo-por-lista-tienda`, 5/10/2026). Cabecera común de 8 columnas **más dos**: `visible_mayorista` (la 9; los tests la mapean como `prop_visible_en_tienda_mayorista`) y `margen_mayorista` (la 10; `prop_%_mayorista`, solo en el test que la pide). Datos de la 2 a la 8: cuatro **existentes** del escenario sembrado — A1 con `"Si"` (el caso central: solo cambia la visibilidad), A2 con `"No"`, A12 con la celda **vacía** (no informado: no se toca) y A15 con `"SÍ"` (tilde y mayúscula) y margen 25 (cambian las dos cosas en la misma fila) — y tres **nuevos** (`PC-VIS-1` con `"sí"`, `PC-VIS-2` con `"no"`, `PC-VIS-3` vacía). Las filas existentes repiten los datos del escenario sembrado, así que lo único que puede cambiar son las listas. Generado por `generar_visible_en_tienda.php`. Ver `VisibleEnTiendaPorListaTest`. |
 
-⚠️ **`06_incidente_servian.xlsx` es el único fixture que se importa con varios lotes.** El `config(['app.ARTICLE_EXCEL_CHUNK_SIZE' => 10])` del `setUp()` de `IncidenteServianTest` es lo que hace que el escenario reproduzca el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes). Si alguien cambia o quita ese `config()`, el test deja de probar lo que dice probar aunque siga pasando en verde.
+⚠️ **Hay cuatro fixtures que se importan con varios lotes, y los cuatro dependen de un `config()`.** `06_incidente_servian.xlsx` (`IncidenteServianTest`) y `28_`, `29_` y `30_` (`CeldaConSaltoDeLineaTest`, misión `importacion-celda-multilinea`, 4/10/2026) bajan `ARTICLE_EXCEL_CHUNK_SIZE` a 10 en el `setUp()`. En el 06 es lo que reproduce el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes); en el 28, el 29 y el 30, lo que hace que haya offsets de lote que se puedan desalinear con una celda multilínea (el CSV tiene un **registro** por fila del Excel, pero una celda con salto de línea ocupa varias **líneas** físicas). Si alguien cambia o quita ese `config()`, los tests dejan de probar lo que dicen probar aunque sigan pasando en verde. Los tres fixtures multilínea se regeneran con:
+
+```
+php tests/Import/fixtures/generar_celdas_multilinea.php
+```
+
+El `31_` (misión `importacion-mensaje-de-problemas`, 4/10/2026) tiene su propio generador, también con PhpSpreadsheet:
+
+```
+php tests/Import/fixtures/generar_problemas_de_la_demo.php
+```
+
+El `32_` (misión `catalogo-por-lista-tienda`, 5/10/2026) también tiene su propio generador, con PhpSpreadsheet: es el único fixture con una columna Sí/No **por lista**, y ningún otro generador la escribe.
+
+```
+php tests/Import/fixtures/generar_visible_en_tienda.php
+```
+
+`MensajeDeResultadoTest.php` captura el aviso de resultado con `Notification::fake()` (la `GlobalNotification` con `notification_modal = 'article_import_result'` que `FinalizeArticleImport` le manda al tenant) y asierta el `message_text` exacto: que cuente **filas** y no problemas, que separe las que no se importaron (`ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA`) de las que tienen datos para revisar, y que de estas **no** diga que se importaron: con "Solo actualizar" sin match la fila no crea nada y eso no queda en `import_conflicts`. `conflicts_count` no cambia de significado: son problemas para revisar (todos los tipos menos `ImportConflict::TIPOS_QUE_NO_CUENTAN`).
 
 `CadenaIdentificacionTest.php` (grupo 284, prompt 05) no importa nada: es un test de caracterización de `AiExcelAnalyzer::analyze_identification_chain()` (vía `ReflectionMethod`, el método es `protected` a propósito) sobre `01_codigos_de_proveedor.xlsx` y `07_repetidos_en_el_archivo.xlsx`, para que un conteo roto en el bloque "Como se van a identificar los articulos" del paso 3 se detecte antes de llegar a un cliente.
 
@@ -113,6 +146,22 @@ deja un `import_conflict` en el historial en vez de pasar callado.
 sea que el `INSERT IGNORE` de `asignar_price_types()` no deduplica nada: solo ignora errores. Por eso
 las aserciones de esta clase son de **cantidad exacta** de filas, nunca de "al menos una", y el
 helper `pivots()` falla explícitamente si encuentra duplicados.
+
+`VisibleEnTiendaPorListaTest.php` (misión `catalogo-por-lista-tienda`, 5/10/2026) arma el mismo tipo de
+escenario que `ListasDePrecioPorDefectoTest` —prende `users.listas_de_precio` y crea dos listas dentro de
+la transacción, Minorista y Mayorista con el catálogo restringido— y le suma los pivotes de A1, A2, A12 y A15 ya
+armados: A1 con un margen **propio** de 55 (no el 40 de la lista), que el UPDATE de margen le pisaría si la
+fila "solo visibilidad" pasara por él. Las columnas de costo, precio, stock e IVA se apagan, así que lo
+único que una fila puede cambiar son las listas. Fija la visibilidad de los creados y los existentes, que
+la celda vacía no toca nada, que un "No" sobre un NULL no cuenta como cambio, que un existente **sin fila
+de pivote** para la lista recibe la fila con el "Sí" (sin inventarle margen ni duplicar un par que ya
+tenía dos filas), y que un texto que no es ni "Sí" ni "No" —una columna mal mapeada— no deshabilita a
+nadie. Lo prueba también por el endpoint del modal con IA (`/api/ai-excel-import/import`, con `columns` en
+JSON y los índices 0-based: es el único camino que usa la SPA, y ahí la columna llega con el nombre ya
+normalizado, incluida una lista de **dos palabras** que ejercita el espacio), con `vaciar_valores_en_blanco`
+(una celda vacía no deshabilita), con una lista sin restricción mapeada y con dos listas a la vez. Se lee con
+`DB::table('article_price_type')`: el pivote no tiene índice único y lo que se mide son filas.
+`SiONoDeLaCeldaTest.php` es parseo puro (sin base) de qué celda vale 1, 0 o "no informado".
 
 ## Repetidos del archivo vs. repetidos contra la base (2/9/2026)
 

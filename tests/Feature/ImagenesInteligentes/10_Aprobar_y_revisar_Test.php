@@ -63,7 +63,7 @@ class Aprobar_y_revisar_Test extends ImagenesInteligentesTestCase
      */
     protected function servir(array $urls)
     {
-        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request) use ($urls) {
             if (isset($urls[$request->url()])) {
