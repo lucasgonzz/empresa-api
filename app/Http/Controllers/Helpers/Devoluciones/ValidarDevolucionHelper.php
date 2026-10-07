@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Helpers\Devoluciones;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Models\AfipTicket;
 use App\Models\ConceptoStockMovement;
+use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\StockMovement;
 use Illuminate\Support\Facades\DB;
@@ -96,11 +98,46 @@ class ValidarDevolucionHelper {
 
                 $num = !is_null($sale->num) && $sale->num !== '' ? 'N° '.$sale->num : 'id '.$sale->id;
 
-                return 'No se pueden devolver '.Self::fmt($unidades).' unidades '.$nombre.': la venta '.$num.' tiene '.Self::fmt($vendidas).' vendidas y '.Self::fmt($ya_devueltas).' ya devueltas. Si la devolución ya se registró, no hace falta volver a guardarla.';
+                return 'No se pueden devolver '.Self::fmt($unidades).' unidades '.$nombre.': la venta '.$num.' tiene '.Self::fmt($vendidas).' vendidas y '.Self::fmt($ya_devueltas).' ya devueltas. Si la devolución ya se registró, no hace falta volver a guardarla.'.Self::aviso_de_nota_sin_facturar($sale);
             }
         }
 
         return null;
+    }
+
+    /**
+     * Aviso que se agrega al rechazo por "ya devueltas" cuando el motivo probable es una nota de
+     * crédito de la venta que quedó guardada SIN facturar y la venta sí está facturada: en ese caso
+     * rehacer la devolución no es la salida, la nota se factura desde Comprobantes (CF, 7/10/2026:
+     * la NC N° 128 de la venta 1488 se guardó sin ARCA y el usuario no sabía por qué lo rechazaba).
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return string  Vacío si no corresponde.
+     */
+    static function aviso_de_nota_sin_facturar($sale) {
+
+        $venta_facturada = AfipTicket::where('sale_id', $sale->id)
+                                ->whereNull('nota_credito_id')
+                                ->whereNotNull('cae')
+                                ->where('cae', '<>', '')
+                                ->exists();
+
+        if (!$venta_facturada) {
+            return '';
+        }
+
+        $hay_nota_sin_facturar = CurrentAcount::where('sale_id', $sale->id)
+                                    ->where('status', 'nota_credito')
+                                    ->whereDoesntHave('afip_ticket', function ($q) {
+                                        $q->whereNotNull('cae')->where('cae', '<>', '');
+                                    })
+                                    ->exists();
+
+        if (!$hay_nota_sin_facturar) {
+            return '';
+        }
+
+        return ' Esa devolución quedó guardada sin facturar ante ARCA: facturala desde Comprobantes › Notas de crédito, con el botón "Facturar con ARCA".';
     }
 
     /**

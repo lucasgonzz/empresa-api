@@ -109,6 +109,10 @@ class check_stock_movements extends Command
 
     function enviar_notificaciones() {
         if (count($this->notificaciones) >= 1) {
+            // 🔴 DECIDIDO: este envío NO mira los rechazos (RechazosDeCorreoHelper) porque es CÓDIGO MUERTO: su única llamada está comentada en handle()
+            // (`// $this->enviar_notificaciones();`) y nada más lo invoca, así que no afirma nada. Si alguien descomenta la llamada, el rechazo del servidor SMTP (un 550
+            // en el RCPT TO, que SwiftMailer no convierte en excepción) igual queda en el log por el listener AnotarMailRechazadoPorElServidor. Si pasa a afirmar algo
+            // ("se envió"), sacalo de TodoEnvioDeMailMiraLosRechazosTest::ENVIOS_SIN_CHEQUEO y mirá los rechazos como en check_stocks.
             Mail::to('comerciocity.erp@gmail.com')->send(new MantenimientoMail($this->user_id, $this->notificaciones));
         }
     }

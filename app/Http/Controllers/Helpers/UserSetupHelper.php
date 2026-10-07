@@ -332,7 +332,7 @@ class UserSetupHelper
 
     /**
      * Extensiones de base que todos los sistemas de producción reciben.
-     * Son menos que en demo (sin 'online', sin datos de ejemplo).
+     * Son menos que en demo (sin datos de ejemplo). 'online' va igual que en demo.
      *
      * @return string[]
      */
@@ -341,6 +341,7 @@ class UserSetupHelper
         return [
             'comerciocity_interno',
             'ask_save_current_acount',
+            'online',
             'enviar_mail_a_clientes',
 
             /*

@@ -667,6 +667,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Notas de credito
     Route::get('nota-credito/from-date/{from_date?}/{until_date?}', 'NotaCreditoController@index');
     Route::get('nota-credito', 'NotaCreditoController@index');
+    // Factura ante ARCA una nota de credito que se guardo sin facturar (CF, 7/10/2026).
+    Route::post('nota-credito/{id}/facturar', 'NotaCreditoController@facturar');
 
     // Pagos de Clientes
     Route::get('pago-de-cliente/from-date/{from_date?}/{until_date?}', 'PagoDeClienteController@index');

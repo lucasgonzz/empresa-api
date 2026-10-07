@@ -110,6 +110,20 @@ class ComercioCityMailHelper
             'preheader' => 'Venta #' . $numVenta . ' · ' . $totalStr,
         ]);
 
+        /*
+         * 🔴 DECIDIDO: este ->queue() NO mira los rechazos (RechazosDeCorreoHelper) y NO se vuelve sincrónico. Un mail encolado se manda en un worker: si el
+         * servidor SMTP rechaza la casilla (un 550 en el RCPT TO, que SwiftMailer no convierte en excepción) pasa ahí, cuando quien lo pidió ya no está, y
+         * acá no hay nada que leer. Lo que se hace: el listener AnotarMailRechazadoPorElServidor deja el rechazo en el log. Lo que NO se hace, y por qué:
+         *   - volverlo sincrónico: el request de guardar la venta se quedaría esperando al SMTP;
+         *   - tirar en el worker: con QUEUE_CONNECTION=sync la excepción VUELVE a este request (un 500 sobre una venta que ya hizo commit en SaleController).
+         *     (Además, un job que tira pasa por Handler::report() y de ahí a GitHub; eso solo se evitaría sumando la excepción a Handler::$dontReport, pero no
+         *     alcanza por el motivo de arriba.)
+         * El log de abajo se escribe al ENCOLAR y no dice si el mail salió. La decisión está en TodoEnvioDeMailMiraLosRechazosTest::ENCOLADOS.
+         *
+         * Límite dicho, el mismo que el de `notificada_email_at` de las ofertas (ver abajo): `SaleController::send_client_mail()` y `send_client_mail_bulk()` (el botón
+         * "Enviar correo al cliente" del listado de ventas) llegan acá con `$force_send`, contestan 200 y escriben `sales.send_mail = true` apenas ENCOLAN: un rechazo en
+         * el worker no lo revierte. (`send_mail` es a la vez la casilla "enviar mail" del formulario de venta, o sea una preferencia: no es un defecto de este helper.)
+         */
         Mail::to($email)->queue(new ComercioCityMail($payload));
 
         Log::info('Se mando mail a '.$email);
@@ -144,7 +158,7 @@ class ComercioCityMailHelper
 
         /*
          * 🔴 ACÁ SÍ SE LLAMA A ClientMailConfigHelper::apply(), a diferencia de
-         * new_sale() (:26-114), que deja salir los mails de venta desde
+         * new_sale() (arriba), que deja salir los mails de venta desde
          * contacto@comerciocity.com. Una oferta comercial tiene que llegar con
          * el remitente DEL COMERCIO: es el comercio el que le está ofreciendo un
          * descuento a su cliente, no ComercioCity. Un mail de "ComercioCity" con
@@ -203,6 +217,11 @@ class ComercioCityMailHelper
          * implementa — es un `use` muerto. Lo único que encola es este ->queue()
          * (QUEUE_CONNECTION=database). Si alguien lo "simplifica" a ->send(), el
          * request de activación se queda esperando al SMTP del comercio.
+         *
+         * 🔴 Y TAMPOCO mira los rechazos del servidor SMTP (RechazosDeCorreoHelper): el rechazo ocurre en el worker y acá no se puede leer. Lo deja en el log el
+         * listener AnotarMailRechazadoPorElServidor (ver el comentario del ->queue() de new_sale() y TodoEnvioDeMailMiraLosRechazosTest::ENCOLADOS). Límite
+         * dicho: `notificada_email_at` se escribe al encolar (ClientOfertaAltaHelper::avisarle_al_cliente) y seguirá diciendo "notificada" aunque el worker reciba un
+         * rechazo; compensarlo necesita un job propio que escriba en client_offers: es una decisión de producto, no un arreglo de este helper.
          */
         Mail::to($email)->queue(new ComercioCityMail($payload));
 

@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\MailRechazadoPorElServidorException;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ClientMailConfigHelper;
+use App\Mail\Helpers\RechazosDeCorreoHelper;
 use App\Models\OnlineConfiguration;
 use App\Services\LogoPaletteAiService;
 use Illuminate\Http\Request;
@@ -212,7 +214,19 @@ class OnlineConfigurationController extends Controller
                         ->subject('Mail de prueba - ComercioCity');
             });
 
+            // 🔴 Que Mail::raw() no haya tirado NO quiere decir que el mail haya salido: si el servidor SMTP rechaza la casilla de destino (un 550 en el RCPT TO),
+            // SwiftMailer no tira nada. Sin esta línea el botón decía "enviado correctamente" sobre un mail que nunca salió, justo el botón que existe para
+            // decirle al dueño si su correo anda.
+            RechazosDeCorreoHelper::fallar_si_hubo_rechazos();
+
             return response()->json(['message' => 'Mail de prueba enviado correctamente'], 200);
+        } catch (MailRechazadoPorElServidorException $e) {
+            // La misma forma de error de siempre (422 con `message`, que TestMailButton.vue muestra tal cual). Es una prueba de configuración: además del
+            // motivo dice qué mirar. El motivo sale de la excepción (una sola fuente: si cambia el texto, cambia acá también) y no repite la casilla de destino
+            // (la acaba de tipear quien lo lee).
+            return response()->json([
+                'message' => 'Error al enviar el mail de prueba: '.$e->getMessage().'. Probá con otra casilla de destino; si se repite, revisá la configuración de tu servidor de correo.',
+            ], 422);
         } catch (\Exception $e) {
             // Se devuelve el mensaje de error de SMTP tal cual: es la razon de ser del endpoint,
             // le dice al dueño del comercio por que no le anda el correo (ej. auth rechazada).
