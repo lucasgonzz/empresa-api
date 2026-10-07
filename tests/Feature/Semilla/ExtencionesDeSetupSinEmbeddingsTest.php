@@ -95,4 +95,16 @@ class ExtencionesDeSetupSinEmbeddingsTest extends TestCase
     {
         $this->assertContains('whatsapp', $this->extencions_del_user_setup());
     }
+
+    /**
+     * Pedido de Lucas (7/10/2026): la extensión de tienda online ('online') se habilita siempre,
+     * en la demo y en el user setup, sin depender de ningún flag del formulario.
+     *
+     * @test
+     */
+    public function la_demo_y_el_user_setup_nacen_siempre_con_tienda_online()
+    {
+        $this->assertContains('online', $this->extencions_de_la_demo());
+        $this->assertContains('online', $this->extencions_del_user_setup());
+    }
 }
