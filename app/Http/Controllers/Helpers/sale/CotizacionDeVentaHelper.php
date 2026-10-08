@@ -44,6 +44,10 @@ use Illuminate\Support\Facades\Log;
  *     puede rechazar nada, así que se cuenta con el dólar del dueño (`users.dollar`) y, si tampoco
  *     hay, el costo se deja como está en vez de dividir por cero o multiplicar por cero.
  *
+ *  La EDICIÓN de una venta ya guardada tiene su propia regla (misión edicion-completa-ventas-presupuestos,
+ *  8/10/2026): `resolver_moneda_y_cotizacion_de_update()`, que llama `SaleController::update()`. Ahí la
+ *  señal para tocar la moneda y la cotización es `moneda_id`, no `valor_dolar` (ver esa función).
+ *
  *  Un caso distinto de "el dólar no viaja" es "el dólar viaja pero el renglón no dice en qué moneda
  *  está su costo": eso lo resuelve `item_esta_en_dolares()` / `item_esta_en_pesos()`, y no se
  *  rechaza (un artículo sin marca es un artículo en pesos, como siempre).
@@ -241,5 +245,137 @@ class CotizacionDeVentaHelper
         Log::warning('getCost: '.get_class($sale).' '.$sale->id.' sin valor_dolar valido ('.var_export($sale->valor_dolar, true).') y el dueño no tiene dolar cargado; el costo queda sin convertir.');
 
         return null;
+    }
+
+    /**
+     * ¿El `valor_dolar` del request es "no hay cotización" (y no una cotización mala)? null, el texto
+     * vacío o un número igual a cero.
+     *
+     * En el PUT de una venta el 0 NO es un pedido de borrar la cotización: es lo que manda una SPA
+     * cuyo store no tiene dólar (un dueño sin `users.dollar` cargado). Tratarlo como inválido le daría
+     * 422 a una edición común de una venta en dólares; guardarlo borraría la cotización con la que se
+     * preciaron los renglones. Se preserva la guardada.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    static function es_cotizacion_vacia($valor)
+    {
+        if (is_null($valor)) {
+            return true;
+        }
+
+        if (is_string($valor) && trim($valor) === '') {
+            return true;
+        }
+
+        return is_numeric($valor) && (float) $valor == 0;
+    }
+
+    /**
+     * La moneda y la cotización con las que queda una venta YA GUARDADA que se edita
+     * (`SaleController::update()`), o el 422 si no se puede (misión edicion-completa-ventas-presupuestos,
+     * 8/10/2026). Solo lee: lo llama el controlador ANTES de abrir la transacción, junto con los otros
+     * 4xx tempranos, y asigna el resultado adentro.
+     *
+     * ─────────────────────────────────────────────────────────────────────────
+     *  🔴 LA SEÑAL ES `moneda_id`, NO `valor_dolar`. No "simplificar" a mirar la cotización sola.
+     * ─────────────────────────────────────────────────────────────────────────
+     *
+     *  La SPA manda `valor_dolar` en TODOS los PUT de venta desde hace meses: también la anterior a
+     *  esta misión, con el campo bloqueado en pantalla, y si la venta no tenía cotización manda el
+     *  `owner.dollar` que `Moneda.vue::iniciar_dolar()` cargó al abrirla. Hasta esta misión el back lo
+     *  ignoraba (la línea estaba comentada en `update()`); si ahora lo honrara siempre, cualquier
+     *  edición común —cambiar una cantidad— le pisaría la cotización a la venta. `moneda_id`, en cambio,
+     *  no viajaba nunca en el PUT de venta: solo lo manda la SPA nueva, que sí deja editar la moneda y
+     *  la cotización. Por eso:
+     *
+     *   - SIN `moneda_id` (clave ausente o en null) → no se toca NI la moneda NI la cotización. Es la
+     *     SPA vieja y cualquier otro llamador (el asistente, un PUT armado a mano): idéntico a antes.
+     *   - CON `moneda_id` → la moneda queda la del request (normalizada: 0, vacío o texto son pesos,
+     *     igual que en el alta) y la cotización:
+     *       · un valor válido (> 0 ya redondeado a 2 decimales, `valor_dolar_para_guardar()`) → ése;
+     *       · null, vacío o 0 (`es_cotizacion_vacia()`) → se PRESERVA la guardada;
+     *       · un valor inválido explícito (texto, negativo, uno que redondeado da 0) → 422 si la venta
+     *         queda en dólares (mismo criterio que `BudgetController::update()`); en pesos no se rechaza
+     *         ni se escribe: se preserva la guardada, que sirve si después se la pasa a dólares.
+     *   - 422 si la venta PASA a dólares (estaba en pesos o sin moneda y queda en 2) sin una cotización
+     *     válida ni en el request ni guardada: sin cotización no hay costo convertido, ni factura, ni
+     *     cuenta contra la que cobrar en pesos.
+     *
+     *  🔴 Nunca se rechaza la edición de una venta que YA estaba en dólares con `valor_dolar` NULL si no
+     *  le mandan una cotización mala: 2R tiene 44 así, y un 422 les impediría guardar cualquier cambio.
+     *
+     *  Decisión 2 de Lucas (8/10/2026): cambiar solo la cotización NO toca los renglones (se guarda la
+     *  cotización y nada más, como en presupuestos); si además cambia la moneda, los renglones llegan
+     *  ya convertidos por la SPA (`reexpresar_comprobante.js`). El back no re-precia en ningún caso.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  \App\Models\Sale  $sale  La venta como está guardada.
+     * @return array  [
+     *                  'actualizar'  => bool       false = el PUT no habla de la moneda: no se toca nada,
+     *                  'moneda_id'   => int|null   la moneda que queda (null si no se actualiza),
+     *                  'valor_dolar' => float|null la cotización NUEVA a guardar; null = se preserva la guardada,
+     *                  'error'       => array|null el cuerpo del 422 (`message` + `sin_cotizacion_dolar`),
+     *                ]
+     */
+    static function resolver_moneda_y_cotizacion_de_update($request, $sale)
+    {
+        $resultado = [
+            'actualizar'  => false,
+            'moneda_id'   => null,
+            'valor_dolar' => null,
+            'error'       => null,
+        ];
+
+        if (is_null($request->moneda_id)) {
+            return $resultado;
+        }
+
+        $moneda_que_queda = self::normalizar_moneda_id($request->moneda_id);
+
+        $queda_en_dolares = $moneda_que_queda == self::MONEDA_DOLAR;
+
+        // Lo GUARDADO contra lo que queda: es la única forma de distinguir "la está pasando a dólares"
+        // de "ya estaba en dólares" (la de 2R sin cotización, que no se rechaza).
+        $estaba_en_dolares = (int) $sale->moneda_id == self::MONEDA_DOLAR;
+
+        $resultado['actualizar'] = true;
+        $resultado['moneda_id']  = $moneda_que_queda;
+
+        if (!self::es_cotizacion_vacia($request->valor_dolar)) {
+
+            $valor_dolar_del_request = self::valor_dolar_para_guardar($request->valor_dolar);
+
+            if (!is_null($valor_dolar_del_request) && $valor_dolar_del_request > 0) {
+
+                $resultado['valor_dolar'] = $valor_dolar_del_request;
+
+            } else if ($queda_en_dolares) {
+
+                Log::info('update sale id '.$sale->id.': rechazado con cotizacion del dolar invalida (valor_dolar '.var_export($request->valor_dolar, true).').');
+
+                $resultado['error'] = [
+                    'message'               => 'La cotización del dólar tiene que ser un número mayor a cero. Cargá el valor del dólar y volvé a guardar la venta.',
+                    'sin_cotizacion_dolar'  => true,
+                ];
+
+                return $resultado;
+            }
+        }
+
+        $valor_dolar_que_queda = !is_null($resultado['valor_dolar']) ? $resultado['valor_dolar'] : $sale->valor_dolar;
+
+        if ($queda_en_dolares && !$estaba_en_dolares && !self::es_cotizacion_valida($valor_dolar_que_queda)) {
+
+            Log::info('update sale id '.$sale->id.': rechazado al pasarla a dolares sin cotizacion del dolar.');
+
+            $resultado['error'] = [
+                'message'               => 'La venta se pasó a dólares y no tiene cotización. Cargá el valor del dólar y volvé a guardarla.',
+                'sin_cotizacion_dolar'  => true,
+            ];
+        }
+
+        return $resultado;
     }
 }
