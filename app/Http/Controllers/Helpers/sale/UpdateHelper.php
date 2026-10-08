@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
+use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Models\Article;
 use App\Models\ConceptoStockMovement;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -196,6 +199,124 @@ class UpdateHelper {
 		}
 
 		return (float)$query->sum('amount');
+	}
+
+	/**
+	 * La venta cambió de sucursal al editarla: lo que salió de la sucursal VIEJA vuelve a ella y sale
+	 * de la NUEVA, por artículo + variante (misión variantes-mismo-articulo-en-vender, 8/10/2026).
+	 *
+	 * Hasta hoy el cambio de sucursal no movía nada: el cálculo por diferencia de la edición
+	 * (`ArticleHelper::get_amount_for_stock_movement`) solo mira cantidades, así que lo vendido quedaba
+	 * descontado de la sucursal vieja mientras la venta decía la nueva, y los ajustes y el borrado
+	 * posteriores (que van contra `$sale->address_id`) devolvían a la nueva lo que había salido de la
+	 * vieja.
+	 *
+	 * La implementación mínima: se corre ANTES de re-adjuntar los renglones, con `$sale->address_id`
+	 * ya en la nueva. Por cada (artículo, variante) se toma del libro de la venta el neto de los
+	 * movimientos que tocaron la sucursal vieja (`from_address_id` o `to_address_id`), sin contar las
+	 * notas de crédito (esas entraron al depósito que eligió el operador y se quedan donde están), y
+	 * se generan dos "Act Venta": uno que lo devuelve a la vieja y otro que lo descuenta de la nueva.
+	 * Después de esto el libro de la venta tiene todo su descuento en la sucursal nueva, y el cálculo
+	 * por diferencia, el borrado de renglones y el borrado de la venta operan sobre ella sin cambios.
+	 *
+	 * Solo para lo que reparte por depósitos (la variante, o el artículo si no tiene variante): el
+	 * stock global no es de ninguna sucursal. Una venta que nunca descontó (to_check, sin
+	 * `discount_stock`) no tiene nada en el libro y no mueve nada. Si la sucursal vieja ya no existe,
+	 * no se muda nada: su stock lo resolvió la baja de la sucursal, y devolverle unidades las mandaría
+	 * a otra por la guarda del motor (D12).
+	 *
+	 * @param  \App\Models\Sale  $sale                 Ya con la sucursal nueva.
+	 * @param  int|null          $address_id_anterior
+	 * @param  int|null          $address_id_nuevo
+	 * @return void
+	 */
+	static function mudar_stock_de_sucursal($sale, $address_id_anterior, $address_id_nuevo) {
+
+		if (
+			SucursalVigenteHelper::es_vacio($address_id_anterior)
+			|| SucursalVigenteHelper::es_vacio($address_id_nuevo)
+			|| (int)$address_id_anterior == (int)$address_id_nuevo
+		) {
+			return;
+		}
+
+		if (!SucursalVigenteHelper::existe_para_stock($address_id_anterior, $sale->user_id)) {
+			Log::info('Venta '.$sale->id.': cambio de sucursal desde la '.$address_id_anterior.', que ya no existe. No se muda stock.');
+			return;
+		}
+
+		foreach (Self::neto_en_la_sucursal($sale, $address_id_anterior) as $renglon) {
+
+			$article = Article::find($renglon->article_id);
+
+			if (is_null($article) || is_null($article->stock)) {
+				continue;
+			}
+
+			if (!RegresarStockHelper::reparte_por_depositos($article, $renglon->variant_id_neto)) {
+				continue;
+			}
+
+			$observaciones = 'Cambio de sucursal de la venta';
+
+			// Lo que salió de la vieja vuelve a ella (el neto es negativo: se invierte).
+			$ct = new StockMovementController();
+			$ct->crear([
+				'model_id'                      => $article->id,
+				'amount'                        => -(float)$renglon->neto,
+				'sale_id'                       => $sale->id,
+				'article_variant_id'            => $renglon->variant_id_neto,
+				'to_address_id'                 => $address_id_anterior,
+				'concepto_stock_movement_name'  => 'Act Venta',
+				'observations'                  => $observaciones,
+			], false);
+
+			// Y sale de la nueva, igual que la venta original.
+			$ct = new StockMovementController();
+			$ct->crear([
+				'model_id'                      => $article->id,
+				'amount'                        => (float)$renglon->neto,
+				'sale_id'                       => $sale->id,
+				'article_variant_id'            => $renglon->variant_id_neto,
+				'from_address_id'               => $address_id_nuevo,
+				'concepto_stock_movement_name'  => 'Act Venta',
+				'observations'                  => $observaciones,
+			], false);
+		}
+	}
+
+	/**
+	 * Neto de los movimientos de stock de la venta que tocaron una sucursal, por (artículo, variante),
+	 * sin las notas de crédito. Solo los que no dan cero.
+	 *
+	 * El GROUP BY va por posición, como en `DeleteSaleHelper::neto_por_renglon()` y por el mismo motivo
+	 * (MariaDB bajo ONLY_FULL_GROUP_BY no compara expresiones entre el SELECT y el GROUP BY).
+	 *
+	 * @param  \App\Models\Sale  $sale
+	 * @param  int               $address_id
+	 * @return \Illuminate\Support\Collection  Objetos con article_id, variant_id_neto y neto.
+	 */
+	static function neto_en_la_sucursal($sale, $address_id) {
+
+		$query = DB::table('stock_movements')
+					->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS variant_id_neto'), DB::raw('SUM(amount) AS neto'))
+					->where('sale_id', $sale->id)
+					->whereNotNull('article_id')
+					->where(function ($q) use ($address_id) {
+						$q->where('from_address_id', $address_id)->orWhere('to_address_id', $address_id);
+					});
+
+		$concepto_nc = ConceptoStockMovement::where('name', 'Nota de credito')->first();
+
+		if (!is_null($concepto_nc)) {
+			$query->where(function ($q) use ($concepto_nc) {
+				$q->whereNull('concepto_stock_movement_id')->orWhere('concepto_stock_movement_id', '<>', $concepto_nc->id);
+			});
+		}
+
+		return $query->groupByRaw('1, 2')
+					->havingRaw('ABS(SUM(amount)) > 0.0001')
+					->get();
 	}
 
 }

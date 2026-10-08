@@ -457,7 +457,17 @@ class DeleteSaleHelper {
         $stock_movement_nota_credito = StockMovement::where('article_id', $article->id)
                                                     ->where('concepto_stock_movement_id', $concepto->id)
                                                     ->where('sale_id', $sale->id);
-        if (!is_null($article->pivot->article_variant_id)) {
+        /*
+            🔴 Sin variante = SOLO los movimientos sin variante (misión
+            variantes-mismo-articulo-en-vender, 8/10/2026). Antes un renglón sin variante no filtraba
+            nada y contaba como suyas las devoluciones de las filas con variante del mismo artículo.
+            Mismo criterio (null, 0 y '' son "sin variante") que ArticleHelper::misma_variante().
+        */
+        if (ArticleHelper::misma_variante($article->pivot->article_variant_id, null)) {
+            $stock_movement_nota_credito = $stock_movement_nota_credito->where(function ($q) {
+                $q->whereNull('article_variant_id')->orWhere('article_variant_id', 0);
+            });
+        } else {
             $stock_movement_nota_credito = $stock_movement_nota_credito->where('article_variant_id', $article->pivot->article_variant_id);
         }
              
