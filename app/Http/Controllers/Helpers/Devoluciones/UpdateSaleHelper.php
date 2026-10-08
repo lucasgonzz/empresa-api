@@ -24,8 +24,9 @@ class UpdateSaleHelper {
 	 *   - la SPA manda un ítem por fila (`format_items` de Devoluciones): cada ítem va a SU fila,
 	 *     la primera libre con el mismo precio y la misma cantidad, si no la primera libre con el
 	 *     mismo precio, si no la primera libre (en orden de id);
-	 *   - si llega UN solo ítem para una clave que tiene varias filas (un renglón agrupado), el total
-	 *     se reparte en orden de id sin pasar la cantidad de cada fila, y lo que sobre va a la última.
+	 *   - si llega UN solo ítem para una clave que tiene varias filas y no es ninguna de ellas (un
+	 *     renglón agrupado), el total se reparte en orden de id sin pasar la cantidad de cada fila, y
+	 *     lo que sobre va a la última.
 	 *
 	 * @param  \Illuminate\Http\Request  $request
 	 * @return void
@@ -111,8 +112,12 @@ class UpdateSaleHelper {
 			return;
 		}
 
-		// Un renglón agrupado para varias filas: se reparte.
-		if (count($items) == 1 && count($filas) > 1) {
+		/*
+			Un renglón agrupado para varias filas: se reparte. Solo si el ítem NO es una de las filas
+			(mismo precio y misma cantidad): con un único ítem que sí es una fila (el operador sacó las
+			otras de la lista), repartir le pisaría el `returned_amount` a las demás.
+		*/
+		if (count($items) == 1 && count($filas) > 1 && !Self::es_una_de_las_filas($filas, $items[0])) {
 
 			Self::repartir_devueltas($filas, $items[0]['returned_amount']);
 			return;
@@ -135,6 +140,31 @@ class UpdateSaleHelper {
 				->where('id', $fila->id)
 				->update(['returned_amount' => $item['returned_amount']]);
 		}
+	}
+
+	/**
+	 * ¿El ítem es exactamente una de las filas (mismo precio y misma cantidad)?
+	 *
+	 * @param  array  $filas
+	 * @param  array  $item
+	 * @return bool
+	 */
+	static function es_una_de_las_filas($filas, $item) {
+
+		if (!isset($item['price_vender']) || !isset($item['amount'])) {
+			return false;
+		}
+
+		foreach ($filas as $fila) {
+			if (
+				abs((float)$fila->price - (float)$item['price_vender']) < 0.0001
+				&& abs((float)$fila->amount - (float)$item['amount']) < 0.0001
+			) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**

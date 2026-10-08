@@ -200,6 +200,44 @@ class Devoluciones_Test extends VariantesEnVentaTestCase
     }
 
     /**
+     * A3 — varios precios devueltos de a una fila por vez (el operador saca de la lista la otra
+     * fila): cada devolución marca SU fila y no le pisa lo devuelto a la otra.
+     *
+     * @test
+     */
+    public function varios_precios_devolver_de_a_una_fila_no_pisa_la_otra()
+    {
+        $e = $this->escenario();
+
+        $testigo = $e['testigo'];
+
+        $renglon = [
+            'is_article'     => true,
+            'id'             => $testigo->id,
+            'name'           => $testigo->name,
+            'price_vender'   => 100,
+            'amount'         => 5,
+            'varios_precios' => [
+                ['id' => 1, 'price_vender' => 100, 'amount' => 2, 'price_vender_con_recargos' => 100, 'price_vender_sin_recargos' => null],
+                ['id' => 0, 'price_vender' => 50, 'amount' => 3, 'price_vender_con_recargos' => 50, 'price_vender_sin_recargos' => null],
+            ],
+        ];
+
+        $venta = $this->crear_venta([$renglon], ['address_id' => $e['suc1']->id, 'total' => 351, 'sub_total' => 351]);
+
+        $de_100 = DB::table('article_sale')->where('sale_id', $venta->id)->where('article_id', $testigo->id)->where('price', 100)->first();
+
+        $this->devolver($venta, [$this->item_devolucion($de_100, 1)], $e['suc1']->id);
+
+        $de_50 = DB::table('article_sale')->where('sale_id', $venta->id)->where('article_id', $testigo->id)->where('price', 50)->first();
+
+        $this->devolver($venta, [$this->item_devolucion($de_50, 2)], $e['suc1']->id);
+
+        $this->assertEquals(1.0, (float) DB::table('article_sale')->where('id', $de_100->id)->value('returned_amount'), 'La fila de 100 conserva su 1 devuelta.');
+        $this->assertEquals(2.0, (float) DB::table('article_sale')->where('id', $de_50->id)->value('returned_amount'), 'La fila de 50 registra sus 2.');
+    }
+
+    /**
      * A2, camino viejo — una NC de antes de esta misión no tiene la variante en su pivot ni (si es
      * anterior a la auditoría de stock) movimientos atados. Borrarla sigue el criterio de siempre: el
      * renglón con más devuelto y la sucursal de la venta.
