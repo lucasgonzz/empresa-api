@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -132,7 +133,8 @@ class BudgetController extends Controller
             CuentaCorrienteLock::bloquear('client', $request->client_id);
 
             // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
-            $model = Budget::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(CobroPresupuestoEsquemaHelper::agregar_al_payload(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // Y la de aplicar_descuentos_directo_a_items envuelve a esa: mismo motivo, otra columna (ver la clave, más abajo).
+            $model = Budget::create(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(CobroPresupuestoEsquemaHelper::agregar_al_payload(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                       => $this->num('budgets'),
                 'client_id'                 => $request->client_id,
                 'start_at'                  => $request->start_at,
@@ -153,6 +155,18 @@ class BudgetController extends Controller
                 'surchages_in_services'     => $request->surchages_in_services,
                 'discounts_in_services'     => $request->discounts_in_services,
                 'aplicar_recargos_directo_a_items' => $request->aplicar_recargos_directo_a_items,
+                /*
+                 * 🔴 La opción hermana para DESCUENTOS (misión descuentos-aplicar-al-precio-del-articulo,
+                 * 8/10/2026). Prendida, el descuento viaja ADENTRO del `price` de cada renglón y
+                 * `BudgetHelper::getTotal()` no lo vuelve a restar: si lo hiciera, la diferencia contra
+                 * `budgets.total` se pasaría del margen de 3 de más abajo y el alta moriría con "El total
+                 * del presupuesto no corresponde con los productos ingresados".
+                 *
+                 * ⚠️ Esta clave NO va pelada: `Budget` declara `$guarded = []` y entre que el deploy sube
+                 * los archivos y corre las migraciones la columna no existe. La guarda que envuelve todo
+                 * este array la saca en esa ventana. Ver `DescuentosEnPreciosEsquemaHelper`.
+                 */
+                'aplicar_descuentos_directo_a_items' => $request->aplicar_descuentos_directo_a_items,
                 /*
                  * Default 1 (pesos) si no viaja, igual que `SaleController::store()` (tanda 2 de la
                  * mision vender-lista-obligatoria, 18/9/2026, item A6). Hasta hoy iba pelado: la
@@ -206,7 +220,7 @@ class BudgetController extends Controller
              * la de `iva_en_articulos_sin_iva` (mision iva-a-articulos-sin-iva-en-vender): las tres
              * guardas se anidan y cada una saca SU clave si SU columna todavia no esta.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'), $filas_de_cobro), 'budgets'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'), $filas_de_cobro), 'budgets'), 'budgets'));
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
             GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
@@ -662,6 +676,16 @@ class BudgetController extends Controller
             $model->aplicar_recargos_directo_a_items = !is_null($request->aplicar_recargos_directo_a_items)
                                                         ? $request->aplicar_recargos_directo_a_items
                                                         : $model->aplicar_recargos_directo_a_items;
+            /*
+                La hermana para descuentos (misión descuentos-aplicar-al-precio-del-articulo,
+                8/10/2026), con la MISMA regla de preservación y por el mismo motivo que la de arriba:
+                una SPA anterior a esta misión no manda la clave, y asignarla pelada dejaría el flag
+                en null con los precios del pivot todavía descontados; `update()` no valida el total
+                como `store()`, así que el presupuesto se guardaría mal y recién al confirmarlo la
+                venta nacería con el descuento restado DOS veces. Pasa por la guarda de esquema: en la
+                ventana del deploy la columna no existe.
+            */
+            DescuentosEnPreciosEsquemaHelper::asignar_flag_en_update($model, $request->aplicar_descuentos_directo_a_items, 'budgets');
             // Sin la clave se preserva la guardada (columna NOT NULL): mismo motivo que el default 1 de store().
             $model->moneda_id                 = !is_null($request->moneda_id) ? $request->moneda_id : $model->moneda_id;
             /*
