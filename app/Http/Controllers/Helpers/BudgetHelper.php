@@ -391,6 +391,18 @@ class BudgetHelper {
 			 * primer segundo, aunque el presupuesto no lo estuviera. Lo mismo en los tres
 			 * `attachSale*` de abajo.
 			 */
+			/*
+			 * 🔴 La VARIANTE del renglon pasa a la venta (mision presupuestos-con-variantes,
+			 * 8/10/2026). Hasta hoy el presupuesto no la guardaba, y la venta nacia con el articulo
+			 * padre: perdia "Talle M" y el stock salia del articulo y no de cada variante en la
+			 * sucursal. Con la variante, la venta queda igual que una de VENDER (mismas dos columnas
+			 * de `article_sale`), y el borrado, las devoluciones y la edicion ya la manejan.
+			 *
+			 * Un presupuesto viejo (o uno guardado en la ventana del deploy, sin las columnas) trae
+			 * null: la venta y el stock quedan exactamente como siempre.
+			 */
+			$variante = Self::variante_para_la_venta($article);
+
 			$sale->articles()->attach($article->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
@@ -400,6 +412,8 @@ class BudgetHelper {
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 				'name'				=> $article->pivot->name,
+				'article_variant_id'	=> $variante['article_variant_id'],
+				'variant_description'	=> $variante['variant_description'],
 			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'));
 
 			Log::info('sale articles:');
@@ -408,9 +422,43 @@ class BudgetHelper {
 			// Solo descontar stock de artículos si la venta lleva discount_stock (como en flujo de SaleHelper).
 			if (!$has_extencion_check_sales && (bool) $sale->discount_stock) {
 
-            	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, null);
+            	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, $variante['article_variant_id']);
 			}
 		}
+	}
+
+	/**
+	 * La variante con la que un renglon del presupuesto pasa a la venta (mision
+	 * presupuestos-con-variantes, 8/10/2026).
+	 *
+	 * Se lee del pivot con `isset`: sin las columnas (ventana del deploy) no vienen y el renglon va
+	 * sin variante, como siempre. Y se revalida contra la base: si la variante se borro desde que
+	 * se guardo el presupuesto (no tienen papelera), el stock no se puede descontar de una variante
+	 * que no existe y sale del articulo, como un renglon sin variante; la descripcion se conserva
+	 * para que la venta diga lo mismo que el presupuesto.
+	 *
+	 * @param  \App\Models\Article  $article  Renglon del presupuesto, con `pivot`.
+	 * @return array  ['article_variant_id' => int|null, 'variant_description' => string|null]
+	 */
+	static function variante_para_la_venta($article) {
+
+		$article_variant_id = VarianteEnPresupuestoEsquemaHelper::variante_del_pivot($article->pivot);
+		$variant_description = VarianteEnPresupuestoEsquemaHelper::descripcion_del_pivot($article->pivot);
+
+		if (
+			!is_null($article_variant_id)
+			&& !ArticleVariant::where('id', $article_variant_id)->where('article_id', $article->id)->exists()
+		) {
+
+			Log::info('attachSaleArticles: la variante '.$article_variant_id.' del presupuesto ya no existe, el renglon '.$article->id.' pasa a la venta sin variante.');
+
+			$article_variant_id = null;
+		}
+
+		return [
+			'article_variant_id'	=> $article_variant_id,
+			'variant_description'	=> $variant_description,
+		];
 	}
 
 	static function attachSalePromocionVinotecas($sale, $budget) {
