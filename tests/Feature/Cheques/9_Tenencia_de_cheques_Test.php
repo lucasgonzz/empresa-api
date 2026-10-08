@@ -1828,6 +1828,11 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
                 'tenencia' => 'cuerpo: cheque_id por cheque_del_dueno() (+ ChequeHelper::problemas_de_endoso_en_payload) y provider_id por proveedor_del_dueno() -> 422, antes de escribir nada; el cheque_banco_id de la copia, por ChequeHelper::cheque_banco_id_de(..., dueño).',
                 'prueba'   => 'Tenencia_de_cheques_Test::no_se_endosa_a_un_proveedor_de_otro_dueno; Endosar_desde_el_modulo_Test; Prevalidacion_de_endoso_Test::un_cheque_id_que_no_es_numero_es_sin_cheque_en_las_tres_puertas',
             ],
+            'PUT api/cheque/{id}' => [
+                'accion'   => $cheque . 'update',
+                'tenencia' => 'ruta: cheque_del_dueno($id) (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El cheque no existe o no es de tu cuenta.", el mismo cuerpo para ajeno, inexistente y basura; el banco del cuerpo, por ChequeHelper::id_del_dueno(ChequeBanco) -> 422, antes de escribir nada; el par endosado se busca siempre con user_id = dueño.',
+                'prueba'   => 'Edicion_acotada_Test::un_cheque_ajeno_inexistente_o_basura_es_404_y_no_toca_nada, ::un_banco_ajeno_o_inexistente_es_422_y_no_escribe_nada y ::un_cheque_endosado_replica_al_otro_papel_todo_menos_las_notas (la copia de otro dueño no se toca)',
+            ],
             'DELETE api/cheque/{id}' => [
                 'accion'   => $cheque . 'destroy',
                 'tenencia' => 'ruta: cheque_del_dueno($id) (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El cheque no existe o no es de tu cuenta.", el mismo cuerpo para ajeno, inexistente y basura.',

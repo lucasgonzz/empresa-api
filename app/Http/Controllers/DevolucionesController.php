@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
 use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoProveedorHelper;
+use App\Http\Controllers\Helpers\Devoluciones\NotasExistentesDeLaVentaHelper;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Models\AfipTicket;
 use App\Models\CreditAccount;
@@ -64,6 +65,35 @@ class DevolucionesController extends Controller
         */
         if ($request->tipo == 'compra') {
             return NotaCreditoProveedorHelper::store($request);
+        }
+
+        /*
+            🔴 Aviso de nota de crédito existente (misión nc-aviso-existente-y-sin-cliente, 8/10/2026).
+            Si la venta YA tiene una nota de crédito que devolvió estas unidades, se responde 409 con
+            las notas para que la pantalla ofrezca facturar la existente, crear otra igual
+            (`confirmar_duplicada`) o cancelar. Es OPT-IN (`verificar_notas_existentes`, que manda solo
+            la SPA nueva): sin ese campo el camino es el de siempre, así una pantalla vieja contra esta
+            API se comporta igual. Va ANTES del tope de stock: ese sigue siendo el bloqueo duro, y
+            corre igual si el usuario confirma la duplicada.
+        */
+        if (
+            $request->boolean('verificar_notas_existentes')
+            && !$request->boolean('confirmar_duplicada')
+            && $request->sale_id
+        ) {
+
+            $notas_existentes = NotasExistentesDeLaVentaHelper::buscar($request->sale_id, $request->items);
+
+            if (count($notas_existentes)) {
+
+                $primera = $notas_existentes[0];
+
+                return response()->json([
+                    'message'         => 'Esta venta ya tiene una nota de crédito que devuelve esas unidades ('.$primera['detalle'].'). Elegí si querés facturarla, crear otra igual o cancelar.',
+                    'nota_existente'  => true,
+                    'notas'           => $notas_existentes,
+                ], 409);
+            }
         }
 
         /*

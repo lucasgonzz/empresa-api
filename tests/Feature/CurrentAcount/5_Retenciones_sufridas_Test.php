@@ -15,6 +15,7 @@ use App\Models\MovimientoCaja;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
+use App\Models\RetencionImpuesto;
 use App\Models\RetencionSufrida;
 use App\Models\User;
 use Carbon\Carbon;
@@ -1023,6 +1024,331 @@ class Retenciones_sufridas_Test extends EmpresaTestCase
 
         $this->assertNull($certificado->base_imponible, 'Un texto que no es número quedó guardado como 0: se lee como "la base fue cero".');
         $this->assertNull($certificado->alicuota);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Impuestos propios del comercio (misión retenciones-abm-impuestos, 8/10/2026)
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Un impuesto de retención propio del dueño del fixture.
+     *
+     * @param  string $nombre
+     * @param  int|null $user_id Otro dueño, para armar uno ajeno.
+     * @return \App\Models\RetencionImpuesto
+     */
+    protected function impuesto_propio($nombre, $user_id = null)
+    {
+        return RetencionImpuesto::create([
+            'name'    => $nombre,
+            'user_id' => is_null($user_id) ? $this->dueno->id : $user_id,
+        ]);
+    }
+
+    /**
+     * Un certificado cargado a mano (sin pasar por el cobro), para armar períodos con contenido
+     * conocido.
+     *
+     * @param  string $impuesto
+     * @param  string $fecha
+     * @param  float $importe
+     * @return \App\Models\RetencionSufrida
+     */
+    protected function certificado_a_mano($impuesto, $fecha, $importe)
+    {
+        $certificado = RetencionSufrida::create([
+            'user_id'  => $this->dueno->id,
+            'impuesto' => $impuesto,
+            'fecha'    => $fecha,
+            'importe'  => $importe,
+            'origen'   => RetencionSufrida::ORIGEN_COBRO,
+        ]);
+
+        $this->retenciones_creadas[] = $certificado->id;
+
+        return $certificado;
+    }
+
+    /**
+     * Pega contra `GET api/reportes/posicion-fiscal` y devuelve el array `posicion_fiscal`.
+     *
+     * @param  string $desde
+     * @param  string $hasta
+     * @return array
+     */
+    protected function posicion_fiscal_por_api($desde, $hasta)
+    {
+        $response = $this->getJson('api/reportes/posicion-fiscal?'.http_build_query(['desde' => $desde, 'hasta' => $hasta]));
+
+        $response->assertStatus(200);
+
+        return $response->json('posicion_fiscal');
+    }
+
+    /**
+     * Un cobro con un certificado de un impuesto propio guarda el certificado con la clave
+     * `imp_<id>`, y el cobro cancela la deuda entera igual que con cualquier otro impuesto.
+     *
+     * @group current-acount
+     * @group retenciones
+     * @test
+     */
+    public function el_cobro_con_un_impuesto_propio_guarda_el_certificado_con_su_clave()
+    {
+        $suss = $this->impuesto_propio('SUSS');
+
+        list($cliente, $cuenta, $debito) = $this->cliente_con_deuda('Cliente Retencion Impuesto Propio');
+
+        $pago = $this->cobrar($this->payload_con_retencion($cliente, $cuenta, [
+            'retencion_impuesto'           => 'imp_'.$suss->id,
+            'retencion_numero_certificado' => 'S-77',
+        ]));
+
+        $certificado = RetencionSufrida::where('current_acount_id', $pago->id)->first();
+
+        $this->assertNotNull($certificado, 'No se guardó el certificado del impuesto propio.');
+        $this->retenciones_creadas[] = $certificado->id;
+
+        $this->assertEquals('imp_'.$suss->id, $certificado->impuesto);
+        $this->assertEqualsWithDelta(self::RETENCION, (float) $certificado->importe, self::DELTA);
+        $this->assertEquals($this->dueno->id, $certificado->user_id);
+
+        // La regla de siempre: el medio de pago cancela la deuda entera, sea cual sea el impuesto.
+        $debito->refresh();
+        $this->assertEquals('pagado', $debito->status);
+        $this->assertEqualsWithDelta(self::DEUDA, (float) $pago->haber, self::DELTA);
+
+        // El nombre del impuesto se resuelve en el detalle del reporte.
+        $desde = Carbon::now()->startOfMonth()->format('Y-m-d');
+        $hasta = Carbon::now()->endOfMonth()->format('Y-m-d');
+
+        $detalle = ContabilidadRepository::retenciones_sufridas_detalle($this->dueno->id, $desde, $hasta, 1, 200);
+
+        $fila = null;
+
+        foreach ($detalle['registros'] as $registro) {
+
+            if ($registro['id'] == $certificado->id) {
+                $fila = $registro;
+            }
+        }
+
+        $this->assertNotNull($fila, 'El certificado del impuesto propio no aparece en el detalle.');
+        $this->assertStringContainsString('Retención SUSS', $fila['descripcion']);
+        $this->assertStringContainsString('S-77', $fila['descripcion']);
+    }
+
+    /**
+     * Un `imp_<id>` que no es del dueño —de otro comercio, inexistente o mal escrito— cae en
+     * ganancias, igual que cualquier valor desconocido antes de esta misión.
+     *
+     * @group current-acount
+     * @group retenciones
+     * @test
+     */
+    public function un_impuesto_propio_que_no_es_del_dueno_cae_en_ganancias()
+    {
+        $otro_dueno = User::create([
+            'name'     => 'Otro comercio retenciones',
+            'email'    => 'retenciones-otro-' . uniqid() . '@test.local',
+            'password' => bcrypt('secret'),
+        ]);
+
+        $ajeno = $this->impuesto_propio('Impuesto del vecino', $otro_dueno->id);
+        $propio = $this->impuesto_propio('SUSS');
+
+        $valores = [
+            'de otro dueño'           => 'imp_'.$ajeno->id,
+            'inexistente'             => 'imp_'.($propio->id + 100000),
+            'sin número'              => 'imp_',
+            'con basura al final'     => 'imp_'.$propio->id.'abc',
+            'con espacio adentro'     => 'imp_ '.$propio->id,
+            'número negativo'         => 'imp_-'.$propio->id,
+        ];
+
+        foreach ($valores as $caso => $valor) {
+
+            list($cliente, $cuenta, $debito) = $this->cliente_con_deuda('Cliente Retencion Ajeno '.$caso);
+
+            $pago = $this->cobrar($this->payload_con_retencion($cliente, $cuenta, ['retencion_impuesto' => $valor]));
+
+            $certificado = RetencionSufrida::where('current_acount_id', $pago->id)->first();
+
+            $this->assertNotNull($certificado, 'El cobro con un impuesto '.$caso.' no guardó el certificado.');
+            $this->retenciones_creadas[] = $certificado->id;
+
+            $this->assertEquals(
+                RetencionSufrida::IMPUESTO_POR_DEFECTO,
+                $certificado->impuesto,
+                'Un impuesto '.$caso.' ('.$valor.') no cayó en ganancias.'
+            );
+        }
+
+        // La forma canónica: mayúsculas y ceros a la izquierda se normalizan a la clave del impuesto.
+        list($cliente, $cuenta, $debito) = $this->cliente_con_deuda('Cliente Retencion Canonica');
+
+        $pago = $this->cobrar($this->payload_con_retencion($cliente, $cuenta, [
+            'retencion_impuesto' => ' IMP_000'.$propio->id.' ',
+        ]));
+
+        $certificado = RetencionSufrida::where('current_acount_id', $pago->id)->first();
+        $this->retenciones_creadas[] = $certificado->id;
+
+        $this->assertEquals('imp_'.$propio->id, $certificado->impuesto);
+    }
+
+    /**
+     * Sin dueño para comprobarlo, un `imp_<id>` no se acepta (normalizar_impuesto se comporta como
+     * antes de esta misión cuando no recibe `$user_id`).
+     *
+     * @group retenciones
+     * @test
+     */
+    public function normalizar_impuesto_sin_dueno_no_acepta_impuestos_propios()
+    {
+        $suss = $this->impuesto_propio('SUSS');
+
+        $this->assertEquals('ganancias', RetencionSufrida::normalizar_impuesto('imp_'.$suss->id));
+        $this->assertEquals('imp_'.$suss->id, RetencionSufrida::normalizar_impuesto('imp_'.$suss->id, $this->dueno->id));
+        $this->assertEquals('iva', RetencionSufrida::normalizar_impuesto(' IVA '));
+        $this->assertEquals('ganancias', RetencionSufrida::normalizar_impuesto(null, $this->dueno->id));
+        $this->assertEquals('SUSS', RetencionSufrida::nombre_impuesto('imp_'.$suss->id, $this->dueno->id));
+        $this->assertEquals('Ganancias', RetencionSufrida::nombre_impuesto('ganancias'));
+    }
+
+    /**
+     * 🔴 UN IMPUESTO PROPIO ES INFORMATIVO. La Posición Fiscal con un certificado `imp_*` no cambia
+     * ni el saldo de IVA, ni el de IIBB, ni los pagos a cuenta de Ganancias, y trae el renglón nuevo
+     * `otras_retenciones` con el monto.
+     *
+     * Período exclusivo de este test (marzo de 2031, donde nadie siembra nada): se compara contra la
+     * medición previa de la misma API.
+     *
+     * @group current-acount
+     * @group retenciones
+     * @test
+     */
+    public function la_posicion_fiscal_no_resta_un_impuesto_propio_y_lo_muestra_como_otra_retencion()
+    {
+        $desde = '2031-03-01';
+        $hasta = '2031-03-31';
+
+        $suss = $this->impuesto_propio('SUSS');
+
+        $antes = $this->posicion_fiscal_por_api($desde, $hasta);
+
+        $this->assertSame([], $antes['otras_retenciones'], 'Sin impuestos propios, otras_retenciones tiene que venir como lista vacía.');
+
+        list($cliente, $cuenta, $debito) = $this->cliente_con_deuda('Cliente Retencion Posicion Propia');
+
+        $pago = $this->cobrar($this->payload_con_retencion($cliente, $cuenta, [
+            'retencion_impuesto' => 'imp_'.$suss->id,
+            'retencion_fecha'    => '2031-03-15',
+        ]));
+
+        $certificado = RetencionSufrida::where('current_acount_id', $pago->id)->first();
+        $this->assertNotNull($certificado);
+        $this->retenciones_creadas[] = $certificado->id;
+
+        $despues = $this->posicion_fiscal_por_api($desde, $hasta);
+
+        $this->assertEquals($antes['posicion_iva'], $despues['posicion_iva'], 'Un impuesto propio cambió la posición de IVA: es informativo, no resta.');
+        $this->assertEquals($antes['posicion_iibb'], $despues['posicion_iibb'], 'Un impuesto propio cambió la posición de IIBB: es informativo, no resta.');
+        $this->assertEquals($antes['pagos_a_cuenta_ganancias'], $despues['pagos_a_cuenta_ganancias'], 'Un impuesto propio cambió los pagos a cuenta de Ganancias.');
+
+        $this->assertCount(1, $despues['otras_retenciones']);
+        $this->assertEquals('imp_'.$suss->id, $despues['otras_retenciones'][0]['impuesto']);
+        $this->assertEquals('SUSS', $despues['otras_retenciones'][0]['nombre']);
+        $this->assertEqualsWithDelta(self::RETENCION, (float) $despues['otras_retenciones'][0]['monto'], self::DELTA);
+    }
+
+    /**
+     * El repositorio mantiene iva/iibb/ganancias como estaban y suma `otros` y `otros_detalle`:
+     * un renglón por impuesto propio, ordenado por nombre, sin los de monto cero y sin doble
+     * conteo con los tres de siempre.
+     *
+     * @group retenciones
+     * @test
+     */
+    public function el_repositorio_separa_los_impuestos_propios_de_los_tres_de_siempre()
+    {
+        $desde = '2031-04-01';
+        $hasta = '2031-04-30';
+
+        $suss = $this->impuesto_propio('SUSS');
+        $municipal = $this->impuesto_propio('Municipal');
+        $en_cero = $this->impuesto_propio('Compensado');
+
+        $this->certificado_a_mano('iva', '2031-04-05', 1000);
+        $this->certificado_a_mano('iibb', '2031-04-06', 200);
+        $this->certificado_a_mano('ganancias', '2031-04-07', 30);
+        $this->certificado_a_mano('imp_'.$suss->id, '2031-04-08', 400);
+        $this->certificado_a_mano('imp_'.$suss->id, '2031-04-09', 100.5);
+        $this->certificado_a_mano('imp_'.$municipal->id, '2031-04-10', 7);
+        // Un impuesto cuyo neto da cero no es un renglón.
+        $this->certificado_a_mano('imp_'.$en_cero->id, '2031-04-11', 50);
+        $this->certificado_a_mano('imp_'.$en_cero->id, '2031-04-12', -50);
+        // Fuera del período.
+        $this->certificado_a_mano('imp_'.$suss->id, '2031-05-01', 99999);
+
+        $retenciones = ContabilidadRepository::retenciones_sufridas($this->dueno->id, $desde, $hasta);
+
+        $this->assertEqualsWithDelta(1000, $retenciones['iva'], self::DELTA);
+        $this->assertEqualsWithDelta(200, $retenciones['iibb'], self::DELTA);
+        $this->assertEqualsWithDelta(30, $retenciones['ganancias'], self::DELTA);
+        $this->assertEqualsWithDelta(507.5, $retenciones['otros'], self::DELTA);
+
+        $this->assertCount(2, $retenciones['otros_detalle']);
+        $this->assertEquals('Municipal', $retenciones['otros_detalle'][0]['nombre']);
+        $this->assertEquals('imp_'.$municipal->id, $retenciones['otros_detalle'][0]['impuesto']);
+        $this->assertEqualsWithDelta(7, $retenciones['otros_detalle'][0]['monto'], self::DELTA);
+        $this->assertEquals('SUSS', $retenciones['otros_detalle'][1]['nombre']);
+        $this->assertEqualsWithDelta(500.5, $retenciones['otros_detalle'][1]['monto'], self::DELTA);
+    }
+
+    /**
+     * El total de la tarjeta "retenciones" del detalle suma también los impuestos propios, así que
+     * coincide con la suma de sus filas (el detalle lista TODOS los certificados).
+     *
+     * @group retenciones
+     * @test
+     */
+    public function el_total_del_detalle_de_retenciones_coincide_con_la_suma_de_sus_filas()
+    {
+        $desde = '2031-06-01';
+        $hasta = '2031-06-30';
+
+        $suss = $this->impuesto_propio('SUSS');
+        $municipal = $this->impuesto_propio('Municipal');
+
+        $this->certificado_a_mano('iva', '2031-06-05', 1000);
+        $this->certificado_a_mano('ganancias', '2031-06-07', 30);
+        $this->certificado_a_mano('imp_'.$suss->id, '2031-06-08', 400);
+        $this->certificado_a_mano('imp_'.$municipal->id, '2031-06-10', 7);
+
+        $response = $this->getJson('api/reportes/detalle?'.http_build_query([
+            'concepto' => 'retenciones',
+            'desde'    => $desde,
+            'hasta'    => $hasta,
+        ]));
+
+        $response->assertStatus(200);
+
+        $suma_de_filas = 0.0;
+        $descripciones = [];
+
+        foreach ($response->json('registros') as $registro) {
+
+            $suma_de_filas += (float) $registro['monto'];
+            $descripciones[] = $registro['descripcion'];
+        }
+
+        $this->assertCount(4, $response->json('registros'));
+        $this->assertEqualsWithDelta(1437, (float) $response->json('total'), self::DELTA);
+        $this->assertEqualsWithDelta($suma_de_filas, (float) $response->json('total'), self::DELTA, 'El total de la tarjeta no coincide con la suma de sus filas.');
+
+        $this->assertContains('Retención SUSS', $descripciones);
+        $this->assertContains('Retención Municipal', $descripciones);
     }
 
     /**

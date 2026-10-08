@@ -14,6 +14,7 @@ use App\Models\Expense;
 use App\Models\Provider;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -58,6 +59,39 @@ class ChequeHelper {
      * otros y el punto lo pone quien arma el mensaje.
      */
     const CHEQUE_DE_ENDOSO_AJENO = 'El cheque elegido para endosar no existe o no es de tu cuenta';
+
+    /**
+     * Las ÚNICAS cinco claves que la edición de un cheque (ChequeController::update) lee del pedido.
+     * `cheque_banco_id` es el banco del catálogo: el texto `banco` se deriva de él y no se edita.
+     * 🔴 Agregar una acá es abrirle una columna más al PUT: antes de hacerlo, preguntarse si cambiarla
+     * mueve plata o cuentas (cliente, proveedor, monto, estado y endoso, sí).
+     */
+    const CAMPOS_EDITABLES = ['numero', 'cheque_banco_id', 'notes', 'fecha_emision', 'fecha_pago'];
+
+    /** El 422 de la edición con un banco que no es del catálogo de esta cuenta (o que no existe). */
+    const MENSAJE_BANCO_AJENO = 'El banco elegido no existe o no es de tu cuenta.';
+
+    /** El corte de la edición cuando el cheque no es de esta cuenta (defensa: el controller ya lo filtró). */
+    const MENSAJE_CHEQUE_AJENO = 'El cheque no existe o no es de tu cuenta.';
+
+    /** El 422 de la edición que intenta dejar vacía la fecha de pago de un cheque que ya la tiene. */
+    const MENSAJE_FECHA_PAGO_VACIA = 'La fecha de pago del cheque no se puede dejar vacía.';
+
+    /**
+     * Largo máximo del número de cheque: `cheques.numero` es un varchar(191), no de 255, porque
+     * AppServiceProvider llama a Schema::defaultStringLength(191). Pasarse es un 500 en modo estricto.
+     */
+    const LARGO_MAXIMO_NUMERO = 191;
+
+    /** Largo máximo de las notas, en CARACTERES (lo que ve el usuario). */
+    const LARGO_MAXIMO_NOTAS = 20000;
+
+    /**
+     * Largo máximo de las notas, en BYTES: `notes` es un `text` (65.535 bytes). Aparte del tope en
+     * caracteres porque un emoji ocupa 4 bytes: 20.000 de ellos son 80.000 bytes y la base cortaba
+     * con un 500 (SQLSTATE 1406, Data too long).
+     */
+    const BYTES_MAXIMOS_NOTAS = 65535;
 
     /**
      * Crea el cheque de una fila de método de pago de tipo cheque, o —si la fila trae `cheque_id`—
@@ -799,6 +833,304 @@ class ChequeHelper {
         }
 
         return false;
+    }
+
+    /**
+     * La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): aplica al cheque
+     * SOLO el número, el banco, las notas, la fecha de emisión y la fecha de pago que vengan en el
+     * pedido, y nada más. Es todo-o-nada: si cualquiera de los valores es inválido no se escribe
+     * NADA (ni los campos válidos).
+     *
+     * - Una clave AUSENTE del pedido no se toca; una clave presente y vacía (null, '') vacía el campo.
+     * - `numero`: se recorta con trim, hasta 191 caracteres. `notes`: ídem, texto largo.
+     * - `cheque_banco_id`: tiene que ser un banco DEL CATÁLOGO DE ESTE DUEÑO (id_del_dueno()); el texto
+     *   legacy `banco` se reescribe con su nombre para quedar en sincronía (Excel, mostrador, SPA
+     *   vieja). Vacío (null, '', 0) con un banco previo = "sin banco": ambos quedan en null. Vacío sin
+     *   banco previo (cheque viejo que solo tiene el texto) = no se toca nada, para no perder ese texto.
+     * - La fecha de pago NO se puede vaciar: con un valor previo es un 422; si el cheque ya no la tenía,
+     *   la clave vacía se ignora. La de emisión sí puede quedar vacía.
+     * - Fechas: `YYYY-MM-DD` o un ISO datetime; se toman los primeros 10 caracteres y se valida con
+     *   checkdate(), SIN pasar por zona horaria (un `...T23:00:00-03:00` es ese día, no el siguiente).
+     * - Un recibido endosado y su copia emitida (`endosado_desde_cheque_id`) son el MISMO papel:
+     *   número, banco y fechas se replican al otro en la misma transacción. Las notas NO (cada lado
+     *   anota lo suyo). El par se filtra por el dueño.
+     *
+     * 🔴 Lo único que se escribe sale de $cambios, armado a mano clave por clave: ningún valor del
+     * pedido llega a una columna que no sea una de las cinco (y `banco`, derivado del catálogo).
+     * Cliente, proveedor, monto, cuenta corriente, caja, estado y endoso no se tocan JAMÁS por acá.
+     *
+     * @param  \App\Models\Cheque  $cheque  El cheque ya resuelto contra el dueño.
+     * @param  array  $pedido  Solo las claves de CAMPOS_EDITABLES que vinieron en el pedido.
+     * @param  int  $user_id  El dueño de la cuenta.
+     * @return array<int, string>  Los problemas, en lenguaje de comerciante; vacío si se aplicó (o si
+     *                             no había nada para cambiar).
+     */
+    static function actualizar_datos(Cheque $cheque, array $pedido, $user_id) {
+
+        // Defensa en profundidad: el controller ya resolvió el cheque con cheque_del_dueno().
+        if (empty($user_id) || (int) $cheque->user_id !== (int) $user_id) {
+
+            return [self::MENSAJE_CHEQUE_AJENO];
+        }
+
+        $problemas = [];
+        $cambios = [];
+
+        if (array_key_exists('numero', $pedido)) {
+
+            list($numero, $problema) = self::leer_texto_de_cheque($pedido['numero'], self::LARGO_MAXIMO_NUMERO, 'El número del cheque no es válido.', 'El número del cheque es demasiado largo: el máximo es de '.self::LARGO_MAXIMO_NUMERO.' caracteres.');
+
+            if (is_null($problema)) {
+
+                $cambios['numero'] = $numero;
+
+            } else {
+
+                $problemas[] = $problema;
+            }
+        }
+
+        if (array_key_exists('notes', $pedido)) {
+
+            list($notas, $problema) = self::leer_texto_de_cheque($pedido['notes'], self::LARGO_MAXIMO_NOTAS, 'Las notas del cheque no son válidas.', 'Las notas del cheque son demasiado largas.', self::BYTES_MAXIMOS_NOTAS);
+
+            if (is_null($problema)) {
+
+                $cambios['notes'] = $notas;
+
+            } else {
+
+                $problemas[] = $problema;
+            }
+        }
+
+        foreach (['fecha_emision' => 'La fecha de emisión', 'fecha_pago' => 'La fecha de pago'] as $clave => $rotulo) {
+
+            if (!array_key_exists($clave, $pedido)) {
+
+                continue;
+            }
+
+            list($fecha, $problema) = self::leer_fecha_de_cheque($pedido[$clave], $rotulo.' no es válida.');
+
+            // La fecha de pago no se puede dejar vacía: ChequeController::index() hace
+            // Carbon::parse(fecha_pago), que con null da "ahora", y el cheque caería en "pendientes"
+            // sin que nadie lo decida. Si el cheque ya la tiene, es un 422; si no la tenía (cheque
+            // viejo que la SPA reenvía igual), no es un cambio y se ignora la clave.
+            if ($clave === 'fecha_pago' && is_null($problema) && is_null($fecha)) {
+
+                if (!empty($cheque->fecha_pago)) {
+
+                    $problemas[] = self::MENSAJE_FECHA_PAGO_VACIA;
+                }
+
+                continue;
+            }
+
+            if (is_null($problema)) {
+
+                $cambios[$clave] = $fecha;
+
+            } else {
+
+                $problemas[] = $problema;
+            }
+        }
+
+        if (array_key_exists('cheque_banco_id', $pedido)) {
+
+            $banco_pedido = self::id_del_pedido($pedido['cheque_banco_id']);
+
+            // El MISMO banco que el cheque ya tiene: la SPA reenvía el modelo entero, así que es el
+            // formulario devolviendo lo que ya había y no un pedido de cambiarlo. No se toca nada del
+            // banco (ni el id ni el texto) y no se valida la tenencia: un cheque viejo atado al banco
+            // de otro comercio (dato anterior al arreglo del 3/10/2026) tiene que poder editarse. Pedir
+            // un id DISTINTO que no es del dueño sigue siendo 422.
+            if ($banco_pedido > 0 && $banco_pedido === (int) $cheque->cheque_banco_id) {
+
+                // Nada que hacer con el banco.
+
+            } elseif (self::es_sin_caja($pedido['cheque_banco_id'])) {
+
+                // "Vacío" es la misma lista blanca de es_sin_caja(): null, '', el entero 0 o solo ceros.
+
+                // Solo si había banco del catálogo: un cheque viejo con apenas el texto `banco` recibe
+                // del formulario un "sin banco" que NO es una orden de borrar ese texto.
+                if (!empty($cheque->cheque_banco_id)) {
+
+                    $cambios['cheque_banco_id'] = null;
+                    $cambios['banco'] = null;
+                }
+
+            } else {
+
+                $banco_id = self::id_del_dueno(ChequeBanco::class, $pedido['cheque_banco_id'], $user_id);
+
+                if (is_null($banco_id)) {
+
+                    $problemas[] = self::MENSAJE_BANCO_AJENO;
+
+                } else {
+
+                    $cambios['cheque_banco_id'] = $banco_id;
+                    $cambios['banco'] = ChequeBanco::where('id', $banco_id)->value('name');
+                }
+            }
+        }
+
+        if (count($problemas)) {
+
+            return $problemas;
+        }
+
+        if (!count($cambios)) {
+
+            return [];
+        }
+
+        // Lo que se replica al otro papel del endoso: todo menos las notas.
+        $para_el_par = $cambios;
+        unset($para_el_par['notes']);
+
+        DB::transaction(function () use ($cheque, $cambios, $para_el_par, $user_id) {
+
+            /*
+             * 🔴 Por MODELO (->update() sobre la instancia) y no por builder: el builder no dispara los
+             * eventos de Eloquent y AuditLogRecorder solo ve eventos, o sea que la edición no dejaría
+             * rastro en audit_logs (Cheque es un modelo no excluible de la auditoría; cobrar, pagar y
+             * rechazar auditan porque usan save()). $cambios y $para_el_par se arman a mano arriba,
+             * clave por clave, así que el `$guarded = []` del modelo no abre nada.
+             */
+            $propio = Cheque::where('id', $cheque->id)
+                            ->where('user_id', $user_id)
+                            ->first();
+
+            if (!is_null($propio)) {
+
+                $propio->update($cambios);
+            }
+
+            if (count($para_el_par)) {
+
+                $par = self::par_del_endoso($cheque, $user_id);
+
+                if (!is_null($par)) {
+
+                    foreach ($par->get() as $otro) {
+
+                        $otro->update($para_el_par);
+                    }
+                }
+            }
+        });
+
+        return [];
+    }
+
+    /**
+     * El builder de las filas que son "el otro papel" del mismo cheque endosado, siempre del dueño:
+     * para un recibido, las copias emitidas que nacieron de él (`endosado_desde_cheque_id` = su id);
+     * para una copia emitida, el recibido del que salió. null si el cheque no está en ningún endoso.
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @param  int  $user_id
+     * @return \Illuminate\Database\Eloquent\Builder|null
+     */
+    protected static function par_del_endoso(Cheque $cheque, $user_id) {
+
+        if ($cheque->tipo === 'recibido') {
+
+            $q = Cheque::where('endosado_desde_cheque_id', $cheque->id);
+
+        } elseif (!empty($cheque->endosado_desde_cheque_id)) {
+
+            $q = Cheque::where('id', $cheque->endosado_desde_cheque_id);
+
+        } else {
+
+            return null;
+        }
+
+        return $q->where('user_id', $user_id);
+    }
+
+    /**
+     * Lee un texto libre del pedido (número, notas): null y '' son "vaciar"; un número entero o
+     * decimal se toma como texto; un booleano o un array no son texto. Se recorta con trim().
+     *
+     * @param  mixed  $valor
+     * @param  int  $largo_maximo
+     * @param  string  $mensaje_invalido
+     * @param  string  $mensaje_largo
+     * @param  int|null  $bytes_maximo  Tope en bytes además del de caracteres (columnas `text`); null si no aplica.
+     * @return array{0: string|null, 1: string|null}  [valor a guardar, problema]
+     */
+    protected static function leer_texto_de_cheque($valor, $largo_maximo, $mensaje_invalido, $mensaje_largo, $bytes_maximo = null) {
+
+        if (is_null($valor)) {
+
+            return [null, null];
+        }
+
+        if (!is_string($valor) && !is_int($valor) && !is_float($valor)) {
+
+            return [null, $mensaje_invalido];
+        }
+
+        $texto = trim((string) $valor);
+
+        if ($texto === '') {
+
+            return [null, null];
+        }
+
+        if (mb_strlen($texto) > $largo_maximo || (!is_null($bytes_maximo) && strlen($texto) > $bytes_maximo)) {
+
+            return [null, $mensaje_largo];
+        }
+
+        return [$texto, null];
+    }
+
+    /**
+     * Lee una fecha del pedido: null y '' son "vaciar"; `YYYY-MM-DD` o un ISO datetime (`...T...`
+     * o `... ...`) valen por sus PRIMEROS 10 caracteres, validados con checkdate() y sin pasar por
+     * Carbon ni zona horaria: el día que escribió el usuario es el día que se guarda.
+     *
+     * @param  mixed  $valor
+     * @param  string  $mensaje_invalido
+     * @return array{0: string|null, 1: string|null}  [`YYYY-MM-DD` a guardar, problema]
+     */
+    protected static function leer_fecha_de_cheque($valor, $mensaje_invalido) {
+
+        if (is_null($valor)) {
+
+            return [null, null];
+        }
+
+        if (!is_string($valor)) {
+
+            return [null, $mensaje_invalido];
+        }
+
+        $texto = trim($valor);
+
+        if ($texto === '') {
+
+            return [null, null];
+        }
+
+        if (preg_match('/\A(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?\z/s', $texto, $m) !== 1) {
+
+            return [null, $mensaje_invalido];
+        }
+
+        if ((int) $m[1] < 1900 || !checkdate((int) $m[2], (int) $m[3], (int) $m[1])) {
+
+            return [null, $mensaje_invalido];
+        }
+
+        return [$m[1].'-'.$m[2].'-'.$m[3], null];
     }
 
     /**

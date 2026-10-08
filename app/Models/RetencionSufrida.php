@@ -34,7 +34,9 @@ class RetencionSufrida extends Model
 
     /**
      * Los tres impuestos que la Posición Fiscal sabe restar. Cualquier otro valor no tiene renglón
-     * donde caer, así que el alta lo normaliza contra esta lista.
+     * donde caer, así que el alta lo normaliza contra esta lista. La única excepción son los
+     * impuestos propios del comercio (`imp_<id>`, ver RetencionImpuesto), que viajan en la misma
+     * columna pero son informativos: no restan contra ningún saldo.
      *
      * @var array<int,string>
      */
@@ -95,13 +97,22 @@ class RetencionSufrida extends Model
     }
 
     /**
-     * Normaliza el impuesto que llegó del formulario contra los tres que la Posición Fiscal sabe
-     * restar. Lo que no está en la lista cae en IMPUESTO_POR_DEFECTO (ver su PHPDoc).
+     * Normaliza el impuesto que llegó del formulario: uno de los tres que la Posición Fiscal sabe
+     * restar, o —desde la misión retenciones-abm-impuestos (8/10/2026)— un impuesto propio del
+     * comercio (`imp_<id>`). Lo que no es ninguno de los dos cae en IMPUESTO_POR_DEFECTO (ver su
+     * PHPDoc).
+     *
+     * 🔴 UN `imp_<id>` SOLO ENTRA SI ES DEL DUEÑO. El valor viaja desde la SPA y es texto libre: un
+     * `imp_7` de otro comercio, uno que no existe o uno sin `$user_id` para comprobarlo se tratan
+     * como cualquier valor desconocido y caen en ganancias, igual que antes de esta misión. Se
+     * devuelve la forma canónica (`imp_07` queda `imp_7`) para que la búsqueda por texto exacto del
+     * resto del sistema (el borrado del impuesto, la suma de la Posición Fiscal) lo encuentre.
      *
      * @param  string|null $impuesto
+     * @param  int|null    $user_id  El dueño del cobro. Sin él, los `imp_<id>` no se aceptan.
      * @return string
      */
-    static function normalizar_impuesto($impuesto) {
+    static function normalizar_impuesto($impuesto, $user_id = null) {
 
         if (is_null($impuesto)) {
 
@@ -110,31 +121,73 @@ class RetencionSufrida extends Model
 
         $impuesto = strtolower(trim((string) $impuesto));
 
-        if (!in_array($impuesto, self::IMPUESTOS)) {
+        if (in_array($impuesto, self::IMPUESTOS)) {
 
-            return self::IMPUESTO_POR_DEFECTO;
+            return $impuesto;
         }
 
-        return $impuesto;
+        $impuesto_id = RetencionImpuesto::id_de_clave($impuesto);
+
+        if ($impuesto_id > 0 && !is_null($user_id)) {
+
+            $es_del_dueno = RetencionImpuesto::where('id', $impuesto_id)
+                                                ->where('user_id', $user_id)
+                                                ->exists();
+
+            if ($es_del_dueno) {
+
+                return RetencionImpuesto::clave($impuesto_id);
+            }
+        }
+
+        return self::IMPUESTO_POR_DEFECTO;
     }
 
     /**
      * Nombre del impuesto para mostrar en el detalle del reporte.
      *
+     * Los tres de siempre salen de una tabla fija. Un `imp_<id>` se resuelve por id contra
+     * `retencion_impuestos`: con `$nombres` (un mapa `[id => nombre]` ya cargado, para no hacer una
+     * consulta por fila en un listado) o, si no viene, consultando la tabla scopeada por
+     * `$user_id`. Si el impuesto ya no existe se dice "Impuesto eliminado" y no el código crudo.
+     *
      * @param  string|null $impuesto
+     * @param  int|null    $user_id  Dueño, para scopear la consulta de un `imp_<id>`.
+     * @param  array|null  $nombres  Mapa `[id => nombre]` precargado.
      * @return string
      */
-    static function nombre_impuesto($impuesto) {
+    static function nombre_impuesto($impuesto, $user_id = null, $nombres = null) {
 
-        $nombres = [
+        $fijos = [
             'iva'       => 'IVA',
             'iibb'      => 'IIBB',
             'ganancias' => 'Ganancias',
         ];
 
-        if (isset($nombres[$impuesto])) {
+        if (isset($fijos[$impuesto])) {
 
-            return $nombres[$impuesto];
+            return $fijos[$impuesto];
+        }
+
+        $impuesto_id = RetencionImpuesto::id_de_clave($impuesto);
+
+        if ($impuesto_id > 0) {
+
+            if (is_array($nombres)) {
+
+                return isset($nombres[$impuesto_id]) ? (string) $nombres[$impuesto_id] : 'Impuesto eliminado';
+            }
+
+            $query = RetencionImpuesto::where('id', $impuesto_id);
+
+            if (!is_null($user_id)) {
+
+                $query->where('user_id', $user_id);
+            }
+
+            $model = $query->first();
+
+            return !is_null($model) ? (string) $model->name : 'Impuesto eliminado';
         }
 
         return (string) $impuesto;

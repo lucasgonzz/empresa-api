@@ -309,7 +309,12 @@ class CurrentAcountController extends Controller
                 'user_id'                       => $pago->user_id,
                 'current_acount_id'             => $pago->id,
                 'client_id'                     => $model_id,
-                'impuesto'                      => RetencionSufrida::normalizar_impuesto($this->dato_de_retencion($payment_method, 'impuesto')),
+                /*
+                 * Ganancias/IVA/IIBB o un `imp_<id>` propio del comercio (misión
+                 * retenciones-abm-impuestos, 8/10/2026). Se le pasa el dueño del cobro porque un
+                 * `imp_<id>` solo vale si es suyo: el valor viaja desde la SPA y es texto libre.
+                 */
+                'impuesto'                      => RetencionSufrida::normalizar_impuesto($this->dato_de_retencion($payment_method, 'impuesto'), $pago->user_id),
                 'numero_certificado'            => $this->dato_de_retencion($payment_method, 'numero_certificado'),
                 /*
                  * La fecha del certificado es obligatoria: es la que decide en que periodo fiscal
@@ -784,6 +789,24 @@ class CurrentAcountController extends Controller
     function delete(Request $request, $model_name, $id) {
         $current_acount = CurrentAcount::find($id);
 
+        if (is_null($current_acount)) {
+            return response()->json(['message' => 'El movimiento no existe o ya fue eliminado.'], 404);
+        }
+
+        /*
+         * Una nota de crédito ya facturada no se elimina (misión nc-aviso-existente-y-sin-cliente,
+         * 8/10/2026): ver NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar().
+         * `error_nota_credito_facturada` es opcional: una SPA que no la lee muestra el `message`.
+         */
+        if ($current_acount->status == 'nota_credito') {
+
+            $motivo = NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar($current_acount);
+
+            if (!is_null($motivo)) {
+                return response()->json(['message' => $motivo, 'error_nota_credito_facturada' => true], 422);
+            }
+        }
+
         /** Solo aplica a pagos en cuenta corriente con impacto en caja (no a notas de crédito en este alcance). */
         $compensar_caja = $request->boolean('compensar_caja');
         /** Helper para validar apertura de cajas y emitir movimientos compensatorios consistentes con ventas/gastos. */
@@ -815,6 +838,27 @@ class CurrentAcountController extends Controller
         try {
 
             CuentaCorrienteLock::bloquear_duenio($duenio);
+
+            /*
+             * Segunda mirada con la nota bloqueada (misión nc-aviso-existente-y-sin-cliente): la guarda
+             * de arriba corre sin candado, y FacturarNotaCreditoExistenteHelper emite con la nota
+             * bloqueada. Sin esto, una baja y una emisión simultáneas podían cruzarse: la baja
+             * borraba el comprobante recién autorizado. Con el mismo candado, una espera a la otra y
+             * la que llega segunda ve el resultado de la primera.
+             */
+            if ($current_acount->status == 'nota_credito') {
+
+                CurrentAcount::where('id', $current_acount->id)->lockForUpdate()->first(['id']);
+
+                $motivo_ahora = NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar($current_acount);
+
+                if (!is_null($motivo_ahora)) {
+
+                    DB::rollBack();
+
+                    return response()->json(['message' => $motivo_ahora, 'error_nota_credito_facturada' => true], 422);
+                }
+            }
 
             if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
 
@@ -853,6 +897,15 @@ class CurrentAcountController extends Controller
              * `crear_movimientos_compensacion()` más abajo.
              */
             $current_acount->current_acount_payment_methods()->detach();
+
+            /*
+             * El comprobante de un intento que ARCA no autorizó (sin CAE ni número: la guarda de
+             * arriba ya dejó pasar solo ese caso) se da de baja con la nota, para que no quede un
+             * "SIN CAE" huérfano colgado de la venta.
+             */
+            if ($current_acount->status == 'nota_credito') {
+                \App\Models\AfipTicket::where('nota_credito_id', $current_acount->id)->delete();
+            }
 
             $current_acount->delete();
 
