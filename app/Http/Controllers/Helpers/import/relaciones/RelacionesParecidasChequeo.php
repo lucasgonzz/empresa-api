@@ -22,12 +22,12 @@ use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
  *      (tope TOPE_ITEMS_IA, los de más filas primero); sin candidatos no hay llamada;
  *   5. cierra cada grupo con lo que contestó la IA.
  *
- * Las subcategorías se comparan DENTRO de su categoría: la que resolvería la fila con la opción
- * preseleccionada, y juntas las de todas las escrituras del Excel que van a terminar en esa misma
- * categoría ("Látex" bajo "Pinturería" con "Latex" bajo "Pintureria"). Como esa opción puede
- * depender de la IA, se analizan contra la categoría provisional (la de antes de la IA) y, si la IA
- * termina cambiando el grupo, se rehacen contra el final solo con la capa determinista. Igual para
- * localidad dentro de provincia.
+ * Las subcategorías se comparan DENTRO de su categoría, una vez por cada resolución posible de la
+ * categoría (`padre_ref`: "id:X" por cada existente que el paso 3 le ofrece, "nuevo:<x>" por cada
+ * forma de crearla): si el usuario cambia la decisión de la categoría, los hijos de la opción que
+ * eligió también están revisados. En cada resolución se juntan las subcategorías de todas las
+ * escrituras del Excel que terminan en esa misma categoría ("Látex" bajo "Pinturería" con "Latex"
+ * bajo "Pintureria"). Igual para localidad dentro de provincia.
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promoción de constructor, readonly, enum ni #[...].
@@ -206,40 +206,53 @@ class RelacionesParecidasChequeo
      * @param  string|null $tipo_padre   'categoria' | 'provincia' | null
      * @param  string|null $tipo_hijo    'sub_categoria' | 'localidad' | null
      * @param  array       $hijos        [valor del padre => [valor => filas]]
-     * @return array ['ia_consultada' => bool, 'items' => [...]]
+     * @return array ['ia_consultada' => bool, 'recortado' => bool, 'items' => [...]]
      */
     protected static function chequear($user_id, array $simples, $tipo_padre, $tipo_hijo, array $hijos)
     {
+        /* Un solo presupuesto de comparaciones para toda la corrida (ver el detector). */
+        $presupuesto = RelacionesParecidasDetector::nuevo_presupuesto();
+        $recortado = false;
+
         $grupos = [];
 
         foreach ($simples as $tipo => $valores) {
             $existentes = self::existentes($user_id, $tipo);
             $recordadas = EquivalenciasResolver::recordadas_del_tipo($user_id, $tipo);
 
+            $analisis = RelacionesParecidasDetector::analizar_grupo(
+                $valores,
+                self::lista_de_existentes($existentes),
+                isset($recordadas[0]) ? $recordadas[0] : [],
+                true,
+                $presupuesto
+            );
+
+            $recortado = $recortado || !empty($analisis['recortado']);
+
             $grupos[] = [
                 'tipo'     => $tipo,
-                'padre'    => null,
-                'padre_id' => null,
-                'analisis' => RelacionesParecidasDetector::analizar_grupo(
-                    $valores,
-                    self::lista_de_existentes($existentes),
-                    isset($recordadas[0]) ? $recordadas[0] : []
-                ),
+                'es_hijo'  => false,
+                'analisis' => $analisis,
             ];
         }
 
         /*
-         * Hijos (subcategorías, localidades con provincia): se agrupan por el padre PROVISIONAL
-         * CANÓNICO, no por cómo vino escrito el padre en cada fila. Si "Pinturería" y "Pintureria"
-         * van a terminar siendo la misma categoría (unir preseleccionado), "Látex" bajo una y
-         * "Latex" bajo la otra se comparan JUNTOS: si se compararan por separado, la categoría se
-         * uniría pero adentro quedarían dos subcategorías, que es el duplicado que esta misión
-         * vino a evitar (y los errores de tipeo suelen venir juntos en la misma fila).
+         * Hijos (subcategorías, localidades con provincia): se analizan una vez por cada
+         * RESOLUCIÓN POSIBLE del padre (`padre_ref`), porque el usuario puede cambiar la decisión
+         * del padre y los hijos tienen que estar revisados para la que elija. "Látex" bajo
+         * "Pintureria" y "Latex" bajo "Pinturería" se comparan juntos en la resolución en la que
+         * las dos categorías terminan siendo la misma (`nuevo:Pinturería`), y cada uno solo en la
+         * de "crear aparte" de su categoría.
+         *
+         * Antes de la IA se arman los grupos con las resoluciones que el padre PODRÍA tener; después
+         * se arman con las que efectivamente le quedaron de opciones. Un grupo se aprovecha (con lo
+         * que contestó la IA) solo si tiene exactamente los mismos padres en los dos momentos; si no,
+         * se rehace solo con la capa determinista.
          */
         $existentes_hijo = [];
         $recordadas_hijo = [];
         $indice_padre = null;
-        $grupos_hijos = [];
 
         if (!is_null($tipo_hijo) && count($hijos) > 0) {
             $existentes_hijo = self::existentes($user_id, $tipo_hijo);
@@ -251,23 +264,29 @@ class RelacionesParecidasChequeo
                 }
             }
 
-            $claves_provisionales = is_null($indice_padre)
+            $refs_previas = is_null($indice_padre)
                 ? []
-                : self::claves_de_padre_provisionales($grupos[$indice_padre]['analisis']);
+                : self::refs_de_padre_previas($grupos[$indice_padre]['analisis']);
 
-            foreach (self::agrupar_hijos($hijos, $claves_provisionales) as $clave_padre => $grupo_hijo) {
+            foreach (self::agrupar_hijos_por_ref($hijos, $refs_previas) as $ref => $grupo_hijo) {
+                $analisis = self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, self::id_de_ref($ref), true, $presupuesto);
+
+                $recortado = $recortado || !empty($analisis['recortado']);
+
                 $grupos[] = [
-                    'tipo'        => $tipo_hijo,
-                    'es_hijo'     => true,
-                    'clave_padre' => (string) $clave_padre,
-                    'padres'      => $grupo_hijo['padres'],
-                    'analisis'    => self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, $tipo_hijo, self::id_de_clave_padre($clave_padre), true),
+                    'tipo'     => $tipo_hijo,
+                    'es_hijo'  => true,
+                    'ref'      => (string) $ref,
+                    'padres'   => $grupo_hijo['padres'],
+                    'analisis' => $analisis,
                 ];
             }
         }
 
-        /* Una sola llamada a la IA para todo. */
+        /* Una sola llamada a la IA para todo, con las consultas idénticas una sola vez. */
         $consultas = self::armar_consultas($grupos);
+
+        $recortado = $recortado || $consultas['recortado'];
 
         $ia_ok = true;
         $respuestas_ia = [];
@@ -284,12 +303,11 @@ class RelacionesParecidasChequeo
         $por_grupo = self::respuestas_por_grupo($consultas['mapa'], $respuestas_ia);
 
         $items = [];
-        $supuestos_padre = [];
         $items_padre = [];
 
-        /* Primero los grupos sin padre: de ahí sale la categoría (o provincia) final de cada fila. */
+        /* Primero los grupos sin padre: de ahí salen las opciones de la categoría (o provincia). */
         foreach ($grupos as $i => $grupo) {
-            if (!empty($grupo['es_hijo'])) {
+            if ($grupo['es_hijo']) {
                 continue;
             }
 
@@ -302,53 +320,48 @@ class RelacionesParecidasChequeo
             );
 
             if ($grupo['tipo'] === $tipo_padre) {
-                $supuestos_padre = $cerrado['supuestos'];
                 $items_padre = $cerrado['items'];
             }
 
             $items[$grupo['tipo']] = $cerrado['items'];
         }
 
-        $items_hijos = [];
-
         if (!is_null($tipo_hijo) && count($hijos) > 0) {
-            /*
-             * La clave FINAL de cada padre: la que resulta de lo preseleccionado después de la IA.
-             * Un grupo provisional se aprovecha (con lo que contestó la IA) solo si tiene
-             * exactamente los mismos padres que el grupo final; si la IA cambió algún padre de
-             * grupo, el grupo final se rehace contra el padre final, solo con la capa determinista.
-             */
-            $claves_finales = self::claves_de_padre_finales(array_keys($hijos), $supuestos_padre, $items_padre);
+            $refs_finales = self::refs_de_padre_finales(
+                array_keys($hijos),
+                is_null($indice_padre) ? ['valores' => []] : $grupos[$indice_padre]['analisis'],
+                $items_padre
+            );
 
-            $provisionales = [];
+            $previos = [];
 
             foreach ($grupos as $i => $grupo) {
-                if (!empty($grupo['es_hijo'])) {
-                    $provisionales[$grupo['clave_padre']] = $i;
+                if ($grupo['es_hijo']) {
+                    $previos[$grupo['ref']] = $i;
                 }
             }
 
-            foreach (self::agrupar_hijos($hijos, $claves_finales) as $clave_padre => $grupo_hijo) {
-                $clave_padre = (string) $clave_padre;
-                $padre_id = self::id_de_clave_padre($clave_padre);
+            $items_hijos = [];
 
-                $i = isset($provisionales[$clave_padre]) ? $provisionales[$clave_padre] : null;
+            foreach (self::agrupar_hijos_por_ref($hijos, $refs_finales) as $ref => $grupo_hijo) {
+                $ref = (string) $ref;
+                $padre_id = self::id_de_ref($ref);
 
-                $se_aprovecha = !is_null($i) && self::mismos_padres($grupos[$i]['padres'], $grupo_hijo['padres']);
+                $i = isset($previos[$ref]) ? $previos[$ref] : null;
 
-                if ($se_aprovecha) {
+                if (!is_null($i) && self::mismos_padres($grupos[$i]['padres'], $grupo_hijo['padres'])) {
                     $analisis   = $grupos[$i]['analisis'];
                     $respuestas = isset($por_grupo[$i]) ? $por_grupo[$i]['respuestas'] : [];
                     $enviados   = isset($por_grupo[$i]) ? $por_grupo[$i]['enviados'] : [];
                 } else {
-                    $analisis   = self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, $tipo_hijo, $padre_id, false);
+                    $analisis   = self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, $padre_id, false, $presupuesto);
                     $respuestas = [];
                     $enviados   = [];
                 }
 
                 $cerrado = RelacionesParecidasDetector::cerrar_grupo($tipo_hijo, $analisis, $respuestas, $enviados, $ia_ok, null, $padre_id);
 
-                $items_hijos = array_merge($items_hijos, self::items_por_fila($cerrado['items'], $grupo_hijo['padres'], $hijos, $tipo_hijo));
+                $items_hijos = array_merge($items_hijos, self::items_por_fila($cerrado['items'], $grupo_hijo['padres'], $hijos, $tipo_hijo, $ref));
             }
 
             $items[$tipo_hijo] = array_merge(isset($items[$tipo_hijo]) ? $items[$tipo_hijo] : [], $items_hijos);
@@ -368,34 +381,62 @@ class RelacionesParecidasChequeo
              * aviso del paso 3. Sin candidatos no hay llamada y no hay nada que avisar.
              */
             'ia_consultada' => $ia_ok,
+
+            /*
+             * true si alguna capa se acotó: una columna con demasiados valores, más consultas de las
+             * que entran en la IA o el presupuesto de comparaciones agotado. El paso 3 avisa que
+             * puede haber otros parecidos que no aparecen.
+             */
+            'recortado'     => $recortado || (bool) $presupuesto->recortado,
             'items'         => $todos,
         ];
     }
 
     /**
-     * Clave de agrupado de cada padre ANTES de la IA: "id:<id>" si resolvería a un existente (el
-     * idéntico, el recordado, el de la misma escritura más viejo o el primer candidato parecido) y
-     * "nuevo:<canónico>" si es nuevo, con el canónico de los padres nuevos que comparten la clave
-     * fuerte (los que el paso 3 va a proponer unir sin IA).
+     * Las resoluciones que cada padre PODRÍA tener después de la IA (un superconjunto): "id:<id>"
+     * por cada existente que el paso 3 podría ofrecerle y "nuevo:<x>" por cada forma de crearlo
+     * (él mismo, el canónico de su misma escritura entre los nuevos, o un valor del archivo con el
+     * que la IA podría unirlo).
      *
      * @param  array $analisis  analizar_grupo() del padre
-     * @return array [padre => clave]
+     * @return array [padre => [ref => true]]
      */
-    protected static function claves_de_padre_provisionales(array $analisis)
+    protected static function refs_de_padre_previas(array $analisis)
     {
-        $claves = [];
+        $refs = [];
         $nuevos_por_fuerte = [];
 
         foreach ($analisis['valores'] as $padre => $info) {
             $padre = (string) $padre;
-            $id = self::padre_provisional($analisis, $padre);
+            $refs[$padre] = [];
 
-            if (!is_null($id)) {
-                $claves[$padre] = 'id:' . $id;
-                continue;
+            switch ($info['estado']) {
+                case 'identico':
+                    $refs[$padre]['id:' . (int) $info['id']] = true;
+                    break;
+
+                case 'recordado':
+                case 'misma_escritura':
+                    foreach ($info['opciones'] as $opcion) {
+                        $refs[$padre]['id:' . (int) $opcion['id']] = true;
+                    }
+
+                    $refs[$padre]['nuevo:' . $padre] = true;
+                    break;
+
+                default:
+                    foreach ($info['candidatos'] as $candidato) {
+                        $refs[$padre]['id:' . (int) $candidato['id']] = true;
+                    }
+
+                    foreach ($info['candidatos_archivo'] as $candidato) {
+                        $refs[$padre]['nuevo:' . (string) $candidato['valor']] = true;
+                    }
+
+                    $refs[$padre]['nuevo:' . $padre] = true;
+                    $nuevos_por_fuerte[RelacionesParecidasDetector::clave_fuerte($padre)][] = $padre;
+                    break;
             }
-
-            $nuevos_por_fuerte[RelacionesParecidasDetector::clave_fuerte($padre)][] = $padre;
         }
 
         foreach ($nuevos_por_fuerte as $miembros) {
@@ -404,82 +445,113 @@ class RelacionesParecidasChequeo
             });
 
             foreach ($miembros as $padre) {
-                $claves[$padre] = 'nuevo:' . $miembros[0];
+                $refs[$padre]['nuevo:' . $miembros[0]] = true;
             }
         }
 
-        return $claves;
+        return $refs;
     }
 
     /**
-     * Clave de agrupado de cada padre DESPUÉS de la IA, según lo preseleccionado: "id:<id>" si la
-     * opción marcada usa un existente; "nuevo:<con>" si la marcada es unir con otro valor nuevo; si
-     * no, "nuevo:<el padre mismo>".
+     * Las resoluciones que cada padre tiene DESPUÉS de la IA, según su ítem del paso 3: una por
+     * opción (`usar` X → "id:X", `crear` → "nuevo:<el padre>", `unir` con C → "nuevo:<C>"). Un
+     * padre sin ítem tiene una sola: "id:X" si es idéntico a un existente, "nuevo:<él mismo>" si no.
      *
      * @param  array $padres       los padres (como vinieron en el Excel)
-     * @param  array $supuestos    cerrar_grupo()['supuestos'] del padre
+     * @param  array $analisis     analizar_grupo() del padre
      * @param  array $items_padre  cerrar_grupo()['items'] del padre
-     * @return array [padre => clave]
+     * @return array [padre => [ref => true]]
      */
-    protected static function claves_de_padre_finales(array $padres, array $supuestos, array $items_padre)
+    protected static function refs_de_padre_finales(array $padres, array $analisis, array $items_padre)
     {
-        $unir_con = [];
+        $por_valor = [];
 
         foreach ($items_padre as $item) {
-            $marcada = isset($item['opciones'][$item['sugerida']]) ? $item['opciones'][$item['sugerida']] : null;
-
-            if (!is_null($marcada) && $marcada['accion'] === 'unir') {
-                $unir_con[(string) $item['valor']] = (string) $marcada['con'];
-            }
+            $por_valor[(string) $item['valor']] = $item;
         }
 
-        $claves = [];
+        $refs = [];
 
         foreach ($padres as $padre) {
             $padre = (string) $padre;
+            $refs[$padre] = [];
 
-            if (array_key_exists($padre, $supuestos) && !is_null($supuestos[$padre])) {
-                $claves[$padre] = 'id:' . (int) $supuestos[$padre];
-            } elseif (isset($unir_con[$padre])) {
-                $claves[$padre] = 'nuevo:' . $unir_con[$padre];
+            if (isset($por_valor[$padre])) {
+                foreach ($por_valor[$padre]['opciones'] as $opcion) {
+                    $refs[$padre][self::ref_de_opcion($opcion, $padre)] = true;
+                }
+
+                continue;
+            }
+
+            $info = isset($analisis['valores'][$padre]) ? $analisis['valores'][$padre] : null;
+
+            if (!is_null($info) && $info['estado'] === 'identico') {
+                $refs[$padre]['id:' . (int) $info['id']] = true;
             } else {
-                $claves[$padre] = 'nuevo:' . $padre;
+                $refs[$padre]['nuevo:' . $padre] = true;
             }
         }
 
-        return $claves;
+        return $refs;
     }
 
     /**
-     * Junta los hijos de los padres que comparten clave: [clave => ['padres' => [...],
-     * 'valores' => [valor => filas sumadas]]].
+     * El `padre_ref` de una opción de un ítem padre (el mismo que calcula el SPA para mostrar los
+     * hijos de la opción elegida).
      *
-     * @param  array $hijos   [padre => [valor => filas]]
-     * @param  array $claves  [padre => clave]
+     * @param  array  $opcion
+     * @param  string $padre
+     * @return string
+     */
+    protected static function ref_de_opcion(array $opcion, $padre)
+    {
+        if ($opcion['accion'] === 'usar') {
+            return 'id:' . (int) $opcion['id'];
+        }
+
+        if ($opcion['accion'] === 'unir') {
+            return 'nuevo:' . (string) $opcion['con'];
+        }
+
+        return 'nuevo:' . (string) $padre;
+    }
+
+    /**
+     * Junta los hijos de los padres que comparten una resolución: [ref => ['padres' => [...],
+     * 'valores' => [valor => filas sumadas]]]. Un padre con varias resoluciones aporta sus hijos a
+     * cada una.
+     *
+     * @param  array $hijos  [padre => [valor => filas]]
+     * @param  array $refs   [padre => [ref => true]]
      * @return array
      */
-    protected static function agrupar_hijos(array $hijos, array $claves)
+    protected static function agrupar_hijos_por_ref(array $hijos, array $refs)
     {
         $agrupados = [];
 
         foreach ($hijos as $padre => $valores) {
             $padre = (string) $padre;
-            $clave = isset($claves[$padre]) ? $claves[$padre] : 'nuevo:' . $padre;
+            $refs_del_padre = isset($refs[$padre]) && count($refs[$padre]) > 0 ? $refs[$padre] : ['nuevo:' . $padre => true];
 
-            if (!isset($agrupados[$clave])) {
-                $agrupados[$clave] = ['padres' => [], 'valores' => []];
-            }
+            foreach ($refs_del_padre as $ref => $nada) {
+                $ref = (string) $ref;
 
-            $agrupados[$clave]['padres'][] = $padre;
-
-            foreach ($valores as $valor => $filas) {
-                $valor = (string) $valor;
-
-                if (!isset($agrupados[$clave]['valores'][$valor])) {
-                    $agrupados[$clave]['valores'][$valor] = 0;
+                if (!isset($agrupados[$ref])) {
+                    $agrupados[$ref] = ['padres' => [], 'valores' => []];
                 }
 
-                $agrupados[$clave]['valores'][$valor] += (int) $filas;
+                $agrupados[$ref]['padres'][] = $padre;
+
+                foreach ($valores as $valor => $filas) {
+                    $valor = (string) $valor;
+
+                    if (!isset($agrupados[$ref]['valores'][$valor])) {
+                        $agrupados[$ref]['valores'][$valor] = 0;
+                    }
+
+                    $agrupados[$ref]['valores'][$valor] += (int) $filas;
+                }
             }
         }
 
@@ -487,14 +559,14 @@ class RelacionesParecidasChequeo
     }
 
     /**
-     * @param  string $clave  "id:<id>" | "nuevo:<valor>"
+     * @param  string $ref  "id:<id>" | "nuevo:<valor>"
      * @return int|null
      */
-    protected static function id_de_clave_padre($clave)
+    protected static function id_de_ref($ref)
     {
-        $clave = (string) $clave;
+        $ref = (string) $ref;
 
-        return strpos($clave, 'id:') === 0 ? (int) substr($clave, 3) : null;
+        return strpos($ref, 'id:') === 0 ? (int) substr($ref, 3) : null;
     }
 
     /**
@@ -515,16 +587,18 @@ class RelacionesParecidasChequeo
 
     /**
      * Los ítems de un grupo de hijos se analizaron por valor, sumando las filas de todos los padres
-     * del grupo; acá se abren en un ítem por cada par (padre como vino en SU fila, valor), que es
-     * la clave con la que el worker busca la decisión: `tipo|padre|valor`.
+     * del grupo; acá se abren en un ítem por cada par (padre como vino en SU fila, valor), con su
+     * `padre_ref`. La clave es `tipo|padre|valor|padre_ref`: el mismo hijo aparece una vez por cada
+     * resolución posible de su padre, y el SPA muestra solo la de la opción elegida.
      *
      * @param  array  $items
      * @param  array  $padres
      * @param  array  $hijos      [padre => [valor => filas]]
      * @param  string $tipo_hijo
+     * @param  string $ref
      * @return array
      */
-    protected static function items_por_fila(array $items, array $padres, array $hijos, $tipo_hijo)
+    protected static function items_por_fila(array $items, array $padres, array $hijos, $tipo_hijo, $ref)
     {
         $abiertos = [];
 
@@ -538,8 +612,9 @@ class RelacionesParecidasChequeo
 
                 $copia = $item;
                 $copia['padre'] = $padre;
+                $copia['padre_ref'] = (string) $ref;
                 $copia['filas'] = (int) $hijos[$padre][$item['valor']];
-                $copia['clave'] = $tipo_hijo . '|' . $padre . '|' . $item['valor'];
+                $copia['clave'] = $tipo_hijo . '|' . $padre . '|' . $item['valor'] . '|' . $ref;
 
                 $abiertos[] = $copia;
             }
@@ -549,47 +624,18 @@ class RelacionesParecidasChequeo
     }
 
     /**
-     * El id del padre que la fila resolvería ANTES de la IA (para comparar sus hijos): el idéntico,
-     * el recordado, el de la misma escritura más viejo o el primer candidato parecido.
+     * Analiza los hijos de una resolución del padre contra los existentes de ESE padre (o contra
+     * nada si el padre es nuevo: ahí solo queda la comparación entre valores nuevos).
      *
-     * @param  array  $analisis
-     * @param  string $padre
-     * @return int|null
-     */
-    protected static function padre_provisional(array $analisis, $padre)
-    {
-        if (!isset($analisis['valores'][$padre])) {
-            return null;
-        }
-
-        $info = $analisis['valores'][$padre];
-
-        switch ($info['estado']) {
-            case 'identico':
-            case 'recordado':
-                return (int) $info['id'];
-            case 'misma_escritura':
-                return (int) $info['opciones'][0]['id'];
-            case 'consultar':
-                return (int) $info['candidatos'][0]['id'];
-        }
-
-        return null;
-    }
-
-    /**
-     * Analiza los hijos de un padre contra los existentes de ESE padre (o contra nada si el padre
-     * es nuevo: ahí solo queda la comparación entre valores nuevos).
-     *
-     * @param  array    $valores
-     * @param  array    $existentes_hijo  salida de existentes()
-     * @param  array    $recordadas_hijo  [contexto => [clave => id]]
-     * @param  string   $tipo_hijo
-     * @param  int|null $padre_id
-     * @param  bool     $con_parecidos
+     * @param  array     $valores
+     * @param  array     $existentes_hijo  salida de existentes()
+     * @param  array     $recordadas_hijo  [contexto => [clave => id]]
+     * @param  int|null  $padre_id
+     * @param  bool      $con_parecidos
+     * @param  \stdClass $presupuesto
      * @return array
      */
-    protected static function analizar_hijo(array $valores, array $existentes_hijo, array $recordadas_hijo, $tipo_hijo, $padre_id, $con_parecidos)
+    protected static function analizar_hijo(array $valores, array $existentes_hijo, array $recordadas_hijo, $padre_id, $con_parecidos, $presupuesto)
     {
         $existentes = [];
         $recordadas = [];
@@ -604,30 +650,20 @@ class RelacionesParecidasChequeo
             $recordadas = isset($recordadas_hijo[(int) $padre_id]) ? $recordadas_hijo[(int) $padre_id] : [];
         }
 
-        return RelacionesParecidasDetector::analizar_grupo($valores, self::lista_de_existentes($existentes), $recordadas, $con_parecidos);
-    }
-
-    /**
-     * @param  array $analisis
-     * @return array [valor => filas]
-     */
-    protected static function valores_del_analisis(array $analisis)
-    {
-        $valores = [];
-
-        foreach ($analisis['valores'] as $valor => $info) {
-            $valores[(string) $valor] = (int) $info['filas'];
-        }
-
-        return $valores;
+        return RelacionesParecidasDetector::analizar_grupo($valores, self::lista_de_existentes($existentes), $recordadas, $con_parecidos, $presupuesto);
     }
 
     /**
      * Arma las consultas para la IA: cada valor con candidatos existentes ("cargado") o del mismo
      * archivo ("archivo"). Los de más filas primero, hasta TOPE_ITEMS_IA.
      *
+     * Las consultas IDÉNTICAS (mismo tipo, mismo valor, mismos candidatos) van una sola vez: con los
+     * hijos analizados una vez por cada resolución posible del padre, la misma pregunta aparece en
+     * varios grupos, y pagarla varias veces sería tirar tokens.
+     *
      * @param  array $grupos
-     * @return array ['consultas' => [...], 'mapa' => [n => ['grupo' => i, 'valor' => v, 'c' => [c => eleccion]]]]
+     * @return array ['consultas' => [...], 'mapa' => [n => [['grupo' => i, 'valor' => v, 'elecciones' => [c => eleccion]], ...]],
+     *                'recortado' => bool]
      */
     protected static function armar_consultas(array $grupos)
     {
@@ -643,17 +679,50 @@ class RelacionesParecidasChequeo
                     continue;
                 }
 
-                $pendientes[] = ['grupo' => $i, 'valor' => (string) $valor, 'info' => $info, 'tipo' => $grupo['tipo']];
+                $candidatos = [];
+                $elecciones = [];
+                $c = 0;
+
+                foreach ($info['candidatos'] as $candidato) {
+                    $c++;
+                    $candidatos[] = ['c' => $c, 'nombre' => $candidato['nombre'], 'origen' => 'cargado'];
+                    $elecciones[$c] = ['existente' => (int) $candidato['id']];
+                }
+
+                foreach ($info['candidatos_archivo'] as $candidato) {
+                    $c++;
+                    $candidatos[] = ['c' => $c, 'nombre' => $candidato['valor'], 'origen' => 'archivo'];
+                    $elecciones[$c] = ['archivo' => (string) $candidato['valor']];
+                }
+
+                $clave = $grupo['tipo'] . "\x1F" . (string) $valor . "\x1F" . json_encode($candidatos);
+
+                if (!isset($pendientes[$clave])) {
+                    $pendientes[$clave] = [
+                        'tipo'       => $grupo['tipo'],
+                        'valor'      => (string) $valor,
+                        'filas'      => 0,
+                        'candidatos' => $candidatos,
+                        'entradas'   => [],
+                    ];
+                }
+
+                $pendientes[$clave]['filas'] = max($pendientes[$clave]['filas'], (int) $info['filas']);
+                $pendientes[$clave]['entradas'][] = ['grupo' => $i, 'valor' => (string) $valor, 'elecciones' => $elecciones];
             }
         }
 
+        $pendientes = array_values($pendientes);
+
         usort($pendientes, function ($a, $b) {
-            if ($a['info']['filas'] !== $b['info']['filas']) {
-                return $b['info']['filas'] - $a['info']['filas'];
+            if ($a['filas'] !== $b['filas']) {
+                return $b['filas'] - $a['filas'];
             }
 
             return strcmp($a['valor'], $b['valor']);
         });
+
+        $recortado = count($pendientes) > self::TOPE_ITEMS_IA;
 
         $pendientes = array_slice($pendientes, 0, self::TOPE_ITEMS_IA);
 
@@ -663,37 +732,18 @@ class RelacionesParecidasChequeo
 
         foreach ($pendientes as $pendiente) {
             $n++;
-            $c = 0;
-            $candidatos = [];
-            $elecciones = [];
-
-            foreach ($pendiente['info']['candidatos'] as $candidato) {
-                $c++;
-                $candidatos[] = ['c' => $c, 'nombre' => $candidato['nombre'], 'origen' => 'cargado'];
-                $elecciones[$c] = ['existente' => (int) $candidato['id']];
-            }
-
-            foreach ($pendiente['info']['candidatos_archivo'] as $candidato) {
-                $c++;
-                $candidatos[] = ['c' => $c, 'nombre' => $candidato['valor'], 'origen' => 'archivo'];
-                $elecciones[$c] = ['archivo' => (string) $candidato['valor']];
-            }
 
             $consultas[] = [
                 'n'          => $n,
                 'tipo'       => $pendiente['tipo'],
                 'valor'      => $pendiente['valor'],
-                'candidatos' => $candidatos,
+                'candidatos' => $pendiente['candidatos'],
             ];
 
-            $mapa[$n] = [
-                'grupo'      => $pendiente['grupo'],
-                'valor'      => $pendiente['valor'],
-                'elecciones' => $elecciones,
-            ];
+            $mapa[$n] = $pendiente['entradas'];
         }
 
-        return ['consultas' => $consultas, 'mapa' => $mapa];
+        return ['consultas' => $consultas, 'mapa' => $mapa, 'recortado' => $recortado];
     }
 
     /**
@@ -709,29 +759,31 @@ class RelacionesParecidasChequeo
     {
         $por_grupo = [];
 
-        foreach ($mapa as $n => $entrada) {
-            $i = $entrada['grupo'];
+        foreach ($mapa as $n => $entradas) {
+            foreach ($entradas as $entrada) {
+                $i = $entrada['grupo'];
 
-            if (!isset($por_grupo[$i])) {
-                $por_grupo[$i] = ['respuestas' => [], 'enviados' => []];
+                if (!isset($por_grupo[$i])) {
+                    $por_grupo[$i] = ['respuestas' => [], 'enviados' => []];
+                }
+
+                $por_grupo[$i]['enviados'][$entrada['valor']] = true;
+
+                if (!array_key_exists($n, $respuestas_ia)) {
+                    continue;
+                }
+
+                $respuesta = $respuestas_ia[$n];
+
+                if (!is_array($respuesta) || !isset($respuesta['c']) || !isset($entrada['elecciones'][$respuesta['c']])) {
+                    $por_grupo[$i]['respuestas'][$entrada['valor']] = null;
+                    continue;
+                }
+
+                $por_grupo[$i]['respuestas'][$entrada['valor']] = $entrada['elecciones'][$respuesta['c']] + [
+                    'seguro' => isset($respuesta['seguro']) && $respuesta['seguro'] === true,
+                ];
             }
-
-            $por_grupo[$i]['enviados'][$entrada['valor']] = true;
-
-            if (!array_key_exists($n, $respuestas_ia)) {
-                continue;
-            }
-
-            $respuesta = $respuestas_ia[$n];
-
-            if (!is_array($respuesta) || !isset($respuesta['c']) || !isset($entrada['elecciones'][$respuesta['c']])) {
-                $por_grupo[$i]['respuestas'][$entrada['valor']] = null;
-                continue;
-            }
-
-            $por_grupo[$i]['respuestas'][$entrada['valor']] = $entrada['elecciones'][$respuesta['c']] + [
-                'seguro' => isset($respuesta['seguro']) && $respuesta['seguro'] === true,
-            ];
         }
 
         return $por_grupo;

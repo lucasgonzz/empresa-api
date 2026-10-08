@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Genera los fixtures 33 a 37: los nombres parecidos de las relaciones de la importación (misión
+ * Genera los fixtures 33 a 38: los nombres parecidos de las relaciones de la importación (misión
  * importacion-relaciones-parecidas, 8/10/2026).
  *
  * Se corre desde la raiz de empresa-api:
@@ -137,4 +137,19 @@ escribir_fixture_relaciones('37_relaciones_parecidas_localidades.xlsx', ['nombre
     ['Cliente LP 1', 'Santa Fe',  'Villa Gdor. Galvez'],
     ['Cliente LP 2', 'Santa Fe.', 'Villa Gdor Galvez'],
     ['Cliente LP 3', 'Santa Fe',  'Villa Gdor. Galvez'],
+]);
+
+/*
+ * Los hijos de un padre en cada una de sus resoluciones posibles (`padre_ref`): "Pintureria Sur" (3
+ * filas, la canónica) y "PINTURERIA SUR" (2 filas, su variante), con subcategorías que se parecen
+ * DENTRO del mismo padre ("Látex"/"Latex", "Esmalte"/"ESMALTE"/"Esmaltes"). Con una categoría
+ * "Pinturería del Sur" cargada, el padre es dudoso (usar o crear); sin nada cargado, las dos
+ * escrituras son nuevas y la variante se une a la canónica (unir o crear aparte).
+ */
+escribir_fixture_relaciones('38_relaciones_parecidas_padres.xlsx', $cabecera_articulos, [
+    ['7798800031', 'SKU-RP-31', 'RP-31', 'Art RP 31', 310.0, null, null, 21.0, null, 'Pintureria Sur', 'Látex',    null],
+    ['7798800032', 'SKU-RP-32', 'RP-32', 'Art RP 32', 320.0, null, null, 21.0, null, 'Pintureria Sur', 'Latex',    null],
+    ['7798800033', 'SKU-RP-33', 'RP-33', 'Art RP 33', 330.0, null, null, 21.0, null, 'Pintureria Sur', 'Esmalte',  null],
+    ['7798800034', 'SKU-RP-34', 'RP-34', 'Art RP 34', 340.0, null, null, 21.0, null, 'PINTURERIA SUR', 'Esmaltes', null],
+    ['7798800035', 'SKU-RP-35', 'RP-35', 'Art RP 35', 350.0, null, null, 21.0, null, 'PINTURERIA SUR', 'ESMALTE',  null],
 ]);

@@ -73,6 +73,7 @@ php tests/Import/fixtures/generar_filas_del_excel.php
 | `35_relaciones_parecidas_clientes.xlsx` | 4 | Clientes: `nombre`, `provincia`, `localidad`, `vendedor`, `tipo_de_precio`, con `"Buenos Aires"`/`"BUENOS AIRES"`/`"Bs As"`, `"La Plata"`/`"LA PLATA"`, `"Juan Perez"`/`"JUAN PEREZ"`/`"Juan Pérez"` y una fila sin provincia. Generado por `generar_relaciones_parecidas.php`. |
 | `36_relaciones_parecidas_proveedores.xlsx` | 3 | Proveedores: `nombre`, `localidad` (`"Rosario"`, `"ROSARIO"`, `"Funes"`). Generado por `generar_relaciones_parecidas.php`. |
 | `37_relaciones_parecidas_localidades.xlsx` | 3 | Clientes: `nombre`, `provincia`, `localidad`. `"Villa Gdor. Galvez"` bajo `"Santa Fe"` y `"Villa Gdor Galvez"` bajo `"Santa Fe."`: la misma localidad bajo dos escrituras de la misma provincia, con y sin punto para que el `WHERE` de MySQL **no** las junte solo. Generado por `generar_relaciones_parecidas.php`. |
+| `38_relaciones_parecidas_padres.xlsx` | 5 | Cabecera del 33. "Pintureria Sur" (3 filas) con "Látex", "Latex" y "Esmalte", y "PINTURERIA SUR" (2 filas) con "Esmaltes" y "ESMALTE": los hijos de un padre en cada una de sus resoluciones (`padre_ref`), con el padre dudoso (si se siembra "Pinturería del Sur") o `entre_nuevos` (sin sembrar nada). Generado por `generar_relaciones_parecidas.php`. Ver `PadreRefTest`. |
 
 ⚠️ **Hay cuatro fixtures que se importan con varios lotes, y los cuatro dependen de un `config()`.** `06_incidente_servian.xlsx` (`IncidenteServianTest`) y `28_`, `29_` y `30_` (`CeldaConSaltoDeLineaTest`, misión `importacion-celda-multilinea`, 4/10/2026) bajan `ARTICLE_EXCEL_CHUNK_SIZE` a 10 en el `setUp()`. En el 06 es lo que reproduce el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes); en el 28, el 29 y el 30, lo que hace que haya offsets de lote que se puedan desalinear con una celda multilínea (el CSV tiene un **registro** por fila del Excel, pero una celda con salto de línea ocupa varias **líneas** físicas). Si alguien cambia o quita ese `config()`, los tests dejan de probar lo que dicen probar aunque sigan pasando en verde. Los tres fixtures multilínea se regeneran con:
 
@@ -92,7 +93,7 @@ El `32_` (misión `catalogo-por-lista-tienda`, 5/10/2026) también tiene su prop
 php tests/Import/fixtures/generar_visible_en_tienda.php
 ```
 
-Los `33_` a `37_` (misión `importacion-relaciones-parecidas`, 8/10/2026) tienen su propio generador, con PhpSpreadsheet y tipos de celda explícitos: son los únicos con columnas de proveedor, categoría, subcategoría y marca (y los únicos de clientes y proveedores de esta carpeta).
+Los `33_` a `38_` (misión `importacion-relaciones-parecidas`, 8/10/2026) tienen su propio generador, con PhpSpreadsheet y tipos de celda explícitos: son los únicos con columnas de proveedor, categoría, subcategoría y marca (y los únicos de clientes y proveedores de esta carpeta).
 
 ```
 php tests/Import/fixtures/generar_relaciones_parecidas.php
@@ -563,6 +564,12 @@ distinto. Hasta esta misión la resolución de relaciones de la importación no 
   `seguro: false` (ítem `posible`, "crear" marcado y la explicación "Podría ser «…»…") y `elegido: null` (es otra
   cosa, no se muestra). 🔴 "Ante la duda" es `seguro: false`, nunca null: null no pregunta y crea el duplicado en
   silencio. `seguro` ausente o no booleano vale false.
+- Tanda 2: los hijos salen **una vez por cada resolución posible del padre** (`padre_ref`: `id:X` por cada `usar`,
+  `nuevo:<padre>` por `crear`, `nuevo:<C>` por `unir` con C) y la clave es `tipo|padre|valor|padre_ref`
+  (`PadreRefTest`). `relaciones_parecidas.recortado` dice si alguna capa se acotó (columna con más de 2000
+  valores, más consultas que el tope de la IA, presupuesto de comparaciones agotado). 🔴 Un test que llame dos
+  veces a `falsear_ia()` necesita la fábrica limpia que el helper ya pone: los stubs de `Http::fake()` se
+  acumulan y gana el primero.
 - Los hijos (subcategoría, localidad con provincia) se comparan bajo el **padre canónico**: "Látex" bajo
   "Pintureria" y "Latex" bajo "Pinturería" se juzgan juntos (fixture 33), igual que "Villa Gdor Galvez" bajo
   "Santa Fe." y "Villa Gdor. Galvez" bajo "Santa Fe" (fixture 37). El ítem conserva el padre de SU fila.

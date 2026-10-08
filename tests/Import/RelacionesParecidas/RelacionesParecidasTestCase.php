@@ -9,6 +9,7 @@ use App\Models\ImportHistory;
 use App\Models\Provider;
 use App\Models\SubCategory;
 use Illuminate\Support\Facades\Http;
+use Tests\Fakes\HttpFactorySinSalida;
 use Tests\Import\ImportTestCase;
 
 /**
@@ -31,6 +32,7 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
     const CLIENTES      = '35_relaciones_parecidas_clientes.xlsx';
     const PROVEEDORES   = '36_relaciones_parecidas_proveedores.xlsx';
     const LOCALIDADES   = '37_relaciones_parecidas_localidades.xlsx';
+    const PADRES        = '38_relaciones_parecidas_padres.xlsx';
 
     /** Para elegir_por_nombre(): la clave `seguro` no viaja en la respuesta de la IA. */
     const ABSENT = '__sin_seguro__';
@@ -290,6 +292,13 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
 
         $this->llamadas_relaciones = [];
         $this->llamadas_recomendacion = 0;
+
+        /*
+         * Fábrica limpia antes de cada fake: los stubs de Http::fake() se ACUMULAN y gana el
+         * primero, así que un segundo falsear_ia() en el mismo test no cambiaría nada. Con la
+         * fábrica que frena (nunca con la de Laravel a secas, que se lleva puesto el freno).
+         */
+        Http::swap(new HttpFactorySinSalida(app('events')));
 
         Http::fake(function ($request) use ($test, $elegir, $status, $texto_crudo) {
             $datos  = $request->data();

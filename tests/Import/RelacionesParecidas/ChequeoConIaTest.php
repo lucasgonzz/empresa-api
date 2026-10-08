@@ -57,6 +57,17 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
     }
 
     /**
+     * Clave del ítem de "Martillo" bajo "Del norte": se compara contra las subcategorías de la
+     * categoría existente "DEL NORTE" (padre_ref "id:<id>").
+     *
+     * @return string
+     */
+    protected function clave_martillo()
+    {
+        return 'sub_categoria|Del norte|Martillo|id:' . $this->sembrado['del_norte']->id;
+    }
+
+    /**
      * Las claves que salen sin IA, en cualquier caso.
      *
      * @return string[]
@@ -70,7 +81,7 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
             'marca|BOSCH',
             'proveedor|ACME',
             /* "Latex" bajo "Pinturería" se compara con "Látex" bajo "Pintureria": las dos categorías se unen. */
-            'sub_categoria|Pinturería|Latex',
+            'sub_categoria|Pinturería|Latex|nuevo:Pinturería',
         ];
     }
 
@@ -93,7 +104,7 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
         $esperadas = array_merge($this->claves_deterministas(), [
             'marca|Bosh',
             'proveedor|Ferret. del Norte',
-            'sub_categoria|Del norte|Martillo',
+            $this->clave_martillo(),
         ]);
         sort($esperadas);
 
@@ -103,7 +114,7 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
         $this->assertSame('parecido', $proveedor['motivo']);
         $this->assertSame(['accion' => 'usar', 'id' => (int) $this->sembrado['ferreteria']->id, 'nombre' => 'Ferretería Del Norte'], $proveedor['opciones'][$proveedor['sugerida']]);
 
-        $sub = $this->item($relaciones, 'sub_categoria|Del norte|Martillo');
+        $sub = $this->item($relaciones, $this->clave_martillo());
         $this->assertSame('Del norte', $sub['padre']);
         $this->assertSame((int) $this->sembrado['del_norte']->id, $sub['padre_id'], 'La sub se comparó dentro de la categoría que resolvería la fila.');
         $this->assertSame((int) $this->sembrado['martillos']->id, $sub['opciones'][$sub['sugerida']]['id']);
@@ -175,7 +186,7 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
         $esperadas = array_merge($this->claves_deterministas(), [
             'marca|Bosh',
             'proveedor|Ferret. del Norte',
-            'sub_categoria|Del norte|Martillo',
+            $this->clave_martillo(),
         ]);
         sort($esperadas);
 
@@ -183,7 +194,7 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
 
         $nombres = [
             'proveedor|Ferret. del Norte'      => 'Ferretería Del Norte',
-            'sub_categoria|Del norte|Martillo' => 'Martillos',
+            $this->clave_martillo() => 'Martillos',
             'marca|Bosh'                       => 'Bosch',
         ];
 
@@ -215,7 +226,7 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
             'sub_categoria'       => 10,
         ]);
 
-        $latex = $this->item($relaciones, 'sub_categoria|Pinturería|Latex');
+        $latex = $this->item($relaciones, 'sub_categoria|Pinturería|Latex|nuevo:Pinturería');
         $this->assertNotNull($latex, json_encode($this->claves($relaciones)));
         $this->assertSame('entre_nuevos', $latex['motivo']);
         $this->assertSame('Pinturería', $latex['padre']);
@@ -223,12 +234,12 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
         $this->assertSame([['accion' => 'unir', 'con' => 'Látex'], ['accion' => 'crear']], $latex['opciones']);
         $this->assertSame(0, $latex['sugerida']);
 
-        $martillo = $this->item($relaciones, 'sub_categoria|Del norte|Martillo');
+        $martillo = $this->item($relaciones, 'sub_categoria|Del norte|Martillo|nuevo:Del norte');
         $this->assertNotNull($martillo, 'Martillo (bajo "Del norte") y Martillos (bajo "DEL NORTE") se juzgaron juntos.');
         $this->assertSame('entre_nuevos', $martillo['motivo']);
         $this->assertSame([['accion' => 'unir', 'con' => 'Martillos'], ['accion' => 'crear']], $martillo['opciones']);
 
-        $this->assertNull($this->item($relaciones, 'sub_categoria|Pintureria|Látex'), 'La canónica no se pregunta.');
+        $this->assertNull($this->item($relaciones, 'sub_categoria|Pintureria|Látex|nuevo:Pinturería'), 'La canónica no se pregunta.');
     }
 
     /**
@@ -249,9 +260,9 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
             'header_row'     => null,
         ]);
 
-        $this->assertSame(['localidad|Santa Fe.|Villa Gdor Galvez', 'provincia|Santa Fe.'], $this->claves($relaciones));
+        $this->assertSame(['localidad|Santa Fe.|Villa Gdor Galvez|nuevo:Santa Fe', 'provincia|Santa Fe.'], $this->claves($relaciones));
 
-        $localidad = $this->item($relaciones, 'localidad|Santa Fe.|Villa Gdor Galvez');
+        $localidad = $this->item($relaciones, 'localidad|Santa Fe.|Villa Gdor Galvez|nuevo:Santa Fe');
         $this->assertSame('entre_nuevos', $localidad['motivo']);
         $this->assertSame('Santa Fe.', $localidad['padre']);
         $this->assertSame([['accion' => 'unir', 'con' => 'Villa Gdor. Galvez'], ['accion' => 'crear']], $localidad['opciones']);
@@ -361,13 +372,13 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
 
         $esperadas = array_merge($this->claves_deterministas(), [
             'proveedor|Ferret. del Norte',
-            'sub_categoria|Del norte|Martillo',
+            $this->clave_martillo(),
         ]);
         sort($esperadas);
 
         $this->assertSame($esperadas, $this->claves($relaciones));
 
-        foreach (['proveedor|Ferret. del Norte', 'sub_categoria|Del norte|Martillo'] as $clave) {
+        foreach (['proveedor|Ferret. del Norte', $this->clave_martillo()] as $clave) {
             $item = $this->item($relaciones, $clave);
 
             $this->assertSame('posible', $item['motivo'], $clave);

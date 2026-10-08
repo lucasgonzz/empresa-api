@@ -137,14 +137,14 @@ class RecomendacionConRelacionesTest extends RelacionesParecidasTestCase
         $relaciones = $resultado['relaciones_parecidas'];
 
         $this->assertSame([
-            'localidad|Buenos Aires|La Plata',
+            'localidad|Buenos Aires|La Plata|id:' . $provincia->id,
             'provincia|Buenos Aires',
             'tipo_de_precio|Mayorista',
             'vendedor|Juan Perez',
             'vendedor|Juan Pérez',
         ], $this->claves($relaciones));
 
-        $localidad = $this->item($relaciones, 'localidad|Buenos Aires|La Plata');
+        $localidad = $this->item($relaciones, 'localidad|Buenos Aires|La Plata|id:' . $provincia->id);
         $this->assertSame('Buenos Aires', $localidad['padre']);
         $this->assertSame((int) $provincia->id, $localidad['padre_id'], 'La localidad se compara dentro de la provincia supuesta.');
         $this->assertSame('misma_escritura', $localidad['motivo']);
