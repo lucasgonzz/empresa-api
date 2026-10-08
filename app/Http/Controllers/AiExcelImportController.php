@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\article\ProviderImportMappingHelper;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
 use App\Jobs\RunExcelAnalysisJob;
@@ -569,6 +570,9 @@ class AiExcelImportController extends Controller
      *   - actualizar_proveedor (bool)
      *   - desempatar_por_nombre (bool): con provider_code repetido, quedarse con el
      *     artículo que además coincide en nombre (misión 9/9/2026). Default false.
+     *   - equivalencias (array, opcional): las decisiones del paso 3 sobre nombres parecidos,
+     *     [{tipo, valor, padre?, accion: usar|crear|unir, id?, con?}] (misión
+     *     importacion-relaciones-parecidas, 8/10/2026). Vale también para model=client|provider.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
@@ -624,6 +628,9 @@ class AiExcelImportController extends Controller
 
         /* Mapeo de columnas confirmado por el usuario: propiedad => índice de columna. */
         $columns = $request->input('columns', []);
+
+        /* Decisiones sobre nombres parecidos: se recuerdan ANTES de encolar (ver recordar_equivalencias()). */
+        $equivalencias = $this->recordar_equivalencias($request, EquivalenciasResolver::TIPOS_ARTICULOS);
 
         /*
          * Delegamos en InitExcelImport exactamente con los mismos parámetros que
@@ -720,6 +727,12 @@ class AiExcelImportController extends Controller
              * hasta hoy. filter_var y no cast crudo, porque `(bool) 'false'` da TRUE.
              */
             'desempatar_por_nombre'                              => filter_var($request->input('desempatar_por_nombre', false), FILTER_VALIDATE_BOOLEAN),
+
+            /*
+             * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3
+             * sobre nombres parecidos. Opcional: sin el campo, la importación resuelve como hoy.
+             */
+            'equivalencias'                                      => $equivalencias,
         ]);
 
         if ($result['hubo_un_error']) {
@@ -731,6 +744,49 @@ class AiExcelImportController extends Controller
         }
 
         return response(null, 200);
+    }
+
+    /**
+     * Lee las `equivalencias` del request (las decisiones del paso 3 sobre nombres parecidos) y
+     * guarda o borra las equivalencias recordadas del comercio que salen de ellas: cada `usar` se
+     * recuerda y cada `crear` borra la que hubiera.
+     *
+     * Se hace acá, ANTES de encolar, y no en el worker: es la decisión del usuario, y tiene que
+     * quedar aunque la fila que la usa no llegue a procesarse. Los `unir` los recuerda el worker,
+     * que es el que conoce el id, y lo mismo los `crear` de subcategorías y localidades con
+     * provincia, que dependen de qué padre resolvió la fila.
+     *
+     * Nunca tira: recordar es una comodidad y la importación sale igual.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  array                     $tipos  los tipos que admite esta importación
+     * @return array  las equivalencias tal como vinieron (el saneado lo vuelve a hacer el worker)
+     */
+    protected function recordar_equivalencias(Request $request, array $tipos)
+    {
+        $equivalencias = $request->input('equivalencias', []);
+
+        if (is_string($equivalencias)) {
+            $decodificado = json_decode($equivalencias, true);
+            $equivalencias = is_array($decodificado) ? $decodificado : [];
+        }
+
+        if (!is_array($equivalencias) || count($equivalencias) === 0) {
+            return [];
+        }
+
+        $equivalencias = array_values(array_filter($equivalencias, 'is_array'));
+
+        try {
+            (new EquivalenciasResolver($this->userId(), $equivalencias, $tipos))->recordar_decisiones();
+        } catch (\Throwable $e) {
+            Log::warning('AiExcelImportController: no se pudieron recordar las equivalencias', [
+                'user_id' => $this->userId(),
+                'message' => $e->getMessage(),
+            ]);
+        }
+
+        return $equivalencias;
     }
 
     /**
@@ -841,9 +897,18 @@ class AiExcelImportController extends Controller
          */
         $vaciar_valores_en_blanco = $request->boolean('vaciar_valores_en_blanco');
 
+        /* Decisiones sobre nombres parecidos (provincia, localidad, vendedor, lista de precios). */
+        $equivalencias = $this->recordar_equivalencias($request, EquivalenciasResolver::TIPOS_CLIENTES);
+
         try {
+            /*
+             * Las decisiones entran por el setter y no por el constructor: la firma de ClientImport
+             * está congelada (el último parámetro tiene que ser vaciar_valores_en_blanco, lo fija
+             * ValoresEnBlancoClientesProveedoresTest) porque AdminSync la construye con la corta.
+             */
             Excel::import(
-                new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar_valores_en_blanco),
+                (new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar_valores_en_blanco))
+                    ->con_equivalencias($equivalencias),
                 $excel_full_path
             );
 
@@ -911,13 +976,17 @@ class AiExcelImportController extends Controller
         /* Mismo checkbox único que en import_clients, con el mismo default false. */
         $vaciar_valores_en_blanco = $request->boolean('vaciar_valores_en_blanco');
 
+        /* Decisiones sobre nombres parecidos (localidad). Mismo setter que en import_clients(). */
+        $equivalencias = $this->recordar_equivalencias($request, EquivalenciasResolver::TIPOS_PROVEEDORES);
+
         try {
             /*
              * El quinto parámetro ($provider_id) es null; en importación de proveedores
              * no se asigna un proveedor padre al registro importado.
              */
             Excel::import(
-                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre, $vaciar_valores_en_blanco),
+                (new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre, $vaciar_valores_en_blanco))
+                    ->con_equivalencias($equivalencias),
                 $excel_full_path
             );
 
@@ -1050,6 +1119,16 @@ class AiExcelImportController extends Controller
                      */
                     'hoja'                        => self::normalizar_hoja($request->input('hoja')),
                     'header_row'                  => self::normalizar_header_row($request->input('header_row')),
+
+                    /*
+                     * Misión `importacion-relaciones-parecidas` (8/10/2026): si esta corrida tiene
+                     * que revisar los nombres de las columnas que son relaciones (proveedor,
+                     * categoría, marca, provincia...) contra los que ya existen. Opcional, default
+                     * false: la SPA vieja no la manda, no va a mostrar la lista, y no tiene por qué
+                     * pagar la llamada a la IA ni esperarla. `boolean()` y no `(bool)`, porque
+                     * `(bool) 'false'` da true.
+                     */
+                    'chequear_relaciones'         => $request->boolean('chequear_relaciones'),
                 ],
             ]);
 

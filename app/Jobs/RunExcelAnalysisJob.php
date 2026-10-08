@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
+use App\Http\Controllers\Helpers\import\relaciones\RelacionesParecidasChequeo;
 use App\Models\ExcelAnalysisRun;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -447,17 +448,37 @@ class RunExcelAnalysisJob implements ShouldQueue
          * Para ellos se cierra la corrida sin recorrer el archivo ni llamar a la IA: la SPA nueva
          * ni siquiera la pide, esto cubre a la SPA que todavía no se desplegó.
          */
-        if ($this->modelo_de_la_recomendacion($run) !== 'article') {
+        $modelo = $this->modelo_de_la_recomendacion($run);
+
+        if ($modelo !== 'article') {
+            $resultado = [
+                'recomendacion_configuracion'                 => null,
+                'provider_codes_existentes_mismo_proveedor'   => 0,
+                'provider_codes_existentes_otros_proveedores' => 0,
+                'formatos_numericos'                          => null,
+            ];
+
+            /*
+             * Misión importacion-relaciones-parecidas (8/10/2026): con la bandera, la SPA nueva
+             * pide esta corrida SOLO para revisar los nombres parecidos de provincia, localidad,
+             * vendedor y lista de precios (o localidad, en proveedores). Las otras cuatro claves
+             * siguen como siempre. Sin la bandera, idéntico a antes: no se lee el archivo.
+             */
+            if ($this->chequea_relaciones($run)) {
+                $run->update([
+                    'progreso' => 50,
+                    'paso'     => 'Revisando nombres parecidos…',
+                ]);
+                $this->etapa_del_proceso_en_segundo_plano($run, 'Revisando nombres parecidos…', 50);
+
+                $resultado['relaciones_parecidas'] = $this->relaciones_parecidas($run, $excel_full_path, $modelo);
+            }
+
             $run->update([
                 'estado'    => 'listo',
                 'progreso'  => 100,
                 'paso'      => null,
-                'resultado' => [
-                    'recomendacion_configuracion'                 => null,
-                    'provider_codes_existentes_mismo_proveedor'   => 0,
-                    'provider_codes_existentes_otros_proveedores' => 0,
-                    'formatos_numericos'                          => null,
-                ],
+                'resultado' => $resultado,
             ]);
 
             $this->notificar_fin($run);
@@ -594,6 +615,20 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'formatos_numericos'                          => $formatos_numericos,
             ];
 
+            /*
+             * Misión importacion-relaciones-parecidas (8/10/2026): solo si la SPA lo pidió. Sin la
+             * bandera el resultado queda con las mismas cuatro claves de siempre.
+             */
+            if ($this->chequea_relaciones($run)) {
+                $run->update([
+                    'progreso' => 90,
+                    'paso'     => 'Revisando proveedores, categorías y marcas…',
+                ]);
+                $this->etapa_del_proceso_en_segundo_plano($run, 'Revisando proveedores, categorías y marcas…', 90);
+
+                $resultado['relaciones_parecidas'] = $this->relaciones_parecidas($run, $excel_full_path, 'article');
+            }
+
             $run->update([
                 'estado'    => 'listo',
                 'progreso'  => 100,
@@ -643,6 +678,65 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             /* Mismo criterio que handle_analisis(): la ruta del servidor va al log, no a la pantalla. */
             $this->finalizar_con_error($run, 'Ocurrió un error inesperado al generar la recomendación. Volvé a intentar; si sigue pasando, avisanos.');
+        }
+    }
+
+    /**
+     * ¿La corrida pidió el chequeo de nombres parecidos? (`chequear_relaciones` del payload, que
+     * guarda getRecomendacion(); ausente en las corridas de la SPA vieja = no.)
+     *
+     * @param  \App\Models\ExcelAnalysisRun $run
+     * @return bool
+     */
+    protected function chequea_relaciones(ExcelAnalysisRun $run)
+    {
+        $payload = $run->payload ?? [];
+
+        return !empty($payload['chequear_relaciones'])
+            && filter_var($payload['chequear_relaciones'], FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * `relaciones_parecidas` del resultado: los nombres de proveedor, categoría, marca, provincia...
+     * del Excel que se parecen a algo que ya existe (o entre sí), para que el usuario decida en el
+     * paso 3 antes de importar.
+     *
+     * 🔴 Tiene su propio try/catch y NUNCA tira: si el chequeo falla, devuelve null y la corrida
+     * termina igual, con la recomendación de siempre. Una lista de nombres parecidos es una ayuda;
+     * perder por ella la recomendación (o trabar la importación de clientes) sería peor que no
+     * tenerla. La IA caída no llega acá: eso ya lo resuelve el chequeo con `ia_consultada: false`.
+     *
+     * @param  \App\Models\ExcelAnalysisRun $run
+     * @param  string                       $excel_full_path
+     * @param  string                       $modelo  article | client | provider
+     * @return array|null
+     */
+    protected function relaciones_parecidas(ExcelAnalysisRun $run, $excel_full_path, $modelo)
+    {
+        try {
+            $payload = $run->payload ?? [];
+
+            $hoja = isset($payload['hoja']) && is_numeric($payload['hoja']) ? (int) $payload['hoja'] : 0;
+
+            ExcelWorkbookReader::asegurar_csv($excel_full_path, $hoja);
+
+            if ($modelo === 'client') {
+                return RelacionesParecidasChequeo::para_clientes($run->user_id, $excel_full_path, $payload);
+            }
+
+            if ($modelo === 'provider') {
+                return RelacionesParecidasChequeo::para_proveedores($run->user_id, $excel_full_path, $payload);
+            }
+
+            return RelacionesParecidasChequeo::para_articulos($run->user_id, $excel_full_path, $payload);
+
+        } catch (\Throwable $e) {
+            Log::warning('RunExcelAnalysisJob: no se pudo revisar los nombres parecidos (la corrida sigue sin esa lista)', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            return null;
         }
     }
 
