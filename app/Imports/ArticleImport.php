@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ArticlesPreImportHelper;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\IvaHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -21,6 +22,7 @@ use App\Http\Controllers\Stock\StockMovementController;
 use App\Http\Controllers\update;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\CreditAccount;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Models\Provider;
@@ -594,6 +596,66 @@ class ArticleImport implements ToCollection
         return $this->filas_procesadas >= $this->start_row;
     }
 
+    /**
+     * Asegura las dos cuentas corrientes (pesos y dólares) de cada proveedor de la columna
+     * "proveedor" de este lote. Lo llama set_providers() al final.
+     *
+     * set_providers() crea los proveedores que no existen con un `Provider::create()` pelado: sin
+     * cuentas. Ese proveedor no aceptaba una compra en cuenta corriente (500 en
+     * NewProviderOrderHelper::crear_current_acount()) ni un saldo inicial importado (misión
+     * importacion-proveedores-saldo-inicial, 8/10/2026). Va acá y no en el modelo `Provider` a
+     * propósito: un hook cambiaría lo que hoy responde a "proveedor sin cuenta" en otros lados
+     * (endosar un cheque a un proveedor sin cuenta da 422).
+     *
+     * Cubre los proveedores nuevos del lote y también los viejos que hayan quedado sin cuenta y
+     * aparezcan en la columna. Idempotente: a quien ya tiene las dos no le crea nada.
+     *
+     * Una sola consulta de cuentas por lote, y crear_credit_accounts() solo para los que les falta
+     * alguna moneda. 🔴 El `user_id` va SIEMPRE explícito: esto corre en el job del lote, sin
+     * sesión, y sin él crear_credit_accounts() lo sacaría de UserHelper::userId().
+     *
+     * `nombres_proveedores` es un mapa nombre => Provider: una Collection o un array según el
+     * camino que lo armó; se recorre con foreach, que anda con los dos.
+     *
+     * @return void
+     */
+    private function asegurar_cuentas_de_proveedores() {
+
+        $ids = [];
+
+        foreach ($this->nombres_proveedores as $proveedor) {
+            if (!is_null($proveedor)) {
+                $ids[] = (int) $proveedor->id;
+            }
+        }
+
+        if (count($ids) == 0) {
+            return;
+        }
+
+        $monedas_por_proveedor = [];
+
+        $cuentas = CreditAccount::where('model_name', 'provider')
+                                ->whereIn('model_id', $ids)
+                                ->get(['model_id', 'moneda_id']);
+
+        foreach ($cuentas as $cuenta) {
+            $monedas_por_proveedor[(int) $cuenta->model_id][(int) $cuenta->moneda_id] = true;
+        }
+
+        foreach (array_unique($ids) as $provider_id) {
+
+            $tiene_pesos   = isset($monedas_por_proveedor[$provider_id][1]);
+            $tiene_dolares = isset($monedas_por_proveedor[$provider_id][2]);
+
+            if ($tiene_pesos && $tiene_dolares) {
+                continue;
+            }
+
+            CreditAccountHelper::crear_credit_accounts('provider', $provider_id, $this->user->id);
+        }
+    }
+
     function check_fila_fin() {
         return $this->filas_procesadas <= $this->finish_row;
     }
@@ -630,11 +692,13 @@ class ArticleImport implements ToCollection
             foreach ($nombresFaltantes as $nombre) {
                 $this->nombres_proveedores[$nombre] = Provider::create([
                     'name' => $nombre,
-                    'user_id' => $this->user->id 
+                    'user_id' => $this->user->id
                 ]);
             }
 
         }
+
+        $this->asegurar_cuentas_de_proveedores();
     }
 
     // function guardar_proveedor($row) {
