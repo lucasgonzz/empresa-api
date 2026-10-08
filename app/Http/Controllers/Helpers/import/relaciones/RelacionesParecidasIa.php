@@ -234,8 +234,15 @@ ahí el sistema crea un duplicado y nadie se entera. Por eso hay tres respuestas
 Ante la duda, NO respondas null: respondé el candidato más probable con "seguro": false. Null es
 solo para cuando está claro que son cosas distintas.
 
+Si el valor coincide con un candidato "cargado" y también con uno del "archivo", elegí el
+"cargado": es el nombre que el comercio ya usa.
+
+Un candidato que difiere en un número ("Mayorista 2", "Caño 3/4") NUNCA es el mismo con
+seguridad: a lo sumo "seguro": false, y si el número es una medida o un modelo, null.
+
 Por ejemplo: "Caño 1/2" y "Caño 3/4" NO son el mismo (cambia la medida): null.
 "Ferret. del Norte" y "Ferretería Del Norte" SÍ son el mismo: elegido con "seguro": true.
+"Mayoristas" es "Mayorista" (cargado), no "Mayorista 2" (archivo): elegido el cargado, con "seguro": true.
 
 Valores a revisar (JSON):
 {$json}
