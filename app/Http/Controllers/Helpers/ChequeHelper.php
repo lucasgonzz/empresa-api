@@ -74,6 +74,9 @@ class ChequeHelper {
     /** El corte de la edición cuando el cheque no es de esta cuenta (defensa: el controller ya lo filtró). */
     const MENSAJE_CHEQUE_AJENO = 'El cheque no existe o no es de tu cuenta.';
 
+    /** El 422 de la edición que intenta dejar vacía la fecha de pago de un cheque que ya la tiene. */
+    const MENSAJE_FECHA_PAGO_VACIA = 'La fecha de pago del cheque no se puede dejar vacía.';
+
     /**
      * Largo máximo del número de cheque: `cheques.numero` es un varchar(191), no de 255, porque
      * AppServiceProvider llama a Schema::defaultStringLength(191). Pasarse es un 500 en modo estricto.
@@ -844,6 +847,8 @@ class ChequeHelper {
      *   legacy `banco` se reescribe con su nombre para quedar en sincronía (Excel, mostrador, SPA
      *   vieja). Vacío (null, '', 0) con un banco previo = "sin banco": ambos quedan en null. Vacío sin
      *   banco previo (cheque viejo que solo tiene el texto) = no se toca nada, para no perder ese texto.
+     * - La fecha de pago NO se puede vaciar: con un valor previo es un 422; si el cheque ya no la tenía,
+     *   la clave vacía se ignora. La de emisión sí puede quedar vacía.
      * - Fechas: `YYYY-MM-DD` o un ISO datetime; se toman los primeros 10 caracteres y se valida con
      *   checkdate(), SIN pasar por zona horaria (un `...T23:00:00-03:00` es ese día, no el siguiente).
      * - Un recibido endosado y su copia emitida (`endosado_desde_cheque_id`) son el MISMO papel:
@@ -907,6 +912,20 @@ class ChequeHelper {
             }
 
             list($fecha, $problema) = self::leer_fecha_de_cheque($pedido[$clave], $rotulo.' no es válida.');
+
+            // La fecha de pago no se puede dejar vacía: ChequeController::index() hace
+            // Carbon::parse(fecha_pago), que con null da "ahora", y el cheque caería en "pendientes"
+            // sin que nadie lo decida. Si el cheque ya la tiene, es un 422; si no la tenía (cheque
+            // viejo que la SPA reenvía igual), no es un cambio y se ignora la clave.
+            if ($clave === 'fecha_pago' && is_null($problema) && is_null($fecha)) {
+
+                if (!empty($cheque->fecha_pago)) {
+
+                    $problemas[] = self::MENSAJE_FECHA_PAGO_VACIA;
+                }
+
+                continue;
+            }
 
             if (is_null($problema)) {
 

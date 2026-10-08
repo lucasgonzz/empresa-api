@@ -491,23 +491,31 @@ class Edicion_acotada_Test extends ChequesTestCase
     }
 
     /**
-     * 6c. Una fecha null (o vacía) vacía el campo.
+     * 6c. Una fecha de emisión null (o vacía) vacía el campo. (La de pago NO se puede vaciar: ver el
+     * caso 15.)
      *
      * @test
      */
-    public function una_fecha_null_o_vacia_vacia_el_campo()
+    public function una_fecha_de_emision_null_o_vacia_vacia_el_campo()
     {
         list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente fecha null ' . uniqid());
         $recibido = $this->cobrar_con_cheque($cliente, $cuenta);
 
-        $response = $this->putJson('api/cheque/' . $recibido->id, $this->payload_de_la_spa($recibido->id, ['fecha_emision' => null, 'fecha_pago' => '']));
+        $fecha_pago = $this->fila($recibido->id)['fecha_pago'];
 
-        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+        foreach ([null, ''] as $vacio) {
 
-        $fila = $this->fila($recibido->id);
+            DB::table('cheques')->where('id', $recibido->id)->update(['fecha_emision' => '2026-01-01']);
 
-        $this->assertNull($fila['fecha_emision']);
-        $this->assertNull($fila['fecha_pago']);
+            $response = $this->putJson('api/cheque/' . $recibido->id, $this->payload_de_la_spa($recibido->id, ['fecha_emision' => $vacio]));
+
+            $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+
+            $fila = $this->fila($recibido->id);
+
+            $this->assertNull($fila['fecha_emision']);
+            $this->assertSame($fecha_pago, $fila['fecha_pago'], 'La fecha de pago no se toca.');
+        }
     }
 
     /**
@@ -908,6 +916,133 @@ class Edicion_acotada_Test extends ChequesTestCase
         $this->assertSame(422, $response->getStatusCode(), $this->resumen($response));
         $this->assertSame(self::MENSAJE_BANCO, $response->json('message'));
         $this->assertSame($antes, $this->fila($recibido->id));
+    }
+
+    /**
+     * 15. La fecha de pago no se puede dejar vacía: con un valor previo es 422 (ChequeController::index
+     * haría Carbon::parse(null) = "ahora" y el cheque caería en "pendientes" sin que nadie lo decida)
+     * y no se escribe NADA, ni los otros campos del pedido.
+     *
+     * @test
+     */
+    public function vaciar_la_fecha_de_pago_de_un_cheque_que_la_tiene_es_422_y_no_escribe_nada()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente pago vacío ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta);
+
+        $this->assertNotNull($this->fila($recibido->id)['fecha_pago'], 'El escenario arranca con fecha de pago.');
+
+        $antes = $this->fila($recibido->id);
+
+        foreach ([null, '', '   '] as $vacio) {
+
+            $response = $this->putJson('api/cheque/' . $recibido->id, $this->payload_de_la_spa($recibido->id, [
+                'fecha_pago' => $vacio,
+                'numero'     => 'NO-DEBE-ESCRIBIRSE',
+                'notes'      => 'NO-DEBE-ESCRIBIRSE',
+            ]));
+
+            $etiqueta = 'fecha_pago = ' . json_encode($vacio);
+
+            $this->assertSame(422, $response->getStatusCode(), $etiqueta . ': ' . $this->resumen($response));
+            $this->assertSame('La fecha de pago del cheque no se puede dejar vacía.', $response->json('message'), $etiqueta);
+            $this->assertSame($antes, $this->fila($recibido->id), $etiqueta . ': no se escribe nada.');
+        }
+    }
+
+    /**
+     * 15b. Un cheque viejo SIN fecha de pago: la SPA reenvía el vacío igual, y eso no es un cambio.
+     * El pedido da 200, la clave se ignora y el resto se guarda. Una clave ausente no se toca.
+     *
+     * @test
+     */
+    public function reenviar_la_fecha_de_pago_vacia_de_un_cheque_que_no_la_tenia_no_traba_la_edicion()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente sin pago ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta);
+
+        // El dato viejo, insertado a mano.
+        DB::table('cheques')->where('id', $recibido->id)->update(['fecha_pago' => null]);
+
+        foreach ([null, ''] as $vacio) {
+
+            $response = $this->putJson('api/cheque/' . $recibido->id, [
+                'fecha_pago' => $vacio,
+                'numero'     => 'SIN-PAGO-' . json_encode($vacio),
+                'notes'      => 'se guarda igual',
+            ]);
+
+            $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+
+            $fila = $this->fila($recibido->id);
+
+            $this->assertNull($fila['fecha_pago']);
+            $this->assertSame('SIN-PAGO-' . json_encode($vacio), $fila['numero']);
+            $this->assertSame('se guarda igual', $fila['notes']);
+        }
+
+        // Clave ausente: no se toca (y poner una fecha real sí se puede).
+        $antes = $this->fila($recibido->id);
+
+        $this->assertSame(200, $this->putJson('api/cheque/' . $recibido->id, ['notes' => 'otra nota'])->getStatusCode());
+        $this->assertNull($this->fila($recibido->id)['fecha_pago']);
+
+        $this->assertSame(200, $this->putJson('api/cheque/' . $recibido->id, ['fecha_pago' => '2026-12-01'])->getStatusCode());
+        $this->assertSame('2026-12-01', $this->fila($recibido->id)['fecha_pago']);
+    }
+
+    /**
+     * 16. La puerta lateral: `PUT update/cheque` (la actualización masiva genérica) asigna cualquier
+     * clave del update_form al modelo, y por ahí se podía reescribir `client_id` o `amount`. Los
+     * cheques no se actualizan en forma masiva: 422, sin encolar nada y sin tocar el cheque, tanto con
+     * selección manual como por filtro.
+     *
+     * @test
+     */
+    public function los_cheques_no_se_actualizan_en_forma_masiva()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente masiva ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta, ['numero' => 'MASIVA-1']);
+        list($otro_cliente) = $this->cliente_con_cuenta('Otro cliente masiva ' . uniqid());
+
+        $antes = $this->fila($recibido->id);
+        $masivas_antes = (int) DB::table('masive_updates')->max('id');
+        $foto = $this->foto_de_cheques();
+
+        $update_form = [
+            ['type' => 'search', 'key' => 'client_id', 'value' => $otro_cliente->id],
+            ['type' => 'number', 'key' => 'amount', 'value' => 1],
+        ];
+
+        $pedidos = [
+            'selección manual' => [
+                'models_id'   => [$recibido->id],
+                'from_filter' => false,
+                'update_form' => $update_form,
+            ],
+            'por filtro' => [
+                'from_filter' => true,
+                'filter_form' => [['key' => 'numero', 'operator' => '=', 'value' => 'MASIVA-1']],
+                'update_form' => $update_form,
+            ],
+        ];
+
+        foreach (['cheque', 'Cheque', 'cheque-'] as $nombre) {
+
+            foreach ($pedidos as $tipo => $cuerpo) {
+
+                $response = $this->putJson('api/update/' . $nombre, $cuerpo);
+
+                $etiqueta = 'PUT update/' . $nombre . ' (' . $tipo . ')';
+
+                $this->assertSame(422, $response->getStatusCode(), $etiqueta . ': ' . $this->resumen($response));
+                $this->assertSame('Los cheques no se actualizan en forma masiva.', $response->json('message'), $etiqueta);
+                $this->assertSame($antes, $this->fila($recibido->id), $etiqueta . ': el cheque queda intacto.');
+            }
+        }
+
+        $this->assertSame($foto, $this->foto_de_cheques());
+        $this->assertSame($masivas_antes, (int) DB::table('masive_updates')->max('id'), 'No se encoló ninguna actualización masiva.');
     }
 
     // ---------------------------------------------------------------------------------------------
