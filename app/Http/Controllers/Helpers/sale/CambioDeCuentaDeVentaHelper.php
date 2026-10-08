@@ -6,6 +6,9 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\PaymentPlan;
+use App\Models\Sale;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -37,10 +40,26 @@ use Illuminate\Support\Facades\Log;
  *      venta, es otra misión.
  *   3. La venta está incluida en una FACTURACIÓN CONSOLIDADA → 422. La factura salió a nombre del
  *      cliente (y en la moneda) que la venta tenía: moverla deja la factura contando una venta que ya
- *      no es de ese cliente.
+ *      no es de ese cliente. No hay forma de sacar una venta de una consolidación desde la pantalla.
  *   4. El cliente que queda NO TIENE la cuenta corriente de la moneda que queda → se le crea, adentro
  *      de la transacción (si algo falla después, el rollback la deshace). Sin esto
  *      `CurrentAcountFromSaleHelper` usa la cuenta sin chequear null y la edición termina en un 500.
+ *   5. La venta tiene un PLAN DE PAGO en cuotas → 422 (revisión independiente, 8/10/2026).
+ *      `payment_plans` y `payment_plan_cuotas` guardan `client_id` y `sale_id` y no viajan con el
+ *      débito. Medido: después de mudar la venta de A a B, pagar la cuota como la arma `PagarBtn.vue`
+ *      dejaba un pago con `client_id` = A en la cuenta de B, y el siguiente
+ *      `check_saldos_y_pagos()` de B (`reimputar_pagos()` filtra por `client_id`) devolvía el débito a
+ *      `sin_pagar` con el pago restando igual en el saldo de B. Un plan de pago no se puede eliminar
+ *      desde la pantalla (`payment-plan` solo tiene alta), así que el mensaje no ofrece salida.
+ *   6. La venta mantiene en el PUT un COMBO que ya tenía y cambia la MONEDA → 422 (misma revisión).
+ *      `ComboCostoDeVentaHelper::costo_para_renglon()` le deja a un combo que la venta ya tenía su
+ *      costo CONGELADO de la base, sin mirar la moneda: pasada a otra moneda, la venta quedaba con el
+ *      precio del combo convertido y el costo en la moneda vieja (la ganancia, absurda). Un combo
+ *      NUEVO en esta edición se cotiza en la moneda que queda y no tiene el problema, así que sacar los
+ *      combos en el mismo PUT que cambia la moneda sí se deja. Esta guarda no depende de la cuenta
+ *      corriente: vale también para una venta de contado.
+ *
+ *  Todos los 422 tienen la misma forma: `message`, `cambio_de_cuenta_rechazado` = true y `motivo`.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  🔴 CUÁNDO SE MIRAN, Y POR QUÉ NO SIEMPRE
@@ -48,7 +67,9 @@ use Illuminate\Support\Facades\Log;
  *
  *  - La guarda 1 (tenencia) corre ante CUALQUIER cambio a otro cliente: la SPA solo ofrece clientes
  *    del comercio, así que a ella no le cambia nada.
- *  - Las guardas 2 y 3 y la cuenta de destino (4) corren solo cuando el débito SE MUDA: la venta queda
+ *  - La guarda 6 (combos) corre ante cualquier cambio de moneda, vaya o no la venta a la cuenta
+ *    corriente: el costo del combo está mal en los dos casos.
+ *  - Las guardas 2, 3 y 5 y la cuenta de destino (4) corren solo cuando el débito SE MUDA: la venta queda
  *    en la cuenta corriente después del PUT Y cambia el cliente o la moneda. No corren:
  *      · en una venta omitida de la cuenta corriente (de contado con cliente): es el único cambio de
  *        cliente que permitía la SPA anterior a esta misión, y no mueve nada de ninguna cuenta. Con
@@ -160,7 +181,8 @@ class CambioDeCuentaDeVentaHelper
      * Va ANTES de la transacción de `SaleController::update()`, junto con los otros 4xx tempranos.
      *
      * Cuerpo del 422: `message` (para mostrar), `cambio_de_cuenta_rechazado` = true y `motivo`
-     * (`cliente_inexistente`, `cliente_ajeno`, `nota_de_credito` o `consolidada`).
+     * (`cliente_inexistente`, `cliente_ajeno`, `combos`, `nota_de_credito`, `plan_de_pago` o
+     * `consolidada`).
      *
      * @param  \Illuminate\Http\Request  $request
      * @param  \App\Models\Sale  $sale  La venta como está guardada.
@@ -187,6 +209,19 @@ class CambioDeCuentaDeVentaHelper
             }
         }
 
+        /*
+            Combos y cambio de moneda (guarda 6 del bloque de la clase). Va ANTES del corte por
+            cuenta corriente a propósito: el costo congelado del combo queda en la moneda vieja también
+            en una venta de contado.
+        */
+        if (self::cambia_la_moneda($sale, $moneda_que_queda) && self::mantiene_combos_que_ya_tenia($request, $sale)) {
+
+            return self::rechazo(
+                'combos',
+                'La venta tiene combos y su costo quedó guardado en la moneda original, así que no se le puede cambiar la moneda con esos combos adentro. Sacá los combos de la venta para cambiarle la moneda, o eliminala y volvé a cargarla.'
+            );
+        }
+
         if (!self::el_debito_se_muda($request, $sale, $moneda_que_queda)) {
             return null;
         }
@@ -210,15 +245,75 @@ class CambioDeCuentaDeVentaHelper
             );
         }
 
-        if (!empty($sale->consolidacion_facturacion_id)) {
+        /*
+            Plan de pago en cuotas (guarda 5 del bloque de la clase): las cuotas guardan el cliente y
+            la venta, y no se mudan con el débito. Basta con que exista el plan: sus cuotas, pagas o
+            no, son de la venta.
+        */
+        if (PaymentPlan::where('sale_id', $sale->id)->exists()) {
 
             return self::rechazo(
-                'consolidada',
-                'La venta está incluida en una facturación consolidada, así que no se puede pasar a otro cliente ni a otra moneda: la factura ya salió con el cliente y la moneda que tiene.'
+                'plan_de_pago',
+                'La venta tiene un plan de pago en cuotas: las cuotas están a nombre del cliente que tiene la venta y en su moneda, y no se mudan con ella. Por eso no se le puede cambiar el cliente ni la moneda, y un plan de pago no se puede eliminar desde el sistema.'
             );
         }
 
+        /*
+            Facturación consolidada (guarda 3). Solo con la venta contenedora viva, mismo criterio que
+            `DeleteSaleHelper::motivo_por_el_que_no_se_puede_eliminar()`: si la contenedora ya se
+            borró, su factura no sostiene esta venta. No hay forma de sacar una venta de una
+            consolidación desde la pantalla, así que el mensaje no ofrece salida.
+        */
+        if (!empty($sale->consolidacion_facturacion_id)) {
+
+            $contenedora = Sale::find($sale->consolidacion_facturacion_id);
+
+            if (!is_null($contenedora)) {
+
+                $num = !is_null($contenedora->num) ? $contenedora->num : $contenedora->id;
+
+                return self::rechazo(
+                    'consolidada',
+                    'La venta está incluida en la facturación consolidada de la venta N° '.$num.': esa factura salió con el cliente y la moneda que tiene esta venta, y una venta no se puede sacar de una consolidación. Por eso no se le puede cambiar el cliente ni la moneda.'
+                );
+            }
+        }
+
         return null;
+    }
+
+    /**
+     * ¿El PUT mantiene algún combo que la venta YA tenía guardado (`combo_sale`)? Un renglón es combo
+     * con el mismo criterio que `SaleHelper::attachCombos()`: la clave `is_combo` presente. Un combo
+     * nuevo en esta edición no cuenta: `ComboCostoDeVentaHelper::costo_para_renglon()` lo cotiza con
+     * la moneda que queda; el congelado es solo el de los combos que ya estaban.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  \App\Models\Sale  $sale
+     * @return bool
+     */
+    static function mantiene_combos_que_ya_tenia($request, $sale)
+    {
+        $combos_guardados = DB::table('combo_sale')
+                                ->where('sale_id', $sale->id)
+                                ->pluck('combo_id')
+                                ->map(function ($combo_id) {
+                                    return (int) $combo_id;
+                                })
+                                ->all();
+
+        if (count($combos_guardados) == 0 || !is_array($request->items)) {
+            return false;
+        }
+
+        foreach ($request->items as $item) {
+
+            if (is_array($item) && isset($item['is_combo']) && isset($item['id']) && in_array((int) $item['id'], $combos_guardados)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
