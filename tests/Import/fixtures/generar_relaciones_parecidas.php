@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Genera los fixtures 33 a 39: los nombres parecidos de las relaciones de la importación (misión
+ * Genera los fixtures 33 a 42: los nombres parecidos de las relaciones de la importación (misión
  * importacion-relaciones-parecidas, 8/10/2026).
  *
  * Se corre desde la raiz de empresa-api:
@@ -160,6 +160,31 @@ escribir_fixture_relaciones('38_relaciones_parecidas_padres.xlsx', $cabecera_art
  * archivo, que a su vez era dudoso contra "Mayorista". "Mayoristas" no salía en ningún ítem y se
  * creaba otra lista sin preguntar.
  */
+/*
+ * Tanda 4: "Pinturerias Sur" (1 fila, con la sub "Latex") que la IA une a "Pintureria Sur" (2
+ * filas), que a su vez apunta a una categoría existente. Los hijos de "Pinturerias Sur" tienen que
+ * revisarse contra las subcategorías de esa categoría.
+ */
+escribir_fixture_relaciones('40_relaciones_parecidas_unir_a_resuelto.xlsx', $cabecera_articulos, [
+    ['7798800041', 'SKU-RP-41', 'RP-41', 'Art RP 41', 410.0, null, null, 21.0, null, 'Pintureria Sur',  'Esmalte', null],
+    ['7798800042', 'SKU-RP-42', 'RP-42', 'Art RP 42', 420.0, null, null, 21.0, null, 'Pintureria Sur',  'Esmalte', null],
+    ['7798800043', 'SKU-RP-43', 'RP-43', 'Art RP 43', 430.0, null, null, 21.0, null, 'Pinturerias Sur', 'Latex',   null],
+]);
+
+/*
+ * Tanda 4: "crear aparte" de un hijo con el padre unido, en los DOS órdenes. "LATEX"→crear bajo
+ * «Pinturería» y "Latex" (sin decisión) bajo «Pintureria», que se une a «Pinturería».
+ */
+escribir_fixture_relaciones('41_relaciones_parecidas_crear_hijo_primero.xlsx', $cabecera_articulos, [
+    ['7798800051', 'SKU-RP-51', 'RP-51', 'Art RP 51', 510.0, null, null, 21.0, null, 'Pinturería', 'LATEX', null],
+    ['7798800052', 'SKU-RP-52', 'RP-52', 'Art RP 52', 520.0, null, null, 21.0, null, 'Pintureria', 'Latex', null],
+]);
+
+escribir_fixture_relaciones('42_relaciones_parecidas_crear_hijo_despues.xlsx', $cabecera_articulos, [
+    ['7798800052', 'SKU-RP-52', 'RP-52', 'Art RP 52', 520.0, null, null, 21.0, null, 'Pintureria', 'Latex', null],
+    ['7798800051', 'SKU-RP-51', 'RP-51', 'Art RP 51', 510.0, null, null, 21.0, null, 'Pinturería', 'LATEX', null],
+]);
+
 escribir_fixture_relaciones('39_relaciones_parecidas_listas.xlsx', ['nombre', 'tipo_de_precio'], [
     ['Cliente MP 1', 'Mayorista'],
     ['Cliente MP 2', 'Mayoristas'],

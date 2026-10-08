@@ -2,6 +2,7 @@
 
 namespace Tests\Import\RelacionesParecidas;
 
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
 use App\Models\Client;
@@ -176,6 +177,37 @@ class ImportacionClientesProveedoresTest extends RelacionesParecidasTestCase
 
         $this->assertSame((int) $la_plata->id, (int) $this->cliente('Cliente RP 1')->location_id);
         $this->assertSame(0, $this->cuantos_exactos('locations', 'La Plata'), 'No se creó nada: la decisión era para filas sin provincia.');
+    }
+
+    /**
+     * Un `unir` de clientes sigue la decisión que el usuario tomó sobre el DESTINO ("Bs As" se une a
+     * "Buenos Aires", y a "Buenos Aires" le eligió una provincia existente), sin depender de que la
+     * equivalencia recordada exista: se prueba con la tabla de equivalencias AUSENTE (la consulta
+     * apunta a una tabla que no existe) y con un camino de siempre que no debería usarse.
+     */
+    public function test_unir_sigue_la_decision_del_destino_sin_la_tabla_de_equivalencias()
+    {
+        $provincia = $this->provincia('Provincia de Buenos Aires');
+
+        $resolver = new class($this->tenant->id, [
+            ['tipo' => 'provincia', 'valor' => 'Bs As', 'accion' => 'unir', 'con' => 'Buenos Aires'],
+            ['tipo' => 'provincia', 'valor' => 'Buenos Aires', 'accion' => 'usar', 'id' => $provincia->id],
+        ], EquivalenciasResolver::TIPOS_CLIENTES) extends EquivalenciasResolver {
+            protected static function consulta_equivalencias()
+            {
+                return DB::table('import_equivalencias_que_no_existe');
+            }
+        };
+
+        $camino_de_hoy = function ($valor) {
+            return -1;
+        };
+
+        $crear = function ($valor) {
+            return -2;
+        };
+
+        $this->assertSame((int) $provincia->id, $resolver->resolver_con_camino_de_hoy('provincia', 'Bs As', 0, null, $camino_de_hoy, $crear));
     }
 
     public function test_unir_resuelve_el_canonico_y_lo_recuerda()

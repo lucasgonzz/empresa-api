@@ -138,6 +138,46 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
         $this->assertSame($mayusculas, (int) $this->articulo('RP-02')->category_id);
     }
 
+    /**
+     * "Crear aparte" de un HIJO no depende del orden aunque el padre esté unido: «Pintureria» se une
+     * a «Pinturería», "LATEX"→crear bajo «Pinturería» y "Latex" (sin decisión) bajo «Pintureria».
+     * Las dos subcategorías terminan en la misma categoría, y la regla mira esa categoría (el
+     * contexto resuelto), no el padre como vino escrito. Antes, con "LATEX" primero, "Latex" caía
+     * por clave en "LATEX".
+     */
+    public function test_crear_un_hijo_con_el_padre_unido_con_la_fila_del_crear_primero()
+    {
+        $this->assertCrearHijoConPadreUnido(self::CREAR_HIJO_PRIMERO);
+    }
+
+    public function test_crear_un_hijo_con_el_padre_unido_con_la_fila_del_crear_despues()
+    {
+        $this->assertCrearHijoConPadreUnido(self::CREAR_HIJO_DESPUES);
+    }
+
+    /**
+     * @param  string $fixture
+     * @return void
+     */
+    protected function assertCrearHijoConPadreUnido($fixture)
+    {
+        $this->importar_articulos($fixture, [
+            ['tipo' => 'categoria',     'valor' => 'Pintureria', 'accion' => 'unir', 'con' => 'Pinturería'],
+            ['tipo' => 'sub_categoria', 'valor' => 'LATEX', 'padre' => 'Pinturería', 'accion' => 'crear'],
+        ]);
+
+        $this->assertSame(1, $this->cuantos_exactos('categories', 'Pinturería'));
+        $this->assertSame(0, $this->cuantos_exactos('categories', 'Pintureria'));
+
+        $categoria = Category::where('user_id', $this->tenant->id)->whereRaw('BINARY name = ?', ['Pinturería'])->first();
+
+        $subs = SubCategory::where('user_id', $this->tenant->id)->where('category_id', $categoria->id)->pluck('id', 'name')->all();
+
+        $this->assertCount(2, $subs, 'LATEX (creada aparte) y Latex: ' . json_encode(array_keys($subs)));
+        $this->assertSame((int) $subs['LATEX'], (int) $this->articulo('RP-51')->sub_category_id);
+        $this->assertSame((int) $subs['Latex'], (int) $this->articulo('RP-52')->sub_category_id);
+    }
+
     public function test_unir_crea_uno_solo_y_lo_recuerda()
     {
         $this->importar_articulos(self::ARTICULOS, [

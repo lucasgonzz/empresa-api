@@ -79,14 +79,14 @@ class EquivalenciasResolver
     protected $escritas = [];
 
     /**
-     * Claves de cache de los valores con decisión `crear`, por tipo y padre (como las decisiones):
-     * [tipo => [padre => [clave => true]]].
-     * Ver resolver_sin_decision(): un valor SIN decisión que comparte clave con uno que el usuario
-     * pidió crear aparte no puede caer por clave en el que se creó.
+     * Valores con decisión `crear`, por tipo y clave de cache, con los padres (como vinieron en el
+     * Excel) bajo los que se pidieron: [tipo => [clave => [padre => true]]].
+     * Ver comparte_clave_con_un_crear(): un valor SIN decisión que comparte clave con uno que el
+     * usuario pidió crear aparte no puede caer por clave en el que se creó.
      *
      * @var array
      */
-    protected $claves_con_crear = [];
+    protected $crear_por_clave = [];
 
     /**
      * Lo mismo, con la clave sin tildes (clientes y proveedores: el camino de siempre busca con un
@@ -94,7 +94,17 @@ class EquivalenciasResolver
      *
      * @var array
      */
-    protected $claves_con_crear_sin_tildes = [];
+    protected $crear_por_clave_sin_tildes = [];
+
+    /**
+     * Las creaciones forzadas que ya se APLICARON en esta instancia, por el CONTEXTO resuelto (la
+     * categoría o la provincia que resolvió la fila) y no por el padre del Excel:
+     * [tipo => [contexto => [clave => true]]] (y la de sin tildes).
+     *
+     * @var array
+     */
+    protected $crear_aplicado = [];
+    protected $crear_aplicado_sin_tildes = [];
 
     /**
      * @param int   $user_id        Dueño del comercio.
@@ -122,8 +132,8 @@ class EquivalenciasResolver
                     if ($decision['accion'] === 'crear') {
                         $padre = is_null($decision['padre']) ? '' : $decision['padre'];
 
-                        $this->claves_con_crear[$tipo][$padre][RelacionesParecidasDetector::clave_cache($decision['valor'])] = true;
-                        $this->claves_con_crear_sin_tildes[$tipo][$padre][RelacionesParecidasDetector::clave_sin_tildes($decision['valor'])] = true;
+                        $this->crear_por_clave[$tipo][RelacionesParecidasDetector::clave_cache($decision['valor'])][$padre] = true;
+                        $this->crear_por_clave_sin_tildes[$tipo][RelacionesParecidasDetector::clave_sin_tildes($decision['valor'])][$padre] = true;
                     }
                 }
             }
@@ -915,7 +925,28 @@ class EquivalenciasResolver
             }
         }
 
-        $id = $this->recordada($tipo, $contexto, $valor);
+        $id = null;
+
+        /*
+         * 🔴 Un `unir` sigue la decisión que el usuario haya tomado sobre el DESTINO (un solo
+         * salto), igual que en artículos: si "Mayoristas" se une a "Mayorista 2" y a "Mayorista 2"
+         * el usuario le eligió "usar la lista Mayorista", las dos van a Mayorista. Antes esto solo
+         * salía bien si la equivalencia recordada de "Mayorista 2" llegaba a guardarse (y sin la
+         * tabla, o sin que se guarde, el valor unido iba por el camino de siempre).
+         */
+        if (!is_null($original)) {
+            $destino = $this->decision_en_contexto($tipo, $valor, $padre, $contexto);
+
+            if (!is_null($destino) && $destino['accion'] === 'usar' && $this->aplica_usar($destino, $contexto)) {
+                $id = (int) $destino['id'];
+            } elseif (!is_null($destino) && $destino['accion'] === 'crear') {
+                $id = $this->exacto_o_crear($tipo, $contexto, $valor, $crear_forzado);
+            }
+        }
+
+        if (is_null($id)) {
+            $id = $this->recordada($tipo, $contexto, $valor);
+        }
 
         if (is_null($id)) {
             $id = $this->buscar_exacto($tipo, $contexto, $valor);
@@ -926,7 +957,7 @@ class EquivalenciasResolver
          * escritura que el WHERE de MySQL no distingue de ésta (mayúsculas o tildes), el camino de
          * siempre caería en la que se creó. Va por nombre exacto, sin importar el orden de las filas.
          */
-        if (is_null($id) && isset($this->claves_con_crear_sin_tildes[$tipo][self::clave_de_padre($padre)][RelacionesParecidasDetector::clave_sin_tildes($valor)])) {
+        if (is_null($id) && $this->comparte_clave_con_un_crear($tipo, $contexto, $valor, $padre, true)) {
             $id = $this->exacto_o_crear($tipo, $contexto, $valor, $crear_forzado);
         }
 
@@ -1016,7 +1047,7 @@ class EquivalenciasResolver
      */
     protected function resolver_destino_de_unir($tipo, $con, $contexto, $padre, $crear)
     {
-        $decision = $this->decision($tipo, $con, $padre);
+        $decision = $this->decision_en_contexto($tipo, $con, $padre, $contexto);
 
         if (!is_null($decision)) {
             if ($decision['accion'] === 'usar' && $this->aplica_usar($decision, $contexto)) {
@@ -1062,7 +1093,7 @@ class EquivalenciasResolver
          * "Del norte" (sin decisión), "Del norte" caía en "DEL NORTE" y nunca se creaba. Si el
          * usuario separó una escritura, las demás de esa clave van por su nombre exacto.
          */
-        if (isset($this->claves_con_crear[$tipo][self::clave_de_padre($padre)][RelacionesParecidasDetector::clave_cache($valor)])) {
+        if ($this->comparte_clave_con_un_crear($tipo, $contexto, $valor, $padre, false)) {
             return $this->exacto_o_crear($tipo, $contexto, $valor, $crear);
         }
 
@@ -1095,6 +1126,10 @@ class EquivalenciasResolver
      */
     protected function exacto_o_crear($tipo, $contexto, $valor, $crear)
     {
+        /* Queda registrado por el contexto RESUELTO: ver comparte_clave_con_un_crear(). */
+        $this->crear_aplicado[$tipo][(int) $contexto][RelacionesParecidasDetector::clave_cache($valor)] = true;
+        $this->crear_aplicado_sin_tildes[$tipo][(int) $contexto][RelacionesParecidasDetector::clave_sin_tildes($valor)] = true;
+
         $id = $this->buscar_exacto($tipo, $contexto, $valor);
 
         if (!is_null($id)) {
@@ -1103,6 +1138,163 @@ class EquivalenciasResolver
 
         $id = (int) call_user_func($crear, $valor);
         $this->agregar_al_indice($tipo, $contexto, $id, $valor);
+
+        return $id;
+    }
+
+    /**
+     * ¿Este valor (sin decisión) comparte la clave con uno que el usuario pidió CREAR aparte, en el
+     * mismo contexto?
+     *
+     * 🔴 El contexto es el RESUELTO (la categoría o la provincia que resolvió la fila), no el padre
+     * como vino en el Excel. Los hijos se revisan bajo el padre canónico: con «Pintureria» unida a
+     * «Pinturería», "LATEX"→crear bajo «Pinturería» y "Latex" (sin decisión) bajo «Pintureria» van a
+     * la misma categoría. Si esto mirara el padre del Excel, con la fila de "LATEX" primero las de
+     * "Latex" caían por clave en "LATEX" (y con el orden inverso, no): dependía del orden.
+     *
+     * Se resuelve de dos maneras, porque cada lote es una instancia nueva:
+     *   - lo ya aplicado en esta instancia (exacto_o_crear() lo registra por contexto);
+     *   - las decisiones `crear` cuyo padre del Excel resuelve (sin crear nada) al mismo contexto
+     *     que la fila: cubre el "crear" que se aplicó en un lote anterior.
+     *
+     * @param  string      $tipo
+     * @param  int         $contexto
+     * @param  string      $valor
+     * @param  string|null $padre       el padre de ESTA fila, como vino en el Excel
+     * @param  bool        $sin_tildes  clientes y proveedores (WHERE de MySQL)
+     * @return bool
+     */
+    protected function comparte_clave_con_un_crear($tipo, $contexto, $valor, $padre, $sin_tildes)
+    {
+        $clave    = $sin_tildes ? RelacionesParecidasDetector::clave_sin_tildes($valor) : RelacionesParecidasDetector::clave_cache($valor);
+        $aplicado = $sin_tildes ? $this->crear_aplicado_sin_tildes : $this->crear_aplicado;
+        $pedidos  = $sin_tildes ? $this->crear_por_clave_sin_tildes : $this->crear_por_clave;
+
+        if (isset($aplicado[$tipo][(int) $contexto][$clave])) {
+            return true;
+        }
+
+        if (!isset($pedidos[$tipo][$clave])) {
+            return false;
+        }
+
+        if (!in_array($tipo, self::TIPOS_CON_PADRE, true)) {
+            return true;
+        }
+
+        $padre_fila = self::clave_de_padre($padre);
+
+        foreach ($pedidos[$tipo][$clave] as $padre_crear => $nada) {
+            $padre_crear = (string) $padre_crear;
+
+            if ($padre_crear === $padre_fila) {
+                return true;
+            }
+
+            /* Con padre y sin padre son preguntas distintas del paso 3 (ver decision()). */
+            if ($padre_crear === '' || $padre_fila === '') {
+                continue;
+            }
+
+            $contexto_crear = $this->espiar_contexto($tipo, $padre_crear);
+
+            if (!is_null($contexto_crear) && (int) $contexto_crear === (int) $contexto) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La decisión del usuario para el DESTINO de un `unir`: la del padre de la fila y, si no hay,
+     * la de otro padre del Excel que resuelve al mismo contexto (el destino canónico puede venir
+     * escrito bajo otra variante del padre: "Látex" bajo «Pintureria» para "Latex" bajo
+     * «Pinturería»).
+     *
+     * @param  string      $tipo
+     * @param  string      $valor
+     * @param  string|null $padre
+     * @param  int         $contexto
+     * @return array|null
+     */
+    protected function decision_en_contexto($tipo, $valor, $padre, $contexto)
+    {
+        $decision = $this->decision($tipo, $valor, $padre);
+
+        if (!is_null($decision) || !in_array($tipo, self::TIPOS_CON_PADRE, true) || self::clave_de_padre($padre) === '') {
+            return $decision;
+        }
+
+        $valor = trim((string) $valor);
+
+        if (!isset($this->decisiones[$tipo])) {
+            return null;
+        }
+
+        foreach ($this->decisiones[$tipo] as $otro_padre => $por_valor) {
+            $otro_padre = (string) $otro_padre;
+
+            if ($otro_padre === '' || $otro_padre === self::clave_de_padre($padre) || !isset($por_valor[$valor])) {
+                continue;
+            }
+
+            $contexto_otro = $this->espiar_contexto($tipo, $otro_padre);
+
+            if (!is_null($contexto_otro) && (int) $contexto_otro === (int) $contexto) {
+                return $por_valor[$valor];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * El contexto (id de la categoría o de la provincia) al que resolvería un padre del Excel,
+     * SIN crear nada: decisión del usuario, equivalencia recordada, nombre exacto o clave. Null si
+     * todavía no existe.
+     *
+     * @param  string $tipo_hijo  sub_categoria | localidad
+     * @param  string $padre
+     * @return int|null
+     */
+    protected function espiar_contexto($tipo_hijo, $padre)
+    {
+        $padre = trim((string) $padre);
+
+        if ($padre === '') {
+            return 0;
+        }
+
+        $tipo_padre = $tipo_hijo === 'sub_categoria' ? 'categoria' : 'provincia';
+
+        $this->asegurar_indice($tipo_padre);
+
+        $valor = $padre;
+        $decision = $this->decision($tipo_padre, $valor, null);
+
+        if (!is_null($decision) && $decision['accion'] === 'unir') {
+            $valor = $decision['con'];
+            $decision = $this->decision($tipo_padre, $valor, null);
+        }
+
+        if (!is_null($decision) && $decision['accion'] === 'usar') {
+            return (int) $decision['id'];
+        }
+
+        if (!is_null($decision) && $decision['accion'] === 'crear') {
+            return $this->buscar_exacto($tipo_padre, 0, $valor);
+        }
+
+        $id = $this->recordada($tipo_padre, 0, $valor);
+
+        if (is_null($id)) {
+            $id = $this->buscar_exacto($tipo_padre, 0, $valor);
+        }
+
+        if (is_null($id)) {
+            $id = $this->buscar_por_clave($tipo_padre, 0, $valor);
+        }
 
         return $id;
     }

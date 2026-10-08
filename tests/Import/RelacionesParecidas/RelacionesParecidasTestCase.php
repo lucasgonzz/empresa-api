@@ -34,6 +34,9 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
     const LOCALIDADES   = '37_relaciones_parecidas_localidades.xlsx';
     const PADRES        = '38_relaciones_parecidas_padres.xlsx';
     const LISTAS        = '39_relaciones_parecidas_listas.xlsx';
+    const UNIR_A_RESUELTO     = '40_relaciones_parecidas_unir_a_resuelto.xlsx';
+    const CREAR_HIJO_PRIMERO  = '41_relaciones_parecidas_crear_hijo_primero.xlsx';
+    const CREAR_HIJO_DESPUES  = '42_relaciones_parecidas_crear_hijo_despues.xlsx';
 
     /** Para elegir_por_nombre(): la clave `seguro` no viaja en la respuesta de la IA. */
     const ABSENT = '__sin_seguro__';
