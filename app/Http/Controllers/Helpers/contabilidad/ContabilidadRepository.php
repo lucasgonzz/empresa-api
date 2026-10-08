@@ -11,6 +11,7 @@ use App\Models\Expense;
 use App\Models\ExpenseConcept;
 use App\Models\MovimientoCaja;
 use App\Models\ProviderOrderAfipTicket;
+use App\Models\RetencionImpuesto;
 use App\Models\RetencionSufrida;
 use App\Models\Sale;
 use App\Models\SaleTax;
@@ -1682,10 +1683,18 @@ class ContabilidadRepository
      *
      * Las fórmulas de PosicionFiscalHelper NO cambiaron: siguen restando exactamente lo mismo.
      *
+     * 🔴 `otros` Y `otros_detalle` (misión retenciones-abm-impuestos, 8/10/2026) son los
+     * certificados de los impuestos propios del comercio (`imp_<id>`). Van APARTE de
+     * `iva`/`iibb`/`ganancias`, que se calculan con la query de siempre y no cambian ni un peso: un
+     * impuesto nuevo es INFORMATIVO, no resta contra ningún saldo. `otros` es la suma de todos y
+     * `otros_detalle` un renglón por impuesto (`impuesto`, `nombre`, `monto`), solo los de monto
+     * distinto de cero y ordenados por nombre. Un valor de `impuesto` que no sea ninguno de los tres
+     * ni un `imp_<id>` no entra en ningún lado (como antes de esta misión).
+     *
      * @param  int $user_id
      * @param  string $desde
      * @param  string $hasta
-     * @return array{iva: float, iibb: float, ganancias: float}
+     * @return array{iva: float, iibb: float, ganancias: float, otros: float, otros_detalle: array}
      */
     public static function retenciones_sufridas($user_id, $desde, $hasta)
     {
@@ -1700,11 +1709,90 @@ class ContabilidadRepository
             ->selectRaw("SUM(CASE WHEN impuesto = 'ganancias' THEN importe ELSE 0 END) as ganancias")
             ->first();
 
+        $otros_detalle = self::retenciones_sufridas_de_otros_impuestos($user_id, $desde, $hasta);
+
+        $otros = 0.0;
+
+        foreach ($otros_detalle as $renglon) {
+
+            $otros += $renglon['monto'];
+        }
+
         return [
-            'iva'       => $row ? (float) $row->iva : 0.0,
-            'iibb'      => $row ? (float) $row->iibb : 0.0,
-            'ganancias' => $row ? (float) $row->ganancias : 0.0,
+            'iva'           => $row ? (float) $row->iva : 0.0,
+            'iibb'          => $row ? (float) $row->iibb : 0.0,
+            'ganancias'     => $row ? (float) $row->ganancias : 0.0,
+            'otros'         => $otros,
+            'otros_detalle' => $otros_detalle,
         ];
+    }
+
+    /**
+     * Las retenciones sufridas del período de los impuestos propios del comercio (`imp_<id>`), uno
+     * por impuesto. Es la mitad "otros" de retenciones_sufridas().
+     *
+     * Se agrupa por el texto de `impuesto` y se filtra en PHP con la misma lectura estricta de
+     * RetencionImpuesto::id_de_clave(): son pocas filas (un renglón por impuesto del comercio) y así
+     * no se depende de cómo escapa un LIKE cada motor. Lo que ya es iva/iibb/ganancias se deja afuera
+     * en la query, de modo que ningún certificado puede contarse en las dos mitades.
+     *
+     * @param  int $user_id
+     * @param  string $desde Ya normalizado por rango().
+     * @param  string $hasta Ya normalizado por rango().
+     * @return array<int, array{impuesto: string, nombre: string, monto: float}> Ordenado por nombre.
+     */
+    private static function retenciones_sufridas_de_otros_impuestos($user_id, $desde, $hasta)
+    {
+        $rows = RetencionSufrida::query()
+            ->where('user_id', $user_id)
+            ->whereDate('fecha', '>=', $desde)
+            ->whereDate('fecha', '<=', $hasta)
+            ->whereNotIn('impuesto', RetencionSufrida::IMPUESTOS)
+            ->groupBy('impuesto')
+            ->selectRaw('impuesto, SUM(importe) as monto')
+            ->get();
+
+        $montos = [];
+
+        foreach ($rows as $row) {
+
+            $impuesto_id = RetencionImpuesto::id_de_clave($row->impuesto);
+
+            if ($impuesto_id > 0 && (float) $row->monto != 0.0) {
+
+                $montos[$impuesto_id] = (float) $row->monto;
+            }
+        }
+
+        if (count($montos) == 0) {
+
+            return [];
+        }
+
+        $nombres = RetencionImpuesto::where('user_id', $user_id)
+                                    ->whereIn('id', array_keys($montos))
+                                    ->pluck('name', 'id')
+                                    ->all();
+
+        $detalle = [];
+
+        foreach ($montos as $impuesto_id => $monto) {
+
+            $detalle[] = [
+                'impuesto' => RetencionImpuesto::clave($impuesto_id),
+                'nombre'   => RetencionSufrida::nombre_impuesto(RetencionImpuesto::clave($impuesto_id), $user_id, $nombres),
+                'monto'    => $monto,
+            ];
+        }
+
+        usort($detalle, function ($a, $b) {
+
+            $por_nombre = strcmp(mb_strtolower($a['nombre'], 'UTF-8'), mb_strtolower($b['nombre'], 'UTF-8'));
+
+            return $por_nombre != 0 ? $por_nombre : strcmp($a['impuesto'], $b['impuesto']);
+        });
+
+        return $detalle;
     }
 
     /**
@@ -1767,6 +1855,32 @@ class ContabilidadRepository
                 'provider_order_afip_tickets.provider_order_id as provider_order_id',
             ]);
 
+        /*
+         * Los nombres de los impuestos propios de esta página, en UNA consulta: el listado no puede
+         * hacer una por fila.
+         */
+        $ids_de_impuestos = [];
+
+        foreach ($rows as $row) {
+
+            $impuesto_id = RetencionImpuesto::id_de_clave($row->impuesto);
+
+            if ($impuesto_id > 0) {
+
+                $ids_de_impuestos[] = $impuesto_id;
+            }
+        }
+
+        $nombres = [];
+
+        if (count($ids_de_impuestos) > 0) {
+
+            $nombres = RetencionImpuesto::where('user_id', $user_id)
+                                        ->whereIn('id', array_unique($ids_de_impuestos))
+                                        ->pluck('name', 'id')
+                                        ->all();
+        }
+
         $registros = [];
 
         foreach ($rows as $row) {
@@ -1776,7 +1890,7 @@ class ContabilidadRepository
             $registros[] = [
                 'id'          => $row->id,
                 'fecha'       => $row->fecha,
-                'descripcion' => self::descripcion_de_retencion($row),
+                'descripcion' => self::descripcion_de_retencion($row, $nombres),
                 'monto'       => (float) $row->importe,
                 'link_tipo'   => $link_tipo,
                 'link_id'     => $link_id,
@@ -1819,11 +1933,12 @@ class ContabilidadRepository
      * certificado, con los dos últimos solo si están cargados.
      *
      * @param  object $row
+     * @param  array  $nombres Mapa `[id => nombre]` de los impuestos propios de la página.
      * @return string
      */
-    private static function descripcion_de_retencion($row)
+    private static function descripcion_de_retencion($row, $nombres = [])
     {
-        $descripcion = 'Retención '.RetencionSufrida::nombre_impuesto($row->impuesto);
+        $descripcion = 'Retención '.RetencionSufrida::nombre_impuesto($row->impuesto, null, $nombres);
 
         if (!is_null($row->client_name) && $row->client_name !== '') {
 

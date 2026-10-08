@@ -466,6 +466,50 @@ class ChequeController extends Controller
     }
 
     /**
+     * La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): solo se pueden
+     * cambiar el número, el banco, las notas, la fecha de emisión y la fecha de pago. Todo lo demás
+     * (tipo, cliente, proveedor, monto, cuenta corriente, caja, estado, endoso...) mueve plata o
+     * cuentas, y este endpoint ni lo mira: se ignora en silencio, porque la SPA manda el modelo
+     * entero en cada guardado y rechazar por "campo de más" rompería el guardado legítimo.
+     *
+     * 🔴 El pedido NO se vuelca al modelo: se leen SUS cinco claves por nombre
+     * (ChequeHelper::CAMPOS_EDITABLES) y nada más. Nunca `$request->all()`, `fill()` ni
+     * `update($request->all())` acá: sería abrirle la puerta a `client_id`, `amount`, `user_id`...
+     * La lógica (reglas del banco, fechas, replicación al par endosado) vive en
+     * ChequeHelper::actualizar_datos().
+     *
+     * @param  \Illuminate\Http\Request  $request  El modelo del cheque; solo cuentan las claves
+     *                                             `numero`, `cheque_banco_id`, `notes`,
+     *                                             `fecha_emision` y `fecha_pago`.
+     * @param  string  $id  El id de la ruta.
+     * @return \Illuminate\Http\JsonResponse  200 `{model}` con el cheque ya actualizado; 404 si el
+     *                                        cheque no es de esta cuenta, no existe o no es un id
+     *                                        (el mismo cuerpo que destroy); 422 `{message}` si el
+     *                                        banco no es de esta cuenta o una fecha es inválida,
+     *                                        sin escribir nada.
+     */
+    function update(Request $request, $id) {
+
+        $cheque = $this->cheque_del_dueno($id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
+        }
+
+        // Las cinco claves por nombre: `only()` trae solo las que vienen (una ausente no se toca,
+        // una null sí viene y significa "vaciar").
+        $problemas = ChequeHelper::actualizar_datos($cheque, $request->only(ChequeHelper::CAMPOS_EDITABLES), $this->userId());
+
+        if (count($problemas)) {
+
+            return response()->json(['message' => implode(' ', $problemas)], 422);
+        }
+
+        return response()->json(['model' => $this->fullModel('Cheque', $cheque->id)], 200);
+    }
+
+    /**
      * Borra un cheque del dueño.
      *
      * Hasta el 3/10/2026 era `Cheque::find($id)->delete()`: borraba el cheque de cualquier comercio
