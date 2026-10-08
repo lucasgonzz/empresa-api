@@ -636,7 +636,7 @@ class SaleTicketPdf extends fpdf {
 	 */
 	function discounts() {
 	    if ($this->sale->aplicar_descuentos_directo_a_items) {
-	    	return;
+			return;
 	    }
 
 	    $this->SetFont('Arial', 'B', 10);

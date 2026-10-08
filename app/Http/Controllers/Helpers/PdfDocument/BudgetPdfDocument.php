@@ -388,7 +388,8 @@ class BudgetPdfDocument implements PdfDocumentSource
      *
      * Con `aplicar_recargos_directo_a_items` el recargo YA ESTÁ adentro del precio de cada
      * renglón: listarlo también acá se lee como que se suma dos veces (pedido de Lucas). Los
-     * descuentos sí se listan siempre, porque nunca viajan adentro del precio.
+     * descuentos se listan salvo que su propia opción (`aplicar_descuentos_directo_a_items`) los
+     * haya metido adentro del precio: ver `renglones_de_descuentos()`. Cada opción gobierna SU ajuste.
      *
      * @return array<int, string>
      */

@@ -651,8 +651,10 @@ class BudgetHelper {
 			se pasa del margen de 3 de `BudgetController::store()` y el guardado muere con
 			"El total del presupuesto no corresponde con los productos ingresados" (500).
 
-			Los DESCUENTOS si se siguen aplicando: la opcion es solo de recargos, el precio del
-			pivot no los trae adentro.
+			Los DESCUENTOS se siguen aplicando con ESTA opcion: el precio del pivot no los trae adentro
+			por ella. Solo dejan de aplicarse cuando su propia opcion hermana, de descuentos
+			(`aplicar_descuentos_directo_a_items`), esta activa: es la guarda `$aplicar_discounts` de
+			mas abajo. Cada opcion gobierna SU ajuste.
 
 			Misma guarda, mismo motivo y mismo estilo que `SaleHelper::getTotalSale()`, que es
 			donde este comportamiento ya estaba resuelto del lado de las ventas.
