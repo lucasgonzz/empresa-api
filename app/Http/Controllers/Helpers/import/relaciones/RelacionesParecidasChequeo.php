@@ -231,9 +231,10 @@ class RelacionesParecidasChequeo
             $recortado = $recortado || !empty($analisis['recortado']);
 
             $grupos[] = [
-                'tipo'     => $tipo,
-                'es_hijo'  => false,
-                'analisis' => $analisis,
+                'tipo'      => $tipo,
+                'es_hijo'   => false,
+                'prioridad' => 0,
+                'analisis'  => $analisis,
             ];
         }
 
@@ -268,17 +269,34 @@ class RelacionesParecidasChequeo
                 ? []
                 : self::refs_de_padre_previas($grupos[$indice_padre]['analisis']);
 
+            $preseleccionadas = is_null($indice_padre)
+                ? []
+                : self::refs_preseleccionadas_previas($grupos[$indice_padre]['analisis']);
+
             foreach (self::agrupar_hijos_por_ref($hijos, $refs_previas) as $ref => $grupo_hijo) {
                 $analisis = self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, self::id_de_ref($ref), true, $presupuesto);
 
                 $recortado = $recortado || !empty($analisis['recortado']);
 
+                /*
+                 * Prioridad para la IA: los hijos bajo la resolución que el padre tiene (muy
+                 * probablemente) preseleccionada van antes que los de las resoluciones alternativas.
+                 */
+                $es_preseleccionada = false;
+
+                foreach ($grupo_hijo['padres'] as $padre) {
+                    if (isset($preseleccionadas[$padre][(string) $ref])) {
+                        $es_preseleccionada = true;
+                    }
+                }
+
                 $grupos[] = [
-                    'tipo'     => $tipo_hijo,
-                    'es_hijo'  => true,
-                    'ref'      => (string) $ref,
-                    'padres'   => $grupo_hijo['padres'],
-                    'analisis' => $analisis,
+                    'tipo'      => $tipo_hijo,
+                    'es_hijo'   => true,
+                    'prioridad' => $es_preseleccionada ? 1 : 2,
+                    'ref'       => (string) $ref,
+                    'padres'    => $grupo_hijo['padres'],
+                    'analisis'  => $analisis,
                 ];
             }
         }
@@ -434,6 +452,63 @@ class RelacionesParecidasChequeo
                     }
 
                     $refs[$padre]['nuevo:' . $padre] = true;
+                    $nuevos_por_fuerte[RelacionesParecidasDetector::clave_fuerte($padre)][] = $padre;
+                    break;
+            }
+        }
+
+        foreach ($nuevos_por_fuerte as $miembros) {
+            usort($miembros, function ($a, $b) use ($analisis) {
+                return RelacionesParecidasDetector::comparar_canonico($a, $analisis['valores'][$a]['filas'], $b, $analisis['valores'][$b]['filas']);
+            });
+
+            foreach ($miembros as $padre) {
+                $refs[$padre]['nuevo:' . $miembros[0]] = true;
+            }
+        }
+
+        return $refs;
+    }
+
+    /**
+     * Las resoluciones que cada padre puede terminar teniendo PRESELECCIONADAS, antes de la IA. Solo
+     * ordena las consultas a la IA (ver armar_consultas()): no decide nada.
+     *
+     * Sin parecidos es una sola: el idéntico, el recordado, el de la misma escritura más viejo o,
+     * si es nuevo, el canónico de su misma escritura. Con parecidos depende de lo que conteste la
+     * IA, que todavía no contestó, así que son dos: su PRIMER candidato (el que la IA confirma
+     * cuando está segura; los cargados van primero porque el prompt los prefiere) y "crear" (lo
+     * que queda si duda o no elige). Los demás candidatos son las resoluciones alternativas.
+     *
+     * @param  array $analisis  analizar_grupo() del padre
+     * @return array [padre => [ref => true]]
+     */
+    protected static function refs_preseleccionadas_previas(array $analisis)
+    {
+        $refs = [];
+        $nuevos_por_fuerte = [];
+
+        foreach ($analisis['valores'] as $padre => $info) {
+            $padre = (string) $padre;
+            $refs[$padre] = [];
+
+            switch ($info['estado']) {
+                case 'identico':
+                case 'recordado':
+                    $refs[$padre]['id:' . (int) $info['id']] = true;
+                    break;
+
+                case 'misma_escritura':
+                    $refs[$padre]['id:' . (int) $info['opciones'][0]['id']] = true;
+                    break;
+
+                default:
+                    if (count($info['candidatos']) > 0) {
+                        $refs[$padre]['id:' . (int) $info['candidatos'][0]['id']] = true;
+                    } elseif (count($info['candidatos_archivo']) > 0) {
+                        $refs[$padre]['nuevo:' . (string) $info['candidatos_archivo'][0]['valor']] = true;
+                    }
+
                     $nuevos_por_fuerte[RelacionesParecidasDetector::clave_fuerte($padre)][] = $padre;
                     break;
             }
@@ -655,7 +730,13 @@ class RelacionesParecidasChequeo
 
     /**
      * Arma las consultas para la IA: cada valor con candidatos existentes ("cargado") o del mismo
-     * archivo ("archivo"). Los de más filas primero, hasta TOPE_ITEMS_IA.
+     * archivo ("archivo"), hasta TOPE_ITEMS_IA.
+     *
+     * 🔴 El orden antes de cortar: primero los valores sin padre (proveedor, categoría, marca...),
+     * después los hijos bajo la resolución PRESELECCIONADA de su padre y al final los hijos bajo
+     * las resoluciones alternativas; dentro de cada tramo, los de más filas primero. Con
+     * `padre_ref` un padre con tres candidatos multiplica sus hijos por cuatro, y sin este orden
+     * esos hijos alternativos se comían el tope y se recortaban las consultas que importan.
      *
      * Las consultas IDÉNTICAS (mismo tipo, mismo valor, mismos candidatos) van una sola vez: con los
      * hijos analizados una vez por cada resolución posible del padre, la misma pregunta aparece en
@@ -697,17 +778,21 @@ class RelacionesParecidasChequeo
 
                 $clave = $grupo['tipo'] . "\x1F" . (string) $valor . "\x1F" . json_encode($candidatos);
 
+                $prioridad = isset($grupo['prioridad']) ? (int) $grupo['prioridad'] : 0;
+
                 if (!isset($pendientes[$clave])) {
                     $pendientes[$clave] = [
                         'tipo'       => $grupo['tipo'],
                         'valor'      => (string) $valor,
                         'filas'      => 0,
+                        'prioridad'  => $prioridad,
                         'candidatos' => $candidatos,
                         'entradas'   => [],
                     ];
                 }
 
                 $pendientes[$clave]['filas'] = max($pendientes[$clave]['filas'], (int) $info['filas']);
+                $pendientes[$clave]['prioridad'] = min($pendientes[$clave]['prioridad'], $prioridad);
                 $pendientes[$clave]['entradas'][] = ['grupo' => $i, 'valor' => (string) $valor, 'elecciones' => $elecciones];
             }
         }
@@ -715,6 +800,10 @@ class RelacionesParecidasChequeo
         $pendientes = array_values($pendientes);
 
         usort($pendientes, function ($a, $b) {
+            if ($a['prioridad'] !== $b['prioridad']) {
+                return $a['prioridad'] - $b['prioridad'];
+            }
+
             if ($a['filas'] !== $b['filas']) {
                 return $b['filas'] - $a['filas'];
             }
