@@ -300,6 +300,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // cheques-endoso-y-bancos, 21/9/2026). También baja por recursos-iniciales.
     Route::resource('cheque-banco', 'ChequeBancoController');
 
+    // Impuestos de retención propios del comercio, además de Ganancias/IVA/IIBB (misión
+    // retenciones-abm-impuestos, 8/10/2026). También baja por recursos-iniciales.
+    Route::resource('retencion-impuesto', 'RetencionImpuestoController');
+
     // Balanzas del comercio: cómo leer los tickets de cada una y a qué artículo imputarlos, para la
     // lectura "por balanza" de VENDER (misión balanzas-configurables, 3/10/2026). También baja por
     // recursos-iniciales (la SPA las usa para leer tickets sin conexión).

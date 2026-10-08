@@ -1010,6 +1010,16 @@ class CatalogoDeEscrituraIaHelper
          * catálogo de acciones de pantalla (el alta y la edición pasan por el modo de confianza del
          * dueño; la baja siempre deja tarjeta).
          */
+        /*
+         * Impuestos de retención propios (misión retenciones-abm-impuestos, 8/10/2026). Es un catálogo
+         * por dueño con `name` y nada más, como `cheque_banco`, y su controller scopea y valida por su
+         * cuenta (404 de otra cuenta, 422 si el nombre se repite o si la baja dejaría certificados
+         * huérfanos). Se deja FUERA del ABM genérico a propósito: lo que se ofrece en el selector del
+         * cobro decide en qué renglón de la Posición Fiscal cae un certificado, y esta misión no
+         * quiere que un impuesto fiscal nazca de una frase de chat. Se da de alta desde el ABM de
+         * Tesorería. Reabrir la decisión es mover esta entrada a ENTIDADES con las tres operaciones.
+         */
+        'retencion_impuesto'           => 'impuestos de retención propios: se dan de alta desde el ABM de Tesorería, porque deciden en qué renglón de la Posición Fiscal cae un certificado',
         'balanza'                      => 'balanzas: su store() lee el request por un helper (la guarda no ve campos), no rige sin "Por balanza" en Configuración y sus datos salen de la etiqueta de la balanza física',
     ];
 
