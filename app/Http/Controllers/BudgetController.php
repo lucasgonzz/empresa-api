@@ -568,6 +568,22 @@ class BudgetController extends Controller
         }
 
         /*
+            🔴 EL TOTAL SE VALIDA CUANDO UNA SPA ANTERIOR PODRIA HABERLO DOBLE-DESCONTADO (mision
+            descuentos-aplicar-al-precio-del-articulo, 8/10/2026). Se decide ACA, antes de pisar
+            `$model->total` con el del request, porque necesita el flag y el total GUARDADOS.
+
+            Este metodo nunca valido el total (`store()` si: compara contra `getTotal()` con margen de 3). Con el flag de
+            descuentos en 1 los precios ya traen el descuento adentro, y una SPA que no conoce la
+            opcion reabre el presupuesto, vuelve a restar el descuento en su pie y manda un total mas
+            chico que el de los renglones: guardarlo dejaria el presupuesto mal, y al confirmarlo la
+            venta heredaria ese total. No se corta por la ausencia de la clave porque el form
+            generico de Presupuestos es un llamador legitimo sin ella; se valida el total, y solo si
+            el request lo MUEVE. El porque completo, en
+            `DescuentosEnPreciosEsquemaHelper::requiere_validar_el_total_del_presupuesto()`.
+        */
+        $validar_el_total = DescuentosEnPreciosEsquemaHelper::requiere_validar_el_total_del_presupuesto($model, $request);
+
+        /*
             🔴 TODO LO QUE SIGUE ES UNA SOLA TRANSACCION (tanda 2 de la mision
             vender-lista-obligatoria, 18/9/2026, item A1). Hasta hoy este metodo era el unico de la
             clase sin `DB::beginTransaction()` ni try/catch: store(), duplicate(), confirmar() y
@@ -717,6 +733,26 @@ class BudgetController extends Controller
                 los combos ya tienen que estar adjuntados.
             */
             BudgetHelper::attachCombos($model, $request->combos);
+
+            /*
+                La validacion del total que `store()` hace con estos mismos numeros: la diferencia
+                absoluta entre `getTotal()` y el total del request no puede pasar de 3. Va despues de
+                adjuntar los renglones (`getTotal()` los lee de la base) y ANTES de `checkStatus()`:
+                un rechazo no puede haber confirmado ni creado nada. El `throw` cae en el
+                `catch (\Throwable)` de abajo, que revierte la transaccion entera: no queda escrito
+                ni el total, ni los renglones, ni el flag. Mismo mensaje que el alta.
+            */
+            if ($validar_el_total) {
+
+                $diferencia_del_total = abs((int) BudgetHelper::getTotal($model) - (int) $model->total);
+
+                if ($diferencia_del_total > 3) {
+
+                    Log::info('update budget id '.$id.': total mal para presupuesto con los descuentos adentro de los precios. getTotal: '.(int) BudgetHelper::getTotal($model).', total del request: '.(int) $model->total);
+
+                    throw new Exception('El total del presupuesto no corresponde con los productos ingresados');
+                }
+            }
 
             /*
                 🔴 checkStatus() SOLO si el estado cambio de verdad.

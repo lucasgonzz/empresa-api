@@ -449,6 +449,61 @@ class DescuentosEnPreciosEsquemaHelper {
     }
 
     /**
+     * ¿Hay que VALIDAR el total de este PUT de un PRESUPUESTO contra sus renglones antes de
+     * guardarlo? Es la version para presupuestos de `requiere_spa_nueva()`, pero NO corta por la
+     * ausencia de la clave: pide una validacion, y solo cuando hace falta.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 EL HUECO: `BudgetController::update()` NO VALIDA EL TOTAL
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  `store()` compara el `total` del request contra `BudgetHelper::getTotal()` (margen de 3) y
+     *  rebota lo que no cierra; `update()` asigna `$model->total = $request->total` pelado. Una SPA
+     *  anterior a la opcion que reabre un presupuesto con el flag en 1 (descuentos ya adentro de los
+     *  precios) y lo guarda manda un `total` con el descuento restado DOS veces, y `update()` lo
+     *  guarda: el presupuesto queda con los renglones descontados una vez y el total dos, y al
+     *  confirmarlo `saveSale()` copia ese total a la venta.
+     *
+     *  ¿Por que NO es un 409 por ausencia de la clave, como en las ventas? Porque aca hay un
+     *  llamador legitimo sin la clave: el FORM GENERICO del modulo Presupuestos re-manda el modelo
+     *  que recibio, no sabe nada de descuentos y es la unica pantalla donde se puede cambiar una
+     *  cantidad o un precio sin pasar por VENDER. Cortarlo lo dejaria sin poder tocar estos
+     *  presupuestos, y no tiene el problema: re-manda el `total` que ya tenia guardado.
+     *
+     *  ¿Y por que solo si el `total` CAMBIA? Porque el dano es un total NUEVO y mal calculado. El
+     *  form generico tiene el total en solo lectura y no lo recalcula cuando se edita un renglon: un
+     *  cambio de precio o de cantidad desde ahi deja el total tal cual (hoy pasa con todos los
+     *  presupuestos). Validarlo contra los renglones rechazaria, con el mensaje del alta, justo la
+     *  unica edicion que ese form ofrece, y el usuario no podria arreglarlo desde ahi. Un total
+     *  que no se movio no puede haber sido doble-descontado por nadie. En cambio la SPA vieja
+     *  siempre lo mueve: su pie recalcula el total restando el descuento otra vez.
+     *
+     *  Con la clave presente (la SPA nueva la manda siempre), o con el flag en 0 o NULL, o sin la
+     *  columna (ventana del deploy), el comportamiento no cambia.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model  $budget   El presupuesto tal como esta guardado, antes de tocarlo.
+     * @param  \Illuminate\Http\Request             $request  El PUT.
+     * @return bool  true = validar el total contra `BudgetHelper::getTotal()` antes de guardar.
+     */
+    static function requiere_validar_el_total_del_presupuesto($budget, $request) {
+
+        if (!Self::hay_columna_flag('budgets')) {
+            return false;
+        }
+
+        if (!$budget->{Self::COLUMNA_FLAG}) {
+            return false;
+        }
+
+        if ($request->exists(Self::COLUMNA_FLAG)) {
+            return false;
+        }
+
+        // Un centavo de tolerancia: el total viaja como numero y se guarda con dos decimales.
+        return abs((float) $request->total - (float) $budget->total) > 0.01;
+    }
+
+    /**
      * El mensaje que ve el vendedor cuando `requiere_spa_nueva()` (o su hermano de update-prices)
      * frena su edicion. Habla en criollo: no nombra ninguna columna ni ningun flag.
      *
