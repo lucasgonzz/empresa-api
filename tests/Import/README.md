@@ -75,6 +75,9 @@ php tests/Import/fixtures/generar_filas_del_excel.php
 | `37_relaciones_parecidas_localidades.xlsx` | 3 | Clientes: `nombre`, `provincia`, `localidad`. `"Villa Gdor. Galvez"` bajo `"Santa Fe"` y `"Villa Gdor Galvez"` bajo `"Santa Fe."`: la misma localidad bajo dos escrituras de la misma provincia, con y sin punto para que el `WHERE` de MySQL **no** las junte solo. Generado por `generar_relaciones_parecidas.php`. |
 | `38_relaciones_parecidas_padres.xlsx` | 5 | Cabecera del 33. "Pintureria Sur" (3 filas) con "Látex", "Latex" y "Esmalte", y "PINTURERIA SUR" (2 filas) con "Esmaltes" y "ESMALTE": los hijos de un padre en cada una de sus resoluciones (`padre_ref`), con el padre dudoso (si se siembra "Pinturería del Sur") o `entre_nuevos` (sin sembrar nada). Generado por `generar_relaciones_parecidas.php`. Ver `PadreRefTest`. |
 | `39_relaciones_parecidas_listas.xlsx` | 4 | Clientes: `nombre`, `tipo_de_precio` con "Mayorista", "Mayoristas", "Mayorista 2" y "Minorista": el caso medido con la IA real (tanda 3), un valor emparejado SEGURO con otro del archivo que ya estaba resuelto contra una lista cargada. Generado por `generar_relaciones_parecidas.php`. Ver `EmparejadoConUnResueltoTest`. |
+| `40_relaciones_parecidas_unir_a_resuelto.xlsx` | 3 | Cabecera del 33. "Pintureria Sur" (2 filas, sub "Esmalte") y "Pinturerias Sur" (1 fila, sub "Latex"): con la categoría "Pinturería del Sur" cargada, A se une SEGURO con B y B apunta a la cargada; los hijos de A se revisan contra las subcategorías de la cargada (tanda 4). Generado por `generar_relaciones_parecidas.php`. Ver `UnirAUnResueltoTest`. |
+| `41_relaciones_parecidas_crear_hijo_primero.xlsx` | 2 | Cabecera del 33. "LATEX" bajo "Pinturería" y después "Latex" bajo "Pintureria" (que se une a "Pinturería"): el "crear aparte" de un hijo con la fila del `crear` PRIMERO (tanda 4). Generado por `generar_relaciones_parecidas.php`. |
+| `42_relaciones_parecidas_crear_hijo_despues.xlsx` | 2 | Las mismas dos filas que el 41 en el orden inverso: la fila sin decisión primero. Los dos órdenes tienen que dar lo mismo. Generado por `generar_relaciones_parecidas.php`. |
 
 ⚠️ **Hay cuatro fixtures que se importan con varios lotes, y los cuatro dependen de un `config()`.** `06_incidente_servian.xlsx` (`IncidenteServianTest`) y `28_`, `29_` y `30_` (`CeldaConSaltoDeLineaTest`, misión `importacion-celda-multilinea`, 4/10/2026) bajan `ARTICLE_EXCEL_CHUNK_SIZE` a 10 en el `setUp()`. En el 06 es lo que reproduce el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes); en el 28, el 29 y el 30, lo que hace que haya offsets de lote que se puedan desalinear con una celda multilínea (el CSV tiene un **registro** por fila del Excel, pero una celda con salto de línea ocupa varias **líneas** físicas). Si alguien cambia o quita ese `config()`, los tests dejan de probar lo que dicen probar aunque sigan pasando en verde. Los tres fixtures multilínea se regeneran con:
 
@@ -568,7 +571,7 @@ distinto. Hasta esta misión la resolución de relaciones de la importación no 
 - Tanda 2: los hijos salen **una vez por cada resolución posible del padre** (`padre_ref`: `id:X` por cada `usar`,
   `nuevo:<padre>` por `crear`, `nuevo:<C>` por `unir` con C) y la clave es `tipo|padre|valor|padre_ref`
   (`PadreRefTest`). `relaciones_parecidas.recortado` dice si alguna capa se acotó (columna con más de 2000
-  valores, más consultas que el tope de la IA, presupuesto de comparaciones agotado). 🔴 Un test que llame dos
+  valores, más consultas que el tope de la IA, presupuesto de comparaciones o de bloqueo agotado). 🔴 Un test que llame dos
   veces a `falsear_ia()` necesita la fábrica limpia que el helper ya pone: los stubs de `Http::fake()` se
   acumulan y gana el primero.
 - Los hijos (subcategoría, localidad con provincia) se comparan bajo el **padre canónico**: "Látex" bajo
@@ -577,6 +580,16 @@ distinto. Hasta esta misión la resolución de relaciones de la importación no 
 - `ImportacionArticulosTest` y `ImportacionClientesProveedoresTest`: `usar` / `crear` / `unir`, el saneado (id
   ajeno, tipo de otra importación, sub o localidad de otro padre), las equivalencias recordadas (`crear` las
   borra; la segunda importación sin decisiones las aplica, también por el import clásico) y varios lotes.
+- Tanda 4: el "crear aparte" de un hijo con el padre unido da lo mismo en los dos órdenes de filas (fixtures 41 y
+  42); un `unir` respeta lo que decidió el destino aunque no haya tabla de equivalencias; los hijos de un padre
+  unido SEGURO a otro que apunta a un cargado se revisan contra ese cargado (`UnirAUnResueltoTest`, fixture 40).
+  `PrioridadDeConsultasTest`: antes de cortar en 150 consultas van los valores sin padre, después los hijos bajo
+  la resolución preseleccionada del padre y al final los de las alternativas. `ArchivoDeDecisionesTest`: las
+  decisiones viajan a los lotes como la ruta de `<excel>.hoja-equivalencias-<uuid>.json` (lo borra la misma
+  limpieza que el volcado de la hoja); sin el archivo, el lote sigue sin decisiones y lo loguea. 🔴 Sus
+  decisiones son `crear` a propósito: un `usar` lo recuerda el controlador antes de encolar y se aplicaría igual
+  por la equivalencia recordada. `PresupuestoDeBloqueoTest` (sin base): el bloqueo por bigramas también gasta
+  presupuesto y, agotado, los que quedan sin revisar son los de menos filas.
 
 🔴 **`test_sin_equivalencias_no_duplica_por_mayusculas` cambia un comportamiento a propósito.** Hasta esta
 misión, con el proveedor "Acme" cargado y "ACME" en el Excel, `ArticleImport::set_providers()` creaba un
