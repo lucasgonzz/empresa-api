@@ -61,18 +61,37 @@ class RelacionesParecidasDetector
 
     /**
      * Entradas de las listas del índice de bigramas que el BLOQUEO puede recorrer por corrida, como
-     * máximo (cada valor recorre las listas de todos sus bigramas). Agotado, los valores que faltan
-     * quedan solo con la capa determinista y la corrida sale `recortado`, igual que con las
-     * comparaciones.
+     * máximo (cada valor recorre las listas de sus bigramas). Un valor cuyo bloqueo no entra en lo
+     * que queda se saltea SOLO ÉL (queda con la capa determinista y la corrida sale `recortado`);
+     * los que siguen, si entran, se revisan. El chequeo lo reparte por columna (ver
+     * abrir_cuota_de_bloqueo()).
      *
-     * 🔴 Hace falta aparte del de comparaciones: el bloqueo era el costo que no se contaba. Medido el
-     * 8/10/2026 con 1999 valores en una columna: contra 3000 existentes recorre 11,2 millones de
-     * entradas (8,6 s, entra entero); contra 20.000, 58 millones (46-50 s, 116 MB), con las
-     * comparaciones lejos de su tope porque cada valor compara 20 como máximo. Recorre ~1,2
-     * millones de entradas por segundo: con este tope el caso de 20.000 tarda 11 s y sale
-     * `recortado`. La memoria no la acota: es la del índice de los existentes.
+     * 🔴 Hace falta aparte del de comparaciones: el bloqueo era el costo que no se contaba (1999
+     * valores contra 20.000 existentes: 46-73 s con las comparaciones casi sin tocar, 8/10/2026).
+     * Recorre ~1,2 millones de entradas por segundo. Ver la medición en BIGRAMA_COMUN_FRACCION.
      */
     const PRESUPUESTO_BLOQUEO = 15000000;
+
+    /**
+     * Un bigrama es COMÚN en una lista si aparece en más de esta fracción de sus elementos (y en
+     * más de BIGRAMA_COMUN_PISO): los comunes no se usan para bloquear. No discriminan ("er", "ra",
+     * "ia" están en media lista de ferreterías y distribuidoras) y son los que inflaban el costo:
+     * cada valor recorría sus listas enteras. El umbral y el Jaccard del bloqueo se cuentan sobre
+     * los bigramas que NO son comunes; un valor que solo tiene comunes ("Esta") bloquea con todos.
+     *
+     * Medido el 8/10/2026 con nombres de rubro (palabras repetidas: "Ferreteria Norte SRL 12"),
+     * 1999 valores contra 3000 existentes: el bloqueo pasó de agotar los 15 M (y recortar) a
+     * recorrer 8,1 M en 2,8 s sin recortar; tres columnas de 1000 contra 3000, de recortar la
+     * tercera a 3,4 + 3,3 + 3,3 M en 4,5 s. Con tipeos de existentes conocidos, el de origen queda
+     * entre los candidatos el 99,4 % de las veces (99,6 % recorriendo todo, sin presupuesto).
+     */
+    const BIGRAMA_COMUN_FRACCION = 0.2;
+
+    /**
+     * Con pocos existentes no hay nada que ahorrar y el 20 % son dos o tres: una lista solo es común
+     * si además tiene más de estas entradas.
+     */
+    const BIGRAMA_COMUN_PISO = 200;
 
     /**
      * Pares que pasan el bloqueo y se comparan en serio, por valor, como máximo: los que más
@@ -82,6 +101,13 @@ class RelacionesParecidasDetector
 
     /** Fracción mínima de bigramas compartidos (sobre el más corto de los dos) para comparar un par. */
     const MINIMO_BIGRAMAS_COMPARTIDOS = 0.3;
+
+    /**
+     * Cuando el bloqueo elige con los bigramas raros (ver BIGRAMA_COMUN_FRACCION), las mejores de
+     * esta cantidad se reordenan con el Jaccard de todos los bigramas antes de quedarse con
+     * MAX_COMPARACIONES_POR_VALOR.
+     */
+    const REORDENAR_POR_VALOR = 60;
 
     const MOTIVO_MISMA_ESCRITURA = 'misma_escritura';
     const MOTIVO_PARECIDO        = 'parecido';
@@ -245,16 +271,32 @@ class RelacionesParecidasDetector
      *
      * @param  int $comparaciones
      * @param  int $bloqueo
-     * @return \stdClass {restante: int, bloqueo_restante: int, recortado: bool}
+     * @return \stdClass {restante: int, bloqueo_restante: int, bloqueo_cuota: int|null, recortado: bool}
      */
     public static function nuevo_presupuesto($comparaciones = self::PRESUPUESTO_COMPARACIONES, $bloqueo = self::PRESUPUESTO_BLOQUEO)
     {
         $presupuesto = new \stdClass();
         $presupuesto->restante = (int) $comparaciones;
         $presupuesto->bloqueo_restante = (int) $bloqueo;
+        $presupuesto->bloqueo_cuota = null;
         $presupuesto->recortado = false;
 
         return $presupuesto;
+    }
+
+    /**
+     * Abre la cuota de bloqueo de la próxima columna (o tipo): lo que queda del presupuesto,
+     * repartido en partes iguales entre las $partes columnas que faltan (esta incluida). Así una
+     * columna no deja sin candidatos a las otras, y lo que una no usa queda para las que siguen,
+     * porque la cuota de cada una se calcula sobre lo que realmente quedó.
+     *
+     * @param  \stdClass $presupuesto
+     * @param  int       $partes
+     * @return void
+     */
+    public static function abrir_cuota_de_bloqueo(\stdClass $presupuesto, $partes)
+    {
+        $presupuesto->bloqueo_cuota = intdiv(max(0, (int) $presupuesto->bloqueo_restante), max(1, (int) $partes));
     }
 
     /**
@@ -543,7 +585,7 @@ class RelacionesParecidasDetector
             }
         }
 
-        $indice_existentes = $con_parecidos ? self::indice_de_bigramas($rasgos_existentes) : [];
+        $indice_existentes = $con_parecidos ? self::indice_de_bigramas($rasgos_existentes) : ['listas' => [], 'comunes' => [], 'n_raros' => []];
 
         $resultado = [];
         $posibles_nuevos = [];
@@ -652,22 +694,42 @@ class RelacionesParecidasDetector
     }
 
     /**
-     * Índice invertido bigrama => [posición, ...] sobre una lista de ['rasgos' => [...]].
+     * Índice invertido sobre una lista de ['rasgos' => [...]]:
+     *   'listas'  => [bigrama => [posición, ...]]
+     *   'comunes' => [bigrama => true]  los que no se usan para bloquear (ver BIGRAMA_COMUN_FRACCION)
+     *   'n_raros' => [posición => int]  cuántos bigramas NO comunes tiene cada elemento
      *
      * @param  array $lista
      * @return array
      */
     protected static function indice_de_bigramas(array $lista)
     {
-        $indice = [];
+        $listas = [];
 
         foreach ($lista as $posicion => $elemento) {
             foreach ($elemento['rasgos']['bigramas'] as $bigrama => $nada) {
-                $indice[$bigrama][] = $posicion;
+                $listas[$bigrama][] = $posicion;
             }
         }
 
-        return $indice;
+        $umbral = max(self::BIGRAMA_COMUN_PISO, self::BIGRAMA_COMUN_FRACCION * count($lista));
+        $comunes = [];
+
+        foreach ($listas as $bigrama => $posiciones) {
+            if (count($posiciones) > $umbral) {
+                $comunes[$bigrama] = true;
+            }
+        }
+
+        $n_raros = [];
+
+        foreach ($lista as $posicion => $elemento) {
+            $n_raros[$posicion] = count($comunes) > 0
+                ? count(array_diff_key($elemento['rasgos']['bigramas'], $comunes))
+                : $elemento['rasgos']['n_bigramas'];
+        }
+
+        return ['listas' => $listas, 'comunes' => $comunes, 'n_raros' => $n_raros];
     }
 
     /**
@@ -678,10 +740,13 @@ class RelacionesParecidasDetector
      * El umbral es sobre el MÁS CORTO para no perder la contención ("pala" adentro de "palanca de
      * cambios" comparte todos los bigramas de "pala", que son pocos contra los del largo).
      *
-     * Recorrer las listas cuesta tantas entradas como suman las de los bigramas del valor (los
-     * comunes, "er", "as", "os", tienen una entrada por casi cada existente): eso se cobra del
-     * presupuesto de bloqueo ANTES de recorrerlas. Si no alcanza, no se recorre nada, el valor
-     * queda sin candidatos y la corrida sale `recortado`.
+     * Solo con los bigramas NO comunes de la lista (ver BIGRAMA_COMUN_FRACCION): el conteo, el
+     * umbral y el Jaccard se hacen sobre ellos, a los dos lados. Si el valor no tiene ninguno, se
+     * bloquea con todos y contra el largo completo (como antes de existir los comunes).
+     *
+     * Recorrer las listas cuesta tantas entradas como suman las de los bigramas usados: eso se
+     * cobra del presupuesto de bloqueo ANTES de recorrerlas. Si no alcanza, no se recorre nada,
+     * ESE valor queda sin candidatos y la corrida sale `recortado`; el saldo no se toca.
      *
      * @param  array     $rasgos_valor
      * @param  array     $lista        [posición => ['rasgos' => [...]]]
@@ -691,13 +756,20 @@ class RelacionesParecidasDetector
      */
     protected static function bloquear(array $rasgos_valor, array $lista, array $indice, \stdClass $presupuesto)
     {
+        $raros = count($indice['comunes']) > 0
+            ? array_diff_key($rasgos_valor['bigramas'], $indice['comunes'])
+            : $rasgos_valor['bigramas'];
+
+        $solo_raros = count($raros) > 0;
+        $usados = $solo_raros ? $raros : $rasgos_valor['bigramas'];
+
         $listas = [];
         $entradas = 0;
 
-        foreach ($rasgos_valor['bigramas'] as $bigrama => $nada) {
-            if (isset($indice[$bigrama])) {
-                $listas[] = $indice[$bigrama];
-                $entradas += count($indice[$bigrama]);
+        foreach ($usados as $bigrama => $nada) {
+            if (isset($indice['listas'][$bigrama])) {
+                $listas[] = $indice['listas'][$bigrama];
+                $entradas += count($indice['listas'][$bigrama]);
             }
         }
 
@@ -717,10 +789,10 @@ class RelacionesParecidasDetector
         $conteo = array_count_values(count($listas) === 1 ? $listas[0] : array_merge(...$listas));
 
         $pasan = [];
-        $n_valor = $rasgos_valor['n_bigramas'];
+        $n_valor = $solo_raros ? count($raros) : $rasgos_valor['n_bigramas'];
 
         foreach ($conteo as $posicion => $compartidos) {
-            $n_otro = $lista[$posicion]['rasgos']['n_bigramas'];
+            $n_otro = $solo_raros ? $indice['n_raros'][$posicion] : $lista[$posicion]['rasgos']['n_bigramas'];
             $minimo = (int) ceil(self::MINIMO_BIGRAMAS_COMPARTIDOS * min($n_valor, $n_otro));
 
             if ($compartidos >= max(1, $minimo)) {
@@ -736,12 +808,36 @@ class RelacionesParecidasDetector
 
         arsort($pasan);
 
-        return array_keys(array_slice($pasan, 0, self::MAX_COMPARACIONES_POR_VALOR, true));
+        /* Sin bigramas comunes en la lista, los raros son todos: el orden ya es el de siempre. */
+        if (!$solo_raros || count($indice['comunes']) === 0) {
+            return array_keys(array_slice($pasan, 0, self::MAX_COMPARACIONES_POR_VALOR, true));
+        }
+
+        /*
+         * Con los bigramas raros se ELIGE; el orden final va con el Jaccard de TODOS los bigramas,
+         * sobre una lista corta (REORDENAR_POR_VALOR): es el mismo orden de antes de los comunes,
+         * y cuesta una intersección en C por posición de la lista corta.
+         */
+        $reordenadas = [];
+        $n_valor_completo = $rasgos_valor['n_bigramas'];
+
+        foreach (array_slice($pasan, 0, self::REORDENAR_POR_VALOR, true) as $posicion => $jaccard_raro) {
+            $otro = $lista[$posicion]['rasgos'];
+            $compartidos = count(array_intersect_key($rasgos_valor['bigramas'], $otro['bigramas']));
+
+            $reordenadas[$posicion] = $compartidos / ($n_valor_completo + $otro['n_bigramas'] - $compartidos);
+        }
+
+        arsort($reordenadas);
+
+        return array_keys(array_slice($reordenadas, 0, self::MAX_COMPARACIONES_POR_VALOR, true));
     }
 
     /**
-     * Cobra $entradas del presupuesto de bloqueo. false = no alcanzan: el presupuesto queda en cero
-     * (los valores que faltan ni lo intentan) y la corrida, `recortado`.
+     * Cobra $entradas del presupuesto de bloqueo (y de la cuota de la columna, si hay una abierta).
+     * false = no alcanzan: ESE valor se saltea y la corrida queda `recortado`, pero el saldo no se
+     * toca. Antes lo vaciaba, y un solo valor caro dejaba sin candidatos a todo lo que venía
+     * después, incluidas todas las subcategorías, que van al final.
      *
      * @param  \stdClass $presupuesto
      * @param  int       $entradas
@@ -749,14 +845,23 @@ class RelacionesParecidasDetector
      */
     protected static function gastar_bloqueo(\stdClass $presupuesto, $entradas)
     {
-        if ($presupuesto->bloqueo_restante < $entradas) {
-            $presupuesto->bloqueo_restante = 0;
+        $disponible = $presupuesto->bloqueo_restante;
+
+        if (isset($presupuesto->bloqueo_cuota) && !is_null($presupuesto->bloqueo_cuota)) {
+            $disponible = min($disponible, $presupuesto->bloqueo_cuota);
+        }
+
+        if ($entradas > $disponible) {
             $presupuesto->recortado = true;
 
             return false;
         }
 
         $presupuesto->bloqueo_restante -= $entradas;
+
+        if (isset($presupuesto->bloqueo_cuota) && !is_null($presupuesto->bloqueo_cuota)) {
+            $presupuesto->bloqueo_cuota -= $entradas;
+        }
 
         return true;
     }

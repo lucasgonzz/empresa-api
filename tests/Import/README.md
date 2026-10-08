@@ -585,11 +585,18 @@ distinto. Hasta esta misión la resolución de relaciones de la importación no 
   unido SEGURO a otro que apunta a un cargado se revisan contra ese cargado (`UnirAUnResueltoTest`, fixture 40).
   `PrioridadDeConsultasTest`: antes de cortar en 150 consultas van los valores sin padre, después los hijos bajo
   la resolución preseleccionada del padre y al final los de las alternativas. `ArchivoDeDecisionesTest`: las
-  decisiones viajan a los lotes como la ruta de `<excel>.hoja-equivalencias-<uuid>.json` (lo borra la misma
-  limpieza que el volcado de la hoja); sin el archivo, el lote sigue sin decisiones y lo loguea. 🔴 Sus
-  decisiones son `crear` a propósito: un `usar` lo recuerda el controlador antes de encolar y se aplicaría igual
-  por la equivalencia recordada. `PresupuestoDeBloqueoTest` (sin base): el bloqueo por bigramas también gasta
-  presupuesto y, agotado, los que quedan sin revisar son los de menos filas.
+  decisiones viajan a los lotes como la ruta de `<excel>.equivalencias-<id del ImportHistory>.json`; sin el
+  archivo, el lote sigue sin decisiones y lo loguea. 🔴 Sus decisiones son `crear` a propósito: un `usar` lo
+  recuerda el controlador antes de encolar y se aplicaría igual por la equivalencia recordada.
+  `PresupuestoDeBloqueoTest` (sin base): el bloqueo por bigramas también gasta presupuesto y los que quedan sin
+  revisar son los de menos filas.
+- Tanda 5: el archivo de decisiones ya no lleva el prefijo `<excel>.hoja`, que el cierre de CUALQUIER
+  importación de la misma subida borraba (doble envío o corrida reabierta, mismo `excel_path`): lo borra solo
+  su importación, `FinalizeArticleImport` al terminar o `ImportFailureHandler` si falla
+  (`test_el_cierre_de_otra_importacion_de_la_misma_subida_no_borra_el_archivo` corre el cierre real de A con B a
+  mitad de camino). En el bloqueo: un valor que no entra en el presupuesto se saltea solo él, los bigramas
+  comunes de la lista (más del 20 % y más de 200 entradas) no se usan para bloquear, y el chequeo abre una cuota
+  por columna (`abrir_cuota_de_bloqueo()`).
 
 🔴 **`test_sin_equivalencias_no_duplica_por_mayusculas` cambia un comportamiento a propósito.** Hasta esta
 misión, con el proveedor "Acme" cargado y "ACME" en el Excel, `ArticleImport::set_providers()` creaba un

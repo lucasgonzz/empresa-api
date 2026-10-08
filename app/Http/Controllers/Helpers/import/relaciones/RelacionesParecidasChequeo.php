@@ -216,7 +216,19 @@ class RelacionesParecidasChequeo
 
         $grupos = [];
 
+        /*
+         * El presupuesto de bloqueo se reparte por columna (tipo): cada una recibe una parte igual
+         * de lo que queda, y lo que no usa pasa a las que siguen. Sin esto, la primera columna
+         * grande se lo gastaba entero y las demás (las subcategorías, que van al final) quedaban
+         * sin candidatos.
+         */
+        $hay_hijos = !is_null($tipo_hijo) && count($hijos) > 0;
+        $tipos_pendientes = count($simples) + ($hay_hijos ? 1 : 0);
+
         foreach ($simples as $tipo => $valores) {
+            RelacionesParecidasDetector::abrir_cuota_de_bloqueo($presupuesto, $tipos_pendientes);
+            $tipos_pendientes--;
+
             $existentes = self::existentes($user_id, $tipo);
             $recordadas = EquivalenciasResolver::recordadas_del_tipo($user_id, $tipo);
 
@@ -255,7 +267,7 @@ class RelacionesParecidasChequeo
         $recordadas_hijo = [];
         $indice_padre = null;
 
-        if (!is_null($tipo_hijo) && count($hijos) > 0) {
+        if ($hay_hijos) {
             $existentes_hijo = self::existentes($user_id, $tipo_hijo);
             $recordadas_hijo = EquivalenciasResolver::recordadas_del_tipo($user_id, $tipo_hijo);
 
@@ -273,15 +285,15 @@ class RelacionesParecidasChequeo
                 ? []
                 : self::refs_preseleccionadas_previas($grupos[$indice_padre]['analisis']);
 
+            /*
+             * Prioridad para la IA: los hijos bajo la resolución que el padre tiene (muy
+             * probablemente) preseleccionada van antes que los de las resoluciones alternativas. Y
+             * se analizan en ese mismo orden: si la cuota de bloqueo de los hijos no alcanza, lo
+             * que queda sin revisar son las alternativas.
+             */
+            $grupos_hijo = [];
+
             foreach (self::agrupar_hijos_por_ref($hijos, $refs_previas) as $ref => $grupo_hijo) {
-                $analisis = self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, self::id_de_ref($ref), true, $presupuesto);
-
-                $recortado = $recortado || !empty($analisis['recortado']);
-
-                /*
-                 * Prioridad para la IA: los hijos bajo la resolución que el padre tiene (muy
-                 * probablemente) preseleccionada van antes que los de las resoluciones alternativas.
-                 */
                 $es_preseleccionada = false;
 
                 foreach ($grupo_hijo['padres'] as $padre) {
@@ -290,11 +302,37 @@ class RelacionesParecidasChequeo
                     }
                 }
 
+                $grupos_hijo[] = [
+                    'ref'       => (string) $ref,
+                    'grupo'     => $grupo_hijo,
+                    'prioridad' => $es_preseleccionada ? 1 : 2,
+                    'orden'     => count($grupos_hijo),
+                ];
+            }
+
+            usort($grupos_hijo, function ($a, $b) {
+                if ($a['prioridad'] !== $b['prioridad']) {
+                    return $a['prioridad'] - $b['prioridad'];
+                }
+
+                return $a['orden'] - $b['orden'];
+            });
+
+            RelacionesParecidasDetector::abrir_cuota_de_bloqueo($presupuesto, 1);
+
+            foreach ($grupos_hijo as $hijo) {
+                $ref = $hijo['ref'];
+                $grupo_hijo = $hijo['grupo'];
+
+                $analisis = self::analizar_hijo($grupo_hijo['valores'], $existentes_hijo, $recordadas_hijo, self::id_de_ref($ref), true, $presupuesto);
+
+                $recortado = $recortado || !empty($analisis['recortado']);
+
                 $grupos[] = [
                     'tipo'      => $tipo_hijo,
                     'es_hijo'   => true,
-                    'prioridad' => $es_preseleccionada ? 1 : 2,
-                    'ref'       => (string) $ref,
+                    'prioridad' => $hijo['prioridad'],
+                    'ref'       => $ref,
                     'padres'    => $grupo_hijo['padres'],
                     'analisis'  => $analisis,
                 ];
