@@ -3,6 +3,7 @@
 namespace Tests\Feature\DescuentosEnPrecios;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Models\Article;
 use App\Models\BudgetStatus;
 use App\Models\Client;
@@ -70,6 +71,9 @@ abstract class DescuentosEnPreciosTestCase extends EmpresaTestCase
     /** Ids de `budget_statuses`. */
     const ESTADO_SIN_CONFIRMAR = 1;
     const ESTADO_CONFIRMADO    = 2;
+
+    /** El nombre al que `con_el_flag_escondido()` corre el flag para que la guarda de esquema no lo encuentre. */
+    const FLAG_ESCONDIDO_POR_EL_TEST = 'aplicar_descuentos_directo_a_items_escondido_por_el_test';
 
     /**
      * `budget_statuses` puede venir vacia en la base del slot, y `BudgetHelper::checkStatus()` hace
@@ -602,6 +606,104 @@ abstract class DescuentosEnPreciosTestCase extends EmpresaTestCase
         if ($base_recargos !== false) {
             $this->assert_columna($fila->price_sin_recargos_de_venta, $base_recargos, $que.' / base de recargos');
         }
+    }
+
+    /**
+     * Corre el cuerpo con `aplicar_descuentos_directo_a_items` ESCONDIDO en `sales` y `budgets`: la
+     * base de un cliente que recibio el codigo y todavia no corrio la migracion (la ventana del
+     * deploy). Misma tecnica que `tests/Feature/DescuentosEnPrecios/7`:
+     *
+     *   1. el DDL de MySQL hace COMMIT IMPLICITO de la sesion que lo corre: el RENAME va por una
+     *      conexion PDO aparte, para no cerrar la transaccion del test;
+     *   2. en MySQL 8 `information_schema` responde con el snapshot de la transaccion REPEATABLE READ
+     *      abierta: se cierra la transaccion del trait ANTES del rename y se abre otra despues. Sin
+     *      eso la guarda seguiria viendo la columna y el test daria VERDE EN FALSO.
+     *
+     * Se RENOMBRA y no se borra: si algo se corta a la mitad, la columna sigue entera bajo el otro
+     * nombre y `restaurar_flag_si_quedo_escondido()` (que cada clase que use esto llama en su
+     * `setUp()`) la devuelve sola en la corrida siguiente.
+     *
+     * ⚠️ Todo lo que el cuerpo necesite crear (descuentos, servicios...) se crea ADENTRO del
+     * cuerpo: lo creado antes del rollback se perderia con el.
+     *
+     * @param  \Closure  $cuerpo
+     * @return void
+     */
+    protected function con_el_flag_escondido($cuerpo)
+    {
+        DB::rollBack();
+
+        $this->renombrar_el_flag(DescuentosEnPreciosEsquemaHelper::COLUMNA_FLAG, self::FLAG_ESCONDIDO_POR_EL_TEST);
+
+        DB::beginTransaction();
+
+        try {
+
+            /* Control del escenario: sin esta asercion, un test que no lograra esconder la columna pasaria igual. */
+            foreach (DescuentosEnPreciosEsquemaHelper::TABLAS_FLAG as $tabla) {
+                $this->assertFalse(
+                    DescuentosEnPreciosEsquemaHelper::hay_columna_flag($tabla),
+                    'El escenario no se armo: la guarda sigue viendo el flag en '.$tabla.'.'
+                );
+            }
+
+            $cuerpo();
+
+        } finally {
+
+            DB::rollBack();
+
+            $this->renombrar_el_flag(self::FLAG_ESCONDIDO_POR_EL_TEST, DescuentosEnPreciosEsquemaHelper::COLUMNA_FLAG);
+
+            /* Para que el rollback del tearDown del trait tenga una transaccion que cerrar. */
+            DB::beginTransaction();
+        }
+    }
+
+    /**
+     * Renombra el flag en `sales` y `budgets` por una conexion PDO aparte contra la MISMA base.
+     * Donde la columna no esta con el nombre `$de`, no hace nada.
+     *
+     * @param  string  $de
+     * @param  string  $a
+     * @return void
+     */
+    protected function renombrar_el_flag($de, $a)
+    {
+        $config = config('database.connections.'.config('database.default'));
+
+        $dsn = 'mysql:host='.$config['host'].';port='.$config['port'].';dbname='.$config['database'];
+
+        $pdo = new \PDO($dsn, $config['username'], $config['password'], [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+
+        /* Sin esto, un metadata lock cuelga la suite: el default de MySQL para MDL es 1 año. */
+        $pdo->exec('SET SESSION lock_wait_timeout = 10');
+
+        foreach (DescuentosEnPreciosEsquemaHelper::TABLAS_FLAG as $tabla) {
+
+            $existe = $pdo->query(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() ".
+                "AND TABLE_NAME = '".$tabla."' AND COLUMN_NAME = '".$de."'"
+            )->fetchColumn();
+
+            if ((int) $existe === 0) {
+                continue;
+            }
+
+            $pdo->exec('ALTER TABLE `'.$tabla.'` RENAME COLUMN `'.$de.'` TO `'.$a.'`');
+        }
+
+        DescuentosEnPreciosEsquemaHelper::olvidar();
+    }
+
+    /**
+     * Red de seguridad: si una corrida anterior se corto con el flag escondido, se devuelve.
+     *
+     * @return void
+     */
+    protected function restaurar_flag_si_quedo_escondido()
+    {
+        $this->renombrar_el_flag(self::FLAG_ESCONDIDO_POR_EL_TEST, DescuentosEnPreciosEsquemaHelper::COLUMNA_FLAG);
     }
 
     /**

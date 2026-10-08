@@ -1420,6 +1420,26 @@ class SaleController extends Controller
         }
 
         /*
+         * 🔴 EL MODAL "ACTUALIZAR PRECIOS" DE UNA SPA ANTERIOR NO PUEDE TOCAR UNA VENTA CON LOS
+         * DESCUENTOS ADENTRO DE LOS PRECIOS (misión descuentos-aplicar-al-precio-del-articulo,
+         * 8/10/2026). Misma clase de daño que el 409 de `update()`, por otro endpoint: esa SPA manda
+         * los items sin `price_vender_sin_descuentos`, `updateItemsPrices()` escribe el precio de
+         * lista sin descuento y deja la base en NULL con el flag todavía en 1. El descuento se pierde
+         * para siempre y la factura sale por más que el total. La SPA nueva manda la clave en CADA
+         * item (en null o con número); si falta en alguno se corta ANTES de escribir nada. Ver
+         * `DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva_en_update_prices()`.
+         */
+        if (DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva_en_update_prices($model, $request->items)) {
+
+            Log::info('updatePrices sale id '.$id.': rechazado. La venta tiene los descuentos adentro de los precios y la SPA que actualiza no manda la clave price_vender_sin_descuentos en todos los items.');
+
+            return response()->json([
+                'message'            => DescuentosEnPreciosEsquemaHelper::mensaje_spa_nueva(),
+                'requiere_spa_nueva' => true,
+            ], 409);
+        }
+
+        /*
          * 🔴 Transacción + candado de la venta y de la cuenta corriente (misión
          * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Este camino reescribe los precios de los
          * renglones y, con ellos, borra y recrea el movimiento de la venta en la cuenta corriente,

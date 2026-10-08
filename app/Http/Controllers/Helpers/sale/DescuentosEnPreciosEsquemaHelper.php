@@ -397,8 +397,60 @@ class DescuentosEnPreciosEsquemaHelper {
     }
 
     /**
-     * El mensaje que ve el vendedor cuando `requiere_spa_nueva()` frena su edicion. Habla en
-     * criollo: no nombra ninguna columna ni ningun flag.
+     * ¿Hay que frenar este "Actualizar precios" de una VENTA porque lo manda una SPA anterior a la
+     * opcion? Es el hermano de `requiere_spa_nueva()` para `PUT api/sale/update-prices/{id}`.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 EL CASO: EL MODAL VIEJO SOBRE UNA VENTA CON LOS DESCUENTOS ADENTRO
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  Una SPA anterior abre "Actualizar precios" sobre una venta con el flag en 1 y manda los items
+     *  SIN `price_vender_sin_descuentos`. `SaleHelper::updateItemsPrices()` escribe el precio que le
+     *  mandan —el de lista, sin descuento— y deja la base de descuentos en NULL (la base describe al
+     *  `price` de SU fila: dejar la vieja seria mentir), pero el flag sigue en 1. Resultado: el
+     *  descuento se pierde para siempre, la factura sale por mas que el total y nadie lo ve. Misma
+     *  clase de dano que `requiere_spa_nueva()`, por otro endpoint.
+     *
+     *  ¿Como se distingue? La SPA nueva manda la clave en CADA item, en null o con un numero
+     *  (`update-prices/Index.vue` arma asi todos los renglones de la tabla). Si ALGUN item no la trae
+     *  (`array_key_exists`: un null explicito cuenta como presente) el emisor no la conoce y se corta
+     *  con 409, ANTES de escribir nada. Un solo item sin la clave alcanza: la SPA nueva no deja
+     *  ninguno afuera, y mezclar items con y sin base deja al comprobante a medio describir.
+     *
+     *  Con el flag en 0 o NULL, o sin la columna (ventana del deploy), no hay descuento adentro que
+     *  perder y la SPA vieja sigue andando como siempre.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model  $sale   La venta tal como esta guardada, antes de tocarla.
+     * @param  mixed                                 $items  `items` del request (array de renglones).
+     * @return bool  true = cortar con 409.
+     */
+    static function requiere_spa_nueva_en_update_prices($sale, $items) {
+
+        if (!Self::hay_columna_flag('sales')) {
+            return false;
+        }
+
+        if (!$sale->{Self::COLUMNA_FLAG}) {
+            return false;
+        }
+
+        if (!is_array($items)) {
+            return false;
+        }
+
+        foreach ($items as $item) {
+
+            if (is_array($item) && !array_key_exists(Self::CLAVE_REQUEST, $item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * El mensaje que ve el vendedor cuando `requiere_spa_nueva()` (o su hermano de update-prices)
+     * frena su edicion. Habla en criollo: no nombra ninguna columna ni ningun flag.
      *
      * @return string
      */

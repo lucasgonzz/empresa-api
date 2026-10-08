@@ -35,9 +35,6 @@ use Illuminate\Support\Facades\DB;
  */
 class Spa_vieja_no_edita_una_venta_con_descuentos_adentro_Test extends DescuentosEnPreciosTestCase
 {
-    /** El nombre al que se corre el flag para que la guarda no lo encuentre (caso d). */
-    const FLAG_ESCONDIDO = 'aplicar_descuentos_directo_a_items_escondido_por_el_test_15';
-
     /**
      * @return void
      */
@@ -46,8 +43,6 @@ class Spa_vieja_no_edita_una_venta_con_descuentos_adentro_Test extends Descuento
         parent::setUp();
 
         $this->restaurar_flag_si_quedo_escondido();
-
-        DescuentosEnPreciosEsquemaHelper::olvidar();
     }
 
     /**
@@ -227,50 +222,33 @@ class Spa_vieja_no_edita_una_venta_con_descuentos_adentro_Test extends Descuento
      */
     public function sin_la_columna_el_candado_no_se_tiene_en_cuenta()
     {
-        $articulo = $this->articulo_centinela();
+        $self = $this;
 
-        DB::rollBack();
+        $this->con_el_flag_escondido(function () use ($self) {
 
-        $this->renombrar_flag(DescuentosEnPreciosEsquemaHelper::COLUMNA_FLAG, self::FLAG_ESCONDIDO);
+            $articulo  = $self->articulo_centinela();
+            $descuento = $self->descuento();
 
-        DB::beginTransaction();
-
-        try {
-
-            /* Despues del beginTransaction(): lo que se crea antes del rollback se perderia con el. */
-            $descuento = $this->descuento();
-
-            $this->assertFalse(DescuentosEnPreciosEsquemaHelper::hay_columna_flag('sales'), 'El escenario no se armo: la guarda sigue viendo la columna.');
-
-            $sale = $this->crear_venta($this->payload_venta([
-                $this->item_vender('article', $articulo->id, 100, false),
-            ], 90.00, 0, [$this->descuento_del_payload($descuento)], ['sub_total' => 100]));
+            $sale = $self->crear_venta($self->payload_venta([
+                $self->item_vender('article', $articulo->id, 100, false),
+            ], 90.00, 0, [$self->descuento_del_payload($descuento)], ['sub_total' => 100]));
 
             /* El helper mira la guarda ANTES que el modelo: ni con un atributo en 1 en memoria frena. */
             $sale->aplicar_descuentos_directo_a_items = 1;
 
-            $this->assertFalse(
+            $self->assertFalse(
                 DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva($sale, Request::create('api/sale/'.$sale->id, 'PUT', [])),
                 'Sin la columna no hay nada que proteger.'
             );
 
-            $payload = $this->payload_actualizar($sale, [
-                $this->item_vender('article', $articulo->id, 100, false),
-            ], 90.00, 0, [$this->descuento_del_payload($descuento)], ['sub_total' => 100]);
+            $payload = $self->payload_actualizar($sale, [
+                $self->item_vender('article', $articulo->id, 100, false),
+            ], 90.00, 0, [$self->descuento_del_payload($descuento)], ['sub_total' => 100]);
 
             unset($payload['aplicar_descuentos_directo_a_items']);
 
-            $this->putJson('api/sale/'.$sale->id, $payload)->assertStatus(200);
-
-        } finally {
-
-            DB::rollBack();
-
-            $this->renombrar_flag(self::FLAG_ESCONDIDO, DescuentosEnPreciosEsquemaHelper::COLUMNA_FLAG);
-
-            /* Para que el rollback del tearDown del trait tenga una transaccion que cerrar. */
-            DB::beginTransaction();
-        }
+            $self->putJson('api/sale/'.$sale->id, $payload)->assertStatus(200);
+        });
     }
 
     /**
@@ -288,50 +266,5 @@ class Spa_vieja_no_edita_una_venta_con_descuentos_adentro_Test extends Descuento
 
         $this->assertFalse(DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva(Sale::find($v['sale']->id), $con_clave_null));
         $this->assertTrue(DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva(Sale::find($v['sale']->id), $sin_clave));
-    }
-
-    /**
-     * Conexion PDO aparte contra la MISMA base (el DDL de MySQL hace COMMIT implicito de la sesion
-     * que lo corre y cerraria la transaccion del test).
-     *
-     * @param  string  $de
-     * @param  string  $a
-     * @return void
-     */
-    protected function renombrar_flag($de, $a)
-    {
-        $config = config('database.connections.'.config('database.default'));
-
-        $dsn = 'mysql:host='.$config['host'].';port='.$config['port'].';dbname='.$config['database'];
-
-        $pdo = new \PDO($dsn, $config['username'], $config['password'], [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
-
-        $pdo->exec('SET SESSION lock_wait_timeout = 10');
-
-        foreach (DescuentosEnPreciosEsquemaHelper::TABLAS_FLAG as $tabla) {
-
-            $existe = $pdo->query(
-                "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() ".
-                "AND TABLE_NAME = '".$tabla."' AND COLUMN_NAME = '".$de."'"
-            )->fetchColumn();
-
-            if ((int) $existe === 0) {
-                continue;
-            }
-
-            $pdo->exec('ALTER TABLE `'.$tabla.'` RENAME COLUMN `'.$de.'` TO `'.$a.'`');
-        }
-
-        DescuentosEnPreciosEsquemaHelper::olvidar();
-    }
-
-    /**
-     * Red de seguridad: si una corrida anterior se corto con el flag escondido, se devuelve.
-     *
-     * @return void
-     */
-    protected function restaurar_flag_si_quedo_escondido()
-    {
-        $this->renombrar_flag(self::FLAG_ESCONDIDO, DescuentosEnPreciosEsquemaHelper::COLUMNA_FLAG);
     }
 }
