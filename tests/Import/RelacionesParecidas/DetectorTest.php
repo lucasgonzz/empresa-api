@@ -339,8 +339,43 @@ class DetectorTest extends TestCase
         ]);
 
         $this->assertFalse($grupo['con_parecidos']);
+        $this->assertTrue($grupo['recortado'], 'Se acotó la columna: el paso 3 lo avisa.');
         $this->assertSame('nuevo', $grupo['valores']['Ferret. del Norte']['estado'], 'Sin capa de parecidos no hay candidatos.');
         $this->assertSame('misma_escritura', $grupo['valores']['del norte']['estado'], 'La clave fuerte corre igual.');
+    }
+
+    /**
+     * El bloqueo por bigramas no pierde los casos que importan, y con el presupuesto agotado el
+     * grupo sale `recortado` (los valores quedan solo con la capa determinista).
+     */
+    public function test_bloqueo_y_presupuesto()
+    {
+        $existentes = [
+            ['id' => 1, 'nombre' => 'Ferretería Del Norte'],
+            ['id' => 2, 'nombre' => 'Bulonería Tomi'],
+            ['id' => 3, 'nombre' => 'Martillos'],
+            ['id' => 4, 'nombre' => 'Bosch'],
+            ['id' => 5, 'nombre' => 'Caño 3/4'],
+            ['id' => 6, 'nombre' => 'Pinturas y Solventes del Oeste'],
+        ];
+
+        $valores = ['Ferret. del Norte' => 1, 'Bulonera Tomy' => 1, 'Martillo' => 1, 'Bosh' => 1, 'Caño 1/2' => 1];
+
+        $grupo = RelacionesParecidasDetector::analizar_grupo($valores, $existentes);
+
+        $this->assertFalse($grupo['recortado']);
+
+        $esperados = ['Ferret. del Norte' => 1, 'Bulonera Tomy' => 2, 'Martillo' => 3, 'Bosh' => 4, 'Caño 1/2' => 5];
+
+        foreach ($esperados as $valor => $id) {
+            $this->assertSame('consultar', $grupo['valores'][$valor]['estado'], $valor);
+            $this->assertSame($id, $grupo['valores'][$valor]['candidatos'][0]['id'], $valor);
+        }
+
+        $sin_presupuesto = RelacionesParecidasDetector::analizar_grupo($valores, $existentes, [], true, RelacionesParecidasDetector::nuevo_presupuesto(0));
+
+        $this->assertTrue($sin_presupuesto['recortado']);
+        $this->assertSame('nuevo', $sin_presupuesto['valores']['Martillo']['estado']);
     }
 
     /* ------------------------------------------------------------------

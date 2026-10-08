@@ -53,6 +53,21 @@ class RelacionesParecidasDetector
     /** Puntaje desde el que un parecido se muestra igual cuando la IA no se pudo consultar. */
     const PUNTAJE_ALTO = 0.85;
 
+    /**
+     * Comparaciones completas (puntaje_entre) por corrida, como máximo. Agotado el presupuesto, los
+     * valores que faltan quedan solo con la capa determinista y la corrida sale `recortado`.
+     */
+    const PRESUPUESTO_COMPARACIONES = 150000;
+
+    /**
+     * Pares que pasan el bloqueo y se comparan en serio, por valor, como máximo: los que más
+     * bigramas comparten. Solo se muestran 3 candidatos; comparar 30 alcanza y sobra.
+     */
+    const MAX_COMPARACIONES_POR_VALOR = 20;
+
+    /** Fracción mínima de bigramas compartidos (sobre el más corto de los dos) para comparar un par. */
+    const MINIMO_BIGRAMAS_COMPARTIDOS = 0.3;
+
     const MOTIVO_MISMA_ESCRITURA = 'misma_escritura';
     const MOTIVO_PARECIDO        = 'parecido';
     const MOTIVO_RECORDADO       = 'recordado';
@@ -168,11 +183,60 @@ class RelacionesParecidasDetector
 
         $tokens = preg_split('/[^a-z0-9]+/', $ascii, -1, PREG_SPLIT_NO_EMPTY);
 
+        $fuerte = self::clave_fuerte($valor);
+        $bigramas = self::bigramas($fuerte);
+
         return [
-            'fuerte' => self::clave_fuerte($valor),
-            'ascii'  => $ascii,
-            'tokens' => is_array($tokens) ? $tokens : [],
+            'fuerte'     => $fuerte,
+            'ascii'      => $ascii,
+            'tokens'     => is_array($tokens) ? $tokens : [],
+            'bigramas'   => $bigramas,
+            'n_bigramas' => count($bigramas),
         ];
+    }
+
+    /**
+     * Bigramas (distintos) de la clave fuerte: lo que usa el bloqueo para decidir qué pares vale
+     * la pena comparar en serio.
+     *
+     * Bigramas y no trigramas a propósito: con textos cortos ("Bosh" y "Bosch") los trigramas
+     * casi no se comparten ("bos" y nada más) y el par se perdía; los bigramas comparten "bo" y
+     * "os". Y todo lo que la comparación completa considera candidato comparte bigramas: misma
+     * subcadena (contención), pocas ediciones (Levenshtein) o tokens en común (que viven en la
+     * clave fuerte).
+     *
+     * @param  string $fuerte
+     * @return array [bigrama => true]
+     */
+    protected static function bigramas($fuerte)
+    {
+        $bigramas = [];
+        $largo = strlen($fuerte);
+
+        if ($largo === 1) {
+            $bigramas[$fuerte] = true;
+        }
+
+        for ($i = 0; $i < $largo - 1; $i++) {
+            $bigramas[substr($fuerte, $i, 2)] = true;
+        }
+
+        return $bigramas;
+    }
+
+    /**
+     * Presupuesto de comparaciones de una corrida (lo comparten todos los grupos del chequeo).
+     *
+     * @param  int $comparaciones
+     * @return \stdClass {restante: int, recortado: bool}
+     */
+    public static function nuevo_presupuesto($comparaciones = self::PRESUPUESTO_COMPARACIONES)
+    {
+        $presupuesto = new \stdClass();
+        $presupuesto->restante = (int) $comparaciones;
+        $presupuesto->recortado = false;
+
+        return $presupuesto;
     }
 
     /**
@@ -401,15 +465,33 @@ class RelacionesParecidasDetector
      * Y, para los dos últimos, `candidatos_archivo`: otros valores del MISMO archivo, más
      * canónicos, que se le parecen (la IA juzga si son el mismo, para crear uno solo).
      *
-     * @param  array $valores        [valor => filas]; valores ya con trim y no vacíos
-     * @param  array $existentes     [['id' => int, 'nombre' => string], ...] ordenados por id
-     * @param  array $recordadas     [clave_guardable => model_id]
-     * @param  bool  $con_parecidos  false = solo la capa determinista
-     * @return array  ['valores' => [valor => [...]], 'con_parecidos' => bool]
+     * 🔴 Los candidatos parecidos NO se calculan para todos los pares: con 1999 valores contra 3000
+     * existentes eso eran 6 millones de comparaciones (195 s en una columna, medido; con las cuatro
+     * columnas de artículos se acercaba al timeout del job, y ahí se perdía también la
+     * recomendación). Un bloqueo por bigramas de la clave fuerte (índice invertido) elige los pares
+     * que comparten lo suficiente, y solo esos se comparan en serio, con un presupuesto por corrida.
+     *
+     * @param  array          $valores        [valor => filas]; valores ya con trim y no vacíos
+     * @param  array          $existentes     [['id' => int, 'nombre' => string], ...] ordenados por id
+     * @param  array          $recordadas     [clave_guardable => model_id]
+     * @param  bool           $con_parecidos  false = solo la capa determinista
+     * @param  \stdClass|null $presupuesto    nuevo_presupuesto(); null = uno propio para este grupo
+     * @return array  ['valores' => [valor => [...]], 'con_parecidos' => bool, 'recortado' => bool]
      */
-    public static function analizar_grupo(array $valores, array $existentes, array $recordadas = [], $con_parecidos = true)
+    public static function analizar_grupo(array $valores, array $existentes, array $recordadas = [], $con_parecidos = true, $presupuesto = null)
     {
+        if (is_null($presupuesto)) {
+            $presupuesto = self::nuevo_presupuesto();
+        }
+
+        $recortado = false;
+
         if (count($valores) > self::TOPE_VALORES_POR_COLUMNA) {
+            /* Demasiados valores distintos: solo la clave fuerte, y se avisa que se acotó. */
+            if ($con_parecidos) {
+                $recortado = true;
+            }
+
             $con_parecidos = false;
         }
 
@@ -442,6 +524,8 @@ class RelacionesParecidasDetector
                 $rasgos_existentes[] = ['entrada' => $entrada, 'rasgos' => self::rasgos($nombre)];
             }
         }
+
+        $indice_existentes = $con_parecidos ? self::indice_de_bigramas($rasgos_existentes) : [];
 
         $resultado = [];
         $posibles_nuevos = [];
@@ -494,7 +578,7 @@ class RelacionesParecidasDetector
                     $info['opciones'] = $por_fuerte[$fuerte];
                 } else {
                     if ($con_parecidos) {
-                        $info['candidatos'] = self::candidatos_existentes(self::rasgos($valor), $rasgos_existentes);
+                        $info['candidatos'] = self::candidatos_existentes(self::rasgos($valor), $rasgos_existentes, $indice_existentes, $presupuesto);
                     }
 
                     $info['estado'] = count($info['candidatos']) > 0 ? 'consultar' : 'nuevo';
@@ -506,27 +590,131 @@ class RelacionesParecidasDetector
         }
 
         if ($con_parecidos) {
-            self::candidatos_entre_valores($resultado, $posibles_nuevos);
+            self::candidatos_entre_valores($resultado, $posibles_nuevos, $presupuesto);
         }
 
         return [
             'valores'       => $resultado,
             'con_parecidos' => (bool) $con_parecidos,
+            'recortado'     => $recortado || (bool) $presupuesto->recortado,
         ];
+    }
+
+    /**
+     * Índice invertido bigrama => [posición, ...] sobre una lista de ['rasgos' => [...]].
+     *
+     * @param  array $lista
+     * @return array
+     */
+    protected static function indice_de_bigramas(array $lista)
+    {
+        $indice = [];
+
+        foreach ($lista as $posicion => $elemento) {
+            foreach ($elemento['rasgos']['bigramas'] as $bigrama => $nada) {
+                $indice[$bigrama][] = $posicion;
+            }
+        }
+
+        return $indice;
+    }
+
+    /**
+     * El bloqueo: las posiciones de la lista que comparten con el valor al menos el 30 % de los
+     * bigramas del más corto de los dos, ordenadas por Jaccard de bigramas, hasta
+     * MAX_COMPARACIONES_POR_VALOR. Solo esas se comparan con puntaje_entre().
+     *
+     * El umbral es sobre el MÁS CORTO para no perder la contención ("pala" adentro de "palanca de
+     * cambios" comparte todos los bigramas de "pala", que son pocos contra los del largo).
+     *
+     * @param  array $rasgos_valor
+     * @param  array $lista   [posición => ['rasgos' => [...]]]
+     * @param  array $indice  indice_de_bigramas($lista)
+     * @return int[] posiciones
+     */
+    protected static function bloquear(array $rasgos_valor, array $lista, array $indice)
+    {
+        $listas = [];
+
+        foreach ($rasgos_valor['bigramas'] as $bigrama => $nada) {
+            if (isset($indice[$bigrama])) {
+                $listas[] = $indice[$bigrama];
+            }
+        }
+
+        if (count($listas) === 0) {
+            return [];
+        }
+
+        /*
+         * El conteo de bigramas compartidos con array_merge + array_count_values, que corren en C,
+         * y no con un foreach que incrementa: los bigramas comunes ("er", "an", "os") tienen listas
+         * de miles de posiciones, y el foreach era la mitad del tiempo del chequeo.
+         */
+        $conteo = array_count_values(count($listas) === 1 ? $listas[0] : array_merge(...$listas));
+
+        $pasan = [];
+        $n_valor = $rasgos_valor['n_bigramas'];
+
+        foreach ($conteo as $posicion => $compartidos) {
+            $n_otro = $lista[$posicion]['rasgos']['n_bigramas'];
+            $minimo = (int) ceil(self::MINIMO_BIGRAMAS_COMPARTIDOS * min($n_valor, $n_otro));
+
+            if ($compartidos >= max(1, $minimo)) {
+                /*
+                 * Se ordena por Jaccard de bigramas y no por cantidad compartida: con muchos
+                 * existentes que CONTIENEN el valor ("MARTILLOS SA", "SRL MARTILLOS"...) todos
+                 * comparten los mismos bigramas que "Martillos", y por cantidad el más parecido
+                 * podía quedar afuera de los que se comparan. El Jaccard premia el largo parecido.
+                 */
+                $pasan[$posicion] = $compartidos / ($n_valor + $n_otro - $compartidos);
+            }
+        }
+
+        arsort($pasan);
+
+        return array_keys(array_slice($pasan, 0, self::MAX_COMPARACIONES_POR_VALOR, true));
+    }
+
+    /**
+     * Gasta una comparación del presupuesto. false = se agotó (y la corrida queda `recortado`).
+     *
+     * @param  \stdClass $presupuesto
+     * @return bool
+     */
+    protected static function gastar(\stdClass $presupuesto)
+    {
+        if ($presupuesto->restante <= 0) {
+            $presupuesto->recortado = true;
+
+            return false;
+        }
+
+        $presupuesto->restante--;
+
+        return true;
     }
 
     /**
      * Hasta MAX_CANDIDATOS existentes parecidos a un valor, por puntaje (empate: el más viejo).
      *
-     * @param  array $rasgos_valor
-     * @param  array $rasgos_existentes  [['entrada' => [...], 'rasgos' => [...]], ...]
+     * @param  array     $rasgos_valor
+     * @param  array     $rasgos_existentes  [['entrada' => [...], 'rasgos' => [...]], ...]
+     * @param  array     $indice             indice_de_bigramas($rasgos_existentes)
+     * @param  \stdClass $presupuesto
      * @return array [['id' => int, 'nombre' => string, 'puntaje' => float], ...]
      */
-    protected static function candidatos_existentes(array $rasgos_valor, array $rasgos_existentes)
+    protected static function candidatos_existentes(array $rasgos_valor, array $rasgos_existentes, array $indice, \stdClass $presupuesto)
     {
         $candidatos = [];
 
-        foreach ($rasgos_existentes as $existente) {
+        foreach (self::bloquear($rasgos_valor, $rasgos_existentes, $indice) as $posicion) {
+            if (!self::gastar($presupuesto)) {
+                break;
+            }
+
+            $existente = $rasgos_existentes[$posicion];
+
             $puntaje = self::puntaje_entre($rasgos_valor, $existente['rasgos']);
 
             if ($puntaje > 0) {
@@ -555,27 +743,35 @@ class RelacionesParecidasDetector
      * necesita preguntarle nada a la IA, y así cada par se juzga una sola vez. Los pares con la
      * misma clave fuerte no se anotan: esos se agrupan solos, sin IA.
      *
-     * @param  array $resultado        se modifica por referencia
-     * @param  array $posibles_nuevos  valores en estado consultar o nuevo
+     * @param  array     $resultado        se modifica por referencia
+     * @param  array     $posibles_nuevos  valores en estado consultar o nuevo
+     * @param  \stdClass $presupuesto
      * @return void
      */
-    protected static function candidatos_entre_valores(array &$resultado, array $posibles_nuevos)
+    protected static function candidatos_entre_valores(array &$resultado, array $posibles_nuevos, \stdClass $presupuesto)
     {
         if (count($posibles_nuevos) < 2) {
             return;
         }
 
-        $rasgos = [];
+        /* Misma forma que los existentes, para usar el mismo bloqueo: [posición => ['rasgos' => ...]]. */
+        $lista = [];
 
         foreach ($posibles_nuevos as $valor) {
-            $rasgos[$valor] = self::rasgos($valor);
+            $lista[] = ['valor' => (string) $valor, 'rasgos' => self::rasgos($valor)];
         }
 
-        foreach ($posibles_nuevos as $valor) {
+        $indice = self::indice_de_bigramas($lista);
+
+        foreach ($lista as $posicion_valor => $elemento) {
+            $valor = $elemento['valor'];
+            $rasgos_valor = $elemento['rasgos'];
             $candidatos = [];
 
-            foreach ($posibles_nuevos as $otro) {
-                if ($otro === $valor || $rasgos[$otro]['fuerte'] === $rasgos[$valor]['fuerte']) {
+            foreach (self::bloquear($rasgos_valor, $lista, $indice) as $posicion) {
+                $otro = $lista[$posicion]['valor'];
+
+                if ($posicion === $posicion_valor || $lista[$posicion]['rasgos']['fuerte'] === $rasgos_valor['fuerte']) {
                     continue;
                 }
 
@@ -583,7 +779,11 @@ class RelacionesParecidasDetector
                     continue;
                 }
 
-                $puntaje = self::puntaje_entre($rasgos[$valor], $rasgos[$otro]);
+                if (!self::gastar($presupuesto)) {
+                    break;
+                }
+
+                $puntaje = self::puntaje_entre($rasgos_valor, $lista[$posicion]['rasgos']);
 
                 if ($puntaje > 0) {
                     $candidatos[] = ['valor' => $otro, 'puntaje' => $puntaje];
