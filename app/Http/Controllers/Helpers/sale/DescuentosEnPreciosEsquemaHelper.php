@@ -345,4 +345,68 @@ class DescuentosEnPreciosEsquemaHelper {
             $model->{Self::COLUMNA_FLAG} = $valor_request;
         }
     }
+
+    /**
+     * ¿Hay que frenar esta edicion de una VENTA porque la manda una SPA anterior a la opcion?
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 EL CASO QUE ESTO CIERRA: LA PESTAÑA VIEJA DE OTRA CAJA
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  Una venta guardada con `aplicar_descuentos_directo_a_items` = 1 tiene los renglones con el
+     *  descuento ADENTRO del precio. La SPA anterior a la opcion (una PWA cacheada, o la pestaña que
+     *  quedo abierta en OTRA caja del mismo comercio) no conoce el flag: abre esa venta, muestra los
+     *  precios tal cual y su pie vuelve a RESTAR el descuento, asi que su PUT manda un `total`
+     *  descontado dos veces. `SaleController::update()` guarda ese `total` tal cual (no lo valida
+     *  contra los renglones) y `asignar_flag_en_update()` preserva el flag en 1, de modo que la venta
+     *  quedaria PARA SIEMPRE con los renglones descontados una vez y el total descontado dos: el
+     *  cliente paga de menos y la cuenta corriente, la caja y la factura heredan el error.
+     *
+     *  Preservar el flag evita que `getTotalSale()` reste de nuevo, pero no puede arreglar un `total`
+     *  que la SPA vieja ya calculo mal. La unica salida segura es no dejar que esa SPA edite esa
+     *  venta: se le contesta 409 y se le pide al vendedor que recargue la pagina.
+     *
+     *  Solo ventas. Los presupuestos quedan afuera por decision de la mision: `BudgetController::store()`
+     *  valida el total contra `BudgetHelper::getTotal()` (margen de 3) y rebota a la SPA vieja solo.
+     *  (El `update()` de presupuestos no valida el total; si hiciera falta cerrarlo, seria otro candado.)
+     *
+     *  ¿Como se distingue la SPA nueva de la vieja? La nueva manda `aplicar_descuentos_directo_a_items`
+     *  SIEMPRE en el PUT de VENDER, incluido el 0 (`vender.js` / `previus_sales.js`), y `update()` solo
+     *  se alcanza con `items` de VENDER, asi que una edicion legitima sin la clave no existe. Por eso
+     *  el criterio es la AUSENCIA de la clave (`exists()`, que ve tambien un null explicito) y no su
+     *  valor: un 0 explicito es una SPA nueva que apago la opcion, y pasa.
+     *
+     *  Si la columna no existe todavia (ventana del deploy) no hay nada que proteger: ninguna venta
+     *  puede tener el flag en 1.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model  $sale     La venta tal como esta guardada, antes de tocarla.
+     * @param  \Illuminate\Http\Request             $request  El PUT de la edicion.
+     * @return bool  true = cortar con 409.
+     */
+    static function requiere_spa_nueva($sale, $request) {
+
+        if (!Self::hay_columna_flag('sales')) {
+            return false;
+        }
+
+        if (!$sale->{Self::COLUMNA_FLAG}) {
+            return false;
+        }
+
+        return !$request->exists(Self::COLUMNA_FLAG);
+    }
+
+    /**
+     * El mensaje que ve el vendedor cuando `requiere_spa_nueva()` frena su edicion. Habla en
+     * criollo: no nombra ninguna columna ni ningun flag.
+     *
+     * @return string
+     */
+    static function mensaje_spa_nueva() {
+
+        return 'Esta venta tiene los descuentos aplicados directamente en los precios de los articulos, '.
+               'y esta pantalla es de una version anterior del sistema que no sabe editarla: si la guardara, '.
+               'volveria a restar el descuento y el total quedaria mal. Recarga la pagina (o actualiza el '.
+               'sistema) y volve a abrir la venta para editarla.';
+    }
 }

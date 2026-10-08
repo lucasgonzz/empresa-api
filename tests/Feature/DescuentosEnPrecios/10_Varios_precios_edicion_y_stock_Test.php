@@ -16,8 +16,9 @@ use Illuminate\Support\Facades\DB;
  *
  *  - la NUEVA reabre la venta como UN renglon con varios precios, una fila por fila guardada, y
  *    manda en cada fila `price_vender_con_recargos` y las bases;
- *  - la de antes reabre UN RENGLON POR FILA, sin saber nada de las bases: la API guarda NULL en las
- *    dos columnas (nunca la base del precio anterior) y el flag se preserva si no viaja.
+ *  - la de antes reabre UN RENGLON POR FILA, sin saber nada de las bases ni del flag: sobre una
+ *    venta con los descuentos adentro la API la RECHAZA con 409 (ver el archivo 15), porque su
+ *    `total` vendria con el descuento restado dos veces.
  *
  * Todo con un articulo PROPIO con stock 20 y `discount_stock` = 1.
  *
@@ -194,13 +195,13 @@ class Varios_precios_edicion_y_stock_Test extends DescuentosEnPreciosTestCase
     }
 
     /**
-     * Test 2 — una SPA ANTERIOR reabre con un renglon POR FILA y guarda sin tocar nada: el stock no
-     * se mueve, el flag se conserva (la clave no viaja en su PUT) y las bases quedan en NULL —no
-     * sabe nada de ellas—. Los precios, el total y el stock son los de antes.
+     * Test 2 — una SPA ANTERIOR reabre con un renglon POR FILA y guarda sin tocar nada: la API la
+     * rechaza con 409 (la clave del flag no viaja en su PUT) y NO se mueve nada: ni el stock, ni las
+     * filas con sus bases, ni el flag, ni el total.
      *
      * @test
      */
-    public function editar_con_un_renglon_por_fila_desde_una_spa_anterior_deja_las_bases_en_null_y_no_mueve_el_stock()
+    public function editar_con_un_renglon_por_fila_desde_una_spa_anterior_se_rechaza_y_no_mueve_nada()
     {
         $articulo  = $this->articulo_propio('Varios precios con descuento y stock', ['stock' => self::STOCK_INICIAL]);
         $descuento = $this->descuento();
@@ -213,20 +214,21 @@ class Varios_precios_edicion_y_stock_Test extends DescuentosEnPreciosTestCase
 
         unset($payload['aplicar_descuentos_directo_a_items']);
 
-        $this->putJson('api/sale/'.$sale->id, $payload)->assertStatus(200);
+        $this->putJson('api/sale/'.$sale->id, $payload)->assertStatus(409);
 
-        $this->assertEqualsWithDelta(15, $this->stock($articulo), self::DELTA, 'Guardar sin cambios desde una SPA anterior no puede devolver stock.');
+        $this->assertEqualsWithDelta(15, $this->stock($articulo), self::DELTA, 'El rechazo no puede mover stock.');
 
         $filas = $this->filas_de_la_venta($sale->id, $articulo->id);
 
         $this->assertCount(2, $filas);
 
-        $this->assert_precio_y_base($filas[0], 45, null, 'fila de 45 editada por una SPA anterior', null);
-        $this->assert_precio_y_base($filas[1], 90, null, 'fila de 90 editada por una SPA anterior', null);
+        $this->assert_precio_y_base($filas[0], 45, 50, 'fila de 45 despues del rechazo', null);
+        $this->assert_precio_y_base($filas[1], 90, 100, 'fila de 90 despues del rechazo', null);
 
         $sale = Sale::find($sale->id);
 
-        $this->assertEquals(1, (int) $sale->aplicar_descuentos_directo_a_items, 'Sin la clave, el flag guardado se preserva: si no, getTotalSale() volveria a restar el descuento.');
+        $this->assertEquals(1, (int) $sale->aplicar_descuentos_directo_a_items);
+        $this->assertEqualsWithDelta(315.00, (float) $sale->total, self::DELTA);
         $this->assertEqualsWithDelta(315.00, SaleHelper::getTotalSale($sale, true, true, false, true), self::DELTA);
     }
 

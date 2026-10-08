@@ -111,17 +111,17 @@ class Actualizar_venta_prender_y_apagar_Test extends DescuentosEnPreciosTestCase
 
     /**
      * Test 3 — un PUT de la SPA VIEJA (sin la clave del flag ni la de la base) sobre una venta
-     * prendida PRESERVA el flag y deja la base en NULL.
+     * prendida se RECHAZA con 409 y la venta no cambia en nada.
      *
-     * El flag se preserva porque asignarlo pelado lo dejaria en null con los precios todavia
-     * descontados, y `getTotalSale()` volveria a restar el descuento al pie. La base no se puede
-     * preservar: en la venta, a diferencia del presupuesto, el PUT lo manda solo VENDER, y una SPA
-     * que no conoce la clave tampoco sabe si el precio que manda trae el descuento. NULL es lo
-     * seguro. Y el precio que mando se guarda tal cual: la API nunca calcula.
+     * Antes de este candado (`SaleController::update()` ->
+     * `DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva()`) la API preservaba el flag y dejaba la
+     * base en NULL, pero guardaba el `total` que mandaba la SPA vieja, que ya trae el descuento restado
+     * dos veces: la venta quedaba con el total mal para siempre. Todos los casos del candado, incluidos
+     * los que si pasan, estan en el archivo 15.
      *
      * @test
      */
-    public function un_put_sin_las_claves_preserva_el_flag_y_deja_la_base_en_null()
+    public function un_put_sin_las_claves_se_rechaza_y_la_venta_no_cambia()
     {
         $articulo  = $this->articulo_centinela();
         $descuento = $this->descuento();
@@ -137,19 +137,19 @@ class Actualizar_venta_prender_y_apagar_Test extends DescuentosEnPreciosTestCase
         /* La SPA anterior a esta mision no conoce el flag: la clave NO viaja. */
         unset($payload['aplicar_descuentos_directo_a_items']);
 
-        $this->putJson('api/sale/'.$sale->id, $payload)->assertStatus(200);
+        $this->putJson('api/sale/'.$sale->id, $payload)->assertStatus(409);
 
         $sale = Sale::find($sale->id);
 
-        $this->assertEquals(1, (int) $sale->aplicar_descuentos_directo_a_items, 'Sin la clave, el flag guardado se preserva.');
+        $this->assertEquals(1, (int) $sale->aplicar_descuentos_directo_a_items, 'El flag guardado no se toca.');
 
-        $this->assert_precio_y_base($this->fila('article_sale', 'sale_id', $sale->id, 'article_id', $articulo->id), 90, null, 'articulo editado por la SPA vieja');
+        $this->assert_precio_y_base($this->fila('article_sale', 'sale_id', $sale->id, 'article_id', $articulo->id), 90, 100, 'articulo: el rechazo no toca los renglones');
 
         $this->assertEqualsWithDelta(
             90.00,
             SaleHelper::getTotalSale($sale, true, true, false, true),
             self::DELTA,
-            'Con el flag preservado el descuento no se resta dos veces.'
+            'La venta sigue cerrando: el descuento no se resta dos veces.'
         );
     }
 }

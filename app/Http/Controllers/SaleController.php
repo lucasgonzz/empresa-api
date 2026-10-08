@@ -657,6 +657,34 @@ class SaleController extends Controller
         }
 
         /*
+         * 🔴 UNA SPA ANTERIOR A LA OPCIÓN DE DESCUENTOS NO PUEDE EDITAR UNA VENTA CON LOS DESCUENTOS
+         * ADENTRO DE LOS PRECIOS (misión descuentos-aplicar-al-precio-del-articulo, 8/10/2026).
+         *
+         * El caso real es la caja con la pestaña vieja: la venta se guardó en una caja con la
+         * versión nueva (`aplicar_descuentos_directo_a_items` = 1, renglones ya descontados) y en
+         * otra caja del mismo comercio quedó abierta la versión anterior. Esa SPA no conoce el flag:
+         * su pie vuelve a restar el descuento y su PUT manda un `total` doble-descontado, que este
+         * método guarda tal cual (más abajo, `$model->total = $request->total`, sin validarlo contra
+         * los renglones) mientras el flag se preserva. La venta quedaría para siempre con el total
+         * mal. No hay forma de corregirlo desde acá, así que se corta con 409 ANTES de abrir la
+         * transacción y de tocar nada, igual que el corte de arriba, y el vendedor recarga la página.
+         *
+         * Se reconoce a la SPA nueva porque manda la clave SIEMPRE (incluido el 0). Este método
+         * solo se alcanza con los `items` de VENDER, así que no hay otra edición legítima sin la
+         * clave. Los presupuestos no necesitan esto: `BudgetHelper::getTotal()` ya rebota a la SPA
+         * vieja por la diferencia del total. Ver `DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva()`.
+         */
+        if (DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva($sale_a_actualizar, $request)) {
+
+            Log::info('update sale id '.$id.': rechazado. La venta tiene los descuentos adentro de los precios y la SPA que edita no manda la clave aplicar_descuentos_directo_a_items.');
+
+            return response()->json([
+                'message'            => DescuentosEnPreciosEsquemaHelper::mensaje_spa_nueva(),
+                'requiere_spa_nueva' => true,
+            ], 409);
+        }
+
+        /*
          * Panel "Nota de crédito" de Vender: no se puede devolver más de lo que la venta tiene sin
          * devolver (auditoría de stock, 5/9/2026). Es el mismo freno que DevolucionesController y va
          * ANTES de abrir la transacción, para responder 422 con el motivo en vez de que el catch de
