@@ -107,6 +107,21 @@ class MasiveUpdateHelper
     {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
+
+        /*
+         * 🔴 Los cheques NO se actualizan en forma masiva (misión cheque-edicion-acotada, 8/10/2026).
+         * Esta actualización asigna cualquier clave del update_form al modelo y lo guarda, y resuelve
+         * los registros por id sin filtrar por dueño: por acá se podía reescribir `client_id`, `amount`
+         * o `current_acount_id` de un cheque, que es justo lo que `PUT cheque/{id}` blinda (solo
+         * número, banco, notas y fechas). Se corta ANTES de buscar o encolar nada, para las dos
+         * entradas (la pantalla genérica y el asistente de IA). Se compara la clase ya resuelta y en
+         * minúsculas, así 'cheque', 'Cheque' o 'cheque-' dan lo mismo.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\Cheque::class)) {
+            Log::info('Se interrumpio actualizacion: los cheques no se actualizan en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'Los cheques no se actualizan en forma masiva.']);
+        }
+
         $from_filter = (boolean) $from_filter;
         $models_id = is_array($models_id) ? $models_id : [];
         // Un filter_form ausente entra al search como lista vacía (sin filtros efectivos → 422),
