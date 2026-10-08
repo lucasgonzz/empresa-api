@@ -51,8 +51,11 @@ class CreateImportEquivalenciasTable extends Migration
 
             $table->bigIncrements('id');
 
-            /* Dueño del comercio (users con owner_id null): las equivalencias son del comercio. */
-            $table->unsignedBigInteger('user_id')->index();
+            /*
+             * Dueño del comercio (users con owner_id null): las equivalencias son del comercio. Sin
+             * índice propio: el único de abajo empieza por user_id y ya sirve para buscar por él.
+             */
+            $table->unsignedBigInteger('user_id');
 
             $table->string('tipo', 40);
 

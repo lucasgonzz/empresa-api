@@ -252,6 +252,25 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
         $this->assertSame(0, ImportEquivalencia::where('user_id', $otro->id)->count());
     }
 
+    /**
+     * `usar` con un id BORRADO (soft delete): se ignora y la fila sigue el camino normal. Tampoco
+     * se recuerda.
+     */
+    public function test_usar_con_un_id_borrado_se_ignora()
+    {
+        $borrada = $this->crear_categoria('Norteño');
+        $borrada->delete();
+
+        $propia = $this->crear_categoria('DEL NORTE');
+
+        $this->importar_articulos(self::ARTICULOS, [
+            ['tipo' => 'categoria', 'valor' => 'Del norte', 'accion' => 'usar', 'id' => $borrada->id],
+        ]);
+
+        $this->assertSame((int) $propia->id, (int) $this->articulo('RP-01')->category_id, 'Camino normal: la clave lleva a "DEL NORTE".');
+        $this->assertSame(0, ImportEquivalencia::where('user_id', $this->tenant->id)->count());
+    }
+
     public function test_sub_usar_con_otra_categoria_resuelta_se_ignora()
     {
         $del_norte    = $this->crear_categoria('DEL NORTE');

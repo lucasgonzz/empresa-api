@@ -61,7 +61,7 @@ class RelacionesParecidasDetector
 
     /**
      * Pares que pasan el bloqueo y se comparan en serio, por valor, como máximo: los que más
-     * bigramas comparten. Solo se muestran 3 candidatos; comparar 30 alcanza y sobra.
+     * bigramas comparten. Solo se muestran 3 candidatos; comparar 20 alcanza y sobra.
      */
     const MAX_COMPARACIONES_POR_VALOR = 20;
 
