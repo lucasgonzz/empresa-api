@@ -4,6 +4,7 @@ namespace App\Imports;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Provider;
@@ -43,6 +44,18 @@ class ProviderImport implements ToCollection, WithMultipleSheets
      * @var bool
      */
     private $vaciar_valores_en_blanco = false;
+
+    /**
+     * Proveedores cuyo saldo del Excel NO se cargo porque su cuenta ya tenia movimientos, como
+     * [provider_id => nombre]. Se avisan al final, en la notificacion (getInfoToShow()).
+     *
+     * El saldo de la importacion de proveedores es siempre un saldo INICIAL: va solo en una
+     * cuenta vacia y nunca ajusta (ver LocalImportHelper::setSaldoInicial()). Antes ese "no se
+     * cargo" era silencioso (mision importacion-proveedores-saldo-inicial, 8/10/2026).
+     *
+     * @var array
+     */
+    private $saldos_no_cargados = [];
 
     /**
      * Propiedades que esta fila vacia a proposito, como set [prop_key => true].
@@ -181,10 +194,38 @@ class ProviderImport implements ToCollection, WithMultipleSheets
             'message_text'              => 'Importacion de Excel finalizada correctamente',
             'color_variant'             => 'success',
             'functions_to_execute'      => $functions_to_execute,
-            'info_to_show'              => [],
+            'info_to_show'              => $this->getInfoToShow(),
             'owner_id'                  => $user->id,
             'is_only_for_auth_user'     => false,
         ]));
+    }
+
+    /**
+     * Bloques informativos que se muestran al terminar la importacion. Mismo formato que
+     * ClientImport::getInfoToShow() (`title` + `parrafos`), que el SPA ya renderiza.
+     *
+     * Hoy el unico bloque es el de los saldos que no se cargaron porque la cuenta del proveedor
+     * ya tenia movimientos: los nombres primero y la explicacion al final. Si no hay nada que
+     * informar se devuelve un array vacio, igual que antes.
+     *
+     * @return array
+     */
+    function getInfoToShow() {
+        $info_to_show = [];
+
+        if (count($this->saldos_no_cargados) > 0) {
+            $parrafos = array_values($this->saldos_no_cargados);
+
+            $parrafos[] = 'Estos proveedores ya tenían movimientos en su cuenta corriente, así que el saldo del Excel no se cargó: '
+                . 'el saldo inicial va solo en una cuenta vacía. Para ajustar la cuenta usá una nota de crédito o de débito.';
+
+            $info_to_show[] = [
+                'title'    => 'Saldos del Excel que no se cargaron',
+                'parrafos' => $parrafos,
+            ];
+        }
+
+        return $info_to_show;
     }
 
     function saveModel($row, $provider) {
@@ -244,10 +285,34 @@ class ProviderImport implements ToCollection, WithMultipleSheets
             $data['user_id'] = $this->ct->userId();
             $data['created_at'] = Carbon::now()->subSeconds($this->finish_row - $this->num_row);
             $provider = Provider::create($data);
+
+            /*
+             * El proveedor nace con sus dos cuentas corrientes, como en el ABM y como en
+             * ClientImport. Sin esto el saldo del Excel no tenia donde cargarse (se perdia en
+             * silencio) y una compra en cuenta corriente a este proveedor reventaba con un 500
+             * (mision importacion-proveedores-saldo-inicial, 8/10/2026).
+             *
+             * user_id EXPLICITO, el del proveedor: AdminSync corre esto con un login armado a
+             * mano y el motor de /implementar en proceso.
+             */
+            CreditAccountHelper::crear_credit_accounts('provider', $provider->id, $provider->user_id);
+
             Log::info('se creo proveedor '.$provider->name.' con la data: ');
             Log::info($data);
         }
-        LocalImportHelper::setSaldoInicial($row, $this->columns, 'provider', $provider);
+
+        /*
+         * Sin proveedor no hay saldo que cargar: es una fila de "solo editar" (create_and_edit
+         * apagado) cuyo proveedor no existe. Antes llegaba igual al helper y reventaba con un
+         * 500 a mitad del archivo.
+         */
+        if (!is_null($provider)) {
+            $estado_saldo = LocalImportHelper::setSaldoInicial($row, $this->columns, 'provider', $provider);
+
+            if ($estado_saldo == 'ya_tenia_movimientos') {
+                $this->saldos_no_cargados[$provider->id] = $provider->name;
+            }
+        }
     }
 
     /**
