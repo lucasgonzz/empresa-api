@@ -581,12 +581,19 @@ class SaleHelper extends Controller {
         return (float) $total - $costo_neto - (float) $medicion_iva['iva'];
     }
 
-    // Chequeo que no falten articulos como le suele pasar a Pack
+    /*
+        Chequeo que no falten articulos como le suele pasar a Pack.
+
+        🔴 Se busca por articulo Y variante (mision variantes-mismo-articulo-en-vender, 8/10/2026).
+        Con el id solo, el renglon de la Remera L encontraba la fila de la Remera M y, si a la L no
+        la habia adjuntado attachArticles() (cantidad 0), quedaba fuera de la venta; a un articulo
+        sin variantes, en el mismo caso, el chequeo si lo adjunta.
+    */
     static function check_que_este_el_articulos($sale, $article) {
 
         $sale->load('articles');
-        $article_sale = $sale->articles()->find($article['id']);
-            
+        $article_sale = count(Self::filas_del_renglon($sale->id, $article['id'], Self::getArticleVariantId($article))) > 0;
+
         if (!$article_sale) {
             Self::attachArticle($sale, $article);
           
@@ -1352,8 +1359,9 @@ class SaleHelper extends Controller {
                         || (!is_null($amount) && $amount > 0) ) {
 
                         // Log::info('Agregando el articulos: '.$article['name']);
-                        $article_id = (int)$article['id'];
-                        $fecha_agregado = $fecha_agregado_by_article_id[$article_id] ?? null;
+                        // La clave es artículo + variante: ver get_fecha_agregado_map_for_normal_articles().
+                        $clave_renglon = Self::clave_de_renglon($article['id'], Self::getArticleVariantId($article));
+                        $fecha_agregado = $fecha_agregado_by_article_id[$clave_renglon] ?? null;
 
                         Self::attachArticle($sale, $article, $fecha_agregado);
                     } else {
@@ -1762,6 +1770,30 @@ class SaleHelper extends Controller {
                     'price' => $item['price_vender'],
                     'price_sin_iva' => $price_sin_iva,
                 ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'article_sale');
+
+                /*
+                    🔴 Con la clave `article_variant_id` (la SPA nueva la manda SIEMPRE, con 0 para
+                    el renglón sin variante) se escriben SOLO las filas de esa variante, cada una con
+                    SU ganancia (misión variantes-mismo-articulo-en-vender, 8/10/2026). Sin la clave
+                    (SPA vieja) queda lo de siempre: `updateExistingPivot()` escribe todas las filas
+                    del artículo, y con dos variantes a precios distintos las dos terminaban con el
+                    último precio.
+                */
+                if (array_key_exists('article_variant_id', $item)) {
+
+                    foreach (Self::filas_del_renglon($sale->id, $item['id'], $item['article_variant_id']) as $fila) {
+
+                        $cambios_de_la_fila = $cambios;
+
+                        $cambios_de_la_fila['ganancia'] = Self::ganancia_de_linea($fila->cost, $fila->amount, $item['price_vender']);
+
+                        DB::table('article_sale')
+                            ->where('id', $fila->id)
+                            ->update($cambios_de_la_fila);
+                    }
+
+                    continue;
+                }
 
                 /** Línea actual, para leerle el costo y la cantidad que ya tiene guardados. */
                 $linea = $sale->articles()->find($item['id']);
@@ -3116,24 +3148,39 @@ class SaleHelper extends Controller {
         return $total;
     }
 
+    /**
+     * La fecha en que se agregó cada renglón "normal" (sin varios precios) en una edición.
+     *
+     * 🔴 La clave es artículo + VARIANTE (misión variantes-mismo-articulo-en-vender, 8/10/2026):
+     * con el id solo, agregar la Remera L a una venta que ya tenía la Remera M contaba como "ya
+     * existía" y la L quedaba sin fecha. La clave la arma `clave_de_renglon()`, la misma que lee
+     * `attachArticles()`.
+     *
+     * @param  array  $request_items
+     * @param  mixed  $previus_articles  Renglones previos (con pivot).
+     * @return array  clave => fecha_agregado a guardar.
+     */
     static function get_fecha_agregado_map_for_normal_articles($request_items, $previus_articles)
     {
         $now = Carbon::now();
 
-        // Mapa: article_id => fecha_agregado previa (para preservarla si ya existía)
-        $previus_fecha_agregado_by_id = [];
-        $previus_ids = [];
+        // Mapa: clave => fecha_agregado previa (para preservarla si ya existía)
+        $previus_fecha_agregado_by_clave = [];
+        $previus_claves = [];
 
         foreach ($previus_articles as $article) {
-            $id = (int)$article->id;
-            $previus_ids[$id] = true;
+            $clave = Self::clave_de_renglon($article->id, $article->pivot->article_variant_id);
+            $previus_claves[$clave] = true;
 
-            // preserva si ya tenía fecha (por un update anterior); si no, queda null
-            $previus_fecha_agregado_by_id[$id] = $article->pivot->fecha_agregado ?? null;
+            // preserva si ya tenía fecha (por un update anterior); si no, queda null. Con varias
+            // filas de la misma clave, la primera que tenga fecha.
+            if (!isset($previus_fecha_agregado_by_clave[$clave])) {
+                $previus_fecha_agregado_by_clave[$clave] = $article->pivot->fecha_agregado ?? null;
+            }
         }
 
-        // ids "normales" que vienen en el request (sin varios_precios)
-        $new_normal_ids = [];
+        // claves "normales" que vienen en el request (sin varios_precios)
+        $new_normal_claves = [];
         foreach ($request_items as $item) {
             if (!isset($item['is_article'])) {
                 continue;
@@ -3143,26 +3190,71 @@ class SaleHelper extends Controller {
                 // NO nos interesa para fecha_agregado
                 continue;
             }
-            $new_normal_ids[(int)$item['id']] = true;
+            $new_normal_claves[Self::clave_de_renglon($item['id'], Self::getArticleVariantId($item))] = true;
         }
 
-        // Armar map final: article_id => fecha_agregado a guardar
+        // Armar map final: clave => fecha_agregado a guardar
         $result = [];
 
-        foreach (array_keys($new_normal_ids) as $article_id) {
+        foreach (array_keys($new_normal_claves) as $clave) {
 
-            $existed_before = isset($previus_ids[$article_id]);
+            $existed_before = isset($previus_claves[$clave]);
 
             if (!$existed_before) {
-                // NUEVO artículo normal agregado en este update
-                $result[$article_id] = $now;
+                // NUEVO renglón normal agregado en este update
+                $result[$clave] = $now;
             } else {
                 // Ya existía: preservar (probablemente null si era de creación)
-                $result[$article_id] = $previus_fecha_agregado_by_id[$article_id] ?? null;
+                $result[$clave] = $previus_fecha_agregado_by_clave[$clave] ?? null;
             }
         }
 
         return $result;
+    }
+
+    /**
+     * La clave de un renglón de venta: id del artículo + variante normalizada (null, 0 y '' son "sin
+     * variante", el criterio de `ArticleHelper::misma_variante()`).
+     *
+     * @param  int|string  $article_id
+     * @param  mixed       $article_variant_id
+     * @return string
+     */
+    static function clave_de_renglon($article_id, $article_variant_id)
+    {
+        $variante = ArticleHelper::misma_variante($article_variant_id, null) ? '' : (int) $article_variant_id;
+
+        return (int) $article_id.'-'.$variante;
+    }
+
+    /**
+     * Las filas de `article_sale` de un artículo + variante en una venta, en orden de id. Variante
+     * null, 0 o '' = las filas SIN variante (null o 0). Para los caminos que escriben UN renglón de
+     * una venta guardada por variante (actualizar precios, unidades entregadas): la relación
+     * `$sale->articles()` no expone el id del pivot y `updateExistingPivot()` escribe todas las
+     * filas del artículo, también las de sus otras variantes.
+     *
+     * @param  int    $sale_id
+     * @param  int    $article_id
+     * @param  mixed  $article_variant_id
+     * @return array  Filas (objetos) de article_sale.
+     */
+    static function filas_del_renglon($sale_id, $article_id, $article_variant_id)
+    {
+        $query = DB::table('article_sale')
+                    ->where('sale_id', $sale_id)
+                    ->where('article_id', $article_id)
+                    ->orderBy('id', 'ASC');
+
+        if (ArticleHelper::misma_variante($article_variant_id, null)) {
+            $query->where(function ($q) {
+                $q->whereNull('article_variant_id')->orWhere('article_variant_id', 0);
+            });
+        } else {
+            $query->where('article_variant_id', (int) $article_variant_id);
+        }
+
+        return $query->get()->all();
     }
 
     // static function build_article_sale_key_from_item($item)

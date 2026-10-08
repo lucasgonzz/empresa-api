@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\Devoluciones\VarianteEnNotaCreditoEsquemaHelper;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CurrentAcountController;
@@ -396,13 +397,19 @@ class CurrentAcountHelper {
                             $iva_percentage_nc = $item['iva']['percentage'];
                         }
 
-                        $nota_credito->articles()->attach($item['id'], [
+                        /*
+                         * La variante devuelta va al pivot de la NC (misión
+                         * variantes-mismo-articulo-en-vender, 8/10/2026): con el mismo artículo en
+                         * dos variantes en la venta, es lo que dice cuál se devolvió cuando la NC
+                         * se borra. Entra por la guarda de esquema (ventana del deploy).
+                         */
+                        $nota_credito->articles()->attach($item['id'], VarianteEnNotaCreditoEsquemaHelper::agregar_al_pivot([
                                                             'amount'          => $item['unidades_devueltas'],
                                                             'price'           => $item['price_vender'],
                                                             'cost'            => $cost,
                                                             'discount'        => $item['discount'],
                                                             'iva_percentage'  => SaleHelper::normalize_iva_percentage_for_pivot($iva_percentage_nc),
-                                                        ]);
+                                                        ], $item));
                     }
                 }
             }

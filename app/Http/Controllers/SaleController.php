@@ -28,6 +28,7 @@ use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComis
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
@@ -804,6 +805,9 @@ class SaleController extends Controller
 
             $model->afip_information_id                 = $request->afip_information_id;
             
+            // La sucursal que tenia la venta, para mudar el stock si cambia (ver mas abajo).
+            $address_id_anterior                        = $model->address_id;
+
             // Una sucursal borrada se reemplaza solo si el request trae una DISTINTA de la guardada: la
             // venta vieja conserva la suya (D2) y el motor redirige el stock (D12). Ver resolver_al_editar().
             $model->address_id                          = \App\Http\Controllers\Helpers\address\SucursalVigenteHelper::resolver_al_editar($request->address_id, $model->address_id, $this->userId(), $this->userId(false), 'SaleController@update');
@@ -1011,6 +1015,14 @@ class SaleController extends Controller
             $model->updated_at                          = Carbon::now();
             
             $model->save();
+
+            /*
+             * Si la edicion le cambio la sucursal, lo vendido vuelve a la vieja y sale de la nueva
+             * (mision variantes-mismo-articulo-en-vender, 8/10/2026). Va ANTES de re-adjuntar los
+             * renglones: asi el calculo por diferencia, los renglones sacados y el borrado de la venta
+             * operan todos sobre la sucursal nueva. Ver UpdateHelper::mudar_stock_de_sucursal().
+             */
+            UpdateHelper::mudar_stock_de_sucursal($model, $address_id_anterior, $model->address_id);
 
             SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando, $se_activando_discount_stock);
 
