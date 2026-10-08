@@ -216,6 +216,12 @@ class BudgetDuplicarHelper {
                     duplicado, que no tiene ninguna.
                 */
                 'article_variant_id' => (int) VarianteEnPresupuestoEsquemaHelper::variante_del_pivot($article->pivot),
+                /*
+                    Y su descripción guardada: `attachArticles` la usa SOLO si la variante ya no
+                    existe (se borró después de guardar el origen), para que la copia no pierda
+                    "Talle M". Con la variante viva manda la descripción de la variante.
+                */
+                'variant_description' => VarianteEnPresupuestoEsquemaHelper::descripcion_del_pivot($article->pivot),
                 'pivot' => [
                     'amount' => $article->pivot->amount,
                     'bonus' => $article->pivot->bonus,
