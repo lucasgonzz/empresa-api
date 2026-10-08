@@ -95,6 +95,46 @@ class Cambio_de_sucursal_y_borrado_Test extends VariantesEnVentaTestCase
     }
 
     /**
+     * Test 3 ter — el cambio de sucursal también vale para un artículo SIN variantes que reparte
+     * por depósitos (el mismo motor, sin la variante).
+     *
+     * @test
+     */
+    public function cambiar_la_sucursal_mueve_tambien_un_articulo_sin_variantes_con_depositos()
+    {
+        $e = $this->escenario();
+
+        $con_depositos = $this->crear_articulo('zz Sin variantes con depositos '.uniqid(), ['stock' => 0]);
+
+        \Illuminate\Support\Facades\DB::table('address_article')->insert([
+            ['article_id' => $con_depositos->id, 'address_id' => $e['suc1']->id, 'amount' => 7],
+            ['article_id' => $con_depositos->id, 'address_id' => $e['suc2']->id, 'amount' => 3],
+        ]);
+
+        \App\Http\Controllers\Helpers\ArticleHelper::setArticleStockFromAddresses($con_depositos->fresh(), false, $this->usuario()->id);
+
+        $this->assertEquals(10.0, $this->stock($con_depositos));
+
+        $renglon = ['article' => $con_depositos, 'amount' => 2, 'price' => 100, 'cost' => 100];
+
+        $venta = $this->crear_venta([$renglon], ['address_id' => $e['suc1']->id]);
+
+        $this->assertEquals(5.0, $this->stock_en_deposito($con_depositos, $e['suc1']->id));
+
+        $this->actualizar_venta($venta, [$renglon], ['address_id' => $e['suc2']->id])->assertStatus(200);
+
+        $this->assertEquals(7.0, $this->stock_en_deposito($con_depositos, $e['suc1']->id), 'Lo vendido vuelve a la sucursal 1.');
+        $this->assertEquals(1.0, $this->stock_en_deposito($con_depositos, $e['suc2']->id), 'Y sale de la sucursal 2.');
+        $this->assertEquals(8.0, $this->stock($con_depositos));
+
+        $this->deleteJson('api/sale/'.$venta->id)->assertStatus(200);
+
+        $this->assertEquals(7.0, $this->stock_en_deposito($con_depositos, $e['suc1']->id));
+        $this->assertEquals(3.0, $this->stock_en_deposito($con_depositos, $e['suc2']->id));
+        $this->assertEquals(10.0, $this->stock($con_depositos));
+    }
+
+    /**
      * Test 4 — borrar la venta devuelve cada variante a su depósito y el testigo a su stock global.
      *
      * @test
