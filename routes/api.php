@@ -683,6 +683,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('/cheque/pagar', 'ChequeController@pagar');
     Route::put('/cheque/rechazar', 'ChequeController@rechazar');
     Route::put('/cheque/endosar', 'ChequeController@endosar');
+    // La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): solo número, banco, notas,
+    // fecha de emisión y fecha de pago. 🔴 Va DESPUÉS de las PUT fijas (cobrar, pagar, rechazar, endosar): si va
+    // antes, {id} las captura y `PUT cheque/cobrar` terminaría en update().
+    Route::put('/cheque/{id}', 'ChequeController@update');
     Route::delete('/cheque/{id}', 'ChequeController@destroy');
 
 
