@@ -44,6 +44,10 @@ class DeleteModelsHelper
         // trae decisión, así que sin esto contaba la sucursal como eliminada y la SPA la sacaba de
         // la lista aunque seguía existiendo con su stock.
         'address',
+        // Impuesto de retención con certificados cargados (misión retenciones-abm-impuestos,
+        // 8/10/2026): RetencionImpuestoController::destroy() responde 422 y no borra nada. Sin esto la
+        // masiva lo contaba como eliminado y el listado lo sacaba de pantalla aunque siguiera existiendo.
+        'retencion_impuesto',
     ];
 
     /**

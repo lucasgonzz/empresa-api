@@ -287,4 +287,28 @@ class Abm_de_impuestos_Test extends EmpresaTestCase
 
         $this->assertEquals(['SUSS'], $nombres);
     }
+
+    /**
+     * El borrado masivo (`PUT delete/retencion_impuesto`) respeta el 422 de un impuesto con
+     * certificados: lo devuelve en `not_deleted` y no en `deleted_models`, y la fila sigue ahí.
+     * Sin que el modelo esté en `DeleteModelsHelper::MODELOS_QUE_RESPETAN_RECHAZO`, el listado lo
+     * sacaría de pantalla como eliminado.
+     *
+     * @test
+     */
+    public function el_borrado_masivo_respeta_el_rechazo_por_certificados()
+    {
+        $impuesto = RetencionImpuesto::create(['name' => 'zz Masivo SUSS', 'user_id' => $this->dueno->id]);
+        $this->certificado_con($impuesto->id);
+
+        $respuesta = $this->putJson('api/delete/retencion_impuesto', ['models_id' => [$impuesto->id]]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame($impuesto->id, (int) $respuesta->json('not_deleted.0.id'));
+        $this->assertEmpty($respuesta->json('deleted_models'));
+        $this->assertNotNull(RetencionImpuesto::find($impuesto->id));
+
+        RetencionSufrida::where('impuesto', RetencionImpuesto::clave($impuesto->id))->delete();
+        RetencionImpuesto::where('id', $impuesto->id)->delete();
+    }
 }
