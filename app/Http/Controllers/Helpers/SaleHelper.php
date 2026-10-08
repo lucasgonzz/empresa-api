@@ -28,6 +28,7 @@ use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
@@ -940,9 +941,20 @@ class SaleHelper extends Controller {
                     Y
                     Si es un articulo (a los cuales SIEMPRE se le aplican los descuentos de la venta)
                     O (en caso que no sea un articulo, osea que es un SERVICIO) la venta tiene en TRUE discounts_in_services
+
+                    🔴 Y SOLO SI LA VENTA NO TIENE `aplicar_descuentos_directo_a_items` (mision
+                    descuentos-aplicar-al-precio-del-articulo, 8/10/2026). Con la opcion prendida el
+                    `price_vender` de cada renglon devuelto YA TRAE EL DESCUENTO ADENTRO (es el precio
+                    del renglon de la venta, que es el que manda VENDER en `returned_items`), y
+                    restarlo de nuevo acredita DE MENOS al cliente: el descuento se aplicaria dos
+                    veces. No es un detalle de estilo ni se puede "simplificar" sacando la guarda: es
+                    exactamente la misma que ya pone `getTotalSale()` para el total de la venta.
+                    Cada opcion gobierna SU PROPIO ajuste: una venta con los descuentos adentro y los
+                    recargos al pie NO resta el descuento pero SI suma el recargo.
                 */
                 if (
                     count($sale->discounts) >= 1
+                    && !$sale->aplicar_descuentos_directo_a_items
                     && (
                         (isset($item['is_article']) && $item['is_article'])
                         || $sale->discounts_in_services
@@ -963,9 +975,17 @@ class SaleHelper extends Controller {
                     Y
                     Si es un articulo (a los cuales SIEMPRE se le aplican los recargos de la venta)
                     O (en caso que no sea un articulo, osea que es un SERVICIO) la venta tiene en TRUE surchages_in_services
+
+                    🔴 Y SOLO SI LA VENTA NO TIENE `aplicar_recargos_directo_a_items` (decision de
+                    Lucas, 8/10/2026: corregir la nota de credito para recargos Y descuentos; era el
+                    hallazgo 1 del informe del 28/9/2026). Con la opcion prendida el `price_vender`
+                    devuelto YA TRAE EL RECARGO ADENTRO, y sumarlo de nuevo acreditaba DE MAS al
+                    cliente. Misma guarda que `getTotalSale()`, y por el mismo motivo que la de
+                    descuentos de arriba.
                 */
                 if (
                     count($sale->surchages) >= 1
+                    && !$sale->aplicar_recargos_directo_a_items
                     && (
                         (isset($item['is_article']) && $item['is_article'])
                         || $sale->surchages_in_services
@@ -1164,6 +1184,8 @@ class SaleHelper extends Controller {
                             para siempre en VENDER por un renglon que nadie toco.
                         */
                         'price_vender_sin_recargos' => RecargosEnPreciosEsquemaHelper::base_del_pivot($previus_article->pivot),
+                        // Y la de descuentos, por el mismo motivo (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026).
+                        DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST => DescuentosEnPreciosEsquemaHelper::base_del_pivot($previus_article->pivot),
                         'created_at'            => Carbon::now(),
                     ];
                     Self::attachArticle($sale, $article);
@@ -1499,8 +1521,8 @@ class SaleHelper extends Controller {
      *  - `checked_amount`, `returned_amount` y `delivered_amount`: son cantidades del PADRE y no se
      *    copian (decision de Lucas). Heredada, la chequeada le ganaria a la cantidad de la fila en
      *    `getAmount()`, y la entregada prenderia `en_acopio` en una venta que nadie acopio.
-     *  - `price_vender_con_recargos` y `price_vender_sin_recargos`: son el precio y la base del PADRE;
-     *    la fila trae los suyos.
+     *  - `price_vender_con_recargos`, `price_vender_sin_recargos` y `price_vender_sin_descuentos`: son
+     *    el precio y las bases del PADRE; la fila trae las suyas.
      *
      * Queda heredado: `discount`, el costo (`cost`, `costo_real`, `cost_in_dollars`, `presentacion`,
      * `unidades_individuales`), `iva` / `iva_id`, `article_variant_id`, `price_type_personalizado_id`,
@@ -1525,6 +1547,7 @@ class SaleHelper extends Controller {
             'delivered_amount',
             'price_vender_con_recargos',
             'price_vender_sin_recargos',
+            DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST,
         ];
 
         foreach ($claves_del_padre as $clave) {
@@ -1553,6 +1576,17 @@ class SaleHelper extends Controller {
             $fila['price_vender_sin_recargos'] = $otro_precio['price_vender_sin_recargos'];
         } else {
             $fila['price_vender_sin_recargos'] = null;
+        }
+
+        /*
+            Y lo mismo para la base de DESCUENTOS (mision descuentos-aplicar-al-precio-del-articulo,
+            8/10/2026): la de la FILA o null, NUNCA la del padre. Una base de descuentos del padre
+            que quedara en la fila se guardaria como si fuera el precio original de ESTE precio.
+        */
+        if (array_key_exists(DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST, $otro_precio)) {
+            $fila[DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST] = $otro_precio[DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST];
+        } else {
+            $fila[DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST] = null;
         }
 
         return Self::precio_y_base_de_varios_precios($fila);
@@ -1611,14 +1645,24 @@ class SaleHelper extends Controller {
      * vale lo mismo que el precio tipeado y `price_vender_sin_recargos` va en null, asi que se
      * guarda el tipeado con la base en NULL sin que este metodo tenga que distinguir nada.
      *
+     * 🔴 EL NOMBRE `price_vender_con_recargos` QUEDO CHICO (mision descuentos-aplicar-al-precio-del-
+     * articulo, 8/10/2026) Y NO SE RENOMBRA. Desde esa mision es EL PRECIO FINAL DEL RENGLON con los
+     * descuentos y/o los recargos de venta adentro, segun cual de las dos opciones este prendida. Se
+     * conserva el nombre por compatibilidad hacia atras: una SPA vieja y una API nueva (o al reves)
+     * tienen que seguir entendiendose en este campo. Lo que cambia el significado de cada base es la
+     * pila de capas: `price_vender_sin_recargos` es el precio sin los recargos (con los descuentos, si
+     * los tiene adentro) y `price_vender_sin_descuentos` es el precio ORIGINAL, sin descuentos ni
+     * recargos.
+     *
      * Sin `price_vender_con_recargos` —solo la SPA VIEJA, anterior a esta mision— se guarda
-     * `price_vender` como siempre y la base va en NULL AUNQUE VENGA `price_vender_sin_recargos`: en
-     * ese caso el precio guardado es el tipeado, que no tiene el recargo adentro, y una base NO NULL
-     * diria lo contrario. La invariante de la columna manda sobre lo que diga el payload.
+     * `price_vender` como siempre y las bases van en NULL AUNQUE VENGAN `price_vender_sin_recargos` o
+     * `price_vender_sin_descuentos`: en ese caso el precio guardado es el tipeado, que no tiene ni el
+     * recargo ni el descuento adentro, y una base NO NULL diria lo contrario. La invariante de las
+     * columnas manda sobre lo que diga el payload.
      *
      * @param  array  $otro_precio  La fila ya armada como renglon por `fila_de_varios_precios()`: con
      *                              el precio, la cantidad y las bases de la fila, nunca las del padre.
-     * @return array  La misma fila, con `price_vender` y `price_vender_sin_recargos` resueltos.
+     * @return array  La misma fila, con `price_vender` y las dos bases resueltos.
      */
     static function precio_y_base_de_varios_precios($otro_precio) {
 
@@ -1634,6 +1678,7 @@ class SaleHelper extends Controller {
         }
 
         $otro_precio['price_vender_sin_recargos'] = null;
+        $otro_precio[DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST] = null;
 
         return $otro_precio;
     }
@@ -1675,7 +1720,13 @@ class SaleHelper extends Controller {
             dividiendo `price` por el factor de los recargos: el precio guardado puede venir
             redondeado, y un precio adivinado es justo lo que la columna existe para evitar.
         */
-        $sale->articles()->attach($article['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+        /*
+            Y la base de DESCUENTOS (`price_sin_descuentos_de_venta`, el precio ORIGINAL; mision
+            descuentos-aplicar-al-precio-del-articulo, 8/10/2026) entra por SU guarda, anidada con la
+            de arriba: dos columnas, dos memos. Mismas reglas: la API no la calcula ni la valida, y
+            clave ausente (SPA vieja) = NULL.
+        */
+        $sale->articles()->attach($article['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
             'amount'                => $amount,
             'ganancia'              => $ganancia * $amount,
             'cost'                  => $cost,
@@ -1702,7 +1753,7 @@ class SaleHelper extends Controller {
             'fecha_agregado'        => $fecha_agregado,
 
             'created_at'            => Carbon::now(),
-        ], RecargosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'));
+        ], RecargosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'));
 
         if (!is_null($delivered_amount) && !$sale->en_acopio) {
             $sale->en_acopio = 1;
@@ -1758,10 +1809,16 @@ class SaleHelper extends Controller {
                     cambie el precio que el vendedor acaba de poner. NULL la deja bloqueada, que es
                     lo seguro.
                 */
-                $cambios = RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+                /*
+                    Y lo mismo para la base de DESCUENTOS (mision descuentos-aplicar-al-precio-del-
+                    articulo, 8/10/2026): se escribe SIEMPRE con el precio, y sin la clave va NULL.
+                    Dejar la base de descuentos vieja con un precio nuevo haria que VENDER, al
+                    reabrir, parta de un precio original que ya no es el de este renglon.
+                */
+                $cambios = DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                     'price' => $item['price_vender'],
                     'price_sin_iva' => $price_sin_iva,
-                ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'article_sale');
+                ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_item($item), 'article_sale');
 
                 /** Línea actual, para leerle el costo y la cantidad que ya tiene guardados. */
                 $linea = $sale->articles()->find($item['id']);
@@ -1781,9 +1838,9 @@ class SaleHelper extends Controller {
                 $service->price = $item['price_vender'];
                 $service->save();
                 // La base va con el precio, por el mismo motivo que en el renglon de articulo de arriba.
-                $sale->services()->updateExistingPivot($item['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+                $sale->services()->updateExistingPivot($item['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                         'price' => $item['price_vender'],
-                                                    ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'sale_service'));
+                                                    ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'sale_service'), DescuentosEnPreciosEsquemaHelper::base_del_item($item), 'sale_service'));
             }
         }
     }
@@ -1936,15 +1993,21 @@ class SaleHelper extends Controller {
         por su cuenta, dos lugares decidirian lo mismo y el dia que no coincidan un renglon con el
         recargo adentro quedaria sin base (bloqueado) o uno sin recargo quedaria con base (y apagar
         la opcion le cambiaria el precio).
+
+        🔴 LO MISMO VALE PARA LA BASE DE DESCUENTOS (`price_sin_descuentos_de_venta`; mision
+        descuentos-aplicar-al-precio-del-articulo, 8/10/2026), que se escribe en estos tres `attach*`
+        igual que la de recargos y por su propia guarda. Con su opcion prendida, combos y promociones
+        llevan el descuento adentro, y un servicio lo lleva solo con "descuentos en servicios": la
+        SPA decide, la API no filtra.
     */
     static function attachPromocionVinotecas($sale, $promocion_vinotecas, $previus_promos) {
         foreach ($promocion_vinotecas as $promo) {
             if (isset($promo['is_promocion_vinoteca'])) {
-                $sale->promocion_vinotecas()->attach($promo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+                $sale->promocion_vinotecas()->attach($promo['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                             'amount' => (float)$promo['amount'],
                                                             'price' => $promo['price_vender'],
                                                             'created_at' => Carbon::now(),
-                                                        ], RecargosEnPreciosEsquemaHelper::base_del_item($promo), 'promocion_vinoteca_sale'));
+                                                        ], RecargosEnPreciosEsquemaHelper::base_del_item($promo), 'promocion_vinoteca_sale'), DescuentosEnPreciosEsquemaHelper::base_del_item($promo), 'promocion_vinoteca_sale'));
                 PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo, $previus_promos);
             }
         }
@@ -1960,7 +2023,7 @@ class SaleHelper extends Controller {
     static function attachCombos($sale, $combos, $previus_combos, $costos_previos = null) {
         foreach ($combos as $combo) {
             if (isset($combo['is_combo'])) {
-                $sale->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+                $sale->combos()->attach($combo['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                             'amount' => (float)$combo['amount'],
                                                             'price' => $combo['price_vender'],
                                                             /*
@@ -1985,7 +2048,7 @@ class SaleHelper extends Controller {
                                                             */
                                                             'cost' => ComboCostoDeVentaHelper::costo_para_renglon($sale, $combo['id'], $costos_previos),
                                                             'created_at' => Carbon::now(),
-                                                        ], RecargosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'));
+                                                        ], RecargosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'), DescuentosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'));
 
                 ComboHelper::discount_articles_stock($sale, $combo, $previus_combos);
             }
@@ -1995,12 +2058,12 @@ class SaleHelper extends Controller {
     static function attachServices($sale, $services) {
         foreach ($services as $service) {
             if (isset($service['is_service'])) {
-                $sale->services()->attach($service['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+                $sale->services()->attach($service['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                     'price' => $service['price_vender'],
                     'amount' => $service['amount'],
                     'returned_amount'   => Self::getReturnedAmount($service),
                     'discount' => Self::getDiscount($service),
-                ], RecargosEnPreciosEsquemaHelper::base_del_item($service), 'sale_service'));
+                ], RecargosEnPreciosEsquemaHelper::base_del_item($service), 'sale_service'), DescuentosEnPreciosEsquemaHelper::base_del_item($service), 'sale_service'));
             }
         }
     }
@@ -2769,7 +2832,22 @@ class SaleHelper extends Controller {
             $total_articles -= $total_articles * $sale->descuento / 100;
         }
 
-        if ($with_discount) {
+        /*
+            🔴 LA GUARDA DEL FLAG DE DESCUENTOS (mision descuentos-aplicar-al-precio-del-articulo,
+            8/10/2026), gemela de la de recargos de mas abajo: con `aplicar_descuentos_directo_a_items`
+            el precio de cada renglon YA TRAE el descuento adentro, y restarlo aca otra vez lo cobraria
+            DOS veces. Envuelve a LOS CUATRO buckets —combos y promociones incluidos— y a los servicios
+            (que solo llevan el descuento adentro con `discounts_in_services`: sin esa opcion no lo
+            llevan adentro NI se les resta al pie, que es lo que ya hacia el `if` de servicios).
+
+            El flag decide DONDE se ve el descuento, nunca SI se cobra: no hay forma de que prender o
+            apagar la opcion deje de cobrar un descuento, porque la SPA reescribe todos los precios
+            junto con el flag. No "simplificar" sacando un bucket de esta guarda.
+        */
+        if (
+            $with_discount
+            && !$sale->aplicar_descuentos_directo_a_items
+        ) {
             foreach ($sale->discounts as $discount) {
                 $total_articles -= $total_articles * $discount->pivot->percentage / 100;
                 $total_combos -= $total_combos * $discount->pivot->percentage / 100;
@@ -3110,6 +3188,11 @@ class SaleHelper extends Controller {
     }
 
     static function getTotalMenosDescuentos($sale, $total) {
+        // Con la opcion prendida el $total que llega ya es la suma de precios CON el descuento adentro: restarlo seria cobrarlo dos veces (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026).
+        if ($sale->aplicar_descuentos_directo_a_items) {
+            return $total;
+        }
+
         foreach ($sale->discounts as $discount) {
             $total -= $total * Numbers::percentage($discount->pivot->percentage);
         }

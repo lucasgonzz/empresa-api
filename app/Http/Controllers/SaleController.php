@@ -26,6 +26,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
@@ -414,7 +415,8 @@ class SaleController extends Controller
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
             // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
-            $model = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // Y la de aplicar_descuentos_directo_a_items envuelve a esa: mismo motivo, otra columna (ver la clave, más abajo).
+            $model = Sale::create(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
                 /*
                  * La fecha de creación elegida por el usuario, ya resuelta arriba (día elegido +
@@ -482,6 +484,18 @@ class SaleController extends Controller
                 'valor_dolar'                       => CotizacionDeVentaHelper::valor_dolar_para_guardar($request->valor_dolar),
                 'incoterms'                         => $request->incoterms,
                 'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
+                /*
+                 * 🔴 La opción hermana para DESCUENTOS (misión descuentos-aplicar-al-precio-del-articulo,
+                 * 8/10/2026): prendida, el descuento viaja ADENTRO del `price` de cada renglón y
+                 * `getTotalSale()`, la factura, los puntos y los PDF no lo vuelven a restar al pie.
+                 * Se guarda tal cual vino (null = SPA anterior = apagada).
+                 *
+                 * ⚠️ Esta clave NO va pelada: `Sale` declara `$guarded = []`, el INSERT la manda aunque
+                 * valga null, y entre que el deploy sube los archivos y corre las migraciones la columna
+                 * no existe. La guarda que envuelve todo este array la saca en esa ventana. Ver
+                 * `DescuentosEnPreciosEsquemaHelper`.
+                 */
+                'aplicar_descuentos_directo_a_items' => $request->aplicar_descuentos_directo_a_items,
                 'sale_status_id'                    => $request->sale_status_id,
                 // Si no se envía el campo, se asume true (comportamiento por defecto: descontar stock)
                 'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
@@ -522,7 +536,7 @@ class SaleController extends Controller
              *
              * El cero se normaliza a null en `SaleHelper::normalized_forzar_total_monto()`.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'), 'sales'));
 
             // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
@@ -897,6 +911,17 @@ class SaleController extends Controller
             $model->aplicar_recargos_directo_a_items    = !is_null($request->aplicar_recargos_directo_a_items)
                                                             ? $request->aplicar_recargos_directo_a_items
                                                             : $model->aplicar_recargos_directo_a_items;
+
+            /*
+                La hermana para descuentos (misión descuentos-aplicar-al-precio-del-articulo,
+                8/10/2026), con la MISMA regla de preservación y por el mismo motivo que la de
+                arriba: una SPA anterior a esta misión no manda la clave, y asignarla pelada dejaría
+                el flag en null con los precios del pivot todavía descontados, o sea que el
+                descuento se restaría DOS veces (al confirmar una venta chequeada, al puntuar, al
+                facturar). Pasa por la guarda de esquema: en la ventana del deploy la columna no
+                existe y la asignación tumbaría la actualización de cualquier venta.
+            */
+            DescuentosEnPreciosEsquemaHelper::asignar_flag_en_update($model, $request->aplicar_descuentos_directo_a_items, 'sales');
             $model->sale_status_id                      = $request->sale_status_id;
 
             /*
