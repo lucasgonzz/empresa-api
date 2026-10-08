@@ -84,7 +84,14 @@ class ArticleImport implements ToCollection
          * repetido, quedarse con el artículo que además coincide en nombre. Va último y
          * con default por la misma razón que los dos de arriba (cambio aditivo).
          */
-        $desempatar_por_nombre = false
+        $desempatar_por_nombre = false,
+
+        /*
+         * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
+         * nombres parecidos (proveedor, categoría, subcategoría, marca). Va último y con default
+         * por la misma razón que los de arriba: el import clásico y AdminSync no lo mandan.
+         */
+        $equivalencias = []
     ) {
 
         $this->log_activado = false;
@@ -172,6 +179,7 @@ class ArticleImport implements ToCollection
             'filas_repetidas_del_archivo'                           => $this->filas_repetidas_del_archivo,
             'precios_incluyen_iva'                                  => $this->precios_incluyen_iva,
             'desempatar_por_nombre'                                 => $this->desempatar_por_nombre,
+            'equivalencias'                                         => is_array($equivalencias) ? $equivalencias : [],
         ]);
 
         $this->nombres_proveedores = [];
@@ -606,34 +614,29 @@ class ArticleImport implements ToCollection
 
         if (isset($this->columns['proveedor'])) {
 
-            $index_columna_proveedor = $this->columns['proveedor'];
+            /*
+             * Los nombres se leen con getColumnValue(), el MISMO lector que usa después
+             * ProcessRow::get_provider_id() para buscarlos acá: si se leyeran distinto (antes era
+             * un pluck() con trim, sin sacar el BOM ni las comillas), un nombre resuelto acá no
+             * se encontraría allá y la fila quedaría sin proveedor.
+             */
+            $nombres = [];
 
-            $proveedoresNombres = collect($rows)
-                        ->pluck($index_columna_proveedor) // índice de la columna "proveedor"
-                        ->filter(fn($nombre) => !is_null($nombre) && trim($nombre) !== '')
-                        ->map(fn($nombre) => trim($nombre))
-                        ->unique()
-                        ->values();
+            foreach ($rows as $row) {
+                $nombre = ImportHelper::getColumnValue($row, 'proveedor', $this->columns);
 
-            // Paso 2: obtener todos los proveedores existentes
-            $proveedoresExistentes = Provider::where('user_id', $this->user->id)
-                                        ->whereIn('name', $proveedoresNombres)
-                                        ->get();
-
-            // Paso 3: mapear por nombre para acceso rápido
-            $this->nombres_proveedores = $proveedoresExistentes->keyBy('name');
-
-            // Paso 4: determinar qué nombres faltan
-            $nombresFaltantes = $proveedoresNombres->diff($this->nombres_proveedores->keys());
-
-            // Paso 5: crear los que faltan
-            foreach ($nombresFaltantes as $nombre) {
-                $this->nombres_proveedores[$nombre] = Provider::create([
-                    'name' => $nombre,
-                    'user_id' => $this->user->id 
-                ]);
+                if (!is_null($nombre) && trim($nombre) !== '') {
+                    $nombres[trim($nombre)] = true;
+                }
             }
 
+            /*
+             * La resolución (decisión del usuario → equivalencia recordada → nombre exacto →
+             * clave sin mayúsculas, la más vieja → crear) vive en ProcessRow, con las otras tres
+             * relaciones. Ver ProcessRow::resolver_proveedores() para el duplicado por mayúsculas
+             * que tenía el whereIn + diff de acá.
+             */
+            $this->nombres_proveedores = $this->process_row->resolver_proveedores(array_map('strval', array_keys($nombres)));
         }
     }
 

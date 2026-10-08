@@ -24,6 +24,11 @@ class InitExcelImport
      */
     protected $chunk_offsets = [];
 
+    /**
+     * Decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Ver importar().
+     */
+    protected $equivalencias = [];
+
     function importar($data)
     {
         $this->import_uuid              = $data['import_uuid'];
@@ -133,6 +138,15 @@ class InitExcelImport
          *     corría antes: para el admin no cambia nada. Verificado contra su único
          *     consumidor, `admin-api ImplementationImportService`.
          */
+        /*
+         * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
+         * nombres parecidos. Clave OPCIONAL (ni el import clásico ni AdminSync la mandan) que viaja
+         * tal cual hasta ProcessRow; el saneado lo hace EquivalenciasResolver allá, una vez por lote.
+         */
+        $this->equivalencias = isset($data['equivalencias']) && is_array($data['equivalencias'])
+            ? array_values($data['equivalencias'])
+            : [];
+
         $this->filas_repetidas_del_archivo = $this->normalizar_filas_repetidas_del_archivo(
             $data['filas_repetidas_del_archivo'] ?? null
         );
@@ -708,7 +722,8 @@ class InitExcelImport
                 $this->interpretacion_punto,
                 $this->filas_repetidas_del_archivo,
                 $this->precios_incluyen_iva,
-                $this->desempatar_por_nombre
+                $this->desempatar_por_nombre,
+                $this->equivalencias
             );
 
             $this->chunk_number++;

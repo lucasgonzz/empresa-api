@@ -61,6 +61,15 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $desempatar_por_nombre = false;
 
+    /**
+     * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
+     * nombres parecidos (`equivalencias` del POST). Viaja hasta ProcessRow. Con default en la
+     * declaración: un job serializado antes de este cambio se deserializa con [] y corre igual.
+     *
+     * @var array
+     */
+    protected $equivalencias = [];
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -102,7 +111,13 @@ class ProcessArticleChunk implements ShouldQueue
              * encolados y serializados sin esta clave se deserializan igual y corren con
              * el comportamiento de siempre.
              */
-            $desempatar_por_nombre = false
+            $desempatar_por_nombre = false,
+
+            /*
+             * Misión `importacion-relaciones-parecidas` (8/10/2026). Va último y con default, igual
+             * que los de arriba.
+             */
+            $equivalencias = []
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -130,6 +145,7 @@ class ProcessArticleChunk implements ShouldQueue
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
         $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
         $this->desempatar_por_nombre                                = $desempatar_por_nombre;
+        $this->equivalencias                                        = is_array($equivalencias) ? $equivalencias : [];
 
         $this->observations = '';
 
@@ -520,6 +536,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->filas_repetidas_del_archivo,
                 $this->precios_incluyen_iva,
                 $this->desempatar_por_nombre,
+                is_array($this->equivalencias) ? $this->equivalencias : []
             );
 
         } catch (\Throwable $e) {
