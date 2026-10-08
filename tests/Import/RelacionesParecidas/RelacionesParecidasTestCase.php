@@ -327,10 +327,20 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
             foreach ($consultas as $consulta) {
                 $respuesta = call_user_func($elegir, $consulta);
 
-                /* $elegir devuelve el resto de la entrada (elegido, seguro) o, a secas, el `c` / null. */
-                $respuestas[] = is_array($respuesta)
-                    ? array_merge(['n' => $consulta['n']], $respuesta)
-                    : ['n' => $consulta['n'], 'elegido' => $respuesta];
+                /* false = la IA se saltea este valor (no viene su `n`). */
+                if ($respuesta === false) {
+                    continue;
+                }
+
+                /* Una lista = la IA contesta varias veces el mismo `n`, en ese orden. */
+                $entradas = (is_array($respuesta) && array_key_exists(0, $respuesta)) ? $respuesta : [$respuesta];
+
+                foreach ($entradas as $entrada) {
+                    /* $elegir devuelve el resto de la entrada (elegido, seguro) o, a secas, el `c` / null. */
+                    $respuestas[] = is_array($entrada)
+                        ? array_merge(['n' => $consulta['n']], $entrada)
+                        : ['n' => $consulta['n'], 'elegido' => $entrada];
+                }
             }
 
             return Http::response($test->cuerpo_ia(json_encode(['respuestas' => $respuestas])), 200);

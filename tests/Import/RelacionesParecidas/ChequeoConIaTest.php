@@ -259,6 +259,59 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * La IA contesta pero se saltea un valor: ese valor se pregunta como DUDOSO (no "la IA no se
+     * pudo consultar") y no se descarta aunque su puntaje sea bajo ("Bosh"~"Bosch" es 0,80).
+     */
+    public function test_un_valor_que_la_ia_omite_sale_dudoso_aunque_tenga_puntaje_bajo()
+    {
+        $this->sembrar();
+
+        $elegir = $this->elegir_por_nombre([
+            'Ferret. del Norte' => 'Ferretería Del Norte',
+            'Martillo'          => 'Martillos',
+        ]);
+
+        $this->falsear_ia(function (array $consulta) use ($elegir) {
+            return $consulta['valor'] === 'Bosh' ? false : call_user_func($elegir, $consulta);
+        });
+
+        $relaciones = $this->chequear();
+
+        $this->assertTrue($relaciones['ia_consultada']);
+
+        $bosh = $this->item($relaciones, 'marca|Bosh');
+        $this->assertNotNull($bosh, 'Omitido no es descartado.');
+        $this->assertSame('posible', $bosh['motivo']);
+        $this->assertSame('Podría ser «Bosch» escrito de otra forma; si es el mismo, elegilo', $bosh['explicacion']);
+        $this->assertSame(['accion' => 'crear'], $bosh['opciones'][$bosh['sugerida']]);
+
+        $this->assertSame('parecido', $this->item($relaciones, 'proveedor|Ferret. del Norte')['motivo'], 'Los que sí contestó, como siempre.');
+    }
+
+    /**
+     * Un `n` repetido en la respuesta: gana la primera.
+     */
+    public function test_un_valor_contestado_dos_veces_se_queda_con_la_primera_respuesta()
+    {
+        $this->sembrar();
+
+        $this->falsear_ia(function (array $consulta) {
+            if ($consulta['valor'] !== 'Bosh') {
+                return ['elegido' => null];
+            }
+
+            return [
+                ['elegido' => $consulta['candidatos'][0]['c'], 'seguro' => true],
+                ['elegido' => null],
+            ];
+        });
+
+        $relaciones = $this->chequear();
+
+        $this->assertSame('parecido', $this->item($relaciones, 'marca|Bosh')['motivo']);
+    }
+
     public function test_lo_que_la_ia_dice_que_no_coincide_no_se_muestra()
     {
         $this->sembrar();

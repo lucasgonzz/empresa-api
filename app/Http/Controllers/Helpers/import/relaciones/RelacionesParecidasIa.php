@@ -150,6 +150,15 @@ class RelacionesParecidasIa
                 continue;
             }
 
+            /* Un `n` repetido: gana la primera respuesta (la IA no debería repetir; si lo hace, queda en el log). */
+            if (array_key_exists($n, $resultado)) {
+                Log::warning('RelacionesParecidasIa: la IA contestó dos veces el mismo valor; queda la primera respuesta', [
+                    'n' => $n,
+                ]);
+
+                continue;
+            }
+
             $elegido = array_key_exists('elegido', $respuesta) ? $respuesta['elegido'] : null;
 
             if (is_null($elegido) || $elegido === false || $elegido === '' || $elegido === 0 || $elegido === '0') {

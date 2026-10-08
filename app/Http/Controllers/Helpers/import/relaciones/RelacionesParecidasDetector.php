@@ -664,6 +664,22 @@ class RelacionesParecidasDetector
                     $supuestos[$valor] = null;
 
                     $fue_enviado = isset($enviados[$valor]);
+
+                    /*
+                     * La IA contestó, pero se salteó este valor: se trata como DUDOSO sobre su
+                     * mejor candidato (se pregunta, con "crear" marcado), sin importar el puntaje.
+                     * Descartarlo sería el mismo error que "ante la duda, null": el valor no se
+                     * pregunta y el duplicado se crea en silencio. No es "la IA no se pudo
+                     * consultar": la IA anduvo, solo que no dijo nada de éste.
+                     */
+                    if ($fue_enviado && $ia_ok && !array_key_exists($valor, $respuestas)) {
+                        if (count($info['candidatos']) > 0) {
+                            $respuestas[$valor] = ['existente' => (int) $info['candidatos'][0]['id'], 'seguro' => false];
+                        } elseif (count($info['candidatos_archivo']) > 0) {
+                            $respuestas[$valor] = ['archivo' => (string) $info['candidatos_archivo'][0]['valor'], 'seguro' => false];
+                        }
+                    }
+
                     $contesto = $fue_enviado && $ia_ok && array_key_exists($valor, $respuestas);
 
                     if ($contesto) {
@@ -715,9 +731,10 @@ class RelacionesParecidasDetector
 
                     if ($fue_enviado) {
                         /*
-                         * La IA no se pudo consultar (o no contestó por este valor): queda lo que
-                         * pasaría hoy —crear uno nuevo— pero se le muestran al usuario los parecidos
-                         * de puntaje alto, para que decida él.
+                         * La IA no se pudo consultar: queda lo que pasaría hoy —crear uno nuevo—
+                         * pero se le muestran al usuario los parecidos de puntaje alto, para que
+                         * decida él. (Si la IA anduvo y solo se salteó este valor, ya se trató
+                         * arriba como dudoso.)
                          */
                         $altos = [];
 
