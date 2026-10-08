@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\Provider;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -56,6 +57,20 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     private $props_vaciadas = [];
 
     /**
+     * Decisiones del paso 3 sobre nombres parecidos (localidad), tal como vinieron del request.
+     * Entran por con_equivalencias() y no por el constructor (misión
+     * importacion-relaciones-parecidas, 8/10/2026).
+     *
+     * @var array
+     */
+    private $equivalencias_crudas = [];
+
+    /**
+     * @var \App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver|null
+     */
+    private $equivalencias = null;
+
+    /**
      * @param array       $columns
      * @param bool        $create_and_edit
      * @param int         $start_row
@@ -89,6 +104,22 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         $this->vaciar_valores_en_blanco = filter_var($vaciar_valores_en_blanco, FILTER_VALIDATE_BOOLEAN);
 
         $this->setProps();
+    }
+
+    /**
+     * Las decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Encadenable.
+     *
+     * 🔴 Setter y no parámetro del constructor, por la misma firma congelada que ClientImport
+     * (AdminSync la construye con cinco argumentos; ValoresEnBlancoClientesProveedoresTest lo fija).
+     *
+     * @param  array $equivalencias
+     * @return $this
+     */
+    public function con_equivalencias(array $equivalencias) {
+        $this->equivalencias_crudas = $equivalencias;
+        $this->equivalencias = null;
+
+        return $this;
     }
 
     /**
@@ -226,9 +257,33 @@ class ProviderImport implements ToCollection, WithMultipleSheets
          * de arriba y este bloque no necesita un else. Si se le agregara uno, se marcaria
          * dos veces la misma propiedad.
          */
-        if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
-            LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
-            $data['location_id'] = $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id');
+        $localidad = ImportHelper::getColumnValue($row, 'localidad', $this->columns);
+
+        if (!is_null($localidad)) {
+            $ct = $this->ct;
+
+            $camino_de_hoy = function ($valor) use ($ct) {
+                LocalImportHelper::saveLocation($valor, $ct);
+                return $ct->getModelBy('locations', 'name', $valor, true, 'id');
+            };
+
+            if ($localidad === 'Sin especificar') {
+                /* El camino de siempre lo ignora a propósito: no hay nada que resolver. */
+                $data['location_id'] = call_user_func($camino_de_hoy, $localidad);
+            } else {
+                /*
+                 * Decisión del usuario → equivalencia recordada → nombre exacto → el camino de
+                 * siempre (misión importacion-relaciones-parecidas). Sin provincia: contra todas las
+                 * localidades del comercio.
+                 */
+                if (is_null($this->equivalencias)) {
+                    $this->equivalencias = new EquivalenciasResolver($ct->userId(), $this->equivalencias_crudas, EquivalenciasResolver::TIPOS_PROVEEDORES);
+                }
+
+                $data['location_id'] = $this->equivalencias->resolver_con_camino_de_hoy('localidad', $localidad, 0, null, $camino_de_hoy, function ($nombre) use ($ct) {
+                    return LocalImportHelper::crearRelacionDeImportacion('localidad', $nombre, $ct);
+                });
+            }
         }
         // Log::info('data');
         // Log::info($data);

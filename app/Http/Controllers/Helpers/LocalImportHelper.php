@@ -399,6 +399,69 @@ class LocalImportHelper {
 	}
 
 	/**
+	 * Crea SIEMPRE una relación de la importación de clientes/proveedores (provincia, localidad,
+	 * vendedor o lista de precios) con ese nombre, y devuelve su id. Es la decisión "crear uno
+	 * nuevo" del paso 3 (misión importacion-relaciones-parecidas, 8/10/2026).
+	 *
+	 * 🔴 No pasa por createIfNotExist() a propósito: ese busca con un WHERE de MySQL, cuya
+	 * collation ignora mayúsculas y tildes, así que para "Juan Perez" encontraría "JUAN PEREZ" y no
+	 * crearía nada — justo lo contrario de lo que el usuario eligió. Quien llama ya buscó el nombre
+	 * EXACTO (comparación binaria) antes de llegar acá.
+	 *
+	 * Inserta los mismos campos que los save*() de arriba: `num` en vendedor y en localidad con
+	 * provincia, `provincia_id` en localidad.
+	 *
+	 * @param string $tipo provincia | localidad | vendedor | tipo_de_precio
+	 * @param string $nombre
+	 * @param \App\Http\Controllers\Controller $ct
+	 * @param int|null $provincia_id Solo para localidad.
+	 * @return int|null Id creado; null si el tipo no se conoce.
+	 */
+	static function crearRelacionDeImportacion($tipo, $nombre, $ct, $provincia_id = null) {
+		$user_id = $ct->userId();
+
+		if ($tipo === 'provincia') {
+			return DB::table('provincias')->insertGetId([
+				'name'    => $nombre,
+				'user_id' => $user_id,
+			]);
+		}
+
+		if ($tipo === 'localidad') {
+			if (!is_null($provincia_id)) {
+				return DB::table('locations')->insertGetId([
+					'num'          => $ct->num('locations'),
+					'name'         => $nombre,
+					'provincia_id' => $provincia_id,
+					'user_id'      => $user_id,
+				]);
+			}
+
+			return DB::table('locations')->insertGetId([
+				'name'    => $nombre,
+				'user_id' => $user_id,
+			]);
+		}
+
+		if ($tipo === 'vendedor') {
+			return DB::table('sellers')->insertGetId([
+				'num'     => $ct->num('sellers'),
+				'name'    => $nombre,
+				'user_id' => $user_id,
+			]);
+		}
+
+		if ($tipo === 'tipo_de_precio') {
+			return DB::table('price_types')->insertGetId([
+				'name'    => $nombre,
+				'user_id' => $user_id,
+			]);
+		}
+
+		return null;
+	}
+
+	/**
 	 * Resuelve el ID de condición frente al IVA tolerando mayúsculas/minúsculas y alias comunes.
 	 *
 	 * @param string|null $iva_condition_name Texto indicado en el Excel.
