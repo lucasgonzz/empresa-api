@@ -68,6 +68,10 @@ php tests/Import/fixtures/generar_filas_del_excel.php
 | `30_sin_encabezado_a1_multilinea.xlsx` | 12 | **Sin encabezado** (`start_row = 1`) y **A1 multilínea**; columnas propias: nombre, `codigo_de_proveedor`, costo, iva (el test las mapea así). Datos de la 1 a la 12 (`SE-01` a `SE-12`, costo 3000 + fila). Es el lote que arranca en la fila 1: con su offset en el byte 0 el BOM queda pegado a la comilla de A1 y `fgetcsv()` parte ese registro en dos. Lotes de 10: [1–10], [11–12]. Generado por `generar_celdas_multilinea.php`. Ver `CeldaConSaltoDeLineaTest`. |
 | `31_problemas_de_la_lista_de_la_demo.xlsx` | 6 | Cabecera común. Un caso de cada situación del mensaje de resultado: F2 limpia (`PD-01`), F3 con costo **y** precio `"consultar"` (2 `numero_invalido`, una sola fila), F4 sin ningún código (`sin_identificador`), F5 con código de barras `S/N` (`placeholder_descartado`), F6 que repite `PD-01` (`fila_sobrescrita` F2→F6, informativo) y F7 con `7790007` (duplicado en base: A7 y A8) y costo `"consultar"` (`ambiguo` + `numero_invalido`). Sobre el archivo entero: `conflicts_count = 6`, 1 fila no importada (F7) y 3 con datos para revisar (F3, F4, F5), tanto con "Crear y actualizar" como con "Solo actualizar" (donde las filas 2 a 6 no crean nada). Existe porque el aviso decía "3 filas que no se pudieron procesar" cuando las tres se habían importado (demo2, 4.3.6): el único tipo que seguro deja la fila afuera es `ambiguo`, y del resto no se puede afirmar que la fila se importó. Generado por `generar_problemas_de_la_demo.php`. Ver `MensajeDeResultadoTest`. |
 | `32_visible_en_tienda.xlsx` | 7 | **La columna "visible en la tienda" de una lista** (misión `catalogo-por-lista-tienda`, 5/10/2026). Cabecera común de 8 columnas **más dos**: `visible_mayorista` (la 9; los tests la mapean como `prop_visible_en_tienda_mayorista`) y `margen_mayorista` (la 10; `prop_%_mayorista`, solo en el test que la pide). Datos de la 2 a la 8: cuatro **existentes** del escenario sembrado — A1 con `"Si"` (el caso central: solo cambia la visibilidad), A2 con `"No"`, A12 con la celda **vacía** (no informado: no se toca) y A15 con `"SÍ"` (tilde y mayúscula) y margen 25 (cambian las dos cosas en la misma fila) — y tres **nuevos** (`PC-VIS-1` con `"sí"`, `PC-VIS-2` con `"no"`, `PC-VIS-3` vacía). Las filas existentes repiten los datos del escenario sembrado, así que lo único que puede cambiar son las listas. Generado por `generar_visible_en_tienda.php`. Ver `VisibleEnTiendaPorListaTest`. |
+| `33_relaciones_parecidas_articulos.xlsx` | 9 | **Nombres parecidos en las relaciones** (misión `importacion-relaciones-parecidas`, 8/10/2026). Cabecera común de 8 columnas **más cuatro**: `proveedor` (9), `categoria` (10), `sub_categoria` (11) y `marca` (12); los tests mapean 0-based por el endpoint del modal. Filas RP-01 a RP-09: `"ACME"`/`"Acme"`, `"Del norte"`/`"DEL NORTE"`, `"CAÑERÍA"`, `"Pinturería"`/`"Pintureria"`, `"Ferret. del Norte"`, la sub `"Martillo"`/`"Martillos"` y la marca `"Bosh"`/`"Bosch"`/`"BOSCH"`. `"Del norte"` está en las filas 2 y 9 y `"Pintureria"` en la 6 y la 10 **a propósito**: con lotes de 2 filas las decisiones cruzan lotes. Generado por `generar_relaciones_parecidas.php`. Ver `RelacionesParecidas/`. |
+| `34_relaciones_parecidas_reimportacion.xlsx` | 1 | La misma cabecera que el 33 y una fila (`RP-21`) con los valores de la fila 2: la segunda importación **sin decisiones**, por el import clásico, que tiene que aplicar la equivalencia recordada en la primera. Generado por `generar_relaciones_parecidas.php`. |
+| `35_relaciones_parecidas_clientes.xlsx` | 4 | Clientes: `nombre`, `provincia`, `localidad`, `vendedor`, `tipo_de_precio`, con `"Buenos Aires"`/`"BUENOS AIRES"`/`"Bs As"`, `"La Plata"`/`"LA PLATA"`, `"Juan Perez"`/`"JUAN PEREZ"`/`"Juan Pérez"` y una fila sin provincia. Generado por `generar_relaciones_parecidas.php`. |
+| `36_relaciones_parecidas_proveedores.xlsx` | 3 | Proveedores: `nombre`, `localidad` (`"Rosario"`, `"ROSARIO"`, `"Funes"`). Generado por `generar_relaciones_parecidas.php`. |
 
 ⚠️ **Hay cuatro fixtures que se importan con varios lotes, y los cuatro dependen de un `config()`.** `06_incidente_servian.xlsx` (`IncidenteServianTest`) y `28_`, `29_` y `30_` (`CeldaConSaltoDeLineaTest`, misión `importacion-celda-multilinea`, 4/10/2026) bajan `ARTICLE_EXCEL_CHUNK_SIZE` a 10 en el `setUp()`. En el 06 es lo que reproduce el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes); en el 28, el 29 y el 30, lo que hace que haya offsets de lote que se puedan desalinear con una celda multilínea (el CSV tiene un **registro** por fila del Excel, pero una celda con salto de línea ocupa varias **líneas** físicas). Si alguien cambia o quita ese `config()`, los tests dejan de probar lo que dicen probar aunque sigan pasando en verde. Los tres fixtures multilínea se regeneran con:
 
@@ -85,6 +89,12 @@ El `32_` (misión `catalogo-por-lista-tienda`, 5/10/2026) también tiene su prop
 
 ```
 php tests/Import/fixtures/generar_visible_en_tienda.php
+```
+
+Los `33_` a `36_` (misión `importacion-relaciones-parecidas`, 8/10/2026) tienen su propio generador, con PhpSpreadsheet y tipos de celda explícitos: son los únicos con columnas de proveedor, categoría, subcategoría y marca (y los únicos de clientes y proveedores de esta carpeta).
+
+```
+php tests/Import/fixtures/generar_relaciones_parecidas.php
 ```
 
 `MensajeDeResultadoTest.php` captura el aviso de resultado con `Notification::fake()` (la `GlobalNotification` con `notification_modal = 'article_import_result'` que `FinalizeArticleImport` le manda al tenant) y asierta el `message_text` exacto: que cuente **filas** y no problemas, que separe las que no se importaron (`ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA`) de las que tienen datos para revisar, y que de estas **no** diga que se importaron: con "Solo actualizar" sin match la fila no crea nada y eso no queda en `import_conflicts`. `conflicts_count` no cambia de significado: son problemas para revisar (todos los tipos menos `ImportConflict::TIPOS_QUE_NO_CUENTAN`).
@@ -532,3 +542,28 @@ todavía, se asume restaurado desde un dump. Si la suite da ~85/90 rojos con
 `"No existe el usuario de prueba id=900"` o un `SQLSTATE[42S22]: Column not found`, correr
 `php artisan migrate --env=testing --force` y sembrar el tenant a mano antes de sospechar de un
 bug real.
+
+## Nombres parecidos en las relaciones (8/10/2026)
+
+`RelacionesParecidas/` cubre la misión `importacion-relaciones-parecidas`: antes de crear un proveedor, una
+categoría, una subcategoría, una marca (o una provincia, localidad, vendedor o lista de precios en clientes y
+proveedores), el paso 3 le pregunta al usuario si el valor del Excel es en realidad uno que ya existe escrito
+distinto. Hasta esta misión la resolución de relaciones de la importación no tenía un solo test.
+
+- `DetectorTest` (sin base): la clave fuerte ("DEL NORTE" = "Del Nórte"), los candidatos parecidos, el agrupado
+  entre valores nuevos y su canónico, el tope de 2000 valores por columna. 🔴 `"Caño 1/2"` y `"Caño 3/4"` **son**
+  candidatos a propósito: los separa una medida, y eso lo juzga la IA, no una distancia de caracteres.
+- `ChequeoConIaTest`: la IA falseada por **callback** (contesta según lo que se le mandó), respuesta válida,
+  "ninguno", 500 y JSON roto (fallback: `ia_consultada: false` y solo los parecidos de puntaje >= 0,85, con
+  "crear" marcado) y **cero requests** cuando no hay candidatos.
+- `RecomendacionConRelacionesTest`: `get-recomendacion` de punta a punta con y sin `chequear_relaciones`, en los
+  tres modelos. Sin la bandera el `resultado` tiene exactamente las cuatro claves de siempre.
+- `ImportacionArticulosTest` y `ImportacionClientesProveedoresTest`: `usar` / `crear` / `unir`, el saneado (id
+  ajeno, tipo de otra importación, sub o localidad de otro padre), las equivalencias recordadas (`crear` las
+  borra; la segunda importación sin decisiones las aplica, también por el import clásico) y varios lotes.
+
+🔴 **`test_sin_equivalencias_no_duplica_por_mayusculas` cambia un comportamiento a propósito.** Hasta esta
+misión, con el proveedor "Acme" cargado y "ACME" en el Excel, `ArticleImport::set_providers()` creaba un
+proveedor "ACME" duplicado (el `whereIn` de MySQL lo encontraba, el `diff()` de PHP no), y "CAÑERÍA" con
+"cañería" cargada creaba otra categoría (`strtolower` no baja la Ñ). Si ese test se pone rojo, volvió el
+duplicado.
