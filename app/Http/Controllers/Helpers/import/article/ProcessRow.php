@@ -482,10 +482,13 @@ class ProcessRow {
          * Clave OPCIONAL: AdminSync y el import clásico no la mandan, y sin ella todo resuelve como
          * antes (más las equivalencias recordadas y el arreglo de mayúsculas). El saneado —ids
          * ajenos o borrados, tipos de otra importación— lo hace el resolver.
+         *
+         * Llega la ruta del archivo de decisiones (o el array, en un job viejo) y se lee UNA vez,
+         * acá: un ProcessRow por lote. Sin archivo, el lote sigue sin decisiones (y lo loguea).
          */
         $this->equivalencias = new EquivalenciasResolver(
             $this->user->id,
-            isset($data['equivalencias']) ? $data['equivalencias'] : [],
+            EquivalenciasResolver::decisiones_del_lote(isset($data['equivalencias']) ? $data['equivalencias'] : []),
             EquivalenciasResolver::TIPOS_ARTICULOS
         );
 

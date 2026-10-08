@@ -141,14 +141,128 @@ class EquivalenciasResolver
     }
 
     /* =====================================================================
+     * El archivo de decisiones de una importación de artículos
+     * ================================================================== */
+
+    /**
+     * Dónde se guardan las decisiones saneadas de una importación de artículos.
+     *
+     * 🔴 Va junto al volcado de la hoja (<excel>.hoja<N>.csv) y con el mismo prefijo `<excel>.hoja`
+     * A PROPÓSITO: así tiene la misma vida útil y la borra la misma limpieza
+     * (FinalizeArticleImport::borrar_archivos_derivados(), solo al terminar bien; si la importación
+     * falla queda, para diagnosticar). Si se renombra, hay que tocar esa limpieza también. El uuid
+     * de la importación va en el nombre para que dos importaciones del mismo Excel no compartan
+     * archivo.
+     *
+     * @param  string $archivo_excel  ruta completa del Excel (storage_path('app/' . excel_url))
+     * @param  string $import_uuid
+     * @return string
+     */
+    public static function ruta_del_archivo_de_decisiones($archivo_excel, $import_uuid)
+    {
+        $uuid = preg_replace('/[^A-Za-z0-9\-]/', '', (string) $import_uuid);
+
+        if ($uuid === '') {
+            $uuid = uniqid();
+        }
+
+        return (string) $archivo_excel . '.hoja-equivalencias-' . $uuid . '.json';
+    }
+
+    /**
+     * Escribe las decisiones (ya saneadas) en $ruta: a un temporal y después se renombra, para que
+     * un lote nunca lea un archivo a medio escribir.
+     *
+     * @param  string $ruta
+     * @param  array  $decisiones
+     * @return bool   false si no se pudo (queda en el log; el que llama decide qué hacer)
+     */
+    public static function guardar_archivo_de_decisiones($ruta, array $decisiones)
+    {
+        $json = json_encode(array_values($decisiones), JSON_UNESCAPED_UNICODE);
+
+        if ($json === false) {
+            Log::warning('EquivalenciasResolver: no se pudieron pasar a JSON las decisiones de la importación', [
+                'archivo' => $ruta,
+                'error'   => json_last_error_msg(),
+            ]);
+
+            return false;
+        }
+
+        $temporal = $ruta . '.tmp' . getmypid();
+
+        if (@file_put_contents($temporal, $json) === false || !@rename($temporal, $ruta)) {
+            @unlink($temporal);
+
+            Log::warning('EquivalenciasResolver: no se pudo escribir el archivo de decisiones de la importación', [
+                'archivo' => $ruta,
+            ]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Las decisiones que recibe un lote (ProcessArticleChunk → ArticleImport → ProcessRow), que
+     * pueden venir de dos formas:
+     *   - la RUTA del archivo de decisiones (string): lo normal desde la tanda 4. Se lee una vez por
+     *     lote. Si el archivo no está o no se puede leer, el lote sigue SIN decisiones (resuelve por
+     *     el camino de siempre) y se loguea: nunca rompe la importación.
+     *   - el array de decisiones: un job serializado antes de este cambio, o el respaldo de
+     *     InitExcelImport cuando no pudo escribir el archivo.
+     *
+     * Ojo: un string acá es SIEMPRE una ruta, nunca el JSON de las decisiones (eso es acotar(),
+     * que sirve al request). Antes de la tanda 4 el job convertía cualquier string en [], así que
+     * no hay jobs viejos con un JSON adentro.
+     *
+     * @param  mixed $equivalencias
+     * @return array
+     */
+    public static function decisiones_del_lote($equivalencias)
+    {
+        if (is_array($equivalencias)) {
+            return $equivalencias;
+        }
+
+        if (!is_string($equivalencias) || $equivalencias === '') {
+            return [];
+        }
+
+        $contenido = is_file($equivalencias) ? @file_get_contents($equivalencias) : false;
+
+        if ($contenido === false) {
+            Log::warning('EquivalenciasResolver: no está el archivo de decisiones de la importación; el lote sigue sin decisiones', [
+                'archivo' => $equivalencias,
+            ]);
+
+            return [];
+        }
+
+        $decisiones = json_decode($contenido, true);
+
+        if (!is_array($decisiones)) {
+            Log::warning('EquivalenciasResolver: el archivo de decisiones de la importación no se puede leer; el lote sigue sin decisiones', [
+                'archivo' => $equivalencias,
+            ]);
+
+            return [];
+        }
+
+        return $decisiones;
+    }
+
+    /* =====================================================================
      * Saneado
      * ================================================================== */
 
     /**
      * Las decisiones tal como vinieron del request, normalizadas a una lista de arrays y con TOPE:
-     * más de TOPE_DECISIONES entradas se cortan (con un warning). Viajan serializadas en cada lote
-     * de la cadena de importación, y el paso 3 nunca muestra tantas: un request con decenas de
-     * miles es un error o un abuso, no un usuario.
+     * más de TOPE_DECISIONES entradas se cortan (con un warning). Cada lote de la cadena de
+     * importación las relee (del archivo de decisiones) y las vuelve a validar, y el paso 3 nunca
+     * muestra tantas: un request con decenas de miles es un error o un abuso, no un usuario.
      *
      * @param  mixed $equivalencias  array, o el mismo array como JSON
      * @return array

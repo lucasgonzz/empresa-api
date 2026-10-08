@@ -26,7 +26,11 @@ class InitExcelImport
     protected $chunk_offsets = [];
 
     /**
-     * Decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Ver importar().
+     * Decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Ver importar() y
+     * guardar_equivalencias_en_archivo(): saneadas son un array; a los lotes les llega la ruta del
+     * archivo donde se guardaron (o el array, si no se pudo escribir).
+     *
+     * @var array|string
      */
     protected $equivalencias = [];
 
@@ -144,10 +148,11 @@ class InitExcelImport
          * nombres parecidos. Clave OPCIONAL (ni el import clásico ni AdminSync la mandan).
          *
          * Se acotan (tope de EquivalenciasResolver::TOPE_DECISIONES) y se sanean UNA vez acá, antes
-         * de armar la cadena: lo que viaja serializado en cada lote es solo lo válido (tipos de
-         * artículos, ids vivos del comercio, unir con destino). ProcessRow las vuelve a validar
-         * contra la base en cada lote por si algún modelo se borró en el medio, pero ya sobre una
-         * lista limpia y acotada.
+         * de armar la cadena: solo queda lo válido (tipos de artículos, ids vivos del comercio,
+         * unir con destino). Se guardan una vez en un archivo y cada lote recibe solo la ruta (ver
+         * guardar_equivalencias_en_archivo()). ProcessRow las vuelve a validar contra la base en
+         * cada lote por si algún modelo se borró en el medio, pero ya sobre una lista limpia y
+         * acotada.
          */
         $this->equivalencias = (isset($data['equivalencias']) && !is_null($this->user))
             ? EquivalenciasResolver::sanear($this->user->id, $data['equivalencias'], EquivalenciasResolver::TIPOS_ARTICULOS)
@@ -218,6 +223,7 @@ class InitExcelImport
         $this->chunk_offsets = $this->build_csv_chunk_offsets();
         $this->crear_import_status();
         $this->crear_import_history();
+        $this->guardar_equivalencias_en_archivo();
         $this->armar_jobs_de_chunks();
 
         /*
@@ -694,6 +700,35 @@ class InitExcelImport
             'provider_codes' => count($claves['provider_codes']),
             'names'          => count($claves['names']),
         ]);
+    }
+
+    /**
+     * Las decisiones saneadas se escriben UNA vez en un archivo junto al volcado de la hoja (misma
+     * vida útil y misma limpieza: ver EquivalenciasResolver::ruta_del_archivo_de_decisiones()) y a
+     * cada lote le llega solo la ruta. Antes viajaban copiadas en cada ProcessArticleChunk: con
+     * 3000 decisiones y lotes de 50 filas, un Excel de 5000 filas encolaba cien copias.
+     *
+     * Si no se puede escribir, los lotes siguen llevando el array: pesa más que las decisiones del
+     * usuario se apliquen que el tamaño de la cola.
+     *
+     * @return void
+     */
+    protected function guardar_equivalencias_en_archivo()
+    {
+        if (!is_array($this->equivalencias) || count($this->equivalencias) === 0) {
+            return;
+        }
+
+        $ruta = EquivalenciasResolver::ruta_del_archivo_de_decisiones($this->archivo_excel, $this->import_uuid);
+
+        if (EquivalenciasResolver::guardar_archivo_de_decisiones($ruta, $this->equivalencias)) {
+            Log::info('InitExcelImport: decisiones sobre nombres parecidos guardadas para los lotes', [
+                'archivo'    => $ruta,
+                'decisiones' => count($this->equivalencias),
+            ]);
+
+            $this->equivalencias = $ruta;
+        }
     }
 
     function armar_jobs_de_chunks()

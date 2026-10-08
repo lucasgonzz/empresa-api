@@ -89,7 +89,8 @@ class ArticleImport implements ToCollection
         /*
          * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
          * nombres parecidos (proveedor, categoría, subcategoría, marca). Va último y con default
-         * por la misma razón que los de arriba: el import clásico y AdminSync no lo mandan.
+         * por la misma razón que los de arriba: el import clásico y AdminSync no lo mandan. Es la
+         * ruta del archivo de decisiones o el array (ver ProcessArticleChunk::$equivalencias).
          */
         $equivalencias = []
     ) {
@@ -179,7 +180,7 @@ class ArticleImport implements ToCollection
             'filas_repetidas_del_archivo'                           => $this->filas_repetidas_del_archivo,
             'precios_incluyen_iva'                                  => $this->precios_incluyen_iva,
             'desempatar_por_nombre'                                 => $this->desempatar_por_nombre,
-            'equivalencias'                                         => is_array($equivalencias) ? $equivalencias : [],
+            'equivalencias'                                         => (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [],
         ]);
 
         $this->nombres_proveedores = [];
