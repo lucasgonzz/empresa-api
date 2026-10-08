@@ -3,6 +3,7 @@
 namespace Tests\Import;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\CreditAccount;
 use App\Models\ImportHistory;
 use App\Models\Provider;
@@ -228,5 +229,71 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
         );
 
         $this->assert_tiene_sus_dos_cuentas($sin_cuentas);
+    }
+
+    /**
+     * Por admin-sync (el motor de /implementar), SIN sesión: las cuentas salen con el user_id del
+     * comercio de la importación, no con el de UserHelper::userId().
+     *
+     * Es el caso que el `user_id` explícito existe para cubrir. Con `model=article`, AdminSync no
+     * loguea a nadie (a diferencia de clientes y proveedores) y en producción el lote corre en un
+     * job, también sin sesión: ahí UserHelper::userId() cae a `config('app.USER_ID')`, que en una
+     * base compartida es OTRO comercio. En testing esa clave es 500 y el tenant es 900, así que una
+     * cuenta creada con el user_id de la sesión se ve.
+     *
+     * @return void
+     */
+    public function test_por_admin_sync_sin_sesion_las_cuentas_salen_con_el_user_id_del_comercio()
+    {
+        $nombre_nuevo = 'zz Proveedor admin-sync ' . uniqid();
+
+        $ruta = $this->xlsx([
+            $this->fila('PC-PROV-ART-4', 'Lijadora de la lista', $nombre_nuevo),
+        ]);
+
+        // El admin manda el Excel ya guardado por /analyze, relativo a storage/app.
+        $relativa = 'imported_files/zz_test_' . uniqid() . '.xlsx';
+        copy($ruta, storage_path('app/' . $relativa));
+        $this->temporales[] = storage_path('app/' . $relativa);
+
+        config([
+            'services.admin_api.require_api_key' => true,
+            'services.admin_api.api_key'         => 'clave-de-prueba',
+        ]);
+
+        // Sin sesión: ImportTestCase deja logueado al tenant, y el admin no viene logueado.
+        $this->app['auth']->forgetGuards();
+
+        $this->assertNotEquals(
+            $this->tenant->id,
+            UserHelper::userId(),
+            'Premisa: sin sesión, UserHelper::userId() tiene que ser OTRO comercio para que el test distinga.'
+        );
+
+        $this->postJson('api/admin-sync/ai-excel-import/import', [
+            'user_id'                                           => $this->tenant->id,
+            'model'                                             => 'article',
+            'excel_path'                                        => $relativa,
+            'columns'                                           => [
+                'codigo_de_proveedor' => 2,
+                'nombre'              => 3,
+                'costo'               => 4,
+                'precio'              => 5,
+                'stock_actual'        => 6,
+                'iva'                 => 7,
+                'proveedor'           => 8,
+            ],
+            'create_and_edit'                                   => true,
+            'start_row'                                         => 2,
+            'finish_row'                                        => 99999,
+            'provider_id'                                       => null,
+            'permitir_provider_code_repetido_en_multi_providers' => true,
+        ], ['X-Admin-Api-Key' => 'clave-de-prueba'])->assertStatus(200);
+
+        $nuevo = Provider::where('user_id', $this->tenant->id)->where('name', $nombre_nuevo)->first();
+
+        $this->assertNotNull($nuevo, 'La importación por admin-sync no creó el proveedor de la columna "proveedor".');
+
+        $this->assert_tiene_sus_dos_cuentas($nuevo);
     }
 }
