@@ -15,7 +15,17 @@ use Illuminate\Support\Facades\DB;
  *  - Borrar una venta (`DELETE api/sale/{id}` → `DeleteSaleHelper`) saca su movimiento de SU cuenta
  *    (la de la moneda de la venta) y recalcula esa cuenta; la de la otra moneda no se toca.
  *  - Editar una venta (`PUT api/sale/{id}`) recrea su movimiento en la cuenta de la moneda de la
- *    venta con el total nuevo. `update()` nunca reasigna `moneda_id`.
+ *    venta con el total nuevo.
+ *  - 🔴 CAMBIO DE REGLA DEL 8/10/2026 (misión edicion-completa-ventas-presupuestos, pedido de Lucas:
+ *    "que se pueda cambiar la moneda también del presupuesto o la venta"). Hasta ese día este archivo
+ *    fijaba que `update()` NUNCA reasignaba `moneda_id` (`un_put_con_otra_moneda_no_cambia_la_moneda_de_la_venta`).
+ *    Desde ahí, un PUT CON `moneda_id` cambia la moneda (y la cotización, si es válida) y el débito pasa
+ *    a la cuenta de la otra moneda; un PUT SIN `moneda_id` (la SPA vieja) sigue sin tocar ni la moneda
+ *    ni la cotización. No es una aserción ajustada para que pase: la regla de negocio cambió por pedido
+ *    explícito. El test se reescribió como
+ *    `un_put_con_otra_moneda_cambia_la_moneda_y_pasa_el_debito_a_la_otra_cuenta`. La regla completa
+ *    está en `CotizacionDeVentaHelper::resolver_moneda_y_cotizacion_de_update()` y sus casos, en
+ *    tests/Feature/EdicionCompletaVenta.
  *  - El recálculo (`GET api/check-saldos/{credit_account_id}` → `CurrentAcountHelper::
  *    check_saldos_y_pagos()`) es idempotente sobre una cuenta consistente y repara una cadena
  *    corrupta: los saldos recalculados coinciden con los guardados
@@ -313,13 +323,19 @@ class CuentaCorriente_6_Venta_eliminar_editar_y_recalculo_Test extends CuentaCor
     }
 
     /**
-     * Regla: `SaleController::update()` NUNCA reasigna `moneda_id` (ver también el comentario de
-     * `LimiteCreditoHelper::validar_venta_actualizada()`): un PUT que manda `moneda_id = 1` sobre una
-     * venta en dólares no la pasa a pesos; el movimiento sigue en la cuenta en dólares.
+     * Regla (reescrita el 8/10/2026, ver el bloque de la clase): un PUT SIN `moneda_id` (la SPA vieja,
+     * que manda `valor_dolar` siempre) no cambia ni la moneda ni la cotización de una venta en dólares;
+     * un PUT CON `moneda_id = 1` y una cotización de 1500 la pasa a pesos: la venta queda en moneda 1
+     * con `valor_dolar` 1500, su débito sale de la cuenta en dólares y entra en la de pesos con el total
+     * en pesos que manda la SPA (100 USD × 1500 = 150000), y las dos cuentas y el cliente quedan con
+     * los saldos correctos.
+     *
+     * Hasta el 8/10/2026 este test se llamaba `un_put_con_otra_moneda_no_cambia_la_moneda_de_la_venta`
+     * y fijaba lo contrario (`update()` nunca reasignaba `moneda_id`).
      *
      * @test
      */
-    public function un_put_con_otra_moneda_no_cambia_la_moneda_de_la_venta()
+    public function un_put_con_otra_moneda_cambia_la_moneda_y_pasa_el_debito_a_la_otra_cuenta()
     {
         $cliente = $this->cliente_nuevo();
         $pesos = $this->cuenta($cliente, self::PESOS);
@@ -327,14 +343,34 @@ class CuentaCorriente_6_Venta_eliminar_editar_y_recalculo_Test extends CuentaCor
 
         $venta = $this->vender($cliente, self::DOLARES, 100);
 
-        $this->editar_venta($venta, 100, ['moneda_id' => self::PESOS, 'valor_dolar' => 1500])->assertStatus(200);
+        // SPA vieja: sin `moneda_id`, con otra cotización. No cambia nada.
+        $this->editar_venta($venta, 100, ['valor_dolar' => 1500])->assertStatus(200);
 
         $venta = Sale::find($venta->id);
-        $this->assertEquals(self::DOLARES, (int) $venta->moneda_id);
-        $this->assertMonto(self::DOLAR, $venta->valor_dolar, 'La edición pisó el valor del dólar con el que se hizo la venta.');
+        $this->assertEquals(self::DOLARES, (int) $venta->moneda_id, 'Sin moneda_id en el PUT la moneda no puede cambiar.');
+        $this->assertMonto(self::DOLAR, $venta->valor_dolar, 'Sin moneda_id en el PUT la cotización guardada no se puede pisar.');
         $this->assertNotNull($this->debito_de($venta, $dolares));
-        $this->assertNull($this->debito_de($venta, $pesos));
-        $this->assertMonto(0, $this->saldo_de($pesos));
+
+        // SPA nueva: con `moneda_id` = pesos y la cotización nueva. La venta pasa a pesos.
+        $this->editar_venta($venta, 150000, ['moneda_id' => self::PESOS, 'valor_dolar' => 1500])->assertStatus(200);
+
+        $venta = Sale::find($venta->id);
+        $this->assertEquals(self::PESOS, (int) $venta->moneda_id, 'Con moneda_id en el PUT la venta tiene que pasar a pesos.');
+        $this->assertMonto(1500, $venta->valor_dolar, 'Con moneda_id en el PUT la cotización válida se guarda.');
+        $this->assertMonto(150000, $venta->total);
+
+        $this->assertNull($this->debito_de($venta, $dolares), 'El débito tiene que salir de la cuenta en dólares.');
+        $debito = $this->debito_de($venta, $pesos);
+        $this->assertNotNull($debito, 'El débito tiene que entrar en la cuenta en pesos.');
+        $this->assertMonto(150000, $debito->debe);
+
+        $this->assertMonto(150000, $this->saldo_de($pesos));
+        $this->assertMonto(0, $this->saldo_de($dolares));
+        $this->assertMonto(150000, $this->saldos_del_cliente($cliente)['pesos']);
+        $this->assertMonto(0, $this->saldos_del_cliente($cliente)['dolares']);
+
+        $this->assertCuentaConsistente($pesos);
+        $this->assertCuentaConsistente($dolares);
     }
 
     /**
