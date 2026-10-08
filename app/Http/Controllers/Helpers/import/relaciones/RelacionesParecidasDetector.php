@@ -1210,13 +1210,34 @@ class RelacionesParecidasDetector
             $explicacion = $seguro ? self::EXPLICACION_PARECIDO : sprintf(self::EXPLICACION_DUDOSA, $destino);
         }
 
+        $sugerida = $seguro ? 0 : count($opciones) - 1;
+
+        /*
+         * 🔴 Seguro, y B tiene preseleccionado "usar X": la sugerida de A es "usar X", no "unir con
+         * B" (que sigue disponible). Es adonde va a terminar A de todos modos, y así sus hijos se
+         * revisan contra las subcategorías de X (`padre_ref` "id:X"). Con "unir con B" marcado, los
+         * hijos se revisaban como de un padre nuevo ("nuevo:B") y el worker igual los metía en X,
+         * sin que nadie los hubiera comparado con lo que X ya tiene.
+         */
+        if ($seguro && isset($resueltos[$destino])) {
+            $de_b = $resueltos[$destino]['opciones'][$resueltos[$destino]['sugerida']];
+
+            if ($de_b['accion'] === 'usar') {
+                foreach ($opciones as $indice => $opcion) {
+                    if ($opcion['accion'] === 'usar' && (int) $opcion['id'] === (int) $de_b['id']) {
+                        $sugerida = $indice;
+                    }
+                }
+            }
+        }
+
         return self::item(
             $base,
             $info,
             $seguro ? self::MOTIVO_PARECIDO : self::MOTIVO_POSIBLE,
             $explicacion,
             $opciones,
-            $seguro ? 0 : count($opciones) - 1
+            $sugerida
         );
     }
 
