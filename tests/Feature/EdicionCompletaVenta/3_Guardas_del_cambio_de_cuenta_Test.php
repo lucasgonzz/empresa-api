@@ -288,6 +288,47 @@ class Guardas_del_cambio_de_cuenta_Test extends EdicionCompletaVentaTestCase
     }
 
     /**
+     * Punto 7 de la revisión (8/10/2026). Venta con débito en la cuenta corriente de A a la que el
+     * mismo PUT le cambia el cliente Y la deja "para checkear" (`to_check`) o chequeada (`checked`):
+     * 422 `para_checkear` y nada cambió. Con esos flags `update()` no entra ni a
+     * `updateCurrentAcountsAndCommissions()` ni a `sacar_de_la_cuenta_corriente()`, así que el débito
+     * quedaba en la cuenta de A con la venta ya a nombre de B.
+     *
+     * Pasarla a "para checkear" SIN cambiar el cliente sigue como antes (200): es comportamiento
+     * preexistente y no es de esta guarda.
+     *
+     * @test
+     */
+    public function cambiar_el_cliente_y_pasarla_a_para_checkear_en_el_mismo_put_da_422()
+    {
+        $cliente_a = $this->cliente_nuevo('zz Checkear A');
+        $cliente_b = $this->cliente_nuevo('zz Checkear B');
+
+        $venta = $this->vender($cliente_a, self::PESOS, 80000);
+
+        $this->assertNotNull($this->debito_de($venta, $this->cuenta($cliente_a, self::PESOS)), 'Precondición: la venta tiene débito en la cuenta de A.');
+
+        $antes = $this->foto_cruda($venta, [$cliente_a, $cliente_b]);
+
+        foreach (['to_check', 'checked'] as $flag) {
+
+            $response = $this->put_venta($venta, $this->payload_de_edicion($venta, [
+                'client_id' => $cliente_b->id,
+                $flag       => 1,
+            ]));
+
+            $this->assertEquals(422, $response->getStatusCode(), 'Cambiar el cliente con '.$flag.' = 1 tenía que dar 422. Cuerpo: '.substr($response->getContent(), 0, 500));
+            $this->assertTrue((bool) $response->json('cambio_de_cuenta_rechazado'));
+            $this->assertEquals('para_checkear', $response->json('motivo'));
+            $this->assertNotEmpty($response->json('message'));
+            $this->assertEquals($antes, $this->foto_cruda($venta, [$cliente_a, $cliente_b]), 'El 422 con '.$flag.' escribió algo.');
+        }
+
+        // Sin cambiar el cliente, pasarla a "para checkear" no lo frena esta guarda.
+        $this->editar_ok($venta, $this->payload_de_edicion($venta, ['to_check' => 1]));
+    }
+
+    /**
      * Revisión independiente (8/10/2026). Venta con un COMBO + cambio de moneda: 422 `combos` y nada
      * cambió, porque el costo congelado del combo quedaría en la moneda vieja. El mismo PUT sin cambiar
      * la moneda da 200; y cambiar la moneda SACANDO el combo en el mismo PUT también (un combo que no

@@ -59,6 +59,11 @@ use Illuminate\Support\Facades\Log;
  *      combos en el mismo PUT que cambia la moneda sí se deja. Esta guarda no depende de la cuenta
  *      corriente: vale también para una venta de contado.
  *
+ *   7. El PUT le CAMBIA EL CLIENTE a una venta que tiene débito en la cuenta corriente y en la misma
+ *      edición la deja "Para checkear" (`to_check`) o chequeada (`checked`) → 422 (punto 7 de la
+ *      revisión, 8/10/2026). Con esos flags `update()` no toca la cuenta corriente y el débito quedaba
+ *      en la cuenta del cliente viejo con la venta a nombre del nuevo.
+ *
  *  Todos los 422 tienen la misma forma: `message`, `cambio_de_cuenta_rechazado` = true y `motivo`.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -181,8 +186,8 @@ class CambioDeCuentaDeVentaHelper
      * Va ANTES de la transacción de `SaleController::update()`, junto con los otros 4xx tempranos.
      *
      * Cuerpo del 422: `message` (para mostrar), `cambio_de_cuenta_rechazado` = true y `motivo`
-     * (`cliente_inexistente`, `cliente_ajeno`, `combos`, `nota_de_credito`, `plan_de_pago` o
-     * `consolidada`).
+     * (`cliente_inexistente`, `cliente_ajeno`, `para_checkear`, `combos`, `nota_de_credito`,
+     * `plan_de_pago` o `consolidada`).
      *
      * @param  \Illuminate\Http\Request  $request
      * @param  \App\Models\Sale  $sale  La venta como está guardada.
@@ -207,6 +212,31 @@ class CambioDeCuentaDeVentaHelper
 
                 return self::rechazo('cliente_ajeno', 'El cliente elegido no es de este comercio.');
             }
+        }
+
+        /*
+            Cambio de cliente + "Para checkear" en el mismo PUT (guarda 7 del bloque de la clase). Con
+            `to_check` o `checked` en 1, `SaleController::update()` no llama ni a
+            updateCurrentAcountsAndCommissions() ni a sacar_de_la_cuenta_corriente(): el débito que
+            la venta YA tiene se quedaría en la cuenta del cliente viejo, con la venta a nombre del
+            nuevo. Solo frena si hay débito (una venta que nunca entró a la cuenta corriente no deja
+            nada colgado) y solo con cambio de cliente: pasarla a "Para checkear" sin cambiarlo es el
+            comportamiento de siempre y no se toca acá.
+
+            🔴 El mensaje NO ofrece hacerlo "al revés" (primero "Para checkear", después el cliente):
+            en ese segundo PUT la venta sigue para checkear, el débito quedaría colgado igual, y esta
+            misma guarda lo frena.
+        */
+        if (
+            self::cambia_el_cliente($request, $sale)
+            && ($request->to_check || $request->checked)
+            && self::tiene_debito_en_la_cuenta_corriente($sale)
+        ) {
+
+            return self::rechazo(
+                'para_checkear',
+                'La venta está en la cuenta corriente de su cliente y en esta misma edición se le cambia el cliente y se la pasa a "Para checkear": el movimiento quedaría en la cuenta del cliente anterior. Primero guardá el cambio de cliente sin pasarla a "Para checkear", y después, en otra edición, pasala a "Para checkear".'
+            );
         }
 
         /*
@@ -280,6 +310,21 @@ class CambioDeCuentaDeVentaHelper
         }
 
         return null;
+    }
+
+    /**
+     * ¿La venta tiene hoy su débito en alguna cuenta corriente? Mismo criterio con el que
+     * `SaleHelper::deleteCurrentAcountFromSale()` lo encuentra: la fila con su `sale_id` y `haber`
+     * null.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return bool
+     */
+    static function tiene_debito_en_la_cuenta_corriente($sale)
+    {
+        return CurrentAcount::where('sale_id', $sale->id)
+                            ->whereNull('haber')
+                            ->exists();
     }
 
     /**
