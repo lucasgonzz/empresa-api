@@ -145,28 +145,69 @@ class EquivalenciasResolver
      * ================================================================== */
 
     /**
-     * Dónde se guardan las decisiones saneadas de una importación de artículos.
+     * Dónde se guardan las decisiones saneadas de una importación de artículos:
+     * `<excel>.equivalencias-<id del ImportHistory>.json`, junto al Excel.
      *
-     * 🔴 Va junto al volcado de la hoja (<excel>.hoja<N>.csv) y con el mismo prefijo `<excel>.hoja`
-     * A PROPÓSITO: así tiene la misma vida útil y la borra la misma limpieza
-     * (FinalizeArticleImport::borrar_archivos_derivados(), solo al terminar bien; si la importación
-     * falla queda, para diagnosticar). Si se renombra, hay que tocar esa limpieza también. El uuid
-     * de la importación va en el nombre para que dos importaciones del mismo Excel no compartan
-     * archivo.
+     * 🔴 Es de UNA importación y lo borra SOLO ella (borrar_archivo_de_decisiones(), desde
+     * FinalizeArticleImport al terminar y desde ImportFailureHandler si falla). No puede llevar el
+     * prefijo `<excel>.hoja`: la misma subida se puede importar dos veces (doble envío, o reabrir la
+     * corrida guardada) con el mismo excel_url, y el `<excel>.hoja*` del cierre de la primera le
+     * borraba el archivo a la segunda, cuyos últimos lotes perdían sus `crear` y `unir`.
      *
-     * @param  string $archivo_excel  ruta completa del Excel (storage_path('app/' . excel_url))
-     * @param  string $import_uuid
+     * Va el id del ImportHistory y no el uuid de la importación porque es lo que tienen a mano los
+     * dos que lo borran (el uuid no se guarda en ningún lado), y es igual de único.
+     *
+     * @param  string $archivo_excel      ruta completa del Excel (storage_path('app/' . excel_url))
+     * @param  int    $import_history_id
      * @return string
      */
-    public static function ruta_del_archivo_de_decisiones($archivo_excel, $import_uuid)
+    public static function ruta_del_archivo_de_decisiones($archivo_excel, $import_history_id)
     {
-        $uuid = preg_replace('/[^A-Za-z0-9\-]/', '', (string) $import_uuid);
+        return (string) $archivo_excel . '.equivalencias-' . (int) $import_history_id . '.json';
+    }
 
-        if ($uuid === '') {
-            $uuid = uniqid();
+    /**
+     * Borra el archivo de decisiones de UNA importación (el suyo y ningún otro). Nunca tira: un
+     * archivo que no se pudo borrar queda en el log, no frena el cierre.
+     *
+     * @param  string $excel_url          ImportHistory::excel_url (relativa a storage/app)
+     * @param  int    $import_history_id
+     * @return bool   true si había archivo y se borró
+     */
+    public static function borrar_archivo_de_decisiones($excel_url, $import_history_id)
+    {
+        try {
+            $excel_url = ltrim((string) $excel_url, '/');
+
+            if ($excel_url === '' || (int) $import_history_id <= 0) {
+                return false;
+            }
+
+            $ruta = self::ruta_del_archivo_de_decisiones(storage_path('app/' . $excel_url), $import_history_id);
+
+            if (!is_file($ruta)) {
+                return false;
+            }
+
+            if (!@unlink($ruta)) {
+                Log::warning('EquivalenciasResolver: no se pudo borrar el archivo de decisiones de la importación', [
+                    'archivo' => $ruta,
+                ]);
+
+                return false;
+            }
+
+            return true;
+
+        } catch (\Throwable $e) {
+            Log::warning('EquivalenciasResolver: no se pudo borrar el archivo de decisiones de la importación', [
+                'excel'             => $excel_url,
+                'import_history_id' => $import_history_id,
+                'error'             => $e->getMessage(),
+            ]);
+
+            return false;
         }
-
-        return (string) $archivo_excel . '.hoja-equivalencias-' . $uuid . '.json';
     }
 
     /**

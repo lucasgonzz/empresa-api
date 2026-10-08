@@ -703,10 +703,11 @@ class InitExcelImport
     }
 
     /**
-     * Las decisiones saneadas se escriben UNA vez en un archivo junto al volcado de la hoja (misma
-     * vida útil y misma limpieza: ver EquivalenciasResolver::ruta_del_archivo_de_decisiones()) y a
-     * cada lote le llega solo la ruta. Antes viajaban copiadas en cada ProcessArticleChunk: con
-     * 3000 decisiones y lotes de 50 filas, un Excel de 5000 filas encolaba cien copias.
+     * Las decisiones saneadas se escriben UNA vez en un archivo de esta importación (ver
+     * EquivalenciasResolver::ruta_del_archivo_de_decisiones(), que explica el nombre y quién lo
+     * borra) y a cada lote le llega solo la ruta. Antes viajaban copiadas en cada
+     * ProcessArticleChunk: con 3000 decisiones y lotes de 50 filas, un Excel de 5000 filas
+     * encolaba cien copias. Va después de crear_import_history(): el nombre lleva su id.
      *
      * Si no se puede escribir, los lotes siguen llevando el array: pesa más que las decisiones del
      * usuario se apliquen que el tamaño de la cola.
@@ -719,7 +720,7 @@ class InitExcelImport
             return;
         }
 
-        $ruta = EquivalenciasResolver::ruta_del_archivo_de_decisiones($this->archivo_excel, $this->import_uuid);
+        $ruta = EquivalenciasResolver::ruta_del_archivo_de_decisiones($this->archivo_excel, $this->import_history->id);
 
         if (EquivalenciasResolver::guardar_archivo_de_decisiones($ruta, $this->equivalencias)) {
             Log::info('InitExcelImport: decisiones sobre nombres parecidos guardadas para los lotes', [
