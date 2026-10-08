@@ -117,7 +117,7 @@ class ImportacionClientesProveedoresTest extends RelacionesParecidasTestCase
         $this->assertSame((int) $lista->id, (int) $cliente->price_type_id, 'lista de precios');
 
         $this->assertSame((int) $localidad->id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
-            ->where('tipo', 'localidad')->where('contexto_id', $provincia->id)->where('valor_clave', 'la plata')->value('model_id'),
+            ->where('tipo', 'localidad')->where('contexto_id', $provincia->id)->where('valor_clave', 'La Plata')->value('model_id'),
             'La localidad con provincia se recuerda en el contexto de su provincia.');
     }
 
@@ -153,7 +153,7 @@ class ImportacionClientesProveedoresTest extends RelacionesParecidasTestCase
         $this->assertSame(1, Provincia::where('user_id', $this->tenant->id)->count());
 
         $this->assertSame($id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
-            ->where('tipo', 'provincia')->where('valor_clave', 'bs as')->value('model_id'));
+            ->where('tipo', 'provincia')->where('valor_clave', 'Bs As')->value('model_id'));
     }
 
     public function test_localidad_usar_con_otra_provincia_resuelta_se_ignora()
@@ -260,8 +260,14 @@ class ImportacionClientesProveedoresTest extends RelacionesParecidasTestCase
 
         $this->assertSame((int) $rosario->id, (int) $this->proveedor_importado('Proveedor RP 1')->location_id);
 
-        /* La decisión ya quedó recordada antes de importar: "ROSARIO" comparte la clave. */
-        $this->assertSame((int) $rosario->id, (int) $this->proveedor_importado('Proveedor RP 2')->location_id);
+        /*
+         * "ROSARIO" no tiene decisión, y la equivalencia recordada de "Rosario" NO se le aplica: la
+         * clave respeta mayúsculas (lo parecido lo vuelve a preguntar el paso 3). Va por el camino
+         * de siempre, que no la confunde con "Ciudad de Rosario".
+         */
+        $this->assertNotSame((int) $rosario->id, (int) $this->proveedor_importado('Proveedor RP 2')->location_id);
+        $this->assertSame((int) $rosario->id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
+            ->where('tipo', 'localidad')->where('valor_clave', 'Rosario')->value('model_id'));
 
         $funes = Location::find($this->proveedor_importado('Proveedor RP 3')->location_id);
         $this->assertSame('Funes', $funes->name);

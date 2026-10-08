@@ -300,16 +300,30 @@ class EquivalenciasResolver
     }
 
     /**
-     * La clave con la que se guarda y se busca una equivalencia: la clave de cache, recortada al
-     * largo de la columna. Se recorta en los dos lados con la misma función: si solo se recortara
-     * al guardar, un valor largo no se encontraría nunca.
+     * La clave con la que se guarda y se busca una equivalencia: el valor con trim y los espacios
+     * internos colapsados, recortado al largo de la columna. Se recorta en los dos lados con la
+     * misma función: si solo se recortara al guardar, un valor largo no se encontraría nunca.
+     *
+     * 🔴 RESPETA mayúsculas y tildes (y la columna es utf8mb4_bin). Una equivalencia es la
+     * decisión que el usuario tomó sobre ESE texto: con una clave más gruesa (minúsculas, como la
+     * clave de cache), "DEL NORTE"→usar y "Del norte"→crear del mismo Excel caían en la misma fila
+     * y la segunda borraba a la primera, y "Pintureria"→usar se aplicaba sola a "PINTURERIA" sin
+     * que nadie la hubiera elegido. Lo parecido lo vuelve a preguntar el paso 3.
      *
      * @param  mixed $valor
      * @return string
      */
     public static function clave_guardable($valor)
     {
-        return mb_substr(RelacionesParecidasDetector::clave_cache($valor), 0, self::LARGO_CLAVE, 'UTF-8');
+        $texto = trim((string) $valor);
+
+        $colapsado = preg_replace('/\s+/u', ' ', $texto);
+
+        if (is_string($colapsado)) {
+            $texto = $colapsado;
+        }
+
+        return mb_substr($texto, 0, self::LARGO_CLAVE, 'UTF-8');
     }
 
     /* =====================================================================

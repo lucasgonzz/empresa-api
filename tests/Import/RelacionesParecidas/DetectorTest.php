@@ -96,10 +96,10 @@ class DetectorTest extends TestCase
             RelacionesParecidasDetector::clave_cache('Pinturería'),
             RelacionesParecidasDetector::clave_cache('Pintureria')
         );
-        $this->assertSame(
-            RelacionesParecidasDetector::clave_cache('del norte'),
-            EquivalenciasResolver::clave_guardable('DEL   NORTE')
-        );
+        /* La de las equivalencias recordadas colapsa espacios pero RESPETA mayúsculas y tildes. */
+        $this->assertSame('DEL NORTE', EquivalenciasResolver::clave_guardable('  DEL   NORTE '));
+        $this->assertNotSame(EquivalenciasResolver::clave_guardable('Del norte'), EquivalenciasResolver::clave_guardable('DEL NORTE'));
+        $this->assertNotSame(EquivalenciasResolver::clave_guardable('Pintureria'), EquivalenciasResolver::clave_guardable('Pinturería'));
     }
 
     /* ------------------------------------------------------------------
@@ -215,26 +215,32 @@ class DetectorTest extends TestCase
         ];
 
         $grupo = RelacionesParecidasDetector::analizar_grupo(
-            ['Del norte' => 1, 'Sur' => 1, 'DEL NORTE' => 1],
+            ['Del norte' => 1, 'Sur' => 1, 'DEL NORTE' => 1, '  Del   norte ' => 1],
             $existentes,
             [
-                'del norte' => 8,   // "Del norte" y "DEL NORTE" comparten clave
-                'sur'       => 999, // modelo que ya no existe
+                'Del norte' => 8,   // la clave respeta mayúsculas: "DEL NORTE" no la comparte
+                'Sur'       => 999, // modelo que ya no existe
+                'DEL NORTE' => 8,
             ]
         );
 
         $this->assertSame('recordado', $grupo['valores']['Del norte']['estado']);
         $this->assertSame(8, $grupo['valores']['Del norte']['id']);
+        $this->assertSame('recordado', $grupo['valores']['  Del   norte ']['estado'], 'Espacios de más: misma clave.');
         $this->assertSame('nuevo', $grupo['valores']['Sur']['estado']);
         $this->assertSame('recordado', $grupo['valores']['DEL NORTE']['estado'], 'La equivalencia apunta a otro modelo: se muestra.');
 
-        $grupo = RelacionesParecidasDetector::analizar_grupo(['DEL NORTE' => 1], $existentes, ['del norte' => 5]);
+        $grupo = RelacionesParecidasDetector::analizar_grupo(['DEL NORTE' => 1], $existentes, ['DEL NORTE' => 5]);
         $this->assertSame('identico', $grupo['valores']['DEL NORTE']['estado']);
+
+        /* Una equivalencia de "Del norte" no se aplica a "DEL NORTE": eso lo vuelve a preguntar el paso 3. */
+        $grupo = RelacionesParecidasDetector::analizar_grupo(['DEL NORTE' => 1], [['id' => 8, 'nombre' => 'Norteño']], ['Del norte' => 8]);
+        $this->assertSame('nuevo', $grupo['valores']['DEL NORTE']['estado']);
 
         $cerrado = RelacionesParecidasDetector::cerrar_grupo('categoria', RelacionesParecidasDetector::analizar_grupo(
             ['Del norte' => 1],
             $existentes,
-            ['del norte' => 8]
+            ['Del norte' => 8]
         ), [], [], true);
 
         $this->assertSame('recordado', $cerrado['items'][0]['motivo']);

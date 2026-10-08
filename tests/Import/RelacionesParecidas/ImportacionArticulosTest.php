@@ -66,9 +66,9 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
 
         /* Cada "usar" queda recordado; la sub, en el contexto de SU categoría. */
         $this->assertSame((int) $categoria->id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
-            ->where('tipo', 'categoria')->where('contexto_id', 0)->where('valor_clave', 'del norte')->value('model_id'));
+            ->where('tipo', 'categoria')->where('contexto_id', 0)->where('valor_clave', 'Del norte')->value('model_id'));
         $this->assertSame((int) $sub->id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
-            ->where('tipo', 'sub_categoria')->where('contexto_id', $categoria->id)->where('valor_clave', 'martillo')->value('model_id'));
+            ->where('tipo', 'sub_categoria')->where('contexto_id', $categoria->id)->where('valor_clave', 'Martillo')->value('model_id'));
         $this->assertSame(4, ImportEquivalencia::where('user_id', $this->tenant->id)->count());
     }
 
@@ -114,7 +114,7 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
         }
 
         $this->assertSame($id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
-            ->where('tipo', 'categoria')->where('valor_clave', 'pintureria')->value('model_id'), 'El unir se recuerda cuando el worker conoce el id.');
+            ->where('tipo', 'categoria')->where('valor_clave', 'Pintureria')->value('model_id'), 'El unir se recuerda cuando el worker conoce el id.');
     }
 
     /**
@@ -268,7 +268,7 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
             'tipo'        => 'categoria',
             'contexto_id' => 0,
             'valor'       => 'Del norte',
-            'valor_clave' => 'del norte',
+            'valor_clave' => 'Del norte',
             'model_id'    => $norteno->id,
         ]);
 
@@ -283,6 +283,56 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
         $this->assertNotNull($nueva);
         $this->assertSame((int) $nueva->id, (int) $this->articulo('RP-01')->category_id);
         $this->assertSame((int) $viejo->id, (int) $this->articulo('RP-02')->category_id, 'Sin la equivalencia, "DEL NORTE" vuelve a la idéntica.');
+    }
+
+    /**
+     * 🔴 La clave de una equivalencia respeta mayúsculas: "DEL NORTE"→usar y "Del norte"→crear del
+     * mismo Excel son dos decisiones distintas. Con la clave en minúsculas caían en la misma fila y
+     * el "crear" borraba lo que el "usar" acababa de recordar.
+     */
+    public function test_usar_y_crear_de_dos_escrituras_no_se_pisan()
+    {
+        $norteno = $this->crear_categoria('Norteño');
+
+        $this->importar_articulos(self::ARTICULOS, [
+            ['tipo' => 'categoria', 'valor' => 'DEL NORTE', 'accion' => 'usar', 'id' => $norteno->id],
+            ['tipo' => 'categoria', 'valor' => 'Del norte', 'accion' => 'crear'],
+        ]);
+
+        $this->assertSame((int) $norteno->id, (int) ImportEquivalencia::where('user_id', $this->tenant->id)
+            ->where('tipo', 'categoria')->where('valor_clave', 'DEL NORTE')->value('model_id'), 'El "usar" quedó recordado.');
+        $this->assertSame(1, ImportEquivalencia::where('user_id', $this->tenant->id)->count());
+
+        $this->assertSame((int) $norteno->id, (int) $this->articulo('RP-02')->category_id);
+
+        $nueva = Category::where('user_id', $this->tenant->id)->whereRaw('BINARY name = ?', ['Del norte'])->first();
+        $this->assertNotNull($nueva);
+        $this->assertSame((int) $nueva->id, (int) $this->articulo('RP-01')->category_id);
+    }
+
+    /**
+     * "Pintureria" y "Pinturería" son dos equivalencias distintas (columna utf8mb4_bin): con la
+     * collation por defecto el índice único las trataba como la misma fila.
+     */
+    public function test_pintureria_con_y_sin_tilde_son_equivalencias_distintas()
+    {
+        $sin_tilde = $this->crear_categoria('Pinturas');
+        $con_tilde = $this->crear_categoria('Pinturerías del Centro');
+
+        $this->importar_articulos(self::ARTICULOS, [
+            ['tipo' => 'categoria', 'valor' => 'Pintureria', 'accion' => 'usar', 'id' => $sin_tilde->id],
+            ['tipo' => 'categoria', 'valor' => 'Pinturería', 'accion' => 'usar', 'id' => $con_tilde->id],
+        ]);
+
+        $this->assertSame(2, ImportEquivalencia::where('user_id', $this->tenant->id)->where('tipo', 'categoria')->count());
+
+        foreach (['RP-05', 'RP-09'] as $codigo) {
+            $this->assertSame((int) $sin_tilde->id, (int) $this->articulo($codigo)->category_id, $codigo);
+        }
+
+        foreach (['RP-04', 'RP-06'] as $codigo) {
+            $this->assertSame((int) $con_tilde->id, (int) $this->articulo($codigo)->category_id, $codigo);
+        }
     }
 
     /* ------------------------------------------------------------------

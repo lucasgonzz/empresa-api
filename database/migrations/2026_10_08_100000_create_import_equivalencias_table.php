@@ -17,8 +17,15 @@ use Illuminate\Support\Facades\Schema;
  *   tipo_de_precio.
  * - `contexto_id`: la categoría para `sub_categoria` y la provincia para `localidad` con
  *   provincia (las dos se comparan DENTRO de su padre); 0 para el resto.
- * - `valor`: el texto tal como vino en el Excel (para mostrarlo); `valor_clave`: su clave de
- *   cache (minúsculas, sin espacios de más), que es por la que se busca.
+ * - `valor`: el texto tal como vino en el Excel (para mostrarlo); `valor_clave`: el mismo texto
+ *   con trim y los espacios internos colapsados, RESPETANDO mayúsculas y tildes, que es por el
+ *   que se busca.
+ *
+ * 🔴 `valor_clave` va con collation utf8mb4_bin, y no con la de la tabla: con la collation por
+ * defecto (que ignora mayúsculas y tildes) "DEL NORTE"→usar y "Del norte"→crear del mismo Excel se
+ * pisaban en la misma fila del índice único, y "pintureria"/"pinturería" también. Una equivalencia
+ * recuerda la decisión sobre ESE texto, no sobre todos los que se le parecen: para lo parecido
+ * está el paso 3, que vuelve a preguntar.
  *
  * 🔴 `valor_clave` es string(191) y no 255 a propósito: forma parte del índice único, y con
  * utf8mb4 una columna de 255 son 1020 bytes, más que los 767 que acepta un índice en las tablas
@@ -55,8 +62,8 @@ class CreateImportEquivalenciasTable extends Migration
             /* El valor como vino en el Excel. */
             $table->string('valor', 255);
 
-            /* EquivalenciasResolver::clave_guardable($valor). */
-            $table->string('valor_clave', 191);
+            /* EquivalenciasResolver::clave_guardable($valor). Binaria: ver el comentario de la clase. */
+            $table->string('valor_clave', 191)->collation('utf8mb4_bin');
 
             /* Id del modelo (categoría, marca, proveedor, provincia...) al que equivale. */
             $table->unsignedBigInteger('model_id');
