@@ -94,6 +94,56 @@ class Cambio_de_moneda_y_cotizacion_Test extends EdicionCompletaVentaTestCase
     }
 
     /**
+     * Caso 5 con COBROS IMPUTADOS (decisión 1 de Lucas, variante de moneda; pedido de la revisión
+     * independiente, 8/10/2026). La venta en pesos de A estaba pagándose con un cobro de 30000 y A tiene
+     * otra deuda en pesos: al pasarla a dólares, el cobro QUEDA en la cuenta en pesos de A y se imputa a
+     * esa otra deuda; la venta entra en la cuenta en dólares de A como pendiente.
+     *
+     * @test
+     */
+    public function pasar_a_dolares_una_venta_con_cobros_deja_el_cobro_en_la_cuenta_en_pesos()
+    {
+        $cliente = $this->cliente_nuevo('zz Moneda con cobros');
+        $pesos = $this->cuenta($cliente, self::PESOS);
+        $dolares = $this->cuenta($cliente, self::DOLARES);
+
+        $venta = $this->vender($cliente, self::PESOS, 120000);
+
+        $cobro = $this->pagar($cliente, $pesos, [$this->fila_de_pago(self::PESOS, self::PESOS, 30000, $this->caja_pesos)]);
+
+        $otra_deuda = $this->vender($cliente, self::PESOS, 50000);
+
+        $this->assertEquals('pagandose', $this->debito_de($venta, $pesos)->status, 'Precondición: la venta tiene que estar pagándose.');
+        $debito_viejo_id = $this->debito_de($venta, $pesos)->id;
+
+        $venta = $this->editar_ok($venta, $this->payload_de_edicion($venta, [
+            'moneda_id'   => self::DOLARES,
+            'valor_dolar' => 1200,
+            'items'       => $this->reexpresar($this->items_de($venta), 1 / 1200),
+            'sub_total'   => 100,
+            'total'       => 100,
+        ]));
+
+        // El cobro sigue en la cuenta en pesos, imputado a la otra deuda.
+        $this->assertEquals($pesos->id, (int) \App\Models\CurrentAcount::find($cobro->id)->credit_account_id, 'El cobro se fue de la cuenta en pesos.');
+        $debito_otra = $this->debito_de($otra_deuda, $pesos);
+        $this->assertEquals('pagandose', $debito_otra->status, 'El cobro tiene que imputarse a la otra deuda en pesos.');
+        $this->assertMonto(30000, $debito_otra->pagandose);
+        $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $debito_viejo_id)->count(), 'Quedaron imputaciones del débito que se mudó.');
+
+        // La venta entra pendiente en dólares.
+        $debito_usd = $this->debito_de($venta, $dolares);
+        $this->assertNotNull($debito_usd, 'La venta no entró en la cuenta en dólares.');
+        $this->assertEquals('sin_pagar', $debito_usd->status);
+        $this->assertMonto(100, $debito_usd->debe);
+        $this->assertCount(1, $this->debitos_de_la_venta($venta));
+
+        // Pesos: 50000 − 30000. Dólares: 100.
+        $this->assert_saldo_independiente($cliente, self::PESOS, 20000, 'Cuenta en pesos (de la que salió)');
+        $this->assert_saldo_independiente($cliente, self::DOLARES, 100, 'Cuenta en dólares (a la que entró)');
+    }
+
+    /**
      * Caso 6. Cliente Y moneda a la vez: la venta en pesos de A pasa a B en dólares. Sale de la cuenta
      * en pesos de A y entra en la de dólares de B; las otras dos cuentas no se tocan.
      *
@@ -249,6 +299,45 @@ class Cambio_de_moneda_y_cotizacion_Test extends EdicionCompletaVentaTestCase
         $this->assertNull($venta->valor_dolar);
 
         $this->assert_saldo_independiente($cliente, self::DOLARES, 100, 'Dólares');
+    }
+
+    /**
+     * Contrato con la SPA nueva (ajuste del 8/10/2026): manda `moneda_id` NORMALIZADO (nunca null:
+     * NULL → 1) y `valor_dolar` null cuando la venta no tenía cotización, no cambia de moneda y el
+     * vendedor no tocó el campo. Eso es "no tocar": una venta en dólares sin cotización sigue sin
+     * cotización (200, sin 422), y una venta sin moneda y sin cotización queda en pesos sin cotización.
+     *
+     * @test
+     */
+    public function la_spa_nueva_con_moneda_normalizada_y_cotizacion_null_preserva_lo_guardado()
+    {
+        $cliente = $this->cliente_nuevo('zz Contrato SPA');
+
+        $en_dolares = $this->vender($cliente, self::DOLARES, 100);
+        DB::table('sales')->where('id', $en_dolares->id)->update(['valor_dolar' => null]);
+
+        $en_dolares = $this->editar_ok($en_dolares, $this->payload_de_edicion($en_dolares, [
+            'moneda_id'   => self::DOLARES,
+            'valor_dolar' => null,
+        ]));
+
+        $this->assertEquals(self::DOLARES, (int) $en_dolares->moneda_id);
+        $this->assertNull($en_dolares->valor_dolar, 'Una venta en dólares sin cotización tiene que seguir sin cotización.');
+        $this->assertNotNull($this->debito_de($en_dolares, $this->cuenta($cliente, self::DOLARES)));
+
+        $sin_moneda = $this->vender($cliente, self::PESOS, 30000);
+        DB::table('sales')->where('id', $sin_moneda->id)->update(['moneda_id' => null, 'valor_dolar' => null]);
+
+        $sin_moneda = $this->editar_ok($sin_moneda, $this->payload_de_edicion($sin_moneda, [
+            'moneda_id'   => self::PESOS,
+            'valor_dolar' => null,
+        ]));
+
+        $this->assertEquals(self::PESOS, (int) $sin_moneda->moneda_id);
+        $this->assertNull($sin_moneda->valor_dolar);
+
+        $this->assert_saldo_independiente($cliente, self::DOLARES, 100, 'Dólares');
+        $this->assert_saldo_independiente($cliente, self::PESOS, 30000, 'Pesos');
     }
 
     /**

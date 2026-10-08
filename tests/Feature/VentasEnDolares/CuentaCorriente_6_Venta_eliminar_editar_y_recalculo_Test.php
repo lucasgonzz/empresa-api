@@ -350,6 +350,8 @@ class CuentaCorriente_6_Venta_eliminar_editar_y_recalculo_Test extends CuentaCor
         $this->assertEquals(self::DOLARES, (int) $venta->moneda_id, 'Sin moneda_id en el PUT la moneda no puede cambiar.');
         $this->assertMonto(self::DOLAR, $venta->valor_dolar, 'Sin moneda_id en el PUT la cotización guardada no se puede pisar.');
         $this->assertNotNull($this->debito_de($venta, $dolares));
+        $this->assertNull($this->debito_de($venta, $pesos), 'Sin moneda_id en el PUT el débito no puede pasar a la cuenta en pesos.');
+        $this->assertMonto(0, $this->saldo_de($pesos));
 
         // SPA nueva: con `moneda_id` = pesos y la cotización nueva. La venta pasa a pesos.
         $this->editar_venta($venta, 150000, ['moneda_id' => self::PESOS, 'valor_dolar' => 1500])->assertStatus(200);

@@ -231,7 +231,152 @@ class Guardas_del_cambio_de_cuenta_Test extends EdicionCompletaVentaTestCase
         $this->assertEquals(422, $response->getStatusCode(), 'Cuerpo: '.substr($response->getContent(), 0, 500));
         $this->assertTrue((bool) $response->json('cambio_de_cuenta_rechazado'));
         $this->assertEquals('consolidada', $response->json('motivo'));
+        $this->assertStringContainsString('N° '.$contenedora->num, $response->json('message'), 'El mensaje tiene que nombrar la venta consolidada.');
         $this->assertEquals($antes, $this->foto_cruda($venta, [$cliente_a, $cliente_b]), 'El 422 escribió algo.');
+    }
+
+    /**
+     * Revisión independiente (8/10/2026), BLOQUEANTE. Venta a cuenta corriente con un PLAN DE PAGO en
+     * cuotas + cambio de cliente o de moneda: 422 `plan_de_pago` y nada cambió. El plan y sus cuotas
+     * guardan el cliente y la venta y no se mudan con el débito: pagar la cuota después de mover la
+     * venta dejaba un pago del cliente viejo en la cuenta del nuevo, que `reimputar_pagos()` (filtra por
+     * `client_id`) no volvía a imputar.
+     *
+     * @test
+     */
+    public function una_venta_con_plan_de_pago_no_cambia_de_cliente_ni_de_moneda()
+    {
+        $cliente_a = $this->cliente_nuevo('zz Plan A');
+        $cliente_b = $this->cliente_nuevo('zz Plan B');
+
+        $venta = $this->vender($cliente_a, self::PESOS, 80000);
+
+        $this->avanzar_reloj_de_ventas();
+        $this->postJson('api/payment-plan', [
+            'sale_id'         => $venta->id,
+            'cantidad_cuotas' => 2,
+            'frequency'       => 'monthly',
+            'start_date'      => date('Y-m-d'),
+        ])->assertStatus(201);
+
+        $this->assertEquals(2, DB::table('payment_plan_cuotas')->where('sale_id', $venta->id)->count(), 'Precondición: el plan tiene que dejar dos cuotas.');
+
+        $antes = $this->foto_cruda($venta, [$cliente_a, $cliente_b]);
+
+        $response = $this->put_venta($venta, $this->payload_de_edicion($venta, ['client_id' => $cliente_b->id]));
+
+        $this->assertEquals(422, $response->getStatusCode(), 'Cuerpo: '.substr($response->getContent(), 0, 500));
+        $this->assertTrue((bool) $response->json('cambio_de_cuenta_rechazado'));
+        $this->assertEquals('plan_de_pago', $response->json('motivo'));
+        $this->assertNotEmpty($response->json('message'));
+        $this->assertEquals($antes, $this->foto_cruda($venta, [$cliente_a, $cliente_b]), 'El 422 escribió algo.');
+
+        $response = $this->put_venta($venta, $this->payload_de_edicion($venta, [
+            'moneda_id'   => self::DOLARES,
+            'valor_dolar' => 1200,
+            'items'       => $this->reexpresar($this->items_de($venta), 1 / 1200),
+            'sub_total'   => 66.67,
+            'total'       => 66.67,
+        ]));
+
+        $this->assertEquals(422, $response->getStatusCode(), 'Cuerpo: '.substr($response->getContent(), 0, 500));
+        $this->assertEquals('plan_de_pago', $response->json('motivo'));
+        $this->assertEquals($antes, $this->foto_cruda($venta, [$cliente_a, $cliente_b]), 'El 422 escribió algo.');
+
+        // Editar sin cambiar de cuenta sigue andando.
+        $this->editar_ok($venta, $this->payload_de_edicion($venta));
+    }
+
+    /**
+     * Revisión independiente (8/10/2026). Venta con un COMBO + cambio de moneda: 422 `combos` y nada
+     * cambió, porque el costo congelado del combo quedaría en la moneda vieja. El mismo PUT sin cambiar
+     * la moneda da 200; y cambiar la moneda SACANDO el combo en el mismo PUT también (un combo que no
+     * queda no tiene costo que convertir).
+     *
+     * @test
+     */
+    public function una_venta_con_combos_no_cambia_de_moneda_si_los_mantiene()
+    {
+        $articulo = $this->articulo(\Database\Seeders\testing\TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+
+        $combo = \App\Models\Combo::create([
+            'num'     => 9811,
+            'name'    => 'zz Combo edicion completa',
+            'price'   => 20000,
+            'cost'    => 5000,
+            'user_id' => $this->usuario->id,
+        ]);
+
+        $combo->articles()->attach($articulo->id, ['amount' => 1]);
+
+        // El renglón de combo como lo arma Vender (`deteccion_combos.js`): el modelo con `is_combo`.
+        $renglon_combo = function ($precio) use ($combo, $articulo) {
+            return [
+                'is_combo'                    => true,
+                'id'                          => $combo->id,
+                'name'                        => $combo->name,
+                'price_vender'                => $precio,
+                'amount'                      => 1,
+                'article_variant_id'          => 0,
+                'price_type_personalizado_id' => 0,
+                'articles'                    => [
+                    ['id' => $articulo->id, 'pivot' => ['amount' => 1]],
+                ],
+            ];
+        };
+
+        $cliente = $this->cliente_nuevo('zz Combos');
+
+        $venta = $this->vender($cliente, self::PESOS, 120000, [
+            'items' => [
+                ['is_article' => true, 'id' => $articulo->id, 'price_vender' => 100000, 'amount' => 1],
+                $renglon_combo(20000),
+            ],
+        ]);
+
+        $this->assertEquals(1, DB::table('combo_sale')->where('sale_id', $venta->id)->count(), 'Precondición: la venta tiene que tener el combo.');
+
+        $antes = $this->foto_cruda($venta, [$cliente]);
+
+        // Mismo PUT, con los renglones pasados a dólares y el combo adentro: 422.
+        $items_en_dolares = $this->reexpresar($this->items_de($venta), 1 / 1200);
+        $items_en_dolares[] = $renglon_combo(16.67);
+
+        $response = $this->put_venta($venta, $this->payload_de_edicion($venta, [
+            'moneda_id'   => self::DOLARES,
+            'valor_dolar' => 1200,
+            'items'       => $items_en_dolares,
+            'sub_total'   => 100,
+            'total'       => 100,
+        ]));
+
+        $this->assertEquals(422, $response->getStatusCode(), 'Cuerpo: '.substr($response->getContent(), 0, 500));
+        $this->assertTrue((bool) $response->json('cambio_de_cuenta_rechazado'));
+        $this->assertEquals('combos', $response->json('motivo'));
+        $this->assertNotEmpty($response->json('message'));
+        $this->assertEquals($antes, $this->foto_cruda($venta, [$cliente]), 'El 422 escribió algo.');
+
+        // Sin cambiar la moneda, con el combo: 200.
+        $items_en_pesos = $this->items_de($venta);
+        $items_en_pesos[] = $renglon_combo(20000);
+
+        $venta = $this->editar_ok($venta, $this->payload_de_edicion($venta, ['items' => $items_en_pesos]));
+        $this->assertEquals(self::PESOS, (int) $venta->moneda_id);
+        $this->assertEquals(1, DB::table('combo_sale')->where('sale_id', $venta->id)->count());
+
+        // Cambiando la moneda y SACANDO el combo en el mismo PUT: 200, sin combos.
+        $venta = $this->editar_ok($venta, $this->payload_de_edicion($venta, [
+            'moneda_id'   => self::DOLARES,
+            'valor_dolar' => 1200,
+            'items'       => $this->reexpresar($this->items_de($venta), 1 / 1200),
+            'sub_total'   => 83.33,
+            'total'       => 83.33,
+        ]));
+
+        $this->assertEquals(self::DOLARES, (int) $venta->moneda_id);
+        $this->assertEquals(0, DB::table('combo_sale')->where('sale_id', $venta->id)->count());
+        $this->assert_saldo_independiente($cliente, self::DOLARES, 83.33, 'Dólares');
+        $this->assert_saldo_independiente($cliente, self::PESOS, 0, 'Pesos');
     }
 
     /**

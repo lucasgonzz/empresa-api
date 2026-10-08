@@ -264,6 +264,9 @@ abstract class EdicionCompletaVentaTestCase extends CuentaCorriente_Base
             'cuentas'       => DB::table('credit_accounts')->where('model_name', 'client')->whereIn('model_id', $ids_clientes)->orderBy('id')->get()->map(function ($f) { return (array) $f; })->all(),
             'clientes'      => DB::table('clients')->whereIn('id', $ids_clientes)->orderBy('id')->get(['id', 'saldo', 'saldo_pesos', 'saldo_dolares'])->map(function ($f) { return (array) $f; })->all(),
             'comisiones'    => DB::table('seller_commissions')->where('sale_id', $venta->id)->orderBy('id')->get()->map(function ($f) { return (array) $f; })->all(),
+            'combo_sale'    => DB::table('combo_sale')->where('sale_id', $venta->id)->orderBy('id')->get()->map(function ($f) { return (array) $f; })->all(),
+            'planes'        => DB::table('payment_plans')->where('sale_id', $venta->id)->orderBy('id')->get()->map(function ($f) { return (array) $f; })->all(),
+            'cuotas'        => DB::table('payment_plan_cuotas')->where('sale_id', $venta->id)->orderBy('id')->get()->map(function ($f) { return (array) $f; })->all(),
         ];
     }
 
