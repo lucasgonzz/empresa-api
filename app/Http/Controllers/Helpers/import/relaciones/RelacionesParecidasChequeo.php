@@ -402,8 +402,8 @@ class RelacionesParecidasChequeo
 
             /*
              * true si alguna capa se acotó: una columna con demasiados valores, más consultas de las
-             * que entran en la IA o el presupuesto de comparaciones agotado. El paso 3 avisa que
-             * puede haber otros parecidos que no aparecen.
+             * que entran en la IA o el presupuesto agotado (de comparaciones o de bloqueo). El paso 3
+             * avisa que puede haber otros parecidos que no aparecen.
              */
             'recortado'     => $recortado || (bool) $presupuesto->recortado,
             'items'         => $todos,
