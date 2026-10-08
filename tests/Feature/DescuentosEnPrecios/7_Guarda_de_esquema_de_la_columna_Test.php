@@ -245,6 +245,25 @@ class Guarda_de_esquema_de_la_columna_Test extends DescuentosEnPreciosTestCase
             ])->assertStatus(200);
 
             $self->assertEqualsWithDelta(108, (float) Sale::find($sale_id)->articles()->first()->pivot->price, self::DELTA);
+
+            /*
+                Y el camino POR VARIANTE de update-prices (`article_variant_id` en el item): escribe con
+                `DB::table('article_sale')->update($cambios)`, y `$cambios` tiene que seguir saliendo de
+                las dos guardas de esquema; si alguien lo rearma nombrando una columna a mano, en la
+                ventana del deploy se cae el modal de toda venta.
+            */
+            $self->putJson('api/sale/update-prices/'.$sale_id, [
+                'items' => [[
+                    'is_article'                  => true,
+                    'id'                          => $articulo->id,
+                    'article_variant_id'          => 0,
+                    'price_vender'                => 132,
+                    'price_vender_sin_recargos'   => 120,
+                    'price_vender_sin_descuentos' => 140,
+                ]],
+            ])->assertStatus(200);
+
+            $self->assertEqualsWithDelta(132, (float) Sale::find($sale_id)->articles()->first()->pivot->price, self::DELTA);
         });
     }
 

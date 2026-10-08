@@ -71,11 +71,14 @@ class Actualizar_precios_de_la_venta_Test extends DescuentosEnPreciosTestCase
     }
 
     /**
-     * Test 2 — sin la clave, la base queda en NULL: nunca la base del precio anterior.
+     * Test 2 — sin la clave, sobre una venta prendida: se RECHAZA con 409 y no se toca nada, ni el
+     * precio ni la base vieja. Antes de `requiere_spa_nueva_en_update_prices()` la API escribia el
+     * precio nuevo y dejaba la base en NULL con el flag todavia en 1 (el descuento se perdia para
+     * siempre). Todos los casos del candado estan en el archivo 16.
      *
      * @test
      */
-    public function sin_la_clave_la_base_queda_en_null_y_no_la_vieja()
+    public function sin_la_clave_se_rechaza_y_no_se_toca_la_base_vieja()
     {
         list($sale, $articulo, $servicio) = $this->venta_prendida();
 
@@ -95,10 +98,47 @@ class Actualizar_precios_de_la_venta_Test extends DescuentosEnPreciosTestCase
                     'price_vender' => 54,
                 ],
             ],
+        ])->assertStatus(409);
+
+        $this->assert_precio_y_base($this->fila('article_sale', 'sale_id', $sale->id, 'article_id', $articulo->id), 90, 100, 'articulo: el rechazo no lo toca');
+        $this->assert_precio_y_base($this->fila('sale_service', 'sale_id', $sale->id, 'service_id', $servicio->id), 45, 50, 'servicio: el rechazo no lo toca');
+    }
+
+    /**
+     * Test 3 bis — el camino POR VARIANTE de `SaleHelper::updateItemsPrices()` (mision
+     * variantes-mismo-articulo-en-vender, 8/10/2026): con la clave `article_variant_id` en el item
+     * (la SPA de variantes la manda SIEMPRE, con 0 para el renglon sin variante) escribe las filas
+     * de esa variante con `DB::table('article_sale')->update()` y NO con `updateExistingPivot()`.
+     * Las dos bases tienen que viajar igual: el `$cambios` de ese camino sale de las mismas dos
+     * guardas de esquema.
+     *
+     * @test
+     */
+    public function el_camino_por_variante_tambien_escribe_las_dos_bases()
+    {
+        list($sale, $articulo, $servicio) = $this->venta_prendida();
+
+        $this->putJson('api/sale/update-prices/'.$sale->id, [
+            'items' => [
+                [
+                    'is_article'                  => true,
+                    'id'                          => $articulo->id,
+                    'article_variant_id'          => 0,
+                    'price_vender'                => 121,
+                    'price_vender_sin_recargos'   => 110,
+                    'price_vender_sin_descuentos' => 130,
+                ],
+                [
+                    'is_service'                  => true,
+                    'id'                          => $servicio->id,
+                    'price_vender'                => 45,
+                    'price_vender_sin_descuentos' => 50,
+                ],
+            ],
         ])->assertStatus(200);
 
-        $this->assert_precio_y_base($this->fila('article_sale', 'sale_id', $sale->id, 'article_id', $articulo->id), 108, null, 'articulo actualizado por la SPA vieja');
-        $this->assert_precio_y_base($this->fila('sale_service', 'sale_id', $sale->id, 'service_id', $servicio->id), 54, null, 'servicio actualizado por la SPA vieja');
+        /* Valores DISTINTOS de los sembrados (90 / base 100): si el camino por variante dejara de escribir una base, quedaria la vieja y esto lo delata. */
+        $this->assert_precio_y_base($this->fila('article_sale', 'sale_id', $sale->id, 'article_id', $articulo->id), 121, 130, 'articulo por variante con las dos capas', 110);
     }
 
     /**
