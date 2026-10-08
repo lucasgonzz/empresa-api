@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\ImportHistory;
@@ -140,11 +141,16 @@ class InitExcelImport
          */
         /*
          * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
-         * nombres parecidos. Clave OPCIONAL (ni el import clásico ni AdminSync la mandan) que viaja
-         * tal cual hasta ProcessRow; el saneado lo hace EquivalenciasResolver allá, una vez por lote.
+         * nombres parecidos. Clave OPCIONAL (ni el import clásico ni AdminSync la mandan).
+         *
+         * Se acotan (tope de EquivalenciasResolver::TOPE_DECISIONES) y se sanean UNA vez acá, antes
+         * de armar la cadena: lo que viaja serializado en cada lote es solo lo válido (tipos de
+         * artículos, ids vivos del comercio, unir con destino). ProcessRow las vuelve a validar
+         * contra la base en cada lote por si algún modelo se borró en el medio, pero ya sobre una
+         * lista limpia y acotada.
          */
-        $this->equivalencias = isset($data['equivalencias']) && is_array($data['equivalencias'])
-            ? array_values($data['equivalencias'])
+        $this->equivalencias = (isset($data['equivalencias']) && !is_null($this->user))
+            ? EquivalenciasResolver::sanear($this->user->id, $data['equivalencias'], EquivalenciasResolver::TIPOS_ARTICULOS)
             : [];
 
         $this->filas_repetidas_del_archivo = $this->normalizar_filas_repetidas_del_archivo(

@@ -764,18 +764,12 @@ class AiExcelImportController extends Controller
      */
     protected function recordar_equivalencias(Request $request, array $tipos)
     {
-        $equivalencias = $request->input('equivalencias', []);
+        /* Lista de arrays, con tope (ver EquivalenciasResolver::acotar()). */
+        $equivalencias = EquivalenciasResolver::acotar($request->input('equivalencias', []));
 
-        if (is_string($equivalencias)) {
-            $decodificado = json_decode($equivalencias, true);
-            $equivalencias = is_array($decodificado) ? $decodificado : [];
-        }
-
-        if (!is_array($equivalencias) || count($equivalencias) === 0) {
+        if (count($equivalencias) === 0) {
             return [];
         }
-
-        $equivalencias = array_values(array_filter($equivalencias, 'is_array'));
 
         try {
             (new EquivalenciasResolver($this->userId(), $equivalencias, $tipos))->recordar_decisiones();

@@ -45,6 +45,9 @@ class EquivalenciasResolver
     /** Largo de `import_equivalencias.valor_clave` (ver la migración: 191 por el índice único). */
     const LARGO_CLAVE = 191;
 
+    /** Decisiones que se aceptan por importación, como máximo (ver acotar()). */
+    const TOPE_DECISIONES = 3000;
+
     /** @var int */
     protected $user_id;
 
@@ -132,6 +135,40 @@ class EquivalenciasResolver
      * ================================================================== */
 
     /**
+     * Las decisiones tal como vinieron del request, normalizadas a una lista de arrays y con TOPE:
+     * más de TOPE_DECISIONES entradas se cortan (con un warning). Viajan serializadas en cada lote
+     * de la cadena de importación, y el paso 3 nunca muestra tantas: un request con decenas de
+     * miles es un error o un abuso, no un usuario.
+     *
+     * @param  mixed $equivalencias  array, o el mismo array como JSON
+     * @return array
+     */
+    public static function acotar($equivalencias)
+    {
+        if (is_string($equivalencias)) {
+            $decodificado = json_decode($equivalencias, true);
+            $equivalencias = is_array($decodificado) ? $decodificado : [];
+        }
+
+        if (!is_array($equivalencias)) {
+            return [];
+        }
+
+        $equivalencias = array_values(array_filter($equivalencias, 'is_array'));
+
+        if (count($equivalencias) > self::TOPE_DECISIONES) {
+            Log::warning('EquivalenciasResolver: vinieron más decisiones que el tope; se ignoran las de más', [
+                'recibidas' => count($equivalencias),
+                'tope'      => self::TOPE_DECISIONES,
+            ]);
+
+            $equivalencias = array_slice($equivalencias, 0, self::TOPE_DECISIONES);
+        }
+
+        return $equivalencias;
+    }
+
+    /**
      * Las decisiones válidas del request. Lo que no sirve se descarta en silencio y esa fila sigue
      * el camino normal:
      *   - `tipo` fuera de la lista de esta importación;
@@ -150,14 +187,7 @@ class EquivalenciasResolver
      */
     public static function sanear($user_id, $equivalencias, array $tipos_validos)
     {
-        if (is_string($equivalencias)) {
-            $decodificado = json_decode($equivalencias, true);
-            $equivalencias = is_array($decodificado) ? $decodificado : [];
-        }
-
-        if (!is_array($equivalencias)) {
-            return [];
-        }
+        $equivalencias = self::acotar($equivalencias);
 
         $candidatas = [];
         $ids_por_tipo = [];
