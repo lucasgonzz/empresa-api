@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\Budget\VarianteEnPresupuestoEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
@@ -113,8 +114,16 @@ class Budget extends Model
         return $this->hasMany('App\Models\BudgetProduct');
     }
 
+    /**
+     * Los renglones de artículo del presupuesto.
+     *
+     * La variante del renglón (`article_variant_id` / `variant_description`, misión
+     * presupuestos-con-variantes, 8/10/2026) entra al pivot por su guarda de esquema: sin la
+     * columna (ventana del deploy) no se nombra, y la lectura de presupuestos y sus PDFs sigue
+     * andando. Con ella, `GeneralHelper::article_name()` ya imprime "Remera Talle M" en el PDF.
+     */
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name'], 'article_budget'));
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(VarianteEnPresupuestoEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name'], 'article_budget')));
     }
 
     function optional_order_production_statuses() {
