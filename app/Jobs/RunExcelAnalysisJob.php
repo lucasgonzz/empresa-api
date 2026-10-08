@@ -712,6 +712,19 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $this->finalizar_con_error($run, self::MENSAJE_ERROR_DE_BASE);
 
+        } catch (\RuntimeException $e) {
+            /*
+             * Mismo criterio que las otras dos ramas: un \RuntimeException trae un mensaje escrito
+             * para el usuario (p. ej. ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE). Va DESPUÉS del
+             * de QueryException, que también es un RuntimeException (lo vigila MensajesDeErrorTest).
+             */
+            Log::warning('RunExcelAnalysisJob: error al cerrar la recomendación de ' . $modelo, [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, $e->getMessage());
+
         } catch (\Throwable $e) {
             Log::error('RunExcelAnalysisJob: error inesperado al cerrar la recomendación de ' . $modelo, [
                 'excel_analysis_run_id' => $run->id,
