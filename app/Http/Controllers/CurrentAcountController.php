@@ -784,6 +784,24 @@ class CurrentAcountController extends Controller
     function delete(Request $request, $model_name, $id) {
         $current_acount = CurrentAcount::find($id);
 
+        if (is_null($current_acount)) {
+            return response()->json(['message' => 'El movimiento no existe o ya fue eliminado.'], 404);
+        }
+
+        /*
+         * Una nota de crédito ya facturada no se elimina (misión nc-aviso-existente-y-sin-cliente,
+         * 8/10/2026): ver NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar().
+         * `error_nota_credito_facturada` es opcional: una SPA que no la lee muestra el `message`.
+         */
+        if ($current_acount->status == 'nota_credito') {
+
+            $motivo = NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar($current_acount);
+
+            if (!is_null($motivo)) {
+                return response()->json(['message' => $motivo, 'error_nota_credito_facturada' => true], 422);
+            }
+        }
+
         /** Solo aplica a pagos en cuenta corriente con impacto en caja (no a notas de crédito en este alcance). */
         $compensar_caja = $request->boolean('compensar_caja');
         /** Helper para validar apertura de cajas y emitir movimientos compensatorios consistentes con ventas/gastos. */
@@ -853,6 +871,15 @@ class CurrentAcountController extends Controller
              * `crear_movimientos_compensacion()` más abajo.
              */
             $current_acount->current_acount_payment_methods()->detach();
+
+            /*
+             * El comprobante de un intento que ARCA no autorizó (sin CAE ni número: la guarda de
+             * arriba ya dejó pasar solo ese caso) se da de baja con la nota, para que no quede un
+             * "SIN CAE" huérfano colgado de la venta.
+             */
+            if ($current_acount->status == 'nota_credito') {
+                \App\Models\AfipTicket::where('nota_credito_id', $current_acount->id)->delete();
+            }
 
             $current_acount->delete();
 

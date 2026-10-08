@@ -11,6 +11,41 @@ use Illuminate\Support\Facades\DB;
 class NotaCreditoHelper {
 
 	/**
+	 * Motivo por el que una nota de crédito NO se puede eliminar, o null si se puede (misión
+	 * nc-aviso-existente-y-sin-cliente, 8/10/2026; pedido de Lucas: "como pasa con las ventas").
+	 *
+	 * 🔴 Una nota con comprobante ante ARCA ya existe allá: con CAE está autorizada, y con número
+	 * y sin CAE se envió y está pendiente de confirmación. Borrar la fila local la saca del Libro
+	 * IVA y de los TXT mientras sigue vigente en ARCA, el mismo problema por el que una venta
+	 * facturada no se borra (DeleteSaleHelper) y un comprobante con CAE no se elimina
+	 * (AfipTicketController::destroy). Un intento que ARCA no autorizó (sin CAE ni número) no
+	 * cuenta: la nota se puede borrar y su comprobante fallido se da de baja con ella.
+	 *
+	 * 🔴 Vive en la API aunque la pantalla esconda el botón: a este delete también llegan el
+	 * asistente y cualquier llamada directa, que no pasan por ningún botón.
+	 *
+	 * @param  \App\Models\CurrentAcount  $nota_credito
+	 * @return string|null
+	 */
+	static function motivo_por_el_que_no_se_puede_eliminar($nota_credito) {
+
+		$tickets = \App\Models\AfipTicket::where('nota_credito_id', $nota_credito->id)->get();
+
+		foreach ($tickets as $ticket) {
+
+			if (!empty($ticket->cae)) {
+				return 'La nota de crédito está facturada ante ARCA (N° '.$ticket->cbte_numero.'): no se puede eliminar.';
+			}
+
+			if (!empty($ticket->cbte_numero)) {
+				return 'La nota de crédito ya se envió a ARCA con el N° '.$ticket->cbte_numero.' y está pendiente de confirmación: consultala desde el comprobante antes de tocarla.';
+			}
+		}
+
+		return null;
+	}
+
+	/**
 	 * Al borrar una nota de credito de la cuenta corriente, deshace lo que esa NC habia devuelto:
 	 * baja `returned_amount` en la venta y saca del stock lo que la NC habia repuesto.
 	 *

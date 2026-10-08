@@ -65,13 +65,28 @@ class FacturarNotaCreditoExistenteHelper {
                 throw new NotaCreditoNoFacturableException('No se encontró la nota de crédito.');
             }
 
-            if (is_null($nota_credito->sale_id) || is_null($nota_credito->client_id)) {
-                throw new NotaCreditoNoFacturableException('Esta nota de crédito no está atada a una venta con cliente: solo se factura sobre la factura de una venta.');
+            /*
+             * Con o sin cliente (pedido de Lucas, 8/10/2026): una venta a consumidor final, o una
+             * devolución con "Generar movimiento en C/C" destildado, deja la nota con `client_id`
+             * NULL y igual se factura (el emisor ya sabe declarar un receptor "NR"). Lo que no se
+             * factura acá es una nota de proveedor ni una nota libre sin venta.
+             */
+            if (is_null($nota_credito->sale_id) || !is_null($nota_credito->provider_id)) {
+                throw new NotaCreditoNoFacturableException('Esta nota de crédito no está atada a una venta: solo se factura sobre la factura de una venta.');
             }
 
             Self::exigir_que_no_este_facturada($nota_credito);
 
             $factura = Self::elegir_factura($nota_credito, $afip_ticket_id);
+
+            /*
+             * La nota de exportación (factura E, tipo 19) declara el país de destino del cliente
+             * (`pais_exportacion`): sin cliente el emisor no tiene de dónde sacarlo y reventaría
+             * con un 500 sin explicación.
+             */
+            if ((string) $factura->cbte_tipo === '19' && (is_null($nota_credito->sale) || is_null($nota_credito->sale->client))) {
+                throw new NotaCreditoNoFacturableException('La factura es de exportación: la nota de crédito necesita que la venta tenga cliente (con su país de destino).');
+            }
 
             Self::exigir_que_el_total_cierre($nota_credito, $factura);
 
