@@ -81,10 +81,17 @@ class FacturarNotaCreditoExistenteHelper {
 
             /*
              * La nota de exportación (factura E, tipo 19) declara el país de destino del cliente
-             * (`pais_exportacion`): sin cliente el emisor no tiene de dónde sacarlo y reventaría
-             * con un 500 sin explicación.
+             * (`pais_exportacion`): sin cliente, o con un cliente sin país, el emisor no tiene de
+             * dónde sacarlo y reventaría con un 500 sin explicación.
              */
-            if ((string) $factura->cbte_tipo === '19' && (is_null($nota_credito->sale) || is_null($nota_credito->sale->client))) {
+            if (
+                (string) $factura->cbte_tipo === '19'
+                && (
+                    is_null($nota_credito->sale)
+                    || is_null($nota_credito->sale->client)
+                    || is_null($nota_credito->sale->client->pais_exportacion)
+                )
+            ) {
                 throw new NotaCreditoNoFacturableException('La factura es de exportación: la nota de crédito necesita que la venta tenga cliente (con su país de destino).');
             }
 

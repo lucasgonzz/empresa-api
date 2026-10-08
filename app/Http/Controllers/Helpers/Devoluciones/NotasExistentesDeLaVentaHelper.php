@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\Devoluciones;
 
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 
@@ -42,7 +43,9 @@ class NotasExistentesDeLaVentaHelper {
 
         $sale = Sale::withTrashed()->with('articles')->find($sale_id);
 
-        if (is_null($sale)) {
+        // Solo ventas del dueño (mismo criterio que DevolucionesController::search_sale): el aviso no
+        // tiene que mostrar las notas de una venta ajena aunque se le pase su id.
+        if (is_null($sale) || $sale->user_id != UserHelper::userId()) {
             return [];
         }
 

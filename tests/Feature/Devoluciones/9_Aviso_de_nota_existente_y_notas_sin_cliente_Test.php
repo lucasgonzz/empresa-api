@@ -3,6 +3,10 @@
 namespace Tests\Feature\Devoluciones;
 
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
+use App\Http\Controllers\Helpers\Afip\AfipSolicitarCaeHelper;
+use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
+use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\Devoluciones\NotasExistentesDeLaVentaHelper;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;
 use App\Models\Article;
@@ -14,6 +18,7 @@ use App\Models\Sale;
 use App\Models\StockMovement;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
 
 /**
@@ -471,5 +476,156 @@ class Aviso_de_nota_existente_y_notas_sin_cliente_Test extends EmpresaTestCase
         ]);
 
         $this->post('api/nota-credito/'.$nota->id.'/facturar', [])->assertStatus(422);
+    }
+
+    /**
+     * El aviso mira solo ventas del dueño: con el id de una venta ajena no devuelve sus notas.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function el_aviso_no_muestra_las_notas_de_una_venta_ajena()
+    {
+        $e = $this->venta();
+        $this->nota_existente($e);
+
+        $items = $this->payload($e)['items'];
+
+        $this->assertCount(1, NotasExistentesDeLaVentaHelper::buscar($e['venta']->id, $items), 'Control: con la venta propia sí avisa.');
+
+        $otro_comercio = User::create([
+            'name'     => 'Otro comercio NC',
+            'email'    => 'nc-otro-'.uniqid().'@test.local',
+            'password' => Hash::make('secret'),
+        ]);
+
+        $e['venta']->update(['user_id' => $otro_comercio->id]);
+
+        $this->assertSame([], NotasExistentesDeLaVentaHelper::buscar($e['venta']->id, $items));
+    }
+
+    /**
+     * Con dos notas existentes se listan las dos, cada una con su estado: la ya facturada no se
+     * ofrece de nuevo y la otra no se puede facturar porque la factura quedó agotada por la primera.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function con_dos_notas_se_listan_las_dos_y_la_factura_agotada_no_se_ofrece()
+    {
+        $e = $this->venta();
+        $factura = $this->factura_de($e);
+
+        $facturada = $this->nota_existente($e);
+
+        AfipTicket::create([
+            'nota_credito_id'     => $facturada->id,
+            'sale_afip_ticket_id' => $factura->id,
+            'afip_information_id' => $factura->afip_information_id,
+            'cbte_tipo'           => '8',
+            'cbte_numero'         => '9',
+            'importe_total'       => 1000,
+            'cae'                 => '71234567890123',
+        ]);
+
+        $sin_facturar = $this->nota_existente($e);
+
+        $notas = $this->post('api/devoluciones/', $this->payload($e, 1, ['verificar_notas_existentes' => true]))->json('notas');
+
+        $this->assertCount(2, $notas);
+
+        $por_id = [];
+        foreach ($notas as $nota) {
+            $por_id[$nota['id']] = $nota;
+        }
+
+        $this->assertTrue($por_id[$facturada->id]['facturada']);
+        $this->assertFalse($por_id[$sin_facturar->id]['facturada']);
+        $this->assertFalse($por_id[$sin_facturar->id]['puede_facturarse'], 'La factura ya está agotada por la primera nota: no cabe otra.');
+        $this->assertEmpty($por_id[$sin_facturar->id]['facturas']);
+    }
+
+    /**
+     * "Crear otra de todos modos" sobre una venta cuya nota ya está facturada: se permite (el
+     * usuario lo eligió con el aviso a la vista).
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function confirmar_la_duplicada_tambien_deja_crear_si_la_existente_ya_esta_facturada()
+    {
+        $e = $this->venta();
+        $factura = $this->factura_de($e);
+        $existente = $this->nota_existente($e);
+
+        AfipTicket::create([
+            'nota_credito_id'     => $existente->id,
+            'sale_afip_ticket_id' => $factura->id,
+            'afip_information_id' => $factura->afip_information_id,
+            'cbte_tipo'           => '8',
+            'cbte_numero'         => '9',
+            'importe_total'       => 1000,
+            'cae'                 => '71234567890123',
+        ]);
+
+        $this->post('api/devoluciones/', $this->payload($e, 1, ['verificar_notas_existentes' => true]))->assertStatus(409);
+
+        $this->post('api/devoluciones/', $this->payload($e, 1, ['verificar_notas_existentes' => true, 'confirmar_duplicada' => true]))->assertStatus(201);
+    }
+
+    /**
+     * Una factura de exportación con un cliente SIN país de destino tampoco se puede notar: 422 con
+     * el motivo, no un 500 del emisor.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function la_nota_de_exportacion_con_cliente_sin_pais_se_rechaza_con_el_motivo()
+    {
+        $e = $this->venta(true);
+        $factura = $this->factura_de($e);
+        $factura->update(['cbte_tipo' => '19']);
+        $nota = $this->nota_existente($e);
+
+        $response = $this->post('api/nota-credito/'.$nota->id.'/facturar', []);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('país de destino', $response->json('message'));
+    }
+
+    /**
+     * Lo que el emisor REAL arma antes de hablar con ARCA funciona con una venta sin cliente: el
+     * comprobante de la nota, el documento del receptor (consumidor final), la condición de IVA del
+     * receptor y los importes. Lo único que queda afuera es la llamada de red (`init()`), que no se
+     * puede hacer en un test; el doble de los otros tests reemplaza `init()` entero y no ejercita
+     * nada de esto.
+     *
+     * @group devoluciones
+     * @test
+     */
+    public function las_piezas_reales_de_la_emision_funcionan_sin_cliente()
+    {
+        $e = $this->venta(false);
+        $factura = $this->factura_de($e);
+        $nota = $this->nota_existente($e);
+
+        $emisor = new AfipNotaCreditoHelper($factura, $nota);
+        $emisor->create_afip_ticket();
+
+        $comprobante = AfipTicket::where('nota_credito_id', $nota->id)->first();
+
+        $this->assertNotNull($comprobante, 'El comprobante de la nota se crea aunque la venta no tenga cliente.');
+        $this->assertSame('', $comprobante->iva_cliente);
+
+        $documento = AfipSolicitarCaeHelper::get_doc_client($e['venta']);
+        $this->assertSame('NR', $documento['doc_client']);
+        $this->assertEquals(99, $documento['doc_type']);
+
+        $this->assertEquals(5, CondicionIvaReceptorHelper::get_iva_receptor($e['venta'], 8), 'Sin cliente el receptor es consumidor final (5).');
+
+        $calculador = new AfipHelper($factura, $nota->articles, $nota->services, null, null, $nota->nota_credito_descriptions, $nota);
+        $importes = $calculador->getImportes();
+
+        $this->assertGreaterThan(0, (float) $importes['total'], 'Los importes de la nota se calculan sin cliente.');
     }
 }

@@ -834,6 +834,27 @@ class CurrentAcountController extends Controller
 
             CuentaCorrienteLock::bloquear_duenio($duenio);
 
+            /*
+             * Segunda mirada con la nota bloqueada (misión nc-aviso-existente-y-sin-cliente): la guarda
+             * de arriba corre sin candado, y FacturarNotaCreditoExistenteHelper emite con la nota
+             * bloqueada. Sin esto, una baja y una emisión simultáneas podían cruzarse: la baja
+             * borraba el comprobante recién autorizado. Con el mismo candado, una espera a la otra y
+             * la que llega segunda ve el resultado de la primera.
+             */
+            if ($current_acount->status == 'nota_credito') {
+
+                CurrentAcount::where('id', $current_acount->id)->lockForUpdate()->first(['id']);
+
+                $motivo_ahora = NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar($current_acount);
+
+                if (!is_null($motivo_ahora)) {
+
+                    DB::rollBack();
+
+                    return response()->json(['message' => $motivo_ahora, 'error_nota_credito_facturada' => true], 422);
+                }
+            }
+
             if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
 
                 // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
