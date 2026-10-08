@@ -2,6 +2,9 @@
 
 namespace Tests\Import\RelacionesParecidas;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Models\BackgroundProcess;
+use App\Models\ExcelAnalysisRun;
 use App\Models\Location;
 use App\Models\PriceType;
 use App\Models\Provincia;
@@ -202,8 +205,44 @@ class RecomendacionConRelacionesTest extends RelacionesParecidasTestCase
                 'provider_codes_existentes_otros_proveedores' => 0,
                 'formatos_numericos'                          => null,
             ], $resultado, $caso[0]);
+
+            $this->assertProcesoCompletado($caso[0]);
         }
 
         Http::assertNothingSent();
+
+        /* Sin la bandera no se revisó nada: el aviso queda el de antes. */
+        $this->assertAviso('Está lista la recomendación de importación para el archivo');
+        Notification::assertNotSentTo($this->tenant, GlobalNotification::class, function ($notificacion) {
+            return strpos($notificacion->message_text, 'nombres parecidos') !== false;
+        });
+    }
+
+    /**
+     * La rama de clientes y proveedores cierra el proceso visible (la píldora): si quedara "en
+     * curso", a las 3 horas cerrar_colgados() lo marcaría como fallo.
+     */
+    public function test_clientes_con_la_bandera_cierran_el_proceso_en_segundo_plano()
+    {
+        $this->falsear_ia(function () {
+            return null;
+        });
+
+        $this->recomendacion('client', self::CLIENTES, $this->columnas_clientes(), true);
+
+        $this->assertProcesoCompletado('client');
+    }
+
+    /**
+     * @param  string $mensaje
+     * @return void
+     */
+    protected function assertProcesoCompletado($mensaje)
+    {
+        $run = ExcelAnalysisRun::where('uuid', $this->ultimo_uuid)->first();
+        $proceso = BackgroundProcessHelper::por_referencia($run, false);
+
+        $this->assertNotNull($proceso, $mensaje . ': la corrida no abrió proceso visible.');
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $proceso->status, $mensaje . ': el proceso quedó "' . $proceso->status . '".');
     }
 }

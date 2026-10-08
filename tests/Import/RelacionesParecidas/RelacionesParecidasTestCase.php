@@ -44,6 +44,9 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
     /** @var int Llamadas a la IA de la recomendación de artículos. */
     protected $llamadas_recomendacion = 0;
 
+    /** @var string|null uuid de la última corrida de get-recomendacion. */
+    protected $ultimo_uuid = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -258,6 +261,8 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
         }
 
         $respuesta = $this->postJson('/api/ai-excel-import/get-recomendacion', $data)->assertStatus(202);
+
+        $this->ultimo_uuid = $respuesta->json('analysis_uuid');
 
         $estado = $this->getJson('/api/ai-excel-import/analysis/' . $respuesta->json('analysis_uuid'))->assertStatus(200);
 
