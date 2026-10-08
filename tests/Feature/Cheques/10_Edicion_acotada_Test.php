@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Cheques;
 
+use App\Models\AuditLog;
 use App\Models\Caja;
 use App\Models\Cheque;
 use App\Models\ChequeBanco;
@@ -9,6 +10,7 @@ use App\Models\CurrentAcount;
 use App\Models\EtiquetaMedida;
 use App\Models\MovimientoCaja;
 use App\Models\User;
+use App\Services\AuditLog\AuditContext;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -776,6 +778,136 @@ class Edicion_acotada_Test extends ChequesTestCase
         $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
         $this->assertSame('cobrado', $response->json('model.estado_manual'));
         $this->assertSame('cobrado', $this->fila($recibido->id)['estado_manual']);
+    }
+
+    /**
+     * 12. La edición deja rastro en `audit_logs`: una fila `updated` del cheque editado y otra por
+     * cada cheque del par al que se replicó. Va por MODELO (->update()) y no por builder, porque el
+     * builder no dispara los eventos de Eloquent y la auditoría solo ve eventos.
+     *
+     * @test
+     */
+    public function la_edicion_deja_rastro_en_audit_logs_del_cheque_y_de_su_par()
+    {
+        list($recibido, $copia) = $this->cheque_endosado_con_su_copia();
+
+        $contar = function ($cheque_id) {
+            return AuditLog::where('auditable_type', Cheque::class)
+                            ->where('auditable_id', $cheque_id)
+                            ->where('event', 'updated')
+                            ->count();
+        };
+
+        AuditContext::reiniciar();
+
+        $recibido_antes = $contar($recibido->id);
+        $copia_antes = $contar($copia->id);
+
+        $response = $this->putJson('api/cheque/' . $recibido->id, $this->payload_de_la_spa($recibido->id, [
+            'numero'     => 'AUDITADO-1',
+            'notes'      => 'nota auditada',
+            'fecha_pago' => '2026-11-11',
+        ]));
+
+        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+        $this->assertSame($recibido_antes + 1, $contar($recibido->id), 'La edición tiene que dejar una fila `updated` del cheque editado.');
+        $this->assertSame($copia_antes + 1, $contar($copia->id), 'Y otra del cheque del par al que se replicó.');
+
+        $fila = AuditLog::where('auditable_type', Cheque::class)
+                        ->where('auditable_id', $recibido->id)
+                        ->where('event', 'updated')
+                        ->orderBy('id', 'DESC')
+                        ->first();
+
+        $this->assertStringContainsString('AUDITADO-1', (string) $fila->new_values);
+
+        // Un PUT que no cambia nada no ensucia la auditoría.
+        $recibido_antes = $contar($recibido->id);
+        $copia_antes = $contar($copia->id);
+
+        $this->assertSame(200, $this->putJson('api/cheque/' . $recibido->id, ['numero' => 'AUDITADO-1'])->getStatusCode());
+        $this->assertSame($recibido_antes, $contar($recibido->id));
+        $this->assertSame($copia_antes, $contar($copia->id));
+    }
+
+    /**
+     * 13. `notes` es un `text` de 65.535 BYTES: 20.000 emojis (4 bytes cada uno) pasan el tope en
+     * caracteres y reventaban con un 500 (SQLSTATE 1406). Es 422 y no se escribe nada.
+     *
+     * @test
+     */
+    public function unas_notas_que_no_entran_en_la_columna_son_422_y_no_escriben_nada()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente notas largas ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta);
+
+        $antes = $this->fila($recibido->id);
+
+        $response = $this->putJson('api/cheque/' . $recibido->id, [
+            'notes'  => str_repeat("\u{1F600}", 20000),
+            'numero' => 'NO-DEBE-ESCRIBIRSE',
+        ]);
+
+        $this->assertSame(422, $response->getStatusCode(), $this->resumen($response));
+        $this->assertStringContainsString('notas', mb_strtolower($response->json('message')));
+        $this->assertSame($antes, $this->fila($recibido->id), 'No se escribe nada.');
+
+        // Justo en el borde de bytes: 16.383 emojis son 65.532 bytes y entran.
+        $response = $this->putJson('api/cheque/' . $recibido->id, ['notes' => str_repeat("\u{1F600}", 16383)]);
+
+        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+    }
+
+    /**
+     * 14. Un cheque viejo atado al banco de OTRO comercio (dato anterior al arreglo de tenencia del
+     * 3/10/2026): la SPA reenvía ese mismo id en el modelo entero, y eso no puede trabar la edición
+     * del resto. El banco no se toca (ni el id ni el texto). Pedir un id ajeno DISTINTO sigue siendo
+     * 422 y no escribe nada.
+     *
+     * @test
+     */
+    public function reenviar_el_mismo_banco_ajeno_que_ya_tiene_no_traba_la_edicion()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente banco viejo ajeno ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta, ['banco' => 'Texto viejo']);
+        $ajeno = ChequeBanco::create(['name' => 'Banco ajeno viejo ' . uniqid(), 'user_id' => $this->otro_dueno()->id]);
+        $otro_ajeno = ChequeBanco::create(['name' => 'Otro banco ajeno ' . uniqid(), 'user_id' => $this->otro_dueno()->id]);
+
+        // El dato viejo, insertado a mano: ningún endpoint de hoy lo deja.
+        DB::table('cheques')->where('id', $recibido->id)->update(['cheque_banco_id' => $ajeno->id]);
+
+        $antes = $this->fila($recibido->id);
+
+        // --- El mismo id reenviado (como número y como texto): 200, el resto se guarda ----------------
+        foreach ([$ajeno->id, (string) $ajeno->id] as $reenviado) {
+
+            $response = $this->putJson('api/cheque/' . $recibido->id, [
+                'cheque_banco_id' => $reenviado,
+                'numero'          => 'EDITABLE-' . gettype($reenviado),
+                'notes'           => 'se guarda igual',
+            ]);
+
+            $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+
+            $fila = $this->fila($recibido->id);
+
+            $this->assertSame('EDITABLE-' . gettype($reenviado), $fila['numero']);
+            $this->assertSame('se guarda igual', $fila['notes']);
+            $this->assertSame((string) $ajeno->id, (string) $fila['cheque_banco_id'], 'El banco no se toca.');
+            $this->assertSame($antes['banco'], $fila['banco'], 'El texto del banco tampoco.');
+        }
+
+        // --- Un id ajeno DISTINTO: 422 y no se escribe nada ------------------------------------------
+        $antes = $this->fila($recibido->id);
+
+        $response = $this->putJson('api/cheque/' . $recibido->id, [
+            'cheque_banco_id' => $otro_ajeno->id,
+            'numero'          => 'NO-DEBE-ESCRIBIRSE',
+        ]);
+
+        $this->assertSame(422, $response->getStatusCode(), $this->resumen($response));
+        $this->assertSame(self::MENSAJE_BANCO, $response->json('message'));
+        $this->assertSame($antes, $this->fila($recibido->id));
     }
 
     // ---------------------------------------------------------------------------------------------

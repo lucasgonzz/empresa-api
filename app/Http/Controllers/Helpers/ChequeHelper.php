@@ -80,8 +80,15 @@ class ChequeHelper {
      */
     const LARGO_MAXIMO_NUMERO = 191;
 
-    /** Largo máximo de las notas: es un `text` (65.535 bytes) en la base; con margen para multibyte. */
+    /** Largo máximo de las notas, en CARACTERES (lo que ve el usuario). */
     const LARGO_MAXIMO_NOTAS = 20000;
+
+    /**
+     * Largo máximo de las notas, en BYTES: `notes` es un `text` (65.535 bytes). Aparte del tope en
+     * caracteres porque un emoji ocupa 4 bytes: 20.000 de ellos son 80.000 bytes y la base cortaba
+     * con un 500 (SQLSTATE 1406, Data too long).
+     */
+    const BYTES_MAXIMOS_NOTAS = 65535;
 
     /**
      * Crea el cheque de una fila de método de pago de tipo cheque, o —si la fila trae `cheque_id`—
@@ -880,7 +887,7 @@ class ChequeHelper {
 
         if (array_key_exists('notes', $pedido)) {
 
-            list($notas, $problema) = self::leer_texto_de_cheque($pedido['notes'], self::LARGO_MAXIMO_NOTAS, 'Las notas del cheque no son válidas.', 'Las notas del cheque son demasiado largas.');
+            list($notas, $problema) = self::leer_texto_de_cheque($pedido['notes'], self::LARGO_MAXIMO_NOTAS, 'Las notas del cheque no son válidas.', 'Las notas del cheque son demasiado largas.', self::BYTES_MAXIMOS_NOTAS);
 
             if (is_null($problema)) {
 
@@ -913,8 +920,20 @@ class ChequeHelper {
 
         if (array_key_exists('cheque_banco_id', $pedido)) {
 
-            // "Vacío" es la misma lista blanca de es_sin_caja(): null, '', el entero 0 o solo ceros.
-            if (self::es_sin_caja($pedido['cheque_banco_id'])) {
+            $banco_pedido = self::id_del_pedido($pedido['cheque_banco_id']);
+
+            // El MISMO banco que el cheque ya tiene: la SPA reenvía el modelo entero, así que es el
+            // formulario devolviendo lo que ya había y no un pedido de cambiarlo. No se toca nada del
+            // banco (ni el id ni el texto) y no se valida la tenencia: un cheque viejo atado al banco
+            // de otro comercio (dato anterior al arreglo del 3/10/2026) tiene que poder editarse. Pedir
+            // un id DISTINTO que no es del dueño sigue siendo 422.
+            if ($banco_pedido > 0 && $banco_pedido === (int) $cheque->cheque_banco_id) {
+
+                // Nada que hacer con el banco.
+
+            } elseif (self::es_sin_caja($pedido['cheque_banco_id'])) {
+
+                // "Vacío" es la misma lista blanca de es_sin_caja(): null, '', el entero 0 o solo ceros.
 
                 // Solo si había banco del catálogo: un cheque viejo con apenas el texto `banco` recibe
                 // del formulario un "sin banco" que NO es una orden de borrar ese texto.
@@ -956,9 +975,21 @@ class ChequeHelper {
 
         DB::transaction(function () use ($cheque, $cambios, $para_el_par, $user_id) {
 
-            Cheque::where('id', $cheque->id)
-                    ->where('user_id', $user_id)
-                    ->update($cambios);
+            /*
+             * 🔴 Por MODELO (->update() sobre la instancia) y no por builder: el builder no dispara los
+             * eventos de Eloquent y AuditLogRecorder solo ve eventos, o sea que la edición no dejaría
+             * rastro en audit_logs (Cheque es un modelo no excluible de la auditoría; cobrar, pagar y
+             * rechazar auditan porque usan save()). $cambios y $para_el_par se arman a mano arriba,
+             * clave por clave, así que el `$guarded = []` del modelo no abre nada.
+             */
+            $propio = Cheque::where('id', $cheque->id)
+                            ->where('user_id', $user_id)
+                            ->first();
+
+            if (!is_null($propio)) {
+
+                $propio->update($cambios);
+            }
 
             if (count($para_el_par)) {
 
@@ -966,7 +997,10 @@ class ChequeHelper {
 
                 if (!is_null($par)) {
 
-                    $par->update($para_el_par);
+                    foreach ($par->get() as $otro) {
+
+                        $otro->update($para_el_par);
+                    }
                 }
             }
         });
@@ -1009,9 +1043,10 @@ class ChequeHelper {
      * @param  int  $largo_maximo
      * @param  string  $mensaje_invalido
      * @param  string  $mensaje_largo
+     * @param  int|null  $bytes_maximo  Tope en bytes además del de caracteres (columnas `text`); null si no aplica.
      * @return array{0: string|null, 1: string|null}  [valor a guardar, problema]
      */
-    protected static function leer_texto_de_cheque($valor, $largo_maximo, $mensaje_invalido, $mensaje_largo) {
+    protected static function leer_texto_de_cheque($valor, $largo_maximo, $mensaje_invalido, $mensaje_largo, $bytes_maximo = null) {
 
         if (is_null($valor)) {
 
@@ -1030,7 +1065,7 @@ class ChequeHelper {
             return [null, null];
         }
 
-        if (mb_strlen($texto) > $largo_maximo) {
+        if (mb_strlen($texto) > $largo_maximo || (!is_null($bytes_maximo) && strlen($texto) > $bytes_maximo)) {
 
             return [null, $mensaje_largo];
         }
