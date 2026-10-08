@@ -35,6 +35,16 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
     /** @var array archivos temporales a borrar al terminar cada test */
     protected $temporales = [];
 
+    /**
+     * Excel que la importación dejó en storage/app (rutas relativas, como `ImportHistory::excel_url`).
+     * Al terminar se borran junto con sus derivados: el CSV de los lotes
+     * (`imported_files/<nombre>_<time>.csv`, que en producción queda a propósito) y los de
+     * FinalizeArticleImport::borrar_archivos_derivados().
+     *
+     * @var array
+     */
+    protected $excels_en_storage = [];
+
     protected function tearDown(): void
     {
         foreach ($this->temporales as $ruta) {
@@ -42,6 +52,23 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
         }
 
         $this->temporales = [];
+
+        foreach ($this->excels_en_storage as $relativa) {
+
+            $derivados = array_merge(
+                [storage_path('app/' . $relativa)],
+                glob(storage_path('app/' . $relativa) . '.hoja*') ?: [],
+                glob(storage_path('app/imported_files/' . pathinfo($relativa, PATHINFO_FILENAME) . '_*.csv*')) ?: []
+            );
+
+            foreach ($derivados as $archivo) {
+                if (is_file($archivo)) {
+                    @unlink($archivo);
+                }
+            }
+        }
+
+        $this->excels_en_storage = [];
 
         parent::tearDown();
     }
@@ -124,6 +151,10 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
         $import = ImportHistory::where('user_id', $this->tenant->id)->orderBy('id', 'DESC')->first();
 
         $this->assertNotNull($import, 'La importación no dejó ImportHistory.');
+
+        if (!empty($import->excel_url)) {
+            $this->excels_en_storage[] = $import->excel_url;
+        }
 
         $this->assertInvariantesDeConteo($import);
 
@@ -254,7 +285,7 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
         // El admin manda el Excel ya guardado por /analyze, relativo a storage/app.
         $relativa = 'imported_files/zz_test_' . uniqid() . '.xlsx';
         copy($ruta, storage_path('app/' . $relativa));
-        $this->temporales[] = storage_path('app/' . $relativa);
+        $this->excels_en_storage[] = $relativa;
 
         config([
             'services.admin_api.require_api_key' => true,
