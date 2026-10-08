@@ -60,6 +60,21 @@ class RelacionesParecidasDetector
     const PRESUPUESTO_COMPARACIONES = 150000;
 
     /**
+     * Entradas de las listas del índice de bigramas que el BLOQUEO puede recorrer por corrida, como
+     * máximo (cada valor recorre las listas de todos sus bigramas). Agotado, los valores que faltan
+     * quedan solo con la capa determinista y la corrida sale `recortado`, igual que con las
+     * comparaciones.
+     *
+     * 🔴 Hace falta aparte del de comparaciones: el bloqueo era el costo que no se contaba. Medido el
+     * 8/10/2026 con 1999 valores en una columna: contra 3000 existentes recorre 11,2 millones de
+     * entradas (8,6 s, entra entero); contra 20.000, 58 millones (46-50 s, 116 MB), con las
+     * comparaciones lejos de su tope porque cada valor compara 20 como máximo. Recorre ~1,2
+     * millones de entradas por segundo: con este tope el caso de 20.000 tarda 11 s y sale
+     * `recortado`. La memoria no la acota: es la del índice de los existentes.
+     */
+    const PRESUPUESTO_BLOQUEO = 15000000;
+
+    /**
      * Pares que pasan el bloqueo y se comparan en serio, por valor, como máximo: los que más
      * bigramas comparten. Solo se muestran 3 candidatos; comparar 20 alcanza y sobra.
      */
@@ -225,15 +240,18 @@ class RelacionesParecidasDetector
     }
 
     /**
-     * Presupuesto de comparaciones de una corrida (lo comparten todos los grupos del chequeo).
+     * Presupuesto de una corrida (lo comparten todos los grupos del chequeo): comparaciones
+     * completas y entradas del índice que puede recorrer el bloqueo.
      *
      * @param  int $comparaciones
-     * @return \stdClass {restante: int, recortado: bool}
+     * @param  int $bloqueo
+     * @return \stdClass {restante: int, bloqueo_restante: int, recortado: bool}
      */
-    public static function nuevo_presupuesto($comparaciones = self::PRESUPUESTO_COMPARACIONES)
+    public static function nuevo_presupuesto($comparaciones = self::PRESUPUESTO_COMPARACIONES, $bloqueo = self::PRESUPUESTO_BLOQUEO)
     {
         $presupuesto = new \stdClass();
         $presupuesto->restante = (int) $comparaciones;
+        $presupuesto->bloqueo_restante = (int) $bloqueo;
         $presupuesto->recortado = false;
 
         return $presupuesto;
@@ -577,11 +595,7 @@ class RelacionesParecidasDetector
                     $info['estado'] = 'misma_escritura';
                     $info['opciones'] = $por_fuerte[$fuerte];
                 } else {
-                    if ($con_parecidos) {
-                        $info['candidatos'] = self::candidatos_existentes(self::rasgos($valor), $rasgos_existentes, $indice_existentes, $presupuesto);
-                    }
-
-                    $info['estado'] = count($info['candidatos']) > 0 ? 'consultar' : 'nuevo';
+                    /* Queda 'nuevo' hasta que se le busquen candidatos, abajo. */
                     $posibles_nuevos[] = $valor;
                 }
             }
@@ -590,6 +604,20 @@ class RelacionesParecidasDetector
         }
 
         if ($con_parecidos) {
+            /*
+             * Los candidatos se buscan de los valores con MÁS FILAS a los de menos: si el
+             * presupuesto se agota en el medio, los que se quedan sin revisar son los que menos
+             * pesan en el archivo.
+             */
+            $posibles_nuevos = self::por_filas_descendente($posibles_nuevos, $resultado);
+
+            foreach ($posibles_nuevos as $valor) {
+                $candidatos = self::candidatos_existentes(self::rasgos($valor), $rasgos_existentes, $indice_existentes, $presupuesto);
+
+                $resultado[$valor]['candidatos'] = $candidatos;
+                $resultado[$valor]['estado'] = count($candidatos) > 0 ? 'consultar' : 'nuevo';
+            }
+
             self::candidatos_entre_valores($resultado, $posibles_nuevos, $presupuesto);
         }
 
@@ -598,6 +626,29 @@ class RelacionesParecidasDetector
             'con_parecidos' => (bool) $con_parecidos,
             'recortado'     => $recortado || (bool) $presupuesto->recortado,
         ];
+    }
+
+    /**
+     * Los valores ordenados por filas descendente; a igual cantidad, en el orden en que vinieron
+     * (usort no es estable en PHP 7.4, así que el desempate va explícito).
+     *
+     * @param  string[] $valores
+     * @param  array    $resultado  [valor => ['filas' => int, ...]]
+     * @return string[]
+     */
+    protected static function por_filas_descendente(array $valores, array $resultado)
+    {
+        $orden = array_flip($valores);
+
+        usort($valores, function ($a, $b) use ($resultado, $orden) {
+            if ($resultado[$a]['filas'] !== $resultado[$b]['filas']) {
+                return $resultado[$b]['filas'] - $resultado[$a]['filas'];
+            }
+
+            return $orden[$a] - $orden[$b];
+        });
+
+        return $valores;
     }
 
     /**
@@ -627,22 +678,34 @@ class RelacionesParecidasDetector
      * El umbral es sobre el MÁS CORTO para no perder la contención ("pala" adentro de "palanca de
      * cambios" comparte todos los bigramas de "pala", que son pocos contra los del largo).
      *
-     * @param  array $rasgos_valor
-     * @param  array $lista   [posición => ['rasgos' => [...]]]
-     * @param  array $indice  indice_de_bigramas($lista)
+     * Recorrer las listas cuesta tantas entradas como suman las de los bigramas del valor (los
+     * comunes, "er", "as", "os", tienen una entrada por casi cada existente): eso se cobra del
+     * presupuesto de bloqueo ANTES de recorrerlas. Si no alcanza, no se recorre nada, el valor
+     * queda sin candidatos y la corrida sale `recortado`.
+     *
+     * @param  array     $rasgos_valor
+     * @param  array     $lista        [posición => ['rasgos' => [...]]]
+     * @param  array     $indice       indice_de_bigramas($lista)
+     * @param  \stdClass $presupuesto
      * @return int[] posiciones
      */
-    protected static function bloquear(array $rasgos_valor, array $lista, array $indice)
+    protected static function bloquear(array $rasgos_valor, array $lista, array $indice, \stdClass $presupuesto)
     {
         $listas = [];
+        $entradas = 0;
 
         foreach ($rasgos_valor['bigramas'] as $bigrama => $nada) {
             if (isset($indice[$bigrama])) {
                 $listas[] = $indice[$bigrama];
+                $entradas += count($indice[$bigrama]);
             }
         }
 
         if (count($listas) === 0) {
+            return [];
+        }
+
+        if (!self::gastar_bloqueo($presupuesto, $entradas)) {
             return [];
         }
 
@@ -677,6 +740,28 @@ class RelacionesParecidasDetector
     }
 
     /**
+     * Cobra $entradas del presupuesto de bloqueo. false = no alcanzan: el presupuesto queda en cero
+     * (los valores que faltan ni lo intentan) y la corrida, `recortado`.
+     *
+     * @param  \stdClass $presupuesto
+     * @param  int       $entradas
+     * @return bool
+     */
+    protected static function gastar_bloqueo(\stdClass $presupuesto, $entradas)
+    {
+        if ($presupuesto->bloqueo_restante < $entradas) {
+            $presupuesto->bloqueo_restante = 0;
+            $presupuesto->recortado = true;
+
+            return false;
+        }
+
+        $presupuesto->bloqueo_restante -= $entradas;
+
+        return true;
+    }
+
+    /**
      * Gasta una comparación del presupuesto. false = se agotó (y la corrida queda `recortado`).
      *
      * @param  \stdClass $presupuesto
@@ -708,7 +793,7 @@ class RelacionesParecidasDetector
     {
         $candidatos = [];
 
-        foreach (self::bloquear($rasgos_valor, $rasgos_existentes, $indice) as $posicion) {
+        foreach (self::bloquear($rasgos_valor, $rasgos_existentes, $indice, $presupuesto) as $posicion) {
             if (!self::gastar($presupuesto)) {
                 break;
             }
@@ -768,7 +853,7 @@ class RelacionesParecidasDetector
             $rasgos_valor = $elemento['rasgos'];
             $candidatos = [];
 
-            foreach (self::bloquear($rasgos_valor, $lista, $indice) as $posicion) {
+            foreach (self::bloquear($rasgos_valor, $lista, $indice, $presupuesto) as $posicion) {
                 $otro = $lista[$posicion]['valor'];
 
                 if ($posicion === $posicion_valor || $lista[$posicion]['rasgos']['fuerte'] === $rasgos_valor['fuerte']) {
