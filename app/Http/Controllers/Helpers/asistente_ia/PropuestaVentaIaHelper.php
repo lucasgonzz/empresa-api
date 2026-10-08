@@ -1671,6 +1671,8 @@ class PropuestaVentaIaHelper
             'incoterms'                                  => 0,
             'observations_ocultas'                       => '',
             'aplicar_recargos_directo_a_items'           => 0,
+            // Idem para descuentos (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026): el asistente arma el descuento de venta al pie.
+            'aplicar_descuentos_directo_a_items'         => 0,
             'sale_status_id'                             => 0,
             'discount_stock'                             => 1,
             'iva_aplicado'                               => 1,
