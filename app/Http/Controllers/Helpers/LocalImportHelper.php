@@ -19,6 +19,10 @@ class LocalImportHelper {
 	/**
 	 * Procesa la columna saldo del Excel según si el cliente/proveedor es nuevo o existente.
 	 *
+	 * Hoy lo usa solo `ClientImport`. Al nuevo le carga el saldo inicial y al EXISTENTE le ajusta
+	 * el saldo con una nota de crédito o de débito. La importación de proveedores usa
+	 * setSaldoInicial(), que no ajusta nunca: ver su docblock.
+	 *
 	 * @param mixed $row Fila del Excel.
 	 * @param array $columns Mapeo de columnas de la importación.
 	 * @param string $model_name Nombre del modelo (`client` o `provider`).
@@ -70,16 +74,39 @@ class LocalImportHelper {
 	/**
 	 * Crea el saldo inicial cuando el registro importado aún no tiene movimientos en pesos.
 	 *
-	 * @param float $saldo_importado Saldo indicado en el Excel.
+	 * Solo carga en una cuenta VACÍA: si la cuenta ya tiene algún movimiento (provisorios
+	 * incluidos, igual que el botón "Saldo inicial"), no hace nada y devuelve false. Nunca ajusta;
+	 * el ajuste de un cliente existente es ajustarSaldoPorImportacion(), y lo decide
+	 * procesarSaldoImportacion(), no esta función.
+	 *
+	 * 🔴 El monto va SIEMPRE en positivo, del lado que corresponde: la deuda en el `debe` y el saldo
+	 * a favor en el `haber`. Antes un saldo negativo del Excel (a favor) se guardaba con el `haber`
+	 * NEGATIVO: el movimiento, la cuenta y el `saldo_pesos` quedaban bien al cargarse, pero la
+	 * cadena resta el haber (`CurrentAcountHelper::aporte_al_saldo()` = −haber), así que el primer
+	 * `checkSaldos()` —cualquier pago, venta o nota posterior— daba vuelta el signo: −7.600 a favor
+	 * pasaba a +7.600 de deuda (misión importacion-proveedores-saldo-inicial, 8/10/2026; es lo de
+	 * los "Saldo inicial" de Servian que destapó la tanda 4.2.5). Ahora queda igual que el del
+	 * botón (`CurrentAcountController::saldoInicial()`). Lo ya importado con el signo viejo no se
+	 * toca acá.
+	 *
+	 * El `saldo` del movimiento, el de la cuenta y el `saldo_pesos` sí llevan el signo del Excel:
+	 * son saldos, no montos.
+	 *
+	 * Va SIN `user_id`, a propósito: ver el comentario del create en
+	 * `CurrentAcountController::saldoInicial()` (recibos y reportes de caja).
+	 *
+	 * @param float $saldo_importado Saldo indicado en el Excel (negativo = a favor).
 	 * @param \App\Models\CreditAccount $credit_account Cuenta corriente en pesos.
 	 * @param string $model_name Nombre del modelo (`client` o `provider`).
 	 * @param mixed $model Instancia persistida del cliente/proveedor.
+	 * @return bool true si cargó el saldo inicial; false si la cuenta ya tenía movimientos.
+	 *              procesarSaldoImportacion() lo ignora; setSaldoInicial() lo usa para avisar.
 	 */
 	static function crearSaldoInicialPorImportacion($saldo_importado, $credit_account, $model_name, $model) {
-		$current_acounts = CurrentAcount::where('credit_account_id', $credit_account->id)->get();
+		$tiene_movimientos = CurrentAcount::where('credit_account_id', $credit_account->id)->exists();
 
-		if (count($current_acounts) > 0) {
-			return;
+		if ($tiene_movimientos) {
+			return false;
 		}
 
 		$is_for_debe = $saldo_importado >= 0;
@@ -90,7 +117,7 @@ class LocalImportHelper {
 			'client_id'         => $model_name == 'client' ? $model->id : null,
 			'provider_id'       => $model_name == 'provider' ? $model->id : null,
 			'debe'              => $is_for_debe ? $saldo_importado : null,
-			'haber'             => !$is_for_debe ? $saldo_importado : null,
+			'haber'             => !$is_for_debe ? abs($saldo_importado) : null,
 			'credit_account_id' => $credit_account->id,
 			'moneda_id'         => 1,
 			'saldo'             => $saldo_importado,
@@ -101,6 +128,8 @@ class LocalImportHelper {
 
 		$credit_account->saldo = $saldo_importado;
 		$credit_account->save();
+
+		return true;
 	}
 
 	/**
@@ -157,20 +186,61 @@ class LocalImportHelper {
 		CurrentAcountHelper::update_credit_account_saldo($credit_account->id);
 	}
 
+	/**
+	 * Carga el saldo del Excel como SALDO INICIAL del cliente/proveedor, si su cuenta en pesos está
+	 * vacía. Es el helper de la importación de PROVEEDORES (`ProviderImport`).
+	 *
+	 * La diferencia con procesarSaldoImportacion() (clientes) es deliberada: acá el saldo del Excel
+	 * es siempre un saldo INICIAL y nunca ajusta una cuenta que ya tiene movimientos (es lo que dice
+	 * la pantalla de importación). Clientes, en cambio, ajusta al existente con una nota de crédito
+	 * o de débito. Para que ese "no se cargó" no sea silencioso, la función devuelve un estado y
+	 * ProviderImport lo avisa al final de la importación.
+	 *
+	 * 🔴 Si el modelo no tiene cuenta en pesos, la CREA (las dos monedas) y carga el saldo. Antes
+	 * salía con un `return`: como ProviderImport creaba el proveedor sin cuentas, el saldo de todo
+	 * proveedor NUEVO se perdía en silencio (misión importacion-proveedores-saldo-inicial,
+	 * 8/10/2026). Ahora ProviderImport ya le crea las cuentas al crearlo; esto cubre además al
+	 * proveedor viejo que quedó sin cuenta, que al reimportar el Excel recibe la cuenta y el saldo
+	 * (es la reparación de lo ya importado).
+	 *
+	 * El `user_id` de la cuenta va EXPLÍCITO, el del modelo: AdminSync loguea al dueño a mano y el
+	 * motor de /implementar corre en proceso, así que la sesión no es una fuente confiable.
+	 *
+	 * @param mixed $row Fila del Excel.
+	 * @param array $columns Mapeo de columnas de la importación.
+	 * @param string $model_name Nombre del modelo (`client` o `provider`).
+	 * @param mixed $model Instancia persistida del cliente/proveedor, o null.
+	 * @return string 'sin_saldo'            -> la fila no trae saldo, o no hay modelo (una fila de
+	 *                                          "solo editar" cuyo proveedor no existe): nada que cargar.
+	 *                'cargado'              -> se cargó el saldo inicial.
+	 *                'ya_tenia_movimientos' -> la cuenta ya tenía movimientos: el saldo NO se cargó.
+	 */
 	static function setSaldoInicial($row, $columns, $model_name, $model) {
 
+		/*
+		 * Sin modelo no hay dónde cargar nada. Antes esto era `$model->id` sobre null: un
+		 * ErrorException que tiraba la importación entera con un 500 a mitad del archivo.
+		 */
+		if (is_null($model)) {
+			return 'sin_saldo';
+		}
+
 		$saldo_actual = ImportHelper::getColumnValueByAliases($row, ['saldo_actual', 'saldo actual'], $columns);
-        
-        if (!is_null($saldo_actual)) {
 
-        	$credit_account = self::get_credit_account_pesos($model_name, $model->id);
+		if (is_null($saldo_actual)) {
+			return 'sin_saldo';
+		}
 
-            if (is_null($credit_account)) {
-            	return;
-            }
+		$credit_account = self::get_credit_account_pesos($model_name, $model->id);
 
-            self::crearSaldoInicialPorImportacion((float) $saldo_actual, $credit_account, $model_name, $model);
-        }
+		if (is_null($credit_account)) {
+			CreditAccountHelper::crear_credit_accounts($model_name, $model->id, $model->user_id);
+			$credit_account = self::get_credit_account_pesos($model_name, $model->id);
+		}
+
+		$cargado = self::crearSaldoInicialPorImportacion((float) $saldo_actual, $credit_account, $model_name, $model);
+
+		return $cargado ? 'cargado' : 'ya_tenia_movimientos';
 	}
 
 	// static function setSaldoInicial($row, $columns, $model_name, $model) {
