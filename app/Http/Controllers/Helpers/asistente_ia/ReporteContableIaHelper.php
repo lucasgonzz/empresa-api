@@ -28,7 +28,8 @@ use Illuminate\Support\Facades\DB;
  *     topean. `plata_en_transito` trae tres listas con la misma información (liquidaciones por
  *     fecha, cheques por fecha y el calendario que combina las dos): viaja solo `total_estimado` y
  *     el `calendario` topeado, que ya dice el origen de cada renglón.
- *   - posicion_fiscal: 419 bytes. Entero.
+ *   - posicion_fiscal: 419 bytes (mas una linea por impuesto propio en `otras_retenciones`, vacia
+ *     casi siempre). Entero.
  *
  * Lo que se poda se dice en `podado`, para que el modelo sepa que existe más detalle en la pantalla
  * y no afirme que "no hay cheques" porque no le llegó la lista.
@@ -186,13 +187,14 @@ class ReporteContableIaHelper
     {
         return [
             'reporte' => 'posicion_fiscal',
-            'que_es'  => 'Impuestos del periodo, en pesos y con los renglones separados: IVA (debito menos credito, percepciones y retenciones sufridas), IIBB (determinado menos percepciones y retenciones) y pagos a cuenta de Ganancias. En cada saldo, tipo dice si es a_pagar o a_favor. iibb_configurado en false quiere decir que el negocio no cargo la alicuota, no que no deba.',
+            'que_es'  => 'Impuestos del periodo, en pesos y con los renglones separados: IVA (debito menos credito, percepciones y retenciones sufridas), IIBB (determinado menos percepciones y retenciones) y pagos a cuenta de Ganancias. En cada saldo, tipo dice si es a_pagar o a_favor. otras_retenciones lista las retenciones sufridas de otros impuestos que el negocio dio de alta (SUSS, por ejemplo), una por impuesto: son solo informativas y no restan en ningun saldo. iibb_configurado en false quiere decir que el negocio no cargo la alicuota, no que no deba.',
             'datos'   => [
                 'desde'                    => $desde,
                 'hasta'                    => $hasta,
                 'posicion_iva'             => PosicionFiscalHelper::posicion_iva($owner_id, $desde, $hasta),
                 'posicion_iibb'            => PosicionFiscalHelper::posicion_iibb($owner_id, $desde, $hasta),
                 'pagos_a_cuenta_ganancias' => PosicionFiscalHelper::pagos_a_cuenta_ganancias($owner_id, $desde, $hasta),
+                'otras_retenciones'        => PosicionFiscalHelper::otras_retenciones($owner_id, $desde, $hasta),
             ],
             'podado'  => [],
         ];

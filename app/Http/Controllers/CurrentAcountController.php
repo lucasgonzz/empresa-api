@@ -309,7 +309,12 @@ class CurrentAcountController extends Controller
                 'user_id'                       => $pago->user_id,
                 'current_acount_id'             => $pago->id,
                 'client_id'                     => $model_id,
-                'impuesto'                      => RetencionSufrida::normalizar_impuesto($this->dato_de_retencion($payment_method, 'impuesto')),
+                /*
+                 * Ganancias/IVA/IIBB o un `imp_<id>` propio del comercio (misión
+                 * retenciones-abm-impuestos, 8/10/2026). Se le pasa el dueño del cobro porque un
+                 * `imp_<id>` solo vale si es suyo: el valor viaja desde la SPA y es texto libre.
+                 */
+                'impuesto'                      => RetencionSufrida::normalizar_impuesto($this->dato_de_retencion($payment_method, 'impuesto'), $pago->user_id),
                 'numero_certificado'            => $this->dato_de_retencion($payment_method, 'numero_certificado'),
                 /*
                  * La fecha del certificado es obligatoria: es la que decide en que periodo fiscal

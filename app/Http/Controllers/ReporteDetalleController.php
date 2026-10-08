@@ -170,11 +170,14 @@ class ReporteDetalleController extends Controller
                 break;
 
             case 'retenciones':
-                // Combina los tres impuestos (IVA + IIBB + Ganancias) en una única tarjeta genérica:
-                // a diferencia de percepciones, la especificación no separó este concepto por
-                // impuesto, así que el total y el detalle salen combinados de la misma fuente.
+                // Combina los tres impuestos (IVA + IIBB + Ganancias) y los impuestos propios del
+                // comercio (`otros`, misión retenciones-abm-impuestos) en una única tarjeta
+                // genérica: a diferencia de percepciones, la especificación no separó este concepto
+                // por impuesto, así que el total y el detalle salen combinados de la misma fuente.
+                // El detalle lista TODOS los certificados, así que el total tiene que sumarlos
+                // todos: sin `otros` el total y la suma de sus filas no coincidirían.
                 $retenciones = ContabilidadRepository::retenciones_sufridas($user_id, $desde, $hasta);
-                $total = (float) $retenciones['iva'] + (float) $retenciones['iibb'] + (float) $retenciones['ganancias'];
+                $total = (float) $retenciones['iva'] + (float) $retenciones['iibb'] + (float) $retenciones['ganancias'] + (float) $retenciones['otros'];
                 $detalle = ContabilidadRepository::retenciones_sufridas_detalle($user_id, $desde, $hasta, $page, $per_page);
                 break;
 

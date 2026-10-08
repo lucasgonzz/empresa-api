@@ -179,6 +179,27 @@ class PosicionFiscalHelper
     }
 
     /**
+     * Otras retenciones sufridas del período: las de los impuestos propios del comercio
+     * (`imp_<id>`, misión retenciones-abm-impuestos, 8/10/2026), un renglón por impuesto.
+     *
+     * 🔴 SON PURAMENTE INFORMATIVAS, igual que los pagos a cuenta de Ganancias, y NO restan contra
+     * ningún saldo: ni posicion_iva() ni posicion_iibb() ni pagos_a_cuenta_ganancias() las miran.
+     * Existen para que el comercio vea cuánto le retuvieron de SUSS (o lo que haya dado de alta) sin
+     * que eso toque lo que declara de IVA o de IIBB.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @return array<int, array{impuesto: string, nombre: string, monto: float}> Vacío si no hay.
+     */
+    public static function otras_retenciones($user_id, $desde, $hasta)
+    {
+        $retenciones = ContabilidadRepository::retenciones_sufridas($user_id, $desde, $hasta);
+
+        return $retenciones['otros_detalle'];
+    }
+
+    /**
      * Normaliza el signo de un saldo fiscal: cuando el resultado da negativo (más crédito/pago a
      * cuenta que débito/impuesto determinado), es un saldo A FAVOR del contribuyente, no una deuda
      * (regla 03 del prompt). Devuelve siempre el monto en valor absoluto más el tipo explícito, para
