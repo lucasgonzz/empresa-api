@@ -957,7 +957,14 @@ class RelacionesParecidasDetector
             }
         }
 
-        $items = array_merge($items, self::items_entre_nuevos($base, $nuevos, $aristas, $enviados, $ia_ok, $respuestas, $dudosos));
+        /* Los ítems contra existentes ya armados, por valor: el destino de un "unir" puede ser uno de ellos. */
+        $resueltos = [];
+
+        foreach ($items as $item) {
+            $resueltos[(string) $item['valor']] = $item;
+        }
+
+        $items = array_merge($items, self::items_entre_nuevos($base, $nuevos, $aristas, $enviados, $ia_ok, $respuestas, $dudosos, $resueltos));
 
         usort($items, function ($a, $b) {
             if ($a['filas'] !== $b['filas']) {
@@ -988,9 +995,10 @@ class RelacionesParecidasDetector
      * @param  bool  $ia_ok
      * @param  array $respuestas
      * @param  array $dudosos     [valor => otro] pares que la IA cree posibles pero no seguros
+     * @param  array $resueltos   [valor => ítem] los que ya tienen ítem contra un existente
      * @return array items
      */
-    protected static function items_entre_nuevos(array $base, array $nuevos, array $aristas, array $enviados, $ia_ok, array $respuestas, array $dudosos = [])
+    protected static function items_entre_nuevos(array $base, array $nuevos, array $aristas, array $enviados, $ia_ok, array $respuestas, array $dudosos = [], array $resueltos = [])
     {
         if (count($nuevos) === 0) {
             return [];
@@ -1039,9 +1047,17 @@ class RelacionesParecidasDetector
             }
         }
 
+        /*
+         * Un par "seguro" cuyo destino NO es nuevo (ya tiene ítem contra un existente) no se puede
+         * agrupar: se guarda para darle a ese valor su propio ítem más abajo.
+         */
+        $hacia_resueltos = [];
+
         foreach ($aristas as $arista) {
             if (isset($nuevos[$arista[0]]) && isset($nuevos[$arista[1]])) {
                 $unir($arista[0], $arista[1]);
+            } elseif (isset($nuevos[$arista[0]])) {
+                $hacia_resueltos[(string) $arista[0]] = (string) $arista[1];
             }
         }
 
@@ -1097,32 +1113,111 @@ class RelacionesParecidasDetector
             }
 
             if ($ia_ok && array_key_exists($valor, $respuestas)) {
-                if (isset($dudosos[$valor]) && isset($nuevos[$dudosos[$valor]])) {
+                /*
+                 * 🔴 Ningún valor que la IA emparejó puede quedar sin ítem. Si el valor del archivo
+                 * con el que lo emparejó ya quedó resuelto contra un existente (tiene su propio ítem
+                 * `parecido` o `posible`), no hay grupo de nuevos al que sumarlo, y antes este valor
+                 * se caía: "Mayoristas" emparejado SEGURO con "Mayorista 2", que era `posible` contra
+                 * la lista "Mayorista", no salía en ningún ítem y se creaba otra lista sin preguntar.
+                 */
+                if (isset($hacia_resueltos[$valor])) {
+                    $items[] = self::item_hacia_resuelto($base, $info, $hacia_resueltos[$valor], true, $resueltos);
+                } elseif (isset($dudosos[$valor]) && isset($nuevos[$dudosos[$valor]])) {
                     $con = isset($canonico_de[$dudosos[$valor]]) ? $canonico_de[$dudosos[$valor]] : $dudosos[$valor];
 
                     $items[] = self::item($base, $info, self::MOTIVO_POSIBLE, sprintf(self::EXPLICACION_DUDOSA, $con), [
                         ['accion' => 'unir', 'con' => $con],
                         ['accion' => 'crear'],
                     ], 1);
+                } elseif (isset($dudosos[$valor])) {
+                    $items[] = self::item_hacia_resuelto($base, $info, $dudosos[$valor], false, $resueltos);
                 }
 
                 continue;
             }
 
             foreach ($info['candidatos_archivo'] as $candidato) {
-                if ($candidato['puntaje'] >= self::PUNTAJE_ALTO && isset($nuevos[$candidato['valor']])) {
+                if ($candidato['puntaje'] < self::PUNTAJE_ALTO) {
+                    continue;
+                }
+
+                if (isset($nuevos[$candidato['valor']])) {
                     $con = isset($canonico_de[$candidato['valor']]) ? $canonico_de[$candidato['valor']] : $candidato['valor'];
 
                     $items[] = self::item($base, $info, self::MOTIVO_POSIBLE, self::EXPLICACION_POSIBLE, [
                         ['accion' => 'unir', 'con' => $con],
                         ['accion' => 'crear'],
                     ], 1);
-                    break;
+                } else {
+                    /* Mismo criterio con la IA caída: el par se muestra aunque el otro ya tenga ítem. */
+                    $items[] = self::item_hacia_resuelto($base, $info, (string) $candidato['valor'], false, $resueltos, self::EXPLICACION_POSIBLE);
                 }
+
+                break;
             }
         }
 
         return $items;
+    }
+
+    /**
+     * El ítem de un valor A que la IA emparejó con otro valor del archivo B que YA está resuelto
+     * contra un existente (B tiene su propio ítem). Ofrece lo que tiene sentido: unir con B (que
+     * sigue la decisión que el usuario tome sobre B), usar los existentes hacia los que apunta B,
+     * usar los candidatos propios de A, o crear aparte.
+     *
+     * La sugerida va con el nivel de seguridad: seguro → hacia donde eligió la IA (unir con B);
+     * dudoso → crear, para que un clic distraído nunca una dos cosas distintas.
+     *
+     * @param  array       $base
+     * @param  array       $info         el de A
+     * @param  string      $destino      B
+     * @param  bool        $seguro
+     * @param  array       $resueltos    [valor => ítem]
+     * @param  string|null $explicacion  null = la que corresponde al nivel de seguridad
+     * @return array
+     */
+    protected static function item_hacia_resuelto(array $base, array $info, $destino, $seguro, array $resueltos, $explicacion = null)
+    {
+        $destino = (string) $destino;
+
+        $opciones = [['accion' => 'unir', 'con' => $destino]];
+        $ids = [];
+
+        $usar_del_destino = isset($resueltos[$destino]) ? $resueltos[$destino]['opciones'] : [];
+
+        foreach ($usar_del_destino as $opcion) {
+            if ($opcion['accion'] === 'usar' && !isset($ids[(int) $opcion['id']])) {
+                $ids[(int) $opcion['id']] = true;
+                $opciones[] = $opcion;
+            }
+        }
+
+        foreach ($info['candidatos'] as $candidato) {
+            if (!isset($ids[(int) $candidato['id']])) {
+                $ids[(int) $candidato['id']] = true;
+                $opciones[] = [
+                    'accion' => 'usar',
+                    'id'     => (int) $candidato['id'],
+                    'nombre' => (string) $candidato['nombre'],
+                ];
+            }
+        }
+
+        $opciones[] = ['accion' => 'crear'];
+
+        if (is_null($explicacion)) {
+            $explicacion = $seguro ? self::EXPLICACION_PARECIDO : sprintf(self::EXPLICACION_DUDOSA, $destino);
+        }
+
+        return self::item(
+            $base,
+            $info,
+            $seguro ? self::MOTIVO_PARECIDO : self::MOTIVO_POSIBLE,
+            $explicacion,
+            $opciones,
+            $seguro ? 0 : count($opciones) - 1
+        );
     }
 
     /**

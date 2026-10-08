@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Genera los fixtures 33 a 38: los nombres parecidos de las relaciones de la importación (misión
+ * Genera los fixtures 33 a 39: los nombres parecidos de las relaciones de la importación (misión
  * importacion-relaciones-parecidas, 8/10/2026).
  *
  * Se corre desde la raiz de empresa-api:
@@ -152,4 +152,17 @@ escribir_fixture_relaciones('38_relaciones_parecidas_padres.xlsx', $cabecera_art
     ['7798800033', 'SKU-RP-33', 'RP-33', 'Art RP 33', 330.0, null, null, 21.0, null, 'Pintureria Sur', 'Esmalte',  null],
     ['7798800034', 'SKU-RP-34', 'RP-34', 'Art RP 34', 340.0, null, null, 21.0, null, 'PINTURERIA SUR', 'Esmaltes', null],
     ['7798800035', 'SKU-RP-35', 'RP-35', 'Art RP 35', 350.0, null, null, 21.0, null, 'PINTURERIA SUR', 'ESMALTE',  null],
+]);
+
+/*
+ * El caso medido con la IA real el 8/10/2026 (tanda 3): con las listas "Distribuidor", "Mayorista",
+ * "Minorista" y "Tienda Nube" cargadas, la IA emparejó "Mayoristas" (seguro) con "Mayorista 2" del
+ * archivo, que a su vez era dudoso contra "Mayorista". "Mayoristas" no salía en ningún ítem y se
+ * creaba otra lista sin preguntar.
+ */
+escribir_fixture_relaciones('39_relaciones_parecidas_listas.xlsx', ['nombre', 'tipo_de_precio'], [
+    ['Cliente MP 1', 'Mayorista'],
+    ['Cliente MP 2', 'Mayoristas'],
+    ['Cliente MP 3', 'Mayorista 2'],
+    ['Cliente MP 4', 'Minorista'],
 ]);
