@@ -76,6 +76,24 @@ class EquivalenciasResolver
     protected $escritas = [];
 
     /**
+     * Claves de cache de los valores con decisión `crear`, por tipo y padre (como las decisiones):
+     * [tipo => [padre => [clave => true]]].
+     * Ver resolver_sin_decision(): un valor SIN decisión que comparte clave con uno que el usuario
+     * pidió crear aparte no puede caer por clave en el que se creó.
+     *
+     * @var array
+     */
+    protected $claves_con_crear = [];
+
+    /**
+     * Lo mismo, con la clave sin tildes (clientes y proveedores: el camino de siempre busca con un
+     * WHERE de MySQL, que ignora mayúsculas Y tildes).
+     *
+     * @var array
+     */
+    protected $claves_con_crear_sin_tildes = [];
+
+    /**
      * @param int   $user_id        Dueño del comercio.
      * @param array $equivalencias  Las decisiones tal como vinieron del request (se sanean acá).
      * @param array $tipos_validos  Los tipos que admite esta importación.
@@ -93,6 +111,19 @@ class EquivalenciasResolver
 
             /* Si el request trae dos decisiones para el mismo valor, gana la última. */
             $this->decisiones[$decision['tipo']][$padre][$decision['valor']] = $decision;
+        }
+
+        foreach ($this->decisiones as $tipo => $por_padre) {
+            foreach ($por_padre as $por_valor) {
+                foreach ($por_valor as $decision) {
+                    if ($decision['accion'] === 'crear') {
+                        $padre = is_null($decision['padre']) ? '' : $decision['padre'];
+
+                        $this->claves_con_crear[$tipo][$padre][RelacionesParecidasDetector::clave_cache($decision['valor'])] = true;
+                        $this->claves_con_crear_sin_tildes[$tipo][$padre][RelacionesParecidasDetector::clave_sin_tildes($decision['valor'])] = true;
+                    }
+                }
+            }
         }
     }
 
@@ -341,11 +372,23 @@ class EquivalenciasResolver
     }
 
     /**
+     * El padre como clave de los índices de decisiones: '' = sin padre.
+     *
+     * @param  string|null $padre
+     * @return string
+     */
+    protected static function clave_de_padre($padre)
+    {
+        return is_null($padre) ? '' : trim((string) $padre);
+    }
+
+    /**
      * La decisión del usuario para un valor, o null.
      *
-     * Para los tipos con padre se busca primero con el padre de la fila y, si no hay, una decisión
-     * sin padre: un cliente que no lo mande igual queda cubierto (el `usar` igual se valida contra
-     * el padre que resolvió la fila).
+     * 🔴 Para los tipos con padre, la decisión tiene que ser la de ESE padre: si la fila trae padre
+     * solo vale una decisión con el mismo padre, y si no trae, solo una sin padre. No se cae de una
+     * a la otra: "Rosario" sin provincia (contra todas las localidades) y "Rosario" bajo "Santa
+     * Fe" son dos preguntas distintas del paso 3, y la respuesta a una no es la de la otra.
      *
      * @param  string      $tipo
      * @param  mixed       $valor
@@ -364,10 +407,6 @@ class EquivalenciasResolver
 
         if (isset($this->decisiones[$tipo][$padre][$valor])) {
             return $this->decisiones[$tipo][$padre][$valor];
-        }
-
-        if ($padre !== '' && isset($this->decisiones[$tipo][''][$valor])) {
-            return $this->decisiones[$tipo][''][$valor];
         }
 
         return null;
@@ -565,6 +604,22 @@ class EquivalenciasResolver
      * ================================================================== */
 
     /**
+     * La consulta sobre import_equivalencias. Un solo punto para que un test pueda simular la tabla
+     * ausente.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder
+     */
+    protected static function consulta_equivalencias()
+    {
+        return ImportEquivalencia::query();
+    }
+
+    /**
+     * 🔴 Todo lo que toca import_equivalencias (cargar, recordar, olvidar) tolera que la tabla no
+     * esté: un cliente al que todavía no le corrió la migración tiene que poder seguir importando
+     * —por el modal, por AdminSync o por el import clásico—, solo que sin equivalencias
+     * recordadas. Recordar es una comodidad, la importación no.
+     *
      * @return void
      */
     protected function cargar_recordadas()
@@ -575,13 +630,23 @@ class EquivalenciasResolver
 
         $this->recordadas = [];
 
-        foreach (ImportEquivalencia::where('user_id', $this->user_id)->get() as $fila) {
-            $this->recordadas[$fila->tipo][(int) $fila->contexto_id][(string) $fila->valor_clave] = (int) $fila->model_id;
+        try {
+            foreach (static::consulta_equivalencias()->where('user_id', $this->user_id)->get() as $fila) {
+                $this->recordadas[$fila->tipo][(int) $fila->contexto_id][(string) $fila->valor_clave] = (int) $fila->model_id;
+            }
+        } catch (\Throwable $e) {
+            $this->recordadas = [];
+
+            Log::warning('EquivalenciasResolver: no se pudieron leer las equivalencias recordadas; se sigue sin ellas', [
+                'user_id' => $this->user_id,
+                'message' => $e->getMessage(),
+            ]);
         }
     }
 
     /**
      * Todas las recordadas de un tipo y contexto: [valor_clave => model_id]. Para el chequeo.
+     * Tolera la tabla ausente, igual que cargar_recordadas().
      *
      * @param  int    $user_id
      * @param  string $tipo
@@ -591,8 +656,17 @@ class EquivalenciasResolver
     {
         $recordadas = [];
 
-        foreach (ImportEquivalencia::where('user_id', (int) $user_id)->where('tipo', $tipo)->get() as $fila) {
-            $recordadas[(int) $fila->contexto_id][(string) $fila->valor_clave] = (int) $fila->model_id;
+        try {
+            foreach (static::consulta_equivalencias()->where('user_id', (int) $user_id)->where('tipo', $tipo)->get() as $fila) {
+                $recordadas[(int) $fila->contexto_id][(string) $fila->valor_clave] = (int) $fila->model_id;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('EquivalenciasResolver: no se pudieron leer las equivalencias recordadas para el chequeo', [
+                'user_id' => (int) $user_id,
+                'message' => $e->getMessage(),
+            ]);
+
+            return [];
         }
 
         return $recordadas;
@@ -646,21 +720,28 @@ class EquivalenciasResolver
 
         $this->escritas[$marca] = true;
 
-        ImportEquivalencia::updateOrCreate(
-            [
-                'user_id'     => $this->user_id,
-                'tipo'        => $tipo,
-                'contexto_id' => (int) $contexto,
-                'valor_clave' => $clave,
-            ],
-            [
-                'valor'    => mb_substr(trim((string) $valor), 0, 255, 'UTF-8'),
-                'model_id' => (int) $model_id,
-            ]
-        );
-
         $this->cargar_recordadas();
         $this->recordadas[$tipo][(int) $contexto][$clave] = (int) $model_id;
+
+        try {
+            static::consulta_equivalencias()->updateOrCreate(
+                [
+                    'user_id'     => $this->user_id,
+                    'tipo'        => $tipo,
+                    'contexto_id' => (int) $contexto,
+                    'valor_clave' => $clave,
+                ],
+                [
+                    'valor'    => mb_substr(trim((string) $valor), 0, 255, 'UTF-8'),
+                    'model_id' => (int) $model_id,
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('EquivalenciasResolver: no se pudo recordar una equivalencia; la importación sigue', [
+                'tipo'    => $tipo,
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -682,14 +763,22 @@ class EquivalenciasResolver
 
         $this->escritas[$marca] = true;
 
-        ImportEquivalencia::where('user_id', $this->user_id)
-            ->where('tipo', $tipo)
-            ->where('contexto_id', (int) $contexto)
-            ->where('valor_clave', $clave)
-            ->delete();
-
         $this->cargar_recordadas();
         unset($this->recordadas[$tipo][(int) $contexto][$clave]);
+
+        try {
+            static::consulta_equivalencias()
+                ->where('user_id', $this->user_id)
+                ->where('tipo', $tipo)
+                ->where('contexto_id', (int) $contexto)
+                ->where('valor_clave', $clave)
+                ->delete();
+        } catch (\Throwable $e) {
+            Log::warning('EquivalenciasResolver: no se pudo borrar una equivalencia; la importación sigue', [
+                'tipo'    => $tipo,
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -802,6 +891,15 @@ class EquivalenciasResolver
             $id = $this->buscar_exacto($tipo, $contexto, $valor);
         }
 
+        /*
+         * Mismo motivo que en resolver_sin_decision(): si el usuario pidió crear aparte otra
+         * escritura que el WHERE de MySQL no distingue de ésta (mayúsculas o tildes), el camino de
+         * siempre caería en la que se creó. Va por nombre exacto, sin importar el orden de las filas.
+         */
+        if (is_null($id) && isset($this->claves_con_crear_sin_tildes[$tipo][self::clave_de_padre($padre)][RelacionesParecidasDetector::clave_sin_tildes($valor)])) {
+            $id = $this->exacto_o_crear($tipo, $contexto, $valor, $crear_forzado);
+        }
+
         if (is_null($id)) {
             $id = call_user_func($camino_de_hoy, $valor);
 
@@ -871,7 +969,7 @@ class EquivalenciasResolver
             }
         }
 
-        return $this->resolver_sin_decision($tipo, $valor, $contexto, $crear);
+        return $this->resolver_sin_decision($tipo, $valor, $contexto, $crear, $padre);
     }
 
     /**
@@ -900,7 +998,7 @@ class EquivalenciasResolver
             }
         }
 
-        return $this->resolver_sin_decision($tipo, $con, $contexto, $crear);
+        return $this->resolver_sin_decision($tipo, $con, $contexto, $crear, $padre);
     }
 
     /**
@@ -912,7 +1010,7 @@ class EquivalenciasResolver
      * @param  callable $crear
      * @return int
      */
-    protected function resolver_sin_decision($tipo, $valor, $contexto, $crear)
+    protected function resolver_sin_decision($tipo, $valor, $contexto, $crear, $padre = null)
     {
         $id = $this->recordada($tipo, $contexto, $valor);
 
@@ -924,6 +1022,18 @@ class EquivalenciasResolver
 
         if (!is_null($id)) {
             return $id;
+        }
+
+        /*
+         * 🔴 Un valor sin decisión que comparte la clave de cache con uno que el usuario pidió
+         * CREAR aparte no puede resolverse por clave: caería en el que se creó (o, si la fila sin
+         * decisión venía primero, el "crear" de la otra encontraría a ésta por nombre... y al
+         * revés no). El resultado dependía del orden de las filas: con "DEL NORTE"→crear antes que
+         * "Del norte" (sin decisión), "Del norte" caía en "DEL NORTE" y nunca se creaba. Si el
+         * usuario separó una escritura, las demás de esa clave van por su nombre exacto.
+         */
+        if (isset($this->claves_con_crear[$tipo][self::clave_de_padre($padre)][RelacionesParecidasDetector::clave_cache($valor)])) {
+            return $this->exacto_o_crear($tipo, $contexto, $valor, $crear);
         }
 
         $id = $this->buscar_por_clave($tipo, $contexto, $valor);

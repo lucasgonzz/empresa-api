@@ -98,6 +98,46 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
         $this->assertSame((int) $acme->id, (int) $this->articulo('RP-02')->provider_id, 'La fila con "Acme" sigue yendo al viejo.');
     }
 
+    /**
+     * "Crear aparte" entre dos escrituras NUEVAS no puede depender del orden de las filas. En el
+     * 33, "Del norte" está en las filas 2 y 9 y "DEL NORTE" en la 3: con el crear en "Del norte" la
+     * fila con decisión viene primero; con el crear en "DEL NORTE", la que no tiene decisión.
+     * Antes, en el primer orden "DEL NORTE" caía por clave en la "Del norte" recién creada.
+     */
+    public function test_crear_entre_nuevos_con_la_fila_con_decision_primero()
+    {
+        $this->importar_articulos(self::ARTICULOS, [
+            ['tipo' => 'categoria', 'valor' => 'Del norte', 'accion' => 'crear'],
+        ]);
+
+        $this->assertDosCategoriasDelNorte();
+    }
+
+    public function test_crear_entre_nuevos_con_la_fila_sin_decision_primero()
+    {
+        $this->importar_articulos(self::ARTICULOS, [
+            ['tipo' => 'categoria', 'valor' => 'DEL NORTE', 'accion' => 'crear'],
+        ]);
+
+        $this->assertDosCategoriasDelNorte();
+    }
+
+    /**
+     * @return void
+     */
+    protected function assertDosCategoriasDelNorte()
+    {
+        $this->assertSame(1, $this->cuantos_exactos('categories', 'Del norte'));
+        $this->assertSame(1, $this->cuantos_exactos('categories', 'DEL NORTE'));
+
+        $del_norte = (int) Category::where('user_id', $this->tenant->id)->whereRaw('BINARY name = ?', ['Del norte'])->value('id');
+        $mayusculas = (int) Category::where('user_id', $this->tenant->id)->whereRaw('BINARY name = ?', ['DEL NORTE'])->value('id');
+
+        $this->assertSame($del_norte, (int) $this->articulo('RP-01')->category_id);
+        $this->assertSame($del_norte, (int) $this->articulo('RP-08')->category_id);
+        $this->assertSame($mayusculas, (int) $this->articulo('RP-02')->category_id);
+    }
+
     public function test_unir_crea_uno_solo_y_lo_recuerda()
     {
         $this->importar_articulos(self::ARTICULOS, [

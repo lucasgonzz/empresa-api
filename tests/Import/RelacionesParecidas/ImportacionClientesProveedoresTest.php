@@ -138,6 +138,46 @@ class ImportacionClientesProveedoresTest extends RelacionesParecidasTestCase
         $this->assertSame((int) $viejo->id, (int) $this->cliente('Cliente RP 2')->seller_id, '"JUAN PEREZ" sigue yendo al viejo (nombre exacto).');
     }
 
+    /**
+     * "Crear aparte" entre dos escrituras NUEVAS no depende del orden de las filas ("Juan Perez" en
+     * la fila 2, "JUAN PEREZ" en la 3). Antes, con el crear en "Juan Perez", la fila 3 caía por el
+     * WHERE de MySQL (que ignora mayúsculas) en el vendedor recién creado.
+     */
+    public function test_crear_entre_nuevos_no_depende_del_orden_de_las_filas()
+    {
+        foreach (['Juan Perez', 'JUAN PEREZ'] as $con_crear) {
+            DB::table('clients')->where('user_id', $this->tenant->id)->delete();
+            DB::table('sellers')->where('user_id', $this->tenant->id)->delete();
+
+            $this->importar_clientes([
+                ['tipo' => 'vendedor', 'valor' => $con_crear, 'accion' => 'crear'],
+            ]);
+
+            $this->assertSame(1, $this->cuantos_exactos('sellers', 'Juan Perez'), $con_crear);
+            $this->assertSame(1, $this->cuantos_exactos('sellers', 'JUAN PEREZ'), $con_crear);
+
+            $this->assertSame('Juan Perez', Seller::find($this->cliente('Cliente RP 1')->seller_id)->name, $con_crear);
+            $this->assertSame('JUAN PEREZ', Seller::find($this->cliente('Cliente RP 2')->seller_id)->name, $con_crear);
+        }
+    }
+
+    /**
+     * Una decisión de localidad SIN padre no se aplica a una fila que trae provincia: son dos
+     * preguntas distintas del paso 3.
+     */
+    public function test_una_decision_sin_padre_no_se_aplica_a_una_fila_con_provincia()
+    {
+        $provincia = $this->provincia('BUENOS AIRES');
+        $la_plata  = $this->localidad('LA PLATA', $provincia);
+
+        $this->importar_clientes([
+            ['tipo' => 'localidad', 'valor' => 'La Plata', 'accion' => 'crear'],
+        ]);
+
+        $this->assertSame((int) $la_plata->id, (int) $this->cliente('Cliente RP 1')->location_id);
+        $this->assertSame(0, $this->cuantos_exactos('locations', 'La Plata'), 'No se creó nada: la decisión era para filas sin provincia.');
+    }
+
     public function test_unir_resuelve_el_canonico_y_lo_recuerda()
     {
         $this->importar_clientes([

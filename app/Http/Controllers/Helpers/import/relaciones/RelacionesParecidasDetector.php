@@ -124,6 +124,19 @@ class RelacionesParecidasDetector
     }
 
     /**
+     * La clave con la que el WHERE de MySQL (collation utf8mb4_unicode_ci) considera iguales dos
+     * nombres, aproximada: sin tildes, en minúscula, con trim y espacios colapsados. La usa
+     * EquivalenciasResolver con clientes y proveedores, cuyo camino de siempre busca con ese WHERE.
+     *
+     * @param  mixed $valor
+     * @return string
+     */
+    public static function clave_sin_tildes($valor)
+    {
+        return self::clave_cache(Str::ascii(trim((string) $valor)));
+    }
+
+    /**
      * Forma "legible" para comparar: sin tildes, minúscula, espacios colapsados, signos conservados.
      *
      * Levenshtein corre sobre esta forma ADEMÁS de sobre la clave fuerte porque la clave fuerte se
