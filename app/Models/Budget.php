@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
@@ -52,13 +53,18 @@ class Budget extends Model
         subidos, migracion sin correr) una columna pelada en el `withPivot()` tumbaria el listado de
         presupuestos, el PDF y la confirmacion. Mismo motivo que en `Sale`; ver el encabezado de
         `RecargosEnPreciosEsquemaHelper`. Aplica a las cuatro relaciones de renglones de este modelo.
+
+        🔴 Y LO MISMO PARA `price_sin_descuentos_de_venta` (mision
+        descuentos-aplicar-al-precio-del-articulo, 8/10/2026): por
+        `DescuentosEnPreciosEsquemaHelper::columnas_pivot()`, anidado con el de recargos. Dos
+        columnas, dos memos, ninguna pelada en el `withPivot()`.
     */
     public function services() {
-        return $this->belongsToMany('App\Models\Service')->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['discount', 'amount', 'price', 'returned_amount'], 'budget_service'));
+        return $this->belongsToMany('App\Models\Service')->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['discount', 'amount', 'price', 'returned_amount'], 'budget_service'), 'budget_service'));
     }
 
     public function promocion_vinotecas() {
-        return $this->belongsToMany(PromocionVinoteca::class)->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price'], 'budget_promocion_vinoteca'))->withTrashed();
+        return $this->belongsToMany(PromocionVinoteca::class)->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price'], 'budget_promocion_vinoteca'), 'budget_promocion_vinoteca'))->withTrashed();
     }
 
     /**
@@ -75,7 +81,7 @@ class Budget extends Model
             tabla la cuida `ComboEsquemaHelper` antes de que nadie llegue a construir esta relacion.
             Y si la tabla no existe, `Schema::hasColumn()` devuelve false sin error.
         */
-        return $this->belongsToMany(Combo::class)->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price'], 'budget_combo'))->withTrashed();
+        return $this->belongsToMany(Combo::class)->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price'], 'budget_combo'), 'budget_combo'))->withTrashed();
     }
 
     function discounts() {
@@ -114,7 +120,7 @@ class Budget extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name'], 'article_budget'));
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name'], 'article_budget'), 'article_budget'));
     }
 
     function optional_order_production_statuses() {
