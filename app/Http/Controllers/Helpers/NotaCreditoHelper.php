@@ -81,14 +81,19 @@ class NotaCreditoHelper {
 
 				/*
 					La variante del renglon a deshacer: la del pivot; si no, la del movimiento atado;
-					si no hay ninguna de las dos (NC vieja), cualquier renglon del articulo.
+					si no hay ninguna de las dos (NC vieja), cualquier renglon del articulo. Entre las
+					filas candidatas se prefiere la del mismo precio que el renglon de la NC (varios
+					precios): ver renglon_a_deshacer().
 				*/
+				$precio_nc = $article_nota_credito->pivot->price;
+				$cantidad_nc = $article_nota_credito->pivot->amount;
+
 				if (!is_null($variante_del_pivot)) {
-					$renglon = Self::renglon_a_deshacer($sale, $article_nota_credito->id, $variante_del_pivot, true);
+					$renglon = Self::renglon_a_deshacer($sale, $article_nota_credito->id, $variante_del_pivot, true, $precio_nc, $cantidad_nc);
 				} else if (!is_null($movimiento)) {
-					$renglon = Self::renglon_a_deshacer($sale, $article_nota_credito->id, $movimiento->article_variant_id, true);
+					$renglon = Self::renglon_a_deshacer($sale, $article_nota_credito->id, $movimiento->article_variant_id, true, $precio_nc, $cantidad_nc);
 				} else {
-					$renglon = Self::renglon_a_deshacer($sale, $article_nota_credito->id);
+					$renglon = Self::renglon_a_deshacer($sale, $article_nota_credito->id, null, false, $precio_nc, $cantidad_nc);
 				}
 
 				if (is_null($renglon)) {
@@ -250,6 +255,14 @@ class NotaCreditoHelper {
 	 * variante): con el mismo articulo en dos variantes, la fila con mas devuelto puede ser la de la
 	 * otra.
 	 *
+	 * Con `$precio` (el del renglon de la NC) se prefiere, entre esas filas, la del MISMO precio que
+	 * tenga al menos `$cantidad` devueltas; si no, la del mismo precio con algo devuelto; si no, el
+	 * criterio de siempre. Con varios precios (filas de 100 × 2 y 50 × 3, NC de 1 y 3) el criterio
+	 * de siempre mandaba los dos renglones de la NC a la fila de 50, y la de 100 quedaba con una
+	 * unidad devuelta que ya ninguna NC respaldaba (revisión de la misión
+	 * variantes-mismo-articulo-en-vender, 8/10/2026). El precio de la NC puede venir editado en
+	 * Devoluciones: ahí no coincide con ninguna fila y vale el criterio de siempre.
+	 *
 	 * Se lee de la tabla y no de `$sale->articles`, porque esa relacion no expone el `id` del pivot
 	 * y sin el id no se puede escribir UN renglon cuando el articulo aparece en varios.
 	 *
@@ -257,12 +270,14 @@ class NotaCreditoHelper {
 	 * @param  int               $article_id
 	 * @param  int|null          $variante
 	 * @param  bool              $con_variante  Si se filtra por `$variante`.
+	 * @param  float|null        $precio        Precio del renglon de la NC.
+	 * @param  float|null        $cantidad      Cantidad del renglon de la NC.
 	 * @return object|null  Fila con id, article_variant_id y returned_amount.
 	 */
-	static function renglon_a_deshacer($sale, $article_id, $variante = null, $con_variante = false) {
+	static function renglon_a_deshacer($sale, $article_id, $variante = null, $con_variante = false, $precio = null, $cantidad = null) {
 
 		$query = DB::table('article_sale')
-					->select('id', 'article_variant_id', 'returned_amount')
+					->select('id', 'article_variant_id', 'returned_amount', 'price')
 					->where('sale_id', $sale->id)
 					->where('article_id', $article_id);
 
@@ -277,9 +292,35 @@ class NotaCreditoHelper {
 			}
 		}
 
-		return $query->orderBy('returned_amount', 'DESC')
+		$filas = $query->orderBy('returned_amount', 'DESC')
 					->orderBy('id', 'ASC')
-					->first();
+					->get()
+					->all();
+
+		if (count($filas) == 0) {
+			return null;
+		}
+
+		if (!is_null($precio)) {
+
+			$mismo_precio = array_values(array_filter($filas, function ($fila) use ($precio) {
+				return abs((float)$fila->price - (float)$precio) < 0.0001;
+			}));
+
+			foreach ($mismo_precio as $fila) {
+				if ((float)$fila->returned_amount >= (float)$cantidad - 0.0001) {
+					return $fila;
+				}
+			}
+
+			foreach ($mismo_precio as $fila) {
+				if ((float)$fila->returned_amount > 0) {
+					return $fila;
+				}
+			}
+		}
+
+		return $filas[0];
 	}
 
 }
