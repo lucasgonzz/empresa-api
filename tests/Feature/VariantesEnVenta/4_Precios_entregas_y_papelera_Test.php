@@ -113,6 +113,67 @@ class Precios_entregas_y_papelera_Test extends VariantesEnVentaTestCase
     }
 
     /**
+     * Contrato con la SPA nueva: manda `article_variant_id` SIEMPRE, con 0 para el renglón sin
+     * variante. Con la clave en 0 se escriben SOLO las filas sin variante (precio y entregadas), no
+     * las de las variantes del mismo artículo.
+     *
+     * @test
+     */
+    public function con_la_clave_de_variante_en_cero_se_escribe_solo_la_fila_sin_variante()
+    {
+        $e = $this->escenario();
+
+        $venta = $this->crear_venta([
+            $this->renglon($e, $e['m'], 2),
+            ['article' => $e['articulo'], 'amount' => 1, 'price' => self::PRECIO, 'cost' => (float) $e['articulo']->cost],
+        ], ['address_id' => $e['suc1']->id]);
+
+        $this->putJson('api/sale/update-prices/'.$venta->id, [
+            'items' => [
+                ['is_article' => true, 'id' => $e['articulo']->id, 'price_vender' => 500, 'article_variant_id' => 0],
+            ],
+        ])->assertStatus(200);
+
+        $sin_variante = $this->fila_de($venta, $e['articulo'], null);
+        $fila_m = $this->fila_de($venta, $e['articulo'], $e['m']);
+
+        $this->assertEquals(500.0, (float) $sin_variante->price, 'La fila sin variante toma el precio nuevo.');
+        $this->assertEqualsWithDelta((500 - (float) $sin_variante->cost) * 1, (float) $sin_variante->ganancia, 0.01);
+        $this->assertEquals((float) self::PRECIO, (float) $fila_m->price, 'La fila de la M no se toca.');
+
+        $this->putJson('api/sale/unidades-entregadas/'.$venta->id, [
+            'articles' => [
+                ['id' => $e['articulo']->id, 'add_delivered_amount' => 1, 'article_variant_id' => 0],
+            ],
+        ])->assertStatus(200);
+
+        $this->assertEquals(1.0, (float) $this->fila_de($venta, $e['articulo'], null)->delivered_amount, 'La fila sin variante entregó 1.');
+        $this->assertEquals(0.0, (float) $this->fila_de($venta, $e['articulo'], $e['m'])->delivered_amount, 'La M no entregó nada.');
+    }
+
+    /**
+     * La SPA vieja (sin la clave) en "Unidades entregadas" sigue como siempre.
+     *
+     * @test
+     */
+    public function unidades_entregadas_sin_la_clave_de_variante_sigue_como_siempre()
+    {
+        $e = $this->escenario();
+
+        $venta = $this->crear_venta([
+            $this->renglon_testigo($e, 3),
+        ], ['address_id' => $e['suc1']->id]);
+
+        $this->putJson('api/sale/unidades-entregadas/'.$venta->id, [
+            'articles' => [
+                ['id' => $e['testigo']->id, 'add_delivered_amount' => 2],
+            ],
+        ])->assertStatus(200);
+
+        $this->assertEquals(2.0, (float) DB::table('article_sale')->where('sale_id', $venta->id)->where('article_id', $e['testigo']->id)->value('delivered_amount'));
+    }
+
+    /**
      * B6 — lo ya devuelto por NC de un renglón SIN variante no cuenta las devoluciones de las filas
      * CON variante del mismo artículo (lo usa la papelera al restaurar una venta).
      *
