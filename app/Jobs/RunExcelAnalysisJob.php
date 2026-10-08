@@ -1016,14 +1016,32 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $es_recomendacion = $run->tipo === 'recomendacion';
 
+            /*
+             * Para clientes y proveedores la "recomendación" no recomienda nada (es de artículos):
+             * esa corrida solo revisa los nombres parecidos (misión
+             * importacion-relaciones-parecidas), así que el aviso habla de eso.
+             */
+            $solo_nombres_parecidos = $es_recomendacion && $this->modelo_de_la_recomendacion($run) !== 'article';
+
+            /* "de "Clientes.xlsx"" o "del archivo" (no "de el archivo"). */
+            $de_archivo = $presentacion['original_filename'] !== '' ? 'de ' . $archivo : 'del archivo';
+
             if ($run->estado === 'listo') {
-                $message_text = $es_recomendacion
-                    ? 'Está lista la recomendación de importación para ' . $archivo
-                    : 'Terminó el análisis de ' . $archivo;
+                if ($solo_nombres_parecidos) {
+                    $message_text = 'Revisamos los nombres parecidos ' . $de_archivo;
+                } else {
+                    $message_text = $es_recomendacion
+                        ? 'Está lista la recomendación de importación para ' . $archivo
+                        : 'Terminó el análisis de ' . $archivo;
+                }
             } else {
-                $message_text = $es_recomendacion
-                    ? 'No se pudo generar la recomendación para ' . $archivo
-                    : 'No se pudo analizar ' . $archivo;
+                if ($solo_nombres_parecidos) {
+                    $message_text = 'No pudimos revisar los nombres parecidos ' . $de_archivo;
+                } else {
+                    $message_text = $es_recomendacion
+                        ? 'No se pudo generar la recomendación para ' . $archivo
+                        : 'No se pudo analizar ' . $archivo;
+                }
             }
 
             $owner->notify(new GlobalNotification([
