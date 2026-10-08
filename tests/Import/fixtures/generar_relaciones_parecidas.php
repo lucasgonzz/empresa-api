@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Genera los fixtures 33 a 36: los nombres parecidos de las relaciones de la importación (misión
+ * Genera los fixtures 33 a 37: los nombres parecidos de las relaciones de la importación (misión
  * importacion-relaciones-parecidas, 8/10/2026).
  *
  * Se corre desde la raiz de empresa-api:
@@ -25,6 +25,8 @@
  *   35_relaciones_parecidas_clientes.xlsx       nombre, provincia, localidad, vendedor,
  *                                               tipo_de_precio.
  *   36_relaciones_parecidas_proveedores.xlsx    nombre, localidad.
+ *   37_relaciones_parecidas_localidades.xlsx    nombre, provincia, localidad: la misma localidad bajo
+ *                                               dos escrituras de la misma provincia.
  *
  * Mismo criterio de tipos que generar_visible_en_tienda.php:
  *
@@ -124,4 +126,15 @@ escribir_fixture_relaciones('36_relaciones_parecidas_proveedores.xlsx', ['nombre
     ['Proveedor RP 1', 'Rosario'],
     ['Proveedor RP 2', 'ROSARIO'],
     ['Proveedor RP 3', 'Funes'],
+]);
+
+/*
+ * Localidades bajo dos escrituras de la misma provincia: "Villa Gdor Galvez" bajo "Santa Fe." tiene
+ * que compararse con "Villa Gdor. Galvez" bajo "Santa Fe" (las dos provincias se unen). Con o sin
+ * punto, para que el WHERE de MySQL NO los junte solo: la prueba es que el paso 3 lo pregunte.
+ */
+escribir_fixture_relaciones('37_relaciones_parecidas_localidades.xlsx', ['nombre', 'provincia', 'localidad'], [
+    ['Cliente LP 1', 'Santa Fe',  'Villa Gdor. Galvez'],
+    ['Cliente LP 2', 'Santa Fe.', 'Villa Gdor Galvez'],
+    ['Cliente LP 3', 'Santa Fe',  'Villa Gdor. Galvez'],
 ]);

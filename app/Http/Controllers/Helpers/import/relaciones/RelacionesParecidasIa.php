@@ -12,9 +12,15 @@ use Illuminate\Support\Facades\Log;
  * importacion-relaciones-parecidas, 8/10/2026).
  *
  * Recibe SOLO la lista corta que armó RelacionesParecidasDetector (cada valor con hasta tres
- * candidatos) y decide, por cada valor, si es alguno de los candidatos escrito de otra forma o si
- * no es ninguno. UNA llamada por corrida, con tope de ítems (el excedente queda con la capa
- * determinista). Sin candidatos no se la llama: eso lo garantiza RelacionesParecidasChequeo.
+ * candidatos) y decide, por cada valor, si es alguno de los candidatos escrito de otra forma
+ * (seguro o dudoso) o si es claramente otra cosa. UNA llamada por corrida, con tope de ítems (el
+ * excedente queda con la capa determinista). Sin candidatos no se la llama: eso lo garantiza
+ * RelacionesParecidasChequeo.
+ *
+ * 🔴 "Ante la duda" la IA tiene que contestar el candidato con `seguro: false`, NUNCA null. Null
+ * hace que el ítem no se muestre: ante la duda no se preguntaría y se crearía el duplicado en
+ * silencio, que es justo lo que esta misión vino a evitar. Medido el 8/10/2026 con la IA real:
+ * con el prompt viejo ("ante la duda, null"), "Bulonera Tomy" contra "Bulonería Tomi" volvía null.
  *
  * Mismo esqueleto que AiExcelAnalyzer::ask_claude_for_recomendation(): el modelo lo elige el admin
  * por comercio (ModelosIaHelper::resolver con TAREA_EXCEL), el request lo arma ProveedorIaHelper,
@@ -53,8 +59,9 @@ class RelacionesParecidasIa
      * @param  int   $user_id    dueño del comercio (el que paga el consumo y el que eligió el modelo)
      * @param  array $consultas  [['n' => int, 'tipo' => string, 'valor' => string,
      *                            'candidatos' => [['c' => int, 'nombre' => string, 'origen' => 'cargado'|'archivo'], ...]], ...]
-     * @return array|null  [n => c|null] con lo que contestó (un `n` que no vino no está en el
-     *                     array); null si la IA no se pudo consultar o no contestó en forma
+     * @return array|null  [n => ['c' => int, 'seguro' => bool] | null] con lo que contestó (un `n`
+     *                     que no vino no está en el array; null = la IA dice que es otra cosa);
+     *                     null si la IA no se pudo consultar o no contestó en forma
      */
     public static function juzgar($user_id, array $consultas)
     {
@@ -104,9 +111,17 @@ class RelacionesParecidasIa
      * null o uno de los `c` de ESE ítem. Lo demás se descarta (y ese valor queda como si la IA no
      * hubiera contestado por él).
      *
+     * Tres niveles: elegido + `seguro: true` (es el mismo), elegido + `seguro: false` (puede ser el
+     * mismo: se pregunta sin marcar nada) y `elegido: null` (es otra cosa: no se muestra).
+     *
+     * 🔴 `seguro` cuenta solo si es el booleano true. Ausente, "true" como texto, 1 o lo que sea,
+     * vale false: lo único que hace un "seguro" de más es preseleccionar "usar el existente", y
+     * ante una respuesta mal formada es mejor preguntar sin marcar que unir dos cosas por un clic
+     * distraído.
+     *
      * @param  array $respuestas
      * @param  array $consultas
-     * @return array [n => c|null]
+     * @return array [n => ['c' => int, 'seguro' => bool] | null]
      */
     protected static function validar_respuestas(array $respuestas, array $consultas)
     {
@@ -143,7 +158,10 @@ class RelacionesParecidasIa
             }
 
             if (is_numeric($elegido) && isset($validos[$n][(int) $elegido])) {
-                $resultado[$n] = (int) $elegido;
+                $resultado[$n] = [
+                    'c'      => (int) $elegido,
+                    'seguro' => array_key_exists('seguro', $respuesta) && $respuesta['seguro'] === true,
+                ];
             }
         }
 
@@ -192,19 +210,30 @@ Decidí, para cada valor, si es EL MISMO que alguno de sus candidatos, solo que 
 forma: error de tipeo, abreviatura, plural o singular, palabras en otro orden, con o sin tildes,
 mayúsculas, espacios o signos de puntuación.
 
-NO es el mismo si difiere en un dato que importa: una medida, un número, un modelo, un color,
-una marca distinta, un lugar distinto, una variante. Por ejemplo "Caño 1/2" y "Caño 3/4" NO son
-el mismo; "Ferret. del Norte" y "Ferretería Del Norte" SÍ.
+Tu respuesta NO se aplica sola: el comerciante ve cada sugerencia y la confirma antes de
+importar. Lo peor que puede pasar es que NO le preguntes por un nombre que sí era el mismo:
+ahí el sistema crea un duplicado y nadie se entera. Por eso hay tres respuestas posibles:
 
-Ante la duda, respondé null: es preferible preguntarle de más al comerciante que unir dos cosas
-distintas.
+- Es el mismo y estás seguro: "elegido" con el número "c" de ese candidato y "seguro": true.
+  Se le muestra al comerciante con ese candidato ya marcado.
+- Se parece y PUEDE ser el mismo, pero no estás seguro: "elegido" con el número "c" del
+  candidato más probable y "seguro": false. Se le pregunta al comerciante sin marcarle nada.
+- Está claro que es OTRA cosa, porque difiere en un dato que importa (una medida, un número, un
+  modelo, un color, una marca distinta, un lugar distinto, una variante): "elegido": null. Ese
+  valor no se le muestra al comerciante.
+
+Ante la duda, NO respondas null: respondé el candidato más probable con "seguro": false. Null es
+solo para cuando está claro que son cosas distintas.
+
+Por ejemplo: "Caño 1/2" y "Caño 3/4" NO son el mismo (cambia la medida): null.
+"Ferret. del Norte" y "Ferretería Del Norte" SÍ son el mismo: elegido con "seguro": true.
 
 Valores a revisar (JSON):
 {$json}
 
 Respondé SOLO con un JSON válido, sin markdown ni texto adicional, con una entrada por cada "n":
-{"respuestas": [{"n": 1, "elegido": 2}, {"n": 2, "elegido": null}]}
-donde "elegido" es el número "c" del candidato que es el mismo, o null si ninguno lo es.
+{"respuestas": [{"n": 1, "elegido": 2, "seguro": true}, {"n": 2, "elegido": 1, "seguro": false}, {"n": 3, "elegido": null}]}
+donde "elegido" es el número "c" del candidato, o null si ninguno puede ser el mismo.
 PROMPT;
     }
 

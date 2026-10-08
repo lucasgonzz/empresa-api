@@ -66,6 +66,9 @@ class RelacionesParecidasDetector
     const EXPLICACION_NUEVOS_PARECIDO  = 'En el archivo aparece escrito de varias formas parecidas';
     const EXPLICACION_POSIBLE          = 'No se pudo consultar a la IA; revisá estos nombres parecidos';
 
+    /** La IA cree que puede ser el mismo pero no está segura (%s = el nombre que eligió). */
+    const EXPLICACION_DUDOSA           = 'Podría ser «%s» escrito de otra forma; si es el mismo, elegilo';
+
     /* =====================================================================
      * Claves de comparación
      * ================================================================== */
@@ -595,9 +598,10 @@ class RelacionesParecidasDetector
      *
      * @param  string      $tipo        proveedor | categoria | sub_categoria | marca | ...
      * @param  array       $grupo       salida de analizar_grupo()
-     * @param  array       $respuestas  [valor => eleccion]; eleccion = null (ninguno),
-     *                                  ['existente' => id] o ['archivo' => valor]. Solo los valores
-     *                                  que la IA contestó.
+     * @param  array       $respuestas  [valor => eleccion]; eleccion = null (es otra cosa),
+     *                                  ['existente' => id, 'seguro' => bool] o
+     *                                  ['archivo' => valor, 'seguro' => bool]. Solo los valores que
+     *                                  la IA contestó. Sin `seguro` (o no booleano) cuenta como false.
      * @param  array       $enviados    [valor => true]: los que se le mandaron a la IA
      * @param  bool        $ia_ok       false = la IA no se pudo consultar (o no contestó en forma)
      * @param  string|null $padre       categoría (o provincia) del Excel, para los tipos con padre
@@ -610,6 +614,9 @@ class RelacionesParecidasDetector
         $supuestos = [];
         $nuevos    = [];
         $aristas   = [];
+
+        /* Pares entre valores nuevos que la IA cree posibles pero no seguros: [valor => otro]. */
+        $dudosos   = [];
 
         /* Valores que ya tienen un ítem contra un existente: no entran al agrupado entre nuevos. */
         $con_item = [];
@@ -649,24 +656,44 @@ class RelacionesParecidasDetector
                     if ($contesto) {
                         $eleccion = $respuestas[$valor];
 
+                        /*
+                         * 🔴 Solo el booleano true es "seguro". Cualquier otra cosa (ausente, "true"
+                         * como texto) es dudosa: se pregunta igual, pero sin marcar "usar el
+                         * existente", así un clic distraído nunca une dos cosas distintas.
+                         */
+                        $seguro = is_array($eleccion) && isset($eleccion['seguro']) && $eleccion['seguro'] === true;
+
                         if (is_array($eleccion) && isset($eleccion['existente'])) {
                             $opciones = self::opciones_usar($info['candidatos']);
-                            $sugerida = 0;
+                            $elegida  = 0;
+                            $nombre   = '';
 
                             foreach ($info['candidatos'] as $indice => $candidato) {
                                 if ((int) $candidato['id'] === (int) $eleccion['existente']) {
-                                    $sugerida = $indice;
+                                    $elegida = $indice;
+                                    $nombre  = (string) $candidato['nombre'];
                                 }
                             }
 
-                            $supuestos[$valor] = (int) $eleccion['existente'];
                             $con_item[$valor] = true;
-                            $items[] = self::item($base, $info, self::MOTIVO_PARECIDO, self::EXPLICACION_PARECIDO, $opciones, $sugerida);
+
+                            if ($seguro) {
+                                $supuestos[$valor] = (int) $eleccion['existente'];
+                                $items[] = self::item($base, $info, self::MOTIVO_PARECIDO, self::EXPLICACION_PARECIDO, $opciones, $elegida);
+                            } else {
+                                /* Dudoso: se pregunta con "crear" marcado (lo que pasaría hoy). */
+                                $items[] = self::item($base, $info, self::MOTIVO_POSIBLE, sprintf(self::EXPLICACION_DUDOSA, $nombre), $opciones, count($opciones) - 1);
+                            }
+
                             break;
                         }
 
                         if (is_array($eleccion) && isset($eleccion['archivo'])) {
-                            $aristas[] = [$valor, (string) $eleccion['archivo']];
+                            if ($seguro) {
+                                $aristas[] = [$valor, (string) $eleccion['archivo']];
+                            } else {
+                                $dudosos[$valor] = (string) $eleccion['archivo'];
+                            }
                         }
 
                         $nuevos[$valor] = $info;
@@ -700,7 +727,7 @@ class RelacionesParecidasDetector
             }
         }
 
-        $items = array_merge($items, self::items_entre_nuevos($base, $nuevos, $aristas, $enviados, $ia_ok, $respuestas));
+        $items = array_merge($items, self::items_entre_nuevos($base, $nuevos, $aristas, $enviados, $ia_ok, $respuestas, $dudosos));
 
         usort($items, function ($a, $b) {
             if ($a['filas'] !== $b['filas']) {
@@ -720,18 +747,20 @@ class RelacionesParecidasDetector
      * Agrupa los valores nuevos (los que no son ningún existente) y arma un ítem por cada variante
      * que no es la canónica de su grupo: "unir con «canónico»" preseleccionado, o "crear aparte".
      *
-     * Se agrupan por clave fuerte (seguro) y por los pares que la IA dijo que son el mismo. Si la
-     * IA no se pudo consultar, los pares de puntaje alto se muestran con "crear aparte" marcado.
+     * Se agrupan por clave fuerte (seguro) y por los pares que la IA dijo, SEGURA, que son el
+     * mismo. Los pares que la IA cree posibles pero no seguros, y los de puntaje alto cuando la IA
+     * no se pudo consultar, se muestran con "crear aparte" marcado.
      *
      * @param  array $base
      * @param  array $nuevos      [valor => info]
-     * @param  array $aristas     [[valor, otro], ...] pares que la IA confirmó
+     * @param  array $aristas     [[valor, otro], ...] pares que la IA confirmó con seguridad
      * @param  array $enviados
      * @param  bool  $ia_ok
      * @param  array $respuestas
+     * @param  array $dudosos     [valor => otro] pares que la IA cree posibles pero no seguros
      * @return array items
      */
-    protected static function items_entre_nuevos(array $base, array $nuevos, array $aristas, array $enviados, $ia_ok, array $respuestas)
+    protected static function items_entre_nuevos(array $base, array $nuevos, array $aristas, array $enviados, $ia_ok, array $respuestas, array $dudosos = [])
     {
         if (count($nuevos) === 0) {
             return [];
@@ -795,6 +824,9 @@ class RelacionesParecidasDetector
         $items = [];
         $agrupados = [];
 
+        /* [valor => canónico de su grupo]: un "unir" siempre apunta al canónico, nunca a una variante. */
+        $canonico_de = [];
+
         foreach ($grupos as $miembros) {
             if (count($miembros) < 2) {
                 continue;
@@ -810,6 +842,7 @@ class RelacionesParecidasDetector
             for ($i = 1; $i < count($miembros); $i++) {
                 $variante = $miembros[$i];
                 $agrupados[$variante] = true;
+                $canonico_de[$variante] = $canonico;
 
                 $explicacion = self::clave_fuerte($variante) === $fuerte_canonico
                     ? self::EXPLICACION_NUEVOS_ESCRITURA
@@ -822,7 +855,10 @@ class RelacionesParecidasDetector
             }
         }
 
-        /* IA caída: los pares de puntaje alto entre valores nuevos, con "crear aparte" marcado. */
+        /*
+         * Pares que se preguntan con "crear aparte" marcado: los que la IA cree posibles pero no
+         * seguros y, si la IA no se pudo consultar, los de puntaje alto.
+         */
         foreach ($nuevos as $valor => $info) {
             $valor = (string) $valor;
 
@@ -831,13 +867,24 @@ class RelacionesParecidasDetector
             }
 
             if ($ia_ok && array_key_exists($valor, $respuestas)) {
+                if (isset($dudosos[$valor]) && isset($nuevos[$dudosos[$valor]])) {
+                    $con = isset($canonico_de[$dudosos[$valor]]) ? $canonico_de[$dudosos[$valor]] : $dudosos[$valor];
+
+                    $items[] = self::item($base, $info, self::MOTIVO_POSIBLE, sprintf(self::EXPLICACION_DUDOSA, $con), [
+                        ['accion' => 'unir', 'con' => $con],
+                        ['accion' => 'crear'],
+                    ], 1);
+                }
+
                 continue;
             }
 
             foreach ($info['candidatos_archivo'] as $candidato) {
                 if ($candidato['puntaje'] >= self::PUNTAJE_ALTO && isset($nuevos[$candidato['valor']])) {
+                    $con = isset($canonico_de[$candidato['valor']]) ? $canonico_de[$candidato['valor']] : $candidato['valor'];
+
                     $items[] = self::item($base, $info, self::MOTIVO_POSIBLE, self::EXPLICACION_POSIBLE, [
-                        ['accion' => 'unir', 'con' => $candidato['valor']],
+                        ['accion' => 'unir', 'con' => $con],
                         ['accion' => 'crear'],
                     ], 1);
                     break;

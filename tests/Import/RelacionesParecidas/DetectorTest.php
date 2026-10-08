@@ -290,11 +290,21 @@ class DetectorTest extends TestCase
 
         $enviados = ['Martillo' => true];
 
-        $si = RelacionesParecidasDetector::cerrar_grupo('sub_categoria', $grupo, ['Martillo' => ['archivo' => 'Martillos']], $enviados, true, 'Herramientas', null);
+        $si = RelacionesParecidasDetector::cerrar_grupo('sub_categoria', $grupo, ['Martillo' => ['archivo' => 'Martillos', 'seguro' => true]], $enviados, true, 'Herramientas', null);
         $this->assertCount(1, $si['items']);
         $this->assertSame('entre_nuevos', $si['items'][0]['motivo']);
         $this->assertSame('sub_categoria|Herramientas|Martillo', $si['items'][0]['clave']);
         $this->assertSame('Herramientas', $si['items'][0]['padre']);
+
+        /* Dudoso (sin `seguro`, o en false): se pregunta igual, con "crear aparte" marcado. */
+        foreach ([['archivo' => 'Martillos', 'seguro' => false], ['archivo' => 'Martillos']] as $eleccion) {
+            $dudoso = RelacionesParecidasDetector::cerrar_grupo('sub_categoria', $grupo, ['Martillo' => $eleccion], $enviados, true, 'Herramientas', null);
+            $this->assertCount(1, $dudoso['items']);
+            $this->assertSame('posible', $dudoso['items'][0]['motivo']);
+            $this->assertSame([['accion' => 'unir', 'con' => 'Martillos'], ['accion' => 'crear']], $dudoso['items'][0]['opciones']);
+            $this->assertSame(1, $dudoso['items'][0]['sugerida']);
+            $this->assertSame('Podría ser «Martillos» escrito de otra forma; si es el mismo, elegilo', $dudoso['items'][0]['explicacion']);
+        }
 
         $no = RelacionesParecidasDetector::cerrar_grupo('sub_categoria', $grupo, ['Martillo' => null], $enviados, true, 'Herramientas', null);
         $this->assertCount(0, $no['items']);
@@ -344,7 +354,7 @@ class DetectorTest extends TestCase
         $candidatos = $grupo['valores']['Ferret. del Norte']['candidatos'];
         $this->assertSame(7, $candidatos[0]['id']);
 
-        $eligio = RelacionesParecidasDetector::cerrar_grupo('proveedor', $grupo, ['Ferret. del Norte' => ['existente' => 7]], $enviados, true);
+        $eligio = RelacionesParecidasDetector::cerrar_grupo('proveedor', $grupo, ['Ferret. del Norte' => ['existente' => 7, 'seguro' => true]], $enviados, true);
         $this->assertCount(1, $eligio['items']);
         $this->assertSame('parecido', $eligio['items'][0]['motivo']);
         $this->assertSame('usar', $eligio['items'][0]['opciones'][$eligio['items'][0]['sugerida']]['accion']);
@@ -356,5 +366,16 @@ class DetectorTest extends TestCase
         $ninguno = RelacionesParecidasDetector::cerrar_grupo('proveedor', $grupo, ['Ferret. del Norte' => null], $enviados, true);
         $this->assertCount(0, $ninguno['items'], 'Lo que la IA dice que no coincide no se le muestra al usuario.');
         $this->assertNull($ninguno['supuestos']['Ferret. del Norte']);
+
+        foreach ([['existente' => 7, 'seguro' => false], ['existente' => 7], ['existente' => 7, 'seguro' => 'true']] as $eleccion) {
+            $dudoso = RelacionesParecidasDetector::cerrar_grupo('proveedor', $grupo, ['Ferret. del Norte' => $eleccion], $enviados, true);
+            $item = $dudoso['items'][0];
+
+            $this->assertSame('posible', $item['motivo'], json_encode($eleccion));
+            $this->assertSame(['accion' => 'crear'], $item['opciones'][$item['sugerida']], 'Dudoso: "crear" marcado.');
+            $this->assertSame(7, $item['opciones'][0]['id'], 'El candidato se ofrece igual.');
+            $this->assertSame('Podría ser «Ferretería Del Norte» escrito de otra forma; si es el mismo, elegilo', $item['explicacion']);
+            $this->assertNull($dudoso['supuestos']['Ferret. del Norte'], 'Con "crear" marcado, la fila no supone el existente.');
+        }
     }
 }

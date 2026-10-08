@@ -30,6 +30,10 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
     const REIMPORTACION = '34_relaciones_parecidas_reimportacion.xlsx';
     const CLIENTES      = '35_relaciones_parecidas_clientes.xlsx';
     const PROVEEDORES   = '36_relaciones_parecidas_proveedores.xlsx';
+    const LOCALIDADES   = '37_relaciones_parecidas_localidades.xlsx';
+
+    /** Para elegir_por_nombre(): la clave `seguro` no viaja en la respuesta de la IA. */
+    const ABSENT = '__sin_seguro__';
 
     /** @var string[] Prefijos de los archivos copiados a storage, para borrarlos al final. */
     protected $copias = [];
@@ -316,7 +320,12 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
             $respuestas = [];
 
             foreach ($consultas as $consulta) {
-                $respuestas[] = ['n' => $consulta['n'], 'elegido' => call_user_func($elegir, $consulta)];
+                $respuesta = call_user_func($elegir, $consulta);
+
+                /* $elegir devuelve el resto de la entrada (elegido, seguro) o, a secas, el `c` / null. */
+                $respuestas[] = is_array($respuesta)
+                    ? array_merge(['n' => $consulta['n']], $respuesta)
+                    : ['n' => $consulta['n'], 'elegido' => $respuesta];
             }
 
             return Http::response($test->cuerpo_ia(json_encode(['respuestas' => $respuestas])), 200);
@@ -343,25 +352,32 @@ abstract class RelacionesParecidasTestCase extends ImportTestCase
 
     /**
      * Un $elegir que elige, para cada valor del mapa, el candidato con ese nombre; para el resto
-     * (y para los valores del mapa en null), ninguno.
+     * (y para los valores del mapa en null), `elegido: null` ("es otra cosa").
      *
-     * @param  array $mapa  [valor del Excel => nombre del candidato]
+     * @param  array $mapa    [valor del Excel => nombre del candidato]
+     * @param  mixed $seguro  lo que viaja en `seguro`; ABSENT = la clave no viaja
      * @return callable
      */
-    protected function elegir_por_nombre(array $mapa)
+    protected function elegir_por_nombre(array $mapa, $seguro = true)
     {
-        return function (array $consulta) use ($mapa) {
+        return function (array $consulta) use ($mapa, $seguro) {
             if (!array_key_exists($consulta['valor'], $mapa) || is_null($mapa[$consulta['valor']])) {
-                return null;
+                return ['elegido' => null];
             }
 
             foreach ($consulta['candidatos'] as $candidato) {
                 if ($candidato['nombre'] === $mapa[$consulta['valor']]) {
-                    return $candidato['c'];
+                    $respuesta = ['elegido' => $candidato['c']];
+
+                    if ($seguro !== self::ABSENT) {
+                        $respuesta['seguro'] = $seguro;
+                    }
+
+                    return $respuesta;
                 }
             }
 
-            return null;
+            return ['elegido' => null];
         };
     }
 

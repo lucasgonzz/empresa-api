@@ -72,6 +72,7 @@ php tests/Import/fixtures/generar_filas_del_excel.php
 | `34_relaciones_parecidas_reimportacion.xlsx` | 1 | La misma cabecera que el 33 y una fila (`RP-21`) con los valores de la fila 2: la segunda importación **sin decisiones**, por el import clásico, que tiene que aplicar la equivalencia recordada en la primera. Generado por `generar_relaciones_parecidas.php`. |
 | `35_relaciones_parecidas_clientes.xlsx` | 4 | Clientes: `nombre`, `provincia`, `localidad`, `vendedor`, `tipo_de_precio`, con `"Buenos Aires"`/`"BUENOS AIRES"`/`"Bs As"`, `"La Plata"`/`"LA PLATA"`, `"Juan Perez"`/`"JUAN PEREZ"`/`"Juan Pérez"` y una fila sin provincia. Generado por `generar_relaciones_parecidas.php`. |
 | `36_relaciones_parecidas_proveedores.xlsx` | 3 | Proveedores: `nombre`, `localidad` (`"Rosario"`, `"ROSARIO"`, `"Funes"`). Generado por `generar_relaciones_parecidas.php`. |
+| `37_relaciones_parecidas_localidades.xlsx` | 3 | Clientes: `nombre`, `provincia`, `localidad`. `"Villa Gdor. Galvez"` bajo `"Santa Fe"` y `"Villa Gdor Galvez"` bajo `"Santa Fe."`: la misma localidad bajo dos escrituras de la misma provincia, con y sin punto para que el `WHERE` de MySQL **no** las junte solo. Generado por `generar_relaciones_parecidas.php`. |
 
 ⚠️ **Hay cuatro fixtures que se importan con varios lotes, y los cuatro dependen de un `config()`.** `06_incidente_servian.xlsx` (`IncidenteServianTest`) y `28_`, `29_` y `30_` (`CeldaConSaltoDeLineaTest`, misión `importacion-celda-multilinea`, 4/10/2026) bajan `ARTICLE_EXCEL_CHUNK_SIZE` a 10 en el `setUp()`. En el 06 es lo que reproduce el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes); en el 28, el 29 y el 30, lo que hace que haya offsets de lote que se puedan desalinear con una celda multilínea (el CSV tiene un **registro** por fila del Excel, pero una celda con salto de línea ocupa varias **líneas** físicas). Si alguien cambia o quita ese `config()`, los tests dejan de probar lo que dicen probar aunque sigan pasando en verde. Los tres fixtures multilínea se regeneran con:
 
@@ -91,7 +92,7 @@ El `32_` (misión `catalogo-por-lista-tienda`, 5/10/2026) también tiene su prop
 php tests/Import/fixtures/generar_visible_en_tienda.php
 ```
 
-Los `33_` a `36_` (misión `importacion-relaciones-parecidas`, 8/10/2026) tienen su propio generador, con PhpSpreadsheet y tipos de celda explícitos: son los únicos con columnas de proveedor, categoría, subcategoría y marca (y los únicos de clientes y proveedores de esta carpeta).
+Los `33_` a `37_` (misión `importacion-relaciones-parecidas`, 8/10/2026) tienen su propio generador, con PhpSpreadsheet y tipos de celda explícitos: son los únicos con columnas de proveedor, categoría, subcategoría y marca (y los únicos de clientes y proveedores de esta carpeta).
 
 ```
 php tests/Import/fixtures/generar_relaciones_parecidas.php
@@ -558,6 +559,13 @@ distinto. Hasta esta misión la resolución de relaciones de la importación no 
   "crear" marcado) y **cero requests** cuando no hay candidatos.
 - `RecomendacionConRelacionesTest`: `get-recomendacion` de punta a punta con y sin `chequear_relaciones`, en los
   tres modelos. Sin la bandera el `resultado` tiene exactamente las cuatro claves de siempre.
+- La IA contesta en **tres niveles**: `elegido` + `seguro: true` (ítem `parecido`, "usar" marcado), `elegido` +
+  `seguro: false` (ítem `posible`, "crear" marcado y la explicación "Podría ser «…»…") y `elegido: null` (es otra
+  cosa, no se muestra). 🔴 "Ante la duda" es `seguro: false`, nunca null: null no pregunta y crea el duplicado en
+  silencio. `seguro` ausente o no booleano vale false.
+- Los hijos (subcategoría, localidad con provincia) se comparan bajo el **padre canónico**: "Látex" bajo
+  "Pintureria" y "Latex" bajo "Pinturería" se juzgan juntos (fixture 33), igual que "Villa Gdor Galvez" bajo
+  "Santa Fe." y "Villa Gdor. Galvez" bajo "Santa Fe" (fixture 37). El ítem conserva el padre de SU fila.
 - `ImportacionArticulosTest` y `ImportacionClientesProveedoresTest`: `usar` / `crear` / `unir`, el saneado (id
   ajeno, tipo de otra importación, sub o localidad de otro padre), las equivalencias recordadas (`crear` las
   borra; la segunda importación sin decisiones las aplica, también por el import clásico) y varios lotes.

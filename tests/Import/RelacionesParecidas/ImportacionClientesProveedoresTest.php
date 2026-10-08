@@ -217,6 +217,34 @@ class ImportacionClientesProveedoresTest extends RelacionesParecidasTestCase
         $this->assertSame((int) $elegido->id, (int) $this->cliente('Cliente RP 1')->seller_id);
     }
 
+    /**
+     * Lo mismo que "Látex"/"Latex" en artículos, para localidad dentro de provincia: con las dos
+     * decisiones que propone el paso 3 queda UNA provincia con UNA localidad. Sin la de la
+     * localidad, "Villa Gdor Galvez" se crearía aparte (el WHERE de MySQL no ignora el punto).
+     */
+    public function test_unir_la_provincia_y_la_localidad_deja_una_sola_de_cada_una()
+    {
+        $this->importar_modelo('client', self::LOCALIDADES, ['nombre' => 0, 'provincia' => 1, 'localidad' => 2], [
+            ['tipo' => 'provincia', 'valor' => 'Santa Fe.', 'accion' => 'unir', 'con' => 'Santa Fe'],
+            ['tipo' => 'localidad', 'valor' => 'Villa Gdor Galvez', 'padre' => 'Santa Fe.', 'accion' => 'unir', 'con' => 'Villa Gdor. Galvez'],
+        ]);
+
+        $this->assertSame(1, Provincia::where('user_id', $this->tenant->id)->count());
+
+        $provincia = Provincia::where('user_id', $this->tenant->id)->first();
+        $this->assertSame('Santa Fe', $provincia->name);
+
+        $localidades = Location::where('user_id', $this->tenant->id)->get();
+        $this->assertCount(1, $localidades, 'Una sola localidad.');
+        $this->assertSame('Villa Gdor. Galvez', $localidades[0]->name);
+        $this->assertSame((int) $provincia->id, (int) $localidades[0]->provincia_id);
+
+        foreach (['Cliente LP 1', 'Cliente LP 2', 'Cliente LP 3'] as $nombre) {
+            $this->assertSame((int) $localidades[0]->id, (int) $this->cliente($nombre)->location_id, $nombre);
+            $this->assertSame((int) $provincia->id, (int) $this->cliente($nombre)->provincia_id, $nombre);
+        }
+    }
+
     /* ------------------------------------------------------------------
      * Proveedores
      * ------------------------------------------------------------------ */

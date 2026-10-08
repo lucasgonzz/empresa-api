@@ -117,6 +117,35 @@ class ImportacionArticulosTest extends RelacionesParecidasTestCase
             ->where('tipo', 'categoria')->where('valor_clave', 'pintureria')->value('model_id'), 'El unir se recuerda cuando el worker conoce el id.');
     }
 
+    /**
+     * El caso real de los errores de tipeo que vienen juntos en la misma fila: "Látex" bajo
+     * "Pintureria" y "Latex" bajo "Pinturería". Con las dos decisiones que propone el paso 3 (unir
+     * las categorías y unir las subcategorías) queda UNA categoría con UNA subcategoría: el `unir`
+     * de la sub se resuelve dentro de la categoría que resolvió la fila.
+     */
+    public function test_unir_la_categoria_y_la_sub_deja_una_sola_de_cada_una()
+    {
+        $this->importar_articulos(self::ARTICULOS, [
+            ['tipo' => 'categoria',     'valor' => 'Pintureria', 'accion' => 'unir', 'con' => 'Pinturería'],
+            ['tipo' => 'sub_categoria', 'valor' => 'Latex', 'padre' => 'Pinturería', 'accion' => 'unir', 'con' => 'Látex'],
+        ]);
+
+        $categoria = Category::where('user_id', $this->tenant->id)->whereRaw('BINARY name = ?', ['Pinturería'])->first();
+
+        $this->assertNotNull($categoria);
+        $this->assertSame(0, $this->cuantos_exactos('categories', 'Pintureria'));
+
+        $subs = SubCategory::where('user_id', $this->tenant->id)->where('category_id', $categoria->id)->get();
+
+        $this->assertCount(1, $subs, 'Una sola subcategoría dentro de la categoría unida.');
+        $this->assertSame('Látex', $subs[0]->name);
+
+        foreach (['RP-05', 'RP-06'] as $codigo) {
+            $this->assertSame((int) $categoria->id, (int) $this->articulo($codigo)->category_id, $codigo);
+            $this->assertSame((int) $subs[0]->id, (int) $this->articulo($codigo)->sub_category_id, $codigo);
+        }
+    }
+
     /* ------------------------------------------------------------------
      * Sin decisiones: el arreglo de mayúsculas
      * ------------------------------------------------------------------ */

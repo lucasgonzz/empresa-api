@@ -6,6 +6,7 @@ use App\Models\Location;
 use App\Models\PriceType;
 use App\Models\Provincia;
 use App\Models\Seller;
+use App\Notifications\GlobalNotification;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 
@@ -70,6 +71,8 @@ class RecomendacionConRelacionesTest extends RelacionesParecidasTestCase
         $this->assertSame('parecido', $this->item($relaciones, 'marca|Bosh')['motivo']);
         $this->assertSame('misma_escritura', $this->item($relaciones, 'proveedor|ACME')['motivo']);
         $this->assertSame('entre_nuevos', $this->item($relaciones, 'categoria|Pintureria')['motivo']);
+
+        $this->assertAviso('Está lista la recomendación de importación para el archivo');
     }
 
     public function test_articulos_sin_la_bandera_el_resultado_es_el_de_siempre()
@@ -144,6 +147,22 @@ class RecomendacionConRelacionesTest extends RelacionesParecidasTestCase
         $this->assertSame('misma_escritura', $localidad['motivo']);
 
         $this->assertSame((int) $seller->id, $this->item($relaciones, 'vendedor|Juan Pérez')['opciones'][0]['id']);
+
+        $this->assertAviso('Revisamos los nombres parecidos del archivo');
+    }
+
+    /**
+     * El aviso de fin de la corrida (GlobalNotification al dueño): para clientes y proveedores no
+     * habla de "recomendación", que es de artículos.
+     *
+     * @param  string $texto
+     * @return void
+     */
+    protected function assertAviso($texto)
+    {
+        Notification::assertSentTo($this->tenant, GlobalNotification::class, function ($notificacion) use ($texto) {
+            return $notificacion->message_text === $texto;
+        });
     }
 
     public function test_proveedores_con_la_bandera_traen_la_localidad()
@@ -164,6 +183,8 @@ class RecomendacionConRelacionesTest extends RelacionesParecidasTestCase
         $this->assertSame((int) $rosario->id, $this->item($relaciones, 'localidad|ROSARIO')['opciones'][0]['id']);
         $this->assertNull($this->item($relaciones, 'localidad|ROSARIO')['padre']);
         $this->assertCount(0, $this->llamadas_relaciones, '"Funes" no se parece a nada: sin candidatos no hay llamada.');
+
+        $this->assertAviso('Revisamos los nombres parecidos del archivo');
     }
 
     public function test_clientes_y_proveedores_sin_la_bandera_no_leen_ni_llaman()
