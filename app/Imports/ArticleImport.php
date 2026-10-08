@@ -692,7 +692,7 @@ class ArticleImport implements ToCollection
             foreach ($nombresFaltantes as $nombre) {
                 $this->nombres_proveedores[$nombre] = Provider::create([
                     'name' => $nombre,
-                    'user_id' => $this->user->id
+                    'user_id' => $this->user->id 
                 ]);
             }
 
