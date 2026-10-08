@@ -609,7 +609,10 @@ class SaleTicketPdf extends fpdf {
 	 */
 	function total_sin_des_rec() {
 		if (
-			count($this->sale->discounts) >= 1
+			(
+				count($this->sale->discounts) >= 1
+				&& !$this->sale->aplicar_descuentos_directo_a_items
+			)
 			|| count($this->sale->surchages) >= 1
 			|| PuntosComprobanteHelper::tiene_canje($this->sale)
 			|| SaleHelper::get_forzar_total_monto($this->sale) != 0
@@ -620,7 +623,22 @@ class SaleTicketPdf extends fpdf {
 		}
 	}
 
+	/*
+	 * 🔴 Con `aplicar_descuentos_directo_a_items` el descuento YA ESTA adentro del precio de cada
+	 * renglon (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), y `$this->total_sale`
+	 * arranca de `sales.sub_total`, que es la suma de esos precios. Restarlo aca imprimiria una linea
+	 * "Desc 10%" con un importe por debajo del total real, y el cierre ("Total sin descuentos" contra
+	 * "TOTAL") dejaria de cuadrar. Por eso no se imprime ni se resta.
+	 *
+	 * ⚠️ Los recargos de este ticket NO tienen la guarda equivalente: es el hallazgo 2 abierto de la
+	 * mision del 28/9/2026 (`surchages()` mas abajo no mira `aplicar_recargos_directo_a_items`) y esta
+	 * mision no lo arregla.
+	 */
 	function discounts() {
+	    if ($this->sale->aplicar_descuentos_directo_a_items) {
+	    	return;
+	    }
+
 	    $this->SetFont('Arial', 'B', 10);
 	    foreach ($this->sale->discounts as $discount) {
 	    	$this->x = $this->x_incial;

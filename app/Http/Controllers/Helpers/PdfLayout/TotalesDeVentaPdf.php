@@ -332,13 +332,20 @@ class TotalesDeVentaPdf
     /**
      * Gemelo de `NewSalePdf::build_discount_rows()`: muta los acumuladores igual que allá.
      *
+     * Con `aplicar_descuentos_directo_a_items` el descuento YA ESTÁ en el precio de cada renglón
+     * (misión descuentos-aplicar-al-precio-del-articulo, 8/10/2026) y no se lista ni se descuenta de
+     * los acumuladores: la misma condición que `NewSalePdf::build_discount_rows()`.
+     *
      * @return array<int, string>
      */
     private function armar_renglones_de_descuentos()
     {
         $rows = [];
 
-        if (count($this->sale->discounts) >= 1) {
+        if (
+            count($this->sale->discounts) >= 1
+            && !$this->sale->aplicar_descuentos_directo_a_items
+        ) {
 
             foreach ($this->sale->discounts as $discount) {
 

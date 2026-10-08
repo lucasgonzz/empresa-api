@@ -397,7 +397,13 @@ class BudgetPdf extends fpdf {
 				$height += 12;
 			}
 
-			$height += count($this->budget->discounts) * 7;
+			/*
+				Misma condicion que la fila de cada descuento en `discountsSurchages()`: con
+				`aplicar_descuentos_directo_a_items` no se imprimen, asi que tampoco ocupan alto.
+			*/
+			if (!$this->budget->aplicar_descuentos_directo_a_items) {
+				$height += count($this->budget->discounts) * 7;
+			}
 
 			if (!$this->budget->aplicar_recargos_directo_a_items) {
 				$height += count($this->budget->surchages) * 7;
@@ -561,7 +567,17 @@ class BudgetPdf extends fpdf {
 
 		    $this->SetFont('Arial', '', 10);
 
-		    foreach ($this->budget->discounts as $discount) {
+		    /*
+		    	Con `aplicar_descuentos_directo_a_items` el descuento YA ESTA adentro del precio de cada
+		    	renglon (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), asi que listarlo
+		    	tambien en el pie hace leer que se resta dos veces: el cliente ve "- 10% Descuento"
+		    	abajo de un total que no lo vuelve a restar. Por eso no se imprime. Mismo criterio que
+		    	el de los recargos, justo debajo, y que `NewSalePdf::count_discount_rows()` para el PDF
+		    	de la venta. `footerHeight()` sigue esta misma condicion fila por fila.
+		    */
+		    $descuentos_a_listar = $this->budget->aplicar_descuentos_directo_a_items ? [] : $this->budget->discounts;
+
+		    foreach ($descuentos_a_listar as $discount) {
 				
 		    	$this->x = 5;
 				$this->Cell(200, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'R');

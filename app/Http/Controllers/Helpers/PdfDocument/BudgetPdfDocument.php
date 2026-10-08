@@ -364,14 +364,20 @@ class BudgetPdfDocument implements PdfDocumentSource
     /**
      * Un renglón por descuento ("- 10% Descuento por volumen").
      *
+     * Con `aplicar_descuentos_directo_a_items` el descuento YA ESTÁ adentro del precio de cada
+     * renglón (misión descuentos-aplicar-al-precio-del-articulo, 8/10/2026): listarlo también acá se
+     * lee como que se resta dos veces. Gemelo de `renglones_de_recargos()` y de `BudgetPdf`.
+     *
      * @return array<int, string>
      */
     public function renglones_de_descuentos()
     {
         $renglones = [];
 
-        foreach ($this->budget->discounts as $discount) {
-            $renglones[] = '- '.Numbers::price($discount->pivot->percentage).'% '.$discount->name;
+        if (! $this->budget->aplicar_descuentos_directo_a_items) {
+            foreach ($this->budget->discounts as $discount) {
+                $renglones[] = '- '.Numbers::price($discount->pivot->percentage).'% '.$discount->name;
+            }
         }
 
         return $renglones;
