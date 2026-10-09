@@ -50,8 +50,10 @@ class LocalImportHelper {
 	const PRESUPUESTO_DE_BYTES_DE_LOS_AVISOS = 8000;
 
 	/**
-	 * Largo máximo, en caracteres, del nombre y del texto de la celda en cada párrafo del aviso de
-	 * saldos ilegibles. Lo que pasa se corta con "…". También es por el límite de Pusher.
+	 * Largo máximo, en caracteres, del nombre y del texto de la celda en cada párrafo de los avisos
+	 * de saldo: el nombre en los dos (el de saldos ilegibles y el de "no se cargaron" de
+	 * ProviderImport), el texto de la celda en el de ilegibles. Lo que pasa se corta con "…" (ver
+	 * recortar_para_el_aviso()). También es por el límite de Pusher.
 	 *
 	 * @var int
 	 */
@@ -72,6 +74,10 @@ class LocalImportHelper {
 	 * 1, ver get_credit_account_pesos()); leído como el número que acompaña, "USD 1.500" quedaba
 	 * como una deuda de $1.500 sin que nadie se enterara. El rechazo es propio del saldo: en
 	 * artículos parseNumericValue() sigue ignorando la moneda, como siempre.
+	 *
+	 * ⚠️ Límite: el rechazo mira el TEXTO de la celda. Una celda NUMÉRICA con formato de dólares
+	 * (1500 con formato `[$USD] #,##0.00`) se lee como el número 1500, porque la importación no ve el
+	 * formato: Maatwebsite lee con `read_only` y sin `WithFormatData`, y entrega el entero pelado.
 	 *
 	 * @param mixed $row Fila del Excel.
 	 * @param array $columns Mapeo de columnas de la importación.
@@ -240,20 +246,30 @@ class LocalImportHelper {
 	 *      todos los días, y ahí no cambia nada.
 	 *   3. Si no entra, le baja uno al tope del bloque que MÁS pesa (de los que todavía nombran más
 	 *      de uno) y vuelve a armar todo. Repite hasta que entre.
-	 *   4. Nunca nombra menos de uno por bloque: si con todos en uno sigue sin entrar, devuelve eso
-	 *      (con los nombres y textos cortados no debería pasar).
+	 *   4. Nunca nombra menos de uno por bloque: si con todos en uno sigue sin entrar, devuelve eso.
 	 *
 	 * Cada bloque se arma con su propio constructor, que cuenta los restantes ("y N ... más") contra
 	 * el TOTAL: achicar el tope cambia cuántos se nombran, nunca cuántos se cuentan.
 	 *
+	 * ⚠️ Lo que NO garantiza: los bloques FIJOS (hoy, las sucursales que no existen de ClientImport)
+	 * no tienen tope ni se achican, así que solos pueden dejar el evento afuera del presupuesto y de
+	 * Pusher (con 400 sucursales inexistentes son unos 98 KB). Es previo a esta misión. Lo único
+	 * que se les hace acá es sanear sus textos a UTF-8 válido (sanear_bloque_fijo()) antes de medir,
+	 * para que un byte roto del Excel no haga fallar json_encode() y se pierda la notificación.
+	 *
 	 * @param array $bloques_fijos Bloques ya armados que van primero y no se achican (el de sucursales
-	 *                             de ClientImport). Pueden estar vacíos.
+	 *                             de ClientImport). Pueden estar vacíos. Se devuelven saneados.
 	 * @param array $bloques_con_tope En el orden en que van, como
 	 *                                [clave => ['tope' => int, 'total' => int, 'armar' => callable(int $tope): array|null], ...].
 	 *                                `armar` devuelve null si el bloque no tiene nada que avisar.
 	 * @return array El `info_to_show`: los fijos y después los que no son null.
 	 */
 	static function avisos_dentro_del_presupuesto(array $bloques_fijos, array $bloques_con_tope) {
+		// Los fijos traen texto del Excel sin cortar: al menos que sean UTF-8 válido.
+		$bloques_fijos = array_map(function ($bloque) {
+			return self::sanear_bloque_fijo($bloque);
+		}, $bloques_fijos);
+
 		// Tope de cada bloque. Nunca más que lo que hay para nombrar: bajar un tope que no corta nada
 		// no achica el aviso. Nunca menos de uno.
 		$topes = [];
@@ -280,7 +296,7 @@ class LocalImportHelper {
 			$json = json_encode($info_to_show);
 
 			if ($json === false) {
-				// No debería pasar: los textos de los bloques con tope ya vienen saneados.
+				// No debería pasar: los textos de los bloques, fijos y con tope, ya vienen saneados.
 				Log::warning('LocalImportHelper::avisos_dentro_del_presupuesto - json_encode fallo: ' . json_last_error_msg());
 
 				return $info_to_show;
@@ -314,6 +330,30 @@ class LocalImportHelper {
 
 			$topes[$clave_a_achicar]--;
 		}
+	}
+
+	/**
+	 * Sanea a UTF-8 válido todos los textos de un bloque fijo de avisos (título y párrafos), con
+	 * mb_scrub(): cada byte roto pasa a "?". No corta nada (ver avisos_dentro_del_presupuesto()).
+	 *
+	 * @param mixed $bloque ['title' => string, 'parrafos' => [string, ...]] u otra forma: se recorre
+	 *                      entero y solo se tocan los strings.
+	 * @return mixed El bloque saneado.
+	 */
+	private static function sanear_bloque_fijo($bloque) {
+		if (is_string($bloque)) {
+			return mb_scrub($bloque, 'UTF-8');
+		}
+
+		if (is_array($bloque)) {
+			array_walk_recursive($bloque, function (&$valor) {
+				if (is_string($valor)) {
+					$valor = mb_scrub($valor, 'UTF-8');
+				}
+			});
+		}
+
+		return $bloque;
 	}
 
 	/**
