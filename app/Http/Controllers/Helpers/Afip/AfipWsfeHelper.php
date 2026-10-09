@@ -257,6 +257,16 @@ class AfipWsfeHelper extends Controller
                                 if (!$this->consulto_despues_de_error_en_emision) {
                                     $this->recalcular_ganancia_de_la_venta();
                                 }
+
+                                /**
+                                 * Igual que en `solicitar_cae()`: con la factura recuperada, los otros
+                                 * intentos de esta venta que se puede probar que nunca se autorizaron
+                                 * salen de Alertas. Cubre los dos caminos que llegan aca: la consulta
+                                 * manual y la automatica despues de un error de red al emitir. Primero
+                                 * se restaura el ticket si quedo borrado: tiene CAE.
+                                 */
+                                IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
+                                IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
                             }
 
                         } else {
@@ -515,6 +525,13 @@ class AfipWsfeHelper extends Controller
 
         if (!$ok) return;
 
+        /**
+         * Con numero, este ticket va a ARCA: si otra emision de la misma venta lo descarto "sin
+         * numero" mientras estaba en vuelo, se restaura ahora, antes de mandarlo. Salga autorizado,
+         * rechazado o sin respuesta, tiene que quedar visible (ver el helper).
+         */
+        IntentosDeFacturaFallidosHelper::restaurar_si_va_a_arca($this->afip_ticket);
+
         $afip_helper = new AfipHelper($this->afip_ticket);
         $importes = $afip_helper->getImportes();
 
@@ -626,6 +643,16 @@ class AfipWsfeHelper extends Controller
             if ($this->afip_ticket->resultado == 'A') {
 
                 AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $importes['total']);
+
+                /**
+                 * La venta ya quedo facturada: los intentos anteriores que se puede PROBAR que nunca
+                 * se autorizaron (sin numero, mismo numero o rechazados) dejan de tenerla en Alertas.
+                 * Antes, si este mismo ticket quedo borrado por otra emision de la venta mientras
+                 * estaba en vuelo, se restaura: un comprobante con CAE nunca queda borrado.
+                 * Ninguno de los dos tira: si fallan, la emision sigue siendo un exito (ver el helper).
+                 */
+                IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
+                IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
             }
 
         } else {
@@ -834,7 +861,34 @@ class AfipWsfeHelper extends Controller
     }
 
 
+    /**
+     * Persiste en el ticket lo que contesto `FECAESolicitar`.
+     *
+     * Con `Resultado = 'A'` escribe el comprobante completo, con `resultado` e `importe_iva` en el
+     * MISMO `update()` (ver `importe_iva_de_la_consulta()`).
+     *
+     * Con `Resultado = 'R'` (mision facturas-reintentadas-salen-de-alertas, 9/10/2026) guarda solo el
+     * rechazo y el request/response. Hasta entonces no se guardaba nada y un rechazo explicito de
+     * ARCA quedaba igual que un error de red: indistinguible de una factura que pudo haberse
+     * autorizado. Con el `R` asentado, `IntentosDeFacturaFallidosHelper` puede sacarlo de Alertas
+     * cuando la venta se factura con otro tipo o numero. No se escribe `importe_iva`: un rechazo no
+     * declara IVA, y todos los lectores de esa columna filtran `resultado = 'A'`.
+     *
+     * @param  mixed  $afip_result Respuesta deserializada de `FECAESolicitar`.
+     * @param  array  $importes
+     * @param  string $moneda_id
+     * @param  array  $result      Respuesta cruda de `WS::__call()` (request/response).
+     * @return void
+     */
     function update_afip_ticket($afip_result, $importes, $moneda_id, $result) {
+        if (isset($afip_result->FECAESolicitarResult->FeCabResp) && $afip_result->FECAESolicitarResult->FeCabResp->Resultado == 'R') {
+            $this->afip_ticket->update([
+                'resultado'         => 'R',
+                'request'           => $result['request'],
+                'response'          => $result['response'],
+            ]);
+        }
+
         if (isset($afip_result->FECAESolicitarResult->FeCabResp) && $afip_result->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
             $this->afip_ticket->update([
                 'cbte_letra'        => AfipWsHelper::getTipoLetra($afip_result->FECAESolicitarResult->FeCabResp->CbteTipo),

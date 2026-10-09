@@ -552,6 +552,28 @@ class PropuestaCompraConFacturaIaHelper
 
             if (!is_null($orden)) {
 
+                /*
+                 * 🔴 LA COMPRA VACÍA QUE SE REUSA TAMBIÉN TIENE QUE SUMAR EL IVA (misión
+                 * compra-asistente-iva-total, 9/10/2026). Hasta esa misión el alta de abajo no
+                 * mandaba `total_with_iva` y la compra quedaba en NULL; una de esas, vacía y de los
+                 * últimos DIAS_DE_REUSO días, es justo la que se reusa acá, y la factura que se le
+                 * cuelga ahora no sumaría su IVA al total ni a la deuda con el proveedor. Volver a
+                 * guardarla desde el formulario NO la arregla: ver el 🔴 del alta de abajo.
+                 *
+                 * Se prende solo si está apagada (NULL o 0). esta_vacia() de arriba garantiza
+                 * únicamente que no tiene ARTÍCULOS (puede tener costos extra o una factura cargada
+                 * a mano), y prender la bandera no recalcula nada en el momento: ProviderOrder no
+                 * tiene observers. El próximo recálculo —la confirmación del escaneo de esta
+                 * factura— le aplica la misma regla que a una compra del formulario. Monotributista
+                 * y `precios_incluyen_iva` siguen sin sumar: eso lo resuelve
+                 * NewProviderOrderHelper::suma_iva_al_total(), no la bandera.
+                 */
+                if (!$orden->total_with_iva) {
+
+                    $orden->total_with_iva = 1;
+                    $orden->save();
+                }
+
                 return $orden;
             }
         }
@@ -570,6 +592,23 @@ class PropuestaCompraConFacturaIaHelper
             'update_prices'            => 0,
             'update_stock'             => 0,
             'generate_current_acount'  => 1,
+            /*
+             * 🔴 Y SUMANDO EL IVA AL TOTAL, como la del formulario (misión compra-asistente-iva-total,
+             * 9/10/2026). Antes esta clave no viajaba, ProviderOrderAltaHelper la insertaba en NULL
+             * y NewProviderOrderHelper::suma_iva_al_total() la exige: al confirmar el escaneo, el IVA
+             * de la factura quedaba en `total_iva` pero no se sumaba al total, y la deuda con el
+             * proveedor quedaba NETA.
+             *
+             * Y no se arreglaba sola: el formulario pone el 1 solo en una compra NUEVA (el `value: 1`
+             * de `total_with_iva` en el modelo de la SPA). Al editar, la SPA reenvía lo guardado y
+             * ProviderOrderController::update() lo respeta; la casilla está oculta, así que nadie
+             * la puede prender DESDE LA PANTALLA. Una compra que nace apagada no suma el IVA nunca
+             * más, por más que se la vuelva a guardar desde el formulario.
+             *
+             * Monotributista y `precios_incluyen_iva` siguen sin sumar: lo decide
+             * suma_iva_al_total(), no esta bandera.
+             */
+            'total_with_iva'           => 1,
             'precios_incluyen_iva'     => isset($datos['precios_incluyen_iva']) && $datos['precios_incluyen_iva'] ? 1 : 0,
             'moneda_id'                => 1,
             'articles'                 => [],

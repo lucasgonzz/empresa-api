@@ -103,7 +103,17 @@ class ProviderOrderController extends Controller
              * otro ('manual', ver el helper).
              */
             'modo_facturacion'                          => self::modo_facturacion_del_alta($request->modo_facturacion),
-            'total_with_iva'                            => $request->total_with_iva,
+            /*
+             * 🔴 Sin la clave (o con null), una compra nueva nace SUMANDO el IVA, como la del
+             * formulario (misión compra-asistente-iva-total, 9/10/2026). La SPA la manda siempre
+             * —en 1 en una compra nueva—, así que para la pantalla no cambia nada. Los que no la
+             * mandan son el asistente de WhatsApp y el MCP, que crean la compra por la acción de
+             * pantalla `POST api/provider-order` (CatalogoDeAccionesDePantallaIaHelper, donde la
+             * clave es opcional): hasta hoy nacía en NULL, NewProviderOrderHelper::suma_iva_al_total()
+             * no le sumaba el IVA y la deuda con el proveedor quedaba NETA. Un valor explícito (0 o
+             * 1) se respeta. Ver total_with_iva_del_alta().
+             */
+            'total_with_iva'                            => self::total_with_iva_del_alta($request->total_with_iva),
             'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
             'provider_id'                               => $request->provider_id,
             'provider_order_status_id'                  => $request->provider_order_status_id,
@@ -152,6 +162,71 @@ class ProviderOrderController extends Controller
         return is_null($modo) ? ModoFacturacionHelper::AUTOMATICO : $modo;
     }
 
+    /**
+     * La bandera `total_with_iva` con la que nace una compra: la que mandó el request si vino un
+     * valor, y 1 —como una compra nueva del formulario— si no vino: la clave ausente, null, vacía o
+     * algo que no se lee como booleano (ver total_with_iva_pedido() y el comentario en store()).
+     *
+     * @param  mixed  $valor  Lo que mandó la SPA o la acción de pantalla del asistente.
+     * @return int
+     */
+    protected static function total_with_iva_del_alta($valor)
+    {
+        $pedido = self::total_with_iva_pedido($valor);
+
+        return is_null($pedido) ? 1 : $pedido;
+    }
+
+    /**
+     * La bandera `total_with_iva` tal como la pidió el request: 0 o 1 si vino un valor, y null si
+     * NO VINO (misión compra-asistente-iva-total, 9/10/2026). Qué se hace con ese null lo decide
+     * cada método: el alta nace en 1 (total_with_iva_del_alta()) y la edición conserva la que la
+     * compra ya tenía (update()).
+     *
+     * 🔴 POR QUÉ SE NORMALIZA ACÁ Y NO SE CONFÍA EN EL MIDDLEWARE. Desde la SPA, un `""` llega en
+     * null por ConvertEmptyStringsToNull. Pero el asistente de WhatsApp y el MCP ejecutan la acción
+     * de pantalla con `$ruta->run()` (EjecutorAccionDePantallaIaHelper), que NO pasa por el
+     * middleware global: el `""` llega crudo, y con un `$valor ? 1 : 0` a secas la compra nacía sin
+     * IVA o la edición le apagaba la bandera. Mismo criterio que ModoFacturacionHelper::normalizar(),
+     * que trata un `""` como "no vino". Qué da cada cosa:
+     *
+     *   null, "", "  ", "null", "abc"          → null (no vino)
+     *   "1", "true", "on", "yes" (con o sin espacios) → 1
+     *   "0", "false", "off", "no"              → 0
+     *   cualquier otro tipo (int, bool)        → 1 si es verdadero, 0 si no
+     *
+     * @param  mixed  $valor
+     * @return int|null
+     */
+    protected static function total_with_iva_pedido($valor)
+    {
+        if (is_null($valor)) {
+
+            return null;
+        }
+
+        if (is_string($valor)) {
+
+            $valor = trim($valor);
+
+            if ($valor === '') {
+
+                return null;
+            }
+
+            $booleano = filter_var($valor, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+            if (is_null($booleano)) {
+
+                return null;
+            }
+
+            return $booleano ? 1 : 0;
+        }
+
+        return $valor ? 1 : 0;
+    }
+
     public function update(Request $request, $id) {
 
         /*
@@ -175,7 +250,20 @@ class ProviderOrderController extends Controller
 
             $ya_se_actualizo_stock = $model->update_stock;
 
-            $model->total_with_iva                              = $request->total_with_iva;
+            /*
+             * 🔴 Sin la clave (o con null) NO se pisa la bandera que la compra ya tenía (misión
+             * compra-asistente-iva-total, 9/10/2026). La SPA la manda siempre, con lo guardado, así
+             * que para la pantalla no cambia nada. El que no la manda es el asistente de WhatsApp
+             * (y el MCP) por la acción de pantalla `PUT api/provider-order/{provider_order}`, donde
+             * la clave es opcional: hasta hoy esa edición le APAGABA la bandera a una compra del
+             * formulario, y desde ahí no sumaba más el IVA. Un valor explícito (0 o 1) se respeta.
+             * Mismo criterio que el modo de facturación de abajo.
+             */
+            $total_with_iva = self::total_with_iva_pedido($request->total_with_iva);
+
+            if (!is_null($total_with_iva)) {
+                $model->total_with_iva                          = $total_with_iva;
+            }
 
             /*
              * Un modo que no es ninguno de los tres (el `"0"` de "Seleccione", un "" o la clave
