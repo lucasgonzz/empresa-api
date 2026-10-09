@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Models\Buyer;
-use App\Models\Client;
 use App\Models\Message;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -91,6 +90,11 @@ class BuyerController extends Controller
             $password = $request->visible_password;
         }
 
+        // El hash se calcula ANTES de abrir la transacción: bcrypt tarda unas decenas de ms y,
+        // adentro, se haría con los locks de `users` y `buyers` del dueño tomados, frenando todos
+        // los `num()` de ese comercio (ventas, compras) mientras tanto.
+        $hash = bcrypt($password);
+
         $model = null;
         $existente = null;
 
@@ -108,13 +112,23 @@ class BuyerController extends Controller
             // fila) y muestra "Usuario creado", que es verdad. `ya_existia` es un campo nuevo y
             // opcional para la SPA que sí lo entienda.
             //
-            // El `lockForUpdate()` sobre la fila del cliente serializa dos POST simultáneos: sin
-            // él, los dos buscan, ninguno encuentra al otro todavía, y crean los dos. Se bloquea
-            // el cliente (y no los compradores) porque es la única fila que existe antes de la
-            // carrera; `withTrashed()` para que bloquee igual aunque lo hayan borrado en el medio.
-            DB::transaction(function () use ($request, $password, &$model, &$existente) {
+            // El `lockForUpdate()` serializa dos POST simultáneos: sin él, los dos buscan,
+            // ninguno encuentra al otro todavía, y crean los dos. Se bloquea la fila del DUEÑO en
+            // `users` y no la del cliente, por tres motivos:
+            //  - Es el mismo lock que `num()` toma enseguida (`users` del dueño y después la fila
+            //    de `buyers` con mayor `num`): no suma ninguna espera nueva y el orden queda
+            //    users → buyers, igual que en `num()`.
+            //  - La fila del cliente es el candado de su cuenta corriente
+            //    (`CuentaCorrienteLock`, que `SaleController@store` toma primero): bloquearla
+            //    frenaba ventas y cobros de ese cliente mientras durara el alta.
+            //  - `ClientController@store` toma `users` (vía `num('clients')`) y después la fila del
+            //    cliente de mayor `num`: bloquear el cliente primero invertía el orden y, sobre el
+            //    último cliente recién creado, podía terminar en deadlock (500).
+            // El SELECT de abajo es la primera lectura consistente de la transacción, así que ya
+            // ve lo que commiteó el POST que esperábamos.
+            DB::transaction(function () use ($request, $password, $hash, &$model, &$existente) {
 
-                Client::withTrashed()->where('id', $request->id)->lockForUpdate()->first();
+                DB::table('users')->where('id', $this->userId())->lockForUpdate()->first(['id']);
 
                 // El de menor id: si ya hay duplicados viejos, se devuelve siempre el mismo y no
                 // se suma un tercero.
@@ -124,13 +138,13 @@ class BuyerController extends Controller
                                     ->first();
 
                 if (is_null($existente)) {
-                    $model = $this->crear_comprador($request, $password);
+                    $model = $this->crear_comprador($request, $password, $hash);
                 }
             });
         } else {
 
             // Alta desde el ABM de compradores: sin cliente de por medio no hay nada que duplicar.
-            $model = $this->crear_comprador($request, $password);
+            $model = $this->crear_comprador($request, $password, $hash);
         }
 
         if (!is_null($existente)) {
@@ -159,10 +173,11 @@ class BuyerController extends Controller
      * Crea la fila del comprador con los datos que manda la SPA.
      *
      * @param  \Illuminate\Http\Request  $request
-     * @param  string  $password  Clave en claro que se guarda en `visible_password` y, hasheada, en `password`.
+     * @param  string  $password  Clave en claro que se guarda en `visible_password`.
+     * @param  string  $hash  Esa misma clave ya hasheada, para `password` (se calcula afuera de los locks).
      * @return \App\Models\Buyer
      */
-    protected function crear_comprador(Request $request, $password) {
+    protected function crear_comprador(Request $request, $password, $hash) {
 
         return Buyer::create([
             'num'                       => $this->num('buyers'),
@@ -174,7 +189,7 @@ class BuyerController extends Controller
             'address'                     => $request->address,
             'seller_id'                 => $request->seller_id,
             'visible_password'          => $password,
-            'password'                  => bcrypt($password),
+            'password'                  => $hash,
             'comercio_city_client_id'   => $request->id,
             'user_id'                   => $this->userId(),
         ]);

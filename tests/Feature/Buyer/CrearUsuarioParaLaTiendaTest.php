@@ -5,6 +5,7 @@ namespace Tests\Feature\Buyer;
 use App\Models\Address;
 use App\Models\Buyer;
 use App\Models\Message;
+use Illuminate\Support\Facades\Auth;
 use Tests\EmpresaTestCase;
 
 /**
@@ -246,7 +247,14 @@ class CrearUsuarioParaLaTiendaTest extends EmpresaTestCase
         $primera = $this->crear_usuario_para($cliente);
         $primera->assertStatus(201);
 
-        $this->actuar_como($this->crear_empleado($this->dueno));
+        $empleado = $this->crear_empleado($this->dueno);
+
+        $this->actuar_como($empleado);
+
+        // Si el cambio de usuario fallara, el test seguiría operando como el dueño y pasaría por
+        // la razón equivocada: se afirma que de verdad opera el empleado de este dueño.
+        $this->assertSame($empleado->id, (int) Auth::id(), 'Tendría que estar autenticado el empleado, no el dueño.');
+        $this->assertSame($this->dueno->id, (int) Auth::user()->owner_id, 'El usuario autenticado tendría que ser un empleado del dueño.');
 
         $segunda = $this->crear_usuario_para($cliente);
 
@@ -328,6 +336,11 @@ class CrearUsuarioParaLaTiendaTest extends EmpresaTestCase
 
         $this->assertLessThan($segundo->id, $primero->id);
 
+        // Ojo: este test NO discrimina el `orderBy('id')` del controller. Sin él, MySQL devuelve
+        // igual el de menor id (recorre por clave primaria), así que pasaría también sin la
+        // cláusula. Lo que sí garantiza es lo importante: con duplicados viejos no se crea un
+        // tercero y la respuesta es siempre el mismo comprador, el primero. El `orderBy` queda
+        // como seguro explícito para no depender del orden con el que MySQL elija recorrer.
         $respuesta = $this->crear_usuario_para($cliente);
 
         $respuesta->assertStatus(200);
