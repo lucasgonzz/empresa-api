@@ -832,6 +832,90 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $this->assertEquals($cae_de_la_otra_emision, AfipTicket::find($en_vuelo->id)->cae);
     }
 
+    /**
+     * Test 16 — 🔴 Guarda de importe pedido, en vivo. Facturación en partes: F1 pide $60 y ARCA la
+     * rechaza; F2 pide $40 y sale autorizada (con el MISMO número, porque el rechazo no lo consumió).
+     * F2 no dice nada de los $60: F1 se queda y la venta sigue en Alertas como recordatorio.
+     *
+     * El control: cuando se factura una F3 por los mismos $60, F1 sí se va.
+     *
+     * @test
+     */
+    public function una_factura_por_otra_porcion_no_supera_al_intento_rechazado()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $f1 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B, 60.00), [
+            'ultimo' => $numero - 1,
+            'fecae'  => DobleDeWsfeParaReintentos::RECHAZADA,
+        ]);
+
+        $this->assertEquals('R', $f1->resultado);
+
+        $f2 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B, 40.00), [
+            'ultimo' => $numero - 1,
+            'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
+        ]);
+
+        $this->assertNotEmpty($f2->cae);
+        $this->assertEquals((string) $f1->cbte_numero, (string) $f2->cbte_numero, 'Las dos tienen el mismo número: ni la regla (b) alcanza si el importe es otro.');
+
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $f1->id]);
+        $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte(AfipTicket::find($f1->id), [$f2]));
+        $this->assertContains(
+            $venta->id,
+            $this->ventas_en_alertas(),
+            'Los $60 siguen sin facturar: la venta tiene que seguir en Alertas.'
+        );
+
+        // Control: una factura por la MISMA porción sí supera a F1.
+        $f3 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B, 60.00), [
+            'ultimo' => $numero,
+            'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
+        ]);
+
+        $this->assertNotEmpty($f3->cae);
+        $this->assertSoftDeleted('afip_tickets', ['id' => $f1->id]);
+        $this->assertNotContains($venta->id, $this->ventas_en_alertas());
+    }
+
+    /**
+     * Test 17 — La misma guarda en el comando: F1 por $60 autorizada, F2 por $40 sin número.
+     * `--aplicar` NO la borra, y el listado dice por qué se queda.
+     *
+     * @test
+     */
+    public function el_comando_no_descarta_un_intento_por_otra_porcion_de_la_venta()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'                    => (string) $numero,
+            'cae'                            => $this->cae(),
+            'resultado'                      => 'A',
+            'facturar_importe_personalizado' => 60.00,
+        ]);
+
+        $f2 = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'                    => null,
+            'facturar_importe_personalizado' => 40.00,
+        ]);
+
+        $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
+        $salida = Artisan::output();
+
+        $this->assertEquals(0, $exit, 'Salida: '.$salida);
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $f2->id]);
+        $this->assertStringContainsString(
+            'ticket #'.$f2->id.' (sin número): ninguna factura autorizada de la venta es por el mismo importe pedido',
+            $salida,
+            'Salida: '.$salida
+        );
+        $this->assertContains($venta->id, $this->ventas_en_alertas());
+    }
+
     // =========================================================================================
     // Helpers del archivo
     // =========================================================================================
@@ -924,9 +1008,10 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
      *
      * @param  \App\Models\Sale $venta
      * @param  int $codigo Código de ARCA del comprobante.
+     * @param  float|null $importe_pedido `facturar_importe_personalizado`; null = la venta entera.
      * @return \App\Models\AfipTicket
      */
-    protected function nuevo_intento($venta, $codigo)
+    protected function nuevo_intento($venta, $codigo, $importe_pedido = null)
     {
         $afip_information = $this->punto_de_venta();
         $sale = Sale::find($venta->id);
@@ -940,7 +1025,7 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
             'afip_information_id'               => $afip_information->id,
             'afip_tipo_comprobante_id'          => $this->tipo_de_comprobante($codigo)->id,
             'afip_fecha_emision'                => date('Y-m-d'),
-            'facturar_importe_personalizado'    => null,
+            'facturar_importe_personalizado'    => $importe_pedido,
             'importe_personalizado_ivas_json'   => null,
             'forma_de_pago'                     => null,
             'permiso_existente'                 => 'N',

@@ -17,11 +17,15 @@ use Illuminate\Support\Facades\Log;
  * los intentos superados de esa venta. Esto es para los que quedaron de antes: recorre los tickets
  * de factura sin CAE de las ventas que YA tienen al menos una factura autorizada, y les aplica el
  * MISMO criterio (`IntentosDeFacturaFallidosHelper::motivo_de_descarte()`): (a) sin número, (b)
- * mismo comprobante que la factura autorizada, (c) rechazado por ARCA (`resultado = 'R'`).
+ * mismo comprobante que la factura autorizada, (c) rechazado por ARCA (`resultado = 'R'`), y las
+ * tres solo contra una factura autorizada por el MISMO importe pedido.
  *
- * 🔴 Un intento con OTRO número y sin rechazo explícito NO se toca: puede ser una factura que ARCA
- * autorizó y cuya respuesta se perdió, o sea una posible factura duplicada. Tiene que seguir en
- * Alertas para que alguien apriete Consultar. El listado los muestra como "queda" para eso.
+ * 🔴 Lo que NO se toca, y el listado muestra como "queda" con el motivo:
+ *  - Un intento con OTRO número y sin rechazo explícito: puede ser una factura que ARCA autorizó y
+ *    cuya respuesta se perdió, o sea una posible factura duplicada. Tiene que seguir en Alertas
+ *    para que alguien apriete Consultar.
+ *  - Un intento por un importe que ninguna factura autorizada de la venta cubre (facturación en
+ *    partes): esa porción sigue sin facturar y Alertas es el recordatorio.
  *
  *   - Sin `--aplicar`: lista cada intento (venta, ticket, motivo) y NO escribe nada.
  *   - Con `--aplicar`: hace el borrado suave (SoftDeletes, lo mismo que el tacho de la tarjeta).
@@ -158,7 +162,7 @@ class DescartarIntentosDeFacturaFallidos extends Command
 
                     $quedan++;
 
-                    $this->line('  Queda '.$prefijo.': otro número y sin rechazo, puede estar autorizado en ARCA. Hay que Consultarlo.');
+                    $this->line('  Queda '.$prefijo.': '.$this->por_que_queda($intento, $autorizadas));
 
                     continue;
                 }
@@ -222,5 +226,24 @@ class DescartarIntentosDeFacturaFallidos extends Command
 
         // Siempre 0: ver el docblock de la clase.
         return 0;
+    }
+
+    /**
+     * Por qué un intento sin CAE de una venta con factura autorizada se queda en Alertas, para el
+     * listado.
+     *
+     * @param  \App\Models\AfipTicket $intento
+     * @param  array $autorizadas Facturas autorizadas de su venta.
+     * @return string
+     */
+    protected function por_que_queda($intento, $autorizadas)
+    {
+        foreach ($autorizadas as $autorizada) {
+            if (IntentosDeFacturaFallidosHelper::mismo_importe_pedido($autorizada, $intento)) {
+                return 'otro número y sin rechazo, puede estar autorizado en ARCA. Hay que Consultarlo.';
+            }
+        }
+
+        return 'ninguna factura autorizada de la venta es por el mismo importe pedido: esa porción sigue sin facturar.';
     }
 }

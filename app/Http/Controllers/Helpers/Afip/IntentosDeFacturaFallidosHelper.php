@@ -36,6 +36,14 @@ use Illuminate\Support\Facades\Log;
  *      guarda desde esta misión (`AfipWsfeHelper::update_afip_ticket()`); la Factura E ya lo
  *      guardaba.
  *
+ * 🔴 **Y las tres cuentan SOLO contra una factura autorizada por el MISMO IMPORTE PEDIDO**
+ * (`facturar_importe_personalizado`): las dos por la venta entera (nulo o 0), o las dos por el
+ * mismo importe (con la tolerancia de 0,01 que ya usa `consultar_comprobante()`). Con la
+ * facturación en partes, una factura autorizada por OTRA porción no supera al intento: venta de
+ * $100.000, F1 por $60.000 sale `R`, se factura F2 por $40.000. F2 no dice nada de los $60.000, y
+ * borrar F1 haría desaparecer de Alertas el único recordatorio de que esa porción sigue sin
+ * facturar (lo que había pedido Lucas era "otro comprobante con CAE por el total").
+ *
  * ─── Lo que NUNCA se toca ─────────────────────────────────────────────────────────────────────
  *
  *  - Un ticket con CAE: ese comprobante existe en ARCA y borrarlo lo saca del Libro IVA y de los
@@ -48,8 +56,8 @@ use Illuminate\Support\Facades\Log;
  *    venta puede tener una factura DUPLICADA en ARCA, y lo único que lo pone en evidencia es que
  *    siga en Alertas para que alguien apriete Consultar. Borrarlo sería esconder un comprobante
  *    autorizado que el sistema nunca declararía.
- *  - Nada, si la venta no tiene ninguna factura autorizada: sin factura no hay nada que "supere"
- *    al intento, y la venta tiene que seguir en Alertas.
+ *  - Nada, si la venta no tiene ninguna factura autorizada por el mismo importe pedido: sin esa
+ *    factura no hay nada que "supere" al intento, y la venta tiene que seguir en Alertas.
  *
  * No hay restricción por orden de creación: si Consultar le da el CAE a un fallido viejo, los
  * reintentos posteriores que cumplan el criterio también se descartan.
@@ -104,7 +112,8 @@ class IntentosDeFacturaFallidosHelper
      *
      * @param  \App\Models\AfipTicket $fallido Ticket sin CAE candidato a descartarse.
      * @param  iterable|\App\Models\AfipTicket $autorizados Facturas de la venta (las que no tengan
-     *         CAE, las notas de crédito y las de otra venta se ignoran solas).
+     *         CAE, las notas de crédito, las de otra venta y las de OTRO importe pedido se ignoran
+     *         solas).
      * @return string|null Una de las constantes `MOTIVO_*`, o null.
      */
     public static function motivo_de_descarte($fallido, $autorizados)
@@ -117,7 +126,10 @@ class IntentosDeFacturaFallidosHelper
             $autorizados = [$autorizados];
         }
 
-        /** @var array $facturas_autorizadas Las que de verdad superan al fallido: facturas con CAE de SU venta. */
+        /**
+         * @var array $facturas_autorizadas Las que de verdad superan al fallido: facturas con CAE de
+         * SU venta y por el MISMO importe pedido (ver el docblock de la clase).
+         */
         $facturas_autorizadas = [];
 
         foreach ($autorizados as $autorizado) {
@@ -128,12 +140,13 @@ class IntentosDeFacturaFallidosHelper
                 && !is_null($autorizado->sale_id)
                 && (int) $autorizado->sale_id === (int) $fallido->sale_id
                 && (int) $autorizado->id !== (int) $fallido->id
+                && self::mismo_importe_pedido($autorizado, $fallido)
             ) {
                 $facturas_autorizadas[] = $autorizado;
             }
         }
 
-        // Sin una factura autorizada de la venta no hay nada que supere al intento.
+        // Sin una factura autorizada de la venta por el mismo importe no hay nada que supere al intento.
         if (count($facturas_autorizadas) == 0) {
             return null;
         }
@@ -272,6 +285,12 @@ class IntentosDeFacturaFallidosHelper
      * Es una de las dos mitades de la invariante **"un comprobante con CAE nunca queda borrado"**;
      * la otra es `restaurar_si_quedo_borrado()`, para la carrera que este `UPDATE` no puede ver (el
      * ticket se borra legítimamente sin número y DESPUÉS sale autorizado).
+     *
+     * El importe pedido (`facturar_importe_personalizado`) NO se repite en el `UPDATE`: solo lo
+     * escribe `MakeAfipTicket::make_afip_ticket()` al CREAR el ticket (verificado el 9/10/2026; los
+     * otros dos lugares que lo tocan, `SaleHelper::set_total_a_facturar()` y
+     * `MakeAfipTicket::get_tope_en_pesos()`, arman un ticket en memoria que nunca se guarda), así
+     * que no puede cambiar entre la lectura y el borrado.
      *
      * Los `afip_errors` y `afip_observations` del intento NO se tocan: quedan como historia de por
      * qué falló.
@@ -472,6 +491,45 @@ class IntentosDeFacturaFallidosHelper
 
             return false;
         }
+    }
+
+    /**
+     * Importe que se pidió facturar con el ticket (`facturar_importe_personalizado`), o null si se
+     * pidió la venta entera (nulo, vacío o 0, igual que lo normaliza `MakeAfipTicket`).
+     *
+     * @param  \App\Models\AfipTicket $ticket
+     * @return float|null
+     */
+    public static function importe_pedido($ticket)
+    {
+        $valor = $ticket->facturar_importe_personalizado;
+
+        if (is_null($valor) || !is_numeric($valor) || (float) $valor <= 0) {
+            return null;
+        }
+
+        return (float) $valor;
+    }
+
+    /**
+     * ¿Los dos tickets pidieron facturar lo mismo? Los dos la venta entera, o los dos el mismo
+     * importe, con la tolerancia de 0,01 que ya usa `AfipWsfeHelper::consultar_comprobante()` para
+     * comparar importes (`abs(...) < 0.01`).
+     *
+     * @param  \App\Models\AfipTicket $a
+     * @param  \App\Models\AfipTicket $b
+     * @return bool
+     */
+    public static function mismo_importe_pedido($a, $b)
+    {
+        $importe_a = self::importe_pedido($a);
+        $importe_b = self::importe_pedido($b);
+
+        if (is_null($importe_a) || is_null($importe_b)) {
+            return is_null($importe_a) && is_null($importe_b);
+        }
+
+        return abs($importe_a - $importe_b) < 0.01;
     }
 
     /**
