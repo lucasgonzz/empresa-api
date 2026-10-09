@@ -17,9 +17,9 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
  * la misión sacó esa comparación para todas las importaciones (decisión de Lucas). Pero esta clase
  * NO es la prueba de ese arreglo: los artículos leen del CSV intermedio (`fgetcsv`), donde la celda
  * llega como el string "-1", y el `!== -1` (entero) nunca la descartaba. Estos tests pasan con y sin
- * el arreglo. La prueba es `SaldoCeldasDeTextoImportTest::un_saldo_de_menos_uno_se_importa_como_cualquier_otro`
- * y `::una_celda_numerica_menos_uno_en_el_telefono_se_importa_como_menos_uno` (clientes y
- * proveedores leen por Maatwebsite, que entrega `int`).
+ * el arreglo. La prueba es `SaldoCeldasDeTextoImportTest::una_celda_numerica_menos_uno_en_el_telefono_se_importa_como_menos_uno`
+ * (clientes y proveedores leen por Maatwebsite, que entrega `int`). El test de saldo −1 de esa
+ * clase no lo prueba: el saldo se lee de la celda cruda y no pasa por getColumnValue().
  *
  * Lo que esta guarda cuida: que por el camino real de la importación de artículos una celda
  * numérica −1 en el stock se siga tratando igual que una −2 en la misma columna, si algún día el

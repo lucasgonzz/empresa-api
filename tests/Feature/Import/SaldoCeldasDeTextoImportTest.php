@@ -884,11 +884,13 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
     }
 
     /**
-     * Proveedores con los DOS bloques del aviso al tope: el de saldos que no se cargaron porque la
-     * cuenta ya tenía otro (50 nombrados) y el de saldos ilegibles (20 nombrados), con nombres y
-     * textos largos. El bloque nuevo va DESPUÉS del que ya existía, y el evento entero sigue
-     * entrando en Pusher (10 KB) con margen. Con 30 filas en el bloque nuevo pesaba 10.056 bytes:
-     * por eso el tope es 20 (LocalImportHelper::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES).
+     * Proveedores con los DOS bloques del aviso llenos: 52 saldos que no se cargaron porque la
+     * cuenta ya tenía otro y 22 saldos ilegibles, con nombres y textos largos. El bloque nuevo va
+     * DESPUÉS del que ya existía, y el evento entero sigue entrando en Pusher (10 KB) con margen.
+     * Con 30 filas en el bloque nuevo pesaba 10.056 bytes: por eso el tope es 20
+     * (LocalImportHelper::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES). Y con el presupuesto de
+     * bytes este escenario ya no nombra 50 en el bloque viejo: nombra 46 y "y 6 proveedores más"
+     * (medido el 9/10/2026); el de ilegibles queda en 20 y "y 2 filas más".
      *
      * @test
      */
@@ -1061,9 +1063,11 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
      *   - se leen: BOM adelante, espacios y comillas en los bordes, el `+` adelante ("+$ 7.600",
      *     "$ +7.600", "+7.600": antes daban 7,6), el signo con espacio ("- 500"), el menos
      *     tipográfico U+2212 y el NBSP / U+202F en los bordes;
-     *   - quedan ilegibles y se avisan: VERDADERO, "1e999" (PHP lo lee como infinito) y todo saldo en
+     *   - quedan ilegibles y se avisan: VERDADERO, "1e999" (PHP lo lee como infinito), todo saldo en
      *     dólares (USD, U$S, US$, en mayúsculas o minúsculas, con o sin signo), porque la columna
-     *     carga la cuenta en PESOS. Antes "USD 1.500" se cargaba como $1.500 sin aviso.
+     *     carga la cuenta en PESOS (antes "USD 1.500" se cargaba como $1.500 sin aviso), y el doble
+     *     signo o la doble moneda ("$++1.500", "$$+1.500", "$+-500"...): el lector saca un signo y
+     *     una moneda, y lo que sobraba llegaba a parseNumericValue(), que leía "+1.500" como 1,5.
      *
      * @test
      */
@@ -1092,6 +1096,11 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
             ['Prov borde u$s',           'U$S 100',    'U$S 100'],
             ['Prov borde us$',           'US$ 100',    'US$ 100'],
             ['Prov borde usd minuscula', 'usd 50',     'usd 50'],
+            ['Prov borde doble mas',            '$++1.500',    '$++1.500'],
+            ['Prov borde doble mas separado',   '$ + +7.600',  '$ + +7.600'],
+            ['Prov borde doble moneda',         '$$+1.500',    '$$+1.500'],
+            ['Prov borde doble moneda separada', '$ $ +7.600', '$ $ +7.600'],
+            ['Prov borde mas y menos',          '$+-500',      '$+-500'],
         ];
 
         $filas = [];
@@ -1178,9 +1187,86 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
         $this->assert_nombrados_mas_restantes_dan_el_total($notificacion->info_to_show[0]['parrafos'], 50, 'proveedor', 'proveedores');
         $this->assert_nombrados_mas_restantes_dan_el_total($notificacion->info_to_show[1]['parrafos'], 22, 'fila', 'filas');
 
+        // En el bloque de los "no se cargaron" el nombre de más de 60 caracteres sale cortado a 60 + "…".
+        $this->assertStringStartsWith(
+            mb_substr($filas_segunda[0][0], 0, 60).'…: saldo en el Excel ',
+            $notificacion->info_to_show[0]['parrafos'][0],
+            'El nombre del proveedor en el aviso de saldos no cargados se corta a 60 caracteres.'
+        );
+
         $bytes = strlen(json_encode($notificacion->toBroadcast(User::find($this->user_id))->data));
 
         $this->assertLessThan(9000, $bytes, 'El evento de fin de importación pesa '.$bytes.' bytes: no entra en Pusher.');
+    }
+
+    /**
+     * El bloque de saldos ilegibles también se achica por debajo de 20 cuando los avisos no entran
+     * en el presupuesto de Pusher, y el "y N filas más" sigue contando contra el TOTAL de filas, no
+     * contra el tope de 20.
+     *
+     * Escenario real de clientes: 60 filas con una sucursal que no existe (el bloque de sucursales
+     * es fijo: no tiene tope y no se achica) y el saldo ilegible, con nombres y textos largos. Con
+     * las sucursales ocupando casi todo el presupuesto, el de ilegibles tiene que nombrar menos de
+     * 20 y contar el resto.
+     *
+     * @test
+     */
+    public function el_aviso_de_ilegibles_se_achica_por_debajo_de_veinte_y_cuenta_el_resto()
+    {
+        $filas = [];
+
+        for ($i = 1; $i <= 60; $i++) {
+            $numero = str_pad($i, 2, '0', STR_PAD_LEFT);
+
+            $filas[] = [
+                $this->nombre('Cli achica el aviso con un nombre bastante largo para cortar '.$numero),
+                'Sucursal que no existe en el sistema, deposito de la zona norte del Gran Buenos Aires '.$numero.' '.$this->sufijo,
+                'Debe la factura 0001-000045'.$numero.' del 12/03 mas los intereses de mora',
+            ];
+        }
+
+        Notification::fake();
+
+        $this->importar_por_ia('client', $this->xlsx(['Nombre', 'Sucursal', 'Saldo'], $filas), ['nombre' => 0, 'sucursal' => 1, 'saldo_actual' => 2])->assertStatus(200);
+
+        $notificacion = $this->notificacion_de_fin();
+
+        $this->assertCount(2, $notificacion->info_to_show, 'Tienen que venir el bloque de sucursales y el de saldos ilegibles.');
+        $this->assertSame('Sucursales que no existen en el sistema', $notificacion->info_to_show[0]['title']);
+        $this->assertSame(self::TITULO_DEL_AVISO, $notificacion->info_to_show[1]['title']);
+
+        // El de sucursales es fijo: las 60 y su explicación.
+        $this->assertCount(61, $notificacion->info_to_show[0]['parrafos'], 'El bloque de sucursales no se achica.');
+
+        $parrafos = $notificacion->info_to_show[1]['parrafos'];
+
+        // Nombradas: todo menos el "y N filas más" y la explicación.
+        $this->assertLessThan(20, count($parrafos) - 2, 'Premisa: con este escenario el aviso de ilegibles tiene que nombrar menos de 20 filas.');
+
+        $this->assert_nombrados_mas_restantes_dan_el_total($parrafos, 60, 'fila', 'filas');
+
+        $this->assertLessThanOrEqual(
+            \App\Http\Controllers\Helpers\LocalImportHelper::PRESUPUESTO_DE_BYTES_DE_LOS_AVISOS,
+            strlen(json_encode($notificacion->info_to_show)),
+            'Los avisos tienen que entrar en el presupuesto.'
+        );
+    }
+
+    /**
+     * recortar_para_el_aviso() devuelve UTF-8 válido aunque el texto del Excel traiga un byte roto,
+     * y el aviso se puede pasar a JSON. Con un solo byte inválido json_encode() devuelve false y se
+     * pierde la notificación entera.
+     *
+     * @test
+     */
+    public function recortar_para_el_aviso_sanea_un_byte_roto()
+    {
+        $recortado = \App\Http\Controllers\Helpers\LocalImportHelper::recortar_para_el_aviso("Prov\x80 roto", 60);
+
+        $this->assertTrue(mb_check_encoding($recortado, 'UTF-8'), 'El texto del aviso tiene que quedar en UTF-8 válido.');
+        $this->assertNotFalse(json_encode(['parrafos' => [$recortado]]), 'Con un byte roto json_encode() falla y se pierde la notificación.');
+        $this->assertStringStartsWith('Prov', $recortado);
+        $this->assertStringEndsWith(' roto', $recortado);
     }
 
     /**
