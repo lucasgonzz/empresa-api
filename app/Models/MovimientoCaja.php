@@ -73,16 +73,18 @@ class MovimientoCaja extends Model
 
     /**
      * El motivo de cada origen automático. 🔴 La SPA los muestra TAL CUAL en un aviso: son textos
-     * para el comerciante, no para un programador.
+     * para el comerciante, no para un programador. Cada uno dice también cómo ajustar la caja
+     * cuando la operación de origen ya no está o no tiene pantalla propia (una transferencia no se
+     * corrige en ningún otro lado: se compensa con un manual en cada caja).
      */
     const MOTIVOS_POR_ORIGEN = [
-        self::ORIGEN_VENTA          => 'Este movimiento lo generó una VENTA: se corrige desde la venta, no desde la caja.',
-        self::ORIGEN_GASTO          => 'Este movimiento lo generó un GASTO: se corrige desde el gasto, no desde la caja.',
-        self::ORIGEN_PAGO           => 'Este movimiento lo generó un PAGO de cuenta corriente: se corrige desde la cuenta corriente, no desde la caja.',
-        self::ORIGEN_TRANSFERENCIA  => 'Este movimiento es parte de una transferencia entre cajas: no se corrige desde la caja.',
-        self::ORIGEN_COMPENSACION   => 'Este movimiento lo generó el sistema al eliminar una venta, un gasto o un pago con «Compensar caja»: no se corrige a mano.',
-        self::ORIGEN_PAGO_VENDEDOR  => 'Este movimiento lo generó un pago de comisión a un vendedor: no se corrige desde la caja.',
-        self::ORIGEN_SISTEMA        => 'Este movimiento lo generó el sistema: se corrige desde la operación que lo originó.',
+        self::ORIGEN_VENTA          => 'Este movimiento lo generó una VENTA: se corrige desde la venta, no desde la caja. Si la venta ya no está, ajustá la caja con un movimiento manual.',
+        self::ORIGEN_GASTO          => 'Este movimiento lo generó un GASTO: se corrige desde el gasto, no desde la caja. Si el gasto ya no está, ajustá la caja con un movimiento manual.',
+        self::ORIGEN_PAGO           => 'Este movimiento lo generó un PAGO de cuenta corriente: se corrige desde la cuenta corriente, no desde la caja. Si el pago ya no está, ajustá la caja con un movimiento manual.',
+        self::ORIGEN_TRANSFERENCIA  => 'Este movimiento es parte de una transferencia entre cajas y no se modifica. Para corregirla, cargá un movimiento manual en cada caja.',
+        self::ORIGEN_COMPENSACION   => 'Este movimiento lo generó el sistema al eliminar una venta, un gasto o un pago con «Compensar caja»: no se corrige a mano. Si hace falta, ajustá la caja con un movimiento manual.',
+        self::ORIGEN_PAGO_VENDEDOR  => 'Este movimiento lo generó un pago de comisión a un vendedor: no se corrige desde la caja. Si hace falta, ajustá la caja con un movimiento manual.',
+        self::ORIGEN_SISTEMA        => 'Este movimiento lo generó el sistema: se corrige desde la operación que lo originó, o ajustando la caja con un movimiento manual.',
     ];
 
     /**
@@ -95,7 +97,8 @@ class MovimientoCaja extends Model
     private static $id_concepto_pago_a_vendedor = false;
 
     /**
-     * ¿Existe ya la columna `manual`? null = todavía no se preguntó en este proceso.
+     * true = la columna `manual` ya existe (se recuerda por proceso); null = todavía no se vio.
+     * Un "no existe" NO se recuerda: ver hay_columna_manual().
      *
      * @var bool|null
      */
@@ -122,22 +125,32 @@ class MovimientoCaja extends Model
     }
 
     /**
-     * ¿Ya está la columna `manual`? Se pregunta una sola vez por proceso.
+     * ¿Ya está la columna `manual`?
      *
      * 🔴 Existe por la ventana del deploy: el upgrade sube los archivos y DESPUÉS corre las
      * migraciones. En ese rato la columna no existe, y nombrarla en el `create()` de
      * MovimientoCajaHelper::crear_movimiento() tumbaría TODA venta, gasto o pago que mueva caja.
      * Mismo patrón que VarianteEnPresupuestoEsquemaHelper.
      *
+     * Solo se recuerda el SÍ: en el caso normal (la columna está) es una consulta por proceso. Un
+     * NO se vuelve a preguntar la próxima vez, para que un proceso largo que arrancó antes de la
+     * migración (un worker de cola) se entere solo cuando la columna aparece, sin reiniciarlo.
+     *
      * @return bool
      */
     static function hay_columna_manual() {
 
-        if (is_null(self::$hay_columna_manual)) {
-            self::$hay_columna_manual = Schema::hasColumn('movimiento_cajas', 'manual');
+        if (self::$hay_columna_manual === true) {
+            return true;
         }
 
-        return self::$hay_columna_manual;
+        $existe = Schema::hasColumn('movimiento_cajas', 'manual');
+
+        if ($existe) {
+            self::$hay_columna_manual = true;
+        }
+
+        return $existe;
     }
 
     /**

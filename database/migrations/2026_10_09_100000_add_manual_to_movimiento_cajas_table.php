@@ -23,6 +23,11 @@ use Illuminate\Support\Facades\Schema;
  * La base es compartida con `tienda`, pero `tienda-api` no escribe `movimiento_cajas`. Es aditiva
  * y NULL: ninguna fila existente cambia. Sin FK ni índice.
  *
+ * 🔴 Va al FINAL de la tabla, sin `->after(...)`: `movimiento_cajas` es grande en la base
+ * compartida (`u767360347_empresa`, 51 comercios), y una columna ubicada en el medio puede impedir
+ * el ADD COLUMN instantáneo de InnoDB y forzar la reconstrucción de la tabla en pleno deploy. El
+ * orden de las columnas no lo usa nadie.
+ *
  * Guarda `hasColumn`: hay ~40 bases de clientes en estados de esquema distintos y una que ya la
  * tenga no puede tumbar la migración. El código que la escribe pregunta antes si existe
  * (`MovimientoCaja::hay_columna_manual()`), para la ventana del deploy en la que todavía no está.
@@ -40,7 +45,7 @@ class AddManualToMovimientoCajasTable extends Migration
 
             Schema::table('movimiento_cajas', function (Blueprint $table) {
                 // true = lo cargó una persona; false = lo generó el sistema; NULL = fila vieja.
-                $table->boolean('manual')->nullable()->after('concepto_movimiento_caja_id');
+                $table->boolean('manual')->nullable();
             });
         }
     }
