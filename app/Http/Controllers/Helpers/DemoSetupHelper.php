@@ -1011,6 +1011,11 @@ class DemoSetupHelper
                 common_seeders() de DatabaseSeeder.
             */
             'PdfColumnProfileDocumentosSeeder',
+            /*
+                "Ticket remito" y "Ticket factura" de comandera (mision diseno-ticket-comandera,
+                9/10/2026): itera los duenios, igual que el de documentos de arriba.
+            */
+            'PdfTicketComanderaSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 

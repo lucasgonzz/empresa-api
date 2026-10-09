@@ -447,6 +447,13 @@ class UserSetupHelper
             'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileDocumentosSeeder',
+            /*
+                "Ticket remito" y "Ticket factura" de comandera (mision diseno-ticket-comandera,
+                9/10/2026). Itera los duenios como el de documentos de arriba y va despues de
+                PdfColumnProfileSeeder (asegura solo los rollos y el catalogo de columnas). Nacen sin
+                diseño: imprimen el Ticket 2.0 de siempre.
+            */
+            'PdfTicketComanderaSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 

@@ -331,9 +331,9 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertSame(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Los ids basura no movieron ninguna caja.');
 
         // Y lo propio sigue andando: rechazar el cheque propio, con el cuerpo que manda la SPA, es
-        // un 200 con el cheque rechazado. (El motivo no se mira: la SPA lo manda como `notas`, la API
-        // lee `rechazado_observaciones` y esa columna es un entero. Es un defecto aparte, no de
-        // tenencia, y queda en los hallazgos de la misión.)
+        // un 200 con el cheque rechazado. (El motivo no se mira acá: es de la misión
+        // cheque-motivo-rechazo, 9/10/2026, que pasó la columna a texto y hace que la API lea
+        // `notas` además de `rechazado_observaciones`. Lo cubre Motivo_del_rechazo_Test.)
         $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $propio->id, 'notas' => 'Sin fondos']);
 
         $this->assertSame(200, $response->getStatusCode(), 'rechazar un cheque propio: ' . $this->resumen($response));
@@ -1900,7 +1900,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     /**
      * Los tres pedidos que reciben un cheque por el cuerpo, con las claves que manda la SPA
      * (cheques/list/modals/{Cobrar,Pagar,Rechazar}Cheque.vue de develop). Rechazar manda `notas`,
-     * no `rechazado_observaciones`.
+     * no `rechazado_observaciones` (desde la misión cheque-motivo-rechazo la API lee las dos).
      *
      * @param mixed $cheque_id
      * @param mixed $caja_id

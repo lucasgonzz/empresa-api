@@ -27,7 +27,7 @@ class VenderKeyboardShortcutController extends Controller
             : VenderKeyboardShortcutHelper::default_shortcuts();
 
         $print_options = $model && $model->print_options
-            ? VenderKeyboardShortcutHelper::normalize_print_options($model->print_options)
+            ? VenderKeyboardShortcutHelper::normalize_print_options($model->print_options, $this->userId())
             : VenderKeyboardShortcutHelper::default_print_options();
 
         return response()->json([
@@ -54,8 +54,14 @@ class VenderKeyboardShortcutController extends Controller
             $request->input('shortcuts', [])
         );
 
+        /**
+         * Con el dueño (userId() sin false: los diseños de PDF son del comercio, no del empleado)
+         * se valida que un 'ticket:{id}' sea un ticket de comandera suyo y de la clase de la lista
+         * (misión diseno-ticket-comandera).
+         */
         $print_options = VenderKeyboardShortcutHelper::normalize_print_options(
-            $request->input('print_options', [])
+            $request->input('print_options', []),
+            $this->userId()
         );
 
         if (VenderKeyboardShortcutHelper::has_duplicate_keys($shortcuts)) {
@@ -77,7 +83,7 @@ class VenderKeyboardShortcutController extends Controller
                 'id' => $model->id,
                 'user_id' => $model->user_id,
                 'shortcuts' => VenderKeyboardShortcutHelper::normalize_shortcuts($model->shortcuts),
-                'print_options' => VenderKeyboardShortcutHelper::normalize_print_options($model->print_options),
+                'print_options' => VenderKeyboardShortcutHelper::normalize_print_options($model->print_options, $this->userId()),
             ],
         ], 200);
     }

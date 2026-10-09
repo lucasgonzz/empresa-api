@@ -309,14 +309,24 @@ class ChequeController extends Controller
     }
 
     /**
-     * Marca un cheque como rechazado.
+     * Marca un cheque como rechazado y guarda el motivo del rechazo.
      *
-     * @param  \Illuminate\Http\Request  $request  {cheque_id, rechazado_observaciones}. Ojo:
-     *                                             RechazarCheque.vue manda el motivo como `notas`,
-     *                                             que acá no se lee (y la columna
-     *                                             `rechazado_observaciones` es un entero).
-     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
-     *                                        (o no existe), sin escribir nada.
+     * Hasta la misión cheque-motivo-rechazo (9/10/2026) el motivo se perdía SIEMPRE: el modal lo
+     * manda como `notas`, acá se leía `rechazado_observaciones` (que nunca llegaba) y la columna era
+     * un entero. Ahora se aceptan las dos claves (ChequeHelper::motivo_de_rechazo(): si vienen las
+     * dos con texto, gana `rechazado_observaciones`).
+     *
+     * 🔴 Compatibilidad: el SPA sigue mandando `notas` a propósito (la API vieja la ignora sin
+     * romper), y esta API no escribe el motivo mientras la columna siga siendo INT —la ventana de un
+     * deploy entre subir la API y migrar—: rechaza igual, sin motivo, y deja un warning
+     * (ChequeHelper::asignar_motivo_de_rechazo()).
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, rechazado_observaciones | notas}.
+     *                                             RechazarCheque.vue manda {cheque_id, notas}.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque. 422 sin escribir nada si el cheque no
+     *                                        es de esta cuenta (o no existe), o si el motivo no es un
+     *                                        texto, no es UTF-8 válido o supera los
+     *                                        ChequeHelper::MOTIVO_DE_RECHAZO_MAX caracteres.
      */
     function rechazar(Request $request) {
 
@@ -327,13 +337,27 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
         }
 
+        // El motivo se valida ANTES de marcar nada: un motivo inválido no deja el cheque rechazado.
+        //
+        // 🔴 Las dos claves se leen ACÁ, en el cuerpo de este método, y no adentro del helper: el
+        // catálogo de acciones de pantalla del asistente (CatalogoDeEscrituraIaHelper::claves_que_lee())
+        // saca las claves que acepta cada ruta con una regex sobre el código del método del
+        // controller. Leídas en el helper, el asistente veía solo `cheque_id` y no el motivo.
+        $pedido = ChequeHelper::motivo_de_rechazo($request->input('rechazado_observaciones'), $request->input('notas'));
+
+        if (!is_null($pedido['error'])) {
+
+            return response()->json(['message' => $pedido['error']], 422);
+        }
+
         $cheque->estado_manual = 'rechazado';
         $cheque->rechazado_en = Carbon::now();
         $cheque->rechazado_por_id = $this->userId(false);
-        $cheque->rechazado_observaciones = $request->rechazado_observaciones;
+
+        ChequeHelper::asignar_motivo_de_rechazo($cheque, $pedido['motivo']);
 
         $cheque->save();
-        
+
         return response()->json(['model' => $cheque], 200);
     }
 
