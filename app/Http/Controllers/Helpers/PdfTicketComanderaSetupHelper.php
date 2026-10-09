@@ -101,7 +101,17 @@ class PdfTicketComanderaSetupHelper
                     'name' => $es_factura ? self::TICKET_FACTURA : self::TICKET_REMITO,
                     /** json NOT NULL sin default (ver PdfColumnProfileController::store()). */
                     'columns' => [],
-                    'is_default' => true,
+                    /**
+                     * 🔴 NO nace por defecto (revisor de merge, 9/10/2026). El código VIEJO elige el PDF
+                     * de una venta con `where('is_default', true)` sin mirar el tipo de hoja: mientras
+                     * el frente viejo sigue sirviendo durante el despliegue, en las pestañas ya abiertas
+                     * y en los comercios de una base compartida que todavía están en una versión
+                     * anterior, un ticket por defecto le ganaba al Remito / Factura comun de hoja y el
+                     * PDF salía con las columnas del ticket. El código nuevo lo elige igual: el ticket
+                     * por defecto de una clase es el de `is_default`, y si no hay ninguno el de menor
+                     * id (SaleTicketComanderaHelper::ticket_por_defecto y el menú del SPA).
+                     */
+                    'is_default' => false,
                     'is_default_whatsapp' => false,
                     'is_default_whatsapp_afip' => false,
                     'is_default_tienda' => false,

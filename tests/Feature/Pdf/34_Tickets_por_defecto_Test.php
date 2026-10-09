@@ -102,7 +102,12 @@ class Tickets_por_defecto_Test extends TestCase
         foreach ($tickets as $i => $ticket) {
             $this->assertSame($i === 0 ? 'Ticket remito' : 'Ticket factura', $ticket->name);
             $this->assertSame($i === 1, $ticket->is_afip_ticket);
-            $this->assertTrue($ticket->is_default, 'Por defecto en su clase.');
+            /**
+             * Cambio de especificación (revisor de merge, 9/10/2026): nace SIN is_default para que el
+             * código viejo, que elige el PDF por defecto con where('is_default') sin mirar el tipo de
+             * hoja, no lo tome por un remito A4. El código nuevo lo elige igual (el de menor id).
+             */
+            $this->assertFalse($ticket->is_default, 'No nace por defecto: el código viejo lo tomaría por la hoja por defecto.');
             $this->assertNull($ticket->page_layout, 'Nace sin diseño: imprime el Ticket 2.0 de siempre (D1).');
             $this->assertSame('Ticket 80 mm', $ticket->sheet_type->name);
             $this->assertNull($ticket->sheet_type->user_id);
@@ -210,5 +215,38 @@ class Tickets_por_defecto_Test extends TestCase
             '$this->call(PdfTicketComanderaSeeder::class);',
             file_get_contents(base_path('database/seeders/DatabaseSeeder.php'))
         );
+    }
+
+    /**
+     * El código VIEJO (el frente que sigue sirviendo durante el despliegue, las pestañas abiertas y los
+     * comercios de una base compartida que siguen en una versión anterior) elige el PDF de una venta
+     * con `where('is_default', true)` sin mirar el tipo de hoja. Después de sembrar, esa consulta no
+     * puede devolver un ticket; y el ticket por defecto del código nuevo tiene que seguir siendo el
+     * sembrado (revisor de merge, 9/10/2026).
+     *
+     * @test
+     */
+    public function despues_de_sembrar_el_codigo_viejo_no_toma_un_ticket_por_el_pdf_por_defecto()
+    {
+        $dueno = $this->dueno();
+        $this->perfil_de_hoja($dueno->id, false, ['name' => 'Remito']);
+        $this->perfil_de_hoja($dueno->id, true, ['name' => 'Factura comun']);
+
+        PdfTicketComanderaSetupHelper::apply_for_owner($dueno->id);
+
+        foreach ([false, true] as $es_factura) {
+            /** La consulta de PdfColumnService::get_profile_for_print de antes de la misión, tal cual. */
+            $viejo = PdfColumnProfile::where('user_id', $dueno->id)
+                ->where('model_name', 'sale')
+                ->where('is_afip_ticket', $es_factura)
+                ->where('is_default', true)
+                ->first();
+
+            $this->assertNull($viejo, 'Ningún perfil de venta queda por defecto: el código viejo sigue cayendo en la hoja de siempre.');
+
+            $por_defecto = \App\Http\Controllers\Helpers\sale\SaleTicketComanderaHelper::ticket_por_defecto($dueno->id, $es_factura);
+            $this->assertNotNull($por_defecto);
+            $this->assertSame($es_factura ? 'Ticket factura' : 'Ticket remito', $por_defecto->name, 'El código nuevo elige el ticket sembrado.');
+        }
     }
 }
