@@ -25,12 +25,29 @@ class ImportHelper {
 		return 'auto';
 	}
 
+	/**
+	 * Valor de una columna de la fila como string limpio (sin BOM, sin espacios ni comillas en los
+	 * bordes), o null si la columna no está mapeada, la celda no existe o está vacía.
+	 *
+	 * 🔴 NO se vuelve a comparar el VALOR de la celda con −1. La marca de "columna sin usar" vive en
+	 * el MAPEO (`$columns[$key] == -1`, ver isIgnoredColumn()), y una columna marcada así ya da null
+	 * acá: `isset($row[-1])` es falso. Comparar la CELDA con −1 (entró como `!= -1` y pasó a
+	 * `!== -1` en 31241031, 25/11/2025) solo lograba descartar todo dato que valiera −1 entero
+	 * —PhpSpreadsheet entrega `int` para un entero—: un saldo de −1 no se importaba. Se sacó para
+	 * todas las importaciones (misión importacion-saldo-celdas-de-texto, 9/10/2026, decisión de
+	 * Lucas). La importación de artículos lee del CSV intermedio, donde todo llega como string, así
+	 * que a ella esa comparación ya no la alcanzaba.
+	 *
+	 * @param mixed $row Fila del Excel (array o Collection).
+	 * @param string $key Clave de la columna en el mapeo.
+	 * @param array $columns Mapeo de columnas de la importación.
+	 * @return string|null
+	 */
 	static function getColumnValue($row, $key, $columns) {
 		if (
 			isset($columns[$key])
 			&& isset($row[$columns[$key]])
 			&& $row[$columns[$key]] !== ''
-			&& $row[$columns[$key]] !== -1
 		) {
 			/*
 			 * Antes se hacia (string) $row[...] directo. Sobre un float entero
