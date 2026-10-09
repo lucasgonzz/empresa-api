@@ -5,10 +5,12 @@ namespace Tests\Feature\Cheques;
 use App\Http\Controllers\ChequeController;
 use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Models\AuditLog;
+use App\Models\Caja;
 use App\Models\Cheque;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
+use App\Models\MovimientoCaja;
 use App\Models\Provider;
 use Carbon\Carbon;
 
@@ -423,6 +425,364 @@ class Rechazado_por_proveedor_Test extends ChequesTestCase
     }
 
     /**
+     * 🔴 La nota va por lo que el cheque BAJÓ EN LA CUENTA, no por su monto nominal: una cuenta en
+     * dólares pagada con un cheque de $120.000 a 1.200 bajó USD 100, y la nota suma USD 100 (no USD
+     * 120.000). La deuda vuelve exacto a la de antes del pago, y la cuenta en pesos no se toca.
+     *
+     * @test
+     */
+    public function un_cheque_en_pesos_sobre_una_cuenta_en_dolares_vuelve_por_lo_cotizado()
+    {
+        list($proveedor, $cuenta_pesos) = $this->proveedor_con_cuenta('Proveedor en dólares ' . uniqid());
+
+        $cuenta_usd = $this->cuenta_en_dolares($proveedor);
+
+        $this->sembrar_deuda($proveedor, $cuenta_usd, 500);
+
+        $this->assertEqualsWithDelta(500, (float) CreditAccount::find($cuenta_usd->id)->saldo, self::DELTA);
+
+        $fila = $this->fila_de_pago([
+            'numero'          => '8011',
+            'banco'           => 'Banco Nación',
+            'amount'          => 120000,
+            'moneda_id'       => 1,
+            'cotizacion'      => 1200,
+            'amount_cotizado' => 100,
+            'fecha_emision'   => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'      => Carbon::today()->addDays(15)->format('Y-m-d'),
+        ]);
+
+        list($pago_id, $emitido) = $this->pagar_con_filas($proveedor, $cuenta_usd, [$fila], 100);
+
+        $this->assertEqualsWithDelta(120000, (float) $emitido->amount, self::DELTA);
+        $this->assertEqualsWithDelta(400, (float) CreditAccount::find($cuenta_usd->id)->saldo, self::DELTA, 'El pago bajó USD 100.');
+
+        $movimientos_usd = $this->movimientos_de($cuenta_usd);
+        $movimientos_pesos = $this->movimientos_de($cuenta_pesos);
+
+        $response = $this->rechazar_por_proveedor($emitido->id);
+
+        $response->assertStatus(200);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+        $this->assertEquals(
+            'Cheque N° 8011 marcado como rechazado. Se le cargó a ' . $proveedor->name . ' una nota de débito por USD 100,00.',
+            $response->json('mensaje')
+        );
+
+        $nuevos = CurrentAcount::where('credit_account_id', $cuenta_usd->id)->whereNotIn('id', $movimientos_usd)->get();
+
+        $this->assertCount(1, $nuevos);
+        $this->assertEqualsWithDelta(100, (float) $nuevos->first()->debe, self::DELTA, 'La nota va por lo que el cheque bajó en la cuenta en dólares.');
+        $this->assertEqualsWithDelta(500, (float) CreditAccount::find($cuenta_usd->id)->saldo, self::DELTA, 'La deuda en dólares vuelve a la de antes del pago.');
+
+        $this->assertCount(0, CurrentAcount::where('credit_account_id', $cuenta_pesos->id)->whereNotIn('id', $movimientos_pesos)->get(), 'La cuenta en pesos no se toca.');
+    }
+
+    /**
+     * Dos cheques del MISMO monto en el mismo pago, a cotizaciones distintas: valen distinto en la
+     * cuenta y no se sabe cuál es cuál. Se marca igual, SIN nota, y el mensaje pide cargarla a mano.
+     *
+     * @test
+     */
+    public function dos_cheques_del_mismo_monto_que_valen_distinto_en_la_cuenta_no_cargan_nota()
+    {
+        list($proveedor, $cuenta_pesos) = $this->proveedor_con_cuenta('Proveedor de dos cotizaciones ' . uniqid());
+
+        $cuenta_usd = $this->cuenta_en_dolares($proveedor);
+
+        $this->sembrar_deuda($proveedor, $cuenta_usd, 500);
+
+        $filas = [];
+
+        foreach ([['8012', 1200, 100], ['8013', 1000, 120]] as $datos) {
+            $filas[] = $this->fila_de_pago([
+                'numero'          => $datos[0],
+                'banco'           => 'Banco Nación',
+                'amount'          => 120000,
+                'moneda_id'       => 1,
+                'cotizacion'      => $datos[1],
+                'amount_cotizado' => $datos[2],
+                'fecha_emision'   => Carbon::today()->format('Y-m-d'),
+                'fecha_pago'      => Carbon::today()->addDays(15)->format('Y-m-d'),
+            ]);
+        }
+
+        list($pago_id, $emitido) = $this->pagar_con_filas($proveedor, $cuenta_usd, $filas, 220);
+
+        $this->assertEqualsWithDelta(280, (float) CreditAccount::find($cuenta_usd->id)->saldo, self::DELTA);
+
+        $el_8012 = Cheque::where('current_acount_id', $pago_id)->where('user_id', $this->dueno->id)->where('numero', '8012')->first();
+
+        $max_movimiento = (int) CurrentAcount::max('id');
+
+        $response = $this->rechazar_por_proveedor($el_8012->id);
+
+        $response->assertStatus(200);
+        $this->assertNull($response->json('nota_debito'));
+        $this->assertEquals(
+            'Cheque N° 8012 marcado como rechazado. No se pudo saber por cuánto volver la deuda: cargale a ' . $proveedor->name . ' una nota de débito a mano desde su cuenta corriente.',
+            $response->json('mensaje')
+        );
+
+        $this->assertEquals('rechazado', $el_8012->fresh()->estado_manual);
+        $this->assertEquals($max_movimiento, (int) CurrentAcount::max('id'));
+        $this->assertEqualsWithDelta(280, (float) CreditAccount::find($cuenta_usd->id)->saldo, self::DELTA);
+    }
+
+    /**
+     * Dos cheques del mismo monto en la misma moneda valen lo mismo en la cuenta: no hay ambigüedad,
+     * la nota sale por ese valor.
+     *
+     * @test
+     */
+    public function dos_cheques_del_mismo_monto_y_la_misma_moneda_cargan_la_nota()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor de dos cheques iguales ' . uniqid(), self::DEUDA_PROVEEDOR * 2);
+
+        $filas = [];
+
+        foreach (['8014', '8015'] as $numero) {
+            $filas[] = $this->fila_de_pago([
+                'numero'        => $numero,
+                'banco'         => 'Banco Provincia',
+                'fecha_emision' => Carbon::today()->format('Y-m-d'),
+                'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
+            ]);
+        }
+
+        list($pago_id, $emitido) = $this->pagar_con_filas($proveedor, $cuenta, $filas);
+
+        $saldo = (float) CreditAccount::find($cuenta->id)->saldo;
+
+        $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR * 2 - self::MONTO_CHEQUE * 2, $saldo, self::DELTA);
+
+        $response = $this->rechazar_por_proveedor($emitido->id);
+
+        $response->assertStatus(200);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+        $this->assertEqualsWithDelta(self::MONTO_CHEQUE, (float) $response->json('nota_debito.debe'), self::DELTA);
+        $this->assertEqualsWithDelta($saldo + self::MONTO_CHEQUE, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
+    }
+
+    /**
+     * Un pago PROVISORIO no movió el saldo (getSaldo() y checkSaldos() lo excluyen): su cheque se
+     * marca sin nota, y el mensaje lo dice.
+     *
+     * @test
+     */
+    public function el_cheque_de_un_pago_provisorio_se_marca_sin_nota()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del pago provisorio ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $fila = $this->fila_de_pago([
+            'numero'        => '8016',
+            'banco'         => 'Banco Provincia',
+            'fecha_emision' => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
+        ]);
+
+        list($pago_id, $emitido) = $this->pagar_con_filas($proveedor, $cuenta, [$fila], null, ['is_provisorio' => 1]);
+
+        $this->assertEquals(1, (int) CurrentAcount::find($pago_id)->is_provisorio);
+        $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA, 'Un pago provisorio no baja la deuda.');
+
+        $max_movimiento = (int) CurrentAcount::max('id');
+
+        $response = $this->rechazar_por_proveedor($emitido->id);
+
+        $response->assertStatus(200);
+        $this->assertNull($response->json('nota_debito'));
+        $this->assertEquals(
+            'Cheque N° 8016 marcado como rechazado. Su pago es provisorio y no había movido la cuenta corriente, así que no se cargó nota de débito.',
+            $response->json('mensaje')
+        );
+
+        $this->assertEquals('rechazado', $emitido->fresh()->estado_manual);
+        $this->assertEquals($max_movimiento, (int) CurrentAcount::max('id'));
+        $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
+    }
+
+    /**
+     * Un cheque sin monto (0 o null) se marca sin nota: una nota con `debe` vacío quedaría como ancla
+     * de la cadena de saldos. Los cheques se arman a mano colgados de un pago real: ningún endpoint
+     * deja un cheque de pago sin monto.
+     *
+     * @test
+     */
+    public function un_cheque_sin_monto_se_marca_sin_nota()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del cheque sin monto ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8017');
+
+        foreach ([['8018', 0], ['8019', null]] as $datos) {
+
+            $sin_monto = $this->cheque_a_mano([
+                'numero'            => $datos[0],
+                'tipo'              => 'emitido',
+                'amount'            => $datos[1],
+                'provider_id'       => $proveedor->id,
+                'current_acount_id' => $pago_id,
+            ]);
+
+            $max_movimiento = (int) CurrentAcount::max('id');
+
+            $response = $this->rechazar_por_proveedor($sin_monto->id);
+
+            $response->assertStatus(200);
+            $this->assertNull($response->json('nota_debito'));
+            $this->assertEquals(
+                'Cheque N° ' . $datos[0] . ' marcado como rechazado. No tiene monto, así que no se cargó nota de débito.',
+                $response->json('mensaje')
+            );
+            $this->assertEquals('rechazado', $sin_monto->fresh()->estado_manual);
+            $this->assertEquals($max_movimiento, (int) CurrentAcount::max('id'));
+        }
+    }
+
+    /**
+     * Un emitido SIN proveedor (el cheque de una venta sin cliente, o uno de gasto de antes del
+     * 21/9/2026 con el id del gasto en `current_acount_id`) no está atado a ningún pago a proveedor,
+     * aunque su `current_acount_id` apunte a un movimiento que existe. Se marca sin nota.
+     *
+     * @test
+     */
+    public function un_emitido_sin_proveedor_no_esta_atado_a_un_pago()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor de otro pago ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8020');
+
+        $sin_proveedor = $this->cheque_a_mano([
+            'numero'            => '8021',
+            'tipo'              => 'emitido',
+            'provider_id'       => null,
+            'current_acount_id' => $pago_id,
+        ]);
+
+        $max_movimiento = (int) CurrentAcount::max('id');
+
+        $response = $this->rechazar_por_proveedor($sin_proveedor->id);
+
+        $response->assertStatus(200);
+        $this->assertNull($response->json('nota_debito'));
+        $this->assertEquals(
+            'Cheque N° 8021 marcado como rechazado. No está atado a un pago a un proveedor: no se movió ninguna cuenta corriente.',
+            $response->json('mensaje')
+        );
+        $this->assertEquals($max_movimiento, (int) CurrentAcount::max('id'));
+    }
+
+    /**
+     * La descripción de la nota nunca pasa el varchar(191) de `current_acounts.description`, aunque el
+     * número del cheque ocupe los 191 caracteres él solo (en modo estricto sería un 500).
+     *
+     * @test
+     */
+    public function la_descripcion_de_la_nota_no_pasa_los_191_caracteres()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del número largo ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $numero = str_repeat('7', 191);
+
+        list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, $numero);
+
+        $response = $this->rechazar_por_proveedor($emitido->id);
+
+        $response->assertStatus(200);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+        $descripcion = CurrentAcount::find((int) $response->json('nota_debito.id'))->description;
+
+        $this->assertLessThanOrEqual(191, mb_strlen($descripcion, 'UTF-8'));
+        $this->assertStringStartsWith('Cheque N° 777', $descripcion);
+        $this->assertStringEndsWith(' rechazado por el proveedor', $descripcion);
+        $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
+    }
+
+    /**
+     * `PUT cheque/pagar` sobre un cheque que ya tiene marca: 422 sin escribir nada. Una pestaña vieja
+     * no pisa el rechazo (quedaban la nota Y el egreso de caja), y pagar dos veces no saca dos veces
+     * la plata de la caja.
+     *
+     * @test
+     */
+    public function pagar_un_cheque_rechazado_o_ya_pagado_da_422_y_no_mueve_la_caja()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor de la pestaña vieja ' . uniqid(), self::DEUDA_PROVEEDOR * 2);
+
+        $caja = Caja::where('user_id', $this->dueno->id)->orderBy('id')->first();
+
+        $this->assertNotNull($caja, 'El fixture tiene que tener una caja del dueño.');
+
+        // --- Rechazado y después pagado (la pestaña vieja) ------------------------------------------
+        list($pago_id, $rechazado) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8022');
+
+        $response = $this->rechazar_por_proveedor($rechazado->id);
+        $response->assertStatus(200);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        $pagar = $this->putJson('api/cheque/pagar', ['cheque_id' => $rechazado->id, 'caja_id' => $caja->id]);
+
+        $pagar->assertStatus(422);
+        $this->assertEquals('El cheque N° 8022 ya figura como rechazado.', $pagar->json('message'));
+        $this->assertEquals('rechazado', $rechazado->fresh()->estado_manual);
+        $this->assertNull($rechazado->fresh()->cobrado_en);
+        $this->assertEquals(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Un 422 no mueve ninguna caja.');
+
+        // --- Pagado dos veces ---------------------------------------------------------------------
+        list($otro_pago_id, $pagado) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8023');
+
+        $this->putJson('api/cheque/pagar', ['cheque_id' => $pagado->id, 'caja_id' => 0])->assertStatus(200);
+
+        $this->assertEquals('cobrado', $pagado->fresh()->estado_manual);
+
+        $segundo = $this->putJson('api/cheque/pagar', ['cheque_id' => $pagado->id, 'caja_id' => $caja->id]);
+
+        $segundo->assertStatus(422);
+        $this->assertEquals('El cheque N° 8023 ya figura como pagado.', $segundo->json('message'));
+        $this->assertEquals(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Pagar dos veces no saca dos veces la plata de la caja.');
+    }
+
+    /**
+     * Un emitido rechazado no se borra con el tacho: la nota ya devolvió la deuda, y sin el cheque su
+     * pago volvería a ser borrable (la deuda se contaría dos veces). 422, el cheque sigue, y borrar el
+     * pago sigue frenado.
+     *
+     * @test
+     */
+    public function un_emitido_rechazado_no_se_borra_y_el_pago_sigue_frenado()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del tacho ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8024');
+
+        $response = $this->rechazar_por_proveedor($emitido->id);
+        $response->assertStatus(200);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+        $borrado = $this->deleteJson('api/cheque/' . $emitido->id);
+
+        $borrado->assertStatus(422);
+        $this->assertEquals(
+            'El cheque N° 8024 figura como rechazado por el proveedor y no se elimina: si nació de un pago, la deuda ya volvió con una nota de débito en su cuenta corriente. Si lo marcaste por error, eliminá esa nota de débito desde la cuenta corriente del proveedor.',
+            $borrado->json('message')
+        );
+
+        $this->assertNotNull(Cheque::find($emitido->id));
+        $this->assertEquals('rechazado', $emitido->fresh()->estado_manual);
+
+        $this->deleteJson('api/current-acount/provider/' . $pago_id . '?compensar_caja=1')->assertStatus(422);
+
+        $this->assertNotNull(CurrentAcount::find($pago_id));
+        $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
+    }
+
+    /**
      * `PUT cheque/rechazar-por-proveedor`, como lo manda RechazadoPorProveedor.vue.
      *
      * @param mixed $cheque_id
@@ -450,19 +810,79 @@ class Rechazado_por_proveedor_Test extends ChequesTestCase
             'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
         ]);
 
-        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta, [$fila]));
+        return $this->pagar_con_filas($proveedor, $cuenta, [$fila]);
+    }
 
-        $response->assertStatus(201);
+    /**
+     * Un pago al proveedor con las filas dadas por `POST current-acount/pago`, como la pantalla.
+     *
+     * @param Provider $proveedor
+     * @param CreditAccount $cuenta
+     * @param array $filas
+     * @param float|null $haber En la moneda de la cuenta. Default: la suma de los `amount`.
+     * @param array $extra Claves del payload a pisar (por ejemplo `is_provisorio`).
+     * @return array{0: int, 1: Cheque}  El id del pago y el primer cheque emitido que dejó.
+     */
+    protected function pagar_con_filas($proveedor, $cuenta, array $filas, $haber = null, array $extra = [])
+    {
+        $payload = array_merge($this->payload_de_pago('provider', $proveedor->id, $cuenta, $filas, $haber), $extra);
+
+        $response = $this->postJson('api/current-acount/pago', $payload);
+
+        if ($response->getStatusCode() !== 201) {
+            $this->fail('El pago con cheque tenía que dar 201 y dio ' . $response->getStatusCode() . ': ' . $response->getContent());
+        }
 
         $pago_id = (int) $response->json('current_acount.id');
         $this->cobros_cc_creados_por_escenarios[] = $pago_id;
 
-        $emitido = Cheque::where('current_acount_id', $pago_id)->where('user_id', $this->dueno->id)->first();
+        $emitido = Cheque::where('current_acount_id', $pago_id)->where('user_id', $this->dueno->id)->orderBy('id')->first();
 
         $this->assertNotNull($emitido, 'El pago con una fila de tipo cheque tenía que dejar un cheque emitido.');
         $this->assertEquals('emitido', $emitido->tipo);
 
         return [$pago_id, $emitido];
+    }
+
+    /**
+     * La cuenta corriente en DÓLARES de un proveedor (CreditAccountHelper crea las dos monedas).
+     *
+     * @param Provider $proveedor
+     * @return CreditAccount
+     */
+    protected function cuenta_en_dolares($proveedor)
+    {
+        $cuenta = CreditAccount::where('model_name', 'provider')
+                                ->where('model_id', $proveedor->id)
+                                ->where('moneda_id', 2)
+                                ->first();
+
+        $this->assertNotNull($cuenta, 'El proveedor tenía que tener su cuenta corriente en dólares.');
+
+        return $cuenta;
+    }
+
+    /**
+     * Una deuda sembrada por el endpoint real de nota de débito, en la cuenta que se pida.
+     *
+     * @param Provider $proveedor
+     * @param CreditAccount $cuenta
+     * @param float $debe
+     * @return void
+     */
+    protected function sembrar_deuda($proveedor, $cuenta, $debe)
+    {
+        $response = $this->postJson('api/current-acount/nota-debito', [
+            'credit_account_id' => $cuenta->id,
+            'model_name'        => 'provider',
+            'model_id'          => $proveedor->id,
+            'debe'              => $debe,
+            'description'       => 'Deuda sembrada por la suite de cheques',
+        ]);
+
+        $response->assertStatus(201);
+
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('current_acount.id');
     }
 
     /**
