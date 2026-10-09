@@ -281,17 +281,8 @@ class PdfColumnProfileController extends Controller
          * suma de anchos). Si ya entran (el diseñador las recalculó), no se tocan.
          */
         if ($era_ticket !== $es_ticket) {
-            $util_viejo = PdfColumnProfileTicketHelper::ancho_util_de_columnas($model->printable_width_mm, $model->margin_mm);
-            $util_nuevo = PdfColumnProfileTicketHelper::ancho_util_de_columnas(
-                $request->has('printable_width_mm') ? $request->input('printable_width_mm') : $model->printable_width_mm,
-                $request->has('margin_mm') ? $request->input('margin_mm') : $model->margin_mm
-            );
-            $opciones = $request->has('pdf_column_options')
-                ? $request->input('pdf_column_options')
-                : PdfColumnProfileTicketHelper::columnas_guardadas($model);
-
             $request->merge([
-                'pdf_column_options' => PdfColumnProfileTicketHelper::columnas_para_otro_ancho($opciones, $util_viejo, $util_nuevo),
+                'pdf_column_options' => PdfColumnProfileTicketHelper::columnas_al_cambiar_de_clase($request, $model),
             ]);
         }
 
@@ -1129,18 +1120,17 @@ class PdfColumnProfileController extends Controller
 
         /**
          * Tolerancia del redondeo de la grilla de 24 medias columnas (misión diseno-ticket-comandera,
-         * decisión D9): el diseñador guarda cada ancho como round(medias × útil / 24), y con la tabla
-         * llena (24 medias) la suma en mm puede pasarse uno o dos del útil (un rollo de 55 mm con
-         * 10/2/6/6 medias da 56 mm). Una tabla que entra en 24 medias columnas se acepta: el tope
-         * sigue siendo la hoja, medido como lo mide el diseñador. Un pedido de siempre que entraba
-         * en mm sigue entrando igual.
+         * decisión D9): el diseñador guarda cada ancho como round(medias × útil / 24), y cada columna
+         * puede subir hasta medio mm. Se acepta pasarse del útil hasta ceil(columnas / 2) mm, ni uno
+         * más (PdfColumnProfileTicketHelper::suma_dentro_del_redondeo()). Un pedido de siempre que
+         * entraba en mm sigue entrando igual.
          */
         if ($sum_widths > $available_width_mm) {
             $anchos_visibles = $request->has('pdf_column_options')
                 ? $this->visible_widths_from_request_options($request->input('pdf_column_options'))
                 : $this->visible_widths_from_attached_options($model);
 
-            if (PdfColumnProfileTicketHelper::medias_columnas($anchos_visibles, $available_width_mm) <= CatalogoDeCamposPdf::GRILLA_DE_TABLA) {
+            if (PdfColumnProfileTicketHelper::suma_dentro_del_redondeo($anchos_visibles, $available_width_mm)) {
                 return;
             }
         }

@@ -240,7 +240,9 @@ class Perfiles_de_ticket_reglas_Test extends TestCase
 
         /**
          * Las columnas de la A4 (100/20/40/40 sobre 200 mm útiles = 12/2/5/5 medias) pasan al rollo
-         * conservando sus medias columnas (D9): 40/7/17/17 sobre 80.
+         * conservando sus medias columnas (D9): 40/7/17/17 = 81 sobre 80, y con la regla del
+         * diseñador (cambio de especificación del 9/10/2026: la suma no pasa del útil) se le saca
+         * 1 mm a la que más subió al redondear; en el empate, a la más ancha (Precio): 40/7/16/17.
          */
         $anchos = [];
         foreach ($ticket->pdf_column_options()->orderBy('pdf_column_option_profile.order')->get() as $opcion) {
@@ -248,7 +250,8 @@ class Perfiles_de_ticket_reglas_Test extends TestCase
                 $anchos[] = (int) $opcion->pivot->width;
             }
         }
-        $this->assertSame([40, 7, 17, 17], $anchos);
+        $this->assertSame([40, 7, 16, 17], $anchos);
+        $this->assertSame(80, array_sum($anchos));
 
         /** Ticket → hoja con el 80/80/0 que reenvía el formulario: A4 con margen 5. */
         $ticket->page_layout = $this->diseno();
@@ -334,6 +337,46 @@ class Perfiles_de_ticket_reglas_Test extends TestCase
                 $this->columna('item_subtotal', 14, 3),
             ],
         ]))->assertStatus(201);
+
+        /**
+         * Al borde del redondeo (cambio de especificación del 9/10/2026: la tolerancia es
+         * ceil(columnas / 2) mm, no "lo que entre en 24 medias"): 4 columnas en una A4 de 200 útiles
+         * pueden sumar hasta 202.
+         */
+        $a4 = $this->hoja_a4()->id;
+        $this->postJson(self::URL, $this->alta([
+            'sheet_type_id' => $a4,
+            'pdf_column_options' => [
+                $this->columna('item_name', 101, 0, true),
+                $this->columna('item_amount', 33, 1),
+                $this->columna('item_price', 34, 2),
+                $this->columna('item_subtotal', 34, 3),
+            ],
+        ]))->assertStatus(201);
+
+        /** Un mm más (203) ya no es redondeo. */
+        $this->postJson(self::URL, $this->alta([
+            'sheet_type_id' => $a4,
+            'pdf_column_options' => [
+                $this->columna('item_name', 101, 0, true),
+                $this->columna('item_amount', 33, 1),
+                $this->columna('item_price', 34, 2),
+                $this->columna('item_subtotal', 35, 3),
+            ],
+        ]))->assertStatus(422)->assertJsonStructure(['errors' => ['pdf_column_options']]);
+
+        /**
+         * Muchas columnas angostas que suman 240 mm en 200 útiles: la primera versión las aceptaba
+         * porque cada una "entraba" en una o dos medias columnas; ahora dan 422.
+         */
+        $angostas = [];
+        $orden = 0;
+        foreach (['row_index', 'item_id', 'item_bar_code', 'item_provider_code', 'item_name', 'item_amount', 'item_cost', 'item_cost_total', 'item_price_without_iva', 'item_subtotal_without_iva', 'item_iva_amount', 'item_price_with_iva'] as $resolver) {
+            $angostas[] = $this->columna($resolver, 20, $orden++);
+        }
+        $this->postJson(self::URL, $this->alta(['sheet_type_id' => $a4, 'pdf_column_options' => $angostas]))
+            ->assertStatus(422)
+            ->assertJsonStructure(['errors' => ['pdf_column_options']]);
 
         /** Una tabla que de verdad no entra sigue dando 422 (200 mm útiles en la A4). */
         $this->postJson(self::URL, $this->alta([

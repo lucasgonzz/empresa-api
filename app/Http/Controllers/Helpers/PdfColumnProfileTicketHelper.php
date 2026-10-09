@@ -202,30 +202,98 @@ class PdfColumnProfileTicketHelper
     }
 
     /**
-     * Medias columnas de la grilla de 24 que suman unas columnas de la tabla con esos anchos en mm
-     * (la cuenta del diseñador, D9: max(1, round(mm × 24 / útil)) cada una).
+     * ¿La suma de unas columnas entra en el ancho útil, con el margen del redondeo de la grilla de
+     * 24 medias columnas (D9)?
      *
-     * El diseñador guarda los mm con round(medias × útil / 24): con una suma de 24 medias, el
-     * redondeo puede dejar la suma en mm uno o dos por encima del útil (55 mm: 10/2/6/6 medias dan
-     * 23 + 5 + 14 + 14 = 56 mm). Por eso la validación de anchos acepta también una tabla que entra
-     * en 24 medias columnas.
+     * El diseñador guarda cada ancho como round(medias × útil / 24): cada columna puede subir hasta
+     * medio milímetro al redondear, así que una tabla llena puede pasarse del útil como mucho
+     * ceil(columnas / 2) mm. Esa es toda la tolerancia: una tabla que de verdad no entra (12 columnas
+     * de 20 mm en los 200 de una A4) sigue sin entrar. Ajuste del 9/10/2026 a pedido del revisor: la
+     * primera versión aceptaba cualquier tabla que entrara en 24 medias columnas, que era demasiado.
      *
      * @param array<int, int> $anchos_mm de las columnas visibles.
      * @param int             $ancho_util
-     * @return int
+     * @return bool
      */
-    public static function medias_columnas($anchos_mm, $ancho_util)
+    public static function suma_dentro_del_redondeo($anchos_mm, $ancho_util)
     {
-        if ($ancho_util <= 0) {
-            return 0;
-        }
-
-        $total = 0;
+        $suma = 0;
         foreach ($anchos_mm as $ancho_mm) {
-            $total += max(1, (int) round(((int) $ancho_mm) * CatalogoDeCamposPdf::GRILLA_DE_TABLA / $ancho_util));
+            $suma += (int) $ancho_mm;
         }
 
-        return $total;
+        return $suma <= (int) $ancho_util + (int) ceil(count($anchos_mm) / 2);
+    }
+
+    /**
+     * Pasa anchos exactos (con decimales) a mm enteros sin que la suma se pase del útil: la regla
+     * del diseñador (SPA). Cada uno se redondea y, si la suma queda por encima del útil, se le saca
+     * 1 mm a la columna que más subió al redondear (en un empate, a la más ancha; después, a la
+     * primera), de a uno, hasta entrar. Ninguna baja de 1 mm.
+     *
+     * @param array<int|string, float> $exactos
+     * @param int                      $ancho_util
+     * @return array<int|string, int> con las mismas claves.
+     */
+    public static function repartir_mm($exactos, $ancho_util)
+    {
+        $redondeados = [];
+        $suma = 0;
+        foreach ($exactos as $clave => $exacto) {
+            $redondeados[$clave] = max(1, (int) round($exacto));
+            $suma += $redondeados[$clave];
+        }
+
+        while ($suma > (int) $ancho_util) {
+            $elegida = null;
+
+            foreach ($redondeados as $clave => $mm) {
+                if ($mm <= 1) {
+                    continue;
+                }
+
+                if (is_null($elegida)) {
+                    $elegida = $clave;
+                    continue;
+                }
+
+                $subio = $mm - $exactos[$clave];
+                $subio_elegida = $redondeados[$elegida] - $exactos[$elegida];
+
+                if ($subio > $subio_elegida + 0.000001
+                    || (abs($subio - $subio_elegida) <= 0.000001 && $mm > $redondeados[$elegida])) {
+                    $elegida = $clave;
+                }
+            }
+
+            /** Todas en 1 mm: no hay a quién sacarle. */
+            if (is_null($elegida)) {
+                break;
+            }
+
+            $redondeados[$elegida]--;
+            $suma--;
+        }
+
+        return $redondeados;
+    }
+
+    /**
+     * Los mm de unas columnas a partir de sus medias columnas de 24 sobre un ancho útil, con la
+     * regla del diseñador (repartir_mm()): la suma nunca pasa del útil.
+     *
+     * @param array<int|string, int> $medias
+     * @param int                    $ancho_util
+     * @return array<int|string, int>
+     */
+    public static function mm_de_medias($medias, $ancho_util)
+    {
+        $exactos = [];
+        foreach ($medias as $clave => $cantidad) {
+            $exactos[$clave] = $cantidad * $ancho_util / CatalogoDeCamposPdf::GRILLA_DE_TABLA;
+        }
+
+        return self::repartir_mm($exactos, $ancho_util);
     }
 
     /**
@@ -234,8 +302,9 @@ class PdfColumnProfileTicketHelper
      * pasar una A4 (columnas que suman 200 mm) a un rollo de 80 mm daba 422 por la suma de anchos.
      *
      * Si las columnas visibles ya entran en el ancho nuevo (el diseñador ya las recalculó), quedan
-     * como vinieron. Si no, cada una (visibles y ocultas) pasa por la cuenta del diseñador:
-     * medias = max(1, round(mm × 24 / útil viejo)) y mm = round(medias × útil nuevo / 24).
+     * como vinieron. Si no, cada una pasa por la cuenta del diseñador:
+     * medias = max(1, round(mm × 24 / útil viejo)) y mm = round(medias × útil nuevo / 24), con las
+     * visibles repartidas para que su suma no pase del útil nuevo (repartir_mm()).
      *
      * @param array $opciones   columnas en la forma del pedido: [{id, pivot: {visible, width, ...}}].
      * @param int   $util_viejo
@@ -249,11 +318,23 @@ class PdfColumnProfileTicketHelper
         }
 
         $suma_visible = 0;
-        foreach ($opciones as $opcion) {
-            $pivot = (is_array($opcion) && isset($opcion['pivot']) && is_array($opcion['pivot'])) ? $opcion['pivot'] : [];
-            $visible = ! array_key_exists('visible', $pivot) || (bool) $pivot['visible'];
-            if ($visible) {
-                $suma_visible += (int) (isset($pivot['width']) ? $pivot['width'] : 0);
+        $exactos_visibles = [];
+
+        foreach ($opciones as $i => $opcion) {
+            if (! is_array($opcion) || ! isset($opcion['pivot']) || ! is_array($opcion['pivot']) || ! isset($opcion['pivot']['width'])) {
+                continue;
+            }
+
+            $pivot = $opcion['pivot'];
+            $medias = max(1, (int) round(((int) $pivot['width']) * CatalogoDeCamposPdf::GRILLA_DE_TABLA / $util_viejo));
+            $exacto = $medias * $util_nuevo / CatalogoDeCamposPdf::GRILLA_DE_TABLA;
+
+            if (! array_key_exists('visible', $pivot) || (bool) $pivot['visible']) {
+                $suma_visible += (int) $pivot['width'];
+                $exactos_visibles[$i] = $exacto;
+            } else {
+                /** Una oculta no suma: solo conserva sus medias columnas para cuando se muestre. */
+                $opciones[$i]['pivot']['width'] = max(1, (int) round($exacto));
             }
         }
 
@@ -261,16 +342,36 @@ class PdfColumnProfileTicketHelper
             return $opciones;
         }
 
-        foreach ($opciones as $i => $opcion) {
-            if (! is_array($opcion) || ! isset($opcion['pivot']['width'])) {
-                continue;
-            }
-
-            $medias = max(1, (int) round(((int) $opcion['pivot']['width']) * CatalogoDeCamposPdf::GRILLA_DE_TABLA / $util_viejo));
-            $opciones[$i]['pivot']['width'] = (int) round($medias * $util_nuevo / CatalogoDeCamposPdf::GRILLA_DE_TABLA);
+        foreach (self::repartir_mm($exactos_visibles, $util_nuevo) as $i => $mm) {
+            $opciones[$i]['pivot']['width'] = $mm;
         }
 
         return $opciones;
+    }
+
+    /**
+     * Las columnas que tiene que llevar el PUT de un perfil que cambia de clase: las del pedido si
+     * vienen (si no, las guardadas, reescritas como si las mandara el formulario), llevadas al ancho
+     * útil nuevo (columnas_para_otro_ancho()). El útil nuevo es el que queda después del pedido (ya
+     * con el papel forzado de un ticket o la hoja por defecto mezclados).
+     *
+     * @param \Illuminate\Http\Request    $request
+     * @param PdfColumnProfile            $perfil  tal como está guardado.
+     * @return array
+     */
+    public static function columnas_al_cambiar_de_clase($request, PdfColumnProfile $perfil)
+    {
+        $util_viejo = self::ancho_util_de_columnas($perfil->printable_width_mm, $perfil->margin_mm);
+        $util_nuevo = self::ancho_util_de_columnas(
+            $request->has('printable_width_mm') ? $request->input('printable_width_mm') : $perfil->printable_width_mm,
+            $request->has('margin_mm') ? $request->input('margin_mm') : $perfil->margin_mm
+        );
+
+        $opciones = $request->has('pdf_column_options')
+            ? $request->input('pdf_column_options')
+            : self::columnas_guardadas($perfil);
+
+        return self::columnas_para_otro_ancho($opciones, $util_viejo, $util_nuevo);
     }
 
     /**
