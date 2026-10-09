@@ -48,6 +48,12 @@ class DeleteModelsHelper
         // 8/10/2026): RetencionImpuestoController::destroy() responde 422 y no borra nada. Sin esto la
         // masiva lo contaba como eliminado y el listado lo sacaba de pantalla aunque siguiera existiendo.
         'retencion_impuesto',
+        // Movimiento de caja que generó el sistema (venta, gasto, pago, transferencia, compensación,
+        // pago a vendedor), de una apertura ya cerrada o de otro dueño (misión
+        // movimientos-caja-manuales, 9/10/2026): MovimientoCajaController::destroy() responde 422 (o
+        // 404 si no es del dueño) y no borra nada. Sin esto la masiva lo contaba como eliminado y el
+        // listado lo sacaba de pantalla aunque seguía en la caja.
+        'movimiento_caja',
     ];
 
     /**
