@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Models\Buyer;
+use App\Models\Client;
 use App\Models\Message;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class BuyerController extends Controller
 {
@@ -57,6 +59,19 @@ class BuyerController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * Alta de un comprador de la tienda. `POST buyer`.
+     *
+     * Llega por dos caminos: el ABM de Tienda online → Clientes (sin `id` en el cuerpo) y el botón
+     * "Crear usuario para la tienda" de la ficha de un cliente del sistema, donde la SPA manda el
+     * cliente entero y su `id` termina guardado como `comercio_city_client_id`.
+     *
+     * Responde 201 con el comprador creado, o 200 con `ya_existia: true` si el cliente ya tenía
+     * uno (ver la guarda más abajo).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function store(Request $request) {
 
         $password = '1234';
@@ -76,7 +91,80 @@ class BuyerController extends Controller
             $password = $request->visible_password;
         }
 
-        $model = Buyer::create([
+        $model = null;
+        $existente = null;
+
+        if ($request->filled('id')) {
+
+            // 🔴 Un cliente del sistema tiene UN solo comprador. Sin esta guarda, un doble clic en
+            // "Crear usuario para la tienda" de la ficha creaba dos compradores para el mismo
+            // cliente con el mismo correo (medido el 8/10/2026 en demo2: ids 20 y 21 para el
+            // cliente 29), y la tienda resuelve el login por email con `->first()`: uno de los
+            // dos sobra.
+            //
+            // Cuando ya existe NO se responde 422: la SPA 4.3.8 que hay hoy en producción, ante
+            // un error, mostraría "Error al crear usuario" sobre un usuario que sí existe. Con un
+            // 200 y el comprador existente hace `buyer/add` (reemplaza por id, no duplica la
+            // fila) y muestra "Usuario creado", que es verdad. `ya_existia` es un campo nuevo y
+            // opcional para la SPA que sí lo entienda.
+            //
+            // El `lockForUpdate()` sobre la fila del cliente serializa dos POST simultáneos: sin
+            // él, los dos buscan, ninguno encuentra al otro todavía, y crean los dos. Se bloquea
+            // el cliente (y no los compradores) porque es la única fila que existe antes de la
+            // carrera; `withTrashed()` para que bloquee igual aunque lo hayan borrado en el medio.
+            DB::transaction(function () use ($request, $password, &$model, &$existente) {
+
+                Client::withTrashed()->where('id', $request->id)->lockForUpdate()->first();
+
+                // El de menor id: si ya hay duplicados viejos, se devuelve siempre el mismo y no
+                // se suma un tercero.
+                $existente = Buyer::where('user_id', $this->userId())
+                                    ->where('comercio_city_client_id', $request->id)
+                                    ->orderBy('id')
+                                    ->first();
+
+                if (is_null($existente)) {
+                    $model = $this->crear_comprador($request, $password);
+                }
+            });
+        } else {
+
+            // Alta desde el ABM de compradores: sin cliente de por medio no hay nada que duplicar.
+            $model = $this->crear_comprador($request, $password);
+        }
+
+        if (!is_null($existente)) {
+
+            // 🔴 Acá NO va fullModel('Buyer'): su withAll() carga toda la conversación con
+            // `article.images` (lo que tumbó el VPS el 9/9/2026, ver index() y
+            // BuyerHelper::vincular). Se arma igual que ahí: direcciones y cliente, y `messages`
+            // como colección vacía porque la SPA hace `buyer.messages.length`.
+            //
+            // Se ocultan el hash de la clave, el token de recordar y el código de verificación.
+            // `visible_password` se deja: la respuesta alimenta `buyer/add`, que reemplaza la
+            // fila entera del listado de Tienda online → Clientes, igual que el 201 de siempre.
+            $existente->load('addresses', 'comercio_city_client');
+            $existente->setRelation('messages', $existente->newCollection());
+            $existente->makeHidden(['password', 'remember_token', 'verification_code']);
+
+            return response()->json(['model' => $existente, 'ya_existia' => true], 200);
+        }
+
+        // Solo si se creó: avisarle a las otras pestañas de un comprador que no nació no sirve.
+        $this->sendAddModelNotification('Buyer', $model->id);
+        return response()->json(['model' => $this->fullModel('Buyer', $model->id)], 201);
+    }
+
+    /**
+     * Crea la fila del comprador con los datos que manda la SPA.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  string  $password  Clave en claro que se guarda en `visible_password` y, hasheada, en `password`.
+     * @return \App\Models\Buyer
+     */
+    protected function crear_comprador(Request $request, $password) {
+
+        return Buyer::create([
             'num'                       => $this->num('buyers'),
             'name'                      => $request->name,
             'email'                     => $request->email,
@@ -90,9 +178,7 @@ class BuyerController extends Controller
             'comercio_city_client_id'   => $request->id,
             'user_id'                   => $this->userId(),
         ]);
-        $this->sendAddModelNotification('Buyer', $model->id);
-        return response()->json(['model' => $this->fullModel('Buyer', $model->id)], 201);
-    }  
+    }
 
     public function update(Request $request, $id) {
         $model = Buyer::find($id);
