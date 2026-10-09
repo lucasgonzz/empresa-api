@@ -111,7 +111,9 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
     {
         $spreadsheet = new Spreadsheet();
 
-        $spreadsheet->getActiveSheet()->fromArray(array_merge([$cabecera], $filas), null, 'A1');
+        // Comparación ESTRICTA con null: sin ella fromArray() saltea también las celdas en 0
+        // (0 == null), y un saldo 0 llegaría al importador como una celda vacía.
+        $spreadsheet->getActiveSheet()->fromArray(array_merge([$cabecera], $filas), null, 'A1', true);
 
         $ruta = tempnam(sys_get_temp_dir(), 'zz_import_prov_saldo_').'.xlsx';
 
@@ -740,6 +742,55 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
 
         // El repetido: un solo proveedor con un solo "Saldo inicial".
         $this->assert_saldo_inicial('provider', $this->proveedor_por_nombre($nombre_repetido), 450);
+
+        $this->assert_notificacion_sin_avisos();
+    }
+
+    /**
+     * Saldo 0 en el Excel: no hay nada que cargar. El proveedor queda con sus cuentas VACÍAS (la
+     * cuenta se crea si faltaba, también al proveedor viejo que no la tenía) y el botón "Saldo
+     * inicial" sigue disponible. Antes la importación cargaba un "Saldo inicial" de $0, la cuenta
+     * quedaba "con movimientos" y el botón, que no acepta 0, ya no se podía usar (422).
+     *
+     * @test
+     */
+    public function un_saldo_cero_no_carga_movimiento_y_deja_la_cuenta_lista_para_el_boton()
+    {
+        // Tal cual lo dejaba ProviderImport antes del arreglo: sin crear_credit_accounts().
+        $viejo = Provider::create([
+            'num'     => (int) Provider::where('user_id', $this->user_id)->max('num') + 1,
+            'name'    => $this->nombre('Prov viejo en cero'),
+            'user_id' => $this->user_id,
+        ]);
+
+        $nombre_nuevo = $this->nombre('Prov nuevo en cero');
+
+        Notification::fake();
+
+        $this->importar_por_ia($this->xlsx(['Nombre', 'Saldo'], [
+            [$nombre_nuevo, 0],
+            [$viejo->name,  0],
+        ]))->assertStatus(200);
+
+        $nuevo = $this->proveedor_por_nombre($nombre_nuevo);
+
+        foreach ([$nuevo, $viejo] as $proveedor) {
+
+            $this->assert_tiene_sus_dos_cuentas('provider', $proveedor);
+
+            $cuenta = $this->cuenta('provider', $proveedor->id, 1);
+
+            $this->assertCount(0, $this->movimientos($cuenta), 'Un saldo 0 no carga ningún movimiento en la cuenta de "'.$proveedor->name.'".');
+
+            // Y la cuenta vacía acepta el saldo inicial por el botón.
+            $this->postJson('api/current-acount/saldo-inicial', [
+                'credit_account_id' => $cuenta->id,
+                'model_name'        => 'provider',
+                'model_id'          => $proveedor->id,
+                'is_for_debe'       => true,
+                'saldo_inicial'     => 1500,
+            ])->assertStatus(201);
+        }
 
         $this->assert_notificacion_sin_avisos();
     }

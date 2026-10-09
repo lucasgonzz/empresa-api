@@ -85,9 +85,14 @@ class LocalImportHelper {
 	 * cadena resta el haber (`CurrentAcountHelper::aporte_al_saldo()` = −haber), así que el primer
 	 * `checkSaldos()` —cualquier pago, venta o nota posterior— daba vuelta el signo: −7.600 a favor
 	 * pasaba a +7.600 de deuda (misión importacion-proveedores-saldo-inicial, 8/10/2026; es lo de
-	 * los "Saldo inicial" de Servian que destapó la tanda 4.2.5). Ahora queda igual que el del
-	 * botón (`CurrentAcountController::saldoInicial()`). Lo ya importado con el signo viejo no se
-	 * toca acá.
+	 * los "Saldo inicial" de Servian que destapó la tanda 4.2.5). Ahora el monto queda del mismo
+	 * lado y con el mismo signo que el del botón (`CurrentAcountController::saldoInicial()`). Lo ya
+	 * importado con el signo viejo no se toca acá.
+	 *
+	 * No es el mismo camino que el botón: el botón rechaza un monto 0 y carga el movimiento con el
+	 * candado de la cuenta tomado; esta función no toma candado y, si le llega un 0, lo carga como
+	 * un `debe` 0. La importación de proveedores no le pasa nunca un 0 (setSaldoInicial() lo
+	 * filtra antes); la de clientes (procesarSaldoImportacion()) sí.
 	 *
 	 * El `saldo` del movimiento, el de la cuenta y el `saldo_pesos` sí llevan el signo del Excel:
 	 * son saldos, no montos.
@@ -210,6 +215,10 @@ class LocalImportHelper {
 	 * proveedor viejo que quedó sin cuenta, que al reimportar el Excel recibe la cuenta y el saldo
 	 * (es la reparación de lo ya importado).
 	 *
+	 * Un saldo 0 (menos de medio centavo) no carga nada: es 'sin_saldo'. La cuenta igual se crea si
+	 * faltaba. Antes cargaba un "Saldo inicial" de $0, la cuenta quedaba "con movimientos" y el
+	 * botón "Saldo inicial", que no acepta 0, ya no se podía usar (422).
+	 *
 	 * El `user_id` de la cuenta va EXPLÍCITO, el del modelo: AdminSync loguea al dueño a mano y el
 	 * motor de /implementar corre en proceso, así que la sesión no es una fuente confiable.
 	 *
@@ -221,8 +230,9 @@ class LocalImportHelper {
 	 *                           'sin_cambios' y 'ya_tenia_movimientos') queda con
 	 *                           ['excel' => saldo del Excel, 'cuenta' => saldo de la cuenta], para
 	 *                           que el llamador pueda mostrar los dos montos en el aviso.
-	 * @return string 'sin_saldo'            -> la fila no trae saldo, o no hay modelo (una fila de
-	 *                                          "solo editar" cuyo proveedor no existe): nada que cargar.
+	 * @return string 'sin_saldo'            -> la fila no trae saldo, el saldo es 0, o no hay modelo
+	 *                                          (una fila de "solo editar" cuyo proveedor no existe):
+	 *                                          nada que cargar.
 	 *                'cargado'              -> se cargó el saldo inicial.
 	 *                'sin_cambios'          -> la cuenta ya tenía movimientos y su saldo ya es el del
 	 *                                          Excel: no se carga nada y no hay nada que avisar.
@@ -252,6 +262,10 @@ class LocalImportHelper {
 		if (is_null($credit_account)) {
 			CreditAccountHelper::crear_credit_accounts($model_name, $model->id, $model->user_id);
 			$credit_account = self::get_credit_account_pesos($model_name, $model->id);
+		}
+
+		if (abs($saldo_importado) < 0.005) {
+			return 'sin_saldo';
 		}
 
 		if (self::crearSaldoInicialPorImportacion($saldo_importado, $credit_account, $model_name, $model)) {
