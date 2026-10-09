@@ -311,6 +311,79 @@ PHP;
     }
 
     /**
+     * El encabezado de "Imprimir unidades entregadas" lleva el número de la venta ("N° 345"). Antes
+     * leía $sale->num_sale, que no existe (la columna es num): Eloquent devolvía null y el "N°" no
+     * salía nunca.
+     *
+     * Corre el Header() de verdad, que llama a PdfHelper::header(). Lo único que se reemplaza es
+     * UserHelper (lo declara el proceso aparte antes de que lo cargue el autoload): getFullModel()
+     * busca el usuario en la base y este test no usa base. La venta es un objeto que, como un modelo
+     * de Eloquent, devuelve null para cualquier atributo que no tenga.
+     *
+     * @test
+     */
+    public function el_encabezado_de_las_unidades_entregadas_lleva_el_numero_de_la_venta()
+    {
+        $codigo = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Helpers {
+    /** El usuario sin base: lo único de UserHelper que usa el encabezado. */
+    class UserHelper
+    {
+        public static function getFullModel()
+        {
+            return (object) ['pdf_image_size' => 30];
+        }
+    }
+}
+
+namespace {
+    require __AUTOLOAD__;
+
+    class EntregadasConEncabezado extends \App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf
+    {
+        public function __construct($sale)
+        {
+            \FPDF::__construct();
+            $this->b = 0;
+            $this->sale = $sale;
+        }
+    }
+
+    $venta = new class {
+        public $num = 345;
+        public $created_at;
+        public $user;
+
+        public function __construct()
+        {
+            $this->created_at = new \DateTime('2026-10-09');
+            $this->user = (object) ['image_url' => null, 'afip_information' => null, 'online' => null, 'phone' => null, 'email' => 'ventas@ejemplo.com'];
+        }
+
+        public function __get($atributo)
+        {
+            return null;
+        }
+    };
+
+    $pdf = new EntregadasConEncabezado($venta);
+    $pdf->SetCompression(false);
+    $pdf->AddPage();
+    echo 'PDF_INICIO'.base64_encode($pdf->Output('S')).'PDF_FIN';
+}
+PHP;
+
+        $textos = array_column($this->textos($this->pdf_de_otro_proceso($codigo)), 'texto');
+
+        /** El encabezado se dibujó entero: el número de página sale en la misma numeroFecha(). */
+        $this->assertContains('Pag 1', $textos, 'El encabezado no se dibujó.');
+
+        /** "N° 345" tal como queda en la hoja: Cell() lo pasa a Latin-1 (° = 0xB0). */
+        $this->assertContains("N\xB0 345", $textos, 'El encabezado no imprime el número de la venta.');
+    }
+
+    /**
      * Copia LITERAL de PdfHelper::title() antes de la misión acopio-pdf-entregadas (develop al
      * 9/10/2026). Es la vara contra la que se mide que lo que ya entraba no cambió.
      */

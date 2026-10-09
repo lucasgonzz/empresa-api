@@ -45,8 +45,10 @@ class SaleDeliveredArticlesPdf extends fpdf {
 	}
 
 	function Header() {
+		// El número es la columna num de sales, como en SalePdf. Antes leía num_sale, que no existe:
+		// Eloquent devolvía null y el "N°" del encabezado no salía nunca.
 		$data = [
-			'num' 			=> $this->sale->num_sale,
+			'num' 			=> $this->sale->num,
 			'date'			=> $this->sale->created_at,
 			'title' 		=> 'Articulos entregados',
 			'model_info'	=> $this->sale->client,
