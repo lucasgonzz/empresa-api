@@ -894,6 +894,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
     Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
+    // Tipos de hoja de los diseños de PDF: los del sistema y los anchos de comandera propios del
+    // negocio (misión diseno-ticket-comandera, 9/10/2026, contrato §3.1).
+    Route::get('sheet-types', 'SheetTypeController@index');
+    Route::post('sheet-types', 'SheetTypeController@store');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
     Route::post('etiqueta-medidas', 'EtiquetaMedidaController@store');
