@@ -1828,6 +1828,11 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
                 'tenencia' => 'cuerpo: cheque_id por cheque_del_dueno() (+ ChequeHelper::problemas_de_endoso_en_payload) y provider_id por proveedor_del_dueno() -> 422, antes de escribir nada; el cheque_banco_id de la copia, por ChequeHelper::cheque_banco_id_de(..., dueño).',
                 'prueba'   => 'Tenencia_de_cheques_Test::no_se_endosa_a_un_proveedor_de_otro_dueno; Endosar_desde_el_modulo_Test; Prevalidacion_de_endoso_Test::un_cheque_id_que_no_es_numero_es_sin_cheque_en_las_tres_puertas',
             ],
+            'PUT api/cheque/rechazar-por-proveedor' => [
+                'accion'   => $cheque . 'rechazar_por_proveedor',
+                'tenencia' => 'cuerpo: cheque_id por cheque_del_dueno() -> 422, antes de escribir nada; la nota de débito va a la cuenta del pago del cheque solo si ese pago es del mismo proveedor, el proveedor es del dueño (ChequeHelper::id_del_dueno, borrado incluido) y la cuenta es de ese proveedor.',
+                'prueba'   => 'Rechazado_por_proveedor_Test::un_cheque_ajeno_inexistente_o_que_no_es_un_id_da_422',
+            ],
             'PUT api/cheque/{id}' => [
                 'accion'   => $cheque . 'update',
                 'tenencia' => 'ruta: cheque_del_dueno($id) (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El cheque no existe o no es de tu cuenta.", el mismo cuerpo para ajeno, inexistente y basura; el banco del cuerpo, por ChequeHelper::id_del_dueno(ChequeBanco) -> 422, antes de escribir nada; el par endosado se busca siempre con user_id = dueño.',
