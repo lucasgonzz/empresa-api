@@ -54,6 +54,19 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     private $sucursales_no_encontradas = [];
 
     /**
+     * Filas cuyo saldo del Excel no se pudo leer como numero ("s/d", "-", una formula), como
+     * [['fila' => n° de fila del Excel, 'nombre' => cliente, 'texto' => lo que traia la celda], ...].
+     *
+     * Ese saldo no se cargo ni ajusto nada (ver LocalImportHelper::procesarSaldoImportacion()): el
+     * cliente se importo con el resto de sus datos y su cuenta quedo como estaba. Se avisan al
+     * final, en la notificacion (getInfoToShow()), para que el usuario corrija la celda y vuelva a
+     * importar (mision importacion-saldo-celdas-de-texto, 9/10/2026).
+     *
+     * @var array
+     */
+    private $saldos_ilegibles = [];
+
+    /**
      * Checkbox unico por importacion: que hacer con las celdas VACIAS de las columnas
      * que el usuario mapeo.
      *
@@ -210,9 +223,12 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     /**
      * Bloques informativos que se muestran al terminar la importacion.
      *
-     * Hoy el unico bloque es el de sucursales que no existen: si el Excel traia
-     * nombres de sucursal que no matchearon con ninguna, el usuario tiene que
-     * enterarse, porque esos clientes quedaron sin sucursal asignada.
+     * Dos bloques posibles, en este orden:
+     *   1. Sucursales que no existen: si el Excel traia nombres de sucursal que no matchearon
+     *      con ninguna, el usuario tiene que enterarse, porque esos clientes quedaron sin
+     *      sucursal asignada.
+     *   2. Saldos que no se pudieron leer: filas cuyo saldo no es un numero. El bloque lo arma
+     *      LocalImportHelper::bloque_de_saldos_ilegibles(), el mismo que usa ProviderImport.
      *
      * Si no hay nada que informar se devuelve un array vacio: un bloque que diga
      * "0 sucursales no encontradas" es solo ruido.
@@ -232,6 +248,12 @@ class ClientImport implements ToCollection, WithMultipleSheets {
                 'title'    => 'Sucursales que no existen en el sistema',
                 'parrafos' => $parrafos,
             ];
+        }
+
+        $bloque_de_saldos_ilegibles = LocalImportHelper::bloque_de_saldos_ilegibles($this->saldos_ilegibles);
+
+        if (!is_null($bloque_de_saldos_ilegibles)) {
+            $info_to_show[] = $bloque_de_saldos_ilegibles;
         }
 
         return $info_to_show;
@@ -366,7 +388,22 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         }
 
         if (!is_null($client)) {
-            LocalImportHelper::procesarSaldoImportacion($row, $this->columns, 'client', $client, $existing_client);
+            $texto_ilegible = null;
+
+            $estado_saldo = LocalImportHelper::procesarSaldoImportacion($row, $this->columns, 'client', $client, $existing_client, $texto_ilegible);
+
+            /*
+             * Un saldo que no es un numero no se cargo ni ajusto nada: se anota la fila para el
+             * aviso de fin. num_row es el numero de fila del Excel: collection() cuenta desde la
+             * fila 1 de la hoja (la cabecera incluida).
+             */
+            if ($estado_saldo == 'ilegible') {
+                $this->saldos_ilegibles[] = [
+                    'fila'   => $this->num_row,
+                    'nombre' => $client->name,
+                    'texto'  => $texto_ilegible,
+                ];
+            }
         }
     }
 

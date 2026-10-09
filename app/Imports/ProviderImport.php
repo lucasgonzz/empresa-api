@@ -70,6 +70,19 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     const MAXIMO_DE_PROVEEDORES_EN_EL_AVISO = 50;
 
     /**
+     * Filas cuyo saldo del Excel no se pudo leer como numero ("s/d", "-", una formula), como
+     * [['fila' => n° de fila del Excel, 'nombre' => proveedor, 'texto' => lo que traia la celda], ...].
+     *
+     * Ese saldo no se cargo (LocalImportHelper::setSaldoInicial() devuelve 'ilegible'): el
+     * proveedor se importo con el resto de sus datos. Se avisan al final, en un bloque aparte del
+     * de saldos_no_cargados (mision importacion-saldo-celdas-de-texto, 9/10/2026). Va por FILA y no
+     * por proveedor: lo que el usuario tiene que corregir es la celda.
+     *
+     * @var array
+     */
+    private $saldos_ilegibles = [];
+
+    /**
      * Propiedades que esta fila vacia a proposito, como set [prop_key => true].
      *
      * Existe SOLO para isDataUpdated(): esa funcion pregunta por isset(), y isset() sobre
@@ -216,11 +229,17 @@ class ProviderImport implements ToCollection, WithMultipleSheets
      * Bloques informativos que se muestran al terminar la importacion. Mismo formato que
      * ClientImport::getInfoToShow() (`title` + `parrafos`), que el SPA ya renderiza.
      *
-     * Hoy el unico bloque es el de los saldos que no se cargaron porque la cuenta del proveedor
-     * ya tenia movimientos y otro saldo: un parrafo por proveedor con su nombre y los dos montos
-     * (el del Excel y el de la cuenta, para que se vea la diferencia antes de ajustar), como mucho
-     * MAXIMO_DE_PROVEEDORES_EN_EL_AVISO y, si hay mas, "y N proveedores mas"; la explicacion va
-     * al final. Si no hay nada que informar se devuelve un array vacio, igual que antes.
+     * Dos bloques posibles, en este orden:
+     *   1. Los saldos que no se cargaron porque la cuenta del proveedor ya tenia movimientos y
+     *      otro saldo: un parrafo por proveedor con su nombre y los dos montos (el del Excel y el
+     *      de la cuenta, para que se vea la diferencia antes de ajustar), como mucho
+     *      MAXIMO_DE_PROVEEDORES_EN_EL_AVISO y, si hay mas, "y N proveedores mas"; la explicacion
+     *      va al final.
+     *   2. Los saldos que no se pudieron leer (no son un numero): lo arma
+     *      LocalImportHelper::bloque_de_saldos_ilegibles(), el mismo que usa ClientImport.
+     *
+     * Con los dos al tope el evento tiene que seguir entrando en Pusher (10 KB): lo mide un test.
+     * Si no hay nada que informar se devuelve un array vacio, igual que antes.
      *
      * @return array
      */
@@ -252,6 +271,12 @@ class ProviderImport implements ToCollection, WithMultipleSheets
                 'title'    => 'Saldos del Excel que no se cargaron',
                 'parrafos' => $parrafos,
             ];
+        }
+
+        $bloque_de_saldos_ilegibles = LocalImportHelper::bloque_de_saldos_ilegibles($this->saldos_ilegibles);
+
+        if (!is_null($bloque_de_saldos_ilegibles)) {
+            $info_to_show[] = $bloque_de_saldos_ilegibles;
         }
 
         return $info_to_show;
@@ -367,6 +392,19 @@ class ProviderImport implements ToCollection, WithMultipleSheets
                     'nombre' => $provider->name,
                     'excel'  => $saldos['excel'],
                     'cuenta' => $saldos['cuenta'],
+                ];
+            }
+
+            /*
+             * Un saldo que no es un numero no se cargo: se anota la fila para el aviso de fin.
+             * num_row es el numero de fila del Excel: collection() cuenta desde la fila 1 de la
+             * hoja (la cabecera incluida).
+             */
+            if ($estado_saldo == 'ilegible') {
+                $this->saldos_ilegibles[] = [
+                    'fila'   => $this->num_row,
+                    'nombre' => $provider->name,
+                    'texto'  => $saldos['texto'],
                 ];
             }
         }

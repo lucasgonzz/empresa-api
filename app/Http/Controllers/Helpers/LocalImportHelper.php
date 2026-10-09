@@ -17,23 +17,86 @@ use Illuminate\Support\Facades\DB;
 class LocalImportHelper {
 
 	/**
+	 * Tope de filas que nombra el aviso de saldos ilegibles (bloque_de_saldos_ilegibles()). Del
+	 * resto se dice cuántas son. El evento de la notificación de fin viaja por Pusher, que corta en
+	 * 10 KB: sin tope, un archivo con cientos de saldos ilegibles perdería la notificación ENTERA,
+	 * botón incluido. Mismo criterio que ProviderImport::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO.
+	 *
+	 * @var int
+	 */
+	const MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES = 30;
+
+	/**
+	 * Largo máximo, en caracteres, del nombre y del texto de la celda en cada párrafo del aviso de
+	 * saldos ilegibles. Lo que pasa se corta con "…". También es por el límite de Pusher.
+	 *
+	 * @var int
+	 */
+	const LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO = 60;
+	const LARGO_MAXIMO_DEL_TEXTO_EN_EL_AVISO = 40;
+
+	/**
+	 * Lee el saldo del Excel de una fila (columna "saldo actual") con ImportHelper::leerNumeroDeCelda().
+	 *
+	 * Es la lectura que comparten clientes (procesarSaldoImportacion()) y proveedores
+	 * (setSaldoInicial()). 🔴 Se lee la celda CRUDA (getColumnRawValueByAliases()) y no el string de
+	 * getColumnValueByAliases(): una celda NUMÉRICA tiene que entrar tal cual, y pasada a string
+	 * ("1.234") la lectura de texto la tomaría como miles. Antes se hacía `(float)` del string:
+	 * "$ 52.000,50" daba 0 y "52.000" daba 52 (misión importacion-saldo-celdas-de-texto, 9/10/2026).
+	 *
+	 * @param mixed $row Fila del Excel.
+	 * @param array $columns Mapeo de columnas de la importación.
+	 * @return array El resultado de ImportHelper::leerNumeroDeCelda(): ['estado', 'valor', 'texto'].
+	 */
+	static function leerSaldoDeLaFila($row, $columns) {
+		$celda = ImportHelper::getColumnRawValueByAliases($row, ['saldo_actual', 'saldo actual'], $columns);
+
+		return ImportHelper::leerNumeroDeCelda($celda);
+	}
+
+	/**
 	 * Procesa la columna saldo del Excel según si el cliente/proveedor es nuevo o existente.
 	 *
 	 * Hoy lo usa solo `ClientImport`. Al nuevo le carga el saldo inicial y al EXISTENTE le ajusta
 	 * el saldo con una nota de crédito o de débito. La importación de proveedores usa
 	 * setSaldoInicial(), que no ajusta nunca: ver su docblock.
 	 *
+	 * El saldo se lee con leerSaldoDeLaFila(): una celda NUMÉRICA entra tal cual y una de TEXTO se
+	 * lee como los artículos ("$ 52.000,50", "52.000", "-$ 7.600"). Antes era un `(float)` del
+	 * string, que daba 0 o 52 en esos casos.
+	 *
+	 * 🔴 Un saldo ILEGIBLE ("s/d", "-", una fórmula) no toca NADA: ni crea la cuenta, ni carga un
+	 * saldo inicial, ni ajusta. No se lo trata como 0 a propósito: a un cliente existente un 0 le
+	 * cargaba una nota de crédito por todo lo que debía (decisión de Lucas, 9/10/2026). La fila se
+	 * importa igual con el resto de sus datos (eso ya pasó antes de llamar acá) y ClientImport lo
+	 * avisa al final, con el texto que devuelve $texto_ilegible.
+	 *
 	 * @param mixed $row Fila del Excel.
 	 * @param array $columns Mapeo de columnas de la importación.
 	 * @param string $model_name Nombre del modelo (`client` o `provider`).
 	 * @param mixed $model Instancia persistida del cliente/proveedor.
 	 * @param bool $is_existing_model Indica si el registro ya existía antes de importar.
+	 * @param string|null $texto_ilegible SALIDA, opcional: con el estado 'ilegible', lo que traía la
+	 *                                    celda, para el aviso.
+	 * @return string 'sin_saldo' -> la fila no trae saldo o no hay modelo: nada que hacer.
+	 *                'ilegible'  -> la celda trae algo que no es un número: no se tocó nada.
+	 *                'procesado' -> se cargó el saldo inicial o se ajustó el saldo del existente.
 	 */
-	static function procesarSaldoImportacion($row, $columns, $model_name, $model, $is_existing_model = false) {
-		$saldo_excel = ImportHelper::getColumnValueByAliases($row, ['saldo_actual', 'saldo actual'], $columns);
+	static function procesarSaldoImportacion($row, $columns, $model_name, $model, $is_existing_model = false, &$texto_ilegible = null) {
+		if (is_null($model)) {
+			return 'sin_saldo';
+		}
 
-		if (is_null($saldo_excel) || is_null($model)) {
-			return;
+		$lectura = self::leerSaldoDeLaFila($row, $columns);
+
+		if ($lectura['estado'] == 'vacio') {
+			return 'sin_saldo';
+		}
+
+		if ($lectura['estado'] == 'ilegible') {
+			$texto_ilegible = $lectura['texto'];
+
+			return 'ilegible';
 		}
 
 		$credit_account = self::get_credit_account_pesos($model_name, $model->id);
@@ -44,17 +107,82 @@ class LocalImportHelper {
 		}
 
 		if (is_null($credit_account)) {
-			return;
+			// No hay dónde cargarlo. No debería pasar: crear_credit_accounts() la acaba de crear.
+			return 'sin_saldo';
 		}
 
-		$saldo_importado = (float) $saldo_excel;
+		$saldo_importado = $lectura['valor'];
 
 		if ($is_existing_model) {
 			self::ajustarSaldoPorImportacion($saldo_importado, $credit_account, $model_name, $model->id);
-			return;
+			return 'procesado';
 		}
 
 		self::crearSaldoInicialPorImportacion($saldo_importado, $credit_account, $model_name, $model);
+
+		return 'procesado';
+	}
+
+	/**
+	 * Arma el bloque "Saldos del Excel que no se pudieron leer" de la notificación de fin de
+	 * importación (formato `title` + `parrafos`, el que el SPA ya renderiza). Lo usan ClientImport y
+	 * ProviderImport, cada uno con las filas que juntó.
+	 *
+	 * Un párrafo por fila: `Fila 7, Juan Pérez: "s/d"`. Comillas RECTAS a propósito: Pusher escapa
+	 * cada caracter no ASCII a `\uXXXX` (seis bytes) y el evento tiene un tope de 10 KB. Por lo mismo
+	 * el nombre se corta a LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO caracteres y el texto a
+	 * LARGO_MAXIMO_DEL_TEXTO_EN_EL_AVISO, y se nombran como mucho
+	 * MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES filas; si hay más, "y N filas más". La
+	 * explicación, en el idioma del comerciante, va al final.
+	 *
+	 * @param array $saldos_ilegibles Filas como [['fila' => int, 'nombre' => string, 'texto' => string], ...],
+	 *                                en el orden del Excel.
+	 * @return array|null El bloque, o null si no hubo ninguna fila ilegible (no se avisa nada).
+	 */
+	static function bloque_de_saldos_ilegibles($saldos_ilegibles) {
+		if (count($saldos_ilegibles) == 0) {
+			return null;
+		}
+
+		$parrafos = [];
+
+		foreach (array_slice($saldos_ilegibles, 0, self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES) as $ilegible) {
+			$parrafos[] = 'Fila ' . $ilegible['fila']
+				. ', ' . self::recortar_para_el_aviso($ilegible['nombre'], self::LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO)
+				. ': "' . self::recortar_para_el_aviso($ilegible['texto'], self::LARGO_MAXIMO_DEL_TEXTO_EN_EL_AVISO) . '"';
+		}
+
+		$restantes = count($saldos_ilegibles) - self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES;
+
+		if ($restantes > 0) {
+			$parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' fila más' : ' filas más');
+		}
+
+		$parrafos[] = 'El saldo de esas filas no se cargó y su cuenta corriente quedó como estaba; el resto de sus datos sí se importó. '
+			. 'Escribí el saldo solo con números (por ejemplo 52000,50, 52.000,50 o -7600); si es una fórmula, copiala y pegala como valor. '
+			. 'Después volvé a importar el archivo.';
+
+		return [
+			'title'    => 'Saldos del Excel que no se pudieron leer',
+			'parrafos' => $parrafos,
+		];
+	}
+
+	/**
+	 * Corta un texto a $maximo caracteres (no bytes) y le agrega "…" si lo cortó.
+	 *
+	 * @param string|null $texto
+	 * @param int $maximo
+	 * @return string
+	 */
+	private static function recortar_para_el_aviso($texto, $maximo) {
+		$texto = (string) $texto;
+
+		if (mb_strlen($texto, 'UTF-8') <= $maximo) {
+			return $texto;
+		}
+
+		return mb_substr($texto, 0, $maximo, 'UTF-8') . '…';
 	}
 
 	/**
@@ -223,6 +351,15 @@ class LocalImportHelper {
 	 * cliente/proveedor, venga de donde venga la llamada. (Sin el parámetro, crear_credit_accounts()
 	 * lo sacaría de UserHelper::userId().)
 	 *
+	 * El saldo se lee con leerSaldoDeLaFila(), igual que en clientes: una celda NUMÉRICA entra tal
+	 * cual y una de TEXTO se lee como los artículos. Antes era un `(float)` del string:
+	 * "$ 52.000,50" daba 0 (y no se cargaba nada) y "52.000" daba 52.
+	 *
+	 * 🔴 Un saldo ILEGIBLE ("s/d", "-", una fórmula) devuelve 'ilegible' ANTES de crear la cuenta
+	 * que falte, igual que una celda vacía: no se carga nada y no se lo trata como 0. ProviderImport
+	 * lo avisa al final con el texto de la celda (misión importacion-saldo-celdas-de-texto,
+	 * 9/10/2026).
+	 *
 	 * @param mixed $row Fila del Excel.
 	 * @param array $columns Mapeo de columnas de la importación.
 	 * @param string $model_name Nombre del modelo (`client` o `provider`).
@@ -230,10 +367,13 @@ class LocalImportHelper {
 	 * @param array|null $saldos SALIDA, opcional: cuando la cuenta ya tenía movimientos (estados
 	 *                           'sin_cambios' y 'ya_tenia_movimientos') queda con
 	 *                           ['excel' => saldo del Excel, 'cuenta' => saldo de la cuenta], para
-	 *                           que el llamador pueda mostrar los dos montos en el aviso.
+	 *                           que el llamador pueda mostrar los dos montos en el aviso. Con el
+	 *                           estado 'ilegible' queda con ['texto' => lo que traía la celda].
 	 * @return string 'sin_saldo'            -> la fila no trae saldo, el saldo es 0, o no hay modelo
 	 *                                          (una fila de "solo editar" cuyo proveedor no existe):
 	 *                                          nada que cargar.
+	 *                'ilegible'             -> la celda trae algo que no es un número: no se cargó
+	 *                                          nada (se avisa).
 	 *                'cargado'              -> se cargó el saldo inicial.
 	 *                'sin_cambios'          -> la cuenta ya tenía movimientos y su saldo ya es el del
 	 *                                          Excel: no se carga nada y no hay nada que avisar.
@@ -250,13 +390,21 @@ class LocalImportHelper {
 			return 'sin_saldo';
 		}
 
-		$saldo_actual = ImportHelper::getColumnValueByAliases($row, ['saldo_actual', 'saldo actual'], $columns);
+		$lectura = self::leerSaldoDeLaFila($row, $columns);
 
-		if (is_null($saldo_actual)) {
+		if ($lectura['estado'] == 'vacio') {
 			return 'sin_saldo';
 		}
 
-		$saldo_importado = (float) $saldo_actual;
+		if ($lectura['estado'] == 'ilegible') {
+			$saldos = [
+				'texto' => $lectura['texto'],
+			];
+
+			return 'ilegible';
+		}
+
+		$saldo_importado = $lectura['valor'];
 
 		$credit_account = self::get_credit_account_pesos($model_name, $model->id);
 

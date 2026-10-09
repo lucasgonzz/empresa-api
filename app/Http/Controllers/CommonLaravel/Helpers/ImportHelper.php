@@ -186,6 +186,171 @@ class ImportHelper {
 		return null;
 	}
 
+	/**
+	 * Valor de una columna de la fila TAL CUAL lo entrega PhpSpreadsheet (int, float, string o
+	 * bool), sin pasarlo a string. Null si la columna no está mapeada (o está marcada −1 en el
+	 * mapeo), si la celda no existe o si es un string vacío (después de sacar BOM y espacios).
+	 *
+	 * Existe para los números que tienen que distinguir una celda NUMÉRICA de una de TEXTO (el
+	 * saldo de clientes y proveedores, ver leerNumeroDeCelda()): getColumnValue() convierte todo a
+	 * string, y una celda numérica 1.234 (uno coma dos) se volvería el texto "1.234", que leído
+	 * como texto es mil doscientos treinta y cuatro.
+	 *
+	 * Como en getColumnValue(), no hay centinela −1 sobre el VALOR de la celda: una celda −1 es −1.
+	 *
+	 * @param mixed $row Fila del Excel (array o Collection).
+	 * @param string $key Clave de la columna en el mapeo.
+	 * @param array $columns Mapeo de columnas de la importación.
+	 * @return int|float|string|bool|null
+	 */
+	static function getColumnRawValue($row, $key, $columns) {
+		if (!isset($columns[$key]) || !isset($row[$columns[$key]])) {
+			return null;
+		}
+
+		$value = $row[$columns[$key]];
+
+		if (is_string($value) && trim(str_replace("\xEF\xBB\xBF", '', $value)) === '') {
+			return null;
+		}
+
+		return $value;
+	}
+
+	/**
+	 * getColumnRawValue() probando varias claves posibles del mapeo, en orden. Devuelve el primer
+	 * valor no nulo.
+	 *
+	 * @param mixed $row Fila del Excel.
+	 * @param array $keys Claves a probar en orden (snake_case o legacy).
+	 * @param array $columns Mapeo de columnas de la importación.
+	 * @return int|float|string|bool|null
+	 */
+	static function getColumnRawValueByAliases($row, $keys, $columns) {
+		foreach ($keys as $key) {
+			$value = self::getColumnRawValue($row, $key, $columns);
+
+			if (!is_null($value)) {
+				return $value;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Lee un número de una celda cruda (la de getColumnRawValue()) y dice qué encontró.
+	 *
+	 * Es el lector del saldo de la importación de clientes y de proveedores (misión
+	 * importacion-saldo-celdas-de-texto, 9/10/2026). Antes ese saldo se leía con un `(float)` del
+	 * string: "$ 52.000,50" daba 0, "52.000" daba 52 y un texto que no es un número daba 0 (y a un
+	 * cliente existente le dejaba el saldo en 0 con una nota de crédito por todo lo que debía).
+	 *
+	 *   - null o texto vacío   -> 'vacio'.
+	 *   - int o float finito   -> 'numero', TAL CUAL. 🔴 No pasa por parseNumericValue() ni por
+	 *                             string: la celda numérica ya es un número, y convertida al texto
+	 *                             "1.234" la regla de miles la leería como 1234.
+	 *   - texto                -> se limpia como en getColumnValue() (BOM, espacios, comillas), se
+	 *                             mueve el signo que viene ANTES de la moneda ("-$ 7.600" ->
+	 *                             "-7.600") y se lee con parseNumericValue() en modo 'auto', igual
+	 *                             que los artículos. Si no es un número -> 'ilegible'.
+	 *   - bool, NAN/INF, array u objeto -> 'ilegible'.
+	 *
+	 * La interpretación del punto es siempre 'auto': clientes y proveedores no tienen el selector
+	 * del paso 3 del modal ("Cómo vamos a leer los números").
+	 *
+	 * 🔴 El signo antes de la moneda se arregla ACÁ y no en parseNumericValue(): en artículos un
+	 * "-$ 100" en el costo tiene que seguir siendo un conflicto, no un costo negativo. En un saldo,
+	 * en cambio, "-$ 7.600" es un saldo a favor escrito como lo escribe cualquiera.
+	 *
+	 * Una fórmula llega como su texto ("=B2*2"): ningún importador implementa
+	 * `WithCalculatedFormulas`. Queda 'ilegible', y el aviso le pide al usuario pegarla como valor.
+	 *
+	 * @param mixed $valor Valor crudo de la celda.
+	 * @return array [
+	 *   'estado' => 'vacio' | 'numero' | 'ilegible',
+	 *   'valor'  => float|null   el número, solo con estado 'numero',
+	 *   'texto'  => string|null  lo que traía la celda, solo con estado 'ilegible' (para el aviso),
+	 * ]
+	 */
+	static function leerNumeroDeCelda($valor) {
+		if (is_null($valor)) {
+			return self::lecturaDeCelda('vacio');
+		}
+
+		if (is_bool($valor)) {
+			// Una celda VERDADERO/FALSO no es un saldo. Se muestra como la ve el usuario en su Excel.
+			return self::lecturaDeCelda('ilegible', null, $valor ? 'VERDADERO' : 'FALSO');
+		}
+
+		if (is_int($valor) || is_float($valor)) {
+			if (is_float($valor) && !is_finite($valor)) {
+				return self::lecturaDeCelda('ilegible', null, (string) $valor);
+			}
+
+			return self::lecturaDeCelda('numero', (float) $valor);
+		}
+
+		if (!is_string($valor)) {
+			// Array u objeto: no debería llegar de una celda, pero no se lo trata como número.
+			$texto = is_object($valor) && method_exists($valor, '__toString') ? (string) $valor : '';
+
+			return self::lecturaDeCelda('ilegible', null, $texto);
+		}
+
+		// Misma limpieza que getColumnValue(): BOM, espacios y comillas en los bordes.
+		$texto = str_replace("\xEF\xBB\xBF", '', $valor);
+		$texto = trim($texto);
+		$texto = trim($texto, '"');
+		$texto = trim($texto);
+
+		if ($texto === '') {
+			return self::lecturaDeCelda('vacio');
+		}
+
+		/*
+		 * El signo ANTES de la moneda pasa adelante del número: "-$ 7.600", "- $7.600" y
+		 * "-USD 100" quedan "-7.600" y "-100". parseNumericValue() solo saca la moneda cuando está
+		 * al principio, así que con el signo adelante no la reconocería y el saldo quedaría
+		 * ilegible. ("$ -1.500" ya lo lee: saca la moneda y queda "-1.500".)
+		 */
+		$texto_a_leer = preg_replace('/^([+-])\s*(USD|U\$S|\$)\s*/iu', '$1', $texto);
+
+		if (is_null($texto_a_leer)) {
+			// UTF-8 inválido: preg_replace con /u devuelve null. Se lee el texto sin tocar.
+			$texto_a_leer = $texto;
+		}
+
+		try {
+			$numero = self::parseNumericValue($texto_a_leer, null, null, 'auto');
+		} catch (\InvalidArgumentException $e) {
+			return self::lecturaDeCelda('ilegible', null, $texto);
+		}
+
+		// "1e999" es numérico para PHP y da INF: tampoco es un saldo.
+		if (is_null($numero) || !is_finite((float) $numero)) {
+			return self::lecturaDeCelda('ilegible', null, $texto);
+		}
+
+		return self::lecturaDeCelda('numero', (float) $numero);
+	}
+
+	/**
+	 * Arma el resultado de leerNumeroDeCelda(), siempre con las tres claves.
+	 *
+	 * @param string $estado 'vacio' | 'numero' | 'ilegible'
+	 * @param float|null $valor
+	 * @param string|null $texto
+	 * @return array
+	 */
+	private static function lecturaDeCelda($estado, $valor = null, $texto = null) {
+		return [
+			'estado' => $estado,
+			'valor'  => $valor,
+			'texto'  => $texto,
+		];
+	}
+
 	static function usa_columna($value) {
 		return !is_null($value) && $value !== '';
 	}
