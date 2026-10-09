@@ -2493,7 +2493,9 @@ class SembrarDatosDePrueba extends Command
                 $cheque->estado_manual = 'rechazado';
                 $cheque->rechazado_en = Carbon::now();
                 $cheque->rechazado_por_id = config('semilla.user_id');
-                $cheque->rechazado_observaciones = null;
+                // Un motivo realista y no null: desde la misión cheque-motivo-rechazo (9/10/2026) la
+                // columna es de texto y la solapa Rechazados lo muestra en "Motivo del rechazo".
+                $cheque->rechazado_observaciones = 'Sin fondos suficientes';
                 $cheque->save();
                 $conteo['rechazado']++;
             } elseif ($indice === 2) {
