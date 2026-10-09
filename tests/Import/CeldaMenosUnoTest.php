@@ -10,16 +10,20 @@ use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
 /**
- * Misión importacion-saldo-celdas-de-texto (9/10/2026) — una celda que vale −1 es un dato, no una
- * "columna sin usar".
+ * Misión importacion-saldo-celdas-de-texto (9/10/2026) — GUARDA de artículos: una celda que vale −1
+ * es un dato, no una "columna sin usar".
  *
- * `ImportHelper::getColumnValue()` comparaba el VALOR de la celda con el centinela −1 (`!== -1`).
- * La marca de "columna sin usar" vive en el MAPEO (`$columns[$key] == -1`), no en la celda: lo único
- * que lograba esa comparación era descartar toda celda que valiera −1 entero. El arreglo saca la
- * comparación para todas las importaciones (decisión de Lucas).
+ * `ImportHelper::getColumnValue()` comparaba el VALOR de la celda con el centinela −1 (`!== -1`), y
+ * la misión sacó esa comparación para todas las importaciones (decisión de Lucas). Pero esta clase
+ * NO es la prueba de ese arreglo: los artículos leen del CSV intermedio (`fgetcsv`), donde la celda
+ * llega como el string "-1", y el `!== -1` (entero) nunca la descartaba. Estos tests pasan con y sin
+ * el arreglo. La prueba es `SaldoCeldasDeTextoImportTest::un_saldo_de_menos_uno_se_importa_como_cualquier_otro`
+ * y `::una_celda_numerica_menos_uno_en_el_telefono_se_importa_como_menos_uno` (clientes y
+ * proveedores leen por Maatwebsite, que entrega `int`).
  *
- * Por el camino real de la importación de artículos, una celda numérica −1 en el stock se trata
- * igual que una −2 en la misma columna.
+ * Lo que esta guarda cuida: que por el camino real de la importación de artículos una celda
+ * numérica −1 en el stock se siga tratando igual que una −2 en la misma columna, si algún día el
+ * camino deja de pasar por el CSV o vuelve un centinela sobre el valor.
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promoción de constructor, readonly, enum ni #[...].

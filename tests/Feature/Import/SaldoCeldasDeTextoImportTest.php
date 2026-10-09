@@ -44,8 +44,10 @@ use Tests\Feature\CuentaCorriente\ArmaCadenas;
  * el binder convierte "52.000" en el número 52 y el test no prueba lo que dice. `xlsx()` relee el
  * archivo y verifica el tipo de cada celda antes de devolverlo.
  *
- * Todo por los endpoints reales: el modal con IA (`api/ai-excel-import/import`), la importación
- * clásica (`api/client|provider/excel/import`) y el admin (`api/admin-sync/ai-excel-import/import`).
+ * Todo por los endpoints reales: el modal con IA (`api/ai-excel-import/import`, que es también el
+ * camino del motor de `/implementar`: hace `Request::create()` de esa ruta en el mismo proceso), la
+ * importación clásica (`api/client|provider/excel/import`) y admin-sync
+ * (`api/admin-sync/ai-excel-import/import`, el que usa admin-api desde `ImplementationImportService`).
  *
  * DatabaseTransactions (heredado de EmpresaTestCase): nada de lo que se crea acá sobrevive al test.
  * Los Excel temporales y las copias en `storage/app/imported_files` se borran en tearDown().
@@ -128,11 +130,14 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
      *
      *   string de PHP   -> celda de TEXTO (setCellValueExplicit, TYPE_STRING): "52.000" queda texto.
      *   int / float     -> celda NUMÉRICA.
+     *   bool            -> celda VERDADERO/FALSO (TYPE_BOOL).
      *   formula('=..')  -> celda con FÓRMULA.
      *   null            -> celda VACÍA.
      *
      * Después relee el archivo y verifica que cada celda quedó del tipo pedido: si el binder de
-     * PhpSpreadsheet hubiera convertido un texto en número, el test no probaría lo que dice.
+     * PhpSpreadsheet hubiera convertido un texto en número, el test no probaría lo que dice. A las
+     * de texto les verifica además el contenido exacto (BOM, espacios y NBSP de los bordes
+     * incluidos), que es lo que llega al importador.
      *
      * @param  array $cabecera
      * @param  array $filas
@@ -145,6 +150,9 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
 
         // Tipo esperado de cada celda escrita, para verificarlo al releer: [referencia => tipo].
         $tipos_esperados = [];
+
+        // Contenido esperado de cada celda de TEXTO: [referencia => string].
+        $textos_esperados = [];
 
         foreach (array_merge([$cabecera], $filas) as $indice_fila => $fila) {
             foreach (array_values($fila) as $indice_columna => $valor) {
@@ -162,6 +170,10 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
                 } elseif (is_string($valor)) {
                     $hoja->setCellValueExplicit($referencia, $valor, DataType::TYPE_STRING);
                     $tipos_esperados[$referencia] = DataType::TYPE_STRING;
+                    $textos_esperados[$referencia] = $valor;
+                } elseif (is_bool($valor)) {
+                    $hoja->setCellValueExplicit($referencia, $valor, DataType::TYPE_BOOL);
+                    $tipos_esperados[$referencia] = DataType::TYPE_BOOL;
                 } else {
                     $hoja->setCellValue($referencia, $valor);
                     $tipos_esperados[$referencia] = DataType::TYPE_NUMERIC;
@@ -184,6 +196,14 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
                 $tipo,
                 $releida->getCell($referencia)->getDataType(),
                 'Premisa del test: la celda '.$referencia.' no quedó como "'.$tipo.'" en el Excel.'
+            );
+        }
+
+        foreach ($textos_esperados as $referencia => $texto) {
+            $this->assertSame(
+                $texto,
+                (string) $releida->getCell($referencia)->getValue(),
+                'Premisa del test: el texto de la celda '.$referencia.' no quedó tal cual en el Excel.'
             );
         }
 
@@ -271,8 +291,11 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
     }
 
     /**
-     * El endpoint del admin (el del motor de `/implementar`): sin sesión, con el header de la clave
-     * y el `user_id` del comercio. Nombre en la columna 0 y saldo en la 1.
+     * El endpoint de admin-sync, el que usa admin-api (`ImplementationImportService`): sin sesión,
+     * con el header de la clave y el `user_id` del comercio. Nombre en la columna 0 y saldo en la 1.
+     *
+     * NO es el camino del motor de `/implementar`: el motor hace `Request::create()` de
+     * `/api/ai-excel-import/import` en el mismo proceso, o sea el de importar_por_ia().
      *
      * @param  string $model  'client' | 'provider'
      * @param  string $ruta
@@ -498,6 +521,9 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
     /**
      * Las celdas de texto con formato y lo que tiene que quedar de cada una.
      *
+     * Un saldo en dólares ("-USD 100") ya no está acá: desde la ronda de correcciones es ilegible
+     * (la columna carga la cuenta en pesos). Lo cubre los_casos_borde_del_saldo_en_una_sola_importacion().
+     *
      * @return array [[texto de la celda, saldo esperado], ...]
      */
     protected function textos_con_formato()
@@ -510,7 +536,6 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
             ['-$ 7.600',    -7600],
             ['$ -1.500',    -1500],
             ['- $7.600',    -7600],
-            ['-USD 100',    -100],
         ];
     }
 
@@ -937,7 +962,8 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
     }
 
     /**
-     * El endpoint del admin (motor de `/implementar`), con celdas de texto. Llega sin sesión.
+     * admin-sync, el endpoint que usa admin-api (`ImplementationImportService`), con celdas de
+     * texto. Llega sin sesión. (El motor de `/implementar` no pasa por acá: va por el modal con IA.)
      *
      * @test
      */
@@ -959,5 +985,240 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
 
         $this->assert_saldo_inicial('client', $this->por_nombre('client', $cliente), 1234.56);
         $this->assert_saldo_inicial('provider', $this->por_nombre('provider', $proveedor), 52000);
+    }
+
+    /* =====================================================================
+     * 9. Ronda de correcciones: los huecos que dejaron las mutaciones
+     * ================================================================== */
+
+    /**
+     * Una celda NUMÉRICA −1 es un dato también fuera del saldo: un cliente y un proveedor con −1 en
+     * el teléfono quedan con teléfono "-1". Con el centinela viejo de getColumnValue() (`!== -1`
+     * sobre el VALOR de la celda) quedaban sin teléfono.
+     *
+     * Es el test que prueba el arreglo de getColumnValue() por un camino que lo ve: clientes y
+     * proveedores leen por Maatwebsite, que entrega `int` para un entero. (CeldaMenosUnoTest es solo
+     * una guarda de artículos, que leen del CSV intermedio y nunca recibieron un −1 entero.)
+     *
+     * @test
+     */
+    public function una_celda_numerica_menos_uno_en_el_telefono_se_importa_como_menos_uno()
+    {
+        foreach (['client' => 'Cli', 'provider' => 'Prov'] as $model_name => $prefijo) {
+
+            $nombre = $this->nombre($prefijo.' telefono menos uno');
+
+            $this->importar_por_ia($model_name, $this->xlsx(['Nombre', 'Telefono'], [
+                [$nombre, -1],
+            ]), ['nombre' => 0, 'telefono' => 1])->assertStatus(200);
+
+            $this->assertSame(
+                '-1',
+                $this->por_nombre($model_name, $nombre)->phone,
+                'Una celda numérica −1 en el teléfono del '.$model_name.' tiene que importarse como "-1", no descartarse.'
+            );
+        }
+    }
+
+    /**
+     * 🔴 Un cliente EXISTENTE con saldo y la celda de saldo VACÍA, o con solo espacios: la cuenta
+     * queda como estaba, sin nota, y no se avisa nada (una celda vacía no es un saldo ilegible: es
+     * "no informo saldo"). Si una celda vacía se leyera como 0, el ajuste le cargaría una nota de
+     * crédito por todo lo que debe: es el daño que esta misión vino a cerrar. La fila se importa
+     * igual con el resto de sus datos.
+     *
+     * @test
+     */
+    public function un_cliente_existente_con_la_celda_de_saldo_vacia_o_con_espacios_queda_como_estaba()
+    {
+        list($con_celda_vacia, $cuenta_celda_vacia)       = $this->cliente_existente_con_saldo('Cli existente celda vacia', 1000);
+        list($con_celda_espacios, $cuenta_celda_espacios) = $this->cliente_existente_con_saldo('Cli existente celda con espacios', 2500);
+
+        Notification::fake();
+
+        $this->importar_por_ia('client', $this->xlsx(['Nombre', 'Telefono', 'Saldo'], [
+            [$con_celda_vacia->name,    '11-1000', null],
+            [$con_celda_espacios->name, '11-2500', '   '],
+        ]), ['nombre' => 0, 'telefono' => 1, 'saldo_actual' => 2])->assertStatus(200);
+
+        // La fila se importó: el teléfono es el del Excel.
+        $this->assertSame('11-1000', $con_celda_vacia->fresh()->phone);
+        $this->assertSame('11-2500', $con_celda_espacios->fresh()->phone);
+
+        $this->assertCount(1, $this->movimientos($cuenta_celda_vacia), 'Una celda de saldo vacía no puede ajustar la cuenta de un cliente existente.');
+        $this->assertCount(1, $this->movimientos($cuenta_celda_espacios), 'Una celda de saldo con solo espacios no puede ajustar la cuenta de un cliente existente.');
+
+        $this->assert_saldo_inicial('client', $con_celda_vacia, 1000);
+        $this->assert_saldo_inicial('client', $con_celda_espacios, 2500);
+
+        $this->assert_notificacion_sin_avisos();
+    }
+
+    /**
+     * Todos los casos borde del lector en una sola importación de proveedores, con la columna
+     * mapeada con el alias viejo `'saldo actual'` (con espacio):
+     *
+     *   - se leen: BOM adelante, espacios y comillas en los bordes, el `+` adelante ("+$ 7.600",
+     *     "$ +7.600", "+7.600": antes daban 7,6), el signo con espacio ("- 500"), el menos
+     *     tipográfico U+2212 y el NBSP / U+202F en los bordes;
+     *   - quedan ilegibles y se avisan: VERDADERO, "1e999" (PHP lo lee como infinito) y todo saldo en
+     *     dólares (USD, U$S, US$, en mayúsculas o minúsculas, con o sin signo), porque la columna
+     *     carga la cuenta en PESOS. Antes "USD 1.500" se cargaba como $1.500 sin aviso.
+     *
+     * @test
+     */
+    public function los_casos_borde_del_saldo_en_una_sola_importacion()
+    {
+        // [base del nombre, celda, saldo esperado]
+        $legibles = [
+            ['Prov borde bom',               "\xEF\xBB\xBF500",          500],
+            ['Prov borde espacios',          '  -$ 7.600  ',             -7600],
+            ['Prov borde comillas',          '"500"',                    500],
+            ['Prov borde mas pesos',         '+$ 7.600',                 7600],
+            ['Prov borde pesos mas',         '$ +7.600',                 7600],
+            ['Prov borde mas',               '+7.600',                   7600],
+            ['Prov borde signo y espacio',   '- 500',                    -500],
+            ['Prov borde menos tipografico', "\u{2212}7.600",            -7600],
+            ['Prov borde nbsp',              "\u{00A0}1.500\u{00A0}",    1500],
+            ['Prov borde espacio fino',      "\u{202F}2.000\u{202F}",    2000],
+        ];
+
+        // [base del nombre, celda, texto que tiene que mostrar el aviso]
+        $ilegibles = [
+            ['Prov borde verdadero',     true,         'VERDADERO'],
+            ['Prov borde infinito',      '1e999',      '1e999'],
+            ['Prov borde usd',           'USD 1.500',  'USD 1.500'],
+            ['Prov borde menos usd',     '-USD 100',   '-USD 100'],
+            ['Prov borde u$s',           'U$S 100',    'U$S 100'],
+            ['Prov borde us$',           'US$ 100',    'US$ 100'],
+            ['Prov borde usd minuscula', 'usd 50',     'usd 50'],
+        ];
+
+        $filas = [];
+
+        foreach (array_merge($legibles, $ilegibles) as $caso) {
+            $filas[] = [$this->nombre($caso[0]), $caso[1]];
+        }
+
+        Notification::fake();
+
+        $this->importar_por_ia('provider', $this->xlsx(['Nombre', 'Saldo'], $filas), ['nombre' => 0, 'saldo actual' => 1])->assertStatus(200);
+
+        foreach ($legibles as $caso) {
+            $this->assert_saldo_inicial('provider', $this->por_nombre('provider', $this->nombre($caso[0])), $caso[2]);
+        }
+
+        foreach ($ilegibles as $caso) {
+            $this->assert_cuenta_vacia('provider', $this->por_nombre('provider', $this->nombre($caso[0])));
+        }
+
+        $parrafos = $this->parrafos_del_aviso_de_ilegibles();
+
+        $this->assertCount(count($ilegibles) + 1, $parrafos, 'Un párrafo por fila ilegible y la explicación al final.');
+
+        foreach ($ilegibles as $i => $caso) {
+            // Fila 1: cabecera. Los ilegibles van después de los legibles.
+            $fila = count($legibles) + $i + 2;
+
+            $this->assertSame('Fila '.$fila.', '.$this->nombre($caso[0]).': "'.$caso[2].'"', $parrafos[$i]);
+        }
+
+        $explicacion = end($parrafos);
+
+        $this->assert_explicacion_del_aviso($explicacion);
+        $this->assertStringContainsString('dólares', $explicacion, 'La explicación tiene que decir que un saldo en dólares no se importa.');
+        $this->assertStringContainsString('pesos', $explicacion);
+    }
+
+    /**
+     * Con datos REALES el evento de fin de importación de proveedores tiene que seguir entrando en
+     * Pusher: 50 proveedores con movimientos y otro saldo, con nombres de más de 60 caracteres con
+     * tildes y eñes (cada una pesa seis bytes en el JSON) y montos de cientos de millones, más 22
+     * saldos ilegibles con nombres y textos con acentos. Con topes fijos (50 y 20) el bloque de los
+     * "no se cargaron" solo ya pasaba los 9 KB.
+     *
+     * Vienen los dos bloques y, en cada uno, los nombrados más el "y N ... más" dan el total: el
+     * presupuesto achica cuántos se nombran, nunca cuántos se cuentan.
+     *
+     * @test
+     */
+    public function con_datos_reales_los_dos_avisos_de_proveedores_entran_en_pusher()
+    {
+        $filas_primera = [];
+        $filas_segunda = [];
+
+        for ($i = 1; $i <= 50; $i++) {
+            $nombre = $this->nombre('Distribuidora Ñandú de Artículos Eléctricos y Construcción Peñarol '.str_pad($i, 2, '0', STR_PAD_LEFT));
+
+            $filas_primera[] = [$nombre, 123456789.5 + $i];
+            $filas_segunda[] = [$nombre, 987654321.75 + $i];
+        }
+
+        for ($i = 1; $i <= 22; $i++) {
+            $filas_segunda[] = [
+                $this->nombre('Ferretería Ñuñoa del Señor de los Milagros y Compañía '.str_pad($i, 2, '0', STR_PAD_LEFT)),
+                'Según lo acordado debía más de lo anotado en el cuaderno '.$i,
+            ];
+        }
+
+        $this->assertGreaterThan(60, mb_strlen($filas_primera[0][0]), 'Premisa: los nombres tienen que pasar los 60 caracteres.');
+
+        $this->importar_por_ia('provider', $this->xlsx(['Nombre', 'Saldo'], $filas_primera))->assertStatus(200);
+
+        Notification::fake();
+
+        $this->importar_por_ia('provider', $this->xlsx(['Nombre', 'Saldo'], $filas_segunda))->assertStatus(200);
+
+        $notificacion = $this->notificacion_de_fin();
+
+        $this->assertCount(2, $notificacion->info_to_show, 'Tienen que venir los dos bloques.');
+        $this->assertSame('Saldos del Excel que no se cargaron', $notificacion->info_to_show[0]['title']);
+        $this->assertSame(self::TITULO_DEL_AVISO, $notificacion->info_to_show[1]['title']);
+
+        $this->assert_nombrados_mas_restantes_dan_el_total($notificacion->info_to_show[0]['parrafos'], 50, 'proveedor', 'proveedores');
+        $this->assert_nombrados_mas_restantes_dan_el_total($notificacion->info_to_show[1]['parrafos'], 22, 'fila', 'filas');
+
+        $bytes = strlen(json_encode($notificacion->toBroadcast(User::find($this->user_id))->data));
+
+        $this->assertLessThan(9000, $bytes, 'El evento de fin de importación pesa '.$bytes.' bytes: no entra en Pusher.');
+    }
+
+    /**
+     * En un bloque del aviso, los nombrados más el "y N ... más" dan el total, y se nombra al menos
+     * uno. Los párrafos son: un nombrado por párrafo, el "y N ... más" (si hay restantes) y la
+     * explicación al final.
+     *
+     * @param  array  $parrafos
+     * @param  int    $total     Filas o proveedores que había para avisar.
+     * @param  string $singular  "proveedor" | "fila"
+     * @param  string $plural    "proveedores" | "filas"
+     * @return void
+     */
+    protected function assert_nombrados_mas_restantes_dan_el_total(array $parrafos, $total, $singular, $plural)
+    {
+        // Sin la explicación del final.
+        $sin_explicacion = array_slice($parrafos, 0, count($parrafos) - 1);
+
+        $restantes = 0;
+
+        $ultimo = end($sin_explicacion);
+
+        if (preg_match('/^y (\d+) (' . preg_quote($singular, '/') . '|' . preg_quote($plural, '/') . ') más$/u', (string) $ultimo, $partes) === 1) {
+            $restantes = (int) $partes[1];
+
+            $this->assertSame($restantes == 1 ? $singular : $plural, $partes[2], 'El "y N ... más" tiene que ir en singular solo si N es 1.');
+
+            array_pop($sin_explicacion);
+        }
+
+        $nombrados = count($sin_explicacion);
+
+        $this->assertGreaterThanOrEqual(1, $nombrados, 'Cada bloque tiene que nombrar al menos uno.');
+
+        foreach ($sin_explicacion as $parrafo) {
+            $this->assertDoesNotMatchRegularExpression('/^y \d+ /u', $parrafo, 'Un "y N ... más" en el medio del bloque.');
+        }
+
+        $this->assertSame($total, $nombrados + $restantes, 'Nombrados ('.$nombrados.') más restantes ('.$restantes.') tienen que dar el total.');
     }
 }
