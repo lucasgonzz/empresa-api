@@ -3,12 +3,16 @@
 namespace Tests\Feature\Cheques;
 
 use App\Exports\ChequesFilteredExport;
+use App\Http\Controllers\ChequeController;
+use App\Http\Controllers\Helpers\ChequeHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
 use App\Models\Cheque;
 use App\Models\EtiquetaMedida;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Misión cheque-motivo-rechazo (9/10/2026) — `PUT cheque/rechazar` guarda el motivo del rechazo.
@@ -34,6 +38,12 @@ class Motivo_del_rechazo_Test extends ChequesTestCase
 
     /** El 422 de un cheque ajeno o inexistente (ChequeController::MENSAJE_CHEQUE_AJENO). */
     const MENSAJE_CHEQUE_AJENO = 'El cheque elegido no existe o no es de tu cuenta.';
+
+    /** El 422 de un motivo que no es UTF-8 válido. */
+    const MENSAJE_CARACTERES_INVALIDOS = 'El motivo del rechazo tiene caracteres inválidos.';
+
+    /** La propiedad estática donde ChequeHelper cachea que la columna es de texto. */
+    const CACHE_DE_LA_COLUMNA = 'columna_de_motivo_acepta_texto';
 
     /** @var User|null El otro comercio: un dueño (sin owner_id) que vive en la misma base. */
     protected $otro_dueno = null;
@@ -359,9 +369,222 @@ class Motivo_del_rechazo_Test extends ChequesTestCase
         $this->assertNull($ajeno->fresh()->rechazado_observaciones);
     }
 
+    /**
+     * 13. La columna todavía INT (la ventana del deploy entre subir la API y migrar), sin tocar el
+     * esquema: se fuerza el cache de ChequeHelper a false. El rechazo con motivo es un 200, el cheque
+     * queda rechazado SIN motivo (no un 500 por escribir texto en un INT) y queda el warning en el log
+     * con el id del cheque.
+     *
+     * @test
+     */
+    public function con_la_columna_todavia_int_rechaza_sin_motivo_y_avisa_en_el_log()
+    {
+        $recibido = $this->recibido_en_cartera('columna int');
+
+        $cache = $this->cache_de_la_columna();
+
+        try {
+
+            $cache->setValue(null, false);
+
+            Log::spy();
+
+            $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $recibido->id, 'notas' => 'Sin fondos']);
+
+            $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+
+            $fila = $this->fila($recibido->id);
+
+            $this->assertSame('rechazado', $fila['estado_manual'], 'El cheque se rechaza igual.');
+            $this->assertNull($fila['rechazado_observaciones'], 'Con la columna INT el motivo no se escribe.');
+
+            Log::shouldHaveReceived('warning')
+                ->withArgs(function ($mensaje, $contexto = []) use ($recibido) {
+                    return strpos((string) $mensaje, 'SIN su motivo') !== false
+                        && isset($contexto['cheque_id'])
+                        && (int) $contexto['cheque_id'] === (int) $recibido->id;
+                })
+                ->once();
+
+        } finally {
+
+            $cache->setValue(null, null);
+        }
+    }
+
+    /**
+     * 14. Solo el true queda cacheado. Un false REAL, sin DDL: con otro prefijo de tablas la consulta
+     * a information_schema no encuentra la columna y da false, y ese false NO se guarda. Al volver
+     * al prefijo de siempre, la próxima pregunta va a la base (la columna es TEXT), da true y el true
+     * sí queda guardado. Es lo que le permite a un `queue:work` que arrancó antes de la migración
+     * enterarse solo.
+     *
+     * @test
+     */
+    public function solo_el_true_de_la_columna_queda_cacheado()
+    {
+        $cache = $this->cache_de_la_columna();
+
+        $prefijo = DB::connection()->getTablePrefix();
+
+        try {
+
+            $cache->setValue(null, null);
+
+            DB::connection()->setTablePrefix('tabla_que_no_existe_');
+
+            $this->assertFalse(ChequeHelper::columna_de_motivo_acepta_texto(), 'Sin la columna, false.');
+            $this->assertNull($cache->getValue(), 'El false no queda guardado.');
+
+            DB::connection()->setTablePrefix($prefijo);
+
+            $this->assertTrue(ChequeHelper::columna_de_motivo_acepta_texto(), 'Se vuelve a preguntar y la columna es de texto.');
+            $this->assertTrue($cache->getValue(), 'El true sí queda guardado.');
+
+        } finally {
+
+            DB::connection()->setTablePrefix($prefijo);
+
+            $cache->setValue(null, null);
+        }
+    }
+
+    /**
+     * 15. Por formulario (form-urlencoded, no JSON): un texto se guarda, y un "0" o un vacío son
+     * "sin motivo" (NULL, con el cheque rechazado igual). Y un byte que no es UTF-8 válido —por
+     * formulario puede llegar— es un 422 sin escribir nada, en vez del 500 de la base.
+     *
+     * @test
+     */
+    public function por_formulario_el_texto_se_guarda_y_el_cero_o_el_vacio_son_null()
+    {
+        $casos = [
+            'texto' => ['Sin fondos', 'Sin fondos'],
+            'cero'  => ['0', null],
+            'vacío' => ['', null],
+        ];
+
+        foreach ($casos as $nombre => $caso) {
+
+            $cheque = $this->recibido_en_cartera('formulario ' . $nombre);
+
+            $response = $this->put('api/cheque/rechazar', ['cheque_id' => (string) $cheque->id, 'notas' => $caso[0]], ['Accept' => 'application/json']);
+
+            $this->assertSame(200, $response->getStatusCode(), $nombre . ': ' . $this->resumen($response));
+
+            $fila = $this->fila($cheque->id);
+
+            $this->assertSame('rechazado', $fila['estado_manual'], $nombre . ': el cheque se rechaza.');
+            $this->assertSame($caso[1], $fila['rechazado_observaciones'], $nombre);
+        }
+
+        $cheque = $this->recibido_en_cartera('formulario utf8 inválido');
+        $antes = $this->fila($cheque->id);
+
+        $response = $this->put('api/cheque/rechazar', ['cheque_id' => (string) $cheque->id, 'notas' => "Sin fondos \xC3\x28"], ['Accept' => 'application/json']);
+
+        $this->assertSame(422, $response->getStatusCode(), $this->resumen($response));
+        $this->assertSame(self::MENSAJE_CARACTERES_INVALIDOS, $response->json('message'));
+        $this->assertSame($antes, $this->fila($cheque->id), 'No se escribe nada, ni la marca de rechazado.');
+    }
+
+    /**
+     * 16. El `notas: 0` ENTERO que mandaba el modal viejo en el segundo rechazo de la misma pestaña
+     * (después de rechazar dejaba `this.notas = 0`): no es un motivo, queda NULL y el cheque se
+     * rechaza. Y un 0 en la canónica no tapa un texto en `notas`.
+     *
+     * @test
+     */
+    public function el_cero_entero_que_dejaba_el_modal_viejo_no_es_un_motivo()
+    {
+        $recibido = $this->recibido_en_cartera('cero entero');
+
+        $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $recibido->id, 'notas' => 0]);
+
+        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+
+        $fila = $this->fila($recibido->id);
+
+        $this->assertSame('rechazado', $fila['estado_manual']);
+        $this->assertNull($fila['rechazado_observaciones'], 'Un 0 no es un motivo.');
+
+        $otro = $this->recibido_en_cartera('cero en la canónica');
+
+        $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $otro->id, 'rechazado_observaciones' => 0, 'notas' => 'Sin fondos']);
+
+        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+        $this->assertSame('Sin fondos', $this->fila($otro->id)['rechazado_observaciones']);
+    }
+
+    /**
+     * 17. Los espacios Unicode (el NBSP de un copiar y pegar, los de ancho fijo, el ideográfico) se
+     * recortan como los comunes: solo eso es "sin motivo" (NULL), y alrededor de un texto se sacan.
+     *
+     * @test
+     */
+    public function los_espacios_unicode_se_recortan_y_solos_son_null()
+    {
+        $solos = [
+            'NBSP'             => "\u{00A0}\u{00A0}",
+            'varios Unicode'   => "\u{2003}\u{3000}\u{00A0} \t\u{2007}",
+        ];
+
+        foreach ($solos as $nombre => $notas) {
+
+            $cheque = $this->recibido_en_cartera('unicode ' . $nombre);
+
+            $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $cheque->id, 'notas' => $notas]);
+
+            $this->assertSame(200, $response->getStatusCode(), $nombre . ': ' . $this->resumen($response));
+
+            $fila = $this->fila($cheque->id);
+
+            $this->assertSame('rechazado', $fila['estado_manual'], $nombre);
+            $this->assertNull($fila['rechazado_observaciones'], $nombre . ': solo espacios es NULL.');
+        }
+
+        $cheque = $this->recibido_en_cartera('unicode alrededor');
+
+        $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $cheque->id, 'notas' => "\u{00A0}\u{3000}Sin fondos\u{2007}\u{00A0}"]);
+
+        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+        $this->assertSame('Sin fondos', $this->fila($cheque->id)['rechazado_observaciones']);
+    }
+
+    /**
+     * 18. El catálogo de acciones de pantalla del asistente ve las claves del motivo: las saca con una
+     * regex sobre el cuerpo de ChequeController::rechazar() (claves_que_lee()), así que tienen que
+     * leerse ahí y no adentro del helper. En develop daba `cheque_id` y `rechazado_observaciones`.
+     *
+     * @test
+     */
+    public function el_asistente_ve_las_claves_del_motivo_en_el_catalogo()
+    {
+        $claves = CatalogoDeEscrituraIaHelper::claves_que_lee(ChequeController::class, 'rechazar');
+
+        foreach (['cheque_id', 'rechazado_observaciones', 'notas'] as $clave) {
+
+            $this->assertContains($clave, $claves, 'claves_que_lee(ChequeController@rechazar) = ' . json_encode($claves));
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Ayudantes
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * La propiedad estática donde ChequeHelper cachea que la columna del motivo es de texto.
+     *
+     * @return \ReflectionProperty
+     */
+    protected function cache_de_la_columna()
+    {
+        $cache = new \ReflectionProperty(ChequeHelper::class, self::CACHE_DE_LA_COLUMNA);
+
+        $cache->setAccessible(true);
+
+        return $cache;
+    }
 
     /**
      * Un cheque recibido en cartera, nacido de un cobro real a un cliente nuevo.
