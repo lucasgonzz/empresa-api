@@ -192,7 +192,8 @@ class ChequeController extends Controller
      *
      * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda PagarCheque.vue.
      * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque o la caja no son de
-     *                                        esta cuenta (o no existen), sin escribir nada.
+     *                                        esta cuenta (o no existen), o si el cheque ya figura como
+     *                                        pagado o rechazado, sin escribir nada.
      */
     function pagar(Request $request) {
 
@@ -201,6 +202,19 @@ class ChequeController extends Controller
         if (is_null($cheque)) {
 
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
+        /*
+         * 🔴 Un cheque que ya tiene marca manual no se vuelve a marcar (misión
+         * cheques-emitidos-rechazo-proveedor, 9/10/2026). Hasta entonces pagar() escribía `cobrado`
+         * sin mirar: una pestaña vieja pisaba un "Rechazado por proveedor" (quedaban la nota de débito
+         * Y el egreso de caja) y pagar dos veces sacaba dos veces la plata de la caja.
+         */
+        $motivo = ChequeHelper::motivo_para_no_pagar($cheque);
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['message' => $motivo], 422);
         }
 
         // La caja se valida ANTES de marcar el cheque: hasta el 3/10/2026 el cheque quedaba pagado
@@ -212,10 +226,43 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
         }
 
-        $cheque->estado_manual = 'cobrado';
-        $cheque->cobrado_en = Carbon::now();
-        $cheque->cobrado_por_id = $this->userId(false);
-        $cheque->save();
+        /*
+         * La marca es condicional y con la fila bloqueada, como la de ChequeHelper::rechazar_por_proveedor():
+         * si otro request lo marcó entre la lectura de arriba y ésta, no se marca ni se mueve la caja.
+         * Se escribe sobre el mismo modelo que se devuelve (la respuesta no cambia de forma).
+         */
+        $user_id = $this->userId();
+        $empleado_id = $this->userId(false);
+
+        $marcado = DB::transaction(function () use ($cheque, $user_id, $empleado_id) {
+
+            $libre = Cheque::where('id', $cheque->id)
+                            ->where('user_id', $user_id)
+                            ->whereNull('estado_manual')
+                            ->lockForUpdate()
+                            ->first(['id']);
+
+            if (is_null($libre)) {
+
+                return false;
+            }
+
+            $cheque->estado_manual = 'cobrado';
+            $cheque->cobrado_en = Carbon::now();
+            $cheque->cobrado_por_id = $empleado_id;
+            $cheque->save();
+
+            return true;
+        });
+
+        if (!$marcado) {
+
+            $actual = $this->cheque_del_dueno($cheque->id);
+
+            $motivo = is_null($actual) ? null : ChequeHelper::motivo_para_no_pagar($actual);
+
+            return response()->json(['message' => is_null($motivo) ? self::MENSAJE_CHEQUE_AJENO : $motivo], 422);
+        }
 
         if ($caja_id > 0) {
             CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
@@ -468,10 +515,11 @@ class ChequeController extends Controller
     /**
      * El botón "Rechazado por proveedor" de Cheques → Emitido (misión
      * cheques-emitidos-rechazo-proveedor, 9/10/2026): marca el cheque emitido como rechazado y, si
-     * salió de un pago a un proveedor, le carga a ese proveedor una nota de débito por el monto, así
-     * la deuda vuelve (decisión de Lucas). Un cheque de un gasto solo se marca. La lógica vive en
-     * ChequeHelper::rechazar_por_proveedor(); acá se resuelve el cheque contra el dueño y se traduce
-     * el resultado.
+     * salió de un pago a un proveedor, le carga a ese proveedor una nota de débito por lo que el
+     * cheque le había bajado de la deuda (en la moneda de su cuenta), así la deuda vuelve (decisión
+     * de Lucas). Cuándo se marca sin nota (gasto, pago provisorio o borrado, monto desconocido...) lo
+     * dice el `mensaje`. La lógica vive en ChequeHelper::rechazar_por_proveedor(); acá se resuelve el
+     * cheque contra el dueño y se traduce el resultado.
      *
      * Es un endpoint aparte de rechazar() a propósito: rechazar() no mueve ninguna cuenta corriente
      * (es el de los recibidos) y lo está cambiando la misión cheque-motivo-rechazo.
@@ -563,6 +611,11 @@ class ChequeController extends Controller
      * un aviso, y el ejecutor del asistente (EjecutorAccionDePantallaIaHelper) traduce un
      * JsonResponse con estado >= 400 a un 422 con este mensaje.
      *
+     * Y un cheque EMITIDO rechazado no se borra: 422 `{message}` sin borrar nada
+     * (ChequeHelper::motivo_para_no_borrar(), misión cheques-emitidos-rechazo-proveedor, 9/10/2026).
+     * Si se pudiera, la deuda se contaba dos veces: la nota de débito del rechazo ya la devolvió, y sin
+     * el cheque su pago volvía a ser borrable.
+     *
      * @param  string  $id  El id de la ruta.
      * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
      */
@@ -574,6 +627,13 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
         }
 
+        $motivo = ChequeHelper::motivo_para_no_borrar($model);
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['message' => $motivo], 422);
+        }
+
         /*
          * Si es la copia emitida de un endoso que sigue pendiente, su recibido vuelve a la cartera en
          * la misma transacción (misión cheque-endoso-deshacer-al-borrar-pago, 9/10/2026): hasta
@@ -582,20 +642,35 @@ class ChequeController extends Controller
          */
         $user_id = $this->userId();
 
-        DB::transaction(function () use ($model, $user_id) {
+        $motivo = DB::transaction(function () use ($model, $user_id) {
 
             // Releída con la fila bloqueada: si en el medio la marcaron pagada o rechazada, eso manda.
             $copia = Cheque::where('id', $model->id)->lockForUpdate()->first();
 
             if (is_null($copia)) {
 
-                return;
+                return null;
+            }
+
+            // Si la rechazaron por proveedor en el medio, tampoco se borra.
+            $motivo = ChequeHelper::motivo_para_no_borrar($copia);
+
+            if (!is_null($motivo)) {
+
+                return $motivo;
             }
 
             ChequeHelper::devolver_a_la_cartera_el_origen_de($copia, $user_id);
 
             $copia->delete();
+
+            return null;
         });
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['message' => $motivo], 422);
+        }
 
         return response(null, 200);
     }
@@ -603,8 +678,8 @@ class ChequeController extends Controller
     /**
      * El cheque que nombra el pedido —en el cuerpo o en la ruta— si es del dueño de la sesión, o
      * null si es de otra cuenta, no existe o lo que llegó no es un id. Es EL resolvedor de los ids
-     * de cheque de este controller: cobrar, pagar, rechazar y endosar contestan 422 si da null, y
-     * destroy 404.
+     * de cheque de este controller: cobrar, pagar, rechazar, rechazar_por_proveedor y endosar
+     * contestan 422 si da null, y update y destroy 404.
      *
      * 🔴 No volver a un `Cheque::find($request->cheque_id)` pelado: un id ajeno se contesta igual
      * que uno inexistente; en una base compartida los ids son correlativos entre comercios, así que

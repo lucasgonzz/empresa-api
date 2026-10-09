@@ -1749,10 +1749,22 @@ class ChequeHelper {
     }
 
     /**
+     * Largo máximo de `current_acounts.description`: un varchar(191) (AppServiceProvider llama a
+     * Schema::defaultStringLength(191)). La descripción de la nota de débito del rechazo nunca lo pasa.
+     */
+    const LARGO_MAXIMO_DESCRIPCION_DE_MOVIMIENTO = 191;
+
+    /**
+     * Tolerancia para reconocer la fila de cheque del pago por su monto (`pivot->amount` contra
+     * `cheques.amount`, los dos con 2 decimales) y para comparar lo que valen en la cuenta.
+     */
+    const TOLERANCIA_DEL_MONTO_DEL_CHEQUE = 0.005;
+
+    /**
      * El botón "Rechazado por proveedor" de Cheques → Emitido (misión
      * cheques-emitidos-rechazo-proveedor, 9/10/2026): marca como rechazado un cheque EMITIDO y, si
-     * salió de un pago a un proveedor, le carga a ese proveedor una nota de débito por el monto del
-     * cheque, todo en una sola transacción.
+     * salió de un pago a un proveedor, le carga a ese proveedor una nota de débito por lo que ese
+     * cheque le había bajado de la deuda, todo en una sola transacción.
      *
      * Por qué la nota (decisión de Lucas, 9/10/2026): el proveedor no pudo cobrar el cheque, así que
      * el pago que lo entregó no le canceló nada y la deuda tiene que volver. Y no hay otro camino para
@@ -1760,21 +1772,29 @@ class ChequeHelper {
      * (problemas_de_los_cheques_del_movimiento()), así que sin esta nota la cuenta del proveedor
      * quedaba bajada para siempre por un cheque que nunca cobró.
      *
-     * - Cheque de un pago a proveedor (nuevo o la copia emitida de un endoso, que se trata igual):
-     *   marca + nota de débito en la cuenta corriente DEL PAGO (misma moneda). En la copia de un
-     *   endoso, el recibido de origen sigue endosado y la cuenta del cliente no se toca.
-     * - Cheque de un gasto (`expense_id`): solo se marca. Un gasto no tiene cuenta corriente.
-     * - Cheque cuyo pago ya no existe (o que no está atado a un pago de su proveedor): solo se marca,
-     *   y el mensaje lo dice.
+     * 🔴 LA NOTA VA POR LO QUE EL CHEQUE BAJÓ EN LA CUENTA, NO POR SU MONTO NOMINAL. El pago bajó la
+     * deuda por el valor de la fila EN LA MONEDA DE LA CUENTA (`amount_cotizado` si la fila es de
+     * otra moneda): un cheque de $120.000 a 1.200 sobre una cuenta en dólares bajó USD 100, y la
+     * nota tiene que sumar USD 100, no USD 120.000. Ver monto_del_cheque_en_la_cuenta().
+     *
+     * Cuándo NO hay nota (el cheque se marca igual y el mensaje dice por qué):
+     * - es de un gasto (`expense_id`): un gasto no tiene cuenta corriente;
+     * - no tiene proveedor (un cheque de venta, un cheque de gasto de antes del 21/9/2026);
+     * - no tiene monto (null o <= 0): una nota con `debe` null sería un ancla de la cadena de saldos;
+     * - su pago ya no existe, o no se encuentra un pago de su proveedor con la cuenta de ese proveedor;
+     * - su pago es provisorio: no movió el saldo (getSaldo() y checkSaldos() lo excluyen);
+     * - no se puede saber por cuánto: el pago no tiene una fila de cheque por ese monto, o tiene
+     *   varias que valen distinto en la cuenta. El mensaje pide cargar la nota a mano.
+     *
+     * La copia emitida de un endoso se trata igual que un cheque propio: nota al proveedor. El recibido
+     * de origen sigue endosado y la cuenta del cliente no se toca.
      *
      * 🔴 LA MARCA ES CONDICIONAL, con la misma garantía que el UPDATE condicional de endosar(): una
      * lectura FOR UPDATE que repite "del dueño, emitido, sin marca manual", así que de dos clics (o de
-     * un "Rechazado" y un borrado cruzados) gana exactamente uno. El otro no encuentra la fila y corta
-     * ANTES de crear la nota: dos clics, una sola nota. A diferencia de endosar(), la marca se escribe
-     * por modelo, para que quede en audit_logs. Y el candado de la cuenta del proveedor va PRIMERO en
-     * la transacción (CuentaCorrienteLock), antes de cualquier lectura. ⚠️ No cubre un `PUT
-     * cheque/pagar` simultáneo: pagar() escribe sin condición ni transacción (hallazgo abierto de la
-     * misión cheque-endoso-deshacer-al-borrar-pago, fuera de este método).
+     * un "Rechazado" y un "Pagado" o un borrado cruzados) gana exactamente uno. El otro no encuentra la
+     * fila y corta ANTES de crear la nota: dos clics, una sola nota. A diferencia de endosar(), la
+     * marca se escribe por modelo, para que quede en audit_logs. Y el candado de la cuenta del
+     * proveedor va PRIMERO en la transacción (CuentaCorrienteLock), antes de cualquier lectura.
      *
      * No lee ni escribe el motivo del rechazo: es de la misión hermana cheque-motivo-rechazo.
      *
@@ -1794,17 +1814,17 @@ class ChequeHelper {
         }
 
         /*
-         * El pago y su cuenta se resuelven ANTES de abrir la transacción: son lecturas comunes, y
-         * adentro fijarían la foto de la base antes de esperar el candado de la cuenta (ver
-         * CuentaCorrienteLock). El pago de un cheque y el dueño de una cuenta no cambian.
+         * El pago, su cuenta y el monto se resuelven ANTES de abrir la transacción: son lecturas
+         * comunes, y adentro fijarían la foto de la base antes de esperar el candado de la cuenta (ver
+         * CuentaCorrienteLock). El pago de un cheque, sus filas y el dueño de una cuenta no cambian.
          */
-        $destino = self::pago_del_cheque_emitido($cheque, $user_id);
+        $destino = self::destino_de_la_nota_de_debito($cheque, $user_id);
 
-        $rotulo = self::rotulo_del_cheque($cheque);
+        $resultado = DB::transaction(function () use ($cheque, $destino, $user_id, $empleado_id) {
 
-        $resultado = DB::transaction(function () use ($cheque, $destino, $user_id, $empleado_id, $rotulo) {
+            $con_nota = $destino['motivo'] === 'nota';
 
-            if (!is_null($destino)) {
+            if ($con_nota) {
 
                 /*
                  * Nombre completo, sin sumar un `use`. 🔴 No acortarlo a `currentAcount\...`: los alias
@@ -1839,18 +1859,20 @@ class ChequeHelper {
             $fila->rechazado_por_id = $empleado_id;
             $fila->save();
 
-            if (is_null($destino)) {
+            if (!$con_nota) {
 
                 return ['marcado' => true, 'nota_debito' => null];
             }
 
             $pago = $destino['pago'];
+            $monto = $destino['monto'];
 
-            // Los mismos campos que CurrentAcountController::notaDebito(), con la cuenta DEL PAGO.
+            // Los mismos campos que CurrentAcountController::notaDebito(), con la cuenta DEL PAGO y
+            // el monto EN LA MONEDA DE ESA CUENTA.
             $nota_debito = CurrentAcount::create([
                 'detalle'           => 'Nota de debito',
-                'description'       => $rotulo.' rechazado por el proveedor',
-                'debe'              => $cheque->amount,
+                'description'       => self::descripcion_de_la_nota_de_debito($cheque),
+                'debe'              => $monto,
                 'status'            => 'sin_pagar',
                 'client_id'         => null,
                 'provider_id'       => $pago->provider_id,
@@ -1858,7 +1880,7 @@ class ChequeHelper {
                 'credit_account_id' => $pago->credit_account_id,
             ]);
 
-            $nota_debito->saldo = (float) CurrentAcountHelper::getSaldo($pago->credit_account_id, $nota_debito) + (float) $cheque->amount;
+            $nota_debito->saldo = (float) CurrentAcountHelper::getSaldo($pago->credit_account_id, $nota_debito) + $monto;
             $nota_debito->save();
 
             // La cadena entera y el saldo de la cuenta (y del proveedor), como notaDebito().
@@ -1875,8 +1897,72 @@ class ChequeHelper {
         return [
             'problemas'     => [],
             'nota_debito'   => $resultado['nota_debito'],
-            'mensaje'       => self::mensaje_del_rechazo_por_proveedor($cheque, $destino, $rotulo, $user_id),
+            'mensaje'       => self::mensaje_del_rechazo_por_proveedor($cheque, $destino),
         ];
+    }
+
+    /**
+     * El 422 de `PUT cheque/pagar` sobre un cheque que ya tiene marca manual (pagado o rechazado),
+     * o null si se puede pagar. Hasta el 9/10/2026 pagar() marcaba sin mirar: una pestaña vieja
+     * pisaba un "Rechazado por proveedor" (quedaban la nota de débito y el egreso de caja) y pagar dos
+     * veces sacaba dos veces la plata de la caja.
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @return string|null
+     */
+    static function motivo_para_no_pagar(Cheque $cheque) {
+
+        $estado = self::estado_manual_en_palabras($cheque);
+
+        if (is_null($estado)) {
+
+            return null;
+        }
+
+        return ucfirst(self::nombre_del_cheque($cheque)).' ya figura como '.$estado.'.';
+    }
+
+    /**
+     * El 422 de `DELETE cheque/{id}` sobre un cheque EMITIDO rechazado, o null si se puede borrar.
+     *
+     * 🔴 Si se pudiera borrar, la deuda se contaba dos veces: la nota de débito del rechazo ya la
+     * devolvió, y sin el cheque rechazado su pago vuelve a ser borrable (la guarda de
+     * problemas_de_los_cheques_del_movimiento() mira los cheques que existen), así que borrar el pago
+     * la devolvía de nuevo.
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @return string|null
+     */
+    static function motivo_para_no_borrar(Cheque $cheque) {
+
+        if ($cheque->tipo !== 'emitido' || $cheque->estado_manual !== 'rechazado') {
+
+            return null;
+        }
+
+        return ucfirst(self::nombre_del_cheque($cheque)).' figura como rechazado por el proveedor y no se elimina: si nació de un pago, la deuda ya volvió con una nota de débito en su cuenta corriente. Si lo marcaste por error, eliminá esa nota de débito desde la cuenta corriente del proveedor.';
+    }
+
+    /**
+     * La marca manual de un cheque en palabras de comerciante, o null si no tiene. En un emitido,
+     * `cobrado` es "pagado": así lo marca ChequeController::pagar().
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @return string|null
+     */
+    protected static function estado_manual_en_palabras(Cheque $cheque) {
+
+        if (is_null($cheque->estado_manual) || $cheque->estado_manual === '') {
+
+            return null;
+        }
+
+        if ($cheque->estado_manual === 'cobrado') {
+
+            return $cheque->tipo === 'recibido' ? 'cobrado' : 'pagado';
+        }
+
+        return $cheque->estado_manual;
     }
 
     /**
@@ -1893,21 +1979,9 @@ class ChequeHelper {
             return ['Solo un cheque emitido se marca como rechazado por el proveedor.'];
         }
 
-        if (!is_null($cheque->estado_manual)) {
+        $estado = self::estado_manual_en_palabras($cheque);
 
-            // En un emitido, `cobrado` es "pagado": así lo marca ChequeController::pagar().
-            if ($cheque->estado_manual === 'cobrado') {
-
-                $estado = 'pagado';
-
-            } elseif ($cheque->estado_manual === 'rechazado') {
-
-                $estado = 'rechazado';
-
-            } else {
-
-                $estado = $cheque->estado_manual;
-            }
+        if (!is_null($estado)) {
 
             return [ucfirst(self::nombre_del_cheque($cheque)).' ya figura como '.$estado.'.'];
         }
@@ -1916,7 +1990,7 @@ class ChequeHelper {
     }
 
     /**
-     * El motivo del 422 cuando el UPDATE condicional no marcó nada porque otro request se adelantó:
+     * El motivo del 422 cuando la marca condicional no marcó nada porque otro request se adelantó:
      * se relee el cheque y se dice en qué estado quedó (el mismo texto que la validación de entrada).
      *
      * @param  \App\Models\Cheque  $cheque  El que se quiso marcar (con los datos de antes).
@@ -1945,32 +2019,47 @@ class ChequeHelper {
     }
 
     /**
-     * El pago a proveedor del que salió un cheque emitido, con su cuenta corriente, o null si no hay
-     * a quién cargarle la nota de débito: el cheque es de un gasto, no tiene pago, su pago ya no
-     * existe, o el pago no es de su proveedor.
+     * Adónde va la nota de débito del rechazo, o por qué no hay nota.
      *
      * El pago es `current_acount_id` del cheque: el pago donde nació el cheque nuevo, o donde se
      * endosó la copia. 🔴 Que exista no alcanza: crear_cheque() le graba el id de la VENTA en
      * `current_acount_id` al cheque de una venta (hallazgo abierto de la misión
-     * cheque-endoso-deshacer-al-borrar-pago), así que ese id puede ser el de cualquier movimiento. Por
-     * eso el pago tiene que ser del MISMO proveedor que el cheque, ese proveedor tiene que ser del
-     * dueño (borrado vale: su cuenta sigue existiendo y la deuda vuelve igual) y la cuenta tiene que
-     * ser DE ese proveedor.
+     * cheque-endoso-deshacer-al-borrar-pago), y un cheque de gasto de antes del 21/9/2026 tiene ahí el
+     * id del gasto, así que ese id puede ser el de cualquier movimiento. Por eso el pago tiene que ser
+     * del MISMO proveedor que el cheque, ese proveedor tiene que ser del dueño (borrado vale: su
+     * cuenta sigue existiendo y la deuda vuelve igual) y la cuenta tiene que ser DE ese proveedor.
      *
      * @param  \App\Models\Cheque  $cheque
      * @param  int  $user_id
-     * @return array|null  ['pago' => CurrentAcount, 'cuenta' => CreditAccount]
+     * @return array  ['motivo' => 'nota'|'gasto'|'sin_proveedor'|'sin_monto'|'sin_pago'|'pago_borrado'
+     *                 |'provisorio'|'monto_desconocido', 'pago' => CurrentAcount|null,
+     *                 'cuenta' => CreditAccount|null, 'moneda' => int|null, 'monto' => float|null]
      */
-    protected static function pago_del_cheque_emitido(Cheque $cheque, $user_id) {
+    protected static function destino_de_la_nota_de_debito(Cheque $cheque, $user_id) {
 
-        if (!is_null($cheque->expense_id) || empty($cheque->current_acount_id) || empty($cheque->provider_id)) {
+        $sin_nota = function ($motivo, $pago = null) {
 
-            return null;
+            return ['motivo' => $motivo, 'pago' => $pago, 'cuenta' => null, 'moneda' => null, 'monto' => null];
+        };
+
+        if (!is_null($cheque->expense_id)) {
+
+            return $sin_nota('gasto');
         }
 
-        if (is_null(self::id_del_dueno(Provider::class, $cheque->provider_id, $user_id, true))) {
+        if (empty($cheque->provider_id)) {
 
-            return null;
+            return $sin_nota('sin_proveedor');
+        }
+
+        if (is_null($cheque->amount) || (float) $cheque->amount <= 0) {
+
+            return $sin_nota('sin_monto');
+        }
+
+        if (empty($cheque->current_acount_id) || is_null(self::id_del_dueno(Provider::class, $cheque->provider_id, $user_id, true))) {
+
+            return $sin_nota('sin_pago');
         }
 
         $pago = CurrentAcount::where('id', $cheque->current_acount_id)
@@ -1980,7 +2069,9 @@ class ChequeHelper {
 
         if (is_null($pago)) {
 
-            return null;
+            $existe = CurrentAcount::where('id', $cheque->current_acount_id)->exists();
+
+            return $sin_nota($existe ? 'sin_pago' : 'pago_borrado');
         }
 
         $cuenta = CreditAccount::where('id', $pago->credit_account_id)
@@ -1990,15 +2081,86 @@ class ChequeHelper {
 
         if (is_null($cuenta)) {
 
-            return null;
+            return $sin_nota('sin_pago');
         }
 
-        return ['pago' => $pago, 'cuenta' => $cuenta];
+        // Un pago provisorio no movió el saldo: getSaldo() y checkSaldos() lo excluyen.
+        if ((int) $pago->is_provisorio === 1) {
+
+            return $sin_nota('provisorio', $pago);
+        }
+
+        $moneda = \App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoMonedaHelper::normalizar_moneda($cuenta->moneda_id);
+
+        $monto = self::monto_del_cheque_en_la_cuenta($cheque, $pago, $moneda);
+
+        if (is_null($monto)) {
+
+            return $sin_nota('monto_desconocido', $pago);
+        }
+
+        return ['motivo' => 'nota', 'pago' => $pago, 'cuenta' => $cuenta, 'moneda' => $moneda, 'monto' => $monto];
     }
 
     /**
-     * "Cheque N° 123", o "Cheque de $ 45.000" si no tiene número: el arranque del mensaje y de la
-     * descripción de la nota de débito.
+     * Cuánto le bajó el cheque a la cuenta del pago, en la moneda de la cuenta: el valor de SU fila
+     * de método de pago, con la misma regla con la que el pago armó el haber
+     * (CurrentAcountPagoMonedaHelper::valor_de_la_fila_en_la_cuenta()).
+     *
+     * El pivote no guarda qué cheque nació de cada fila, así que la fila se reconoce por tipo (cheque)
+     * y por monto (`pivot->amount`, en la moneda de la fila, igual al `amount` del cheque). Si hay
+     * varias y todas valen lo mismo en la cuenta, ése es el monto. Si no hay ninguna (el endoso de la
+     * pantalla con un monto distinto al del cheque, datos viejos) o valen distinto (dos cheques del
+     * mismo monto a cotizaciones distintas), no se adivina: null.
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @param  \App\Models\CurrentAcount  $pago
+     * @param  int  $moneda_de_la_cuenta  Normalizada.
+     * @return float|null
+     */
+    protected static function monto_del_cheque_en_la_cuenta(Cheque $cheque, CurrentAcount $pago, $moneda_de_la_cuenta) {
+
+        $filas = $pago->current_acount_payment_methods()
+                        ->whereHas('type', function ($q) {
+                            $q->where('slug', 'cheque');
+                        })
+                        ->get();
+
+        $valores = [];
+
+        foreach ($filas as $metodo) {
+
+            if (abs((float) $metodo->pivot->amount - (float) $cheque->amount) > self::TOLERANCIA_DEL_MONTO_DEL_CHEQUE) {
+
+                continue;
+            }
+
+            $valores[] = round((float) \App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoMonedaHelper::valor_de_la_fila_en_la_cuenta([
+                'amount'            => $metodo->pivot->amount,
+                'amount_cotizado'   => $metodo->pivot->amount_cotizado,
+                'cotizacion'        => $metodo->pivot->cotizacion,
+                'moneda_id'         => $metodo->pivot->moneda_id,
+            ], $moneda_de_la_cuenta), 2);
+        }
+
+        if (!count($valores)) {
+
+            return null;
+        }
+
+        foreach ($valores as $valor) {
+
+            if (abs($valor - $valores[0]) > self::TOLERANCIA_DEL_MONTO_DEL_CHEQUE) {
+
+                return null;
+            }
+        }
+
+        return $valores[0] > 0 ? $valores[0] : null;
+    }
+
+    /**
+     * "Cheque N° 123", o "Cheque de $ 45.000" si no tiene número: el arranque del mensaje.
      *
      * @param  \App\Models\Cheque  $cheque
      * @return string
@@ -2016,36 +2178,81 @@ class ChequeHelper {
     }
 
     /**
+     * La descripción de la nota de débito: "Cheque N° 123 rechazado por el proveedor", con el número
+     * recortado para que el total nunca pase el varchar(191) de `current_acounts.description` (el
+     * número del cheque puede tener 191 caracteres él solo: en modo estricto sería un 500).
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @return string
+     */
+    protected static function descripcion_de_la_nota_de_debito(Cheque $cheque) {
+
+        $sufijo = ' rechazado por el proveedor';
+        $numero = trim((string) $cheque->numero);
+
+        if ($numero === '') {
+
+            return mb_substr(self::rotulo_del_cheque($cheque).$sufijo, 0, self::LARGO_MAXIMO_DESCRIPCION_DE_MOVIMIENTO, 'UTF-8');
+        }
+
+        $prefijo = 'Cheque N° ';
+        $lugar = self::LARGO_MAXIMO_DESCRIPCION_DE_MOVIMIENTO - mb_strlen($prefijo, 'UTF-8') - mb_strlen($sufijo, 'UTF-8');
+
+        return $prefijo.mb_substr($numero, 0, $lugar, 'UTF-8').$sufijo;
+    }
+
+    /**
+     * "a Ferretería Pérez" o "al proveedor" si no tiene nombre (nunca "a el proveedor").
+     *
+     * @param  int|null  $provider_id
+     * @return string
+     */
+    protected static function a_quien($provider_id) {
+
+        $nombre = empty($provider_id) ? null : Provider::withTrashed()->where('id', $provider_id)->value('name');
+
+        if (is_null($nombre) || trim((string) $nombre) === '') {
+
+            return 'al proveedor';
+        }
+
+        return 'a '.$nombre;
+    }
+
+    /**
      * El texto del toast después de marcar: dice si se cargó la nota de débito (a quién y por
      * cuánto) o por qué no.
      *
      * @param  \App\Models\Cheque  $cheque
-     * @param  array|null  $destino  Lo que devolvió pago_del_cheque_emitido().
-     * @param  string  $rotulo
-     * @param  int  $user_id
+     * @param  array  $destino  Lo que devolvió destino_de_la_nota_de_debito().
      * @return string
      */
-    protected static function mensaje_del_rechazo_por_proveedor(Cheque $cheque, $destino, $rotulo, $user_id) {
+    protected static function mensaje_del_rechazo_por_proveedor(Cheque $cheque, array $destino) {
 
-        $mensaje = $rotulo.' marcado como rechazado.';
+        $mensaje = self::rotulo_del_cheque($cheque).' marcado como rechazado.';
 
-        if (!is_null($destino)) {
+        switch ($destino['motivo']) {
 
-            $proveedor = Provider::withTrashed()->where('id', $destino['pago']->provider_id)->value('name');
+            case 'nota':
+                return $mensaje.' Se le cargó '.self::a_quien($destino['pago']->provider_id).' una nota de débito por '.Numbers::price($destino['monto'], true, $destino['moneda']).'.';
 
-            $proveedor = is_null($proveedor) || trim((string) $proveedor) === '' ? 'el proveedor' : $proveedor;
+            case 'gasto':
+                return $mensaje.' Salió de un gasto: no se movió ninguna cuenta corriente.';
 
-            return $mensaje.' Se le cargó a '.$proveedor.' una nota de débito por '.Numbers::price($cheque->amount, true, $destino['cuenta']->moneda_id).'.';
-        }
+            case 'sin_proveedor':
+                return $mensaje.' No está atado a un pago a un proveedor: no se movió ninguna cuenta corriente.';
 
-        if (!is_null($cheque->expense_id)) {
+            case 'sin_monto':
+                return $mensaje.' No tiene monto, así que no se cargó nota de débito.';
 
-            return $mensaje.' Salió de un gasto: no se movió ninguna cuenta corriente.';
-        }
+            case 'pago_borrado':
+                return $mensaje.' El pago de este cheque ya no existe, así que no se cargó nota de débito.';
 
-        if (!empty($cheque->current_acount_id) && !CurrentAcount::where('id', $cheque->current_acount_id)->exists()) {
+            case 'provisorio':
+                return $mensaje.' Su pago es provisorio y no había movido la cuenta corriente, así que no se cargó nota de débito.';
 
-            return $mensaje.' El pago de este cheque ya no existe, así que no se cargó nota de débito.';
+            case 'monto_desconocido':
+                return $mensaje.' No se pudo saber por cuánto volver la deuda: cargale '.self::a_quien($cheque->provider_id).' una nota de débito a mano desde su cuenta corriente.';
         }
 
         return $mensaje.' No se encontró el pago al proveedor de este cheque, así que no se cargó nota de débito.';
