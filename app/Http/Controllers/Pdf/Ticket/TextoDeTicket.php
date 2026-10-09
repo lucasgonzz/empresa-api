@@ -107,6 +107,18 @@ class TextoDeTicket
             $texto = mb_convert_encoding($texto, 'UTF-8', 'ISO-8859-1');
         }
 
+        /**
+         * Forma compuesta (NFC): una "é" escrita como "e" + tilde combinable (U+0301, la que dejan
+         * algunos teclados de celular o un texto pegado desde una Mac) pasa a ser UNA letra, que existe
+         * en CP850. Sin esto la tilde suelta salía "?". Solo si el servidor tiene la extensión intl.
+         */
+        if (class_exists('Normalizer')) {
+            $compuesto = \Normalizer::normalize($texto, \Normalizer::FORM_C);
+            if (is_string($compuesto)) {
+                $texto = $compuesto;
+            }
+        }
+
         $caracteres = preg_split('//u', $texto, -1, PREG_SPLIT_NO_EMPTY);
         if (! is_array($caracteres)) {
             return '';

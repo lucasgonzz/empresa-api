@@ -319,11 +319,56 @@ class Motor_escpos_del_ticket_Test extends EmpresaTestCase
 
         $bytes = (new TicketComanderaEscPos($venta, $perfil))->bytes();
 
-        $this->assertStringStartsWith("\x1B\x74\x02", $bytes, 'ESC t 2: tabla CP850.');
+        /**
+         * ESC t 2 y, por un trabajo cortado, sin negrita y en tamaño normal (cambio de especificación
+         * del 9/10/2026: antes arrancaba solo con ESC t 2).
+         */
+        $this->assertStringStartsWith("\x1B\x74\x02\x1B\x45\x00\x1D\x21\x00", $bytes, 'ESC t 2 + ESC E 0 + GS ! 0.');
         $this->assertStringEndsWith("\n\n\n\n\x1D\x56\x00\n", $bytes, 'El corte de siempre.');
         $this->assertStringNotContainsString("\x1B\x40", $bytes, 'Sin ESC @ (el de siempre tampoco lo manda).');
         $this->assertStringContainsString("Pag\xA2 la se\xA4a", $bytes, 'ó → 0xA2 y ñ → 0xA4 en CP850.');
         $this->assertSame(['Pagó la seña'], $this->lineas($venta, $perfil), 'El texto sigue en UTF-8.');
+    }
+
+    /**
+     * @test
+     */
+    public function una_tilde_combinable_sale_como_la_letra_con_tilde()
+    {
+        if (! class_exists('Normalizer')) {
+            $this->markTestSkipped('Este PHP no tiene la extensión intl (Normalizer).');
+        }
+
+        $venta = $this->crear_venta_completa();
+
+        /** "José" escrito con "e" + U+0301 (tilde combinable), como lo deja un texto pegado. */
+        $perfil = $this->ticket_sin_tabla($this->diseno_de_pagina([], [
+            $this->caja_de_diseno('a', 12, [
+                $this->campo_de_caja('texto_libre', ['id' => 'nota', 'texto' => "Jose\u{0301}"]),
+            ], '', 'ninguno'),
+        ]));
+
+        $this->assertStringContainsString("Jos\x82", (new TicketComanderaEscPos($venta, $perfil))->bytes(), 'é compuesta → 0x82 en CP850, no "?".');
+        $this->assertSame(["Jos\u{00E9}"], $this->lineas($venta, $perfil));
+    }
+
+    /**
+     * @test
+     */
+    public function la_columna_decide_la_alineacion_de_sus_celdas()
+    {
+        $venta = $this->crear_venta_completa();
+
+        /** Un artículo que se llama "12": en Nombre (columna de texto) va a la izquierda. */
+        $taladro = $venta->articles()->first();
+        $taladro->name = '12';
+        $taladro->save();
+
+        $perfil = $this->perfil_de_ticket($this->dueno->id, false, ['page_layout' => $this->diseno_de_pagina([], [])], 80);
+        $lineas = (new TicketComanderaEscPos($venta->fresh(), $perfil))->lineas();
+
+        $this->assertMatchesRegularExpression('/^12 {17}\s+2\s/', $lineas[2], 'El "12" del nombre queda contra el borde izquierdo de su columna.');
+        $this->assertNingunaLineaPasaDe($lineas, 48);
     }
 
     /**
@@ -368,7 +413,7 @@ class Motor_escpos_del_ticket_Test extends EmpresaTestCase
         };
 
         $this->assertSame(['[LOGO]', str_repeat(' ', 24).'N: 1520'], $motor->lineas());
-        $this->assertStringStartsWith("\x1B\x74\x02\x1D\x76\x30\x00RASTER", $motor->bytes());
+        $this->assertStringStartsWith(TicketComanderaEscPos::INICIO.TicketComanderaEscPos::NEGRITA_NO.TicketComanderaEscPos::TAMANO_NORMAL."\x1D\x76\x30\x00RASTER", $motor->bytes());
 
         /** Sin logo cargado no sale nada. */
         $this->dueno->image_url = null;
@@ -437,6 +482,7 @@ class Motor_escpos_del_ticket_Test extends EmpresaTestCase
         $this->assertLessThan(array_search($this->dueno->company_name, $lineas), array_search('FACTURA B', $lineas));
         $this->assertGreaterThan(array_search('Cliente: Juan Perez Test', $lineas), array_search('CUIT: 20123456789', $lineas));
         $this->assertSame('[QR]', end($lineas));
+        $this->assertCount(1, array_keys($lineas, 'Cliente: Juan Perez Test'), 'El cliente sale una vez: lo trae el fijo de ARCA, sin la caja del remito.');
         $this->assertNingunaLineaPasaDe($lineas, 48);
 
         /** El QR con el GS ( k del Ticket 2.0 de siempre y el link de ARCA. */

@@ -597,9 +597,10 @@ class DisenoDerivadoPdf
      *
      * Arriba: el logo (agregar_logo_ticket()), [factura: el emisor de ARCA (afip_information())], el
      * nombre del negocio (info_negocio()), la venta (info_venta(): número, fecha y hora, con una línea
-     * abajo), el cliente (info_cliente(): nombre en alto doble y dirección, con una línea abajo) y
-     * [factura: el cliente de ARCA]. Abajo: la cuenta (descuentos_y_recargos() y total()) y [factura:
-     * el IVA, el CAE y el QR (print_iva_pagado())].
+     * abajo) y el cliente: en el remito, info_cliente() (nombre en alto doble y dirección, con una
+     * línea abajo); en la factura, el fijo del cliente de ARCA, que ya trae esos datos. Abajo: la
+     * cuenta (descuentos_y_recargos() y total()) y [factura: el IVA, el CAE y el QR
+     * (print_iva_pagado())].
      *
      * Diferencias con el de siempre, a propósito: los rótulos son los del catálogo ("Fecha: …",
      * "Hora: …", "Dirección: …"), la dirección del cliente no sale en alto doble, y el TOTAL va en
@@ -627,13 +628,18 @@ class DisenoDerivadoPdf
             self::campo('venta_hora'),
         ]);
 
-        $superior[] = self::caja(self::CAJA_CLIENTE, 12, 'borde', [
-            self::campo('cliente_nombre', null, 12),
-            self::campo('cliente_direccion'),
-        ]);
-
+        /**
+         * En la factura el cliente lo trae el fijo de ARCA (nombre, CUIT, condición frente al IVA,
+         * domicilio y condición de venta): la caja del cliente lo repetía (ajuste del 9/10/2026 a
+         * pedido del revisor). En el remito queda la caja, como el info_cliente() de siempre.
+         */
         if ($es_fiscal) {
             $superior[] = self::fijo(CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR, null);
+        } else {
+            $superior[] = self::caja(self::CAJA_CLIENTE, 12, 'borde', [
+                self::campo('cliente_nombre', null, 12),
+                self::campo('cliente_direccion'),
+            ]);
         }
 
         /** El total como el "TOTAL A PAGAR: $…" de siempre: negrita, tamaño normal, a la izquierda. */

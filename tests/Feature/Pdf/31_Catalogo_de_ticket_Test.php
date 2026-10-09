@@ -187,12 +187,16 @@ class Catalogo_de_ticket_Test extends EmpresaTestCase
         }
 
         $derivado = $json['diseno_derivado'];
+        /**
+         * Sin la caja del cliente (cambio de especificación del 9/10/2026): el fijo de ARCA ya trae
+         * nombre, documento, condición frente al IVA y domicilio, y la caja los repetía.
+         */
         $this->assertSame(
-            ['caja_logo', 'fijo:afip_emisor', 'caja_negocio', 'caja_venta', 'caja_cliente', 'fijo:afip_receptor'],
+            ['caja_logo', 'fijo:afip_emisor', 'caja_negocio', 'caja_venta', 'fijo:afip_receptor'],
             $this->ids($derivado['superior'])
         );
         $this->assertSame(['caja_totales', 'fijo:afip_pie'], $this->ids($derivado['pie']));
-        $this->assertSame(12, $derivado['superior'][5]['cols']);
+        $this->assertSame(12, $derivado['superior'][4]['cols']);
 
         /** La factura de HOJA no cambia: dos fijos, el del cliente redimensionable desde 6. */
         $hoja = $this->catalogo(['model_name' => 'sale', 'is_afip_ticket' => 1]);

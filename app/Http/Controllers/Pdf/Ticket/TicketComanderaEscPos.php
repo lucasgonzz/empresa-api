@@ -29,8 +29,9 @@ use App\Services\PdfColumnService;
  * cambia allá (plan §4).
  *
  * - N = caracteres por renglón = floor(ancho_mm × 48 / 80).
- * - Empieza con `ESC t 2` (tabla CP850) y el texto va en CP850 de verdad (D11: las tildes salen
- *   bien). No manda `ESC @` (el de siempre tampoco). Termina con el corte de siempre:
+ * - Empieza con `ESC t 2` (tabla CP850), `ESC E 0` y `GS ! 0` (sin negrita y en normal, por si la
+ *   impresora quedó así por un trabajo cortado) y el texto va en CP850 de verdad (D11: las tildes
+ *   salen bien). No manda `ESC @` (el de siempre tampoco). Termina con el corte de siempre:
  *   "\n\n\n\n" + `GS V 0` + "\n".
  * - CAJAS en la grilla de 12: una caja de c columnas mide floor(c × N / 12) caracteres; en una fila,
  *   cada caja menos la última deja uno de separación (contenido = ancho − 1). Las cajas de una fila
@@ -51,8 +52,9 @@ use App\Services\PdfColumnService;
  *   cada una medias = max(1, round(ancho_mm_columna × 24 / ancho_mm)) y caracteres =
  *   floor(medias × N / 24); lo que sobra de N va a la columna con salto de línea (si no hay, a la más
  *   ancha). Uno de separación entre columnas (sale del ancho de cada una menos la última).
- *   Encabezado con los rótulos en negrita y una línea de guiones; un renglón por ítem; los valores
- *   numéricos a la derecha; con salto de línea el texto se parte, si no se corta. Línea de guiones al
+ *   Encabezado con los rótulos en negrita y una línea de guiones; un renglón por ítem; las columnas
+ *   numéricas (todos sus valores con algo son números) a la derecha, encabezado y celdas; con salto
+ *   de línea el texto se parte, si no se corta. Línea de guiones al
  *   final. DIFERENCIA con el plan, a propósito: un valor NUMÉRICO que no entra en su columna no se
  *   corta (cortarlo cambia el número: "12" en una columna de 1 sería "1"), sigue en el renglón de
  *   abajo.
@@ -219,7 +221,12 @@ class TicketComanderaEscPos
      */
     public function bytes()
     {
-        $salida = self::INICIO;
+        /**
+         * La tabla de caracteres y, por las dudas, sin negrita y en tamaño normal: un trabajo que se
+         * cortó a la mitad (papel, cable) puede haber dejado la impresora en negrita o en grande, y
+         * el estado de abajo arranca suponiendo que no (ajuste del 9/10/2026 a pedido del revisor).
+         */
+        $salida = self::INICIO.self::NEGRITA_NO.self::TAMANO_NORMAL;
 
         /** Estado de la impresora: se manda un comando solo cuando cambia. */
         $negrita = false;
@@ -791,7 +798,7 @@ class TicketComanderaEscPos
         $piezas[] = PiezasDeTicket::renglon(PiezasDeTicket::guiones($this->caracteres));
 
         foreach ($filas as $valores) {
-            foreach ($this->renglones_de_fila_de_tabla($columnas, $valores) as $trozos) {
+            foreach ($this->renglones_de_fila_de_tabla($columnas, $valores, $numericas) as $trozos) {
                 $piezas[] = PiezasDeTicket::renglon($trozos);
             }
         }
@@ -806,11 +813,16 @@ class TicketComanderaEscPos
      * él) o, si es un número que no entra, seguida abajo; el ítem ocupa los renglones de su columna
      * más alta.
      *
-     * @param array $columnas
-     * @param array $valores
+     * La alineación la decide la COLUMNA (numérica → a la derecha), no cada valor: un artículo que
+     * se llama "12" queda a la izquierda en Nombre, como el resto de la columna (ajuste del
+     * 9/10/2026 a pedido del revisor).
+     *
+     * @param array              $columnas
+     * @param array              $valores
+     * @param array<int, bool>   $numericas por columna: todos sus valores con algo son números.
      * @return array<int, array> renglones de trozos.
      */
-    private function renglones_de_fila_de_tabla($columnas, $valores)
+    private function renglones_de_fila_de_tabla($columnas, $valores, $numericas)
     {
         $cantidad = count($columnas);
         $partes = [];
@@ -824,7 +836,7 @@ class TicketComanderaEscPos
                 $partes[$c] = [''];
             } elseif ($columna['wrap_content']) {
                 $partes[$c] = TextoDeTicket::partir($valor, $ancho);
-            } elseif (TextoDeTicket::largo($valor) > $ancho && self::es_numerico($valor)) {
+            } elseif (TextoDeTicket::largo($valor) > $ancho && ($numericas[$c] || self::es_numerico($valor))) {
                 $partes[$c] = TextoDeTicket::partir_por_caracteres($valor, $ancho);
             } else {
                 $partes[$c] = [TextoDeTicket::cortar($valor, $ancho)];
@@ -839,7 +851,7 @@ class TicketComanderaEscPos
 
             foreach ($columnas as $c => $columna) {
                 $texto = isset($partes[$c][$k]) ? $partes[$c][$k] : '';
-                $alineacion = self::es_numerico($valores[$c]) ? 'derecha' : 'izquierda';
+                $alineacion = $numericas[$c] ? 'derecha' : 'izquierda';
 
                 foreach (PiezasDeTicket::alinear([PiezasDeTicket::trozo($texto, false)], max(0, $columna['contenido']), $alineacion) as $trozo) {
                     $trozos[] = $trozo;
