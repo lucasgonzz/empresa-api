@@ -180,6 +180,28 @@ class Fecha_De_La_Compra_En_Cuenta_Corriente_Test extends ComprasTestCase
     }
 
     /**
+     * El pago quedó imputado a la compra después del recálculo: el débito de la compra está
+     * "pagandose" por el monto del pago (el total la supera) y la imputación existe en `pagado_por`.
+     *
+     * @param  \App\Models\CurrentAcount  $pago
+     * @param  \App\Models\CurrentAcount  $movimiento
+     * @param  string                       $contexto
+     * @return void
+     */
+    protected function assert_el_pago_imputa_la_compra($pago, $movimiento, $contexto)
+    {
+        $debito = CurrentAcount::find($movimiento->id);
+
+        $this->assertSame('pagandose', $debito->status, $contexto.': el pago a cuenta tenía que dejar la compra "pagandose".');
+
+        $this->assertEqualsWithDelta(self::PAGO, (float) $debito->pagandose, 0.01, $contexto.': lo imputado a la compra tiene que ser el pago.');
+
+        $imputado = DB::table('pagado_por')->where('debe_id', $movimiento->id)->where('haber_id', $pago->id)->sum('pagado');
+
+        $this->assertEqualsWithDelta(self::PAGO, (float) $imputado, 0.01, $contexto.': falta la imputación del pago a la compra en pagado_por.');
+    }
+
+    /**
      * Los ids de la cuenta en el orden de la cadena (`created_at, id`).
      *
      * @return array<int>
@@ -228,6 +250,8 @@ class Fecha_De_La_Compra_En_Cuenta_Corriente_Test extends ComprasTestCase
         $this->assertEqualsWithDelta($total, (float) CurrentAcount::find($movimiento->id)->saldo, 0.01, 'La compra es el primer movimiento: su saldo es su total.');
 
         $this->assertEqualsWithDelta($total - self::PAGO, $saldo, 0.01);
+
+        $this->assert_el_pago_imputa_la_compra($pago, $movimiento, 'Alta con fecha pasada');
     }
 
     /**
@@ -273,6 +297,8 @@ class Fecha_De_La_Compra_En_Cuenta_Corriente_Test extends ComprasTestCase
         $this->assertEqualsWithDelta((float) $compra->total, (float) CurrentAcount::find($movido->id)->saldo, 0.01, 'La compra pasó a ser el primer movimiento: su saldo es su total.');
 
         $this->assertEqualsWithDelta((float) $compra->total - self::PAGO, $saldo, 0.01);
+
+        $this->assert_el_pago_imputa_la_compra($pago, $movido, 'Edición que cambia la fecha');
     }
 
     /**
