@@ -34,6 +34,14 @@ use Illuminate\Support\Facades\Log;
  * endosa a un proveedor, `endosado_en_expense_id` cuando se endosa en un gasto), y quien mire una
  * sola de las dos va a contar como plata que entra un cheque que ya se entregó. Los consumidores
  * (ChequeController::index, RecolectorCaja, FlujoCajaHelper) llaman acá y no repiten la condición.
+ *
+ * 🔴 Y DESHACER TAMBIÉN TIENE UN SOLO CAMINO (misión cheque-endoso-deshacer-al-borrar-pago,
+ * 9/10/2026): borrar el movimiento que originó cheques —el pago a un proveedor, el cobro a un
+ * cliente, el gasto— pasa por deshacer_cheques_del_movimiento(), que devuelve a la cartera lo que
+ * se endosó en él y borra lo que nació con él (o frena el borrado si alguno ya tuvo vida propia); y
+ * borrar a mano la copia de un endoso pasa por devolver_a_la_cartera_el_origen_de(). Un
+ * `endosado_a_provider_id = null` escrito a mano afuera de este archivo es un camino que se va a
+ * desalinear de esos dos.
  */
 class ChequeHelper {
 
@@ -387,6 +395,399 @@ class ChequeHelper {
 
             throw new \RuntimeException(self::MENSAJE_GASTO_AJENO);
         }
+    }
+
+    /**
+     * Deshace los cheques de un movimiento que se está borrando —un pago a un proveedor, un cobro a
+     * un cliente o un gasto—, o devuelve por qué no se puede (misión
+     * cheque-endoso-deshacer-al-borrar-pago, 9/10/2026).
+     *
+     * Hasta esa misión borrar el movimiento no tocaba sus cheques (medido en demo2 filmando el
+     * T5.22): el pago a un proveedor que había endosado un cheque recibido se borraba y el recibido
+     * seguía endosado —fuera de la cartera, sin poder volver a endosarse— y su copia emitida seguía
+     * pendiente con el proveedor, sin pago que la respaldara. La misma clase en las otras puertas:
+     * el cheque nuevo de un pago a proveedor o de un gasto seguía pendiente, y el de un cobro a un
+     * cliente seguía EN CARTERA (se podía endosar o cobrar sin el cobro que lo trajo).
+     *
+     * Qué hace, todo o nada:
+     * - Los cheques que NACIERON con el movimiento (cheques_del_movimiento()) se borran: el cheque
+     *   nuevo, el recibido del cobro y la copia emitida de un endoso.
+     * - Los recibidos que se ENDOSARON en el movimiento (origenes_endosados_en()) vuelven a la
+     *   cartera: se limpian `endosado_a_provider_id`, `endosado_en_expense_id` y `fecha_endoso`.
+     *
+     * 🔴 Si alguno de los que nacieron ya tuvo vida propia —se cobró, se pagó, se rechazó o (el
+     * recibido de un cobro) ya se endosó— NO escribe nada y devuelve los motivos, para que el
+     * controller conteste 422 (decisión de Lucas, 9/10/2026: el mismo criterio que la nota de
+     * crédito facturada, la venta facturada y las cajas cerradas). Borrar igual perdería ese rastro
+     * o dejaría un cheque cobrado sin el cobro que lo trajo.
+     *
+     * Corre ADENTRO de la transacción del borrado y ANTES de soltar las filas de métodos de pago del
+     * movimiento (las mira para reconocer los cheques de un pago). Bloquea las filas de los cheques,
+     * así un cobrar/pagar/rechazar simultáneo no se cuela entre la mirada y el borrado. Escribe por
+     * MODELO (save()/delete() sobre la instancia) y no por builder: el builder no dispara los
+     * eventos de los que se alimenta audit_logs.
+     *
+     * @param  \App\Models\CurrentAcount|\App\Models\Expense  $model  El movimiento que se borra.
+     * @param  int  $user_id  El dueño de la cuenta: solo se miran sus cheques.
+     * @return array<int, string>  Los motivos por los que no se puede (mensaje_de_borrado_frenado()
+     *                             los arma en el texto del 422); vacío si se deshizo.
+     */
+    static function deshacer_cheques_del_movimiento($model, $user_id) {
+
+        $nacidos = self::cheques_del_movimiento($model, $user_id, true);
+
+        $problemas = self::problemas_de_los_cheques_del_movimiento($nacidos);
+
+        if (count($problemas)) {
+
+            return $problemas;
+        }
+
+        $ids_nacidos = $nacidos->pluck('id')->all();
+
+        foreach (self::origenes_endosados_en($model, $nacidos, $user_id, true) as $origen) {
+
+            self::devolver_a_la_cartera($origen, $ids_nacidos, $user_id);
+        }
+
+        foreach ($nacidos as $nacido) {
+
+            $nacido->delete();
+        }
+
+        return [];
+    }
+
+    /**
+     * Los motivos por los que un movimiento no se puede borrar por sus cheques, SIN escribir nada:
+     * la misma mirada de deshacer_cheques_del_movimiento(), para cortar con 422 antes de tocar
+     * cualquier otra cosa (ExpenseController::destroy() la usa antes de borrar las imágenes y de
+     * compensar la caja). Vacío si se puede.
+     *
+     * @param  \App\Models\CurrentAcount|\App\Models\Expense|null  $model
+     * @param  int  $user_id
+     * @return array<int, string>
+     */
+    static function problemas_para_borrar_el_movimiento($model, $user_id) {
+
+        return self::problemas_de_los_cheques_del_movimiento(self::cheques_del_movimiento($model, $user_id));
+    }
+
+    /**
+     * El texto del 422 de un borrado frenado por sus cheques, con los motivos de
+     * deshacer_cheques_del_movimiento() o problemas_para_borrar_el_movimiento().
+     *
+     * @param  \App\Models\CurrentAcount|\App\Models\Expense  $model
+     * @param  array<int, string>  $problemas
+     * @return string
+     */
+    static function mensaje_de_borrado_frenado($model, array $problemas) {
+
+        if ($model instanceof Expense) {
+
+            $que = 'este gasto';
+
+        } elseif (!empty($model->client_id)) {
+
+            $que = 'este cobro';
+
+        } else {
+
+            $que = 'este pago';
+        }
+
+        return 'No se puede eliminar '.$que.': '.implode('; ', $problemas).'.';
+    }
+
+    /**
+     * Si el cheque que se borra a mano (`DELETE cheque/{id}`, y el borrado masivo, que llama al mismo
+     * destroy) es la copia EMITIDA de un endoso que sigue pendiente, devuelve su recibido a la
+     * cartera (misión cheque-endoso-deshacer-al-borrar-pago, decisión de Lucas del 9/10/2026). Hasta
+     * entonces el recibido quedaba endosado para siempre: fuera de la cartera y sin copia.
+     *
+     * Una copia que ya se pagó o se rechazó (`estado_manual`) NO devuelve nada: ese endoso sí pasó y
+     * terminó, y borrar el registro de la copia no lo deshace. El recibido solo vuelve si su marca
+     * apunta al mismo destino que la copia (el proveedor o el gasto), y siempre entre los cheques
+     * del dueño.
+     *
+     * @param  \App\Models\Cheque  $copia  El cheque que se va a borrar (ya resuelto contra el dueño).
+     * @param  int  $user_id
+     * @return bool  true si devolvió un recibido a la cartera.
+     */
+    static function devolver_a_la_cartera_el_origen_de(Cheque $copia, $user_id) {
+
+        if ($copia->tipo !== 'emitido' || empty($copia->endosado_desde_cheque_id) || !is_null($copia->estado_manual)) {
+
+            return false;
+        }
+
+        $q = Cheque::where('user_id', $user_id)
+                    ->where('id', $copia->endosado_desde_cheque_id)
+                    ->where('tipo', 'recibido');
+
+        if (!is_null($copia->expense_id)) {
+
+            $q->where('endosado_en_expense_id', $copia->expense_id);
+
+        } elseif (!empty($copia->provider_id)) {
+
+            $q->where('endosado_a_provider_id', $copia->provider_id);
+
+        } else {
+
+            return false;
+        }
+
+        $origen = $q->lockForUpdate()->first();
+
+        if (is_null($origen)) {
+
+            return false;
+        }
+
+        return self::devolver_a_la_cartera($origen, [$copia->id], $user_id);
+    }
+
+    /**
+     * Los cheques que NACIERON con un movimiento, siempre del dueño y ordenados por id.
+     *
+     * - Un gasto: los de `expense_id` = el gasto (el cheque nuevo y la copia de un endoso). Esa
+     *   columna es solo de gastos.
+     * - Un pago o un cobro de cuenta corriente: los de `current_acount_id` = el movimiento, del MISMO
+     *   proveedor (emitidos) o del MISMO cliente (recibidos), y solo si el movimiento tiene una fila
+     *   de método de pago de tipo cheque.
+     *
+     * 🔴 Esas condiciones de más no son decorativas: crear_cheque() le graba el id de la VENTA en
+     * `current_acount_id` al cheque de una venta de contado (hallazgo abierto de esta misión), así
+     * que un cobro con el mismo id que una venta pagada con cheque "tendría" ese cheque. El cheque de
+     * una venta nunca tiene proveedor, y del lado del cliente solo choca si además es el mismo
+     * cliente y el cobro trae una fila de cheque.
+     *
+     * @param  mixed  $model
+     * @param  int  $user_id
+     * @param  bool  $bloquear  true adentro de la transacción del borrado (SELECT ... FOR UPDATE).
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function cheques_del_movimiento($model, $user_id, $bloquear = false) {
+
+        if ($model instanceof Expense) {
+
+            $q = Cheque::where('user_id', $user_id)
+                        ->where('expense_id', $model->id);
+
+        } elseif ($model instanceof CurrentAcount) {
+
+            if (!self::tiene_fila_de_cheque($model)) {
+
+                return collect();
+            }
+
+            $q = Cheque::where('user_id', $user_id)
+                        ->where('current_acount_id', $model->id)
+                        ->whereNull('expense_id');
+
+            if (!empty($model->provider_id)) {
+
+                $q->where('tipo', 'emitido')->where('provider_id', $model->provider_id);
+
+            } elseif (!empty($model->client_id)) {
+
+                $q->where('tipo', 'recibido')->where('client_id', $model->client_id);
+
+            } else {
+
+                return collect();
+            }
+
+        } else {
+
+            return collect();
+        }
+
+        if ($bloquear) {
+
+            $q->lockForUpdate();
+        }
+
+        return $q->orderBy('id')->get();
+    }
+
+    /**
+     * true si el pago o cobro tiene al menos una fila de método de pago de tipo cheque: la única
+     * forma en que attach_payment_methods() crea un cheque. Se mira ANTES de que el borrado suelte
+     * esas filas.
+     *
+     * @param  \App\Models\CurrentAcount  $current_acount
+     * @return bool
+     */
+    protected static function tiene_fila_de_cheque(CurrentAcount $current_acount) {
+
+        return $current_acount->current_acount_payment_methods()
+                                ->whereHas('type', function ($q) {
+                                    $q->where('slug', 'cheque');
+                                })
+                                ->exists();
+    }
+
+    /**
+     * Los recibidos que se endosaron EN el movimiento y por lo tanto vuelven a la cartera al
+     * borrarlo: en un gasto, los marcados con `endosado_en_expense_id` = el gasto; en un pago a
+     * proveedor, los orígenes de sus copias (`endosado_desde_cheque_id`) que siguen marcados a ESE
+     * proveedor. La marca del pago a proveedor guarda solo el proveedor, no el pago: el camino del
+     * pago al recibido es la copia.
+     *
+     * @param  mixed  $model
+     * @param  \Illuminate\Support\Collection  $nacidos  Lo que devolvió cheques_del_movimiento().
+     * @param  int  $user_id
+     * @param  bool  $bloquear
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function origenes_endosados_en($model, $nacidos, $user_id, $bloquear = false) {
+
+        $q = Cheque::where('user_id', $user_id)
+                    ->where('tipo', 'recibido');
+
+        if ($model instanceof Expense) {
+
+            $q->where('endosado_en_expense_id', $model->id);
+
+        } elseif ($model instanceof CurrentAcount && !empty($model->provider_id)) {
+
+            $ids = $nacidos->pluck('endosado_desde_cheque_id')->filter()->values()->all();
+
+            if (!count($ids)) {
+
+                return collect();
+            }
+
+            $q->whereIn('id', $ids)
+              ->where('endosado_a_provider_id', $model->provider_id);
+
+        } else {
+
+            return collect();
+        }
+
+        if ($bloquear) {
+
+            $q->lockForUpdate();
+        }
+
+        return $q->orderBy('id')->get();
+    }
+
+    /**
+     * Los motivos de "vida propia" de los cheques que nacieron con un movimiento, en lenguaje de
+     * comerciante y sin mayúscula inicial (van después de "No se puede eliminar este pago: ").
+     *
+     * - Un recibido (nació de un cobro): ya endosado a un proveedor o en un gasto, cobrado o
+     *   rechazado. El endoso se mira primero: es lo que dice adónde fue el cheque.
+     * - Un emitido (cheque nuevo o copia de un endoso): pagado (`estado_manual = cobrado`, que es
+     *   como lo marca ChequeController::pagar()) o rechazado.
+     *
+     * @param  \Illuminate\Support\Collection  $nacidos
+     * @return array<int, string>
+     */
+    protected static function problemas_de_los_cheques_del_movimiento($nacidos) {
+
+        $problemas = [];
+
+        foreach ($nacidos as $cheque) {
+
+            $nombre = self::nombre_del_cheque($cheque);
+
+            if ($cheque->tipo === 'recibido') {
+
+                if (!empty($cheque->endosado_a_provider_id)) {
+
+                    $proveedor = Provider::withTrashed()->where('id', $cheque->endosado_a_provider_id)->value('name');
+
+                    $problemas[] = $nombre.' que entró con él ya se endosó al proveedor '.(is_null($proveedor) ? 'que lo recibió' : $proveedor).' (eliminá primero ese pago)';
+
+                    continue;
+                }
+
+                if (!is_null($cheque->endosado_en_expense_id)) {
+
+                    $num = Expense::where('id', $cheque->endosado_en_expense_id)->value('num');
+
+                    $problemas[] = $nombre.' que entró con él ya se endosó en '.(is_null($num) ? 'un gasto' : 'el gasto N° '.$num).' (eliminá primero ese gasto)';
+
+                    continue;
+                }
+
+                if ($cheque->estado_manual === 'cobrado') {
+
+                    $problemas[] = $nombre.' que entró con él ya figura como cobrado';
+
+                } elseif ($cheque->estado_manual === 'rechazado') {
+
+                    $problemas[] = $nombre.' que entró con él ya figura como rechazado';
+                }
+
+                continue;
+            }
+
+            if ($cheque->estado_manual === 'cobrado') {
+
+                $problemas[] = $nombre.' que se entregó en él ya figura como pagado';
+
+            } elseif ($cheque->estado_manual === 'rechazado') {
+
+                $problemas[] = $nombre.' que se entregó en él ya figura como rechazado';
+            }
+        }
+
+        return $problemas;
+    }
+
+    /**
+     * "el cheque N° 123", o "el cheque de $ 45.000" si no tiene número.
+     *
+     * @param  \App\Models\Cheque  $cheque
+     * @return string
+     */
+    protected static function nombre_del_cheque(Cheque $cheque) {
+
+        $numero = trim((string) $cheque->numero);
+
+        if ($numero !== '') {
+
+            return 'el cheque N° '.$numero;
+        }
+
+        return 'el cheque de $ '.Numbers::price($cheque->amount);
+    }
+
+    /**
+     * Devuelve un recibido a la cartera: limpia las dos marcas del endoso y la fecha, por modelo
+     * (queda en audit_logs). No lo hace si el recibido tiene OTRA copia viva que no se está
+     * borrando —un doble endoso de antes del UPDATE condicional del 21/9/2026—: ese papel sigue
+     * entregado y es esa copia la que lo dice.
+     *
+     * @param  \App\Models\Cheque  $origen
+     * @param  array<int, int>  $ids_que_se_borran  Las copias que se están borrando junto con esto.
+     * @param  int  $user_id
+     * @return bool  true si lo devolvió.
+     */
+    protected static function devolver_a_la_cartera(Cheque $origen, array $ids_que_se_borran, $user_id) {
+
+        $otra_copia = Cheque::where('user_id', $user_id)
+                            ->where('endosado_desde_cheque_id', $origen->id)
+                            ->whereNotIn('id', $ids_que_se_borran)
+                            ->exists();
+
+        if ($otra_copia) {
+
+            return false;
+        }
+
+        $origen->endosado_a_provider_id = null;
+        $origen->endosado_en_expense_id = null;
+        $origen->fecha_endoso = null;
+        $origen->save();
+
+        return true;
     }
 
     /**
