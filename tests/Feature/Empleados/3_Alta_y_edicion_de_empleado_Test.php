@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
 
@@ -45,7 +46,7 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
     /** Los tres textos del 422, tal cual los devuelve el controller. */
     const MENSAJE_OBLIGATORIOS = 'Completá el nombre, el número de documento y la contraseña del empleado';
 
-    const MENSAJE_LARGO = 'El nombre, el documento, la contraseña y el teléfono no pueden tener más de 128 caracteres';
+    const MENSAJE_LARGO = 'El nombre, el documento y la contraseña no pueden tener más de 128 caracteres, ni el teléfono más de 191';
 
     const MENSAJE_REPETIDO = 'Ya hay un empleado con ese número de documento';
 
@@ -183,6 +184,23 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
     }
 
     /**
+     * Una tilde guardada en 0, y NO en null.
+     *
+     * `(int) null` también es 0: con columnas nullable (`admin_access`,
+     * `ver_alertas_de_todos_los_empleados`) un `assertSame(0, (int) ...)` daría verde aunque se
+     * guardara null. Por eso se afirman las dos cosas.
+     *
+     * @param  mixed  $valor
+     * @param  string  $caso
+     * @return void
+     */
+    protected function assertCeroNoNull($valor, $caso)
+    {
+        $this->assertNotNull($valor, $caso.': quedó en null, tenía que ser 0.');
+        $this->assertSame(0, (int) $valor, $caso);
+    }
+
+    /**
      * Un dueño de OTRO comercio con un empleado propio (lo que hay en una base compartida).
      *
      * @return array{0: User, 1: User}
@@ -313,9 +331,9 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
             $creado = User::where('doc_number', $datos['doc_number'])->first();
 
             $this->assertNotNull($creado, $caso);
-            $this->assertSame(0, (int) $creado->admin_access, $caso);
-            $this->assertSame(0, (int) $creado->ver_alertas_de_todos_los_empleados, $caso);
-            $this->assertSame(0, (int) $creado->puede_guardar_ventas_sin_cliente, $caso);
+            $this->assertCeroNoNull($creado->admin_access, $caso.' (admin_access)');
+            $this->assertCeroNoNull($creado->ver_alertas_de_todos_los_empleados, $caso.' (ver_alertas_de_todos_los_empleados)');
+            $this->assertCeroNoNull($creado->puede_guardar_ventas_sin_cliente, $caso.' (puede_guardar_ventas_sin_cliente)');
             $this->assertNull($creado->dias_alertar_empleados_ventas_no_cobradas, $caso);
             $this->assertNull($creado->address_id, $caso);
             $this->assertNull($creado->seller_id, $caso);
@@ -336,7 +354,14 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
         $casos = [
             'de un empleado del mismo dueño' => $this->empleado->doc_number,
             'de un usuario de otro dueño'    => $ajeno->doc_number,
-            'con espacios alrededor'         => '  '.$this->empleado->doc_number.'  ',
+            /*
+                Con espacios alrededor, por HTTP: lo recorta el middleware global `TrimStrings`
+                ANTES de llegar al controller, así que esto NO prueba el trim del controller (ese
+                vale para pedidos armados por dentro, ver el test del documento viejo con espacios
+                del asistente). Lo que prueba es que, de punta a punta, unos espacios no alcanzan
+                para colar un documento repetido.
+            */
+            'con espacios alrededor, por HTTP' => '  '.$this->empleado->doc_number.'  ',
         ];
 
         foreach ($casos as $caso => $doc_number) {
@@ -376,7 +401,7 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
             'nombre de 129'                => [['name' => $largo], self::MENSAJE_LARGO],
             'documento de 129'             => [['doc_number' => $largo], self::MENSAJE_LARGO],
             'contraseña de 129'            => [['visible_password' => $largo], self::MENSAJE_LARGO],
-            'teléfono de 129'              => [['phone' => $largo], self::MENSAJE_LARGO],
+            'teléfono de 192'              => [['phone' => str_repeat('1', 192)], self::MENSAJE_LARGO],
         ];
 
         foreach ($casos as $caso => $par) {
@@ -398,6 +423,15 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
         unset($sin_telefono['phone']);
 
         $this->postJson('api/employee', $sin_telefono)->assertStatus(201);
+
+        /*
+            El tope del teléfono es el de su columna, varchar(191) (`string()` sin largo y
+            `Schema::defaultStringLength(191)`), no 128: uno de 191 entra.
+        */
+        $telefono_largo = $this->datos_del_alta(['phone' => str_repeat('1', 191)]);
+
+        $this->postJson('api/employee', $telefono_largo)->assertStatus(201);
+        $this->assertSame(191, mb_strlen((string) User::where('doc_number', $telefono_largo['doc_number'])->value('phone')));
     }
 
     // =====================================================================
@@ -549,7 +583,7 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
         $this->assertSame(9, (int) $recargado->seller_id);
         $this->assertSame(20, (int) $recargado->dias_alertar_empleados_ventas_no_cobradas);
         $this->assertSame(1, (int) $recargado->ver_alertas_de_todos_los_empleados);
-        $this->assertSame(0, (int) $recargado->puede_guardar_ventas_sin_cliente, 'Un null en una columna NOT NULL tiene que ir como 0.');
+        $this->assertCeroNoNull($recargado->puede_guardar_ventas_sin_cliente, 'Un null en una columna NOT NULL tiene que ir como 0.');
     }
 
     /**
@@ -589,6 +623,97 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
             $this->assertSame($password_antes, $recargado->password, $caso);
             $this->assertSame($permisos_antes, $this->permisos_de($this->empleado->id), $caso);
         }
+    }
+
+    /**
+     * 🔴 Un documento VIEJO guardado con espacios, que ahora llega recortado (el formulario lo
+     * manda tal cual y `TrimStrings` lo recorta), SÍ cuenta como cambio y se chequea por unicidad:
+     * "cambió" se compara contra el valor crudo de la base. Si se comparara recortado, se
+     * escribiría el recortado sin chequear y podrían quedar dos usuarios con el mismo documento.
+     *
+     * @return void
+     */
+    public function test_un_documento_viejo_con_espacios_que_llega_recortado_se_chequea()
+    {
+        $doc = 'DOC-ALTA-VIEJO-'.$this->sufijo;
+
+        DB::table('users')->where('id', $this->empleado->id)->update(['doc_number' => ' '.$doc]);
+
+        $otro = User::create([
+            'name'             => 'Dueño del recortado',
+            'email'            => 'alta-viejo-otro-'.$this->sufijo.'@test.local',
+            'doc_number'       => $doc,
+            'password'         => Hash::make('x'),
+            'visible_password' => 'x',
+            'owner_id'         => $this->owner->id,
+        ]);
+
+        $response = $this->putJson('api/employee/'.$this->empleado->id, $this->datos_de_la_edicion([
+            'doc_number' => ' '.$doc,
+            'name'       => 'No se tiene que guardar',
+        ]));
+
+        $response->assertStatus(422);
+        $this->assertSame(self::MENSAJE_REPETIDO, $response->json('message'));
+        $this->assertSame(' '.$doc, User::find($this->empleado->id)->doc_number);
+        $this->assertSame('Empleado Existente', User::find($this->empleado->id)->name);
+
+        // Sin el otro usuario, el mismo guardado pasa y deja el documento recortado.
+        DB::table('users')->where('id', $otro->id)->update(['doc_number' => 'DOC-ALTA-OTRO-'.uniqid()]);
+
+        $this->putJson('api/employee/'.$this->empleado->id, $this->datos_de_la_edicion([
+            'doc_number' => ' '.$doc,
+        ]))->assertStatus(200);
+
+        $this->assertSame($doc, User::find($this->empleado->id)->doc_number);
+    }
+
+    /**
+     * Un EMPLEADO logueado (sin acceso de administrador) que gestiona empleados: puede editar a un
+     * compañero del mismo dueño (no se agregó el 403 de Duplicar), y no alcanza a un usuario de otro
+     * comercio (404, nada cambia).
+     *
+     * @return void
+     */
+    public function test_un_empleado_logueado_edita_a_un_companero_pero_no_a_alguien_de_otro_comercio()
+    {
+        list(, $ajeno) = $this->otro_comercio();
+
+        $logueado = User::create([
+            'name'             => 'Empleado logueado',
+            'email'            => 'alta-logueado-'.$this->sufijo.'@test.local',
+            'doc_number'       => 'DOC-ALTA-LOGUEADO-'.$this->sufijo,
+            'password'         => Hash::make('logueado'),
+            'visible_password' => 'logueado',
+            'owner_id'         => $this->owner->id,
+            'admin_access'     => 0,
+        ]);
+
+        $this->actingAs($logueado, 'web');
+
+        $this->putJson('api/employee/'.$this->empleado->id, $this->datos_de_la_edicion([
+            'name' => 'Editado por un compañero',
+        ]))->assertStatus(200);
+
+        $this->assertSame('Editado por un compañero', User::find($this->empleado->id)->name);
+
+        $ajeno_antes = User::find($ajeno->id);
+        $permisos_antes = $this->permisos_de($ajeno->id);
+
+        $this->putJson('api/employee/'.$ajeno->id, [
+            'id'               => $ajeno->id,
+            'name'             => 'Hackeado',
+            'doc_number'       => 'DOC-HACK-'.uniqid(),
+            'visible_password' => 'clave-hack',
+            'permissions'      => [['id' => $this->permisos[0]->id]],
+        ])->assertStatus(404);
+
+        $recargado = User::find($ajeno->id);
+
+        $this->assertSame($ajeno_antes->name, $recargado->name);
+        $this->assertSame($ajeno_antes->doc_number, $recargado->doc_number);
+        $this->assertSame($ajeno_antes->password, $recargado->password);
+        $this->assertSame($permisos_antes, $this->permisos_de($ajeno->id));
     }
 
     // =====================================================================
@@ -665,54 +790,109 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
     // =====================================================================
 
     /**
+     * 🔴 Al PROPONER: si al empleado le falta el documento (o el nombre, o la contraseña visible),
+     * no se arma la tarjeta. `update()` exige los tres y contestaría 422 sin escribir nada: una
+     * tarjeta para ese empleado no se podría confirmar nunca. Se dice qué falta y dónde se carga.
+     *
+     * @return void
+     */
+    public function test_el_asistente_no_propone_para_un_empleado_sin_documento()
+    {
+        $this->preparar_asistente();
+
+        $sin_documento = $this->empleado_del_asistente(['doc_number' => null]);
+
+        list($conversation, $assistant) = $this->conversacion('Sacale a Brisa el permiso A');
+
+        $respuesta = $this->proponer_sacar_el_permiso_a($conversation, $assistant, $sin_documento);
+
+        $this->assertFalse(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertSame(
+            $sin_documento->name.' no tiene cargado el número de documento, y sin eso no se pueden guardar sus permisos desde acá. Cargáselo en ABM > Empleados.',
+            (string) $respuesta['error']
+        );
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'No se tenía que armar la tarjeta.');
+        $this->assertSame($this->ids_ab(), $this->permisos_de($sin_documento->id));
+    }
+
+    /**
+     * 🔴 Al CONFIRMAR: la misma guarda, otra vez, porque la ficha pudo cambiar entre la propuesta y
+     * el clic. Acá el documento se borra en el medio SIN tocar `updated_at` (con el query builder),
+     * así que la guarda del 409 no lo ve: la que lo frena es la de la ficha.
+     *
+     * @return void
+     */
+    public function test_el_asistente_no_confirma_si_al_empleado_le_borraron_el_documento_en_el_medio()
+    {
+        $this->preparar_asistente();
+
+        $empleado = $this->empleado_del_asistente();
+
+        list($conversation, $assistant) = $this->conversacion('Sacale a Brisa el permiso A');
+
+        $respuesta = $this->proponer_sacar_el_permiso_a($conversation, $assistant, $empleado);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        DB::table('users')->where('id', $empleado->id)->update(['doc_number' => null]);
+
+        $http = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $esperado = $empleado->name.' no tiene cargado el número de documento, y sin eso no se pueden guardar sus permisos desde acá. Cargáselo en ABM > Empleados.';
+
+        $http->assertStatus(422);
+        $this->assertSame($esperado, $http->json('message'));
+
+        $this->actuar_como_el_dueno();
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $accion->estado_guardado(), 'La tarjeta no se puede dar por confirmada.');
+        $this->assertSame($esperado, (string) $accion->error_mensaje);
+        $this->assertSame($this->ids_ab(), $this->permisos_de($empleado->id), 'No se tiene que haber tocado ningún permiso.');
+    }
+
+    /**
      * 🔴 Si `update()` no guarda (422), el asistente lo dice con ESE motivo, y no con el engañoso
      * "el sistema no dejó los permisos como corresponde".
      *
-     * El caso real: un empleado viejo sin documento cargado. Con la validación nueva no se puede
-     * guardar su ficha sin completarlo, y eso solo se resuelve desde ABM > Empleados.
+     * El caso que solo ve `update()`: un empleado viejo con el documento guardado CON ESPACIOS
+     * (" DOC-X") y otro usuario con "DOC-X". El asistente arma el pedido por dentro
+     * (`Request::create()`, sin el middleware `TrimStrings`), así que acá sí trabaja el recorte del
+     * controller: " DOC-X" llega como "DOC-X", eso cuenta como cambio (se compara contra el valor
+     * crudo de la base) y choca. La ficha está completa, así que la guarda del helper no lo frena.
      *
      * @return void
      */
     public function test_si_update_no_guarda_el_asistente_lanza_con_ese_motivo()
     {
-        // 🔴 Nunca la clave real del .env.testing: este archivo no sale a la red.
-        config(['services.anthropic.api_key' => 'clave-de-prueba-empleados-3']);
+        $this->preparar_asistente();
 
-        $this->dar_extension('asistente_ia');
-        $this->dar_extension(PropuestaPermisoEmpleadoIaHelper::EXTENSION);
+        $doc = 'DOC-ALTA-ESPACIOS-'.$this->sufijo;
 
-        $sin_documento = User::create([
-            'name'             => 'zz-alta Brisa '.$this->sufijo,
-            'email'            => 'alta-sin-doc-'.$this->sufijo.'@test.local',
-            'password'         => Hash::make('clave-de-brisa'),
-            'visible_password' => 'clave-de-brisa',
+        $empleado = $this->empleado_del_asistente(['doc_number' => ' '.$doc]);
+
+        User::create([
+            'name'             => 'Dueño del documento recortado',
+            'email'            => 'alta-recortado-'.$this->sufijo.'@test.local',
+            'doc_number'       => $doc,
+            'password'         => Hash::make('x'),
+            'visible_password' => 'x',
             'owner_id'         => $this->owner->id,
         ]);
-        $sin_documento->permissions()->sync([$this->permisos[0]->id, $this->permisos[1]->id]);
 
-        $password_antes = User::find($sin_documento->id)->password;
+        $password_antes = User::find($empleado->id)->password;
 
         list($conversation, $assistant) = $this->conversacion('Sacale a Brisa el permiso A');
 
-        $resultado = HerramientasDeCarga::ejecutar('proponer_permiso_de_empleado', [
-            'empleado' => $sin_documento->name,
-            'permiso'  => $this->permisos[0]->slug,
-            'accion'   => 'sacar',
-        ], $conversation, $assistant);
-
-        $this->assertFalse($resultado['is_error'], 'La herramienta devolvió una falla técnica: '.$resultado['content']);
-
-        $respuesta = json_decode($resultado['content'], true);
+        $respuesta = $this->proponer_sacar_el_permiso_a($conversation, $assistant, $empleado);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
 
-        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
-        $assistant->estado = 'listo';
-        $assistant->save();
+        $http = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
 
-        $http = $this->postJson('api/ai-conversations/'.$conversation->id.'/acciones/'.$respuesta['tarjeta_id'].'/confirmar');
-
-        $esperado = self::MENSAJE_OBLIGATORIOS.'. Corregilo en ABM > Empleados.';
+        $esperado = self::MENSAJE_REPETIDO.'. Corregilo en ABM > Empleados.';
 
         $http->assertStatus(422);
         $this->assertSame($esperado, $http->json('message'));
@@ -725,11 +905,102 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $accion->estado_guardado(), 'La tarjeta no se puede dar por confirmada.');
         $this->assertSame($esperado, (string) $accion->error_mensaje);
 
-        $esperados = [(int) $this->permisos[0]->id, (int) $this->permisos[1]->id];
-        sort($esperados);
+        $recargado = User::find($empleado->id);
 
-        $this->assertSame($esperados, $this->permisos_de($sin_documento->id), 'No se tiene que haber tocado ningún permiso.');
-        $this->assertSame($password_antes, User::find($sin_documento->id)->password);
+        $this->assertSame($this->ids_ab(), $this->permisos_de($empleado->id), 'No se tiene que haber tocado ningún permiso.');
+        $this->assertSame(' '.$doc, $recargado->doc_number, 'El documento no se tenía que tocar.');
+        $this->assertSame($password_antes, $recargado->password);
+    }
+
+    // ---------------------------------------------------------------------
+    // Armado del asistente (mismo que Tests\Feature\ChatIa\Cheque_y_permisos_de_empleado_Test)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Extensiones del asistente y de Empleados, y una clave falsa: este archivo no sale a la red.
+     *
+     * @return void
+     */
+    protected function preparar_asistente()
+    {
+        // 🔴 Nunca la clave real del .env.testing.
+        config(['services.anthropic.api_key' => 'clave-de-prueba-empleados-3']);
+
+        $this->dar_extension('asistente_ia');
+        $this->dar_extension(PropuestaPermisoEmpleadoIaHelper::EXTENSION);
+    }
+
+    /**
+     * Un empleado del dueño con la ficha completa y los permisos A y B, con lo que se le cambie.
+     *
+     * @param  array  $cambios
+     * @return User
+     */
+    protected function empleado_del_asistente(array $cambios = [])
+    {
+        $empleado = User::create(array_merge([
+            'name'             => 'zz-alta Brisa '.uniqid(),
+            'email'            => 'alta-asistente-'.uniqid().'@test.local',
+            'doc_number'       => 'DOC-ALTA-ASISTENTE-'.uniqid(),
+            'password'         => Hash::make('clave-de-brisa'),
+            'visible_password' => 'clave-de-brisa',
+            'owner_id'         => $this->owner->id,
+        ], $cambios));
+
+        $empleado->permissions()->sync([$this->permisos[0]->id, $this->permisos[1]->id]);
+
+        return $empleado;
+    }
+
+    /**
+     * Los ids de los permisos A y B, ordenados (lo que tiene el empleado del asistente).
+     *
+     * @return array<int,int>
+     */
+    protected function ids_ab()
+    {
+        $ids = [(int) $this->permisos[0]->id, (int) $this->permisos[1]->id];
+        sort($ids);
+
+        return $ids;
+    }
+
+    /**
+     * Corre la herramienta `proponer_permiso_de_empleado` para sacarle el permiso A.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant
+     * @param  User  $empleado
+     * @return array  La respuesta de negocio de la herramienta.
+     */
+    protected function proponer_sacar_el_permiso_a($conversation, $assistant, User $empleado)
+    {
+        $resultado = HerramientasDeCarga::ejecutar('proponer_permiso_de_empleado', [
+            'empleado' => $empleado->name,
+            'permiso'  => $this->permisos[0]->slug,
+            'accion'   => 'sacar',
+        ], $conversation, $assistant);
+
+        $this->assertFalse($resultado['is_error'], 'La herramienta devolvió una falla técnica: '.$resultado['content']);
+
+        return json_decode($resultado['content'], true);
+    }
+
+    /**
+     * Confirma la tarjeta por HTTP, como el botón del chat.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant
+     * @param  int  $tarjeta_id
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function confirmar($conversation, $assistant, $tarjeta_id)
+    {
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        return $this->postJson('api/ai-conversations/'.$conversation->id.'/acciones/'.$tarjeta_id.'/confirmar');
     }
 
     /**
