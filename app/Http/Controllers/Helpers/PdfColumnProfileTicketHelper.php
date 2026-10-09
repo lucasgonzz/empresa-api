@@ -211,18 +211,43 @@ class PdfColumnProfileTicketHelper
      * de 20 mm en los 200 de una A4) sigue sin entrar. Ajuste del 9/10/2026 a pedido del revisor: la
      * primera versión aceptaba cualquier tabla que entrara en 24 medias columnas, que era demasiado.
      *
+     * 🔴 Y SOLO PARA UNA TABLA DE LA GRILLA: cada ancho tiene que estar a 1 mm o menos de un múltiplo
+     * de media columna (round, y el mm que el diseñador le saca a la que más subió). Una tabla armada
+     * a mano en mm (el formulario de siempre, el asistente) sigue con la regla exacta de siempre: la
+     * suma no pasa del útil. Lo exige ChatIa/29 (`el_put_del_abm_sigue_validando_la_suma_de_anchos_
+     * con_la_misma_regla`): 8+15+30+133+15 = 201 en 200 útiles es 422, y con la tolerancia sola
+     * (5 columnas → hasta 203) pasaba.
+     *
      * @param array<int, int> $anchos_mm de las columnas visibles.
      * @param int             $ancho_util
      * @return bool
      */
     public static function suma_dentro_del_redondeo($anchos_mm, $ancho_util)
     {
-        $suma = 0;
-        foreach ($anchos_mm as $ancho_mm) {
-            $suma += (int) $ancho_mm;
+        if ((int) $ancho_util <= 0) {
+            return false;
         }
 
-        return $suma <= (int) $ancho_util + (int) ceil(count($anchos_mm) / 2);
+        $suma = 0;
+        $de_la_grilla = true;
+
+        foreach ($anchos_mm as $ancho_mm) {
+            $ancho_mm = (int) $ancho_mm;
+            $suma += $ancho_mm;
+
+            /** ¿Es un ancho de la grilla? El múltiplo de media columna más cercano, a 1 mm o menos. */
+            $medias = max(1, (int) round($ancho_mm * CatalogoDeCamposPdf::GRILLA_DE_TABLA / $ancho_util));
+            $multiplo = $medias * $ancho_util / CatalogoDeCamposPdf::GRILLA_DE_TABLA;
+
+            if (abs($ancho_mm - $multiplo) > 1.000001) {
+                $de_la_grilla = false;
+            }
+        }
+
+        /** Fuera de la grilla, la regla exacta de siempre; en la grilla, el margen del redondeo. */
+        $tolerancia = $de_la_grilla ? (int) ceil(count($anchos_mm) / 2) : 0;
+
+        return $suma <= (int) $ancho_util + $tolerancia;
     }
 
     /**

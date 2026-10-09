@@ -354,6 +354,21 @@ class Perfiles_de_ticket_reglas_Test extends TestCase
             ],
         ]))->assertStatus(201);
 
+        /**
+         * Una tabla armada a mano en mm (anchos que no son de la grilla: 15 y 30 no están a 1 mm de
+         * una media columna de 8,33) sigue con la regla exacta: 201 en 200 es 422, como en ChatIa/29.
+         */
+        $this->postJson(self::URL, $this->alta([
+            'sheet_type_id' => $a4,
+            'pdf_column_options' => [
+                $this->columna('row_index', 8, 0),
+                $this->columna('item_id', 15, 1),
+                $this->columna('item_bar_code', 30, 2),
+                $this->columna('item_name', 133, 3, true),
+                $this->columna('item_amount', 15, 4),
+            ],
+        ]))->assertStatus(422)->assertJsonStructure(['errors' => ['pdf_column_options']]);
+
         /** Un mm más (203) ya no es redondeo. */
         $this->postJson(self::URL, $this->alta([
             'sheet_type_id' => $a4,
