@@ -230,13 +230,17 @@ class ClientImport implements ToCollection, WithMultipleSheets {
      *   2. Saldos que no se pudieron leer: filas cuyo saldo no es un numero. El bloque lo arma
      *      LocalImportHelper::bloque_de_saldos_ilegibles(), el mismo que usa ProviderImport.
      *
+     * Los dos pasan por LocalImportHelper::avisos_dentro_del_presupuesto(), como en
+     * ProviderImport: el de sucursales va FIJO (no tiene tope y queda como estaba) y el de saldos
+     * ilegibles nombra 20 filas, o menos si los avisos no entran en el presupuesto de Pusher.
+     *
      * Si no hay nada que informar se devuelve un array vacio: un bloque que diga
      * "0 sucursales no encontradas" es solo ruido.
      *
      * @return array
      */
     function getInfoToShow() {
-        $info_to_show = [];
+        $bloques_fijos = [];
 
         if (count($this->sucursales_no_encontradas) > 0) {
             $parrafos = array_values($this->sucursales_no_encontradas);
@@ -244,19 +248,23 @@ class ClientImport implements ToCollection, WithMultipleSheets {
             $parrafos[] = 'Los clientes de esas filas quedaron sin sucursal asignada. '
                 . 'Podes crear las sucursales y volver a importar el archivo.';
 
-            $info_to_show[] = [
+            $bloques_fijos[] = [
                 'title'    => 'Sucursales que no existen en el sistema',
                 'parrafos' => $parrafos,
             ];
         }
 
-        $bloque_de_saldos_ilegibles = LocalImportHelper::bloque_de_saldos_ilegibles($this->saldos_ilegibles);
+        $ilegibles = $this->saldos_ilegibles;
 
-        if (!is_null($bloque_de_saldos_ilegibles)) {
-            $info_to_show[] = $bloque_de_saldos_ilegibles;
-        }
-
-        return $info_to_show;
+        return LocalImportHelper::avisos_dentro_del_presupuesto($bloques_fijos, [
+            'ilegibles' => [
+                'tope'  => LocalImportHelper::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES,
+                'total' => count($ilegibles),
+                'armar' => function ($tope) use ($ilegibles) {
+                    return LocalImportHelper::bloque_de_saldos_ilegibles($ilegibles, $tope);
+                },
+            ],
+        ]);
     }
 
     function saveModel($row, $client) {

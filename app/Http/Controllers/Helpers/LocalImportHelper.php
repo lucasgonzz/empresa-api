@@ -13,6 +13,7 @@ use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\SubCategory;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class LocalImportHelper {
 
@@ -22,14 +23,31 @@ class LocalImportHelper {
 	 * 10 KB: sin tope, un archivo con cientos de saldos ilegibles perdería la notificación ENTERA,
 	 * botón incluido. Mismo criterio que ProviderImport::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO.
 	 *
-	 * 🔴 Es 20 y no más por una medición, no por gusto: en proveedores este bloque convive con el de
-	 * "Saldos del Excel que no se cargaron" (hasta 50 nombres). Con los dos al tope, nombres largos
-	 * y textos largos, el evento pesó 10.056 bytes con 30 filas, 9.401 con 25 y 8.747 con 20 (9/10/2026;
-	 * el umbral del test es 9.000). Subirlo vuelve a dejar sin notificación una importación grande.
+	 * Es el tope del caso típico: el que de verdad manda es PRESUPUESTO_DE_BYTES_DE_LOS_AVISOS, que
+	 * lo achica si los avisos no entran (ver avisos_dentro_del_presupuesto()). Es 20 y no 30 por una
+	 * medición: en proveedores este bloque convive con el de "Saldos del Excel que no se cargaron"
+	 * (hasta 50 nombres), y con los dos al tope y nombres y textos largos el evento pesó 10.056 bytes
+	 * con 30 filas, 9.401 con 25 y 8.747 con 20 (9/10/2026).
 	 *
 	 * @var int
 	 */
 	const MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES = 20;
+
+	/**
+	 * Bytes que puede ocupar `info_to_show` (los bloques de avisos), medido como lo manda Pusher:
+	 * `strlen(json_encode(...))`, con cada caracter no ASCII escapado a `\uXXXX` (seis bytes).
+	 *
+	 * 🔴 Por qué 8000: Pusher corta el evento en 10 KB (10.240 bytes) y, si se pasa, se pierde la
+	 * notificación ENTERA de fin de importación, botón incluido. El resto de los datos de la
+	 * notificación (mensaje, botón, owner_id...) ronda los 450 bytes y Laravel le suma unos 100 al
+	 * emitirla; con 8000 para los avisos el evento queda por debajo de los 9000 que mide el test, con
+	 * margen hasta el límite. Los topes fijos solos no alcanzaban: con datos reales (nombres de más
+	 * de 60 caracteres con tildes y eñes, montos de cientos de millones) el bloque de los "no se
+	 * cargaron" de proveedores, con sus 50 nombres, ya pasaba los 9 KB (9/10/2026).
+	 *
+	 * @var int
+	 */
+	const PRESUPUESTO_DE_BYTES_DE_LOS_AVISOS = 8000;
 
 	/**
 	 * Largo máximo, en caracteres, del nombre y del texto de la celda en cada párrafo del aviso de
@@ -142,28 +160,37 @@ class LocalImportHelper {
 	 * Un párrafo por fila: `Fila 7, Juan Pérez: "s/d"`. Comillas RECTAS a propósito: Pusher escapa
 	 * cada caracter no ASCII a `\uXXXX` (seis bytes) y el evento tiene un tope de 10 KB. Por lo mismo
 	 * el nombre se corta a LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO caracteres y el texto a
-	 * LARGO_MAXIMO_DEL_TEXTO_EN_EL_AVISO, y se nombran como mucho
-	 * MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES filas; si hay más, "y N filas más". La
-	 * explicación, en el idioma del comerciante, va al final.
+	 * LARGO_MAXIMO_DEL_TEXTO_EN_EL_AVISO, y se nombran como mucho $tope filas; si hay más, "y N filas
+	 * más" (nombradas + N = todas). La explicación, en el idioma del comerciante, va al final.
+	 *
+	 * El $tope lo baja avisos_dentro_del_presupuesto() cuando los avisos no entran en Pusher.
 	 *
 	 * @param array $saldos_ilegibles Filas como [['fila' => int, 'nombre' => string, 'texto' => string], ...],
 	 *                                en el orden del Excel.
+	 * @param int|null $tope Cuántas filas nombrar. Null: MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES.
 	 * @return array|null El bloque, o null si no hubo ninguna fila ilegible (no se avisa nada).
 	 */
-	static function bloque_de_saldos_ilegibles($saldos_ilegibles) {
+	static function bloque_de_saldos_ilegibles($saldos_ilegibles, $tope = null) {
 		if (count($saldos_ilegibles) == 0) {
 			return null;
 		}
 
+		if (is_null($tope)) {
+			$tope = self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES;
+		}
+
+		// Nunca menos de una fila nombrada: un aviso que solo cuenta no dice dónde corregir.
+		$tope = max(1, (int) $tope);
+
 		$parrafos = [];
 
-		foreach (array_slice($saldos_ilegibles, 0, self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES) as $ilegible) {
+		foreach (array_slice($saldos_ilegibles, 0, $tope) as $ilegible) {
 			$parrafos[] = 'Fila ' . $ilegible['fila']
 				. ', ' . self::recortar_para_el_aviso($ilegible['nombre'], self::LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO)
 				. ': "' . self::recortar_para_el_aviso($ilegible['texto'], self::LARGO_MAXIMO_DEL_TEXTO_EN_EL_AVISO) . '"';
 		}
 
-		$restantes = count($saldos_ilegibles) - self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES;
+		$restantes = count($saldos_ilegibles) - $tope;
 
 		if ($restantes > 0) {
 			$parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' fila más' : ' filas más');
@@ -181,20 +208,112 @@ class LocalImportHelper {
 	}
 
 	/**
-	 * Corta un texto a $maximo caracteres (no bytes) y le agrega "…" si lo cortó.
+	 * Corta un texto a $maximo caracteres (no bytes) y le agrega "…" si lo cortó. Lo usan los dos
+	 * bloques de avisos de saldo (el de ilegibles y el de "no se cargaron" de ProviderImport).
+	 *
+	 * 🔴 Antes de medir, sanea el texto a UTF-8 válido (mb_scrub(): cada byte roto pasa a "?"). El
+	 * nombre o el texto vienen del Excel, y un solo byte inválido hace que json_encode() devuelva
+	 * false: el evento de Pusher no se arma y se pierde la notificación entera.
 	 *
 	 * @param string|null $texto
 	 * @param int $maximo
 	 * @return string
 	 */
-	private static function recortar_para_el_aviso($texto, $maximo) {
-		$texto = (string) $texto;
+	static function recortar_para_el_aviso($texto, $maximo) {
+		$texto = mb_scrub((string) $texto, 'UTF-8');
 
 		if (mb_strlen($texto, 'UTF-8') <= $maximo) {
 			return $texto;
 		}
 
 		return mb_substr($texto, 0, $maximo, 'UTF-8') . '…';
+	}
+
+	/**
+	 * Arma los bloques de avisos de la notificación de fin de importación (`info_to_show`) de forma
+	 * que entren en PRESUPUESTO_DE_BYTES_DE_LOS_AVISOS, achicando cuántos nombra cada bloque "con
+	 * tope". Lo usan ProviderImport (sus dos bloques de saldos) y ClientImport (el de ilegibles).
+	 *
+	 * Cómo:
+	 *   1. Arma cada bloque con su tope inicial (el del caso típico: 50 proveedores, 20 filas).
+	 *   2. Si `strlen(json_encode($info_to_show))` entra en el presupuesto, listo. Es el caso de
+	 *      todos los días, y ahí no cambia nada.
+	 *   3. Si no entra, le baja uno al tope del bloque que MÁS pesa (de los que todavía nombran más
+	 *      de uno) y vuelve a armar todo. Repite hasta que entre.
+	 *   4. Nunca nombra menos de uno por bloque: si con todos en uno sigue sin entrar, devuelve eso
+	 *      (con los nombres y textos cortados no debería pasar).
+	 *
+	 * Cada bloque se arma con su propio constructor, que cuenta los restantes ("y N ... más") contra
+	 * el TOTAL: achicar el tope cambia cuántos se nombran, nunca cuántos se cuentan.
+	 *
+	 * @param array $bloques_fijos Bloques ya armados que van primero y no se achican (el de sucursales
+	 *                             de ClientImport). Pueden estar vacíos.
+	 * @param array $bloques_con_tope En el orden en que van, como
+	 *                                [clave => ['tope' => int, 'total' => int, 'armar' => callable(int $tope): array|null], ...].
+	 *                                `armar` devuelve null si el bloque no tiene nada que avisar.
+	 * @return array El `info_to_show`: los fijos y después los que no son null.
+	 */
+	static function avisos_dentro_del_presupuesto(array $bloques_fijos, array $bloques_con_tope) {
+		// Tope de cada bloque. Nunca más que lo que hay para nombrar: bajar un tope que no corta nada
+		// no achica el aviso. Nunca menos de uno.
+		$topes = [];
+
+		foreach ($bloques_con_tope as $clave => $bloque) {
+			$topes[$clave] = max(1, min((int) $bloque['tope'], (int) $bloque['total']));
+		}
+
+		while (true) {
+			$armados = [];
+
+			foreach ($bloques_con_tope as $clave => $bloque) {
+				$armados[$clave] = call_user_func($bloque['armar'], $topes[$clave]);
+			}
+
+			$info_to_show = $bloques_fijos;
+
+			foreach ($armados as $armado) {
+				if (!is_null($armado)) {
+					$info_to_show[] = $armado;
+				}
+			}
+
+			$json = json_encode($info_to_show);
+
+			if ($json === false) {
+				// No debería pasar: los textos de los bloques con tope ya vienen saneados.
+				Log::warning('LocalImportHelper::avisos_dentro_del_presupuesto - json_encode fallo: ' . json_last_error_msg());
+
+				return $info_to_show;
+			}
+
+			if (strlen($json) <= self::PRESUPUESTO_DE_BYTES_DE_LOS_AVISOS) {
+				return $info_to_show;
+			}
+
+			// El bloque que más pesa, de los que todavía nombran más de uno.
+			$clave_a_achicar = null;
+			$peso_mayor = -1;
+
+			foreach ($armados as $clave => $armado) {
+				if (is_null($armado) || $topes[$clave] <= 1) {
+					continue;
+				}
+
+				$peso = strlen((string) json_encode($armado));
+
+				if ($peso > $peso_mayor) {
+					$peso_mayor = $peso;
+					$clave_a_achicar = $clave;
+				}
+			}
+
+			// Todos en uno: no hay nada más que achicar.
+			if (is_null($clave_a_achicar)) {
+				return $info_to_show;
+			}
+
+			$topes[$clave_a_achicar]--;
+		}
 	}
 
 	/**
