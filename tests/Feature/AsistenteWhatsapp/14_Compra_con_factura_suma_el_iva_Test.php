@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
+use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
 use App\Models\AiMessage;
 use App\Models\AiMessageImagen;
 use App\Models\Article;
@@ -14,6 +15,7 @@ use App\Models\Iva;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderScan;
+use App\Models\ProviderOrderStatus;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -129,26 +131,35 @@ class Compra_con_factura_suma_el_iva_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * Una compra vacía de este proveedor tal como la dejaba el asistente ANTES del arreglo: los
-     * mismos interruptores que el alta de orden_para_la_factura() y `total_with_iva` en NULL,
-     * porque esa clave no viajaba. Recién creada, así que entra en la ventana de reuso
-     * (PropuestaCompraConFacturaIaHelper::DIAS_DE_REUSO) — el mismo armado que
-     * Compra_con_factura_Test::reusa_una_compra_vacia_y_reciente_del_mismo_proveedor.
+     * Una compra vacía de este proveedor tal como la dejaba el asistente ANTES del arreglo: por el
+     * mismo ProviderOrderAltaHelper::crear() y con las mismas claves que mandaba
+     * orden_para_la_factura(), SIN `total_with_iva` —esa clave no viajaba, así que queda en NULL—.
+     * Por ese camino la compra queda como la real: total 0 y su movimiento de cuenta corriente con
+     * debe 0, así que al confirmar el escaneo la deuda se ACTUALIZA
+     * (NewProviderOrderHelper::actualizar_current_acount()) en vez de crearse.
+     *
+     * Recién creada, entra en la ventana de reuso (PropuestaCompraConFacturaIaHelper::DIAS_DE_REUSO)
+     * — la misma condición que Compra_con_factura_Test::reusa_una_compra_vacia_y_reciente_del_mismo_proveedor.
      *
      * @return \App\Models\ProviderOrder
      */
     protected function compra_vacia_como_la_dejaba_el_asistente()
     {
-        return ProviderOrder::create([
-            'user_id'                 => $this->comercio->id,
-            'provider_id'             => $this->proveedor->id,
-            'num'                     => 77,
-            'update_prices'           => 0,
-            'update_stock'            => 0,
-            'generate_current_acount' => 1,
-            'total_with_iva'          => null,
-            'precios_incluyen_iva'    => 0,
-            'moneda_id'               => 1,
+        $estado = ProviderOrderStatus::where('name', PropuestaCompraConFacturaIaHelper::ESTADO_EN_PROCESO)
+                                        ->orderBy('id')
+                                        ->first();
+
+        return ProviderOrderAltaHelper::crear([
+            'user_id'                  => $this->comercio->id,
+            'provider_id'              => (int) $this->proveedor->id,
+            'provider_order_status_id' => is_null($estado) ? null : (int) $estado->id,
+            'address_id'               => null,
+            'update_prices'            => 0,
+            'update_stock'             => 0,
+            'generate_current_acount'  => 1,
+            'precios_incluyen_iva'     => 0,
+            'moneda_id'                => 1,
+            'articles'                 => [],
         ]);
     }
 
@@ -386,6 +397,12 @@ class Compra_con_factura_suma_el_iva_Test extends AsistenteWhatsappTestCase
         $this->assertNull(
             $vacia->fresh()->total_with_iva,
             'Precondición: la compra vacía nace como la dejaba el asistente, con la bandera en NULL.'
+        );
+
+        $this->assertEquals(
+            0,
+            $this->deuda_de($vacia),
+            'Precondición: como la real, la compra vacía ya tiene su movimiento de cuenta corriente, con debe 0.'
         );
 
         $this->proponer_y_confirmar_la_compra();

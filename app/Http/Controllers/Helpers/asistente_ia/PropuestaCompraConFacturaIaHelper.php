@@ -560,10 +560,13 @@ class PropuestaCompraConFacturaIaHelper
                  * cuelga ahora no sumaría su IVA al total ni a la deuda con el proveedor. Volver a
                  * guardarla desde el formulario NO la arregla: ver el 🔴 del alta de abajo.
                  *
-                 * Se prende solo si está apagada (NULL o 0), y es seguro porque está vacía
-                 * (esta_vacia() de arriba): no tiene artículos ni total, así que no cambia ningún
-                 * importe ya registrado. Monotributista y `precios_incluyen_iva` siguen sin sumar:
-                 * eso lo resuelve NewProviderOrderHelper::suma_iva_al_total(), no la bandera.
+                 * Se prende solo si está apagada (NULL o 0). esta_vacia() de arriba garantiza
+                 * únicamente que no tiene ARTÍCULOS (puede tener costos extra o una factura cargada
+                 * a mano), y prender la bandera no recalcula nada en el momento: ProviderOrder no
+                 * tiene observers. El próximo recálculo —la confirmación del escaneo de esta
+                 * factura— le aplica la misma regla que a una compra del formulario. Monotributista
+                 * y `precios_incluyen_iva` siguen sin sumar: eso lo resuelve
+                 * NewProviderOrderHelper::suma_iva_al_total(), no la bandera.
                  */
                 if (!$orden->total_with_iva) {
 
@@ -598,8 +601,9 @@ class PropuestaCompraConFacturaIaHelper
              *
              * Y no se arreglaba sola: el formulario pone el 1 solo en una compra NUEVA (el `value: 1`
              * de `total_with_iva` en el modelo de la SPA). Al editar, la SPA reenvía lo guardado y
-             * ProviderOrderController::update() lo asigna tal cual; la casilla está oculta, así que
-             * nadie la puede prender. Una compra que nace apagada no suma el IVA NUNCA.
+             * ProviderOrderController::update() lo respeta; la casilla está oculta, así que nadie
+             * la puede prender DESDE LA PANTALLA. Una compra que nace apagada no suma el IVA nunca
+             * más, por más que se la vuelva a guardar desde el formulario.
              *
              * Monotributista y `precios_incluyen_iva` siguen sin sumar: lo decide
              * suma_iva_al_total(), no esta bandera.

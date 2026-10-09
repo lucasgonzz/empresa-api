@@ -430,9 +430,10 @@ class PurchaseSuggestionController extends Controller
                  *
                  * Y no se arreglaba sola: el formulario pone el 1 solo en una compra NUEVA (el
                  * `value: 1` de `total_with_iva` en el modelo de la SPA). Al editar, la SPA reenvía
-                 * lo guardado y ProviderOrderController::update() lo asigna tal cual; la casilla
-                 * está oculta, así que nadie la puede prender. Una compra que nace apagada no suma
-                 * el IVA NUNCA.
+                 * lo guardado y ProviderOrderController::update() lo respeta; la casilla está
+                 * oculta, así que nadie la puede prender DESDE LA PANTALLA. Una compra que nace
+                 * apagada no suma el IVA nunca más, por más que se la vuelva a guardar desde el
+                 * formulario.
                  *
                  * Sumarlo encima es lo correcto porque costo_estimado ya viene NETO y la orden nace
                  * con precios_incluyen_iva en false (el caveat de arriba). Monotributista sigue sin
