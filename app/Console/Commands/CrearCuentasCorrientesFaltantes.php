@@ -31,7 +31,8 @@ use Illuminate\Support\Facades\Log;
  * la importación vieja perdió no está en la base: vuelve reimportando el mismo Excel, que con el
  * arreglo carga el saldo inicial en la cuenta vacía sin duplicar nada.
  *
- * 🔴 SALE SIEMPRE CON EXIT 0, aunque algún proveedor no se pueda completar. Va en el despliegue, y
+ * 🔴 SALE SIEMPRE CON EXIT 0, aunque algún proveedor no se pueda completar o la corrida se corte
+ * a mitad (ver handle()). Va en el despliegue, y
  * con un exit distinto de 0 el despliegue del admin frena antes de rotar el frente (mismo criterio
  * que `cuenta_corriente:reparar_cadenas`). Los fallidos quedan en el log (con report() de la
  * excepción) y en la salida, con un resumen al final.
@@ -56,7 +57,40 @@ class CrearCuentasCorrientesFaltantes extends Command
         2 => 'dólares',
     ];
 
+    /**
+     * 🔴 Todo el cuerpo va adentro de un try: el exit 0 no puede depender de que la falla caiga
+     * en el try de cada proveedor. Si se corta afuera (la consulta de un lote, la de las cuentas
+     * del lote), se reporta y se sale igual con 0. Lo creado antes del corte queda (cada cuenta es
+     * independiente) y volver a correrlo completa el resto: es idempotente.
+     *
+     * @return int
+     */
     public function handle()
+    {
+        try {
+
+            return $this->revisar();
+
+        } catch (\Throwable $e) {
+
+            // Sin report() este fallo no llegaría al reporter de errores.
+            report($e);
+
+            Log::warning('cuenta_corriente:crear_cuentas_faltantes: se cortó antes de terminar: '.$e->getMessage());
+
+            $this->error('cuenta_corriente:crear_cuentas_faltantes: se cortó antes de terminar: '.$e->getMessage());
+
+            // Siempre 0: ver el docblock de la clase.
+            return 0;
+        }
+    }
+
+    /**
+     * El cuerpo del comando: valida el user_id, recorre los proveedores y deja el resumen.
+     *
+     * @return int
+     */
+    protected function revisar()
     {
         $aplicar = (bool) $this->option('aplicar');
         $user_id = $this->argument('user_id');

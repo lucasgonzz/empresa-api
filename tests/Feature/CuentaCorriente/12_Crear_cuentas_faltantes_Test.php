@@ -8,6 +8,7 @@ use App\Models\CreditAccount;
 use App\Models\Provider;
 use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
 
@@ -299,6 +300,30 @@ class Crear_cuentas_faltantes_Test extends EmpresaTestCase
         $this->assertStringContainsString('Proveedor '.$proveedor->id.' ', $salida, 'El comando tomó las cuentas del cliente como del proveedor.');
         $this->assertCount(2, $this->cuentas_de($proveedor->id), 'El proveedor quedó sin sus cuentas porque había cuentas de un cliente con su mismo id.');
         $this->assertEquals(2, CreditAccount::where('model_name', 'client')->where('model_id', $cliente->id)->count(), 'El comando tocó las cuentas del cliente.');
+    }
+
+    /**
+     * Sale con 0 aunque falle algo FUERA del try de cada proveedor (la consulta de las cuentas del
+     * lote): va en el despliegue, y un exit distinto de 0 frena la rotación del frente. Se simula
+     * con un listener de consultas que revienta en esa consulta.
+     *
+     * @test
+     */
+    public function sale_con_cero_aunque_falle_la_consulta_del_lote()
+    {
+        $proveedor = $this->proveedor_sin_cuenta($this->user_id, 'Prov falla del lote');
+
+        DB::listen(function ($query) {
+            if (strpos($query->sql, 'select `model_id`, `moneda_id` from `credit_accounts`') !== false) {
+                throw new \RuntimeException('Falla simulada en la consulta de las cuentas del lote');
+            }
+        });
+
+        list($exit, $salida) = $this->correr(['user_id' => $this->user_id, '--aplicar' => true]);
+
+        $this->assertSame(0, $exit, 'El comando va en el despliegue: tiene que salir con 0 aunque se corte a mitad.');
+        $this->assertStringContainsString('Falla simulada en la consulta de las cuentas del lote', $salida, 'El corte tiene que quedar en la salida.');
+        $this->assertSame([], $this->cuentas_de($proveedor->id));
     }
 
     /**
