@@ -49,6 +49,12 @@ class LocalImportHelper {
 	 * ("1.234") la lectura de texto la tomaría como miles. Antes se hacía `(float)` del string:
 	 * "$ 52.000,50" daba 0 y "52.000" daba 52 (misión importacion-saldo-celdas-de-texto, 9/10/2026).
 	 *
+	 * 🔴 Se lee "solo pesos": un saldo escrito en dólares ("USD 1.500", "-USD 100", "U$S 100",
+	 * "US$ 100") queda ILEGIBLE y se avisa. Esta columna carga la cuenta corriente en PESOS (moneda
+	 * 1, ver get_credit_account_pesos()); leído como el número que acompaña, "USD 1.500" quedaba
+	 * como una deuda de $1.500 sin que nadie se enterara. El rechazo es propio del saldo: en
+	 * artículos parseNumericValue() sigue ignorando la moneda, como siempre.
+	 *
 	 * @param mixed $row Fila del Excel.
 	 * @param array $columns Mapeo de columnas de la importación.
 	 * @return array El resultado de ImportHelper::leerNumeroDeCelda(): ['estado', 'valor', 'texto'].
@@ -56,7 +62,7 @@ class LocalImportHelper {
 	static function leerSaldoDeLaFila($row, $columns) {
 		$celda = ImportHelper::getColumnRawValueByAliases($row, ['saldo_actual', 'saldo actual'], $columns);
 
-		return ImportHelper::leerNumeroDeCelda($celda);
+		return ImportHelper::leerNumeroDeCelda($celda, true);
 	}
 
 	/**
@@ -165,6 +171,7 @@ class LocalImportHelper {
 
 		$parrafos[] = 'El saldo de esas filas no se cargó y su cuenta corriente quedó como estaba; el resto de sus datos sí se importó. '
 			. 'Escribí el saldo solo con números (por ejemplo 52000,50, 52.000,50 o -7600); si es una fórmula, copiala y pegala como valor. '
+			. 'Un saldo en dólares no se importa: esta columna carga la cuenta en pesos. '
 			. 'Después volvé a importar el archivo.';
 
 		return [

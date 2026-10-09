@@ -26,17 +26,22 @@ class ImportHelper {
 	}
 
 	/**
-	 * Valor de una columna de la fila como string limpio (sin BOM, sin espacios ni comillas en los
-	 * bordes), o null si la columna no está mapeada, la celda no existe o está vacía.
+	 * Valor de una columna de la fila como string, sin BOM y sin espacios ni comillas (") en los
+	 * bordes.
+	 *
+	 * Devuelve null SOLO si la columna no está mapeada (o está marcada −1 en el mapeo), si la celda
+	 * no existe (null) o si es exactamente el string vacío ''. Una celda con solo espacios, o solo
+	 * comillas, NO da null: da '' (lo que queda después de limpiarla). Quien tenga que tratarla
+	 * como vacía lo mira aparte (usa_columna() considera vacío al '').
 	 *
 	 * 🔴 NO se vuelve a comparar el VALOR de la celda con −1. La marca de "columna sin usar" vive en
 	 * el MAPEO (`$columns[$key] == -1`, ver isIgnoredColumn()), y una columna marcada así ya da null
 	 * acá: `isset($row[-1])` es falso. Comparar la CELDA con −1 (entró como `!= -1` y pasó a
 	 * `!== -1` en 31241031, 25/11/2025) solo lograba descartar todo dato que valiera −1 entero
-	 * —PhpSpreadsheet entrega `int` para un entero—: un saldo de −1 no se importaba. Se sacó para
-	 * todas las importaciones (misión importacion-saldo-celdas-de-texto, 9/10/2026, decisión de
-	 * Lucas). La importación de artículos lee del CSV intermedio, donde todo llega como string, así
-	 * que a ella esa comparación ya no la alcanzaba.
+	 * —PhpSpreadsheet entrega `int` para un entero—: un −1 en un teléfono o un saldo no se
+	 * importaba. Se sacó para todas las importaciones (misión importacion-saldo-celdas-de-texto,
+	 * 9/10/2026, decisión de Lucas). La importación de artículos lee del CSV intermedio, donde todo
+	 * llega como string, así que a ella esa comparación ya no la alcanzaba.
 	 *
 	 * @param mixed $row Fila del Excel (array o Collection).
 	 * @param string $key Clave de la columna en el mapeo.
@@ -250,30 +255,35 @@ class ImportHelper {
 	 *   - int o float finito   -> 'numero', TAL CUAL. 🔴 No pasa por parseNumericValue() ni por
 	 *                             string: la celda numérica ya es un número, y convertida al texto
 	 *                             "1.234" la regla de miles la leería como 1234.
-	 *   - texto                -> se limpia como en getColumnValue() (BOM, espacios, comillas), se
-	 *                             mueve el signo que viene ANTES de la moneda ("-$ 7.600" ->
-	 *                             "-7.600") y se lee con parseNumericValue() en modo 'auto', igual
-	 *                             que los artículos. Si no es un número -> 'ilegible'.
+	 *   - texto                -> se limpia (BOM, espacios, NBSP y U+202F, comillas en los bordes),
+	 *                             se normaliza el signo (ver normalizarSignoYMoneda()) y se lee con
+	 *                             parseNumericValue() en modo 'auto', igual que los artículos. Si no
+	 *                             es un número -> 'ilegible'.
 	 *   - bool, NAN/INF, array u objeto -> 'ilegible'.
 	 *
 	 * La interpretación del punto es siempre 'auto': clientes y proveedores no tienen el selector
 	 * del paso 3 del modal ("Cómo vamos a leer los números").
 	 *
-	 * 🔴 El signo antes de la moneda se arregla ACÁ y no en parseNumericValue(): en artículos un
-	 * "-$ 100" en el costo tiene que seguir siendo un conflicto, no un costo negativo. En un saldo,
-	 * en cambio, "-$ 7.600" es un saldo a favor escrito como lo escribe cualquiera.
+	 * 🔴 El signo se arregla ACÁ y no en parseNumericValue(): en artículos un "-$ 100" en el costo
+	 * tiene que seguir siendo un conflicto, no un costo negativo, y parseNumericValue() la usan
+	 * igual que siempre. En un saldo, en cambio, "-$ 7.600", "+$ 7.600" o "- 500" son saldos
+	 * escritos como los escribe cualquiera.
 	 *
 	 * Una fórmula llega como su texto ("=B2*2"): ningún importador implementa
 	 * `WithCalculatedFormulas`. Queda 'ilegible', y el aviso le pide al usuario pegarla como valor.
 	 *
 	 * @param mixed $valor Valor crudo de la celda.
+	 * @param bool $solo_pesos Con true, un texto que trae una moneda extranjera (USD, U$S, US$, en
+	 *                         mayúsculas o minúsculas) queda 'ilegible' en lugar de leerse como el
+	 *                         número que acompaña. Lo pide el saldo de clientes y proveedores, que
+	 *                         carga la cuenta en PESOS (ver LocalImportHelper::leerSaldoDeLaFila()).
 	 * @return array [
 	 *   'estado' => 'vacio' | 'numero' | 'ilegible',
 	 *   'valor'  => float|null   el número, solo con estado 'numero',
 	 *   'texto'  => string|null  lo que traía la celda, solo con estado 'ilegible' (para el aviso),
 	 * ]
 	 */
-	static function leerNumeroDeCelda($valor) {
+	static function leerNumeroDeCelda($valor, $solo_pesos = false) {
 		if (is_null($valor)) {
 			return self::lecturaDeCelda('vacio');
 		}
@@ -298,28 +308,27 @@ class ImportHelper {
 			return self::lecturaDeCelda('ilegible', null, $texto);
 		}
 
-		// Misma limpieza que getColumnValue(): BOM, espacios y comillas en los bordes.
+		// La limpieza de getColumnValue() (BOM, espacios y comillas en los bordes), más NBSP y U+202F.
 		$texto = str_replace("\xEF\xBB\xBF", '', $valor);
-		$texto = trim($texto);
+		$texto = self::recortarEspaciosDeLosBordes($texto);
 		$texto = trim($texto, '"');
-		$texto = trim($texto);
+		$texto = self::recortarEspaciosDeLosBordes($texto);
 
 		if ($texto === '') {
 			return self::lecturaDeCelda('vacio');
 		}
 
 		/*
-		 * El signo ANTES de la moneda pasa adelante del número: "-$ 7.600", "- $7.600" y
-		 * "-USD 100" quedan "-7.600" y "-100". parseNumericValue() solo saca la moneda cuando está
-		 * al principio, así que con el signo adelante no la reconocería y el saldo quedaría
-		 * ilegible. ("$ -1.500" ya lo lee: saca la moneda y queda "-1.500".)
+		 * 🔴 Una moneda extranjera en la celda: con $solo_pesos, ilegible. parseNumericValue() saca
+		 * "USD" o "U$S" del principio y lee el número que queda, así que "USD 1.500" en el saldo se
+		 * cargaba como $1.500 en la cuenta en PESOS, sin aviso. Se busca en cualquier parte del
+		 * texto ("1.500 USD" tampoco es un saldo en pesos).
 		 */
-		$texto_a_leer = preg_replace('/^([+-])\s*(USD|U\$S|\$)\s*/iu', '$1', $texto);
-
-		if (is_null($texto_a_leer)) {
-			// UTF-8 inválido: preg_replace con /u devuelve null. Se lee el texto sin tocar.
-			$texto_a_leer = $texto;
+		if ($solo_pesos && preg_match('/USD|U\$S|US\$/i', $texto) === 1) {
+			return self::lecturaDeCelda('ilegible', null, $texto);
 		}
+
+		$texto_a_leer = self::normalizarSignoYMoneda($texto);
 
 		try {
 			$numero = self::parseNumericValue($texto_a_leer, null, null, 'auto');
@@ -333,6 +342,68 @@ class ImportHelper {
 		}
 
 		return self::lecturaDeCelda('numero', (float) $numero);
+	}
+
+	/**
+	 * trim() que además saca el espacio de no separación (U+00A0, NBSP) y el espacio fino de no
+	 * separación (U+202F) de los bordes. trim() no los ve, y un Excel armado copiando de una web o de
+	 * un PDF los trae: "\u{00A0}1.500" quedaba ilegible.
+	 *
+	 * @param string $texto
+	 * @return string
+	 */
+	private static function recortarEspaciosDeLosBordes($texto) {
+		$recortado = preg_replace('/^[\s\x{00A0}\x{202F}]+|[\s\x{00A0}\x{202F}]+$/u', '', $texto);
+
+		// UTF-8 inválido: preg_replace con /u devuelve null. Queda el trim() de siempre.
+		if (is_null($recortado)) {
+			return trim($texto);
+		}
+
+		return $recortado;
+	}
+
+	/**
+	 * Deja el signo de un número escrito como texto donde parseNumericValue() lo entiende: pegado
+	 * adelante, sin moneda en el medio y sin "+". Es del lector de leerNumeroDeCelda(), NO de
+	 * parseNumericValue() (ver el docblock de leerNumeroDeCelda()).
+	 *
+	 *   "-$ 7.600", "- $7.600", "$ -7.600" -> "-7.600"   (parseNumericValue() solo saca la moneda
+	 *                                                      cuando está al principio)
+	 *   "+$ 7.600", "$ +7.600", "+7.600"   -> "7.600"    (la regla de miles de 'auto' no acepta el
+	 *                                                      "+": "+7.600" daba 7,6)
+	 *   "- 500"                            -> "-500"     (el signo con espacio)
+	 *   "−7.600" (U+2212, el menos de Word y de muchos PDF) -> "-7.600"
+	 *
+	 * Con signo antes Y después de la moneda ("-$ -7.600") no se adivina: el texto queda como vino y
+	 * parseNumericValue() lo rechaza. Sin signo ni moneda, el texto no cambia.
+	 *
+	 * @param string $texto Texto ya limpio de bordes.
+	 * @return string
+	 */
+	private static function normalizarSignoYMoneda($texto) {
+		// El menos tipográfico es un menos.
+		$texto = str_replace("\u{2212}", '-', $texto);
+
+		$coincide = preg_match('/^([+-]?)\s*(?:(?:USD|U\$S|US\$|\$)\s*)?([+-]?)\s*(.*)$/isu', $texto, $partes);
+
+		// Sin coincidencia (o UTF-8 inválido): se lee el texto como vino.
+		if ($coincide !== 1) {
+			return $texto;
+		}
+
+		$signo_antes   = $partes[1];
+		$signo_despues = $partes[2];
+		$resto         = $partes[3];
+
+		if ($signo_antes !== '' && $signo_despues !== '') {
+			return $texto;
+		}
+
+		$signo = $signo_antes !== '' ? $signo_antes : $signo_despues;
+
+		// El "+" no aporta nada y parseNumericValue() lo lee mal: se saca.
+		return ($signo === '-' ? '-' : '') . $resto;
 	}
 
 	/**
