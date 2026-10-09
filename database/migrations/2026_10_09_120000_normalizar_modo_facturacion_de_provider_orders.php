@@ -12,10 +12,10 @@ use Illuminate\Support\Facades\DB;
  * compras del asistente de WhatsApp, las de las sugerencias de compra y las más viejas que la
  * columna quedaron en NULL.
  *
- * ⚠️ Dos altas siguen naciendo con NULL después de esta migración, porque no pasan por
- * `ProviderOrderAltaHelper`: la compra de una sugerencia de compra (`PurchaseSuggestionController`)
- * y la compra espejo de una venta entre comercios (`SaleProviderOrderHelper`). Un NULL se comporta
- * como 'manual', así que no cambia ningún número; solo se ve "Seleccione" en esas compras.
+ * Después de esta migración ningún alta deja NULL: la pantalla guarda 'automatico' si no vino un
+ * modo válido, y el asistente, las sugerencias de compra (`PurchaseSuggestionController`), la compra
+ * espejo de una venta entre comercios (`SaleProviderOrderHelper`) y la copia entre bases
+ * (`DatabaseProviderOrderHelper`) guardan 'manual'.
  *
  * 🔴 Por qué 'manual' y no 'automatico'. Es exactamente como se comportan HOY esas compras al
  * editarlas: `"0"` o NULL no matchean ningún modo en una edición (`"0" == 'automatico'` es falso
