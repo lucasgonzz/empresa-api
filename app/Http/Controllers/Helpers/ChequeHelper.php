@@ -1789,8 +1789,9 @@ class ChequeHelper {
      * - un texto o un número (entero o decimal): se recorta (espacios comunes y Unicode); si queda
      *   vacío o queda exactamente "0", no hay.
      * - cualquier otra cosa (un array, un booleano, un objeto) o un texto que no es UTF-8 válido: es
-     *   un error, aunque la otra clave traiga un texto válido. Un pedido malo no se esconde detrás de
-     *   uno bueno.
+     *   un error. En `rechazado_observaciones` lo es aunque `notas` traiga un texto válido (un pedido
+     *   malo en la clave canónica no se esconde detrás de uno bueno); `notas` solo se mira —y solo
+     *   puede dar error— si `rechazado_observaciones` no trajo texto.
      * - un texto de más de MOTIVO_DE_RECHAZO_MAX caracteres: es un error.
      * Si las dos claves traen texto, gana `rechazado_observaciones`.
      *
@@ -1828,8 +1829,11 @@ class ChequeHelper {
      * - Antes de recortar se mira que sea UTF-8 válido: por formulario (no JSON) puede llegar un byte
      *   suelto, y con `'strict' => true` escribirlo en una columna utf8mb4 es un 500 (SQLSTATE 1366).
      * - El recorte saca los espacios comunes y también los Unicode (`\p{Z}`: el espacio duro NBSP,
-     *   los de ancho fijo, el ideográfico...): trim() solo conoce los ASCII, y un motivo de puro NBSP
-     *   —lo que deja un copiar y pegar— se guardaba como si fuera un texto.
+     *   los de ancho fijo, el ideográfico...), el byte NUL (que trim() sí sacaba) y los invisibles
+     *   ZWSP (U+200B) y BOM (U+FEFF), que Unicode no cuenta como espacios: trim() solo conoce los
+     *   ASCII, y un motivo de puro NBSP —lo que deja un copiar y pegar— se guardaba como si fuera un
+     *   texto. Por HTTP el middleware TrimStrings ya recorta las puntas, pero una acción de pantalla
+     *   del asistente llega al controller sin pasar por él.
      * - Un "0" es "sin motivo": es el resto del modal viejo, que después de rechazar dejaba
      *   `this.notas = 0` y en el SEGUNDO rechazo de la misma pestaña mandaba `notas: 0` (entero) sin
      *   que nadie lo escribiera. Es el mismo criterio de la migración 2026_10_09_180000, que pasa a
@@ -1858,7 +1862,7 @@ class ChequeHelper {
             return [null, 'El motivo del rechazo tiene caracteres inválidos.'];
         }
 
-        $motivo = preg_replace('/\A[\s\p{Z}]+|[\s\p{Z}]+\z/u', '', $texto);
+        $motivo = preg_replace('/\A[\s\p{Z}\x{0}\x{200B}\x{FEFF}]+|[\s\p{Z}\x{0}\x{200B}\x{FEFF}]+\z/u', '', $texto);
 
         // null es un error del motor de regex (el UTF-8 ya se validó): no se toma como "sin motivo"
         // para no perderlo en silencio.

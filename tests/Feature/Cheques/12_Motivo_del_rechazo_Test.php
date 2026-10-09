@@ -568,6 +568,27 @@ class Motivo_del_rechazo_Test extends ChequesTestCase
         }
     }
 
+    /**
+     * 19. El recorte del helper también saca el byte NUL y los invisibles ZWSP (U+200B) y BOM (U+FEFF).
+     * Se llama al helper directo y no por HTTP: por HTTP el middleware TrimStrings ya recorta el NUL
+     * de las puntas y el test no probaría el helper; una acción de pantalla del asistente llega al
+     * controller sin pasar por ese middleware.
+     *
+     * @test
+     */
+    public function el_nul_y_los_invisibles_se_recortan_en_el_helper()
+    {
+        foreach (["\0", "\u{200B}", "\u{FEFF}", "\0 \u{200B}\u{FEFF}\u{00A0}"] as $solo_invisibles) {
+
+            $this->assertSame(['motivo' => null, 'error' => null], ChequeHelper::motivo_de_rechazo($solo_invisibles, null), 'Solo invisibles: ' . bin2hex($solo_invisibles));
+        }
+
+        $this->assertSame(['motivo' => 'Sin fondos', 'error' => null], ChequeHelper::motivo_de_rechazo("\u{FEFF}\0Sin fondos\u{200B}\0", null));
+
+        // Un invisible en `rechazado_observaciones` no tapa a `notas`: es "sin motivo" y se mira la otra.
+        $this->assertSame(['motivo' => 'Firma no coincide', 'error' => null], ChequeHelper::motivo_de_rechazo("\u{200B}", 'Firma no coincide'));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Ayudantes
     // ---------------------------------------------------------------------------------------------
