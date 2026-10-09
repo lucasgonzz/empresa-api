@@ -1852,19 +1852,6 @@ class SaleController extends Controller
     }
 
     /**
-     * Bytes ESC/POS (`GS v 0`) del logo del negocio para el header del Ticket 2.0.
-     *
-     * Mismo criterio de resolución que el logo del PDF: `AfipPdfHelper::resolve_logo_url()`
-     * (sucursal de la venta primero, negocio como fallback) — es el único lugar del código
-     * que decide de dónde sale el logo, no se duplica ese if acá. La conversión a bitmap la
-     * hace `SaleTicketRasterHelper`, en el backend, porque el navegador no puede leer los
-     * píxeles de una imagen de otro origen sin CORS habilitado.
-     *
-     * @param int|string $sale_id Id de la venta del usuario autenticado.
-     * @param Request $request Query: ancho_mm (opcional, default 80).
-     * @return \Illuminate\Http\JsonResponse {has_logo: false} o {has_logo: true, raster_base64}.
-     */
-    /**
      * El ticket de comandera de la venta armado con un diseño de ticket (misión
      * diseno-ticket-comandera, 9/10/2026, contrato §3.6): los bytes ESC/POS en base64 que el Ticket
      * 2.0 manda a la impresora, o el texto para la vista previa del diseñador (`formato=texto`).
@@ -1899,6 +1886,19 @@ class SaleController extends Controller
         return response()->json($resultado['body'], $resultado['status']);
     }
 
+    /**
+     * Bytes ESC/POS (`GS v 0`) del logo del negocio para el header del Ticket 2.0.
+     *
+     * Mismo criterio de resolución que el logo del PDF: `AfipPdfHelper::resolve_logo_url()`
+     * (sucursal de la venta primero, negocio como fallback) — es el único lugar del código
+     * que decide de dónde sale el logo, no se duplica ese if acá. La conversión a bitmap la
+     * hace `SaleTicketRasterHelper`, en el backend, porque el navegador no puede leer los
+     * píxeles de una imagen de otro origen sin CORS habilitado.
+     *
+     * @param int|string $sale_id Id de la venta del usuario autenticado.
+     * @param Request $request Query: ancho_mm (opcional, default 80).
+     * @return \Illuminate\Http\JsonResponse {has_logo: false} o {has_logo: true, raster_base64}.
+     */
     function ticket_logo_raster($sale_id, Request $request)
     {
         $sale = Sale::where('user_id', $this->userId())
