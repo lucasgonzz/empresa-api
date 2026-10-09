@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\database;
 
 use App\Http\Controllers\Helpers\DatabaseHelper;
+use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderExtraCost;
@@ -26,6 +27,10 @@ class DatabaseProviderOrderHelper {
                 'provider_id'                               => $provider_order->provider_id,
                 'provider_order_status_id'                  => $provider_order->provider_order_status_id,
                 'days_to_advise'                            => $provider_order->days_to_advise,
+                // Mision factura-compra-tres-defectos (9/10/2026): la copia conservaba todo menos el
+                // modo de facturacion, y la compra copiada quedaba en NULL ("Seleccione"). Se copia
+                // el modo, y si el original no tenia uno valido, 'manual' (su comportamiento real).
+                'modo_facturacion'                          => ModoFacturacionHelper::normalizar($provider_order->modo_facturacion) ?? ModoFacturacionHelper::MANUAL,
                 'user_id'                                   => $provider_order->user_id,
                 'created_at'                                => $provider_order->created_at,
                 'updated_at'                                => $provider_order->updated_at,

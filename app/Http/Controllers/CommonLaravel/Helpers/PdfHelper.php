@@ -266,6 +266,32 @@ class PdfHelper {
 		$instance->Cell(85, 5, 'Pag '.$instance->PageNo(), $instance->b, 0, 'R');
 	}
 
+	/** Letra mínima (pt) hasta la que se achica el título del cuadradito central cuando no entra. */
+	const TITULO_LETRA_MINIMA = 7;
+
+	/**
+	 * El cuadradito central del encabezado: "A", "X", "NC", "Presupuesto", "Articulos entregados"...
+	 *
+	 * La caja es FIJA: 30 x 15 mm desde x=90, y=5, y la dibujan las cuatro Line() del final sin mirar
+	 * el texto. El texto va con MultiCell(30, $height), y el MultiCell del fpdf.php del proyecto, cuando
+	 * una palabra no entra en el ancho útil (30 - 2*cMargin), la corta POR CARÁCTER, y cada renglón
+	 * baja $height mm (15 por defecto). Con la letra por defecto (30 pt) cualquier título de más de una
+	 * letra se partía letra por letra hacia abajo, encima del cliente, de los artículos y de la firma:
+	 * al 9/10/2026, "Articulos entregados", "Entrega", "Orden de produccion", "Recibo de Pago",
+	 * "Venta Pre netos" y el "Presupuesto" de __base.
+	 *
+	 * Por eso, antes de dibujar, se mide si el título entra con la letra y el alto que pidió el
+	 * comprobante:
+	 *  - Si entra, el camino es EXACTAMENTE el de siempre (mismo SetFont, misma y, mismo MultiCell) y
+	 *    el PDF no cambia ni un byte. Es a propósito: por acá pasan ~20 comprobantes y las letras y
+	 *    los títulos que ya mandan title_font_size (Presupuesto 12, Cuenta corriente 12/5...) se ven
+	 *    bien; "mejorarlos" (por ejemplo centrándolos) cambiaría PDF que nadie pidió tocar.
+	 *  - Si no entra, se achica la letra de a 1 punto (hasta TITULO_LETRA_MINIMA) con el renglón
+	 *    proporcional a la letra, hasta que cada palabra entre entera y los renglones entren en los
+	 *    15 mm, y el bloque se centra en vertical adentro de la caja.
+	 *
+	 * Medir y dibujar usan la misma regla (APRENDER_NO_PARCHEAR, 18/9/2026): ver renglones_del_titulo().
+	 */
 	static function title($instance, $data) {
 		
 		$font_size = 30;
@@ -283,7 +309,18 @@ class PdfHelper {
 		$start_y = 5;
 		$start_x = 90;
 		$width = 30;
-		$instance->y = $start_y;
+		$box_height = 15;
+
+		$text_y = $start_y;
+
+		$ajuste = Self::ajuste_del_titulo($instance, $data['title'], $width, $box_height, $font_size, $height);
+		if (!is_null($ajuste)) {
+			$instance->SetFont('Arial', 'B', $ajuste['font_size']);
+			$height = $ajuste['height'];
+			$text_y = $start_y + $ajuste['margen_superior'];
+		}
+
+		$instance->y = $text_y;
 		$instance->x = $start_x;
 	    $instance->MultiCell(
 			$width, 
@@ -294,11 +331,118 @@ class PdfHelper {
 	    	false
 	    );
 	    $finish_x = $start_x + $width;
-	    $finish_y = $start_y + 15;
+	    $finish_y = $start_y + $box_height;
 		$instance->Line($start_x, $start_y, $finish_x, $start_y);
 		$instance->Line($finish_x, $start_y, $finish_x, $finish_y);
 		$instance->Line($finish_x, $finish_y, $start_x, $finish_y);
 		$instance->Line($start_x, $finish_y, $start_x, $start_y);
+	}
+
+	/**
+	 * Decide si el título del cuadradito central hay que achicarlo. Se llama con la letra pedida ya
+	 * puesta en $instance.
+	 *
+	 * Devuelve null si el título entra tal cual, si es null / vacío o si ya viene con la letra
+	 * mínima: title() sigue por el camino de siempre. Si no entra, devuelve la letra y el alto de renglón con los que sí entra, y cuánto
+	 * bajar el bloque para que quede centrado en la caja.
+	 *
+	 * El alto de renglón del achique es proporcional a la letra: el mm por punto que pidió el
+	 * comprobante, sin pasar del de la letra por defecto (15 mm / 30 pt). El tope es porque un
+	 * comprobante con letra chica y renglón de 15 (por ejemplo 10/15) nunca entraría en dos
+	 * renglones por más que se achicara la letra.
+	 *
+	 * Si ni con TITULO_LETRA_MINIMA entra (un título larguísimo), se dibuja con esa letra arrancando
+	 * arriba de la caja: se sale, pero mucho menos que con la letra pedida.
+	 */
+	static function ajuste_del_titulo($instance, $title, $width, $box_height, $font_size, $height) {
+		if (is_null($title) || $title === '') {
+			return null;
+		}
+
+		$ancho_util = $width - 2 * Self::margen_de_celda($instance);
+
+		$renglones = Self::renglones_del_titulo($instance, $title, $ancho_util, 1);
+		if (!is_null($renglones) && $renglones * $height <= $box_height) {
+			return null;
+		}
+
+		if ($font_size <= Self::TITULO_LETRA_MINIMA) {
+			return null;
+		}
+
+		$alto_por_punto = min($height / $font_size, 15 / 30);
+
+		$tamano = $font_size;
+		while ($tamano > Self::TITULO_LETRA_MINIMA) {
+			$tamano = max($tamano - 1, Self::TITULO_LETRA_MINIMA);
+			$alto = $tamano * $alto_por_punto;
+			$renglones = Self::renglones_del_titulo($instance, $title, $ancho_util, $tamano / $font_size);
+			if (!is_null($renglones) && $renglones * $alto <= $box_height) {
+				break;
+			}
+		}
+
+		$margen_superior = 0;
+		if (!is_null($renglones) && $renglones * $alto < $box_height) {
+			$margen_superior = ($box_height - $renglones * $alto) / 2;
+		}
+
+		return [
+			'font_size'			=> $tamano,
+			'height'			=> $alto,
+			'margen_superior'	=> $margen_superior,
+		];
+	}
+
+	/**
+	 * Cuántos renglones ocupa $text en un MultiCell de ancho útil $ancho_util, o null si alguna
+	 * palabra no entra entera (el MultiCell la cortaría por carácter).
+	 *
+	 * Corta igual que el MultiCell del fpdf.php del proyecto: por los "\n" y, adentro de cada
+	 * párrafo, por palabras, llenando cada renglón con todas las que entran. Y mide igual:
+	 * GetStringWidth() sobre el MISMO texto que recibe MultiCell, sin convertir el encoding
+	 * (ninguno de los dos decodifica UTF-8 en este fpdf.php; solo Cell() lo hace).
+	 *
+	 * Mide con la letra que tenga puesta $instance y multiplica por $escala: GetStringWidth() es
+	 * lineal en el tamaño de la letra, así que se prueba cada tamaño sin un SetFont() por intento
+	 * (cada SetFont() escribe un operador en la página).
+	 */
+	static function renglones_del_titulo($instance, $text, $ancho_util, $escala) {
+		$text = str_replace("\r", '', (string)$text);
+		if (substr($text, -1) === "\n") {
+			$text = substr($text, 0, -1);
+		}
+
+		$renglones = 0;
+		foreach (explode("\n", $text) as $parrafo) {
+			$renglones++;
+			$renglon = null;
+			foreach (explode(' ', $parrafo) as $palabra) {
+				if ($instance->GetStringWidth($palabra) * $escala > $ancho_util) {
+					return null;
+				}
+				$con_la_palabra = is_null($renglon) ? $palabra : $renglon.' '.$palabra;
+				if ($instance->GetStringWidth($con_la_palabra) * $escala > $ancho_util) {
+					$renglones++;
+					$renglon = $palabra;
+				} else {
+					$renglon = $con_la_palabra;
+				}
+			}
+		}
+
+		return $renglones;
+	}
+
+	/**
+	 * El cMargin de FPDF (el margen interno de Cell y MultiCell) es protected y no tiene getter. Se lee
+	 * de la instancia y no se asume el de por defecto (1.000125 mm) para medir con el mismo ancho
+	 * útil con el que corta el MultiCell.
+	 */
+	static function margen_de_celda($instance) {
+		$propiedad = new \ReflectionProperty($instance, 'cMargin');
+		$propiedad->setAccessible(true);
+		return $propiedad->getValue($instance);
 	}
 
 	static function cuadrante_derecho($instance, $data, $alto_imagen) {

@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
+use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
@@ -88,7 +89,20 @@ class ProviderOrderController extends Controller
 
         $model = ProviderOrderAltaHelper::crear([
             'user_id'                                   => $this->userId(),
-            'modo_facturacion'                          => $request->modo_facturacion,
+            /*
+             * 🔴 Una compra nueva arranca en 'automatico' (decisión de Lucas, misión
+             * factura-compra-tres-defectos, 9/10/2026). La SPA vieja manda `0` cuando el select
+             * quedó en "Seleccione", y hasta hoy ese `0` ya facturaba en automático —por el `0 ==
+             * 'automatico'` de PHP 7.4, ver ModoFacturacionHelper::normalizar()— pero guardaba
+             * "0" en la columna, así que al reabrir la compra no se veía en qué modo estaba. Ahora
+             * hace lo mismo y además queda guardado con su nombre. Cualquier valor que no sea uno
+             * de los tres modos (0, "0", "", null, la clave ausente) cae acá.
+             *
+             * Se resuelve en el controller y no en ProviderOrderAltaHelper a propósito: el otro
+             * llamador del helper (el asistente de WhatsApp) no manda modo y ahí el default es
+             * otro ('manual', ver el helper).
+             */
+            'modo_facturacion'                          => self::modo_facturacion_del_alta($request->modo_facturacion),
             'total_with_iva'                            => $request->total_with_iva,
             'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
             'provider_id'                               => $request->provider_id,
@@ -123,6 +137,21 @@ class ProviderOrderController extends Controller
         return response()->json(['model' => $this->fullModel('ProviderOrder', $id)], 200);
     }
 
+    /**
+     * El modo de facturación con el que nace una compra cargada desde la pantalla: el que eligió
+     * el usuario si es uno de los tres válidos, y 'automatico' si no eligió ninguno (ver el
+     * comentario en store()).
+     *
+     * @param  mixed  $modo  Lo que mandó la SPA.
+     * @return string
+     */
+    protected static function modo_facturacion_del_alta($modo)
+    {
+        $modo = ModoFacturacionHelper::normalizar($modo);
+
+        return is_null($modo) ? ModoFacturacionHelper::AUTOMATICO : $modo;
+    }
+
     public function update(Request $request, $id) {
 
         /*
@@ -147,7 +176,19 @@ class ProviderOrderController extends Controller
             $ya_se_actualizo_stock = $model->update_stock;
 
             $model->total_with_iva                              = $request->total_with_iva;
-            $model->modo_facturacion                            = $request->modo_facturacion;
+
+            /*
+             * Un modo que no es ninguno de los tres (el `"0"` de "Seleccione", un "" o la clave
+             * ausente) NO pisa el que la compra ya tenía (misión factura-compra-tres-defectos,
+             * 9/10/2026). Hasta hoy se guardaba tal cual y la compra quedaba sin modo; como esa
+             * basura no matcheaba ningún modo, se comportaba como 'manual' sin decirlo.
+             */
+            $modo_facturacion = ModoFacturacionHelper::normalizar($request->modo_facturacion);
+
+            if (!is_null($modo_facturacion)) {
+                $model->modo_facturacion                        = $modo_facturacion;
+            }
+
             $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
             $model->provider_id                                 = $request->provider_id;
             $model->provider_order_status_id                    = $request->provider_order_status_id;
@@ -224,6 +265,18 @@ class ProviderOrderController extends Controller
 
             ProviderOrderHelper::deleteCurrentAcount($model);
             ProviderOrderHelper::resetArticlesStock($model);
+
+            /*
+             * 🔴 Las facturas de la compra se van con ella, CON sus alícuotas (misión
+             * factura-compra-tres-defectos, 9/10/2026). `ProviderOrder` es borrado duro y ninguna
+             * de las dos tablas tiene clave foránea, así que hasta hoy la compra desaparecía y sus
+             * facturas quedaban vivas, con `user_id` e `issued_at`: la Posición Fiscal seguía
+             * sumando su IVA crédito y sus percepciones de una compra que ya no existía. Va adentro
+             * de la transacción y antes del delete: si algo corta, la compra y sus facturas vuelven
+             * juntas. Incluye los comprobantes aparte de los costos extra, que también cuelgan de
+             * la compra. Ver FacturaDeCompraHelper::borrar_facturas().
+             */
+            FacturaDeCompraHelper::borrar_facturas_de_la_compra($model->id);
 
             // if (!is_null($model->provider)) {
             //     $model->provider->pagos_checkeados = 0;
