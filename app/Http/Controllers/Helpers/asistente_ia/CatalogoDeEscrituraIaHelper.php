@@ -904,6 +904,8 @@ class CatalogoDeEscrituraIaHelper
         'client_offer'                 => 'tiene su herramienta (proponer_oferta)',
         'provider_order'               => 'compra con factura: tiene su herramienta y su store() abre transacción y toca stock y cuenta corriente',
         'pdf_column_profiles'          => 'diseños de PDF: tienen su herramienta (proponer_cambio_en_diseno_pdf)',
+        // Misión diseno-ticket-comandera (9/10/2026): `sheet_types` sumó user_id y `POST api/sheet-types`.
+        'sheet_types'                  => 'tipos de hoja: un ancho de comandera se agrega desde el formulario de Diseño de PDF ("+ Agregar un ancho de comandera"), no es un registro del negocio',
         // Del plan: próximas o fuera del alcance.
         'budget'                       => 'presupuesto: tan complejo como la venta, con renglones',
         'movimiento_caja'              => 'plata de caja',

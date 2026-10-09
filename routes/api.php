@@ -398,6 +398,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::put('sale/{sale_id}/delivery-info', 'SaleController@update_delivery_info');
     Route::get('sale/{sale_id}/ticket-2-logo', 'SaleController@ticket_logo_raster');
+    // Ticket de comandera armado con un diseño de ticket (misión diseno-ticket-comandera,
+    // 9/10/2026): los bytes ESC/POS (o el texto, con formato=texto) que el Ticket 2.0 manda a la
+    // impresora. Con un perfil sin diseño responde disenado:false y el SPA imprime el de siempre.
+    Route::get('sale/{sale_id}/ticket-comandera', 'SaleController@ticket_comandera');
     Route::post('sale/{sale_id}/send-client-mail', 'SaleController@send_client_mail');
     Route::post('sale/send-client-mail-bulk', 'SaleController@send_client_mail_bulk');
     Route::put('sale/{sale_id}/etiqueta-sender', 'SaleController@update_etiqueta_sender');
@@ -894,6 +898,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
     Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
+    // Tipos de hoja de los diseños de PDF: los del sistema y los anchos de comandera propios del
+    // negocio (misión diseno-ticket-comandera, 9/10/2026, contrato §3.1).
+    Route::get('sheet-types', 'SheetTypeController@index');
+    Route::post('sheet-types', 'SheetTypeController@store');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
     Route::post('etiqueta-medidas', 'EtiquetaMedidaController@store');
