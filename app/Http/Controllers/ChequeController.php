@@ -533,7 +533,29 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
         }
 
-        $model->delete();
+        /*
+         * Si es la copia emitida de un endoso que sigue pendiente, su recibido vuelve a la cartera en
+         * la misma transacción (misión cheque-endoso-deshacer-al-borrar-pago, 9/10/2026): hasta
+         * entonces quedaba endosado para siempre, fuera de la cartera y sin copia. Ver
+         * ChequeHelper::devolver_a_la_cartera_el_origen_de().
+         */
+        $user_id = $this->userId();
+
+        DB::transaction(function () use ($model, $user_id) {
+
+            // Releída con la fila bloqueada: si en el medio la marcaron pagada o rechazada, eso manda.
+            $copia = Cheque::where('id', $model->id)->lockForUpdate()->first();
+
+            if (is_null($copia)) {
+
+                return;
+            }
+
+            ChequeHelper::devolver_a_la_cartera_el_origen_de($copia, $user_id);
+
+            $copia->delete();
+        });
+
         return response(null, 200);
     }
 
