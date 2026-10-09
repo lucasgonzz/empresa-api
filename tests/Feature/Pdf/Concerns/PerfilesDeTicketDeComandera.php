@@ -63,8 +63,9 @@ trait PerfilesDeTicketDeComandera
 
     /**
      * Perfil de TICKET de comandera (venta) con las columnas Nombre (con salto de línea), Cant,
-     * Precio y Sub total en 10/2/6/6 medias columnas sobre el ancho del rollo (las de los perfiles
-     * por defecto), salvo que se pasen otras.
+     * Precio y Sub total en 10/2/6/6 medias columnas sobre el ancho del rollo, salvo que se pasen
+     * otras. Es un reparto de prueba que afirman los tests del motor (32), no el de los tickets por
+     * defecto (esos van en 9/3/6/6: PdfTicketComanderaSetupHelper).
      *
      * @param int        $owner_id
      * @param bool       $es_factura

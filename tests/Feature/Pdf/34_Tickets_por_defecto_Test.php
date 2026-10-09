@@ -110,10 +110,13 @@ class Tickets_por_defecto_Test extends TestCase
             $this->assertFalse($ticket->is_default_whatsapp);
             $this->assertFalse($ticket->is_default_tienda);
 
-            /** Nombre (con salto), Cant, Precio y Sub total en 10/2/6/6 medias sobre 80 mm. */
+            /**
+             * Nombre (con salto), Cant, Precio y Sub total en 9/3/6/6 medias sobre 80 mm (cambio de
+             * especificación del 9/10/2026: con 10/2/6/6 "Cant" quedaba en 3 caracteres).
+             */
             $this->assertSame([
-                'item_name' => [33, true],
-                'item_amount' => [7, false],
+                'item_name' => [30, true],
+                'item_amount' => [10, false],
                 'item_price' => [20, false],
                 'item_subtotal' => [20, false],
             ], $this->columnas_visibles($ticket));
@@ -137,14 +140,16 @@ class Tickets_por_defecto_Test extends TestCase
             $this->assertSame(55, (int) $ticket->paper_width_mm);
 
             $anchos = array_column($this->columnas_visibles($ticket), 0);
-            $this->assertSame([22, 5, 14, 14], $anchos);
+            /** round(9/3/6/6 × 55 / 24) = 21/7/14/14 = 56: el mm que sobra se le saca a Nombre (la que más subió). */
+            $this->assertSame([20, 7, 14, 14], $anchos);
+            $this->assertLessThanOrEqual(55, array_sum($anchos), 'La suma no pasa del rollo: no depende de la tolerancia.');
 
-            /** El diseñador los vuelve a leer como 10/2/6/6 medias columnas (D9). */
+            /** El diseñador los vuelve a leer como 9/3/6/6 medias columnas (D9). */
             $medias = [];
             foreach ($anchos as $ancho) {
                 $medias[] = max(1, (int) round($ancho * 24 / 55));
             }
-            $this->assertSame([10, 2, 6, 6], $medias);
+            $this->assertSame([9, 3, 6, 6], $medias);
         }
     }
 

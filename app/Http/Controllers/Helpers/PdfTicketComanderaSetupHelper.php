@@ -21,9 +21,10 @@ use Illuminate\Support\Facades\DB;
  * - venta, `is_afip_ticket` 0 (remito) o 1 (factura), "por defecto" en su clase (D5);
  * - tipo de hoja "Ticket 80 mm" (o "Ticket 55 mm" si el dueño tiene configurado un rollo de
  *   hasta 65 mm en `users.sale_ticket_width`), papel = ancho del rollo, margen 0;
- * - columnas visibles Nombre (con salto de línea), Cant, Precio y Sub total en 10/2/6/6 medias
- *   columnas sobre el ancho del rollo (Nombre se lleva lo que sobra, para que la suma cierre en el
- *   rollo); el resto del catálogo, no visible.
+ * - columnas visibles Nombre (con salto de línea), Cant, Precio y Sub total en 9/3/6/6 medias
+ *   columnas sobre el ancho del rollo, en mm con la regla del diseñador (la suma no pasa del
+ *   rollo); el resto del catálogo, no visible. 9/3/6/6 y no 10/2/6/6 (ajuste del 9/10/2026): con
+ *   2 medias "Cant" quedaba en 3 caracteres útiles a 80 mm ("Can") y en 1 a 55 mm.
  *
  * IDEMPOTENTE: si el dueño ya tiene un ticket de esa clase (el de una corrida anterior, uno que armó
  * él, o el que renombró), no se crea otro. Se puede correr las veces que haga falta.
@@ -43,8 +44,8 @@ class PdfTicketComanderaSetupHelper
 
     /** Medias columnas (de 24) de cada columna visible, en orden: Nombre, Cant, Precio, Sub total. */
     const MEDIAS_COLUMNAS = [
-        'Nombre del artículo' => 10,
-        'Cantidad' => 2,
+        'Nombre del artículo' => 9,
+        'Cantidad' => 3,
         'Precio unitario' => 6,
         'Subtotal línea' => 6,
     ];
@@ -75,6 +76,13 @@ class PdfTicketComanderaSetupHelper
 
         DB::beginTransaction();
         try {
+            /**
+             * Se bloquea la fila del dueño mientras se mira "ya tiene el ticket" y se crea: dos
+             * actualizaciones que corren a la vez sobre una base compartida (varios comercios en la
+             * misma base, el seeder de cada uno) no pueden ver las dos "no tiene" y crear dos.
+             */
+            User::query()->where('id', $owner->id)->lockForUpdate()->first();
+
             foreach ([false, true] as $es_factura) {
                 $ya_tiene = PdfColumnProfile::query()
                     ->where('user_id', $owner->id)
@@ -125,33 +133,24 @@ class PdfTicketComanderaSetupHelper
     /**
      * Las columnas visibles de los tickets por defecto, en el formato de
      * PdfColumnProfileSeederHelper::assign_profile_options(): cada una con los mm de sus medias
-     * columnas sobre el rollo (round(medias × ancho / 24), la cuenta del diseñador, D9) y Nombre con
-     * lo que sobra, así la suma es exactamente el ancho del rollo. 80 mm: 33/7/20/20; 55 mm:
-     * 22/5/14/14 (que el diseñador vuelve a leer como 10/2/6/6).
+     * columnas sobre el rollo con la MISMA regla que el diseñador (round(medias × ancho / 24) y, si
+     * la suma se pasa del rollo, 1 mm menos a la que más subió al redondear:
+     * PdfColumnProfileTicketHelper::mm_de_medias()). Así la suma nunca pasa del rollo y el alta no
+     * depende de la tolerancia de la validación. 80 mm: 30/10/20/20; 55 mm: 20/7/14/14 (que el
+     * diseñador vuelve a leer como 9/3/6/6).
      *
      * @param int $ancho_mm
      * @return array<int, array<string, mixed>>
      */
     public static function columnas($ancho_mm)
     {
-        $columnas = [];
-        $resto = (int) $ancho_mm;
-
-        foreach (self::MEDIAS_COLUMNAS as $nombre => $medias) {
-            if ($nombre === 'Nombre del artículo') {
-                continue;
-            }
-
-            $ancho = (int) round($medias * $ancho_mm / 24);
-            $resto -= $ancho;
-            $columnas[$nombre] = $ancho;
-        }
+        $mm = PdfColumnProfileTicketHelper::mm_de_medias(self::MEDIAS_COLUMNAS, (int) $ancho_mm);
 
         return [
-            ['name' => 'Nombre del artículo', 'width' => $resto, 'wrap_content' => true],
-            ['name' => 'Cantidad', 'width' => $columnas['Cantidad']],
-            ['name' => 'Precio unitario', 'width' => $columnas['Precio unitario']],
-            ['name' => 'Subtotal línea', 'width' => $columnas['Subtotal línea']],
+            ['name' => 'Nombre del artículo', 'width' => $mm['Nombre del artículo'], 'wrap_content' => true],
+            ['name' => 'Cantidad', 'width' => $mm['Cantidad']],
+            ['name' => 'Precio unitario', 'width' => $mm['Precio unitario']],
+            ['name' => 'Subtotal línea', 'width' => $mm['Subtotal línea']],
         ];
     }
 
