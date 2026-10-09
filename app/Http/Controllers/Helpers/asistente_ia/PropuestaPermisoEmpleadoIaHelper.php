@@ -9,6 +9,7 @@ use App\Models\AiMessageAction;
 use App\Models\PermissionEmpresa;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -252,6 +253,9 @@ class PropuestaPermisoEmpleadoIaHelper
      * quedaría con MENOS permisos de los que tenía y el endpoint no lo diría. Se lee la lista final
      * y se compara contra la esperada; si no coinciden, se lanza y el ejecutor revierte.
      *
+     * Y si `update()` contesta un error (422 por datos de la ficha que no sirven, 404), se lanza
+     * con SU motivo antes de comparar nada (ver el 🔴 de la llamada).
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
      * @return array  resultado {texto, ruta}
@@ -315,7 +319,7 @@ class PropuestaPermisoEmpleadoIaHelper
          * 🔴 SEGUNDA CAPA, Y NO ES REDUNDANTE: EL PAYLOAD SE REARMA CON EL EMPLEADO DE AHORA.
          *
          * `payload` lleva el MODELO ENTERO (nombre, teléfono, documento, sucursal, admin_access,
-         * vendedor, versiones) y `EmployeeController::update()` pisa cada columna con lo que le
+         * vendedor) y `EmployeeController::update()` pisa cada columna con lo que le
          * llega: confirmar con el payload congelado revierte, sin que nadie lo vea, todo lo que se
          * haya editado de esa ficha entre la propuesta y el clic. Es exactamente el problema que
          * PropuestaStockIaHelper::ejecutar_stock_en_deposito() resuelve rearmando, y acá duele más,
@@ -364,7 +368,36 @@ class PropuestaPermisoEmpleadoIaHelper
             return $persona;
         });
 
-        app(EmployeeController::class)->update($request, $employee_id);
+        $respuesta = app(EmployeeController::class)->update($request, $employee_id);
+
+        /*
+         * 🔴 SI `update()` NO GUARDÓ, SE DICE POR QUÉ, CON SU PROPIO MOTIVO.
+         *
+         * Desde la misión empleados-alta-y-edicion (9/10/2026) `update()` valida antes de escribir y
+         * puede contestar 422 (p. ej. un empleado viejo SIN documento cargado: nombre, documento y
+         * contraseña son obligatorios también al editar) o 404. Antes esa respuesta se ignoraba y
+         * lo que llegaba a la persona era la comparación de abajo: "el sistema no dejó los permisos
+         * como corresponde", que es engañoso — no es que los dejó mal, es que no guardó nada, y
+         * hay algo de la ficha para corregir. Como `update()` valida todo antes de tocar la base,
+         * un 4xx garantiza que no hubo escritura a medias.
+         */
+        if ($respuesta instanceof JsonResponse && $respuesta->getStatusCode() >= 400) {
+
+            $cuerpo = $respuesta->getData(true);
+
+            $motivo = is_array($cuerpo) && isset($cuerpo['message']) && is_string($cuerpo['message'])
+                ? trim($cuerpo['message'])
+                : '';
+
+            if ($motivo === '') {
+                $motivo = 'El sistema no dejó guardar la ficha de ' . $empleado->name;
+            }
+
+            throw new AccionIaException(
+                $respuesta->getStatusCode() < 500 ? 422 : 500,
+                rtrim($motivo, '.') . '. Corregilo en ABM > Empleados.'
+            );
+        }
 
         $quedaron = [];
 
@@ -412,6 +445,11 @@ class PropuestaPermisoEmpleadoIaHelper
      * de "lo que queremos cambiar": es la lista de lo que se borraría si no viajara. Por eso todas
      * salen del empleado tal como está hoy, y la única que cambia es `permissions`.
      *
+     * La excepción son `default_version` / `estable_version`: desde la misión
+     * empleados-alta-y-edicion (9/10/2026) `update()` las IGNORA, porque las escribe el admin en
+     * cada rotación de frente. Siguen viajando porque no molestan (igual que en la SPA, que manda
+     * el modelo entero), pero ya no son "una columna que se pisaría".
+     *
      * `permissions` va como array de OBJETOS (el endpoint lee `$permission['id']`), que es lo que
      * manda la SPA: `employee.js` no declara `send_belongs_to_many_ids_as`, así que la relación
      * viaja entera.
@@ -447,6 +485,7 @@ class PropuestaPermisoEmpleadoIaHelper
             'dias_alertar_empleados_ventas_no_cobradas' => $empleado->dias_alertar_empleados_ventas_no_cobradas,
             'ver_alertas_de_todos_los_empleados'        => $empleado->ver_alertas_de_todos_los_empleados,
             'puede_guardar_ventas_sin_cliente'          => $empleado->puede_guardar_ventas_sin_cliente,
+            // update() las ignora (las escribe el admin); viajan igual, como en la SPA.
             'default_version'                           => $empleado->default_version,
             'estable_version'                           => $empleado->estable_version,
             'seller_id'                                 => $empleado->seller_id,
