@@ -17,6 +17,7 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Los cheques que nacen de un método de pago de tipo cheque y, desde la misión
@@ -101,6 +102,21 @@ class ChequeHelper {
      * con un 500 (SQLSTATE 1406, Data too long).
      */
     const BYTES_MAXIMOS_NOTAS = 65535;
+
+    /**
+     * Largo máximo del motivo del rechazo de un cheque, en CARACTERES (misión cheque-motivo-rechazo,
+     * 9/10/2026). Es el mismo `maxlength` del textarea de RechazarCheque.vue. La columna es un `text`
+     * (65.535 bytes): 1000 caracteres de 4 bytes (emojis) son 4.000 bytes, así que con este tope no
+     * hace falta uno aparte en bytes como en las notas.
+     */
+    const MOTIVO_DE_RECHAZO_MAX = 1000;
+
+    /**
+     * Cache por proceso de columna_de_motivo_acepta_texto(): null hasta la primera consulta.
+     *
+     * @var bool|null
+     */
+    protected static $columna_de_motivo_acepta_texto = null;
 
     /**
      * Crea el cheque de una fila de método de pago de tipo cheque, o —si la fila trae `cheque_id`—
@@ -1746,6 +1762,170 @@ class ChequeHelper {
         $metodo = CurrentAcountPaymentMethod::find($id);
 
         return !is_null($metodo) && !is_null($metodo->type) && $metodo->type->slug == 'cheque';
+    }
+
+    /**
+     * El motivo del rechazo que trae `PUT cheque/rechazar` (misión cheque-motivo-rechazo, 9/10/2026),
+     * o por qué no se puede guardar.
+     *
+     * Se lee de DOS claves:
+     * - `rechazado_observaciones`: la canónica, la del nombre de la columna (y la que manda el
+     *   asistente por la acción de pantalla).
+     * - `notas`: la que manda RechazarCheque.vue, el viejo y el nuevo. 🔴 El SPA nuevo sigue
+     *   mandando `notas` A PROPÓSITO: en un deploy el SPA se sube ANTES que la API y la migración, y
+     *   la API vieja ignora `notas` sin romper; si el SPA mandara `rechazado_observaciones`, la API
+     *   vieja lo escribiría en la columna INT y el rechazo entero sería un 500 (SQLSTATE 1366, modo
+     *   estricto).
+     *
+     * La regla, clave por clave (primero `rechazado_observaciones` y, si no trae texto, `notas`):
+     * - null o ausente: no hay motivo en esa clave.
+     * - un texto o un número (entero o decimal): se recorta con trim(); si queda vacío, no hay.
+     * - cualquier otra cosa (un array, un booleano, un objeto): es un error, aunque la otra clave
+     *   traiga un texto válido. Un pedido malo no se esconde detrás de uno bueno.
+     * - un texto de más de MOTIVO_DE_RECHAZO_MAX caracteres: es un error.
+     * Si las dos claves traen texto, gana `rechazado_observaciones`.
+     *
+     * No escribe nada: el controller corta con 422 antes de marcar el cheque si hay error.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return array{motivo: string|null, error: string|null}  `motivo` null = sin motivo (el cheque
+     *                                                          se rechaza igual); `error` no null =
+     *                                                          422 sin escribir nada.
+     */
+    static function motivo_de_rechazo_del_pedido($request) {
+
+        foreach (['rechazado_observaciones', 'notas'] as $clave) {
+
+            list($motivo, $error) = self::leer_motivo_de_rechazo($request->input($clave));
+
+            if (!is_null($error)) {
+
+                return ['motivo' => null, 'error' => $error];
+            }
+
+            if (!is_null($motivo)) {
+
+                return ['motivo' => $motivo, 'error' => null];
+            }
+        }
+
+        return ['motivo' => null, 'error' => null];
+    }
+
+    /**
+     * Lee el valor de UNA clave del motivo del rechazo, con la regla de motivo_de_rechazo_del_pedido().
+     *
+     * @param  mixed  $valor
+     * @return array{0: string|null, 1: string|null}  [motivo, error]
+     */
+    protected static function leer_motivo_de_rechazo($valor) {
+
+        if (is_null($valor)) {
+
+            return [null, null];
+        }
+
+        // is_string / is_int / is_float y no is_scalar: un booleano es escalar y no es un motivo.
+        if (!is_string($valor) && !is_int($valor) && !is_float($valor)) {
+
+            return [null, 'El motivo del rechazo tiene que ser un texto.'];
+        }
+
+        $motivo = trim((string) $valor);
+
+        if ($motivo === '') {
+
+            return [null, null];
+        }
+
+        if (mb_strlen($motivo) > self::MOTIVO_DE_RECHAZO_MAX) {
+
+            return [null, 'El motivo del rechazo no puede superar los '.self::MOTIVO_DE_RECHAZO_MAX.' caracteres.'];
+        }
+
+        return [$motivo, null];
+    }
+
+    /**
+     * Le pone al cheque el motivo del rechazo, SIN guardar (el save() lo hace quien llama, junto con
+     * las otras marcas del rechazo), solo si la columna ya es de texto.
+     *
+     * 🔴 Si la columna todavía es INT —la ventana de un deploy entre que se sube la API y se corre la
+     * migración 2026_10_09_180000, o un cliente donde esa migración falló— NO lo asigna: escribir un
+     * texto en un INT con modo estricto es un 500 y el rechazo entero se perdería. El cheque se
+     * rechaza igual, sin motivo (exactamente lo de antes de esta misión), y queda un warning en el
+     * log con el id del cheque para saber qué motivo se perdió y dónde.
+     *
+     * ⚠️ La va a reutilizar el rechazo por proveedor de los emitidos (misión
+     * cheques-emitidos-rechazo-proveedor) con esta misma firma: no cambiarla sin avisar.
+     *
+     * @param  \App\Models\Cheque  $cheque  El cheque que se está rechazando.
+     * @param  string|null  $motivo  Lo que devolvió motivo_de_rechazo_del_pedido(); null = sin motivo.
+     * @return void
+     */
+    static function asignar_motivo_de_rechazo($cheque, $motivo) {
+
+        if (self::columna_de_motivo_acepta_texto()) {
+
+            $cheque->rechazado_observaciones = $motivo;
+
+            return;
+        }
+
+        if (!is_null($motivo)) {
+
+            Log::warning('Cheque rechazado SIN su motivo: cheques.rechazado_observaciones todavía no es de texto (falta la migración 2026_10_09_180000_rechazado_observaciones_texto_en_cheques).', [
+                'cheque_id' => $cheque->id,
+                'motivo'    => $motivo,
+            ]);
+        }
+    }
+
+    /**
+     * true si `cheques.rechazado_observaciones` ya es una columna de texto, mirando el tipo REAL en
+     * la base (Schema::getColumnType(), con doctrine/dbal). false si todavía es INT, si la columna no
+     * existe o si no se pudo leer el tipo. Se pregunta una sola vez por proceso (propiedad estática).
+     *
+     * 🔴 Antes de preguntar se le enseña a doctrine el tipo `enum` (como `string`): `cheques` tiene una
+     * columna enum (`estado_manual`), doctrine lee la tabla ENTERA para devolver una columna y, sin ese
+     * mapeo, Schema::getColumnType('cheques', ...) corta con "Unknown database type enum requested"
+     * (medido el 9/10/2026 contra empresa_testing_s21). Sin el mapeo esta función daría siempre false
+     * y el motivo no se guardaría nunca. Registrar el mapeo es idempotente y solo cambia cómo doctrine
+     * LEE el esquema en este proceso.
+     *
+     * @return bool
+     */
+    static function columna_de_motivo_acepta_texto() {
+
+        if (!is_null(self::$columna_de_motivo_acepta_texto)) {
+
+            return self::$columna_de_motivo_acepta_texto;
+        }
+
+        $acepta_texto = false;
+
+        try {
+
+            if (Schema::hasColumn('cheques', 'rechazado_observaciones')) {
+
+                DB::connection()->getDoctrineConnection()->getDatabasePlatform()->registerDoctrineTypeMapping('enum', 'string');
+
+                // doctrine devuelve `text` para TEXT/MEDIUMTEXT/LONGTEXT y `string` para VARCHAR.
+                $acepta_texto = in_array(Schema::getColumnType('cheques', 'rechazado_observaciones'), ['text', 'string'], true);
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('No se pudo leer el tipo de cheques.rechazado_observaciones: el motivo del rechazo no se guarda.', [
+                'error' => $e->getMessage(),
+            ]);
+
+            $acepta_texto = false;
+        }
+
+        self::$columna_de_motivo_acepta_texto = $acepta_texto;
+
+        return $acepta_texto;
     }
 
 }
