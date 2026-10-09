@@ -2867,6 +2867,16 @@ class SembrarDatosDePrueba extends Command
                 DeleteModelsHelper::process_delete('provider_order', $provider_order_ids, true);
             }
 
+            /*
+                🔴 Los cheques se borran ANTES que los gastos y los movimientos de cuenta corriente
+                (misión cheque-endoso-deshacer-al-borrar-pago, 9/10/2026). Desde entonces borrar un
+                gasto o un cobro deshace sus cheques y FRENA con 422 si alguno ya se cobró, se rechazó
+                o se endosó, que es justo lo que deja sembrar_cheques_con_ciclo(): esos borrados no
+                miran la respuesta, así que los cobros quedaban vivos después del reseteo. Como acá
+                los cheques se van todos igual, primero se borran y después nada los frena.
+            */
+            Cheque::where('user_id', $user_id)->delete();
+
             $expense_controller = new ExpenseController();
             $expense_ids = Expense::where('user_id', $user_id)->pluck('id')->toArray();
             foreach ($expense_ids as $expense_id) {
@@ -2882,11 +2892,10 @@ class SembrarDatosDePrueba extends Command
                 $current_acount_controller->delete($request, $model_name, $current_acount->id);
             }
 
-            // Cheques, presupuestos y comprobantes fiscales sembrados por este comando: no tienen
-            // el mismo riesgo de descuadrar una cuenta corriente que Sale/CurrentAcount/Expense
-            // (ya se borraron arriba, con su flujo real), así que un delete directo por lote es
-            // seguro acá.
-            Cheque::where('user_id', $user_id)->delete();
+            // Presupuestos y comprobantes fiscales sembrados por este comando (los cheques ya se
+            // borraron antes de los gastos): no tienen el mismo riesgo de descuadrar una cuenta
+            // corriente que Sale/CurrentAcount/Expense (ya se borraron arriba, con su flujo real),
+            // así que un delete directo por lote es seguro acá.
             Budget::whereIn('num', range(900000, 900010))->where('user_id', $user_id)->delete();
             ProviderOrderAfipTicket::where('user_id', $user_id)->delete();
 

@@ -482,6 +482,194 @@ class Borrar_el_movimiento_deshace_sus_cheques_Test extends ChequesTestCase
     }
 
     /**
+     * Un pago con DOS filas de cheque —un endoso y un cheque nuevo—: al borrarlo, el recibido vuelve a
+     * la cartera y se van las dos emitidas.
+     *
+     * @test
+     */
+    public function el_pago_con_un_endoso_y_un_cheque_nuevo_deshace_los_dos()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente dos filas ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor dos filas ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7014']);
+
+        $filas = [
+            $this->fila_de_pago($this->claves_de_endoso($recibido->fresh())),
+            $this->fila_de_pago([
+                'numero'        => '7015',
+                'banco'         => 'Banco Provincia',
+                'amount'        => 10000,
+                'fecha_emision' => Carbon::today()->format('Y-m-d'),
+                'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
+            ]),
+        ];
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, $filas));
+
+        $response->assertStatus(201);
+
+        $pago_id = (int) $response->json('current_acount.id');
+        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
+
+        $emitidos = Cheque::where('current_acount_id', $pago_id)->where('user_id', $this->dueno->id)->pluck('id')->all();
+
+        $this->assertCount(2, $emitidos);
+
+        $this->borrar_movimiento('provider', $pago_id)->assertStatus(200);
+
+        $this->assertEquals(0, Cheque::whereIn('id', $emitidos)->count());
+        $this->assertNull($recibido->fresh()->endosado_a_provider_id);
+        $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar());
+    }
+
+    /**
+     * Un endoso de ANTES del 21/9/2026: la copia nació sin `endosado_desde_cheque_id` (el botón viejo
+     * no lo escribía). El recibido se encuentra por proveedor, número y monto y vuelve a la cartera.
+     *
+     * @test
+     */
+    public function un_endoso_viejo_sin_vinculo_tambien_se_deshace()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente endoso viejo ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor endoso viejo ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7016']);
+
+        list($pago, $copia) = $this->endosar_en_pago($recibido, $proveedor, $cuenta_proveedor);
+
+        // El estado que dejaba el endoso viejo, y que ningún endpoint de hoy deja: la copia sin vínculo.
+        Cheque::where('id', $copia->id)->update(['endosado_desde_cheque_id' => null]);
+
+        $this->borrar_movimiento('provider', $pago->id)->assertStatus(200);
+
+        $this->assertNull(Cheque::find($copia->id));
+        $this->assertNull($recibido->fresh()->endosado_a_provider_id);
+        $this->assertContains($recibido->id, $this->ids_disponibles_para_endosar());
+    }
+
+    /**
+     * Un recibido que quedó endosado SIN copia (su pago y su copia se borraron antes de esta misión,
+     * o es un dato sembrado) no frena el borrado de su cobro: si frenara, el aviso mandaría a borrar
+     * un pago que ya no existe y el cobro no se podría borrar nunca.
+     *
+     * @test
+     */
+    public function el_cobro_cuyo_cheque_quedo_endosado_sin_copia_se_borra()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente endoso huérfano ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor endoso huérfano ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7017']);
+
+        list($pago, $copia) = $this->endosar_en_pago($recibido, $proveedor, $cuenta_proveedor);
+
+        // Lo que dejaba el borrado de antes, a mano: el pago y la copia se van, el recibido queda marcado.
+        Cheque::where('id', $copia->id)->delete();
+        $pago->current_acount_payment_methods()->detach();
+        CurrentAcount::where('id', $pago->id)->delete();
+
+        $this->assertEquals($proveedor->id, $recibido->fresh()->endosado_a_provider_id);
+
+        $this->borrar_movimiento('client', $recibido->current_acount_id)->assertStatus(200);
+
+        $this->assertNull(CurrentAcount::find($recibido->current_acount_id));
+        $this->assertNull(Cheque::find($recibido->id));
+    }
+
+    /**
+     * La copia sigue viva pero su pago ya no (se borró antes de esta misión): el aviso del cobro manda
+     * a borrar la copia, y después de borrarla el cobro se borra.
+     *
+     * @test
+     */
+    public function si_la_copia_vive_sin_su_pago_el_aviso_manda_a_borrar_la_copia()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente copia sin pago ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor copia sin pago ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7018']);
+
+        list($pago, $copia) = $this->endosar_en_pago($recibido, $proveedor, $cuenta_proveedor);
+
+        $pago->current_acount_payment_methods()->detach();
+        CurrentAcount::where('id', $pago->id)->delete();
+
+        $response = $this->borrar_movimiento('client', $recibido->current_acount_id);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('eliminá primero su copia en Tesorería → Cheques → Emitidos', (string) $response->json('message'));
+
+        $this->deleteJson('api/cheque/' . $copia->id)->assertStatus(200);
+
+        $this->assertTrue(\App\Http\Controllers\Helpers\ChequeHelper::en_cartera($recibido->fresh()));
+
+        $this->borrar_movimiento('client', $recibido->current_acount_id)->assertStatus(200);
+
+        $this->assertNull(Cheque::find($recibido->id));
+    }
+
+    /**
+     * El cobro cuyo cheque se endosó en un GASTO: el aviso nombra el gasto.
+     *
+     * @test
+     */
+    public function el_cobro_cuyo_cheque_se_endoso_en_un_gasto_no_se_borra()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente endoso en gasto ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7019']);
+
+        list($gasto, $copia) = $this->endosar_en_gasto($recibido);
+
+        $response = $this->borrar_movimiento('client', $recibido->current_acount_id);
+
+        $response->assertStatus(422);
+        $this->assertEquals(
+            'No se puede eliminar este cobro: el cheque N° 7019 que entró con él ya se endosó en el gasto N° ' . $gasto->num . ' (eliminá primero ese gasto).',
+            $response->json('message')
+        );
+        $this->assertNotNull(CurrentAcount::find($recibido->current_acount_id));
+        $this->assertEquals($gasto->id, $recibido->fresh()->endosado_en_expense_id);
+        $this->assertNotNull(Cheque::find($copia->id));
+    }
+
+    /**
+     * El cheque NUEVO de un pago a proveedor que ya se marcó pagado frena el borrado del pago.
+     *
+     * @test
+     */
+    public function el_pago_cuyo_cheque_nuevo_ya_se_pago_no_se_borra()
+    {
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor cheque pagado ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $fila = $this->fila_de_pago([
+            'numero'        => '7020',
+            'banco'         => 'Banco Nación',
+            'fecha_emision' => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
+        ]);
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
+
+        $response->assertStatus(201);
+
+        $pago_id = (int) $response->json('current_acount.id');
+        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
+
+        $emitido = Cheque::where('current_acount_id', $pago_id)->where('user_id', $this->dueno->id)->first();
+
+        $this->putJson('api/cheque/pagar', ['cheque_id' => $emitido->id, 'caja_id' => 0])->assertStatus(200);
+
+        $response = $this->borrar_movimiento('provider', $pago_id);
+
+        $response->assertStatus(422);
+        $this->assertEquals('No se puede eliminar este pago: el cheque N° 7020 que se entregó en él ya figura como pagado.', $response->json('message'));
+        $this->assertNotNull(CurrentAcount::find($pago_id));
+        $this->assertNotNull(Cheque::find($emitido->id));
+    }
+
+    /**
      * Endosa un recibido en un pago a proveedor por `POST current-acount/pago`, como la pantalla.
      *
      * @param Cheque $recibido

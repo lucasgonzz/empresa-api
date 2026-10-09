@@ -543,9 +543,17 @@ class ChequeController extends Controller
 
         DB::transaction(function () use ($model, $user_id) {
 
-            ChequeHelper::devolver_a_la_cartera_el_origen_de($model, $user_id);
+            // Releída con la fila bloqueada: si en el medio la marcaron pagada o rechazada, eso manda.
+            $copia = Cheque::where('id', $model->id)->lockForUpdate()->first();
 
-            $model->delete();
+            if (is_null($copia)) {
+
+                return;
+            }
+
+            ChequeHelper::devolver_a_la_cartera_el_origen_de($copia, $user_id);
+
+            $copia->delete();
         });
 
         return response(null, 200);

@@ -436,7 +436,7 @@ class ChequeHelper {
 
         $nacidos = self::cheques_del_movimiento($model, $user_id, true);
 
-        $problemas = self::problemas_de_los_cheques_del_movimiento($nacidos);
+        $problemas = self::problemas_de_los_cheques_del_movimiento($nacidos, $user_id);
 
         if (count($problemas)) {
 
@@ -470,7 +470,7 @@ class ChequeHelper {
      */
     static function problemas_para_borrar_el_movimiento($model, $user_id) {
 
-        return self::problemas_de_los_cheques_del_movimiento(self::cheques_del_movimiento($model, $user_id));
+        return self::problemas_de_los_cheques_del_movimiento(self::cheques_del_movimiento($model, $user_id), $user_id);
     }
 
     /**
@@ -516,29 +516,12 @@ class ChequeHelper {
      */
     static function devolver_a_la_cartera_el_origen_de(Cheque $copia, $user_id) {
 
-        if ($copia->tipo !== 'emitido' || empty($copia->endosado_desde_cheque_id) || !is_null($copia->estado_manual)) {
+        if (!is_null($copia->estado_manual)) {
 
             return false;
         }
 
-        $q = Cheque::where('user_id', $user_id)
-                    ->where('id', $copia->endosado_desde_cheque_id)
-                    ->where('tipo', 'recibido');
-
-        if (!is_null($copia->expense_id)) {
-
-            $q->where('endosado_en_expense_id', $copia->expense_id);
-
-        } elseif (!empty($copia->provider_id)) {
-
-            $q->where('endosado_a_provider_id', $copia->provider_id);
-
-        } else {
-
-            return false;
-        }
-
-        $origen = $q->lockForUpdate()->first();
+        $origen = self::origen_de_la_copia($copia, $user_id, true);
 
         if (is_null($origen)) {
 
@@ -546,6 +529,114 @@ class ChequeHelper {
         }
 
         return self::devolver_a_la_cartera($origen, [$copia->id], $user_id);
+    }
+
+    /**
+     * El recibido del que salió una copia EMITIDA, siempre del dueño y solo si su marca apunta al
+     * mismo destino que la copia (el proveedor o el gasto). null si la copia no es de un endoso.
+     *
+     * 🔴 Los endosos de ANTES del 21/9/2026 no tienen vínculo: el botón Endosar del módulo armaba la
+     * copia sin `endosado_desde_cheque_id` (la columna nació con la misión cheques-endoso-y-bancos y
+     * no se completó para atrás). Para esas copias el recibido se busca por lo que el viejo endoso sí
+     * copiaba —proveedor, número y monto—, entre los recibidos endosados a ese proveedor que no
+     * tienen ninguna copia vinculada, y solo si hay EXACTAMENTE uno: con dos candidatos no se adivina
+     * y el recibido queda como está. Sin esto, borrar uno de esos pagos borraba la copia y dejaba el
+     * recibido endosado sin copia (lo vio el chequeo independiente de la misión).
+     *
+     * @param  \App\Models\Cheque  $copia
+     * @param  int  $user_id
+     * @param  bool  $bloquear  true adentro de una transacción (SELECT ... FOR UPDATE).
+     * @return \App\Models\Cheque|null
+     */
+    protected static function origen_de_la_copia(Cheque $copia, $user_id, $bloquear = false) {
+
+        if ($copia->tipo !== 'emitido') {
+
+            return null;
+        }
+
+        $q = Cheque::where('cheques.user_id', $user_id)
+                    ->where('cheques.tipo', 'recibido');
+
+        if (!is_null($copia->expense_id)) {
+
+            $q->where('cheques.endosado_en_expense_id', $copia->expense_id);
+
+        } elseif (!empty($copia->provider_id)) {
+
+            $q->where('cheques.endosado_a_provider_id', $copia->provider_id);
+
+        } else {
+
+            return null;
+        }
+
+        if (!empty($copia->endosado_desde_cheque_id)) {
+
+            $q->where('cheques.id', $copia->endosado_desde_cheque_id);
+
+            if ($bloquear) {
+
+                $q->lockForUpdate();
+            }
+
+            return $q->first();
+        }
+
+        // Endoso viejo, sin vínculo. Los endosos en un gasto nacieron todos con vínculo (21/9/2026).
+        if (!is_null($copia->expense_id) || trim((string) $copia->numero) === '') {
+
+            return null;
+        }
+
+        $q->where('cheques.numero', $copia->numero)
+          ->where('cheques.amount', $copia->amount)
+          ->whereNotExists(function ($sub) {
+              $sub->select(DB::raw(1))
+                  ->from('cheques as copias')
+                  ->whereColumn('copias.endosado_desde_cheque_id', 'cheques.id');
+          });
+
+        if ($bloquear) {
+
+            $q->lockForUpdate();
+        }
+
+        $candidatos = $q->orderBy('cheques.id')->limit(2)->get();
+
+        return $candidatos->count() === 1 ? $candidatos->first() : null;
+    }
+
+    /**
+     * La copia EMITIDA que hoy representa a un recibido endosado: la vinculada por
+     * `endosado_desde_cheque_id` o, para un endoso de antes del 21/9/2026, la que coincide en
+     * proveedor, número y monto sin vínculo (ver origen_de_la_copia()). null si el recibido quedó
+     * endosado SIN copia: su pago o su copia se borraron antes de esta misión, o es un dato sembrado.
+     *
+     * @param  \App\Models\Cheque  $recibido
+     * @param  int  $user_id
+     * @return \App\Models\Cheque|null
+     */
+    protected static function copia_viva_de(Cheque $recibido, $user_id) {
+
+        $copia = Cheque::where('user_id', $user_id)
+                        ->where('endosado_desde_cheque_id', $recibido->id)
+                        ->orderBy('id')
+                        ->first();
+
+        if (!is_null($copia) || empty($recibido->endosado_a_provider_id) || trim((string) $recibido->numero) === '') {
+
+            return $copia;
+        }
+
+        return Cheque::where('user_id', $user_id)
+                        ->where('tipo', 'emitido')
+                        ->whereNull('endosado_desde_cheque_id')
+                        ->where('provider_id', $recibido->endosado_a_provider_id)
+                        ->where('numero', $recibido->numero)
+                        ->where('amount', $recibido->amount)
+                        ->orderBy('id')
+                        ->first();
     }
 
     /**
@@ -632,9 +723,9 @@ class ChequeHelper {
     /**
      * Los recibidos que se endosaron EN el movimiento y por lo tanto vuelven a la cartera al
      * borrarlo: en un gasto, los marcados con `endosado_en_expense_id` = el gasto; en un pago a
-     * proveedor, los orígenes de sus copias (`endosado_desde_cheque_id`) que siguen marcados a ESE
-     * proveedor. La marca del pago a proveedor guarda solo el proveedor, no el pago: el camino del
-     * pago al recibido es la copia.
+     * proveedor, los orígenes de sus copias que siguen marcados a ESE proveedor (origen_de_la_copia(),
+     * que también encuentra los de los endosos viejos sin vínculo). La marca del pago a proveedor
+     * guarda solo el proveedor, no el pago: el camino del pago al recibido es la copia.
      *
      * @param  mixed  $model
      * @param  \Illuminate\Support\Collection  $nacidos  Lo que devolvió cheques_del_movimiento().
@@ -644,36 +735,38 @@ class ChequeHelper {
      */
     protected static function origenes_endosados_en($model, $nacidos, $user_id, $bloquear = false) {
 
-        $q = Cheque::where('user_id', $user_id)
-                    ->where('tipo', 'recibido');
-
         if ($model instanceof Expense) {
 
-            $q->where('endosado_en_expense_id', $model->id);
+            $q = Cheque::where('user_id', $user_id)
+                        ->where('tipo', 'recibido')
+                        ->where('endosado_en_expense_id', $model->id);
 
-        } elseif ($model instanceof CurrentAcount && !empty($model->provider_id)) {
+            if ($bloquear) {
 
-            $ids = $nacidos->pluck('endosado_desde_cheque_id')->filter()->values()->all();
-
-            if (!count($ids)) {
-
-                return collect();
+                $q->lockForUpdate();
             }
 
-            $q->whereIn('id', $ids)
-              ->where('endosado_a_provider_id', $model->provider_id);
-
-        } else {
-
-            return collect();
+            return $q->orderBy('id')->get();
         }
 
-        if ($bloquear) {
+        $origenes = collect();
 
-            $q->lockForUpdate();
+        if (!($model instanceof CurrentAcount) || empty($model->provider_id)) {
+
+            return $origenes;
         }
 
-        return $q->orderBy('id')->get();
+        foreach ($nacidos as $copia) {
+
+            $origen = self::origen_de_la_copia($copia, $user_id, $bloquear);
+
+            if (!is_null($origen) && !$origenes->contains('id', $origen->id)) {
+
+                $origenes->push($origen);
+            }
+        }
+
+        return $origenes;
     }
 
     /**
@@ -681,14 +774,19 @@ class ChequeHelper {
      * comerciante y sin mayúscula inicial (van después de "No se puede eliminar este pago: ").
      *
      * - Un recibido (nació de un cobro): ya endosado a un proveedor o en un gasto, cobrado o
-     *   rechazado. El endoso se mira primero: es lo que dice adónde fue el cheque.
+     *   rechazado. El endoso se mira primero: es lo que dice adónde fue el cheque. Un endoso SIN copia
+     *   viva (copia_viva_de() da null: su pago o su copia se borraron antes del 9/10/2026, o es un
+     *   dato sembrado) no frena: el cheque no está en manos de nadie y, si se frenara, el aviso
+     *   mandaría a borrar un pago que ya no existe y el cobro no se podría borrar nunca. Si la copia
+     *   vive pero su pago o su gasto ya no, el aviso manda a borrar la copia.
      * - Un emitido (cheque nuevo o copia de un endoso): pagado (`estado_manual = cobrado`, que es
      *   como lo marca ChequeController::pagar()) o rechazado.
      *
      * @param  \Illuminate\Support\Collection  $nacidos
+     * @param  int  $user_id
      * @return array<int, string>
      */
-    protected static function problemas_de_los_cheques_del_movimiento($nacidos) {
+    protected static function problemas_de_los_cheques_del_movimiento($nacidos, $user_id) {
 
         $problemas = [];
 
@@ -698,20 +796,37 @@ class ChequeHelper {
 
             if ($cheque->tipo === 'recibido') {
 
-                if (!empty($cheque->endosado_a_provider_id)) {
+                $copia = self::en_cartera($cheque) ? null : self::copia_viva_de($cheque, $user_id);
 
-                    $proveedor = Provider::withTrashed()->where('id', $cheque->endosado_a_provider_id)->value('name');
+                if (!is_null($copia)) {
 
-                    $problemas[] = $nombre.' que entró con él ya se endosó al proveedor '.(is_null($proveedor) ? 'que lo recibió' : $proveedor).' (eliminá primero ese pago)';
+                    if (!empty($cheque->endosado_a_provider_id)) {
 
-                    continue;
-                }
+                        $proveedor = Provider::withTrashed()->where('id', $cheque->endosado_a_provider_id)->value('name');
 
-                if (!is_null($cheque->endosado_en_expense_id)) {
+                        $donde = 'al proveedor '.(is_null($proveedor) ? 'que lo recibió' : $proveedor);
 
-                    $num = Expense::where('id', $cheque->endosado_en_expense_id)->value('num');
+                    } else {
 
-                    $problemas[] = $nombre.' que entró con él ya se endosó en '.(is_null($num) ? 'un gasto' : 'el gasto N° '.$num).' (eliminá primero ese gasto)';
+                        $num = Expense::where('id', $cheque->endosado_en_expense_id)->value('num');
+
+                        $donde = 'en '.(is_null($num) ? 'un gasto' : 'el gasto N° '.$num);
+                    }
+
+                    if (!is_null($copia->expense_id) && Expense::where('id', $copia->expense_id)->exists()) {
+
+                        $que_hacer = 'eliminá primero ese gasto';
+
+                    } elseif (!is_null($copia->current_acount_id) && CurrentAcount::where('id', $copia->current_acount_id)->exists()) {
+
+                        $que_hacer = 'eliminá primero ese pago';
+
+                    } else {
+
+                        $que_hacer = 'eliminá primero su copia en Tesorería → Cheques → Emitidos';
+                    }
+
+                    $problemas[] = $nombre.' que entró con él ya se endosó '.$donde.' ('.$que_hacer.')';
 
                     continue;
                 }
