@@ -9,6 +9,7 @@ use App\Models\AiMessageAction;
 use App\Models\PermissionEmpresa;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -23,23 +24,26 @@ use Illuminate\Support\Facades\Auth;
  * endpoint que la pantalla de Empleados.
  *
  * ══════════════════════════════════════════════════════════════════════════════════════════════
- * 🔴 TRES TRAMPAS DE ESE ENDPOINT, Y LAS TRES DEJAN A UNA PERSONA SIN PODER TRABAJAR
+ * 🔴 TRES TRAMPAS DE ESE ENDPOINT
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
- * 1. **`permissions` ES UN REEMPLAZO TOTAL.** `update()` hace `sync([])` y después un `attach()`
- *    por cada permiso del request. Mandar SOLO el permiso nuevo le saca al empleado TODOS los
- *    demás. Por eso acá se leen los actuales, se suma o se resta el que pidió el dueño, y se manda
- *    la LISTA COMPLETA. Y si `permissions` viene ausente, el `foreach` de `update()` revienta con
- *    un 500 — otra razón para mandarla siempre, aunque quede vacía.
+ * 1. **`permissions` ES UN REEMPLAZO TOTAL.** `update()` hace `sync()` con la lista que le llega:
+ *    mandar SOLO el permiso nuevo le saca al empleado TODOS los demás. Por eso acá se leen los
+ *    actuales, se suma o se resta el que pidió el dueño, y se manda la LISTA COMPLETA. (Si
+ *    `permissions` no viene como lista, `update()` no toca los permisos —desde el 1/10/2026; antes
+ *    reventaba con un 500—, pero acá se manda siempre: es justo lo que se quiere cambiar.)
  *
- * 2. **REESCRIBE LA CONTRASEÑA SIEMPRE**: `password = bcrypt($request->visible_password)`, sin
- *    mirar si vino. Con `visible_password` vacío, el empleado NO ENTRA MÁS. Acá se manda la
- *    `visible_password` que el empleado ya tiene y, 🔴 si no tiene ninguna, la carga se RECHAZA con
- *    el motivo: tocar sus permisos desde el chat le cambiaría la contraseña, y eso no lo pidió
- *    nadie. Ese caso se resuelve desde ABM > Empleados.
+ * 2. **REESCRIBE LA CONTRASEÑA EN CADA GUARDADO** (`password = Hash::make(visible_password)`), y
+ *    desde el 9/10/2026 (misión empleados-alta-y-edicion) EXIGE nombre, documento y contraseña:
+ *    con cualquiera de los tres vacío contesta 422 y NO ESCRIBE NADA (antes, con la contraseña
+ *    vacía, se la cambiaba y el empleado no entraba más). Acá se manda la `visible_password` que el
+ *    empleado ya tiene y, 🔴 si le falta la contraseña visible, el nombre o el documento, la carga se
+ *    RECHAZA de entrada con el motivo: así no se puede guardar su ficha, y eso se completa desde
+ *    ABM > Empleados, no desde el chat.
  *
- * 3. **USA `$request->id`, NO EL `{id}` DE LA URL.** Se mandan los dos y se verifica que coincidan
- *    antes de llamar: un payload sin `id` editaría un `User` nulo y tiraría un 500 sobre `null`.
+ * 3. **USA `$request->id`, NO EL `{id}` DE LA URL.** Se mandan los dos y tienen que coincidir.
+ *    Desde el 9/10/2026 un `id` ausente, o el de alguien que no es empleado del dueño, da 404
+ *    (antes era un 500 sobre `null`).
  *
  * ⚠️ Y una cuarta, que no es del endpoint sino del catálogo: la tabla de permisos de empresa es
  * `permission_empresas` (modelo `PermissionEmpresa`, pivot `permission_empresa_user`), NO
@@ -121,17 +125,16 @@ class PropuestaPermisoEmpleadoIaHelper
         }
 
         /*
-         * 🔴 LA GUARDA DE LA CONTRASEÑA (trampa 2). `update()` hace `bcrypt($request->visible_password)`
-         * SIEMPRE: si el empleado no tiene una cargada, cambiarle un permiso desde acá le cambiaría
-         * la contraseña y no podría entrar. Se corta con el motivo, antes de armar la tarjeta.
+         * 🔴 LA GUARDA DE LA FICHA (trampa 2). `update()` exige nombre, documento y contraseña y, si
+         * falta alguno, contesta 422 sin escribir nada. Este helper manda la ficha tal como está,
+         * así que una tarjeta armada para un empleado con la ficha incompleta no se podría
+         * confirmar nunca. Se corta acá, antes de armarla, diciendo qué falta y dónde se carga.
          */
-        if (trim((string) $empleado->visible_password) === '') {
+        $falta = self::falta_en_la_ficha($empleado);
 
-            return RespuestaDeCargaIa::error(
-                $empleado->name . ' no tiene la contraseña visible cargada en su ficha, y la pantalla que cambia los permisos '
-                . 'la reescribe en cada guardado: desde acá le cambiaría la contraseña y no podría entrar. '
-                . 'Ese cambio hay que hacerlo desde ABM > Empleados.'
-            );
+        if (!is_null($falta)) {
+
+            return RespuestaDeCargaIa::error($falta);
         }
 
         $actuales = self::permisos_actuales($empleado);
@@ -247,10 +250,14 @@ class PropuestaPermisoEmpleadoIaHelper
     /**
      * Aplica el cambio por `EmployeeController::update()` y CONFIRMA leyendo los permisos después.
      *
-     * 🔴 SE CONFIRMA EL RESULTADO, Y NO POR PROLIJIDAD: `update()` borra la lista con `sync([])` y
-     * después hace un `attach()` por permiso. Si algo fallara a mitad del `foreach`, el empleado
-     * quedaría con MENOS permisos de los que tenía y el endpoint no lo diría. Se lee la lista final
-     * y se compara contra la esperada; si no coinciden, se lanza y el ejecutor revierte.
+     * 🔴 SE CONFIRMA EL RESULTADO, Y NO POR PROLIJIDAD: `update()` REEMPLAZA la lista entera con un
+     * `sync()` (trampa 1), y lo que le importa a la persona es con qué permisos quedó el empleado, no
+     * que el endpoint haya contestado 200. Desde el 9/10/2026 `update()` valida antes de escribir y
+     * escribe en una transacción, pero esta verificación no depende de eso: se lee la lista final y
+     * se compara contra la esperada; si no coinciden, se lanza y el ejecutor revierte.
+     *
+     * Y si `update()` contesta un error (422 por datos de la ficha que no sirven, 404), se lanza
+     * con SU motivo antes de comparar nada (ver el 🔴 de la llamada).
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
@@ -290,14 +297,12 @@ class PropuestaPermisoEmpleadoIaHelper
             throw new AccionIaException(422, 'Ese empleado ya no está entre los de este negocio. Pedímelo de nuevo.');
         }
 
-        // La guarda de la contraseña, revisada de nuevo: la ficha pudo cambiar entre la propuesta y el clic.
-        if (trim((string) $empleado->visible_password) === '') {
+        // La guarda de la ficha, revisada de nuevo: la ficha pudo cambiar entre la propuesta y el clic.
+        $falta = self::falta_en_la_ficha($empleado);
 
-            throw new AccionIaException(
-                422,
-                $empleado->name . ' quedó sin la contraseña visible cargada, y guardar sus permisos desde acá se la cambiaría. '
-                . 'Hacelo desde ABM > Empleados.'
-            );
+        if (!is_null($falta)) {
+
+            throw new AccionIaException(422, $falta);
         }
 
         /*
@@ -315,7 +320,7 @@ class PropuestaPermisoEmpleadoIaHelper
          * 🔴 SEGUNDA CAPA, Y NO ES REDUNDANTE: EL PAYLOAD SE REARMA CON EL EMPLEADO DE AHORA.
          *
          * `payload` lleva el MODELO ENTERO (nombre, teléfono, documento, sucursal, admin_access,
-         * vendedor, versiones) y `EmployeeController::update()` pisa cada columna con lo que le
+         * vendedor) y `EmployeeController::update()` pisa cada columna con lo que le
          * llega: confirmar con el payload congelado revierte, sin que nadie lo vea, todo lo que se
          * haya editado de esa ficha entre la propuesta y el clic. Es exactamente el problema que
          * PropuestaStockIaHelper::ejecutar_stock_en_deposito() resuelve rearmando, y acá duele más,
@@ -364,7 +369,40 @@ class PropuestaPermisoEmpleadoIaHelper
             return $persona;
         });
 
-        app(EmployeeController::class)->update($request, $employee_id);
+        $respuesta = app(EmployeeController::class)->update($request, $employee_id);
+
+        /*
+         * 🔴 SI `update()` NO GUARDÓ, SE DICE POR QUÉ, CON SU PROPIO MOTIVO.
+         *
+         * Desde la misión empleados-alta-y-edicion (9/10/2026) `update()` valida antes de escribir y
+         * puede contestar 422 o 404. La ficha incompleta ya la frena `falta_en_la_ficha()` antes de
+         * llegar acá, pero quedan casos que solo ve `update()`: p. ej. un documento viejo guardado
+         * con espacios, que al recortarlo choca con el de otro usuario ("Ya hay un empleado con ese
+         * número de documento"). Antes esa respuesta se ignoraba y lo que llegaba a la persona era
+         * la comparación de abajo: "el sistema no dejó los permisos como corresponde", que es
+         * engañoso — no es que los dejó mal, es que no guardó nada, y hay algo de la ficha para
+         * corregir. Como `update()` valida todo antes de tocar la base, un error garantiza que no
+         * hubo escritura a medias.
+         *
+         * Siempre 422, con el motivo de `update()`: es el único status que el ejecutor convierte en
+         * "no se pudo, por esto" (`respuesta_de_negocio()` manda todo lo que no es 404 ni 422 a un
+         * 409 de "tarjeta resuelta", que acá sería falso). Un 500 de verdad no llega como respuesta:
+         * `update()` tira la excepción y la atrapa el ejecutor.
+         */
+        if ($respuesta instanceof JsonResponse && $respuesta->getStatusCode() >= 400) {
+
+            $cuerpo = $respuesta->getData(true);
+
+            $motivo = is_array($cuerpo) && isset($cuerpo['message']) && is_string($cuerpo['message'])
+                ? trim($cuerpo['message'])
+                : '';
+
+            if ($motivo === '') {
+                $motivo = 'El sistema no dejó guardar la ficha de ' . $empleado->name;
+            }
+
+            throw new AccionIaException(422, rtrim($motivo, '.') . '. Corregilo en ABM > Empleados.');
+        }
 
         $quedaron = [];
 
@@ -412,6 +450,13 @@ class PropuestaPermisoEmpleadoIaHelper
      * de "lo que queremos cambiar": es la lista de lo que se borraría si no viajara. Por eso todas
      * salen del empleado tal como está hoy, y la única que cambia es `permissions`.
      *
+     * La excepción son `default_version` / `estable_version`: desde la misión
+     * empleados-alta-y-edicion (9/10/2026) `update()` las IGNORA. `default_version` la escribe el
+     * admin en cada rotación de frente; `estable_version` es interna (la URL de un frente), el dueño
+     * no tiene qué poner ahí y se dejó de escribir desde la pantalla de Empleados para que nadie la
+     * cambie sin saber. Siguen viajando porque no molestan (igual que en la SPA, que manda el modelo
+     * entero), pero ya no son "una columna que se pisaría".
+     *
      * `permissions` va como array de OBJETOS (el endpoint lee `$permission['id']`), que es lo que
      * manda la SPA: `employee.js` no declara `send_belongs_to_many_ids_as`, así que la relación
      * viaja entera.
@@ -441,12 +486,13 @@ class PropuestaPermisoEmpleadoIaHelper
             'phone'                                     => $empleado->phone,
             'doc_number'                                => $empleado->doc_number,
             'address_id'                                => $empleado->address_id,
-            // 🔴 La de hoy: update() hace bcrypt() de esto SIEMPRE. Vacía = el empleado no entra más.
+            // 🔴 La de hoy: update() la vuelve a hashear en cada guardado, y vacía da 422 (trampa 2).
             'visible_password'                          => (string) $empleado->visible_password,
             'admin_access'                              => $empleado->admin_access,
             'dias_alertar_empleados_ventas_no_cobradas' => $empleado->dias_alertar_empleados_ventas_no_cobradas,
             'ver_alertas_de_todos_los_empleados'        => $empleado->ver_alertas_de_todos_los_empleados,
             'puede_guardar_ventas_sin_cliente'          => $empleado->puede_guardar_ventas_sin_cliente,
+            // update() las ignora (ver el docblock); viajan igual, como en la SPA.
             'default_version'                           => $empleado->default_version,
             'estable_version'                           => $empleado->estable_version,
             'seller_id'                                 => $empleado->seller_id,
@@ -484,6 +530,50 @@ class PropuestaPermisoEmpleadoIaHelper
                 AiMessageAction::ESTADO_VENCIDA
             );
         }
+    }
+
+    /**
+     * Lo que le falta a la ficha del empleado para que `EmployeeController::update()` la pueda
+     * guardar, como texto para la persona; null si está completa.
+     *
+     * Espejo de `EmployeeController::validar_datos_del_empleado()` (misión empleados-alta-y-edicion,
+     * 9/10/2026): nombre, documento y contraseña son obligatorios también al editar, y con
+     * cualquiera vacío `update()` contesta 422 sin escribir nada. Este helper manda la ficha TAL
+     * COMO ESTÁ (no puede inventar un documento ni una contraseña), así que si le falta algo, el
+     * cambio de permisos no se puede hacer desde el chat: se carga en ABM > Empleados.
+     *
+     * Se usa dos veces y no es redundante: al PROPONER, para no armar una tarjeta que no se va a
+     * poder confirmar nunca; y al CONFIRMAR, porque la ficha pudo cambiar en el medio.
+     *
+     * La contraseña se mira recortada (más estricto que `update()`, que solo rechaza la vacía): una
+     * "contraseña" de puros espacios tampoco es algo que el chat deba reescribir.
+     *
+     * @param  \App\Models\User  $empleado
+     * @return string|null
+     */
+    public static function falta_en_la_ficha(User $empleado)
+    {
+        $nombre = trim((string) $empleado->name);
+
+        if ($nombre === '') {
+
+            return 'Ese empleado no tiene el nombre cargado en su ficha, y sin eso no se pueden guardar sus permisos desde acá. '
+                . 'Cargáselo en ABM > Empleados.';
+        }
+
+        if (trim((string) $empleado->doc_number) === '') {
+
+            return $nombre . ' no tiene cargado el número de documento, y sin eso no se pueden guardar sus permisos desde acá. '
+                . 'Cargáselo en ABM > Empleados.';
+        }
+
+        if (trim((string) $empleado->visible_password) === '') {
+
+            return $nombre . ' no tiene la contraseña visible cargada en su ficha, y sin eso no se pueden guardar sus permisos desde acá. '
+                . 'Cargásela en ABM > Empleados.';
+        }
+
+        return null;
     }
 
     /**
