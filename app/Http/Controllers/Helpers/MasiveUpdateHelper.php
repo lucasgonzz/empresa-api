@@ -122,6 +122,20 @@ class MasiveUpdateHelper
             return self::respuesta_de_encolado(422, ['message' => 'Los cheques no se actualizan en forma masiva.']);
         }
 
+        /*
+         * 🔴 Los movimientos de caja tampoco (misión movimientos-caja-manuales, 9/10/2026), por el
+         * mismo motivo que los cheques: esta actualización resuelve los ids con find() sin dueño y
+         * asigna cualquier columna sin recalcular saldos, así que por acá se podía reescribir el
+         * movimiento de una venta, el de un turno ya arqueado o el de otro comercio, salteando todo
+         * lo que MovimientoCajaController::update() blinda (tenencia, origen, apertura vigente,
+         * importes y recálculo). Mismo corte: antes de buscar o encolar nada, para las dos
+         * entradas, comparando la clase resuelta en minúsculas.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\MovimientoCaja::class)) {
+            Log::info('Se interrumpio actualizacion: los movimientos de caja no se actualizan en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'Los movimientos de caja no se actualizan en forma masiva.']);
+        }
+
         $from_filter = (boolean) $from_filter;
         $models_id = is_array($models_id) ? $models_id : [];
         // Un filter_form ausente entra al search como lista vacía (sin filtros efectivos → 422),
