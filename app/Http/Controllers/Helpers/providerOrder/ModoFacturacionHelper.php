@@ -11,17 +11,72 @@ use Illuminate\Support\Facades\Log;
 
 class ModoFacturacionHelper
 {
+    /** El sistema arma la factura de la compra desde sus artículos. */
+    const AUTOMATICO = 'automatico';
+
+    /** El usuario carga la o las facturas a mano; el sistema no las toca. */
+    const MANUAL = 'manual';
+
+    /** La compra no tiene factura: se borran las que tuviera. */
+    const SIN_FACTURA = 'sin factura';
+
+    /**
+     * Los tres modos de facturación que existen (son las tres opciones del select de la SPA,
+     * `src/models/provider_order.js`). Cualquier otro valor en `provider_orders.modo_facturacion`
+     * es basura, no un cuarto modo.
+     */
+    const MODOS_VALIDOS = [self::AUTOMATICO, self::MANUAL, self::SIN_FACTURA];
+
+    /**
+     * Devuelve el modo si es uno de los tres válidos, o null si no lo es.
+     *
+     * 🔴 Por qué existe (misión `factura-compra-tres-defectos`, 9/10/2026). El select de la SPA
+     * arranca en la opción 0 ("Seleccione Modo Facturacion"), así que una compra guardada sin
+     * elegir modo viajaba con `modo_facturacion: 0` —entero—, y en PHP 7.4 `0 == 'automatico'` es
+     * VERDADERO (la cadena se convierte a número). El alta corría entonces la factura automática
+     * pero guardaba `"0"` en la columna; al reabrirla, `"0"` volvía a matchear la opción 0 y el
+     * select decía "Seleccione". Y en la edición la SPA ya mandaba `"0"` (string), que contra
+     * `'automatico'` da falso: la misma compra se comportaba como automática al nacer y como
+     * manual de ahí en adelante, sin que nada lo mostrara.
+     *
+     * Todo lo que decide por el modo pasa por acá y compara con `===`. La comparación es estricta
+     * también en el tipo (`in_array(..., true)`): un `0`, un `"0"`, un `""`, un `null` o un `false`
+     * no son un modo.
+     *
+     * @param  mixed  $modo
+     * @return string|null
+     */
+    public static function normalizar($modo)
+    {
+        if (is_string($modo) && in_array($modo, self::MODOS_VALIDOS, true)) {
+            return $modo;
+        }
+
+        return null;
+    }
+
     public static function check_modo_facturacion($provider_order, $helper): void
     {
-        if ($provider_order->modo_facturacion == 'automatico') {
+        /*
+         * Comparaciones ESTRICTAS contra el modo normalizado (ver `normalizar()`): un modo que no
+         * es ninguno de los tres no dispara nada, igual que 'manual'.
+         */
+        $modo = self::normalizar($provider_order->modo_facturacion);
+
+        if ($modo === self::AUTOMATICO) {
             self::calcular_iva($provider_order, $helper);
             return;
-        } else if ($provider_order->modo_facturacion == 'sin factura') {
-            ProviderOrderAfipTicket::where('provider_order_id', $provider_order->id)->delete();
+        } else if ($modo === self::SIN_FACTURA) {
+            /*
+             * Las facturas se van CON sus alícuotas (misión `factura-compra-tres-defectos`,
+             * 9/10/2026): antes acá se borraban solo las facturas y el desglose quedaba colgando de
+             * ids que ya no existían. Ver `FacturaDeCompraHelper::borrar_facturas()`.
+             */
+            FacturaDeCompraHelper::borrar_facturas_de_la_compra($provider_order->id);
         }
 
         // manual: no tocamos nada (el usuario carga tickets)
-        // not_invoiced: no tocamos nada (queda como está)
+        // cualquier otro valor: tampoco (es lo que hacía hasta hoy un modo que no era ninguno de los tres)
     }
 
     private static function calcular_iva(ProviderOrder $provider_order, $helper): void
@@ -48,9 +103,10 @@ class ModoFacturacionHelper
                                                 ->whereNull('provider_order_extra_cost_id')
                                                 ->get();
         $index = 0;
+        $sobrantes = [];
         foreach ($afip_tickets as $afip_ticket) {
             if ($index >= 1) {
-                $afip_ticket->delete();
+                $sobrantes[] = $afip_ticket->id;
             } else {
                 ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $afip_ticket->id)->delete();
                 $ticket = $afip_ticket;
@@ -58,6 +114,10 @@ class ModoFacturacionHelper
             }
             $index++;
         }
+
+        // Las facturas sobrantes se van CON sus alícuotas (misión `factura-compra-tres-defectos`,
+        // 9/10/2026): antes se borraba la factura sola y su desglose quedaba huérfano.
+        FacturaDeCompraHelper::borrar_facturas($sobrantes);
 
 
         // 2) crea 1 ticket "principal" vacío en caso de que no haya habido uno ya creado (usuario completa percepciones/retenciones/descripción/etc)
@@ -414,10 +474,10 @@ class ModoFacturacionHelper
             $query_huerfanos->whereNotIn('provider_order_extra_cost_id', $extra_cost_ids_vigentes);
         }
 
-        foreach ($query_huerfanos->get() as $huerfano) {
-            ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $huerfano->id)->delete();
-            $huerfano->delete();
-        }
+        // Con sus alícuotas, por el único lugar que borra facturas de compra (misión
+        // `factura-compra-tres-defectos`, 9/10/2026). Esta baja ya se acordaba del desglose; pasa
+        // por el helper para que no haya una sexta forma de borrar una factura.
+        FacturaDeCompraHelper::borrar_facturas($query_huerfanos->pluck('id')->all());
     }
 
     /**

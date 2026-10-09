@@ -82,9 +82,29 @@ class ProviderOrderAltaHelper
 
             $datos_created_at = is_null($created_at) ? [] : ['created_at' => $created_at];
 
+            /*
+             * 🔴 El modo de facturación sale normalizado: uno de los tres válidos, o 'manual' si
+             * no vino o no es ninguno (misión factura-compra-tres-defectos, 9/10/2026).
+             *
+             * 'manual' y no null, aunque hasta hoy este camino guardaba null: es EXACTAMENTE como
+             * se comportaba ese null —ModoFacturacionHelper no toca nada, y el escaneo de la
+             * factura (ProviderOrderScanController::aplicar_confirmacion(), pasos 5 y 8) la guarda
+             * completa sin pedir `pasar_a_manual`—, pero ahora se ve en la pantalla de la compra en
+             * vez de un "Seleccione". Verificado leyendo el escaneo: el paso 5 solo frena con
+             * 'sin factura' o 'automatico', y guardar_factura() solo se saltea los importes con
+             * 'automatico'; null y 'manual' caen en las mismas ramas.
+             *
+             * El que llama desde la pantalla (ProviderOrderController::store()) ya resuelve su
+             * propio default ('automatico') antes de llegar acá; el que no manda modo es el
+             * asistente de WhatsApp (PropuestaCompraConFacturaIaHelper), cuya compra nace vacía
+             * para colgarle una factura escaneada: si naciera en 'automatico', el escaneo no podría
+             * guardar los importes de esa factura sin pedirle al dueño que la pase a manual.
+             */
+            $modo_facturacion = ModoFacturacionHelper::normalizar(self::valor($datos, 'modo_facturacion'));
+
             $model = ProviderOrder::create(array_merge([
                 'num'                                       => $controller->num('provider_orders', $user_id),
-                'modo_facturacion'                          => self::valor($datos, 'modo_facturacion'),
+                'modo_facturacion'                          => is_null($modo_facturacion) ? ModoFacturacionHelper::MANUAL : $modo_facturacion,
                 'total_with_iva'                            => self::valor($datos, 'total_with_iva'),
                 'total_from_provider_order_afip_tickets'    => self::valor($datos, 'total_from_provider_order_afip_tickets'),
                 'provider_id'                               => self::valor($datos, 'provider_id'),

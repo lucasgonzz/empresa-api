@@ -95,6 +95,12 @@ class EmployeeSeeder extends Seeder
         $this->crear_empleados($models);
     }
 
+    /*
+        Misión permisos-navegacion-empleados (9/10/2026): los cuatro llevan `comprobantes.index`
+        porque todos tienen `sale.index` o `client.index`, que es el criterio de Lucas para
+        heredarlo. Este seeder lo corre `DemoSetupHelper` y la demo no corre el seeder suelto
+        `PermissionComprobantesIndexSeeder`: sin esto los empleados de las demos pierden Comprobantes.
+    */
     function empleados() {
 
         $models = [
@@ -115,6 +121,7 @@ class EmployeeSeeder extends Seeder
                     'client.index',
                     'client.update',
                     'sale.store',
+                    'comprobantes.index',
                 ],
             ],
             [
@@ -133,6 +140,7 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'comprobantes.index',
                 ],
             ],
             [
@@ -151,6 +159,7 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'comprobantes.index',
                 ],
             ],
             [
@@ -169,6 +178,7 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'comprobantes.index',
                 ],
             ],
         ];

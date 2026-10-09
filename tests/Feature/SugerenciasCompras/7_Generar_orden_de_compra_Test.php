@@ -206,6 +206,9 @@ class Generar_orden_de_compra_Test extends TestCase
         $this->assertEquals(0, (int) $order->generate_current_acount, 'No genera deuda hasta que se confirme.');
         $this->assertEquals(1, (int) $order->moneda_id);
         $this->assertEquals($suggestion->id, (int) $order->purchase_suggestion_id);
+        // Mision factura-compra-tres-defectos (9/10/2026): nace con un modo de facturacion que se ve
+        // al abrirla. En NULL el select decia "Seleccione" y la compra se comportaba como manual sin decirlo.
+        $this->assertSame('manual', $order->modo_facturacion);
     }
 
     /**

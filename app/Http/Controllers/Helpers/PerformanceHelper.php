@@ -261,7 +261,13 @@ class PerformanceHelper
 
         $this->total_iva_comprado = 0;
 
+        /*
+         * `deCompraExistente()` (misión factura-compra-tres-defectos, 9/10/2026): el IVA comprado
+         * del rendimiento del mes no puede sumar facturas de compras borradas ni facturas que nunca
+         * llegaron a colgar de una compra. Es la misma regla que la Posición Fiscal; ver el scope.
+         */
         $provider_order_afip_tickets = ProviderOrderAfipTicket::where('user_id', $this->user_id)
+                                    ->deCompraExistente()
                                     ->whereDate('issued_at', '>=', $this->mes_inicio)
                                     ->whereDate('issued_at', '<=', $this->mes_fin)
                                     ->get();
