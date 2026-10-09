@@ -99,10 +99,18 @@ class EmployeeController extends Controller
 
             /*
                 🔴 `default_version` y `estable_version` NO SE ESCRIBEN ACÁ, aunque vengan en el
-                pedido (la SPA manda el modelo entero). Las escribe el admin, en el dueño y en todos
-                sus empleados, en cada rotación de frente (`AdminSync\UpdateDefaultVersionController`).
-                Si este método las pisara, un listado cargado ANTES de la rotación devolvería al
-                empleado al frente viejo con solo guardarlo. Decisión de Lucas, 9/10/2026.
+                pedido (la SPA manda el modelo entero). Decisión de Lucas, 9/10/2026. Son dos casos
+                distintos:
+
+                - `default_version` la escribe el admin, en el dueño y en todos sus empleados, en
+                  cada rotación de frente (`AdminSync\UpdateDefaultVersionController`). Si este
+                  método la pisara, un listado cargado ANTES de la rotación devolvería al empleado al
+                  frente viejo con solo guardarlo.
+                - `estable_version` NO la escribe nadie más para un empleado (el admin no la toca;
+                  `UserController@update` la escribe solo para el usuario logueado, y Duplicar la
+                  copia del original). Es un dato interno —la URL de un frente— y el dueño no tiene
+                  qué poner ahí: se deja de escribir desde este formulario para que nadie la cambie
+                  sin saber. Si un empleado quedara con una vieja, se corrige en la base.
             */
             foreach ($this->perfil_del_empleado($request) as $columna => $valor) {
                 $model->{$columna} = $valor;
@@ -130,9 +138,11 @@ class EmployeeController extends Controller
      * persona nueva y los pide el formulario), la sesion (`session_id`, `login_at`...), y la caja
      * PROPIA (`cajas.employee_id`), que pertenece a un solo empleado.
      *
-     * Se hace en el API y no armando un "empleado nuevo" en la pantalla porque `store()` solo
-     * guarda un subconjunto de columnas: por ese camino se perdian el perfil de vendedor y las
-     * alertas.
+     * Se hizo en el API y no armando un "empleado nuevo" en la pantalla porque, cuando nació
+     * Duplicar (29/9/2026), `store()` solo guardaba un subconjunto de columnas: por ese camino se
+     * perdían el perfil de vendedor y las alertas. Desde el 9/10/2026 (misión
+     * empleados-alta-y-edicion) el alta guarda el perfil completo, pero Duplicar sigue en el API
+     * porque además copia las cajas y los permisos del original.
      *
      * @param  Request  $request  name, doc_number y visible_password (obligatorios); phone opcional.
      * @param  int  $id  Empleado a copiar. Tiene que ser del mismo dueno que el usuario logueado.
@@ -296,7 +306,8 @@ class EmployeeController extends Controller
             /*
                 🔴 Sin `default_version` / `estable_version`, aunque vengan: quedan en null y el
                 empleado usa las del dueño (`check_version.js` y `BtnVersionEstable.vue` de la SPA
-                caen al `owner`). Las escribe el admin en cada rotación de frente; ver update().
+                caen al `owner`). `default_version` la escribe el admin en cada rotación de frente;
+                `estable_version` es interna y no se carga desde este formulario. Ver update().
             */
             $model = User::create(array_merge([
                 'name'              => ucfirst($datos['name']),
@@ -334,14 +345,25 @@ class EmployeeController extends Controller
      *
      * - Los campos son texto: si llega otra cosa (un array, por ejemplo) se toma como vacío en vez
      *   de romper con un 500.
-     * - Nombre, documento y teléfono se recortan; la contraseña NO, como en `duplicate()`: lo que
-     *   la persona tipeó es la clave, espacios incluidos.
+     * - Nombre, documento y teléfono se recortan acá. La contraseña no se recorta acá, como en
+     *   `duplicate()`; ojo que en el camino HTTP igual llega recortada: el middleware global
+     *   `TrimStrings` (app/Http/Kernel.php) recorta todo el pedido salvo `password`,
+     *   `current_password` y `password_confirmation`, y `visible_password` no está en esa lista
+     *   (preexistente, no es de esta misión). El recorte de acá es el que vale para un pedido
+     *   armado por dentro, como el del asistente (`Request::create()`, sin middleware).
+     * - Largos: nombre, documento y contraseña son `varchar(128)`; el teléfono es `string()` sin
+     *   largo en la migración, o sea `varchar(191)` por `Schema::defaultStringLength(191)` de
+     *   AppServiceProvider. Pasarse en modo estricto de MySQL es un 500.
      * - 🔴 La unicidad del documento es GLOBAL, no por dueño: el login busca por `doc_number` sin
      *   mirar el dueño, así que dos usuarios con el mismo documento chocarían al entrar.
      * - 🔴 En la edición, la unicidad se chequea SOLO SI EL DOCUMENTO CAMBIÓ, y excluyendo al
      *   propio empleado. No es un descuido: hay empleados viejos cuyo documento ya choca con el de
      *   otro usuario (de antes de esta validación), y tienen que poder seguir guardándose sin
      *   tocarlo. Chequearlo siempre los dejaría imposibles de editar.
+     * - 🔴 "Cambió" se compara contra el valor CRUDO de la base, sin recortarlo: un documento viejo
+     *   guardado con espacios que ahora llega recortado SÍ cuenta como cambio y se chequea. Si se
+     *   comparara recortado, se escribiría el recortado sin chequear y podrían quedar dos usuarios
+     *   con el mismo documento, y uno de los dos dejaría de poder entrar.
      *
      * @param  Request  $request
      * @param  \App\Models\User|null  $empleado  El que se edita; null en el alta.
@@ -364,10 +386,14 @@ class EmployeeController extends Controller
             ];
         }
 
-        // Las columnas son varchar(128): más largo que eso en modo estricto de MySQL da un error 500.
-        if (mb_strlen($name) > 128 || mb_strlen($doc_number) > 128 || mb_strlen($password) > 128 || mb_strlen((string) $phone) > 128) {
+        /*
+            Nombre, documento y contraseña son varchar(128); el teléfono, varchar(191) (ver el
+            docblock). Más largo que eso en modo estricto de MySQL da un error 500. El texto nombra
+            los dos topes para que sea verdad cualquiera sea el campo que se pasó.
+        */
+        if (mb_strlen($name) > 128 || mb_strlen($doc_number) > 128 || mb_strlen($password) > 128 || mb_strlen((string) $phone) > 191) {
             return [
-                response()->json(['message' => 'El nombre, el documento, la contraseña y el teléfono no pueden tener más de 128 caracteres'], 422),
+                response()->json(['message' => 'El nombre, el documento y la contraseña no pueden tener más de 128 caracteres, ni el teléfono más de 191'], 422),
                 null,
             ];
         }
@@ -378,7 +404,8 @@ class EmployeeController extends Controller
 
         } else {
 
-            $cambio = $doc_number !== trim((string) $empleado->doc_number);
+            // Contra el valor CRUDO, sin trim: ver el último punto del docblock.
+            $cambio = $doc_number !== (string) $empleado->doc_number;
 
             $repetido = $cambio && User::where('doc_number', $doc_number)
                                         ->where('id', '!=', $empleado->id)
