@@ -1549,25 +1549,18 @@ class NewProviderOrderHelper {
         $this->provider_order->total_costos_extra            = $total_costos_extra;
 
 
-        // Prompt 609 - Tarea 5: un Monotributista no suma el IVA por encima del total (ya está
-        // "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como crédito fiscal).
-        // La columna de IVA de la compra sigue calculándose y mostrándose (prompt 611), solo se deja
-        // de sumar acá.
-        //
-        // Prompt 614: mismo razonamiento aplica para un Responsable Inscripto cuando la orden trae
-        // `precios_incluyen_iva` ON: en ese caso `$total_articulos` (y por lo tanto `$total`, que
-        // arranca en `$total_articulos`) YA es el precio final tipeado con IVA incluido — el IVA
-        // no es un crédito fiscal a sumar aparte sobre ese número, ya está "adentro". Sumar
-        // `$total_iva` encima duplicaba el IVA (bug real detectado al automatizar el costeo con
-        // PHPUnit: una compra de 1210 x 10 con `precios_incluyen_iva=1` daba total 14200 en vez de
-        // los 12100 que efectivamente cuestan esos artículos, la misma plata que tipeada neta). Con
-        // el flag OFF (comportamiento de siempre) no cambia nada: el costo tipeado es neto y el IVA
-        // sí hay que sumarlo aparte para llegar al total final.
-        if ($this->provider_order->total_with_iva && $this->get_condicion_iva_precios() != 'MT' && !$this->provider_order->precios_incluyen_iva) {
+        // Si la compra suma el IVA por encima, y cuánto: los dos métodos de abajo son la única
+        // fuente de esa regla (el porqué de cada pata —Monotributista, `precios_incluyen_iva`
+        // (prompts 609/614)— y de dónde sale el IVA en cada modo de facturación está en sus
+        // docblocks). La devolución a proveedor (NotaCreditoProveedorHelper::
+        // agregar_datos_de_devolucion()) lee la misma cuenta para no devolver un IVA que la
+        // compra no cobró. `iva_sumado_al_total()` lee `provider_order->total_iva`, que se asignó
+        // arriba con `$total_iva`: acá vale exactamente eso.
+        if ($this->suma_iva_al_total()) {
 
             $total_sin_iva = $total;
 
-            $total += $total_iva;
+            $total += $this->iva_sumado_al_total();
 
             $des[] = 'APLICANDO IVA';
             $des[] = 'Total en '.Numbers::price($total_sin_iva, true).' mas '.Numbers::price($total_iva, true).' de IVA = '.Numbers::price($total, true);
@@ -1770,6 +1763,110 @@ class NewProviderOrderHelper {
     }
 
     /**
+     * ¿Esta compra suma el IVA por ENCIMA de su total? Es la condición de set_totales(), sacada a
+     * un método para que sea la única fuente de la regla (misión
+     * `devolucion-proveedor-iva-sin-factura`, 9/10/2026): la devolución a proveedor la necesita
+     * idéntica para no devolver un IVA que la compra no cobró.
+     *
+     * Las tres patas:
+     *
+     *  - `total_with_iva`: la bandera de la compra. 🔴 La SPA la manda en 1 en TODA compra, así que
+     *    sola no dice si la compra cobró IVA: cuánto sumó lo dice iva_sumado_al_total(), y si lo
+     *    cobró (compras legadas incluidas) cobro_iva_por_encima().
+     *  - No Monotributista (prompt 609, tarea 5): un Monotributista no suma el IVA por encima del
+     *    total (ya está "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como
+     *    crédito fiscal). La columna de IVA de la compra sigue calculándose y mostrándose (prompt
+     *    611), solo se deja de sumar.
+     *  - Sin `precios_incluyen_iva` (prompt 614): mismo razonamiento para un Responsable Inscripto
+     *    cuando la orden trae la bandera ON: `$total_articulos` (y por lo tanto el total, que
+     *    arranca ahí) YA es el precio final tipeado con IVA incluido — el IVA no es un crédito
+     *    fiscal a sumar aparte sobre ese número, ya está "adentro". Sumarlo encima duplicaba el IVA
+     *    (bug real detectado al automatizar el costeo con PHPUnit: una compra de 1210 x 10 con
+     *    `precios_incluyen_iva=1` daba total 14200 en vez de los 12100 que efectivamente cuestan
+     *    esos artículos, la misma plata que tipeada neta). Con el flag OFF (comportamiento de
+     *    siempre) el costo tipeado es neto y el IVA sí hay que sumarlo aparte.
+     *
+     * @return bool
+     */
+    function suma_iva_al_total() {
+
+        return (bool)$this->provider_order->total_with_iva
+                && $this->get_condicion_iva_precios() != 'MT'
+                && !$this->provider_order->precios_incluyen_iva;
+    }
+
+    /**
+     * Cuánto IVA le sumó la compra a su total: el `total_iva` de la compra si suma_iva_al_total()
+     * da, y 0 si no.
+     *
+     * 🔴 El IVA que suma la compra sale SIEMPRE de sus comprobantes (Σ
+     * `provider_order_afip_tickets.total_iva`), nunca de un cálculo propio. Lo que hay en cada
+     * modo de facturación (leído en el código, misión `devolucion-proveedor-iva-sin-factura`):
+     *
+     *  - `automatico`: ModoFacturacionHelper::calcular_iva() arma la factura principal con el IVA
+     *    por renglón y alícuota (bonificaciones prorrateadas por peso bruto), más los comprobantes
+     *    de los costos extra. Suma el IVA de todos ellos.
+     *  - `sin factura`: ModoFacturacionHelper::check_modo_facturacion() BORRA los comprobantes, así
+     *    que no hay IVA: 0. Por eso la compra sin factura no cobra IVA aunque llegue con
+     *    `total_with_iva` en 1.
+     *  - `manual` (y `null`, compras viejas): los carga el usuario (factura + alícuotas), y cada
+     *    guardado recalcula la compra (FacturaDeCompraHelper::recalcular_compra() → set_totales()).
+     *    Suma lo cargado; 0 si no cargó ninguna, o si la factura no discrimina IVA (Factura C/B,
+     *    sin alícuotas).
+     *
+     * Lee `provider_order->total_iva`: set_totales() la asigna con la suma de los comprobantes
+     * ANTES de llamar a este método y la guarda, así que fuera de set_totales() el valor guardado
+     * es exactamente lo que la compra sumó. Salvo en una compra legada (`total_iva` NULL, que
+     * nunca pasó por set_totales()): ahí da 0 aunque la compra haya cobrado IVA, y por eso la
+     * devolución no pregunta acá sino en cobro_iva_por_encima().
+     *
+     * @return float
+     */
+    function iva_sumado_al_total() {
+
+        if (!$this->suma_iva_al_total()) {
+            return 0.0;
+        }
+
+        return (float)$this->provider_order->total_iva;
+    }
+
+    /**
+     * ¿La compra le COBRÓ el IVA por encima al total? Es la pregunta de la devolución a proveedor
+     * (NotaCreditoProveedorHelper::agregar_datos_de_devolucion()): solo se le devuelve con IVA lo
+     * que la compra efectivamente cobró con IVA.
+     *
+     *  - false si suma_iva_al_total() no da (sin `total_with_iva`, Monotributista o
+     *    `precios_incluyen_iva`).
+     *  - 🔴 true si `total_iva` es NULL: es una compra LEGADA. La columna es `decimal nullable` sin
+     *    default y set_totales() la escribe SIEMPRE, con un número (nunca null), desde el 2/10/2024
+     *    (`149786ab`). Una compra con NULL nunca pasó por set_totales(): su total lo armó el
+     *    ProviderOrderHelper::getTotal() viejo, que sumaba el IVA por renglón con solo
+     *    `total_with_iva`. Leerla como "0 de IVA" les sacaba el IVA a todas esas compras al
+     *    devolver, aunque lo hubieran cobrado.
+     *  - si no, iva_sumado_al_total() > 0: el IVA que la compra sumó sale de sus comprobantes, así
+     *    que una compra sin factura (o manual sin IVA cargado) no lo cobró aunque traiga
+     *    `total_with_iva` (misión `devolucion-proveedor-iva-sin-factura`, 9/10/2026).
+     *
+     * set_totales() no lo usa: ahí `total_iva` recién se asignó con un número y la suma va por
+     * iva_sumado_al_total().
+     *
+     * @return bool
+     */
+    function cobro_iva_por_encima() {
+
+        if (!$this->suma_iva_al_total()) {
+            return false;
+        }
+
+        if (is_null($this->provider_order->total_iva)) {
+            return true;
+        }
+
+        return $this->iva_sumado_al_total() > 0;
+    }
+
+    /**
      * Prompt 609 — Tarea 6: cantidad efectiva a usar en los cálculos de costeo/totales de un
      * artículo de la compra.
      *
@@ -1835,6 +1932,22 @@ class NewProviderOrderHelper {
 
         $current_acount->debe = $this->provider_order->total;
 
+        /*
+         * El movimiento acompaña a la fecha de la compra también al editarla (misión
+         * compra-fecha-en-cuenta-corriente, 9/10/2026): si la edición le cambió el día, el
+         * movimiento se muda con ella. Siempre, no solo cuando el request trae la fecha: es el
+         * mismo criterio que la venta, que en cada edición recrea su movimiento con la fecha de la
+         * venta (SaleHelper::updateCurrentAcountsAndCommissions). Así una compra que ya quedó
+         * cargada con el movimiento en el día equivocado se acomoda la próxima vez que se guarda.
+         *
+         * Va ANTES de getSaldo(), que busca el saldo del movimiento anterior por `created_at, id`.
+         * El resto de la cadena (lo que queda antes y después del día nuevo, y las imputaciones de
+         * los pagos) lo recalcula set_current_acount() con check_saldos_y_pagos().
+         */
+        if (!is_null($this->provider_order->created_at)) {
+            $current_acount->created_at = $this->provider_order->created_at;
+        }
+
         $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
         $current_acount->saldo = $saldo;
@@ -1878,7 +1991,7 @@ class NewProviderOrderHelper {
 
     function crear_current_acount() {
 
-        $current_acount = CurrentAcount::create([
+        $datos = [
             'detalle'           => $this->provider_order->detalle_current_acount(),
             'debe'              => $this->provider_order->total,
             'status'            => 'sin_pagar',
@@ -1886,7 +1999,25 @@ class NewProviderOrderHelper {
             'provider_id'       => $this->provider_order->provider_id,
             'provider_order_id' => $this->provider_order->id,
             'credit_account_id' => $this->credit_account->id,
-        ]);
+        ];
+
+        /*
+         * 🔴 El movimiento entra a la cuenta corriente del proveedor con la FECHA DE LA COMPRA, no
+         * con la de hoy (misión compra-fecha-en-cuenta-corriente, 9/10/2026). Desde
+         * fecha-creacion-editable (22/9/2026) la compra se guarda con el día que elige el usuario,
+         * pero este movimiento nacía con `now()`: una compra del 21/8 cargada el 9/10 quedaba en
+         * la cadena DESPUÉS de un pago del 31/8, y el saldo de cada fila se calculaba en ese orden.
+         * Es el mismo criterio que la venta (CurrentAcountFromSaleHelper::crear_current_acount()).
+         *
+         * Solo si la compra tiene fecha: `CurrentAcount` tiene `$guarded = []` y un
+         * `'created_at' => null` ensucia el atributo, así que Eloquent no lo completaría y la
+         * columna quedaría en NULL (la misma trampa que ProviderOrderAltaHelper::crear()).
+         */
+        if (!is_null($this->provider_order->created_at)) {
+            $datos['created_at'] = $this->provider_order->created_at;
+        }
+
+        $current_acount = CurrentAcount::create($datos);
 
         $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
