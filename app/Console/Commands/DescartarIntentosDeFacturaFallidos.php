@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Log;
  * de factura sin CAE de las ventas que YA tienen al menos una factura autorizada, y les aplica el
  * MISMO criterio (`IntentosDeFacturaFallidosHelper::motivo_de_descarte()`): (a) sin número, (b)
  * mismo comprobante que la factura autorizada, (c) rechazado por ARCA (`resultado = 'R'`), y las
- * tres solo contra una factura autorizada por el MISMO importe pedido.
+ * tres solo contra una factura autorizada por el MISMO importe pedido y POSTERIOR al intento.
  *
  * 🔴 Lo que NO se toca, y el listado muestra como "queda" con el motivo:
  *  - Un intento con OTRO número y sin rechazo explícito: puede ser una factura que ARCA autorizó y
@@ -26,6 +26,12 @@ use Illuminate\Support\Facades\Log;
  *    para que alguien apriete Consultar.
  *  - Un intento por un importe que ninguna factura autorizada de la venta cubre (facturación en
  *    partes): esa porción sigue sin facturar y Alertas es el recordatorio.
+ *  - 🔴 Un intento POSTERIOR a la factura autorizada: no es un reintento de ella. Puede ser otra
+ *    parte del mismo importe, una refacturación después de una nota de crédito o —lo que importa
+ *    acá— un ticket que el frente VIEJO está emitiendo mientras corre el despliegue. Este comando
+ *    corre justo en esa ventana, y el código viejo no restaura un comprobante que recibe su CAE
+ *    estando borrado: descartarlo lo dejaría fuera del Libro IVA. Ver el docblock de
+ *    `IntentosDeFacturaFallidosHelper`.
  *
  *   - Sin `--aplicar`: lista cada intento (venta, ticket, motivo) y NO escribe nada.
  *   - Con `--aplicar`: hace el borrado suave, con la misma fila `deleted` en `audit_logs` que deja
@@ -238,12 +244,26 @@ class DescartarIntentosDeFacturaFallidos extends Command
      */
     protected function por_que_queda($intento, $autorizadas)
     {
+        $hay_del_mismo_importe = false;
+
         foreach ($autorizadas as $autorizada) {
-            if (IntentosDeFacturaFallidosHelper::mismo_importe_pedido($autorizada, $intento)) {
+
+            if (!IntentosDeFacturaFallidosHelper::mismo_importe_pedido($autorizada, $intento)) {
+                continue;
+            }
+
+            $hay_del_mismo_importe = true;
+
+            if (IntentosDeFacturaFallidosHelper::es_posterior($autorizada, $intento)) {
                 return 'otro número y sin rechazo, puede estar autorizado en ARCA. Hay que Consultarlo.';
             }
         }
 
-        return 'ninguna factura autorizada de la venta es por el mismo importe pedido: esa porción sigue sin facturar.';
+        if (!$hay_del_mismo_importe) {
+            return 'ninguna factura autorizada de la venta es por el mismo importe pedido: esa porción sigue sin facturar.';
+        }
+
+        return 'la factura autorizada es anterior a este intento: puede ser otra parte de la venta, una '
+            .'refacturación después de una nota de crédito o una emisión en curso. Hay que revisarlo.';
     }
 }

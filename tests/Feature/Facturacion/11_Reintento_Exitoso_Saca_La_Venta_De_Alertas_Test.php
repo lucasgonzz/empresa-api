@@ -64,6 +64,16 @@ use Tests\EmpresaTestCase;
  * una corrida de mutantes (19 a 22: el CUIT en la regla b, comparar contra TODAS las autorizadas,
  * exit 0 ante una excepción y los ceros a la izquierda).
  *
+ * Del 23 al 27: una factura autorizada solo supera a los intentos ANTERIORES a ella. Consultar
+ * no se lleva un reintento posterior (23), ni otra parte del mismo importe (24 en vivo, 25 con el
+ * comando), ni la refacturación después de una nota de crédito (26), ni el ticket que el frente
+ * viejo crea mientras el comando corre en el despliegue (27).
+ *
+ * 🔴 Con esa regla, todo escenario arma los tickets en el orden en que nacen de verdad: los
+ * intentos fallidos ANTES de la factura que los supera. Los tests 8, 15, 18, 20 y 22 creaban la
+ * autorizada primero por comodidad; se reordenaron (sin tocar ninguna aserción), y el 17 y el 19
+ * también, para que lo único que proteja al intento sea la regla que cada uno prueba.
+ *
  * @group facturacion
  * @group afip
  */
@@ -326,22 +336,27 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
             'ultimo' => null,
         ]);
 
-        $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
+        $reintento = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
             'ultimo' => $numero - 1,
             'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
         ]);
 
         $this->assertSoftDeleted('afip_tickets', ['id' => $control->id]);
 
+        // Contra el reintento, que es POSTERIOR a todos: lo único que protege a cada uno es su
+        // propia guarda (el CAE o ser nota de crédito), no el orden.
         foreach ([$factura_vieja, $con_cae_y_r, $nc_de_la_venta, $nc_con_sale_id] as $intocable) {
             $this->assertNotSoftDeleted('afip_tickets', ['id' => $intocable->id]);
-            $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte(AfipTicket::find($intocable->id), [$factura_vieja]));
+            $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte(AfipTicket::find($intocable->id), [$factura_vieja, $reintento]));
         }
     }
 
     /**
      * Test 6 — Consultar: un intento sin número y otro numerado que tiró error de red. Consultar el
      * numerado le da el CAE (estaba autorizado en ARCA) y el sin número se descarta.
+     *
+     * El orden es el del caso real: el sin número nace ANTES que el numerado (el reintento). Una
+     * factura solo supera a los intentos anteriores; el caso inverso lo fija el test 23.
      *
      * @test
      */
@@ -435,16 +450,18 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $venta_a = $this->crear_venta();
         $numero = $this->numero_base($venta_a);
 
+        // Los intentos fallidos nacen ANTES que la factura que los supera (el caso real).
+        $a_sin_numero = $this->ticket_directo($venta_a, self::FACTURA_B, ['cbte_numero' => null]);
+        $a_mismo_numero = $this->ticket_directo($venta_a, self::FACTURA_B, ['cbte_numero' => (string) $numero]);
+        $a_rechazado = $this->ticket_directo($venta_a, self::FACTURA_A, ['cbte_numero' => (string) ($numero + 7), 'resultado' => 'R']);
+        $a_otro_numero = $this->ticket_directo($venta_a, self::FACTURA_B, ['cbte_numero' => (string) ($numero - 1)]);
+
         $autorizada = $this->ticket_directo($venta_a, self::FACTURA_B, [
             'cbte_numero' => (string) $numero,
             'cae'         => $this->cae(),
             'resultado'   => 'A',
         ]);
 
-        $a_sin_numero = $this->ticket_directo($venta_a, self::FACTURA_B, ['cbte_numero' => null]);
-        $a_mismo_numero = $this->ticket_directo($venta_a, self::FACTURA_B, ['cbte_numero' => (string) $numero]);
-        $a_rechazado = $this->ticket_directo($venta_a, self::FACTURA_A, ['cbte_numero' => (string) ($numero + 7), 'resultado' => 'R']);
-        $a_otro_numero = $this->ticket_directo($venta_a, self::FACTURA_B, ['cbte_numero' => (string) ($numero - 1)]);
         $a_nota_de_credito = $this->ticket_directo($venta_a, self::FACTURA_B, [
             'sale_id'              => null,
             'sale_nota_credito_id' => $venta_a->id,
@@ -805,13 +822,14 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $venta = $this->crear_venta();
         $numero = $this->numero_base($venta);
 
+        // El intento nace ANTES que la factura que lo supera (si no, el comando ni lo intenta).
+        $en_vuelo = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
+
         $this->ticket_directo($venta, self::FACTURA_B, [
             'cbte_numero' => (string) $numero,
             'cae'         => $this->cae(),
             'resultado'   => 'A',
         ]);
-
-        $en_vuelo = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
 
         $cae_de_la_otra_emision = $this->cae();
         $ya_escribio = false;
@@ -899,16 +917,17 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $venta = $this->crear_venta();
         $numero = $this->numero_base($venta);
 
+        // F2 nace antes que F1: lo único que la protege es el importe, no el orden.
+        $f2 = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'                    => null,
+            'facturar_importe_personalizado' => 40.00,
+        ]);
+
         $this->ticket_directo($venta, self::FACTURA_B, [
             'cbte_numero'                    => (string) $numero,
             'cae'                            => $this->cae(),
             'resultado'                      => 'A',
             'facturar_importe_personalizado' => 60.00,
-        ]);
-
-        $f2 = $this->ticket_directo($venta, self::FACTURA_B, [
-            'cbte_numero'                    => null,
-            'facturar_importe_personalizado' => 40.00,
         ]);
 
         $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
@@ -948,13 +967,13 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
             $venta = $this->crear_venta();
             $numero = $this->numero_base($venta);
 
+            $fallido = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
+
             $autorizada = $this->ticket_directo($venta, self::FACTURA_B, [
                 'cbte_numero' => (string) $numero,
                 'cae'         => $this->cae(),
                 'resultado'   => 'A',
             ]);
-
-            $fallido = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
 
             $this->assertEquals(1, IntentosDeFacturaFallidosHelper::descartar_superados($autorizada));
 
@@ -1003,15 +1022,16 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $venta = $this->crear_venta();
         $numero = $this->numero_base($venta);
 
+        // El intento nace antes: lo único que lo protege es el CUIT, no el orden.
+        $otro_emisor = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'  => (string) $numero,
+            'cuit_negocio' => '30999999993',
+        ]);
+
         $autorizada = $this->ticket_directo($venta, self::FACTURA_B, [
             'cbte_numero' => (string) $numero,
             'cae'         => $this->cae(),
             'resultado'   => 'A',
-        ]);
-
-        $otro_emisor = $this->ticket_directo($venta, self::FACTURA_B, [
-            'cbte_numero'  => (string) $numero,
-            'cuit_negocio' => '30999999993',
         ]);
 
         $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte($otro_emisor, [$autorizada]));
@@ -1021,8 +1041,9 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
 
     /**
      * Test 20 — `descartar_superados()` evalúa contra TODAS las facturas autorizadas de la venta, no
-     * solo contra la recién autorizada: el intento coincide por (b) con una autorizada VIEJA, se
-     * autoriza otra distinta, y se descarta igual (que es lo que haría el comando).
+     * solo contra la recién autorizada: el intento coincide por (b) con una autorizada anterior a la
+     * nueva (pero posterior a él), se autoriza otra distinta, y se descarta igual (que es lo que
+     * haría el comando).
      *
      * @test
      */
@@ -1031,13 +1052,13 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $venta = $this->crear_venta();
         $numero = $this->numero_base($venta);
 
+        $intento = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => (string) $numero]);
+
         $vieja = $this->ticket_directo($venta, self::FACTURA_B, [
             'cbte_numero' => (string) $numero,
             'cae'         => $this->cae(),
             'resultado'   => 'A',
         ]);
-
-        $intento = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => (string) $numero]);
 
         $nueva = $this->ticket_directo($venta, self::FACTURA_B, [
             'cbte_numero' => (string) ($numero + 5),
@@ -1094,16 +1115,16 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
     {
         $venta = $this->crear_venta();
 
+        $intento = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => '00000123',
+            'punto_venta' => '0001',
+        ]);
+
         $autorizada = $this->ticket_directo($venta, self::FACTURA_B, [
             'cbte_numero' => '123',
             'punto_venta' => '1',
             'cae'         => $this->cae(),
             'resultado'   => 'A',
-        ]);
-
-        $intento = $this->ticket_directo($venta, self::FACTURA_B, [
-            'cbte_numero' => '00000123',
-            'punto_venta' => '0001',
         ]);
 
         $this->assertEquals(
@@ -1112,6 +1133,241 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         );
         $this->assertEquals(1, IntentosDeFacturaFallidosHelper::descartar_superados($autorizada));
         $this->assertSoftDeleted('afip_tickets', ['id' => $intento->id]);
+    }
+
+    /**
+     * Test 23 — 🔴 Consultar NO se lleva un reintento POSTERIOR al numerado, aunque esté rechazado.
+     *
+     * El numerado tiró error de red (estaba autorizado en ARCA con la respuesta perdida); el
+     * reintento recibió N+1 y ARCA lo rechazó. Consultar le da el CAE al numerado, pero el
+     * reintento nació DESPUÉS: no hay forma de distinguirlo de una segunda parte o de una
+     * refacturación, así que se queda en Alertas. Es el comportamiento conservador, a propósito.
+     *
+     * @test
+     */
+    public function consultar_no_se_lleva_un_reintento_rechazado_posterior_al_numerado()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $numerado = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
+            'ultimo'   => $numero - 1,
+            'fecae'    => DobleDeWsfeParaReintentos::ERROR_DE_RED,
+            'consulta' => DobleDeWsfeParaReintentos::ERROR_DE_RED,
+        ]);
+
+        $reintento = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
+            'ultimo' => $numero,
+            'fecae'  => DobleDeWsfeParaReintentos::RECHAZADA,
+        ]);
+
+        $this->assertEquals('R', $reintento->resultado);
+
+        $cae = $this->cae();
+
+        $helper = (new ReflectionClass(AfipWsfeHelper::class))->newInstanceWithoutConstructor();
+        $helper->afip_ticket = AfipTicket::find($numerado->id);
+        $helper->wsfe = new DobleDeWsfeParaReintentos([
+            'consulta'           => DobleDeWsfeParaReintentos::AUTORIZADA,
+            'cae'                => $cae,
+            'consulta_imp_total' => (float) $numerado->imp_total_enviado,
+        ]);
+
+        $helper->consultar_comprobante();
+
+        $this->assertEquals($cae, AfipTicket::find($numerado->id)->cae, 'La consulta tiene que haber adoptado el comprobante.');
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $reintento->id]);
+        $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte(AfipTicket::find($reintento->id), [AfipTicket::find($numerado->id)]));
+        $this->assertContains($venta->id, $this->ventas_en_alertas());
+    }
+
+    /**
+     * Test 24 — Caso 1, en vivo: otra parte del MISMO importe. Venta facturada en dos mitades: F1
+     * por $50 autorizada, F2 por $50 rechazada. Cuando después se autoriza otra factura de la venta
+     * (F3, por otro importe), `descartar_superados()` revisa F2 contra todas las autorizadas: F1 es
+     * del mismo importe pero ANTERIOR, así que F2 se queda y la venta sigue en Alertas.
+     *
+     * @test
+     */
+    public function una_parte_del_mismo_importe_posterior_a_la_autorizada_se_queda_en_alertas()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $f1 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B, 50.00), [
+            'ultimo' => $numero - 1,
+            'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
+        ]);
+
+        $f2 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B, 50.00), [
+            'ultimo' => $numero,
+            'fecae'  => DobleDeWsfeParaReintentos::RECHAZADA,
+        ]);
+
+        $f3 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B, 30.00), [
+            'ultimo' => $numero,
+            'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
+        ]);
+
+        $this->assertNotEmpty($f1->cae);
+        $this->assertEquals('R', $f2->resultado);
+        $this->assertNotEmpty($f3->cae);
+
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $f2->id]);
+        $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte(AfipTicket::find($f2->id), [$f1, $f3]));
+        $this->assertContains($venta->id, $this->ventas_en_alertas(), 'La segunda mitad sigue sin facturar.');
+    }
+
+    /**
+     * Test 25 — Caso 1 con el comando: F1 por $50 autorizada, F2 por $50 sin número, posterior.
+     * `--aplicar` no la borra, y el listado dice que la autorizada es anterior.
+     *
+     * @test
+     */
+    public function el_comando_no_descarta_un_intento_posterior_a_la_factura_autorizada()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'                    => (string) $numero,
+            'cae'                            => $this->cae(),
+            'resultado'                      => 'A',
+            'facturar_importe_personalizado' => 50.00,
+        ]);
+
+        $f2 = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'                    => null,
+            'facturar_importe_personalizado' => 50.00,
+        ]);
+
+        $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
+        $salida = Artisan::output();
+
+        $this->assertEquals(0, $exit, 'Salida: '.$salida);
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $f2->id]);
+        $this->assertStringContainsString(
+            'ticket #'.$f2->id.' (sin número): la factura autorizada es anterior a este intento',
+            $salida,
+            'Salida: '.$salida
+        );
+        $this->assertContains($venta->id, $this->ventas_en_alertas());
+    }
+
+    /**
+     * Test 26 — Caso 2: refacturación después de una nota de crédito. F1 autorizada; una NC la
+     * anula; se vuelve a facturar con B, que ARCA rechaza. F1 no supera a B (nació antes): ni la
+     * limpieza en vivo ni el comando lo tocan, y la venta sigue en Alertas.
+     *
+     * @test
+     */
+    public function la_refacturacion_despues_de_una_nota_de_credito_queda_en_alertas()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $f1 = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
+            'ultimo' => $numero - 1,
+            'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
+        ]);
+
+        // La nota de crédito que anula F1 (cuelga de la venta por sale_nota_credito_id).
+        $this->ticket_directo($venta, self::FACTURA_B, [
+            'sale_id'              => null,
+            'sale_nota_credito_id' => $venta->id,
+            'nota_credito_id'      => 999999998,
+            'sale_afip_ticket_id'  => $f1->id,
+            'cbte_tipo'            => '8',
+            'cbte_numero'          => (string) $numero,
+            'cae'                  => $this->cae(),
+            'resultado'            => 'A',
+        ]);
+
+        $b = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
+            'ultimo' => $numero,
+            'fecae'  => DobleDeWsfeParaReintentos::RECHAZADA,
+        ]);
+
+        $this->assertEquals('R', $b->resultado);
+
+        $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte($b, [$f1]));
+        $this->assertEquals(0, IntentosDeFacturaFallidosHelper::descartar_superados(AfipTicket::find($f1->id)));
+
+        $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
+
+        $this->assertEquals(0, $exit);
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $b->id]);
+        $this->assertContains($venta->id, $this->ventas_en_alertas(), 'La venta quedó anulada y sin factura: tiene que seguir en Alertas.');
+    }
+
+    /**
+     * Test 27 — 🔴 Caso 3: el despliegue. El comando corre mientras el frente VIEJO todavía atiende.
+     *
+     * El frente viejo crea un ticket B sin número en una venta que ya tiene una factura autorizada,
+     * justo cuando el comando lee el lote: se arma con `beforeExecuting` (y no con `DB::listen`,
+     * que corre DESPUÉS de la consulta) para que B entre en el lote que el comando revisa. Después
+     * el frente viejo le escribe el número y el CAE —el código viejo no tiene las restauraciones—.
+     * B nació después de la autorizada: el comando no lo toca y B termina vivo, con su CAE.
+     *
+     * @test
+     */
+    public function un_ticket_que_nace_mientras_el_comando_lee_el_lote_no_se_descarta()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) $numero,
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $afip_information = $this->punto_de_venta();
+        $b = null;
+        $ya_nacio = false;
+
+        DB::connection()->beforeExecuting(function ($sql) use ($venta, $afip_information, &$b, &$ya_nacio) {
+            if ($ya_nacio || strpos($sql, '`autorizadas`') === false) {
+                return;
+            }
+
+            $ya_nacio = true;
+
+            // El frente viejo crea el ticket (todavía sin número) justo antes de que el comando lea,
+            // con los mismos campos que MakeAfipTicket.
+            $b = AfipTicket::create([
+                'cuit_negocio'             => $afip_information->cuit,
+                'iva_negocio'              => $afip_information->iva_condition->name,
+                'punto_venta'              => $afip_information->punto_venta,
+                'iva_cliente'              => '',
+                'sale_id'                  => $venta->id,
+                'afip_information_id'      => $afip_information->id,
+                'afip_tipo_comprobante_id' => AfipTipoComprobante::where('codigo', self::FACTURA_B)->value('id'),
+                'afip_fecha_emision'       => date('Y-m-d'),
+                'permiso_existente'        => 'N',
+            ]);
+        });
+
+        $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
+        $salida = Artisan::output();
+
+        $this->assertTrue($ya_nacio, 'El ticket del frente viejo no nació durante la lectura: el test no probó nada.');
+        $this->assertEquals(0, $exit, 'Salida: '.$salida);
+        $this->assertStringContainsString(
+            'ticket #'.$b->id.' (sin número): la factura autorizada es anterior a este intento',
+            $salida,
+            'El comando tuvo que VER a B en el lote y dejarlo. Salida: '.$salida
+        );
+
+        // El frente viejo termina su emisión: número y CAE por id, sin restaurar nada.
+        AfipTicket::withTrashed()->where('id', $b->id)->update([
+            'cbte_numero' => (string) ($numero + 1),
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $b->id]);
+        $this->assertNotEmpty(AfipTicket::find($b->id)->cae, 'B tiene CAE y tiene que estar vivo: si no, queda fuera del Libro IVA.');
     }
 
     // =========================================================================================

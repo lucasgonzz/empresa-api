@@ -45,6 +45,22 @@ use Illuminate\Support\Facades\Log;
  * borrar F1 haría desaparecer de Alertas el único recordatorio de que esa porción sigue sin
  * facturar (lo que había pedido Lucas era "otro comprobante con CAE por el total").
  *
+ * 🔴 **Y SOLO contra una factura autorizada POSTERIOR al intento** (`autorizada.id > intento.id`;
+ * el id autoincremental, no `created_at`, que tiene resolución de segundos). Un reintento SIEMPRE
+ * nace después del intento que falló; lo que nace DESPUÉS de la factura autorizada no es un
+ * reintento de ella, y ella no prueba nada sobre eso. Los tres casos que lo mostraron (revisor de
+ * merge, 9/10/2026):
+ *
+ *  1. **Otra parte del mismo importe.** Venta de $100: F1 por $50 autorizada, F2 por $50 falla.
+ *     Mismo importe pedido, así que F1 "superaba" a F2 y se perdía el recordatorio de la segunda
+ *     mitad.
+ *  2. **Refacturación después de una nota de crédito.** F1 autorizada, una NC la anula y se vuelve
+ *     a facturar con B, que falla. F1 "superaba" a B, y la venta quedaba anulada y sin factura.
+ *  3. **El despliegue.** El comando corre mientras el frente viejo todavía atiende. El frente viejo
+ *     crea un ticket B sin número en una venta que ya tiene una factura autorizada; el comando lo
+ *     descartaba por (a); el frente viejo, que no tiene las restauraciones, le escribía el CAE
+ *     estando borrado: un comprobante autorizado fuera del Libro IVA.
+ *
  * ─── Lo que NUNCA se toca ─────────────────────────────────────────────────────────────────────
  *
  *  - Un ticket con CAE: ese comprobante existe en ARCA y borrarlo lo saca del Libro IVA y de los
@@ -57,11 +73,14 @@ use Illuminate\Support\Facades\Log;
  *    venta puede tener una factura DUPLICADA en ARCA, y lo único que lo pone en evidencia es que
  *    siga en Alertas para que alguien apriete Consultar. Borrarlo sería esconder un comprobante
  *    autorizado que el sistema nunca declararía.
- *  - Nada, si la venta no tiene ninguna factura autorizada por el mismo importe pedido: sin esa
- *    factura no hay nada que "supere" al intento, y la venta tiene que seguir en Alertas.
+ *  - Nada, si la venta no tiene ninguna factura autorizada por el mismo importe pedido y posterior
+ *    al intento: sin esa factura no hay nada que "supere" al intento, y la venta tiene que seguir
+ *    en Alertas.
  *
- * No hay restricción por orden de creación: si Consultar le da el CAE a un fallido viejo, los
- * reintentos posteriores que cumplan el criterio también se descartan.
+ * El orden corta para los dos lados, y es a propósito conservador: si Consultar le da el CAE a un
+ * fallido viejo, los reintentos POSTERIORES a él (aunque estén rechazados) NO se descartan, porque
+ * no hay forma de distinguirlos de una segunda parte o de una refacturación. Quedan en Alertas y
+ * los resuelve una persona (el tacho, o el comando si después se autoriza otra factura posterior).
  *
  * ─── Quién lo usa ─────────────────────────────────────────────────────────────────────────────
  *
@@ -113,8 +132,8 @@ class IntentosDeFacturaFallidosHelper
      *
      * @param  \App\Models\AfipTicket $fallido Ticket sin CAE candidato a descartarse.
      * @param  iterable|\App\Models\AfipTicket $autorizados Facturas de la venta (las que no tengan
-     *         CAE, las notas de crédito, las de otra venta y las de OTRO importe pedido se ignoran
-     *         solas).
+     *         CAE, las notas de crédito, las de otra venta, las de OTRO importe pedido y las
+     *         ANTERIORES al intento se ignoran solas).
      * @return string|null Una de las constantes `MOTIVO_*`, o null.
      */
     public static function motivo_de_descarte($fallido, $autorizados)
@@ -129,7 +148,7 @@ class IntentosDeFacturaFallidosHelper
 
         /**
          * @var array $facturas_autorizadas Las que de verdad superan al fallido: facturas con CAE de
-         * SU venta y por el MISMO importe pedido (ver el docblock de la clase).
+         * SU venta, por el MISMO importe pedido y POSTERIORES a él (ver el docblock de la clase).
          */
         $facturas_autorizadas = [];
 
@@ -140,14 +159,14 @@ class IntentosDeFacturaFallidosHelper
                 && !self::es_nota_de_credito($autorizado)
                 && !is_null($autorizado->sale_id)
                 && (int) $autorizado->sale_id === (int) $fallido->sale_id
-                && (int) $autorizado->id !== (int) $fallido->id
+                && self::es_posterior($autorizado, $fallido)
                 && self::mismo_importe_pedido($autorizado, $fallido)
             ) {
                 $facturas_autorizadas[] = $autorizado;
             }
         }
 
-        // Sin una factura autorizada de la venta por el mismo importe no hay nada que supere al intento.
+        // Sin una factura autorizada de la venta, por el mismo importe y posterior, nada supera al intento.
         if (count($facturas_autorizadas) == 0) {
             return null;
         }
@@ -291,7 +310,7 @@ class IntentosDeFacturaFallidosHelper
      * escribe `MakeAfipTicket::make_afip_ticket()` al CREAR el ticket (verificado el 9/10/2026; los
      * otros dos lugares que lo tocan, `SaleHelper::set_total_a_facturar()` y
      * `MakeAfipTicket::get_tope_en_pesos()`, arman un ticket en memoria que nunca se guarda), así
-     * que no puede cambiar entre la lectura y el borrado.
+     * que no puede cambiar entre la lectura y el borrado. El orden (los ids) tampoco.
      *
      * 🔴 **Auditoría.** Un `delete()` sobre el builder no dispara eventos de Eloquent, y
      * `AuditLogRecorder` solo escucha eventos: sin más, el descarte no dejaría fila en `audit_logs`,
@@ -562,6 +581,20 @@ class IntentosDeFacturaFallidosHelper
                 .': '.$e->getMessage()
             );
         }
+    }
+
+    /**
+     * ¿La factura autorizada nació DESPUÉS del intento? Se compara el id autoincremental, no
+     * `created_at`: dos tickets creados en el mismo segundo tienen el mismo `created_at` y el id
+     * igual los ordena. Ver el docblock de la clase (los tres casos).
+     *
+     * @param  \App\Models\AfipTicket $autorizada
+     * @param  \App\Models\AfipTicket $intento
+     * @return bool
+     */
+    public static function es_posterior($autorizada, $intento)
+    {
+        return (int) $autorizada->id > (int) $intento->id;
     }
 
     /**
