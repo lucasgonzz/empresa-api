@@ -18,7 +18,9 @@ use Tests\EmpresaTestCase;
  * La pantalla Comprobantes (notas de crédito y pagos de clientes, con importes) no pedía ningún
  * permiso: cualquier empleado la veía. Lucas decidió darle uno propio en el grupo Ventas, y que los
  * empleados que hoy la usan no la pierdan con el release: el seeder suelto
- * `PermissionComprobantesIndexSeeder` se lo da a quien tenga `sale.index` o `client.index`.
+ * `PermissionComprobantesIndexSeeder` se lo da a quien tenga `sale.index` o `client.index`, y también
+ * a quien tenga `devolucion.store` (lo marcó el chequeo independiente: en Comprobantes está el botón
+ * para reintentar con ARCA una nota de crédito guardada sin CAE, misión del 7/10/2026).
  *
  * Lo que estos tests cuidan:
  *  - que las bases nuevas lo reciban por el catálogo, con su nombre y su grupo;
@@ -86,7 +88,8 @@ class Permiso_ver_comprobantes_Test extends EmpresaTestCase
 
     /**
      * El criterio de Lucas: lo hereda quien tiene `sale.index` o `client.index`. El que tiene los dos
-     * recibe una sola fila; el que tiene otros permisos o ninguno no recibe nada.
+     * recibe una sola fila; el que tiene otros permisos o ninguno no recibe nada. (`devolucion.store`
+     * también lo hereda: tiene su propio test, abajo.)
      *
      * @return void
      */
@@ -129,6 +132,33 @@ class Permiso_ver_comprobantes_Test extends EmpresaTestCase
                     ->first();
         $this->assertNotNull($pivot->created_at);
         $this->assertNotNull($pivot->updated_at);
+    }
+
+    /**
+     * El que hace devoluciones sin ver ventas ni clientes también lo recibe: en Comprobantes está el
+     * botón para reintentar con ARCA una nota de crédito guardada sin CAE (misión del 7/10/2026), y
+     * sin el permiso lo perdería. El que no tiene ninguno de los tres sigue sin recibirlo.
+     *
+     * @return void
+     */
+    public function test_el_que_solo_hace_devoluciones_tambien_lo_recibe()
+    {
+        $devolucion_store = $this->permiso('devolucion.store');
+        $article_index = $this->permiso('article.index');
+
+        $solo_devoluciones = $this->empleado([$devolucion_store->id]);
+        $con_otros = $this->empleado([$article_index->id]);
+        $sin_permisos = $this->empleado([]);
+
+        $resultado = (new PermissionComprobantesIndexSeeder())->aplicar();
+
+        $this->assertEquals(1, $resultado['empleados']);
+
+        $comprobantes = PermissionEmpresa::where('slug', 'comprobantes.index')->first();
+
+        $this->assertEquals(1, $this->filas_de_comprobantes($solo_devoluciones, [$comprobantes->id]), 'El que solo hace devoluciones tiene que recibirlo');
+        $this->assertEquals(0, $this->filas_de_comprobantes($con_otros, [$comprobantes->id]));
+        $this->assertEquals(0, $this->filas_de_comprobantes($sin_permisos, [$comprobantes->id]));
     }
 
     /**

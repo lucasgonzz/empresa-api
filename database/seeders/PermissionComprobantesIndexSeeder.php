@@ -21,14 +21,16 @@ use Illuminate\Support\Facades\DB;
  *
  * El criterio para saber quién "la usa hoy" es la decisión de Lucas: el que tiene `sale.index`
  * (ver el listado de ventas) o `client.index` (ver clientes). Son los que ya ven esos importes por
- * otro lado.
+ * otro lado. Se suma `devolucion.store` (hacer devoluciones), que marcó el chequeo independiente de
+ * la misión: en Comprobantes está el botón para reintentar con ARCA una nota de crédito guardada sin
+ * CAE (misión del 7/10/2026), y el que hace devoluciones sin ver ventas ni clientes lo perdería.
  *
  * Qué hace, sin borrar ni reinsertar nada:
  *   1. Si la base no tiene ninguna fila `comprobantes.index`, la crea con el nombre y el grupo del
  *      catálogo (`PermisosCatalogoHelper`). En una base que ya corrió `PermisosOrdenarYCompletarSeeder`
  *      o `PermissionSeeder` con el catálogo nuevo la fila ya está y no se crea otra.
- *   2. A cada usuario que tenga `sale.index` o `client.index` y todavía no tenga `comprobantes.index`
- *      le agrega la fila del pivot `permission_empresa_user`.
+ *   2. A cada usuario que tenga `sale.index`, `client.index` o `devolucion.store` y todavía no tenga
+ *      `comprobantes.index` le agrega la fila del pivot `permission_empresa_user`.
  *
  * Bases viejas: el mismo slug puede estar repetido en varias filas (seeders viejos que usaban
  * `create()`) y los pivots pueden colgar de cualquiera de los ids. Por eso todo se busca por SLUG y
@@ -37,7 +39,7 @@ use Illuminate\Support\Facades\DB;
  * siempre del id más bajo de `comprobantes.index`.
  *
  * Es idempotente: correrlo dos veces no crea filas de más. ⚠️ Pero no es neutro: si entre una
- * corrida y otra el dueño le SACÓ el permiso a un empleado que tiene `sale.index` o `client.index`,
+ * corrida y otra el dueño le SACÓ el permiso a un empleado que tiene alguno de los que lo heredan,
  * la segunda corrida se lo vuelve a dar. Por eso va UNA vez, en los `seeders` de la publicación del
  * release, y no en `DatabaseSeeder`: las bases nuevas lo reciben por el catálogo
  * (`PermissionSeeder`), y los empleados de las demos por `EmployeeSeeder`.
@@ -53,8 +55,10 @@ class PermissionComprobantesIndexSeeder extends Seeder
 
     /**
      * Quien tenga alguno de estos permisos recibe `comprobantes.index` (decisión de Lucas, 9/10/2026).
+     * `devolucion.store` se sumó por el botón de reintentar con ARCA una nota de crédito sin CAE, que
+     * vive en Comprobantes (ver la cabecera).
      */
-    const SLUGS_QUE_LO_HEREDAN = ['sale.index', 'client.index'];
+    const SLUGS_QUE_LO_HEREDAN = ['sale.index', 'client.index', 'devolucion.store'];
 
     /**
      * Run the database seeds.
@@ -69,8 +73,8 @@ class PermissionComprobantesIndexSeeder extends Seeder
             $this->command->info(
                 'Permiso '.self::SLUG.': '
                 .($resultado['permisos_creados'] ? 'creado' : 'ya existía')
-                .' — se lo di a '.$resultado['empleados'].' empleado(s) con '
-                .implode(' o ', self::SLUGS_QUE_LO_HEREDAN)
+                .' — se lo di a '.$resultado['empleados'].' empleado(s) con alguno de: '
+                .implode(', ', self::SLUGS_QUE_LO_HEREDAN)
             );
         }
     }
@@ -119,9 +123,9 @@ class PermissionComprobantesIndexSeeder extends Seeder
             $ids_comprobantes_array = $ids_comprobantes->all();
 
             /*
-                Usuarios con `sale.index` o `client.index` (por cualquiera de sus ids) que todavía no
-                tienen `comprobantes.index` (por cualquiera de sus ids). `distinct`: el que tiene los
-                dos permisos recibe una sola fila. El `whereIn` contra `users` deja afuera los pivots
+                Usuarios con alguno de SLUGS_QUE_LO_HEREDAN (por cualquiera de sus ids) que todavía no
+                tienen `comprobantes.index` (por cualquiera de sus ids). `distinct`: el que tiene
+                varios de esos permisos recibe una sola fila. El `whereIn` contra `users` deja afuera los pivots
                 huérfanos de usuarios que ya no existen, para no sumarles filas ni contarlos.
             */
             $user_ids = DB::table('permission_empresa_user')
