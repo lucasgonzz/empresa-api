@@ -5,7 +5,13 @@ namespace App\Http\Controllers\Pdf;
 use App\Http\Controllers\Helpers\SaleDeliveryInfoHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/*
+	| require_once y no require: el test de renglones_de_direccion() carga esta clase en un proceso
+	| de phpunit donde otro PDF ya pudo declarar FPDF, y un require pelado volvería a ejecutar
+	| fpdf.php y cortaría el proceso con "Cannot declare class FPDF". En producción cada request
+	| arma un solo PDF y no cambia nada.
+*/
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class EtiquetaEnvioPdf extends fpdf {
 
@@ -132,7 +138,9 @@ class EtiquetaEnvioPdf extends fpdf {
 	 * utf8_decode), y cada renglón sale en UTF-8.
 	 *
 	 * Tope de 3 renglones: lo que sobre se corta y el tercero termina en "...". Una palabra sola
-	 * más ancha que el renglón (sin espacios) se corta por caracteres.
+	 * más ancha que el renglón (sin espacios) se corta por caracteres. Si la PRIMERA palabra no
+	 * entra entera al lado del rótulo, se corta al ancho que queda en el primer renglón: si pasara
+	 * entera al segundo, el primero quedaría con el rótulo solo y gastaría uno de los tres.
 	 *
 	 * @param string $address Dirección ya resuelta, en una sola línea (espacios colapsados).
 	 * @return array<int, string> Entre 1 y 3 renglones.
@@ -148,23 +156,34 @@ class EtiquetaEnvioPdf extends fpdf {
 
 		$renglones = [];
 		$actual = 'Dirección:';
+		$es_la_primera = true;
 		foreach (explode(' ', $address) as $palabra) {
 			if ($palabra === '') {
 				continue;
 			}
 
-			$candidato = $actual === '' ? $palabra : $actual.' '.$palabra;
+			// $actual nunca queda vacío: arranca con el rótulo y después siempre es una palabra (o
+			// lo que queda de una) con al menos un caracter.
+			$candidato = $actual.' '.$palabra;
 			if ($this->ancho_en_pdf($candidato) <= $ancho_util) {
 				$actual = $candidato;
+				$es_la_primera = false;
 				continue;
 			}
 
-			// No entra: se cierra el renglón actual y la palabra arranca el siguiente.
-			if ($actual !== '') {
+			if ($es_la_primera) {
+				// La primera palabra no entra entera al lado del rótulo: se corta al ancho que queda
+				// en el primer renglón, para que no quede con el rótulo solo.
+				$pedazo = $this->cortar_al_ancho($palabra, $ancho_util - $this->ancho_en_pdf($actual.' '));
+				$renglones[] = $actual.' '.$pedazo;
+				$palabra = mb_substr($palabra, mb_strlen($pedazo, 'UTF-8'), null, 'UTF-8');
+			} else {
+				// No entra: se cierra el renglón actual y la palabra arranca el siguiente.
 				$renglones[] = $actual;
 			}
+			$es_la_primera = false;
 
-			// Una palabra sola más ancha que un renglón se corta por caracteres.
+			// Lo que queda de una palabra más ancha que un renglón entero se corta por caracteres.
 			while ($this->ancho_en_pdf($palabra) > $ancho_util) {
 				$pedazo = $this->cortar_al_ancho($palabra, $ancho_util);
 				$renglones[] = $pedazo;
@@ -174,9 +193,7 @@ class EtiquetaEnvioPdf extends fpdf {
 			$actual = $palabra;
 		}
 
-		if ($actual !== '') {
-			$renglones[] = $actual;
-		}
+		$renglones[] = $actual;
 
 		if (count($renglones) <= $max_renglones) {
 			return $renglones;

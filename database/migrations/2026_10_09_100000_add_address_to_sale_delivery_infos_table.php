@@ -34,7 +34,10 @@ class AddAddressToSaleDeliveryInfosTable extends Migration
 
         Schema::table('sale_delivery_infos', function (Blueprint $table) {
             // Calle y número del destinatario; NULL = usar el domicilio del cliente.
-            $table->string('address', 255)->nullable()->default(null);
+            // TEXT, igual que `clients.address`: el modal precarga el domicilio del cliente y lo
+            // manda siempre, así que con un varchar(255) un domicilio largo daría "Data too long"
+            // (MySQL estricto) al guardar el modal aunque solo se haya cambiado el teléfono.
+            $table->text('address')->nullable()->default(null);
         });
     }
 

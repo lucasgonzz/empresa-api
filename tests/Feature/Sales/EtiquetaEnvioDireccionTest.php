@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Sales;
 
+use App\Http\Controllers\Helpers\PdfLayout\CamposDeVentaPdf;
 use App\Http\Controllers\Helpers\SaleDeliveryInfoHelper;
+use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
 use App\Models\Address;
 use App\Models\Client;
 use App\Models\Sale;
@@ -25,10 +27,17 @@ use Tests\EmpresaTestCase;
  * 2. Suma `document_label`: 'DNI', 'CUIT' o 'DNI/CUIT' si no hay documento. Un DNI del cliente ''
  *    o de solo espacios cuenta como vacío y cae al CUIT (antes, `dni ?? cuit` dejaba pasar el '').
  * 3. `PUT api/sale/{id}/delivery-info` guarda `address`, y un PUT SIN la clave (el SPA viejo, que
- *    no la conoce) no borra la que ya estaba guardada.
+ *    no la conoce) no borra la que ya estaba guardada. Una dirección de 300 caracteres se guarda
+ *    entera (la columna es TEXT, como `clients.address`).
+ * 4. `EtiquetaEnvioPdf::renglones_de_direccion()` parte la dirección por palabras en hasta 3
+ *    renglones que entran en la celda, sin romper los acentos, y no deja el primero con el rótulo
+ *    solo.
+ * 5. El campo "Datos de envío" del PDF de la venta (`CamposDeVentaPdf`) pone la dirección cargada
+ *    en los datos de envío adelante del lugar.
  *
  * El GET del PDF (`sale/etiqueta-envio/pdf/{id}`) no se puede medir acá: `EtiquetaEnvioPdf` hace
- * `Output(); exit;` y cortaría el proceso de phpunit. Se verifica bajándolo.
+ * `Output(); exit;` y cortaría el proceso de phpunit. Se verifica bajándolo. El partido de la
+ * dirección sí se mide, instanciando la clase sin su constructor (ver etiqueta_para_medir()).
  *
  * DatabaseTransactions (por EmpresaTestCase) sobre la base sembrada del slot.
  *
@@ -371,5 +380,205 @@ class EtiquetaEnvioDireccionTest extends EmpresaTestCase
 
         $this->assertNull(SaleDeliveryInfo::where('sale_id', $venta->id)->value('address'));
         $this->assertSame('Av Pellegrini 1500', $this->etiqueta($venta)['address']);
+    }
+
+    /**
+     * 🔴 Un domicilio largo no rompe el modal. El modal precarga el domicilio del cliente
+     * (`clients.address`, TEXT) y lo manda siempre: con la columna en varchar(255), uno de más de
+     * 255 caracteres daba "Data too long" (500, MySQL estricto) al guardar, aunque el usuario solo
+     * hubiera cambiado el teléfono. La columna es TEXT y la dirección se guarda entera.
+     *
+     * @group etiqueta-envio
+     * @test
+     */
+    public function el_put_guarda_entera_una_direccion_de_300_caracteres()
+    {
+        $larga = substr(str_repeat('Av Presidente Domingo Faustino Sarmiento 1500 ', 7), 0, 299).'X';
+        $this->assertSame(300, mb_strlen($larga, 'UTF-8'));
+
+        $venta = $this->crear_venta($this->crear_cliente(['address' => $larga]));
+
+        $respuesta = $this->putJson('api/sale/'.$venta->id.'/delivery-info', [
+            'phone' => '3415550000',
+            'address' => $larga,
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame($larga, SaleDeliveryInfo::where('sale_id', $venta->id)->value('address'));
+        $this->assertSame($larga, $respuesta->json('model.sale_delivery_info.address'));
+    }
+
+    // ── El campo "Datos de envío" del PDF de la venta ───────────────────────────────────────
+
+    /**
+     * Lo que imprime el campo "Datos de envío" del diseño de página para la venta.
+     *
+     * @param Sale $venta
+     * @return array<int, string>|null
+     */
+    private function datos_de_envio_del_pdf($venta)
+    {
+        $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
+
+        return $fuente->valor('venta_datos_de_envio', [
+            'key' => 'venta_datos_de_envio',
+            'etiqueta' => null,
+            'tamano' => null,
+            'negrita' => null,
+            'cursiva' => null,
+            'alineacion' => null,
+        ]);
+    }
+
+    /**
+     * Con una dirección CARGADA en los datos de envío, el segundo renglón del campo es esa
+     * dirección (no el domicilio del cliente) adelante del lugar. Y si no hay lugar, la dirección
+     * sola.
+     *
+     * @group etiqueta-envio
+     * @test
+     */
+    public function los_datos_de_envio_del_pdf_de_la_venta_usan_la_direccion_cargada()
+    {
+        $cliente = $this->crear_cliente(['address' => 'Av Pellegrini 1500', 'dni' => '30111222']);
+        $venta = $this->crear_venta($cliente, [
+            'first_name' => 'Juana',
+            'last_name' => 'Gomez',
+            'phone' => '3415550000',
+            'address' => 'Mitre 742 Piso 3',
+            'locality' => 'Funes',
+            'province' => 'Santa Fe',
+            'postal_code' => '2132',
+            'email' => 'juana@correo.local',
+        ]);
+
+        $this->assertSame([
+            'Juana Gomez · 3415550000',
+            'Mitre 742 Piso 3, Funes, Santa Fe (2132)',
+            'juana@correo.local / DNI 30111222',
+        ], $this->datos_de_envio_del_pdf($venta));
+
+        $solo_direccion = $this->crear_venta($this->crear_cliente(['address' => 'Av Pellegrini 1500', 'cuit' => '20301112223']), ['address' => 'Mitre 742']);
+
+        $this->assertSame([
+            'Destinatario Etiqueta Test',
+            'Mitre 742',
+            'CUIT 20301112223',
+        ], $this->datos_de_envio_del_pdf($solo_direccion));
+    }
+
+    // ── El partido de la dirección en la etiqueta ───────────────────────────────────────────
+
+    /**
+     * Una etiqueta lista para medir, sin dibujar nada. El constructor de EtiquetaEnvioPdf arma el
+     * PDF entero y hace `Output(); exit;`, así que se instancia sin constructor, se inicializa FPDF
+     * a mano y se pone la fuente con la que se imprime la dirección (Arial negrita 12):
+     * renglones_de_direccion() necesita el margen de la celda (lo pone el constructor de FPDF) y la
+     * fuente actual (para GetStringWidth).
+     *
+     * @return EtiquetaEnvioPdf
+     */
+    private function etiqueta_para_medir()
+    {
+        $pdf = (new \ReflectionClass(EtiquetaEnvioPdf::class))->newInstanceWithoutConstructor();
+        (new \ReflectionMethod(\FPDF::class, '__construct'))->invoke($pdf);
+        $pdf->SetFont('Arial', 'B', 12);
+
+        return $pdf;
+    }
+
+    /**
+     * Ancho útil de un renglón de la dirección: los 200 mm de la celda menos su margen interno a
+     * cada lado (`cMargin`, protegido en FPDF).
+     *
+     * @param EtiquetaEnvioPdf $pdf
+     * @return float
+     */
+    private function ancho_util($pdf)
+    {
+        $margen = new \ReflectionProperty(\FPDF::class, 'cMargin');
+        $margen->setAccessible(true);
+
+        return 200 - 2 * $margen->getValue($pdf);
+    }
+
+    /**
+     * Cada renglón es UTF-8 válido (un corte por bytes partiría un acento al medio) y entra en la
+     * celda, medido como lo imprime Cell: GetStringWidth(utf8_decode(...)).
+     *
+     * @param EtiquetaEnvioPdf $pdf
+     * @param array<int, string> $renglones
+     * @return void
+     */
+    private function assert_renglones_validos($pdf, $renglones)
+    {
+        $ancho = $this->ancho_util($pdf);
+
+        foreach ($renglones as $renglon) {
+            $this->assertTrue(mb_check_encoding($renglon, 'UTF-8'), 'Renglón con UTF-8 roto: '.bin2hex($renglon));
+            $this->assertLessThanOrEqual($ancho, $pdf->GetStringWidth(utf8_decode($renglon)), 'El renglón no entra en la celda: '.$renglon);
+        }
+    }
+
+    /**
+     * Corta, un renglón; larga, dos, partidos entre palabras; larguísima, tres y el último termina
+     * en "..."; sin dirección, el rótulo solo. Ningún renglón pasa del ancho y los acentos y la
+     * "Ñ" salen enteros.
+     *
+     * @group etiqueta-envio
+     * @test
+     */
+    public function la_direccion_de_la_etiqueta_se_parte_en_renglones_que_entran()
+    {
+        $pdf = $this->etiqueta_para_medir();
+
+        $this->assertSame(['Dirección: Av Pellegrini 1500'], $pdf->renglones_de_direccion('Av Pellegrini 1500'));
+
+        $larga = 'Avenida Presidente Domingo Faustino Sarmiento 12345, Barrio Parque Las Acacias, Manzana 14 Lote 22, entre calles Güemes y Belgrano, portón verde con timbre';
+        $renglones = $pdf->renglones_de_direccion($larga);
+        $this->assertCount(2, $renglones);
+        $this->assertSame('Dirección: '.$larga, implode(' ', $renglones), 'Partida entre palabras: unida con espacios vuelve a ser la misma.');
+        $this->assert_renglones_validos($pdf, $renglones);
+
+        $larguisima = trim(str_repeat('Calle Larguísima Número 1234 Bis Departamento Ñandú ', 8));
+        $renglones = $pdf->renglones_de_direccion($larguisima);
+        $this->assertCount(3, $renglones, 'Tope de 3 renglones.');
+        $this->assertStringStartsWith('Dirección: Calle Larguísima', $renglones[0]);
+        $this->assertSame('...', mb_substr($renglones[2], -3, null, 'UTF-8'), 'Lo que sobra se corta con "...".');
+        $this->assertStringContainsString('Ñandú', implode(' ', $renglones));
+        $this->assert_renglones_validos($pdf, $renglones);
+
+        $this->assertSame(['Dirección: '], $pdf->renglones_de_direccion(''));
+        $this->assertSame(['Dirección: '], $pdf->renglones_de_direccion('   '));
+    }
+
+    /**
+     * Una palabra más ancha que el renglón se corta por caracteres, no por bytes: la "Ñ" y los
+     * acentos salen enteros. Y si esa palabra es la PRIMERA, se corta al ancho que queda al lado del
+     * rótulo: el primer renglón no queda con "Dirección:" solo, gastando uno de los tres.
+     *
+     * @group etiqueta-envio
+     * @test
+     */
+    public function una_palabra_mas_ancha_que_el_renglon_se_corta_sin_romper_los_acentos()
+    {
+        $pdf = $this->etiqueta_para_medir();
+
+        $palabra = str_repeat('Ñ', 120);
+        $renglones = $pdf->renglones_de_direccion($palabra);
+        $this->assertCount(2, $renglones);
+        $this->assertStringStartsWith('Dirección: Ñ', $renglones[0], 'El primer renglón no puede quedar con el rótulo solo.');
+        $this->assertSame('Dirección: '.$palabra, $renglones[0].$renglones[1], 'Cortada por caracteres, sin perder ninguno.');
+        $this->assert_renglones_validos($pdf, $renglones);
+
+        $acentos = str_repeat('áéíóúü', 40);
+        $renglones = $pdf->renglones_de_direccion($acentos);
+        $this->assertStringStartsWith('Dirección: á', $renglones[0]);
+        $this->assert_renglones_validos($pdf, $renglones);
+
+        /** Una palabra normal adelante y la larga después: esa sí pasa entera al renglón siguiente. */
+        $renglones = $pdf->renglones_de_direccion('Ruta '.$palabra);
+        $this->assertSame('Dirección: Ruta', $renglones[0]);
+        $this->assert_renglones_validos($pdf, $renglones);
     }
 }
