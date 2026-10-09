@@ -796,6 +796,53 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
     }
 
     /**
+     * El aviso tiene tope: como mucho 50 proveedores y, si hay más, un párrafo "y N proveedores
+     * más". Sin el tope, con unos 300 nombres el evento supera los 10 KB de Pusher y se pierde la
+     * notificación ENTERA de fin de importación, botón incluido.
+     *
+     * Los proveedores se siembran por el camino real más barato: una primera importación les carga
+     * un saldo y la segunda trae otro.
+     *
+     * @test
+     */
+    public function el_aviso_nombra_como_mucho_cincuenta_proveedores()
+    {
+        $filas_primera = [];
+        $filas_segunda = [];
+
+        for ($i = 1; $i <= 52; $i++) {
+            $nombre = $this->nombre('Prov tope '.str_pad($i, 2, '0', STR_PAD_LEFT));
+
+            $filas_primera[] = [$nombre, 100];
+            $filas_segunda[] = [$nombre, 200];
+        }
+
+        $this->importar_por_ia($this->xlsx(['Nombre', 'Saldo'], $filas_primera))->assertStatus(200);
+
+        Notification::fake();
+
+        $this->importar_por_ia($this->xlsx(['Nombre', 'Saldo'], $filas_segunda))->assertStatus(200);
+
+        $parrafos = $this->parrafos_del_aviso();
+
+        // 50 proveedores, "y 2 proveedores más" y la explicación.
+        $this->assertCount(52, $parrafos);
+
+        for ($i = 0; $i < 50; $i++) {
+            $this->assertSame($filas_segunda[$i][0].': saldo en el Excel $200, saldo en la cuenta $100', $parrafos[$i]);
+        }
+
+        $this->assertSame('y 2 proveedores más', $parrafos[50]);
+        $this->assertStringContainsString('cuenta vacía', $parrafos[51]);
+
+        // Y el evento entra en Pusher con margen (el límite es 10 KB para el evento entero).
+        $notificacion = $this->notificacion_de_fin();
+        $datos = $notificacion->toBroadcast(User::find($this->user_id))->data;
+
+        $this->assertLessThan(9000, strlen(json_encode($datos)), 'El evento de fin de importación no entra en Pusher.');
+    }
+
+    /**
      * "Solo editar" (`create_and_edit` apagado) con una fila de un proveedor que no existe y con
      * saldo: no hay proveedor donde cargarlo, así que la fila no hace nada. Antes reventaba con un
      * 500 a mitad de la importación (`$model->id` sobre null) y el resto del archivo no se importaba.

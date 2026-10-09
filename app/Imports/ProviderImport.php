@@ -61,6 +61,15 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     private $saldos_no_cargados = [];
 
     /**
+     * Tope de proveedores que nombra el aviso de saldos no cargados. Del resto se dice cuantos
+     * son. El evento de la notificacion viaja por Pusher, que corta en 10 KB: con unos 300 nombres
+     * se perdia la notificacion ENTERA de fin de importacion, boton incluido.
+     *
+     * @var int
+     */
+    const MAXIMO_DE_PROVEEDORES_EN_EL_AVISO = 50;
+
+    /**
      * Propiedades que esta fila vacia a proposito, como set [prop_key => true].
      *
      * Existe SOLO para isDataUpdated(): esa funcion pregunta por isset(), y isset() sobre
@@ -209,8 +218,9 @@ class ProviderImport implements ToCollection, WithMultipleSheets
      *
      * Hoy el unico bloque es el de los saldos que no se cargaron porque la cuenta del proveedor
      * ya tenia movimientos y otro saldo: un parrafo por proveedor con su nombre y los dos montos
-     * (el del Excel y el de la cuenta, para que se vea la diferencia antes de ajustar), y la
-     * explicacion al final. Si no hay nada que informar se devuelve un array vacio, igual que antes.
+     * (el del Excel y el de la cuenta, para que se vea la diferencia antes de ajustar), como mucho
+     * MAXIMO_DE_PROVEEDORES_EN_EL_AVISO y, si hay mas, "y N proveedores mas"; la explicacion va
+     * al final. Si no hay nada que informar se devuelve un array vacio, igual que antes.
      *
      * @return array
      */
@@ -222,10 +232,16 @@ class ProviderImport implements ToCollection, WithMultipleSheets
 
             $parrafos = [];
 
-            foreach ($no_cargados as $no_cargado) {
+            foreach (array_slice($no_cargados, 0, self::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO) as $no_cargado) {
                 $parrafos[] = $no_cargado['nombre']
                     . ': saldo en el Excel ' . $this->formatear_saldo($no_cargado['excel'])
                     . ', saldo en la cuenta ' . $this->formatear_saldo($no_cargado['cuenta']);
+            }
+
+            $restantes = count($no_cargados) - self::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO;
+
+            if ($restantes > 0) {
+                $parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' proveedor más' : ' proveedores más');
             }
 
             $parrafos[] = 'Estos proveedores ya tenían movimientos en su cuenta corriente y su saldo no coincide con el del Excel, '
