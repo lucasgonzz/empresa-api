@@ -27,7 +27,8 @@ use App\Models\User;
  * CAE de la venta (el criterio del PDF, decisión 12 de diseno-pdf-configurable).
  *
  * Respuesta 200: {disenado, perfil_id, es_factura, ancho_mm, caracteres_por_renglon,
- * payload_base64, lineas}.
+ * payload_base64, lineas, fallo_el_diseno}. `fallo_el_diseno` es true solo si el motor tiró una
+ * excepción (sale disenado:false, el Ticket 2.0 de siempre, y el SPA avisa).
  * - `disenado:false` sin perfil o con un perfil sin diseño (`page_layout` NULL): el SPA imprime el
  *   Ticket 2.0 de siempre (D1). `payload_base64` null. `es_factura` es el is_afip_ticket del perfil,
  *   o null sin perfil.
@@ -90,7 +91,7 @@ class SaleTicketComanderaHelper
             : DisenoDerivadoPdf::para('sale', $perfil, $es_factura, User::find($owner_id), true);
 
         try {
-            $ticket = self::motor($sale, $perfil, $factura, $diseno);
+            $ticket = static::motor($sale, $perfil, $factura, $diseno);
 
             $cuerpo = self::cuerpo(
                 $disenado,
@@ -114,8 +115,12 @@ class SaleTicketComanderaHelper
             report($e);
 
             $ancho_mm = self::ancho_del_rollo($perfil);
+            $cuerpo = self::cuerpo(false, $perfil->id, $es_factura, $ancho_mm, CatalogoDeCamposPdf::caracteres_por_renglon($ancho_mm), null);
 
-            return ['status' => 200, 'body' => self::cuerpo(false, $perfil->id, $es_factura, $ancho_mm, CatalogoDeCamposPdf::caracteres_por_renglon($ancho_mm), null)];
+            /** Para que el SPA avise que el diseño no salió y que imprimió el de siempre. */
+            $cuerpo['fallo_el_diseno'] = true;
+
+            return ['status' => 200, 'body' => $cuerpo];
         }
     }
 
@@ -236,6 +241,12 @@ class SaleTicketComanderaHelper
             'caracteres_por_renglon' => is_null($caracteres) ? null : (int) $caracteres,
             'payload_base64' => $payload_base64,
             'lineas' => null,
+            /**
+             * true SOLO cuando el perfil tiene diseño (o se pidió el texto) y el motor tiró una
+             * excepción: la respuesta cae a disenado:false y el SPA imprime el de siempre, pero
+             * avisando (ajuste del 9/10/2026 a pedido del revisor). Siempre presente.
+             */
+            'fallo_el_diseno' => false,
         ];
     }
 }

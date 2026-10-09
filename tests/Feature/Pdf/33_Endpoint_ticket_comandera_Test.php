@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Pdf;
 
+use App\Http\Controllers\Helpers\sale\SaleTicketComanderaHelper;
 use App\Models\Sale;
 use Tests\Concerns\DocumentosParaPdf;
 use Tests\EmpresaTestCase;
@@ -23,8 +24,12 @@ class Endpoint_ticket_comandera_Test extends EmpresaTestCase
     use ComprobantesConDisenoDePagina;
     use PerfilesDeTicketDeComandera;
 
-    /** Las claves exactas de la respuesta 200 (contrato §3.6). */
-    const CLAVES = ['disenado', 'perfil_id', 'es_factura', 'ancho_mm', 'caracteres_por_renglon', 'payload_base64', 'lineas'];
+    /**
+     * Las claves exactas de la respuesta 200 (contrato §3.6). Cambio de especificación del 9/10/2026
+     * (pedido de la sesión madre): suma `fallo_el_diseno`, siempre presente, true solo si el motor
+     * tiró una excepción.
+     */
+    const CLAVES = ['disenado', 'perfil_id', 'es_factura', 'ancho_mm', 'caracteres_por_renglon', 'payload_base64', 'lineas', 'fallo_el_diseno'];
 
     protected function setUp(): void
     {
@@ -80,6 +85,7 @@ class Endpoint_ticket_comandera_Test extends EmpresaTestCase
         $this->assertNull($json['es_factura'], 'Sin perfil, el SPA aplica la regla de siempre.');
         $this->assertNull($json['payload_base64']);
         $this->assertNull($json['lineas']);
+        $this->assertFalse($json['fallo_el_diseno']);
     }
 
     /**
@@ -178,6 +184,37 @@ class Endpoint_ticket_comandera_Test extends EmpresaTestCase
         $this->assertContains('FACTURA B', $json['lineas'], 'El fijo del emisor lo pone asegurar_fijos() aunque el diseño no lo traiga.');
         $this->assertContains('CAE: 76123456789012', $json['lineas']);
         $this->assertSame('[QR]', end($json['lineas']));
+    }
+
+    /**
+     * @test
+     */
+    public function si_el_motor_falla_sale_el_de_siempre_avisando()
+    {
+        $venta = $this->crear_venta_completa();
+        $remito = $this->perfil_de_ticket($this->dueno->id, false, ['is_default' => true, 'page_layout' => $this->diseno_minimo()]);
+
+        /** Con el motor de verdad, el diseño sale y no hay falla. */
+        $bien = $this->pedir($venta)->assertStatus(200)->json();
+        $this->assertTrue($bien['disenado']);
+        $this->assertFalse($bien['fallo_el_diseno']);
+
+        /** Un motor que revienta (un dato raro): disenado:false, sin bytes, y la marca para avisar. */
+        $helper_que_falla = get_class(new class extends SaleTicketComanderaHelper {
+            protected static function motor($sale, $perfil, $factura, $diseno)
+            {
+                throw new \RuntimeException('Diseño roto de prueba');
+            }
+        });
+
+        $resultado = $helper_que_falla::responder($venta, $this->dueno->id, $remito->id, null, null);
+
+        $this->assertSame(200, $resultado['status']);
+        $this->assertSame(self::CLAVES, array_keys($resultado['body']));
+        $this->assertFalse($resultado['body']['disenado']);
+        $this->assertNull($resultado['body']['payload_base64']);
+        $this->assertTrue($resultado['body']['fallo_el_diseno']);
+        $this->assertSame($remito->id, $resultado['body']['perfil_id']);
     }
 
     /**
