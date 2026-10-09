@@ -45,6 +45,10 @@ class AfipFexHelper
 
         $this->update_afip_ticket_numero_comprobante();
 
+        // Con numero, va a ARCA: si otra emision de la venta lo descarto "sin numero" mientras
+        // estaba en vuelo, se restaura antes de mandarlo (ver IntentosDeFacturaFallidosHelper).
+        IntentosDeFacturaFallidosHelper::restaurar_si_va_a_arca($this->afip_ticket);
+
 
         // $pais_destino = 242; // código país destino (por ejemplo, Uruguay)
         $pais_destino = $this->sale->client->pais_exportacion->codigo_afip;
@@ -224,8 +228,10 @@ class AfipFexHelper
              * Mision facturas-reintentadas-salen-de-alertas (9/10/2026): con la Factura E
              * autorizada, los intentos anteriores de la venta que se puede probar que nunca se
              * autorizaron salen de Alertas. Si ARCA contesto `R`, el ticket no tiene CAE y el
-             * helper no hace nada. No tira nunca.
+             * helper no hace nada. Antes se restaura este ticket si quedo borrado con CAE. No
+             * tiran nunca.
              */
+            IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
             IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
 
         } else if (
@@ -590,6 +596,21 @@ class AfipFexHelper
                         ]);
 
                         Log::info("Comprobante consultado exitosamente en WSFEX");
+
+                        /**
+                         * Mision facturas-reintentadas-salen-de-alertas (9/10/2026): el cuarto camino
+                         * de exito. Si la consulta le dio el CAE, igual que en update_afip_ticket():
+                         * se restaura el ticket si quedo borrado y se descartan los intentos que la
+                         * factura supera. Con una NC E (tambien pasa por aca) descartar_superados()
+                         * no hace nada. Ninguno de los dos tira.
+                         *
+                         * ⚠️ Este camino NO suma `total_facturado` (update_afip_ticket() si). Es
+                         * anterior a esta mision y no se toca aca.
+                         */
+                        if (!empty($this->afip_ticket->cae)) {
+                            IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
+                            IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
+                        }
                     } else {
 
                         // Id == 0: ARCA confirma que el comprobante no existe en sus registros.

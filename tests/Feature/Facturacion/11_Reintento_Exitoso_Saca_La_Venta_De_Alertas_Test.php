@@ -51,6 +51,10 @@ use Tests\EmpresaTestCase;
  * el comando no existía. El 4 y el 7 son guards puros: pasan en las dos versiones y tienen que
  * seguir pasando.
  *
+ * Los tests 10 a 13 cubren la invariante que esta misma limpieza pone en juego: **un comprobante
+ * con CAE nunca queda borrado**, ni aunque dos emisiones de la misma venta corran en paralelo. El
+ * 14 es el cuarto camino de éxito (Consultar una Factura E).
+ *
  * @group facturacion
  * @group afip
  */
@@ -550,6 +554,233 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $this->assertNotContains($venta->id, $this->ventas_en_alertas());
     }
 
+    /**
+     * Test 10 — 🔴 La carrera de la regla (a), del lado de la emisión: la emisión A queda autorizada
+     * y descarta "sin número" al intento B, que en ese momento estaba EN VUELO (recién creado, sin
+     * número todavía). B sigue su camino, pide su número y sale autorizado: tiene que terminar vivo.
+     *
+     * La carrera se arma con el código real: B se lee como lo tiene en memoria su proceso, y el
+     * descarte lo hace `descartar_superados()` de una factura autorizada de la misma venta. Después
+     * B se emite con esa MISMA instancia, que es lo que pasa en producción.
+     *
+     * @test
+     */
+    public function un_intento_en_vuelo_descartado_sin_numero_que_despues_sale_autorizado_queda_vivo()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $en_vuelo = AfipTicket::find($this->nuevo_intento($venta, self::FACTURA_B)->id);
+
+        $autorizada_por_a = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) $numero,
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $this->assertEquals(1, IntentosDeFacturaFallidosHelper::descartar_superados($autorizada_por_a));
+        $this->assertSoftDeleted('afip_tickets', ['id' => $en_vuelo->id]);
+
+        $this->emitir_instancia($en_vuelo, [
+            'ultimo' => $numero,
+            'fecae'  => DobleDeWsfeParaReintentos::AUTORIZADA,
+        ]);
+
+        $b = AfipTicket::withTrashed()->find($en_vuelo->id);
+
+        $this->assertNotEmpty($b->cae, 'B tiene que haber salido autorizado; si no, el escenario no prueba nada.');
+        $this->assertNull(
+            $b->deleted_at,
+            'Un comprobante con CAE nunca puede quedar borrado: quedaría fuera del Libro IVA y de los TXT.'
+        );
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $autorizada_por_a->id]);
+    }
+
+    /**
+     * Test 11 — 🔴 La otra mitad: un ticket que recibe su CAE estando borrado se restaura.
+     *
+     * Acá el borrado ocurre DESPUÉS de numerar, mientras el pedido está en ARCA (el doble lo borra
+     * dentro de `FECAESolicitar`), así que lo único que lo puede salvar es
+     * `restaurar_si_quedo_borrado()`, que corre apenas se escribe el CAE. Y el guard: un intento
+     * descartado SIN CAE no se restaura.
+     *
+     * @test
+     */
+    public function un_ticket_que_recibe_el_cae_estando_borrado_se_restaura()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $intento = $this->nuevo_intento($venta, self::FACTURA_B);
+        $id = $intento->id;
+
+        $this->emitir($intento, [
+            'ultimo'       => $numero - 1,
+            'fecae'        => DobleDeWsfeParaReintentos::AUTORIZADA,
+            'al_solicitar' => function () use ($id) {
+                AfipTicket::where('id', $id)->delete();
+            },
+        ]);
+
+        $ticket = AfipTicket::withTrashed()->find($id);
+
+        $this->assertNotEmpty($ticket->cae);
+        $this->assertNull($ticket->deleted_at, 'Recibió el CAE estando borrado: tenía que restaurarse.');
+
+        // Guard: un descartado sin CAE se queda borrado.
+        $descartado = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
+        $descartado->delete();
+
+        $this->assertFalse(IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($descartado));
+        $this->assertSoftDeleted('afip_tickets', ['id' => $descartado->id]);
+    }
+
+    /**
+     * Test 12 — La carrera de la regla (a) cuando B NO recibe respuesta: B se descartó sin número
+     * mientras estaba en vuelo, pidió su número y ARCA no contestó (error de red, también en la
+     * consulta automática). B puede estar autorizado en ARCA con la respuesta perdida: tiene que
+     * quedar vivo y la venta en Alertas para Consultarlo. Lo cubre `restaurar_si_va_a_arca()`, que
+     * corre apenas B tiene número.
+     *
+     * @test
+     */
+    public function un_intento_en_vuelo_descartado_que_despues_tira_error_de_red_queda_visible_en_alertas()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $en_vuelo = AfipTicket::find($this->nuevo_intento($venta, self::FACTURA_B)->id);
+
+        $autorizada_por_a = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) $numero,
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        IntentosDeFacturaFallidosHelper::descartar_superados($autorizada_por_a);
+
+        $this->assertSoftDeleted('afip_tickets', ['id' => $en_vuelo->id]);
+
+        $this->emitir_instancia($en_vuelo, [
+            'ultimo'   => $numero,
+            'fecae'    => DobleDeWsfeParaReintentos::ERROR_DE_RED,
+            'consulta' => DobleDeWsfeParaReintentos::ERROR_DE_RED,
+        ]);
+
+        $b = AfipTicket::withTrashed()->find($en_vuelo->id);
+
+        $this->assertEquals((string) ($numero + 1), (string) $b->cbte_numero);
+        $this->assertNull($b->deleted_at, 'B fue a ARCA y no se sabe qué pasó: no puede quedar escondido.');
+        $this->assertContains($venta->id, $this->ventas_en_alertas());
+    }
+
+    /**
+     * Test 13 — 🔴 El borrado es condicional y atómico: `descartar()` no borra un ticket que cambió
+     * entre la lectura y el borrado.
+     *
+     * `descartar_superados()` y el comando leen los intentos y llaman a `descartar()` con la
+     * instancia que leyeron. Acá se simula la carrera sin tocar el código: se lee el ticket, otro
+     * "proceso" le escribe derecho en la base (el CAE, el número, otro resultado) y recién después
+     * se le pasa a `descartar()` la instancia vieja. El `UPDATE` vuelve a exigir el motivo y no
+     * encuentra la fila. El último caso es el control: sin cambios, sí borra.
+     *
+     * @test
+     */
+    public function descartar_no_borra_un_ticket_que_cambio_entre_la_lectura_y_el_borrado()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        // Ya tiene CAE cuando llega el borrado (regla a). Se escribe SOLO el CAE, para que lo único
+        // que frene el borrado sea la condición del CAE y no la del número.
+        $leido = AfipTicket::find($this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null])->id);
+        AfipTicket::where('id', $leido->id)->update(['cae' => $this->cae()]);
+
+        $this->assertFalse(IntentosDeFacturaFallidosHelper::descartar($leido, IntentosDeFacturaFallidosHelper::MOTIVO_SIN_NUMERO, 'test'));
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $leido->id]);
+
+        // Ya tiene CAE, leído como rechazado (regla c).
+        $leido = AfipTicket::find($this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => (string) ($numero + 4), 'resultado' => 'R'])->id);
+        AfipTicket::where('id', $leido->id)->update(['cae' => $this->cae()]);
+
+        $this->assertFalse(IntentosDeFacturaFallidosHelper::descartar($leido, IntentosDeFacturaFallidosHelper::MOTIVO_RECHAZADO, 'test'));
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $leido->id]);
+
+        // Sin CAE, pero ya pidió su número (regla a): va camino a ARCA.
+        $leido = AfipTicket::find($this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null])->id);
+        AfipTicket::where('id', $leido->id)->update(['cbte_numero' => (string) ($numero + 5)]);
+
+        $this->assertFalse(IntentosDeFacturaFallidosHelper::descartar($leido, IntentosDeFacturaFallidosHelper::MOTIVO_SIN_NUMERO, 'test'));
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $leido->id]);
+
+        // Sin CAE, pero ya no dice R (regla c).
+        $leido = AfipTicket::find($this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => (string) ($numero + 6), 'resultado' => 'R'])->id);
+        AfipTicket::where('id', $leido->id)->update(['resultado' => null]);
+
+        $this->assertFalse(IntentosDeFacturaFallidosHelper::descartar($leido, IntentosDeFacturaFallidosHelper::MOTIVO_RECHAZADO, 'test'));
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $leido->id]);
+
+        // Sin CAE, pero su comprobante ya no es el que se comparó (regla b).
+        $leido = AfipTicket::find($this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => (string) ($numero + 7)])->id);
+        AfipTicket::where('id', $leido->id)->update(['cbte_numero' => (string) ($numero + 8)]);
+
+        $this->assertFalse(IntentosDeFacturaFallidosHelper::descartar($leido, IntentosDeFacturaFallidosHelper::MOTIVO_MISMO_NUMERO, 'test'));
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $leido->id]);
+
+        // Control: sin cambios entre medio, borra.
+        $leido = AfipTicket::find($this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null])->id);
+
+        $this->assertTrue(IntentosDeFacturaFallidosHelper::descartar($leido, IntentosDeFacturaFallidosHelper::MOTIVO_SIN_NUMERO, 'test'));
+        $this->assertSoftDeleted('afip_tickets', ['id' => $leido->id]);
+    }
+
+    /**
+     * Test 14 — El cuarto camino de éxito: Consultar una Factura E
+     * (`AfipFexHelper::consultar_comprobante()`) que recupera el CAE descarta el intento sin número
+     * de la venta, y restaura el consultado si estaba borrado.
+     *
+     * @test
+     */
+    public function consultar_una_factura_e_que_recupera_el_cae_descarta_los_intentos_superados()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $sin_numero = $this->ticket_directo($venta, self::FACTURA_E, ['cbte_numero' => null]);
+        $consultada = $this->ticket_directo($venta, self::FACTURA_E, ['cbte_numero' => (string) $numero]);
+
+        // Borrada mientras estaba en vuelo: la consulta que le da el CAE la tiene que restaurar.
+        $en_memoria = AfipTicket::find($consultada->id);
+        AfipTicket::where('id', $consultada->id)->delete();
+
+        $this->assertContains($venta->id, $this->ventas_en_alertas());
+
+        $cae = $this->cae();
+
+        $helper = (new ReflectionClass(AfipFexHelper::class))->newInstanceWithoutConstructor();
+        $helper->afip_ticket = $en_memoria;
+        $helper->sale = Sale::find($venta->id);
+        $helper->wsfex = new DobleDeWsfexQueConsulta([
+            'Id'           => 62,
+            'Cbte_tipo'    => self::FACTURA_E,
+            'Punto_vta'    => (int) $consultada->punto_venta,
+            'Cbte_nro'     => $numero,
+            'Imp_total'    => (float) $venta->total,
+            'Cae'          => $cae,
+            'Fch_venc_Cae' => '20261231',
+            'Resultado'    => 'A',
+        ]);
+
+        $helper->consultar_comprobante();
+
+        $guardada = AfipTicket::withTrashed()->find($consultada->id);
+
+        $this->assertEquals($cae, $guardada->cae, 'La consulta tiene que haber escrito el CAE.');
+        $this->assertNull($guardada->deleted_at, 'Con CAE no puede quedar borrada.');
+        $this->assertSoftDeleted('afip_tickets', ['id' => $sin_numero->id]);
+        $this->assertNotContains($venta->id, $this->ventas_en_alertas());
+    }
+
     // =========================================================================================
     // Helpers del archivo
     // =========================================================================================
@@ -574,6 +805,28 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $helper->procesar();
 
         return AfipTicket::withTrashed()->find($intento->id);
+    }
+
+    /**
+     * Como `emitir()`, pero con la instancia que el proceso de la emisión ya tiene en memoria, sin
+     * releerla: es lo que hace falta para la carrera, porque un ticket borrado no se vuelve a
+     * encontrar con `find()` y su proceso igual sigue adelante con él.
+     *
+     * @param  \App\Models\AfipTicket $en_memoria
+     * @param  array $guion Ver `DobleDeWsfeParaReintentos`.
+     * @return void
+     */
+    protected function emitir_instancia($en_memoria, array $guion)
+    {
+        if (!isset($guion['cae'])) {
+            $guion['cae'] = $this->cae();
+        }
+
+        $helper = (new ReflectionClass(AfipWsfeHelper::class))->newInstanceWithoutConstructor();
+        $helper->afip_ticket = $en_memoria;
+        $helper->wsfe = new DobleDeWsfeParaReintentos($guion);
+
+        $helper->procesar();
     }
 
     /**
@@ -825,6 +1078,8 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
  *  - `cae`: el CAE que se devuelve cuando autoriza.
  *  - `consulta_imp_total`: el `ImpTotal` que devuelve la consulta (tiene que coincidir con el
  *    `imp_total_enviado` del ticket para que se adopte).
+ *  - `al_solicitar`: callable que corre al entrar a `FECAESolicitar`, para simular lo que hace otro
+ *    proceso mientras el pedido está en ARCA.
  *
  * Nombre propio para que pueda cargarse en la misma corrida que los dobles de `Tests\Feature\Sales`.
  */
@@ -875,6 +1130,11 @@ class DobleDeWsfeParaReintentos
      */
     public function FECAESolicitar($invoice)
     {
+        // Lo que hace "otro proceso" mientras el pedido está en ARCA (test 11).
+        if (isset($this->guion['al_solicitar'])) {
+            call_user_func($this->guion['al_solicitar']);
+        }
+
         $modo = isset($this->guion['fecae']) ? $this->guion['fecae'] : self::ERROR_DE_RED;
 
         if ($modo == self::ERROR_DE_RED) {
@@ -981,5 +1241,57 @@ class DobleDeWsfeParaReintentos
             'request'       => '<request/>',
             'response'      => null,
         ];
+    }
+}
+
+/**
+ * Doble de WSFEX para `AfipFexHelper::consultar_comprobante()`: contesta `FEXGetCMP` con el
+ * `FEXResultGet` que le pasaron y no abre ninguna conexión.
+ */
+class DobleDeWsfexQueConsulta
+{
+    /** @var array */
+    private $resultado;
+
+    /**
+     * @param  array $resultado Campos de `FEXResultGet`.
+     */
+    public function __construct(array $resultado)
+    {
+        $this->resultado = $resultado;
+    }
+
+    /**
+     * @param  object $params `Cmp` con Id, tipo, punto de venta y número; el doble los ignora.
+     * @return array
+     */
+    public function FEXGetCMP($params)
+    {
+        return [
+            'hubo_un_error' => false,
+            'request'       => '<request/>',
+            'response'      => '<response/>',
+            'result'        => (object) [
+                'FEXGetCMPResult' => (object) [
+                    'FEXResultGet' => (object) $this->resultado,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return string
+     */
+    public function getLastRequest()
+    {
+        return '<request/>';
+    }
+
+    /**
+     * @return string
+     */
+    public function getLastResponse()
+    {
+        return '<response/>';
     }
 }

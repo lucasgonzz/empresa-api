@@ -25,7 +25,10 @@ use Illuminate\Support\Facades\Log;
  *
  *   - Sin `--aplicar`: lista cada intento (venta, ticket, motivo) y NO escribe nada.
  *   - Con `--aplicar`: hace el borrado suave (SoftDeletes, lo mismo que el tacho de la tarjeta).
- *     Los `afip_errors` del intento quedan como historia.
+ *     Los `afip_errors` del intento quedan como historia. Borra con el MISMO
+ *     `IntentosDeFacturaFallidosHelper::descartar()` que la limpieza en vivo: un `UPDATE` que
+ *     vuelve a exigir el motivo, así que si entre el listado y el borrado ese ticket recibió el CAE
+ *     o su número (una emisión en curso), no se toca y no cuenta como descartado.
  *   - `{user_id?}`: solo las ventas de ese comercio (`sales.user_id`). En una base compartida, sin
  *     esto se recorren las de todos.
  *

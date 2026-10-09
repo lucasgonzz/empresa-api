@@ -56,11 +56,26 @@ use Illuminate\Support\Facades\Log;
  *
  * ─── Quién lo usa ─────────────────────────────────────────────────────────────────────────────
  *
- * Los tres caminos por los que una factura queda autorizada llaman a `descartar_superados()`
- * apenas escribieron el CAE: `AfipWsfeHelper::solicitar_cae()` (emisión normal),
- * `AfipWsfeHelper::consultar_comprobante()` (consulta manual, o la automática después de un error
- * de red al emitir) y `AfipFexHelper::update_afip_ticket()` (Factura E). Lo que quedó de antes lo
- * limpia el comando `afip:descartar-intentos-fallidos`, que usa el MISMO `motivo_de_descarte()`.
+ * Los cuatro caminos por los que una factura queda autorizada llaman a
+ * `restaurar_si_quedo_borrado()` y después a `descartar_superados()` apenas escribieron el CAE:
+ * `AfipWsfeHelper::solicitar_cae()` (emisión normal), `AfipWsfeHelper::consultar_comprobante()`
+ * (consulta manual, o la automática después de un error de red al emitir),
+ * `AfipFexHelper::update_afip_ticket()` (Factura E) y `AfipFexHelper::consultar_comprobante()`
+ * (consulta de una Factura E). Lo que quedó de antes lo limpia el comando
+ * `afip:descartar-intentos-fallidos`, que usa el MISMO `motivo_de_descarte()` y el MISMO
+ * `descartar()`.
+ *
+ * ─── La invariante: un comprobante con CAE nunca queda borrado ───────────────────────────────
+ *
+ * Dos emisiones de la misma venta pueden correr en paralelo. Se sostiene por los dos lados, porque
+ * cada uno tapa una mitad de la carrera:
+ *
+ *  1. `descartar()` borra con un `UPDATE` condicional que vuelve a exigir el motivo (sin CAE, y
+ *     además sin número / mismo comprobante / `R`). Si el otro proceso ya escribió algo, no borra.
+ *  2. `restaurar_si_quedo_borrado()` restaura un ticket que recibió su CAE estando borrado (lo
+ *     borraron sin número y después salió autorizado), y `restaurar_si_va_a_arca()` lo restaura
+ *     apenas tiene número, antes de mandarlo, para que un error de red posterior no deje escondido
+ *     un comprobante que ARCA pudo haber autorizado.
  *
  * 🔴 La limpieza nunca puede romper una emisión: cuando se llama, la factura YA está autorizada en
  * ARCA. Cualquier falla se reporta (`report()`) y se sigue; en el peor caso el intento viejo queda
@@ -216,19 +231,78 @@ class IntentosDeFacturaFallidosHelper
     /**
      * Borra (suave) un intento ya calificado por `motivo_de_descarte()` y deja la línea en el log.
      *
+     * 🔴 NO borra la instancia que se leyó: borra con UNA consulta que vuelve a exigir, en el mismo
+     * `UPDATE`, que el ticket siga cumpliendo el motivo. Entre la lectura y el borrado otro proceso
+     * puede estar emitiendo ESE MISMO ticket (dos emisiones de la misma venta en paralelo): si ya
+     * escribió el CAE, si ya pidió su número (regla a), si ya no dice `R` (regla c) o si su
+     * comprobante cambió (regla b), el `UPDATE` no encuentra la fila y no se toca nada. Con
+     * SoftDeletes, `delete()` sobre el builder es un `update deleted_at` con todos esos `where`
+     * adentro, más el `deleted_at IS NULL` del scope.
+     *
+     * Es una de las dos mitades de la invariante **"un comprobante con CAE nunca queda borrado"**;
+     * la otra es `restaurar_si_quedo_borrado()`, para la carrera que este `UPDATE` no puede ver (el
+     * ticket se borra legítimamente sin número y DESPUÉS sale autorizado).
+     *
      * Los `afip_errors` y `afip_observations` del intento NO se tocan: quedan como historia de por
      * qué falló.
      *
-     * @param  \App\Models\AfipTicket $fallido
+     * @param  \App\Models\AfipTicket $fallido Ticket tal como se leyó.
      * @param  string $motivo Una de las constantes `MOTIVO_*`.
      * @param  string $origen Quién lo descarta, para el log.
-     * @return bool true si quedó borrado; false si falló (ya reportado).
+     * @return bool true si quedó borrado; false si cambió entre medio o falló (ya reportado).
      */
     public static function descartar($fallido, $motivo, $origen)
     {
         try {
 
-            $fallido->delete();
+            $borrado = AfipTicket::where('id', $fallido->id)
+                                ->where(function ($q) {
+                                    $q->whereNull('cae')
+                                      ->orWhere('cae', '');
+                                })
+                                ->whereNull('nota_credito_id')
+                                ->whereNull('sale_nota_credito_id');
+
+            if ($motivo === self::MOTIVO_SIN_NUMERO) {
+
+                $borrado->where(function ($q) {
+                    $q->whereNull('cbte_numero')
+                      ->orWhere('cbte_numero', '');
+                });
+
+            } else if ($motivo === self::MOTIVO_MISMO_NUMERO) {
+
+                // El comprobante tiene que seguir siendo el que se comparó contra la factura autorizada.
+                foreach (['cuit_negocio', 'punto_venta', 'cbte_tipo', 'cbte_numero'] as $columna) {
+                    if (is_null($fallido->{$columna})) {
+                        $borrado->whereNull($columna);
+                    } else {
+                        $borrado->where($columna, $fallido->{$columna});
+                    }
+                }
+
+            } else if ($motivo === self::MOTIVO_RECHAZADO) {
+
+                $borrado->where('resultado', 'R');
+
+            } else {
+
+                // Un motivo desconocido no borra nada.
+                return false;
+            }
+
+            $filas = $borrado->delete();
+
+            if ($filas < 1) {
+
+                Log::info(
+                    'IntentosDeFacturaFallidos: venta '.$fallido->sale_id.', el ticket '.$fallido->id
+                    .' NO se descartó: cambió entre la lectura y el borrado (otro proceso lo está emitiendo, '
+                    .'o ya no cumple '.$motivo.'). '.$origen.'.'
+                );
+
+                return false;
+            }
 
             Log::info(
                 'IntentosDeFacturaFallidos: venta '.$fallido->sale_id.', se descartó el ticket '.$fallido->id
@@ -244,6 +318,126 @@ class IntentosDeFacturaFallidosHelper
             Log::warning(
                 'IntentosDeFacturaFallidos: no se pudo descartar el ticket '.$fallido->id.' de la venta '
                 .$fallido->sale_id.': '.$e->getMessage()
+            );
+
+            return false;
+        }
+    }
+
+    /**
+     * 🔴 Restaura un comprobante CON CAE que haya quedado borrado. Se llama en cada punto donde un
+     * ticket recibe su CAE, ANTES de `descartar_superados()`.
+     *
+     * Es la otra mitad de la invariante **"un comprobante con CAE nunca queda borrado"**. El borrado
+     * condicional de `descartar()` no puede ver esta carrera: la emisión A queda autorizada y borra
+     * un intento B que en ESE momento no tenía número (regla a, legítimo), pero B estaba en vuelo —se
+     * acababa de crear— y después pide su número y sale autorizado. `update()` escribe el CAE igual
+     * sobre la fila borrada (Eloquent actualiza por id, sin el scope de SoftDeletes), y sin esto B
+     * quedaría con CAE y `deleted_at`: invisible para el Libro IVA y los TXT, que es exactamente el
+     * bug de masquito (11/9/2026).
+     *
+     * La restauración también es un solo `UPDATE` que vuelve a exigir CAE no vacío y `deleted_at`
+     * no nulo. No tira nunca: corre con el comprobante ya autorizado en ARCA.
+     *
+     * @param  \App\Models\AfipTicket|null $afip_ticket
+     * @return bool true si lo restauró.
+     */
+    public static function restaurar_si_quedo_borrado($afip_ticket)
+    {
+        try {
+
+            if (is_null($afip_ticket) || is_null($afip_ticket->id)) {
+                return false;
+            }
+
+            $guardado = AfipTicket::withTrashed()->find($afip_ticket->id);
+
+            if (is_null($guardado) || !$guardado->trashed() || !self::tiene_cae($guardado)) {
+                return false;
+            }
+
+            $filas = AfipTicket::withTrashed()
+                                ->where('id', $guardado->id)
+                                ->whereNotNull('deleted_at')
+                                ->whereNotNull('cae')
+                                ->where('cae', '!=', '')
+                                ->restore();
+
+            if ($filas < 1) {
+                return false;
+            }
+
+            $venta = !is_null($guardado->sale_id) ? $guardado->sale_id : $guardado->sale_nota_credito_id;
+
+            Log::warning(
+                'IntentosDeFacturaFallidos: el ticket '.$guardado->id.' de la venta '.$venta.' tenía CAE '
+                .$guardado->cae.' y estaba borrado; se restauró (un comprobante autorizado no puede quedar '
+                .'fuera del Libro IVA).'
+            );
+
+            return true;
+
+        } catch (\Throwable $e) {
+
+            report($e);
+
+            Log::warning(
+                'IntentosDeFacturaFallidos: no se pudo revisar/restaurar el ticket '
+                .(is_null($afip_ticket) ? '-' : $afip_ticket->id).': '.$e->getMessage()
+            );
+
+            return false;
+        }
+    }
+
+    /**
+     * 🔴 Restaura un intento que quedó borrado justo cuando está por ir a ARCA. Se llama apenas el
+     * ticket tiene número, ANTES de mandarlo (`FECAESolicitar` / `FEXAuthorize`).
+     *
+     * Cierra el caso de la carrera que `restaurar_si_quedo_borrado()` no cubre: el intento B se borró
+     * sin número (regla a) mientras estaba en vuelo, y después de mandarlo ARCA no contesta (error
+     * de red). B puede estar autorizado en ARCA —la respuesta se perdió— y es justo el fallido que
+     * tiene que seguir en Alertas para Consultarlo. Un ticket que va a ARCA dejó de ser "un intento
+     * que nunca llegó": no puede estar borrado, salga como salga.
+     *
+     * Un ticket que el usuario borró con el tacho nunca vuelve a pasar por acá (reintentar crea uno
+     * nuevo), así que lo único que esto restaura es un intento en vuelo. No tira nunca.
+     *
+     * @param  \App\Models\AfipTicket|null $afip_ticket
+     * @return bool true si lo restauró.
+     */
+    public static function restaurar_si_va_a_arca($afip_ticket)
+    {
+        try {
+
+            if (is_null($afip_ticket) || is_null($afip_ticket->id)) {
+                return false;
+            }
+
+            $filas = AfipTicket::withTrashed()
+                                ->where('id', $afip_ticket->id)
+                                ->whereNotNull('deleted_at')
+                                ->restore();
+
+            if ($filas < 1) {
+                return false;
+            }
+
+            Log::warning(
+                'IntentosDeFacturaFallidos: el ticket '.$afip_ticket->id.' de la venta '.$afip_ticket->sale_id
+                .' estaba borrado y se está mandando a ARCA; se restauró (otra emisión de la misma venta lo '
+                .'había descartado sin número mientras estaba en vuelo).'
+            );
+
+            return true;
+
+        } catch (\Throwable $e) {
+
+            report($e);
+
+            Log::warning(
+                'IntentosDeFacturaFallidos: no se pudo revisar/restaurar el ticket en vuelo '
+                .(is_null($afip_ticket) ? '-' : $afip_ticket->id).': '.$e->getMessage()
             );
 
             return false;

@@ -262,8 +262,10 @@ class AfipWsfeHelper extends Controller
                                  * Igual que en `solicitar_cae()`: con la factura recuperada, los otros
                                  * intentos de esta venta que se puede probar que nunca se autorizaron
                                  * salen de Alertas. Cubre los dos caminos que llegan aca: la consulta
-                                 * manual y la automatica despues de un error de red al emitir.
+                                 * manual y la automatica despues de un error de red al emitir. Primero
+                                 * se restaura el ticket si quedo borrado: tiene CAE.
                                  */
+                                IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
                                 IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
                             }
 
@@ -523,6 +525,13 @@ class AfipWsfeHelper extends Controller
 
         if (!$ok) return;
 
+        /**
+         * Con numero, este ticket va a ARCA: si otra emision de la misma venta lo descarto "sin
+         * numero" mientras estaba en vuelo, se restaura ahora, antes de mandarlo. Salga autorizado,
+         * rechazado o sin respuesta, tiene que quedar visible (ver el helper).
+         */
+        IntentosDeFacturaFallidosHelper::restaurar_si_va_a_arca($this->afip_ticket);
+
         $afip_helper = new AfipHelper($this->afip_ticket);
         $importes = $afip_helper->getImportes();
 
@@ -638,8 +647,11 @@ class AfipWsfeHelper extends Controller
                 /**
                  * La venta ya quedo facturada: los intentos anteriores que se puede PROBAR que nunca
                  * se autorizaron (sin numero, mismo numero o rechazados) dejan de tenerla en Alertas.
-                 * No tira nunca: si falla, la emision sigue siendo un exito (ver el helper).
+                 * Antes, si este mismo ticket quedo borrado por otra emision de la venta mientras
+                 * estaba en vuelo, se restaura: un comprobante con CAE nunca queda borrado.
+                 * Ninguno de los dos tira: si fallan, la emision sigue siendo un exito (ver el helper).
                  */
+                IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
                 IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
             }
 
