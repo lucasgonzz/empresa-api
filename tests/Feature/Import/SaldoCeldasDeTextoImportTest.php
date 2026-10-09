@@ -815,19 +815,20 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
      * ================================================================== */
 
     /**
-     * El aviso nombra como mucho 30 filas; si hay más, "y N filas más" (en singular si es una). El
+     * El aviso nombra como mucho 20 filas; si hay más, "y N filas más" (en singular si es una). El
      * nombre se corta a 60 caracteres y el texto a 40, con "…".
      *
      * @test
      */
-    public function el_aviso_de_clientes_nombra_como_mucho_treinta_filas()
+    public function el_aviso_de_clientes_nombra_como_mucho_veinte_filas()
     {
         $nombre_largo = $this->nombre('Cli con un nombre larguisimo que no entra entero en el aviso de fin');
         $texto_largo  = 'Debe la factura 0001-00004567 del 12/03 mas los intereses de mora';
 
         $filas = [[$nombre_largo, $texto_largo]];
 
-        for ($i = 2; $i <= 31; $i++) {
+        // 21 filas ilegibles en total: una más que el tope.
+        for ($i = 2; $i <= 21; $i++) {
             $filas[] = [$this->nombre('Cli tope '.str_pad($i, 2, '0', STR_PAD_LEFT)), 's/d'];
         }
 
@@ -837,8 +838,8 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
 
         $parrafos = $this->parrafos_del_aviso_de_ilegibles();
 
-        // 30 filas, "y 1 fila más" y la explicación.
-        $this->assertCount(32, $parrafos);
+        // 20 filas, "y 1 fila más" y la explicación.
+        $this->assertCount(22, $parrafos);
 
         $this->assertGreaterThan(60, mb_strlen($nombre_largo), 'Premisa: el nombre tiene que pasar los 60 caracteres.');
 
@@ -848,20 +849,21 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
             'El nombre se corta a 60 caracteres y el texto a 40.'
         );
 
-        for ($i = 1; $i < 30; $i++) {
+        for ($i = 1; $i < 20; $i++) {
             $this->assertSame('Fila '.($i + 2).', '.$filas[$i][0].': "s/d"', $parrafos[$i]);
         }
 
-        $this->assertSame('y 1 fila más', $parrafos[30]);
+        $this->assertSame('y 1 fila más', $parrafos[20]);
 
-        $this->assert_explicacion_del_aviso($parrafos[31]);
+        $this->assert_explicacion_del_aviso($parrafos[21]);
     }
 
     /**
      * Proveedores con los DOS bloques del aviso al tope: el de saldos que no se cargaron porque la
-     * cuenta ya tenía otro (50 nombrados) y el de saldos ilegibles (30 nombrados), con nombres y
+     * cuenta ya tenía otro (50 nombrados) y el de saldos ilegibles (20 nombrados), con nombres y
      * textos largos. El bloque nuevo va DESPUÉS del que ya existía, y el evento entero sigue
-     * entrando en Pusher (10 KB) con margen.
+     * entrando en Pusher (10 KB) con margen. Con 30 filas en el bloque nuevo pesaba 10.056 bytes:
+     * por eso el tope es 20 (LocalImportHelper::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES).
      *
      * @test
      */
@@ -878,8 +880,8 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
             $filas_segunda[] = [$nombre, 200];
         }
 
-        // 32 proveedores nuevos con nombre largo y saldo ilegible largo.
-        for ($i = 1; $i <= 32; $i++) {
+        // 22 proveedores nuevos con nombre largo y saldo ilegible largo: dos más que el tope.
+        for ($i = 1; $i <= 22; $i++) {
             $filas_segunda[] = [
                 $this->nombre('Prov ilegible con un nombre bien largo para el aviso de fin '.str_pad($i, 2, '0', STR_PAD_LEFT)),
                 'Debe la factura 0001-000045'.str_pad($i, 2, '0', STR_PAD_LEFT).' del 12/03 mas los intereses de mora',
@@ -900,8 +902,8 @@ class SaldoCeldasDeTextoImportTest extends EmpresaTestCase
 
         $parrafos = $notificacion->info_to_show[1]['parrafos'];
 
-        $this->assertCount(32, $parrafos, '30 filas, "y 2 filas más" y la explicación.');
-        $this->assertSame('y 2 filas más', $parrafos[30]);
+        $this->assertCount(22, $parrafos, '20 filas, "y 2 filas más" y la explicación.');
+        $this->assertSame('y 2 filas más', $parrafos[20]);
 
         $datos = $notificacion->toBroadcast(User::find($this->user_id))->data;
 

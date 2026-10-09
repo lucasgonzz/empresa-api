@@ -22,9 +22,14 @@ class LocalImportHelper {
 	 * 10 KB: sin tope, un archivo con cientos de saldos ilegibles perdería la notificación ENTERA,
 	 * botón incluido. Mismo criterio que ProviderImport::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO.
 	 *
+	 * 🔴 Es 20 y no más por una medición, no por gusto: en proveedores este bloque convive con el de
+	 * "Saldos del Excel que no se cargaron" (hasta 50 nombres). Con los dos al tope, nombres largos
+	 * y textos largos, el evento pesó 10.056 bytes con 30 filas, 9.401 con 25 y 8.747 con 20 (9/10/2026;
+	 * el umbral del test es 9.000). Subirlo vuelve a dejar sin notificación una importación grande.
+	 *
 	 * @var int
 	 */
-	const MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES = 30;
+	const MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES = 20;
 
 	/**
 	 * Largo máximo, en caracteres, del nombre y del texto de la celda en cada párrafo del aviso de
