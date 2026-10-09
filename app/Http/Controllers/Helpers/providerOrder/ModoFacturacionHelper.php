@@ -17,7 +17,12 @@ class ModoFacturacionHelper
             self::calcular_iva($provider_order, $helper);
             return;
         } else if ($provider_order->modo_facturacion == 'sin factura') {
-            ProviderOrderAfipTicket::where('provider_order_id', $provider_order->id)->delete();
+            /*
+             * Las facturas se van CON sus alícuotas (misión `factura-compra-tres-defectos`,
+             * 9/10/2026): antes acá se borraban solo las facturas y el desglose quedaba colgando de
+             * ids que ya no existían. Ver `FacturaDeCompraHelper::borrar_facturas()`.
+             */
+            FacturaDeCompraHelper::borrar_facturas_de_la_compra($provider_order->id);
         }
 
         // manual: no tocamos nada (el usuario carga tickets)
@@ -48,9 +53,10 @@ class ModoFacturacionHelper
                                                 ->whereNull('provider_order_extra_cost_id')
                                                 ->get();
         $index = 0;
+        $sobrantes = [];
         foreach ($afip_tickets as $afip_ticket) {
             if ($index >= 1) {
-                $afip_ticket->delete();
+                $sobrantes[] = $afip_ticket->id;
             } else {
                 ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $afip_ticket->id)->delete();
                 $ticket = $afip_ticket;
@@ -58,6 +64,10 @@ class ModoFacturacionHelper
             }
             $index++;
         }
+
+        // Las facturas sobrantes se van CON sus alícuotas (misión `factura-compra-tres-defectos`,
+        // 9/10/2026): antes se borraba la factura sola y su desglose quedaba huérfano.
+        FacturaDeCompraHelper::borrar_facturas($sobrantes);
 
 
         // 2) crea 1 ticket "principal" vacío en caso de que no haya habido uno ya creado (usuario completa percepciones/retenciones/descripción/etc)
@@ -414,10 +424,10 @@ class ModoFacturacionHelper
             $query_huerfanos->whereNotIn('provider_order_extra_cost_id', $extra_cost_ids_vigentes);
         }
 
-        foreach ($query_huerfanos->get() as $huerfano) {
-            ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $huerfano->id)->delete();
-            $huerfano->delete();
-        }
+        // Con sus alícuotas, por el único lugar que borra facturas de compra (misión
+        // `factura-compra-tres-defectos`, 9/10/2026). Esta baja ya se acordaba del desglose; pasa
+        // por el helper para que no haya una sexta forma de borrar una factura.
+        FacturaDeCompraHelper::borrar_facturas($query_huerfanos->pluck('id')->all());
     }
 
     /**

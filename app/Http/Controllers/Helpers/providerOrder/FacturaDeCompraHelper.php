@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
+use App\Models\ProviderOrderAfipTicketIva;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -270,5 +271,70 @@ class FacturaDeCompraHelper
         }
 
         return $provider_order->modo_facturacion == 'automatico';
+    }
+
+    /**
+     * Borra facturas de compra CON sus alícuotas de IVA. Es el ÚNICO lugar que da de baja una
+     * `provider_order_afip_ticket` (misión `factura-compra-tres-defectos`, 9/10/2026).
+     *
+     * 🔴 Por qué existe. Ninguna de las dos tablas tiene clave foránea —ni la factura hacia la
+     * compra, ni la alícuota hacia la factura—, así que la base no borra nada en cascada: cada
+     * `->delete()` suelto sobre una factura dejaba vivas sus alícuotas, y borrar la compra dejaba
+     * vivas las facturas. Y las facturas huérfanas no son basura inofensiva: la Posición Fiscal y
+     * el tablero leen las facturas por `user_id` + `issued_at`, así que una compra borrada seguía
+     * sumando su IVA crédito y sus percepciones. Lo medido el 9/10/2026: había CINCO bajas
+     * distintas (el destroy de la compra, el de la factura, el modo "sin factura", las facturas
+     * sobrantes del modo automático y los comprobantes aparte de costos extra) y solo la última
+     * se acordaba de las alícuotas. Por eso pasan todas por acá.
+     *
+     * Las alícuotas van primero: si algo corta a mitad, lo que queda es una factura sin desglose
+     * —que se ve y se puede volver a borrar— y no un desglose colgando de una factura que ya no
+     * existe, que no lo ve nadie.
+     *
+     * Lo que NO toca, a propósito: `retenciones_sufridas.provider_order_afip_ticket_id`. Esa tabla
+     * ya prevé que la factura de origen se haya borrado (el listado hace left join y muestra la
+     * retención sin link, ver `ContabilidadRepository`): una retención es un certificado que el
+     * comercio tiene en la mano, no un dato que dependa de la factura.
+     *
+     * No abre transacción propia: los llamadores que borran algo más en el mismo paso (el destroy
+     * de la compra) ya la tienen, y una baja de facturas sola son dos sentencias.
+     *
+     * @param  array<int,int|string>  $ids  Ids de `provider_order_afip_tickets`.
+     * @return int  Cuántas facturas se borraron.
+     */
+    public static function borrar_facturas(array $ids)
+    {
+        $ids = array_values(array_filter($ids, function ($id) {
+            return !is_null($id) && $id !== '';
+        }));
+
+        if (count($ids) === 0) {
+            return 0;
+        }
+
+        ProviderOrderAfipTicketIva::whereIn('provider_order_afip_ticket_id', $ids)->delete();
+
+        return ProviderOrderAfipTicket::whereIn('id', $ids)->delete();
+    }
+
+    /**
+     * Borra TODAS las facturas de una compra con sus alícuotas: la principal, las que se hayan
+     * cargado a mano y los comprobantes "aparte" de sus costos extra (también cuelgan de la compra
+     * por `provider_order_id`, ver `ModoFacturacionHelper::sincronizar_tickets_costos_extra_aparte()`).
+     *
+     * @param  int|string|null  $provider_order_id
+     * @return int  Cuántas facturas se borraron.
+     */
+    public static function borrar_facturas_de_la_compra($provider_order_id)
+    {
+        if (is_null($provider_order_id) || $provider_order_id === '') {
+            return 0;
+        }
+
+        $ids = ProviderOrderAfipTicket::where('provider_order_id', $provider_order_id)
+                                        ->pluck('id')
+                                        ->all();
+
+        return self::borrar_facturas($ids);
     }
 }

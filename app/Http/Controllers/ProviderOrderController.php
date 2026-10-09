@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
+use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
@@ -147,6 +148,7 @@ class ProviderOrderController extends Controller
             $ya_se_actualizo_stock = $model->update_stock;
 
             $model->total_with_iva                              = $request->total_with_iva;
+
             $model->modo_facturacion                            = $request->modo_facturacion;
             $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
             $model->provider_id                                 = $request->provider_id;
@@ -224,6 +226,18 @@ class ProviderOrderController extends Controller
 
             ProviderOrderHelper::deleteCurrentAcount($model);
             ProviderOrderHelper::resetArticlesStock($model);
+
+            /*
+             * 🔴 Las facturas de la compra se van con ella, CON sus alícuotas (misión
+             * factura-compra-tres-defectos, 9/10/2026). `ProviderOrder` es borrado duro y ninguna
+             * de las dos tablas tiene clave foránea, así que hasta hoy la compra desaparecía y sus
+             * facturas quedaban vivas, con `user_id` e `issued_at`: la Posición Fiscal seguía
+             * sumando su IVA crédito y sus percepciones de una compra que ya no existía. Va adentro
+             * de la transacción y antes del delete: si algo corta, la compra y sus facturas vuelven
+             * juntas. Incluye los comprobantes aparte de los costos extra, que también cuelgan de
+             * la compra. Ver FacturaDeCompraHelper::borrar_facturas().
+             */
+            FacturaDeCompraHelper::borrar_facturas_de_la_compra($model->id);
 
             // if (!is_null($model->provider)) {
             //     $model->provider->pagos_checkeados = 0;
