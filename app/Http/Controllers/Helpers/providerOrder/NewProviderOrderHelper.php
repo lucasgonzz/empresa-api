@@ -1549,25 +1549,18 @@ class NewProviderOrderHelper {
         $this->provider_order->total_costos_extra            = $total_costos_extra;
 
 
-        // Prompt 609 - Tarea 5: un Monotributista no suma el IVA por encima del total (ya está
-        // "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como crédito fiscal).
-        // La columna de IVA de la compra sigue calculándose y mostrándose (prompt 611), solo se deja
-        // de sumar acá.
-        //
-        // Prompt 614: mismo razonamiento aplica para un Responsable Inscripto cuando la orden trae
-        // `precios_incluyen_iva` ON: en ese caso `$total_articulos` (y por lo tanto `$total`, que
-        // arranca en `$total_articulos`) YA es el precio final tipeado con IVA incluido — el IVA
-        // no es un crédito fiscal a sumar aparte sobre ese número, ya está "adentro". Sumar
-        // `$total_iva` encima duplicaba el IVA (bug real detectado al automatizar el costeo con
-        // PHPUnit: una compra de 1210 x 10 con `precios_incluyen_iva=1` daba total 14200 en vez de
-        // los 12100 que efectivamente cuestan esos artículos, la misma plata que tipeada neta). Con
-        // el flag OFF (comportamiento de siempre) no cambia nada: el costo tipeado es neto y el IVA
-        // sí hay que sumarlo aparte para llegar al total final.
-        if ($this->provider_order->total_with_iva && $this->get_condicion_iva_precios() != 'MT' && !$this->provider_order->precios_incluyen_iva) {
+        // Si la compra suma el IVA por encima, y cuánto: los dos métodos de abajo son la única
+        // fuente de esa regla (el porqué de cada pata —Monotributista, `precios_incluyen_iva`
+        // (prompts 609/614)— y de dónde sale el IVA en cada modo de facturación está en sus
+        // docblocks). La devolución a proveedor (NotaCreditoProveedorHelper::
+        // agregar_datos_de_devolucion()) lee la misma cuenta para no devolver un IVA que la
+        // compra no cobró. `iva_sumado_al_total()` lee `provider_order->total_iva`, que se asignó
+        // arriba con `$total_iva`: acá vale exactamente eso.
+        if ($this->suma_iva_al_total()) {
 
             $total_sin_iva = $total;
 
-            $total += $total_iva;
+            $total += $this->iva_sumado_al_total();
 
             $des[] = 'APLICANDO IVA';
             $des[] = 'Total en '.Numbers::price($total_sin_iva, true).' mas '.Numbers::price($total_iva, true).' de IVA = '.Numbers::price($total, true);
@@ -1767,6 +1760,72 @@ class NewProviderOrderHelper {
         }
 
         return 'RRII';
+    }
+
+    /**
+     * ¿Esta compra suma el IVA por ENCIMA de su total? Es la condición de set_totales(), sacada a
+     * un método para que sea la única fuente de la regla (misión
+     * `devolucion-proveedor-iva-sin-factura`, 9/10/2026): la devolución a proveedor la necesita
+     * idéntica para no devolver un IVA que la compra no cobró.
+     *
+     * Las tres patas:
+     *
+     *  - `total_with_iva`: la bandera de la compra. 🔴 La SPA la manda en 1 en TODA compra, así que
+     *    sola no dice si la compra cobró IVA: eso lo dice iva_sumado_al_total().
+     *  - No Monotributista (prompt 609, tarea 5): un Monotributista no suma el IVA por encima del
+     *    total (ya está "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como
+     *    crédito fiscal). La columna de IVA de la compra sigue calculándose y mostrándose (prompt
+     *    611), solo se deja de sumar.
+     *  - Sin `precios_incluyen_iva` (prompt 614): mismo razonamiento para un Responsable Inscripto
+     *    cuando la orden trae la bandera ON: `$total_articulos` (y por lo tanto el total, que
+     *    arranca ahí) YA es el precio final tipeado con IVA incluido — el IVA no es un crédito
+     *    fiscal a sumar aparte sobre ese número, ya está "adentro". Sumarlo encima duplicaba el IVA
+     *    (bug real detectado al automatizar el costeo con PHPUnit: una compra de 1210 x 10 con
+     *    `precios_incluyen_iva=1` daba total 14200 en vez de los 12100 que efectivamente cuestan
+     *    esos artículos, la misma plata que tipeada neta). Con el flag OFF (comportamiento de
+     *    siempre) el costo tipeado es neto y el IVA sí hay que sumarlo aparte.
+     *
+     * @return bool
+     */
+    function suma_iva_al_total() {
+
+        return (bool)$this->provider_order->total_with_iva
+                && $this->get_condicion_iva_precios() != 'MT'
+                && !$this->provider_order->precios_incluyen_iva;
+    }
+
+    /**
+     * Cuánto IVA le sumó la compra a su total: el `total_iva` de la compra si suma_iva_al_total()
+     * da, y 0 si no.
+     *
+     * 🔴 El IVA que suma la compra sale SIEMPRE de sus comprobantes (Σ
+     * `provider_order_afip_tickets.total_iva`), nunca de un cálculo propio. Lo que hay en cada
+     * modo de facturación (leído en el código, misión `devolucion-proveedor-iva-sin-factura`):
+     *
+     *  - `automatico`: ModoFacturacionHelper::calcular_iva() arma la factura principal con el IVA
+     *    por renglón y alícuota (bonificaciones prorrateadas por peso bruto), más los comprobantes
+     *    de los costos extra. Suma el IVA de todos ellos.
+     *  - `sin factura`: ModoFacturacionHelper::check_modo_facturacion() BORRA los comprobantes, así
+     *    que no hay IVA: 0. Por eso la compra sin factura no cobra IVA aunque llegue con
+     *    `total_with_iva` en 1.
+     *  - `manual` (y `null`, compras viejas): los carga el usuario (factura + alícuotas), y cada
+     *    guardado recalcula la compra (FacturaDeCompraHelper::recalcular_compra() → set_totales()).
+     *    Suma lo cargado; 0 si no cargó ninguna, o si la factura no discrimina IVA (Factura C/B,
+     *    sin alícuotas).
+     *
+     * Lee `provider_order->total_iva`: set_totales() la asigna con la suma de los comprobantes
+     * ANTES de llamar a este método y la guarda, así que fuera de set_totales() (una devolución
+     * que corre en un GET) el valor guardado es exactamente lo que la compra sumó.
+     *
+     * @return float
+     */
+    function iva_sumado_al_total() {
+
+        if (!$this->suma_iva_al_total()) {
+            return 0.0;
+        }
+
+        return (float)$this->provider_order->total_iva;
     }
 
     /**
