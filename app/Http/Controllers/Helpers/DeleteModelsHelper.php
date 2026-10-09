@@ -104,6 +104,10 @@ class DeleteModelsHelper
             // el aviso decía "La eliminación masiva de address finalizó correctamente".
             case 'address':
                 return 'sucursales';
+            // La eliminación masiva de movimientos de caja (misión movimientos-caja-manuales,
+            // 9/10/2026): sin este caso el aviso decía "La eliminación masiva de movimiento_caja".
+            case 'movimiento_caja':
+                return 'movimientos de caja';
         }
 
         return $model_name;
