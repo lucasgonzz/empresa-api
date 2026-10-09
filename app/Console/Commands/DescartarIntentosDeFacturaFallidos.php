@@ -11,13 +11,13 @@ use Illuminate\Support\Facades\Log;
  * Saca de Alertas → "Facturacion" las ventas que ya están facturadas pero siguen ahí por un intento
  * fallido viejo (misión facturas-reintentadas-salen-de-alertas, 9/10/2026).
  *
- * Desde esa misión, cuando una factura queda autorizada, los tres caminos de éxito
- * (`AfipWsfeHelper::solicitar_cae()`, `AfipWsfeHelper::consultar_comprobante()` y
- * `AfipFexHelper::update_afip_ticket()`) descartan solos los intentos superados de esa venta. Esto
- * es para los que quedaron de antes: recorre los tickets de factura sin CAE de las ventas que YA
- * tienen al menos una factura autorizada, y les aplica el MISMO criterio
- * (`IntentosDeFacturaFallidosHelper::motivo_de_descarte()`): (a) sin número, (b) mismo comprobante
- * que la factura autorizada, (c) rechazado por ARCA (`resultado = 'R'`).
+ * Desde esa misión, cuando una factura queda autorizada, los cuatro caminos de éxito
+ * (`AfipWsfeHelper::solicitar_cae()`, `AfipWsfeHelper::consultar_comprobante()`,
+ * `AfipFexHelper::update_afip_ticket()` y `AfipFexHelper::consultar_comprobante()`) descartan solos
+ * los intentos superados de esa venta. Esto es para los que quedaron de antes: recorre los tickets
+ * de factura sin CAE de las ventas que YA tienen al menos una factura autorizada, y les aplica el
+ * MISMO criterio (`IntentosDeFacturaFallidosHelper::motivo_de_descarte()`): (a) sin número, (b)
+ * mismo comprobante que la factura autorizada, (c) rechazado por ARCA (`resultado = 'R'`).
  *
  * 🔴 Un intento con OTRO número y sin rechazo explícito NO se toca: puede ser una factura que ARCA
  * autorizó y cuya respuesta se perdió, o sea una posible factura duplicada. Tiene que seguir en
@@ -25,10 +25,11 @@ use Illuminate\Support\Facades\Log;
  *
  *   - Sin `--aplicar`: lista cada intento (venta, ticket, motivo) y NO escribe nada.
  *   - Con `--aplicar`: hace el borrado suave (SoftDeletes, lo mismo que el tacho de la tarjeta).
- *     Los `afip_errors` del intento quedan como historia. Borra con el MISMO
- *     `IntentosDeFacturaFallidosHelper::descartar()` que la limpieza en vivo: un `UPDATE` que
- *     vuelve a exigir el motivo, así que si entre el listado y el borrado ese ticket recibió el CAE
- *     o su número (una emisión en curso), no se toca y no cuenta como descartado.
+ *     Los `afip_errors` del intento quedan como historia. Borra con el
+ *     MISMO `IntentosDeFacturaFallidosHelper::descartar_con_resultado()` que la limpieza en vivo: un
+ *     `UPDATE` que vuelve a exigir el motivo, así que si entre el listado y el borrado ese ticket
+ *     recibió el CAE o su número (una emisión en curso), no se toca. Eso NO es un error: se informa
+ *     aparte ("cambió entre medio") y no va al log como warning. "Error" es solo una excepción.
  *   - `{user_id?}`: solo las ventas de ese comercio (`sales.user_id`). En una base compartida, sin
  *     esto se recorren las de todos.
  *
@@ -130,9 +131,10 @@ class DescartarIntentosDeFacturaFallidos extends Command
             IntentosDeFacturaFallidosHelper::MOTIVO_RECHAZADO    => 0,
         ];
         $descartados = 0;
+        $cambiaron = 0;
         $fallidos = [];
 
-        $query->chunkById(200, function ($intentos) use ($aplicar, &$revisados, &$quedan, &$descartables, &$descartados, &$fallidos) {
+        $query->chunkById(200, function ($intentos) use ($aplicar, &$revisados, &$quedan, &$descartables, &$descartados, &$cambiaron, &$fallidos) {
 
             $sale_ids = $intentos->pluck('sale_id')->unique()->values()->all();
 
@@ -169,9 +171,18 @@ class DescartarIntentosDeFacturaFallidos extends Command
                     continue;
                 }
 
-                if (IntentosDeFacturaFallidosHelper::descartar($intento, $motivo, 'afip:descartar-intentos-fallidos')) {
+                $resultado = IntentosDeFacturaFallidosHelper::descartar_con_resultado($intento, $motivo, 'afip:descartar-intentos-fallidos');
+
+                if ($resultado === IntentosDeFacturaFallidosHelper::DESCARTE_HECHO) {
 
                     $descartados++;
+
+                } else if ($resultado === IntentosDeFacturaFallidosHelper::DESCARTE_CAMBIO_ENTRE_MEDIO) {
+
+                    // El caso esperado de la carrera: otra emisión le escribió el CAE o el número.
+                    $cambiaron++;
+
+                    $this->line('  No se tocó el ticket #'.$intento->id.': cambió entre el listado y el borrado (otra emisión en curso).');
 
                 } else {
 
@@ -192,7 +203,8 @@ class DescartarIntentosDeFacturaFallidos extends Command
             .'Quedan en Alertas: '.$quedan.'.';
 
         if ($aplicar) {
-            $resumen .= ' Descartados: '.$descartados.'. Sin descartar por error: '.count($fallidos)
+            $resumen .= ' Descartados: '.$descartados.'. Cambiaron entre medio (no se tocaron): '.$cambiaron.'.'
+                .' Sin descartar por error: '.count($fallidos)
                 .(count($fallidos) ? ' (tickets '.implode(', ', $fallidos).')' : '').'.';
         } else {
             $resumen .= ' (sin --aplicar: no se escribió nada)';

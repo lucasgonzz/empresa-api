@@ -229,6 +229,36 @@ class IntentosDeFacturaFallidosHelper
     }
 
     /**
+     * El descarte se hizo: el `UPDATE` condicional borró la fila.
+     */
+    const DESCARTE_HECHO = 'hecho';
+
+    /**
+     * No se tocó nada porque el ticket cambió entre la lectura y el borrado (otra emisión en curso):
+     * el `UPDATE` condicional afectó 0 filas. Es el caso esperado de la carrera, no un error.
+     */
+    const DESCARTE_CAMBIO_ENTRE_MEDIO = 'cambio_entre_medio';
+
+    /**
+     * Falló con una excepción (ya reportada). Es el único caso que es un error.
+     */
+    const DESCARTE_FALLO = 'fallo';
+
+    /**
+     * Como `descartar_con_resultado()`, pero solo dice si quedó borrado. Es lo que necesita la
+     * limpieza en vivo, que no distingue por qué no se borró.
+     *
+     * @param  \App\Models\AfipTicket $fallido Ticket tal como se leyó.
+     * @param  string $motivo Una de las constantes `MOTIVO_*`.
+     * @param  string $origen Quién lo descarta, para el log.
+     * @return bool true si quedó borrado.
+     */
+    public static function descartar($fallido, $motivo, $origen)
+    {
+        return self::descartar_con_resultado($fallido, $motivo, $origen) === self::DESCARTE_HECHO;
+    }
+
+    /**
      * Borra (suave) un intento ya calificado por `motivo_de_descarte()` y deja la línea en el log.
      *
      * 🔴 NO borra la instancia que se leyó: borra con UNA consulta que vuelve a exigir, en el mismo
@@ -249,9 +279,9 @@ class IntentosDeFacturaFallidosHelper
      * @param  \App\Models\AfipTicket $fallido Ticket tal como se leyó.
      * @param  string $motivo Una de las constantes `MOTIVO_*`.
      * @param  string $origen Quién lo descarta, para el log.
-     * @return bool true si quedó borrado; false si cambió entre medio o falló (ya reportado).
+     * @return string `DESCARTE_HECHO`, `DESCARTE_CAMBIO_ENTRE_MEDIO` o `DESCARTE_FALLO`.
      */
-    public static function descartar($fallido, $motivo, $origen)
+    public static function descartar_con_resultado($fallido, $motivo, $origen)
     {
         try {
 
@@ -288,7 +318,7 @@ class IntentosDeFacturaFallidosHelper
             } else {
 
                 // Un motivo desconocido no borra nada.
-                return false;
+                return self::DESCARTE_CAMBIO_ENTRE_MEDIO;
             }
 
             $filas = $borrado->delete();
@@ -301,7 +331,7 @@ class IntentosDeFacturaFallidosHelper
                     .'o ya no cumple '.$motivo.'). '.$origen.'.'
                 );
 
-                return false;
+                return self::DESCARTE_CAMBIO_ENTRE_MEDIO;
             }
 
             Log::info(
@@ -309,7 +339,7 @@ class IntentosDeFacturaFallidosHelper
                 .' ('.self::comprobante_legible($fallido).') por '.$motivo.': '.$origen.'.'
             );
 
-            return true;
+            return self::DESCARTE_HECHO;
 
         } catch (\Throwable $e) {
 
@@ -320,7 +350,7 @@ class IntentosDeFacturaFallidosHelper
                 .$fallido->sale_id.': '.$e->getMessage()
             );
 
-            return false;
+            return self::DESCARTE_FALLO;
         }
     }
 

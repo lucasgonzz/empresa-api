@@ -15,6 +15,7 @@ use App\Models\Sale;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use ReflectionClass;
 use Tests\EmpresaTestCase;
 
@@ -779,6 +780,56 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $this->assertNull($guardada->deleted_at, 'Con CAE no puede quedar borrada.');
         $this->assertSoftDeleted('afip_tickets', ['id' => $sin_numero->id]);
         $this->assertNotContains($venta->id, $this->ventas_en_alertas());
+    }
+
+    /**
+     * Test 15 — El comando, cuando un intento cambia entre el listado y el borrado: lo informa como
+     * "no se tocó", lo cuenta aparte y NO lo cuenta como error.
+     *
+     * La carrera se arma sin tocar el código: apenas el comando lee el lote de intentos (la consulta
+     * con el alias `autorizadas`), "otra emisión" le escribe el CAE a uno de ellos directo en la
+     * base. El comando sigue con la instancia que leyó, y el `UPDATE` condicional no lo encuentra.
+     *
+     * @test
+     */
+    public function el_comando_informa_aparte_el_intento_que_cambio_entre_el_listado_y_el_borrado()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) $numero,
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $en_vuelo = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
+
+        $cae_de_la_otra_emision = $this->cae();
+        $ya_escribio = false;
+
+        DB::listen(function ($consulta) use ($en_vuelo, $cae_de_la_otra_emision, &$ya_escribio) {
+            if ($ya_escribio || strpos($consulta->sql, '`autorizadas`') === false) {
+                return;
+            }
+
+            $ya_escribio = true;
+
+            DB::table('afip_tickets')->where('id', $en_vuelo->id)->update(['cae' => $cae_de_la_otra_emision]);
+        });
+
+        $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
+        $salida = Artisan::output();
+
+        $this->assertTrue($ya_escribio, 'La carrera no se armó: la consulta del comando no pasó por el listener. Salida: '.$salida);
+        $this->assertEquals(0, $exit, 'Salida: '.$salida);
+        $this->assertStringContainsString('No se tocó el ticket #'.$en_vuelo->id.':', $salida, 'Salida: '.$salida);
+        $this->assertStringContainsString('Cambiaron entre medio (no se tocaron): 1.', $salida, 'Salida: '.$salida);
+        $this->assertStringContainsString('Sin descartar por error: 0.', $salida, 'Cambiar entre medio no es un error. Salida: '.$salida);
+        $this->assertStringNotContainsString('No se pudo descartar', $salida);
+
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $en_vuelo->id]);
+        $this->assertEquals($cae_de_la_otra_emision, AfipTicket::find($en_vuelo->id)->cae);
     }
 
     // =========================================================================================
