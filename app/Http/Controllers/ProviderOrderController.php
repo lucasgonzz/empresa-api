@@ -164,8 +164,8 @@ class ProviderOrderController extends Controller
 
     /**
      * La bandera `total_with_iva` con la que nace una compra: la que mandó el request si vino un
-     * valor, y 1 —como una compra nueva del formulario— si la clave no vino o vino en null (ver el
-     * comentario en store()).
+     * valor, y 1 —como una compra nueva del formulario— si no vino: la clave ausente, null, vacía o
+     * algo que no se lee como booleano (ver total_with_iva_pedido() y el comentario en store()).
      *
      * @param  mixed  $valor  Lo que mandó la SPA o la acción de pantalla del asistente.
      * @return int
@@ -179,9 +179,21 @@ class ProviderOrderController extends Controller
 
     /**
      * La bandera `total_with_iva` tal como la pidió el request: 0 o 1 si vino un valor, y null si
-     * la clave no vino o vino en null (misión compra-asistente-iva-total, 9/10/2026). Qué se hace
-     * con ese null lo decide cada método: el alta nace en 1 (total_with_iva_del_alta()) y la
-     * edición conserva la que la compra ya tenía (update()).
+     * NO VINO (misión compra-asistente-iva-total, 9/10/2026). Qué se hace con ese null lo decide
+     * cada método: el alta nace en 1 (total_with_iva_del_alta()) y la edición conserva la que la
+     * compra ya tenía (update()).
+     *
+     * 🔴 POR QUÉ SE NORMALIZA ACÁ Y NO SE CONFÍA EN EL MIDDLEWARE. Desde la SPA, un `""` llega en
+     * null por ConvertEmptyStringsToNull. Pero el asistente de WhatsApp y el MCP ejecutan la acción
+     * de pantalla con `$ruta->run()` (EjecutorAccionDePantallaIaHelper), que NO pasa por el
+     * middleware global: el `""` llega crudo, y con un `$valor ? 1 : 0` a secas la compra nacía sin
+     * IVA o la edición le apagaba la bandera. Mismo criterio que ModoFacturacionHelper::normalizar(),
+     * que trata un `""` como "no vino". Qué da cada cosa:
+     *
+     *   null, "", "  ", "null", "abc"          → null (no vino)
+     *   "1", "true", "on", "yes" (con o sin espacios) → 1
+     *   "0", "false", "off", "no"              → 0
+     *   cualquier otro tipo (int, bool)        → 1 si es verdadero, 0 si no
      *
      * @param  mixed  $valor
      * @return int|null
@@ -191,6 +203,25 @@ class ProviderOrderController extends Controller
         if (is_null($valor)) {
 
             return null;
+        }
+
+        if (is_string($valor)) {
+
+            $valor = trim($valor);
+
+            if ($valor === '') {
+
+                return null;
+            }
+
+            $booleano = filter_var($valor, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+            if (is_null($booleano)) {
+
+                return null;
+            }
+
+            return $booleano ? 1 : 0;
         }
 
         return $valor ? 1 : 0;

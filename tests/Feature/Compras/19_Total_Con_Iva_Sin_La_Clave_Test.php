@@ -30,6 +30,8 @@ use Database\Seeders\testing\TestingFerreteriaSeeder;
  *      explícito se respeta.
  *   3. De punta a punta de la plata: la compra creada sin la clave, en RRII, deja el IVA de su
  *      factura sumado al total y a la deuda; y una edición sin la clave no se lo saca.
+ *   4. La normalización del valor, SIN el middleware: el asistente y el MCP ejecutan la acción con
+ *      `$ruta->run()` (EjecutorAccionDePantallaIaHelper) y un `""` o un `"false"` llegan crudos.
  *
  * Escenario: proveedor Rosario (sin bonificaciones de catálogo), sin tocar precios ni stock, un solo
  * artículo de 1000 al 21% — el mismo de Factura_De_Compra_Total_Y_Percepciones_Test.
@@ -103,8 +105,10 @@ class Total_Con_Iva_Sin_La_Clave_Test extends ComprasTestCase
     }
 
     /**
-     * Vuelve a guardar la compra por el endpoint real (el controller no es un PATCH parcial: se
-     * remanda el payload entero, como lo hace la acción de pantalla).
+     * Vuelve a guardar la compra por el endpoint real, con el payload entero del escenario: el
+     * controller no es un PATCH parcial, y así lo único que cambia entre el alta y la edición es
+     * `total_with_iva`. La acción de pantalla del asistente NO hace esto: manda solo las claves que
+     * elige el modelo, y por eso lo que se mide acá es la clave ausente (o null), que es su caso.
      *
      * @param  \App\Models\ProviderOrder  $compra
      * @param  mixed  $total_with_iva
@@ -278,5 +282,47 @@ class Total_Con_Iva_Sin_La_Clave_Test extends ComprasTestCase
             self::DELTA,
             'Ni a la deuda con el proveedor.'
         );
+    }
+
+    /**
+     * Test 4 — 🔴 La normalización del valor, llamando al método directo. Por HTTP un `""` ya llega
+     * en null (ConvertEmptyStringsToNull) y el caso no se ve; pero el asistente y el MCP ejecutan la
+     * acción de pantalla con `$ruta->run()`, que NO pasa por el middleware global, y ahí llegan
+     * crudos. Con un `$valor ? 1 : 0` a secas, `""` daba 0 (la compra nacía sin IVA o la edición le
+     * apagaba la bandera) y `"false"` daba 1. Mismo criterio que ModoFacturacionHelper::normalizar():
+     * un vacío es "no vino".
+     *
+     * @group compras
+     * @test
+     */
+    public function la_bandera_se_normaliza_igual_sin_pasar_por_el_middleware()
+    {
+        $metodo = new \ReflectionMethod(\App\Http\Controllers\ProviderOrderController::class, 'total_with_iva_pedido');
+        $metodo->setAccessible(true);
+
+        // [lo que llega, lo que tiene que dar]
+        $casos = [
+            [null, null],
+            ['', null],
+            ['  ', null],
+            ['null', null],
+            ['0', 0],
+            ['1', 1],
+            ['false', 0],
+            ['true', 1],
+            [0, 0],
+            [1, 1],
+            [false, 0],
+            [true, 1],
+        ];
+
+        foreach ($casos as $caso) {
+
+            $this->assertSame(
+                $caso[1],
+                $metodo->invoke(null, $caso[0]),
+                'total_with_iva = '.var_export($caso[0], true).' tiene que dar '.var_export($caso[1], true).'.'
+            );
+        }
     }
 }
