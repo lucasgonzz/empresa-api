@@ -59,6 +59,11 @@ use Tests\EmpresaTestCase;
  * con CAE nunca queda borrado**, ni aunque dos emisiones de la misma venta corran en paralelo. El
  * 14 es el cuarto camino de éxito (Consultar una Factura E).
  *
+ * Del 15 al 22: el comando ante esa carrera (15), la guarda de importe pedido para la facturación
+ * en partes (16 y 17), la auditoría del descarte y de la restauración (18), y los huecos que dejó
+ * una corrida de mutantes (19 a 22: el CUIT en la regla b, comparar contra TODAS las autorizadas,
+ * exit 0 ante una excepción y los ceros a la izquierda).
+ *
  * @group facturacion
  * @group afip
  */
@@ -984,6 +989,129 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         } finally {
             AuditContext::reiniciar();
         }
+    }
+
+    /**
+     * Test 19 — Regla (b) con OTRO emisor: mismo punto de venta, tipo y número, pero otro CUIT. ARCA
+     * numera por CUIT + punto de venta + tipo, así que ese número puede estar autorizado para el otro
+     * emisor: no se descarta.
+     *
+     * @test
+     */
+    public function un_intento_con_el_mismo_numero_pero_otro_cuit_no_se_descarta()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $autorizada = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) $numero,
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $otro_emisor = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero'  => (string) $numero,
+            'cuit_negocio' => '30999999993',
+        ]);
+
+        $this->assertNull(IntentosDeFacturaFallidosHelper::motivo_de_descarte($otro_emisor, [$autorizada]));
+        $this->assertEquals(0, IntentosDeFacturaFallidosHelper::descartar_superados($autorizada));
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $otro_emisor->id]);
+    }
+
+    /**
+     * Test 20 — `descartar_superados()` evalúa contra TODAS las facturas autorizadas de la venta, no
+     * solo contra la recién autorizada: el intento coincide por (b) con una autorizada VIEJA, se
+     * autoriza otra distinta, y se descarta igual (que es lo que haría el comando).
+     *
+     * @test
+     */
+    public function descartar_superados_compara_contra_todas_las_autorizadas_de_la_venta()
+    {
+        $venta = $this->crear_venta();
+        $numero = $this->numero_base($venta);
+
+        $vieja = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) $numero,
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $intento = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => (string) $numero]);
+
+        $nueva = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => (string) ($numero + 5),
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $this->assertNull(
+            IntentosDeFacturaFallidosHelper::motivo_de_descarte($intento, [$nueva]),
+            'Contra la nueva sola no hay motivo: este test no probaría nada.'
+        );
+
+        $this->assertEquals(1, IntentosDeFacturaFallidosHelper::descartar_superados($nueva));
+        $this->assertSoftDeleted('afip_tickets', ['id' => $intento->id]);
+        $this->assertNotSoftDeleted('afip_tickets', ['id' => $vieja->id]);
+    }
+
+    /**
+     * Test 21 — El comando sale con 0 aunque se corte por una excepción.
+     *
+     * La excepción es real y no hace falta ningún enganche en el código de producción: un listener
+     * de consultas (`DB::listen`) tira apenas el comando hace su consulta de intentos (la única con
+     * el alias `autorizadas`), así que el error sale de la consulta misma, adentro de `handle()`.
+     *
+     * @test
+     */
+    public function el_comando_sale_con_cero_aunque_se_corte_por_una_excepcion()
+    {
+        $tiro = false;
+
+        DB::listen(function ($consulta) use (&$tiro) {
+            if (!$tiro && strpos($consulta->sql, '`autorizadas`') !== false) {
+                $tiro = true;
+
+                throw new \RuntimeException('Falla forzada por el test 21');
+            }
+        });
+
+        $exit = Artisan::call('afip:descartar-intentos-fallidos', ['user_id' => $this->user_id(), '--aplicar' => true]);
+        $salida = Artisan::output();
+
+        $this->assertTrue($tiro, 'La consulta del comando no pasó por el listener: el test no probó nada.');
+        $this->assertEquals(0, $exit, 'Va en el despliegue: con un exit distinto de 0 se frena la rotación. Salida: '.$salida);
+        $this->assertStringContainsString('se cortó antes de terminar', $salida, 'Salida: '.$salida);
+    }
+
+    /**
+     * Test 22 — Los números se comparan normalizados: "00000123" y "123" son el mismo comprobante,
+     * y "0001" y "1" el mismo punto de venta (las columnas son texto).
+     *
+     * @test
+     */
+    public function el_mismo_numero_con_ceros_a_la_izquierda_es_el_mismo_comprobante()
+    {
+        $venta = $this->crear_venta();
+
+        $autorizada = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => '123',
+            'punto_venta' => '1',
+            'cae'         => $this->cae(),
+            'resultado'   => 'A',
+        ]);
+
+        $intento = $this->ticket_directo($venta, self::FACTURA_B, [
+            'cbte_numero' => '00000123',
+            'punto_venta' => '0001',
+        ]);
+
+        $this->assertEquals(
+            IntentosDeFacturaFallidosHelper::MOTIVO_MISMO_NUMERO,
+            IntentosDeFacturaFallidosHelper::motivo_de_descarte($intento, [$autorizada])
+        );
+        $this->assertEquals(1, IntentosDeFacturaFallidosHelper::descartar_superados($autorizada));
+        $this->assertSoftDeleted('afip_tickets', ['id' => $intento->id]);
     }
 
     // =========================================================================================
