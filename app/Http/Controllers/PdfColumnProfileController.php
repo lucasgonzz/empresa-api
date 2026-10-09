@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileHelper;
+use App\Http\Controllers\Helpers\PdfColumnProfileTicketHelper;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
@@ -42,11 +43,28 @@ class PdfColumnProfileController extends Controller
 
     public function store(Request $request)
     {
+        /**
+         * Ticket de comandera (misión diseno-ticket-comandera, contrato §3.2): si el tipo de hoja es
+         * un rollo, el papel y los "predeterminados" de PDF se fuerzan ANTES de validar, así la
+         * validación de anchos de columnas mide contra el rollo y no contra la hoja del formulario.
+         */
+        $tipo_de_hoja = PdfColumnProfileTicketHelper::tipo_de_hoja($request->input('sheet_type_id'), $this->userId());
+        $es_ticket = PdfColumnProfileTicketHelper::es_ticket($tipo_de_hoja);
+
+        if ($es_ticket) {
+            $request->merge(PdfColumnProfileTicketHelper::atributos_forzados($tipo_de_hoja));
+        }
+
         $request->validate(
             $this->store_validation_rules($request),
             [],
             $this->validation_attribute_labels()
         );
+
+        /** Solo una venta se imprime en una comandera: un presupuesto o un pedido con un rollo, 422. */
+        if ($es_ticket && $request->model_name !== CatalogoDeCamposPdf::MODELO_DE_TICKET) {
+            return response()->json(['message' => PdfColumnProfileTicketHelper::MENSAJE_TICKET_SOLO_EN_VENTA], 422);
+        }
 
         $this->assert_sum_of_column_widths_not_exceeds_paper($request, null);
 
@@ -61,7 +79,8 @@ class PdfColumnProfileController extends Controller
             $page_layout = $this->normalize_page_layout(
                 $this->page_layout_from_request($request),
                 $request->model_name,
-                $is_afip_ticket
+                $is_afip_ticket,
+                $es_ticket
             );
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
@@ -79,10 +98,17 @@ class PdfColumnProfileController extends Controller
             return $hoja_chica;
         }
 
+        /**
+         * "Perfil por defecto" por clase (decisión D5): uno entre los de hoja del modelo (como
+         * siempre) y uno por cada clase de ticket (remito / factura), sin pisarse.
+         */
         if ($request->is_default) {
-            PdfColumnProfile::where('user_id', $this->userId())
-                ->where('model_name', $request->model_name)
-                ->update(['is_default' => false]);
+            PdfColumnProfileTicketHelper::apagar_por_defecto_de_la_clase(
+                $this->userId(),
+                $request->model_name,
+                $es_ticket,
+                $is_afip_ticket
+            );
         }
 
         $this->clear_whatsapp_default_flags_on_siblings(
@@ -216,17 +242,41 @@ class PdfColumnProfileController extends Controller
             ->where('id', $id)
             ->firstOrFail();
 
+        /**
+         * Ticket de comandera (misión diseno-ticket-comandera, contrato §3.2). La clase que QUEDA la
+         * dice el tipo de hoja del pedido si viene, si no el guardado. Un ticket lleva el papel del
+         * rollo y ningún "predeterminado" de PDF, forzados antes de validar; un ticket que pasa a
+         * ser hoja sin traer su hoja vuelve a A4 con margen 5.
+         */
+        $era_ticket = PdfColumnProfileTicketHelper::perfil_es_ticket($model);
+        $tipo_de_hoja = PdfColumnProfileTicketHelper::tipo_de_hoja(
+            $request->has('sheet_type_id') ? $request->input('sheet_type_id') : $model->sheet_type_id,
+            $this->userId()
+        );
+        $es_ticket = PdfColumnProfileTicketHelper::es_ticket($tipo_de_hoja);
+
+        if ($es_ticket) {
+            $request->merge(PdfColumnProfileTicketHelper::atributos_forzados($tipo_de_hoja));
+        } elseif ($era_ticket) {
+            $request->merge(PdfColumnProfileTicketHelper::hoja_al_dejar_de_ser_ticket($request, $model));
+        }
+
         $request->validate(
             $this->update_validation_rules($request, $model),
             [],
             $this->validation_attribute_labels()
         );
 
+        $new_model_name = $request->model_name ?: $model->model_name;
+
+        /** Solo una venta se imprime en una comandera. */
+        if ($es_ticket && $new_model_name !== CatalogoDeCamposPdf::MODELO_DE_TICKET) {
+            return response()->json(['message' => PdfColumnProfileTicketHelper::MENSAJE_TICKET_SOLO_EN_VENTA], 422);
+        }
+
         $this->assert_printable_width_not_exceeds_paper($request, $model);
 
         $this->assert_sum_of_column_widths_not_exceeds_paper($request, $model);
-
-        $new_model_name = $request->model_name ?: $model->model_name;
 
         $is_afip_ticket = $request->has('is_afip_ticket')
             ? (bool) $request->is_afip_ticket
@@ -246,11 +296,24 @@ class PdfColumnProfileController extends Controller
                 $page_layout = $this->normalize_page_layout(
                     $this->page_layout_from_request($request),
                     $new_model_name,
-                    $is_afip_ticket
+                    $is_afip_ticket,
+                    $es_ticket
                 );
             } catch (\InvalidArgumentException $e) {
                 return response()->json(['message' => $e->getMessage()], 422);
             }
+        }
+
+        /**
+         * Cambio de clase (ticket ↔ hoja, contrato §3.2): el diseño de una clase no sirve en la otra
+         * (otra grilla de caracteres, otros fijos de ARCA, el logo que en la hoja va en el
+         * encabezado). Si el pedido no trae un diseño propio para la clase nueva, el perfil vuelve a
+         * "el de siempre" (page_layout null): en el ticket, el Ticket 2.0 de siempre (D1).
+         */
+        if ($era_ticket !== $es_ticket
+            && ! PdfColumnProfileTicketHelper::trae_diseno_propio($has_page_layout, $page_layout, $model->page_layout)) {
+            $has_page_layout = true;
+            $page_layout = null;
         }
 
         /**
@@ -270,11 +333,15 @@ class PdfColumnProfileController extends Controller
             return $hoja_chica;
         }
 
+        /** "Perfil por defecto" por clase (decisión D5), como en store(). */
         if ($request->is_default) {
-            PdfColumnProfile::where('user_id', $this->userId())
-                ->where('model_name', $new_model_name)
-                ->where('id', '!=', $model->id)
-                ->update(['is_default' => false]);
+            PdfColumnProfileTicketHelper::apagar_por_defecto_de_la_clase(
+                $this->userId(),
+                $new_model_name,
+                $es_ticket,
+                $is_afip_ticket,
+                $model->id
+            );
         }
 
         $this->clear_whatsapp_default_flags_on_siblings(
@@ -466,7 +533,12 @@ class PdfColumnProfileController extends Controller
      * del perfil y un comprobante para "Ver un PDF de prueba" (misión diseno-pdf-configurable,
      * contrato §2.3 del plan).
      *
-     * GET api/pdf-column-profiles/page-layout-catalog?model_name=sale|budget|order&profile_id=&is_afip_ticket=0|1
+     * GET api/pdf-column-profiles/page-layout-catalog?model_name=sale|budget|order&profile_id=&is_afip_ticket=0|1&sheet_type_id=
+     *
+     * Desde la misión diseno-ticket-comandera (9/10/2026, contrato §3.3) suma `es_ticket`,
+     * `grilla_de_tabla` y `columnas_sugeridas` en todos los casos y, con un tipo de hoja que es un
+     * rollo de comandera (solo en venta), `ancho_mm`, `caracteres_por_renglon` y
+     * `tamanos_de_ticket`, con el catálogo, los fijos y el derivado del ticket.
      *
      * - model_name que no se diseña con cajas (el catálogo de artículos, o nada) → 422.
      * - profile_id de otro dueño o de otro modelo se IGNORA, no da 404: el diseñador abre igual,
@@ -509,17 +581,44 @@ class PdfColumnProfileController extends Controller
 
         $es_fiscal = DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket);
 
-        return response()->json([
+        /**
+         * Ticket de comandera (misión diseno-ticket-comandera, contrato §3.3): lo dice el tipo de
+         * hoja. Manda el del formulario (`sheet_type_id`, puede no estar guardado todavía); si no
+         * viene (o no es uno que el dueño puede usar), el del perfil guardado; si tampoco, hoja. Solo
+         * una venta puede ser ticket.
+         */
+        $tipo_de_hoja = PdfColumnProfileTicketHelper::tipo_de_hoja($request->query('sheet_type_id'), $owner_id);
+        if (is_null($tipo_de_hoja) && ! is_null($profile)) {
+            $tipo_de_hoja = PdfColumnProfileTicketHelper::tipo_de_hoja($profile->sheet_type_id, $owner_id);
+        }
+        $es_ticket = CatalogoDeCamposPdf::soporta_ticket($model_name) && PdfColumnProfileTicketHelper::es_ticket($tipo_de_hoja);
+
+        /** 🔴 Las claves de siempre van primero y, en una hoja, con los mismos valores que antes. */
+        $respuesta = [
             'model_name'            => $model_name,
             'es_fiscal'             => $es_fiscal,
-            'categorias'            => CatalogoDeCamposPdf::categorias($model_name),
-            'campos'                => CatalogoDeCamposPdf::campos($model_name),
-            'fijos'                 => CatalogoDeCamposPdf::fijos($model_name, $es_fiscal),
-            'formatos_de_hoja'      => CatalogoDeCamposPdf::formatos_de_hoja(),
+            'categorias'            => CatalogoDeCamposPdf::categorias($model_name, $es_ticket),
+            'campos'                => CatalogoDeCamposPdf::campos($model_name, $es_ticket),
+            'fijos'                 => CatalogoDeCamposPdf::fijos($model_name, $es_fiscal, $es_ticket),
+            /** Un rollo no tiene formatos de hoja: el ancho se cambia en el formulario. */
+            'formatos_de_hoja'      => $es_ticket ? [] : CatalogoDeCamposPdf::formatos_de_hoja(),
             'limites'               => $this->page_layout_limits(),
-            'diseno_derivado'       => DisenoDerivadoPdf::para($model_name, $profile, $es_fiscal, User::find($owner_id)),
+            'diseno_derivado'       => DisenoDerivadoPdf::para($model_name, $profile, $es_fiscal, User::find($owner_id), $es_ticket),
             'comprobante_de_prueba' => DisenoDerivadoPdf::comprobante_de_prueba($model_name, $es_fiscal, $owner_id),
-        ], 200);
+            /** Claves nuevas en todos los casos (contrato §3.3). */
+            'es_ticket'             => $es_ticket,
+            'grilla_de_tabla'       => CatalogoDeCamposPdf::GRILLA_DE_TABLA,
+            'columnas_sugeridas'    => CatalogoDeCamposPdf::columnas_sugeridas($model_name),
+        ];
+
+        /** Solo en un ticket: el rollo y la letra de la comandera. */
+        if ($es_ticket) {
+            $respuesta['ancho_mm'] = (int) $tipo_de_hoja->width;
+            $respuesta['caracteres_por_renglon'] = CatalogoDeCamposPdf::caracteres_por_renglon($tipo_de_hoja->width);
+            $respuesta['tamanos_de_ticket'] = CatalogoDeCamposPdf::tamanos_de_ticket();
+        }
+
+        return response()->json($respuesta, 200);
     }
 
     /**
@@ -686,7 +785,11 @@ class PdfColumnProfileController extends Controller
             'printable_width_mm' => ['required', 'integer', 'min:1', 'max:50000', 'lte:paper_width_mm'],
             'paper_height_mm' => $this->paper_height_mm_rules(),
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
-            'sheet_type_id' => ['nullable', 'integer', Rule::exists('sheet_types', 'id')],
+            /**
+             * Un tipo de hoja del sistema o del dueño: los anchos de comandera de otro negocio no
+             * (misión diseno-ticket-comandera, sheet_types.user_id).
+             */
+            'sheet_type_id' => ['nullable', 'integer', $this->regla_de_tipo_de_hoja()],
             'is_afip_ticket' => ['sometimes', 'boolean'],
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
             'show_comissions' => ['sometimes', 'boolean'],
@@ -740,7 +843,7 @@ class PdfColumnProfileController extends Controller
             'printable_width_mm' => ['sometimes', 'integer', 'min:1', 'max:50000'],
             'paper_height_mm' => $this->paper_height_mm_rules(),
             'margin_mm' => ['sometimes', 'integer', 'min:0', 'max:5000'],
-            'sheet_type_id' => ['sometimes', 'nullable', 'integer', Rule::exists('sheet_types', 'id')],
+            'sheet_type_id' => ['sometimes', 'nullable', 'integer', $this->regla_de_tipo_de_hoja()],
             'is_afip_ticket' => ['sometimes', 'boolean'],
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
             'show_comissions' => ['sometimes', 'boolean'],
@@ -863,6 +966,61 @@ class PdfColumnProfileController extends Controller
     }
 
     /**
+     * Los anchos (mm) de las columnas visibles tal como llegan del cliente, con el mismo criterio de
+     * visibilidad que sum_pivot_widths_from_request_options().
+     *
+     * @param mixed $pdf_column_options
+     * @return array<int, int>
+     */
+    protected function visible_widths_from_request_options($pdf_column_options): array
+    {
+        $anchos = [];
+
+        if (! is_array($pdf_column_options)) {
+            return $anchos;
+        }
+
+        foreach ($pdf_column_options as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $pivot = (isset($row['pivot']) && is_array($row['pivot'])) ? $row['pivot'] : [];
+            if (! $this->is_request_pivot_visible_for_width_sum($pivot)) {
+                continue;
+            }
+            $anchos[] = (int) ($pivot['width'] ?? 0);
+        }
+
+        return $anchos;
+    }
+
+    /**
+     * Los anchos (mm) de las columnas visibles ya guardadas del perfil.
+     *
+     * @param \App\Models\PdfColumnProfile|null $model
+     * @return array<int, int>
+     */
+    protected function visible_widths_from_attached_options($model): array
+    {
+        $anchos = [];
+
+        if (is_null($model)) {
+            return $anchos;
+        }
+
+        $model->loadMissing('pdf_column_options');
+
+        foreach ($model->pdf_column_options as $option) {
+            if (! $this->is_attached_pivot_visible_for_width_sum($option->pivot)) {
+                continue;
+            }
+            $anchos[] = (int) ($option->pivot->width ?? 0);
+        }
+
+        return $anchos;
+    }
+
+    /**
      * Suma anchos en pivots ya guardados, solo donde `visible` está activo.
      *
      * @param \App\Models\PdfColumnProfile $model Debe tener cargada la relación `pdf_column_options`.
@@ -934,6 +1092,24 @@ class PdfColumnProfileController extends Controller
 
         if ($sum_widths === null) {
             return;
+        }
+
+        /**
+         * Tolerancia del redondeo de la grilla de 24 medias columnas (misión diseno-ticket-comandera,
+         * decisión D9): el diseñador guarda cada ancho como round(medias × útil / 24), y con la tabla
+         * llena (24 medias) la suma en mm puede pasarse uno o dos del útil (un rollo de 55 mm con
+         * 10/2/6/6 medias da 56 mm). Una tabla que entra en 24 medias columnas se acepta: el tope
+         * sigue siendo la hoja, medido como lo mide el diseñador. Un pedido de siempre que entraba
+         * en mm sigue entrando igual.
+         */
+        if ($sum_widths > $available_width_mm) {
+            $anchos_visibles = $request->has('pdf_column_options')
+                ? $this->visible_widths_from_request_options($request->input('pdf_column_options'))
+                : $this->visible_widths_from_attached_options($model);
+
+            if (PdfColumnProfileTicketHelper::medias_columnas($anchos_visibles, $available_width_mm) <= CatalogoDeCamposPdf::GRILLA_DE_TABLA) {
+                return;
+            }
         }
 
         if ($sum_widths > $available_width_mm) {
@@ -1032,10 +1208,13 @@ class PdfColumnProfileController extends Controller
      * @param mixed  $value          array, string JSON o null, tal como vino.
      * @param string $model_name
      * @param bool   $is_afip_ticket el del request si vino, si no el del perfil guardado.
+     * @param bool   $es_ticket      el perfil queda como ticket de comandera (misión
+     *                               diseno-ticket-comandera): suma el fijo del emisor y deja los tres
+     *                               fijos de ARCA a lo ancho.
      * @return array|null
      * @throws \InvalidArgumentException si no tiene la forma de un diseño (el que llama responde 422).
      */
-    protected function normalize_page_layout($value, $model_name, $is_afip_ticket)
+    protected function normalize_page_layout($value, $model_name, $is_afip_ticket, $es_ticket = false)
     {
         if (! CatalogoDeCamposPdf::soporta($model_name)) {
             return null;
@@ -1049,8 +1228,25 @@ class PdfColumnProfileController extends Controller
 
         return DisenoDePaginaPdf::asegurar_fijos(
             $page_layout,
-            DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket)
+            DisenoDerivadoPdf::es_fiscal($model_name, $is_afip_ticket),
+            $es_ticket
         );
+    }
+
+    /**
+     * Regla de validación del tipo de hoja: tiene que existir y ser del sistema (user_id NULL) o del
+     * dueño (misión diseno-ticket-comandera). El closure se aplica agrupado (la consulta de
+     * existencia lo envuelve en su propio where), así el OR no se come el id.
+     *
+     * @return \Illuminate\Validation\Rules\Exists
+     */
+    protected function regla_de_tipo_de_hoja()
+    {
+        $owner_id = $this->userId();
+
+        return Rule::exists('sheet_types', 'id')->where(function ($query) use ($owner_id) {
+            $query->whereNull('user_id')->orWhere('user_id', $owner_id);
+        });
     }
 
     /**
