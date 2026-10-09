@@ -99,8 +99,10 @@ class SaldoDeProveedorTest extends TestCase
     {
         $codigo = (string) file_get_contents(base_path('app/Http/Controllers/Helpers/LocalImportHelper.php'));
 
+        // Acepta las dos funciones porque desde la misión importacion-saldo-celdas-de-texto (9/10/2026) el saldo se
+        // lee de la celda cruda (getColumnRawValueByAliases); el contrato que cuida, el alias 'saldo_actual', no cambia.
         $this->assertMatchesRegularExpression(
-            "/getColumnValueByAliases\(\\\$row, \[[^\]]*'saldo_actual'/",
+            "/getColumn(Raw)?ValueByAliases\(\\\$row, \[[^\]]*'saldo_actual'/",
             $codigo,
             'LocalImportHelper::setSaldoInicial() dejó de aceptar el alias "saldo_actual": '
                 . 'el saldo se importaría en silencio como nada.'

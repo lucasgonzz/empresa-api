@@ -95,13 +95,15 @@ class AcopioArticleDeliveryPdf extends fpdf {
 	    $y_2 = $this->y;
 		$this->y = $y_1;
 		
-		$this->Cell($this->getFields()['Entrega'], $this->line_height, $article->pivot->amount, $this->b, 0, 'R');
+		// Las tres cantidades con Numbers::price(), como en el resto de los PDF: las columnas son decimal
+		// y crudas salían "10.00".
+		$this->Cell($this->getFields()['Entrega'], $this->line_height, Numbers::price($article->pivot->amount), $this->b, 0, 'R');
 		
 		
 		$article_sale = $this->model->sale->articles->find($article->id);
 
-		$this->Cell($this->getFields()['Total vendidas'], $this->line_height, $article_sale->pivot->amount, $this->b, 0, 'R');
-		$this->Cell($this->getFields()['Total entregadas'], $this->line_height, $article_sale->pivot->delivered_amount, $this->b, 0, 'R');
+		$this->Cell($this->getFields()['Total vendidas'], $this->line_height, Numbers::price($article_sale->pivot->amount), $this->b, 0, 'R');
+		$this->Cell($this->getFields()['Total entregadas'], $this->line_height, Numbers::price($article_sale->pivot->delivered_amount), $this->b, 0, 'R');
 		
 		$this->y = $y_2;
 		$this->Line(5, $this->y, 205, $this->y);

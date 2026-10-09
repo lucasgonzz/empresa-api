@@ -86,7 +86,7 @@ class MovimientoCajaHelper {
 			$aplica_liquidacion
 		) {
 
-			$movimiento_caja = MovimientoCaja::create([
+			$campos = [
 	            'concepto_movimiento_caja_id'	=> $data['concepto_movimiento_caja_id'],
 
 	            'ingreso'						=> $data['ingreso'],
@@ -105,7 +105,24 @@ class MovimientoCajaHelper {
 	            'fecha_liquidacion_estimada'	=> $fecha_liquidacion_estimada,
 	            'monto_neto_estimado'			=> $monto_neto_estimado,
 	            'comision_calculada'			=> $comision_calculada,
-			]);
+			];
+
+			/*
+			 * Misión movimientos-caja-manuales (9/10/2026): la marca `manual`. SOLO
+			 * MovimientoCajaController::store() (el alta desde Tesorería → Movimientos) manda
+			 * `manual` en true; todo otro llamador (venta, gasto, pago, transferencia,
+			 * compensación, pago a vendedor) no lo manda y queda en false. Así se sabe qué
+			 * movimiento se puede corregir o eliminar desde la caja (MovimientoCaja::origen_automatico()).
+			 *
+			 * 🔴 Solo si la columna ya existe (MovimientoCaja::hay_columna_manual()): en la ventana
+			 * del deploy el código llega antes que la migración, y nombrar una columna que no
+			 * existe tumbaría toda venta, gasto o pago que mueva caja.
+			 */
+			if (MovimientoCaja::hay_columna_manual()) {
+				$campos['manual'] = !empty($data['manual']);
+			}
+
+			$movimiento_caja = MovimientoCaja::create($campos);
 
 			if ($aplica_liquidacion && $comision_calculada > 0) {
 

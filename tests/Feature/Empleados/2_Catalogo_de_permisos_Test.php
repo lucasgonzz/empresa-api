@@ -63,6 +63,9 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
         'sale.index.employees.all',
         'sale.index.employees.only_your',
         'devolucion.store',
+        // Misión permisos-navegacion-empleados (9/10/2026): el permiso nuevo de la pantalla
+        // Comprobantes, que hasta entonces no pedía ninguno. Lo consulta la SPA tal cual.
+        'comprobantes.index',
         'article.index',
         'article.store',
         'article.update',

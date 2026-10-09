@@ -65,9 +65,25 @@ class ProviderImport implements ToCollection, WithMultipleSheets
      * son. El evento de la notificacion viaja por Pusher, que corta en 10 KB: con unos 300 nombres
      * se perdia la notificacion ENTERA de fin de importacion, boton incluido.
      *
+     * Es el tope del caso tipico. Si con datos reales (nombres largos con tildes, montos de
+     * millones) los avisos no entran, LocalImportHelper::avisos_dentro_del_presupuesto() lo achica.
+     *
      * @var int
      */
     const MAXIMO_DE_PROVEEDORES_EN_EL_AVISO = 50;
+
+    /**
+     * Filas cuyo saldo del Excel no se pudo leer como numero ("s/d", "-", una formula), como
+     * [['fila' => n° de fila del Excel, 'nombre' => proveedor, 'texto' => lo que traia la celda], ...].
+     *
+     * Ese saldo no se cargo (LocalImportHelper::setSaldoInicial() devuelve 'ilegible'): el
+     * proveedor se importo con el resto de sus datos. Se avisan al final, en un bloque aparte del
+     * de saldos_no_cargados (mision importacion-saldo-celdas-de-texto, 9/10/2026). Va por FILA y no
+     * por proveedor: lo que el usuario tiene que corregir es la celda.
+     *
+     * @var array
+     */
+    private $saldos_ilegibles = [];
 
     /**
      * Propiedades que esta fila vacia a proposito, como set [prop_key => true].
@@ -216,45 +232,87 @@ class ProviderImport implements ToCollection, WithMultipleSheets
      * Bloques informativos que se muestran al terminar la importacion. Mismo formato que
      * ClientImport::getInfoToShow() (`title` + `parrafos`), que el SPA ya renderiza.
      *
-     * Hoy el unico bloque es el de los saldos que no se cargaron porque la cuenta del proveedor
-     * ya tenia movimientos y otro saldo: un parrafo por proveedor con su nombre y los dos montos
-     * (el del Excel y el de la cuenta, para que se vea la diferencia antes de ajustar), como mucho
-     * MAXIMO_DE_PROVEEDORES_EN_EL_AVISO y, si hay mas, "y N proveedores mas"; la explicacion va
-     * al final. Si no hay nada que informar se devuelve un array vacio, igual que antes.
+     * Dos bloques posibles, en este orden:
+     *   1. Los saldos que no se cargaron porque la cuenta del proveedor ya tenia movimientos y
+     *      otro saldo: lo arma bloque_de_saldos_no_cargados().
+     *   2. Los saldos que no se pudieron leer (no son un numero): lo arma
+     *      LocalImportHelper::bloque_de_saldos_ilegibles(), el mismo que usa ClientImport.
+     *
+     * 🔴 Los dos pasan por LocalImportHelper::avisos_dentro_del_presupuesto(): en el caso tipico se
+     * nombran 50 y 20, pero si con datos reales (nombres largos con tildes, montos de millones) no
+     * entran en el presupuesto de Pusher, se nombran menos (primero del bloque que mas pesa) y el
+     * "y N ... mas" cuenta el resto. Con topes fijos solos, el evento pasaba los 10 KB y se perdia
+     * la notificacion entera (9/10/2026).
+     *
+     * Si no hay nada que informar se devuelve un array vacio, igual que antes.
      *
      * @return array
      */
     function getInfoToShow() {
-        $info_to_show = [];
+        $no_cargados = array_values($this->saldos_no_cargados);
+        $ilegibles   = $this->saldos_ilegibles;
 
-        if (count($this->saldos_no_cargados) > 0) {
-            $no_cargados = array_values($this->saldos_no_cargados);
+        return LocalImportHelper::avisos_dentro_del_presupuesto([], [
+            'no_cargados' => [
+                'tope'  => self::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO,
+                'total' => count($no_cargados),
+                'armar' => function ($tope) use ($no_cargados) {
+                    return $this->bloque_de_saldos_no_cargados($no_cargados, $tope);
+                },
+            ],
+            'ilegibles' => [
+                'tope'  => LocalImportHelper::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES,
+                'total' => count($ilegibles),
+                'armar' => function ($tope) use ($ilegibles) {
+                    return LocalImportHelper::bloque_de_saldos_ilegibles($ilegibles, $tope);
+                },
+            ],
+        ]);
+    }
 
-            $parrafos = [];
-
-            foreach (array_slice($no_cargados, 0, self::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO) as $no_cargado) {
-                $parrafos[] = $no_cargado['nombre']
-                    . ': saldo en el Excel ' . $this->formatear_saldo($no_cargado['excel'])
-                    . ', saldo en la cuenta ' . $this->formatear_saldo($no_cargado['cuenta']);
-            }
-
-            $restantes = count($no_cargados) - self::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO;
-
-            if ($restantes > 0) {
-                $parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' proveedor más' : ' proveedores más');
-            }
-
-            $parrafos[] = 'Estos proveedores ya tenían movimientos en su cuenta corriente y su saldo no coincide con el del Excel, '
-                . 'así que el saldo del Excel no se cargó: el saldo inicial va solo en una cuenta vacía. '
-                . 'Si el del Excel es el correcto, ajustá la cuenta con una nota de crédito o de débito por la diferencia.';
-
-            $info_to_show[] = [
-                'title'    => 'Saldos del Excel que no se cargaron',
-                'parrafos' => $parrafos,
-            ];
+    /**
+     * El bloque "Saldos del Excel que no se cargaron": un parrafo por proveedor con su nombre y los
+     * dos montos (el del Excel y el de la cuenta, para que se vea la diferencia antes de ajustar),
+     * como mucho $tope y, si hay mas, "y N proveedores mas" (nombrados + N = todos); la
+     * explicacion va al final.
+     *
+     * El nombre se corta a LocalImportHelper::LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO caracteres (y se
+     * sanea a UTF-8 valido), igual que en el bloque de ilegibles: es lo que mas pesa en el evento
+     * de Pusher.
+     *
+     * @param  array $no_cargados Los de saldos_no_cargados, como lista.
+     * @param  int   $tope        Cuantos nombrar (al menos uno).
+     * @return array|null         El bloque, o null si no hay nada que avisar.
+     */
+    private function bloque_de_saldos_no_cargados(array $no_cargados, $tope) {
+        if (count($no_cargados) == 0) {
+            return null;
         }
 
-        return $info_to_show;
+        $tope = max(1, (int) $tope);
+
+        $parrafos = [];
+
+        foreach (array_slice($no_cargados, 0, $tope) as $no_cargado) {
+            $parrafos[] = LocalImportHelper::recortar_para_el_aviso($no_cargado['nombre'], LocalImportHelper::LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO)
+                . ': saldo en el Excel ' . $this->formatear_saldo($no_cargado['excel'])
+                . ', saldo en la cuenta ' . $this->formatear_saldo($no_cargado['cuenta']);
+        }
+
+        $restantes = count($no_cargados) - $tope;
+
+        if ($restantes > 0) {
+            $parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' proveedor más' : ' proveedores más');
+        }
+
+        $parrafos[] = 'Estos proveedores ya tenían movimientos en su cuenta corriente y su saldo no coincide con el del Excel, '
+            . 'así que el saldo del Excel no se cargó: el saldo inicial va solo en una cuenta vacía. '
+            . 'Si el del Excel es el correcto, ajustá la cuenta con una nota de crédito o de débito por la diferencia.';
+
+        return [
+            'title'    => 'Saldos del Excel que no se cargaron',
+            'parrafos' => $parrafos,
+        ];
     }
 
     /**
@@ -367,6 +425,19 @@ class ProviderImport implements ToCollection, WithMultipleSheets
                     'nombre' => $provider->name,
                     'excel'  => $saldos['excel'],
                     'cuenta' => $saldos['cuenta'],
+                ];
+            }
+
+            /*
+             * Un saldo que no es un numero no se cargo: se anota la fila para el aviso de fin.
+             * num_row es el numero de fila del Excel: collection() cuenta desde la fila 1 de la
+             * hoja (la cabecera incluida).
+             */
+            if ($estado_saldo == 'ilegible') {
+                $this->saldos_ilegibles[] = [
+                    'fila'   => $this->num_row,
+                    'nombre' => $provider->name,
+                    'texto'  => $saldos['texto'],
                 ];
             }
         }

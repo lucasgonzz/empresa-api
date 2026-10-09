@@ -860,6 +860,25 @@ class CurrentAcountController extends Controller
                 }
             }
 
+            /*
+             * 🔴 Los cheques del movimiento se deshacen ACÁ (misión cheque-endoso-deshacer-al-borrar-pago,
+             * 9/10/2026): adentro de la transacción, con el candado ya tomado y ANTES de soltar las
+             * filas de métodos de pago, que es como se reconocen los cheques de un pago. El recibido
+             * que este pago endosó vuelve a la cartera; la copia emitida, el cheque nuevo y el
+             * recibido de un cobro se borran. Hasta entonces el borrado no tocaba ningún cheque: el
+             * recibido quedaba endosado fuera de la cartera y la copia, pendiente con el proveedor sin
+             * pago que la respaldara. Si alguno ya se cobró, se pagó, se rechazó o se endosó, no se
+             * borra nada: 422 con el motivo (ver ChequeHelper::deshacer_cheques_del_movimiento()).
+             */
+            $problemas_de_cheques = ChequeHelper::deshacer_cheques_del_movimiento($current_acount, $this->userId());
+
+            if (count($problemas_de_cheques)) {
+
+                DB::rollBack();
+
+                return response()->json(['message' => ChequeHelper::mensaje_de_borrado_frenado($current_acount, $problemas_de_cheques)], 422);
+            }
+
             if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
 
                 // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);

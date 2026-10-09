@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseHelper;
 use App\Models\Expense;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ExpenseController extends Controller
 {
@@ -159,22 +160,66 @@ class ExpenseController extends Controller
             }
         }
 
-        ImageController::deleteModelImages($model);
+        /*
+         * 🔴 Los cheques del gasto (misión cheque-endoso-deshacer-al-borrar-pago, 9/10/2026): el
+         * recibido que el gasto endosó vuelve a la cartera y la copia emitida o el cheque nuevo se
+         * borran. Hasta entonces el borrado no los tocaba: el recibido quedaba endosado en un gasto
+         * que ya no existía. Si alguno ya se pagó o se rechazó, el gasto no se borra (422) y no se
+         * toca nada: por eso esta mirada va ANTES de compensar la caja y de borrar las imágenes. Se
+         * repite adentro de la transacción, con las filas bloqueadas, por si en el medio alguien
+         * marcó el cheque.
+         */
+        $problemas_de_cheques = ChequeHelper::problemas_para_borrar_el_movimiento($model, $this->userId());
 
-        if ($compensar_caja) {
-            $notas_eliminacion = 'Eliminación de gasto';
-            if (! is_null($model->expense_concept)) {
-                $notas_eliminacion .= ' — '.$model->expense_concept->name;
-            }
-            $helper_caja_compensacion->crear_movimientos_compensacion(
-                $model->current_acount_payment_methods,
-                DeleteCajaCompensacionHelper::MODEL_TYPE_EXPENSE,
-                null,
-                $notas_eliminacion
-            );
+        if (count($problemas_de_cheques)) {
+            return response()->json(['message' => ChequeHelper::mensaje_de_borrado_frenado($model, $problemas_de_cheques)], 422);
         }
 
-        $model->delete();
+        /*
+         * La compensación de caja, los cheques y la baja, juntos en una transacción (hasta el
+         * 9/10/2026 no había ninguna): un corte a mitad ya no deja la caja compensada con el gasto
+         * vivo, ni el cheque devuelto a la cartera con el gasto que lo endosó todavía en pie.
+         */
+        DB::beginTransaction();
+
+        try {
+
+            $problemas_de_cheques = ChequeHelper::deshacer_cheques_del_movimiento($model, $this->userId());
+
+            if (count($problemas_de_cheques)) {
+
+                DB::rollBack();
+
+                return response()->json(['message' => ChequeHelper::mensaje_de_borrado_frenado($model, $problemas_de_cheques)], 422);
+            }
+
+            if ($compensar_caja) {
+                $notas_eliminacion = 'Eliminación de gasto';
+                if (! is_null($model->expense_concept)) {
+                    $notas_eliminacion .= ' — '.$model->expense_concept->name;
+                }
+                $helper_caja_compensacion->crear_movimientos_compensacion(
+                    $model->current_acount_payment_methods,
+                    DeleteCajaCompensacionHelper::MODEL_TYPE_EXPENSE,
+                    null,
+                    $notas_eliminacion
+                );
+            }
+
+            $model->delete();
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            throw $e;
+        }
+
+        // Las imágenes, recién con la baja confirmada: un archivo borrado no vuelve con un rollback.
+        ImageController::deleteModelImages($model);
+
         $this->sendDeleteModelNotification('Expense', $model->id);
         return response(null);
     }
