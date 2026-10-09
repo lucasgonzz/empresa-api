@@ -145,6 +145,17 @@ class VenderKeyboardShortcutHelper
             return $option_key;
         }
 
+        /**
+         * Un diseño de ticket de comandera puntual (misión diseno-ticket-comandera, 9/10/2026, plan
+         * §7.4): el atajo imprime ese perfil por el Ticket 2.0. Sin esto, el PUT del atajo lo
+         * convertía en silencio en 'ticket_2' y la elección del usuario no quedaba guardada. Como
+         * los A4, no se valida contra la base: si el perfil se borró, el SPA cae al ticket por
+         * defecto al imprimir.
+         */
+        if (preg_match('/^ticket:\d+$/', $option_key)) {
+            return $option_key;
+        }
+
         return 'ticket_2';
     }
 

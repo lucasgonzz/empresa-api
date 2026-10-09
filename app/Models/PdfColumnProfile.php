@@ -170,6 +170,60 @@ class PdfColumnProfile extends Model
     }
 
     /**
+     * Solo los perfiles de HOJA: sin tipo de hoja, o con un tipo de hoja que tiene alto (misión
+     * diseno-ticket-comandera, 9/10/2026, decisiones D2 y D12).
+     *
+     * 🔴 Es la guarda de la decisión D4: un perfil de ticket (rollo de comandera) se imprime directo
+     * en la comandera, NUNCA se dibuja como PDF. Toda consulta que elige un perfil para un PDF
+     * (el por defecto, el de WhatsApp, el de la tienda, el del asistente) pasa por acá.
+     *
+     * Subconsulta y no join: no cambia las columnas que trae la consulta (un join traería las de
+     * sheet_types y pisaría el id del perfil). El where agrupado no se come otras condiciones.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeDeHoja($query)
+    {
+        return $query->where(function ($sub) {
+            $sub->whereNull('pdf_column_profiles.sheet_type_id')
+                ->orWhereIn('pdf_column_profiles.sheet_type_id', function ($tipos) {
+                    $tipos->select('id')->from('sheet_types')->whereNotNull('height');
+                });
+        });
+    }
+
+    /**
+     * Solo los perfiles de TICKET: con un tipo de hoja sin alto (rollo de comandera, decisión D2).
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeDeTicket($query)
+    {
+        return $query->whereIn('pdf_column_profiles.sheet_type_id', function ($tipos) {
+            $tipos->select('id')->from('sheet_types')->whereNull('height');
+        });
+    }
+
+    /**
+     * ¿Es un perfil de ticket de comandera? Lo dice su tipo de hoja (alto NULL, decisión D2). Sin
+     * tipo de hoja es hoja (D12: un diseño creado desde el ABM viejo quedaba sin tipo).
+     *
+     * @return bool
+     */
+    public function es_ticket()
+    {
+        if (is_null($this->sheet_type_id)) {
+            return false;
+        }
+
+        $sheet_type = $this->sheet_type;
+
+        return ! is_null($sheet_type) && $sheet_type->es_ticket();
+    }
+
+    /**
      * Layout de header por defecto (usado por el render cuando header_layout es null).
      * Centraliza el default para que el generador de PDF (prompt 439) y el diseñador visual
      * (prompt 441) partan siempre de la misma estructura.
