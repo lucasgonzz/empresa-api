@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Facturacion;
 
+use App\Http\Controllers\AfipTicketController;
 use App\Http\Controllers\Helpers\Afip\AfipFexHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWsfeHelper;
 use App\Http\Controllers\Helpers\Afip\IntentosDeFacturaFallidosHelper;
@@ -10,9 +11,11 @@ use App\Models\AfipInformation;
 use App\Models\AfipTicket;
 use App\Models\AfipTipoComprobante;
 use App\Models\Article;
+use App\Models\AuditLog;
 use App\Models\IvaCondition;
 use App\Models\Sale;
 use App\Models\User;
+use App\Services\AuditLog\AuditContext;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -916,6 +919,73 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $this->assertContains($venta->id, $this->ventas_en_alertas());
     }
 
+    /**
+     * Test 18 — Auditoría: el descarte y la restauración dejan su fila en `audit_logs`, igual que el
+     * tacho.
+     *
+     * El descarte es un `UPDATE` sobre el builder (para que sea atómico) y eso no dispara eventos de
+     * Eloquent, que es lo único que escucha `AuditLogRecorder`. El helper relee el ticket y despacha
+     * el evento a mano; este test verifica que la fila exista y que tenga la misma forma que la del
+     * tacho (`AfipTicketController::destroy()`, que borra por la instancia). Mismo criterio que los
+     * tests de `AuditoriaDeCambios`: la auditoría prendida explícitamente y el contexto reiniciado.
+     *
+     * @test
+     */
+    public function el_descarte_y_la_restauracion_quedan_en_la_auditoria_como_el_tacho()
+    {
+        config(['audit_log.habilitado' => true]);
+        AuditContext::reiniciar();
+
+        try {
+
+            $id_inicial = (int) AuditLog::max('id');
+
+            $venta = $this->crear_venta();
+            $numero = $this->numero_base($venta);
+
+            $autorizada = $this->ticket_directo($venta, self::FACTURA_B, [
+                'cbte_numero' => (string) $numero,
+                'cae'         => $this->cae(),
+                'resultado'   => 'A',
+            ]);
+
+            $fallido = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
+
+            $this->assertEquals(1, IntentosDeFacturaFallidosHelper::descartar_superados($autorizada));
+
+            $del_descarte = $this->filas_de_auditoria($id_inicial, $fallido->id, 'deleted');
+
+            $this->assertCount(1, $del_descarte, 'El descarte tiene que dejar UNA fila deleted en audit_logs.');
+            $this->assertNotNull(
+                json_decode($del_descarte[0]->old_values, true)['deleted_at'],
+                'La fila tiene que mostrar el ticket ya borrado, como la del tacho.'
+            );
+
+            // La del tacho, para comparar la forma.
+            $del_tacho = $this->ticket_directo($venta, self::FACTURA_B, ['cbte_numero' => null]);
+
+            (new AfipTicketController())->destroy($del_tacho->id);
+
+            $fila_del_tacho = $this->filas_de_auditoria($id_inicial, $del_tacho->id, 'deleted');
+
+            $this->assertCount(1, $fila_del_tacho);
+            $this->assertEquals(
+                array_keys(json_decode($fila_del_tacho[0]->old_values, true)),
+                array_keys(json_decode($del_descarte[0]->old_values, true)),
+                'La fila del descarte tiene que tener los mismos campos que la del tacho.'
+            );
+
+            // La restauración: el descartado recibe un CAE (otra emisión lo autorizó) y se restaura.
+            AfipTicket::withTrashed()->where('id', $fallido->id)->update(['cae' => $this->cae()]);
+
+            $this->assertTrue(IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($fallido));
+            $this->assertCount(1, $this->filas_de_auditoria($id_inicial, $fallido->id, 'restored'));
+
+        } finally {
+            AuditContext::reiniciar();
+        }
+    }
+
     // =========================================================================================
     // Helpers del archivo
     // =========================================================================================
@@ -1071,6 +1141,24 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
         $response->assertStatus(200);
 
         return array_map('intval', array_column($response->json('models'), 'id'));
+    }
+
+    /**
+     * Filas de `audit_logs` de un ticket, posteriores a `$id_inicial`.
+     *
+     * @param  int $id_inicial
+     * @param  int $afip_ticket_id
+     * @param  string $evento
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    protected function filas_de_auditoria($id_inicial, $afip_ticket_id, $evento)
+    {
+        return AuditLog::where('id', '>', $id_inicial)
+                        ->where('auditable_type', AfipTicket::class)
+                        ->where('auditable_id', $afip_ticket_id)
+                        ->where('event', $evento)
+                        ->orderBy('id')
+                        ->get();
     }
 
     /**

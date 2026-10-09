@@ -21,8 +21,9 @@ use Illuminate\Support\Facades\Log;
  * ─── El criterio (elegido por Lucas: (a)+(b)+(c)) ─────────────────────────────────────────────
  *
  * Cuando una FACTURA de una venta queda autorizada (CAE no vacío), se descartan con **borrado
- * suave** —SoftDeletes, exactamente lo mismo que hace el tacho (`AfipTicketController::destroy()`)—
- * los otros tickets de esa misma venta que se puede PROBAR que nunca se autorizaron:
+ * suave** —el mismo `deleted_at` y la misma fila `deleted` en `audit_logs` que deja el tacho
+ * (`AfipTicketController::destroy()`), ver `descartar_con_resultado()`— los otros tickets de esa
+ * misma venta que se puede PROBAR que nunca se autorizaron:
  *
  *  (a) **sin número** (`cbte_numero` nulo o vacío): nunca llegó a ARCA. `set_numero_comprobante()`
  *      escribe el número ANTES de `FECAESolicitar` (y `AfipFexHelper` antes de `FEXAuthorize`), así
@@ -292,6 +293,12 @@ class IntentosDeFacturaFallidosHelper
      * `MakeAfipTicket::get_tope_en_pesos()`, arman un ticket en memoria que nunca se guarda), así
      * que no puede cambiar entre la lectura y el borrado.
      *
+     * 🔴 **Auditoría.** Un `delete()` sobre el builder no dispara eventos de Eloquent, y
+     * `AuditLogRecorder` solo escucha eventos: sin más, el descarte no dejaría fila en `audit_logs`,
+     * y el tacho sí la deja. Por eso, si el `UPDATE` borró la fila, se relee el ticket con
+     * `withTrashed()` y se despacha el MISMO evento que despacharía Eloquent (`auditar()`). Queda la
+     * misma fila `deleted` que deja el tacho, con el estado ya borrado.
+     *
      * Los `afip_errors` y `afip_observations` del intento NO se tocan: quedan como historia de por
      * qué falló.
      *
@@ -353,6 +360,8 @@ class IntentosDeFacturaFallidosHelper
                 return self::DESCARTE_CAMBIO_ENTRE_MEDIO;
             }
 
+            self::auditar($fallido->id, 'deleted');
+
             Log::info(
                 'IntentosDeFacturaFallidos: venta '.$fallido->sale_id.', se descartó el ticket '.$fallido->id
                 .' ('.self::comprobante_legible($fallido).') por '.$motivo.': '.$origen.'.'
@@ -386,7 +395,8 @@ class IntentosDeFacturaFallidosHelper
      * bug de masquito (11/9/2026).
      *
      * La restauración también es un solo `UPDATE` que vuelve a exigir CAE no vacío y `deleted_at`
-     * no nulo. No tira nunca: corre con el comprobante ya autorizado en ARCA.
+     * no nulo, y por eso tampoco dispara eventos: se audita igual que el descarte (`auditar()`, fila
+     * `restored`). No tira nunca: corre con el comprobante ya autorizado en ARCA.
      *
      * @param  \App\Models\AfipTicket|null $afip_ticket
      * @return bool true si lo restauró.
@@ -415,6 +425,8 @@ class IntentosDeFacturaFallidosHelper
             if ($filas < 1) {
                 return false;
             }
+
+            self::auditar($guardado->id, 'restored');
 
             $venta = !is_null($guardado->sale_id) ? $guardado->sale_id : $guardado->sale_nota_credito_id;
 
@@ -450,7 +462,8 @@ class IntentosDeFacturaFallidosHelper
      * que nunca llegó": no puede estar borrado, salga como salga.
      *
      * Un ticket que el usuario borró con el tacho nunca vuelve a pasar por acá (reintentar crea uno
-     * nuevo), así que lo único que esto restaura es un intento en vuelo. No tira nunca.
+     * nuevo), así que lo único que esto restaura es un intento en vuelo. Se audita como fila
+     * `restored` (ver `auditar()`). No tira nunca.
      *
      * @param  \App\Models\AfipTicket|null $afip_ticket
      * @return bool true si lo restauró.
@@ -472,6 +485,8 @@ class IntentosDeFacturaFallidosHelper
                 return false;
             }
 
+            self::auditar($afip_ticket->id, 'restored');
+
             Log::warning(
                 'IntentosDeFacturaFallidos: el ticket '.$afip_ticket->id.' de la venta '.$afip_ticket->sale_id
                 .' estaba borrado y se está mandando a ARCA; se restauró (otra emisión de la misma venta lo '
@@ -490,6 +505,55 @@ class IntentosDeFacturaFallidosHelper
             );
 
             return false;
+        }
+    }
+
+    /**
+     * Deja en `audit_logs` el descarte o la restauración que se hizo con un `UPDATE` sobre el
+     * builder, que no dispara eventos de Eloquent.
+     *
+     * `AuditLogRecorder` no tiene una API pública para registrar (su `registrar()` es protegido):
+     * solo escucha `eloquent.{evento}: {clase}`. Así que se despacha ESE evento, por el mismo
+     * despachador que usa el modelo (`Model::getEventDispatcher()`, el que usa `fireModelEvent()`),
+     * con el ticket releído con `withTrashed()`: es exactamente lo que habría despachado Eloquent si
+     * el borrado o la restauración hubieran pasado por la instancia. Con el `UPDATE` atómico se
+     * conserva lo que importa de la carrera, y la auditoría queda igual que la del tacho.
+     *
+     * Es seguro despacharlo a mano porque `AfipTicket` no tiene observers ni listeners propios
+     * (verificado el 9/10/2026: el único que escucha es el comodín global de la auditoría). Si el
+     * despachador no está (`Model::withoutEvents()`), no se audita, igual que no lo haría Eloquent.
+     * No tira nunca.
+     *
+     * @param  int $afip_ticket_id
+     * @param  string $evento 'deleted' o 'restored'.
+     * @return void
+     */
+    protected static function auditar($afip_ticket_id, $evento)
+    {
+        try {
+
+            $dispatcher = AfipTicket::getEventDispatcher();
+
+            if (is_null($dispatcher)) {
+                return;
+            }
+
+            $ticket = AfipTicket::withTrashed()->find($afip_ticket_id);
+
+            if (is_null($ticket)) {
+                return;
+            }
+
+            $dispatcher->dispatch('eloquent.'.$evento.': '.AfipTicket::class, $ticket);
+
+        } catch (\Throwable $e) {
+
+            report($e);
+
+            Log::warning(
+                'IntentosDeFacturaFallidos: no se pudo auditar el '.$evento.' del ticket '.$afip_ticket_id
+                .': '.$e->getMessage()
+            );
         }
     }
 

@@ -28,8 +28,8 @@ use Illuminate\Support\Facades\Log;
  *    partes): esa porción sigue sin facturar y Alertas es el recordatorio.
  *
  *   - Sin `--aplicar`: lista cada intento (venta, ticket, motivo) y NO escribe nada.
- *   - Con `--aplicar`: hace el borrado suave (SoftDeletes, lo mismo que el tacho de la tarjeta).
- *     Los `afip_errors` del intento quedan como historia. Borra con el
+ *   - Con `--aplicar`: hace el borrado suave, con la misma fila `deleted` en `audit_logs` que deja
+ *     el tacho de la tarjeta. Los `afip_errors` del intento quedan como historia. Borra con el
  *     MISMO `IntentosDeFacturaFallidosHelper::descartar_con_resultado()` que la limpieza en vivo: un
  *     `UPDATE` que vuelve a exigir el motivo, así que si entre el listado y el borrado ese ticket
  *     recibió el CAE o su número (una emisión en curso), no se toca. Eso NO es un error: se informa
