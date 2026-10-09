@@ -99,11 +99,18 @@ class MovimientoCajaController extends Controller
      * lo hace, así que un movimiento propio podía caer en la caja de otro comercio y moverle el
      * saldo.
      *
+     * Los importes se validan y se normalizan IGUAL que en update() (importe_normalizado() y
+     * rechazo_de_importes()), y lo que se guarda es lo normalizado. Hasta acá entraban crudos: un
+     * alta vacía dejaba `saldo` NULL en la fila y en la caja (y una fila así, primera del turno,
+     * hacía reventar con 500 cualquier corrección o baja posterior, porque recalcular_saldos() no
+     * le encuentra importe), y un alta `{ingreso: 0, egreso: 500}` contaba +0.
+     *
      * No se agregó la regla de "turno cerrado" al alta: no se pidió (sin apertura vigente, el
      * helper sigue usando la última apertura de la caja, como siempre).
      *
      * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\JsonResponse  201 `{model}`; 422 si la caja o la apertura no son del dueño.
+     * @return \Illuminate\Http\JsonResponse  201 `{model}`; 422 si la caja o la apertura no son del
+     *                                        dueño, o si los importes no cierran.
      */
     public function store(Request $request) {
 
@@ -128,10 +135,20 @@ class MovimientoCajaController extends Controller
             }
         }
 
+        $ingreso = $this->importe_normalizado($request->ingreso);
+        $egreso = $this->importe_normalizado($request->egreso);
+
+        $rechazo = $this->rechazo_de_importes($ingreso, $egreso);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
         $data = [
             'concepto_movimiento_caja_id'   => $request->concepto_movimiento_caja_id,
-            'ingreso'                       => $request->ingreso,
-            'egreso'                        => $request->egreso,
+            'ingreso'                       => $ingreso,
+            'egreso'                        => $egreso,
             'notas'                         => $request->notas,
             'apertura_caja_id'              => $apertura_caja_id,
             'caja_id'                       => $caja_id,
@@ -199,6 +216,17 @@ class MovimientoCajaController extends Controller
         $model->ingreso                       = $ingreso;
         $model->egreso                        = $egreso;
         $model->notas                         = $request->notas;
+
+        /*
+         * Si llegó hasta acá es un movimiento manual (motivo_no_editable() es null): se marca. Una
+         * fila VIEJA (`manual` NULL, decidida por concepto) que se corrige por la pantalla queda
+         * marcada, así cambiarle el concepto a uno de sistema no la bloquea para siempre. Solo si
+         * la columna ya existe (ventana del deploy, ver MovimientoCaja::hay_columna_manual()).
+         */
+        if (MovimientoCaja::hay_columna_manual()) {
+            $model->manual = true;
+        }
+
         $model->save();
 
         // Igual que destroy(): saldos de toda la apertura vigente de la caja, y sus totales.
