@@ -330,6 +330,11 @@ class ImportHelper {
 
 		$texto_a_leer = self::normalizarSignoYMoneda($texto);
 
+		// Doble signo o doble moneda ("$++1.500", "$$+1.500"): no se adivina, ilegible.
+		if (is_null($texto_a_leer)) {
+			return self::lecturaDeCelda('ilegible', null, $texto);
+		}
+
 		try {
 			$numero = self::parseNumericValue($texto_a_leer, null, null, 'auto');
 		} catch (\InvalidArgumentException $e) {
@@ -375,11 +380,16 @@ class ImportHelper {
 	 *   "- 500"                            -> "-500"     (el signo con espacio)
 	 *   "−7.600" (U+2212, el menos de Word y de muchos PDF) -> "-7.600"
 	 *
-	 * Con signo antes Y después de la moneda ("-$ -7.600") no se adivina: el texto queda como vino y
-	 * parseNumericValue() lo rechaza. Sin signo ni moneda, el texto no cambia.
+	 * 🔴 Saca como mucho UN signo y UNA moneda. Si después queda otro signo o otra moneda —dos
+	 * signos ("-$ -7.600", "$+-500", "++1.500"), un "+" en el número ("$++1.500", "$ + +7.600"),
+	 * otra moneda ("$$+1.500", "$ $ +7.600")— no se adivina: devuelve null y el saldo queda
+	 * ILEGIBLE. No alcanza con dejarle el texto a parseNumericValue(): lee "+1.500" como 1,5 (su
+	 * regla de miles no acepta el "+"), así que "$++1.500" se cargaba como $1,50 sin aviso.
+	 *
+	 * Sin signo ni moneda, el texto no cambia.
 	 *
 	 * @param string $texto Texto ya limpio de bordes.
-	 * @return string
+	 * @return string|null El texto listo para parseNumericValue(), o null si no se puede leer.
 	 */
 	private static function normalizarSignoYMoneda($texto) {
 		// El menos tipográfico es un menos.
@@ -396,8 +406,14 @@ class ImportHelper {
 		$signo_despues = $partes[2];
 		$resto         = $partes[3];
 
+		// Un signo antes y otro después de la moneda: no se adivina cuál vale.
 		if ($signo_antes !== '' && $signo_despues !== '') {
-			return $texto;
+			return null;
+		}
+
+		// Lo que queda tiene que ser el número solo: ni otro "+", ni un "-" adelante, ni otra moneda.
+		if (preg_match('/^-|\+|\$|USD|U\$S/i', $resto) === 1) {
+			return null;
 		}
 
 		$signo = $signo_antes !== '' ? $signo_antes : $signo_despues;
