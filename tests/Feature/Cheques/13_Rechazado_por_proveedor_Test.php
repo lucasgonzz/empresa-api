@@ -4,6 +4,7 @@ namespace Tests\Feature\Cheques;
 
 use App\Http\Controllers\ChequeController;
 use App\Http\Controllers\Helpers\ChequeHelper;
+use App\Models\AuditLog;
 use App\Models\Cheque;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -53,6 +54,7 @@ class Rechazado_por_proveedor_Test extends ChequesTestCase
         $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR - self::MONTO_CHEQUE, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
 
         $movimientos_antes = $this->movimientos_de($cuenta);
+        $auditoria_antes = (int) AuditLog::max('id');
 
         $response = $this->rechazar_por_proveedor($emitido->id);
 
@@ -60,6 +62,17 @@ class Rechazado_por_proveedor_Test extends ChequesTestCase
 
         $nota_id = (int) $response->json('nota_debito.id');
         $this->cobros_cc_creados_por_escenarios[] = $nota_id;
+
+        // --- La marca queda en audit_logs (se escribe por modelo, no por builder) -------------------
+        $this->assertTrue(
+            AuditLog::where('id', '>', $auditoria_antes)
+                    ->where('auditable_type', Cheque::class)
+                    ->where('auditable_id', $emitido->id)
+                    ->where('event', 'updated')
+                    ->where('new_values', 'like', '%rechazado%')
+                    ->exists(),
+            'Marcar el cheque como rechazado tenía que dejar su fila en audit_logs.'
+        );
 
         // --- La respuesta: el cheque recargado con sus relaciones, la nota y el mensaje --------------
         $this->assertEquals($emitido->id, (int) $response->json('model.id'));

@@ -1767,11 +1767,14 @@ class ChequeHelper {
      * - Cheque cuyo pago ya no existe (o que no está atado a un pago de su proveedor): solo se marca,
      *   y el mensaje lo dice.
      *
-     * 🔴 LA MARCA ES UN UPDATE CONDICIONAL, como en endosar(): repite en el WHERE "del dueño, emitido,
-     * sin marca manual", así que de dos clics (o de un "Pagado" y un "Rechazado" cruzados) gana
-     * exactamente uno. El otro afecta 0 filas y corta ANTES de crear la nota: dos clics, una sola
-     * nota. Y el candado de la cuenta del proveedor va PRIMERO en la transacción (CuentaCorrienteLock),
-     * antes de cualquier lectura.
+     * 🔴 LA MARCA ES CONDICIONAL, con la misma garantía que el UPDATE condicional de endosar(): una
+     * lectura FOR UPDATE que repite "del dueño, emitido, sin marca manual", así que de dos clics (o de
+     * un "Rechazado" y un borrado cruzados) gana exactamente uno. El otro no encuentra la fila y corta
+     * ANTES de crear la nota: dos clics, una sola nota. A diferencia de endosar(), la marca se escribe
+     * por modelo, para que quede en audit_logs. Y el candado de la cuenta del proveedor va PRIMERO en
+     * la transacción (CuentaCorrienteLock), antes de cualquier lectura. ⚠️ No cubre un `PUT
+     * cheque/pagar` simultáneo: pagar() escribe sin condición ni transacción (hallazgo abierto de la
+     * misión cheque-endoso-deshacer-al-borrar-pago, fuera de este método).
      *
      * No lee ni escribe el motivo del rechazo: es de la misión hermana cheque-motivo-rechazo.
      *
@@ -1811,27 +1814,30 @@ class ChequeHelper {
                 \App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock::bloquear('provider', $destino['pago']->provider_id);
             }
 
-            $marcadas = Cheque::where('id', $cheque->id)
-                                ->where('user_id', $user_id)
-                                ->where('tipo', 'emitido')
-                                ->whereNull('estado_manual')
-                                ->update([
-                                    'estado_manual'     => 'rechazado',
-                                    'rechazado_en'      => Carbon::now(),
-                                    'rechazado_por_id'  => $empleado_id,
-                                ]);
+            /*
+             * La lectura CON CANDADO repite las condiciones de "se puede marcar" (del dueño, emitido,
+             * sin marca manual) y ve lo último commiteado: si otro request lo marcó (o lo borró) en el
+             * medio, no vuelve nada y se corta ACÁ, sin nota. Bloquea por la clave primaria: una sola
+             * fila. Y la marca se escribe por MODELO (save()) y no con un update() de builder, que no
+             * dispara los eventos de los que se alimenta audit_logs.
+             */
+            $fila = Cheque::where('id', $cheque->id)
+                            ->where('user_id', $user_id)
+                            ->where('tipo', 'emitido')
+                            ->whereNull('estado_manual')
+                            ->lockForUpdate()
+                            ->first();
 
-            if ($marcadas === 0) {
+            if (is_null($fila)) {
 
-                // Otro request lo marcó (o lo borró) en el medio. No se escribió nada: no hay nota.
+                // No se escribió nada: no hay nota.
                 return ['marcado' => false, 'nota_debito' => null];
             }
 
-            if ($marcadas !== 1) {
-
-                // Imposible (`id` es la clave), pero si pasara se revierte todo.
-                throw new \RuntimeException('Rechazar por proveedor marcó '.$marcadas.' cheques en vez de uno.');
-            }
+            $fila->estado_manual = 'rechazado';
+            $fila->rechazado_en = Carbon::now();
+            $fila->rechazado_por_id = $empleado_id;
+            $fila->save();
 
             if (is_null($destino)) {
 
