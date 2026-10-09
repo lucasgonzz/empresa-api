@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
+use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
 use App\Models\PdfColumnProfile;
 use App\Models\SheetType;
 
@@ -322,27 +323,23 @@ class PdfColumnProfileTicketHelper
     }
 
     /**
-     * Las columnas de la tabla de un perfil que CAMBIA DE CLASE (ticket ↔ hoja), llevadas al ancho
-     * útil nuevo conservando sus medias columnas (D9: "cambiar la hoja recalcula los mm"). Sin esto,
-     * pasar una A4 (columnas que suman 200 mm) a un rollo de 80 mm daba 422 por la suma de anchos.
-     *
-     * Si las columnas visibles ya entran en el ancho nuevo (el diseñador ya las recalculó), quedan
-     * como vinieron. Si no, cada una pasa por la cuenta del diseñador:
-     * medias = max(1, round(mm × 24 / útil viejo)) y mm = round(medias × útil nuevo / 24), con las
-     * visibles repartidas para que su suma no pase del útil nuevo (repartir_mm()).
+     * Las columnas de la tabla llevadas de un ancho útil a otro conservando sus medias columnas
+     * (D9: "cambiar la hoja recalcula los mm"): medias = max(1, round(mm × 24 / útil viejo)) y, sobre
+     * el útil nuevo, las visibles repartidas con la regla del diseñador (repartir_mm(): la suma no
+     * pasa del útil nuevo) y las ocultas con su redondeo (no suman: guardan sus medias para cuando se
+     * muestren). Siempre reescala: decidir SI hay que hacerlo es de columnas_al_cambiar_el_papel().
      *
      * @param array $opciones   columnas en la forma del pedido: [{id, pivot: {visible, width, ...}}].
      * @param int   $util_viejo
      * @param int   $util_nuevo
      * @return array
      */
-    public static function columnas_para_otro_ancho($opciones, $util_viejo, $util_nuevo)
+    public static function reescalar_columnas($opciones, $util_viejo, $util_nuevo)
     {
         if (! is_array($opciones) || $util_viejo <= 0 || $util_nuevo <= 0) {
             return $opciones;
         }
 
-        $suma_visible = 0;
         $exactos_visibles = [];
 
         foreach ($opciones as $i => $opcion) {
@@ -354,17 +351,11 @@ class PdfColumnProfileTicketHelper
             $medias = max(1, (int) round(((int) $pivot['width']) * CatalogoDeCamposPdf::GRILLA_DE_TABLA / $util_viejo));
             $exacto = $medias * $util_nuevo / CatalogoDeCamposPdf::GRILLA_DE_TABLA;
 
-            if (! array_key_exists('visible', $pivot) || (bool) $pivot['visible']) {
-                $suma_visible += (int) $pivot['width'];
+            if (self::pivot_visible($pivot)) {
                 $exactos_visibles[$i] = $exacto;
             } else {
-                /** Una oculta no suma: solo conserva sus medias columnas para cuando se muestre. */
                 $opciones[$i]['pivot']['width'] = max(1, (int) round($exacto));
             }
-        }
-
-        if ($suma_visible <= $util_nuevo) {
-            return $opciones;
         }
 
         foreach (self::repartir_mm($exactos_visibles, $util_nuevo) as $i => $mm) {
@@ -375,16 +366,27 @@ class PdfColumnProfileTicketHelper
     }
 
     /**
-     * Las columnas que tiene que llevar el PUT de un perfil que cambia de clase: las del pedido si
-     * vienen (si no, las guardadas, reescritas como si las mandara el formulario), llevadas al ancho
-     * útil nuevo (columnas_para_otro_ancho()). El útil nuevo es el que queda después del pedido (ya
-     * con el papel forzado de un ticket o la hoja por defecto mezclados).
+     * Las columnas que tiene que llevar el PUT de un perfil que cambia de PAPEL: de clase (ticket ↔
+     * hoja) o de ancho de rollo dentro de los tickets (Ticket 80 → Ticket 55 o uno propio).
      *
-     * @param \Illuminate\Http\Request    $request
-     * @param PdfColumnProfile            $perfil  tal como está guardado.
+     * Regla (desfasaje D-1 del chequeo del contrato, 9/10/2026):
+     * - si el pedido TRAE columnas y sus visibles entran en el útil NUEVO (con el margen del
+     *   redondeo, suma_dentro_del_redondeo()), se guardan tal cual: el diseñador ya las convirtió.
+     *   Antes se las volvía a escalar como si estuvieran en el útil viejo (ticket 80 → A4 dejaba
+     *   "Cant" en 1 mm; A4 → 80 dejaba la tabla en 34 mm);
+     * - si NO las trae (SPA viejo, un PUT parcial) o no entran en el útil nuevo, se reescalan desde
+     *   el útil viejo (reescalar_columnas()): las del pedido si vienen, si no las guardadas, que se
+     *   reescriben como si las mandara el formulario. Sin esto, cambiar el rollo sin mandar columnas
+     *   daba 422 por la suma de anchos.
+     *
+     * El útil nuevo es el que queda después del pedido (ya con el papel forzado de un ticket o la
+     * hoja por defecto mezclados).
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param PdfColumnProfile         $perfil tal como está guardado.
      * @return array
      */
-    public static function columnas_al_cambiar_de_clase($request, PdfColumnProfile $perfil)
+    public static function columnas_al_cambiar_el_papel($request, PdfColumnProfile $perfil)
     {
         $util_viejo = self::ancho_util_de_columnas($perfil->printable_width_mm, $perfil->margin_mm);
         $util_nuevo = self::ancho_util_de_columnas(
@@ -392,11 +394,145 @@ class PdfColumnProfileTicketHelper
             $request->has('margin_mm') ? $request->input('margin_mm') : $perfil->margin_mm
         );
 
-        $opciones = $request->has('pdf_column_options')
-            ? $request->input('pdf_column_options')
-            : self::columnas_guardadas($perfil);
+        if ($request->has('pdf_column_options')) {
+            $opciones = $request->input('pdf_column_options');
 
-        return self::columnas_para_otro_ancho($opciones, $util_viejo, $util_nuevo);
+            if (self::suma_dentro_del_redondeo(self::anchos_visibles($opciones), $util_nuevo)) {
+                return $opciones;
+            }
+        } else {
+            $opciones = self::columnas_guardadas($perfil);
+        }
+
+        return self::reescalar_columnas($opciones, $util_viejo, $util_nuevo);
+    }
+
+    /**
+     * ¿El PUT cambia el ancho del rollo de un ticket que sigue siendo ticket (Ticket 80 → Ticket 55
+     * o uno propio)? Lo dice el ancho imprimible guardado (en un ticket es el del rollo) contra el
+     * del tipo de hoja que queda.
+     *
+     * @param PdfColumnProfile           $perfil
+     * @param bool                       $era_ticket
+     * @param bool                       $es_ticket
+     * @param \App\Models\SheetType|null $tipo_de_hoja el que queda.
+     * @return bool
+     */
+    public static function cambia_el_rollo(PdfColumnProfile $perfil, $era_ticket, $es_ticket, $tipo_de_hoja)
+    {
+        return $era_ticket
+            && $es_ticket
+            && ! is_null($tipo_de_hoja)
+            && (int) $perfil->printable_width_mm !== (int) $tipo_de_hoja->width;
+    }
+
+    /**
+     * El diseño de la hoja que queda cuando un PUT cambia el papel. Devuelve ['tocar' => false] si se
+     * queda lo que ya resolvió el PUT (lo que trae el pedido, o lo guardado si no lo trae), o
+     * ['tocar' => true, 'page_layout' => ...] con lo que hay que guardar.
+     *
+     * - Ticket → hoja sin un diseño propio en el pedido: null (el PDF de siempre).
+     * - Hoja → ticket sin un diseño propio: el DERIVADO del ticket, no null (ajuste del 9/10/2026 a
+     *   pedido del revisor): con null el ticket imprime el Ticket 2.0 de siempre al ancho del PUESTO,
+     *   así que un "Ticket 58 mm" salía en 80.
+     * - Cambio de ancho del rollo: un diseño que trae el pedido (o el que ya tenía el perfil, si el
+     *   pedido no menciona page_layout) se queda: las cajas van en columnas de 12 y valen en
+     *   cualquier rollo. Un perfil sin diseño (o un page_layout null en el pedido) pasa al derivado,
+     *   por lo mismo de arriba.
+     *
+     * "Diseño propio" ignora el eco del formulario genérico (trae_diseno_propio()).
+     *
+     * @param bool             $vino_page_layout el pedido trae la clave page_layout.
+     * @param array|null       $page_layout      el del pedido, ya normalizado para la clase nueva.
+     * @param PdfColumnProfile $perfil           tal como está guardado.
+     * @param bool             $era_ticket
+     * @param bool             $es_ticket
+     * @param bool             $cambia_el_rollo
+     * @param bool             $es_fiscal        el perfil queda como factura de ARCA.
+     * @return array{tocar: bool, page_layout?: array|null}
+     */
+    public static function diseno_al_cambiar_el_papel($vino_page_layout, $page_layout, PdfColumnProfile $perfil, $era_ticket, $es_ticket, $cambia_el_rollo, $es_fiscal)
+    {
+        if ($era_ticket !== $es_ticket) {
+            if (self::trae_diseno_propio($vino_page_layout, $page_layout, $perfil->page_layout)) {
+                return ['tocar' => false];
+            }
+
+            return ['tocar' => true, 'page_layout' => $es_ticket ? self::derivado_del_ticket($es_fiscal) : null];
+        }
+
+        if ($cambia_el_rollo) {
+            if ($vino_page_layout && ! is_null($page_layout)) {
+                return ['tocar' => false];
+            }
+
+            if (! $vino_page_layout && DisenoDePaginaPdf::tiene_diseno($perfil)) {
+                return ['tocar' => false];
+            }
+
+            return ['tocar' => true, 'page_layout' => self::derivado_del_ticket($es_fiscal)];
+        }
+
+        return ['tocar' => false];
+    }
+
+    /**
+     * El diseño derivado del ticket (el equivalente al Ticket 2.0 de siempre, §5 del plan), ya
+     * normalizado y con los fijos de ARCA si es una factura. Es con el que nace un ticket que crea
+     * el usuario: así imprime con SU ancho de rollo y no con el del puesto. No depende del perfil ni
+     * del dueño (el derivado del ticket no lee flags).
+     *
+     * @param bool $es_fiscal
+     * @return array
+     */
+    public static function derivado_del_ticket($es_fiscal)
+    {
+        return DisenoDerivadoPdf::para(CatalogoDeCamposPdf::MODELO_DE_TICKET, null, (bool) $es_fiscal, null, true);
+    }
+
+    /**
+     * Los anchos (mm) de las columnas visibles de una lista en la forma del pedido.
+     *
+     * @param mixed $opciones
+     * @return array<int, int>
+     */
+    public static function anchos_visibles($opciones)
+    {
+        $anchos = [];
+
+        if (! is_array($opciones)) {
+            return $anchos;
+        }
+
+        foreach ($opciones as $opcion) {
+            if (! is_array($opcion) || ! isset($opcion['pivot']) || ! is_array($opcion['pivot'])) {
+                continue;
+            }
+
+            if (self::pivot_visible($opcion['pivot'])) {
+                $anchos[] = (int) (isset($opcion['pivot']['width']) ? $opcion['pivot']['width'] : 0);
+            }
+        }
+
+        return $anchos;
+    }
+
+    /**
+     * ¿El pivot del pedido está visible? Sin la clave, sí (como el default de la base); "0", 0,
+     * false y '' son no.
+     *
+     * @param array $pivot
+     * @return bool
+     */
+    private static function pivot_visible($pivot)
+    {
+        if (! array_key_exists('visible', $pivot)) {
+            return true;
+        }
+
+        $visible = $pivot['visible'];
+
+        return ! ($visible === false || $visible === 0 || $visible === '0' || $visible === '' || is_null($visible));
     }
 
     /**

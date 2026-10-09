@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Pdf;
 
+use App\Http\Controllers\Helpers\PdfColumnProfileTicketHelper;
 use App\Models\PdfColumnOption;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
@@ -231,11 +232,15 @@ class Perfiles_de_ticket_reglas_Test extends TestCase
         $rollo = $this->rollo_del_sistema(80);
         $hoja = $this->perfil_de_hoja($this->dueno->id, false, ['page_layout' => $this->diseno()]);
 
-        /** Hoja → ticket con el diseño de hoja reenviado por el formulario: vuelve a null. */
+        /**
+         * Hoja → ticket con el diseño de hoja reenviado por el formulario: el diseño de hoja no sirve
+         * en el rollo y queda el DERIVADO del ticket (cambio de especificación del 9/10/2026: antes
+         * quedaba null, que imprime el Ticket 2.0 de siempre al ancho del puesto).
+         */
         $this->putJson(self::URL.'/'.$hoja->id, $this->eco_del_formulario($hoja, ['sheet_type_id' => $rollo->id]))->assertStatus(200);
         $ticket = $hoja->fresh();
         $this->assertTrue($ticket->es_ticket());
-        $this->assertNull($ticket->page_layout, 'El diseño de hoja no sirve en el rollo: sale el Ticket 2.0 de siempre.');
+        $this->assertEquals(PdfColumnProfileTicketHelper::derivado_del_ticket(false), $ticket->page_layout);
         $this->assertSame(80, (int) $ticket->paper_width_mm);
 
         /**
@@ -401,5 +406,197 @@ class Perfiles_de_ticket_reglas_Test extends TestCase
                 $this->columna('item_amount', 100, 1),
             ],
         ]))->assertStatus(422)->assertJsonStructure(['errors' => ['pdf_column_options']]);
+    }
+
+    /**
+     * Los anchos (mm) de las columnas de un perfil por value_resolver, visibles y ocultas.
+     *
+     * @param PdfColumnProfile $perfil
+     * @return array<string, array{0: int, 1: bool}> resolver => [ancho, visible]
+     */
+    private function anchos_por_columna(PdfColumnProfile $perfil)
+    {
+        $anchos = [];
+        foreach ($perfil->fresh()->pdf_column_options()->orderBy('pdf_column_option_profile.order')->get() as $opcion) {
+            $anchos[$opcion->value_resolver] = [(int) $opcion->pivot->width, (bool) $opcion->pivot->visible];
+        }
+
+        return $anchos;
+    }
+
+    /**
+     * Las columnas de un perfil en la forma del pedido, con otros anchos (como las manda el SPA ya
+     * convertidas al papel nuevo).
+     *
+     * @param PdfColumnProfile     $perfil
+     * @param array<string, int>   $anchos resolver => mm
+     * @return array
+     */
+    private function columnas_convertidas(PdfColumnProfile $perfil, array $anchos)
+    {
+        $opciones = [];
+        foreach ($perfil->fresh()->pdf_column_options()->orderBy('pdf_column_option_profile.order')->get() as $opcion) {
+            $opciones[] = [
+                'id' => $opcion->id,
+                'pivot' => [
+                    'visible' => (bool) $opcion->pivot->visible,
+                    'order' => (int) $opcion->pivot->order,
+                    'width' => isset($anchos[$opcion->value_resolver]) ? $anchos[$opcion->value_resolver] : (int) $opcion->pivot->width,
+                    'wrap_content' => (bool) $opcion->pivot->wrap_content,
+                ],
+            ];
+        }
+
+        return $opciones;
+    }
+
+    /**
+     * Un ticket de 80 mm con 30/10/20/20 (9/3/6/6 medias) y una columna oculta de 30 mm.
+     *
+     * @return PdfColumnProfile
+     */
+    private function ticket_80_de_30_10_20_20()
+    {
+        $ticket = $this->perfil_de_ticket($this->dueno->id, false, [], 80, [
+            'item_name' => [30, true],
+            'item_amount' => [10, false],
+            'item_price' => [20, false],
+            'item_subtotal' => [20, false],
+        ]);
+
+        $oculta = PdfColumnOption::where('model_name', 'sale')->where('value_resolver', 'item_bar_code')->first();
+        $ticket->pdf_column_options()->attach($oculta->id, ['visible' => false, 'order' => 9, 'width' => 30, 'wrap_content' => false]);
+
+        return $ticket->fresh();
+    }
+
+    /**
+     * @test
+     */
+    public function ticket_80_a_a4_sin_columnas_las_reescala_y_con_columnas_convertidas_las_respeta()
+    {
+        $a4 = $this->hoja_a4()->id;
+
+        /** Sin columnas en el pedido (SPA viejo, PUT parcial): desde el útil viejo, 9/3/6/6 sobre 200. */
+        $sin = $this->ticket_80_de_30_10_20_20();
+        $this->putJson(self::URL.'/'.$sin->id, ['sheet_type_id' => $a4])->assertStatus(200);
+        $anchos = $this->anchos_por_columna($sin);
+        $this->assertSame([75, true], $anchos['item_name']);
+        $this->assertSame([25, true], $anchos['item_amount']);
+        $this->assertSame([50, true], $anchos['item_price']);
+        $this->assertSame([50, true], $anchos['item_subtotal']);
+        $this->assertSame([75, false], $anchos['item_bar_code'], 'La oculta conserva sus 9 medias columnas.');
+
+        /** Con las columnas ya convertidas por el SPA: tal cual (antes "Cant" terminaba en 1 mm). */
+        $con = $this->ticket_80_de_30_10_20_20();
+        $this->putJson(self::URL.'/'.$con->id, [
+            'sheet_type_id' => $a4,
+            'pdf_column_options' => $this->columnas_convertidas($con, ['item_name' => 76, 'item_amount' => 24, 'item_price' => 50, 'item_subtotal' => 50]),
+        ])->assertStatus(200);
+        $anchos = $this->anchos_por_columna($con);
+        $this->assertSame([76, 24, 50, 50], [$anchos['item_name'][0], $anchos['item_amount'][0], $anchos['item_price'][0], $anchos['item_subtotal'][0]]);
+        $this->assertSame([30, false], $anchos['item_bar_code'], 'Si no se reescalan las visibles, la oculta tampoco.');
+    }
+
+    /**
+     * @test
+     */
+    public function a4_a_ticket_80_sin_columnas_las_reescala_y_con_columnas_convertidas_las_respeta()
+    {
+        $rollo = $this->rollo_del_sistema(80)->id;
+        $columnas_a4 = [
+            'item_name' => [75, true],
+            'item_amount' => [25, false],
+            'item_price' => [50, false],
+            'item_subtotal' => [50, false],
+        ];
+
+        $sin = $this->perfil_de_hoja($this->dueno->id, false);
+        $sin->pdf_column_options()->detach();
+        $this->adjuntar_columnas($sin, $columnas_a4);
+        $this->putJson(self::URL.'/'.$sin->id, ['sheet_type_id' => $rollo])->assertStatus(200);
+        $anchos = $this->anchos_por_columna($sin);
+        $this->assertSame([30, 10, 20, 20], [$anchos['item_name'][0], $anchos['item_amount'][0], $anchos['item_price'][0], $anchos['item_subtotal'][0]]);
+
+        /**
+         * Con las columnas convertidas por el SPA, aunque el redondeo las pase 1 mm del rollo
+         * (31/10/20/20 = 81): tal cual. Antes se las volvía a escalar como si estuvieran en la A4 y
+         * la tabla quedaba en 34 mm.
+         */
+        $con = $this->perfil_de_hoja($this->dueno->id, false);
+        $con->pdf_column_options()->detach();
+        $this->adjuntar_columnas($con, $columnas_a4);
+        $this->putJson(self::URL.'/'.$con->id, [
+            'sheet_type_id' => $rollo,
+            'pdf_column_options' => $this->columnas_convertidas($con, ['item_name' => 31, 'item_amount' => 10, 'item_price' => 20, 'item_subtotal' => 20]),
+        ])->assertStatus(200);
+        $anchos = $this->anchos_por_columna($con);
+        $this->assertSame([31, 10, 20, 20], [$anchos['item_name'][0], $anchos['item_amount'][0], $anchos['item_price'][0], $anchos['item_subtotal'][0]]);
+    }
+
+    /**
+     * @test
+     */
+    public function cambiar_el_ancho_del_rollo_reescala_las_columnas_y_conserva_el_diseno()
+    {
+        $rollo_55 = $this->rollo_del_sistema(55)->id;
+
+        /**
+         * 80 → 55 sin columnas (antes daba 422 por la suma de anchos): 9/3/6/6 medias sobre 55 son
+         * 21/7/14/14 = 56, y el mm que sobra sale de Nombre (la que más subió): 20/7/14/14. Un ticket
+         * sin diseño pasa al derivado (con null imprimiría al ancho del puesto).
+         */
+        $sin_diseno = $this->ticket_80_de_30_10_20_20();
+        $this->putJson(self::URL.'/'.$sin_diseno->id, ['sheet_type_id' => $rollo_55])->assertStatus(200);
+        $anchos = $this->anchos_por_columna($sin_diseno);
+        $this->assertSame([20, 7, 14, 14], [$anchos['item_name'][0], $anchos['item_amount'][0], $anchos['item_price'][0], $anchos['item_subtotal'][0]]);
+        $this->assertSame(55, (int) $sin_diseno->fresh()->paper_width_mm);
+        $this->assertEquals(PdfColumnProfileTicketHelper::derivado_del_ticket(false), $sin_diseno->fresh()->page_layout);
+
+        /** Con las columnas convertidas por el SPA, tal cual; un ticket diseñado conserva su diseño. */
+        $disenado = $this->ticket_80_de_30_10_20_20();
+        $disenado->page_layout = $this->diseno('cliente_nombre');
+        $disenado->save();
+        $this->putJson(self::URL.'/'.$disenado->id, $this->eco_del_formulario($disenado, [
+            'sheet_type_id' => $rollo_55,
+            'pdf_column_options' => $this->columnas_convertidas($disenado, ['item_name' => 20, 'item_amount' => 7, 'item_price' => 14, 'item_subtotal' => 14]),
+        ]))->assertStatus(200);
+        $anchos = $this->anchos_por_columna($disenado);
+        $this->assertSame([20, 7, 14, 14], [$anchos['item_name'][0], $anchos['item_amount'][0], $anchos['item_price'][0], $anchos['item_subtotal'][0]]);
+        $this->assertSame([30, false], $anchos['item_bar_code']);
+        $this->assertSame('cliente_nombre', $disenado->fresh()->page_layout['superior'][0]['campos'][0]['key']);
+    }
+
+    /**
+     * @test
+     */
+    public function un_ticket_nuevo_nace_con_el_derivado_y_volver_al_de_siempre_guarda_null()
+    {
+        $rollo = $this->rollo_del_sistema(80)->id;
+
+        /** Sin diseño en el pedido: el derivado del ticket (remito y factura, con sus fijos). */
+        $remito = $this->postJson(self::URL, $this->alta(['sheet_type_id' => $rollo]))->assertStatus(201)->json('model.id');
+        $this->assertEquals(PdfColumnProfileTicketHelper::derivado_del_ticket(false), PdfColumnProfile::find($remito)->page_layout);
+
+        $factura = $this->postJson(self::URL, $this->alta(['sheet_type_id' => $rollo, 'is_afip_ticket' => true, 'page_layout' => null]))->assertStatus(201)->json('model.id');
+        $diseno_factura = PdfColumnProfile::find($factura)->page_layout;
+        $this->assertEquals(PdfColumnProfileTicketHelper::derivado_del_ticket(true), $diseno_factura);
+        $this->assertSame('afip_emisor', $diseno_factura['superior'][1]['key']);
+
+        /** Con un diseño en el pedido, ese. */
+        $propio = $this->postJson(self::URL, $this->alta(['sheet_type_id' => $rollo, 'page_layout' => $this->diseno('cliente_nombre')]))->assertStatus(201)->json('model.id');
+        $this->assertSame('cliente_nombre', PdfColumnProfile::find($propio)->page_layout['superior'][0]['campos'][0]['key']);
+
+        /** Una hoja nueva sin diseño sigue en null (el PDF de siempre). */
+        $hoja = $this->postJson(self::URL, $this->alta(['sheet_type_id' => $this->hoja_a4()->id]))->assertStatus(201)->json('model.id');
+        $this->assertNull(PdfColumnProfile::find($hoja)->page_layout);
+
+        /** "Volver al ticket de siempre" (null explícito, sin cambiar de papel): null, como siempre. */
+        $this->putJson(self::URL.'/'.$remito, ['page_layout' => null])->assertStatus(200);
+        $this->assertNull(PdfColumnProfile::find($remito)->page_layout);
+
+        /** El duplicado copia el diseño tal cual. */
+        $copia = $this->postJson(self::URL.'/'.$factura.'/duplicate')->assertStatus(201)->json('model.id');
+        $this->assertEquals($diseno_factura, PdfColumnProfile::find($copia)->page_layout);
     }
 }

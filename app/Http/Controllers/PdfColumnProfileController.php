@@ -86,6 +86,18 @@ class PdfColumnProfileController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
+        /**
+         * Un ticket que crea el usuario nace DISEÑADO con el derivado del ticket (ajuste del
+         * 9/10/2026 a pedido del revisor): con page_layout null imprimía el Ticket 2.0 de siempre,
+         * que usa el ancho del PUESTO, así que un "Ticket 58 mm" nuevo salía en 80. Los dos tickets
+         * del seeder siguen naciendo en null (D1: el release no cambia lo que imprime nadie).
+         */
+        if ($es_ticket && is_null($page_layout)) {
+            $page_layout = PdfColumnProfileTicketHelper::derivado_del_ticket(
+                DisenoDerivadoPdf::es_fiscal($request->model_name, $is_afip_ticket)
+            );
+        }
+
         /** Una factura de ARCA diseñada con cajas no puede nacer en una hoja donde no entra su cuadro (A5). */
         $hoja_chica = $this->factura_en_hoja_chica_response(
             $request->model_name,
@@ -255,6 +267,10 @@ class PdfColumnProfileController extends Controller
         );
         $es_ticket = PdfColumnProfileTicketHelper::es_ticket($tipo_de_hoja);
 
+        /** Ticket que sigue siendo ticket pero en otro rollo (Ticket 80 → Ticket 55 o uno propio). */
+        $cambia_el_rollo = PdfColumnProfileTicketHelper::cambia_el_rollo($model, $era_ticket, $es_ticket, $tipo_de_hoja);
+        $cambia_el_papel = $era_ticket !== $es_ticket || $cambia_el_rollo;
+
         if ($es_ticket) {
             $request->merge(PdfColumnProfileTicketHelper::atributos_forzados($tipo_de_hoja));
         } elseif ($era_ticket) {
@@ -275,14 +291,14 @@ class PdfColumnProfileController extends Controller
         }
 
         /**
-         * Cambio de clase: las columnas de la tabla pasan al ancho útil nuevo conservando sus medias
-         * columnas (D9). Las del pedido si vienen; si no, las guardadas, que se reescriben como si
-         * las mandara el formulario (una A4 de 200 mm que pasa a un rollo de 80 daba 422 por la
-         * suma de anchos). Si ya entran (el diseñador las recalculó), no se tocan.
+         * Cambio de papel (de clase, o de rollo dentro de los tickets): las columnas de la tabla
+         * pasan al ancho útil nuevo conservando sus medias columnas (D9). Las que trae el pedido ya
+         * convertidas (entran en el útil nuevo) se guardan tal cual; si no las trae o no entran, se
+         * reescalan desde el útil viejo (PdfColumnProfileTicketHelper::columnas_al_cambiar_el_papel()).
          */
-        if ($era_ticket !== $es_ticket) {
+        if ($cambia_el_papel) {
             $request->merge([
-                'pdf_column_options' => PdfColumnProfileTicketHelper::columnas_al_cambiar_de_clase($request, $model),
+                'pdf_column_options' => PdfColumnProfileTicketHelper::columnas_al_cambiar_el_papel($request, $model),
             ]);
         }
 
@@ -317,15 +333,28 @@ class PdfColumnProfileController extends Controller
         }
 
         /**
-         * Cambio de clase (ticket ↔ hoja, contrato §3.2): el diseño de una clase no sirve en la otra
-         * (otra grilla de caracteres, otros fijos de ARCA, el logo que en la hoja va en el
-         * encabezado). Si el pedido no trae un diseño propio para la clase nueva, el perfil vuelve a
-         * "el de siempre" (page_layout null): en el ticket, el Ticket 2.0 de siempre (D1).
+         * Cambio de papel (contrato §3.2 y ajuste del 9/10/2026): el diseño de una clase no sirve en
+         * la otra (otra grilla de caracteres, otros fijos de ARCA, el logo que en la hoja va en el
+         * encabezado). Sin un diseño propio en el pedido: a hoja, null (el PDF de siempre); a ticket
+         * o a otro rollo, el derivado del ticket (con null imprimiría al ancho del puesto). Un ticket
+         * diseñado que solo cambia de rollo conserva su diseño. Sin cambio de papel, un page_layout
+         * null explícito ("Volver al ticket de siempre") sigue guardando null.
          */
-        if ($era_ticket !== $es_ticket
-            && ! PdfColumnProfileTicketHelper::trae_diseno_propio($has_page_layout, $page_layout, $model->page_layout)) {
-            $has_page_layout = true;
-            $page_layout = null;
+        if ($cambia_el_papel) {
+            $cambio = PdfColumnProfileTicketHelper::diseno_al_cambiar_el_papel(
+                $has_page_layout,
+                $page_layout,
+                $model,
+                $era_ticket,
+                $es_ticket,
+                $cambia_el_rollo,
+                DisenoDerivadoPdf::es_fiscal($new_model_name, $is_afip_ticket)
+            );
+
+            if ($cambio['tocar']) {
+                $has_page_layout = true;
+                $page_layout = $cambio['page_layout'];
+            }
         }
 
         /**
