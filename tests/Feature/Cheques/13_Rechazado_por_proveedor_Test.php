@@ -783,14 +783,143 @@ class Rechazado_por_proveedor_Test extends ChequesTestCase
     }
 
     /**
+     * El MOTIVO del rechazo (misión cheque-motivo-rechazo): mandado como `notas`, como el modal, queda
+     * en `rechazado_observaciones` del emitido, junto con la marca y la nota de débito.
+     *
+     * @test
+     */
+    public function el_motivo_mandado_como_notas_queda_en_el_cheque()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del motivo ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8025');
+
+        $response = $this->rechazar_por_proveedor($emitido->id, ['notas' => 'Sin fondos suficientes']);
+
+        $response->assertStatus(200);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+        $this->assertEquals('Sin fondos suficientes', $emitido->fresh()->rechazado_observaciones);
+        $this->assertEquals('Sin fondos suficientes', $response->json('model.rechazado_observaciones'));
+        $this->assertEquals('rechazado', $emitido->fresh()->estado_manual);
+        $this->assertNotNull($response->json('nota_debito'), 'El motivo no cambia nada de la nota.');
+        $this->assertEqualsWithDelta(self::DEUDA_PROVEEDOR, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
+    }
+
+    /**
+     * Un motivo inválido (un array) es un 422 ANTES de escribir nada: ni la marca ni la nota.
+     *
+     * @test
+     */
+    public function un_motivo_invalido_da_422_sin_marca_ni_nota()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del motivo inválido ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, '8026');
+
+        $saldo = (float) CreditAccount::find($cuenta->id)->saldo;
+        $max_movimiento = (int) CurrentAcount::max('id');
+
+        $response = $this->rechazar_por_proveedor($emitido->id, ['notas' => ['Sin fondos']]);
+
+        $response->assertStatus(422);
+        $this->assertEquals('El motivo del rechazo tiene que ser un texto.', $response->json('message'));
+
+        $this->assertNull($emitido->fresh()->estado_manual);
+        $this->assertNull($emitido->fresh()->rechazado_en);
+        $this->assertNull($emitido->fresh()->rechazado_observaciones);
+        $this->assertEquals($max_movimiento, (int) CurrentAcount::max('id'), 'Sin nota de débito.');
+        $this->assertEqualsWithDelta($saldo, (float) CreditAccount::find($cuenta->id)->saldo, self::DELTA);
+    }
+
+    /**
+     * Un motivo vacío o de puros espacios es "sin motivo": el cheque se rechaza igual y la columna
+     * queda en null.
+     *
+     * @test
+     */
+    public function un_motivo_vacio_o_de_espacios_queda_en_null()
+    {
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor del motivo vacío ' . uniqid(), self::DEUDA_PROVEEDOR * 2);
+
+        foreach ([['8027', ''], ['8028', "   \u{00A0} "]] as $datos) {
+
+            list($pago_id, $emitido) = $this->pagar_con_cheque_nuevo($proveedor, $cuenta, $datos[0]);
+
+            $response = $this->rechazar_por_proveedor($emitido->id, ['notas' => $datos[1]]);
+
+            $response->assertStatus(200);
+            $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('nota_debito.id');
+
+            $this->assertEquals('rechazado', $emitido->fresh()->estado_manual);
+            $this->assertNull($emitido->fresh()->rechazado_observaciones, 'Motivo ' . var_export($datos[1], true) . ' tenía que quedar en null.');
+        }
+    }
+
+    /**
+     * 🔴 La guarda del haber: un pago de antes del 30/9/2026 con la fila del cheque en `moneda_id`
+     * null y el cotizado cargado. La regla de hoy toma esa fila como de la moneda de la cuenta y vale
+     * su monto nominal (USD 120.000), pero el pago bajó USD 100: el valor calculado se pasa del haber
+     * del pago, así que no se adivina. Se marca sin nota y el mensaje pide cargarla a mano. El dato
+     * viejo se arma tocando el pivote por modelo.
+     *
+     * @test
+     */
+    public function si_el_valor_de_la_fila_se_pasa_del_haber_del_pago_no_hay_nota()
+    {
+        list($proveedor, $cuenta_pesos) = $this->proveedor_con_cuenta('Proveedor del pago viejo ' . uniqid());
+
+        $cuenta_usd = $this->cuenta_en_dolares($proveedor);
+
+        $this->sembrar_deuda($proveedor, $cuenta_usd, 500);
+
+        $fila = $this->fila_de_pago([
+            'numero'          => '8029',
+            'banco'           => 'Banco Nación',
+            'amount'          => 120000,
+            'moneda_id'       => 1,
+            'cotizacion'      => 1200,
+            'amount_cotizado' => 100,
+            'fecha_emision'   => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'      => Carbon::today()->addDays(15)->format('Y-m-d'),
+        ]);
+
+        list($pago_id, $emitido) = $this->pagar_con_filas($proveedor, $cuenta_usd, [$fila], 100);
+
+        // El pivote como lo dejaban los pagos viejos: sin moneda en la fila, con el cotizado cargado.
+        $pago = CurrentAcount::find($pago_id);
+        $pago->current_acount_payment_methods()->updateExistingPivot($this->metodo_cheque->id, ['moneda_id' => null]);
+
+        $this->assertNull($pago->current_acount_payment_methods()->first()->pivot->moneda_id);
+        $this->assertEqualsWithDelta(100, (float) $pago->fresh()->haber, self::DELTA);
+
+        $saldo = (float) CreditAccount::find($cuenta_usd->id)->saldo;
+        $max_movimiento = (int) CurrentAcount::max('id');
+
+        $response = $this->rechazar_por_proveedor($emitido->id);
+
+        $response->assertStatus(200);
+        $this->assertNull($response->json('nota_debito'));
+        $this->assertEquals(
+            'Cheque N° 8029 marcado como rechazado. No se pudo saber por cuánto volver la deuda: cargale a ' . $proveedor->name . ' una nota de débito a mano desde su cuenta corriente.',
+            $response->json('mensaje')
+        );
+
+        $this->assertEquals('rechazado', $emitido->fresh()->estado_manual);
+        $this->assertEquals($max_movimiento, (int) CurrentAcount::max('id'), 'Ninguna nota inflada.');
+        $this->assertEqualsWithDelta($saldo, (float) CreditAccount::find($cuenta_usd->id)->saldo, self::DELTA);
+    }
+
+    /**
      * `PUT cheque/rechazar-por-proveedor`, como lo manda RechazadoPorProveedor.vue.
      *
      * @param mixed $cheque_id
+     * @param array $extra Claves más del cuerpo (el motivo: `notas` o `rechazado_observaciones`).
      * @return \Illuminate\Testing\TestResponse
      */
-    protected function rechazar_por_proveedor($cheque_id)
+    protected function rechazar_por_proveedor($cheque_id, array $extra = [])
     {
-        return $this->putJson('api/cheque/rechazar-por-proveedor', ['cheque_id' => $cheque_id]);
+        return $this->putJson('api/cheque/rechazar-por-proveedor', array_merge(['cheque_id' => $cheque_id], $extra));
     }
 
     /**
