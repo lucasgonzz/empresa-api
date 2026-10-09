@@ -395,8 +395,9 @@ class IntentosDeFacturaFallidosHelper
      * bug de masquito (11/9/2026).
      *
      * La restauración también es un solo `UPDATE` que vuelve a exigir CAE no vacío y `deleted_at`
-     * no nulo, y por eso tampoco dispara eventos: se audita igual que el descarte (`auditar()`, fila
-     * `restored`). No tira nunca: corre con el comprobante ya autorizado en ARCA.
+     * no nulo, y por eso tampoco dispara eventos: se audita con `auditar()`, que deja solo la fila
+     * `restored` (ver ahí en qué difiere de un `restore()` por instancia). No tira nunca: corre con el
+     * comprobante ya autorizado en ARCA.
      *
      * @param  \App\Models\AfipTicket|null $afip_ticket
      * @return bool true si lo restauró.
@@ -515,9 +516,15 @@ class IntentosDeFacturaFallidosHelper
      * `AuditLogRecorder` no tiene una API pública para registrar (su `registrar()` es protegido):
      * solo escucha `eloquent.{evento}: {clase}`. Así que se despacha ESE evento, por el mismo
      * despachador que usa el modelo (`Model::getEventDispatcher()`, el que usa `fireModelEvent()`),
-     * con el ticket releído con `withTrashed()`: es exactamente lo que habría despachado Eloquent si
-     * el borrado o la restauración hubieran pasado por la instancia. Con el `UPDATE` atómico se
-     * conserva lo que importa de la carrera, y la auditoría queda igual que la del tacho.
+     * con el ticket releído con `withTrashed()`. Con el `UPDATE` atómico se conserva lo que importa
+     * de la carrera, y la auditoría queda así:
+     *
+     *  - **Descarte:** igual que la del tacho. Un `delete()` por instancia dispara `deleting` y
+     *    `deleted`; la auditoría solo escucha `deleted`, y es el que se despacha acá: misma fila.
+     *  - **Restauración:** NO es exactamente lo que dejaría un `restore()` por instancia. Ese
+     *    `restore()` guarda el modelo, así que además de `restored` dispara `saving`/`updating`/
+     *    `updated`/`saved`, y la auditoría dejaría DOS filas: un `updated` con el `deleted_at` viejo
+     *    y el nuevo, y el `restored`. Acá queda solo la fila `restored`, que es la que dice qué pasó.
      *
      * Es seguro despacharlo a mano porque `AfipTicket` no tiene observers ni listeners propios
      * (verificado el 9/10/2026: el único que escucha es el comodín global de la auditoría). Si el
