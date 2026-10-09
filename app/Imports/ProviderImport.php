@@ -336,8 +336,9 @@ class ProviderImport implements ToCollection, WithMultipleSheets
              * silencio) y una compra en cuenta corriente a este proveedor reventaba con un 500
              * (mision importacion-proveedores-saldo-inicial, 8/10/2026).
              *
-             * user_id EXPLICITO, el del proveedor: AdminSync corre esto con un login armado a
-             * mano y el motor de /implementar en proceso.
+             * La cuenta lleva el user_id del propio proveedor: asi queda siempre del mismo
+             * comercio que el proveedor, venga de donde venga la llamada. (Hoy da lo mismo que
+             * la sesion, porque $data['user_id'] sale de $this->ct->userId().)
              */
             CreditAccountHelper::crear_credit_accounts('provider', $provider->id, $provider->user_id);
 

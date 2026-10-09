@@ -219,8 +219,9 @@ class LocalImportHelper {
 	 * faltaba. Antes cargaba un "Saldo inicial" de $0, la cuenta quedaba "con movimientos" y el
 	 * botón "Saldo inicial", que no acepta 0, ya no se podía usar (422).
 	 *
-	 * El `user_id` de la cuenta va EXPLÍCITO, el del modelo: AdminSync loguea al dueño a mano y el
-	 * motor de /implementar corre en proceso, así que la sesión no es una fuente confiable.
+	 * La cuenta lleva el `user_id` del propio modelo: así queda siempre del mismo comercio que el
+	 * cliente/proveedor, venga de donde venga la llamada. (Sin el parámetro, crear_credit_accounts()
+	 * lo sacaría de UserHelper::userId().)
 	 *
 	 * @param mixed $row Fila del Excel.
 	 * @param array $columns Mapeo de columnas de la importación.

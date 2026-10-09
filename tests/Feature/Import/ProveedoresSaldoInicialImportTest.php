@@ -445,14 +445,18 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
     }
 
     /**
-     * El endpoint del admin, el que usa el motor de `/implementar`: corre sin sesión (el
-     * controlador loguea al dueño a mano), así que las cuentas tienen que salir con el user_id del
-     * comercio y no con el de nadie más.
+     * El endpoint del admin, el que usa el motor de `/implementar`. El pedido llega SIN sesión (el
+     * admin no está logueado en el sistema del cliente): el controlador loguea al dueño del
+     * `user_id` con `Auth::loginUsingId()` mientras importa y lo desloguea al terminar. Las cuentas
+     * tienen que salir con el user_id de ese comercio.
      *
      * @test
      */
     public function por_admin_sync_el_proveedor_nuevo_nace_con_su_cuenta_y_su_saldo_inicial()
     {
+        // Sin sesión, como llega el pedido del admin (EmpresaTestCase deja logueado al usuario 500).
+        $this->app['auth']->forgetGuards();
+
         $this->importar_por_admin_sync($this->excel_base())->assertStatus(200);
 
         $this->assert_escenario_base();
