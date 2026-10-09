@@ -3,6 +3,7 @@
 namespace Tests\Feature\Caja;
 
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
+use App\Jobs\ProcessDeleteModelsJob;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
 use App\Models\ConceptoMovimientoCaja;
@@ -12,7 +13,9 @@ use App\Models\User;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Queue;
 use Tests\Concerns\EscenariosDePlata;
 use Tests\EmpresaTestCase;
 
@@ -52,13 +55,16 @@ class Movimientos_manuales_Test extends EmpresaTestCase
     const DELTA = 0.01;
 
     const MOTIVO_APERTURA_CERRADA = 'No se pueden editar movimientos de una apertura ya cerrada.';
-    const MOTIVO_VENTA = 'Este movimiento lo generó una VENTA: se corrige desde la venta, no desde la caja.';
-    const MOTIVO_GASTO = 'Este movimiento lo generó un GASTO: se corrige desde el gasto, no desde la caja.';
-    const MOTIVO_PAGO = 'Este movimiento lo generó un PAGO de cuenta corriente: se corrige desde la cuenta corriente, no desde la caja.';
-    const MOTIVO_TRANSFERENCIA = 'Este movimiento es parte de una transferencia entre cajas: no se corrige desde la caja.';
-    const MOTIVO_COMPENSACION = 'Este movimiento lo generó el sistema al eliminar una venta, un gasto o un pago con «Compensar caja»: no se corrige a mano.';
-    const MOTIVO_PAGO_VENDEDOR = 'Este movimiento lo generó un pago de comisión a un vendedor: no se corrige desde la caja.';
-    const MOTIVO_SISTEMA = 'Este movimiento lo generó el sistema: se corrige desde la operación que lo originó.';
+    const MOTIVO_VENTA = 'Este movimiento lo generó una VENTA: se corrige desde la venta, no desde la caja. Si la venta ya no está, ajustá la caja con un movimiento manual.';
+    const MOTIVO_GASTO = 'Este movimiento lo generó un GASTO: se corrige desde el gasto, no desde la caja. Si el gasto ya no está, ajustá la caja con un movimiento manual.';
+    const MOTIVO_PAGO = 'Este movimiento lo generó un PAGO de cuenta corriente: se corrige desde la cuenta corriente, no desde la caja. Si el pago ya no está, ajustá la caja con un movimiento manual.';
+    const MOTIVO_TRANSFERENCIA = 'Este movimiento es parte de una transferencia entre cajas y no se modifica. Para corregirla, cargá un movimiento manual en cada caja.';
+    const MOTIVO_COMPENSACION = 'Este movimiento lo generó el sistema al eliminar una venta, un gasto o un pago con «Compensar caja»: no se corrige a mano. Si hace falta, ajustá la caja con un movimiento manual.';
+    const MOTIVO_PAGO_VENDEDOR = 'Este movimiento lo generó un pago de comisión a un vendedor: no se corrige desde la caja. Si hace falta, ajustá la caja con un movimiento manual.';
+    const MOTIVO_SISTEMA = 'Este movimiento lo generó el sistema: se corrige desde la operación que lo originó, o ajustando la caja con un movimiento manual.';
+
+    /** El corte de la actualización masiva genérica (`PUT update/movimiento_caja`). */
+    const MENSAJE_SIN_ACTUALIZACION_MASIVA = 'Los movimientos de caja no se actualizan en forma masiva.';
 
     /** Los 404 (ajeno = inexistente = no es un id). */
     const MENSAJE_MOVIMIENTO_404 = 'No se encontró el movimiento de caja.';
@@ -730,6 +736,241 @@ class Movimientos_manuales_Test extends EmpresaTestCase
 
         $this->assertSame($antes, $this->max_id_movimiento_caja(), 'Sin sesión no se creó nada.');
         $this->assert_no_se_toco($foto, $caja, $saldo_caja, 'sin sesión');
+    }
+
+    /**
+     * Segunda vuelta, punto 1: el ALTA valida los importes igual que la corrección. Hasta acá un
+     * alta vacía entraba y dejaba `saldo` NULL en la fila y en la caja (y una fila así, primera del
+     * turno, hacía reventar con 500 cualquier corrección o baja posterior). 422, no se crea nada y
+     * ningún saldo se mueve.
+     *
+     * @test
+     */
+    public function el_alta_valida_los_importes_igual_que_la_correccion()
+    {
+        $caja = $this->caja_efectivo_abierta();
+
+        $saldo_caja = (float) Caja::find($caja->id)->saldo;
+        $antes = $this->max_id_movimiento_caja();
+
+        $casos = [
+            'un alta vacía'              => [['ingreso' => null, 'egreso' => null], self::MENSAJE_SIN_IMPORTE, 'importe'],
+            'los dos en texto vacío'     => [['ingreso' => '', 'egreso' => ''], self::MENSAJE_SIN_IMPORTE, 'importe'],
+            'los dos en cero'            => [['ingreso' => 0, 'egreso' => '0.00'], self::MENSAJE_SIN_IMPORTE, 'importe'],
+            'los dos importes'           => [['ingreso' => 500, 'egreso' => 200], self::MENSAJE_DOS_IMPORTES, 'importe'],
+            'un egreso negativo'         => [['ingreso' => null, 'egreso' => -30], self::MENSAJE_IMPORTE_NEGATIVO, 'egreso'],
+            'un ingreso que es un texto' => [['ingreso' => 'mil', 'egreso' => null], self::MENSAJE_IMPORTE_NO_NUMERICO, 'ingreso'],
+        ];
+
+        foreach ($casos as $nombre => $caso) {
+
+            list($importes, $motivo, $campo) = $caso;
+
+            $response = $this->postJson('api/movimiento-caja', array_merge([
+                'concepto_movimiento_caja_id' => MovimientoCaja::CONCEPTO_VARIOS,
+                'notas'                       => 'Alta que no tiene que entrar: ' . $nombre,
+                'caja_id'                     => $caja->id,
+                'apertura_caja_id'            => $caja->current_apertura_caja_id,
+            ], $importes));
+
+            $this->registrar_movimientos_caja_nuevos($antes);
+
+            $this->assert_rechazo($response, $motivo, $campo, 'Alta con ' . $nombre);
+        }
+
+        $this->assertSame($antes, $this->max_id_movimiento_caja(), 'No se creó ningún movimiento.');
+        $this->assertEqualsWithDelta($saldo_caja, (float) Caja::find($caja->id)->saldo, self::DELTA, 'El saldo de la caja no se movió.');
+    }
+
+    /**
+     * Segunda vuelta, punto 1: un alta `{ingreso: 0, egreso: 500}` guarda SOLO el egreso y el saldo
+     * baja 500. Antes se guardaba crudo y set_saldos(), que mira primero el ingreso si no es null,
+     * contaba +0.
+     *
+     * @test
+     */
+    public function un_alta_con_ingreso_en_cero_y_egreso_guarda_solo_el_egreso()
+    {
+        $caja = $this->caja_efectivo_abierta();
+
+        $saldo_caja = (float) Caja::find($caja->id)->saldo;
+        $total_egresos = (float) AperturaCaja::find($caja->current_apertura_caja_id)->total_egresos;
+
+        $movimiento = $this->alta_manual($caja, 0, 500);
+
+        $this->assertNull($movimiento->ingreso, 'El ingreso en 0 se guarda como NULL.');
+        $this->assertEqualsWithDelta(500, (float) $movimiento->egreso, self::DELTA);
+
+        $this->assertEqualsWithDelta($saldo_caja - 500, (float) Caja::find($caja->id)->saldo, self::DELTA, 'El saldo de la caja baja 500.');
+        $this->assertEqualsWithDelta($saldo_caja - 500, (float) $movimiento->saldo, self::DELTA, 'El saldo de la fila es el de la caja después del egreso.');
+        $this->assertEqualsWithDelta($total_egresos + 500, (float) AperturaCaja::find($caja->current_apertura_caja_id)->total_egresos, self::DELTA);
+    }
+
+    /**
+     * Segunda vuelta, punto 2: corregir un manual VIEJO (`manual` NULL) lo marca como manual, así
+     * cambiarle el concepto a uno de sistema no lo bloquea para siempre: sigue siendo editable y se
+     * puede volver a corregir.
+     *
+     * @test
+     */
+    public function corregir_un_manual_viejo_lo_marca_y_cambiarle_el_concepto_no_lo_bloquea()
+    {
+        $caja = $this->caja_efectivo_abierta();
+
+        $viejo = $this->movimiento_a_mano($caja, [
+            'manual'                      => null,
+            'concepto_movimiento_caja_id' => MovimientoCaja::CONCEPTO_VARIOS,
+            'ingreso'                     => 700,
+        ]);
+
+        $response = $this->putJson('api/movimiento-caja/' . $viejo->id, [
+            'concepto_movimiento_caja_id' => MovimientoCaja::CONCEPTO_VENTA,
+            'ingreso'                     => 700,
+            'egreso'                      => null,
+            'notas'                       => 'Le puse el concepto Venta',
+        ]);
+
+        $this->assertSame(200, $response->getStatusCode(), $this->resumen($response));
+        $this->assertTrue(MovimientoCaja::find($viejo->id)->manual, 'La corrección marca el movimiento como manual.');
+        $this->assertTrue($response->json('model.editable'), 'Con el concepto Venta, un manual marcado sigue siendo editable.');
+        $this->assertNull($response->json('model.motivo_no_editable'));
+
+        $listado = $this->listado($caja->current_apertura_caja_id);
+        $this->assertTrue($listado[$viejo->id]['editable'], 'El listado lo sigue mostrando editable.');
+
+        $response = $this->putJson('api/movimiento-caja/' . $viejo->id, [
+            'concepto_movimiento_caja_id' => MovimientoCaja::CONCEPTO_VARIOS,
+            'ingreso'                     => 650,
+            'egreso'                      => null,
+            'notas'                       => 'Lo vuelvo a corregir',
+        ]);
+
+        $this->assertSame(200, $response->getStatusCode(), 'Se puede volver a corregir: ' . $this->resumen($response));
+        $this->assertEqualsWithDelta(650, (float) MovimientoCaja::find($viejo->id)->ingreso, self::DELTA);
+    }
+
+    /**
+     * Segunda vuelta, punto 7: la actualización masiva genérica (`PUT update/movimiento_caja`)
+     * resolvía los ids con find() sin dueño y asignaba cualquier columna sin recalcular saldos: por
+     * ahí se reescribía el movimiento de una venta o el de otro comercio. 422 antes de buscar o
+     * encolar nada, por selección manual y por filtro, con el nombre escrito de varias formas; no
+     * cambia nada y no se encola ninguna masiva. Mismo patrón que la de cheques
+     * (Cheques/10_Edicion_acotada_Test::los_cheques_no_se_actualizan_en_forma_masiva).
+     *
+     * @test
+     */
+    public function los_movimientos_de_caja_no_se_actualizan_en_forma_masiva()
+    {
+        $caja = $this->caja_efectivo_abierta();
+
+        $venta = $this->crear_venta_cobrada(TestingFerreteriaSeeder::CAJA_EFECTIVO, TestingFerreteriaSeeder::PAGO_EFECTIVO, 1000);
+        $de_la_venta = MovimientoCaja::where('sale_id', $venta->id)->where('caja_id', $caja->id)->first();
+        $this->assertNotNull($de_la_venta);
+
+        $caja_ajena = $this->caja_ajena_con_apertura();
+        $ajeno = $this->movimiento_a_mano($caja_ajena, ['manual' => true, 'ingreso' => 800]);
+
+        $fotos = [$de_la_venta->fresh(), $ajeno->fresh()];
+        $saldo_propia = (float) Caja::find($caja->id)->saldo;
+        $saldo_ajena = (float) Caja::find($caja_ajena->id)->saldo;
+        $masivas_antes = (int) DB::table('masive_updates')->max('id');
+
+        $update_form = [
+            ['type' => 'number', 'key' => 'ingreso', 'value' => 1],
+            ['type' => 'number', 'key' => 'sale_id', 'value' => 0],
+        ];
+
+        $pedidos = [
+            'selección manual' => [
+                'models_id'   => [$de_la_venta->id, $ajeno->id],
+                'from_filter' => false,
+                'update_form' => $update_form,
+            ],
+            'por filtro' => [
+                'from_filter' => true,
+                'filter_form' => [['key' => 'concepto_movimiento_caja_id', 'operator' => '=', 'value' => MovimientoCaja::CONCEPTO_VENTA]],
+                'update_form' => $update_form,
+            ],
+        ];
+
+        foreach (['movimiento_caja', 'movimiento-caja', 'MovimientoCaja', 'movimiento_caja-'] as $nombre) {
+
+            foreach ($pedidos as $tipo => $cuerpo) {
+
+                $response = $this->putJson('api/update/' . $nombre, $cuerpo);
+
+                $etiqueta = 'PUT update/' . $nombre . ' (' . $tipo . ')';
+
+                $this->assertSame(422, $response->getStatusCode(), $etiqueta . ': ' . $this->resumen($response));
+                $this->assertSame(self::MENSAJE_SIN_ACTUALIZACION_MASIVA, $response->json('message'), $etiqueta);
+            }
+        }
+
+        $this->assert_no_se_toco($fotos[0], $caja, $saldo_propia, 'el movimiento de la venta');
+        $this->assertSame((int) $venta->id, (int) MovimientoCaja::find($de_la_venta->id)->sale_id, 'La venta sigue atada a su movimiento.');
+        $this->assert_no_se_toco($fotos[1], $caja_ajena, $saldo_ajena, 'el movimiento de otro dueño');
+        $this->assertSame($masivas_antes, (int) DB::table('masive_updates')->max('id'), 'No se encoló ninguna actualización masiva.');
+    }
+
+    /**
+     * Segunda vuelta, punto 8: el borrado masivo EN SEGUNDO PLANO (más de
+     * DeleteModelsHelper::BACKGROUND_THRESHOLD ids). El job corre destroy() con el dueño de QUIEN
+     * PIDIÓ el borrado (setup_auth_context() pone `auth_user`/`owner` en la sesión y
+     * UserHelper::userId() la lee), no con el `USER_ID` del config.
+     *
+     * Para que la prueba distinga las dos cosas, el segundo job es del OTRO comercio: en la base de
+     * testing `USER_ID` es el dueño del fixture, así que si el job cayera al config borraría lo del
+     * fixture y no lo del otro. Mismo armado que Sucursales/10 (Queue::fake + handle()).
+     *
+     * @test
+     */
+    public function el_borrado_masivo_en_segundo_plano_corre_con_el_dueno_del_pedido()
+    {
+        $caja = $this->caja_efectivo_abierta();
+
+        $manual = $this->alta_manual($caja, 1000, null);
+        $otro_manual = $this->alta_manual($caja, null, 200);
+
+        $venta = $this->crear_venta_cobrada(TestingFerreteriaSeeder::CAJA_EFECTIVO, TestingFerreteriaSeeder::PAGO_EFECTIVO, 500);
+        $de_la_venta = MovimientoCaja::where('sale_id', $venta->id)->where('caja_id', $caja->id)->first();
+
+        $caja_ajena = $this->caja_ajena_con_apertura();
+        $ajeno = $this->movimiento_a_mano($caja_ajena, ['manual' => true, 'ingreso' => 800]);
+
+        // 1. El pedido real del dueño del fixture, por el endpoint: se encola. La cola se falsea
+        // recién acá, para no cambiarle nada a la venta de arriba.
+        Queue::fake();
+
+        $this->putJson('api/delete/movimiento_caja', ['models_id' => [$manual->id, $de_la_venta->id, $ajeno->id]])
+             ->assertStatus(200)
+             ->assertJsonPath('queued', true);
+
+        $job = null;
+
+        Queue::assertPushed(ProcessDeleteModelsJob::class, function ($pushed) use (&$job) {
+            $job = $pushed;
+            return true;
+        });
+
+        // Después de un request el guard por defecto queda en Sanctum (RequestGuard), que no tiene
+        // loginUsingId(); en producción el worker corre con `web` (ver Sucursales/10).
+        Auth::shouldUse('web');
+
+        $job->handle();
+
+        $this->assertNull(MovimientoCaja::find($manual->id), 'El manual del dueño se borró en segundo plano.');
+        $this->assertNotNull(MovimientoCaja::find($de_la_venta->id), 'El de la venta se negó (422) y sigue.');
+        $this->assertNotNull(MovimientoCaja::find($ajeno->id), 'El del otro comercio se negó (404) y sigue.');
+
+        // 2. Un job del OTRO comercio sobre su propio manual y uno del fixture.
+        $job_del_otro = new ProcessDeleteModelsJob('movimiento_caja', [$ajeno->id, $otro_manual->id], $this->otro_dueno()->id, $this->otro_dueno()->id);
+
+        Auth::shouldUse('web');
+
+        $job_del_otro->handle();
+
+        $this->assertNull(MovimientoCaja::find($ajeno->id), 'El job del otro comercio borra SU manual: corrió con su dueño.');
+        $this->assertNotNull(MovimientoCaja::find($otro_manual->id), 'Y no toca el del fixture: no cayó al USER_ID del config.');
     }
 
     // ---------------------------------------------------------------------------------------------
