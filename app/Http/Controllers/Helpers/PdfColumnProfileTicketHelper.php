@@ -229,6 +229,80 @@ class PdfColumnProfileTicketHelper
     }
 
     /**
+     * Las columnas de la tabla de un perfil que CAMBIA DE CLASE (ticket ↔ hoja), llevadas al ancho
+     * útil nuevo conservando sus medias columnas (D9: "cambiar la hoja recalcula los mm"). Sin esto,
+     * pasar una A4 (columnas que suman 200 mm) a un rollo de 80 mm daba 422 por la suma de anchos.
+     *
+     * Si las columnas visibles ya entran en el ancho nuevo (el diseñador ya las recalculó), quedan
+     * como vinieron. Si no, cada una (visibles y ocultas) pasa por la cuenta del diseñador:
+     * medias = max(1, round(mm × 24 / útil viejo)) y mm = round(medias × útil nuevo / 24).
+     *
+     * @param array $opciones   columnas en la forma del pedido: [{id, pivot: {visible, width, ...}}].
+     * @param int   $util_viejo
+     * @param int   $util_nuevo
+     * @return array
+     */
+    public static function columnas_para_otro_ancho($opciones, $util_viejo, $util_nuevo)
+    {
+        if (! is_array($opciones) || $util_viejo <= 0 || $util_nuevo <= 0) {
+            return $opciones;
+        }
+
+        $suma_visible = 0;
+        foreach ($opciones as $opcion) {
+            $pivot = (is_array($opcion) && isset($opcion['pivot']) && is_array($opcion['pivot'])) ? $opcion['pivot'] : [];
+            $visible = ! array_key_exists('visible', $pivot) || (bool) $pivot['visible'];
+            if ($visible) {
+                $suma_visible += (int) (isset($pivot['width']) ? $pivot['width'] : 0);
+            }
+        }
+
+        if ($suma_visible <= $util_nuevo) {
+            return $opciones;
+        }
+
+        foreach ($opciones as $i => $opcion) {
+            if (! is_array($opcion) || ! isset($opcion['pivot']['width'])) {
+                continue;
+            }
+
+            $medias = max(1, (int) round(((int) $opcion['pivot']['width']) * CatalogoDeCamposPdf::GRILLA_DE_TABLA / $util_viejo));
+            $opciones[$i]['pivot']['width'] = (int) round($medias * $util_nuevo / CatalogoDeCamposPdf::GRILLA_DE_TABLA);
+        }
+
+        return $opciones;
+    }
+
+    /**
+     * Las columnas guardadas de un perfil en la forma del pedido ([{id, pivot}]), para poder
+     * recalcularlas y volver a guardarlas como si las hubiera mandado el formulario.
+     *
+     * @param PdfColumnProfile $perfil
+     * @return array
+     */
+    public static function columnas_guardadas($perfil)
+    {
+        $perfil->loadMissing('pdf_column_options');
+
+        $opciones = [];
+        foreach ($perfil->pdf_column_options as $option) {
+            $opciones[] = [
+                'id' => $option->id,
+                'pivot' => [
+                    'visible' => (bool) $option->pivot->visible,
+                    'order' => (int) $option->pivot->order,
+                    'width' => (int) $option->pivot->width,
+                    'wrap_content' => (bool) $option->pivot->wrap_content,
+                    'font_size' => $option->pivot->font_size,
+                    'text_align' => $option->pivot->text_align,
+                ],
+            ];
+        }
+
+        return $opciones;
+    }
+
+    /**
      * Un diseño sin sus bloques fijos (para comparar dos diseños de clases distintas: los fijos los
      * pone asegurar_fijos() según la clase).
      *

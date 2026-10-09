@@ -274,6 +274,27 @@ class PdfColumnProfileController extends Controller
             return response()->json(['message' => PdfColumnProfileTicketHelper::MENSAJE_TICKET_SOLO_EN_VENTA], 422);
         }
 
+        /**
+         * Cambio de clase: las columnas de la tabla pasan al ancho útil nuevo conservando sus medias
+         * columnas (D9). Las del pedido si vienen; si no, las guardadas, que se reescriben como si
+         * las mandara el formulario (una A4 de 200 mm que pasa a un rollo de 80 daba 422 por la
+         * suma de anchos). Si ya entran (el diseñador las recalculó), no se tocan.
+         */
+        if ($era_ticket !== $es_ticket) {
+            $util_viejo = PdfColumnProfileTicketHelper::ancho_util_de_columnas($model->printable_width_mm, $model->margin_mm);
+            $util_nuevo = PdfColumnProfileTicketHelper::ancho_util_de_columnas(
+                $request->has('printable_width_mm') ? $request->input('printable_width_mm') : $model->printable_width_mm,
+                $request->has('margin_mm') ? $request->input('margin_mm') : $model->margin_mm
+            );
+            $opciones = $request->has('pdf_column_options')
+                ? $request->input('pdf_column_options')
+                : PdfColumnProfileTicketHelper::columnas_guardadas($model);
+
+            $request->merge([
+                'pdf_column_options' => PdfColumnProfileTicketHelper::columnas_para_otro_ancho($opciones, $util_viejo, $util_nuevo),
+            ]);
+        }
+
         $this->assert_printable_width_not_exceeds_paper($request, $model);
 
         $this->assert_sum_of_column_widths_not_exceeds_paper($request, $model);
