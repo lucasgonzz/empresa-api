@@ -76,6 +76,16 @@ class PermisosCatalogoHelper
                 'sale.index.employees.all'                      => 'Ver las ventas de todos los empleados',
                 'sale.index.employees.only_your'                => 'Ver solo sus propias ventas (si tiene también el de todos, gana ese)',
                 'devolucion.store'                              => 'Hacer devoluciones',
+                /*
+                    Misión permisos-navegacion-empleados (9/10/2026). La pantalla Comprobantes (notas
+                    de crédito y pagos de clientes, con importes) no pedía ningún permiso: cualquier
+                    empleado la veía. Lucas decidió darle uno propio, en el grupo Ventas. La SPA lo
+                    consulta tal cual en `router/routes.js`, así que el slug no se toca. Para que los
+                    empleados que hoy la usan no la pierdan con el release, el seeder suelto
+                    `PermissionComprobantesIndexSeeder` se lo da a los que tienen `sale.index` o
+                    `client.index`.
+                */
+                'comprobantes.index'                            => 'Ver Comprobantes (notas de crédito y pagos de clientes)',
             ],
 
             'Artículos (Listado)' => [
@@ -268,6 +278,9 @@ class PermisosCatalogoHelper
         ['/\.excel\.export$/',                              'planilla xls xlsx descargar bajar'],
         ['/^sale\./',                                       'venta ventas factura comprobante'],
         ['/^devolucion\./',                                 'nota de credito cambio reclamo'],
+        // Misión permisos-navegacion-empleados (9/10/2026): lo que el dueño busca para encontrar el
+        // permiso de la pantalla Comprobantes, que muestra notas de crédito y pagos de clientes.
+        ['/^comprobantes\./',                               'nota de credito notas de credito pagos cobros recibos comprobante'],
         ['/^vender\.|^article\.vender\./',                  'punto de venta mostrador'],
         ['/^article\.vender\.change_price$|^vender\.prohibir_camibar/', 'precio lista de precios'],
         ['/discount/',                                      'descuento recargo promocion rebaja'],
