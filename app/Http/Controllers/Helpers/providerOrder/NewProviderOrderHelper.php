@@ -1932,6 +1932,22 @@ class NewProviderOrderHelper {
 
         $current_acount->debe = $this->provider_order->total;
 
+        /*
+         * El movimiento acompaña a la fecha de la compra también al editarla (misión
+         * compra-fecha-en-cuenta-corriente, 9/10/2026): si la edición le cambió el día, el
+         * movimiento se muda con ella. Siempre, no solo cuando el request trae la fecha: es el
+         * mismo criterio que la venta, que en cada edición recrea su movimiento con la fecha de la
+         * venta (SaleHelper::updateCurrentAcountsAndCommissions). Así una compra que ya quedó
+         * cargada con el movimiento en el día equivocado se acomoda la próxima vez que se guarda.
+         *
+         * Va ANTES de getSaldo(), que busca el saldo del movimiento anterior por `created_at, id`.
+         * El resto de la cadena (lo que queda antes y después del día nuevo, y las imputaciones de
+         * los pagos) lo recalcula set_current_acount() con check_saldos_y_pagos().
+         */
+        if (!is_null($this->provider_order->created_at)) {
+            $current_acount->created_at = $this->provider_order->created_at;
+        }
+
         $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
         $current_acount->saldo = $saldo;
@@ -1975,7 +1991,7 @@ class NewProviderOrderHelper {
 
     function crear_current_acount() {
 
-        $current_acount = CurrentAcount::create([
+        $datos = [
             'detalle'           => $this->provider_order->detalle_current_acount(),
             'debe'              => $this->provider_order->total,
             'status'            => 'sin_pagar',
@@ -1983,7 +1999,25 @@ class NewProviderOrderHelper {
             'provider_id'       => $this->provider_order->provider_id,
             'provider_order_id' => $this->provider_order->id,
             'credit_account_id' => $this->credit_account->id,
-        ]);
+        ];
+
+        /*
+         * 🔴 El movimiento entra a la cuenta corriente del proveedor con la FECHA DE LA COMPRA, no
+         * con la de hoy (misión compra-fecha-en-cuenta-corriente, 9/10/2026). Desde
+         * fecha-creacion-editable (22/9/2026) la compra se guarda con el día que elige el usuario,
+         * pero este movimiento nacía con `now()`: una compra del 21/8 cargada el 9/10 quedaba en
+         * la cadena DESPUÉS de un pago del 31/8, y el saldo de cada fila se calculaba en ese orden.
+         * Es el mismo criterio que la venta (CurrentAcountFromSaleHelper::crear_current_acount()).
+         *
+         * Solo si la compra tiene fecha: `CurrentAcount` tiene `$guarded = []` y un
+         * `'created_at' => null` ensucia el atributo, así que Eloquent no lo completaría y la
+         * columna quedaría en NULL (la misma trampa que ProviderOrderAltaHelper::crear()).
+         */
+        if (!is_null($this->provider_order->created_at)) {
+            $datos['created_at'] = $this->provider_order->created_at;
+        }
+
+        $current_acount = CurrentAcount::create($datos);
 
         $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
