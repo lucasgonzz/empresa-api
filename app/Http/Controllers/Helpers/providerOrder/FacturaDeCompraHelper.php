@@ -304,7 +304,16 @@ class FacturaDeCompraHelper
      * comercio tiene en la mano, no un dato que dependa de la factura.
      *
      * No abre transacción propia: los llamadores que borran algo más en el mismo paso (el destroy
-     * de la compra) ya la tienen, y una baja de facturas sola son dos sentencias.
+     * de la compra) ya la tienen.
+     *
+     * 🔴 Las facturas se borran DE A UNA, como modelo, y no con un `->delete()` del query builder.
+     * No es prolijidad: `AuditLogRecorder` (lo registra `AppServiceProvider`) escucha
+     * `eloquent.deleted: *` y deja en `audit_logs` quién borró cada factura de compra
+     * (`ProviderOrderAfipTicket` no está en `config/audit_log.php` → `modelos_excluidos`). Un delete
+     * del query builder no dispara eventos de Eloquent, así que esas bajas desaparecían de la
+     * auditoría — y antes de esta misión el destroy de la factura y las sobrantes del modo
+     * automático sí quedaban registradas (lo encontró el chequeo independiente, 9/10/2026). Las
+     * alícuotas siguen yendo por el query builder, como iban en todos lados.
      *
      * @param  array<int,int|string>  $ids  Ids de `provider_order_afip_tickets`.
      * @return int  Cuántas facturas se borraron.
@@ -321,7 +330,16 @@ class FacturaDeCompraHelper
 
         ProviderOrderAfipTicketIva::whereIn('provider_order_afip_ticket_id', $ids)->delete();
 
-        return ProviderOrderAfipTicket::whereIn('id', $ids)->delete();
+        $borradas = 0;
+
+        foreach (ProviderOrderAfipTicket::whereIn('id', $ids)->get() as $factura) {
+
+            if ($factura->delete()) {
+                $borradas++;
+            }
+        }
+
+        return $borradas;
     }
 
     /**

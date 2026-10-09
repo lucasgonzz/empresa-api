@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Compras;
 
+use App\Models\AuditLog;
 use App\Models\CurrentAcount;
 use App\Models\Iva;
 use App\Models\ProviderOrder;
@@ -379,6 +380,44 @@ class Borrar_Facturas_De_Compra_Con_Sus_Alicuotas_Test extends ComprasTestCase
 
         $this->assertNull(ProviderOrderAfipTicket::find($factura->id));
         $this->assertSame(0, $this->alicuotas_de([$factura->id]), 'La alícuota no puede quedar colgando de una factura borrada.');
+    }
+
+    /**
+     * Las bajas de facturas pasan por FacturaDeCompraHelper::borrar_facturas(), y ahí se borran de
+     * a una como modelo para que `AuditLogRecorder` (escucha `eloquent.deleted: *`) las registre.
+     * Con un `->delete()` del query builder no se dispara ningún evento y la baja desaparecía de
+     * `audit_logs` (hallazgo del chequeo independiente, 9/10/2026). Se mira por los dos caminos:
+     * borrar la factura sola y borrar la compra entera.
+     *
+     * @group compras
+     * @test
+     */
+    public function borrar_facturas_queda_registrado_en_la_auditoria()
+    {
+        $id_inicial = (int) AuditLog::max('id');
+
+        $compra_1  = $this->crear_compra();
+        $factura_1 = $this->crear_factura_con_alicuota($compra_1->id);
+
+        $this->deleteJson('api/provider-order-afip-ticket/'.$factura_1->id)->assertStatus(200);
+
+        $compra_2  = $this->crear_compra();
+        $factura_2 = $this->crear_factura_con_alicuota($compra_2->id);
+
+        $this->deleteJson('api/provider-order/'.$compra_2->id)->assertStatus(200);
+
+        foreach ([$factura_1, $factura_2] as $factura) {
+
+            $filas = AuditLog::where('id', '>', $id_inicial)
+                                ->where('auditable_type', ProviderOrderAfipTicket::class)
+                                ->where('auditable_id', $factura->id)
+                                ->where('event', 'deleted')
+                                ->count();
+
+            $this->assertSame(1, $filas, 'La baja de la factura '.$factura->id.' tiene que quedar en audit_logs.');
+        }
+
+        AuditLog::where('id', '>', $id_inicial)->delete();
     }
 
     /* ------------------------------------------------------------------ */
