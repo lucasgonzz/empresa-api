@@ -1771,7 +1771,8 @@ class NewProviderOrderHelper {
      * Las tres patas:
      *
      *  - `total_with_iva`: la bandera de la compra. 🔴 La SPA la manda en 1 en TODA compra, así que
-     *    sola no dice si la compra cobró IVA: eso lo dice iva_sumado_al_total().
+     *    sola no dice si la compra cobró IVA: cuánto sumó lo dice iva_sumado_al_total(), y si lo
+     *    cobró (compras legadas incluidas) cobro_iva_por_encima().
      *  - No Monotributista (prompt 609, tarea 5): un Monotributista no suma el IVA por encima del
      *    total (ya está "adentro" de lo que tipeó/pagó en cada línea, no se recupera aparte como
      *    crédito fiscal). La columna de IVA de la compra sigue calculándose y mostrándose (prompt
@@ -1814,8 +1815,10 @@ class NewProviderOrderHelper {
      *    sin alícuotas).
      *
      * Lee `provider_order->total_iva`: set_totales() la asigna con la suma de los comprobantes
-     * ANTES de llamar a este método y la guarda, así que fuera de set_totales() (una devolución
-     * que corre en un GET) el valor guardado es exactamente lo que la compra sumó.
+     * ANTES de llamar a este método y la guarda, así que fuera de set_totales() el valor guardado
+     * es exactamente lo que la compra sumó. Salvo en una compra legada (`total_iva` NULL, que
+     * nunca pasó por set_totales()): ahí da 0 aunque la compra haya cobrado IVA, y por eso la
+     * devolución no pregunta acá sino en cobro_iva_por_encima().
      *
      * @return float
      */
@@ -1826,6 +1829,41 @@ class NewProviderOrderHelper {
         }
 
         return (float)$this->provider_order->total_iva;
+    }
+
+    /**
+     * ¿La compra le COBRÓ el IVA por encima al total? Es la pregunta de la devolución a proveedor
+     * (NotaCreditoProveedorHelper::agregar_datos_de_devolucion()): solo se le devuelve con IVA lo
+     * que la compra efectivamente cobró con IVA.
+     *
+     *  - false si suma_iva_al_total() no da (sin `total_with_iva`, Monotributista o
+     *    `precios_incluyen_iva`).
+     *  - 🔴 true si `total_iva` es NULL: es una compra LEGADA. La columna es `decimal nullable` sin
+     *    default y set_totales() la escribe SIEMPRE, con un número (nunca null), desde el 2/10/2024
+     *    (`149786ab`). Una compra con NULL nunca pasó por set_totales(): su total lo armó el
+     *    ProviderOrderHelper::getTotal() viejo, que sumaba el IVA por renglón con solo
+     *    `total_with_iva`. Leerla como "0 de IVA" les sacaba el IVA a todas esas compras al
+     *    devolver, aunque lo hubieran cobrado.
+     *  - si no, iva_sumado_al_total() > 0: el IVA que la compra sumó sale de sus comprobantes, así
+     *    que una compra sin factura (o manual sin IVA cargado) no lo cobró aunque traiga
+     *    `total_with_iva` (misión `devolucion-proveedor-iva-sin-factura`, 9/10/2026).
+     *
+     * set_totales() no lo usa: ahí `total_iva` recién se asignó con un número y la suma va por
+     * iva_sumado_al_total().
+     *
+     * @return bool
+     */
+    function cobro_iva_por_encima() {
+
+        if (!$this->suma_iva_al_total()) {
+            return false;
+        }
+
+        if (is_null($this->provider_order->total_iva)) {
+            return true;
+        }
+
+        return $this->iva_sumado_al_total() > 0;
     }
 
     /**

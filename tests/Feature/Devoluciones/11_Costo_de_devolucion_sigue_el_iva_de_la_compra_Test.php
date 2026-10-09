@@ -5,6 +5,7 @@ namespace Tests\Feature\Devoluciones;
 use App\Models\Iva;
 use App\Models\ProviderOrderAfipTicket;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Misión `devolucion-proveedor-iva-sin-factura` (9/10/2026): el costo con el que se le devuelve
@@ -27,6 +28,10 @@ use Database\Seeders\testing\TestingFerreteriaSeeder;
  *   - automático: suma el IVA de la factura que arma el sistema.
  *   - manual con factura con IVA: suma el IVA (la factura se carga por los endpoints reales).
  *   - manual sin factura, o con una factura que no discrimina IVA: no suma.
+ *   - automática editada a sin factura: deja de sumar (el orden check_modo_facturacion() →
+ *     set_totales() de la edición).
+ *   - compra vieja (`total_iva` NULL, de antes de que set_totales() lo escribiera): suma si tiene
+ *     `total_with_iva`, como la sumaba el ProviderOrderHelper::getTotal() de entonces.
  *   - Monotributista y `precios_incluyen_iva`: no suma (guardas de lo que ya andaba).
  *
  * Y en cada modo el invariante de siempre: devolver todo da exactamente el total de la compra (sin
@@ -77,6 +82,50 @@ class Costo_de_devolucion_sigue_el_iva_de_la_compra_Test extends NotaCreditoProv
         );
 
         return [$articulo, $compra];
+    }
+
+    /**
+     * El payload ENTERO de la compra de la llave, el mismo que arma crear_compra() de
+     * NotaCreditoProveedorTestCase: el controller de compras no es un PATCH parcial, para editarla
+     * hay que remandar todo.
+     *
+     * @param  \App\Models\Article  $articulo
+     * @param  array<string,mixed>  $overrides
+     * @return array<string,mixed>
+     */
+    protected function payload_de_la_llave($articulo, $overrides = [])
+    {
+        return $this->payload_compra(array_merge([
+            'provider_id'             => $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO)->id,
+            'moneda_id'               => 1,
+            'address_id'              => null,
+            'articles'                => [$this->renglon_compra($articulo, self::COSTO, self::CANTIDAD)],
+            'total_with_iva'          => 1,
+            'generate_current_acount' => 1,
+        ], $overrides));
+    }
+
+    /**
+     * Deja una compra recién creada como una de antes del 2/10/2024: con `total_iva` en NULL.
+     *
+     * Desde ese día (`149786ab`) set_totales() escribe `total_iva` SIEMPRE, con un número; una
+     * compra con NULL nunca pasó por ahí y su total lo armó el ProviderOrderHelper::getTotal() viejo,
+     * que sumaba el IVA por renglón con solo `total_with_iva`. Se fuerza por la base porque ningún
+     * endpoint de hoy deja ese estado.
+     *
+     * @param  \App\Models\ProviderOrder  $compra
+     * @param  array<string,mixed>        $columnas  Otras columnas a forzar junto con el NULL.
+     * @return void
+     */
+    protected function como_compra_vieja($compra, $columnas = [])
+    {
+        DB::table('provider_orders')
+            ->where('id', $compra->id)
+            ->update(array_merge(['total_iva' => null], $columnas));
+
+        $compra->refresh();
+
+        $this->assertNull($compra->total_iva, 'La compra tenía que quedar con total_iva en NULL; el escenario no sirve.');
     }
 
     /**
@@ -311,6 +360,90 @@ class Costo_de_devolucion_sigue_el_iva_de_la_compra_Test extends NotaCreditoProv
         $nota_credito = $this->devolver_a_cuenta_corriente($compra, $articulo, $costo, self::DEVUELTAS);
 
         $this->assertEqualsWithDelta(4888, (float) $nota_credito->haber, self::DELTA);
+    }
+
+    /**
+     * Compra AUTOMÁTICA editada a SIN FACTURA por el endpoint real: la edición borra la factura
+     * (check_modo_facturacion()) ANTES de recalcular la compra (set_totales()), así que el total
+     * baja al neto y la devolución deja de sumar el IVA. Si ese orden se diera vuelta, la compra
+     * se quedaría con el `total_iva` de la factura borrada y la devolución lo seguiría sumando.
+     *
+     * @test
+     */
+    public function automatica_editada_a_sin_factura_deja_de_sumar_el_iva()
+    {
+        list($articulo, $compra) = $this->compra_de_la_llave('zz Llave T 10mm editada a sin factura', [
+            'modo_facturacion' => 'automatico',
+        ]);
+
+        $this->assertEqualsWithDelta(29572.40, (float) $compra->total, self::DELTA, 'Punto de partida: la compra automática suma el IVA de su factura.');
+        $this->assertEqualsWithDelta(2957.24, $this->costo_de_devolucion($compra, $articulo), self::DELTA);
+
+        $this->putJson('api/provider-order/'.$compra->id, $this->payload_de_la_llave($articulo, [
+            'modo_facturacion' => 'sin factura',
+        ]))->assertStatus(200);
+
+        $compra->refresh();
+
+        $this->assertEquals(0, ProviderOrderAfipTicket::where('provider_order_id', $compra->id)->count(), 'Pasar a sin factura tiene que borrar la factura automática.');
+        $this->assertEqualsWithDelta(24440, (float) $compra->total, self::DELTA, 'Sin factura la compra vuelve al neto: 10 × 2444.');
+        $this->assertEqualsWithDelta(0, (float) $compra->total_iva, self::DELTA);
+
+        $costo = $this->costo_de_devolucion($compra, $articulo);
+
+        $this->assertEqualsWithDelta(2444, $costo, self::DELTA, 'La compra ya no cobra IVA: la devolución tampoco.');
+        $this->assert_devolver_todo_da_el_total($costo, $compra);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Las compras viejas (de antes de que set_totales() escribiera el IVA) */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 Compra vieja (`total_iva` NULL) con `total_with_iva`: el getTotal() de entonces le sumó
+     * el IVA por renglón, así que la devolución lo sigue sumando. Sin esta guarda, el arreglo de
+     * "sin factura" les sacaba el IVA a todas las compras de antes del 2/10/2024.
+     *
+     * @test
+     */
+    public function compra_vieja_sin_total_iva_con_total_with_iva_devuelve_con_iva()
+    {
+        list($articulo, $compra) = $this->compra_de_la_llave('zz Llave T 10mm compra vieja con iva', [
+            'modo_facturacion' => 'automatico',
+        ]);
+
+        $this->como_compra_vieja($compra);
+
+        $this->assertEqualsWithDelta(29572.40, (float) $compra->total, self::DELTA, 'El total de la compra vieja trae el IVA sumado.');
+
+        $costo = $this->costo_de_devolucion($compra, $articulo);
+
+        $this->assertEqualsWithDelta(2957.24, $costo, self::DELTA, 'Una compra vieja con total_with_iva cobró el IVA: la devolución lo suma.');
+        $this->assert_devolver_todo_da_el_total($costo, $compra);
+    }
+
+    /**
+     * Compra vieja (`total_iva` NULL) SIN `total_with_iva`: el getTotal() de entonces no le sumó
+     * IVA (total = neto), y la devolución tampoco.
+     *
+     * @test
+     */
+    public function compra_vieja_sin_total_iva_ni_total_with_iva_devuelve_sin_iva()
+    {
+        list($articulo, $compra) = $this->compra_de_la_llave('zz Llave T 10mm compra vieja sin iva', [
+            'modo_facturacion' => 'automatico',
+        ]);
+
+        // Sin `total_with_iva` el getTotal() viejo dejaba el total en el neto: se fuerza también.
+        $this->como_compra_vieja($compra, [
+            'total_with_iva' => 0,
+            'total'          => 24440,
+        ]);
+
+        $costo = $this->costo_de_devolucion($compra, $articulo);
+
+        $this->assertEqualsWithDelta(2444, $costo, self::DELTA, 'Una compra vieja sin total_with_iva no cobró IVA.');
+        $this->assert_devolver_todo_da_el_total($costo, $compra);
     }
 
     /* ------------------------------------------------------------------ */

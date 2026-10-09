@@ -481,18 +481,21 @@ class NotaCreditoProveedorHelper {
      *     (ModoFacturacionHelper::get_ivas). Se usan los totales que set_totales() dejó guardados en
      *     la compra (`sub_total`, `descuentos_compra`) y no se recalculan: set_totales() escribe la
      *     compra y esto corre en un GET.
-     *  3. IVA, solo si la compra EFECTIVAMENTE lo sumó por encima de su total:
-     *     NewProviderOrderHelper::iva_sumado_al_total() > 0, la misma cuenta de set_totales(). Se
-     *     suma con la alícuota del renglón que resuelve get_total_article() (vacía si el usuario
-     *     carga con IVA incluido). 🔴 No alcanza con `total_with_iva`: la SPA lo manda en 1 en TODA
-     *     compra, y el IVA de la compra sale siempre de sus comprobantes (misión
-     *     `devolucion-proveedor-iva-sin-factura`, 9/10/2026: una compra sin factura de 10 × $2.444
-     *     acreditaba $5.914,48 al devolver 2, en vez de $4.888). Por modo de facturación:
+     *  3. IVA, solo si la compra EFECTIVAMENTE lo cobró por encima de su total:
+     *     NewProviderOrderHelper::cobro_iva_por_encima(), que usa la misma cuenta de set_totales()
+     *     (iva_sumado_al_total()). Se suma con la alícuota del renglón que resuelve
+     *     get_total_article() (vacía si el usuario carga con IVA incluido). 🔴 No alcanza con
+     *     `total_with_iva`: la SPA lo manda en 1 en TODA compra, y el IVA de la compra sale siempre
+     *     de sus comprobantes (misión `devolucion-proveedor-iva-sin-factura`, 9/10/2026: una compra
+     *     sin factura de 10 × $2.444 acreditaba $5.914,48 al devolver 2, en vez de $4.888). Por
+     *     modo de facturación:
      *       - automático: suma, y cuadra exacto (la factura se calcula con el mismo armado por
      *         renglón que este costo).
      *       - sin factura: no suma (la compra no tiene comprobantes, no cobró IVA).
      *       - manual: suma con la alícuota de cada renglón si las facturas cargadas traen IVA, y no
      *         suma si no traen (Factura C/B sin desglose, o ninguna factura cargada todavía).
+     *       - compra legada (`total_iva` NULL, de antes del 2/10/2024): suma si tiene
+     *         `total_with_iva`, como la sumaba el ProviderOrderHelper::getTotal() de entonces.
      *     Con `precios_incluyen_iva` el costo ya lo trae y un Monotributista no lo suma: las dos
      *     patas viven en suma_iva_al_total().
      *  4. Dividido por la cantidad efectiva: costo por unidad DE LA COMPRA (bultos).
@@ -514,8 +517,9 @@ class NotaCreditoProveedorHelper {
         $helper = new NewProviderOrderHelper($provider_order, []);
 
         // Solo si la compra cobró IVA de verdad (ver el punto 3 del docblock): una compra sin
-        // factura, o manual sin IVA cargado, no lo cobró aunque traiga `total_with_iva`.
-        $suma_iva = $helper->iva_sumado_al_total() > 0;
+        // factura, o manual sin IVA cargado, no lo cobró aunque traiga `total_with_iva`. La regla
+        // (incluido el caso de las compras legadas) vive en NewProviderOrderHelper.
+        $suma_iva = $helper->cobro_iva_por_encima();
 
         $sub_total_compra   = (float)$provider_order->sub_total;
         $descuentos_compra  = (float)$provider_order->descuentos_compra;
