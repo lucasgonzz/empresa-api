@@ -270,7 +270,14 @@ class FacturaDeCompraHelper
             return false;
         }
 
-        return $provider_order->modo_facturacion == 'automatico';
+        /*
+         * 🔴 Comparación ESTRICTA, contra el modo ya normalizado (misión
+         * `factura-compra-tres-defectos`, 9/10/2026). Con `==` en PHP 7.4, `0 == 'automatico'` es
+         * verdadero: una compra que hubiera quedado guardada con un modo entero se trataba como
+         * automática en un lugar y como manual en otro. El criterio de qué es un modo válido vive
+         * en un solo lugar, `ModoFacturacionHelper::normalizar()`.
+         */
+        return ModoFacturacionHelper::normalizar($provider_order->modo_facturacion) === ModoFacturacionHelper::AUTOMATICO;
     }
 
     /**
