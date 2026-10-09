@@ -104,6 +104,7 @@ class ProviderController extends Controller
             'porcentaje_comision_blanco'        => $request->porcentaje_comision_blanco,   
             'dolar'                             => $request->dolar, 
             'price_from_cost_mas_iva'           => $request->price_from_cost_mas_iva, 
+            'precios_incluyen_iva'              => filter_var($request->precios_incluyen_iva, FILTER_VALIDATE_BOOLEAN),
             'user_id'                           => $this->userId(),
         ]);
 
@@ -147,6 +148,19 @@ class ProviderController extends Controller
         $model->porcentaje_comision_negro               = $request->porcentaje_comision_negro; 
         $model->porcentaje_comision_blanco              = $request->porcentaje_comision_blanco; 
         $model->price_from_cost_mas_iva                 = $request->price_from_cost_mas_iva;
+
+        /*
+         * Tilde "los costos de este proveedor son BRUTOS (ya tienen el IVA adentro)".
+         *   - filter_var y no un cast: `(bool) 'false'` es TRUE en PHP y el formulario puede mandar
+         *     el valor como texto.
+         *   - Solo si el request trae la clave: un cliente del endpoint que no la manda (p. ej. el
+         *     asistente IA) no la apaga.
+         *   - A proposito NO dispara recalculo de precios: solo define como se lee el costo tipeado
+         *     en la proxima compra (ver recalcular_precios_si_corresponde()).
+         */
+        if ($request->has('precios_incluyen_iva')) {
+            $model->precios_incluyen_iva                = filter_var($request->precios_incluyen_iva, FILTER_VALIDATE_BOOLEAN);
+        }
         $model->save();
 
         $this->recalcular_precios_si_corresponde(
@@ -240,6 +254,9 @@ class ProviderController extends Controller
      *     (ProcessSetFinalPrices con `from_dolar = true` sobre un alcance = interseccion). El dolar
      *     del proveedor lo usa unicamente ArticleHelper::cotizar(), y solo para esos: recalcular el
      *     resto del proveedor es trabajo que no puede mover un centavo.
+     *
+     * `precios_incluyen_iva` (el tilde de costos BRUTOS) NO es uno de los datos que lee el calculo y a
+     * proposito no dispara: solo define como se lee el costo tipeado en la proxima compra.
      *
      * 🔴 LO QUE YA NO DISPARA, y no hay que volver a agregar: un cambio SOLO en los descuentos del
      * proveedor (el viejo `hubo_cambios_en_provider_discounts()`, que miraba si algun
