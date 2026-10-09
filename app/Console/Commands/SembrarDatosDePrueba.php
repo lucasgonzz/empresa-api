@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\ExpenseController;
+use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\Seeders\ActividadTiendaHelper;
@@ -2897,7 +2898,9 @@ class SembrarDatosDePrueba extends Command
             // corriente que Sale/CurrentAcount/Expense (ya se borraron arriba, con su flujo real),
             // así que un delete directo por lote es seguro acá.
             Budget::whereIn('num', range(900000, 900010))->where('user_id', $user_id)->delete();
-            ProviderOrderAfipTicket::where('user_id', $user_id)->delete();
+            // Las facturas de compra, con sus alícuotas (misión factura-compra-tres-defectos,
+            // 9/10/2026): por el único lugar que las borra, que no deja el desglose huérfano.
+            FacturaDeCompraHelper::borrar_facturas(ProviderOrderAfipTicket::where('user_id', $user_id)->pluck('id')->all());
 
             CompanyPerformance::where('user_id', $user_id)->delete();
 
