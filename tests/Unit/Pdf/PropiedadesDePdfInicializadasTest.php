@@ -89,6 +89,13 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'SaleTicketPdf.php' => ['total_sale'],
         'SaleTicketRaw.php' => [],
         'SuperBudgetPdf.php' => [],
+        // Alta del 9/10/2026 (misión diseno-ticket-comandera): el motor ESC/POS del ticket de
+        // comandera diseñado y sus piezas. Entran con [] a propósito (la entrada más estricta): toda
+        // propiedad que leen está declarada en la clase e inicializada en su constructor.
+        'Ticket/BloquesFiscalesDeTicket.php' => [],
+        'Ticket/PiezasDeTicket.php' => [],
+        'Ticket/TextoDeTicket.php' => [],
+        'Ticket/TicketComanderaEscPos.php' => [],
         '__base.php' => ['budget', 'with_prices'],
         'reportes/ClientesPdf.php' => [],
         'reportes/InventarioPdf.php' => [],
