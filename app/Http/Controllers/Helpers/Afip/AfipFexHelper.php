@@ -220,6 +220,13 @@ class AfipFexHelper
 
             AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $this->sale->total);
 
+            /**
+             * Mision facturas-reintentadas-salen-de-alertas (9/10/2026): con la Factura E
+             * autorizada, los intentos anteriores de la venta que se puede probar que nunca se
+             * autorizaron salen de Alertas. Si ARCA contesto `R`, el ticket no tiene CAE y el
+             * helper no hace nada. No tira nunca.
+             */
+            IntentosDeFacturaFallidosHelper::descartar_superados($this->afip_ticket);
 
         } else if (
             isset($result_afip->FEXAuthorizeResult) 
