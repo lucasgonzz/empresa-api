@@ -546,13 +546,19 @@ class ChequeController extends Controller
      * cheque contra el dueño y se traduce el resultado.
      *
      * Es un endpoint aparte de rechazar() a propósito: rechazar() no mueve ninguna cuenta corriente
-     * (es el de los recibidos) y lo está cambiando la misión cheque-motivo-rechazo.
+     * (es el de los recibidos). El MOTIVO del rechazo, en cambio, se lee y se guarda igual que en
+     * rechazar() (misión cheque-motivo-rechazo): las dos claves, `rechazado_observaciones` y `notas`,
+     * por ChequeHelper::motivo_de_rechazo(); si vienen las dos con texto, gana
+     * `rechazado_observaciones`.
      *
-     * @param  \Illuminate\Http\Request  $request  {cheque_id}, como lo manda RechazadoPorProveedor.vue.
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, notas?, rechazado_observaciones?}, como lo
+     *                                             manda RechazadoPorProveedor.vue (el motivo, como `notas`).
      * @return \Illuminate\Http\JsonResponse  200 `{model: Cheque withAll, nota_debito: CurrentAcount|null,
-     *                                        mensaje}`; 422 `{message}` sin escribir nada si el cheque
-     *                                        no es de esta cuenta (o no existe, o no es un id), si no
-     *                                        es emitido o si ya figura como pagado o rechazado.
+     *                                        mensaje}`; 422 `{message}` sin escribir nada (ni la marca ni
+     *                                        la nota) si el cheque no es de esta cuenta (o no existe, o
+     *                                        no es un id), si el motivo no es un texto válido o se pasa
+     *                                        de largo, si no es emitido o si ya figura como pagado o
+     *                                        rechazado.
      */
     function rechazar_por_proveedor(Request $request) {
 
@@ -564,7 +570,20 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
         }
 
-        $resultado = ChequeHelper::rechazar_por_proveedor($cheque, $this->userId(), $this->userId(false));
+        // El motivo se valida ANTES de marcar nada: un motivo inválido no deja ni la marca ni la nota.
+        //
+        // 🔴 Las dos claves se leen ACÁ, en el cuerpo de este método, y no adentro del helper: el
+        // catálogo de acciones de pantalla del asistente (CatalogoDeEscrituraIaHelper::claves_que_lee())
+        // saca las claves que acepta cada ruta con una regex sobre el código del método del
+        // controller. Es lo mismo que hace rechazar().
+        $motivo = ChequeHelper::motivo_de_rechazo($request->input('rechazado_observaciones'), $request->input('notas'));
+
+        if (!is_null($motivo['error'])) {
+
+            return response()->json(['message' => $motivo['error']], 422);
+        }
+
+        $resultado = ChequeHelper::rechazar_por_proveedor($cheque, $this->userId(), $this->userId(false), $motivo['motivo']);
 
         if (count($resultado['problemas'])) {
 

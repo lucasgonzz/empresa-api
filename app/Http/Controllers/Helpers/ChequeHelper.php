@@ -1812,15 +1812,19 @@ class ChequeHelper {
      * marca se escribe por modelo, para que quede en audit_logs. Y el candado de la cuenta del
      * proveedor va PRIMERO en la transacción (CuentaCorrienteLock), antes de cualquier lectura.
      *
-     * No lee ni escribe el motivo del rechazo: es de la misión hermana cheque-motivo-rechazo.
+     * El motivo del rechazo NO se lee acá: lo lee y lo valida el controller con motivo_de_rechazo()
+     * (el catálogo del asistente mira las claves en el cuerpo del método del controller) y llega ya
+     * limpio. Se escribe con asignar_motivo_de_rechazo(), el mismo camino que rechazar(), sobre la
+     * fila bloqueada y en el mismo save() que la marca.
      *
      * @param  \App\Models\Cheque  $cheque  Ya resuelto contra el dueño (ChequeController::cheque_del_dueno()).
      * @param  int  $user_id  El dueño de la cuenta.
      * @param  int  $empleado_id  Quién lo marca (`rechazado_por_id`).
+     * @param  string|null  $motivo  El `motivo` que devolvió motivo_de_rechazo(); null = sin motivo.
      * @return array  ['problemas' => string[], 'nota_debito' => \App\Models\CurrentAcount|null,
      *                 'mensaje' => string]. Con problemas no se escribió nada (el llamador contesta 422).
      */
-    static function rechazar_por_proveedor(Cheque $cheque, $user_id, $empleado_id) {
+    static function rechazar_por_proveedor(Cheque $cheque, $user_id, $empleado_id, $motivo = null) {
 
         $problemas = self::problemas_para_rechazar_por_proveedor($cheque);
 
@@ -1836,7 +1840,7 @@ class ChequeHelper {
          */
         $destino = self::destino_de_la_nota_de_debito($cheque, $user_id);
 
-        $resultado = DB::transaction(function () use ($cheque, $destino, $user_id, $empleado_id) {
+        $resultado = DB::transaction(function () use ($cheque, $destino, $user_id, $empleado_id, $motivo) {
 
             $con_nota = $destino['motivo'] === 'nota';
 
@@ -1873,6 +1877,10 @@ class ChequeHelper {
             $fila->estado_manual = 'rechazado';
             $fila->rechazado_en = Carbon::now();
             $fila->rechazado_por_id = $empleado_id;
+
+            // El motivo, por el mismo camino que rechazar(): no lo escribe si la columna todavía es INT.
+            self::asignar_motivo_de_rechazo($fila, $motivo);
+
             $fila->save();
 
             if (!$con_nota) {
@@ -2111,6 +2119,20 @@ class ChequeHelper {
         $monto = self::monto_del_cheque_en_la_cuenta($cheque, $pago, $moneda);
 
         if (is_null($monto)) {
+
+            return $sin_nota('monto_desconocido', $pago);
+        }
+
+        /*
+         * 🔴 Guarda del haber: un cheque no puede haberle bajado a la cuenta MÁS que el pago entero.
+         * Los pagos de antes del 30/9/2026 pueden tener una fila con `moneda_id` null y el
+         * `amount_cotizado` cargado: la regla de hoy (valor_de_la_fila_en_la_cuenta()) toma esa fila
+         * como de la moneda de la cuenta y vale su `amount` nominal —un cheque de $120.000 sobre una
+         * cuenta en dólares valdría USD 120.000—, pero ese pago bajó por el cotizado. Si el valor
+         * calculado se pasa del haber del pago, no se adivina: sin nota, y el mensaje pide cargarla a
+         * mano.
+         */
+        if ($monto > (float) $pago->haber + self::TOLERANCIA_DEL_MONTO_DEL_CHEQUE) {
 
             return $sin_nota('monto_desconocido', $pago);
         }
