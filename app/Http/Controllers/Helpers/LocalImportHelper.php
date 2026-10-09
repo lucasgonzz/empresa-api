@@ -196,6 +196,13 @@ class LocalImportHelper {
 	 * o de débito. Para que ese "no se cargó" no sea silencioso, la función devuelve un estado y
 	 * ProviderImport lo avisa al final de la importación.
 	 *
+	 * 🔴 Solo se avisa lo que hace falta avisar: si la cuenta ya tiene movimientos pero su saldo YA
+	 * ES el del Excel (diferencia menor a un centavo), el estado es 'sin_cambios' y no se avisa
+	 * nada. Es la segunda pasada del mismo archivo (la doble pasada del motor de /implementar), o un
+	 * proveedor repetido en el Excel con el mismo saldo: un "no se cargó, ajustá con una nota" ahí
+	 * es falso, y quien lo sigue duplica la deuda. La comparación es contra `credit_accounts.saldo`
+	 * de la cuenta en pesos, el saldo vivo.
+	 *
 	 * 🔴 Si el modelo no tiene cuenta en pesos, la CREA (las dos monedas) y carga el saldo. Antes
 	 * salía con un `return`: como ProviderImport creaba el proveedor sin cuentas, el saldo de todo
 	 * proveedor NUEVO se perdía en silencio (misión importacion-proveedores-saldo-inicial,
@@ -210,12 +217,19 @@ class LocalImportHelper {
 	 * @param array $columns Mapeo de columnas de la importación.
 	 * @param string $model_name Nombre del modelo (`client` o `provider`).
 	 * @param mixed $model Instancia persistida del cliente/proveedor, o null.
+	 * @param array|null $saldos SALIDA, opcional: cuando la cuenta ya tenía movimientos (estados
+	 *                           'sin_cambios' y 'ya_tenia_movimientos') queda con
+	 *                           ['excel' => saldo del Excel, 'cuenta' => saldo de la cuenta], para
+	 *                           que el llamador pueda mostrar los dos montos en el aviso.
 	 * @return string 'sin_saldo'            -> la fila no trae saldo, o no hay modelo (una fila de
 	 *                                          "solo editar" cuyo proveedor no existe): nada que cargar.
 	 *                'cargado'              -> se cargó el saldo inicial.
-	 *                'ya_tenia_movimientos' -> la cuenta ya tenía movimientos: el saldo NO se cargó.
+	 *                'sin_cambios'          -> la cuenta ya tenía movimientos y su saldo ya es el del
+	 *                                          Excel: no se carga nada y no hay nada que avisar.
+	 *                'ya_tenia_movimientos' -> la cuenta ya tenía movimientos y su saldo es OTRO: el
+	 *                                          saldo del Excel NO se cargó (se avisa).
 	 */
-	static function setSaldoInicial($row, $columns, $model_name, $model) {
+	static function setSaldoInicial($row, $columns, $model_name, $model, &$saldos = null) {
 
 		/*
 		 * Sin modelo no hay dónde cargar nada. Antes esto era `$model->id` sobre null: un
@@ -231,6 +245,8 @@ class LocalImportHelper {
 			return 'sin_saldo';
 		}
 
+		$saldo_importado = (float) $saldo_actual;
+
 		$credit_account = self::get_credit_account_pesos($model_name, $model->id);
 
 		if (is_null($credit_account)) {
@@ -238,9 +254,22 @@ class LocalImportHelper {
 			$credit_account = self::get_credit_account_pesos($model_name, $model->id);
 		}
 
-		$cargado = self::crearSaldoInicialPorImportacion((float) $saldo_actual, $credit_account, $model_name, $model);
+		if (self::crearSaldoInicialPorImportacion($saldo_importado, $credit_account, $model_name, $model)) {
+			return 'cargado';
+		}
 
-		return $cargado ? 'cargado' : 'ya_tenia_movimientos';
+		$saldo_de_la_cuenta = (float) $credit_account->saldo;
+
+		$saldos = [
+			'excel'  => $saldo_importado,
+			'cuenta' => $saldo_de_la_cuenta,
+		];
+
+		if (abs($saldo_importado - $saldo_de_la_cuenta) < 0.01) {
+			return 'sin_cambios';
+		}
+
+		return 'ya_tenia_movimientos';
 	}
 
 	// static function setSaldoInicial($row, $columns, $model_name, $model) {

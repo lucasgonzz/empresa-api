@@ -46,12 +46,15 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     private $vaciar_valores_en_blanco = false;
 
     /**
-     * Proveedores cuyo saldo del Excel NO se cargo porque su cuenta ya tenia movimientos, como
-     * [provider_id => nombre]. Se avisan al final, en la notificacion (getInfoToShow()).
+     * Proveedores cuyo saldo del Excel NO se cargo porque su cuenta ya tenia movimientos y su
+     * saldo es OTRO, como [provider_id => ['nombre' => ..., 'excel' => ..., 'cuenta' => ...]].
+     * Se avisan al final, en la notificacion (getInfoToShow()), con los dos montos.
      *
      * El saldo de la importacion de proveedores es siempre un saldo INICIAL: va solo en una
      * cuenta vacia y nunca ajusta (ver LocalImportHelper::setSaldoInicial()). Antes ese "no se
-     * cargo" era silencioso (mision importacion-proveedores-saldo-inicial, 8/10/2026).
+     * cargo" era silencioso (mision importacion-proveedores-saldo-inicial, 8/10/2026). Si la
+     * cuenta ya tiene el saldo del Excel ('sin_cambios', p. ej. la segunda pasada del mismo
+     * archivo) no se anota: no hay nada que avisar.
      *
      * @var array
      */
@@ -205,8 +208,9 @@ class ProviderImport implements ToCollection, WithMultipleSheets
      * ClientImport::getInfoToShow() (`title` + `parrafos`), que el SPA ya renderiza.
      *
      * Hoy el unico bloque es el de los saldos que no se cargaron porque la cuenta del proveedor
-     * ya tenia movimientos: los nombres primero y la explicacion al final. Si no hay nada que
-     * informar se devuelve un array vacio, igual que antes.
+     * ya tenia movimientos y otro saldo: un parrafo por proveedor con su nombre y los dos montos
+     * (el del Excel y el de la cuenta, para que se vea la diferencia antes de ajustar), y la
+     * explicacion al final. Si no hay nada que informar se devuelve un array vacio, igual que antes.
      *
      * @return array
      */
@@ -214,10 +218,19 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         $info_to_show = [];
 
         if (count($this->saldos_no_cargados) > 0) {
-            $parrafos = array_values($this->saldos_no_cargados);
+            $no_cargados = array_values($this->saldos_no_cargados);
 
-            $parrafos[] = 'Estos proveedores ya tenían movimientos en su cuenta corriente, así que el saldo del Excel no se cargó: '
-                . 'el saldo inicial va solo en una cuenta vacía. Para ajustar la cuenta usá una nota de crédito o de débito.';
+            $parrafos = [];
+
+            foreach ($no_cargados as $no_cargado) {
+                $parrafos[] = $no_cargado['nombre']
+                    . ': saldo en el Excel ' . $this->formatear_saldo($no_cargado['excel'])
+                    . ', saldo en la cuenta ' . $this->formatear_saldo($no_cargado['cuenta']);
+            }
+
+            $parrafos[] = 'Estos proveedores ya tenían movimientos en su cuenta corriente y su saldo no coincide con el del Excel, '
+                . 'así que el saldo del Excel no se cargó: el saldo inicial va solo en una cuenta vacía. '
+                . 'Si el del Excel es el correcto, ajustá la cuenta con una nota de crédito o de débito por la diferencia.';
 
             $info_to_show[] = [
                 'title'    => 'Saldos del Excel que no se cargaron',
@@ -226,6 +239,21 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         }
 
         return $info_to_show;
+    }
+
+    /**
+     * Un saldo como lo lee un comerciante, con el mismo formato que Numbers::price() con signo:
+     * "$99.999", "$7.600,50" (los centavos solo si los hay) y el menos adelante: "-$7.600".
+     *
+     * @param  float $saldo
+     * @return string
+     */
+    private function formatear_saldo($saldo) {
+        $saldo = round((float) $saldo, 2);
+
+        $decimales = abs($saldo - round($saldo)) < 0.005 ? 0 : 2;
+
+        return ($saldo < 0 ? '-' : '') . '$' . number_format(abs($saldo), $decimales, ',', '.');
     }
 
     function saveModel($row, $provider) {
@@ -307,10 +335,22 @@ class ProviderImport implements ToCollection, WithMultipleSheets
          * 500 a mitad del archivo.
          */
         if (!is_null($provider)) {
-            $estado_saldo = LocalImportHelper::setSaldoInicial($row, $this->columns, 'provider', $provider);
+            $saldos = null;
 
+            $estado_saldo = LocalImportHelper::setSaldoInicial($row, $this->columns, 'provider', $provider, $saldos);
+
+            /*
+             * Solo se avisa cuando la cuenta tiene OTRO saldo. 'sin_cambios' (la cuenta ya tiene
+             * el saldo del Excel: la segunda pasada del mismo archivo, o un proveedor repetido
+             * con el mismo saldo) no se avisa: el aviso diria "ajusta con una nota" y seguirlo
+             * duplicaria la deuda.
+             */
             if ($estado_saldo == 'ya_tenia_movimientos') {
-                $this->saldos_no_cargados[$provider->id] = $provider->name;
+                $this->saldos_no_cargados[$provider->id] = [
+                    'nombre' => $provider->name,
+                    'excel'  => $saldos['excel'],
+                    'cuenta' => $saldos['cuenta'],
+                ];
             }
         }
     }

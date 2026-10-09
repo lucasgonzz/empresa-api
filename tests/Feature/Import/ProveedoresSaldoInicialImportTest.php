@@ -546,16 +546,25 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
      * Es lo que hace hoy el motor de `/implementar` (dos pasadas): con el arreglo, la segunda no
      * puede duplicar la deuda de nadie.
      *
+     * 🔴 Y la segunda pasada NO avisa nada: la cuenta ya tiene el saldo del Excel. Un aviso de "no se
+     * cargó, ajustá con una nota" ahí es falso, y quien lo siga duplica la deuda.
+     *
      * @test
      */
-    public function reimportar_el_mismo_archivo_no_duplica_proveedores_ni_saldos()
+    public function reimportar_el_mismo_archivo_no_duplica_proveedores_ni_saldos_ni_avisa()
     {
         $ruta = $this->excel_base();
 
         $this->importar_por_ia($ruta)->assertStatus(200);
+
+        // Solo se mira la notificación de la SEGUNDA pasada.
+        Notification::fake();
+
         $this->importar_por_ia($ruta)->assertStatus(200);
 
         $this->assert_escenario_base();
+
+        $this->assert_notificacion_sin_avisos();
     }
 
     /**
@@ -591,33 +600,91 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
      * ================================================================== */
 
     /**
-     * Un proveedor que YA tiene movimientos: el saldo del Excel es un saldo INICIAL y no ajusta nada
-     * (a diferencia de clientes, que ajusta con una nota). No se carga y se avisa al final, en la
-     * notificación, con su nombre. El que importa en la misma pasada con la cuenta vacía, se carga.
+     * La única notificación de fin de importación que se mandó (desde el último
+     * Notification::fake()).
      *
-     * @test
+     * @return \App\Notifications\GlobalNotification
      */
-    public function un_proveedor_con_movimientos_no_recibe_el_saldo_del_excel_y_se_avisa()
+    protected function notificacion_de_fin()
     {
-        $con_movimientos = $this->proveedor_desde_el_abm('Prov con movimientos');
+        $enviadas = Notification::sent(User::find($this->user_id), GlobalNotification::class);
 
-        $cuenta = $this->cuenta('provider', $con_movimientos->id, 1);
+        $this->assertCount(1, $enviadas, 'Tiene que salir exactamente una notificación de fin de importación.');
 
-        // El movimiento previo por el camino real: el botón "Saldo inicial" de la cuenta.
+        return $enviadas->first();
+    }
+
+    /**
+     * La notificación de fin de importación salió y no trae ningún bloque de avisos.
+     *
+     * @return void
+     */
+    protected function assert_notificacion_sin_avisos()
+    {
+        $this->assertSame([], $this->notificacion_de_fin()->info_to_show, 'La importación avisó algo que no tenía que avisar.');
+    }
+
+    /**
+     * El bloque "Saldos del Excel que no se cargaron" de la notificación de fin de importación: el
+     * único bloque, con ese título. Devuelve sus párrafos.
+     *
+     * @return array
+     */
+    protected function parrafos_del_aviso()
+    {
+        $info = $this->notificacion_de_fin()->info_to_show;
+
+        $this->assertIsArray($info);
+        $this->assertCount(1, $info, 'La notificación tiene que traer un único bloque de avisos.');
+        $this->assertSame('Saldos del Excel que no se cargaron', $info[0]['title']);
+
+        return $info[0]['parrafos'];
+    }
+
+    /**
+     * Un proveedor con movimientos y su cuenta en pesos, con un saldo cargado por el camino real:
+     * el botón "Saldo inicial" de la cuenta.
+     *
+     * @param  string $base
+     * @param  float  $saldo  Positivo: deuda (debe).
+     * @return array  [Provider, CreditAccount]
+     */
+    protected function proveedor_con_movimientos($base, $saldo)
+    {
+        $proveedor = $this->proveedor_desde_el_abm($base);
+
+        $cuenta = $this->cuenta('provider', $proveedor->id, 1);
+
         $this->postJson('api/current-acount/saldo-inicial', [
             'credit_account_id' => $cuenta->id,
             'model_name'        => 'provider',
-            'model_id'          => $con_movimientos->id,
+            'model_id'          => $proveedor->id,
             'is_for_debe'       => true,
-            'saldo_inicial'     => 1000,
+            'saldo_inicial'     => $saldo,
         ])->assertStatus(201);
+
+        return [$proveedor, $cuenta];
+    }
+
+    /**
+     * Un proveedor que YA tiene movimientos y cuyo saldo es OTRO que el del Excel: el saldo del
+     * Excel es un saldo INICIAL y no ajusta nada (a diferencia de clientes, que ajusta con una
+     * nota). No se carga y se avisa al final, con su nombre y los dos montos, para que el
+     * comerciante vea la diferencia antes de ajustar. El que importa en la misma pasada con la
+     * cuenta vacía, se carga y no se avisa.
+     *
+     * @test
+     */
+    public function un_proveedor_con_movimientos_y_otro_saldo_no_recibe_el_del_excel_y_se_avisa_con_los_dos_montos()
+    {
+        list($con_movimientos, $cuenta) = $this->proveedor_con_movimientos('Prov con movimientos', 1000);
 
         Notification::fake();
 
         $nombre_nuevo = $this->nombre('Prov nuevo de la misma pasada');
 
         $this->importar_por_ia($this->xlsx(['Nombre', 'Saldo'], [
-            [$con_movimientos->name, 99999],
+            [$con_movimientos->name, -7600.5],
             [$nombre_nuevo,          300],
         ]))->assertStatus(200);
 
@@ -626,38 +693,55 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
         $this->assertEqualsWithDelta(1000, (float) $cuenta->fresh()->saldo, 0.01);
         $this->assertEqualsWithDelta(1000, (float) $con_movimientos->fresh()->saldo_pesos, 0.01);
 
-        $nombre_con_movimientos = $con_movimientos->name;
+        $parrafos = $this->parrafos_del_aviso();
 
-        Notification::assertSentTo(
-            User::find($this->user_id),
-            GlobalNotification::class,
-            function ($notification) use ($nombre_con_movimientos, $nombre_nuevo) {
-                $info = $notification->info_to_show;
+        // Un párrafo por proveedor avisado, y la explicación al final.
+        $this->assertCount(2, $parrafos, 'El aviso tiene que nombrar solo al proveedor cuyo saldo no se cargó.');
 
-                if (!is_array($info) || count($info) !== 1) {
-                    return false;
-                }
-
-                if ($info[0]['title'] !== 'Saldos del Excel que no se cargaron') {
-                    return false;
-                }
-
-                $parrafos = $info[0]['parrafos'];
-
-                // El nombre del que no se cargó, y nada más que él.
-                if (!in_array($nombre_con_movimientos, $parrafos, true) || in_array($nombre_nuevo, $parrafos, true)) {
-                    return false;
-                }
-
-                $explicacion = implode(' ', $parrafos);
-
-                return strpos($explicacion, 'cuenta vacía') !== false
-                    && strpos($explicacion, 'nota de crédito o de débito') !== false;
-            }
+        $this->assertSame(
+            $con_movimientos->name.': saldo en el Excel -$7.600,50, saldo en la cuenta $1.000',
+            $parrafos[0],
+            'El párrafo del proveedor tiene que traer su nombre y los dos montos, como los lee un comerciante.'
         );
+
+        $this->assertStringNotContainsString($nombre_nuevo, implode(' ', $parrafos));
+
+        $this->assertStringContainsString('cuenta vacía', $parrafos[1]);
+        $this->assertStringContainsString('nota de crédito o de débito por la diferencia', $parrafos[1]);
 
         // El nuevo de la misma pasada, con la cuenta vacía, sí recibe su saldo.
         $this->assert_saldo_inicial('provider', $this->proveedor_por_nombre($nombre_nuevo), 300);
+    }
+
+    /**
+     * Un proveedor con movimientos cuyo saldo YA ES el del Excel: no se carga nada y NO se avisa
+     * (el aviso diría "ajustá con una nota", y seguirlo duplicaría la deuda). Lo mismo con un
+     * proveedor nuevo repetido en el mismo archivo con el mismo saldo: la primera fila carga el
+     * saldo inicial y la segunda lo encuentra igual.
+     *
+     * @test
+     */
+    public function un_proveedor_con_movimientos_y_el_mismo_saldo_no_se_avisa()
+    {
+        list($con_movimientos, $cuenta) = $this->proveedor_con_movimientos('Prov mismo saldo', 1000);
+
+        Notification::fake();
+
+        $nombre_repetido = $this->nombre('Prov repetido en el archivo');
+
+        $this->importar_por_ia($this->xlsx(['Nombre', 'Saldo'], [
+            [$con_movimientos->name, 1000],
+            [$nombre_repetido,       450],
+            [$nombre_repetido,       450],
+        ]))->assertStatus(200);
+
+        $this->assertCount(1, $this->movimientos($cuenta));
+        $this->assertEqualsWithDelta(1000, (float) $cuenta->fresh()->saldo, 0.01);
+
+        // El repetido: un solo proveedor con un solo "Saldo inicial".
+        $this->assert_saldo_inicial('provider', $this->proveedor_por_nombre($nombre_repetido), 450);
+
+        $this->assert_notificacion_sin_avisos();
     }
 
     /**
