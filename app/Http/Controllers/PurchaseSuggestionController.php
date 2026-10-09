@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Jobs\GeneratePurchaseSuggestionChunksJob;
 use App\Jobs\GenerarResumenSugerenciaCompraJob;
@@ -439,6 +440,10 @@ class PurchaseSuggestionController extends Controller
                  */
                 'total_with_iva'            => 1,
                 'moneda_id'                 => 1,
+                // Misión factura-compra-tres-defectos (9/10/2026): con un modo que se vea al abrirla.
+                // En NULL el select de la compra decía "Seleccione" y la compra se comportaba como
+                // manual sin decirlo; 'manual' es ese mismo comportamiento, ahora a la vista.
+                'modo_facturacion'          => ModoFacturacionHelper::MANUAL,
                 'purchase_suggestion_id'    => $suggestion->id,
                 'user_id'                   => $this->userId(),
             ]);
