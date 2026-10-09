@@ -515,8 +515,8 @@ class UserController extends Controller
      * Vocabulario aceptado (reutiliza las claves de `vender_print_shortcut_options.js` del SPA):
      * - 'factura_ticket_pdf': ticket común (equivalente explícito al default).
      * - 'ticket_2': Ticket 2.0.
-     * - 'factura_a4:{id}': perfil PdfColumnProfile fiscal de tipo A4 con ese id (debe existir,
-     *   pertenecer al modelo 'sale', estar marcado como is_afip_ticket y ser de HOJA: un ticket de
+     * - 'factura_a4:{id}': perfil PdfColumnProfile fiscal de tipo A4 con ese id (debe existir, ser
+     *   del dueño, pertenecer al modelo 'sale', estar marcado como is_afip_ticket y ser de HOJA: un ticket de
      *   comandera nunca se abre como PDF, misión diseno-ticket-comandera, decisión D4).
      * - 'ticket:{id}': un diseño de ticket de comandera fiscal del dueño (misión
      *   diseno-ticket-comandera, 9/10/2026, plan §7.4): el botón imprime ese ticket por el Ticket
@@ -546,7 +546,12 @@ class UserController extends Controller
                 return null;
             }
 
+            /**
+             * Del DUEÑO (misión diseno-ticket-comandera, pedido de la sesión madre): antes no se
+             * filtraba por user_id y se podía guardar el id de un diseño de otro comercio.
+             */
             $profile_valido = PdfColumnProfile::where('id', $profile_id)
+                ->where('user_id', $this->userId())
                 ->where('model_name', 'sale')
                 ->where('is_afip_ticket', true)
                 ->deHoja()
