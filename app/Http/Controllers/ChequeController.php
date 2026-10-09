@@ -266,8 +266,8 @@ class ChequeController extends Controller
      *
      * Hasta la misión cheque-motivo-rechazo (9/10/2026) el motivo se perdía SIEMPRE: el modal lo
      * manda como `notas`, acá se leía `rechazado_observaciones` (que nunca llegaba) y la columna era
-     * un entero. Ahora se aceptan las dos claves (ChequeHelper::motivo_de_rechazo_del_pedido(): si
-     * vienen las dos con texto, gana `rechazado_observaciones`).
+     * un entero. Ahora se aceptan las dos claves (ChequeHelper::motivo_de_rechazo(): si vienen las
+     * dos con texto, gana `rechazado_observaciones`).
      *
      * 🔴 Compatibilidad: el SPA sigue mandando `notas` a propósito (la API vieja la ignora sin
      * romper), y esta API no escribe el motivo mientras la columna siga siendo INT —la ventana de un
@@ -278,8 +278,8 @@ class ChequeController extends Controller
      *                                             RechazarCheque.vue manda {cheque_id, notas}.
      * @return \Illuminate\Http\JsonResponse  200 con el cheque. 422 sin escribir nada si el cheque no
      *                                        es de esta cuenta (o no existe), o si el motivo no es un
-     *                                        texto o supera los ChequeHelper::MOTIVO_DE_RECHAZO_MAX
-     *                                        caracteres.
+     *                                        texto, no es UTF-8 válido o supera los
+     *                                        ChequeHelper::MOTIVO_DE_RECHAZO_MAX caracteres.
      */
     function rechazar(Request $request) {
 
@@ -291,7 +291,12 @@ class ChequeController extends Controller
         }
 
         // El motivo se valida ANTES de marcar nada: un motivo inválido no deja el cheque rechazado.
-        $pedido = ChequeHelper::motivo_de_rechazo_del_pedido($request);
+        //
+        // 🔴 Las dos claves se leen ACÁ, en el cuerpo de este método, y no adentro del helper: el
+        // catálogo de acciones de pantalla del asistente (CatalogoDeEscrituraIaHelper::claves_que_lee())
+        // saca las claves que acepta cada ruta con una regex sobre el código del método del
+        // controller. Leídas en el helper, el asistente veía solo `cheque_id` y no el motivo.
+        $pedido = ChequeHelper::motivo_de_rechazo($request->input('rechazado_observaciones'), $request->input('notas'));
 
         if (!is_null($pedido['error'])) {
 

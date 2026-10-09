@@ -111,7 +111,8 @@ class ChequeHelper {
     const MOTIVO_DE_RECHAZO_MAX = 1000;
 
     /**
-     * Cache por proceso de columna_de_motivo_acepta_texto(): null hasta la primera consulta.
+     * Cache por proceso de columna_de_motivo_acepta_texto(): null mientras la columna no se haya
+     * visto de texto. Solo se guarda el true (el false se vuelve a preguntar).
      *
      * @var bool|null
      */
@@ -1767,35 +1768,45 @@ class ChequeHelper {
      * El motivo del rechazo que trae `PUT cheque/rechazar` (misión cheque-motivo-rechazo, 9/10/2026),
      * o por qué no se puede guardar.
      *
-     * Se lee de DOS claves:
-     * - `rechazado_observaciones`: la canónica, la del nombre de la columna (y la que manda el
-     *   asistente por la acción de pantalla).
+     * Recibe los VALORES de las dos claves del pedido, no el Request: el controller los lee con
+     * `$request->input(...)` a propósito, porque el catálogo de acciones de pantalla del asistente
+     * (CatalogoDeEscrituraIaHelper::claves_que_lee()) saca las claves que acepta cada ruta con una
+     * regex sobre el CUERPO del método del controller. Si se leyeran acá, para `rechazar` el asistente
+     * vería solo `cheque_id` y no sabría que puede mandar el motivo.
+     *
+     * Las dos claves:
+     * - `rechazado_observaciones`: la canónica, la del nombre de la columna. El asistente no tiene una
+     *   clave fija: ve las dos en el catálogo (las lee el controller) y puede mandar cualquiera.
      * - `notas`: la que manda RechazarCheque.vue, el viejo y el nuevo. 🔴 El SPA nuevo sigue
      *   mandando `notas` A PROPÓSITO: en un deploy el SPA se sube ANTES que la API y la migración, y
      *   la API vieja ignora `notas` sin romper; si el SPA mandara `rechazado_observaciones`, la API
      *   vieja lo escribiría en la columna INT y el rechazo entero sería un 500 (SQLSTATE 1366, modo
      *   estricto).
      *
-     * La regla, clave por clave (primero `rechazado_observaciones` y, si no trae texto, `notas`):
+     * La regla, clave por clave (primero `rechazado_observaciones` y, si no trae texto, `notas`), con
+     * el detalle en leer_motivo_de_rechazo():
      * - null o ausente: no hay motivo en esa clave.
-     * - un texto o un número (entero o decimal): se recorta con trim(); si queda vacío, no hay.
-     * - cualquier otra cosa (un array, un booleano, un objeto): es un error, aunque la otra clave
-     *   traiga un texto válido. Un pedido malo no se esconde detrás de uno bueno.
+     * - un texto o un número (entero o decimal): se recorta (espacios comunes y Unicode); si queda
+     *   vacío o queda exactamente "0", no hay.
+     * - cualquier otra cosa (un array, un booleano, un objeto) o un texto que no es UTF-8 válido: es
+     *   un error, aunque la otra clave traiga un texto válido. Un pedido malo no se esconde detrás de
+     *   uno bueno.
      * - un texto de más de MOTIVO_DE_RECHAZO_MAX caracteres: es un error.
      * Si las dos claves traen texto, gana `rechazado_observaciones`.
      *
      * No escribe nada: el controller corta con 422 antes de marcar el cheque si hay error.
      *
-     * @param  \Illuminate\Http\Request  $request
+     * @param  mixed  $rechazado_observaciones  El valor de la clave `rechazado_observaciones` (null si no vino).
+     * @param  mixed  $notas  El valor de la clave `notas` (null si no vino).
      * @return array{motivo: string|null, error: string|null}  `motivo` null = sin motivo (el cheque
      *                                                          se rechaza igual); `error` no null =
      *                                                          422 sin escribir nada.
      */
-    static function motivo_de_rechazo_del_pedido($request) {
+    static function motivo_de_rechazo($rechazado_observaciones, $notas) {
 
-        foreach (['rechazado_observaciones', 'notas'] as $clave) {
+        foreach ([$rechazado_observaciones, $notas] as $valor) {
 
-            list($motivo, $error) = self::leer_motivo_de_rechazo($request->input($clave));
+            list($motivo, $error) = self::leer_motivo_de_rechazo($valor);
 
             if (!is_null($error)) {
 
@@ -1812,7 +1823,17 @@ class ChequeHelper {
     }
 
     /**
-     * Lee el valor de UNA clave del motivo del rechazo, con la regla de motivo_de_rechazo_del_pedido().
+     * Lee el valor de UNA clave del motivo del rechazo, con la regla de motivo_de_rechazo().
+     *
+     * - Antes de recortar se mira que sea UTF-8 válido: por formulario (no JSON) puede llegar un byte
+     *   suelto, y con `'strict' => true` escribirlo en una columna utf8mb4 es un 500 (SQLSTATE 1366).
+     * - El recorte saca los espacios comunes y también los Unicode (`\p{Z}`: el espacio duro NBSP,
+     *   los de ancho fijo, el ideográfico...): trim() solo conoce los ASCII, y un motivo de puro NBSP
+     *   —lo que deja un copiar y pegar— se guardaba como si fuera un texto.
+     * - Un "0" es "sin motivo": es el resto del modal viejo, que después de rechazar dejaba
+     *   `this.notas = 0` y en el SEGUNDO rechazo de la misma pestaña mandaba `notas: 0` (entero) sin
+     *   que nadie lo escribiera. Es el mismo criterio de la migración 2026_10_09_180000, que pasa a
+     *   NULL los '0' que ya estaban en la columna.
      *
      * @param  mixed  $valor
      * @return array{0: string|null, 1: string|null}  [motivo, error]
@@ -1830,9 +1851,23 @@ class ChequeHelper {
             return [null, 'El motivo del rechazo tiene que ser un texto.'];
         }
 
-        $motivo = trim((string) $valor);
+        $texto = (string) $valor;
 
-        if ($motivo === '') {
+        if (!mb_check_encoding($texto, 'UTF-8')) {
+
+            return [null, 'El motivo del rechazo tiene caracteres inválidos.'];
+        }
+
+        $motivo = preg_replace('/\A[\s\p{Z}]+|[\s\p{Z}]+\z/u', '', $texto);
+
+        // null es un error del motor de regex (el UTF-8 ya se validó): no se toma como "sin motivo"
+        // para no perderlo en silencio.
+        if (is_null($motivo)) {
+
+            return [null, 'El motivo del rechazo tiene caracteres inválidos.'];
+        }
+
+        if ($motivo === '' || $motivo === '0') {
 
             return [null, null];
         }
@@ -1859,7 +1894,7 @@ class ChequeHelper {
      * cheques-emitidos-rechazo-proveedor) con esta misma firma: no cambiarla sin avisar.
      *
      * @param  \App\Models\Cheque  $cheque  El cheque que se está rechazando.
-     * @param  string|null  $motivo  Lo que devolvió motivo_de_rechazo_del_pedido(); null = sin motivo.
+     * @param  string|null  $motivo  Lo que devolvió motivo_de_rechazo(); null = sin motivo.
      * @return void
      */
     static function asignar_motivo_de_rechazo($cheque, $motivo) {
@@ -1882,8 +1917,16 @@ class ChequeHelper {
 
     /**
      * true si `cheques.rechazado_observaciones` ya es una columna de texto, mirando el tipo REAL en
-     * la base. false si todavía es INT o si la columna no existe. Se pregunta una sola vez por proceso
-     * (propiedad estática).
+     * la base. false si todavía es INT o si la columna no existe.
+     *
+     * Solo se cachea el true (propiedad estática, por proceso): una vez que la columna es de texto no
+     * vuelve atrás. El false NO se guarda y se vuelve a preguntar en el próximo rechazo, así un proceso
+     * largo que arrancó antes de la migración (un `queue:work`, el scheduler) se entera solo cuando la
+     * migración corre, sin reiniciarlo.
+     *
+     * Tipos que cuentan como texto: `text`, `mediumtext` y `longtext`. NO `tinytext`, `varchar` ni
+     * `char`: no aguantan MOTIVO_DE_RECHAZO_MAX caracteres de 4 bytes (un tinytext son 255 bytes, y un
+     * varchar(191) son 191 caracteres), y escribir de más con modo estricto es un 500.
      *
      * Se lee `information_schema.COLUMNS` —la misma tabla que consulta Schema::hasColumn() en MySQL—
      * y NO Schema::getColumnType(): esa pasa por doctrine/dbal, que lee la tabla ENTERA para devolver
@@ -1906,11 +1949,14 @@ class ChequeHelper {
             [DB::connection()->getTablePrefix().'cheques', 'rechazado_observaciones']
         );
 
-        // `text` (y sus variantes tinytext/mediumtext/longtext) o un varchar/char aceptan el motivo.
         $acepta_texto = !is_null($fila)
-            && in_array(strtolower($fila->tipo), ['text', 'tinytext', 'mediumtext', 'longtext', 'varchar', 'char'], true);
+            && in_array(strtolower($fila->tipo), ['text', 'mediumtext', 'longtext'], true);
 
-        self::$columna_de_motivo_acepta_texto = $acepta_texto;
+        // Solo el true queda guardado: ver el docblock.
+        if ($acepta_texto) {
+
+            self::$columna_de_motivo_acepta_texto = true;
+        }
 
         return $acepta_texto;
     }
