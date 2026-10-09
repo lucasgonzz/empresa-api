@@ -88,7 +88,9 @@ class SaleDeliveredArticlesPdf extends fpdf {
 
 	function printArticle($article) {
 		$y_1 = $this->y;
-		$text = 'Se entregaron '.$article->pivot->delivered_amount.' unidades de '.$article->name;
+		// La cantidad con Numbers::price(), como en el resto de los PDF: la columna es decimal(25,2) y
+		// cruda salía "10.00 unidades".
+		$text = 'Se entregaron '.Numbers::price($article->pivot->delivered_amount).' unidades de '.$article->name;
 		$this->MultiCell(200, 7, $text, 0, 'L', false);
 		// $this->Line(5, $this->y, 205, $this->y);
 	}

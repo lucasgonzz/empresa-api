@@ -36,7 +36,10 @@ class FpdfDelTituloDePrueba extends \FPDF
  * artículos y de la firma. Lo mismo en otros cinco PDF.
  *
  * Extiende PHPUnit\Framework\TestCase directamente, como 23_Motor_de_cajas_Test: title() no lee
- * ningún modelo y dibuja sobre un FPDF pelado.
+ * ningún modelo y dibuja sobre un FPDF pelado. Las cantidades de los PDF de acopio se prueban en un
+ * PROCESO APARTE: SaleDeliveredArticlesPdf y AcopioArticleDeliveryPdf hacen `require` (sin _once) de
+ * fpdf.php, y cargarlos en el proceso de PHPUnit, que ya lo cargó, es un fatal "Cannot declare class
+ * FPDF" que mata la corrida entera (ver 12_Elegir_diseno_al_imprimir_Test).
  *
  * @group pdf-titulo-del-encabezado
  */
@@ -209,6 +212,105 @@ class Titulo_del_encabezado_entra_en_su_caja_Test extends TestCase
     }
 
     /**
+     * SaleDeliveredArticlesPdf ("Imprimir unidades entregadas") imprime la cantidad con
+     * Numbers::price(): la columna es decimal(25,2) y antes salía "10.00 unidades".
+     *
+     * printArticle() se llama sobre una subclase que no pasa por el constructor (que hace Output() y
+     * exit) ni por el Header() (que lee el usuario de la base).
+     *
+     * @test
+     */
+    public function la_cantidad_entregada_sale_formateada()
+    {
+        $codigo = <<<'PHP'
+<?php
+require __AUTOLOAD__;
+
+class EntregadasSinEncabezado extends \App\Http\Controllers\Pdf\SaleDeliveredArticlesPdf
+{
+    public function __construct()
+    {
+        \FPDF::__construct();
+        $this->b = 0;
+    }
+
+    public function Header()
+    {
+    }
+}
+
+$pdf = new EntregadasSinEncabezado();
+$pdf->SetCompression(false);
+$pdf->AddPage();
+$pdf->SetFont('Arial', 'B', 10);
+foreach (['10.00', '2.50', '1000.00'] as $cantidad) {
+    $pdf->x = 5;
+    $pdf->printArticle((object) ['name' => 'Cemento', 'pivot' => (object) ['delivered_amount' => $cantidad]]);
+}
+echo 'PDF_INICIO'.base64_encode($pdf->Output('S')).'PDF_FIN';
+PHP;
+
+        $textos = array_column($this->textos($this->pdf_de_otro_proceso($codigo)), 'texto');
+
+        $this->assertSame([
+            'Se entregaron 10 unidades de Cemento',
+            'Se entregaron 2,50 unidades de Cemento',
+            'Se entregaron 1.000 unidades de Cemento',
+        ], $textos);
+    }
+
+    /**
+     * AcopioArticleDeliveryPdf (el comprobante de cada entrega del acopio) imprime sus tres
+     * cantidades con Numbers::price(): la de la entrega, las vendidas y las entregadas.
+     *
+     * @test
+     */
+    public function las_cantidades_de_la_entrega_de_acopio_salen_formateadas()
+    {
+        $codigo = <<<'PHP'
+<?php
+require __AUTOLOAD__;
+
+class EntregaSinEncabezado extends \App\Http\Controllers\Pdf\AcopioArticleDeliveryPdf
+{
+    public function __construct($model)
+    {
+        \FPDF::__construct();
+        $this->b = 0;
+        $this->line_height = 7;
+        $this->model = $model;
+    }
+
+    public function Header()
+    {
+    }
+}
+
+/** Los artículos de la venta: lo único que printArticle() les pide es find($id). */
+$de_la_venta = new class {
+    public $items = [];
+
+    public function find($id)
+    {
+        return $this->items[$id];
+    }
+};
+$de_la_venta->items[1] = (object) ['pivot' => (object) ['amount' => '1000.00', 'delivered_amount' => '2.50']];
+
+$pdf = new EntregaSinEncabezado((object) ['sale' => (object) ['articles' => $de_la_venta]]);
+$pdf->SetCompression(false);
+$pdf->AddPage();
+$pdf->SetFont('Arial', '', 10);
+$pdf->printArticle((object) ['id' => 1, 'name' => 'Cemento', 'pivot' => (object) ['amount' => '10.00']]);
+echo 'PDF_INICIO'.base64_encode($pdf->Output('S')).'PDF_FIN';
+PHP;
+
+        $textos = array_column($this->textos($this->pdf_de_otro_proceso($codigo)), 'texto');
+
+        $this->assertSame(['Cemento', '10', '1.000', '2,50'], $textos);
+    }
+
+    /**
      * Copia LITERAL de PdfHelper::title() antes de la misión acopio-pdf-entregadas (develop al
      * 9/10/2026). Es la vara contra la que se mide que lo que ya entraba no cambió.
      */
@@ -296,5 +398,28 @@ class Titulo_del_encabezado_entra_en_su_caja_Test extends TestCase
         preg_match_all('~^[\d.]+ [\d.]+ m [\d.]+ [\d.]+ l S$~m', $pdf, $m);
 
         return $m[0];
+    }
+
+    /**
+     * Corre $codigo en otro PHP (el mismo binario que PHPUnit) y devuelve el PDF que imprimió.
+     *
+     * @param string $codigo
+     * @return string
+     */
+    private function pdf_de_otro_proceso($codigo)
+    {
+        $autoload = realpath(__DIR__.'/../../../vendor/autoload.php');
+        $codigo = str_replace('__AUTOLOAD__', var_export($autoload, true), $codigo);
+
+        $archivo = tempnam(sys_get_temp_dir(), 'pdftitulo');
+        file_put_contents($archivo, $codigo);
+
+        $salida = (string) shell_exec('"'.PHP_BINARY.'" "'.$archivo.'" 2>&1');
+        @unlink($archivo);
+
+        $this->assertMatchesRegularExpression('~PDF_INICIO(.*)PDF_FIN~s', $salida, 'El proceso aparte no llegó a imprimir el PDF: '.$salida);
+        preg_match('~PDF_INICIO(.*)PDF_FIN~s', $salida, $m);
+
+        return base64_decode($m[1]);
     }
 }
