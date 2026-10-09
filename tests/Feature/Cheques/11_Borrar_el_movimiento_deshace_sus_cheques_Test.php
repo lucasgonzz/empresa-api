@@ -182,8 +182,9 @@ class Borrar_el_movimiento_deshace_sus_cheques_Test extends ChequesTestCase
 
     /**
      * crear_cheque() le graba el id de la VENTA en `current_acount_id` al cheque de una venta de
-     * contado (hallazgo abierto): un cobro con el mismo id no puede llevarse ese cheque. Un cobro sin
-     * fila de cheque no tiene cheques, aunque haya uno del mismo cliente apuntando a su id.
+     * contado (hallazgo abierto). Este caso: un cobro SIN fila de cheque no tiene cheques, aunque haya
+     * uno del mismo cliente apuntando a su id. (El cobro con fila de cheque y una venta real con el
+     * mismo id lo cubre el test siguiente.)
      *
      * @test
      */
@@ -215,6 +216,111 @@ class Borrar_el_movimiento_deshace_sus_cheques_Test extends ChequesTestCase
 
         $this->assertNull(CurrentAcount::find($cobro_id));
         $this->assertNotNull(Cheque::find($de_la_venta->id), 'El cheque de otra operación que comparte el id no es del cobro.');
+    }
+
+    /**
+     * El cobro CON fila de cheque y una venta del mismo cliente, con el MISMO id y pagada con cheque:
+     * no hay forma de saber qué cheque es de quién, así que no se toca ninguno (como antes del
+     * 9/10/2026). La venta se inserta a mano con el id del cobro: es la coincidencia de ids que
+     * ningún endpoint fuerza.
+     *
+     * @test
+     */
+    public function el_cobro_que_comparte_el_id_con_una_venta_pagada_con_cheque_no_toca_cheques()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente id compartido ' . uniqid());
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7021']);
+
+        $cobro_id = (int) $recibido->current_acount_id;
+
+        if (\App\Models\Sale::withTrashed()->where('id', $cobro_id)->exists()) {
+            $this->markTestSkipped('Ya hay una venta con el id ' . $cobro_id . ' en la base de testing.');
+        }
+
+        \Illuminate\Support\Facades\DB::table('sales')->insert([
+            'id'         => $cobro_id,
+            'num'        => 990000 + ($cobro_id % 1000),
+            'user_id'    => $this->dueno->id,
+            'client_id'  => $cliente->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        \Illuminate\Support\Facades\DB::table('current_acount_payment_method_sale')->insert([
+            'sale_id'                          => $cobro_id,
+            'current_acount_payment_method_id' => $this->metodo_cheque->id,
+            'amount'                           => self::MONTO_CHEQUE,
+        ]);
+
+        $de_la_venta = $this->cheque_a_mano([
+            'tipo'              => 'recibido',
+            'client_id'         => $cliente->id,
+            'current_acount_id' => $cobro_id,
+        ]);
+
+        try {
+            $this->borrar_movimiento('client', $cobro_id)->assertStatus(200);
+
+            $this->assertNull(CurrentAcount::find($cobro_id));
+            $this->assertNotNull(Cheque::find($de_la_venta->id), 'El cheque de la venta no se toca.');
+            $this->assertNotNull(Cheque::find($recibido->id), 'Ambiguo: tampoco se toca el del cobro.');
+        } finally {
+            \Illuminate\Support\Facades\DB::table('current_acount_payment_method_sale')->where('sale_id', $cobro_id)->delete();
+            \Illuminate\Support\Facades\DB::table('sales')->where('id', $cobro_id)->delete();
+        }
+    }
+
+    /**
+     * Un endoso viejo sin vínculo y un pago POSTERIOR al mismo proveedor con un cheque nuevo de igual
+     * número y monto: borrar ese pago se lleva su cheque nuevo, y el recibido viejo sigue endosado
+     * (su copia sigue con el proveedor). Un cheque nuevo no trae `endosado_desde_client_id`.
+     *
+     * @test
+     */
+    public function un_cheque_nuevo_de_igual_numero_no_rescata_un_endoso_viejo()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente endoso viejo y nuevo ' . uniqid());
+        list($proveedor, $cuenta_proveedor) = $this->proveedor_con_cuenta('Proveedor endoso viejo y nuevo ' . uniqid(), self::DEUDA_PROVEEDOR * 2);
+
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '7022']);
+
+        list($pago_viejo, $copia_vieja) = $this->endosar_en_pago($recibido, $proveedor, $cuenta_proveedor);
+
+        Cheque::where('id', $copia_vieja->id)->update(['endosado_desde_cheque_id' => null]);
+
+        $fila = $this->fila_de_pago([
+            'numero'        => '7022',
+            'banco'         => 'Banco Nación',
+            'fecha_emision' => Carbon::today()->format('Y-m-d'),
+            'fecha_pago'    => Carbon::today()->addDays(15)->format('Y-m-d'),
+        ]);
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
+
+        $response->assertStatus(201);
+
+        $pago_nuevo_id = (int) $response->json('current_acount.id');
+        $this->cobros_cc_creados_por_escenarios[] = $pago_nuevo_id;
+
+        $nuevo = Cheque::where('current_acount_id', $pago_nuevo_id)->where('user_id', $this->dueno->id)->first();
+
+        $this->assertNull($nuevo->endosado_desde_client_id);
+
+        $this->borrar_movimiento('provider', $pago_nuevo_id)->assertStatus(200);
+
+        $this->assertNull(Cheque::find($nuevo->id));
+        $this->assertEquals($proveedor->id, $recibido->fresh()->endosado_a_provider_id, 'El recibido viejo sigue en manos del proveedor.');
+        $this->assertNotNull(Cheque::find($copia_vieja->id));
+
+        // Y a mano tampoco: borrar un cheque nuevo con ese número no devuelve el recibido.
+        $otro_pago = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
+        $otro_pago->assertStatus(201);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $otro_pago->json('current_acount.id');
+        $otro = Cheque::where('current_acount_id', (int) $otro_pago->json('current_acount.id'))->where('user_id', $this->dueno->id)->first();
+
+        $this->deleteJson('api/cheque/' . $otro->id)->assertStatus(200);
+
+        $this->assertEquals($proveedor->id, $recibido->fresh()->endosado_a_provider_id);
     }
 
     /**

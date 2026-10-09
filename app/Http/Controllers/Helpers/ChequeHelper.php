@@ -12,6 +12,7 @@ use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Expense;
 use App\Models\Provider;
+use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\DB;
@@ -422,8 +423,11 @@ class ChequeHelper {
      * o dejaría un cheque cobrado sin el cobro que lo trajo.
      *
      * Corre ADENTRO de la transacción del borrado y ANTES de soltar las filas de métodos de pago del
-     * movimiento (las mira para reconocer los cheques de un pago). Bloquea las filas de los cheques,
-     * así un cobrar/pagar/rechazar simultáneo no se cuela entre la mirada y el borrado. Escribe por
+     * movimiento (las mira para reconocer los cheques de un pago). Bloquea las filas de los cheques
+     * POR SU ID (traer()), así dos borrados simultáneos no se cruzan. ⚠️ No cubre un
+     * cobrar/pagar/rechazar simultáneo: ChequeController los resuelve sin bloquear ni transacción, así
+     * que uno que leyó el cheque antes del borrado escribe después sobre una fila borrada (0 filas,
+     * sin error). Hallazgo abierto de la misión, no de esta función. Escribe por
      * MODELO (save()/delete() sobre la instancia) y no por builder: el builder no dispara los
      * eventos de los que se alimenta audit_logs.
      *
@@ -537,15 +541,18 @@ class ChequeHelper {
      *
      * 🔴 Los endosos de ANTES del 21/9/2026 no tienen vínculo: el botón Endosar del módulo armaba la
      * copia sin `endosado_desde_cheque_id` (la columna nació con la misión cheques-endoso-y-bancos y
-     * no se completó para atrás). Para esas copias el recibido se busca por lo que el viejo endoso sí
-     * copiaba —proveedor, número y monto—, entre los recibidos endosados a ese proveedor que no
-     * tienen ninguna copia vinculada, y solo si hay EXACTAMENTE uno: con dos candidatos no se adivina
-     * y el recibido queda como está. Sin esto, borrar uno de esos pagos borraba la copia y dejaba el
-     * recibido endosado sin copia (lo vio el chequeo independiente de la misión).
+     * no se completó para atrás; y un cliente que no actualizó siguió endosando así después de esa
+     * fecha). Lo que el botón viejo SÍ grababa en la copia es `endosado_desde_client_id` (el cliente
+     * del recibido), y eso es lo que la distingue de un cheque NUEVO a ese proveedor, que no lo trae
+     * nunca: sin esa condición, borrar un pago con un cheque nuevo de igual número y monto devolvía
+     * a la cartera un recibido que el proveedor tiene en la mano (lo vio el chequeo independiente).
+     * Para esas copias el recibido se busca por cliente, proveedor, número y monto entre los que no
+     * tienen copia vinculada, y solo si la pareja es única de los dos lados: un recibido candidato y
+     * una sola copia vieja que lo nombre. Con dos, no se adivina y el recibido queda como está.
      *
      * @param  \App\Models\Cheque  $copia
      * @param  int  $user_id
-     * @param  bool  $bloquear  true adentro de una transacción (SELECT ... FOR UPDATE).
+     * @param  bool  $bloquear  true adentro de una transacción (bloquea el recibido por su id).
      * @return \App\Models\Cheque|null
      */
     protected static function origen_de_la_copia(Cheque $copia, $user_id, $bloquear = false) {
@@ -575,21 +582,31 @@ class ChequeHelper {
 
             $q->where('cheques.id', $copia->endosado_desde_cheque_id);
 
-            if ($bloquear) {
-
-                $q->lockForUpdate();
-            }
-
-            return $q->first();
+            return self::traer($q, $bloquear)->first();
         }
 
-        // Endoso viejo, sin vínculo. Los endosos en un gasto nacieron todos con vínculo (21/9/2026).
-        if (!is_null($copia->expense_id) || trim((string) $copia->numero) === '') {
+        // Endoso viejo, sin vínculo: solo del botón (a un proveedor, con el cliente de origen y número).
+        if (!is_null($copia->expense_id) || empty($copia->endosado_desde_client_id) || trim((string) $copia->numero) === '') {
 
             return null;
         }
 
-        $q->where('cheques.numero', $copia->numero)
+        $copias_viejas_iguales = Cheque::where('user_id', $user_id)
+                                        ->where('tipo', 'emitido')
+                                        ->whereNull('endosado_desde_cheque_id')
+                                        ->where('provider_id', $copia->provider_id)
+                                        ->where('endosado_desde_client_id', $copia->endosado_desde_client_id)
+                                        ->where('numero', $copia->numero)
+                                        ->where('amount', $copia->amount)
+                                        ->count();
+
+        if ($copias_viejas_iguales !== 1) {
+
+            return null;
+        }
+
+        $q->where('cheques.client_id', $copia->endosado_desde_client_id)
+          ->where('cheques.numero', $copia->numero)
           ->where('cheques.amount', $copia->amount)
           ->whereNotExists(function ($sub) {
               $sub->select(DB::raw(1))
@@ -597,14 +614,43 @@ class ChequeHelper {
                   ->whereColumn('copias.endosado_desde_cheque_id', 'cheques.id');
           });
 
-        if ($bloquear) {
+        $candidatos = (clone $q)->orderBy('cheques.id')->limit(2)->pluck('cheques.id')->all();
 
-            $q->lockForUpdate();
+        if (count($candidatos) !== 1) {
+
+            return null;
         }
 
-        $candidatos = $q->orderBy('cheques.id')->limit(2)->get();
+        return self::traer($q->where('cheques.id', $candidatos[0]), $bloquear)->first();
+    }
 
-        return $candidatos->count() === 1 ? $candidatos->first() : null;
+    /**
+     * Ejecuta una consulta de cheques y, si se pide bloquear, bloquea SOLO las filas que coinciden,
+     * por su id: primero trae los ids sin bloquear y después hace el SELECT ... FOR UPDATE por la
+     * clave primaria, repitiendo las condiciones (si algo cambió en el medio, la fila no vuelve).
+     * `cheques` no tiene índices en `current_acount_id`, `expense_id` ni en las marcas del endoso: un
+     * FOR UPDATE filtrando por esas columnas recorre la tabla entera y espera cualquier fila que otra
+     * transacción tenga tomada, de cualquier comercio de una base compartida.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $q
+     * @param  bool  $bloquear
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function traer($q, $bloquear) {
+
+        if (!$bloquear) {
+
+            return $q->orderBy('cheques.id')->get();
+        }
+
+        $ids = (clone $q)->orderBy('cheques.id')->pluck('cheques.id')->all();
+
+        if (!count($ids)) {
+
+            return collect();
+        }
+
+        return $q->whereIn('cheques.id', $ids)->lockForUpdate()->orderBy('cheques.id')->get();
     }
 
     /**
@@ -624,15 +670,17 @@ class ChequeHelper {
                         ->orderBy('id')
                         ->first();
 
-        if (!is_null($copia) || empty($recibido->endosado_a_provider_id) || trim((string) $recibido->numero) === '') {
+        if (!is_null($copia) || empty($recibido->endosado_a_provider_id) || empty($recibido->client_id) || trim((string) $recibido->numero) === '') {
 
             return $copia;
         }
 
+        // La copia del botón viejo: sin vínculo pero con el cliente de origen (ver origen_de_la_copia()).
         return Cheque::where('user_id', $user_id)
                         ->where('tipo', 'emitido')
                         ->whereNull('endosado_desde_cheque_id')
                         ->where('provider_id', $recibido->endosado_a_provider_id)
+                        ->where('endosado_desde_client_id', $recibido->client_id)
                         ->where('numero', $recibido->numero)
                         ->where('amount', $recibido->amount)
                         ->orderBy('id')
@@ -652,11 +700,14 @@ class ChequeHelper {
      * `current_acount_id` al cheque de una venta de contado (hallazgo abierto de esta misión), así
      * que un cobro con el mismo id que una venta pagada con cheque "tendría" ese cheque. El cheque de
      * una venta nunca tiene proveedor, y del lado del cliente solo choca si además es el mismo
-     * cliente y el cobro trae una fila de cheque.
+     * cliente y el cobro trae una fila de cheque. Para ese último caso, si EXISTE una venta del dueño
+     * con el mismo id y el mismo cliente que también se pagó con cheque, no hay forma de saber cuál
+     * cheque es de quién: no se toca ninguno (el cobro se borra como antes del 9/10/2026, con su
+     * cheque en la cartera). Es raro y es más barato que llevarse el cheque de una venta.
      *
      * @param  mixed  $model
      * @param  int  $user_id
-     * @param  bool  $bloquear  true adentro de la transacción del borrado (SELECT ... FOR UPDATE).
+     * @param  bool  $bloquear  true adentro de la transacción del borrado (bloquea por id, ver traer()).
      * @return \Illuminate\Support\Collection
      */
     protected static function cheques_del_movimiento($model, $user_id, $bloquear = false) {
@@ -683,6 +734,11 @@ class ChequeHelper {
 
             } elseif (!empty($model->client_id)) {
 
+                if (self::hay_venta_con_cheque_que_comparte_el_id($model, $user_id)) {
+
+                    return collect();
+                }
+
                 $q->where('tipo', 'recibido')->where('client_id', $model->client_id);
 
             } else {
@@ -695,12 +751,30 @@ class ChequeHelper {
             return collect();
         }
 
-        if ($bloquear) {
+        return self::traer($q, $bloquear);
+    }
 
-            $q->lockForUpdate();
-        }
+    /**
+     * true si hay una venta del dueño con el MISMO id que el cobro, del mismo cliente y pagada con un
+     * método de tipo cheque: su cheque quedó con `current_acount_id` = ese id (ver
+     * cheques_del_movimiento()). Se mira con borradas: una venta en la papelera conserva su cheque.
+     *
+     * @param  \App\Models\CurrentAcount  $cobro
+     * @param  int  $user_id
+     * @return bool
+     */
+    protected static function hay_venta_con_cheque_que_comparte_el_id(CurrentAcount $cobro, $user_id) {
 
-        return $q->orderBy('id')->get();
+        return Sale::withTrashed()
+                    ->where('id', $cobro->id)
+                    ->where('user_id', $user_id)
+                    ->where('client_id', $cobro->client_id)
+                    ->whereHas('current_acount_payment_methods', function ($q) {
+                        $q->whereHas('type', function ($sub) {
+                            $sub->where('slug', 'cheque');
+                        });
+                    })
+                    ->exists();
     }
 
     /**
@@ -741,12 +815,7 @@ class ChequeHelper {
                         ->where('tipo', 'recibido')
                         ->where('endosado_en_expense_id', $model->id);
 
-            if ($bloquear) {
-
-                $q->lockForUpdate();
-            }
-
-            return $q->orderBy('id')->get();
+            return self::traer($q, $bloquear);
         }
 
         $origenes = collect();
