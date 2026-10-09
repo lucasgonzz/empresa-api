@@ -466,6 +466,47 @@ class ChequeController extends Controller
     }
 
     /**
+     * El botón "Rechazado por proveedor" de Cheques → Emitido (misión
+     * cheques-emitidos-rechazo-proveedor, 9/10/2026): marca el cheque emitido como rechazado y, si
+     * salió de un pago a un proveedor, le carga a ese proveedor una nota de débito por el monto, así
+     * la deuda vuelve (decisión de Lucas). Un cheque de un gasto solo se marca. La lógica vive en
+     * ChequeHelper::rechazar_por_proveedor(); acá se resuelve el cheque contra el dueño y se traduce
+     * el resultado.
+     *
+     * Es un endpoint aparte de rechazar() a propósito: rechazar() no mueve ninguna cuenta corriente
+     * (es el de los recibidos) y lo está cambiando la misión cheque-motivo-rechazo.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id}, como lo manda RechazadoPorProveedor.vue.
+     * @return \Illuminate\Http\JsonResponse  200 `{model: Cheque withAll, nota_debito: CurrentAcount|null,
+     *                                        mensaje}`; 422 `{message}` sin escribir nada si el cheque
+     *                                        no es de esta cuenta (o no existe, o no es un id), si no
+     *                                        es emitido o si ya figura como pagado o rechazado.
+     */
+    function rechazar_por_proveedor(Request $request) {
+
+        // EL resolvedor de este controller (cheque_del_dueno()): un id ajeno es igual a uno inexistente.
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
+        $resultado = ChequeHelper::rechazar_por_proveedor($cheque, $this->userId(), $this->userId(false));
+
+        if (count($resultado['problemas'])) {
+
+            return response()->json(['message' => implode(' ', $resultado['problemas'])], 422);
+        }
+
+        return response()->json([
+            'model'         => $this->fullModel('Cheque', $cheque->id),
+            'nota_debito'   => $resultado['nota_debito'],
+            'mensaje'       => $resultado['mensaje'],
+        ], 200);
+    }
+
+    /**
      * La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): solo se pueden
      * cambiar el número, el banco, las notas, la fecha de emisión y la fecha de pago. Todo lo demás
      * (tipo, cliente, proveedor, monto, cuenta corriente, caja, estado, endoso...) mueve plata o
