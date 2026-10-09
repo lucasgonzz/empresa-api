@@ -1883,15 +1883,15 @@ class ChequeHelper {
 
     /**
      * true si `cheques.rechazado_observaciones` ya es una columna de texto, mirando el tipo REAL en
-     * la base (Schema::getColumnType(), con doctrine/dbal). false si todavía es INT, si la columna no
-     * existe o si no se pudo leer el tipo. Se pregunta una sola vez por proceso (propiedad estática).
+     * la base. false si todavía es INT o si la columna no existe. Se pregunta una sola vez por proceso
+     * (propiedad estática).
      *
-     * 🔴 Antes de preguntar se le enseña a doctrine el tipo `enum` (como `string`): `cheques` tiene una
-     * columna enum (`estado_manual`), doctrine lee la tabla ENTERA para devolver una columna y, sin ese
-     * mapeo, Schema::getColumnType('cheques', ...) corta con "Unknown database type enum requested"
-     * (medido el 9/10/2026 contra empresa_testing_s21). Sin el mapeo esta función daría siempre false
-     * y el motivo no se guardaría nunca. Registrar el mapeo es idempotente y solo cambia cómo doctrine
-     * LEE el esquema en este proceso.
+     * Se lee `information_schema.COLUMNS` —la misma tabla que consulta Schema::hasColumn() en MySQL—
+     * y NO Schema::getColumnType(): esa pasa por doctrine/dbal, que lee la tabla ENTERA para devolver
+     * una columna y corta con "Unknown database type enum requested" porque `cheques` tiene una
+     * columna enum (`estado_manual`) (medido el 9/10/2026 contra empresa_testing_s21). Esquivarlo
+     * registrando el mapeo `enum` en doctrine cambiaba cómo lee el esquema todo el proceso; acá es
+     * una consulta sola y sin dependencias.
      *
      * @return bool
      */
@@ -1902,26 +1902,14 @@ class ChequeHelper {
             return self::$columna_de_motivo_acepta_texto;
         }
 
-        $acepta_texto = false;
+        $fila = DB::selectOne(
+            'SELECT DATA_TYPE AS tipo FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [DB::connection()->getTablePrefix().'cheques', 'rechazado_observaciones']
+        );
 
-        try {
-
-            if (Schema::hasColumn('cheques', 'rechazado_observaciones')) {
-
-                DB::connection()->getDoctrineConnection()->getDatabasePlatform()->registerDoctrineTypeMapping('enum', 'string');
-
-                // doctrine devuelve `text` para TEXT/MEDIUMTEXT/LONGTEXT y `string` para VARCHAR.
-                $acepta_texto = in_array(Schema::getColumnType('cheques', 'rechazado_observaciones'), ['text', 'string'], true);
-            }
-
-        } catch (\Throwable $e) {
-
-            Log::warning('No se pudo leer el tipo de cheques.rechazado_observaciones: el motivo del rechazo no se guarda.', [
-                'error' => $e->getMessage(),
-            ]);
-
-            $acepta_texto = false;
-        }
+        // `text` (y sus variantes tinytext/mediumtext/longtext) o un varchar/char aceptan el motivo.
+        $acepta_texto = !is_null($fila)
+            && in_array(strtolower($fila->tipo), ['text', 'tinytext', 'mediumtext', 'longtext', 'varchar', 'char'], true);
 
         self::$columna_de_motivo_acepta_texto = $acepta_texto;
 
