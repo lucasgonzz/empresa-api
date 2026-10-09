@@ -209,6 +209,40 @@ class Generar_orden_de_compra_Test extends TestCase
     }
 
     /**
+     * Misión compra-asistente-iva-total (9/10/2026): la orden nace SUMANDO el IVA al total, como
+     * la compra del formulario. Sin la bandera nacía con el default de la columna (0), y no se
+     * arreglaba sola: el formulario pone el 1 solo en una compra NUEVA, al editar la SPA reenvía
+     * lo guardado y la casilla está oculta. El total y la deuda con el proveedor quedaban NETOS
+     * para siempre.
+     *
+     * Sumarlo encima es lo correcto porque costo_estimado viene NETO y la orden nace con
+     * precios_incluyen_iva en false (el caveat de abajo).
+     *
+     * @group sugerencias-compras
+     * @test
+     */
+    public function la_orden_nace_sumando_el_iva_al_total_como_la_del_formulario()
+    {
+        $suggestion = $this->crear_suggestion();
+        $provider = Provider::create(['name' => 'Proveedor iva total P7', 'user_id' => $this->comercio->id]);
+        $linea = $this->crear_linea($suggestion, $provider);
+
+        $response = $this->postJson('api/purchase-suggestion/' . $suggestion->id . '/create-provider-order', [
+            'purchase_suggestion_article_ids' => [$linea->id],
+        ]);
+
+        $response->assertStatus(201);
+        $order = ProviderOrder::find($response->json('provider_orders.0.id'));
+        $this->assertNotNull($order);
+
+        $this->assertEquals(
+            1,
+            (int) $order->total_with_iva,
+            'La SPA manda total_with_iva = 1 en toda compra nueva; la de Sugerencias no puede nacer apagada.'
+        );
+    }
+
+    /**
      * 🔴 EL TEST QUE MÁS IMPORTA DE ESTE ARCHIVO. costo_estimado viene NETO;
      * la orden tiene que nacer con precios_incluyen_iva = false para que el
      * literal tipeado en article_provider_order.cost se interprete como neto

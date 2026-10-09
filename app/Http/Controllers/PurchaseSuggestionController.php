@@ -421,6 +421,23 @@ class PurchaseSuggestionController extends Controller
                 'update_prices'             => 0, // costo SUGERIDO: no puede pisar article_provider como si fuera real
                 'generate_current_acount'   => 0, // no genera deuda hasta que se confirme
                 'precios_incluyen_iva'      => false, // costo_estimado ya viene NETO
+                /*
+                 * 🔴 Suma el IVA al total, como la compra del formulario (misión
+                 * compra-asistente-iva-total, 9/10/2026). Sin esta clave la orden nacía con el
+                 * default de la columna (0) y NewProviderOrderHelper::suma_iva_al_total() la exige:
+                 * el total y la deuda con el proveedor quedaban NETOS.
+                 *
+                 * Y no se arreglaba sola: el formulario pone el 1 solo en una compra NUEVA (el
+                 * `value: 1` de `total_with_iva` en el modelo de la SPA). Al editar, la SPA reenvía
+                 * lo guardado y ProviderOrderController::update() lo asigna tal cual; la casilla
+                 * está oculta, así que nadie la puede prender. Una compra que nace apagada no suma
+                 * el IVA NUNCA.
+                 *
+                 * Sumarlo encima es lo correcto porque costo_estimado ya viene NETO y la orden nace
+                 * con precios_incluyen_iva en false (el caveat de arriba). Monotributista sigue sin
+                 * sumar: lo decide suma_iva_al_total(), no esta bandera.
+                 */
+                'total_with_iva'            => 1,
                 'moneda_id'                 => 1,
                 'purchase_suggestion_id'    => $suggestion->id,
                 'user_id'                   => $this->userId(),
