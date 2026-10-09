@@ -533,7 +533,7 @@ class PdfColumnProfileController extends Controller
      * del perfil y un comprobante para "Ver un PDF de prueba" (misión diseno-pdf-configurable,
      * contrato §2.3 del plan).
      *
-     * GET api/pdf-column-profiles/page-layout-catalog?model_name=sale|budget|order&profile_id=&is_afip_ticket=0|1&sheet_type_id=
+     * GET api/pdf-column-profiles/page-layout-catalog?model_name=sale|budget|order&profile_id=&is_afip_ticket=0|1&sheet_type_id=&sin_comprobante_de_prueba=1
      *
      * Desde la misión diseno-ticket-comandera (9/10/2026, contrato §3.3) suma `es_ticket`,
      * `grilla_de_tabla` y `columnas_sugeridas` en todos los casos y, con un tipo de hoja que es un
@@ -593,6 +593,18 @@ class PdfColumnProfileController extends Controller
         }
         $es_ticket = CatalogoDeCamposPdf::soporta_ticket($model_name) && PdfColumnProfileTicketHelper::es_ticket($tipo_de_hoja);
 
+        /**
+         * `sin_comprobante_de_prueba=1` (opcional, pedido de la sesión madre de diseno-ticket-comandera):
+         * la tarjeta en miniatura del formulario pide el catálogo cada vez que se abre un Diseño de
+         * PDF y no usa el comprobante de prueba; buscarlo en un presupuesto o un pedido recorre
+         * `budgets` / `orders`, que no tienen índice por user_id (hallazgo 6 de
+         * diseno-pdf-configurable). Con el parámetro no se consulta y la clave va en null; sin él,
+         * todo igual que siempre.
+         */
+        $comprobante_de_prueba = $request->boolean('sin_comprobante_de_prueba')
+            ? null
+            : DisenoDerivadoPdf::comprobante_de_prueba($model_name, $es_fiscal, $owner_id);
+
         /** 🔴 Las claves de siempre van primero y, en una hoja, con los mismos valores que antes. */
         $respuesta = [
             'model_name'            => $model_name,
@@ -604,7 +616,7 @@ class PdfColumnProfileController extends Controller
             'formatos_de_hoja'      => $es_ticket ? [] : CatalogoDeCamposPdf::formatos_de_hoja(),
             'limites'               => $this->page_layout_limits(),
             'diseno_derivado'       => DisenoDerivadoPdf::para($model_name, $profile, $es_fiscal, User::find($owner_id), $es_ticket),
-            'comprobante_de_prueba' => DisenoDerivadoPdf::comprobante_de_prueba($model_name, $es_fiscal, $owner_id),
+            'comprobante_de_prueba' => $comprobante_de_prueba,
             /** Claves nuevas en todos los casos (contrato §3.3). */
             'es_ticket'             => $es_ticket,
             'grilla_de_tabla'       => CatalogoDeCamposPdf::GRILLA_DE_TABLA,
