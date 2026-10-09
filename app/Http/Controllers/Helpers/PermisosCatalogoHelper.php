@@ -82,8 +82,9 @@ class PermisosCatalogoHelper
                     empleado la veía. Lucas decidió darle uno propio, en el grupo Ventas. La SPA lo
                     consulta tal cual en `router/routes.js`, así que el slug no se toca. Para que los
                     empleados que hoy la usan no la pierdan con el release, el seeder suelto
-                    `PermissionComprobantesIndexSeeder` se lo da a los que tienen `sale.index` o
-                    `client.index`.
+                    `PermissionComprobantesIndexSeeder` se lo da a los que tienen `sale.index`,
+                    `client.index` o `devolucion.store` (en Comprobantes se reintenta facturar con ARCA
+                    una nota de crédito que quedó sin CAE).
                 */
                 'comprobantes.index'                            => 'Ver Comprobantes (notas de crédito y pagos de clientes)',
             ],
