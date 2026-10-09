@@ -128,6 +128,8 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
         /* ArticleController@import mueve el archivo con storeAs(): se importa sobre una copia. */
         $copia = sys_get_temp_dir() . '/' . uniqid('prov_art_copia_') . '.xlsx';
         copy($ruta, $copia);
+        // storeAs() copia la subida a storage y la deja donde estaba: se borra al terminar.
+        $this->temporales[] = $copia;
 
         $data = array_merge(
             [

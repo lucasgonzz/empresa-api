@@ -60,7 +60,7 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
     /** @var string Sufijo para que los nombres no choquen con nada de la base de testing. */
     protected $sufijo;
 
-    /** @var array Archivos temporales (tempnam y copias en storage) a borrar al terminar. */
+    /** @var array Archivos temporales (los .xlsx de %TEMP% y copias en storage) a borrar al terminar. */
     protected $archivos_temporales = [];
 
     protected function setUp(): void
@@ -115,7 +115,7 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
         // (0 == null), y un saldo 0 llegaría al importador como una celda vacía.
         $spreadsheet->getActiveSheet()->fromArray(array_merge([$cabecera], $filas), null, 'A1', true);
 
-        $ruta = tempnam(sys_get_temp_dir(), 'zz_import_prov_saldo_').'.xlsx';
+        $ruta = sys_get_temp_dir().'/'.uniqid('zz_import_prov_saldo_').'.xlsx';
 
         $writer = new Xlsx($spreadsheet);
         $writer->save($ruta);
@@ -198,7 +198,7 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
      */
     protected function importar_por_el_clasico($ruta)
     {
-        $copia = tempnam(sys_get_temp_dir(), 'zz_import_prov_copia_').'.xlsx';
+        $copia = sys_get_temp_dir().'/'.uniqid('zz_import_prov_copia_').'.xlsx';
 
         copy($ruta, $copia);
 
@@ -512,7 +512,7 @@ class ProveedoresSaldoInicialImportTest extends EmpresaTestCase
             [$this->nombre('Cliente deuda'),   1200],
         ]);
 
-        $copia = tempnam(sys_get_temp_dir(), 'zz_import_cli_copia_').'.xlsx';
+        $copia = sys_get_temp_dir().'/'.uniqid('zz_import_cli_copia_').'.xlsx';
         copy($ruta, $copia);
         $this->archivos_temporales[] = $copia;
 

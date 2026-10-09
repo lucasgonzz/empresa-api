@@ -30,7 +30,7 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
  */
 class Compra_a_proveedor_importado_Test extends ComprasTestCase
 {
-    /** @var array Archivos temporales (tempnam y la copia en storage) a borrar al terminar. */
+    /** @var array Archivos temporales (los .xlsx de %TEMP% y la copia en storage) a borrar al terminar. */
     protected $archivos_temporales = [];
 
     protected function tearDown(): void
@@ -57,7 +57,7 @@ class Compra_a_proveedor_importado_Test extends ComprasTestCase
         $spreadsheet = new Spreadsheet();
         $spreadsheet->getActiveSheet()->fromArray([['Nombre'], [$nombre]], null, 'A1');
 
-        $ruta = tempnam(sys_get_temp_dir(), 'zz_compra_prov_importado_').'.xlsx';
+        $ruta = sys_get_temp_dir().'/'.uniqid('zz_compra_prov_importado_').'.xlsx';
         (new Xlsx($spreadsheet))->save($ruta);
         $this->archivos_temporales[] = $ruta;
 
