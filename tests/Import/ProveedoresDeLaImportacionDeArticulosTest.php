@@ -4,6 +4,7 @@ namespace Tests\Import;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\ImportHistory;
 use App\Models\Provider;
@@ -260,6 +261,86 @@ class ProveedoresDeLaImportacionDeArticulosTest extends ImportTestCase
         );
 
         $this->assert_tiene_sus_dos_cuentas($sin_cuentas);
+
+        // El vecino: C también se siembra sin cuentas, pero NO aparece en la columna. No se toca.
+        $vecino = $this->providers['C'];
+
+        $this->assertEquals(
+            0,
+            $this->cuentas($vecino->id, 1) + $this->cuentas($vecino->id, 2),
+            'La importación les creó cuentas a proveedores que no aparecen en la columna "proveedor".'
+        );
+    }
+
+    /**
+     * Un proveedor que tiene SOLO la cuenta en pesos (los de antes de las cuentas en dólares) y
+     * aparece en la columna queda con las dos; la de pesos no cambia.
+     *
+     * @return void
+     */
+    public function test_un_proveedor_con_solo_la_cuenta_en_pesos_queda_con_las_dos()
+    {
+        $solo_pesos = $this->providers['B'];
+
+        $pesos = CreditAccount::create([
+            'moneda_id'  => 1,
+            'model_name' => 'provider',
+            'model_id'   => $solo_pesos->id,
+            'saldo'      => 0,
+            'user_id'    => $this->tenant->id,
+        ]);
+
+        $this->importar_xlsx($this->xlsx([
+            $this->fila('PC-PROV-ART-5', 'Taladro percutor de la lista', $solo_pesos->name),
+        ]));
+
+        $this->assert_tiene_sus_dos_cuentas($solo_pesos);
+
+        $this->assertEquals(
+            $pesos->id,
+            CreditAccount::where('model_name', 'provider')->where('model_id', $solo_pesos->id)->where('moneda_id', 1)->value('id'),
+            'La cuenta en pesos que ya existía cambió.'
+        );
+    }
+
+    /**
+     * Las cuentas de un CLIENTE con el mismo id que el proveedor no cuentan como del proveedor
+     * (`credit_accounts` es de clientes y proveedores, y los ids de las dos tablas se pisan): el
+     * proveedor de la columna recibe las suyas igual.
+     *
+     * @return void
+     */
+    public function test_las_cuentas_de_un_cliente_con_el_mismo_id_no_cuentan_como_del_proveedor()
+    {
+        // Un proveedor del tenant sin cuentas, como los sembrados.
+        $proveedor = Provider::create([
+            'name'    => 'zz Proveedor con cliente del mismo id ' . uniqid(),
+            'user_id' => $this->tenant->id,
+        ]);
+
+        $cliente = Client::find($proveedor->id);
+
+        if (is_null($cliente)) {
+            $cliente = Client::create([
+                'id'      => $proveedor->id,
+                'name'    => 'zz Cliente con el id del proveedor ' . uniqid(),
+                'user_id' => $this->tenant->id,
+            ]);
+        }
+
+        CreditAccountHelper::crear_credit_accounts('client', $cliente->id, $cliente->user_id);
+
+        $this->assertEquals(
+            2,
+            CreditAccount::where('model_name', 'client')->where('model_id', $proveedor->id)->count(),
+            'Premisa: el cliente con el mismo id que el proveedor tiene sus dos cuentas.'
+        );
+
+        $this->importar_xlsx($this->xlsx([
+            $this->fila('PC-PROV-ART-6', 'Atornillador de la lista', $proveedor->name),
+        ]));
+
+        $this->assert_tiene_sus_dos_cuentas($proveedor);
     }
 
     /**
