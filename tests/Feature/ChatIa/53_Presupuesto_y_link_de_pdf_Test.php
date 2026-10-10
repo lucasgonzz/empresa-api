@@ -5,6 +5,7 @@ namespace Tests\Feature\ChatIa;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -528,16 +529,54 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
 
         list($conversation) = $this->conversacion('Pasame el PDF del presupuesto');
 
-        /** Sin ningún diseño de presupuesto marcado por defecto: el link de siempre, sin query. */
+        /*
+         * 🔴 Desde la misión pdf-de-venta-publico (10/10/2026, cambio autorizado por Lucas) las rutas
+         * de PDF dejaron de ser públicas y el link que pasa el asistente lleva el token del link
+         * (`t=`, PdfLinkHelper) al final: el cliente final que lo abre no tiene sesión. Por eso estas
+         * dos aserciones ya no piden que el link TERMINE en la ruta, sino en la ruta + `t=<token>`, y
+         * además que ese token sea uno vigente de `pdf_links` para ESE presupuesto. Son más
+         * estrictas que antes: nada más puede colarse entre la ruta y el token, y un token que no
+         * abre el presupuesto no pasa.
+         */
+
+        /** Sin ningún diseño de presupuesto marcado por defecto: el link de siempre + su token, sin otro query. */
         $respuesta = $this->link_de_pdf($conversation, ['tipo' => 'presupuesto', 'numero' => 990054]);
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
-        $this->assertStringEndsWith('/budget/pdf/' . $presupuesto->id . '/1/0', $respuesta['link'], 'Ni el de venta ni el de otro dueno ni el que no es default pueden colarse.');
+        $this->assertMatchesRegularExpression(
+            '#/budget/pdf/' . $presupuesto->id . '/1/0\?t=([A-Za-z0-9]{48})$#',
+            $respuesta['link'],
+            'Ni el de venta ni el de otro dueno ni el que no es default pueden colarse.'
+        );
+        $this->assertTokenDelPresupuesto($presupuesto->id, $respuesta['link']);
 
-        /** Con el default del dueño: lleva SU id (y solo ese). */
+        /** Con el default del dueño: lleva SU id (y solo ese), y después el token. */
         $propio = $crear($this->dueno->id, 'budget', 'zz Presupuesto por defecto', true);
 
         $respuesta = $this->link_de_pdf($conversation, ['tipo' => 'presupuesto', 'numero' => 990054]);
-        $this->assertStringEndsWith('/budget/pdf/' . $presupuesto->id . '/1/0?pdf_column_profile_id=' . $propio->id, $respuesta['link']);
+        $this->assertMatchesRegularExpression(
+            '#/budget/pdf/' . $presupuesto->id . '/1/0\?pdf_column_profile_id=' . $propio->id . '&t=([A-Za-z0-9]{48})$#',
+            $respuesta['link']
+        );
+        $this->assertTokenDelPresupuesto($presupuesto->id, $respuesta['link']);
+    }
+
+    /**
+     * El `t` del link es un token vigente de `pdf_links` de tipo `budget` para ESE presupuesto
+     * (misión pdf-de-venta-publico, 10/10/2026).
+     *
+     * @param  int     $presupuesto_id
+     * @param  string  $link
+     * @return void
+     */
+    protected function assertTokenDelPresupuesto($presupuesto_id, $link)
+    {
+        parse_str((string) parse_url($link, PHP_URL_QUERY), $query);
+
+        $this->assertArrayHasKey('t', $query, 'El link del presupuesto tiene que llevar el token.');
+        $this->assertTrue(
+            PdfLinkHelper::token_valido('budget', $presupuesto_id, $query['t']),
+            'El token del link tiene que abrir ESTE presupuesto (pdf_links, tipo budget, sin revocar).'
+        );
     }
 
     /**
