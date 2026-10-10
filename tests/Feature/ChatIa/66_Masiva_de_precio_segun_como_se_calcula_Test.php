@@ -377,7 +377,7 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
 
         $this->assertTrue(RespuestaDeCargaIa::es_negativa($respuesta));
         $this->assertSame(
-            'Ninguno de estos 2 artículos usa precio manual: su precio sale del costo más el margen, así que un precio fijado a mano no se usaría. Para fijarles un precio a mano hay que sacarles el margen en la ficha de cada artículo.',
+            'Ninguno de estos 2 artículos usa precio manual: su precio se calcula a partir del costo, así que un precio fijado a mano no se usaría. Para fijarles un precio a mano hay que sacarles el margen en la ficha de cada artículo.',
             $respuesta['error']
         );
         $this->assertStringNotContainsString('precio_final', $respuesta['error']);
@@ -537,17 +537,25 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
     }
 
     /**
-     * Al bajar, la tarjeta avisa cuántos quedarían por debajo de su costo: por margen
-     * (`base_margen × (1 + margen nuevo)` contra el costo real) y por precio manual (el precio nuevo
-     * contra el costo real).
+     * Al bajar, la tarjeta avisa cuántos quedarían por debajo de su costo, medido por unidad y en
+     * pesos: por margen (`base_margen × (1 + margen nuevo)`) y por precio manual (el precio nuevo),
+     * contra el costo unitario cotizado (ComboCalculadoHelper::costo_unitario_de_articulo()). Un bulto
+     * de 12 no cuenta por tener el costo del bulto, y uno en dólares sí cuenta cuando corresponde. Al
+     * subir no se avisa nada.
      *
      * @group chat-ia
      * @test
      */
     public function bajar_el_precio_final_avisa_los_que_quedarian_por_debajo_de_su_costo()
     {
-        $this->con_precio($this->articulo(['cost' => 1000, 'percentage_gain' => 10]));
-        $this->con_precio($this->articulo(['cost' => 1000, 'percentage_gain' => 50]));
+        $this->comercio->dollar = 1000;
+        $this->comercio->cotizar_precios_en_dolares = 1;
+        $this->comercio->save();
+
+        $this->con_precio($this->articulo(['name' => 'zz-p66 margen 10', 'cost' => 1000, 'percentage_gain' => 10]));
+        $this->con_precio($this->articulo(['name' => 'zz-p66 margen 50', 'cost' => 1000, 'percentage_gain' => 50]));
+        $this->con_precio($this->articulo(['name' => 'zz-p66 bulto de 12', 'cost' => 1200, 'unidades_individuales' => 12, 'percentage_gain' => 30]));
+        $this->con_precio($this->articulo(['name' => 'zz-p66 en dolares', 'cost' => 10, 'cost_in_dollars' => 1, 'percentage_gain' => 10]));
         $this->con_precio($this->articulo(['name' => 'zz-p66 manual caro', 'price' => 1000, 'cost' => 950]));
         $this->con_precio($this->articulo(['name' => 'zz-p66 manual con aire', 'price' => 1000, 'cost' => 500]));
 
@@ -558,22 +566,30 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
         $this->assertTrue($respuesta['ok'], json_encode($respuesta));
 
         $this->assertSame([
-            ['etiqueta' => 'Artículos alcanzados', 'valor' => '4'],
+            ['etiqueta' => 'Artículos alcanzados', 'valor' => '6'],
             ['etiqueta' => 'Categoría', 'valor' => self::CATEGORIA],
             ['etiqueta' => 'Cambio', 'valor' => 'Precio final baja 20 %'],
-            ['etiqueta' => 'Cómo', 'valor' => 'En 2 artículos se ajusta el margen y en 2 baja el precio manual, para que el precio final baje 20 %'],
-            ['etiqueta' => 'Atención', 'valor' => '2 quedarían por debajo de su costo'],
-        ], $this->renglones($respuesta), 'El de margen 10 (queda en −12 %) y el manual de costo 950 (queda en 800).');
+            ['etiqueta' => 'Cómo', 'valor' => 'En 4 artículos se ajusta el margen y en 2 baja el precio manual, para que el precio final baje 20 %'],
+            ['etiqueta' => 'Atención', 'valor' => '3 quedarían por debajo de su costo'],
+        ], $this->renglones($respuesta), 'El de margen 10 y el de dólares (quedan en −12 %) y el manual de costo 950 (queda en 800). El bulto de 12 queda en 4 % sobre su costo unitario: no cuenta.');
+
+        // Al subir no se avisa "por debajo de su costo", ni para el bulto de 12.
+        $subir = $this->proponer([['campo' => 'precio_final', 'operacion' => 'subir_porcentaje', 'valor' => 10]]);
+        $this->assertTrue($subir['ok'], json_encode($subir));
+        $this->assertSame(['En 4 artículos se ajusta el margen y en 2 sube el precio manual, para que el precio final suba 10 %'], $subir['avisos']);
 
         $this->assertSame(-12.0, PrecioFinalEnMasivaHelper::nuevo_margen(10, 20, false), '(1,10 × 0,80 − 1) = −12 %.');
 
-        // Setear o bajar 100 % o más no son operaciones de precio final.
+        // Setear o bajar 100 % o más no son operaciones de precio final, y el error es para el dueño.
         $setear = $this->proponer([['campo' => 'precio_final', 'operacion' => 'setear', 'valor' => 1500]]);
         $this->assertTrue(RespuestaDeCargaIa::es_negativa($setear));
         $this->assertStringContainsString('El precio final se calcula, no se fija', $setear['error']);
+        $this->assertStringNotContainsString('precio_final', $setear['error']);
+        $this->assertStringNotContainsString('subir_porcentaje', $setear['error']);
 
         $todo = $this->proponer([['campo' => 'precio_final', 'operacion' => 'bajar_porcentaje', 'valor' => 100]]);
         $this->assertTrue(RespuestaDeCargaIa::es_negativa($todo));
+        $this->assertSame('Para bajar el precio el porcentaje tiene que ser menor a 100.', $todo['error']);
     }
 
     /**
@@ -630,7 +646,7 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
             ['etiqueta' => 'Cambio', 'valor' => 'Precio final sube 10 %'],
             ['etiqueta' => 'Atención', 'valor' => 'Ninguno de estos 4 artículos usa precio manual: se sube el precio final'],
             ['etiqueta' => 'Cómo', 'valor' => 'En 3 artículos sube el costo para que el precio final suba 10 %'],
-            ['etiqueta' => 'Atención', 'valor' => '1 no tiene costo ni precio cargado: no cambia'],
+            ['etiqueta' => 'Atención', 'valor' => '1 no tiene costo: no cambia'],
             ['etiqueta' => 'Atención', 'valor' => 'Si después se actualiza el costo desde el proveedor, la suba de esos 3 se reemplaza.'],
             ['etiqueta' => 'Atención', 'valor' => '1 tiene el precio de alguna lista fijado a mano: esa lista no cambia'],
         ], $this->renglones($respuesta));
@@ -652,7 +668,8 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
 
     /**
      * Con la extensión de listas por categoría las listas también salen de la base de antes del margen
-     * del artículo: la palanca es el costo.
+     * del artículo: la palanca es el costo. De punta a punta: sube el costo, el precio final y la lista
+     * de la categoría suben 10 %.
      *
      * @group chat-ia
      * @test
@@ -661,17 +678,34 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
     {
         $this->dar_extension('lista_de_precios_por_categoria');
 
-        $this->articulo(['cost' => 1000, 'percentage_gain' => 30]);
+        $lista = PriceType::create(['name' => 'zz Gremio P66', 'user_id' => $this->comercio->id, 'percentage' => 0, 'position' => 1]);
+        $this->adhesivos->price_types()->attach($lista->id, ['percentage' => 20]);
 
-        $respuesta = $this->proponer([
+        $articulo = $this->con_precio($this->articulo(['cost' => 1000, 'percentage_gain' => 30]));
+
+        $lista_del_articulo = function () use ($articulo, $lista) {
+            return DB::table('article_price_type')->where('article_id', $articulo->id)->where('price_type_id', $lista->id)->value('final_price');
+        };
+
+        $lista_antes = $lista_del_articulo();
+        $this->assertGreaterThan(0, (float) $lista_antes, 'Guarda: la lista de la categoría tenía que tener precio.');
+
+        list($respuesta, $masiva) = $this->aplicar_por_la_tarjeta([
             ['campo' => 'precio_final', 'operacion' => 'subir_porcentaje', 'valor' => 10],
         ]);
 
-        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
         $this->assertSame([
             'En 1 artículo sube el costo para que el precio final suba 10 %',
             'Si después se actualiza el costo desde el proveedor, la suba de ese artículo se reemplaza.',
         ], $respuesta['avisos']);
+
+        $this->assertSame(1, (int) $masiva->affected_count);
+
+        $despues = $articulo->fresh();
+        $this->assertEqualsWithDelta(1100, (float) $despues->cost, 0.000001);
+        $this->assertEquals(30, (float) $despues->percentage_gain, 'El margen queda igual.');
+        $this->assertSubio($articulo->final_price, $despues->final_price, 1.1);
+        $this->assertSubio($lista_antes, $lista_del_articulo(), 1.1, 'La lista de la categoría sube 10 %.');
     }
 
     /**
@@ -700,6 +734,14 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
         $this->assertEqualsWithDelta(1100, (float) $despues->cost, 0.000001);
         $this->assertEquals(30, (float) $despues->percentage_gain, 'El margen no se toca: acá no entra en el precio.');
         $this->assertSubio($articulo->final_price, $despues->final_price, 1.1);
+
+        // La reversión de la palanca costo devuelve el costo y el precio.
+        $reversion = MasiveUpdateHelper::create_pending_revert($masiva, $this->comercio->id);
+        MasiveUpdateHelper::process_revert($reversion->fresh(), $masiva->fresh());
+
+        $revertido = $articulo->fresh();
+        $this->assertEqualsWithDelta(1000, (float) $revertido->cost, 0.000001, 'El costo vuelve al de antes.');
+        $this->assertEqualsWithDelta((float) $articulo->final_price, (float) $revertido->final_price, 0.01, 'El precio vuelve al de antes.');
     }
 
     /**
@@ -716,14 +758,34 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
 
         $uno = $this->con_precio($this->articulo(['cost' => 1000, 'provider_id' => $proveedor->id]));
         $dos = $this->con_precio($this->articulo(['cost' => 1234.56, 'provider_id' => $proveedor->id]));
+        $tres = $this->con_precio($this->articulo(['cost' => 777.77, 'provider_id' => $proveedor->id]));
 
-        list($respuesta) = $this->aplicar_por_la_tarjeta([
+        list($respuesta, $masiva) = $this->confirmar_por_la_tarjeta([
             ['campo' => 'precio_final', 'operacion' => 'subir_porcentaje', 'valor' => 10],
         ]);
 
-        $this->assertSame('En 2 artículos se ajusta el margen para que el precio final suba 10 %', $respuesta['avisos'][0]);
+        $this->assertSame('En 3 artículos se ajusta el margen para que el precio final suba 10 %', $respuesta['avisos'][0]);
 
-        foreach ([$uno, $dos] as $antes) {
+        Notification::fake();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        MasiveUpdateHelper::process_update($masiva->fresh());
+
+        $consultas = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        // La lectura del proveedor de la palanca (margen y costo + IVA juntos): una para los tres.
+        $del_proveedor = array_filter($consultas, function ($consulta) {
+            return strpos($consulta['query'], 'providers') !== false
+                && strpos($consulta['query'], 'price_from_cost_mas_iva') !== false;
+        });
+        $this->assertCount(1, $del_proveedor, 'El proveedor de la palanca se lee una vez por corrida, no una por artículo.');
+
+        $this->assertSame(3, (int) $masiva->fresh()->affected_count);
+
+        foreach ([$uno, $dos, $tres] as $antes) {
             $despues = $antes->fresh();
             $this->assertEquals(10, (float) $despues->percentage_gain);
             $this->assertNull($despues->price);
@@ -768,6 +830,69 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
             [['type' => 'number', 'key' => 'increment_price', 'value' => 10], ['type' => 'number', 'key' => 'set_percentage_gain', 'value' => 0]],
             AiMessageAction::find($con_margen['tarjeta_id'])->datos['update_form']
         );
+
+        // Lo mismo si la tarjeta cambia el costo: también decide si manda el margen.
+        $con_costo = $this->proponer([
+            ['campo' => 'precio_manual', 'operacion' => 'subir_porcentaje', 'valor' => 10],
+            ['campo' => 'costo', 'operacion' => 'setear', 'valor' => 0],
+        ]);
+        $this->assertTrue($con_costo['ok'], json_encode($con_costo));
+        $this->assertArrayNotHasKey('avisos', $con_costo);
+    }
+
+    /**
+     * 🔴 Un precio manual convertido en precio final tiene la clave del precio final: un "precio
+     * final sube 10 %" posterior en la misma conversación REEMPLAZA a la tarjeta anterior, y nunca
+     * quedan dos propuestas vivas iguales (confirmar las dos subía 21 %).
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_precio_manual_convertido_y_un_precio_final_igual_son_la_misma_tarjeta()
+    {
+        $this->con_precio($this->articulo(['cost' => 1000, 'percentage_gain' => 30]));
+        $this->con_precio($this->articulo(['cost' => 2000, 'percentage_gain' => 30]));
+
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $convertida = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input([
+            ['campo' => 'precio_manual', 'operacion' => 'subir_porcentaje', 'valor' => 10],
+        ]));
+        $this->assertTrue($convertida['ok'], json_encode($convertida));
+        $this->assertSame(['Precio final sube 10 %'], $convertida['cambios_legibles']);
+
+        $precio_final = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input([
+            ['campo' => 'precio_final', 'operacion' => 'subir_porcentaje', 'valor' => 10],
+        ]));
+        $this->assertTrue($precio_final['ok'], json_encode($precio_final));
+
+        $this->assertSame([(int) $convertida['tarjeta_id']], $precio_final['reemplazo']);
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::find($convertida['tarjeta_id'])->estado_guardado());
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count(), 'Una sola propuesta viva.');
+    }
+
+    /**
+     * Con la extensión de precios en blanco, el precio en blanco sale del costo y del margen en
+     * blanco: ajustar el margen del artículo no lo mueve, y la tarjeta lo dice.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function con_precios_en_blanco_avisa_que_el_precio_en_blanco_no_cambia()
+    {
+        $this->dar_extension('articulos_precios_en_blanco');
+
+        $this->con_precio($this->articulo(['cost' => 1000, 'percentage_gain' => 30]));
+        $this->con_precio($this->articulo(['cost' => 2000, 'percentage_gain' => 20]));
+
+        $respuesta = $this->proponer([['campo' => 'precio_final', 'operacion' => 'subir_porcentaje', 'valor' => 10]]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame([
+            'En 2 artículos se ajusta el margen para que el precio final suba 10 %',
+            'El precio en blanco de los 2 a los que se les ajusta el margen no cambia',
+        ], $respuesta['avisos']);
     }
 
     /**

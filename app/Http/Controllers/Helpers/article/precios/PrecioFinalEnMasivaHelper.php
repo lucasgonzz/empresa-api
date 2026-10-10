@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\article\precios;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\Provider;
 use App\Models\User;
 
@@ -103,20 +104,24 @@ class PrecioFinalEnMasivaHelper
     }
 
     /**
-     * Lo que la palanca necesita saber del comercio: si trabaja con listas de precio y si tiene la
-     * extensión de listas por categoría. Con la memoria de la corrida se resuelve UNA vez por corrida.
+     * Lo que la palanca (y la tarjeta) necesitan saber del comercio: si trabaja con listas de precio,
+     * si tiene la extensión de listas por categoría y si tiene la de precios en blanco
+     * (`articulos_precios_en_blanco`, la que mira setFinalPrice() para llamar a
+     * ArticlePricesHelper::set_precios_en_blanco(), que calcula el precio en blanco desde el costo y
+     * el margen en blanco, sin el margen del artículo). Con la memoria de la corrida se resuelve UNA
+     * vez por corrida.
      *
      * Sin dueño no se le pasa null a UserHelper: caería en Auth, que en la cola no existe. Se toma
-     * como un comercio sin listas.
+     * como un comercio sin listas ni extensiones.
      *
      * @param  \App\Models\User|null  $owner
      * @param  \ArrayObject|null      $memoria
-     * @return array{listas_de_precio: bool, listas_por_categoria: bool}
+     * @return array{listas_de_precio: bool, listas_por_categoria: bool, precios_en_blanco: bool}
      */
     public static function comercio($owner, $memoria = null)
     {
         if (is_null($owner)) {
-            return ['listas_de_precio' => false, 'listas_por_categoria' => false];
+            return ['listas_de_precio' => false, 'listas_por_categoria' => false, 'precios_en_blanco' => false];
         }
 
         $clave = 'precio_final:comercio:' . (int) $owner->id;
@@ -128,6 +133,7 @@ class PrecioFinalEnMasivaHelper
         $comercio = [
             'listas_de_precio'     => UserHelper::uses_listas_de_precio($owner),
             'listas_por_categoria' => UserHelper::hasExtencion('lista_de_precios_por_categoria', $owner),
+            'precios_en_blanco'    => UserHelper::hasExtencion('articulos_precios_en_blanco', $owner),
         ];
 
         if (!is_null($memoria)) {
@@ -352,22 +358,29 @@ class PrecioFinalEnMasivaHelper
      *
      *  - precio_manual, margen, costo: cuántos se mueven por cada una.
      *  - sin_precio, precio_manual_en_cero: los que no cambian.
-     *  - debajo_del_costo: los que quedarían con el precio por debajo de su costo real, medido con lo
-     *    que dejó el último recálculo: margen → `base_margen * (1 + nuevo / 100) < costo_real`;
-     *    precio manual → precio nuevo < `costo_real`. La palanca de costo no cambia márgenes: no
-     *    cuenta. Sin `costo_real` (o sin `base_margen`) no se puede medir y no cuenta.
+     *  - debajo_del_costo: SOLO AL BAJAR, los que quedarían con el precio por debajo de lo que cuesta
+     *    una unidad, en pesos. El precio contra el que se mide es por unidad y en pesos (`base_margen`
+     *    sale de ArticleHelper::calcular_base_antes_de_listas(), que divide por
+     *    `unidades_individuales` y cotiza el dólar), así que el costo también: el de
+     *    ComboCalculadoHelper::costo_unitario_de_articulo(), la misma regla que
+     *    SaleHelper::getCost() sin venta (costo real ÷ unidades, cotizado si está en dólares).
+     *    Margen → `base_margen × (1 + margen nuevo / 100)`; precio manual → el precio nuevo. La
+     *    palanca de costo no cambia márgenes: no cuenta. Sin `base_margen`, sin costo o sin el dueño
+     *    (la cotización lo necesita) no se puede medir y no cuenta.
      *  - ids_costo: los ids de los que suben el costo (para mirar sus listas fijadas a mano).
      *
-     * Los artículos tienen que venir con `provider`, `base_margen` y `costo_real` cargados.
+     * Los artículos tienen que venir con `provider` (la cotización lee su dólar), `base_margen`,
+     * `costo_real`, `unidades_individuales` y `cost_in_dollars` cargados.
      *
-     * @param  iterable  $articulos
-     * @param  float     $porcentaje
-     * @param  bool      $sube
-     * @param  array     $comercio   Lo que devuelve comercio().
-     * @param  bool      $redondear  Si el precio manual se redondea a entero.
+     * @param  iterable               $articulos
+     * @param  float                  $porcentaje
+     * @param  bool                   $sube
+     * @param  array                  $comercio   Lo que devuelve comercio().
+     * @param  bool                   $redondear  Si el precio manual se redondea a entero.
+     * @param  \App\Models\User|null  $owner      El dueño (su dólar y si cotiza en dólares).
      * @return array
      */
-    public static function clasificar($articulos, $porcentaje, $sube, array $comercio, $redondear = false)
+    public static function clasificar($articulos, $porcentaje, $sube, array $comercio, $redondear = false, $owner = null)
     {
         $conteo = [
             self::PALANCA_PRECIO_MANUAL => 0,
@@ -379,32 +392,41 @@ class PrecioFinalEnMasivaHelper
             'ids_costo'                 => [],
         ];
 
+        // Subir el precio no deja a nadie por debajo de su costo (y un artículo que ya lo estaba no es
+        // obra de esta masiva).
+        $medir_el_costo = !$sube && !is_null($owner);
+
         foreach ($articulos as $articulo) {
 
             $palanca = self::palanca($articulo, $comercio);
 
             $conteo[$palanca]++;
 
-            $costo_real = is_null($articulo->costo_real) ? 0 : (float) $articulo->costo_real;
-
             if ($palanca === self::PALANCA_COSTO) {
 
                 $conteo['ids_costo'][] = (int) $articulo->id;
 
-            } elseif ($palanca === self::PALANCA_MARGEN) {
+                continue;
+            }
 
-                if ($costo_real > 0 && !is_null($articulo->base_margen)) {
+            if (!$medir_el_costo) {
+                continue;
+            }
 
-                    $nuevo = self::nuevo_margen($articulo->percentage_gain, $porcentaje, $sube);
+            if ($palanca === self::PALANCA_MARGEN && !is_null($articulo->base_margen)) {
 
-                    if ((float) $articulo->base_margen * (1 + $nuevo / 100) < $costo_real) {
-                        $conteo['debajo_del_costo']++;
-                    }
+                $costo_unitario = ComboCalculadoHelper::costo_unitario_de_articulo($articulo, $owner);
+                $nuevo = self::nuevo_margen($articulo->percentage_gain, $porcentaje, $sube);
+
+                if ($costo_unitario > 0 && (float) $articulo->base_margen * (1 + $nuevo / 100) < $costo_unitario) {
+                    $conteo['debajo_del_costo']++;
                 }
 
             } elseif ($palanca === self::PALANCA_PRECIO_MANUAL) {
 
-                if ($costo_real > 0 && self::nuevo_precio_manual($articulo->price, $porcentaje, $sube, $redondear) < $costo_real) {
+                $costo_unitario = ComboCalculadoHelper::costo_unitario_de_articulo($articulo, $owner);
+
+                if ($costo_unitario > 0 && self::nuevo_precio_manual($articulo->price, $porcentaje, $sube, $redondear) < $costo_unitario) {
                     $conteo['debajo_del_costo']++;
                 }
             }
