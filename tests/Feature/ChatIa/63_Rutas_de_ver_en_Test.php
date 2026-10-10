@@ -172,6 +172,30 @@ class Rutas_de_ver_en_Test extends EmpresaTestCase
     }
 
     /**
+     * Las altas y ediciones genéricas (catálogo de escritura) de una pantalla que lista por día llevan el
+     * día del registro en la ruta: editar por el chat un gasto de otro día y tocar "Ver en Gastos" tiene
+     * que abrir ese día. Las demás pantallas no lo llevan.
+     *
+     * @test
+     */
+    public function la_ruta_generica_de_una_pantalla_por_dia_lleva_el_dia_del_registro()
+    {
+        $metodo = new \ReflectionMethod(\App\Http\Controllers\Helpers\asistente_ia\EjecutorGenericoIaHelper::class, 'ruta_con_dia');
+        $metodo->setAccessible(true);
+
+        $gasto = $metodo->invoke(null, 'expense', (object) ['id' => 1, 'created_at' => '2026-09-15 18:30:00']);
+        $this->assertEquals('expense', $gasto['name']);
+        $this->assertEquals('2026-09-15', $gasto['fecha']);
+
+        $cliente = $metodo->invoke(null, 'client', (object) ['id' => 1, 'created_at' => '2026-09-15 18:30:00']);
+        $this->assertEquals('client', $cliente['name']);
+        $this->assertArrayNotHasKey('fecha', $cliente, 'Clientes no lista por día: la ruta no lleva fecha.');
+
+        $sin_fila = $metodo->invoke(null, 'expense', null);
+        $this->assertArrayNotHasKey('fecha', $sin_fila);
+    }
+
+    /**
      * La clave nueva no cambia la forma de `params`: sigue viajando como objeto vacío (la SPA se lo
      * pasa a router.push). Se mira el contenido CRUDO, como en Acciones_gasto_Test.
      *
@@ -205,12 +229,21 @@ class Rutas_de_ver_en_Test extends EmpresaTestCase
             $codigo = file_get_contents($archivo);
             $clase = 'App\\Http\\Controllers\\Helpers\\asistente_ia\\' . basename($archivo, '.php');
 
-            // Un bloque de ruta: `'ruta' => [` y, a pocas líneas, su `'name' => ...`.
-            preg_match_all("/'ruta'\\s*=>\\s*\\[[^\\]]{0,200}?'name'\\s*=>\\s*(?:'([A-Za-z_\\-]+)'|self::([A-Z_]+))/s", $codigo, $bloques, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+            // Cada `'ruta' => [` del archivo, sin excepción: su primer elemento (sacando comentarios)
+            // tiene que ser `'name' => '...'` o `'name' => self::CONSTANTE`. Si alguno no se puede
+            // leer, el test lo dice en vez de saltearlo (un comentario largo entre `[` y `'name'`
+            // dejaba afuera la ruta del combo con la primera versión de este lector).
+            preg_match_all("/'ruta'\\s*=>\\s*\\[/", $codigo, $aperturas, PREG_OFFSET_CAPTURE);
 
-            foreach ($bloques as $bloque) {
-                $name = (isset($bloque[1]) && $bloque[1][0] !== '') ? $bloque[1][0] : constant($clase . '::' . $bloque[2][0]);
-                $encontrados[] = [basename($archivo), $name, self::tramo_de_params($codigo, $bloque[0])];
+            foreach ($aperturas[0] as $apertura) {
+                $desde = $apertura[1] + strlen($apertura[0]);
+                $tramo = self::sin_comentarios(substr($codigo, $desde, 1500));
+                $legible = preg_match("/^\\s*'name'\\s*=>\\s*(?:'([A-Za-z_\\-]+)'|self::([A-Z_]+))/", $tramo, $m);
+
+                $this->assertSame(1, $legible, 'Una ruta de ' . basename($archivo) . ' no empieza por un `name` legible (literal o self::CONSTANTE): ' . substr($tramo, 0, 120));
+
+                $name = !empty($m[1]) ? $m[1] : constant($clase . '::' . $m[2]);
+                $encontrados[] = [basename($archivo), $name, self::tramo_de_params($tramo, [$m[0], 0])];
             }
 
             // Las funciones que devuelven la ruta armada (ruta_a_disenos, ruta_de_la_agenda, ...).
@@ -237,6 +270,17 @@ class Rutas_de_ver_en_Test extends EmpresaTestCase
                 $this->assertMatchesRegularExpression("/'view'\\s*=>/", $par[2], 'La ruta "' . $par[1] . '" de ' . $par[0] . ' no lleva view: la pantalla abriría sin solapa (en blanco o en otra). Tramo leído: ' . $par[2]);
             }
         }
+    }
+
+    /**
+     * El código sin comentarios, de línea y de bloque.
+     *
+     * @param string $codigo
+     * @return string
+     */
+    protected static function sin_comentarios($codigo)
+    {
+        return preg_replace(['#/\*.*?\*/#s', '#//[^\n]*#'], '', $codigo);
     }
 
     /**

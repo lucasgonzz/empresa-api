@@ -507,11 +507,16 @@ class PropuestaCompraConFacturaIaHelper
              * Compras es la solapa 'compras' de la ruta 'provider' de la SPA (/proveedores/compras).
              * Hasta el 10/10/2026 iba name 'proveedores', que no existe en router/index.js y dejaba
              * la pantalla en blanco (misión ver-en-del-asistente-refresca-destino).
+             *
+             * `fecha` es el día de la compra: Compras lista por día y la factura puede haber caído en
+             * una compra vacía de hasta DIAS_DE_REUSO días atrás (orden_para_la_factura), que no está
+             * en el día de hoy. Clave opcional, como la del gasto.
              */
             'ruta'              => [
                 'name'   => 'provider',
                 'params' => ['view' => 'compras'],
                 'texto'  => 'Ver en Compras',
+                'fecha'  => $orden->created_at->format('Y-m-d'),
             ],
             'provider_id'       => (int) $proveedor->id,
             'provider_order_id' => (int) $orden->id,
