@@ -136,6 +136,27 @@ class Carga_prometida_sin_accion_Test extends TestCase
     /** La frase que distingue la nota de la tarjeta (test 63). */
     const NOTA_DE_LA_TARJETA = 'NO se creó ninguna';
 
+    /**
+     * Quinta vuelta (10/10/2026): la persona PREGUNTA si hizo algo, con un pretérito de primera persona
+     * en una pregunta o detrás de un "si" de pregunta indirecta. Son consultas: con la cuarta vuelta
+     * daban 'otro' y en una primera respuesta "Sí, quedó registrado el pago." terminaba en "No pude…".
+     */
+    const CONSULTAS_CON_PRETERITO = [
+        '¿Cargué bien el gasto de la luz?', '¿Ya le pagué a Coca?', '¿Le pagué a Coca este mes?', '¿Cuándo pagué la luz?',
+        '¿Dónde cargué el gasto de la nafta?', '¿Pagué el alquiler?', '¿Hice la venta a Juan?', 'Fijate si pagué la luz',
+        'Decime si cargué el gasto de la luz', 'Revisá si registré el pago de Juan', '¿Registré el pago de Juan o no?', '¿Ya pasé la tarea al jueves?',
+    ];
+
+    /**
+     * Quinta vuelta (10/10/2026): un ofrecimiento que termina en "decime" o "avisame" sigue siendo un
+     * ofrecimiento (la cuarta vuelta lo salteaba como un cierre de cortesía).
+     */
+    const OFRECIMIENTOS_CON_DECIME = [
+        'Quedó registrado el gasto. Si querés que también te agende el pago, decime.',
+        'Quedó registrado el gasto. Si querés, te agendo también el pago; avisame.',
+        'Quedó registrado el gasto. Te puedo agendar el pago del alquiler, avisame.',
+    ];
+
     /** @var User */
     protected $comercio;
 
@@ -2190,6 +2211,80 @@ class Carga_prometida_sin_accion_Test extends TestCase
     }
 
     // ---------------------------------------------------------------------
+    // Quinta vuelta · la consulta con un pretérito y el ofrecimiento con "decime"
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 La persona PREGUNTA si hizo algo ("¿Ya le pagué a Coca?", "Fijate si pagué la luz") en una
+     * conversación nueva, y el modelo contesta "Sí, quedó registrado el pago." sin herramienta. Es una
+     * consulta sin ninguna tarjeta esperando: no dispara, y la respuesta queda intacta. Con la cuarta
+     * vuelta eran 'otro' y, como mentira segura, terminaban en "No pude hacer esa carga…".
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_consulta_que_pregunta_si_la_persona_lo_hizo_no_dispara()
+    {
+        $secuencia = $this->secuencia();
+
+        foreach (self::CONSULTAS_CON_PRETERITO as $pedido) {
+            $secuencia->push($this->end_turn('Sí, quedó registrado el pago.'), 200);
+        }
+
+        Http::fake([
+            'api.deepseek.com/*' => $secuencia,
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        foreach (self::CONSULTAS_CON_PRETERITO as $pedido) {
+
+            list($conversation, $assistant) = $this->conversacion($pedido);
+
+            $this->assertSame('Sí, quedó registrado el pago.', (new AsistenteIaService())->responder($conversation, $assistant), 'Pedido: ' . $pedido);
+        }
+
+        $this->assertCount(count(self::CONSULTAS_CON_PRETERITO), $this->bodies_enviados(), 'Una llamada por pedido: ningún reintento.');
+    }
+
+    /**
+     * 🔴 La respuesta anterior contó una carga hecha y terminó OFRECIENDO otra con un "decime" o un
+     * "avisame" al final ("Si querés que también te agende el pago, decime."). El "Dale" es un pedido
+     * nuevo, y "Listo, agendé el pago del alquiler." sin herramienta miente: reintenta. Con la cuarta
+     * vuelta esa oración se salteaba como cortesía y no disparaba.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_dale_a_un_ofrecimiento_que_termina_en_decime_reintenta()
+    {
+        $secuencia = $this->secuencia();
+
+        foreach (self::OFRECIMIENTOS_CON_DECIME as $ofrecimiento) {
+            $secuencia->push($this->end_turn('Listo, agendé el pago del alquiler.'), 200)
+                      ->push($this->end_turn('¿Para qué día te agendo el pago del alquiler?'), 200);
+        }
+
+        Http::fake([
+            'api.deepseek.com/*' => $secuencia,
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        foreach (self::OFRECIMIENTOS_CON_DECIME as $indice => $ofrecimiento) {
+
+            list($conversation, $assistant) = $this->conversacion_con_historia([
+                ['Gasté 15000 de comisiones bancarias, en efectivo', $ofrecimiento, AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::TIPO_GASTO],
+            ], 'Dale');
+
+            $this->assertSame('¿Para qué día te agendo el pago del alquiler?', (new AsistenteIaService())->responder($conversation, $assistant), 'Ofrecimiento: ' . $ofrecimiento);
+
+            $bodies = $this->bodies_enviados();
+
+            $this->assertCount(2 * ($indice + 1), $bodies, 'El texto que miente y el reintento.');
+            $this->assert_reintento_de_la_carga($bodies[2 * $indice + 1], self::NOTA_SIN_CARGA);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // 8 · Los detectores
     // ---------------------------------------------------------------------
 
@@ -2286,6 +2381,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
             ['Lo registro en la Caja Efectivo. Si te parece, después lo revisamos.', 'promesa'],
             ['Le cambio el teléfono a 3415559999. Puedo también actualizarle el mail si me lo pasás.', 'promesa'],
             ['La marco como hecha con fecha de hoy. 👍', 'promesa'],
+            ['Te cargo el gasto de $15.000. Si querés que también te agende el pago, decime.', 'promesa'],
         ];
 
         foreach ($afirman as $caso) {
@@ -2517,10 +2613,18 @@ class Carga_prometida_sin_accion_Test extends TestCase
                 'que bueno que ya esta cobrado lo de Juan'],
         ];
 
+        /* Quinta vuelta: la persona pregunta si lo hizo. Siguen en 'otro' el hecho con una pregunta y la pregunta con el dato. */
+        $clases['consulta'] = array_merge($clases['consulta'], self::CONSULTAS_CON_PRETERITO);
+        $clases['otro']     = array_merge($clases['otro'], ['No sé si cargué el gasto, fijate']);
+
         foreach ($clases as $clase => $pedidos) {
             foreach ($pedidos as $pedido) {
                 $this->assertSame($clase, TarjetaPrometidaIaHelper::clase_del_pedido($pedido), 'Clase de: «' . $pedido . '»');
             }
+        }
+
+        foreach (['Ya lo llamé, ¿qué más tengo hoy?', 'como hablamos ya le pagué a coca', 'pagué la luz 12000 ok?'] as $pedido) {
+            $this->assertSame('otro', TarjetaPrometidaIaHelper::clase_del_pedido($pedido), 'Tiene que seguir en otro: «' . $pedido . '»');
         }
 
         $this->assertTrue(TarjetaPrometidaIaHelper::es_pregunta('quedó?'));
@@ -2552,6 +2656,12 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $this->assertTrue(TarjetaPrometidaIaHelper::termina_preguntando("Quedó pasada al miércoles. ¿Querés que te agende otra?\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION));
         $this->assertTrue(TarjetaPrometidaIaHelper::termina_preguntando('Encontré dos tareas. ¿Cuál es, decime?'));
+
+        /* Quinta vuelta: la oración que EMPIEZA ofreciendo no es cortesía aunque termine en "decime"/"avisame"; para el detector, igual sólo cuenta la pregunta. */
+        foreach (self::OFRECIMIENTOS_CON_DECIME as $texto) {
+            $this->assertTrue(TarjetaPrometidaIaHelper::termina_preguntando($texto), 'Termina ofreciendo: ' . $texto);
+            $this->assertFalse(TarjetaPrometidaIaHelper::termina_preguntando($texto, false), 'Para el detector sólo cuenta la pregunta: ' . $texto);
+        }
 
         /* Para el detector (sin ofrecimientos) sólo cuenta la pregunta. */
         $this->assertFalse(TarjetaPrometidaIaHelper::termina_preguntando('Quedó agendada. Si querés, también te agendo el pago.', false));
