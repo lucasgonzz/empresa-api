@@ -44,7 +44,8 @@ use Symfony\Component\Console\Output\BufferedOutput;
  *
  * Nota: este helper ejecuta `migrate:fresh`, por lo tanto vacía toda la base
  * del sistema destino. Solo debe correrse en sistemas recién instalados o
- * dedicados a demos.
+ * dedicados a demos — y desde el 10/10/2026 eso deja de ser una recomendación: fuera de una
+ * instancia de demo se niega a vaciar una base con datos (ver `es_instancia_de_demo()`).
  */
 class DemoSetupHelper
 {
@@ -62,6 +63,32 @@ class DemoSetupHelper
     private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw';
 
     /**
+     * Si esta instalación es una instancia de demo (o un entorno de desarrollo), o sea una base que
+     * se puede vaciar y volver a sembrar sin preguntar.
+     *
+     * El marcador es `FOR_USER=demo` en el `.env`, el mismo que ya exigen `semilla:datos`
+     * (`SembrarDatosDePrueba::handle()`) y `DatabaseSeeder::local_y_demo()` para sembrar datos de
+     * ejemplo: una demo de producción tiene `APP_ENV=production` (lo escribe `EnvTemplateSeeder`
+     * de admin-api), así que sin ese marcador ya no recibiría su año de operaciones.
+     *
+     * `local` y `testing` cuentan como demo por la misma razón que en la semilla: son bases de
+     * desarrollo. Se lee `config()` y NUNCA `env()`: con `config:cache` activo, `env()` fuera de
+     * `config/` devuelve null.
+     *
+     * @return bool
+     */
+    public static function es_instancia_de_demo()
+    {
+        // La instancia de demo de producción se marca en su .env.
+        if (config('app.FOR_USER') === 'demo') {
+            return true;
+        }
+
+        // Bases de desarrollo: la máquina de Lucas y la suite.
+        return in_array(config('app.env'), ['local', 'testing'], true);
+    }
+
+    /**
      * Ejecuta el setup completo de una demo para los datos recibidos.
      *
      * @param array<string, mixed> $data Claves esperadas (las opcionales se asumen falsy):
@@ -77,9 +104,39 @@ class DemoSetupHelper
      *                                   serper_api_key (opcional, misión serper-en-user-setup)
      *
      * @return User Usuario creado
+     *
+     * @throws \App\Exceptions\BaseConDatosException Fuera de una instancia de demo, si la base ya
+     *                                                tiene datos de negocio y el payload no autoriza
+     *                                                el borrado. Sale ANTES del `migrate:fresh`.
      */
     public static function run(array $data)
     {
+        /**
+         * 🔴 GUARDA DE INSTANCIA — PRIMERA SENTENCIA, ANTES DE CUALQUIER `Artisan::call`
+         * (misión guarda-demo-setup, 10/10/2026).
+         *
+         * Las dos puertas a este método (`POST /api/admin-sync/demo-setup` y `POST /demo-setup`)
+         * no piden clave ni sesión, y lo primero que hace el método es `migrate:fresh`. Hasta esta
+         * fecha, un POST con `{"business_type":"x"}` a la API de CUALQUIER cliente le vaciaba la
+         * base de producción — en `u767360347_empresa`, a 51 comercios de una vez. Es el mismo
+         * incidente de Panchito (5/10/2026) por la puerta de al lado: el blindaje de ese día cubrió
+         * `user-setup` y dejó esta anotada como pendiente.
+         *
+         * En una instancia de demo nada cambia: rearmarla sobre los datos de la demo anterior es
+         * justamente su trabajo. Fuera de una demo se aplica la MISMA guarda que a `user-setup`:
+         * con la base vacía (una instalación de cero) sigue como siempre; con datos de negocio se
+         * niega con `BaseConDatosException` sin haber tocado nada, salvo el borrado autorizado a
+         * propósito (`forzar_borrado_total` + `confirmar_base_de_datos` con el nombre de la base).
+         *
+         * Va acá y no en los controladores por el mismo motivo que en `UserSetupHelper::run()`:
+         * este método es el único punto por el que pasan las dos puertas, y una puerta nueva no
+         * puede quedar afuera sin que se note. Hay un test que exige que esta línea esté antes del
+         * primer `Artisan::call`.
+         */
+        if (! self::es_instancia_de_demo()) {
+            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);
+        }
+
         /**
          * POR QUE ESTAS DOS LINEAS, ANTES DE QUE ALGUIEN LAS "LIMPIE":
          *

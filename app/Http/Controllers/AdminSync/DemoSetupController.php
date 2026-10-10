@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\AdminSync;
 
+use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
@@ -62,6 +63,22 @@ class DemoSetupController extends Controller
 
         try {
             $user = DemoSetupHelper::run($request->all());
+        } catch (BaseConDatosException $e) {
+            /*
+             * La guarda de instancia de DemoSetupHelper::run() (10/10/2026) se negó ANTES del
+             * `migrate:fresh`: esta no es una instancia de demo y su base tiene datos. No se tocó
+             * nada. Mismo cuerpo que el 409 de admin-sync/user-setup, y por los mismos motivos: va
+             * antes del catch (\Throwable) porque un rechazo esperado no es un error de servidor;
+             * no lleva el nombre de la base ni conteos porque esta ruta es pública; y `en_curso:
+             * false` lo distingue del 409 del candado. Un admin-api viejo lo lee como
+             * `!successful()` y marca el lead como fallido con el mensaje.
+             */
+            return response()->json([
+                'error'          => $e->getMessage(),
+                'base_con_datos' => true,
+                'en_curso'       => false,
+                'con_datos'      => $e->con_datos(),
+            ], 409);
         } catch (\Throwable $e) {
             /*
              * 🔴 Sin secretos ANTES de loguear y de responder (misión serper-en-user-setup, revisión
