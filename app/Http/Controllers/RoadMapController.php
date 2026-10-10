@@ -133,7 +133,9 @@ class RoadMapController extends Controller
                         ->first();
 
         if (is_null($model)) {
-            abort(404);
+            // Respuesta y no abort(): el borrado masivo (DeleteModelsHelper) llama a destroy() por cada
+            // id y cuenta como "no borrada" a la que responde 4xx; una excepción cortaría todo el lote.
+            return response()->json(['message' => 'La hoja de ruta no existe.'], 404);
         }
 
         // Los pivots y las filas hijas no tienen clave foránea: si no se borran acá quedan colgando

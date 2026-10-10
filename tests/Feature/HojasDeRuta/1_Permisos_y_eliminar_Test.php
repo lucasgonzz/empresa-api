@@ -216,6 +216,26 @@ class Permisos_y_eliminar_Test extends EmpresaTestCase
         $this->assertEquals([$de_dos->id], $this->ids_del_listado($dos->id));
     }
 
+    public function test_el_dueno_ve_todas_aunque_tenga_tildado_solo_sus_hojas()
+    {
+        // El dueño (owner_id null) no es un empleado: el permiso no lo puede restringir.
+        $owner_permiso = PermissionEmpresa::firstOrCreate(
+            ['slug' => 'road_map.terminadas.only_your'],
+            ['name' => 'road_map.terminadas.only_your', 'model_name' => 'Entregas y hojas de ruta']
+        );
+        $this->owner->permissions()->syncWithoutDetaching([$owner_permiso->id]);
+
+        $uno = $this->repartidor([]);
+        $dos = $this->repartidor([]);
+
+        $de_uno = $this->hoja_de($uno);
+        $de_dos = $this->hoja_de($dos);
+
+        $this->actuar_como($this->owner);
+
+        $this->assertEquals(collect([$de_uno->id, $de_dos->id])->sort()->values()->all(), $this->ids_del_listado(0));
+    }
+
     public function test_un_empleado_con_acceso_de_administrador_ve_todas_aunque_tenga_solo_sus_hojas()
     {
         $admin = $this->repartidor(['road_map.terminadas.only_your']);
@@ -295,6 +315,29 @@ class Permisos_y_eliminar_Test extends EmpresaTestCase
     // ---------------------------------------------------------------------------------------------
     // 4. La hoja recién guardada viene con `clientes`
     // ---------------------------------------------------------------------------------------------
+
+    public function test_al_mostrar_y_al_editar_una_hoja_la_respuesta_tambien_trae_los_clientes()
+    {
+        $repartidor = $this->repartidor([]);
+        $hoja = $this->hoja_de($repartidor);
+        $venta = $hoja->sales()->first();
+
+        $show = $this->getJson('api/road-map/'.$hoja->id);
+        $show->assertStatus(200);
+        $this->assertEquals($this->cliente->id, $show->json('model.clientes.0.client.id'));
+
+        $update = $this->putJson('api/road-map/'.$hoja->id, [
+            'employee_id'      => $repartidor->id,
+            'fecha_entrega'    => '2026-10-10',
+            'notes'            => 'Editada',
+            'terminada'        => 0,
+            'sales'            => [['id' => $venta->id]],
+            'client_positions' => [['client' => ['id' => $this->cliente->id], 'position' => 1]],
+        ]);
+        $update->assertStatus(200);
+        $this->assertEquals($this->cliente->id, $update->json('model.clientes.0.client.id'));
+        $this->assertEquals('Editada', $update->json('model.notes'));
+    }
 
     public function test_al_crear_una_hoja_la_respuesta_trae_los_clientes_agrupados()
     {
