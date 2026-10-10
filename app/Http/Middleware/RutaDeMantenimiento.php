@@ -183,6 +183,13 @@ class RutaDeMantenimiento
             return;
         }
 
+        /*
+         * Id de sesión nuevo, como en un login: la sesión pasa a tener un privilegio que antes no tenía, y
+         * un id que alguien haya conseguido ANTES (fijado en el navegador) no tiene que heredarlo.
+         * `regenerate()` conserva los datos (el token CSRF incluido).
+         */
+        $request->session()->regenerate();
+
         $request->session()->put(self::SESION_HABILITADA_HASTA, now()->addHours(self::HORAS_DE_SESION)->getTimestamp());
     }
 
