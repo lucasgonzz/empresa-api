@@ -32,6 +32,8 @@ use Illuminate\Support\Facades\Mail;
  *     uno válido cambia la contraseña, BORRA el código (no se reusa) y loguea como siempre.
  *   - Cada código equivocado (en check o en update) suma un intento; al 5.º el código muere y hay que
  *     pedir otro. Con 6 dígitos, sin esto se probaban las 1.000.000 combinaciones sin límite.
+ *   - Y pedir otro tiene tope: CODIGOS_POR_HORA_MAXIMOS por usuario en una ventana fija de 60 minutos
+ *     (ver puede_emitir_otro_codigo()). Sin ese tope, el de intentos no sirve de nada.
  *
  * POR QUÉ EN CACHÉ Y NO EN `users.verification_code`: esa columna NO EXISTE en una instalación nueva (está
  * comentada en `2014_10_12_000000_create_users_table.php` desde 2023; solo `buyers` la tiene), así que en
@@ -46,14 +48,45 @@ class PasswordResetController extends Controller
     /** Al llegar a esta cantidad de intentos fallidos, el código se invalida. */
     const INTENTOS_FALLIDOS_MAXIMOS = 5;
 
+    /**
+     * Códigos que se le pueden emitir a un usuario por ventana de VENTANA_DE_PEDIDOS_EN_MINUTOS.
+     *
+     * 🔴 SIN ESTE TOPE, EL DE INTENTOS NO SIRVE: cada código nuevo arranca con 0 intentos, así que pidiendo
+     * otro código cada 5 intentos fallidos se probaban combinaciones sin ningún límite (y cada pedido le
+     * manda un mail al dueño de la cuenta). Con 5 códigos × 5 intentos son 25 intentos por hora contra
+     * 900.000 combinaciones posibles; y de paso no se le puede llenar la casilla al dueño con pedidos.
+     */
+    const CODIGOS_POR_HORA_MAXIMOS = 5;
+
+    /** Ventana FIJA (desde el primer pedido, no se corre con cada uno) del tope de códigos emitidos. */
+    const VENTANA_DE_PEDIDOS_EN_MINUTOS = 60;
+
     function sendVerificationCode(Request $request) {
         $user = $this->usuario_del_pedido($request);
         if (is_null($user)) {
             return response()->json(['email_send' => false], 200);
         }
+
+        /*
+         * Tope de códigos por hora (ver CODIGOS_POR_HORA_MAXIMOS). Pasado el tope NO se genera código, NO se
+         * manda mail y NO se toca el código pendiente (el último que se mandó sigue sirviendo). 422 con FORMA
+         * DE VALIDACIÓN (`message` + `errors`): el interceptor global de axios de la SPA
+         * (`show_laravel_validation_toast`) lo muestra como toast con el motivo, igual que el mail rechazado.
+         */
+        if (!$this->puede_emitir_otro_codigo($user)) {
+            return response()->json([
+                'email_send' => false,
+                'message'    => 'Demasiados pedidos de código',
+                'errors'     => [
+                    'email' => ['Pediste demasiados códigos de recuperación. Esperá una hora y volvé a intentar.'],
+                ],
+            ], 422);
+        }
+
         // random_int y no rand(): es un secreto, tiene que salir de un generador criptográfico.
         $code = random_int(100000, 999999);
         $this->guardar_codigo($user, $code);
+        $this->contar_codigo_emitido($user);
 
         try {
             Mail::to($user)->send(new PasswordReset($code));
@@ -157,6 +190,77 @@ class PasswordResetController extends Controller
     protected function clave_de_cache(User $user)
     {
         return 'password_reset:' . $user->id;
+    }
+
+    /**
+     * Clave de caché del contador de códigos emitidos de un usuario. Es APARTE del código pendiente a
+     * propósito: emitir un código nuevo pisa el pendiente, pero este contador no se reinicia.
+     *
+     * @param  \App\Models\User  $user
+     * @return string
+     */
+    protected function clave_de_pedidos(User $user)
+    {
+        return 'password_reset_pedidos:' . $user->id;
+    }
+
+    /**
+     * Los pedidos de la ventana vigente del usuario: `desde` (timestamp del primero) y `cantidad`. Una
+     * ventana vencida, o nada guardado, cuenta como ventana nueva (null).
+     *
+     * @param  \App\Models\User  $user
+     * @return array|null
+     */
+    protected function pedidos_de_la_ventana(User $user)
+    {
+        $pedidos = Cache::get($this->clave_de_pedidos($user));
+
+        if (!is_array($pedidos) || !isset($pedidos['desde'], $pedidos['cantidad'])) {
+            return null;
+        }
+
+        // now() y no time(): el reloj de Carbon es el que mueven los tests.
+        if ((int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 <= now()->getTimestamp()) {
+            return null;
+        }
+
+        return $pedidos;
+    }
+
+    /**
+     * ¿Se le puede emitir otro código a este usuario en la ventana vigente?
+     *
+     * @param  \App\Models\User  $user
+     * @return bool
+     */
+    protected function puede_emitir_otro_codigo(User $user)
+    {
+        $pedidos = $this->pedidos_de_la_ventana($user);
+
+        return is_null($pedidos) || (int) $pedidos['cantidad'] < self::CODIGOS_POR_HORA_MAXIMOS;
+    }
+
+    /**
+     * Suma un código emitido. La ventana es FIJA: arranca con el primer pedido y no se corre con los
+     * siguientes (si se corriera, pedir uno cada 59 minutos la estiraría para siempre); la caché vive
+     * hasta que la ventana vence.
+     *
+     * @param  \App\Models\User  $user
+     * @return void
+     */
+    protected function contar_codigo_emitido(User $user)
+    {
+        $pedidos = $this->pedidos_de_la_ventana($user);
+
+        if (is_null($pedidos)) {
+            $pedidos = ['desde' => now()->getTimestamp(), 'cantidad' => 0];
+        }
+
+        $pedidos['cantidad'] = (int) $pedidos['cantidad'] + 1;
+
+        $segundos_que_le_quedan = (int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 - now()->getTimestamp();
+
+        Cache::put($this->clave_de_pedidos($user), $pedidos, max(1, $segundos_que_le_quedan));
     }
 
     /**

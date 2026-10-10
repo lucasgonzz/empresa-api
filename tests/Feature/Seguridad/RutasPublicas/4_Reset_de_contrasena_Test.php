@@ -343,6 +343,138 @@ class Reset_de_contrasena_Test extends RutasPublicasTestCase
     }
 
     /**
+     * Pide `$cantidad` códigos seguidos (uno por minuto) y devuelve el último.
+     *
+     * @param  string  $email
+     * @param  int  $cantidad
+     * @return string
+     */
+    protected function pedir_codigos($email, $cantidad)
+    {
+        $ultimo = null;
+
+        for ($i = 0; $i < $cantidad; $i++) {
+            $ultimo = $this->pedir_codigo($email);
+            $this->travel(1)->minutes();
+        }
+
+        return $ultimo;
+    }
+
+    /**
+     * El 422 del tope de pedidos, con la forma de validación que la SPA convierte en toast.
+     *
+     * @param  \Illuminate\Testing\TestResponse  $respuesta
+     * @return void
+     */
+    protected function assert_tope_de_pedidos($respuesta)
+    {
+        $respuesta->assertStatus(422);
+        $respuesta->assertJson([
+            'email_send' => false,
+            'message'    => 'Demasiados pedidos de código',
+            'errors'     => ['email' => ['Pediste demasiados códigos de recuperación. Esperá una hora y volvé a intentar.']],
+        ]);
+
+        $cuerpo = json_decode($respuesta->getContent());
+        $this->assertIsObject($cuerpo->errors, '`errors` tiene que ser un mapa campo → mensajes: si no, la SPA no muestra el toast.');
+    }
+
+    /**
+     * El agujero que quedaba: cada código nuevo arranca con 0 intentos, así que pidiendo otro se
+     * reiniciaba el tope de intentos sin límite. El 6.º pedido de la hora da 422, no genera código, no
+     * manda mail y no toca el pendiente: el del 5.º sigue sirviendo.
+     *
+     * @test
+     */
+    public function al_sexto_pedido_en_la_hora_da_422_sin_mail_y_el_codigo_del_quinto_sigue_sirviendo()
+    {
+        $quinto = $this->pedir_codigos($this->usuario->email, 5);
+
+        Mail::assertSent(PasswordReset::class, 5);
+
+        $this->assert_tope_de_pedidos($this->postJson(self::SEND, ['email' => $this->usuario->email]));
+
+        Mail::assertSent(PasswordReset::class, 5);
+
+        // El pendiente sigue siendo el del 5.º: verifica y cambia la contraseña.
+        $this->assertTrue($this->verificar($this->usuario->email, $quinto));
+        $this->actualizar($this->usuario->email, $quinto)->assertStatus(200)->assertExactJson(['password_updated' => true]);
+    }
+
+    /**
+     * Pasada la hora se puede volver a pedir, y el código nuevo sirve.
+     *
+     * @test
+     */
+    public function pasada_la_hora_se_puede_volver_a_pedir()
+    {
+        $this->pedir_codigos($this->usuario->email, 5);
+
+        $this->assert_tope_de_pedidos($this->postJson(self::SEND, ['email' => $this->usuario->email]));
+
+        $this->travel(61)->minutes();
+
+        $nuevo = $this->pedir_codigo($this->usuario->email);
+
+        Mail::assertSent(PasswordReset::class, 6);
+        $this->assertTrue($this->verificar($this->usuario->email, $nuevo));
+    }
+
+    /**
+     * La ventana es FIJA desde el primer pedido: los pedidos siguientes no la corren. Si se corriera,
+     * pedir uno cada tanto la estiraría para siempre.
+     *
+     * @test
+     */
+    public function la_ventana_es_fija_desde_el_primer_pedido()
+    {
+        // El primero a los 0 minutos; los otros cuatro a los 50.
+        $this->pedir_codigo($this->usuario->email);
+        $this->travel(50)->minutes();
+        $this->pedir_codigos($this->usuario->email, 4);
+
+        // Minuto 54: todavía dentro de la ventana del primero.
+        $this->assert_tope_de_pedidos($this->postJson(self::SEND, ['email' => $this->usuario->email]));
+
+        // Minuto 61 desde el primero (y solo 11 desde el último): la ventana ya venció.
+        $this->travel(7)->minutes();
+        $this->pedir_codigo($this->usuario->email);
+    }
+
+    /**
+     * El tope es por usuario: que uno lo haya alcanzado no frena a otro.
+     *
+     * @test
+     */
+    public function el_tope_es_por_usuario()
+    {
+        $this->pedir_codigos($this->usuario->email, 5);
+        $this->assert_tope_de_pedidos($this->postJson(self::SEND, ['email' => $this->usuario->email]));
+
+        $otro = $this->crear_un_dueno();
+
+        $this->pedir_codigo($otro->email);
+    }
+
+    /**
+     * Un email que no existe no cuenta (no hay usuario): sigue siendo 200 `email_send: false` todas las
+     * veces, sin mandar nada.
+     *
+     * @test
+     */
+    public function un_email_inexistente_no_cuenta_para_el_tope()
+    {
+        $email = 'nadie-' . uniqid() . '@ejemplo.test';
+
+        for ($i = 0; $i < 7; $i++) {
+            $this->postJson(self::SEND, ['email' => $email])->assertStatus(200)->assertExactJson(['email_send' => false]);
+        }
+
+        Mail::assertNothingSent();
+    }
+
+    /**
      * Lo que ya andaba no cambia: un correo que no es de nadie sigue siendo 200 `email_send: false`, sin
      * mandar nada.
      *
