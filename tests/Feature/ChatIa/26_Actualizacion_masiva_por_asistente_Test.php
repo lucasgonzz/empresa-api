@@ -200,7 +200,7 @@ class Actualizacion_masiva_por_asistente_Test extends TestCase
         $respuesta = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input_del_margen([
             'cambios' => [
                 ['campo' => 'margen_de_ganancia', 'operacion' => 'setear', 'valor' => 40],
-                ['campo' => 'precio_manual', 'operacion' => 'subir_porcentaje', 'valor' => 10, 'redondear' => true],
+                ['campo' => 'costo', 'operacion' => 'subir_porcentaje', 'valor' => 10, 'redondear' => true],
                 ['campo' => 'categoria', 'operacion' => 'asignar', 'valor' => 'Ferretería P26'],
                 ['campo' => 'iva', 'operacion' => 'asignar', 'valor' => '21 %'],
                 ['campo' => 'en_tienda', 'operacion' => 'activar'],
@@ -216,7 +216,7 @@ class Actualizacion_masiva_por_asistente_Test extends TestCase
         $respuesta = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input_del_margen([
             'cambios' => [
                 ['campo' => 'margen_de_ganancia', 'operacion' => 'setear', 'valor' => 40],
-                ['campo' => 'precio_manual', 'operacion' => 'subir_porcentaje', 'valor' => 10, 'redondear' => true],
+                ['campo' => 'costo', 'operacion' => 'subir_porcentaje', 'valor' => 10, 'redondear' => true],
                 ['campo' => 'categoria', 'operacion' => 'asignar', 'valor' => 'Ferretería P26'],
                 ['campo' => 'iva', 'operacion' => 'asignar', 'valor' => '21 %'],
                 ['campo' => 'en_tienda', 'operacion' => 'activar'],
@@ -237,7 +237,7 @@ class Actualizacion_masiva_por_asistente_Test extends TestCase
             ['etiqueta' => 'Artículos alcanzados', 'valor' => '2'],
             ['etiqueta' => 'Proveedor', 'valor' => 'Bulonera P26'],
             ['etiqueta' => 'Cambio', 'valor' => 'Margen de ganancia → 40 %'],
-            ['etiqueta' => 'Cambio', 'valor' => 'Precio manual sube 10 % (redondeado)'],
+            ['etiqueta' => 'Cambio', 'valor' => 'Costo sube 10 % (redondeado)'],
             ['etiqueta' => 'Cambio', 'valor' => 'Categoría → Ferretería P26'],
             ['etiqueta' => 'Cambio', 'valor' => 'IVA → 21 %'],
             ['etiqueta' => 'Cambio', 'valor' => 'En tienda → activado'],
@@ -249,7 +249,7 @@ class Actualizacion_masiva_por_asistente_Test extends TestCase
         $datos = $accion->datos;
         $this->assertSame([
             ['type' => 'number',   'key' => 'set_percentage_gain', 'value' => 40],
-            ['type' => 'number',   'key' => 'increment_price',     'value' => 10, 'round' => true],
+            ['type' => 'number',   'key' => 'increment_cost',      'value' => 10, 'round' => true],
             ['type' => 'search',   'key' => 'category_id',         'value' => (int) $categoria->id],
             ['type' => 'select',   'key' => 'iva_id',              'value' => (int) $iva_21],
             ['type' => 'checkbox', 'key' => 'online',              'value' => 1],
