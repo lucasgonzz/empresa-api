@@ -11,6 +11,7 @@ use App\Models\ProductionBatchMovementInput;
 use App\Models\Recipe;
 use App\Models\StockMovement;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 /**
@@ -382,22 +383,29 @@ class Defectos_menores_de_lotes_Test extends ProduccionV2TestCase
     /**
      * Eliminar el mismo lote dos veces no revierte dos veces.
      *
-     * `delete_batch` vuelve a leer el lote adentro de la transaccion, con bloqueo, y si ya no esta
-     * corta sin tocar nada. Se simula la segunda eliminacion con el objeto que un DELETE solapado
-     * habria leido ANTES de que el primero confirmara (el lote "obsoleto").
+     * Dos DELETE solapados del mismo lote leian los dos sus movimientos antes de que el primero
+     * confirmara. `delete_batch` vuelve a leer el lote adentro de la transaccion, con bloqueo, y
+     * si ya no esta corta sin tocar nada.
      *
-     * Ojo con lo que prueba: es una GUARDA. Una carrera de verdad necesita dos conexiones y estos
-     * tests corren en una sola transaccion, asi que no puede reproducirla; lo que fija es que la
-     * segunda llamada con un lote ya borrado no devuelve insumos ni saca producto de mas.
+     * Una carrera de verdad necesita dos conexiones y estos tests corren en una sola transaccion,
+     * asi que se simula su RESULTADO: despues del primer borrado se vuelven a insertar los movimientos
+     * y sus insumos (el lote tiene que seguir borrado), como si la segunda transaccion los hubiera
+     * leido antes del commit. Con el `delete_batch` anterior el segundo
+     * llamado los encuentra y devuelve los insumos otra vez; con el bloqueo no encuentra el lote y
+     * corta. (Sin esa reinsercion el test pasaria igual con el codigo viejo: los movimientos ya no
+     * existirian.)
      *
      * @group produccion_v2
      * @test
      */
     public function eliminar_el_mismo_lote_dos_veces_no_revierte_dos_veces()
     {
-        list($lote, $cano, $tornillo, $silla) = $this->lote_con_dos_movimientos();
+        list($lote, $cano, $tornillo, $silla, $mov_1, $mov_2) = $this->lote_con_dos_movimientos();
 
-        $obsoleto = ProductionBatch::find($lote->id);
+        /* Lo que un DELETE solapado habria leido antes de que el primero confirmara. */
+        $obsoleto   = ProductionBatch::find($lote->id);
+        $movimientos = DB::table('production_batch_movements')->where('production_batch_id', $lote->id)->get();
+        $insumos     = DB::table('production_batch_movement_inputs')->whereIn('production_batch_movement_id', [$mov_1, $mov_2])->get();
 
         $this->delete('api/production-batch/'.$lote->id)->assertStatus(204);
 
@@ -405,14 +413,56 @@ class Defectos_menores_de_lotes_Test extends ProduccionV2TestCase
         $this->assertEquals(50, $this->stock_de($tornillo));
         $this->assertEquals(0, $this->stock_de($silla));
 
+        foreach ($movimientos as $fila) {
+            DB::table('production_batch_movements')->insert((array) $fila);
+        }
+        foreach ($insumos as $fila) {
+            DB::table('production_batch_movement_inputs')->insert((array) $fila);
+        }
+
         $movimientos_de_stock = StockMovement::count();
 
         ProductionBatchMovementHelper::delete_batch($obsoleto, app(ProductionBatchController::class));
 
-        $this->assertEquals(100, $this->stock_de($cano));
+        $this->assertEquals(100, $this->stock_de($cano), 'El caño se devolvio dos veces.');
+        $this->assertEquals(50, $this->stock_de($tornillo), 'El tornillo se devolvio dos veces.');
+        $this->assertEquals(0, $this->stock_de($silla), 'Las sillas se sacaron dos veces.');
+        $this->assertSame($movimientos_de_stock, StockMovement::count(), 'La segunda eliminacion no tiene que crear movimientos de stock.');
+    }
+
+    /**
+     * Eliminar el mismo MOVIMIENTO dos veces no revierte dos veces (misma clase que el lote).
+     *
+     * El segundo DELETE trae el movimiento que leyo antes de que el primero confirmara, con sus
+     * insumos ya cargados en memoria. Con el `delete_movement` anterior, esos insumos cargados se
+     * devolvian otra vez aunque la fila ya no existiera. Ahora se vuelve a leer con bloqueo y, si
+     * no esta, no se toca nada. Aca el objeto obsoleto es de verdad obsoleto (se lo lee antes del
+     * primer borrado), asi que este test SI falla con el codigo anterior.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function eliminar_el_mismo_movimiento_dos_veces_no_revierte_dos_veces()
+    {
+        list($lote, $cano, $tornillo, $silla, $mov_1, $mov_2) = $this->lote_con_dos_movimientos();
+
+        $obsoleto = ProductionBatchMovement::with('production_batch.recipe', 'inputs')->find($mov_2);
+
+        $this->delete('api/production-batch-movement/'.$mov_2)->assertStatus(204);
+
+        /* El movimiento 2 devolvio su tornillo y saco sus sillas; el caño del movimiento 1 sigue descontado. */
+        $this->assertEquals(80, $this->stock_de($cano));
         $this->assertEquals(50, $this->stock_de($tornillo));
         $this->assertEquals(0, $this->stock_de($silla));
-        $this->assertSame($movimientos_de_stock, StockMovement::count(), 'La segunda eliminacion no tiene que crear movimientos de stock.');
+
+        $movimientos_de_stock = StockMovement::count();
+
+        ProductionBatchMovementHelper::delete_movement($obsoleto, app(\App\Http\Controllers\ProductionBatchMovementController::class));
+
+        $this->assertEquals(80, $this->stock_de($cano));
+        $this->assertEquals(50, $this->stock_de($tornillo), 'El tornillo se devolvio dos veces.');
+        $this->assertEquals(0, $this->stock_de($silla), 'Las sillas se sacaron dos veces.');
+        $this->assertSame($movimientos_de_stock, StockMovement::count(), 'El segundo borrado no tiene que crear movimientos de stock.');
     }
 
     /**

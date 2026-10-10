@@ -157,6 +157,27 @@ class ProductionBatchMovementHelper
     {
         DB::transaction(function () use ($movement, $controller_instance) {
 
+            // 🔴 El movimiento se vuelve a leer ADENTRO de la transaccion y con bloqueo, por lo mismo
+            // que delete_batch(): dos DELETE solapados del mismo movimiento (o un DELETE de movimiento
+            // contra el de su lote) leian los dos el movimiento y los dos devolvian los insumos y
+            // sacaban el producto, sin error, porque el segundo borrado afectaba cero filas. Con el
+            // bloqueo el segundo espera, ya no lo encuentra y no toca el stock.
+            //
+            // El lote ya viene cargado por quien llama (el controller o delete_batch): se reusa
+            // para no releerlo.
+            $batch = $movement->production_batch;
+
+            $movement = ProductionBatchMovement::with('inputs')
+                            ->where('id', $movement->id)
+                            ->lockForUpdate()
+                            ->first();
+
+            if (is_null($movement)) {
+                return;
+            }
+
+            $movement->setRelation('production_batch', $batch);
+
             // revertir stock insumos (devolver)
             foreach ($movement->inputs as $input) {
                 self::apply_input_stock_movement($input, $movement, +1);
