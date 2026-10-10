@@ -102,6 +102,7 @@ class Articulos_Vendidos_Test extends EmpresaTestCase
         $de_a = $this->pedir();
 
         $this->assertSame([$a1->id, $a2->id], $this->ids($de_a));
+        $this->exigir_articulo_embebido($de_a);
         $this->assertEqualsWithDelta(3, $de_a['totales']['unidades_vendidas'], self::DELTA);
         $this->assertEqualsWithDelta(250, $de_a['totales']['price'], self::DELTA);
         $this->assertSame(2, $de_a['totales']['cantidad_articulos']);
@@ -114,6 +115,7 @@ class Articulos_Vendidos_Test extends EmpresaTestCase
         $de_b = $this->pedir();
 
         $this->assertSame([$b1->id], $this->ids($de_b));
+        $this->exigir_articulo_embebido($de_b);
         $this->assertEqualsWithDelta(5, $de_b['totales']['unidades_vendidas'], self::DELTA);
         $this->assertEqualsWithDelta(5000, $de_b['totales']['price'], self::DELTA);
         $this->assertSame(1, $de_b['totales']['cantidad_articulos']);
@@ -203,6 +205,8 @@ class Articulos_Vendidos_Test extends EmpresaTestCase
 
         $this->assertCount(3, $recortada['models']);
         $this->assertCount(5, $completa['models']);
+        $this->exigir_articulo_embebido($recortada);
+        $this->exigir_articulo_embebido($completa);
 
         $this->assertEquals($completa['totales'], $recortada['totales']);
 
@@ -511,6 +515,29 @@ class Articulos_Vendidos_Test extends EmpresaTestCase
     protected function ids(array $respuesta)
     {
         return array_map('intval', array_column($respuesta['models'], 'article_id'));
+    }
+
+    /**
+     * Cada fila de la lista trae el artículo embebido y su `id` es el mismo `article_id` de la fila.
+     *
+     * Es lo que pinta la columna "N°" del SPA: `src/models/article_purchase.js` la declara sobre
+     * `article_id` con `relation_prop_name: 'id'`, y como toda clave `_id` se trata como relación,
+     * lo que se ve es `model.article.id`. Si el artículo dejara de viajar embebido (o viajara otro),
+     * la columna quedaría vacía o mostraría un número que no es el del artículo.
+     *
+     * @param array $respuesta
+     * @return void
+     */
+    protected function exigir_articulo_embebido(array $respuesta)
+    {
+        $this->assertNotEmpty($respuesta['models']);
+
+        foreach ($respuesta['models'] as $fila) {
+            $this->assertArrayHasKey('article', $fila);
+            $this->assertIsArray($fila['article'], 'La fila del artículo '.$fila['article_id'].' no trae el artículo embebido.');
+            $this->assertArrayHasKey('id', $fila['article']);
+            $this->assertSame($fila['article_id'], $fila['article']['id']);
+        }
     }
 
     /**
