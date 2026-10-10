@@ -43,8 +43,8 @@ class Propiedades_De_Distribuidora_Test extends EmpresaTestCase
     /** @var \App\Models\User */
     protected $dueno;
 
-    /** @var \App\Models\ExtencionEmpresa|null Extensión enganchada por este archivo, para soltarla al terminar. */
-    protected $extencion_enganchada;
+    /** @var array<int,\App\Models\ExtencionEmpresa> Extensiones enganchadas por este archivo, para soltarlas al terminar. */
+    protected $extenciones_enganchadas = [];
 
     protected function setUp(): void
     {
@@ -57,33 +57,53 @@ class Propiedades_De_Distribuidora_Test extends EmpresaTestCase
 
     protected function tearDown(): void
     {
-        if (!is_null($this->extencion_enganchada)) {
-            $this->dueno->extencions()->detach($this->extencion_enganchada->id);
+        foreach ($this->extenciones_enganchadas as $extencion) {
+            $this->dueno->extencions()->detach($extencion->id);
         }
 
         parent::tearDown();
     }
 
     /**
-     * Prende la extensión para el dueño de testing (la fila del catálogo se crea si la base del slot no la trae).
+     * Prende extensiones para el dueño de testing (la fila del catálogo se crea si la base del slot no la trae).
+     * Sin argumentos prende la de distribuidora.
      *
+     * @param  array $slugs
      * @return void
      */
-    protected function prender_extension()
+    protected function prender_extension(array $slugs = [self::SLUG])
     {
-        $extencion = ExtencionEmpresa::where('slug', self::SLUG)->first();
+        foreach ($slugs as $slug) {
 
-        if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate([
-                'name' => 'Articulos con propiedades de distribuidoras',
-                'slug' => self::SLUG,
-            ]);
+            $extencion = ExtencionEmpresa::where('slug', $slug)->first();
+
+            if (is_null($extencion)) {
+                $extencion = ExtencionEmpresa::forceCreate(['name' => $slug, 'slug' => $slug]);
+            }
+
+            $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
+
+            $this->extenciones_enganchadas[] = $extencion;
         }
 
-        $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
         $this->dueno->unsetRelation('extencions');
+    }
 
-        $this->extencion_enganchada = $extencion;
+    /**
+     * Apaga una extensión para el dueño de testing (por si la base del slot la trae prendida a mano), para que
+     * el test no dependa del estado en que otro la dejó. Todo dentro de la transacción de EmpresaTestCase.
+     *
+     * @param  string $slug
+     * @return void
+     */
+    protected function apagar_extension($slug)
+    {
+        $extencion = ExtencionEmpresa::where('slug', $slug)->first();
+
+        if (!is_null($extencion)) {
+            $this->dueno->extencions()->detach($extencion->id);
+            $this->dueno->unsetRelation('extencions');
+        }
     }
 
     /**
@@ -379,6 +399,8 @@ class Propiedades_De_Distribuidora_Test extends EmpresaTestCase
      */
     public function la_exportacion_no_trae_las_columnas_sin_la_extension()
     {
+        $this->apagar_extension(self::SLUG);
+
         $respuesta = $this->postJson('/api/article', $this->payload([
             'name'               => 'ZZ Test distribuidora sin extension',
             'unidades_por_bulto' => 12,
@@ -389,5 +411,82 @@ class Propiedades_De_Distribuidora_Test extends EmpresaTestCase
 
         $this->assertFalse(array_search('Tipo envase', $encabezados, true), 'Sin la extensión no tiene que salir "Tipo envase".');
         $this->assertFalse(array_search('Unidades por bulto', $encabezados, true), 'Sin la extensión no tiene que salir "Unidades por bulto".');
+    }
+
+    /**
+     * Con autopartes Y distribuidora prendidas a la vez (las dos usan "contenido"), las columnas de siempre
+     * siguen alineadas y las tres de distribuidora caen debajo de su encabezado.
+     *
+     * @test
+     */
+    public function la_exportacion_con_autopartes_y_distribuidora_sigue_alineada()
+    {
+        $this->prender_extension([self::SLUG, 'autopartes']);
+
+        $envase = $this->crear_tipo_de_envase('Descartable (test)');
+
+        $respuesta = $this->postJson('/api/article', $this->payload([
+            'name'               => 'ZZ Test distribuidora y autopartes',
+            'unidades_por_bulto' => 24,
+            'contenido'          => '500 ml',
+            'tipo_envase_id'     => $envase->id,
+        ]));
+        $respuesta->assertStatus(201);
+
+        list($encabezados, $celdas) = $this->exportar($respuesta->json('model.id'));
+
+        $posicion_envase = array_search('Tipo envase', $encabezados, true);
+        $posicion_bulto  = array_search('Unidades por bulto', $encabezados, true);
+        $posicion_nombre = array_search('Nombre', $encabezados, true);
+
+        $this->assertNotFalse($posicion_envase);
+        $this->assertNotFalse($posicion_bulto);
+        $this->assertNotFalse($posicion_nombre);
+
+        $this->assertSame('Descartable (test)', $celdas[$posicion_envase]);
+        $this->assertEquals(24, $celdas[$posicion_bulto]);
+        $this->assertSame('ZZ Test distribuidora y autopartes', $celdas[$posicion_nombre], 'Autopartes y distribuidora juntas desalinearon las columnas de siempre.');
+
+        /* "contenido" lo comparten las dos: sale en las dos columnas (la de autopartes y la de distribuidora) con el mismo valor. */
+        foreach (['contenido', 'Contenido'] as $titulo) {
+            $posicion = array_search($titulo, $encabezados, true);
+            $this->assertNotFalse($posicion, 'Falta la columna "' . $titulo . '".');
+            $this->assertSame('500 ml', $celdas[$posicion], 'La columna "' . $titulo . '" no trae el contenido.');
+        }
+    }
+
+    /**
+     * Lo que manda la ficha: el modelo ENTERO que devolvió `GET api/article/{id}`. Guardarlo tal cual no
+     * pierde U x Bulto ni el tipo de envase. Es la prueba que protege contra el borrado silencioso: `update()`
+     * asigna estos campos desde el request, así que un llamador que mande un artículo sin ellos los dejaría en null.
+     *
+     * @test
+     */
+    public function guardar_el_modelo_entero_de_la_ficha_no_pierde_los_campos()
+    {
+        $envase = $this->crear_tipo_de_envase('Retornable (test)');
+
+        $alta = $this->postJson('/api/article', $this->payload([
+            'name'               => 'ZZ Test distribuidora modelo entero',
+            'unidades_por_bulto' => 12,
+            'contenido'          => '300 ml',
+            'tipo_envase_id'     => $envase->id,
+        ]));
+        $alta->assertStatus(201);
+
+        $id = $alta->json('model.id');
+
+        /* Lo mismo que hace la SPA: abre la ficha con GET api/article/{id} y guarda {...model}. */
+        $modelo = $this->getJson('/api/article/' . $id)->json('model');
+
+        $this->assertEquals(12, $modelo['unidades_por_bulto'], 'El GET de la ficha ya tiene que traer U x Bulto.');
+
+        $this->putJson('/api/article/' . $id, $modelo)->assertStatus(200);
+
+        $articulo = Article::find($id);
+
+        $this->assertSame(12, (int) $articulo->unidades_por_bulto, 'Guardar el modelo entero perdió U x Bulto.');
+        $this->assertSame('300 ml', $articulo->contenido);
+        $this->assertSame((string) $envase->id, (string) $articulo->tipo_envase_id, 'Guardar el modelo entero perdió el tipo de envase.');
     }
 }
