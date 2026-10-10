@@ -26,6 +26,27 @@ use Illuminate\Support\Facades\Log;
  * catalogo, el PDF de clientes, la eliminacion y la actualizacion masivas por filtro, el asistente),
  * y por las dos masivas eso BORRABA o MODIFICABA filas ajenas. Por eso la guarda vive aca, una sola
  * vez, y no en cada controller: ver columna_del_filtro(), tiene_criterio() y relacion_real().
+ *
+ * COLUMNAS MOSTRADAS (mision cheques-filtro-banco-catalogo, 10/10/2026). Hay columnas que el listado
+ * MUESTRA distinto de como estan guardadas: la columna "Banco" de cheques muestra el nombre del banco
+ * del catalogo si el cheque tiene uno, y si no el texto `cheques.banco`. Filtrar u ordenar por la
+ * columna cruda da resultados que no coinciden con la pantalla ("Banco BSAS" se ve "Banco Provincia
+ * de Buenos Aires" y filtrar "Provincia" no lo encontraba). Para esos casos el MODELO declara la
+ * expresion SQL de lo que se ve:
+ *
+ *     public static function columnas_mostradas_para_filtros() { return ['banco' => '<expresion>']; }
+ *
+ * y, si el filtro es `text` o `textarea`, la lupa (que contenga, igual que, en blanco / no en blanco)
+ * y el orden de esa columna van por la expresion (ver apply_displayed_column_filter()), con la misma
+ * precedencia y los mismos `used_filters` que la rama de texto de siempre. Reglas del mecanismo:
+ *  - Es generico: aca no hay ningun `if cheque`. Lo usa el modelo que lo declare.
+ *  - La guarda de columnas no cambia y va ANTES: el key tiene que ser una columna real de la tabla,
+ *    y la expresion se busca por ese nombre validado. Nada del pedido entra al SQL crudo: la
+ *    expresion es codigo del modelo, y los valores van bindeados.
+ *  - Un modelo que no lo declara, una columna que no esta en lo declarado o un tipo que no es texto
+ *    (select, search, number, date, checkbox) siguen por el camino de siempre, identico.
+ *  - La expresion tiene que ser lo que la PANTALLA muestra, y se cambia junto con la funcion de la
+ *    SPA que arma esa celda (en cheques, `cheque_banco_texto`; ver Cheque::columnas_mostradas_para_filtros()).
  */
 class ColumnFiltersHelper
 {
@@ -58,6 +79,9 @@ class ColumnFiltersHelper
      *     criterio puesto → FiltroDeColumnaInvalidoException (422). Si no lo es y el filtro es inerte
      *     → se saltea, como hasta ahora.
      *  5. De ahi en adelante, a SQL entra SOLO la columna validada ($columna), nunca $filter['key'].
+     *  6. Si el modelo declara esa columna en columnas_mostradas_para_filtros() y el filtro es text /
+     *     textarea: rama propia por la expresion de lo que se ve (apply_displayed_column_filter()).
+     *     Ver "COLUMNAS MOSTRADAS" en el docblock de la clase.
      *
      * @param  \Illuminate\Database\Eloquent\Builder $models          Query en construccion.
      * @param  array|null                            $filters         Filtros tal cual los manda el SPA.
@@ -175,6 +199,27 @@ class ColumnFiltersHelper
                             $model_name,
                             'key_no_es_columna'
                         );
+                    }
+
+                    continue;
+                }
+
+                /*
+                 * Columna MOSTRADA (mision cheques-filtro-banco-catalogo, 10/10/2026): si el modelo
+                 * declara que esta columna se ve distinto de como esta guardada y el filtro es de
+                 * texto, la lupa y el orden van por la expresion de lo que se ve y no por la columna
+                 * cruda. Va DESPUES de la guarda de arriba (la expresion se busca por la columna ya
+                 * validada) y con `continue`: el resto de este loop no se entera. Ver "COLUMNAS
+                 * MOSTRADAS" en el docblock de la clase.
+                 */
+                $expresion_mostrada = self::expresion_mostrada($model_name, $columna, $filter['type']);
+
+                if (!is_null($expresion_mostrada)) {
+                    $mostrada = self::apply_displayed_column_filter($models, $filter, $expresion_mostrada, $model_name);
+                    $models   = $mostrada['models'];
+
+                    foreach ($mostrada['used_filters'] as $used_filter) {
+                        $used_filters[] = $used_filter;
                     }
 
                     continue;
@@ -1043,6 +1088,164 @@ class ColumnFiltersHelper
 
         // Comportamiento previo: orden directo por la columna propia del modelo.
         return $models->orderBy($columna, $direccion);
+    }
+
+    /**
+     * La expresion SQL de lo que el listado MUESTRA en una columna, si el modelo la declara y el
+     * filtro es de texto; si no, null (y el filtro sigue por el camino de siempre). Ver "COLUMNAS
+     * MOSTRADAS" en el docblock de la clase.
+     *
+     * El tipo se compara ESTRICTO contra 'text' / 'textarea': con `==` de PHP 7.4 un type 0 o true
+     * pasaria por texto, y la rama de siempre los manda a la de number. Un tipo que no es texto sobre
+     * una columna declarada sigue por el camino de siempre, identico.
+     *
+     * El metodo del modelo tiene que ser publico y estatico (se mira por reflexion antes de
+     * invocarlo): su nombre es fijo, no sale del pedido.
+     *
+     * @param  string|\Illuminate\Database\Eloquent\Model  $model_name  Clase Eloquent del modelo.
+     * @param  string                                       $columna     Nombre REAL de la columna, ya validado.
+     * @param  mixed                                        $type        `type` del filtro tal como llego.
+     * @return string|null
+     */
+    protected static function expresion_mostrada($model_name, $columna, $type)
+    {
+        if ($type !== 'text' && $type !== 'textarea') {
+            return null;
+        }
+
+        $clase = is_object($model_name) ? get_class($model_name) : $model_name;
+
+        if (!is_string($clase) || !method_exists($clase, 'columnas_mostradas_para_filtros')) {
+            return null;
+        }
+
+        try {
+            $metodo = new \ReflectionMethod($clase, 'columnas_mostradas_para_filtros');
+        } catch (\ReflectionException $e) {
+            return null;
+        }
+
+        if (!$metodo->isPublic() || !$metodo->isStatic()) {
+            return null;
+        }
+
+        $declaradas = $metodo->invoke(null);
+
+        if (!is_array($declaradas)
+            || !isset($declaradas[$columna])
+            || !is_string($declaradas[$columna])
+            || trim($declaradas[$columna]) === '') {
+            return null;
+        }
+
+        return $declaradas[$columna];
+    }
+
+    /**
+     * La lupa y el orden de una columna MOSTRADA: la misma rama de texto de apply() (orden, y despues
+     * en blanco / no en blanco, o si no igual que / que contenga), con la misma precedencia y los
+     * mismos `used_filters`, pero sobre la expresion de lo que se ve en vez de la columna cruda.
+     *
+     *  - ordenar_de   → `ORDER BY (<expr>) asc|desc`, con la direccion validada por
+     *                   direccion_de_orden() (otra cosa: el mismo 422 de siempre).
+     *  - en_blanco    → `COALESCE((<expr>), '') = ''` (null o vacio, como `whereNull OR = ''`).
+     *  - no_en_blanco → `COALESCE((<expr>), '') != ''`.
+     *  - igual_que    → `(<expr>) = ?`, con el valor recortado (trim) como siempre.
+     *  - que_contenga → por cada palabra del mismo `explode(' ')` de siempre, `(<expr>) LIKE ?` con
+     *                   `%palabra%`.
+     *
+     * La expresion es codigo del modelo (columnas_mostradas_para_filtros()); todo lo que viene del
+     * pedido va bindeado. La expresion va siempre entre parentesis para que no se mezcle con el
+     * operador que la sigue.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $models      Query en construccion.
+     * @param  array                                 $filter      Filtro tal como llego (type text/textarea).
+     * @param  string                                $expresion   Salida de expresion_mostrada().
+     * @param  string                                $model_name  Clase Eloquent (para el 422).
+     * @return array  ['models' => Builder, 'used_filters' => array]
+     *
+     * @throws \App\Exceptions\FiltroDeColumnaInvalidoException  Direccion de orden que no es ASC ni DESC.
+     */
+    protected static function apply_displayed_column_filter($models, array $filter, $expresion, $model_name)
+    {
+        $used_filters = [];
+
+        if (isset($filter['ordenar_de'])
+            && $filter['ordenar_de'] != '') {
+
+            $direccion = self::direccion_de_orden($filter['ordenar_de']);
+
+            if (is_null($direccion)) {
+                throw new FiltroDeColumnaInvalidoException(
+                    $filter['key'],
+                    $model_name,
+                    'direccion_de_orden'
+                );
+            }
+
+            // $direccion es 'asc' o 'desc' (direccion_de_orden() no devuelve otra cosa).
+            $models = $models->orderByRaw('(' . $expresion . ') ' . $direccion);
+
+            $used_filters[] = [
+                'key'       => $filter['key'],
+                'operator'  => 'order_by',
+                'value'     => $filter['ordenar_de'],
+                'type'      => $filter['type'],
+            ];
+        }
+
+        if (isset($filter['en_blanco']) && (boolean) $filter['en_blanco']) {
+
+            $models = $models->whereRaw("COALESCE((" . $expresion . "), '') = ''");
+
+            $used_filters[] = [
+                'key'       => $filter['key'],
+                'operator'  => 'en_blanco',
+                'value'     => true,
+                'type'      => $filter['type'],
+            ];
+
+        } else if (isset($filter['no_en_blanco']) && (boolean) $filter['no_en_blanco']) {
+
+            $models = $models->whereRaw("COALESCE((" . $expresion . "), '') != ''");
+
+            $used_filters[] = [
+                'key'       => $filter['key'],
+                'operator'  => 'no_en_blanco',
+                'value'     => true,
+                'type'      => $filter['type'],
+            ];
+
+        } else if (isset($filter['igual_que'])
+            && $filter['igual_que'] != '') {
+
+            $models = $models->whereRaw('(' . $expresion . ') = ?', [trim($filter['igual_que'])]);
+
+            $used_filters[] = [
+                'key'       => $filter['key'],
+                'operator'  => 'igual_que',
+                'value'     => $filter['igual_que'],
+                'type'      => $filter['type'],
+            ];
+
+        } else if (isset($filter['que_contenga'])
+            && $filter['que_contenga'] != '') {
+
+            $keywords = explode(' ', $filter['que_contenga']);
+
+            foreach ($keywords as $keyword) {
+                $models = $models->whereRaw('(' . $expresion . ') LIKE ?', ['%' . $keyword . '%']);
+            }
+
+            $used_filters[] = [
+                'key'       => $filter['key'],
+                'operator'  => 'que_contenga',
+                'value'     => $filter['que_contenga'],
+                'type'      => $filter['type'],
+            ];
+        }
+
+        return ['models' => $models, 'used_filters' => $used_filters];
     }
 
     /**
