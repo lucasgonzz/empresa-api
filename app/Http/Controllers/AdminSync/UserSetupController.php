@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use App\Http\Controllers\Helpers\SetupErrorHelper;
 use App\Http\Controllers\Helpers\UserSetupHelper;
+use App\Http\Middleware\ClaveDeAdminEnSetup;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -71,7 +72,16 @@ class UserSetupController extends Controller
         }
 
         try {
-            $user = UserSetupHelper::run($request->all());
+            /*
+             * 🔴 El segundo argumento es lo único que habilita un borrado total por esta puerta: el
+             * payload puede pedirlo (`forzar_borrado_total` + `confirmar_base_de_datos`), pero sin la
+             * clave de admin de la instancia en X-Admin-Api-Key la guarda lo rechaza igual, aunque
+             * ADMIN_SYNC_SETUP_REQUIRE_API_KEY esté apagada (misión cerrar-forzado-user-setup,
+             * 10/10/2026). Se calcula acá, con el mismo método que usa el middleware, y no se le pasa
+             * el request a run(): el helper no sabe de HTTP y una puerta nueva no hereda la clave sin
+             * verificarla.
+             */
+            $user = UserSetupHelper::run($request->all(), ClaveDeAdminEnSetup::trae_la_clave_de_admin($request));
         } catch (BaseConDatosException $e) {
             /*
              * La guarda de UserSetupHelper::run() se negó ANTES del `migrate:fresh`: no se tocó nada.

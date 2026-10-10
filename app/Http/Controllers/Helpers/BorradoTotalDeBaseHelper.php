@@ -180,12 +180,19 @@ class BorradoTotalDeBaseHelper
      * eso el contexto lleva además la IP y el user agent del request (ver datos_del_request()):
      * el 5/10/2026 costó reconstruir quién había pegado, y la forense empieza por ahí.
      *
-     * @param  array<string, mixed> $data Payload del setup.
+     * @param  array<string, mixed> $data               Payload del setup.
+     * @param  bool                 $con_clave_de_admin Si la puerta que llama YA verificó la clave de
+     *                                                  admin de la instancia
+     *                                                  (ClaveDeAdminEnSetup::trae_la_clave_de_admin()).
+     *                                                  Solo `true` estricto cuenta: `1`, `'1'` o
+     *                                                  `'true'` no. Por defecto false: quien no la
+     *                                                  pasa a propósito no puede forzar.
      * @return void
      *
-     * @throws BaseConDatosException Si la base tiene datos y el payload no autoriza el borrado.
+     * @throws BaseConDatosException Si la base tiene datos y no se autorizó el borrado (payload que
+     *                               pide y confirma + clave de admin verificada).
      */
-    public static function exigir_base_sin_datos_o_autorizacion(array $data)
+    public static function exigir_base_sin_datos_o_autorizacion(array $data, $con_clave_de_admin = false)
     {
         $resumen = self::resumen_de_datos();
 
@@ -196,7 +203,11 @@ class BorradoTotalDeBaseHelper
 
         $base = self::nombre_de_la_base();
 
-        if (self::esta_autorizado($data)) {
+        $pide_y_confirma = self::esta_autorizado($data);
+
+        // Las dos cosas: el payload pide y confirma el nombre, Y la clave de admin vino y es la de esta
+        // instancia. `=== true` a propósito: un `'1'` que se coló desde un payload no es una clave.
+        if ($pide_y_confirma && $con_clave_de_admin === true) {
             Log::warning('BorradoTotalDeBaseHelper: borrado total AUTORIZADO sobre una base con datos.', array_merge([
                 'base'      => $base,
                 'con_datos' => $resumen,
@@ -205,10 +216,36 @@ class BorradoTotalDeBaseHelper
             return;
         }
 
+        if ($pide_y_confirma) {
+            /*
+             * 🔴 El payload trae el flag Y el nombre EXACTO de la base, pero no la clave de admin. No es
+             * un POST perdido ni un spread: quien llamó sabía a qué base le pegaba, y ningún llamador
+             * legítimo arma esto (admin-api nunca manda esos dos campos y la raíz fuerza desde el
+             * servidor del cliente, con la clave). Por eso tiene su propia línea, distinta del rechazo
+             * de siempre: es la que hay que buscar en el log para ver si alguien está probando.
+             *
+             * La RESPUESTA, en cambio, es la misma que la de cualquier otro rechazo (misma excepción,
+             * mismo mensaje, mismas tablas): si dijera "acertaste el nombre, te falta la clave",
+             * serviría de oráculo para adivinar cómo se llama la base. El motivo real vive solo acá.
+             */
+            Log::warning(
+                'BorradoTotalDeBaseHelper: se rechazó un setup que pidió el borrado total con el nombre '
+                . 'correcto de la base pero SIN la clave de admin. Quien llamó sabía cómo se llama la base: '
+                . 'revisar de dónde vino. No se tocó nada.',
+                array_merge([
+                    'base'      => $base,
+                    'con_datos' => $resumen,
+                ], self::datos_del_request())
+            );
+
+            throw new BaseConDatosException($base, $resumen);
+        }
+
         Log::warning(
             'BorradoTotalDeBaseHelper: se rechazó un setup que vaciaría una base con datos de negocio. '
             . 'Para forzarlo, el payload tiene que traer "' . self::FLAG . '" y "' . self::CONFIRMACION
-            . '" con el nombre exacto de la base.',
+            . '" con el nombre exacto de la base, y el request la clave de admin de la instancia '
+            . '(X-Admin-Api-Key).',
             array_merge([
                 'base'      => $base,
                 'con_datos' => $resumen,

@@ -458,6 +458,10 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
      * por el mock, que lo espera una vez por cada valor aceptado del flag), y el borrado total
      * autorizado deja su rastro en el log.
      *
+     * El request trae además la clave de admin de la instancia: desde la misión
+     * cerrar-forzado-user-setup (10/10/2026) el borrado total la exige siempre, y sin ella esto es
+     * el 409 de siempre (ver la sección 12).
+     *
      * @test
      */
     public function con_el_flag_y_la_confirmacion_correcta_llega_al_migrate_fresh_y_deja_rastro_en_el_log()
@@ -468,13 +472,16 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
         $this->migrate_fresh_cortado(count($valores_del_flag));
 
+        // La clave de admin cargada en la instancia; el request la manda en el header.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+
         $base = BorradoTotalDeBaseHelper::nombre_de_la_base();
 
         foreach ($valores_del_flag as $flag) {
             $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload([
                 BorradoTotalDeBaseHelper::FLAG         => $flag,
                 BorradoTotalDeBaseHelper::CONFIRMACION => $base,
-            ]));
+            ]), ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
 
             // NO es el 409: la guarda lo dejó pasar y llegó al migrate:fresh, que el mock cortó con
             // una excepción (el controlador la contesta como 500 `internal error:`).
@@ -814,11 +821,13 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
             $this->assertStringNotContainsString($base, $e->getMessage(), 'El mensaje viaja en la respuesta: sin el nombre de la base.');
         }
 
-        // Autorizada: no tira (y no toca nada: solo mira).
+        // Autorizada: no tira (y no toca nada: solo mira). El `true` es la clave de admin ya verificada
+        // por la puerta: desde la misión cerrar-forzado-user-setup (10/10/2026) sin ella el payload solo
+        // no alcanza (ver la sección 12).
         BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([
             BorradoTotalDeBaseHelper::FLAG         => true,
             BorradoTotalDeBaseHelper::CONFIRMACION => $base,
-        ]);
+        ], true);
 
         $this->assert_base_intacta();
     }
@@ -1034,6 +1043,9 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     /**
      * El borrado total autorizado también deja la IP y el user agent.
      *
+     * El request trae la clave de admin de la instancia porque, desde la misión
+     * cerrar-forzado-user-setup (10/10/2026), sin ella no hay borrado autorizado (ver la sección 12).
+     *
      * @test
      */
     public function el_borrado_autorizado_deja_en_el_log_la_ip_y_el_user_agent()
@@ -1041,13 +1053,16 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         $this->exigir_base_con_datos();
         $this->migrate_fresh_cortado();
 
+        // La clave de admin cargada en la instancia; el request la manda en el header.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+
         $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.9'])->postJson(
             '/api/admin-sync/user-setup',
             $this->payload([
                 BorradoTotalDeBaseHelper::FLAG         => true,
                 BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
             ]),
-            ['User-Agent' => 'Forense-Autorizado/2.0']
+            ['User-Agent' => 'Forense-Autorizado/2.0', 'X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]
         );
 
         $autorizados = $this->logs_que_contienen(['AUTORIZADO']);

@@ -75,12 +75,19 @@ class UserSetupHelper
      *                                   para re-correr el setup sobre una base que YA tiene datos, ver
      *                                   BorradoTotalDeBaseHelper)
      *
+     * @param bool $con_clave_de_admin Si la puerta que llama YA verificó la clave de admin de la
+     *                                 instancia (ClaveDeAdminEnSetup::trae_la_clave_de_admin()). Solo
+     *                                 con `true` el borrado total que pide el payload se acepta. Por
+     *                                 defecto false: una puerta nueva que llame run($request->all())
+     *                                 no puede forzar; para eso tiene que verificar la clave y pasarla
+     *                                 a propósito.
+     *
      * @return User Usuario creado
      *
-     * @throws BaseConDatosException Si la base ya tiene datos de negocio y el payload no autoriza el
-     *                               borrado total. No se tocó nada.
+     * @throws BaseConDatosException Si la base ya tiene datos de negocio y no se autorizó el borrado
+     *                               total (payload + clave de admin). No se tocó nada.
      */
-    public static function run(array $data)
+    public static function run(array $data, $con_clave_de_admin = false)
     {
         /*
             🔴 PRIMERA SENTENCIA, ANTES DE CUALQUIER OTRA COSA y antes del `migrate:fresh` de abajo
@@ -92,8 +99,11 @@ class UserSetupHelper
             admin-api le dejó en cero la base de Panchito (102.754 ventas) justamente porque acá no
             se miraba nada. Si te tienta sacarla "porque el controlador ya valida", no: el
             controlador no ve lo que mañana llame a run().
+
+            `$con_clave_de_admin` pasa tal cual: la guarda es la que decide, y solo un `true` estricto
+            (la clave ya verificada por la puerta) habilita el borrado total que pida el payload.
         */
-        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data, $con_clave_de_admin);
 
         // `migrate:fresh` limpia la base antes de cualquier inserción
         Artisan::call('migrate:fresh', ['--force' => true]);

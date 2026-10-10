@@ -56,14 +56,43 @@ class ClaveDeAdminEnSetup
             return $next($request);
         }
 
-        $esperada = (string) config('services.admin_api.api_key');
-        $recibida = (string) $request->header('X-Admin-Api-Key');
-
         // Sin clave cargada en la instancia no hay con qué comparar: se rechaza todo (falla cerrado).
-        if ($esperada === '' || $recibida === '' || !hash_equals($esperada, $recibida)) {
+        if (!self::trae_la_clave_de_admin($request)) {
             return response()->json(['error' => 'unauthorized'], 401);
         }
 
         return $next($request);
+    }
+
+    /**
+     * ¿El request trae la clave de admin de ESTA instancia en X-Admin-Api-Key?
+     *
+     * 🔴 Es el ÚNICO lugar donde se compara esa clave en user-setup: lo usa `handle()` (la exigencia
+     * general, detrás de su variable) y lo usa `AdminSync\UserSetupController` para decirle a
+     * `UserSetupHelper::run()` si puede aceptar un borrado total. Dos comparaciones escritas por
+     * separado terminan distintas (una se olvida del vacío, la otra usa `===`); por eso hay una.
+     *
+     * Falla cerrado: si la instancia no tiene clave cargada (ADMIN_API_INBOUND_KEY vacía, que es como
+     * nace una instalación nueva) o el header viene vacío, devuelve false. Sin ese chequeo,
+     * `hash_equals('', '')` daría true y "sin clave de los dos lados" pasaría por "la clave correcta".
+     * Compara con `hash_equals` (sin atajo por largo ni por el primer carácter distinto) y es sensible
+     * a mayúsculas. No loguea nada: ni la clave esperada ni la recibida salen de acá.
+     *
+     * No mira `require_key_for_setup`: dice si la clave está, no si se exige. Quién la exige y para
+     * qué lo decide cada llamador.
+     *
+     * @param  Request $request Request HTTP entrante.
+     * @return bool
+     */
+    public static function trae_la_clave_de_admin(Request $request)
+    {
+        $esperada = (string) config('services.admin_api.api_key');
+        $recibida = (string) $request->header('X-Admin-Api-Key');
+
+        if ($esperada === '' || $recibida === '') {
+            return false;
+        }
+
+        return hash_equals($esperada, $recibida);
     }
 }
