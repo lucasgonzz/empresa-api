@@ -144,8 +144,13 @@ class PropuestaStockIaHelper
 
     /**
      * Ruta de la SPA donde se ve el stock por depósito: el Listado de artículos.
+     *
+     * Es el `name` de la ruta en `router/index.js` de empresa-spa (`/listado-de-articulos`), que es
+     * 'article'. Hasta el 10/10/2026 decía 'listado', que no existe en el router: "Ver en el
+     * Listado" dejaba la pantalla en blanco (misión ver-en-del-asistente-refresca-destino). Las
+     * tarjetas ya confirmadas con 'listado' las traduce la SPA (AccionCard.vue).
      */
-    const RUTA_LISTADO = 'listado';
+    const RUTA_LISTADO = 'article';
 
     // =====================================================================================
     // (a) Mover stock entre depósitos
