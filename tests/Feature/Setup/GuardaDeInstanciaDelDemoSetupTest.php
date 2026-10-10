@@ -21,8 +21,9 @@ use Tests\EmpresaTestCase;
  * producción. El blindaje del 5/10 (BlindajeDelUserSetupTest) cubrió `user-setup` y no esta puerta.
  *
  * Ahora, fuera de una instancia de demo (`FOR_USER=demo`, o `local`/`testing`), `run()` aplica la
- * MISMA guarda que `user-setup`: base vacía → sigue; base con datos → 409 sin tocar nada, salvo el
- * borrado autorizado con `forzar_borrado_total` + `confirmar_base_de_datos`.
+ * guarda de `user-setup`: base vacía → sigue; base con datos → 409 sin tocar nada. A diferencia de
+ * `user-setup`, acá el borrado autorizado (`forzar_borrado_total` + `confirmar_base_de_datos`) NO
+ * alcanza: las dos puertas son públicas y el nombre de la base se deduce del subdominio.
  *
  * Para simular "una instancia de cliente" se pone `app.env = production` y `app.FOR_USER = null`
  * con `config()` dentro del test (la app se recrea en cada uno, no se arrastra).
@@ -339,22 +340,67 @@ class GuardaDeInstanciaDelDemoSetupTest extends EmpresaTestCase
     }
 
     /**
-     * El borrado autorizado a propósito (flag + nombre exacto de la base) pasa, igual que en user-setup.
+     * 🔴 A DIFERENCIA DE USER-SETUP: el flag con el nombre EXACTO de la base tampoco alcanza, por la
+     * API. Esta puerta no tiene clave y el nombre de la base se deduce del subdominio: aceptarlo
+     * sería el mismo agujero con un paso más.
      *
      * @test
      */
-    public function en_un_cliente_el_borrado_autorizado_sigue_hasta_el_migrate_fresh()
+    public function en_un_cliente_ni_el_borrado_autorizado_por_la_api_vacia_la_base()
     {
         $this->exigir_base_con_datos();
         $this->como_instancia_de_cliente();
-        $this->migrate_fresh_cortado();
+        $this->sin_migrate_fresh_jamas();
 
         $respuesta = $this->postJson('/api/admin-sync/demo-setup', $this->payload([
             BorradoTotalDeBaseHelper::FLAG         => true,
             BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
         ]));
 
-        $this->assert_llego_al_migrate_fresh($respuesta);
+        $respuesta->assertStatus(409);
+        $respuesta->assertJson(['base_con_datos' => true, 'en_curso' => false]);
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * Lo mismo por el formulario web.
+     *
+     * @test
+     */
+    public function en_un_cliente_ni_el_borrado_autorizado_por_el_form_web_vacia_la_base()
+    {
+        $this->exigir_base_con_datos();
+        $this->como_instancia_de_cliente();
+        $this->sin_migrate_fresh_jamas();
+
+        $respuesta = $this->post('/demo-setup', $this->payload([
+            BorradoTotalDeBaseHelper::FLAG         => '1',
+            BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
+        ]));
+
+        $respuesta->assertRedirect(route('demo.form'));
+        $this->assertStringContainsString('ya tiene datos de negocio', (string) session('status'));
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * El rechazo suelta el candado (lo hace el `finally`): un segundo POST tiene que volver a pasar
+     * por la guarda (409 de base con datos), no rebotar con el 409 del candado (`en_curso: true`).
+     *
+     * @test
+     */
+    public function despues_de_un_rechazo_el_candado_queda_libre()
+    {
+        $this->exigir_base_con_datos();
+        $this->como_instancia_de_cliente();
+        $this->sin_migrate_fresh_jamas();
+
+        $primero = $this->postJson('/api/admin-sync/demo-setup', $this->payload());
+        $segundo = $this->postJson('/api/admin-sync/demo-setup', $this->payload());
+
+        $primero->assertStatus(409)->assertJson(['en_curso' => false]);
+        $segundo->assertStatus(409)->assertJson(['en_curso' => false, 'base_con_datos' => true]);
+        $this->assert_base_intacta();
     }
 
     /**
@@ -372,6 +418,23 @@ class GuardaDeInstanciaDelDemoSetupTest extends EmpresaTestCase
         $respuesta = $this->postJson('/api/admin-sync/demo-setup', $this->payload());
 
         $this->assert_llego_al_migrate_fresh($respuesta);
+    }
+
+    /**
+     * El formulario web en una demo también sigue hasta el `migrate:fresh` (el controller web no
+     * atrapa el corte del mock: sale como 500 del handler, que es lo esperable acá).
+     *
+     * @test
+     */
+    public function en_una_demo_el_form_web_sigue_hasta_el_migrate_fresh()
+    {
+        $this->exigir_base_con_datos();
+        config(['app.env' => 'production', 'app.FOR_USER' => 'demo']);
+        $this->migrate_fresh_cortado();
+
+        $respuesta = $this->post('/demo-setup', $this->payload());
+
+        $respuesta->assertStatus(500);
     }
 
     /**
@@ -450,7 +513,8 @@ class GuardaDeInstanciaDelDemoSetupTest extends EmpresaTestCase
             }
         }
 
-        $esperado = 'if(!self::es_instancia_de_demo()){BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);}';
+        // Con un payload VACÍO: si alguien le vuelve a pasar `$data`, el borrado autorizado reabre el agujero.
+        $esperado = 'if(!self::es_instancia_de_demo()){BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);}';
 
         $this->assertSame($esperado, substr($codigo, 0, strlen($esperado)), 'La primera sentencia de run() tiene que ser la guarda de instancia.');
     }

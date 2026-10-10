@@ -106,8 +106,8 @@ class DemoSetupHelper
      * @return User Usuario creado
      *
      * @throws \App\Exceptions\BaseConDatosException Fuera de una instancia de demo, si la base ya
-     *                                                tiene datos de negocio y el payload no autoriza
-     *                                                el borrado. Sale ANTES del `migrate:fresh`.
+     *                                                tiene datos de negocio. Sale ANTES del
+     *                                                `migrate:fresh`.
      */
     public static function run(array $data)
     {
@@ -123,10 +123,16 @@ class DemoSetupHelper
          * `user-setup` y dejó esta anotada como pendiente.
          *
          * En una instancia de demo nada cambia: rearmarla sobre los datos de la demo anterior es
-         * justamente su trabajo. Fuera de una demo se aplica la MISMA guarda que a `user-setup`:
-         * con la base vacía (una instalación de cero) sigue como siempre; con datos de negocio se
-         * niega con `BaseConDatosException` sin haber tocado nada, salvo el borrado autorizado a
-         * propósito (`forzar_borrado_total` + `confirmar_base_de_datos` con el nombre de la base).
+         * justamente su trabajo. Fuera de una demo se aplica la guarda de `user-setup`: con la base
+         * vacía (una instalación de cero) sigue como siempre; con datos de negocio se niega con
+         * `BaseConDatosException` sin haber tocado nada.
+         *
+         * 🔴 Se le pasa un payload VACÍO a propósito, no `$data`: `user-setup` acepta un borrado
+         * autorizado (`forzar_borrado_total` + `confirmar_base_de_datos` con el nombre de la base),
+         * pero acá las dos puertas son públicas y sin clave, y el nombre de la base se deduce del
+         * subdominio: aceptarlo sería dejar el agujero abierto con un paso más. Nadie fuerza un
+         * demo-setup sobre un cliente a propósito; una base que hay que rearmar como demo se marca
+         * con `FOR_USER=demo`. (Hallazgo del chequeo independiente de la misión.)
          *
          * Va acá y no en los controladores por el mismo motivo que en `UserSetupHelper::run()`:
          * este método es el único punto por el que pasan las dos puertas, y una puerta nueva no
@@ -134,7 +140,7 @@ class DemoSetupHelper
          * primer `Artisan::call`.
          */
         if (! self::es_instancia_de_demo()) {
-            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);
+            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
         }
 
         /**
