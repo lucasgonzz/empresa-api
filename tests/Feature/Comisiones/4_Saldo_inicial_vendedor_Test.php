@@ -181,6 +181,9 @@ class Saldo_inicial_vendedor_Test extends EmpresaTestCase
             'error'   => true,
             'message' => self::MENSAJE_YA_TIENE_MOVIMIENTOS,
         ]);
+        // El 422 trae el vendedor con el conteo real: el SPA lo usa para esconder el botón.
+        $this->assertEquals($this->seller->id, $response->json('model.id'));
+        $this->assertEquals(1, $response->json('model.seller_commissions_count'));
 
         $filas = $this->filas();
         $this->assertCount(1, $filas);
@@ -193,6 +196,11 @@ class Saldo_inicial_vendedor_Test extends EmpresaTestCase
      * muestra el SPA y ninguna fila (antes quedaba una fila sin importe que escondia el boton
      * para siempre).
      *
+     * Tampoco cuenta lo que no es un numero: "1.234,56" o "50,5" (coma decimal, punto de miles)
+     * antes daban 500 en MySQL; con un `(float)` a secas se hubieran guardado 1,23 y 50 sin
+     * avisar. Ni un negativo, ni un importe que redondeado a centavos da cero (la columna es
+     * decimal(14,2): 0,001 se guardaria como 0,00).
+     *
      * @test
      */
     public function sin_importe_responde_422_y_no_crea_nada()
@@ -202,6 +210,11 @@ class Saldo_inicial_vendedor_Test extends EmpresaTestCase
             ['debe' => 0, 'haber' => 0],
             ['debe' => '0', 'haber' => null],
             [],
+            ['debe' => '1.234,56'],
+            ['haber' => '50,5'],
+            ['debe' => 'abc'],
+            ['debe' => -5],
+            ['debe' => '0.001'],
         ];
 
         foreach ($casos as $i => $caso) {
@@ -215,6 +228,23 @@ class Saldo_inicial_vendedor_Test extends EmpresaTestCase
 
             $this->assertCount(0, $this->filas(), 'El caso '.$i.' no tenia que crear ninguna fila.');
         }
+    }
+
+    /**
+     * El importe se guarda redondeado a centavos (como el saldo inicial de una cuenta corriente),
+     * y un texto numerico con punto decimal se lee como numero.
+     *
+     * @test
+     */
+    public function el_importe_se_redondea_a_centavos()
+    {
+        $this->cargar_saldo_inicial(['debe' => '1234.567', 'moneda_id' => 1])->assertStatus(201);
+
+        $filas = $this->filas();
+
+        $this->assertCount(1, $filas);
+        $this->assertEqualsWithDelta(1234.57, (float) $filas[0]->debe, self::DELTA);
+        $this->assertEqualsWithDelta(1234.57, (float) $filas[0]->saldo, self::DELTA);
     }
 
     /**

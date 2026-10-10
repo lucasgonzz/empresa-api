@@ -223,11 +223,12 @@ class SellerCommissionController extends Controller
             $moneda_id = 1;
         }
 
-        // Un importe es un numero mayor a cero. Lo demas (vacio, cero, negativo, texto) no es un
+        // Un importe es un numero mayor a cero, redondeado a centavos (mismo criterio que
+        // CurrentAcountController::saldoInicial). Lo demas (vacio, cero, negativo, texto) no es un
         // saldo y se guarda como null: un 0 en el haber haria que la tabla del modal mostrara
         // "− $0" o tomara la fila por un pago.
-        $debe = (float) $request->debe > 0 ? (float) $request->debe : null;
-        $haber = (float) $request->haber > 0 ? (float) $request->haber : null;
+        $debe = $this->importe_del_saldo_inicial($request->debe);
+        $haber = $this->importe_del_saldo_inicial($request->haber);
 
         if (is_null($debe) && is_null($haber)) {
             return response()->json([
@@ -285,13 +286,37 @@ class SellerCommissionController extends Controller
         });
 
         if ($ya_tiene_movimientos) {
+            // `model` va también en el 422: el SPA lo usa para esconder el botón "Saldo inicial"
+            // cuando lo que tenía abierto era un vendedor viejo (por ejemplo, otra pestaña ya le
+            // cargó un movimiento). Un SPA que no lo lee solo muestra `message`.
             return response()->json([
                 'error'   => true,
                 'message' => 'Este vendedor ya tiene movimientos: el saldo inicial se carga una sola vez, antes del primer movimiento.',
+                'model'   => $this->fullModel('Seller', $request->seller_id),
             ], 422);
         }
 
         return response()->json(['model' => $this->fullModel('Seller', $request->seller_id)], 201);
+    }
+
+    /**
+     * Importe de un lado (debe o haber) del saldo inicial: el numero redondeado a centavos si es
+     * mayor a cero, o null.
+     *
+     * 🔴 `is_numeric` y no un `(float)` a secas: el input admite coma decimal y punto de miles, y
+     * `(float) '1.234,56'` da 1.234 y `(float) '50,5'` da 50 — se guardaria otro importe sin
+     * avisar (antes MySQL los rechazaba con un 500). Y el redondeo antes de comparar, porque la
+     * columna es decimal(14,2): 0,001 pasaria la guarda y quedaria guardado como 0,00.
+     *
+     * @param mixed $valor
+     * @return float|null
+     */
+    protected function importe_del_saldo_inicial($valor) {
+        if (!is_numeric($valor)) {
+            return null;
+        }
+        $importe = round((float) $valor, 2);
+        return $importe > 0 ? $importe : null;
     }
 
     /**
