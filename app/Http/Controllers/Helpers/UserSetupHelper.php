@@ -37,7 +37,9 @@ use Illuminate\Support\Facades\Log;
  * `run()` empieza llamando a `BorradoTotalDeBaseHelper`, que se niega —con una
  * BaseConDatosException y sin tocar nada— si la base ya tiene datos de negocio, salvo que el
  * payload traiga `forzar_borrado_total` + `confirmar_base_de_datos` (el nombre exacto de la
- * base). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
+ * base) Y quien llama haya verificado la clave de admin de la instancia y la pase como segundo
+ * argumento (misión cerrar-forzado-user-setup, 10/10/2026: el nombre de la base se adivina, no es
+ * una credencial). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
  * producción de Panchito y este método le vació la base entera (102.754 ventas, 6.952
  * artículos) porque la ruta es pública y `migrate:fresh` no pregunta. La guarda está ACÁ y no
  * en los controladores a propósito; el porqué completo está en BorradoTotalDeBaseHelper.
@@ -72,7 +74,8 @@ class UserSetupHelper
      *                                   address_1..3, price_type_1..3,
      *                                   serper_api_key (opcional, misión serper-en-user-setup),
      *                                   forzar_borrado_total + confirmar_base_de_datos (opcionales: solo
-     *                                   para re-correr el setup sobre una base que YA tiene datos, ver
+     *                                   para re-correr el setup sobre una base que YA tiene datos, y
+     *                                   solo valen con $con_clave_de_admin === true; ver
      *                                   BorradoTotalDeBaseHelper)
      *
      * @param bool $con_clave_de_admin Si la puerta que llama YA verificó la clave de admin de la

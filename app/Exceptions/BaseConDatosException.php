@@ -18,6 +18,11 @@ use RuntimeException;
  * decirle a un desconocido cómo se llama la base ni cuánto tiene adentro. Lo que se le
  * muestra a quien llama son solo las familias de tablas con datos (`con_datos()`), no
  * los conteos ni el nombre.
+ *
+ * Y es la MISMA excepción, con el mismo mensaje, se haya acertado o no el nombre de la base
+ * en `confirmar_base_de_datos` (misión cerrar-forzado-user-setup, 10/10/2026: sin la clave de
+ * admin el nombre correcto no fuerza nada). Si el rechazo dijera "el nombre está bien, falta
+ * la clave", serviría para adivinar el nombre probando. El motivo real va solo al log.
  */
 class BaseConDatosException extends RuntimeException
 {
