@@ -53,6 +53,13 @@ class PropuestaTareaIaHelper {
 
     const MENSAJE_TAREA_INEXISTENTE = 'La tarea ya no existe.';
 
+    /**
+     * Cuántos días de agenda viajan en el rechazo de un tarea_id que no es de ninguna tarea (ver
+     * tarea_que_no_esta()): el máximo que acepta consultar_tareas, para que una tarea agendada lejos
+     * también aparezca entre las opciones.
+     */
+    const DIAS_DE_AGENDA_EN_EL_RECHAZO = 90;
+
     // -------------------------------------------------------------------------------------------
     // Tarea nueva
     // -------------------------------------------------------------------------------------------
@@ -210,7 +217,7 @@ class PropuestaTareaIaHelper {
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, tarea_id}
      *
      * @throws AccionIaException
      */
@@ -235,8 +242,9 @@ class PropuestaTareaIaHelper {
         $tarea = Pending::create($columnas);
 
         return [
-            'texto' => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
-            'ruta'  => self::ruta_de_la_agenda(),
+            'texto'    => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
+            'ruta'     => self::ruta_de_la_agenda(),
+            'tarea_id' => (int) $tarea->id,
         ];
     }
 
@@ -272,7 +280,7 @@ class PropuestaTareaIaHelper {
 
         if (is_null($pending)) {
 
-            return RespuestaDeCargaIa::error('No encontré esa tarea en tu agenda.');
+            return self::tarea_que_no_esta($contexto, $tarea_id);
         }
 
         $nuevos = self::datos_de_la_tarea($pending);
@@ -460,7 +468,7 @@ class PropuestaTareaIaHelper {
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, tarea_id}
      *
      * @throws AccionIaException
      */
@@ -518,8 +526,9 @@ class PropuestaTareaIaHelper {
         $pending->save();
 
         return [
-            'texto' => 'Tarea actualizada',
-            'ruta'  => self::ruta_de_la_agenda(),
+            'texto'    => 'Tarea actualizada',
+            'ruta'     => self::ruta_de_la_agenda(),
+            'tarea_id' => (int) $pending->id,
         ];
     }
 
@@ -553,7 +562,7 @@ class PropuestaTareaIaHelper {
 
         if (is_null($pending)) {
 
-            return RespuestaDeCargaIa::error('No encontré esa tarea en tu agenda.');
+            return self::tarea_que_no_esta($contexto, $tarea_id);
         }
 
         $fecha_pedida = EntradaDeCargaIa::valor($input, 'fecha');
@@ -714,7 +723,7 @@ class PropuestaTareaIaHelper {
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
      * @param  callable  $num_expense_resolver
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, tarea_id}
      *
      * @throws AccionIaException
      */
@@ -795,8 +804,9 @@ class PropuestaTareaIaHelper {
         }
 
         return [
-            'texto' => $texto,
-            'ruta'  => self::ruta_de_la_agenda(),
+            'texto'    => $texto,
+            'ruta'     => self::ruta_de_la_agenda(),
+            'tarea_id' => (int) $pending->id,
         ];
     }
 
@@ -958,6 +968,103 @@ class PropuestaTareaIaHelper {
                         ->where('id', (int) $tarea_id)
                         ->with('unidad_frecuencia', 'expense_concept.expense_category')
                         ->first();
+    }
+
+    /**
+     * Rechazo de un tarea_id que no es de ninguna tarea del dueño, para proponer_cambios_en_tarea y
+     * proponer_marcar_tarea_hecha (misión asistente-seguimiento-de-tarea, 10/10/2026).
+     *
+     * 🔴 NO ES UN "NO EXISTE" FINAL. En demo (4.3.8, DeepSeek ágil) el dueño agendó "llamar a
+     * Herramientas del Interior", la confirmó y pidió "pasala al miércoles": el modelo llamó a
+     * proponer_cambios_en_tarea con un id que no era el de la tarea —en el historial el único número
+     * que había era el #N de la tarjeta— y, como el rechazo de antes ("No encontré esa tarea en tu
+     * agenda.") se cuenta tal cual, le dijo al dueño que la tarea no estaba. La tarea estaba.
+     *
+     * Por eso el rechazo dice que no se armó nada, trae la agenda en opciones.tareas (con la forma de
+     * consultar_tareas) y le pide al modelo que vuelva a llamar con el tarea_id de la que nombró la
+     * persona. Si el número es el de una tarjeta de tarea de esta conversación, lo dice y nombra el
+     * tarea_id de esa tarea. No se elige nada solo: decide el modelo, y la tarjeta que arme la sigue
+     * confirmando la persona.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $tarea_id  El que mandó el modelo.
+     * @return array
+     */
+    protected static function tarea_que_no_esta(ContextoDeCargaIa $contexto, $tarea_id) {
+
+        $motivo = 'No se armó ninguna tarjeta: ninguna tarea de la agenda tiene el tarea_id '.(int) $tarea_id.'.';
+
+        $de_la_tarjeta = self::tarea_de_la_tarjeta_de_la_conversacion($contexto, $tarea_id);
+
+        if (!is_null($de_la_tarjeta)) {
+
+            $motivo .= ' Ese número es el de la tarjeta #'.(int) $tarea_id.' ('.$de_la_tarjeta->detalle.'), no el de la tarea: su tarea_id es '.(int) $de_la_tarjeta->id.'.';
+        }
+
+        $motivo .= ' Buscá en opciones.tareas la que pidió la persona y volvé a llamar con su tarea_id, sin contarle este rechazo;'
+                  .' si no está ahí, decile que esa tarea no figura en la agenda.';
+
+        return RespuestaDeCargaIa::error($motivo, [
+            'tareas' => ConsultasDeCargaIaHelper::tareas($contexto, '', self::DIAS_DE_AGENDA_EN_EL_RECHAZO),
+        ]);
+    }
+
+    /**
+     * La tarea a la que apunta una tarjeta de tarea de ESTA conversación cuyo id es $tarjeta_id, o
+     * null si ese número no es una tarjeta de tarea de la conversación o su tarea ya no está.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $tarjeta_id
+     * @return \App\Models\Pending|null
+     */
+    protected static function tarea_de_la_tarjeta_de_la_conversacion(ContextoDeCargaIa $contexto, $tarjeta_id) {
+
+        $tarjeta = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('id', (int) $tarjeta_id)
+                                    ->first();
+
+        if (is_null($tarjeta)) {
+
+            return null;
+        }
+
+        $tarea_id = self::tarea_id_de_la_tarjeta($tarjeta);
+
+        return is_null($tarea_id) ? null : self::tarea_del_dueno($contexto, $tarea_id);
+    }
+
+    /**
+     * El id de la tarea (`pendings.id`) a la que se refiere una tarjeta, o null si la tarjeta no es de
+     * tarea o todavía no tiene tarea: la de cambios y la de marcar hecha lo llevan en sus datos desde
+     * que se proponen; la de una tarea nueva, en su resultado, recién cuando se confirma.
+     *
+     * Lo usa también AccionesIaHelper::linea_de_historial(), que lo pone en la línea que lee el modelo:
+     * sin él, en el turno siguiente el único número que el modelo veía era el #N de la tarjeta.
+     *
+     * @param  \App\Models\AiMessageAction  $tarjeta
+     * @return int|null
+     */
+    static function tarea_id_de_la_tarjeta(AiMessageAction $tarjeta) {
+
+        $tipo = (string) $tarjeta->tipo;
+
+        if ($tipo === AiMessageAction::TIPO_TAREA_NUEVA) {
+
+            $resultado = $tarjeta->resultado;
+
+            return is_object($resultado) && isset($resultado->tarea_id) && (int) $resultado->tarea_id > 0
+                ? (int) $resultado->tarea_id
+                : null;
+        }
+
+        if ($tipo === AiMessageAction::TIPO_TAREA_EDITAR || $tipo === AiMessageAction::TIPO_TAREA_COMPLETAR) {
+
+            $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+            return isset($datos['pending_id']) && (int) $datos['pending_id'] > 0 ? (int) $datos['pending_id'] : null;
+        }
+
+        return null;
     }
 
     /**

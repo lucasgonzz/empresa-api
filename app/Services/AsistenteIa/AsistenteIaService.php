@@ -1094,7 +1094,8 @@ AUTO_RESUELTO;
   sola, esté como esté tu confianza.
 {$regla_de_auto_ejecucion}
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
-  pasó con cada tarjeta. No las repitas.
+  pasó con cada tarjeta. No las repitas. El #N es el número de la TARJETA (el que va en
+  reemplaza_a), nunca el id de un registro: el id de una tarea es el tarea_id que trae su línea.
 - Si el mensaje de la persona termina con una nota "[El sistema ya confirmó la tarjeta...]", esa
   carga ya la registró el sistema por su sí: contá el resultado que dice la nota, no digas que
   dejaste una tarjeta y seguí con lo que haya quedado pendiente. Si la nota dice que no se pudo,
