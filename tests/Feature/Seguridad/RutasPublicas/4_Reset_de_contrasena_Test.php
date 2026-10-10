@@ -475,6 +475,104 @@ class Reset_de_contrasena_Test extends RutasPublicasTestCase
     }
 
     /**
+     * Update con una contraseña nueva dada (y el email del usuario del test).
+     *
+     * @param  mixed  $codigo
+     * @param  mixed  $contrasena
+     * @param  string|null  $email
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function actualizar_con_contrasena($codigo, $contrasena, $email = null)
+    {
+        return $this->postJson(self::UPDATE, [
+            'email'             => is_null($email) ? $this->usuario->email : $email,
+            'verification_code' => $codigo,
+            'password'          => $contrasena,
+            'password_confirm'  => $contrasena,
+        ]);
+    }
+
+    /**
+     * El 422 de la contraseña nueva inválida, con la forma de validación (`errors.password`).
+     *
+     * @param  \Illuminate\Testing\TestResponse  $respuesta
+     * @return void
+     */
+    protected function assert_contrasena_rechazada($respuesta)
+    {
+        $respuesta->assertStatus(422);
+        $respuesta->assertJsonStructure(['message', 'errors' => ['password']]);
+        $respuesta->assertJson(['password_updated' => false]);
+        $this->assertNull($respuesta->json('errors.verification_code'), 'Con la contraseña mala ni se llega a mirar el código.');
+
+        $cuerpo = json_decode($respuesta->getContent());
+        $this->assertIsObject($cuerpo->errors);
+        $this->assertNotSame('', trim((string) $cuerpo->errors->password[0]));
+    }
+
+    /**
+     * La contraseña nueva se valida del lado del servidor (texto, no vacía, mínimo 6 caracteres), ANTES
+     * que el código: una contraseña mala no cambia nada, no consume el código ni le suma intentos (son más
+     * de 5 rechazos y el código sigue sirviendo).
+     *
+     * @test
+     */
+    public function una_contrasena_nueva_invalida_da_422_sin_consumir_el_codigo_ni_sumar_intentos()
+    {
+        $codigo = $this->pedir_codigo($this->usuario->email);
+
+        foreach (['', null, '12345', '      ', ['una-lista'], 'abc', 'x'] as $contrasena) {
+            $this->assert_contrasena_rechazada($this->actualizar_con_contrasena($codigo, $contrasena));
+        }
+
+        // Sin el campo `password`.
+        $this->assert_contrasena_rechazada($this->postJson(self::UPDATE, [
+            'email'             => $this->usuario->email,
+            'verification_code' => $codigo,
+        ]));
+
+        // Con un código EQUIVOCADO y la contraseña mala, tampoco suma intentos: la contraseña se mira
+        // antes. Son 5 (los que matarían el código si contaran).
+        for ($i = 0; $i < 5; $i++) {
+            $this->assert_contrasena_rechazada($this->actualizar_con_contrasena($this->otro_codigo($codigo), '123'));
+        }
+
+        $this->assert_nada_cambio();
+
+        // Trece rechazos después, el código sigue vivo: no se consumió ni sumó intentos.
+        $this->assertTrue($this->verificar($this->usuario->email, $codigo));
+        $this->actualizar($this->usuario->email, $codigo)->assertStatus(200)->assertExactJson(['password_updated' => true]);
+    }
+
+    /**
+     * La contraseña inválida da la MISMA respuesta con un email que no existe (no se lo usa de oráculo).
+     *
+     * @test
+     */
+    public function una_contrasena_invalida_da_lo_mismo_con_un_email_inexistente()
+    {
+        $existe = $this->actualizar_con_contrasena('123456', '123');
+        $no_existe = $this->actualizar_con_contrasena('123456', '123', 'nadie-' . uniqid() . '@ejemplo.test');
+
+        $this->assert_contrasena_rechazada($existe);
+        $this->assertSame($existe->json(), $no_existe->json());
+    }
+
+    /**
+     * El borde: 6 caracteres alcanzan.
+     *
+     * @test
+     */
+    public function una_contrasena_de_seis_caracteres_alcanza()
+    {
+        $codigo = $this->pedir_codigo($this->usuario->email);
+
+        $this->actualizar_con_contrasena($codigo, 'abc123')->assertStatus(200)->assertExactJson(['password_updated' => true]);
+
+        $this->assertTrue(Hash::check('abc123', (string) $this->usuario->fresh()->password));
+    }
+
+    /**
      * Lo que ya andaba no cambia: un correo que no es de nadie sigue siendo 200 `email_send: false`, sin
      * mandar nada.
      *

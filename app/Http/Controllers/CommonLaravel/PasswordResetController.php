@@ -61,6 +61,9 @@ class PasswordResetController extends Controller
     /** Ventana FIJA (desde el primer pedido, no se corre con cada uno) del tope de códigos emitidos. */
     const VENTANA_DE_PEDIDOS_EN_MINUTOS = 60;
 
+    /** Largo mínimo de la contraseña nueva (la SPA exige más de 6: lo que manda siempre pasa). */
+    const MINIMO_DE_LA_CONTRASENA = 6;
+
     function sendVerificationCode(Request $request) {
         $user = $this->usuario_del_pedido($request);
         if (is_null($user)) {
@@ -132,6 +135,23 @@ class PasswordResetController extends Controller
     }
 
     function updatePassword(Request $request) {
+        /*
+         * La contraseña nueva se valida ANTES que el código, a propósito: una contraseña mala no consume el
+         * código ni le suma un intento (el usuario la corrige y reintenta con el mismo código), y como no
+         * mira el email tampoco dice si la cuenta existe. Mínimo MINIMO_DE_LA_CONTRASENA caracteres: la SPA
+         * ya exige más de 6 (Step3.vue), así que lo que manda la SPA de hoy siempre pasa. Antes de esto un
+         * pedido con el código bueno y sin `password` dejaba la contraseña en vacío.
+         */
+        if (!$this->contrasena_nueva_valida($request->input('password'))) {
+            return response()->json([
+                'password_updated' => false,
+                'message'          => 'La contraseña nueva no es válida',
+                'errors'           => [
+                    'password' => ['La contraseña nueva tiene que tener al menos ' . self::MINIMO_DE_LA_CONTRASENA . ' caracteres.'],
+                ],
+            ], 422);
+        }
+
         $user = $this->usuario_del_pedido($request);
 
         /*
@@ -179,6 +199,23 @@ class PasswordResetController extends Controller
         }
 
         return User::where('email', $email)->first();
+    }
+
+    /**
+     * ¿La contraseña nueva es texto, no está vacía (ni es solo espacios) y tiene al menos
+     * MINIMO_DE_LA_CONTRASENA caracteres? Se cuentan caracteres, no bytes. `password` no pasa por
+     * TrimStrings (está en su lista de excepciones): los espacios cuentan como parte de la contraseña.
+     *
+     * @param  mixed  $contrasena
+     * @return bool
+     */
+    protected function contrasena_nueva_valida($contrasena)
+    {
+        if (!is_string($contrasena) || trim($contrasena) === '') {
+            return false;
+        }
+
+        return mb_strlen($contrasena) >= self::MINIMO_DE_LA_CONTRASENA;
     }
 
     /**
