@@ -72,16 +72,49 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
     ];
 
     /**
-     * Rutas de `web.php` que parecen de PDF o export y quedan SIN el middleware, cada una con su
-     * motivo. Agregar una acá es una decisión, no un trámite.
+     * Qué rutas de `web.php` mira el guardián (`ninguna_ruta_con_datos_del_comercio_queda_publica_sin_saberlo`):
+     * las que por su nombre son un PDF o un export...
+     */
+    const PATRON_DE_DESCARGA = '/pdf|excel|export/i';
+
+    /**
+     * ...y, de forma explícita, las que sirven datos de un comercio con un nombre que el patrón no
+     * ve (sumadas en la verificación del 10/10/2026). Si una se renombra, el guardián lo marca: tiene
+     * que seguir existiendo en el router.
+     */
+    const RUTAS_CON_DATOS_DEL_COMERCIO = [
+        'afip-txt/{mes_inicio}/{mes_fin}',
+        'afip-txt-alicuotas/{mes_inicio}/{mes_fin}',
+        'afip-iva-compras/{mes_inicio}/{mes_fin}',
+        'afip-iva-ventas/{mes_inicio}/{mes_fin}',
+        'sale/charts/{from}/{to}',
+        'sale/ticket-raw/{id}',
+        'acopio-article-delivery/{id}',
+        'reportes/inventario/{company_name}/{periodo}',
+        'reportes/clientes/{company_name}/{periodo}',
+        'reportes/excel-articulos/{company_name}/{mes}',
+        'caja',
+        'power-bi/articulos',
+        'n8n/productos-disponibles/{last_updated?}',
+    ];
+
+    /**
+     * Rutas que el guardián mira y quedan SIN el middleware, cada una con su motivo. Agregar una acá
+     * es una decisión, no un trámite.
+     *
+     * ⚠️ Lo que este guardián NO cubre, a propósito: las rutas de mantenimiento de `web.php`
+     * (`helpers/{method}` y el resto de HelperController, `cambiar-bbdd/*`, `import-history/rollback`,
+     * `afip-ticket/consultar-comprobante`, `register-user`, `users/payment-expired-at`...). Muchas
+     * escriben o borran y son otra misión (plan de pdf-de-venta-publico, §4.2): no son descargas y
+     * un middleware de descargas no es su arreglo.
      */
     const AFUERA_A_PROPOSITO = [
-        // Exige sesión en su propio controlador desde el 5/10/2026 (responde 401 sin sesión).
-        'client/pdf',
-        // Fuera del alcance de la misión (decisión del plan).
-        'super-budget',
-        // Confinado por StoragePathHelper; lo sirve la notificación global de exportaciones.
-        'exported-files/{path}',
+        'client/pdf'                                => 'Exige sesión en su propio controlador desde el 5/10/2026 (responde 401 sin sesión).',
+        'super-budget'                              => 'Fuera del alcance de la misión, por decisión del plan.',
+        'exported-files/{path}'                     => 'Confinado por StoragePathHelper; lo sirve la notificación global de exportaciones.',
+        'caja'                                      => 'HALLAZGO fuera de alcance (no es PDF ni export): SaleController@caja devuelve la caja en JSON y sin sesión userId() cae en USER_ID.',
+        'power-bi/articulos'                        => 'HALLAZGO fuera de alcance: devuelve los artículos del user_id 138, fijo en el código, sin sesión.',
+        'n8n/productos-disponibles/{last_updated?}' => 'HALLAZGO fuera de alcance: catálogo para N8N, lista los artículos de toda la base sin filtrar por dueño y sin sesión.',
     ];
 
     /**
@@ -148,29 +181,70 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
     }
 
     /**
-     * Ninguna ruta web cuya URI dice pdf, excel o export queda sin `descarga.comercio`, salvo las
-     * que están afuera a propósito. Es el guardián de la próxima ruta de PDF que alguien agregue.
+     * ¿La ruta pasa por `descarga.comercio`?
+     *
+     * @param  array<int, string>  $middleware
+     * @return bool
+     */
+    protected function pasa_por_la_regla(array $middleware)
+    {
+        foreach ($middleware as $nombre) {
+            if (strpos($nombre, 'descarga.comercio') === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Ninguna ruta web que sirva datos de un comercio (un PDF o export por su nombre, o una de la
+     * lista explícita) queda sin `descarga.comercio`, salvo las declaradas afuera con su motivo. Es
+     * el guardián de la próxima ruta de este tipo que alguien agregue.
      *
      * @test
      */
-    public function ninguna_ruta_de_pdf_o_export_queda_publica_sin_saberlo()
+    public function ninguna_ruta_con_datos_del_comercio_queda_publica_sin_saberlo()
     {
-        foreach ($this->rutas_web() as $uri => $middleware) {
+        $rutas = $this->rutas_web();
 
-            if (!preg_match('/pdf|excel|export/i', $uri) || in_array($uri, self::AFUERA_A_PROPOSITO, true)) {
+        // La lista explícita y la de afuera tienen que seguir existiendo: si una se renombra, que se note.
+        foreach (self::RUTAS_CON_DATOS_DEL_COMERCIO as $uri) {
+            $this->assertArrayHasKey($uri, $rutas, 'La ruta ' . $uri . ' de RUTAS_CON_DATOS_DEL_COMERCIO ya no existe en web.php.');
+        }
+
+        foreach (self::AFUERA_A_PROPOSITO as $uri => $motivo) {
+
+            $this->assertArrayHasKey($uri, $rutas, 'La ruta ' . $uri . ' de AFUERA_A_PROPOSITO ya no existe en web.php: sacala de la lista.');
+            $this->assertNotSame('', trim($motivo), 'La ruta ' . $uri . ' está afuera sin motivo.');
+            $this->assertFalse($this->pasa_por_la_regla($rutas[$uri]), 'La ruta ' . $uri . ' ya pasa por descarga.comercio: sacala de AFUERA_A_PROPOSITO.');
+        }
+
+        foreach ($rutas as $uri => $middleware) {
+
+            if (!$this->la_mira_el_guardian($uri) || array_key_exists($uri, self::AFUERA_A_PROPOSITO)) {
                 continue;
             }
 
-            $protegida = false;
-
-            foreach ($middleware as $nombre) {
-                if (strpos($nombre, 'descarga.comercio') === 0) {
-                    $protegida = true;
-                }
-            }
-
-            $this->assertTrue($protegida, 'La ruta ' . $uri . ' parece de PDF o export y no pasa por descarga.comercio.');
+            $this->assertTrue($this->pasa_por_la_regla($middleware), 'La ruta ' . $uri . ' sirve datos de un comercio y no pasa por descarga.comercio. Protegela o declarala en AFUERA_A_PROPOSITO con su motivo.');
         }
+
+        // Toda ruta protegida tiene que estar en el radar del guardián: si el filtro dejara de ver una
+        // (por ejemplo `sale/ticket-raw`, que no dice pdf), una copia sin el middleware pasaría callada.
+        foreach (array_keys(self::RUTAS_PROTEGIDAS) as $uri) {
+            $this->assertTrue($this->la_mira_el_guardian($uri), 'La ruta protegida ' . $uri . ' no la mira el guardián: sumala a RUTAS_CON_DATOS_DEL_COMERCIO.');
+        }
+    }
+
+    /**
+     * ¿El guardián mira esta ruta? Por el patrón de su nombre o por estar en la lista explícita.
+     *
+     * @param  string  $uri
+     * @return bool
+     */
+    protected function la_mira_el_guardian($uri)
+    {
+        return preg_match(self::PATRON_DE_DESCARGA, $uri) === 1 || in_array($uri, self::RUTAS_CON_DATOS_DEL_COMERCIO, true);
     }
 
     /**
