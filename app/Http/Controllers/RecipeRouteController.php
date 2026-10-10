@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\RecipeRoute;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class RecipeRouteController extends Controller
 {
@@ -39,7 +40,60 @@ class RecipeRouteController extends Controller
         return $value;
     }
 
+    /**
+     * Rechaza la ruta si algun insumo no trae el estado en el que se consume.
+     *
+     * El select "Estado" del insumo manda 0 cuando el usuario deja "Seleccione...", y un insumo
+     * con el estado en 0 (o en null) no se consume en NINGUN movimiento: la ruta se guarda, se ve
+     * completa y el stock del insumo nunca baja. Sin error y sin log. Por eso se rechaza con un
+     * aviso que nombra el insumo, en vez de guardarlo a medias (decision de Lucas, 10/10/2026).
+     *
+     * 🔴 Tiene que llamarse ANTES de cualquier escritura. GeneralHelper::attachModels() hace
+     * detach() de todos los insumos antes de re-adjuntar: validar despues dejaria la ruta sin
+     * insumos con un 422 que llega tarde.
+     *
+     * Responde 422 con `errors` como MAPA (articles => lista de textos) y `message`: es la forma
+     * que la SPA muestra como toast aun sin sesion.
+     *
+     * @param  mixed  $articles  Los insumos tal como llegan en el request (cada uno con su `pivot`).
+     * @return void
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    private function validar_estado_de_los_insumos($articles)
+    {
+        if (!is_array($articles)) {
+            return;
+        }
+
+        $mensajes = [];
+
+        foreach ($articles as $article) {
+
+            $estado_id = GeneralHelper::getPivotValue($article, 'order_production_status_id');
+
+            if (!is_null($estado_id) && (int)$estado_id !== 0) {
+                continue;
+            }
+
+            if (isset($article['name']) && trim((string)$article['name']) !== '') {
+                $nombre = $article['name'];
+            } else if (isset($article['id'])) {
+                $nombre = 'sin nombre (id '.$article['id'].')';
+            } else {
+                $nombre = 'sin nombre';
+            }
+
+            $mensajes[] = 'Elegí en qué estado se consume el insumo "'.$nombre.'".';
+        }
+
+        if (count($mensajes) > 0) {
+            throw ValidationException::withMessages(['articles' => $mensajes]);
+        }
+    }
+
     public function store(Request $request) {
+        $this->validar_estado_de_los_insumos($request->articles);
+
         $model = RecipeRoute::create([
             'recipe_id'                 => $request->recipe_id,
             'recipe_route_type_id'      => $request->recipe_route_type_id,
@@ -62,6 +116,8 @@ class RecipeRouteController extends Controller
     }
 
     public function update(Request $request, $id) {
+        $this->validar_estado_de_los_insumos($request->articles);
+
         $model = RecipeRoute::find($id);
         $model->recipe_route_type_id      = $request->recipe_route_type_id;
         $model->from_address_id           = $request->from_address_id;

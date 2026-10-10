@@ -229,7 +229,11 @@ class ProductionBatchMovementHelper
         foreach ($recipe_route->articles as $article) {
             $pivot_status_id = $article->pivot->order_production_status_id;
 
-            if (!is_null($pivot_status_id) && (int)$pivot_status_id === (int)$to_status_id) {
+            // Un insumo sin estado (null) o con el estado en 0 no se consume en ningun movimiento.
+            // El 0 es el "Seleccione..." de la SPA: hay rutas guardadas asi en produccion (Quino2),
+            // de antes de que la API rechazara el insumo sin estado, y sin esta guarda un
+            // movimiento hacia el estado 0 los consumiria a todos en silencio.
+            if (!is_null($pivot_status_id) && (int)$pivot_status_id !== 0 && (int)$pivot_status_id === (int)$to_status_id) {
                 $planned = (float)$article->pivot->amount * (float)$movement_amount;
 
                 // Cascada del deposito del que sale el insumo: el del movimiento, si no el de la
