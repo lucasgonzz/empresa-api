@@ -281,6 +281,37 @@ return [
     'APP_ENV'                                   => env('APP_ENV', 'production'),
     'APP_URL'                                   => env('APP_URL'),
     'FOR_USER'                                  => env('FOR_USER'),
+
+    /*
+     * Rutas de mantenimiento (`routes/mantenimiento.php`, middleware `solo.mantenimiento`, misión
+     * cerrar-rutas-web-publicas, 10/10/2026). Ver el docblock de App\Http\Middleware\RutaDeMantenimiento.
+     *
+     * `rutas_de_mantenimiento`: con `RUTAS_DE_MANTENIMIENTO=true` en el .env, todas las rutas de
+     * mantenimiento quedan abiertas sin clave. Es para el entorno local de desarrollo (`empresa.local`), y
+     * es una variable EXPLÍCITA a propósito: NO se abren por `APP_ENV=local`, porque no se pudo medir que
+     * ningún cliente ni demo de producción tenga ese valor en su .env (decisión de Lucas, 10/10/2026). Una
+     * variable que nadie tiene puesta por accidente no abre nada por accidente. Apagada por defecto.
+     */
+    'rutas_de_mantenimiento'                    => filter_var(env('RUTAS_DE_MANTENIMIENTO', false), FILTER_VALIDATE_BOOLEAN),
+
+    /*
+     * `mantenimiento_clave_sha256`: el sha256 (64 caracteres hexadecimales) de la clave maestra de
+     * mantenimiento. En producción se abre `.../extensiones?clave=<la clave>` una vez y la sesión queda
+     * habilitada 2 horas (o se manda en el header `X-Clave-Mantenimiento`).
+     *
+     * En el código va SOLO el hash, nunca la clave, y el default de acá es el que vale en toda la flota
+     * sin tocar ningún .env; `MANTENIMIENTO_CLAVE_SHA256` en el .env de un cliente lo reemplaza solo para
+     * ese cliente. Un valor VACÍO en el .env (`MANTENIMIENTO_CLAVE_SHA256=`, como viene en .env.example)
+     * cuenta como "no puesto" y usa el default: por eso `?:` y no el segundo argumento de env().
+     *
+     * POR QUÉ SHA256 Y NO BCRYPT: la clave es un secreto aleatorio de 256 bits generado por script
+     * (`generar-clave-maestra.ps1`), no una contraseña humana; con ese azar un hash rápido no se puede
+     * revertir, y bcrypt le costaría ~60 ms de CPU a cada intento fallido en un grupo `web` sin throttle (un
+     * vector de carga gratis).
+     *
+     * FALLA CERRADO: vacío, de un largo distinto de 64 o no hexadecimal → ninguna clave lo abre.
+     */
+    'mantenimiento_clave_sha256'                => env('MANTENIMIENTO_CLAVE_SHA256') ?: '',
     /* API_URL esta deprecada: no cargarla en .env nuevos. Existe solo por compatibilidad con
        instalaciones viejas que ya la tienen definida; si no esta, cae en APP_URL. */
     'API_URL'                                   => env('API_URL', env('APP_URL')),

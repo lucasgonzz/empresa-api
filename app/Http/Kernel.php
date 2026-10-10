@@ -90,5 +90,12 @@ class Kernel extends HttpKernel
          * Uso: 'descarga.comercio:sale,id' (tipo, parámetro) o 'descarga.comercio:sesion' (sin id).
          */
         'descarga.comercio' => \App\Http\Middleware\DescargaDelComercio::class,
+        /*
+         * La puerta de las rutas de mantenimiento, debug y administración interna (misión
+         * cerrar-rutas-web-publicas, 10/10/2026): todo `routes/mantenimiento.php` pasa por acá
+         * (lo pone RouteServiceProvider). Sin tests, variable explícita, demo (con `:demo`), sesión
+         * habilitada o clave maestra: 404. Uso: 'solo.mantenimiento' o 'solo.mantenimiento:demo'.
+         */
+        'solo.mantenimiento' => \App\Http\Middleware\RutaDeMantenimiento::class,
     ];
 }
