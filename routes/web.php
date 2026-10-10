@@ -443,86 +443,132 @@ Route::post('user', 'UserController@store');
 Route::get('home/clients', 'HomeController@clients');
 
 
+/*
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * PDF Y EXPORTS: NINGUNA RUTA DE ACÁ ABAJO ES PÚBLICA (misión pdf-de-venta-publico, 10/10/2026)
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Todas pasan por el middleware `descarga.comercio` (App\Http\Middleware\DescargaDelComercio):
+ * se sirven con la sesión del comercio dueño del recurso, con un `?t=<token>` válido para ESE
+ * recurso (solo venta, presupuesto, cuenta corriente, movimiento y pedido de la tienda, los que se
+ * comparten fuera del sistema), o durante la ventana de transición de links viejos
+ * (`users.pdf_links_legacy_until` del dueño, registrada con Log::info). Si no, 404.
+ *
+ * Hasta esta misión el grupo `web` no tenía ninguna capa de autenticación y los controladores hacen
+ * `find($id)` pelado: en una base compartida, desde el frente de cualquier comercio se leían los
+ * comprobantes de todos.
+ *
+ * 🔴 UNA RUTA NUEVA DE PDF O EXPORT VA ADENTRO DE UNO DE ESTOS GRUPOS, con su tipo y su parámetro
+ * (o `sesion` si no tiene id). La lista de rutas protegidas está fijada en
+ * tests/Feature/PdfDeVentaPublico: una ruta de PDF que quede afuera la marca ese test.
+ *
+ * Quedan afuera a propósito: `client/pdf` (exige sesión en su controlador desde el 5/10/2026),
+ * `super-budget`, `storage`/`imported-files`/`exported-files` (confinados por StoragePathHelper) y
+ * todo lo que no es PDF ni export.
+ */
+
 // PDF
-Route::get('sale/pdf/{id}', 'SaleController@pdf');
-Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
-Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
-Route::get('sale/sale-ticket-pdf/{id}', 'SaleController@saleTicketPdf');
-Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
-Route::get('sale/afip-ticket-a4-pdf/{id}', 'SaleController@afipTicketA4Pdf');
-Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf');
-Route::get('sale/etiqueta-envio/pdf/{sale_id}', 'SaleController@etiqueta_envio');
+Route::middleware('descarga.comercio:sale,id')->group(function () {
+    Route::get('sale/pdf/{id}', 'SaleController@pdf');
+    Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
+    Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
+    Route::get('sale/sale-ticket-pdf/{id}', 'SaleController@saleTicketPdf');
+});
+
+// El {id} de estas dos es el del comprobante de ARCA (afip_tickets), no el de la venta.
+Route::middleware('descarga.comercio:afip_ticket,id')->group(function () {
+    Route::get('sale/afip-ticket-pdf/{id}', 'SaleController@afipTicketPdf');
+    Route::get('sale/afip-ticket-a4-pdf/{id}', 'SaleController@afipTicketA4Pdf');
+});
+
+Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticlesPdf')->middleware('descarga.comercio:sale,id');
+Route::get('sale/etiqueta-envio/pdf/{sale_id}', 'SaleController@etiqueta_envio')->middleware('descarga.comercio:sale,sale_id');
 
 
 Route::get('client/pdf', 'ClientController@pdf');
 
-Route::get('road-map/pdf/{id}', 'RoadMapController@pdf');
+Route::get('road-map/pdf/{id}', 'RoadMapController@pdf')->middleware('descarga.comercio:road_map,id');
 
 
 // Deposit Movement
-Route::get('deposit-movement/pdf/{id}', 'DepositMovementController@pdf');
+Route::get('deposit-movement/pdf/{id}', 'DepositMovementController@pdf')->middleware('descarga.comercio:deposit_movement,id');
 
 
 // Article
-Route::get('article/pdf/{ids}/{moneda_id?}', 'ArticleController@pdf');
-Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
-Route::get('article/bar-codes-pdf/{ids}', 'ArticleController@barCodePdf');
-Route::get('article/bar-codes-etiquetas-pdf/{ids}', 'ArticleController@barCodeEtiquetasPdf');
-Route::get('article/list-pdf/{ids}', 'ArticleController@listPdf');
-Route::get('article/table-pdf', 'ArticleController@tablePdf');
-Route::get('article/article-offer-pdf/{article_pdf_id}/{ids}', 'ArticleController@articleOfferSheetPdf');
-Route::get('article/pdf-personalizado', 'ArticleController@pdfPersonalizado');
+// {ids} es la lista 12-15-40: la sesión tiene que ser dueña de TODOS los artículos.
+Route::middleware('descarga.comercio:articles,ids')->group(function () {
+    Route::get('article/pdf/{ids}/{moneda_id?}', 'ArticleController@pdf');
+    Route::get('article/tickets-pdf/{ids}', 'ArticleController@ticketsPdf');
+    Route::get('article/bar-codes-pdf/{ids}', 'ArticleController@barCodePdf');
+    Route::get('article/bar-codes-etiquetas-pdf/{ids}', 'ArticleController@barCodeEtiquetasPdf');
+    Route::get('article/list-pdf/{ids}', 'ArticleController@listPdf');
+});
+// Por perfil o personalizados: sin id de recurso, el controlador lee el dueño con userId().
+Route::get('article/table-pdf', 'ArticleController@tablePdf')->middleware('descarga.comercio:sesion');
+Route::get('article/article-offer-pdf/{article_pdf_id}/{ids}', 'ArticleController@articleOfferSheetPdf')->middleware('descarga.comercio:articles,ids');
+Route::get('article/pdf-personalizado', 'ArticleController@pdfPersonalizado')->middleware('descarga.comercio:sesion');
 
 
-Route::get('articles-stock-minimo/excel', 'InventoryPerformanceController@stock_minimo_excel');
+Route::get('articles-stock-minimo/excel', 'InventoryPerformanceController@stock_minimo_excel')->middleware('descarga.comercio:sesion');
 
-Route::get('budget/pdf/{id}/{with_prices}/{with_images}', 'BudgetController@pdf');
-Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');
-Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@articlesPdf');
+Route::get('budget/pdf/{id}/{with_prices}/{with_images}', 'BudgetController@pdf')->middleware('descarga.comercio:budget,id');
+Route::middleware('descarga.comercio:order_production,id')->group(function () {
+    Route::get('order-production/pdf/{id}/{with_prices}', 'OrderProductionController@pdf');
+    Route::get('order-production/articles-pdf/{id}', 'OrderProductionController@articlesPdf');
+});
 
 #Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}', 'CurrentAcountController@pdfFromModel');
-Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}/{type?}', 'CurrentAcountController@pdfFromModel');
-Route::get('/current-acount/pdf/{id}', 'CurrentAcountController@pdf');
+// Con {months_ago} > 0 el primer parámetro es una CUENTA corriente; con 0, UN movimiento (así lo lee
+// pdfFromModel). El middleware decide el tipo con la misma comparación.
+Route::get('/current-acount/pdf/{credit_account_id}/{months_ago}/{type?}', 'CurrentAcountController@pdfFromModel')->middleware('descarga.comercio:cuenta_corriente,credit_account_id,months_ago');
+Route::get('/current-acount/pdf/{id}', 'CurrentAcountController@pdf')->middleware('descarga.comercio:current_acount,id');
 
-Route::get('order/pdf/{id}/', 'OrderController@pdf');
-Route::get('provider-order/pdf/{id}', 'ProviderOrderController@pdf');
+Route::get('order/pdf/{id}/', 'OrderController@pdf')->middleware('descarga.comercio:order,id');
+Route::get('provider-order/pdf/{id}', 'ProviderOrderController@pdf')->middleware('descarga.comercio:provider_order,id');
 
 // Excel
-Route::get('article-clients/excel/export/{price_type_id?}', 'ArticleController@clientsExport');
-Route::get('article-base/excel/export', 'ArticleController@baseExport');
-Route::get('client/excel/export', 'ClientController@export');
-Route::get('provider/excel/export', 'ProviderController@export');
-Route::get('apertura-caja/excel/export/{id}', 'AperturaCajaController@export');
+Route::middleware('descarga.comercio:sesion')->group(function () {
+    Route::get('article-clients/excel/export/{price_type_id?}', 'ArticleController@clientsExport');
+    Route::get('article-base/excel/export', 'ArticleController@baseExport');
+    Route::get('client/excel/export', 'ClientController@export');
+    Route::get('provider/excel/export', 'ProviderController@export');
+});
+Route::get('apertura-caja/excel/export/{id}', 'AperturaCajaController@export')->middleware('descarga.comercio:apertura_caja,id');
 
 Route::get('/provider-orders/export/{id}', function ($id) {
     return Maatwebsite\Excel\Facades\Excel::download(new App\Exports\ProviderOrderExport($id), 'pedido_proveedor_'.$id.'.xlsx');
-});
+})->middleware('descarga.comercio:provider_order,id');
 
-Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel_export');
-Route::get('sales/excel/breakdown-export/{from_date}/{until_date?}', 'SaleController@excel_breakdown_export');
-Route::get('nota-credito/excel/export/{from_date}/{until_date?}', 'NotaCreditoController@excel_export');
-Route::get('cheque/excel/export', 'ChequeController@excel_export');
+Route::middleware('descarga.comercio:sesion')->group(function () {
+    Route::get('sales/excel/export/{from_date}/{until_date?}', 'SaleController@excel_export');
+    Route::get('sales/excel/breakdown-export/{from_date}/{until_date?}', 'SaleController@excel_breakdown_export');
+    Route::get('nota-credito/excel/export/{from_date}/{until_date?}', 'NotaCreditoController@excel_export');
+    Route::get('cheque/excel/export', 'ChequeController@excel_export');
+});
 
 
 
 // Registrar Pago de usuario
 Route::get('user/register-payment/{company_name}', 'CommonLaravel\UserController@registerPayment');
 Route::get('caja', 'SaleController@caja');
-Route::get('sale/charts/{from}/{to}', 'SaleController@charts');
+Route::get('sale/charts/{from}/{to}', 'SaleController@charts')->middleware('descarga.comercio:sesion');
 
 
 
-Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
-Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
+// Libros y TXT de ARCA: sin id de recurso, el controlador toma el dueño con userId().
+Route::middleware('descarga.comercio:sesion')->group(function () {
+    Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
+    Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
 
-Route::get('afip-iva-compras/{mes_inicio}/{mes_fin}', 'AfipController@iva_compras_pdf');
-Route::get('afip-iva-ventas/{mes_inicio}/{mes_fin}', 'AfipController@iva_ventas_pdf');
-
-
-
-
-
-Route::get('acopio-article-delivery/{id}', 'AcopioArticleDeliveryController@pdf');
+    Route::get('afip-iva-compras/{mes_inicio}/{mes_fin}', 'AfipController@iva_compras_pdf');
+    Route::get('afip-iva-ventas/{mes_inicio}/{mes_fin}', 'AfipController@iva_ventas_pdf');
+});
 
 
-Route::get('resumen-caja/pdf/{id}', 'ResumenCajaController@pdf');
+
+
+
+Route::get('acopio-article-delivery/{id}', 'AcopioArticleDeliveryController@pdf')->middleware('descarga.comercio:acopio_article_delivery,id');
+
+
+Route::get('resumen-caja/pdf/{id}', 'ResumenCajaController@pdf')->middleware('descarga.comercio:resumen_caja,id');
