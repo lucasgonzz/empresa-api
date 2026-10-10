@@ -52,6 +52,12 @@ class Cheque extends Model
      *    scope por dueño lo pone el listado sobre `cheques`.
      *  - `NULLIF(..., '')`: un banco con nombre vacío no se muestra (la SPA mira `name` como
      *    verdadero), así que cae al texto, igual que un id que no existe (la subconsulta da NULL).
+     *    Dos bordes donde las tres copias NO coinciden, inalcanzables hoy (la columna `name` es NOT
+     *    NULL y el middleware TrimStrings + ConvertEmptyStringsToNull convierte '' y '   ' en null,
+     *    así que el ABM y el asistente no pueden guardarlos): un nombre '' sale VACÍO en el Excel
+     *    (que mira `!is_null(cheque_banco)`) mientras la tabla y este filtro muestran el texto; y un
+     *    nombre hecho solo de espacios, que la SPA dibuja tal cual, acá cuenta como '' (PAD SPACE de
+     *    utf8mb4_unicode_ci) y cae al texto. Si algún día se pueden guardar, alinear los tres.
      *  - `CONVERT(... USING utf8mb4) COLLATE utf8mb4_unicode_ci` en LAS DOS ramas: `cheque_bancos`
      *    nació el 21/9/2026 con la collation de Laravel y `cheques` puede ser mucho más vieja en una
      *    base de producción; un COALESCE de dos columnas con collations distintas da "Illegal mix of

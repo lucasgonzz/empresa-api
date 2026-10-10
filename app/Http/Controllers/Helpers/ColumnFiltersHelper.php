@@ -47,6 +47,11 @@ use Illuminate\Support\Facades\Log;
  *    (select, search, number, date, checkbox) siguen por el camino de siempre, identico.
  *  - La expresion tiene que ser lo que la PANTALLA muestra, y se cambia junto con la funcion de la
  *    SPA que arma esa celda (en cheques, `cheque_banco_texto`; ver Cheque::columnas_mostradas_para_filtros()).
+ *  - La expresion califica las columnas con el nombre REAL de la tabla (`cheques.banco`): anda con
+ *    joins, pero NO si un llamador le pone alias a la tabla base (`from('cheques as c')`) o aplica
+ *    este helper adentro de un whereHas sobre la misma tabla ("Unknown column"). Hoy ningun camino
+ *    lo hace (todos parten de Modelo::where(...)); si alguno nuevo lo necesita, hay que resolverlo
+ *    aca antes de usarlo.
  */
 class ColumnFiltersHelper
 {
@@ -1095,9 +1100,12 @@ class ColumnFiltersHelper
      * filtro es de texto; si no, null (y el filtro sigue por el camino de siempre). Ver "COLUMNAS
      * MOSTRADAS" en el docblock de la clase.
      *
-     * El tipo se compara ESTRICTO contra 'text' / 'textarea': con `==` de PHP 7.4 un type 0 o true
-     * pasaria por texto, y la rama de siempre los manda a la de number. Un tipo que no es texto sobre
-     * una columna declarada sigue por el camino de siempre, identico.
+     * El tipo se compara ESTRICTO contra 'text' / 'textarea', por la misma razon que tiene_criterio():
+     * con `==` de PHP 7.4 un string y un numero o booleano se comparan "a lo PHP" (`0 == 'text'` es
+     * verdadero). Hoy esos tipos raros ya los ataja antes la rama de imagenes de apply() (que tambien
+     * compara con `==`), asi que la comparacion estricta no cambia nada medible: esta para que esta
+     * rama no dependa de ese orden. Un tipo que no es texto sobre una columna declarada sigue por el
+     * camino de siempre, identico.
      *
      * El metodo del modelo tiene que ser publico y estatico (se mira por reflexion antes de
      * invocarlo): su nombre es fijo, no sale del pedido.

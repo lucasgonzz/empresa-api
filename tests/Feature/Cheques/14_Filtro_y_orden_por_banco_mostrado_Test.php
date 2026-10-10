@@ -244,6 +244,13 @@ class Filtro_y_orden_por_banco_mostrado_Test extends ChequesTestCase
         $sin_acento = $this->buscar_cheques($this->filtro_de_banco(['que_contenga' => 'de entre rios']));
 
         $this->assertContains($er->id, $sin_acento['ids'], '"de entre rios" encuentra "Banco de Entre Ríos" (sin acento ni mayúsculas).');
+
+        // "Ríos", el ejemplo literal de Lucas que ya andaba antes (lo encontraba por el texto
+        // "Banco Entre Rios"): sigue encontrándolo, ahora por lo que se ve.
+        $rios = $this->buscar_cheques($this->filtro_de_banco(['que_contenga' => 'Ríos']));
+
+        $this->assertContains($er->id, $rios['ids'], '"Ríos" sigue encontrando el cheque que se ve "Banco de Entre Ríos".');
+        $this->assertNotContains($bsas->id, $rios['ids']);
     }
 
     /**
