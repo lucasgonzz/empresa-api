@@ -1028,6 +1028,18 @@ class MasiveUpdateHelper
         if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
+
+            /*
+             * Un porcentaje de nada es nada (misión asistente-masiva-precio-manual, 10/10/2026): con la
+             * columna en null, `null * x / 100` daba 0 y se GUARDABA 0 sin contarlo como cambio (en
+             * PHP null == 0), así que ni el historial ni la reversión se enteraban. En un artículo sin
+             * margen ese `price = 0.00` quedaba leyéndose después como un precio manual de $0. Ahora
+             * no se escribe nada. El stock sigue por su camino de siempre (aplicar_stock_por_movimiento()).
+             */
+            if (is_null($old_value) && !self::es_stock_de_articulo($model, $prop_key)) {
+                return null;
+            }
+
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
             $nuevo = $model->{$prop_key} - $value;
             if (!empty($form['round']) && self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
@@ -1060,6 +1072,12 @@ class MasiveUpdateHelper
         if ($form['type'] == 'number' && strpos($form['key'], 'increment') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
+
+            // Mismo motivo que en la rama de decrement: sobre null no se escribe un 0.
+            if (is_null($old_value) && !self::es_stock_de_articulo($model, $prop_key)) {
+                return null;
+            }
+
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
             $nuevo = $model->{$prop_key} + $value;
             if (!empty($form['round']) && self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
@@ -1672,20 +1690,46 @@ class MasiveUpdateHelper
         }
 
         $is_revert = $masive_update->action == 'revert';
-        $model_label = $masive_update->model_name == 'article' ? 'artículos' : $masive_update->model_name;
+        $es_de_articulos = $masive_update->model_name == 'article';
+        $model_label = $es_de_articulos ? 'artículos' : $masive_update->model_name;
+
+        /*
+         * Una masiva que termina sin cambiar nada NO es un "finalizó correctamente" (misión
+         * asistente-masiva-precio-manual, 10/10/2026): en demo, "subile 10 % el precio manual" a
+         * artículos que calculan con costo + margen terminaba en verde con "Registros afectados: 0"
+         * y nada más, y el dueño entendía que se había aplicado. El modal global
+         * (global-notification/Modal.vue) no pinta `color_variant`, así que lo que importa es el
+         * texto: dice que no cambió nada y cuántos alcanzó. Solo para la actualización; una
+         * reversión en 0 sigue como siempre.
+         */
+        $sin_cambios = $success && !$is_revert && (int) $masive_update->affected_count === 0;
+        $alcanzados = self::cantidad_de_alcanzados($masive_update);
 
         if ($success) {
-            $message = $is_revert
-                ? 'La reversión de la actualización masiva finalizó correctamente'
-                : 'La actualización masiva de ' . $model_label . ' finalizó correctamente';
+            if ($sin_cambios) {
+                $message = 'La actualización masiva de ' . $model_label . ' terminó sin cambiar '
+                    . ($es_de_articulos ? 'ningún artículo' : 'ningún registro');
+            } else {
+                $message = $is_revert
+                    ? 'La reversión de la actualización masiva finalizó correctamente'
+                    : 'La actualización masiva de ' . $model_label . ' finalizó correctamente';
+            }
+
+            $parrafos = [];
+
+            if ($sin_cambios) {
+                $parrafos[] = self::parrafo_de_masiva_sin_cambios($alcanzados, $es_de_articulos);
+            } elseif (!is_null($alcanzados) && $alcanzados !== (int) $masive_update->affected_count) {
+                $parrafos[] = ($es_de_articulos ? 'Artículos' : 'Registros') . ' alcanzados: ' . $alcanzados;
+            }
+
+            $parrafos[] = 'Registros afectados: ' . (int) $masive_update->affected_count;
+            $parrafos[] = 'Cambios aplicados: ' . (int) $masive_update->changes_count;
 
             $info_to_show = [
                 [
                     'title' => 'Resultado',
-                    'parrafos' => [
-                        'Registros afectados: ' . (int) $masive_update->affected_count,
-                        'Cambios aplicados: ' . (int) $masive_update->changes_count,
-                    ],
+                    'parrafos' => $parrafos,
                 ],
             ];
 
@@ -1727,13 +1771,62 @@ class MasiveUpdateHelper
             ];
         }
 
+        if (!$success) {
+            $color_variant = 'danger';
+        } else {
+            $color_variant = $sin_cambios ? 'warning' : 'success';
+        }
+
         $owner_user->notify(new GlobalNotification([
             'message_text' => $message,
-            'color_variant' => $success ? 'success' : 'danger',
+            'color_variant' => $color_variant,
             'functions_to_execute' => $functions_to_execute,
             'info_to_show' => $info_to_show,
             'owner_id' => $owner_user->id,
             'is_only_for_auth_user' => $masive_update->employee_id,
         ]));
+    }
+
+    /**
+     * Cuántos registros alcanzó la masiva: los `resolved_models_id` que quedaron en su criterio al
+     * encolarla. null si no los tiene (una reversión, o una masiva encolada antes de que se
+     * guardaran).
+     *
+     * @param \App\Models\MasiveUpdate $masive_update
+     * @return int|null
+     */
+    protected static function cantidad_de_alcanzados(MasiveUpdate $masive_update)
+    {
+        $criteria = json_decode($masive_update->criteria_json, true);
+
+        if (!is_array($criteria) || !isset($criteria['resolved_models_id']) || !is_array($criteria['resolved_models_id'])) {
+            return null;
+        }
+
+        return count($criteria['resolved_models_id']);
+    }
+
+    /**
+     * El primer párrafo del aviso de una masiva que terminó sin cambiar nada: cuántos alcanzó y por
+     * qué ninguno cambió.
+     *
+     * @param int|null $alcanzados
+     * @param bool $es_de_articulos
+     * @return string
+     */
+    protected static function parrafo_de_masiva_sin_cambios($alcanzados, $es_de_articulos)
+    {
+        $singular = $es_de_articulos ? 'artículo' : 'registro';
+        $plural = $es_de_articulos ? 'artículos' : 'registros';
+
+        if (is_null($alcanzados)) {
+            return 'Ningún ' . $singular . ' cambió: ya tenían esos valores o el cambio no se les aplica.';
+        }
+
+        if ($alcanzados === 1) {
+            return 'Alcanzó a 1 ' . $singular . ', pero no cambió: ya tenía esos valores o el cambio no se le aplica.';
+        }
+
+        return 'Alcanzó a ' . $alcanzados . ' ' . $plural . ', pero ninguno cambió: ya tenían esos valores o el cambio no se les aplica.';
     }
 }
