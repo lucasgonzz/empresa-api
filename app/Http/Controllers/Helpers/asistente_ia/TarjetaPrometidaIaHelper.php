@@ -510,6 +510,15 @@ class TarjetaPrometidaIaHelper
      */
     const CIERRE_DE_CORTESIA = '/(?:\bsi necesitas algo mas\b|\bcualquier cosa\b|\b(?:avisame|decime|me decis)\W*$)/u';
 
+    /**
+     * Una oración que EMPIEZA ofreciendo algo, normalizada (quinta vuelta, 10/10/2026): "Si querés que
+     * también te agende el pago, decime.", "Si querés, te agendo también el pago; avisame.", "Te puedo
+     * agendar el pago del alquiler, avisame." Aunque termine en "decime" o "avisame" no es un cierre de
+     * cortesía: ofrece, y el "dale" que la contesta es un pedido nuevo. "Si necesitás algo más, avisame."
+     * no está a propósito: ése sí es la cortesía.
+     */
+    const OFRECIMIENTO_AL_EMPEZAR = '/^(?:si queres|si te parece|puedo|te puedo|tambien te puedo)\b/u';
+
     /** "Fijate de cargarlo", "acordate de pasarla al jueves": un pedido de carga con su infinitivo. */
     const RECORDA_DE_CARGAR = '/\b(?:fijate|acordate|no te olvides)\s+de\s+' . self::INFINITIVO_DE_CARGA . '\b/u';
 
@@ -758,7 +767,8 @@ class TarjetaPrometidaIaHelper
      *
      * Cuarta vuelta (10/10/2026): los cierres de cortesía no son ofrecimientos y se saltean igual que
      * el "Avisame." ("Si necesitás algo más, avisame.", "Cualquier cosa, acá estoy.", toda oración sin
-     * "?" que termine en "avisame" o "decime"); un AVISO_* del final tampoco cuenta (el "dale" que
+     * "?" que termine en "avisame" o "decime", salvo que EMPIECE ofreciendo algo: ver
+     * OFRECIMIENTO_AL_EMPEZAR, de la quinta vuelta); un AVISO_* del final tampoco cuenta (el "dale" que
      * contesta una respuesta con aviso contesta lo de antes); y el detector pide sólo la pregunta
      * (`$con_ofrecimientos` en false), porque una promesa seguida de un ofrecimiento promete igual.
      *
@@ -775,7 +785,9 @@ class TarjetaPrometidaIaHelper
             $ultima = $oraciones[count($oraciones) - 1];
 
             if (! preg_match('/\p{L}/u', $ultima)
-                || (! self::es_pregunta($ultima) && preg_match(self::CIERRE_DE_CORTESIA, self::normalizar($ultima)))) {
+                || (! self::es_pregunta($ultima)
+                    && preg_match(self::CIERRE_DE_CORTESIA, self::normalizar($ultima))
+                    && ! preg_match(self::OFRECIMIENTO_AL_EMPEZAR, self::normalizar($ultima)))) {
 
                 array_pop($oraciones);
                 continue;
@@ -1399,6 +1411,13 @@ class TarjetaPrometidaIaHelper
      * preguntado ("ya le pagué a coca", "Cuando lo llamé me dijo…"; "cuanto vendi hoy" no), o "que" +
      * subjuntivo al empezar un fragmento sin "?" ("Que quede para el jueves").
      *
+     * Quinta vuelta (10/10/2026): tampoco cuenta el pretérito de un fragmento que es PREGUNTA sin un
+     * número ("¿Cargué bien el gasto de la luz?", "¿Ya le pagué a Coca?", "¿Cuándo pagué la luz?") ni el
+     * que va detrás de un "si" de pregunta indirecta ("Fijate si pagué la luz", "Decime si cargué…"): la
+     * persona pregunta si lo hizo. Con la v4 esas consultas eran 'otro', y en una primera respuesta un
+     * "Sí, quedó registrado el pago." terminaba cambiado por "No pude hacer esa carga…". Con un número la
+     * pregunta trae el dato de una carga ("pagué la luz 12000 ok?") y el pretérito cuenta.
+     *
      * @param  string  $fragmento    Normalizado.
      * @param  bool  $es_pregunta  true si el fragmento es una pregunta.
      * @return bool
@@ -1410,7 +1429,13 @@ class TarjetaPrometidaIaHelper
             return true;
         }
 
+        if ($es_pregunta && ! preg_match('/\d/u', $fragmento)) {
+
+            return false;
+        }
+
         $sin_lo_preguntado = (string) preg_replace(self::PRETERITO_PREGUNTADO, ' ', $fragmento);
+        $sin_lo_preguntado = (string) preg_replace('/\bsi\s+(?:(?:ya|le|les|lo|la|los|las|me|te|se|nos)\s+)*' . self::PRETERITO_DE_PRIMERA_PERSONA . '\b/u', ' ', $sin_lo_preguntado);
 
         return (bool) preg_match('/\b' . self::PRETERITO_DE_PRIMERA_PERSONA . '\b/u', $sin_lo_preguntado);
     }
