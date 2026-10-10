@@ -303,10 +303,12 @@ class SellerCommissionController extends Controller
      * Importe de un lado (debe o haber) del saldo inicial: el numero redondeado a centavos si es
      * mayor a cero, o null.
      *
-     * 🔴 `is_numeric` y no un `(float)` a secas: el input admite coma decimal y punto de miles, y
-     * `(float) '1.234,56'` da 1.234 y `(float) '50,5'` da 50 — se guardaria otro importe sin
-     * avisar (antes MySQL los rechazaba con un 500). Y el redondeo antes de comparar, porque la
-     * columna es decimal(14,2): 0,001 pasaria la guarda y quedaria guardado como 0,00.
+     * 🔴 `is_numeric` y no un `(float)` a secas: con coma decimal, `(float) '1.234,56'` da 1.234 y
+     * `(float) '50,5'` da 50 — se guardaria otro importe sin avisar (antes MySQL los rechazaba con
+     * un 500); `is_numeric` los rechaza. Un punto solo ("1.234") es un numero valido y se lee como
+     * decimal (1,23), igual que antes en MySQL: de eso cuida el `type="number"` del SPA. Y el
+     * redondeo antes de comparar, porque la columna es decimal(14,2): 0,001 pasaria la guarda y
+     * quedaria guardado como 0,00.
      *
      * @param mixed $valor
      * @return float|null
