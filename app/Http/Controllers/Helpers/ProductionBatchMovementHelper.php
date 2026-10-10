@@ -165,7 +165,50 @@ class ProductionBatchMovementHelper
             // revertir producto si había ingresado stock por end_status
             self::apply_output_stock_if_end_status($movement->production_batch, $movement, $controller_instance, -1);
 
+            // Las filas de insumos del movimiento se van con él. No hay clave foránea que lo haga
+            // sola, y quedaban huérfanas apuntando a un movimiento que ya no existe.
+            ProductionBatchMovementInput::where('production_batch_movement_id', $movement->id)->delete();
+
             $movement->delete();
+        });
+    }
+
+    /**
+     * Elimina un lote entero: revierte todos sus movimientos y después borra el lote.
+     *
+     * Cada movimiento se revierte con delete_movement(), o sea por el MISMO camino que el botón de
+     * borrar movimiento: devuelve los insumos, saca el producto que haya dado de alta (leyendo lo
+     * que se registró al crearlo, no lo que la ruta diga ahora) y borra sus filas de insumos. Antes
+     * el lote se borraba y sus movimientos quedaban huérfanos con el stock ya tocado: nada lo
+     * revertía (decisión de Lucas, 10/10/2026: eliminar un lote revierte todo).
+     *
+     * Del más nuevo al más viejo, como los borraría un usuario a mano. Se ordena por id y no por
+     * created_at, que tiene resolución de segundos y empata entre movimientos seguidos.
+     *
+     * Todo va en una transacción: si la reversión de uno falla, no queda un lote a medio revertir.
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @param  mixed                         $controller_instance
+     * @return void
+     */
+    public static function delete_batch(ProductionBatch $batch, $controller_instance)
+    {
+        DB::transaction(function () use ($batch, $controller_instance) {
+
+            $movements = ProductionBatchMovement::with('inputs')
+                            ->where('production_batch_id', $batch->id)
+                            ->orderBy('id', 'DESC')
+                            ->get();
+
+            foreach ($movements as $movement) {
+
+                // El lote que ya tenemos: evita releerlo por cada movimiento.
+                $movement->setRelation('production_batch', $batch);
+
+                self::delete_movement($movement, $controller_instance);
+            }
+
+            $batch->delete();
         });
     }
 

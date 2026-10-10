@@ -91,9 +91,18 @@ class ProductionBatchMovementController extends Controller
         $movement->notes = $request->notes;
         $movement->save();
 
-        $movement = ProductionBatchMovementHelper::update_movement_inputs($movement, $request, $this);
+        // Cambiar solo las notas no manda `inputs`: sin este if el foreach del helper revienta
+        // con un 500 sobre un null.
+        if (is_array($request->inputs) && count($request->inputs) > 0) {
+            $movement = ProductionBatchMovementHelper::update_movement_inputs($movement, $request, $this);
+        }
 
-        return response()->json(['production_batch' => $this->fullModel('ProductionBatchMovement', $movement->id)], 200);
+        $full_model = $this->fullModel('ProductionBatchMovement', $movement->id);
+
+        // La SPA lee `model`. `production_batch` se conserva con el mismo payload (que ya era el
+        // movimiento, pese al nombre) para no romper a un SPA anterior: los dos frentes del VPS
+        // pueden servir versiones distintas durante un release o dos.
+        return response()->json(['model' => $full_model, 'production_batch' => $full_model], 200);
     }
 
     /**
