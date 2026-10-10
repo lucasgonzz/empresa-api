@@ -3,12 +3,16 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Exceptions\BaseConDatosException;
+use App\Http\Middleware\ClaveDeAdminEnSetup;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Guarda de "no vaciar una base que ya tiene datos de negocio" para todo lo que corre un
- * `migrate:fresh` (hoy: `UserSetupHelper::run()`).
+ * `migrate:fresh`. Hoy la llaman `UserSetupHelper::run()` y, desde la misión guarda-demo-setup,
+ * también `DemoSetupHelper::run()` cuando la instancia NO es de demo; esta última siempre con un
+ * payload vacío (`[]`) y sin la clave, así que por esa puerta nunca se puede forzar: con datos de
+ * negocio, se niega.
  *
  * POR QUÉ EXISTE (el caso real, 5/10/2026)
  * ----------------------------------------
@@ -23,11 +27,33 @@ use Illuminate\Support\Facades\Log;
  * Antes de borrar, mira si la base tiene datos de negocio (TABLAS_DE_NEGOCIO). Si tiene, se niega
  * con una BaseConDatosException y no toca nada. Hay una sola forma de pasarla por encima, y es
  * deliberadamente incómoda: el payload tiene que traer `forzar_borrado_total` Y
- * `confirmar_base_de_datos` con el nombre EXACTO de la base que se va a vaciar.
+ * `confirmar_base_de_datos` con el nombre EXACTO de la base que se va a vaciar, Y la puerta tiene
+ * que haber verificado la clave de admin de la instancia (X-Admin-Api-Key == ADMIN_API_INBOUND_KEY,
+ * con ClaveDeAdminEnSetup::trae_la_clave_de_admin()) y pasarla como `$con_clave_de_admin = true`.
  *
  * Una base vacía (el "sistema recién instalado y migrado, sin ningún usuario" que dejan
  * /instalar-cliente y /implementar) pasa sin ningún parámetro: el alta de clientes funciona igual
  * que siempre.
+ *
+ * 🔴 POR QUÉ EL FORZADO PIDE LA CLAVE DE ADMIN SIEMPRE (misión cerrar-forzado-user-setup, 10/10/2026)
+ * --------------------------------------------------------------------------------------------------
+ * Con solo el flag y el nombre, POST /api/admin-sync/user-setup vaciaba una producción: la clave de
+ * la ruta está apagada en toda la flota (ADMIN_SYNC_SETUP_REQUIRE_API_KEY) y el nombre de la base NO
+ * es una credencial, se deduce del cliente (`panchito` en el VPS, `u767360347_...` en el shared). Dos
+ * campos adivinables no pueden alcanzar para borrar todo.
+ *
+ * La clave se pide para FORZAR aunque la variable siga apagada, y eso no rompe a nadie: admin-api
+ * nunca manda esos dos campos (`ImplementationUserSetupService` los saca y `RunUserSetupService`
+ * arma el payload campo por campo), así que todo lo que hoy forzaba sin clave era alguien que no
+ * tenía por qué. La variable general queda como está porque gobierna el setup NORMAL (base vacía), y
+ * prenderla hoy rompería el alta de clientes: una instalación nueva nace sin ADMIN_API_INBOUND_KEY.
+ *
+ * Quien de verdad necesita re-correr el setup sobre una base con datos (la raíz del pool) lo hace por
+ * SSH al servidor del cliente, disparando el POST desde ahí con la clave que lee de SU propio `.env`:
+ * la clave no viaja a ningún lado. Si la instancia no tiene clave cargada, primero se la carga desde
+ * el admin (`POST claude/clients/{id}/catalogo/clave`); sin clave nadie fuerza por HTTP (falla
+ * cerrado). Y si el que llama trae el nombre bien pero sin la clave, el log lo dice con una línea
+ * propia; la respuesta, no (ver exigir_base_sin_datos_o_autorizacion()).
  *
  * 🔴 POR QUÉ LA GUARDA VIVE ADENTRO DE `UserSetupHelper::run()` Y NO EN LOS CONTROLADORES
  * -------------------------------------------------------------------------------------
@@ -124,7 +150,11 @@ class BorradoTotalDeBaseHelper
     }
 
     /**
-     * ¿El payload autoriza vaciar esta base aunque tenga datos?
+     * ¿El payload PIDE y CONFIRMA vaciar esta base aunque tenga datos?
+     *
+     * 🔴 Es condición necesaria, no suficiente: para forzar de verdad hace falta además la clave de
+     * admin verificada, que este método no mira (es del request, no del payload) y que exige
+     * `exigir_base_sin_datos_o_autorizacion()`. Por eso no alcanza con que esto dé true.
      *
      * 🔴 El flag Y la confirmación del nombre, a propósito. Con un solo campo, un payload armado
      * con un spread de `setup_data` (como el de `ImplementationUserSetupService::build_payload()`
@@ -146,7 +176,8 @@ class BorradoTotalDeBaseHelper
      *   Panchito se llama `panchito`), o sea que cualquiera que sepa a qué cliente le pega lo puede
      *   adivinar. Lo que la hace valer es que un POST perdido, un payload armado con un spread o un
      *   test mal apuntado NO traen el nombre de la base correcta por casualidad. La defensa contra
-     *   alguien que apunta a propósito es la clave de admin (ClaveDeAdminEnSetup), cuando se prenda.
+     *   alguien que apunta a propósito es la clave de admin, que para forzar se pide SIEMPRE (aunque
+     *   ADMIN_SYNC_SETUP_REQUIRE_API_KEY esté apagada): ver exigir_base_sin_datos_o_autorizacion().
      *
      * @param  array<string, mixed> $data Payload del setup.
      * @return bool
@@ -171,21 +202,33 @@ class BorradoTotalDeBaseHelper
     }
 
     /**
-     * Deja pasar solo si la base no tiene datos de negocio o si el payload autoriza el borrado.
-     * Si no, tira BaseConDatosException SIN haber tocado nada.
+     * Deja pasar solo si la base no tiene datos de negocio, o si el payload pide y confirma el
+     * borrado (esta_autorizado()) Y la puerta verificó la clave de admin (`$con_clave_de_admin`
+     * === true). Si no, tira BaseConDatosException SIN haber tocado nada.
      *
-     * Las dos ramas con datos dejan rastro en el log (con el nombre de la base y los conteos, que
+     * Las tres ramas con datos dejan rastro en el log (con el nombre de la base y los conteos, que
      * son para el servidor y no viajan en ninguna respuesta): el borrado total autorizado queda
-     * registrado, y el rechazado también, para poder reconstruir quién golpeó una base viva. Por
-     * eso el contexto lleva además la IP y el user agent del request (ver datos_del_request()):
-     * el 5/10/2026 costó reconstruir quién había pegado, y la forense empieza por ahí.
+     * registrado, el rechazado también, y el que trae el nombre correcto pero no la clave tiene su
+     * línea propia, para poder reconstruir quién golpeó una base viva. Por eso el contexto lleva
+     * además la IP y el user agent del request (ver datos_del_request()): el 5/10/2026 costó
+     * reconstruir quién había pegado, y la forense empieza por ahí.
      *
-     * @param  array<string, mixed> $data Payload del setup.
+     * Los dos rechazos tiran la MISMA excepción (mismo mensaje, mismas tablas), así que el 409 es
+     * idéntico con el nombre de la base acertado o errado: la respuesta no sirve para adivinarlo.
+     *
+     * @param  array<string, mixed> $data               Payload del setup.
+     * @param  bool                 $con_clave_de_admin Si la puerta que llama YA verificó la clave de
+     *                                                  admin de la instancia
+     *                                                  (ClaveDeAdminEnSetup::trae_la_clave_de_admin()).
+     *                                                  Solo `true` estricto cuenta: `1`, `'1'` o
+     *                                                  `'true'` no. Por defecto false: quien no la
+     *                                                  pasa a propósito no puede forzar.
      * @return void
      *
-     * @throws BaseConDatosException Si la base tiene datos y el payload no autoriza el borrado.
+     * @throws BaseConDatosException Si la base tiene datos y no se autorizó el borrado (payload que
+     *                               pide y confirma + clave de admin verificada).
      */
-    public static function exigir_base_sin_datos_o_autorizacion(array $data)
+    public static function exigir_base_sin_datos_o_autorizacion(array $data, $con_clave_de_admin = false)
     {
         $resumen = self::resumen_de_datos();
 
@@ -196,7 +239,11 @@ class BorradoTotalDeBaseHelper
 
         $base = self::nombre_de_la_base();
 
-        if (self::esta_autorizado($data)) {
+        $pide_y_confirma = self::esta_autorizado($data);
+
+        // Las dos cosas: el payload pide y confirma el nombre, Y la clave de admin vino y es la de esta
+        // instancia. `=== true` a propósito: un `'1'` que se coló desde un payload no es una clave.
+        if ($pide_y_confirma && $con_clave_de_admin === true) {
             Log::warning('BorradoTotalDeBaseHelper: borrado total AUTORIZADO sobre una base con datos.', array_merge([
                 'base'      => $base,
                 'con_datos' => $resumen,
@@ -205,10 +252,44 @@ class BorradoTotalDeBaseHelper
             return;
         }
 
+        if ($pide_y_confirma) {
+            /*
+             * 🔴 El payload trae el flag Y el nombre EXACTO de la base, pero no la clave de admin. No es
+             * un POST perdido ni un spread: quien llamó sabía a qué base le pegaba, y ningún llamador
+             * legítimo arma esto (admin-api nunca manda esos dos campos y la raíz fuerza desde el
+             * servidor del cliente, con la clave). Por eso tiene su propia línea, distinta del rechazo
+             * de siempre: es la que hay que buscar en el log para ver si alguien está probando.
+             *
+             * La RESPUESTA, en cambio, es la misma que la de cualquier otro rechazo (misma excepción,
+             * mismo mensaje, mismas tablas): si dijera "acertaste el nombre, te falta la clave",
+             * serviría de oráculo para adivinar cómo se llama la base. El motivo real vive solo acá.
+             *
+             * `instancia_con_clave` dice si este servidor TIENE una clave cargada (un bool, NUNCA el
+             * valor): como el 409 es idéntico a propósito, es lo que le deja a la raíz distinguir, leyendo
+             * el log, "al servidor le falta ADMIN_API_INBOUND_KEY" (false: hay que cargarla desde el
+             * admin antes de forzar) de "el header vino mal" (true). Mismo criterio que la comparación
+             * (ClaveDeAdminEnSetup::la_instancia_tiene_clave()), para que el log no diga una cosa y la
+             * puerta haga otra.
+             */
+            Log::warning(
+                'BorradoTotalDeBaseHelper: se rechazó un setup que pidió el borrado total con el nombre '
+                . 'correcto de la base pero SIN la clave de admin. Quien llamó sabía cómo se llama la base: '
+                . 'revisar de dónde vino. No se tocó nada.',
+                array_merge([
+                    'base'                => $base,
+                    'con_datos'           => $resumen,
+                    'instancia_con_clave' => ClaveDeAdminEnSetup::la_instancia_tiene_clave(),
+                ], self::datos_del_request())
+            );
+
+            throw new BaseConDatosException($base, $resumen);
+        }
+
         Log::warning(
             'BorradoTotalDeBaseHelper: se rechazó un setup que vaciaría una base con datos de negocio. '
             . 'Para forzarlo, el payload tiene que traer "' . self::FLAG . '" y "' . self::CONFIRMACION
-            . '" con el nombre exacto de la base.',
+            . '" con el nombre exacto de la base, y el request la clave de admin de la instancia '
+            . '(X-Admin-Api-Key).',
             array_merge([
                 'base'      => $base,
                 'con_datos' => $resumen,
