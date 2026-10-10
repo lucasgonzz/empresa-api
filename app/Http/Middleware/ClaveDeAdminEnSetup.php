@@ -90,11 +90,24 @@ class ClaveDeAdminEnSetup
      * `UserSetupHelper::run()` si puede aceptar un borrado total. Dos comparaciones escritas por
      * separado terminan distintas (una se olvida del vacío, la otra usa `===`); por eso hay una.
      *
-     * Falla cerrado: si la instancia no tiene clave cargada (ADMIN_API_INBOUND_KEY vacía, que es como
-     * nace una instalación nueva) o el header viene vacío, devuelve false. Sin ese chequeo,
-     * `hash_equals('', '')` daría true y "sin clave de los dos lados" pasaría por "la clave correcta".
-     * Compara con `hash_equals` (sin atajo por largo ni por el primer carácter distinto) y es sensible
-     * a mayúsculas. No loguea nada: ni la clave esperada ni la recibida salen de acá.
+     * Falla cerrado: si la instancia no tiene una clave de verdad (ver la_instancia_tiene_clave()) o el
+     * header viene vacío o en blanco, devuelve false. Sin ese chequeo, `hash_equals('', '')` daría true
+     * y "sin clave de los dos lados" pasaría por "la clave correcta".
+     *
+     * 🔴 Nada de `(string)` sobre los valores crudos: un `ADMIN_API_INBOUND_KEY=true` en el `.env` llega
+     * como el bool true (`env()` convierte 'true'/'false'), y `(string) true` es `'1'`: un header
+     * `X-Admin-Api-Key: 1` habría forzado. Lo mismo un `0` que llega como número. Por eso la clave de
+     * la instancia tiene que ser un string, y el header también.
+     *
+     * El `trim()` es SOLO para decidir si está vacío ("   " no es una clave). La comparación sigue
+     * siendo con el valor exacto, sin recortar: una clave cargada con espacios alrededor se compara
+     * igual que hasta ahora. Compara con `hash_equals` (sin atajo por largo ni por el primer carácter
+     * distinto) y es sensible a mayúsculas. No loguea nada: ni la clave esperada ni la recibida salen
+     * de acá.
+     *
+     * No se exige un largo mínimo, a propósito: no se midió cuánto miden las `clients.api_key` que ya
+     * están cargadas en la flota (las viejas pueden ser cortas), y un mínimo inventado podría dejar
+     * afuera un uso legítimo sin que nadie lo note. Si algún día se mide, se agrega acá.
      *
      * No mira `require_key_for_setup`: dice si la clave está, no si se exige. Quién la exige y para
      * qué lo decide cada llamador.
@@ -104,13 +117,35 @@ class ClaveDeAdminEnSetup
      */
     public static function trae_la_clave_de_admin(Request $request)
     {
-        $esperada = (string) config('services.admin_api.api_key');
-        $recibida = (string) $request->header('X-Admin-Api-Key');
+        if (!self::la_instancia_tiene_clave()) {
+            return false;
+        }
 
-        if ($esperada === '' || $recibida === '') {
+        $esperada = config('services.admin_api.api_key');
+        $recibida = $request->header('X-Admin-Api-Key');
+
+        if (!is_string($recibida) || trim($recibida) === '') {
             return false;
         }
 
         return hash_equals($esperada, $recibida);
+    }
+
+    /**
+     * ¿Esta instancia tiene cargada una clave de admin con la que se pueda comparar?
+     *
+     * Solo si `services.admin_api.api_key` (ADMIN_API_INBOUND_KEY) es un STRING que no queda vacío
+     * después de `trim()`. Un null (no cargada, como nace una instalación nueva), un bool o un número
+     * (lo que `env()` devuelve para `true`/`false` o lo que deje un config cacheado raro) o un texto en
+     * blanco no son una clave. Es el mismo criterio que usa trae_la_clave_de_admin(); está aparte para
+     * que la guarda pueda decir en el log si "al servidor le falta la clave" sin tocar el valor.
+     *
+     * @return bool
+     */
+    public static function la_instancia_tiene_clave()
+    {
+        $clave = config('services.admin_api.api_key');
+
+        return is_string($clave) && trim($clave) !== '';
     }
 }

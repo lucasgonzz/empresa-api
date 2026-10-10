@@ -1527,6 +1527,96 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
         $this->assert_base_intacta();
         $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Sin clave en la instancia no hay borrado autorizado.');
+
+        // El log le dice a la raíz que al SERVIDOR le falta la clave (el 409 no lo dice, a propósito).
+        $sin_clave = $this->logs_del_forzado_sin_clave();
+
+        $this->assertCount(6, $sin_clave, 'Cada forzado sin clave (2 instancias x 3 headers) deja su línea propia.');
+
+        foreach ($sin_clave as $log) {
+            $this->assertStringContainsString('"instancia_con_clave":false', $log['texto']);
+        }
+    }
+
+    /**
+     * 🔴 La clave de la instancia tiene que ser un STRING con algo adentro, y el header también. Un
+     * `ADMIN_API_INBOUND_KEY=true` en el `.env` llega como el bool true y `(string) true` es '1' (un
+     * header `1` habría forzado); un 0 numérico sería '0'; y "   " no es una clave. Con la variable
+     * apagada ninguno fuerza (409, base intacta); con la variable prendida el middleware da 401, porque
+     * usa el mismo criterio.
+     *
+     * @test
+     */
+    public function una_clave_de_la_instancia_que_no_es_un_string_con_contenido_no_fuerza()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        $casos = [
+            "instancia true (bool) y header '1'"     => [true, '1'],
+            "instancia 1 (int) y header '1'"         => [1, '1'],
+            "instancia 0 (int) y header '0'"         => [0, '0'],
+            'instancia en blanco y header en blanco' => ['   ', '   '],
+        ];
+
+        foreach ($casos as $caso => $par) {
+            list($clave_de_la_instancia, $header) = $par;
+
+            $this->configurar_la_clave(false, false, $clave_de_la_instancia);
+
+            $apagada = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => $header]);
+
+            $this->assertSame(409, $apagada->getStatusCode(), $caso . ', variable apagada: tenía que rebotar.');
+            $this->assert_409_por_base_con_datos($apagada);
+
+            $this->configurar_la_clave(true, false, $clave_de_la_instancia);
+
+            $prendida = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => $header]);
+
+            $this->assertSame(401, $prendida->getStatusCode(), $caso . ', variable prendida: el middleware tenía que cortar.');
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Ninguna de esas "claves" autoriza un borrado total.');
+
+        // Para la guarda, ninguna de esas instancias tiene clave: el log lo dice así.
+        $sin_clave = $this->logs_del_forzado_sin_clave();
+
+        $this->assertCount(count($casos), $sin_clave, 'Cada forzado con la variable apagada deja su línea propia.');
+
+        foreach ($sin_clave as $log) {
+            $this->assertStringContainsString('"instancia_con_clave":false', $log['texto']);
+        }
+    }
+
+    /**
+     * Una clave de la instancia con espacios alrededor NO se recorta para comparar (el `trim()` es
+     * solo para decidir si está vacía): con el header idéntico, espacios incluidos, el forzado pasa
+     * como hasta ahora; con el header sin esos espacios, no.
+     *
+     * @test
+     */
+    public function una_clave_con_espacios_alrededor_se_compara_exacta_sin_recortar()
+    {
+        $this->exigir_base_con_datos();
+        $this->migrate_fresh_cortado();
+
+        $con_espacios = '  ' . self::CLAVE_DE_ADMIN . '  ';
+
+        $this->configurar_la_clave(false, false, $con_espacios);
+
+        $recortada = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
+
+        $this->assertSame(409, $recortada->getStatusCode(), 'El header sin los espacios de la clave de la instancia no es la misma clave.');
+        $this->assert_409_por_base_con_datos($recortada);
+
+        $exacta = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => $con_espacios]);
+
+        $this->assertSame(500, $exacta->getStatusCode(), 'Con el header idéntico (espacios incluidos) tenía que llegar al migrate:fresh.');
+        $this->assertStringContainsString(self::CORTE, (string) $exacta->json('error'));
+
+        $this->assert_base_intacta();
+        $this->assertCount(1, $this->logs_que_contienen(['AUTORIZADO']), 'Solo el header idéntico es un borrado autorizado.');
     }
 
     /**
@@ -1664,7 +1754,8 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
     /**
      * El forzado sin la clave deja su línea de log PROPIA (distinta del rechazo de siempre), con la
-     * base, los conteos, la IP y el user agent; y ni la clave de la instancia ni la del header salen
+     * base, los conteos, la IP, el user agent y si la instancia tiene clave (`instancia_con_clave`,
+     * un bool, nunca el valor); y ni la clave de la instancia ni la del header salen
      * en ninguna línea de log. El payload de siempre, en cambio, no deja esa línea.
      *
      * @test
@@ -1693,6 +1784,9 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         $this->assertStringContainsString('con_datos', $sin_clave[0]['texto']);
         $this->assertStringContainsString('"ip":"203.0.113.21"', $sin_clave[0]['texto']);
         $this->assertStringContainsString('"user_agent":"Adivinador-De-Bases/1.0"', $sin_clave[0]['texto']);
+
+        // La instancia SÍ tiene clave (lo que vino mal fue el header): el log lo distingue con un bool.
+        $this->assertStringContainsString('"instancia_con_clave":true', $sin_clave[0]['texto']);
 
         // No es un borrado autorizado, y es la única línea de rechazo de ese request.
         $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']));

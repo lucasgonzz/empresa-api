@@ -3,12 +3,16 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Exceptions\BaseConDatosException;
+use App\Http\Middleware\ClaveDeAdminEnSetup;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Guarda de "no vaciar una base que ya tiene datos de negocio" para todo lo que corre un
- * `migrate:fresh` (hoy: `UserSetupHelper::run()`).
+ * `migrate:fresh`. Hoy la llaman `UserSetupHelper::run()` y, desde la misión guarda-demo-setup,
+ * también `DemoSetupHelper::run()` cuando la instancia NO es de demo; esta última siempre con un
+ * payload vacío (`[]`) y sin la clave, así que por esa puerta nunca se puede forzar: con datos de
+ * negocio, se niega.
  *
  * POR QUÉ EXISTE (el caso real, 5/10/2026)
  * ----------------------------------------
@@ -259,14 +263,22 @@ class BorradoTotalDeBaseHelper
              * La RESPUESTA, en cambio, es la misma que la de cualquier otro rechazo (misma excepción,
              * mismo mensaje, mismas tablas): si dijera "acertaste el nombre, te falta la clave",
              * serviría de oráculo para adivinar cómo se llama la base. El motivo real vive solo acá.
+             *
+             * `instancia_con_clave` dice si este servidor TIENE una clave cargada (un bool, NUNCA el
+             * valor): como el 409 es idéntico a propósito, es lo que le deja a la raíz distinguir, leyendo
+             * el log, "al servidor le falta ADMIN_API_INBOUND_KEY" (false: hay que cargarla desde el
+             * admin antes de forzar) de "el header vino mal" (true). Mismo criterio que la comparación
+             * (ClaveDeAdminEnSetup::la_instancia_tiene_clave()), para que el log no diga una cosa y la
+             * puerta haga otra.
              */
             Log::warning(
                 'BorradoTotalDeBaseHelper: se rechazó un setup que pidió el borrado total con el nombre '
                 . 'correcto de la base pero SIN la clave de admin. Quien llamó sabía cómo se llama la base: '
                 . 'revisar de dónde vino. No se tocó nada.',
                 array_merge([
-                    'base'      => $base,
-                    'con_datos' => $resumen,
+                    'base'                => $base,
+                    'con_datos'           => $resumen,
+                    'instancia_con_clave' => ClaveDeAdminEnSetup::la_instancia_tiene_clave(),
                 ], self::datos_del_request())
             );
 
