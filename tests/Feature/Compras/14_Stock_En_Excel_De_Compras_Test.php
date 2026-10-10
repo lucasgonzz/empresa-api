@@ -40,8 +40,42 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
  */
 class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
 {
-    /** @var int Dueño que no existe: representa un comercio sin ninguna sucursal cargada. */
-    const DUENO_SIN_SUCURSALES = 2000000000;
+    /**
+     * @var int|null Id del comercio sin ninguna sucursal cargada, creado por
+     *               `dueno_sin_sucursales()` la primera vez que un test lo pide.
+     */
+    protected $dueno_sin_sucursales_id = null;
+
+    /**
+     * Un comercio sin ninguna sucursal cargada: un dueño NORMAL (id automático, `owner_id` null),
+     * creado dentro de la transacción del test, que lo revierte.
+     *
+     * Hasta el 10/10/2026 era la constante 2000000000, un id que no existía como usuario. Desde la
+     * misión pdf-de-venta-publico el Excel se pide con la sesión del dueño de la compra (cambio
+     * autorizado por Lucas), así que ese dueño tiene que existir. No se crea con el id fijo: un
+     * INSERT con id explícito sube el AUTO_INCREMENT de `users` para siempre (InnoDB no lo devuelve
+     * con el rollback) y el próximo usuario de esa base saldría con id 2000000001.
+     *
+     * @return int
+     */
+    protected function dueno_sin_sucursales()
+    {
+        if (is_null($this->dueno_sin_sucursales_id)) {
+
+            $this->dueno_sin_sucursales_id = DB::table('users')->insertGetId([
+                'name'         => 'Comercio sin sucursales',
+                'company_name' => 'Comercio sin sucursales (stock en Excel)',
+                'email'        => 'stock-excel-sin-sucursales-'.uniqid().'@test.local',
+                'password'     => Hash::make('secret'),
+                'status'       => 'commerce',
+                'owner_id'     => null,
+                'created_at'   => Carbon::now(),
+                'updated_at'   => Carbon::now(),
+            ]);
+        }
+
+        return $this->dueno_sin_sucursales_id;
+    }
 
     /**
      * Arma una compra con los artículos dados (nombre => cantidad) y devuelve el modelo.
@@ -93,32 +127,15 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
      * dueño de la compra (o durante su ventana de transición, que en la base de testing está
      * cerrada). Así que el Excel se pide con la sesión de ESE dueño, como lo pide la SPA.
      *
-     * Si el dueño no existe como usuario (DUENO_SIN_SUCURSALES, un id que el fixture no tiene), se
-     * crea acá: dueño (`owner_id` null) y dentro de la transacción del test, que lo revierte.
+     * El dueño es el del fixture o el de `dueno_sin_sucursales()`: en los dos casos existe.
      *
      * @param  \App\Models\ProviderOrder  $compra
      * @return void
      */
     protected function con_la_sesion_del_dueno_de($compra)
     {
-        $dueno = User::find($compra->user_id);
-
-        if (is_null($dueno)) {
-
-            DB::table('users')->insert([
-                'id'           => $compra->user_id,
-                'name'         => 'Comercio sin sucursales',
-                'company_name' => 'Comercio sin sucursales (stock en Excel)',
-                'email'        => 'stock-excel-sin-sucursales-'.uniqid().'@test.local',
-                'password'     => Hash::make('secret'),
-                'status'       => 'commerce',
-                'owner_id'     => null,
-                'created_at'   => Carbon::now(),
-                'updated_at'   => Carbon::now(),
-            ]);
-
-            $dueno = User::find($compra->user_id);
-        }
+        // findOrFail y no find: si el dueño no existiera, que corte acá con un error claro.
+        $dueno = User::findOrFail($compra->user_id);
 
         // Se olvida la sesión que dejó el setUp antes de cambiar de usuario.
         $this->app['auth']->forgetGuards();
@@ -264,7 +281,7 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
         $pinza->timestamps = false;
         $pinza->save();
 
-        $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 2], self::DUENO_SIN_SUCURSALES));
+        $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 2], $this->dueno_sin_sucursales()));
 
         $this->assertSame(
             ['Nombre', 'Código de Barras', 'Código Proveedor', 'Cantidad', 'Stock actual'],
@@ -286,7 +303,7 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
 
         Address::create([
             'street'  => 'Sucursal Ajena',
-            'user_id' => self::DUENO_SIN_SUCURSALES,
+            'user_id' => $this->dueno_sin_sucursales(),
         ]);
 
         $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 1], $principal->user_id));
@@ -337,7 +354,7 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
         $alicate->timestamps = false;
         $alicate->save();
 
-        $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 1, 'Alicate' => 1], self::DUENO_SIN_SUCURSALES));
+        $filas = $this->filas_del_excel($this->compra_con(['Pinza' => 1, 'Alicate' => 1], $this->dueno_sin_sucursales()));
 
         $por_nombre = [];
         foreach (array_slice($filas, 1) as $fila) {
