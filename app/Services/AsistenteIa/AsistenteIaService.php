@@ -22,11 +22,13 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeFotosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
@@ -410,8 +412,10 @@ class AsistenteIaService
          * DeepSeek falló 4 de 4 (mintió "cambié el nombre" sin herramienta, o rearmó la tarjeta con
          * otra foto y la descripción cortada). Ver la_persona_corrige_una_tarjeta_pendiente().
          */
-        if (is_null($confirmacion_determinista)
-            && ConfirmacionDeterministaIaHelper::la_persona_corrige_una_tarjeta_pendiente($conversation, $assistant_message)) {
+        $corrige_una_tarjeta = is_null($confirmacion_determinista)
+            && ConfirmacionDeterministaIaHelper::la_persona_corrige_una_tarjeta_pendiente($conversation, $assistant_message);
+
+        if ($corrige_una_tarjeta) {
             $toco_una_carga = true;
         }
 
@@ -481,6 +485,44 @@ class AsistenteIaService
         $iterations = 0;
         $final_text = '';
 
+        /*
+         * 🔴 MISIÓN asistente-tarjeta-sin-accion (10/10/2026): LA TARJETA QUE EL TEXTO PROMETE TIENE QUE
+         * EXISTIR. En `demo` (DeepSeek ágil, modo resuelto) el asistente contestó "Dejé la tarjeta para
+         * confirmar el borrado…" y "Dejo la tarjeta para agendar el pago del 15/10…" con el mensaje en
+         * `acciones: []`: la persona busca la tarjeta y no hay nada que confirmar. Cuatro caminos dan ese
+         * síntoma y el bucle no distinguía ninguno: (A) el modelo cierra con texto sin pedir la
+         * herramienta; (B) la pide pero el proveedor no marca `stop_reason: tool_use` y el bucle la
+         * tiraba; (C) escribe la llamada como texto y TextoFinalIaHelper borra esa oración; (D) la
+         * `proponer_*` contesta "faltan" y el modelo igual dice que la dejó.
+         *
+         * B se arregla en la rama del tool_use. Para A, C y D: si el texto final afirma una tarjeta y
+         * este mensaje no tiene NINGUNA, se reintenta UNA vez con una nota del sistema (ver
+         * TarjetaPrometidaIaHelper) y, si sigue sin tarjeta, el texto se cambia por uno honesto. Sólo en
+         * el canal con botones: en WhatsApp y MCP no hay tarjeta, la confirmación es por texto.
+         *
+         * 🔴 Y NUNCA DESPUÉS DE UNA CONFIRMACIÓN DETERMINISTA (chequeo adversarial del 10/10/2026): ahí
+         * la carga YA se hizo con una tarjeta de un mensaje anterior, este mensaje no tiene ninguna, y
+         * "listo, la tarjeta que te dejé quedó registrada" terminaba cambiado por "No pude armar la
+         * tarjeta" — la persona la volvía a pedir y se duplicaba.
+         */
+        $guarda_de_tarjeta = $con_acciones
+            && ! $assistant_message->confirma_por_texto()
+            && is_null($confirmacion_determinista);
+
+        /* Las herramientas que el modelo pidió en este turno, en orden: rastro para el log de la guarda. */
+        $herramientas_pedidas = [];
+
+        /*
+         * El texto que afirmaba una tarjeta inexistente, mientras corre el reintento (null si no hay
+         * reintento en curso). Si el reintento falla —red, HTTP, presupuesto, techo de vueltas— la
+         * respuesta vuelve a este texto y la guarda de después del bucle decide con él: una vuelta de
+         * más nunca le puede llegar a la persona como un error que antes no tenía.
+         */
+        $texto_antes_del_reintento = null;
+
+        /* El stop_reason de la última respuesta del modelo, para el log de la guarda. */
+        $stop_reason = '';
+
         while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
@@ -488,6 +530,17 @@ class AsistenteIaService
              * cortar, pero no se arranca una nueva con el tiempo vencido.
              */
             if ((time() - $inicio_del_loop) > self::PRESUPUESTO_SEGUNDOS) {
+                if (! is_null($texto_antes_del_reintento)) {
+                    Log::warning('AsistenteIaService: el presupuesto cortó el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
+                        'ai_conversation_id' => $conversation->id,
+                        'ai_message_id'      => $assistant_message->id,
+                        'iterations'         => $iterations,
+                    ]);
+
+                    $final_text = $texto_antes_del_reintento;
+                    break;
+                }
+
                 Log::warning('AsistenteIaService: presupuesto de tiempo del loop agotado.', [
                     'ai_conversation_id' => $conversation->id,
                     'iterations'         => $iterations,
@@ -537,13 +590,41 @@ class AsistenteIaService
              * El mismo payload para los dos proveedores; `agregar_thinking` solo suma la clave
              * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
              */
-            $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
-                'model'      => $model,
-                'max_tokens' => self::MAX_TOKENS,
-                'system'     => $system,
-                'tools'      => $tools,
-                'messages'   => $messages,
-            ], $thinking));
+            try {
+                $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
+                    'model'      => $model,
+                    'max_tokens' => self::MAX_TOKENS,
+                    'system'     => $system,
+                    'tools'      => $tools,
+                    'messages'   => $messages,
+                ], $thinking));
+            } catch (\Throwable $e) {
+                /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
+                if (is_null($texto_antes_del_reintento)) {
+                    throw $e;
+                }
+
+                Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'excepcion'          => get_class($e),
+                    'error'              => $e->getMessage(),
+                ]);
+
+                $final_text = $texto_antes_del_reintento;
+                break;
+            }
+
+            if (! $response->successful() && ! is_null($texto_antes_del_reintento)) {
+                Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'http'               => $response->status(),
+                ]);
+
+                $final_text = $texto_antes_del_reintento;
+                break;
+            }
 
             if (! $response->successful()) {
                 /*
@@ -588,7 +669,40 @@ class AsistenteIaService
                 ? $response_body['content']
                 : [];
 
-            if ($stop_reason === 'tool_use') {
+            /*
+             * 🔴 (B) de la misión asistente-tarjeta-sin-accion: una respuesta que TRAE bloques
+             * `tool_use` se ejecuta aunque el `stop_reason` diga otra cosa. Antes se miraba sólo el
+             * `stop_reason`, y si el proveedor devolvía "Dejo la tarjeta para…" + el `tool_use` con
+             * `end_turn`, el bucle tomaba el texto como final y tiraba la llamada: la persona leía la
+             * tarjeta y la tarjeta no existía. Anthropic nunca manda un `tool_use` con `end_turn`, así que
+             * para Claude no cambia nada; el log dice si DeepSeek lo hace. Con `max_tokens` (o un corte
+             * del proveedor) NO: el bloque puede venir cortado y ejecutarlo sería cargar con datos a
+             * medias (ahí entra la guarda). Y tampoco en la última vuelta o con el tiempo vencido: ahí
+             * ejecutar dejaría el turno sin texto y el mensaje en error con la carga hecha —la persona
+             * la repetiría—, mientras que el texto, si afirma una tarjeta, lo resuelve la guarda.
+             */
+            $pide_herramientas = $stop_reason === 'tool_use'
+                || (! in_array($stop_reason, ['max_tokens', 'refusal', 'model_context_window_exceeded'], true)
+                    && $this->tiene_tool_use($content_blocks)
+                    && $iterations < $max_iterations
+                    && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS);
+
+            if ($pide_herramientas && $stop_reason !== 'tool_use') {
+                Log::warning('AsistenteIaService: el modelo pidió herramientas sin stop_reason tool_use; se ejecutan igual.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'stop_reason'        => $stop_reason,
+                    'modelo'             => $model,
+                ]);
+            }
+
+            if ($pide_herramientas) {
+                foreach ($content_blocks as $block) {
+                    if (is_array($block) && ($block['type'] ?? '') === 'tool_use') {
+                        $herramientas_pedidas[] = (string) ($block['name'] ?? '');
+                    }
+                }
+
                 /*
                  * Antes de ejecutar nada: si entre lo que pidió hay una tool de carga, el turno
                  * queda escalado y las vueltas que siguen van con el Profundo. Se mira acá y no
@@ -616,7 +730,58 @@ class AsistenteIaService
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
             $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
+
+            /*
+             * (A, C y D) de la misión asistente-tarjeta-sin-accion: el texto afirma una tarjeta y este
+             * mensaje no tiene ninguna. UN reintento, con el texto como turno del asistente y la nota
+             * del sistema como turno de la persona, y escalado al Profundo: la decisión de cargar la
+             * toma el modelo bueno, igual que en cuanto el turno toca una carga. Sólo si quedan vuelta
+             * y tiempo; si no, la guarda de después del bucle lo resuelve con el texto honesto.
+             *
+             * El turno del asistente va como TEXTO y no con sus bloques: si trajera un `tool_use`
+             * cortado por `max_tokens`, la API exigiría su `tool_result`.
+             */
+            if ($guarda_de_tarjeta
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && $this->afirma_una_tarjeta_que_no_existe($final_text, $tools, $assistant_message)) {
+
+                Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó; se reintenta una vez.', $this->rastro_de_la_tarjeta_prometida(
+                    $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $final_text, $tools
+                ));
+
+                $texto_antes_del_reintento = $final_text;
+
+                $messages[] = [
+                    'role'    => 'assistant',
+                    'content' => $final_text,
+                ];
+
+                $messages[] = [
+                    'role'    => 'user',
+                    'content' => TarjetaPrometidaIaHelper::nota_para_reintentar($this->de_carga($herramientas_pedidas)),
+                ];
+
+                $toco_una_carga = true;
+                $final_text = '';
+
+                continue;
+            }
+
             break;
+        }
+
+        /*
+         * El reintento de la tarjeta se quedó sin texto (se comió las vueltas que quedaban pidiendo
+         * herramientas), o con uno que el saneo deja VACÍO (la llamada escrita como texto y nada más,
+         * o la nota del sistema repetida): se vuelve al texto de antes y la guarda de abajo decide con
+         * él. Sin esto, el saneo vacío devolvía el crudo y la persona leía la llamada o la nota interna
+         * (chequeo adversarial del 10/10/2026).
+         */
+        if (! is_null($texto_antes_del_reintento)
+            && trim(TextoFinalIaHelper::limpiar($final_text, $this->nombres_de_herramientas($tools))) === '') {
+            $final_text = $texto_antes_del_reintento;
         }
 
         /*
@@ -661,6 +826,33 @@ class AsistenteIaService
             throw AsistenteIaException::sin_respuesta(
                 'el loop terminó sin texto final en la iteración ' . $iterations
             );
+        }
+
+        /*
+         * La guarda de la misión asistente-tarjeta-sin-accion, después del reintento (o sin él, si no
+         * quedaba vuelta ni tiempo): si el texto TODAVÍA afirma una tarjeta que no existe, a la persona
+         * no le llega. Con una tarjeta `propuesta` de un mensaje anterior el texto se deja: puede estar
+         * hablando de ésa, y el reintento ya le pidió al modelo que no diga "nueva" si no la armó. Sin
+         * ninguna, va el texto honesto.
+         */
+        if ($guarda_de_tarjeta && $this->afirma_una_tarjeta_que_no_existe($final_text, $tools, $assistant_message)) {
+            /* Con el texto CRUDO, el de antes del saneo: si no, `el_saneo_saco_algo` daría siempre false. */
+            $rastro = $this->rastro_de_la_tarjeta_prometida(
+                $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $crudo, $tools
+            );
+            $rastro['hubo_reintento'] = ! is_null($texto_antes_del_reintento);
+
+            /*
+             * Si la persona está CORRIGIENDO esa tarjeta ("no, era 6000"), la de antes no salva nada: el
+             * texto dice que dejó la nueva y lo único confirmable sería la vieja, con el dato viejo.
+             */
+            if (! $corrige_una_tarjeta && $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message)) {
+                Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó, pero hay una pendiente de antes; se deja.', $rastro);
+            } else {
+                Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó; se reemplaza por el texto honesto.', $rastro);
+
+                $final_text = TarjetaPrometidaIaHelper::TEXTO_HONESTO;
+            }
         }
 
         /*
@@ -1761,6 +1953,141 @@ CONFIRMACION;
         }
 
         return false;
+    }
+
+    /**
+     * true si entre los bloques de una respuesta hay al menos un `tool_use` (misión
+     * asistente-tarjeta-sin-accion, camino B): es lo que decide si la vuelta ejecuta herramientas, más
+     * allá de lo que diga el `stop_reason`.
+     *
+     * @param  array<int, mixed>  $content_blocks
+     * @return bool
+     */
+    protected function tiene_tool_use(array $content_blocks): bool
+    {
+        foreach ($content_blocks as $block) {
+            if (is_array($block) && ($block['type'] ?? '') === 'tool_use') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * De las herramientas pedidas en el turno, las de carga (las que pueden dejar una tarjeta), sin
+     * repetir y en el orden en que se pidieron.
+     *
+     * @param  array<int, string>  $herramientas
+     * @return array<int, string>
+     */
+    protected function de_carga(array $herramientas): array
+    {
+        $de_carga = [];
+
+        foreach ($herramientas as $nombre) {
+            if (HerramientasDeCarga::es_de_carga($nombre) && ! in_array($nombre, $de_carga, true)) {
+                $de_carga[] = $nombre;
+            }
+        }
+
+        return $de_carga;
+    }
+
+    /**
+     * true si el texto —saneado, como lo leería la persona— afirma una tarjeta para confirmar y el
+     * mensaje que se está generando no tiene NINGUNA tarjeta colgada (misión
+     * asistente-tarjeta-sin-accion). Una tarjeta reemplazada o auto-confirmada en el mismo turno
+     * cuenta como creada: el texto que la nombra no miente.
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function afirma_una_tarjeta_que_no_existe($texto, array $tools, AiMessage $assistant_message): bool
+    {
+        /*
+         * sanear() y no limpiar(): si el saneo deja el texto VACÍO (una sola oración que nombra una
+         * herramienta, "Dejo la tarjeta con proponer_baja…"), a la persona le llega el crudo, así que
+         * la guarda tiene que mirar el crudo — con limpiar() miraba '' y la mentira pasaba.
+         */
+        $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+        if (! TarjetaPrometidaIaHelper::afirma_una_tarjeta($saneado)) {
+            return false;
+        }
+
+        return ! AiMessageAction::where('ai_message_id', $assistant_message->id)->exists();
+    }
+
+    /**
+     * true si la respuesta ANTERIOR del asistente dejó una tarjeta que sigue `propuesta`: el texto que
+     * afirma una tarjeta puede estar hablando de ésa (*"¿y la tarjeta?"* → *"te la dejé, tocá
+     * Confirmar"*).
+     *
+     * 🔴 Sólo la respuesta inmediatamente anterior, no cualquiera de la conversación (chequeo
+     * adversarial del 10/10/2026): el caso 1 de `demo` fue el TERCER pedido de una conversación, y
+     * con una tarjeta vieja sin confirmar de dos pedidos atrás la mentira del tercero pasaba igual.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function hay_tarjetas_pendientes_de_antes(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        $anterior = AiMessage::where('ai_conversation_id', $conversation->id)
+                             ->where('rol', 'assistant')
+                             ->where('id', '<', $assistant_message->id)
+                             ->orderBy('id', 'DESC')
+                             ->first();
+
+        if (is_null($anterior)) {
+            return false;
+        }
+
+        /*
+         * La columna dice `propuesta` también en una tarjeta VENCIDA (getEstadoAttribute la lee como
+         * vencida recién al leer el modelo), y una vencida no se puede confirmar: no salva nada.
+         */
+        return AiMessageAction::where('ai_message_id', $anterior->id)
+                              ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                              ->get()
+                              ->contains(function ($accion) {
+                                  return ! $accion->vencio();
+                              });
+    }
+
+    /**
+     * Lo que se loguea cuando la guarda de la tarjeta prometida dispara. 🔴 Es el rastro que faltó el
+     * 10/10/2026 para saber cuál de los cuatro caminos fue: con las herramientas pedidas y el
+     * `stop_reason` se distingue "no la pidió" (A) de "la pidió y contestó faltan" (D), y con
+     * `el_saneo_saco_algo` "la escribió como texto" (C). El texto va recortado.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  int  $iterations
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  string  $stop_reason
+     * @param  string  $model
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return array<string, mixed>
+     */
+    protected function rastro_de_la_tarjeta_prometida(AiConversation $conversation, AiMessage $assistant_message, $iterations, array $herramientas_pedidas, $stop_reason, $model, $texto, array $tools): array
+    {
+        $texto = (string) $texto;
+
+        return [
+            'ai_conversation_id'   => $conversation->id,
+            'ai_message_id'        => $assistant_message->id,
+            'iterations'           => $iterations,
+            'herramientas_pedidas' => $herramientas_pedidas,
+            'stop_reason'          => (string) $stop_reason,
+            'modelo'               => (string) $model,
+            'el_saneo_saco_algo'   => TextoFinalIaHelper::limpiar($texto, $this->nombres_de_herramientas($tools)) !== $texto,
+            'texto'                => mb_substr($texto, 0, 300),
+        ];
     }
 
     /**
