@@ -3,12 +3,12 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\MasiveUpdateHelper;
-use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\precios\PrecioFinalEnMasivaHelper;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Iva;
 use App\Models\UnidadMedida;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Actualización masiva de artículos propuesta por el asistente de IA (misión
@@ -50,12 +50,15 @@ class PropuestaActualizacionMasivaIaHelper
 
     /**
      * "Subí (o bajá) el precio X %" (misión asistente-masiva-precio-manual, 10/10/2026): el precio
-     * que se cobra, no una columna. Con precio único va como la operación de la masiva
-     * PrecioFinalEnMasivaHelper (en los de costo + margen ajusta el margen, en los de precio manual
-     * sube ese precio); con listas de precio, como subir o bajar el costo (cada lista sale del costo).
-     * Ver cambio_precio_final().
+     * que se cobra, no una columna. Va siempre como la operación de la masiva
+     * PrecioFinalEnMasivaHelper, que decide por artículo al correr: en los de precio manual sube ese
+     * precio, donde el margen no mueve el precio (listas, costo de lista + IVA) sube el costo, y en
+     * el resto ajusta el margen. Ver cambio_precio_final().
      */
     const CAMPO_PRECIO_FINAL = 'precio_final';
+
+    /** precio_final combinado con otro cambio en la misma tarjeta (ver analizar_cambios_de_precio()). */
+    const TEXTO_PRECIO_EN_TARJETA_APARTE = 'Subir o bajar el precio va en una tarjeta aparte: primero ese cambio y después los demás.';
 
     /** El campo de la IA para el precio cargado a mano (CAMPOS_NUMERICOS). */
     const CAMPO_PRECIO_MANUAL = 'precio_manual';
@@ -156,9 +159,7 @@ class PropuestaActualizacionMasivaIaHelper
             return $traducido;
         }
 
-        $usa_listas = self::usa_listas_de_precio($contexto);
-
-        $cambios_traducidos = self::traducir_cambios($cambios, $contexto->owner_id, $usa_listas);
+        $cambios_traducidos = self::traducir_cambios($cambios, $contexto->owner_id);
 
         if (RespuestaDeCargaIa::es_negativa($cambios_traducidos)) {
 
@@ -180,18 +181,22 @@ class PropuestaActualizacionMasivaIaHelper
         }
 
         /*
-         * 🔴 Un cambio de precio que no le mueve el precio a nadie no se propone (misión
+         * 🔴 Un cambio de precio que no le mueve el precio a nadie no se propone tal cual (misión
          * asistente-masiva-precio-manual, 10/10/2026). En demo, "subile 10 % el precio" salió como
          * "Precio manual sube 10 %" sobre artículos de costo + margen: tarjeta confirmada, masiva
-         * completada, 0 cambios. Solo cuando hay un cambio de precio_manual o precio_final se miran
-         * los alcanzados (una consulta más la del proveedor) para decir cuántos mueve y cómo.
+         * completada, 0 cambios. Cuando hay un cambio de precio_manual o precio_final se miran los
+         * alcanzados (una consulta más la del proveedor) para decir con qué se mueve cada uno; un
+         * precio manual que no mueve a ninguno se convierte en precio final.
          */
-        $analisis = self::analizar_cambios_de_precio($contexto, $traducido, $cambios, $usa_listas);
+        $analisis = self::analizar_cambios_de_precio($contexto, $traducido, $cambios, $cambios_traducidos);
 
         if (RespuestaDeCargaIa::es_negativa($analisis)) {
 
             return $analisis;
         }
+
+        $cambios_traducidos['update_form'] = $analisis['update_form'];
+        $cambios_traducidos['legibles'] = $analisis['legibles'];
 
         $renglones = [
             ['etiqueta' => 'Artículos alcanzados', 'valor' => (string) $total],
@@ -255,67 +260,156 @@ class PropuestaActualizacionMasivaIaHelper
     }
 
     /**
-     * Si el comercio trabaja con listas de precio (preferencia del dueño). Con listas el precio
-     * manual no se usa nunca y cada lista sale del costo.
+     * Mira con qué se mueve el precio de los artículos alcanzados cuando la masiva trae un cambio de
+     * precio_manual o de precio_final, y devuelve los renglones que lo explican (`Cómo`, `Atención`),
+     * el update_form y los legibles (que pueden cambiar: ver precio_manual), o el error si el cambio no
+     * se puede proponer así.
      *
-     * @param  ContextoDeCargaIa  $contexto
-     * @return bool
-     */
-    protected static function usa_listas_de_precio(ContextoDeCargaIa $contexto)
-    {
-        // Sin dueño resuelto no se le pasa null a UserHelper: caería en Auth, que en el job no existe.
-        return !is_null($contexto->owner) && UserHelper::uses_listas_de_precio($contexto->owner);
-    }
-
-    /**
-     * Mira cómo calculan el precio los artículos alcanzados cuando la masiva trae un cambio de
-     * precio_manual o de precio_final, y devuelve los renglones que lo explican (`Cómo`, `Atención`)
-     * o el error si el cambio no le mueve el precio a ninguno.
+     *  - precio_final va SOLO en su tarjeta: combinado con otro cambio, error. Dos cambios sobre la
+     *    misma columna rompen la reversión, y el análisis no puede predecir lo que hacen los otros.
+     *  - precio_manual (salvo que la misma tarjeta cambie el margen o "aplica margen del proveedor",
+     *    que no se puede predecir): si no le mueve el precio a ninguno, subir/bajar se convierte sola
+     *    en precio_final con el mismo porcentaje y redondeo (con un renglón que lo dice), y setear es
+     *    error con un texto para el dueño. Si a algunos no, renglón de atención.
+     *  - precio_final: PrecioFinalEnMasivaHelper::clasificar() con el comercio. Ninguno con algo que
+     *    mover → error. Renglón `Cómo` con las tres palancas y los de atención (ver
+     *    analizar_precio_final()). El `round` y el "(redondeado…)" quedan solo si hay artículos de
+     *    precio manual.
+     *  - Con listas de precio, un cambio de margen suma un renglón: el margen no mueve las listas.
      *
-     *  - precio_manual: cuántos mueve (PrecioFinalEnMasivaHelper::el_precio_manual_lo_mueve(); con
-     *    listas, ninguno). Ninguno → error sin tarjeta, con la sugerencia de precio_final para
-     *    subir/bajar. Algunos no → renglón de atención.
-     *  - precio_final con precio único: PrecioFinalEnMasivaHelper::clasificar(). Ninguno con precio →
-     *    error. Renglón `Cómo` con cuántos ajustan el margen y cuántos suben el precio manual, y de
-     *    atención los sin costo ni precio y (al bajar) los que quedarían con margen negativo.
-     *  - precio_final con listas: sube el costo; los sin costo no cambian. Ninguno con costo → error.
-     *
-     * Sin ningún cambio de precio no consulta nada.
+     * Sin cambios de precio ni de margen no consulta nada.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $traducido  Lo que devolvió FiltroDeArticulosIaHelper::traducir().
      * @param  array  $cambios  Los cambios de la IA, ya validados por traducir_cambios().
-     * @param  bool  $usa_listas
-     * @return array  ['renglones' => [...]] o la respuesta negativa.
+     * @param  array  $cambios_traducidos  Lo que devolvió traducir_cambios() (alineado con $cambios).
+     * @return array  ['renglones', 'update_form', 'legibles'] o la respuesta negativa.
      */
-    protected static function analizar_cambios_de_precio(ContextoDeCargaIa $contexto, array $traducido, array $cambios, $usa_listas)
+    protected static function analizar_cambios_de_precio(ContextoDeCargaIa $contexto, array $traducido, array $cambios, array $cambios_traducidos)
     {
-        $de_precio = [];
+        $update_form = $cambios_traducidos['update_form'];
+        $legibles = $cambios_traducidos['legibles'];
+        $renglones = [];
 
-        foreach ($cambios as $cambio) {
+        $campos = [];
 
-            $campo = mb_strtolower(EntradaDeCargaIa::texto($cambio, 'campo'));
+        foreach ($cambios as $i => $cambio) {
 
-            if ($campo === self::CAMPO_PRECIO_MANUAL || $campo === self::CAMPO_PRECIO_FINAL) {
+            $campos[$i] = mb_strtolower(EntradaDeCargaIa::texto($cambio, 'campo'));
+        }
 
-                $de_precio[] = [
-                    'campo'     => $campo,
-                    'operacion' => mb_strtolower(EntradaDeCargaIa::texto($cambio, 'operacion')),
-                    'valor'     => EntradaDeCargaIa::valor($cambio, 'valor') + 0,
-                ];
+        $hay_precio = in_array(self::CAMPO_PRECIO_FINAL, $campos, true) || in_array(self::CAMPO_PRECIO_MANUAL, $campos, true);
+        $cambia_el_margen_del_articulo = in_array('margen_de_ganancia', $campos, true);
+
+        if (!$hay_precio && !$cambia_el_margen_del_articulo) {
+
+            return ['renglones' => [], 'update_form' => $update_form, 'legibles' => $legibles];
+        }
+
+        if (in_array(self::CAMPO_PRECIO_FINAL, $campos, true) && count($cambios) > 1) {
+
+            return RespuestaDeCargaIa::error(self::TEXTO_PRECIO_EN_TARJETA_APARTE);
+        }
+
+        $comercio = PrecioFinalEnMasivaHelper::comercio($contexto->owner);
+
+        // Con el margen cambiando en la misma tarjeta no se puede predecir quién usa precio manual.
+        $cambia_el_margen = $cambia_el_margen_del_articulo || in_array('aplica_margen_del_proveedor', $campos, true);
+
+        $articulos = null;
+
+        foreach ($campos as $i => $campo) {
+
+            $operacion = mb_strtolower(EntradaDeCargaIa::texto($cambios[$i], 'operacion'));
+            $valor = EntradaDeCargaIa::valor($cambios[$i], 'valor');
+            $redondear = !empty($cambios[$i]['redondear']);
+
+            if ($campo === self::CAMPO_PRECIO_MANUAL && !$cambia_el_margen) {
+
+                if (is_null($articulos)) {
+
+                    $articulos = self::articulos_para_analizar($contexto, $traducido);
+                }
+
+                $resultado = self::analizar_precio_manual($articulos, $operacion, $comercio, count($cambios));
+
+                if (RespuestaDeCargaIa::es_negativa($resultado)) {
+
+                    return $resultado;
+                }
+
+                foreach ($resultado['renglones'] as $renglon) {
+
+                    $renglones[] = $renglon;
+                }
+
+                if ($resultado['convertir']) {
+
+                    $convertido = self::cambio_precio_final($operacion, $valor, $redondear);
+
+                    if (RespuestaDeCargaIa::es_negativa($convertido)) {
+
+                        return $convertido;
+                    }
+
+                    $update_form[$i] = $convertido['form'];
+                    $legibles[$i] = $convertido['texto'];
+                    $campo = self::CAMPO_PRECIO_FINAL;
+                }
+            }
+
+            if ($campo === self::CAMPO_PRECIO_FINAL) {
+
+                if (is_null($articulos)) {
+
+                    $articulos = self::articulos_para_analizar($contexto, $traducido);
+                }
+
+                $resultado = self::analizar_precio_final($articulos, $operacion, $valor + 0, $redondear, $comercio);
+
+                if (RespuestaDeCargaIa::es_negativa($resultado)) {
+
+                    return $resultado;
+                }
+
+                // El redondeo solo toca a los de precio manual: sin ninguno, ni el `round` ni el texto.
+                if ($redondear && !$resultado['hay_precio_manual']) {
+
+                    unset($update_form[$i]['round']);
+                    $legibles[$i] = self::texto_de_precio_final($operacion === 'subir_porcentaje', $valor + 0, false);
+                }
+
+                foreach ($resultado['renglones'] as $renglon) {
+
+                    $renglones[] = $renglon;
+                }
             }
         }
 
-        if (!count($de_precio)) {
+        if (!empty($comercio['listas_de_precio']) && $cambia_el_margen_del_articulo) {
 
-            return ['renglones' => []];
+            $renglones[] = ['etiqueta' => 'Atención', 'valor' => 'Con listas de precio, el margen del artículo no cambia el precio de las listas'];
         }
 
-        /*
-         * Una consulta con las columnas que mira la regla (con el prefijo: el filtro puede joinear) y
-         * la del proveedor, que hace falta para saber si manda su margen. Nada de withAll().
-         */
-        $articulos = FiltroDeArticulosIaHelper::query($contexto->owner_id, $traducido['filter_form'], $traducido['imagen'])
+        return [
+            'renglones'   => $renglones,
+            'update_form' => $update_form,
+            'legibles'    => $legibles,
+        ];
+    }
+
+    /**
+     * Los alcanzados con las columnas que miran la palanca y "por debajo de su costo" (con el
+     * prefijo: el filtro puede joinear) y su proveedor. Una consulta más la del proveedor; nada de
+     * withAll().
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $traducido
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function articulos_para_analizar(ContextoDeCargaIa $contexto, array $traducido)
+    {
+        return FiltroDeArticulosIaHelper::query($contexto->owner_id, $traducido['filter_form'], $traducido['imagen'])
                                     ->with('provider')
                                     ->get([
                                         'articles.id',
@@ -324,222 +418,272 @@ class PropuestaActualizacionMasivaIaHelper
                                         'articles.percentage_gain',
                                         'articles.apply_provider_percentage_gain',
                                         'articles.provider_id',
+                                        'articles.base_margen',
+                                        'articles.costo_real',
                                     ]);
-
-        $renglones = [];
-
-        foreach ($de_precio as $cambio) {
-
-            if ($cambio['campo'] === self::CAMPO_PRECIO_MANUAL) {
-
-                $resultado = self::analizar_precio_manual($articulos, $cambio, $usa_listas);
-
-            } elseif ($usa_listas) {
-
-                $resultado = self::analizar_precio_final_con_listas($articulos, $cambio);
-
-            } else {
-
-                $resultado = self::analizar_precio_final($articulos, $cambio);
-            }
-
-            if (RespuestaDeCargaIa::es_negativa($resultado)) {
-
-                return $resultado;
-            }
-
-            foreach ($resultado as $renglon) {
-
-                $renglones[] = $renglon;
-            }
-        }
-
-        return ['renglones' => $renglones];
     }
 
     /**
-     * precio_manual: si el cambio no le mueve el precio a ninguno de los alcanzados, error (sin
-     * tarjeta); si a algunos no, renglón de atención.
+     * precio_manual: cuántos alcanzados mueve.
+     *
+     *  - Ninguno y setear → error con un texto para el dueño.
+     *  - Ninguno y subir/bajar → se convierte en precio_final (`convertir`), con un renglón que lo
+     *    dice. Si la tarjeta trae más cambios, error: el precio va en su tarjeta.
+     *  - Algunos no → renglón de atención.
      *
      * @param  \Illuminate\Support\Collection  $articulos
-     * @param  array  $cambio  {campo, operacion, valor}
-     * @param  bool  $usa_listas
-     * @return array  Los renglones o la respuesta negativa.
+     * @param  string  $operacion
+     * @param  array  $comercio  PrecioFinalEnMasivaHelper::comercio().
+     * @param  int  $cantidad_de_cambios
+     * @return array  ['convertir' => bool, 'renglones' => [...]] o la respuesta negativa.
      */
-    protected static function analizar_precio_manual($articulos, array $cambio, $usa_listas)
+    protected static function analizar_precio_manual($articulos, $operacion, array $comercio, $cantidad_de_cambios)
     {
         $total = count($articulos);
-        $es_setear = $cambio['operacion'] === 'setear';
+        $es_setear = $operacion === 'setear';
 
-        // Con listas de precio el precio manual no se usa nunca: no le mueve el precio a ninguno.
         $mueve = 0;
 
-        if (!$usa_listas) {
+        foreach ($articulos as $articulo) {
 
-            foreach ($articulos as $articulo) {
+            if (PrecioFinalEnMasivaHelper::el_precio_manual_lo_mueve($articulo, $es_setear, $comercio)) {
 
-                if (PrecioFinalEnMasivaHelper::el_precio_manual_lo_mueve($articulo, $es_setear)) {
-
-                    $mueve++;
-                }
+                $mueve++;
             }
         }
 
         if ($mueve === 0) {
 
-            $motivo = $total === 1
-                ? 'El artículo alcanzado no usa precio manual: su precio final sale del costo + margen (con listas de precio: de las listas), así que cambiar el precio manual no le mueve el precio.'
-                : 'Ninguno de los ' . $total . ' artículos usa precio manual: su precio final sale del costo + margen (con listas de precio: de las listas), así que cambiar el precio manual no les mueve el precio.';
-
             if ($es_setear) {
 
-                $motivo .= ' Para fijarles un precio a mano hay que sacarles el margen desde la ficha de cada artículo; contáselo a la persona.';
+                if (!empty($comercio['listas_de_precio'])) {
 
-                return RespuestaDeCargaIa::error($motivo);
+                    return RespuestaDeCargaIa::error('Con listas de precio el precio manual no se usa: el precio de cada lista sale del costo.');
+                }
+
+                return RespuestaDeCargaIa::error($total === 1
+                    ? 'El artículo alcanzado no usa precio manual: su precio sale del costo más el margen, así que un precio fijado a mano no se usaría. Para fijarle un precio a mano hay que sacarle el margen en su ficha.'
+                    : 'Ninguno de estos ' . $total . ' artículos usa precio manual: su precio sale del costo más el margen, así que un precio fijado a mano no se usaría. Para fijarles un precio a mano hay que sacarles el margen en la ficha de cada artículo.');
             }
 
-            $motivo .= ' Si la persona quiere subir o bajar el precio, usá el campo precio_final con el mismo porcentaje.';
+            if ($cantidad_de_cambios > 1) {
 
-            return RespuestaDeCargaIa::error($motivo, [
-                'sugerencia' => [
-                    'campo'     => self::CAMPO_PRECIO_FINAL,
-                    'operacion' => $cambio['operacion'],
-                    'valor'     => $cambio['valor'],
+                return RespuestaDeCargaIa::error(self::TEXTO_PRECIO_EN_TARJETA_APARTE);
+            }
+
+            $se_mueve = $operacion === 'subir_porcentaje' ? 'se sube' : 'se baja';
+
+            return [
+                'convertir' => true,
+                'renglones' => [
+                    [
+                        'etiqueta' => 'Atención',
+                        'valor'    => $total === 1
+                            ? 'El artículo alcanzado no usa precio manual: ' . $se_mueve . ' el precio final'
+                            : 'Ninguno de estos ' . $total . ' artículos usa precio manual: ' . $se_mueve . ' el precio final',
+                    ],
                 ],
-            ]);
+            ];
         }
 
         $no_mueve = $total - $mueve;
 
         if ($no_mueve <= 0) {
 
-            return [];
+            return ['convertir' => false, 'renglones' => []];
         }
 
         return [
-            [
-                'etiqueta' => 'Atención',
-                'valor'    => $no_mueve === 1
-                    ? '1 de ' . $total . ' artículos no usa precio manual: este cambio no le mueve el precio'
-                    : $no_mueve . ' de ' . $total . ' artículos no usan precio manual: este cambio no les mueve el precio',
+            'convertir' => false,
+            'renglones' => [
+                [
+                    'etiqueta' => 'Atención',
+                    'valor'    => $no_mueve === 1
+                        ? '1 de ' . $total . ' artículos no usa precio manual: este cambio no le mueve el precio'
+                        : $no_mueve . ' de ' . $total . ' artículos no usan precio manual: este cambio no les mueve el precio',
+                ],
             ],
         ];
     }
 
     /**
-     * precio_final con precio único: cuántos ajustan el margen, cuántos suben el precio manual y
-     * cuántos no cambian.
+     * precio_final: con qué palanca se mueve cada alcanzado (PrecioFinalEnMasivaHelper::clasificar())
+     * y los renglones que lo cuentan:
+     *
+     *  - `Cómo`: cuántos ajustan el margen, cuántos suben el precio manual y cuántos suben el costo.
+     *  - `Atención`: los sin costo ni precio, los de precio manual en $0, los que quedarían por debajo
+     *    de su costo, que la suba del costo se reemplaza si después se actualiza el costo desde el
+     *    proveedor, y (con listas de precio) los que tienen el precio de alguna lista fijado a mano,
+     *    que esa lista no cambia (una consulta).
      *
      * @param  \Illuminate\Support\Collection  $articulos
-     * @param  array  $cambio  {campo, operacion, valor}
-     * @return array  Los renglones o la respuesta negativa.
+     * @param  string  $operacion
+     * @param  float  $porcentaje
+     * @param  bool  $redondear
+     * @param  array  $comercio  PrecioFinalEnMasivaHelper::comercio().
+     * @return array  ['renglones' => [...], 'hay_precio_manual' => bool] o la respuesta negativa.
      */
-    protected static function analizar_precio_final($articulos, array $cambio)
+    protected static function analizar_precio_final($articulos, $operacion, $porcentaje, $redondear, array $comercio)
     {
         $total = count($articulos);
-        $sube = $cambio['operacion'] === 'subir_porcentaje';
-        $porcentaje = self::valor_legible($cambio['valor'], 'porcentaje');
+        $sube = $operacion === 'subir_porcentaje';
 
-        $conteo = PrecioFinalEnMasivaHelper::clasificar($articulos, (float) $cambio['valor'], $sube);
+        $conteo = PrecioFinalEnMasivaHelper::clasificar($articulos, (float) $porcentaje, $sube, $comercio, $redondear);
 
-        if ($conteo['manual'] + $conteo['calculado'] === 0) {
+        $margen = $conteo[PrecioFinalEnMasivaHelper::PALANCA_MARGEN];
+        $manual = $conteo[PrecioFinalEnMasivaHelper::PALANCA_PRECIO_MANUAL];
+        $costo = $conteo[PrecioFinalEnMasivaHelper::PALANCA_COSTO];
+        $sin_precio = $conteo[PrecioFinalEnMasivaHelper::SIN_PRECIO];
+        $en_cero = $conteo[PrecioFinalEnMasivaHelper::PRECIO_MANUAL_EN_CERO];
 
-            return RespuestaDeCargaIa::error($total === 1
-                ? 'El artículo alcanzado no tiene un precio que ' . ($sube ? 'subir' : 'bajar') . ': no tiene costo ni precio cargado.'
-                : 'Ninguno de los ' . $total . ' artículos tiene un precio que ' . ($sube ? 'subir' : 'bajar') . ': no tienen costo ni precio cargado.');
-        }
+        if ($margen + $manual + $costo === 0) {
 
-        $como = '';
-
-        if ($conteo['calculado'] > 0) {
-
-            $como = 'En ' . self::cantidad_de_articulos($conteo['calculado']) . ' se ajusta el margen para que el precio final ' . ($sube ? 'suba ' : 'baje ') . $porcentaje;
-        }
-
-        if ($conteo['manual'] > 0) {
-
-            $como .= $como === ''
-                ? 'En ' . self::cantidad_de_articulos($conteo['manual']) . ($sube ? ' sube' : ' baja') . ' el precio manual'
-                : ' y en ' . $conteo['manual'] . ($sube ? ' sube' : ' baja') . ' el precio manual';
+            return RespuestaDeCargaIa::error(self::texto_sin_precio_que_mover($total, $sin_precio, $en_cero, $sube));
         }
 
         $renglones = [
-            ['etiqueta' => 'Cómo', 'valor' => $como],
+            ['etiqueta' => 'Cómo', 'valor' => self::texto_de_como($margen, $manual, $costo, $sube, self::valor_legible($porcentaje, 'porcentaje'))],
         ];
 
-        if ($conteo['sin_precio'] > 0) {
+        if ($sin_precio > 0) {
 
             $renglones[] = [
                 'etiqueta' => 'Atención',
-                'valor'    => $conteo['sin_precio'] === 1
+                'valor'    => $sin_precio === 1
                     ? '1 no tiene costo ni precio cargado: no cambia'
-                    : $conteo['sin_precio'] . ' no tienen costo ni precio cargado: no cambian',
+                    : $sin_precio . ' no tienen costo ni precio cargado: no cambian',
             ];
         }
 
-        if (!$sube && $conteo['margen_negativo'] > 0) {
+        if ($en_cero > 0) {
 
             $renglones[] = [
                 'etiqueta' => 'Atención',
-                'valor'    => $conteo['margen_negativo'] === 1
-                    ? '1 quedaría con margen negativo'
-                    : $conteo['margen_negativo'] . ' quedarían con margen negativo',
+                'valor'    => $en_cero === 1
+                    ? '1 tiene el precio manual en $0: no cambia'
+                    : $en_cero . ' tienen el precio manual en $0: no cambian',
             ];
         }
 
-        return $renglones;
-    }
+        if ($conteo['debajo_del_costo'] > 0) {
 
-    /**
-     * precio_final con listas de precio: cada lista sale del costo, así que se sube (o baja) el
-     * costo. Los que no tienen costo no cambian.
-     *
-     * @param  \Illuminate\Support\Collection  $articulos
-     * @param  array  $cambio  {campo, operacion, valor}
-     * @return array  Los renglones o la respuesta negativa.
-     */
-    protected static function analizar_precio_final_con_listas($articulos, array $cambio)
-    {
-        $total = count($articulos);
-        $sube = $cambio['operacion'] === 'subir_porcentaje';
+            $renglones[] = [
+                'etiqueta' => 'Atención',
+                'valor'    => $conteo['debajo_del_costo'] === 1
+                    ? '1 quedaría por debajo de su costo'
+                    : $conteo['debajo_del_costo'] . ' quedarían por debajo de su costo',
+            ];
+        }
 
-        $con_costo = 0;
+        if ($costo > 0) {
 
-        foreach ($articulos as $articulo) {
+            $renglones[] = [
+                'etiqueta' => 'Atención',
+                'valor'    => 'Si después se actualiza el costo desde el proveedor, ' . ($sube ? 'la suba' : 'la baja')
+                    . ($costo === 1 ? ' de ese artículo' : ' de esos ' . $costo) . ' se reemplaza.',
+            ];
 
-            if (!is_null($articulo->cost) && (float) $articulo->cost > 0) {
+            if (!empty($comercio['listas_de_precio'])) {
 
-                $con_costo++;
+                $fijadas = (int) DB::table('article_price_type')
+                                    ->whereIn('article_id', $conteo['ids_costo'])
+                                    ->where('setear_precio_final', 1)
+                                    ->distinct()
+                                    ->count('article_id');
+
+                if ($fijadas > 0) {
+
+                    $renglones[] = [
+                        'etiqueta' => 'Atención',
+                        'valor'    => ($fijadas === 1 ? '1 tiene' : $fijadas . ' tienen') . ' el precio de alguna lista fijado a mano: esa lista no cambia',
+                    ];
+                }
             }
         }
 
-        if ($con_costo === 0) {
-
-            return RespuestaDeCargaIa::error($total === 1
-                ? 'El artículo alcanzado no tiene costo cargado: con listas de precio el precio sale del costo, así que no hay precio que ' . ($sube ? 'subir' : 'bajar') . '.'
-                : 'Ninguno de los ' . $total . ' artículos tiene costo cargado: con listas de precio el precio sale del costo, así que no hay precio que ' . ($sube ? 'subir' : 'bajar') . '.');
-        }
-
-        $renglones = [
-            [
-                'etiqueta' => 'Cómo',
-                'valor'    => 'Con listas de precio cada lista sale del costo: ' . ($sube ? 'sube' : 'baja') . ' el costo '
-                    . self::valor_legible($cambio['valor'], 'porcentaje') . ' y los márgenes quedan iguales. Si después se actualiza el costo desde el proveedor, '
-                    . ($sube ? 'el aumento' : 'la baja') . ' se reemplaza.',
-            ],
+        return [
+            'renglones'         => $renglones,
+            'hay_precio_manual' => $manual > 0,
         ];
+    }
 
-        $sin_costo = $total - $con_costo;
+    /**
+     * "En 3 artículos se ajusta el margen, en 2 sube el precio manual y en 1 sube el costo, para que
+     * el precio final suba 10 %", sin las palancas en 0.
+     *
+     * @param  int  $margen
+     * @param  int  $manual
+     * @param  int  $costo
+     * @param  bool  $sube
+     * @param  string  $porcentaje  Ya legible ("10 %").
+     * @return string
+     */
+    protected static function texto_de_como($margen, $manual, $costo, $sube, $porcentaje)
+    {
+        $partes = [];
 
-        if ($sin_costo > 0) {
+        if ($margen > 0) {
 
-            $renglones[] = [
-                'etiqueta' => 'Atención',
-                'valor'    => $sin_costo === 1 ? '1 no tiene costo: no cambia' : $sin_costo . ' no tienen costo: no cambian',
-            ];
+            $partes[] = [$margen, 'se ajusta el margen'];
         }
 
-        return $renglones;
+        if ($manual > 0) {
+
+            $partes[] = [$manual, ($sube ? 'sube' : 'baja') . ' el precio manual'];
+        }
+
+        if ($costo > 0) {
+
+            $partes[] = [$costo, ($sube ? 'sube' : 'baja') . ' el costo'];
+        }
+
+        $frases = [];
+
+        foreach ($partes as $k => $parte) {
+
+            $frases[] = ($k === 0 ? 'En ' . self::cantidad_de_articulos($parte[0]) : 'en ' . $parte[0]) . ' ' . $parte[1];
+        }
+
+        $ultima = array_pop($frases);
+        $texto = count($frases) ? implode(', ', $frases) . ' y ' . $ultima : $ultima;
+
+        return $texto . (count($partes) > 1 ? ', ' : ' ') . 'para que el precio final ' . ($sube ? 'suba ' : 'baje ') . $porcentaje;
+    }
+
+    /**
+     * El error de precio_final cuando ningún alcanzado tiene algo que mover.
+     *
+     * @param  int  $total
+     * @param  int  $sin_precio
+     * @param  int  $en_cero
+     * @param  bool  $sube
+     * @return string
+     */
+    protected static function texto_sin_precio_que_mover($total, $sin_precio, $en_cero, $sube)
+    {
+        $verbo = $sube ? 'subir' : 'bajar';
+
+        if ($total === 1) {
+
+            return 'El artículo alcanzado no tiene un precio que ' . $verbo . ': '
+                . ($en_cero > 0 ? 'tiene el precio manual en $0.' : 'no tiene costo ni precio cargado.');
+        }
+
+        if ($en_cero === 0) {
+
+            $motivo = 'no tienen costo ni precio cargado.';
+
+        } elseif ($sin_precio === 0) {
+
+            $motivo = 'tienen el precio manual en $0.';
+
+        } else {
+
+            $motivo = ($sin_precio === 1 ? '1 no tiene' : $sin_precio . ' no tienen') . ' costo ni precio cargado y '
+                . ($en_cero === 1 ? '1 tiene' : $en_cero . ' tienen') . ' el precio manual en $0.';
+        }
+
+        return 'Ninguno de estos ' . $total . ' artículos tiene un precio que ' . $verbo . ': ' . $motivo;
     }
 
     /**
@@ -718,11 +862,9 @@ class PropuestaActualizacionMasivaIaHelper
      *
      * @param  array  $cambios
      * @param  int  $owner_id
-     * @param  bool  $usa_listas  El comercio trabaja con listas de precio: precio_final se traduce
-     *                            como subir o bajar el costo (ver cambio_precio_final()).
      * @return array  ['update_form' => [...], 'legibles' => [...]] o la respuesta negativa.
      */
-    public static function traducir_cambios(array $cambios, $owner_id, $usa_listas = false)
+    public static function traducir_cambios(array $cambios, $owner_id)
     {
         $update_form = [];
         $legibles = [];
@@ -740,7 +882,7 @@ class PropuestaActualizacionMasivaIaHelper
 
             if ($campo === self::CAMPO_PRECIO_FINAL) {
 
-                $traducido = self::cambio_precio_final($operacion, $valor, !empty($cambio['redondear']), $usa_listas);
+                $traducido = self::cambio_precio_final($operacion, $valor, !empty($cambio['redondear']));
 
             } elseif (isset(self::CAMPOS_NUMERICOS[$campo])) {
 
@@ -846,21 +988,20 @@ class PropuestaActualizacionMasivaIaHelper
     /**
      * precio_final: subir_porcentaje o bajar_porcentaje del precio que se cobra.
      *
-     *  - Precio único: la operación de la masiva PrecioFinalEnMasivaHelper (`type` precio_final, con
-     *    su `label` para el historial). `redondear` solo redondea los de precio manual: en los de
-     *    costo + margen se ajusta el margen y el redondeo es el del comercio.
-     *  - Listas de precio: el margen del artículo no mueve las listas, y cada lista sale del costo,
-     *    así que se sube (o baja) el costo, sin redondeo.
+     * Siempre la operación de la masiva PrecioFinalEnMasivaHelper (`type` precio_final, con su
+     * `label` para el historial): la palanca de cada artículo (precio manual, margen o costo) la
+     * decide la operación al correr, con el comercio, también con listas de precio. `redondear` solo
+     * redondea los de precio manual; si no hay ninguno, analizar_cambios_de_precio() saca el `round`
+     * y el "(redondeado…)" del texto.
      *
      * No se puede setear: el precio final se calcula. Para fijar un precio a mano está precio_manual.
      *
      * @param  string  $operacion
      * @param  mixed  $valor
      * @param  bool  $redondear
-     * @param  bool  $usa_listas
      * @return array  ['form', 'texto'] o negativa.
      */
-    protected static function cambio_precio_final($operacion, $valor, $redondear, $usa_listas)
+    protected static function cambio_precio_final($operacion, $valor, $redondear)
     {
         if ($operacion === 'setear') {
 
@@ -890,14 +1031,6 @@ class PropuestaActualizacionMasivaIaHelper
             return RespuestaDeCargaIa::error('Para bajar el precio final el porcentaje tiene que ser menor a 100.');
         }
 
-        if ($usa_listas) {
-
-            return [
-                'form'  => ['type' => 'number', 'key' => ($sube ? 'increment_' : 'decrement_') . 'cost', 'value' => $numero],
-                'texto' => 'Costo' . ($sube ? ' sube ' : ' baja ') . self::valor_legible($numero, 'porcentaje'),
-            ];
-        }
-
         $form = [
             'type'  => PrecioFinalEnMasivaHelper::TIPO,
             'key'   => $sube ? PrecioFinalEnMasivaHelper::SUBIR : PrecioFinalEnMasivaHelper::BAJAR,
@@ -912,8 +1045,22 @@ class PropuestaActualizacionMasivaIaHelper
 
         return [
             'form'  => $form,
-            'texto' => 'Precio final' . ($sube ? ' sube ' : ' baja ') . self::valor_legible($numero, 'porcentaje') . ($redondear ? ' (redondeado en los de precio manual)' : ''),
+            'texto' => self::texto_de_precio_final($sube, $numero, $redondear),
         ];
+    }
+
+    /**
+     * "Precio final sube 10 %", con "(redondeado en los de precio manual)" si corresponde.
+     *
+     * @param  bool  $sube
+     * @param  int|float  $numero
+     * @param  bool  $con_redondeo
+     * @return string
+     */
+    protected static function texto_de_precio_final($sube, $numero, $con_redondeo)
+    {
+        return 'Precio final' . ($sube ? ' sube ' : ' baja ') . self::valor_legible($numero, 'porcentaje')
+            . ($con_redondeo ? ' (redondeado en los de precio manual)' : '');
     }
 
     /**

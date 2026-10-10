@@ -1014,15 +1014,17 @@ class MasiveUpdateHelper
 
         /*
          * "Precio final sube/baja X %" (misión asistente-masiva-precio-manual, 10/10/2026): no es una
-         * columna sino el precio que se cobra, así que tiene su propia rama. En un artículo de precio
-         * manual sube ese precio; en uno de costo + margen recalcula SU margen para que el final suba
-         * exactamente X %; en uno sin costo ni precio no escribe nada. Devuelve el cambio con la forma
-         * de siempre (sobre `price` o `percentage_gain`), así que la reversión de siempre lo
-         * restaura. La memoria de la corrida va para que el margen del proveedor se lea una vez por
-         * proveedor y no una consulta por artículo. Detalle en PrecioFinalEnMasivaHelper.
+         * columna sino el precio que se cobra, así que tiene su propia rama. La palanca se decide por
+         * artículo, con el comercio: en uno de precio manual sube ese precio; donde el margen no mueve
+         * el precio (listas de precio, listas por categoría, proveedor con costo de lista + IVA) sube
+         * el costo; en el resto de los de costo + margen recalcula SU margen; en uno sin costo ni
+         * precio no escribe nada. Devuelve el cambio con la forma de siempre (sobre `price`, `cost` o
+         * `percentage_gain`), así que la reversión de siempre lo restaura. El dueño va explícito (en
+         * la cola no hay sesión) y la memoria de la corrida hace que el comercio se resuelva una vez
+         * por corrida y el proveedor una vez por proveedor. Detalle en PrecioFinalEnMasivaHelper.
          */
         if (PrecioFinalEnMasivaHelper::es_de_la_masiva($form)) {
-            return PrecioFinalEnMasivaHelper::aplicar($model, $form, $memoria_de_la_corrida);
+            return PrecioFinalEnMasivaHelper::aplicar($model, $form, $owner, $memoria_de_la_corrida);
         }
 
         if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
