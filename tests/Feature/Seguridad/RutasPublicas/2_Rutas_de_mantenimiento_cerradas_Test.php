@@ -10,6 +10,7 @@ use Carbon\Carbon;
 use Illuminate\Routing\Events\RouteMatched;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
 
 /**
  * En producción y sin clave, CADA ruta de `routes/mantenimiento.php` da 404 y no toca la base (misión
@@ -198,6 +199,73 @@ class Rutas_de_mantenimiento_cerradas_Test extends RutasPublicasTestCase
         $this->assertSame([$extencion->id], $dueno->extencions()->pluck('extencion_empresa_user.extencion_empresa_id')->map(function ($id) {
             return (int) $id;
         })->all());
+    }
+
+    /**
+     * El POST del configurador en una DEMO (`FOR_USER=demo`, en producción, sin clave): pasa la puerta
+     * (`solo.mantenimiento:demo`) y guarda, que es lo que usa la filmación del centro de recursos. El
+     * mismo POST sin la marca de demo y sin clave: 404 y no cambia nada.
+     *
+     * @test
+     */
+    public function el_post_del_configurador_en_una_demo_guarda_y_fuera_de_una_demo_no()
+    {
+        $extencion = ExtencionEmpresa::forceCreate([
+            'name'        => 'Extension zz_test_puerta_demo',
+            'slug'        => 'zz_test_puerta_demo',
+            'description' => 'De prueba',
+            'modulo'      => 'VENDER',
+            'en_desuso'   => false,
+        ]);
+
+        $dueno = User::find(self::DUENO_ID);
+        $dueno->extencions()->sync([]);
+
+        $de_la_extencion = function () use ($dueno) {
+            return $dueno->extencions()->pluck('extencion_empresa_user.extencion_empresa_id')->map(function ($id) {
+                return (int) $id;
+            })->all();
+        };
+
+        // Sin demo y sin clave: 404 y nada cambia.
+        $this->pedir_midiendo('POST', '/users/' . $dueno->id . '/extencions', [
+            'extencions' => [$extencion->id],
+        ])->assertStatus(404);
+
+        $this->assertSame([], $de_la_extencion());
+
+        // En una demo: pasa la puerta, el controlador guarda y vuelve al configurador.
+        config(['app.FOR_USER' => 'demo']);
+
+        $respuesta = $this->call('POST', '/users/' . $dueno->id . '/extencions', [
+            'extencions' => [$extencion->id],
+        ]);
+
+        $respuesta->assertRedirect();
+        $respuesta->assertSessionHas('success');
+        $this->assertSame([$extencion->id], $de_la_extencion());
+    }
+
+    /**
+     * Control positivo de la medición: una ruta que SÍ consulta la base, pedida por el mismo camino que
+     * las de mantenimiento, deja su consulta en el contador. Sin esto, el "0 consultas" del test central
+     * podría ser un listener que no escucha nada.
+     *
+     * @test
+     */
+    public function la_medicion_de_consultas_ve_una_consulta_de_verdad()
+    {
+        Route::middleware('web')->get('/_sonda-de-la-medicion', function () {
+            DB::select('select 1 as sonda_de_la_medicion');
+
+            return 'ok';
+        });
+
+        $this->pedir_midiendo('GET', '/_sonda-de-la-medicion')->assertStatus(200);
+
+        $this->assertContains('select 1 as sonda_de_la_medicion', $this->consultas, 'El DB::listen no vio la consulta: el "0 consultas" no mediría nada.');
+        $this->assertNotNull($this->ruta_que_matcheo, 'El listener de RouteMatched no vio la ruta.');
+        $this->assertSame('_sonda-de-la-medicion', $this->ruta_que_matcheo->uri());
     }
 
     /**
