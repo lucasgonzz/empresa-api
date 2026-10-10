@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\ApiUrlHelper;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Models\Budget;
 use App\Models\PdfColumnProfile;
 use App\Models\Sale;
@@ -21,9 +22,9 @@ use App\Models\User;
  * ese link, igual que hoy.
  *
  * Las dos rutas son las MISMAS que ya comparte la pantalla por WhatsApp:
- *   - venta → `{api_url}/sale/pdf/{id}` (`routes/web.php:447`), que es lo que arma
+ *   - venta → `{api_url}/sale/pdf/{id}` (ruta `sale/pdf/{id}` de `routes/web.php`), que es lo que arma
  *     `SaleWhatsappSenderService::build_pdf_url()`.
- *   - presupuesto → `{api_url}/budget/pdf/{id}/1/0` (`routes/web.php:479`), con los dos flags
+ *   - presupuesto → `{api_url}/budget/pdf/{id}/1/0` (ruta `budget/pdf/{id}/{with_prices}/{with_images}` de `routes/web.php`), con los dos flags
  *     obligatorios de la ruta; `1/0` (con precios, sin imágenes) es el combo que usa el botón de
  *     WhatsApp de la SPA (`common-vue/sale-print-buttons/WhatsappBtn.vue:186`).
  *
@@ -32,7 +33,7 @@ use App\Models\User;
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
  * 1. **`sale/ticket-pdf/{id}` ES UNA RUTA MUERTA.** `SaleController@ticketPdf` no existe en ningún
- *    lado del repo (el único hit de ese nombre es la propia línea de `routes/web.php:448`), así que
+ *    lado del repo (el único hit de ese nombre es la propia línea de `sale/ticket-pdf/{id}` en `routes/web.php`), así que
  *    esa URL da 500. `sale/ticket-raw` son bytes de impresora, y `sale/afip-ticket-a4-pdf/{id}`
  *    toma el **afip_ticket_id**, no el de la venta. Para "pasame el PDF" va `sale/pdf/{id}` y nada
  *    más: por eso acá hay una constante y no un parámetro.
@@ -45,11 +46,13 @@ use App\Models\User;
  *    si la instalación lo necesita) y, si no queda nada, se cae a `ApiUrlHelper::public_base()`.
  *    🔴 Y SI AUN ASÍ NO HAY URL, SE DICE — nunca se devuelve un link a medias.
  *
- * 3. **LAS DOS RUTAS SON PÚBLICAS, SIN AUTH NI CHEQUEO DE DUEÑO** (`routes/web.php` no tiene
- *    middleware en ese bloque, y `pdf()` hace `Sale::find($id)` / `Budget::find($id)` pelados). Eso
- *    es así hoy y esta misión no lo cambia, pero el asistente NO puede ser el que convierta ese
- *    agujero en una función: acá la pertenencia se chequea SIEMPRE antes de devolver la URL, y un
- *    número de otro comercio se contesta como "no encontré", no con un link que funciona.
+ * 3. **EL LINK LLEVA EL TOKEN, Y LA PERTENENCIA SE CHEQUEA ANTES DE EMITIRLO.** Desde la misión
+ *    pdf-de-venta-publico (10/10/2026) las dos rutas dejaron de ser públicas: se sirven con la
+ *    sesión del comercio o con un `?t=` válido para ESE comprobante (`PdfLinkHelper`). El link del
+ *    asistente se lo pasan al cliente final, que no tiene sesión, así que sale con su token. Y como
+ *    el token abre el PDF sin sesión, el asistente sigue sin poder ser el que lo emita para un
+ *    comprobante ajeno: acá la pertenencia se chequea SIEMPRE antes de armar la URL, y un número de
+ *    otro comercio se contesta como "no encontré", nunca con un link que funciona.
  *
  * PHP 7.4: sin enum, sin match, sin operador nullsafe.
  */
@@ -116,11 +119,11 @@ class LinkDePdfIaHelper
          */
         if ($tipo === self::TIPO_VENTA) {
 
-            $modelo = Sale::where('user_id', (int) $owner_id)->where('num', $numero)->first(['id', 'num', 'total']);
+            $modelo = Sale::where('user_id', (int) $owner_id)->where('num', $numero)->first(['id', 'num', 'total', 'user_id']);
 
         } else {
 
-            $modelo = Budget::where('user_id', (int) $owner_id)->where('num', $numero)->first(['id', 'num', 'total']);
+            $modelo = Budget::where('user_id', (int) $owner_id)->where('num', $numero)->first(['id', 'num', 'total', 'user_id']);
         }
 
         if (is_null($modelo)) {
@@ -144,12 +147,20 @@ class LinkDePdfIaHelper
             ? '/sale/pdf/' . (int) $modelo->id
             : '/budget/pdf/' . (int) $modelo->id . '/' . self::FLAGS_PRESUPUESTO . self::query_del_diseno_del_presupuesto($owner_id);
 
+        // El token va al final, después del `?pdf_column_profile_id=` si lo hay (con_token elige `?` o `&`).
+        $link = PdfLinkHelper::con_token(
+            $base . $ruta,
+            $tipo === self::TIPO_VENTA ? 'sale' : 'budget',
+            (int) $modelo->id,
+            (int) $modelo->user_id
+        );
+
         return [
             'ok'         => true,
             'tipo'       => $tipo,
             'numero'     => (int) $modelo->num,
             'total'      => is_null($modelo->total) ? null : (float) $modelo->total,
-            'link'       => $base . $ruta,
+            'link'       => $link,
             'nota'       => 'Es el mismo link que comparte el botón de WhatsApp de la pantalla. Pasáselo tal cual, sin acortarlo ni cambiarlo.',
         ];
     }

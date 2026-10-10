@@ -1114,6 +1114,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // El PDF sigue saliendo por la ruta web article/tickets-pdf/{ids}, ahora con ?article_ticket_design_id=.
     Route::resource('article-ticket-design', 'ArticleTicketDesignController')->except(['create', 'edit']);
 
+    // Token del link de un PDF para compartir (misión pdf-de-venta-publico, 10/10/2026): el botón de
+    // WhatsApp de la SPA lo suma como ?t= al link de la venta o del presupuesto. Solo para recursos del
+    // dueño de la sesión y de los tipos que admiten token; si no, 404.
+    Route::get('pdf-link/{tipo}/{id}', 'PdfLinkController@show');
+
 
 });
 

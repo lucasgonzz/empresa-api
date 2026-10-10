@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use Illuminate\Http\Request;
@@ -56,6 +57,13 @@ class DemoSetupController extends Controller
         try {
             // Pasamos el input crudo al helper; internamente interpreta cada flag
             DemoSetupHelper::run($request->all());
+        } catch (BaseConDatosException $e) {
+            // Guarda de instancia (10/10/2026): no es una demo y la base tiene datos; no se tocó
+            // nada. Mismo texto genérico que el 409 de la API, sin el nombre de la base ni conteos.
+            return redirect()->route('demo.form')->with(
+                'status',
+                $e->getMessage() . ' Tablas con datos: ' . implode(', ', $e->con_datos()) . '.'
+            );
         } finally {
             DemoSetupLockHelper::soltar($candado);
         }

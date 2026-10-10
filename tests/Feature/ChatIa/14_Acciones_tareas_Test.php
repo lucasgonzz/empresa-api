@@ -625,7 +625,19 @@ class Acciones_tareas_Test extends AgendaTestCase
             $respuesta = $this->herramienta($conversation, $assistant, $herramienta, ['tarea_id' => $ajena->id]);
 
             $this->assertFalse($respuesta['ok']);
-            $this->assertEquals('No encontré esa tarea en tu agenda.', $respuesta['error']);
+
+            /*
+             * Desde la misión asistente-seguimiento-de-tarea (10/10/2026, con el ok de Lucas) el rechazo es
+             * recuperable: dice que no se armó nada y trae la agenda del dueño para que el modelo vuelva a
+             * llamar con el id bueno. Lo que este test protege no cambia: la tarea de otro dueño no se
+             * encuentra, no se nombra y tampoco aparece entre las opciones.
+             */
+            $this->assertStringStartsWith('No se armó ninguna tarjeta: ninguna tarea de la agenda tiene el tarea_id ' . $ajena->id . '.', $respuesta['error']);
+
+            $opciones = array_merge($respuesta['opciones']['tareas']['vencidas'], $respuesta['opciones']['tareas']['proximas']);
+
+            $this->assertNotContains($ajena->id, array_column($opciones, 'tarea_id'));
+            $this->assertStringNotContainsString('Tarea ajena P14', json_encode($respuesta, JSON_UNESCAPED_UNICODE));
         }
 
         $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
