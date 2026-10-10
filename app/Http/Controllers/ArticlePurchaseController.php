@@ -9,7 +9,24 @@ use Illuminate\Support\Facades\Log;
 
 class ArticlePurchaseController extends Controller
 {
+    /**
+     * Reportes → Artículos: lo vendido en el período, agrupado por artículo, categoría y proveedor.
+     *
+     * 🔴 LOS TOTALES Y LOS GRÁFICOS SON DEL PERÍODO, NO DE LA LISTA (misión
+     * reporte-articulos-totales-del-periodo, 10/10/2026). Hasta esta fecha las categorías y los
+     * proveedores se armaban con la lista ya recortada a `cantidad_resultados`, y el SPA sumaba esa
+     * misma lista para el "Total": el dueño leía como "lo vendido en el período" lo que eran solo
+     * los 10 primeros. Ahora se agrupa todo el período, de ahí salen `totales`, `categories` y
+     * `providers`, y recién al final se recorta `models`.
+     *
+     * 🔴 SOLO LO DEL DUEÑO. `article_purchases` no tiene `user_id`: el dueño sale de la venta. Sin
+     * este filtro, en una base compartida por varios comercios el reporte mezclaba las ventas de
+     * todos.
+     */
     function index(Request $request) {
+
+        /** Dueño de la cuenta (para un empleado, devuelve el id de su dueño). */
+        $owner_id = $this->userId();
 
         $client_id = $request->client_id;
         $provider_id = $request->provider_id;
@@ -32,8 +49,19 @@ class ArticlePurchaseController extends Controller
         Log::info('mes_inicio: '.$mes_inicio->format('d/m/y'));
         Log::info('mes_fin: '.$mes_fin->format('d/m/y'));
 
-        $purchases = ArticlePurchase::whereBetween('created_at', [$mes_inicio, $mes_fin])
-                                ->with('article.provider');
+        /*
+         * La venta tiene que ser del dueño, no estar borrada y no ser una contenedora de
+         * consolidación AFIP (mismo criterio que ConsultasSistemaIaHelper::mas_vendidos()).
+         * El `whereNull('sales.deleted_at')` es explícito porque la relación `sale()` de
+         * ArticlePurchase es `withTrashed()`: sin él, una venta borrada seguía sumando.
+         */
+        $purchases = ArticlePurchase::whereBetween('article_purchases.created_at', [$mes_inicio, $mes_fin])
+                                ->whereHas('sale', function($query) use ($owner_id) {
+                                    $query->where('sales.user_id', $owner_id)
+                                          ->whereNull('sales.deleted_at')
+                                          ->soloVentasReales();
+                                })
+                                ->with('article.provider', 'article.category');
 
         if (!is_null($provider_id)) {
             $purchases = $purchases->whereHas('article', function($query) use ($provider_id) {
@@ -63,20 +91,33 @@ class ArticlePurchaseController extends Controller
 
         $purchases = $purchases->get();
 
-        $purchases = $this->agrupar_articulos($purchases, $orden, $cantidad_resultados);
+        /** Todos los artículos vendidos en el período, ya ordenados (sin recortar). */
+        $agrupados = $this->agrupar_articulos($purchases, $orden);
 
-        $categories = $this->get_categories($purchases, $orden);
+        $totales = $this->get_totales($agrupados);
 
-        $providers = $this->get_providers($purchases, $orden);
+        $categories = $this->get_categories($agrupados, $orden);
+
+        $providers = $this->get_providers($agrupados, $orden);
+
+        $models = $this->recortar($agrupados, $cantidad_resultados);
         
         return response()->json([
-            'models' => $purchases, 
-            'categories' => $categories, 
-            'providers' => $providers
+            'models'        => $models,
+            'categories'    => $categories,
+            'providers'     => $providers,
+            'totales'       => $totales,
         ], 200);
     }
 
-    function agrupar_articulos($purchases, $orden, $cantidad_resultados) {
+    /**
+     * Agrupa los renglones vendidos por artículo y los ordena según `$orden`.
+     *
+     * Devuelve todas las filas del período. El tercer parámetro queda por compatibilidad: si viene,
+     * se recorta igual que en `recortar()`; `index()` ya no lo pasa, porque los totales, las
+     * categorías y los proveedores se calculan sobre la lista completa.
+     */
+    function agrupar_articulos($purchases, $orden, $cantidad_resultados = null) {
 
         $agrupados = [];
 
@@ -128,23 +169,114 @@ class ArticlePurchaseController extends Controller
 
         $agrupados = array_values($agrupados);
 
+        $agrupados = $this->ordenar($agrupados, $orden, 'article_id');
+
+        return $this->recortar($agrupados, $cantidad_resultados);
+    }
+
+    /**
+     * Deja las primeras `$cantidad_resultados` filas (ya ordenadas).
+     *
+     * Exactamente esa cantidad: hasta el 10/10/2026 era `array_slice(..., $cantidad - 1)` y con 10
+     * devolvía 9 (y con null, `slice(0, -1)`, sacaba la última). Si la cantidad no es un entero
+     * mayor que cero (null, vacía, 0, negativa, texto) se devuelven todas.
+     */
+    function recortar($agrupados, $cantidad_resultados) {
+
+        $cantidad = filter_var($cantidad_resultados, FILTER_VALIDATE_INT);
+
+        if ($cantidad === false || $cantidad <= 0) {
+            return $agrupados;
+        }
+
+        return array_slice($agrupados, 0, $cantidad);
+    }
+
+    /**
+     * Totales de TODO el período (no de la lista recortada): lo que el dueño lee como "Total" y
+     * "Unidades vendidas". Floats redondeados a 2 decimales; `cantidad_articulos` = artículos
+     * distintos vendidos en el período.
+     */
+    function get_totales($agrupados) {
+
+        $totales = [
+            'unidades_vendidas'     => 0,
+            'price'                 => 0,
+            'cost'                  => 0,
+            'beneficio'             => 0,
+            'price_dolar'           => 0,
+            'cost_dolar'            => 0,
+            'beneficio_dolar'       => 0,
+        ];
+
+        foreach ($agrupados as $agrupado) {
+
+            $totales['unidades_vendidas']   += (float)$agrupado['unidades_vendidas'];
+            $totales['price']               += (float)$agrupado['price'];
+            $totales['cost']                += (float)$agrupado['cost'];
+            $totales['price_dolar']         += (float)$agrupado['price_dolar'];
+            $totales['cost_dolar']          += (float)$agrupado['cost_dolar'];
+        }
+
+        $totales['beneficio']       = $totales['price'] - $totales['cost'];
+        $totales['beneficio_dolar'] = $totales['price_dolar'] - $totales['cost_dolar'];
+
+        foreach ($totales as $clave => $valor) {
+
+            $totales[$clave] = round((float)$valor, 2);
+        }
+
+        $totales['cantidad_articulos'] = count($agrupados);
+
+        return $totales;
+    }
+
+    /**
+     * Ordena filas por unidades vendidas según `$orden` ('mayor-menor' / 'menor-mayor'); con
+     * cualquier otro valor las deja como vienen.
+     *
+     * Compara con `<=>` sobre float: la resta que había antes (`$b - $a`) se casteaba a int en
+     * `usort` y 1,5 empataba con 1,0 (artículos por kilo, balanzas). Como `usort` de PHP 7.4 no es
+     * estable, el empate se desarma siempre igual: `price` de mayor a menor y después
+     * `$campo_desempate` (el id del artículo de menor a mayor, o el nombre alfabético).
+     */
+    function ordenar($filas, $orden, $campo_desempate) {
+
         if ($orden == 'mayor-menor') {
 
-            usort($agrupados, function($a, $b) { 
-                return $b['unidades_vendidas'] - $a['unidades_vendidas']; 
-            });
+            $direccion = -1;
 
         } else if ($orden == 'menor-mayor') {
 
-            usort($agrupados, function($a, $b) { 
-                return $a['unidades_vendidas'] - $b['unidades_vendidas']; 
-            });
+            $direccion = 1;
 
+        } else {
+
+            return $filas;
         }
 
-        $agrupados = array_slice($agrupados, 0, $cantidad_resultados-1);
+        usort($filas, function($a, $b) use ($direccion, $campo_desempate) {
 
-        return $agrupados;
+            $por_unidades = ((float)$a['unidades_vendidas'] <=> (float)$b['unidades_vendidas']) * $direccion;
+
+            if ($por_unidades != 0) {
+                return $por_unidades;
+            }
+
+            $por_price = (float)$b['price'] <=> (float)$a['price'];
+
+            if ($por_price != 0) {
+                return $por_price;
+            }
+
+            if ($campo_desempate == 'article_id') {
+                return (int)$a['article_id'] <=> (int)$b['article_id'];
+            }
+
+            return strcmp((string)$a[$campo_desempate], (string)$b[$campo_desempate]);
+        });
+
+        return $filas;
     }
 
     function get_relation($purchase, $relation_name) {
@@ -193,21 +325,7 @@ class ArticlePurchaseController extends Controller
 
         $categories = array_values($categories);
 
-        if ($orden == 'mayor-menor') {
-
-            usort($categories, function($a, $b) { 
-                return $b['unidades_vendidas'] - $a['unidades_vendidas']; 
-            });
-
-        } else if ($orden == 'menor-mayor') {
-
-            usort($categories, function($a, $b) { 
-                return $a['unidades_vendidas'] - $b['unidades_vendidas']; 
-            });
-
-        }
-
-        return $categories;
+        return $this->ordenar($categories, $orden, 'category_name');
     }
 
     function get_providers($purchases, $orden) {
@@ -246,20 +364,6 @@ class ArticlePurchaseController extends Controller
 
         $providers = array_values($providers);
 
-        if ($orden == 'mayor-menor') {
-
-            usort($providers, function($a, $b) { 
-                return $b['unidades_vendidas'] - $a['unidades_vendidas']; 
-            });
-
-        } else if ($orden == 'menor-mayor') {
-
-            usort($providers, function($a, $b) { 
-                return $a['unidades_vendidas'] - $b['unidades_vendidas']; 
-            });
-
-        }
-
-        return $providers;
+        return $this->ordenar($providers, $orden, 'provider_name');
     }
 }

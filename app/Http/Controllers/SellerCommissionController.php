@@ -3,12 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
-use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\comisiones\PagoVendedorHelper;
 use App\Http\Controllers\Helpers\comisiones\PanelComisionesHelper;
 use App\Models\SellerCommission;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SellerCommissionController extends Controller
 {
@@ -206,6 +206,15 @@ class SellerCommissionController extends Controller
     /**
      * Grupo 268 · Prompt 03: contempla moneda (default 1) y liquidada_at, y recalcula saldos
      * despues de crear (antes seteaba el saldo a mano con un criterio ya eliminado).
+     *
+     * Mision saldo-inicial-vendedor (10/10/2026): el saldo inicial se carga UNA sola vez, antes
+     * del primer movimiento del vendedor en esa moneda, y tiene que traer un importe. Antes la API
+     * no frenaba nada: se podia cargar dos veces (el SPA dejaba el boton a la vista despues de
+     * guardar) y con el debe y el haber vacios quedaba una fila sin importe que encima escondia el
+     * boton para siempre. Las dos cosas responden 422 `{error, message}` sin crear nada; el SPA ya
+     * muestra `message` en el toast.
+     *
+     * Respuesta de exito sin cambios: 201 `{model: Seller}` con `seller_commissions_count`.
      */
     function saldoInicial(Request $request) {
 
@@ -214,21 +223,102 @@ class SellerCommissionController extends Controller
             $moneda_id = 1;
         }
 
-        SellerCommission::create([
-            'num'           => $this->num('seller_commissions'),
-            'status'        => 'active',
-            'seller_id'     => $request->seller_id,
-            'moneda_id'     => $moneda_id,
-            'liquidada_at'  => now(),
-            'description'   => SellerCommissionHelper::getDescription(),
-            'debe'          => !is_null($request->debe) ? $request->debe : null,
-            'haber'         => !is_null($request->haber) ? $request->haber : null,
-            'user_id'       => $this->userId(),
-        ]);
+        // Un importe es un numero mayor a cero, redondeado a centavos (mismo criterio que
+        // CurrentAcountController::saldoInicial). Lo demas (vacio, cero, negativo, texto) no es un
+        // saldo y se guarda como null: un 0 en el haber haria que la tabla del modal mostrara
+        // "− $0" o tomara la fila por un pago.
+        $debe = $this->importe_del_saldo_inicial($request->debe);
+        $haber = $this->importe_del_saldo_inicial($request->haber);
 
-        ComisionesHelper::recalcular_saldos($request->seller_id, $moneda_id);
+        if (is_null($debe) && is_null($haber)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Ingresá el saldo inicial en el debe o en el haber.',
+            ], 422);
+        }
+
+        $ya_tiene_movimientos = false;
+
+        DB::transaction(function () use ($request, $moneda_id, $debe, $haber, &$ya_tiene_movimientos) {
+
+            // El candado serializa dos POST simultaneos (doble Enter con un SPA viejo, dos
+            // pestañas): sin el, los dos preguntan si hay movimientos, ninguno ve al otro todavia
+            // y se cargan dos saldos iniciales. Se bloquea la fila del dueño en `users`, que es el
+            // mismo candado que `num()` toma enseguida: no suma ninguna espera nueva ni cambia el
+            // orden de los candados (mismo criterio que BuyerController@store). La consulta de
+            // abajo es la primera lectura comun de la transaccion, asi que ya ve lo que commiteo
+            // el POST que se estaba esperando.
+            DB::table('users')->where('id', $this->userId())->lockForUpdate()->first(['id']);
+
+            // Cualquier movimiento en esa moneda cuenta, liquidado o pendiente: una comision
+            // pendiente ya es parte de la historia del vendedor. `moneda_id` nulo es pesos, el
+            // mismo criterio que ComisionesHelper::recalcular_saldos.
+            $ya_tiene_movimientos = SellerCommission::where('seller_id', $request->seller_id)
+                                        ->where(function ($q) use ($moneda_id) {
+                                            if ($moneda_id == 1) {
+                                                $q->where('moneda_id', 1)->orWhereNull('moneda_id');
+                                            } else {
+                                                $q->where('moneda_id', $moneda_id);
+                                            }
+                                        })
+                                        ->exists();
+
+            if ($ya_tiene_movimientos) {
+                return;
+            }
+
+            // La descripcion dice lo que es. Antes guardaba la de los pagos ("Pago a vendedor")
+            // aun cuando el saldo estaba en el debe; SellerCommissionHelper::getDescription() la
+            // siguen usando los pagos y por eso no se toca.
+            SellerCommission::create([
+                'num'           => $this->num('seller_commissions'),
+                'status'        => 'active',
+                'seller_id'     => $request->seller_id,
+                'moneda_id'     => $moneda_id,
+                'liquidada_at'  => now(),
+                'description'   => 'Saldo inicial',
+                'debe'          => $debe,
+                'haber'         => $haber,
+                'user_id'       => $this->userId(),
+            ]);
+
+            ComisionesHelper::recalcular_saldos($request->seller_id, $moneda_id);
+        });
+
+        if ($ya_tiene_movimientos) {
+            // `model` va también en el 422: el SPA lo usa para esconder el botón "Saldo inicial"
+            // cuando lo que tenía abierto era un vendedor viejo (por ejemplo, otra pestaña ya le
+            // cargó un movimiento). Un SPA que no lo lee solo muestra `message`.
+            return response()->json([
+                'error'   => true,
+                'message' => 'Este vendedor ya tiene movimientos: el saldo inicial se carga una sola vez, antes del primer movimiento.',
+                'model'   => $this->fullModel('Seller', $request->seller_id),
+            ], 422);
+        }
 
         return response()->json(['model' => $this->fullModel('Seller', $request->seller_id)], 201);
+    }
+
+    /**
+     * Importe de un lado (debe o haber) del saldo inicial: el numero redondeado a centavos si es
+     * mayor a cero, o null.
+     *
+     * 🔴 `is_numeric` y no un `(float)` a secas: con coma decimal, `(float) '1.234,56'` da 1.234 y
+     * `(float) '50,5'` da 50 — se guardaria otro importe sin avisar (antes MySQL los rechazaba con
+     * un 500); `is_numeric` los rechaza. Un punto solo ("1.234") es un numero valido y se lee como
+     * decimal (1,23), igual que antes en MySQL: de eso cuida el `type="number"` del SPA. Y el
+     * redondeo antes de comparar, porque la columna es decimal(14,2): 0,001 pasaria la guarda y
+     * quedaria guardado como 0,00.
+     *
+     * @param mixed $valor
+     * @return float|null
+     */
+    protected function importe_del_saldo_inicial($valor) {
+        if (!is_numeric($valor)) {
+            return null;
+        }
+        $importe = round((float) $valor, 2);
+        return $importe > 0 ? $importe : null;
     }
 
     /**
