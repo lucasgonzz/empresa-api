@@ -503,9 +503,14 @@ class PropuestaCompraConFacturaIaHelper
                 . ($creado ? ' (proveedor nuevo, lo di de alta)' : '')
                 . '. Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
                 . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.',
+            /*
+             * Compras es la solapa 'compras' de la ruta 'provider' de la SPA (/proveedores/compras).
+             * Hasta el 10/10/2026 iba name 'proveedores', que no existe en router/index.js y dejaba
+             * la pantalla en blanco (misión ver-en-del-asistente-refresca-destino).
+             */
             'ruta'              => [
-                'name'   => 'proveedores',
-                'params' => new \stdClass(),
+                'name'   => 'provider',
+                'params' => ['view' => 'compras'],
                 'texto'  => 'Ver en Compras',
             ],
             'provider_id'       => (int) $proveedor->id,
