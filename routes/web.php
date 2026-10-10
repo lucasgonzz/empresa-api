@@ -468,8 +468,10 @@ Route::get('home/clients', 'HomeController@clients');
  */
 
 // PDF
+// 🔴 La opción `tienda` va SOLO en sale/pdf/{id}: es la única ruta cuyo controlador exige el
+// SalePdfAccessToken de `?origin=tienda`. Ponérsela a otra ruta de venta la abre a cualquiera.
+Route::get('sale/pdf/{id}', 'SaleController@pdf')->middleware('descarga.comercio:sale,id,tienda');
 Route::middleware('descarga.comercio:sale,id')->group(function () {
-    Route::get('sale/pdf/{id}', 'SaleController@pdf');
     Route::get('sale/ticket-pdf/{id}', 'SaleController@ticketPdf');
     Route::get('sale/ticket-raw/{id}', 'SaleController@ticketRaw');
     Route::get('sale/sale-ticket-pdf/{id}', 'SaleController@saleTicketPdf');

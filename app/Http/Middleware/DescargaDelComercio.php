@@ -21,6 +21,8 @@ use Illuminate\Support\Facades\Log;
  *
  * Uso (alias `descarga.comercio` en `app/Http/Kernel.php`):
  *   ->middleware('descarga.comercio:sale,id')            tipo del recurso, nombre del parámetro
+ *   ->middleware('descarga.comercio:sale,id,tienda')     ídem, y además habilita `?origin=tienda`
+ *                                                        (SOLO `sale/pdf/{id}`, ver el paso 3)
  *   ->middleware('descarga.comercio:articles,ids')       lista 12-15-40 de artículos
  *   ->middleware('descarga.comercio:cuenta_corriente,credit_account_id,months_ago')
  *   ->middleware('descarga.comercio:sesion')             rutas sin id (exports por fecha, listados)
@@ -32,8 +34,14 @@ use Illuminate\Support\Facades\Log;
  *   2. Token: el tipo admite token y `?t=` es válido para ESE tipo y ESE id (PdfLinkHelper). Con
  *      sesión de OTRO comercio se llega acá y no se corta: en una base compartida un comercio le
  *      manda un link a otro.
- *   3. Tienda: `sale` con `?origin=tienda` sigue al controlador, que ya exige su
- *      `SalePdfAccessToken` de un solo uso. Eso no se toca.
+ *   3. Tienda: con la opción `tienda` en el middleware (y `?origin=tienda` en el pedido) sigue al
+ *      controlador, que exige su `SalePdfAccessToken` de un solo uso. Eso no se toca.
+ *      🔴 LA OPCIÓN VA SOLO EN `sale/pdf/{id}`: `SaleController@pdf` es el ÚNICO controlador que
+ *      mira `origin=tienda`. Las otras rutas de tipo `sale` (ticket, ticket-raw, artículos
+ *      entregados, etiqueta de envío) ignoran ese parámetro y servían el PDF a cualquiera que lo
+ *      agregara (medido en vivo el 10/10/2026 contra la API del slot: 200 con el PDF sin sesión).
+ *      Por eso el paso 3 no se decide por el tipo ni por el path, sino por una opción explícita
+ *      puesta en la ruta que tiene el candado.
  *   4. Ventana de transición: `users.pdf_links_legacy_until` del dueño del recurso es posterior a
  *      ahora → se sirve como antes y queda un `Log::info` (ver registrar_uso_de_la_ventana()).
  *   5. Si no: 404.
@@ -54,6 +62,12 @@ class DescargaDelComercio
     const MODO_SESION = 'sesion';
 
     /**
+     * Opción (tercer argumento) que habilita el camino `?origin=tienda` del paso 3. Solo la lleva
+     * `sale/pdf/{id}`, la única ruta cuyo controlador exige el `SalePdfAccessToken` de la tienda.
+     */
+    const OPCION_TIENDA = 'tienda';
+
+    /**
      * Tipo especial de `current-acount/pdf/{credit_account_id}/{months_ago}/{type?}`: el mismo
      * parámetro es el id de una CUENTA corriente si la cantidad es mayor a cero, o el id de UN
      * movimiento si es cero (así lo lee `CurrentAcountController@pdfFromModel`).
@@ -65,11 +79,14 @@ class DescargaDelComercio
      * @param  \Closure  $next
      * @param  string|null  $tipo               Tipo del recurso, o 'sesion' para las rutas sin id.
      * @param  string|null  $parametro          Nombre del parámetro de la ruta con el id.
-     * @param  string|null  $parametro_cantidad Solo para `cuenta_corriente`: el parámetro con la
-     *                                          cantidad de movimientos.
+     * @param  string|null  $extra              Tercer argumento, según el tipo:
+     *                                          - `cuenta_corriente`: el parámetro de la ruta con la
+     *                                            cantidad de movimientos.
+     *                                          - `sale`: OPCION_TIENDA ('tienda') habilita el paso 3,
+     *                                            solo en `sale/pdf/{id}`.
      * @return mixed
      */
-    public function handle(Request $request, Closure $next, $tipo = null, $parametro = null, $parametro_cantidad = null)
+    public function handle(Request $request, Closure $next, $tipo = null, $parametro = null, $extra = null)
     {
         if (is_null($tipo) || $tipo === self::MODO_SESION) {
             return $this->sin_recurso($request, $next);
@@ -79,7 +96,7 @@ class DescargaDelComercio
 
         if ($tipo === self::TIPO_CUENTA_CORRIENTE) {
             // Sin el nombre del parámetro, `route(null)` devolvería la ruta entera y no un valor.
-            $cantidad = is_null($parametro_cantidad) ? null : $request->route($parametro_cantidad);
+            $cantidad = is_null($extra) ? null : $request->route($extra);
 
             $tipo = $this->tipo_de_cuenta_corriente($cantidad);
         }
@@ -103,8 +120,9 @@ class DescargaDelComercio
             return $next($request);
         }
 
-        // 3. La tienda: el controlador exige su propio token de un solo uso (SalePdfAccessToken).
-        if ($tipo === 'sale' && $request->query('origin') === 'tienda') {
+        // 3. La tienda, SOLO en la ruta que lleva la opción: su controlador exige el token de un solo
+        //    uso (SalePdfAccessToken). En las demás rutas de venta `origin=tienda` no abre nada.
+        if ($tipo === 'sale' && $extra === self::OPCION_TIENDA && $request->query('origin') === 'tienda') {
             return $next($request);
         }
 

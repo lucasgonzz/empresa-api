@@ -271,6 +271,53 @@ class Descarga_regla_de_acceso_Test extends DescargaTestCase
     }
 
     /**
+     * 🔴 `origin=tienda` abre camino SOLO en `sale/pdf/{id}`: es el único controlador que después
+     * exige el SalePdfAccessToken. En las rutas hermanas (ticket, artículos entregados, ticket-raw,
+     * etiqueta de envío) el controlador ni mira ese parámetro, así que el middleware no puede
+     * soltarlas: sin sesión dan el mismo 404 que una venta inexistente. Hallazgo de la verificación
+     * del 10/10/2026: medido en vivo, `sale/sale-ticket-pdf/1?origin=tienda` devolvía el PDF.
+     *
+     * Con los controladores fingidos: si el middleware las soltara, contestarían 200 y el test falla
+     * (en vez de que el PDF real mate el proceso).
+     *
+     * @test
+     */
+    public function origin_tienda_no_abre_las_rutas_hermanas_de_la_venta()
+    {
+        $venta_id = $this->venta_de($this->dueno->id);
+
+        $inexistente = (int) DB::table('sales')->max('id') + 1000;
+
+        $this->sin_sesion();
+
+        $no_existe = $this->get('sale/sale-ticket-pdf/' . $inexistente . '?origin=tienda');
+        $no_existe->assertStatus(404);
+
+        $hermanas = [
+            'sale/sale-ticket-pdf/',
+            'sale/delivered-articles-pdf/',
+            'sale/ticket-raw/',
+            'sale/etiqueta-envio/pdf/',
+            'sale/ticket-pdf/',
+        ];
+
+        foreach ($hermanas as $ruta) {
+
+            $respuesta = $this->get($ruta . $venta_id . '?origin=tienda');
+
+            $respuesta->assertStatus(404);
+
+            $this->assertSame($no_existe->getContent(), $respuesta->getContent(), $ruta . ' con origin=tienda tiene que dar el mismo 404 que una venta inexistente.');
+
+            // Con un token de la tienda pegado, tampoco: esas rutas no lo validan.
+            $this->get($ruta . $venta_id . '?origin=tienda&token=cualquiera')->assertStatus(404);
+        }
+
+        // Y `sale/pdf/{id}` con origin=tienda sigue llegando al controlador (acá, el fingido).
+        $this->get('sale/pdf/' . $venta_id . '?origin=tienda')->assertStatus(200)->assertSee(self::SERVIDA);
+    }
+
+    /**
      * El token de un solo uso de la tienda (`token=`) no reemplaza al del link (`t=`) fuera del
      * camino `origin=tienda`: sin origin, es un parámetro más y la regla corta.
      *

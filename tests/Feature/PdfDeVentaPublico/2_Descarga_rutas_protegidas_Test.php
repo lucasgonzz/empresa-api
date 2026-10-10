@@ -23,7 +23,7 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
      * plan de la misión (secciones 2 y 3).
      */
     const RUTAS_PROTEGIDAS = [
-        'sale/pdf/{id}'                                               => 'descarga.comercio:sale,id',
+        'sale/pdf/{id}'                                               => 'descarga.comercio:sale,id,tienda',
         'sale/ticket-pdf/{id}'                                        => 'descarga.comercio:sale,id',
         'sale/ticket-raw/{id}'                                        => 'descarga.comercio:sale,id',
         'sale/sale-ticket-pdf/{id}'                                   => 'descarga.comercio:sale,id',
@@ -121,6 +121,29 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
 
             $this->assertContains($esperado, $rutas[$uri], 'La ruta ' . $uri . ' no tiene ' . $esperado . '.');
         }
+    }
+
+    /**
+     * La opción `tienda` (que deja pasar `?origin=tienda` al controlador) está SOLO en
+     * `sale/pdf/{id}`: es el único controlador que exige el SalePdfAccessToken. En cualquier otra
+     * ruta abriría el PDF a quien agregue ese parámetro.
+     *
+     * @test
+     */
+    public function la_opcion_tienda_esta_solo_en_el_pdf_de_la_venta()
+    {
+        $con_la_opcion = [];
+
+        foreach ($this->rutas_web() as $uri => $middleware) {
+
+            foreach ($middleware as $nombre) {
+                if (strpos($nombre, 'descarga.comercio:') === 0 && in_array('tienda', explode(',', substr($nombre, strlen('descarga.comercio:'))), true)) {
+                    $con_la_opcion[] = $uri;
+                }
+            }
+        }
+
+        $this->assertSame(['sale/pdf/{id}'], $con_la_opcion);
     }
 
     /**
