@@ -1014,7 +1014,8 @@ class PropuestaTareaIaHelper {
 
         if (!is_null($de_la_tarjeta)) {
 
-            $motivo .= ' Ese número es el de la tarjeta #'.(int) $tarea_id.' ('.$de_la_tarjeta->detalle.'), no el de la tarea: su tarea_id es '.(int) $de_la_tarjeta->id.'.';
+            $motivo .= ' Ese número es el de la tarjeta #'.(int) $tarea_id.', no el de una tarea: la tarea de esa tarjeta es "'.$de_la_tarjeta->detalle.'"'
+                      .' y su tarea_id es '.(int) $de_la_tarjeta->id.'. Si la persona habla de esa, volvé a llamar ahora con tarea_id '.(int) $de_la_tarjeta->id.'.';
         }
 
         /*
