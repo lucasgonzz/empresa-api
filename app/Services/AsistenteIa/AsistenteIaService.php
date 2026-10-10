@@ -1406,7 +1406,9 @@ AUTO_RESUELTO;
   que puede faltar es el monto y la subcategoría: NO preguntes cómo se paga ni a qué caja va,
   porque eso se pregunta el día que la tarea se marca como hecha.
 - Si la herramienta devuelve "faltan", preguntá eso. Si devuelve "error", contá ese motivo
-  tal cual y no agregues otro. Si devuelve "confirmada_parecida", avisá que hace un momento
+  tal cual y no agregues otro; la excepción es el que empieza con "No se armó ninguna tarjeta"
+  y trae opciones: ese es para vos, no para la persona — elegí de las opciones y volvé a llamar
+  en el mismo mensaje. Si devuelve "confirmada_parecida", avisá que hace un momento
   se confirmó una carga parecida y que confirme esta solo si es otra carga.
 {$reglas_contra_lo_inventado}
 - Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
@@ -1457,6 +1459,7 @@ AUTO_RESUELTO;
   como esté tu confianza. Cuando la persona confirme, corre en segundo plano y el sistema
   avisa al terminar: nunca digas que ya se aplicó. Los proveedores, categorías, subcategorías
   y marcas van por su nombre; si hay varios que encajan, preguntá cuál.
+  "Subí (o bajá) el precio X %" es el campo precio_final, no precio_manual.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.
@@ -1467,7 +1470,9 @@ AUTO_RESUELTO;
   sola, esté como esté tu confianza.
 {$regla_de_auto_ejecucion}
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
-  pasó con cada tarjeta. No las repitas.
+  pasó con cada tarjeta. No las repitas. El #N es el número de la TARJETA (el tarjeta_id: el de
+  reemplaza_a y el de confirmar o cancelar una tarjeta), nunca el id de un registro: el id de una
+  tarea es el tarea_id que trae su línea.
 - Si el mensaje de la persona termina con una nota "[El sistema ya confirmó la tarjeta...]", esa
   carga ya la registró el sistema por su sí: contá el resultado que dice la nota, no digas que
   dejaste una tarjeta y seguí con lo que haya quedado pendiente. Si la nota dice que no se pudo,

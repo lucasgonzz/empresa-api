@@ -84,5 +84,11 @@ class Kernel extends HttpKernel
         'solo_el_dueno_ia' => \App\Http\Middleware\SoloElDuenoIa::class,
         /* Solo el dueño (o un empleado con admin_access) escribe la configuración general y online. */
         'solo_administrador' => \App\Http\Middleware\SoloAdministrador::class,
+        /*
+         * Regla de acceso de los PDF y exports de routes/web.php (misión pdf-de-venta-publico,
+         * 10/10/2026): sesión del comercio dueño, token del link, o ventana de transición; si no, 404.
+         * Uso: 'descarga.comercio:sale,id' (tipo, parámetro) o 'descarga.comercio:sesion' (sin id).
+         */
+        'descarga.comercio' => \App\Http\Middleware\DescargaDelComercio::class,
     ];
 }

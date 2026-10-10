@@ -434,13 +434,13 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_cambios_en_tarea',
-                'description'  => 'Arma la tarjeta con cambios en una tarea de la agenda (detalle, fecha, repetición, gasto asociado o notas), para que la persona la confirme: NO la modifica. Mandá solo lo que cambia. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta con cambios en una tarea de la agenda (detalle, fecha, repetición, gasto asociado o notas), para que la persona la confirme: NO la modifica. Mandá solo lo que cambia. Si la respuesta trae "faltan", preguntá eso. Si trae "error" con opciones.tareas, ese tarea_id no era de ninguna tarea y no se armó nada: no se lo cuentes a la persona; elegí de esa lista la que pidió (o buscala con consultar_tareas por su texto) y volvé a llamar ahora con su tarea_id. Si trae "duda", el número también era el de una tarjeta: hacé lo que dice. Con otro "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'tarea_id'              => [
                             'type'        => 'integer',
-                            'description' => 'Id de consultar_tareas.',
+                            'description' => 'Id de la tarea: el de consultar_tareas, o el "tarea_id" que trae la línea [Tarjeta …] de esa tarea en el historial. El #N de una tarjeta NO es el id de la tarea.',
                         ],
                         'detalle'               => [
                             'type' => 'string',
@@ -472,13 +472,13 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_marcar_tarea_hecha',
-                'description'  => 'Arma la tarjeta para marcar como hecha una tarea de la agenda, para que la persona la confirme: NO la marca. Si la tarea tiene gasto asociado hay que decir cómo se pagó (o sin_gasto si no se registra el gasto); sin monto se usa el estimado de la tarea. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para marcar como hecha una tarea de la agenda, para que la persona la confirme: NO la marca. Si la tarea tiene gasto asociado hay que decir cómo se pagó (o sin_gasto si no se registra el gasto); sin monto se usa el estimado de la tarea. Si la respuesta trae "faltan", preguntá eso. Si trae "error" con opciones.tareas, ese tarea_id no era de ninguna tarea y no se armó nada: no se lo cuentes a la persona; elegí de esa lista la que pidió (o buscala con consultar_tareas por su texto) y volvé a llamar ahora con su tarea_id. Si trae "duda", el número también era el de una tarjeta: hacé lo que dice. Con otro "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'tarea_id'    => [
                             'type'        => 'integer',
-                            'description' => 'Id de consultar_tareas.',
+                            'description' => 'Id de la tarea: el de consultar_tareas, o el "tarea_id" que trae la línea [Tarjeta …] de esa tarea en el historial. El #N de una tarjeta NO es el id de la tarea.',
                         ],
                         'fecha'       => [
                             'type'        => 'string',
@@ -701,7 +701,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_actualizacion_masiva',
-                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos de precio manual sube ese precio, donde el margen no mueve el precio —listas de precio, proveedor con costo de lista + IVA— sube el costo, y en el resto ajusta el margen) y va solo, en una tarjeta aparte de cualquier otro cambio. precio_manual es solo cuando la persona habla del precio cargado a mano (si ninguno de los alcanzados lo usa, subir o bajar se convierte solo en precio_final). Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -715,7 +715,7 @@ class HerramientasDeCarga
                                     'campo'     => [
                                         'type'        => 'string',
                                         'enum'        => [
-                                            'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
+                                            'precio_final', 'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
                                             'proveedor', 'categoria', 'sub_categoria', 'marca',
                                             'iva', 'unidad_de_medida',
                                             'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
@@ -724,7 +724,7 @@ class HerramientasDeCarga
                                     'operacion' => [
                                         'type'        => 'string',
                                         'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
-                                        'description' => 'Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
+                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
                                     ],
                                     'valor'     => [
                                         'type'        => ['number', 'string'],
@@ -732,7 +732,7 @@ class HerramientasDeCarga
                                     ],
                                     'redondear' => [
                                         'type'        => 'boolean',
-                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero.',
+                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero (en precio_final, solo los artículos de precio manual).',
                                     ],
                                 ],
                                 'required'   => ['campo', 'operacion'],
