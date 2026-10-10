@@ -49,6 +49,7 @@ class RecipeRouteController extends Controller
             'end_order_production_status_id'   => $this->nullIfZero($request->end_order_production_status_id),
             'temporal_id'               => $this->getTemporalId($request),
             'recipe_id'                 => $request->model_id,
+            'notes'                     => $request->notes,
         ]);
 
         GeneralHelper::attachModels($model, 'articles', $request->articles, ['amount', 'notes', 'order_production_status_id', 'address_id']);
@@ -67,6 +68,13 @@ class RecipeRouteController extends Controller
         $model->to_address_id             = $request->to_address_id;
         $model->order_production_status_group_id = $this->nullIfZero($request->order_production_status_group_id);
         $model->end_order_production_status_id   = $this->nullIfZero($request->end_order_production_status_id);
+
+        // Las notas se escriben solo si el request trae la clave: un cliente que no la manda no
+        // tiene que borrarle la nota a la ruta con un null que nunca pidio.
+        if ($request->has('notes')) {
+            $model->notes = $request->notes;
+        }
+
         $model->save();
 
         GeneralHelper::attachModels($model, 'articles', $request->articles, ['amount', 'notes', 'order_production_status_id', 'address_id']);
