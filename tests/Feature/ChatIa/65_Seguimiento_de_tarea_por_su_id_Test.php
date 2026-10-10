@@ -198,7 +198,7 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
         list($martes, $miercoles) = $this->martes_y_miercoles();
 
         // Detalle único por caso: un test puede armar dos y el doble elige la tarea por su detalle.
-        $detalle = 'Llamar a Herramientas del Interior P64 ' . substr(uniqid(), -6);
+        $detalle = 'Llamar a Herramientas del Interior P65 ' . substr(uniqid(), -6);
 
         list($conversation, $assistant) = $this->conversacion('Recordame el martes llamar a Herramientas del Interior');
 
@@ -242,7 +242,7 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
             return $caso;
         }
 
-        $this->crear_tarea(['detalle' => 'Desfasa los contadores P64']);
+        $this->crear_tarea(['detalle' => 'Desfasa los contadores P65']);
 
         $caso = $this->tarea_del_martes_confirmada();
 
@@ -547,7 +547,7 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
     public function un_tarea_id_que_no_es_de_nadie_no_arma_tarjeta_y_trae_la_agenda_en_las_dos_herramientas()
     {
         $tarea = $this->crear_tarea([
-            'detalle'           => 'Pagar la luz P64',
+            'detalle'           => 'Pagar la luz P65',
             'fecha_realizacion' => Carbon::today()->addDays(3)->format('Y-m-d'),
         ]);
 
@@ -582,14 +582,14 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
     public function el_rechazo_no_muestra_tareas_de_otro_comercio_ni_tarjetas_de_otra_conversacion()
     {
         $otro = User::create([
-            'name'         => 'Otro comercio P64',
-            'company_name' => 'Otro comercio P64',
-            'email'        => 'otro-p63-' . uniqid() . '@test.local',
+            'name'         => 'Otro comercio P65',
+            'company_name' => 'Otro comercio P65',
+            'email'        => 'otro-p65-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
 
         $ajena = Pending::create([
-            'detalle'           => 'Tarea de otro comercio P64',
+            'detalle'           => 'Tarea de otro comercio P65',
             'fecha_realizacion' => Carbon::today()->addDays(2)->format('Y-m-d'),
             'completado'        => 0,
             'es_recurrente'     => 0,
@@ -608,7 +608,7 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
 
         $todas = array_merge($respuesta['opciones']['tareas']['vencidas'], $respuesta['opciones']['tareas']['proximas']);
         $this->assertNotContains($ajena->id, array_column($todas, 'tarea_id'));
-        $this->assertStringNotContainsString('Tarea de otro comercio P64', json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertStringNotContainsString('Tarea de otro comercio P65', json_encode($respuesta, JSON_UNESCAPED_UNICODE));
 
         // Una tarjeta de tarea de OTRA conversación del mismo dueño: su número no se nombra acá.
         $caso = $this->tarea_del_martes_con_numeros_distintos();
@@ -645,7 +645,7 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
 
         $otra = Pending::create([
             'id'                => $numero,
-            'detalle'           => 'Pagar el alquiler P64',
+            'detalle'           => 'Pagar el alquiler P65',
             'fecha_realizacion' => Carbon::today()->addDays(5)->format('Y-m-d'),
             'completado'        => 0,
             'es_recurrente'     => 0,
@@ -672,8 +672,10 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
 
             $this->assertEquals('propuesta', $tarjeta->estado, $herramienta . ': quedó para que la confirme la persona.');
             $this->assertSame($otra->id, (int) $tarjeta->datos['pending_id'], $herramienta);
-            $this->assertStringContainsString('también es el número de la tarjeta #' . $numero, $tarjeta->presentacion['aviso'], $herramienta);
-            $this->assertStringContainsString($caso['tarea']->detalle, $tarjeta->presentacion['aviso'], $herramienta);
+            // El aviso lo lee la persona: nombra las dos tareas y ningún número interno.
+            $this->assertStringContainsString('"' . $otra->detalle . '"', $tarjeta->presentacion['aviso'], $herramienta);
+            $this->assertStringContainsString('"' . $caso['tarea']->detalle . '"', $tarjeta->presentacion['aviso'], $herramienta);
+            $this->assertStringNotContainsString('#', $tarjeta->presentacion['aviso'], $herramienta);
         }
 
         $this->assertEquals(Carbon::today()->addDays(5)->format('Y-m-d'), Carbon::parse($otra->fresh()->fecha_realizacion)->format('Y-m-d'), 'La otra tarea no se movió.');
@@ -748,7 +750,7 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
     public function confirmar_cambios_y_marcar_hecha_devuelven_el_tarea_id()
     {
         $tarea = $this->crear_tarea([
-            'detalle'           => 'Barrer el deposito P64',
+            'detalle'           => 'Barrer el deposito P65',
             'fecha_realizacion' => Carbon::today()->format('Y-m-d'),
         ]);
 

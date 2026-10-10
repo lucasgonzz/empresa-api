@@ -1093,8 +1093,9 @@ class PropuestaTareaIaHelper {
             return null;
         }
 
-        return 'Ojo: el '.(int) $pending->id.' también es el número de la tarjeta #'.(int) $pending->id
-              .', que era de la tarea "'.$duda->detalle.'". Confirmá solo si la tarea es "'.$pending->detalle.'".';
+        // Lo lee la persona: sin números internos (el #N de una tarjeta no se ve en la pantalla).
+        return 'Ojo: revisá la tarea. Esta tarjeta es para "'.$pending->detalle.'", pero quizás pediste "'.$duda->detalle.'".'
+              .' Confirmá solo si es "'.$pending->detalle.'".';
     }
 
     /**
