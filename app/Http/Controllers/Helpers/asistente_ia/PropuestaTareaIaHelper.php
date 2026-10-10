@@ -55,8 +55,13 @@ class PropuestaTareaIaHelper {
 
     /**
      * Cuántos días de agenda viajan en el rechazo de un tarea_id que no es de ninguna tarea (ver
-     * tarea_que_no_esta()): el máximo que acepta consultar_tareas, para que una tarea agendada lejos
-     * también aparezca entre las opciones.
+     * tarea_que_no_esta()): el máximo que acepta consultar_tareas.
+     *
+     * ⚠️ No es "toda la agenda": consultar_tareas corta cada lista (vencidas, próximas) en
+     * ConsultasDeCargaIaHelper::TOPE ocurrencias, y una tarea que se repite ocupa un lugar por vez.
+     * Con una agenda cargada, una tarea a dos o tres semanas puede no entrar. Por eso el rechazo no
+     * termina en "si no está, no existe": manda a buscarla con consultar_tareas por su texto, que
+     * filtra ANTES del tope.
      */
     const DIAS_DE_AGENDA_EN_EL_RECHAZO = 90;
 
@@ -435,6 +440,9 @@ class PropuestaTareaIaHelper {
 
         $aviso = self::cambia_la_regla($antes, $despues) ? self::AVISO_CAMBIO_DE_REGLA : null;
 
+        $duda = self::tarea_de_la_tarjeta_con_el_mismo_numero($contexto, $pending);
+        $aviso = self::sumar_aviso($aviso, self::aviso_de_la_duda($pending, $duda));
+
         $datos = $nuevos;
         $datos['pending_id'] = (int) $pending->id;
 
@@ -459,7 +467,11 @@ class PropuestaTareaIaHelper {
             $nombres[] = mb_strtolower($etiquetas[$campo]);
         }
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, 'Cambios en la tarea '.$antes['detalle'].': '.implode(', ', $nombres));
+        return AccionesIaHelper::respuesta_de_propuesta(
+            $creada,
+            'Cambios en la tarea '.$antes['detalle'].': '.implode(', ', $nombres),
+            self::extra_de_la_duda($pending, $duda, $creada)
+        );
     }
 
     /**
@@ -631,6 +643,8 @@ class PropuestaTareaIaHelper {
         $aviso = null;
         $resumen_del_gasto = '';
 
+        $duda = self::tarea_de_la_tarjeta_con_el_mismo_numero($contexto, $pending);
+
         if ($tiene_gasto && !$sin_gasto) {
 
             $monto = EntradaDeCargaIa::valor($gasto, 'monto');
@@ -706,13 +720,14 @@ class PropuestaTareaIaHelper {
             AiMessageAction::TIPO_TAREA_COMPLETAR,
             'tarea:'.$pending->id.':'.$fecha->format('Y-m-d'),
             $datos,
-            ['titulo' => 'Marcar como hecha', 'renglones' => $renglones, 'aviso' => $aviso],
+            ['titulo' => 'Marcar como hecha', 'renglones' => $renglones, 'aviso' => self::sumar_aviso($aviso, self::aviso_de_la_duda($pending, $duda))],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
         return AccionesIaHelper::respuesta_de_propuesta(
             $creada,
-            'Marcar como hecha: '.$pending->detalle.' · '.FormatoIaHelper::fecha_con_dia($fecha).$resumen_del_gasto
+            'Marcar como hecha: '.$pending->detalle.' · '.FormatoIaHelper::fecha_con_dia($fecha).$resumen_del_gasto,
+            self::extra_de_la_duda($pending, $duda, $creada)
         );
     }
 
@@ -983,8 +998,9 @@ class PropuestaTareaIaHelper {
      * Por eso el rechazo dice que no se armó nada, trae la agenda en opciones.tareas (con la forma de
      * consultar_tareas) y le pide al modelo que vuelva a llamar con el tarea_id de la que nombró la
      * persona. Si el número es el de una tarjeta de tarea de esta conversación, lo dice y nombra el
-     * tarea_id de esa tarea. No se elige nada solo: decide el modelo, y la tarjeta que arme la sigue
-     * confirmando la persona.
+     * tarea_id de esa tarea. Acá no se elige ninguna tarea: decide el modelo, y la tarjeta que arme
+     * después sigue las reglas de siempre de su modo (en "directo" se ejecuta sola, salvo la colisión
+     * de tarea_de_la_tarjeta_con_el_mismo_numero()).
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  int  $tarea_id  El que mandó el modelo.
@@ -1001,8 +1017,14 @@ class PropuestaTareaIaHelper {
             $motivo .= ' Ese número es el de la tarjeta #'.(int) $tarea_id.' ('.$de_la_tarjeta->detalle.'), no el de la tarea: su tarea_id es '.(int) $de_la_tarjeta->id.'.';
         }
 
-        $motivo .= ' Buscá en opciones.tareas la que pidió la persona y volvé a llamar con su tarea_id, sin contarle este rechazo;'
-                  .' si no está ahí, decile que esa tarea no figura en la agenda.';
+        /*
+         * Lo que sigue es para el modelo, no para la persona: no tiene que decirle que la tarjeta quedó
+         * armada (no quedó) ni que la tarea no existe (puede existir y no entrar en la lista, que trae
+         * las primeras de la agenda y no todas: ver DIAS_DE_AGENDA_EN_EL_RECHAZO).
+         */
+        $motivo .= ' No le digas a la persona que quedó armada ni que la tarea no existe: buscá en opciones.tareas la que pidió'
+                  .' y volvé a llamar ahora con su tarea_id. Esa lista trae las primeras de la agenda, no todas: si no está ahí,'
+                  .' buscala con consultar_tareas por su texto (dias 90), y recién si tampoco aparece, decile que esa tarea no figura en la agenda.';
 
         return RespuestaDeCargaIa::error($motivo, [
             'tareas' => ConsultasDeCargaIaHelper::tareas($contexto, '', self::DIAS_DE_AGENDA_EN_EL_RECHAZO),
@@ -1031,6 +1053,90 @@ class PropuestaTareaIaHelper {
         $tarea_id = self::tarea_id_de_la_tarjeta($tarjeta);
 
         return is_null($tarea_id) ? null : self::tarea_del_dueno($contexto, $tarea_id);
+    }
+
+    /**
+     * 🔴 La colisión de números (misión asistente-seguimiento-de-tarea, 10/10/2026): el tarea_id que
+     * mandó el modelo ES una tarea del dueño, pero también es el #N de una tarjeta de tarea de esta
+     * conversación que apunta a OTRA tarea. Es el mismo error que se midió (el modelo manda el número
+     * de la tarjeta), solo que acá ese número existe y el rechazo de tarea_que_no_esta() no salta:
+     * antes la tarjeta se armaba en silencio sobre la tarea equivocada, y en "directo" —los cambios y
+     * marcar hecha son auto-confirmables— se ejecutaba sola.
+     *
+     * No se elige ninguna de las dos: la tarjeta se arma con lo que pidió el modelo, con un aviso que
+     * nombra las dos y pidiendo la confirmación de la persona aunque el modo sea "directo" (ver
+     * extra_de_la_duda()), y la respuesta le dice al modelo cuál es el tarea_id de la otra.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Pending  $pending  La tarea que encontró el tarea_id del modelo.
+     * @return \App\Models\Pending|null  La otra tarea, o null si no hay colisión.
+     */
+    protected static function tarea_de_la_tarjeta_con_el_mismo_numero(ContextoDeCargaIa $contexto, $pending) {
+
+        $otra = self::tarea_de_la_tarjeta_de_la_conversacion($contexto, $pending->id);
+
+        return !is_null($otra) && (int) $otra->id !== (int) $pending->id ? $otra : null;
+    }
+
+    /**
+     * El aviso de la tarjeta cuando hay colisión de números, o null.
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \App\Models\Pending|null  $duda  Lo que devolvió tarea_de_la_tarjeta_con_el_mismo_numero().
+     * @return string|null
+     */
+    protected static function aviso_de_la_duda($pending, $duda) {
+
+        if (is_null($duda)) {
+
+            return null;
+        }
+
+        return 'Ojo: el '.(int) $pending->id.' también es el número de la tarjeta #'.(int) $pending->id
+              .', que era de la tarea "'.$duda->detalle.'". Confirmá solo si la tarea es "'.$pending->detalle.'".';
+    }
+
+    /**
+     * @param  string|null  $aviso
+     * @param  string|null  $otro
+     * @return string|null
+     */
+    protected static function sumar_aviso($aviso, $otro) {
+
+        if (is_null($otro)) {
+
+            return $aviso;
+        }
+
+        return is_null($aviso) ? $otro : $aviso.' '.$otro;
+    }
+
+    /**
+     * Las claves que suma la respuesta de la propuesta cuando hay colisión de números: la tarjeta pide
+     * la confirmación de la persona también en "directo" (`requiere_confirmacion`, que respeta
+     * HerramientasDeCarga::quizas_auto_confirmar()) y `duda` le dice al modelo cómo corregirla.
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \App\Models\Pending|null  $duda
+     * @param  array  $creada  Lo que devolvió AccionesIaHelper::crear().
+     * @return array
+     */
+    protected static function extra_de_la_duda($pending, $duda, array $creada) {
+
+        if (is_null($duda)) {
+
+            return [];
+        }
+
+        return [
+            'requiere_confirmacion' => true,
+            'motivo_confirmacion'   => self::aviso_de_la_duda($pending, $duda),
+            'duda'                  => 'El tarea_id '.(int) $pending->id.' es también el número de la tarjeta #'.(int) $pending->id
+                                      .', que era de la tarea "'.$duda->detalle.'": su tarea_id es '.(int) $duda->id.'.'
+                                      .' Si la persona hablaba de esa, volvé a proponer ahora con tarea_id '.(int) $duda->id
+                                      .' y reemplaza_a '.(int) $creada['accion']->id.'; si hablaba de "'.$pending->detalle.'",'
+                                      .' decile que le dejaste la tarjeta para que la confirme.',
+        ];
     }
 
     /**
