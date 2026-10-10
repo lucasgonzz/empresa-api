@@ -567,11 +567,16 @@ Route::get('sale/charts/{from}/{to}', 'SaleController@charts')->middleware('desc
 
 
 
-// Libros y TXT de ARCA: sin id de recurso, el controlador toma el dueño con userId().
-Route::middleware('descarga.comercio:sesion')->group(function () {
-    Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
-    Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
+// TXT del régimen de información de ARCA: SIN descarga.comercio, a propósito. Los protege su propio
+// controlador desde la misión afip-txt-por-duenio (10/10/2026): sin sesión responden 401
+// (AfipController::exportVentas y exportAlicuotasTxt) y su test lo fija. Pasarlos además por el
+// middleware cambiaba ese 401 por un 404. Son internos (no salen links a terceros): no necesitan token
+// ni ventana. El guardián de rutas los tiene en AFUERA_A_PROPOSITO con este motivo.
+Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
+Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
 
+// Libros de IVA de ARCA: sin id de recurso, el controlador toma el dueño con userId().
+Route::middleware('descarga.comercio:sesion')->group(function () {
     Route::get('afip-iva-compras/{mes_inicio}/{mes_fin}', 'AfipController@iva_compras_pdf');
     Route::get('afip-iva-ventas/{mes_inicio}/{mes_fin}', 'AfipController@iva_ventas_pdf');
 });
