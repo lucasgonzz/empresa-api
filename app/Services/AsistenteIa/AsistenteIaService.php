@@ -2460,6 +2460,9 @@ CONFIRMACION;
      * quedó registrado"— no tiene ninguna propia. Mirando sólo las tarjetas de esa respuesta, el
      * "Gracias!" siguiente → "De nada, quedó registrado el gasto" disparaba sobre algo que sí se hizo.
      *
+     * Sexta vuelta (10/10/2026): cuenta también la que está `en_curso` (ejecutándose), como
+     * hay_cargas_confirmadas_de_antes().
+     *
      * @param  AiConversation  $conversation
      * @param  AiMessage  $assistant_message
      * @return bool
@@ -2473,7 +2476,7 @@ CONFIRMACION;
         }
 
         return AiMessageAction::where('ai_conversation_id', $conversation->id)
-                              ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                              ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
                               ->where(function ($query) use ($anterior) {
                                   $query->where('ai_message_id', $anterior->id)
                                         ->orWhere('resuelta_at', '>=', $anterior->created_at);

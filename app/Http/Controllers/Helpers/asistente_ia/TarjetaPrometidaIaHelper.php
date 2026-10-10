@@ -219,8 +219,20 @@ class TarjetaPrometidaIaHelper
      * La carga: la primera persona del pretérito que afirma una carga SIN mirar el objeto, con tildes
      * (sin tilde es subjuntivo: "¿querés que lo cargue?"). Los que también sirven para presentar una
      * consulta ("marqué", "cambié", "creé"…) van en patrones_de_hecho() con su objeto.
+     *
+     * "subí" no está desde la sexta vuelta (10/10/2026): ver PRETERITO_IGUAL_AL_IMPERATIVO.
      */
-    const PRETERITO_DE_CARGA = '(?:cargué|registré|agendé|apunté|asenté|ingresé|asigné|guardé|reprogramé|programé|moví|subí|cobré|facturé|aumenté|completé|di de alta|di de baja|di por hech[oa]s?|mandé a buscar)';
+    const PRETERITO_DE_CARGA = '(?:cargué|registré|agendé|apunté|asenté|ingresé|asigné|guardé|reprogramé|programé|moví|cobré|facturé|aumenté|completé|di de alta|di de baja|di por hech[oa]s?|mandé a buscar)';
+
+    /**
+     * Lo que vuelve PRETÉRITO a un verbo de -ir que se escribe igual que su imperativo de voseo ("subí",
+     * "emití"), con tildes (sexta vuelta, 10/10/2026): un pronombre o un "ya" justo delante ("Ya subí la
+     * foto", "Te subí la foto", "Le subí el precio", "Ya la emití"), o un "listo,"/"hecho," ("Listo, subí
+     * el precio"). Sin eso es un imperativo —"Subí la foto de la factura y te armo la carga", "Para
+     * facturarla, emití la factura desde Comprobantes"— y no da nada por hecho. De los verbos del
+     * detector, son los únicos de -ir: los de -ar ("cargué"/"cargá") y "moví"/"mové" se distinguen solos.
+     */
+    const ANTES_DE_UN_PRETERITO_DE_IR = '(?<=\bte |\ble |\bles |\blo |\bla |\blos |\blas |\bme |\bse |\bya |\blisto |\blisto, |\blisto: |\bhecho |\bhecho, |\bhecho: )';
 
     /**
      * Lo que tiene que venir justo detrás de "cambié", "actualicé", "modifiqué" o "edité" para que sea
@@ -288,8 +300,11 @@ class TarjetaPrometidaIaHelper
     /**
      * Lo que, en otra oración del mismo texto, hace que un cierre ("Listo.") sea sólo el comienzo de un
      * pedido de datos: "Listo. ¿De qué caja sale?", "Listo. Decime el monto". Ahí no afirma una carga.
+     *
+     * Sexta vuelta (10/10/2026): también lo que pide que la persona mande algo o avise, como en la regla
+     * de cortesía ("Mañana te mando la factura de Coca" → "Listo. Avisame cuando la tengas.").
      */
-    const PIDE_UN_DATO = '/\b(?:decime|pasame|necesito|me falta|me faltan|falta|faltan|indicame|confirmame)\b/u';
+    const PIDE_UN_DATO = '/\b(?:decime|pasame|necesito|me falta|me faltan|falta|faltan|indicame|confirmame|avisame|avisa|mandame|esperame|espero)\b/u';
 
     /**
      * Lo que, DESPUÉS del verbo de una promesa y en la misma oración, la vuelve condición: "Lo cargo
@@ -617,7 +632,7 @@ class TarjetaPrometidaIaHelper
      */
     public static function afirma_una_carga_hecha($texto)
     {
-        $oraciones = self::oraciones_sin_renglones_de_lista($texto);
+        $oraciones = self::oraciones_sin_renglones_de_lista(self::sin_lo_que_va_entre_comillas($texto));
 
         $hay_quedo   = false;
         $hay_cierre  = false;
@@ -1183,6 +1198,21 @@ class TarjetaPrometidaIaHelper
     // -------------------------------------------------------------------------------------------
 
     /**
+     * El texto sin lo que va entre comillas ("…", “…”, «…»), que son ejemplos o citas y no lo que el turno
+     * hizo (sexta vuelta, 10/10/2026): el prompt enseña a pedir con el ejemplo literal "Subí (o bajá) el
+     * precio X %", y el modelo lo repite ("Decime qué artículos y cuánto: por ejemplo, "subí el precio 10
+     * % a lo de Coca"."). Lo de entre comillas se cambia por un espacio: el nombre de una tarea citado en
+     * una afirmación ("Agendé la tarea "Llamar a Juan" para el martes.") no cambia lo que se afirma.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function sin_lo_que_va_entre_comillas($texto)
+    {
+        return (string) preg_replace('/"[^"\n]*"|“[^”\n]*”|«[^»\n]*»/u', ' ', (string) $texto);
+    }
+
+    /**
      * Las oraciones del texto, sin los renglones de lista ("- ", "* ", "• ", "1. "): ahí van los datos
      * de una consulta ("- Tarea cargada: llamar a Juan"), no lo que el turno hizo. Se cortan los
      * renglones ANTES de partir en oraciones: si no, "1. Gasto registrado…" se partiría en "1." y en
@@ -1555,8 +1585,15 @@ class TarjetaPrometidaIaHelper
             ['/\bhice\s+(?:la|el)\s+(?:venta|pago|cobro|cambio|carga|alta|baja|movimiento|presupuesto|transferencia)\b/u', null],
             /* "Te dejé agendada la tarea", "Te lo dejé cargado" — "Dejé la tarjeta" es de la otra familia. */
             ['/\bdejé\s+' . self::PARTICIPIO_DE_CARGA . '\b/u', null],
-            /* "Emití la factura", "Apliqué el descuento", "Le agregué el teléfono", "Bajé el precio". */
-            ['/\bemití\s+(?:la|el)\s+(?:factura|comprobante|nota)/u', null],
+            /*
+             * "Ya subí la foto", "Le subí el precio", "Te emití la factura", "Listo, emití la factura" —
+             * y no el imperativo de voseo, que se escribe igual: "Subí la foto y te armo la carga", "Para
+             * facturarla, emití la factura desde Comprobantes" (sexta vuelta: ver
+             * ANTES_DE_UN_PRETERITO_DE_IR).
+             */
+            ['/' . self::ANTES_DE_UN_PRETERITO_DE_IR . 'subí\b/u', null],
+            ['/' . self::ANTES_DE_UN_PRETERITO_DE_IR . 'emití\b(?:\s+(?:la|el)\s+(?:factura|comprobante|nota)|(?<=(?:lo|la|le|te|me) emití))/u', null],
+            /* "Apliqué el descuento", "Le agregué el teléfono", "Bajé el precio". */
             ['/\bapliqué\s+(?:el|la)\s+(?:descuento|recargo|oferta)/u', null],
             ['/\ble\s+(?:agregué|puse|sumé|saqué)\b/u', null],
             ['/\bbajé\s+(?:el|los)\s+precios?\b/u', null],
