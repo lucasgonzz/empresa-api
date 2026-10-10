@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use Closure;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -61,8 +62,9 @@ use Illuminate\Support\Facades\Log;
  * POR QUÉ SE REDIRIGE SIN `clave` EN UN GET: la clave en el query queda en el historial del navegador, en
  * los logs de acceso del servidor y viaja en el Referer de lo que cargue la página. Con la sesión ya
  * habilitada, el 302 a la misma URL sin `clave` hace que la página que el usuario ve (y la que queda en el
- * historial) no la tenga. En un POST/PUT no se redirige (se perdería el cuerpo): sigue al controlador. Por
- * header tampoco: no queda en ningún lado y es lo que usa un script.
+ * historial) no la tenga. Pasa lo mismo si la sesión YA estaba habilitada y el GET igual trae `clave`. La
+ * redirección es RELATIVA (ver redirigir_sin_la_clave()). En un POST/PUT no se redirige (se perdería el
+ * cuerpo): sigue al controlador. Por header tampoco: no queda en ningún lado y es lo que usa un script.
  *
  * POR QUÉ CORRE DESPUÉS DEL GRUPO `web`: necesita la sesión (StartSession). Consecuencia: un POST sin token
  * CSRF recibe el 419 de VerifyCsrfToken antes de llegar acá; sigue estando cerrado, solo que con otro
@@ -116,6 +118,12 @@ class RutaDeMantenimiento
 
         // 4. La sesión ya habilitada por una clave válida, mientras no venza.
         if ($this->sesion_habilitada($request)) {
+            // Aunque ya no haga falta, si el GET trae `clave` en la URL se la saca igual (sin validarla:
+            // la sesión ya está abierta): si no, la clave quedaría en el historial y en los logs.
+            if ($this->es_get_o_head($request) && array_key_exists(self::PARAMETRO_DE_LA_CLAVE, $request->query())) {
+                return $this->redirigir_sin_la_clave($request);
+            }
+
             return $next($request);
         }
 
@@ -133,8 +141,8 @@ class RutaDeMantenimiento
             $this->habilitar_la_sesion($request);
 
             // En un GET se saca la clave de la URL antes de mostrar nada (ver el docblock).
-            if ($request->isMethod('GET') || $request->isMethod('HEAD')) {
-                return redirect()->to($this->url_sin_la_clave($request), 302);
+            if ($this->es_get_o_head($request)) {
+                return $this->redirigir_sin_la_clave($request);
             }
 
             return $next($request);
@@ -231,19 +239,53 @@ class RutaDeMantenimiento
     }
 
     /**
-     * La misma URL del request, con el resto del query intacto y sin el parámetro de la clave.
+     * ¿Es un GET (o un HEAD, que Laravel trata igual)? Solo ahí se redirige: en un POST/PUT se perdería
+     * el cuerpo.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return bool
+     */
+    protected function es_get_o_head(Request $request)
+    {
+        return $request->isMethod('GET') || $request->isMethod('HEAD');
+    }
+
+    /**
+     * 302 a la misma URL sin el parámetro de la clave, con una URL RELATIVA.
+     *
+     * 🔴 RELATIVA A PROPÓSITO, Y SIN `redirect()->to()`: `redirect()` la vuelve absoluta con el host del
+     * request, y con `TrustProxies::$proxies = '*'` ese host sale del header `X-Forwarded-Host`, que pone
+     * cualquiera: el 302 de después de la clave podría mandar al navegador a otro dominio. Con una URL que
+     * empieza con `/` el navegador se queda en el mismo host por el que entró.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    protected function redirigir_sin_la_clave(Request $request)
+    {
+        return new RedirectResponse($this->url_relativa_sin_la_clave($request), 302);
+    }
+
+    /**
+     * El path del request (con el base path: en el shared es `/public/...`) más el resto del query, sin
+     * el parámetro de la clave.
+     *
+     * Las barras (y las invertidas) del principio se colapsan en una sola: `//otro-host/...` o `/\otro-host`
+     * los navegadores los leen como una URL a otro dominio.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return string
      */
-    protected function url_sin_la_clave(Request $request)
+    protected function url_relativa_sin_la_clave(Request $request)
     {
+        $path = '/' . ltrim($request->getBaseUrl() . $request->getPathInfo(), '/\\');
+
         $query = $request->query();
 
         unset($query[self::PARAMETRO_DE_LA_CLAVE]);
 
         $resto = http_build_query($query);
 
-        return $request->url() . ($resto === '' ? '' : '?' . $resto);
+        return $path . ($resto === '' ? '' : '?' . $resto);
     }
 }

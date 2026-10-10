@@ -6,6 +6,7 @@ use App\Http\Middleware\RutaDeMantenimiento;
 use App\Http\Middleware\VerifyCsrfToken;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Str;
 
 /**
  * Cuándo abre la puerta `solo.mantenimiento` (App\Http\Middleware\RutaDeMantenimiento, misión
@@ -340,5 +341,115 @@ class Llave_de_mantenimiento_Test extends RutasPublicasTestCase
         $this->get('/extensiones?clave=' . urlencode(self::CLAVE))->assertRedirect(url('/extensiones'));
 
         $this->get('/extensiones')->assertStatus(200)->assertSee('extencions[]', false);
+    }
+
+    /**
+     * El 302 de después de la clave es RELATIVO: con `TrustProxies::$proxies = '*'`, una URL absoluta
+     * tomaría el host de `X-Forwarded-Host`, que pone cualquiera, y mandaría el navegador a otro dominio.
+     *
+     * @test
+     */
+    public function la_redireccion_es_relativa_aunque_venga_x_forwarded_host()
+    {
+        $this->como_produccion();
+
+        $respuesta = $this->get(self::RUTA . '?otro=1&clave=' . urlencode(self::CLAVE), [
+            'X-Forwarded-Host' => 'evil.example.com',
+        ]);
+
+        $respuesta->assertStatus(302);
+
+        $location = (string) $respuesta->headers->get('Location');
+
+        $this->assertSame(self::RUTA . '?otro=1', $location);
+        $this->assertSame('/', substr($location, 0, 1), 'La redirección tiene que empezar con /.');
+        $this->assertStringNotContainsString('evil', $location);
+    }
+
+    /**
+     * Con la sesión YA habilitada, un GET que igual trae `clave` en la URL se redirige sin ella (sin
+     * validarla: no hace falta); si no, la clave quedaría en el historial. En un POST sigue de largo.
+     *
+     * @test
+     */
+    public function con_la_sesion_ya_habilitada_un_get_con_clave_igual_redirige_sin_la_clave()
+    {
+        $this->como_produccion();
+
+        // Se habilita por header (sin redirección).
+        $this->get(self::RUTA, [RutaDeMantenimiento::HEADER_DE_LA_CLAVE => self::CLAVE])->assertStatus(200);
+
+        // Con la clave en la URL (aunque sea cualquier cosa): 302 relativo sin ella, el resto del query intacto.
+        $respuesta = $this->get(self::RUTA . '?otro=1&clave=cualquier-cosa');
+        $respuesta->assertStatus(302);
+        $this->assertSame(self::RUTA . '?otro=1', $respuesta->headers->get('Location'));
+
+        // Y también con la clave verdadera.
+        $this->assertSame(self::RUTA, $this->get(self::RUTA . '?clave=' . urlencode(self::CLAVE))->headers->get('Location'));
+
+        // Sin la clave, entra.
+        $this->get(self::RUTA . '?otro=1')->assertStatus(200)->assertSee(self::ADENTRO);
+
+        // En un POST no se redirige: se perdería el cuerpo.
+        $this->withoutMiddleware(VerifyCsrfToken::class);
+        $this->post(self::RUTA . '?clave=cualquier-cosa')->assertStatus(200)->assertSee(self::ADENTRO . '-POST');
+    }
+
+    /**
+     * Pide la ruta de prueba con una cookie de sesión fijada y devuelve el id de sesión con el que quedó
+     * el store después del request.
+     *
+     * @param  string  $id_fijado  Id de sesión que viaja en la cookie (40 alfanuméricos).
+     * @param  string  $sufijo     Lo que va después de la ruta (el query).
+     * @param  array  $headers
+     * @param  int  $estado_esperado
+     * @return string
+     */
+    protected function id_de_sesion_despues_de($id_fijado, $sufijo, array $headers, $estado_esperado)
+    {
+        $this->withCookie(config('session.cookie'), $id_fijado)
+            ->get(self::RUTA . $sufijo, $headers)
+            ->assertStatus($estado_esperado);
+
+        return app('session')->driver()->getId();
+    }
+
+    /**
+     * Al habilitar la sesión con la clave por QUERY, el id de sesión cambia (como en un login): un id
+     * fijado antes en el navegador no hereda el privilegio. Control: sin clave el id no cambia.
+     *
+     * @test
+     */
+    public function habilitar_por_query_cambia_el_id_de_sesion()
+    {
+        $this->como_produccion();
+
+        $control = Str::random(40);
+        $this->assertSame($control, $this->id_de_sesion_despues_de($control, '', [], 404), 'Control: sin clave el id de sesión tiene que quedar igual.');
+
+        $fijado = Str::random(40);
+        $despues = $this->id_de_sesion_despues_de($fijado, '?clave=' . urlencode(self::CLAVE), [], 302);
+
+        $this->assertNotSame($fijado, $despues, 'Al habilitar la sesión por query el id tiene que cambiar.');
+        $this->assertNotNull($this->habilitada_hasta());
+    }
+
+    /**
+     * Lo mismo, con la clave por HEADER.
+     *
+     * @test
+     */
+    public function habilitar_por_header_cambia_el_id_de_sesion()
+    {
+        $this->como_produccion();
+
+        $control = Str::random(40);
+        $this->assertSame($control, $this->id_de_sesion_despues_de($control, '', [], 404), 'Control: sin clave el id de sesión tiene que quedar igual.');
+
+        $fijado = Str::random(40);
+        $despues = $this->id_de_sesion_despues_de($fijado, '', [RutaDeMantenimiento::HEADER_DE_LA_CLAVE => self::CLAVE], 200);
+
+        $this->assertNotSame($fijado, $despues, 'Al habilitar la sesión por header el id tiene que cambiar.');
+        $this->assertNotNull($this->habilitada_hasta());
     }
 }
