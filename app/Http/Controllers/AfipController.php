@@ -23,25 +23,25 @@ class AfipController extends Controller
     
     public function exportVentas($inicio, $fin)
     {
+        /*
+         * 🔴 Guarda de sesion explicita. La ruta esta fuera de cualquier middleware de auth y
+         * `$this->userId()` sin sesion NO da null: `UserHelper::userId()` cae en
+         * `config('app.USER_ID')`, que el `.env` trae cargado. Sin esta guarda, el TXT filtrado por
+         * duenio le saldria a cualquiera sin login con los comprobantes del USER_ID del `.env`. Hasta
+         * el 10/10/2026 sin sesion daba 500 solo porque `AfipHelper::set_afip_selected_payment_methods()`
+         * hace `$this->user->id` sobre null: un candado accidental, que se cae el dia que ese camino
+         * deje de necesitar usuario. Con sesion no cambia nada; sin sesion, 401.
+         */
+        $user = $this->user();
+        if (is_null($user)) {
+            abort(401);
+        }
+
         $inicioCarbon = Carbon::parse($inicio)->startOfMonth();
         $finCarbon = Carbon::parse($fin)->endOfMonth();
 
-        // $afip_tickets = Sale::with(['afip_ticket', 'afip_information'])
-        //     ->where('user_id', $this->userId())
-        //     ->whereBetween('created_at', [$inicioCarbon, $finCarbon])
-        //     ->orderBy('created_at', 'ASC')
-        //     ->get();
-
-        // $afip_tickets = AfipTicket::whereHas('sale', function($q) {
-        //                                 $q->where('user_id', $this->userId());
-        //                             })
-        //                             ->whereBetween('created_at', [$inicioCarbon, $finCarbon])
-        //                             ->orderBy('created_at', 'ASC')
-        //                             ->get();
-        
-        $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
-                                    ->orderBy('created_at', 'ASC')
-                                    ->get();
+        // Solo los comprobantes del duenio logueado (ver `afip_tickets_del_duenio_para_txt()`).
+        $afip_tickets = $this->afip_tickets_del_duenio_para_txt($user->id, $inicioCarbon, $finCarbon);
 
         $lines = [];
 
@@ -56,7 +56,14 @@ class AfipController extends Controller
             }
 
             if (is_null($sale)) {
-                dd('No hay sale para afip_ticket '.$afip_ticket->id);
+                /*
+                 * Ticket del duenio sin venta legible: la consulta lo trae porque lee las ventas con
+                 * `withTrashed()`, pero `$afip_ticket->sale` y `Sale::find()` no ven una venta
+                 * soft-deleted. Antes era un `dd()` que cortaba la descarga entera; ahora el ticket
+                 * se saltea y queda avisado en el log.
+                 */
+                Log::warning('TXT de comprobantes AFIP: el afip_ticket '.$afip_ticket->id.' no tiene venta legible (ni sale ni sale_nota_credito). Quedo fuera del TXT.');
+                continue;
             }
 
 
@@ -136,20 +143,33 @@ class AfipController extends Controller
         }
 
         $fileName = 'Comprobantes_' . $inicio . '_a_' . $fin . '.txt';
-        Storage::disk('local')->put($fileName, implode("\r\n", $lines));
 
-        return response()->download(storage_path("app/{$fileName}"));
+        /*
+         * Carpeta propia del duenio. Con el nombre de siempre suelto en `storage/app`, dos duenios
+         * que bajaban el mismo periodo a la vez podian recibir el archivo del otro. El nombre que ve
+         * el usuario (Content-Disposition) sigue siendo exactamente el de siempre.
+         */
+        $ruta_del_archivo = 'afip-txt/' . $user->id . '/' . $fileName;
+        Storage::disk('local')->put($ruta_del_archivo, implode("\r\n", $lines));
+
+        return response()->download(storage_path('app/' . $ruta_del_archivo), $fileName);
     }
 
     public function exportAlicuotasTxt($inicio, $fin)
     {
+        // 🔴 Guarda de sesion explicita: sin sesion, 401. El motivo esta en `exportVentas()`
+        // (`$this->userId()` sin sesion cae en `config('app.USER_ID')`, no en null).
+        $user = $this->user();
+        if (is_null($user)) {
+            abort(401);
+        }
+
         $inicioCarbon = Carbon::parse($inicio)->startOfMonth();
         $finCarbon = Carbon::parse($fin)->endOfMonth();
 
 
-        $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
-                                    ->orderBy('created_at', 'ASC')
-                                    ->get();
+        // Solo los comprobantes del duenio logueado (ver `afip_tickets_del_duenio_para_txt()`).
+        $afip_tickets = $this->afip_tickets_del_duenio_para_txt($user->id, $inicioCarbon, $finCarbon);
 
         $lines = [];
 
@@ -164,7 +184,10 @@ class AfipController extends Controller
             }
 
             if (is_null($sale)) {
-                dd('No hay sale para afip_ticket '.$afip_ticket->id);
+                // Mismo caso que en `exportVentas()`: venta soft-deleted. Antes `dd()`; ahora se
+                // saltea el ticket y queda avisado en el log.
+                Log::warning('TXT de alicuotas AFIP: el afip_ticket '.$afip_ticket->id.' no tiene venta legible (ni sale ni sale_nota_credito). Quedo fuera del TXT.');
+                continue;
             }
 
             // Calculamos importes de IVA discriminados
@@ -206,9 +229,57 @@ class AfipController extends Controller
         }
 
         $fileName = 'Alicuotas_' . $inicio . '_a_' . $fin . '.txt';
-        Storage::disk('local')->put($fileName, implode("\r\n", $lines));
 
-        return response()->download(storage_path('app/' . $fileName));
+        // Carpeta propia del duenio, mismo motivo que en `exportVentas()`. El nombre descargado
+        // sigue siendo el de siempre.
+        $ruta_del_archivo = 'afip-txt/' . $user->id . '/' . $fileName;
+        Storage::disk('local')->put($ruta_del_archivo, implode("\r\n", $lines));
+
+        return response()->download(storage_path('app/' . $ruta_del_archivo), $fileName);
+    }
+
+    /**
+     * Comprobantes AFIP del duenio en el periodo, para los dos TXT del regimen de informacion
+     * (`exportVentas()` y `exportAlicuotasTxt()`). Es la unica fuente de la consulta de los dos:
+     * hasta el 10/10/2026 cada exportador tenia su copia, y ninguna filtraba por duenio (en una
+     * base compartida el TXT traia los comprobantes de todos los comercios).
+     *
+     * Espejo de `AfipTicket::duenio_de_la_venta()`:
+     *  - `sale_id` manda: la factura de una venta es del duenio de esa venta.
+     *  - Solo si `sale_id` es NULL se mira `sale_nota_credito_id`: la nota de credito nace con
+     *    `sale_id` en NULL y es del duenio de la venta que acredita.
+     *  - Las ventas se leen con `withTrashed()`: el duenio de una venta borrada sigue siendo el
+     *    mismo. Ese ticket entra a la consulta, pero el bucle no puede leer su venta y lo saltea
+     *    con un aviso en el log.
+     *
+     * 🔴 Subconsulta y NO `pluck('id')`: un duenio con 130.000 ventas no puede armar un `IN` de
+     * 130.000 ids.
+     *
+     * 🔴 Sin `whereNotNull('cae')`: el `!$ticket->cae` de los bucles tambien saltea `cae = ''`, y
+     * eso tiene que seguir igual.
+     *
+     * @param int $user_id Id del duenio (el de `$this->user()`, que para un empleado ya es su duenio).
+     * @param Carbon $inicioCarbon Inicio del periodo.
+     * @param Carbon $finCarbon Fin del periodo.
+     * @return \Illuminate\Database\Eloquent\Collection Tickets del duenio, por `created_at` ascendente (el orden de siempre).
+     */
+    private function afip_tickets_del_duenio_para_txt($user_id, $inicioCarbon, $finCarbon)
+    {
+        // Ids de las ventas del duenio, borradas incluidas. Es una subconsulta: no se ejecuta aca.
+        $ventas_del_duenio = Sale::withTrashed()->where('user_id', $user_id)->select('id');
+
+        return AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
+                            ->where(function ($q) use ($ventas_del_duenio) {
+                                // Factura de una venta del duenio.
+                                $q->whereIn('sale_id', $ventas_del_duenio)
+                                  // Nota de credito: la venta acreditada cuenta solo si no hay sale_id.
+                                  ->orWhere(function ($q_nc) use ($ventas_del_duenio) {
+                                      $q_nc->whereNull('sale_id')
+                                           ->whereIn('sale_nota_credito_id', $ventas_del_duenio);
+                                  });
+                            })
+                            ->orderBy('created_at', 'ASC')
+                            ->get();
     }
 
     function get_cantidad_iva($afip_ticket) {
