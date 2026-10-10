@@ -46,9 +46,11 @@ use Tests\TestCase;
  * - el caso literal de Lucas en "resuelto" (lo sigue atajando la guarda de la tarjeta, con su nota);
  * - que en "directo" el turno reintente UNA vez, con la nota de la CARGA y en el Profundo, y que si el
  *   reintento hace la carga la persona lea el texto del modelo con la carga ejecutada en la base;
- * - que si el reintento también miente, la persona lea el texto honesto que corresponde: sin nada en
- *   la conversación, "no pude"; con una carga de antes, "no se registró nada nuevo"; con una tarjeta
- *   esperando el botón —de este mensaje o de la respuesta anterior—, "todavía no quedó registrado";
+ * - que si el reintento también miente, la respuesta se REEMPLACE sólo en la mentira segura (una carga
+ *   pedida, ninguna herramienta, nada confirmado, ninguna tarjeta esperando: "No pude hacer esa
+ *   carga…") y en todo lo demás quede con el aviso verdadero que corresponde (tercera vuelta,
+ *   10/10/2026): con la tarjeta de este mensaje, con la de la respuesta anterior, o el de verificación
+ *   — nunca un "no pude" sobre algo que puede estar hecho;
  * - los agujeros que encontraron los chequeos: el pedido en forma de pregunta, el "dale" a un
  *   ofrecimiento, la mentira después de una consulta preparatoria, el "gracias" con la tarjeta sin
  *   confirmar;
@@ -104,6 +106,12 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
     /** La frase que suma la nota de la carga cuando la tarjeta que espera es de la respuesta anterior. */
     const NOTA_DE_ANTES = 'tarjeta que dejaste antes sigue sin confirmar';
+
+    /** La frase de la nota de la carga en una corrección (M3, tercera vuelta). */
+    const NOTA_DE_CORRECCION = 'La persona está corrigiendo la tarjeta que dejaste antes: armá una tarjeta NUEVA';
+
+    /** La frase de la nota de la carga para algo que ya figuraba registrado (G1, tercera vuelta). */
+    const NOTA_DEL_REPASO = 'decí con qué número y fecha figura';
 
     /** La frase que distingue la nota de la tarjeta (test 63). */
     const NOTA_DE_LA_TARJETA = 'NO se creó ninguna';
@@ -691,8 +699,8 @@ class Carga_prometida_sin_accion_Test extends TestCase
     /**
      * 🔴 El agujero de la CONSULTA PREPARATORIA (chequeo del 10/10/2026): "Pasala al miércoles" →
      * consultar_tareas → "Quedó pasada al miércoles." sin proponer_. Que el turno haya consultado no
-     * vuelve verdad el "quedó": reintenta, y si el reintento insiste, con la tarea confirmada de antes,
-     * la persona lee "no se registró nada nuevo". La tarea sigue el martes.
+     * vuelve verdad el "quedó": reintenta, y si el reintento insiste, la respuesta queda con el aviso de
+     * verificación (el turno pidió una herramienta: no es la mentira segura). La tarea sigue el martes.
      *
      * @group chat-ia
      * @test
@@ -715,7 +723,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_HISTORIA, $texto);
+        $this->assertSame("Quedó pasada al miércoles 14/10.\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION, $texto);
 
         $bodies = $this->bodies_enviados();
 
@@ -782,6 +790,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
                 && $contexto['tipo_de_afirmacion'] === 'hecho'
                 && $contexto['hubo_reintento'] === true
                 && $contexto['texto_honesto'] === TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA
+                && $contexto['accion'] === 'reemplazo'
                 && array_key_exists('el_saneo_saco_algo', $contexto);
         })->once();
     }
@@ -829,8 +838,9 @@ class Carga_prometida_sin_accion_Test extends TestCase
     }
 
     /**
-     * 4 — La variante: el reintento INSISTE en que quedó registrado. La persona lee "Todavía no quedó
-     * registrado: te dejé la tarjeta…", y en la base la tarjeta sigue esperando y no hay ningún gasto.
+     * 4 — La variante: el reintento INSISTE en que quedó registrado. La respuesta del modelo queda y se
+     * le agrega el aviso de que la carga todavía espera la tarjeta (tercera vuelta: ya no se reemplaza
+     * fuera de la mentira segura). En la base la tarjeta sigue esperando y no hay ningún gasto.
      *
      * @group chat-ia
      * @test
@@ -851,7 +861,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_TARJETA, $texto);
+        $this->assertSame("Listo, el gasto quedó registrado.\n\n" . TarjetaPrometidaIaHelper::AVISO_CARGA_CON_TARJETA, $texto);
         $this->assertCount(3, $this->bodies_enviados(), 'Un solo reintento: nunca dos.');
 
         $tarjetas = $this->tarjetas_de($assistant);
@@ -864,13 +874,13 @@ class Carga_prometida_sin_accion_Test extends TestCase
     /**
      * 🔴 La tarjeta de la RESPUESTA ANTERIOR sigue sin confirmar y la persona pregunta "¿Ya quedó
      * cargado?": una consulta, pero "Sí, quedó registrado." miente. Reintenta con la nota que dice que la
-     * tarjeta de antes sigue esperando y, si insiste, la persona lee "Todavía no quedó registrado: te
-     * dejé la tarjeta…". La tarjeta sigue `propuesta` y no hay gasto.
+     * tarjeta de antes sigue esperando y, si insiste, la respuesta queda con el aviso de que la tarjeta
+     * de antes todavía no está confirmada. La tarjeta sigue `propuesta` y no hay gasto.
      *
      * @group chat-ia
      * @test
      */
-    public function una_consulta_con_la_tarjeta_de_antes_sin_confirmar_reintenta_y_da_el_texto_con_tarjeta()
+    public function una_consulta_con_la_tarjeta_de_antes_sin_confirmar_reintenta_y_avisa_que_la_tarjeta_sigue_esperando()
     {
         list($conversation, $assistant, $tarjeta) = $this->gasto_propuesto_en_el_mensaje_anterior('¿Ya quedó cargado?');
 
@@ -883,7 +893,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_TARJETA, $texto);
+        $this->assertSame("Sí, ya quedó registrado el gasto.\n\n" . TarjetaPrometidaIaHelper::AVISO_TARJETA_DE_ANTES, $texto);
 
         $bodies = $this->bodies_enviados();
 
@@ -897,7 +907,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
     /**
      * 🔴 El "gracias" con la tarjeta SIN confirmar (chequeo del 10/10/2026): "Gracias!" → "De nada, quedó
      * registrado el gasto." miente — la tarjeta de la respuesta anterior sigue esperando. Dispara, y si el
-     * reintento insiste, la persona lee que todavía no quedó registrado.
+     * reintento insiste, la respuesta queda con el aviso de que la tarjeta de antes no está confirmada.
      *
      * La respuesta anterior registró OTRA carga además (una tarea, confirmada): aunque haya una carga
      * hecha que agradecer, la tarjeta que sigue esperando manda.
@@ -931,7 +941,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_TARJETA, $texto);
+        $this->assertSame("De nada, el gasto quedó registrado.\n\n" . TarjetaPrometidaIaHelper::AVISO_TARJETA_DE_ANTES, $texto);
 
         $bodies = $this->bodies_enviados();
 
@@ -967,13 +977,13 @@ class Carga_prometida_sin_accion_Test extends TestCase
      * 🔴 5 — EL CASO MEDIDO, en "directo": alta del proveedor ejecutada en el mensaje anterior,
      * "Cambiale el teléfono a 3415559999" → "El teléfono de Distribuidora Norte quedó cambiado a
      * 3415559999." sin herramienta. El reintento insiste: como en la conversación HAY una carga
-     * confirmada, la persona lee "no se registró nada nuevo" (y no "no pude", que la invitaría a
-     * repetir algo que puede estar hecho).
+     * confirmada, no es la mentira segura y la respuesta no se reemplaza: queda con el aviso de
+     * verificación (nunca un "no pude", que invitaría a repetir algo que puede estar hecho).
      *
      * @group chat-ia
      * @test
      */
-    public function en_directo_quedo_cambiado_tras_un_alta_y_un_reintento_que_insiste_da_el_texto_con_historia()
+    public function en_directo_quedo_cambiado_tras_un_alta_y_un_reintento_que_insiste_deja_el_texto_con_el_aviso()
     {
         list($conversation, $assistant, $proveedor) = $this->proveedor_dado_de_alta_antes();
 
@@ -986,7 +996,8 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_HISTORIA, $texto);
+        $this->assertSame("Listo, el teléfono de Distribuidora Norte quedó cambiado a 3415559999.\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION, $texto);
+        $this->assertStringNotContainsString('No pude', $texto);
 
         $bodies = $this->bodies_enviados();
 
@@ -1084,8 +1095,9 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
     /**
      * 6 — La persona CORRIGE una tarjeta pendiente ("no, eran 6000") y el modelo contesta "Listo, lo
-     * cambié a 6000." sin herramienta. Reintenta con la nota de la carga —que además dice que la tarjeta
-     * de antes sigue sin confirmar—; el reintento rearma la tarjeta con el dato nuevo. El turno arranca
+     * cambié a 6000." sin herramienta. Reintenta con la nota de la carga —que en una corrección pide
+     * una tarjeta NUEVA con el dato corregido, sin mandar a confirmar la vieja (M3)—; el reintento rearma
+     * la tarjeta con el dato nuevo. El turno arranca
      * en el Profundo (la corrección ya escalaba) y el reintento también.
      *
      * @group chat-ia
@@ -1115,7 +1127,8 @@ class Carga_prometida_sin_accion_Test extends TestCase
         $this->assertSame(config('services.deepseek.model_profundo'), $bodies[0]['model'], 'La corrección de una tarjeta pendiente ya arranca escalada.');
         $this->assertSame('Listo, lo cambié a 6000.', $this->turno_del_asistente_del_reintento($bodies[1]));
         $this->assert_reintento_de_la_carga($bodies[1], self::NOTA_SIN_CARGA);
-        $this->assert_reintento_de_la_carga($bodies[1], self::NOTA_DE_ANTES);
+        $this->assert_reintento_de_la_carga($bodies[1], self::NOTA_DE_CORRECCION);
+        $this->assertStringNotContainsString(self::NOTA_DE_ANTES, $this->ultimo_turno_como_texto($bodies[1]), 'En una corrección la nota no manda a confirmar la tarjeta vieja.');
 
         $tarjetas = $this->tarjetas_de($assistant);
 
@@ -1124,9 +1137,9 @@ class Carga_prometida_sin_accion_Test extends TestCase
     }
 
     /**
-     * 6 — Si el reintento de la corrección INSISTE, la persona NO lee "te dejé la tarjeta para que la
-     * confirmes": la tarjeta de antes tiene el dato viejo (5000) y la mandaría a confirmar lo que acaba
-     * de corregir. Lee "No pude hacer esa carga…" (no hay ninguna carga confirmada en la conversación).
+     * 6 — Si el reintento de la corrección INSISTE, la respuesta NO queda con el aviso de "la tarjeta de
+     * antes": la de antes tiene el dato viejo (5000) y la mandaría a confirmar lo que acaba de corregir.
+     * Queda con el aviso de verificación. Tampoco es la mentira segura (hay una tarjeta esperando).
      *
      * @group chat-ia
      * @test
@@ -1144,7 +1157,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA, $texto);
+        $this->assertSame("Listo, ya lo cambié a 6000.\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION, $texto);
         $this->assertCount(2, $this->bodies_enviados());
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->fresh()->estado_guardado(), 'La tarjeta vieja sigue como estaba: nadie la confirmó.');
     }
@@ -1155,9 +1168,10 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
     /**
      * 🔴 El agujero del "DALE" A UN OFRECIMIENTO (chequeo del 10/10/2026): la respuesta anterior contó
-     * una carga hecha y terminó ofreciendo otra ("¿Querés que también te agende el pago de la luz?"). El
-     * "Dale" es un pedido nuevo, y "Listo, agendado el recordatorio…" sin herramienta miente: reintenta.
-     * Con la misma carga hecha pero SIN ofrecimiento, el "dale" es un acuse y el texto queda.
+     * una carga hecha y terminó ofreciendo otra ("¿Querés que también te agende el pago de la luz?", o
+     * sin signo: "Si querés, también te agendo el pago."). El "Dale" es un pedido nuevo, y "Listo,
+     * agendado el recordatorio…" sin herramienta miente: reintenta. Con la misma carga hecha pero SIN
+     * ofrecimiento, el "dale" es un acuse y el texto queda.
      *
      * @group chat-ia
      * @test
@@ -1168,20 +1182,25 @@ class Carga_prometida_sin_accion_Test extends TestCase
             'api.deepseek.com/*' => $this->secuencia()
                 ->push($this->end_turn('Listo, agendado el recordatorio para el lunes 12/10.'), 200)
                 ->push($this->end_turn('¿Para qué día te agendo el pago de la luz?'), 200)
+                ->push($this->end_turn('Listo, agendado el pago de la luz para el lunes 12/10.'), 200)
+                ->push($this->end_turn('¿Para qué día te agendo el pago de la luz?'), 200)
                 ->push($this->end_turn('Listo, quedó registrado.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
 
-        list($conversation, $assistant) = $this->conversacion_con_historia([
-            ['Recordame el martes llamar a Juan', 'Quedó agendada la tarea para el martes. ¿Querés que también te agende el pago de la luz?', AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::TIPO_TAREA_NUEVA],
-        ], 'Dale');
+        foreach (['Quedó agendada la tarea para el martes. ¿Querés que también te agende el pago de la luz?', 'Quedó agendada la tarea para el martes. Si querés, también te agendo el pago de la luz.'] as $indice => $ofrecimiento) {
 
-        $this->assertSame('¿Para qué día te agendo el pago de la luz?', (new AsistenteIaService())->responder($conversation, $assistant));
+            list($conversation, $assistant) = $this->conversacion_con_historia([
+                ['Recordame el martes llamar a Juan', $ofrecimiento, AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::TIPO_TAREA_NUEVA],
+            ], 'Dale');
 
-        $bodies = $this->bodies_enviados();
+            $this->assertSame('¿Para qué día te agendo el pago de la luz?', (new AsistenteIaService())->responder($conversation, $assistant));
 
-        $this->assertCount(2, $bodies, 'El "dale" a un ofrecimiento: el texto que miente y el reintento.');
-        $this->assert_reintento_de_la_carga($bodies[1], self::NOTA_SIN_CARGA);
+            $bodies = $this->bodies_enviados();
+
+            $this->assertCount(2 * ($indice + 1), $bodies, 'El "dale" a un ofrecimiento: el texto que miente y el reintento.');
+            $this->assert_reintento_de_la_carga($bodies[2 * $indice + 1], self::NOTA_SIN_CARGA);
+        }
 
         list($conversation, $assistant) = $this->conversacion_con_historia([
             ['Recordame el martes llamar a Juan', 'Quedó agendada la tarea para el martes.', AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::TIPO_TAREA_NUEVA],
@@ -1189,7 +1208,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $this->assertSame('Listo, quedó registrado.', (new AsistenteIaService())->responder($conversation, $assistant));
 
-        $this->assertCount(3, $this->bodies_enviados(), 'El "dale" sin ofrecimiento: una sola llamada, ningún reintento.');
+        $this->assertCount(5, $this->bodies_enviados(), 'El "dale" sin ofrecimiento: una sola llamada, ningún reintento.');
     }
 
     // ---------------------------------------------------------------------
@@ -1737,6 +1756,247 @@ class Carga_prometida_sin_accion_Test extends TestCase
     }
 
     // ---------------------------------------------------------------------
+    // Tercera vuelta · el reemplazo sólo en la mentira segura, el aviso en lo demás
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 LA MENTIRA SEGURA: conversación nueva, la persona pide una carga, el turno no pide ninguna
+     * herramienta, no hay nada confirmado ni ninguna tarjeta esperando, y el modelo dice "Listo, quedó
+     * registrado el gasto." dos veces. Ahí la frase no puede estar contando nada: se reemplaza por
+     * TEXTO_HONESTO_CARGA. El log dice que fue un reemplazo.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_mentira_segura_se_reemplaza_por_el_texto_honesto()
+    {
+        Log::spy();
+
+        $this->en_modo(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        list($conversation, $assistant) = $this->conversacion('Gasté 15000 de comisiones bancarias, en efectivo');
+
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->end_turn('Listo, quedó registrado el gasto.'), 200)
+                ->push($this->end_turn('Listo, quedó registrado el gasto.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA, $texto);
+        $this->assertStringContainsString('con este mensaje no quedó nada registrado', $texto);
+        $this->assertCount(2, $this->bodies_enviados());
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'se reemplaza por el texto honesto') !== false
+                && isset($contexto['clase']) && $contexto['clase'] === 'carga'
+                && $contexto['accion'] === 'reemplazo'
+                && $contexto['texto_honesto'] === TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA;
+        })->once();
+    }
+
+    /**
+     * 🔴 El pedido repetido de algo que YA EXISTE (rechequeo de la tercera vuelta): "Cargame el gasto de
+     * la luz" → el modelo consulta y contesta "Ya está cargado: Gasto N° 7…" (dos veces). Puede ser
+     * verdad —ese gasto se cargó en otra conversación—, así que la respuesta queda y se le agrega el
+     * aviso de verificación: nunca un "No pude…", que invitaría a cargarlo de nuevo y DUPLICARLO.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function lo_que_ya_existia_queda_con_el_aviso_de_verificacion_y_nunca_con_no_pude()
+    {
+        Log::spy();
+
+        $this->en_modo(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        list($conversation, $assistant) = $this->conversacion('Cargame el gasto de la luz de 30000');
+
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->respuesta('tool_use', [$this->tool_use('consultar_opciones_de_carga', [], 'toolu_p66_consulta')]), 200)
+                ->push($this->end_turn('Ya está cargado: Gasto N° 7 por $30.000 en Luz, de hoy.'), 200)
+                ->push($this->end_turn('Ya está cargado: Gasto N° 7 por $30.000.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame('Ya está cargado: Gasto N° 7 por $30.000.' . "\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION, $texto);
+        $this->assertStringNotContainsString('No pude', $texto);
+        $this->assertCount(3, $this->bodies_enviados());
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'se le agrega un aviso') !== false
+                && isset($contexto['clase']) && $contexto['clase'] === 'carga'
+                && $contexto['accion'] === 'aviso'
+                && $contexto['aviso'] === TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION;
+        })->once();
+    }
+
+    /**
+     * El aviso nunca va dos veces: si el reintento ya lo trae (el modelo lo copió), la respuesta queda
+     * como está.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_aviso_no_se_duplica()
+    {
+        list($conversation, $assistant) = $this->tarea_confirmada_en_el_mensaje_anterior('Pasala al miércoles', $this->martes());
+
+        $this->en_modo(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        $con_aviso = "Quedó pasada al miércoles.\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION;
+
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->end_turn('Quedó pasada al miércoles.'), 200)
+                ->push($this->end_turn($con_aviso), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame($con_aviso, $texto);
+        $this->assertSame(1, substr_count($texto, TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION));
+    }
+
+    /**
+     * 🔴 La tarjeta con el aviso de una CARGA PARECIDA (G6 del rechequeo): hace un momento se confirmó el
+     * mismo gasto y el modelo lo cuenta ("Ese gasto ya lo registré recién (Gasto N° 1)."). La tarjeta
+     * nueva ya lleva el aviso de AccionesIaHelper y el texto es verdad: no dispara.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_tarjeta_con_el_aviso_de_carga_parecida_no_dispara()
+    {
+        $comisiones = $this->subcategoria('Comisiones bancarias P66');
+
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+        ]);
+
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Gasté 15000 de comisiones bancarias, en efectivo', 'estado' => 'listo']);
+
+        $anterior = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'contenido' => 'Te dejé la tarjeta del gasto para confirmar.', 'estado' => 'listo', 'acciones_habilitadas' => true]);
+
+        $propuesta = HerramientasDeCarga::ejecutar('proponer_gasto', $this->bloque_proponer_gasto($comisiones, 'toolu_p66_gasto', 15000)['input'], $conversation, $anterior);
+
+        $this->assertFalse($propuesta['is_error']);
+
+        $vieja = AiMessageAction::where('ai_message_id', $anterior->id)->firstOrFail();
+
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Gasté 15000 de comisiones bancarias, en efectivo', 'estado' => 'listo']);
+
+        /* La persona confirmó la de antes con el botón DESPUÉS de mandar el pedido nuevo: la carga parecida. */
+        ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, $vieja->id);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, $vieja->fresh()->estado_guardado());
+
+        $assistant = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => true,
+        ]);
+
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->respuesta('tool_use', [$this->bloque_proponer_gasto($comisiones, 'toolu_p66_gasto_2', 15000)]), 200)
+                ->push($this->end_turn('Ese gasto ya lo registré recién (Gasto N° 1).'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame('Ese gasto ya lo registré recién (Gasto N° 1).', $texto);
+        $this->assertCount(2, $this->bodies_enviados(), 'La herramienta y el texto: ningún reintento.');
+
+        $tarjetas = $this->tarjetas_de($assistant);
+
+        $this->assertCount(1, $tarjetas);
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjetas[0]->estado_guardado());
+        $this->assertStringContainsString(TarjetaPrometidaIaHelper::MARCA_DE_CARGA_PARECIDA, (string) $tarjetas[0]->presentacion['aviso'], 'La tarjeta nueva lleva el aviso de la carga parecida.');
+    }
+
+    /**
+     * 🔴 Un HECHO más una pregunta es un pedido de carga (M2 del rechequeo): "Ya lo llamé, ¿qué más tengo
+     * hoy?" → "Marqué la tarea como hecha. Hoy te queda pagar la luz." sin herramienta reintenta.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_hecho_con_una_pregunta_tambien_reintenta()
+    {
+        $this->en_modo(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        list($conversation, $assistant) = $this->conversacion('Ya lo llamé, ¿qué más tengo hoy?');
+
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->end_turn('Marqué la tarea como hecha. Hoy te queda pagar la luz.'), 200)
+                ->push($this->end_turn('No encontré ninguna tarea para hoy: ¿cuál es la que llamaste?'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame('No encontré ninguna tarea para hoy: ¿cuál es la que llamaste?', $texto);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies);
+        $this->assert_reintento_de_la_carga($bodies[1], self::NOTA_SIN_CARGA);
+    }
+
+    /**
+     * Los acuses de la tercera vuelta tras una carga confirmada ("Gracias Lucas", "Nada más, gracias") y
+     * la consulta con "¿Me podés…?" sin nada antes no disparan: una llamada por pedido, el texto intacto.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function las_despedidas_y_la_consulta_con_podes_no_disparan()
+    {
+        $casos = [
+            ['Gracias Lucas', 'De nada, el gasto quedó registrado.', true],
+            ['Nada más, gracias', '¡De nada! El gasto quedó registrado. Cualquier cosa, acá estoy.', true],
+            ['¿Me podés decir si quedó registrado el pago?', 'Sí, quedó registrado el pago de $20.000.', false],
+        ];
+
+        $secuencia = $this->secuencia();
+
+        foreach ($casos as $caso) {
+            $secuencia->push($this->end_turn($caso[1]), 200);
+        }
+
+        Http::fake([
+            'api.deepseek.com/*' => $secuencia,
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        foreach ($casos as $caso) {
+
+            if ($caso[2]) {
+                list($conversation, $assistant) = $this->conversacion_con_historia([
+                    ['Gasté 15000 de comisiones bancarias, en efectivo', 'Quedó registrado el Gasto N° 1 por $15.000.', AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::TIPO_GASTO],
+                ], $caso[0]);
+            } else {
+                list($conversation, $assistant) = $this->conversacion($caso[0]);
+            }
+
+            $this->assertSame($caso[1], (new AsistenteIaService())->responder($conversation, $assistant), 'Pedido: ' . $caso[0]);
+        }
+
+        $this->assertCount(count($casos), $this->bodies_enviados(), 'Una llamada por pedido, ninguna de más.');
+    }
+
+    // ---------------------------------------------------------------------
     // 8 · Los detectores
     // ---------------------------------------------------------------------
 
@@ -1932,10 +2192,19 @@ class Carga_prometida_sin_accion_Test extends TestCase
             "Tenés estas tareas:\n- Tarea cargada: Llamar a Juan\n1. Gasto registrado el lunes por \$5.000",
             'Cuando quieras.',
             self::TARJETA_FALSA_1,
-            /* Los textos honestos no se vuelven a disparar. */
+            /* Tercera vuelta: lo que contesta el modelo a la nota que le pide el número y la fecha (G1). */
+            'De nada. El gasto ya quedó registrado en el mensaje anterior, no ahora.',
+            'De nada. Quedó registrado previamente: Gasto N° 1 por $15.000.',
+            'De nada. Como te dije antes, quedó registrado el Gasto N° 1.',
+            'Ese gasto ya estaba cargado: Gasto N° 7 por $30.000, de hoy.',
+            'Ya está cargado de antes: Gasto N° 7 por $30.000.',
+            'Ya está cargado: Gasto N° 7 por $30.000 del lunes.',
+            'El gasto de la luz ya figura registrado: Gasto N° 7 del 9/10.',
+            /* Los textos honestos y los avisos no se vuelven a disparar. */
             TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA,
-            TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_TARJETA,
-            TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA_CON_HISTORIA,
+            TarjetaPrometidaIaHelper::AVISO_CARGA_CON_TARJETA,
+            TarjetaPrometidaIaHelper::AVISO_TARJETA_DE_ANTES,
+            TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION,
             TarjetaPrometidaIaHelper::TEXTO_HONESTO,
             '',
         ];
@@ -1947,25 +2216,46 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
     /**
      * 8 — El detector de la TARJETA (punto 5 de las correcciones): el estado que es la cola de una
-     * promesa se decide como la promesa. Los dos falsos positivos medidos dan false; una promesa o un
-     * estado de verdad siguen dando true. (La tabla del test 63 no se toca y sigue igual.)
+     * promesa ("…y dejo la tarjeta para que la confirmes") sólo deja de afirmar cuando lo de antes del
+     * verbo pide un dato. Los dos falsos positivos medidos y sus variantes con palabras en el medio (M4)
+     * dan false; lo que en develop daba true sigue dando true (B1: el "sí" sin coma, la oración de antes
+     * que pregunta, "con eso"). (La tabla del test 63 no se toca y sigue igual.)
      *
      * @group chat-ia
      * @test
      */
     public function el_estado_que_es_la_cola_de_una_promesa_se_decide_como_la_promesa()
     {
-        $this->assertFalse(TarjetaPrometidaIaHelper::afirma_una_tarjeta(self::TARJETA_FALSA_1));
-        $this->assertFalse(TarjetaPrometidaIaHelper::afirma_una_tarjeta(self::TARJETA_FALSA_2));
+        foreach ([
+            self::TARJETA_FALSA_1,
+            self::TARJETA_FALSA_2,
+            'Decime cuál y te dejo acá la tarjeta para confirmar.',
+            'Decime la caja y te dejo armada la tarjeta para que la confirmes.',
+            'Si me pasás la caja, te dejo lista la tarjeta para que la confirmes.',
+            'Decime cuál y dejo abajo la tarjeta para confirmar.',
+        ] as $texto) {
+            $this->assertFalse(TarjetaPrometidaIaHelper::afirma_una_tarjeta($texto), 'Está pidiendo un dato: ' . $texto);
+        }
 
-        foreach (['Dejo la tarjeta para que la confirmes.', 'Te voy a dejar la tarjeta para que la confirmes.', 'La tarjeta queda para que la confirmes.', 'Sí, te dejo la tarjeta para confirmar el pago.'] as $texto) {
+        foreach ([
+            'Dejo la tarjeta para que la confirmes.',
+            'Te voy a dejar la tarjeta para que la confirmes.',
+            'La tarjeta queda para que la confirmes.',
+            'Sí, te dejo la tarjeta para confirmar el pago.',
+            'Te dejo lista la tarjeta para que la confirmes.',
+            'Dejo armada la tarjeta para que la confirmes.',
+            /* B1: lo que develop da true y la segunda vuelta había vuelto false. */
+            'Sí te dejo la tarjeta para confirmar.',
+            'Encontré la tarea. ¿Era la de Juan? Te dejo la tarjeta para confirmar.',
+            'Con eso te dejo la tarjeta para confirmar.',
+        ] as $texto) {
             $this->assertTrue(TarjetaPrometidaIaHelper::afirma_una_tarjeta($texto), 'Tendría que afirmar una tarjeta: ' . $texto);
         }
     }
 
     /**
-     * 8 — La clase del pedido de la persona, que es lo que decide (correcciones §1), y las tres notas
-     * del reintento.
+     * 8 — La clase del pedido de la persona, que es lo que decide (correcciones §1 y tercera vuelta §C),
+     * el final que ofrece algo, los avisos y las notas del reintento.
      *
      * @group chat-ia
      * @test
@@ -1973,11 +2263,21 @@ class Carga_prometida_sin_accion_Test extends TestCase
     public function la_clase_del_pedido_y_las_notas_del_reintento()
     {
         $clases = [
-            'acuse_gracias' => ['Gracias!', 'Gracias genio!', 'mil gracias, sos lo más', 'bien ahí', 'Perfecto, gracias por todo', 'Genial! Gracias!! 😊', 'Graciasss', 'ah buenísimo'],
-            'acuse_si'      => ['Dale', 'Sí', 'ok', 'de una', 'Siii', 'dale gracias!!', '👍'],
-            'consulta'      => ['¿Ya quedó cargado?', '¿Lo cargaste?', '¿Quedó agendada la llamada?', 'Mostrame las tareas de esta semana', 'Decime cuánto vendí hoy', 'gracias, y cuánto vendí hoy?'],
+            'acuse_gracias' => ['Gracias!', 'Gracias genio!', 'mil gracias, sos lo más', 'bien ahí', 'Perfecto, gracias por todo', 'Genial! Gracias!! 😊', 'Graciasss', 'ah buenísimo',
+                /* Las despedidas y el nombre de la tercera vuelta. */
+                'Gracias Lucas', 'Nada más, gracias', 'No, eso es todo', 'Gracias, buen día', 'Gracias, después lo reviso', 'Gracias, hasta mañana'],
+            'acuse_si'      => ['Dale', 'Sí', 'ok', 'de una', 'Siii', 'dale gracias!!', '👍', 'Sí por favor', 'Joya, nos vemos'],
+            'consulta'      => ['¿Ya quedó cargado?', '¿Lo cargaste?', '¿Quedó agendada la llamada?', 'Mostrame las tareas de esta semana', 'Decime cuánto vendí hoy', 'gracias, y cuánto vendí hoy?',
+                /* "¿Podés…?" sin infinitivo de carga, la consulta sin "?", los pedidos de mostrar y de un resumen. */
+                '¿Podés fijarte si quedó cargado el gasto?', '¿Me podés decir si quedó registrado el pago?', '¿Podés mostrarme las tareas?', 'cuanto vendi hoy', 'lo cargaste',
+                'Pasame el resumen de ventas de hoy', 'Mandame la lista de precios', 'Dame las ventas de hoy', 'Haceme un resumen del mes', 'Ventas de hoy', 'Ver tareas', 'che, ¿y el gasto?', '¿Quedó?'],
             /* 🔴 Un mensaje sin texto es una foto sola: casi siempre, el pedido de OTRA carga. */
-            'otro'          => ['', 'Pasala al miércoles', '¿Me la pasás al miércoles?', '¿Podés pasar la tarea al miércoles?', 'Cambiale el teléfono a 3415559999, ¿ok?', 'Ya lo llamé', 'Gasté 15000 de comisiones bancarias, en efectivo', 'Pasame la tarea al miércoles', 'Gracias, ahora cargame otro', 'Cargá el gasto y mostrame cómo quedó', 'no, eran 6000'],
+            'otro'          => ['', 'Pasala al miércoles', '¿Me la pasás al miércoles?', '¿Podés pasar la tarea al miércoles?', 'Cambiale el teléfono a 3415559999, ¿ok?', 'Ya lo llamé',
+                'Gasté 15000 de comisiones bancarias, en efectivo', 'Pasame la tarea al miércoles', 'Gracias, ahora cargame otro', 'Cargá el gasto y mostrame cómo quedó', 'no, eran 6000',
+                /* Un hecho más una pregunta, y los pedidos en pregunta de la tercera vuelta. */
+                'Ya lo llamé, ¿qué más tengo hoy?', 'Juan me pagó 5000. ¿Cuánto me debe ahora?', 'Gasté 15000 de comisiones, ¿de qué caja sale?', 'Pagué la luz, 12000. Revisá que quede bien',
+                '¿Lo pasamos al jueves?', '¿Me la corrés al jueves?', '¿Me lo dejás para el jueves?', '¿Se puede cargar el gasto de la luz?', '¿Me cargarías el gasto de la luz?', '¿Lo podés cargar?',
+                'mostrame las tareas y pasa la de juan al jueves', 'Gracias, ahora pasala al jueves', 'y el gasto de la luz', 'cambiaselo a 3415559999?', 'fijate de cargarlo'],
         ];
 
         foreach ($clases as $clase => $pedidos) {
@@ -1988,14 +2288,39 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $this->assertTrue(TarjetaPrometidaIaHelper::es_pregunta('quedó?'));
         $this->assertFalse(TarjetaPrometidaIaHelper::es_pregunta('Pasala al miércoles'));
-        $this->assertTrue(TarjetaPrometidaIaHelper::termina_preguntando('Quedó agendada. ¿Querés que también te agende el pago?'));
+
+        /* El final que pregunta u ofrece, también sin signo, con un emoji o un "avisame" detrás. */
+        foreach ([
+            'Quedó agendada. ¿Querés que también te agende el pago?',
+            'Quedó agendada. ¿Querés que también te agende el pago? 🙂',
+            'Quedó agendada. ¿Querés que también te agende el pago? Avisame.',
+            'Quedó agendada. Si querés, también te agendo el pago.',
+            'Quedó registrado el gasto. Puedo también agendarte el del mes que viene.',
+        ] as $texto) {
+            $this->assertTrue(TarjetaPrometidaIaHelper::termina_preguntando($texto), 'Termina ofreciendo: ' . $texto);
+        }
+
         $this->assertFalse(TarjetaPrometidaIaHelper::termina_preguntando('¿Algo más? Quedó agendada.'));
+        $this->assertFalse(TarjetaPrometidaIaHelper::termina_preguntando('Quedó agendada para el martes.'));
+
+        /* (b) El texto que nombra la tarjeta del mensaje sin la palabra "dejé": "Confirmala", "en la tarjeta". */
+        $this->assertTrue(TarjetaPrometidaIaHelper::nombra_la_tarjeta('Listo, cambié el monto a $6.000 en la tarjeta. Confirmala y queda registrado.'));
+        $this->assertTrue(TarjetaPrometidaIaHelper::nombra_la_tarjeta('Listo, actualicé el monto a $6.000. Confirmá la tarjeta y queda registrado.'));
+        $this->assertFalse(TarjetaPrometidaIaHelper::nombra_la_tarjeta('Listo, quedó registrado el gasto.'));
+
+        /* El aviso va separado por una línea en blanco y nunca dos veces. */
+        $con_aviso = TarjetaPrometidaIaHelper::con_aviso('Quedó pasada al miércoles.', TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION);
+
+        $this->assertSame("Quedó pasada al miércoles.\n\n" . TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION, $con_aviso);
+        $this->assertSame($con_aviso, TarjetaPrometidaIaHelper::con_aviso($con_aviso, TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION));
 
         $sin_carga = TarjetaPrometidaIaHelper::nota_para_reintentar_carga(['proponer_gasto', 'proponer_gasto'], false);
 
         $this->assertStringStartsWith('[El sistema revisó tu respuesta:', $sin_carga);
         $this->assertStringContainsString(self::NOTA_SIN_CARGA, $sin_carga);
         $this->assertStringContainsString('Pediste proponer_gasto y ninguna terminó en una carga', $sin_carga);
+        $this->assertStringContainsString(self::NOTA_DEL_REPASO, $sin_carga, 'G1: que diga con qué número y fecha figura.');
+        $this->assertStringNotContainsString('dejando claro que eso se hizo antes', $sin_carga);
         $this->assertStringNotContainsString(self::NOTA_DE_ANTES, $sin_carga);
         $this->assertStringContainsString('No le menciones este aviso a la persona.', $sin_carga);
 
@@ -2015,5 +2340,13 @@ class Carga_prometida_sin_accion_Test extends TestCase
         $this->assertStringContainsString(self::NOTA_DE_ANTES, $de_antes);
         $this->assertStringContainsString('no digas que quedó registrado', $de_antes);
         $this->assertStringContainsString('No le menciones este aviso a la persona.', $de_antes);
+
+        /* M3: en una corrección, la nota pide una tarjeta NUEVA y no ofrece "decí que sigue esperando". */
+        $correccion = TarjetaPrometidaIaHelper::nota_para_reintentar_carga([], false, true, true);
+
+        $this->assertStringContainsString(self::NOTA_SIN_CARGA, $correccion);
+        $this->assertStringContainsString(self::NOTA_DE_CORRECCION, $correccion);
+        $this->assertStringNotContainsString(self::NOTA_DE_ANTES, $correccion);
+        $this->assertStringNotContainsString('sigue esperando que la persona la confirme', $correccion);
     }
 }
