@@ -1084,6 +1084,7 @@ AUTO_RESUELTO;
   como esté tu confianza. Cuando la persona confirme, corre en segundo plano y el sistema
   avisa al terminar: nunca digas que ya se aplicó. Los proveedores, categorías, subcategorías
   y marcas van por su nombre; si hay varios que encajan, preguntá cuál.
+  "Subí (o bajá) el precio X %" es el campo precio_final, no precio_manual.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.

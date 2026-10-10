@@ -701,7 +701,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_actualizacion_masiva',
-                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos con costo + margen ajusta el margen, en los de precio manual sube ese precio, y con listas de precio sube el costo). precio_manual es solo cuando la persona habla del precio cargado a mano: en los que calculan con costo + margen no mueve nada. Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -715,7 +715,7 @@ class HerramientasDeCarga
                                     'campo'     => [
                                         'type'        => 'string',
                                         'enum'        => [
-                                            'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
+                                            'precio_final', 'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
                                             'proveedor', 'categoria', 'sub_categoria', 'marca',
                                             'iva', 'unidad_de_medida',
                                             'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
@@ -724,7 +724,7 @@ class HerramientasDeCarga
                                     'operacion' => [
                                         'type'        => 'string',
                                         'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
-                                        'description' => 'Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
+                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
                                     ],
                                     'valor'     => [
                                         'type'        => ['number', 'string'],
@@ -732,7 +732,7 @@ class HerramientasDeCarga
                                     ],
                                     'redondear' => [
                                         'type'        => 'boolean',
-                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero.',
+                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero (en precio_final, solo los artículos de precio manual).',
                                     ],
                                 ],
                                 'required'   => ['campo', 'operacion'],
