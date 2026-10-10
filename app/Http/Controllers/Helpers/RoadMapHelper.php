@@ -73,7 +73,7 @@ class RoadMapHelper {
 		foreach ($road_maps as $road_map) {
 			$road_map->clientes = $road_map->clientes->map(function ($client) use ($road_map) {
 				$client_observations = RoadMapClientObservation::where('road_map_id', $road_map->id)
-					->where('client_id', $client['client']->id)
+					->where('client_id', optional($client['client'])->id)
 					->orderBy('created_at', 'ASC')
 					->get();
 

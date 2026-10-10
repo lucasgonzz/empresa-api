@@ -215,6 +215,8 @@ class PermisosCatalogoHelper
                 'road_map.update'                               => 'Editar hojas de ruta',
                 'road_map.delete'                               => 'Eliminar hojas de ruta',
                 'road_map.terminadas.index'                     => 'Entrar a Rutas (ver rutas asignadas)',
+                'road_map.terminadas.only_your'                 => 'Rutas: ver solo sus hojas de ruta (si tiene también el de todas, gana ese)',
+                'road_map.terminadas.all'                       => 'Rutas: ver las hojas de ruta de todos los repartidores',
             ],
 
             'Producción' => [
@@ -252,8 +254,6 @@ class PermisosCatalogoHelper
                 'deposit_movement.index'                        => 'Ver movimientos de depósito',
                 'deposit_movement.store'                        => 'Crear movimientos de depósito',
                 'deposit_movement.delete'                       => 'Eliminar movimientos de depósito',
-                'road_map.terminadas.only_your'                 => 'Ver solo sus hojas de ruta',
-                'road_map.terminadas.all'                       => 'Ver todas las hojas de ruta',
                 'whatsapp.see_owner_chats'                      => 'Ver los chats de WhatsApp del dueño',
                 'whatsapp.see_other_users_chats'                => 'Ver los chats de WhatsApp de otros empleados',
                 'support.see_owner_chats'                       => 'Ver los chats de soporte del dueño',
