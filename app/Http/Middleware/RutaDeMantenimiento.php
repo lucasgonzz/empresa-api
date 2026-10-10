@@ -45,9 +45,12 @@ use Illuminate\Support\Facades\Log;
  * Si no: un `Log::warning` (patrón de la ruta, método, IP y si trajo clave — NUNCA la clave ni la URL
  * completa, que la llevaría en el query) y `abort(404)`.
  *
- * 🔴 POR QUÉ 404 Y NO 403: es el mismo 404 de una ruta que no existe. Un 403 le confirmaría a quien
+ * 🔴 POR QUÉ 404 Y NO 403: el CUERPO es el mismo de una ruta que no existe. Un 403 le confirmaría a quien
  * barre URLs que ahí hay algo, y le diría en cuál de las 67 rutas de mantenimiento vale la pena
- * insistir con claves.
+ * insistir con claves. Los HEADERS no son idénticos, y es sabido: la puerta corre DENTRO del grupo
+ * `web`, que ya puso el `Set-Cookie` de la sesión y el de XSRF-TOKEN (un 404 de "ninguna ruta coincide"
+ * no los trae). Se acepta porque la lista de rutas no es un secreto (está en un repo público) y la puerta
+ * necesita la sesión para la ventana de 2 horas; lo que protege es la clave, no que no se sepa la URL.
  *
  * 🔴 POR QUÉ NO `auth`: el `Authenticate` de Laravel, en una ruta de `web.php` que no espera JSON, llama a
  * `route('login')`, y en este proyecto no hay ninguna ruta con ese nombre: el request muere en 500 (y se

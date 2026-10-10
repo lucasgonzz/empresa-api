@@ -333,7 +333,7 @@ class Reset_de_contrasena_Test extends RutasPublicasTestCase
     {
         $primero = $this->pedir_codigo($this->usuario->email);
 
-        // Que el segundo salga distinto (6 dígitos al azar: una vez en un millón coinciden).
+        // Que el segundo salga distinto (900.000 códigos posibles: casi nunca coinciden).
         do {
             $segundo = $this->pedir_codigo($this->usuario->email);
         } while ($segundo === $primero);

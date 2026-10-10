@@ -31,7 +31,8 @@ use Illuminate\Support\Facades\Mail;
  *   - `update-password` exige el código: sin uno válido, 422 con forma de validación y no toca nada; con
  *     uno válido cambia la contraseña, BORRA el código (no se reusa) y loguea como siempre.
  *   - Cada código equivocado (en check o en update) suma un intento; al 5.º el código muere y hay que
- *     pedir otro. Con 6 dígitos, sin esto se probaban las 1.000.000 combinaciones sin límite.
+ *     pedir otro. Con códigos de 6 dígitos (`random_int(100000, 999999)`: 900.000 combinaciones), sin
+ *     esto se probaban todas sin límite.
  *   - Y pedir otro tiene tope: CODIGOS_POR_HORA_MAXIMOS por usuario en una ventana fija de 60 minutos
  *     (ver puede_emitir_otro_codigo()). Sin ese tope, el de intentos no sirve de nada.
  *

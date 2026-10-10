@@ -25,6 +25,15 @@ use Illuminate\Support\Facades\Route;
  * Protectores: el `Authenticate` de Laravel (sanctum o sesión), `AdminApiKey`, `ClaveDeAdminEnSetup`,
  * `PrintAgentToken`, `DescargaDelComercio` y `RutaDeMantenimiento` (con o sin `:demo`).
  *
+ * ⚠️ PENDIENTE CONOCIDO: QUE ESTE TEST ESTÉ EN VERDE NO QUIERE DECIR "TODO CERRADO". `AdminApiKey` y
+ * `ClaveDeAdminEnSetup` cuentan acá como protectores porque son la puerta de esas rutas, pero HOY SON
+ * NO-OP: no validan nada mientras `ADMIN_SYNC_REQUIRE_API_KEY` y `ADMIN_SYNC_SETUP_REQUIRE_API_KEY` estén
+ * apagadas (`config/services.php`, `require_api_key` y `require_key_for_setup`, false por defecto), que es
+ * como están en producción. O sea: las 44 rutas `api/admin-sync/*` que pasan por esos dos middlewares (43
+ * con `admin.api.key` y `user-setup` con `admin.setup.key`) responden SIN CLAVE. No son un protector real
+ * hasta que admin-api mande la clave y se prendan esas variables; lo que este test garantiza para ellas es
+ * que tienen la puerta puesta, no que esté cerrada.
+ *
  * 🔴 SI ESTE TEST TE MARCA UNA RUTA NUEVA: si es de mantenimiento, debug o algo que se abre a mano, va en
  * `routes/mantenimiento.php` (queda cerrada sola). Si es de un comercio, va detrás de `auth:sanctum` (api)
  * o de `descarga.comercio` (PDF/export de web). Si de verdad tiene que ser pública (un webhook, un callback
@@ -61,8 +70,8 @@ class Ninguna_ruta_publica_sin_saberlo_Test extends RutasPublicasTestCase
         'POST password-reset/update-password'         => 'Cambia la contraseña SOLO con el código válido (422 sin él) y lo consume (misión cerrar-rutas-web-publicas).',
 
         // --- Callbacks OAuth y webhooks de plataformas externas ------------------------------------
-        'GET platform-connector/mercadolibre/callback' => 'Callback OAuth de Mercado Libre: lo llama ML con el `code`.',
-        'GET platform-connector/tiendanube/callback'   => 'Callback OAuth de Tienda Nube: lo llama TN con el `code`.',
+        'GET platform-connector/mercadolibre/callback' => 'Callback OAuth de Mercado Libre: lo llama ML con el `code`. Ojo (preexistente): además del state aleatorio de un solo uso, acepta como `state` el id numérico del conector (formato viejo, el que ML manda hoy; PlatformConnectorOAuthService::resolver_conector_del_state).',
+        'GET platform-connector/tiendanube/callback'   => 'Callback OAuth de Tienda Nube: lo llama TN con el `code`. Ojo (preexistente): además del state aleatorio de un solo uso, acepta como `state` el id numérico del conector (formato viejo, el que TN manda hoy; PlatformConnectorOAuthService::resolver_conector_del_state).',
         'POST mercadolibre/webhook'                    => 'Webhook viejo de ML: apunta a un método que no existe y el CSRF le da 419 antes. Las notificaciones reales entran por api/meli/notifications.',
         'POST tiendanube/webhook/store_redact'         => 'Webhook obligatorio de privacidad de Tienda Nube: responde {status: ok} y no hace nada.',
         'POST tiendanube/webhook/customers_redact'     => 'Webhook obligatorio de privacidad de Tienda Nube: responde {status: ok} y no hace nada.',
@@ -71,7 +80,7 @@ class Ninguna_ruta_publica_sin_saberlo_Test extends RutasPublicasTestCase
         'GET api/integraciones/zippin/callback'        => 'Callback OAuth de Zippin: consume un `state` aleatorio de un solo uso (ZippinOauthState::consume).',
         'POST api/meli/notifications'                  => 'Webhook de Mercado Libre: no confía en el cuerpo, re-consulta la orden a ML con el token del vendedor.',
         'POST api/zipnova/webhook'                     => 'Webhook de Zipnova: no confía en el cuerpo, re-consulta el envío a Zipnova; throttle 120/min.',
-        'POST api/whatsapp-bot/webhook'                => 'Webhook de Kapso (WhatsApp): firma HMAC-SHA256 del cuerpo con webhook_secret; 401 si no coincide.',
+        'POST api/whatsapp-bot/webhook'                => 'Webhook de Kapso (WhatsApp): firma HMAC-SHA256 del cuerpo con webhook_secret; 401 si no coincide. Ojo (preexistente): con webhook_secret vacío o NULL el HMAC se calcula con clave vacía, que cualquiera puede reproducir (WhatsappBotController::verify_signature).',
 
         // --- Archivos y descargas con su propia guarda ---------------------------------------------
         'GET storage/{path}'        => 'Imágenes de artículos en hosting sin symlink; confinado a storage/app/public por StoragePathHelper.',

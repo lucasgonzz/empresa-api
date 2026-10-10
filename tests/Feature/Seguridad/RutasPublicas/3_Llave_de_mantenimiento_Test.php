@@ -93,12 +93,16 @@ class Llave_de_mantenimiento_Test extends RutasPublicasTestCase
     }
 
     /**
-     * El 404 de la puerta es el mismo de una ruta que no existe: nada le dice a quien barre URLs que ahí
-     * hay algo.
+     * El CUERPO del 404 de la puerta es el mismo de una ruta que no existe: la página no le dice a quien
+     * barre URLs que ahí hay algo.
+     *
+     * Compara solo el cuerpo y el código, a propósito: los headers NO son iguales (la puerta corre dentro
+     * del grupo `web`, que ya puso el Set-Cookie de la sesión y el de XSRF; ver el docblock de
+     * RutaDeMantenimiento, que explica por qué se acepta).
      *
      * @test
      */
-    public function el_404_es_igual_al_de_una_ruta_que_no_existe()
+    public function el_cuerpo_del_404_es_igual_al_de_una_ruta_que_no_existe()
     {
         $this->como_produccion();
 

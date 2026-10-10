@@ -93,8 +93,10 @@ class Kernel extends HttpKernel
         /*
          * La puerta de las rutas de mantenimiento, debug y administración interna (misión
          * cerrar-rutas-web-publicas, 10/10/2026): todo `routes/mantenimiento.php` pasa por acá
-         * (lo pone RouteServiceProvider). Sin tests, variable explícita, demo (con `:demo`), sesión
-         * habilitada o clave maestra: 404. Uso: 'solo.mantenimiento' o 'solo.mantenimiento:demo'.
+         * (lo pone RouteServiceProvider). Deja pasar si se cumple una de: suite de tests, variable
+         * explícita (RUTAS_DE_MANTENIMIENTO), demo con el parámetro `:demo`, sesión habilitada o clave
+         * maestra. Si no se cumple ninguna → 404.
+         * Uso: 'solo.mantenimiento' o 'solo.mantenimiento:demo'.
          */
         'solo.mantenimiento' => \App\Http\Middleware\RutaDeMantenimiento::class,
     ];
