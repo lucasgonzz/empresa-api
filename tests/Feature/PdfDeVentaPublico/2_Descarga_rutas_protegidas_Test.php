@@ -108,13 +108,13 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
      */
     const AFUERA_A_PROPOSITO = [
         'client/pdf'                                => 'Exige sesión en su propio controlador desde el 5/10/2026 (responde 401 sin sesión).',
-        'super-budget'                              => 'Fuera del alcance de la misión, por decisión del plan.',
+        'super-budget'                              => 'No es una descarga del comercio: está en routes/mantenimiento.php y la cierra solo.mantenimiento (misión cerrar-rutas-web-publicas, 10/10/2026).',
         'exported-files/{path}'                     => 'Confinado por StoragePathHelper; lo sirve la notificación global de exportaciones.',
         'afip-txt/{mes_inicio}/{mes_fin}'           => 'Lo protege AfipController::exportVentas desde la misión afip-txt-por-duenio (10/10/2026): 401 sin sesión, fijado por Txt_Regimen_Informacion_Por_Duenio_Test.',
         'afip-txt-alicuotas/{mes_inicio}/{mes_fin}' => 'Lo protege AfipController::exportAlicuotasTxt desde la misión afip-txt-por-duenio (10/10/2026): 401 sin sesión, fijado por Txt_Regimen_Informacion_Por_Duenio_Test.',
-        'caja'                                      => 'HALLAZGO fuera de alcance (no es PDF ni export): SaleController@caja devuelve la caja en JSON y sin sesión userId() cae en USER_ID.',
-        'power-bi/articulos'                        => 'HALLAZGO fuera de alcance: devuelve los artículos del user_id 138, fijo en el código, sin sesión.',
-        'n8n/productos-disponibles/{last_updated?}' => 'HALLAZGO fuera de alcance: catálogo para N8N, lista los artículos de toda la base sin filtrar por dueño y sin sesión.',
+        'caja'                                      => 'No es PDF ni export (SaleController@caja, JSON): está en routes/mantenimiento.php y la cierra solo.mantenimiento (misión cerrar-rutas-web-publicas, 10/10/2026).',
+        'power-bi/articulos'                        => 'Artículos del user_id 138, fijo en el código: está en routes/mantenimiento.php y la cierra solo.mantenimiento (misión cerrar-rutas-web-publicas, 10/10/2026).',
+        'n8n/productos-disponibles/{last_updated?}' => 'Catálogo para N8N de toda la base: está en routes/mantenimiento.php y la cierra solo.mantenimiento (misión cerrar-rutas-web-publicas, 10/10/2026); el reemplazo con clave es api/integraciones/articulos/{export_key}.',
     ];
 
     /**
