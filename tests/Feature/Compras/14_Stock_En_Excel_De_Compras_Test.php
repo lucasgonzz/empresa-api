@@ -4,7 +4,11 @@ namespace Tests\Feature\Compras;
 
 use App\Models\Address;
 use App\Models\ProviderOrder;
+use App\Models\User;
+use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
 /**
@@ -18,8 +22,12 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
  *    mapea por columna elegida, y quien ya tenga una plantilla armada no se entera del cambio);
  *  - "Stock actual" es el stock global del artículo y va SIEMPRE, tenga o no sucursales (a
  *    diferencia del Excel de artículos, donde las sucursales reemplazan a la global);
- *  - una columna "Stock <sucursal>" por sucursal del DUEÑO DE LA COMPRA. La ruta se abre con
- *    window.open y no lleva sesión, así que el dueño sale de `provider_orders.user_id`;
+ *  - una columna "Stock <sucursal>" por sucursal del DUEÑO DE LA COMPRA: el dueño sale de
+ *    `provider_orders.user_id`, no del usuario logueado. (Hasta el 10/10/2026 este comentario
+ *    decía que la ruta se abre con window.open sin sesión; no es así: verificado ese día en vivo
+ *    con un navegador real, la SPA logueada abre `sale/pdf/1` con window.open y llega con su
+ *    sesión — 200 application/pdf —, y sin sesión da 404. Desde la misión pdf-de-venta-publico la
+ *    ruta exige la sesión del dueño de la compra, por eso `filas_del_excel()` pide con esa sesión);
  *  - un artículo que no tiene fila en una sucursal muestra 0 ahí, no una celda vacía;
  *  - un comercio sin sucursales no recibe ninguna columna de más;
  *  - los domicilios de compradores de la tienda (addresses con buyer_id, que llevan el user_id del
@@ -68,6 +76,8 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
      */
     protected function filas_del_excel($compra)
     {
+        $this->con_la_sesion_del_dueno_de($compra);
+
         $respuesta = $this->get('/provider-orders/export/'.$compra->id);
 
         $respuesta->assertStatus(200);
@@ -75,6 +85,45 @@ class Stock_En_Excel_De_Compras_Test extends ComprasTestCase
         $ruta = $respuesta->baseResponse->getFile()->getPathname();
 
         return IOFactory::load($ruta)->getActiveSheet()->toArray(null, true, false, false);
+    }
+
+    /**
+     * Preparación del pedido (misión pdf-de-venta-publico, 10/10/2026, cambio autorizado por
+     * Lucas): `provider-orders/export/{id}` ya no es pública, se sirve con la sesión del comercio
+     * dueño de la compra (o durante su ventana de transición, que en la base de testing está
+     * cerrada). Así que el Excel se pide con la sesión de ESE dueño, como lo pide la SPA.
+     *
+     * Si el dueño no existe como usuario (DUENO_SIN_SUCURSALES, un id que el fixture no tiene), se
+     * crea acá: dueño (`owner_id` null) y dentro de la transacción del test, que lo revierte.
+     *
+     * @param  \App\Models\ProviderOrder  $compra
+     * @return void
+     */
+    protected function con_la_sesion_del_dueno_de($compra)
+    {
+        $dueno = User::find($compra->user_id);
+
+        if (is_null($dueno)) {
+
+            DB::table('users')->insert([
+                'id'           => $compra->user_id,
+                'name'         => 'Comercio sin sucursales',
+                'company_name' => 'Comercio sin sucursales (stock en Excel)',
+                'email'        => 'stock-excel-sin-sucursales-'.uniqid().'@test.local',
+                'password'     => Hash::make('secret'),
+                'status'       => 'commerce',
+                'owner_id'     => null,
+                'created_at'   => Carbon::now(),
+                'updated_at'   => Carbon::now(),
+            ]);
+
+            $dueno = User::find($compra->user_id);
+        }
+
+        // Se olvida la sesión que dejó el setUp antes de cambiar de usuario.
+        $this->app['auth']->forgetGuards();
+
+        $this->actingAs($dueno, 'web');
     }
 
     /**
