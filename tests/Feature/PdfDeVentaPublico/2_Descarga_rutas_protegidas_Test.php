@@ -66,6 +66,9 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
         'afip-iva-ventas/{mes_inicio}/{mes_fin}'                      => 'descarga.comercio:sesion',
         'acopio-article-delivery/{id}'                                => 'descarga.comercio:acopio_article_delivery,id',
         'resumen-caja/pdf/{id}'                                       => 'descarga.comercio:resumen_caja,id',
+        'reportes/inventario/{company_name}/{periodo}'                => 'descarga.comercio:comercio,company_name',
+        'reportes/clientes/{company_name}/{periodo}'                  => 'descarga.comercio:comercio,company_name',
+        'reportes/excel-articulos/{company_name}/{mes}'               => 'descarga.comercio:comercio,company_name',
     ];
 
     /**
@@ -79,8 +82,6 @@ class Descarga_rutas_protegidas_Test extends DescargaTestCase
         'super-budget',
         // Confinado por StoragePathHelper; lo sirve la notificación global de exportaciones.
         'exported-files/{path}',
-        // 🔴 Fuera del alcance de la misión, reportado: reporte por company_name, sin sesión.
-        'reportes/excel-articulos/{company_name}/{mes}',
     ];
 
     /**

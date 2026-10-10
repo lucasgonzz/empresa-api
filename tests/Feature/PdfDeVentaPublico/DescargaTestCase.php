@@ -5,6 +5,7 @@ namespace Tests\Feature\PdfDeVentaPublico;
 use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\BudgetController;
 use App\Http\Controllers\CurrentAcountController;
+use App\Http\Controllers\ReporteController;
 use App\Http\Controllers\SaleController;
 use App\Models\User;
 use Carbon\Carbon;
@@ -257,6 +258,12 @@ abstract class DescargaTestCase extends EmpresaTestCase
 
         $this->app->instance(ArticleController::class, new class extends ArticleController {
             function listPdf($ids) { return response(DescargaTestCase::SERVIDA, 200); }
+        });
+
+        $this->app->instance(ReporteController::class, new class extends ReporteController {
+            function inventario($company_name, $periodo) { return response(DescargaTestCase::SERVIDA, 200); }
+            function clientes($company_name, $periodo) { return response(DescargaTestCase::SERVIDA, 200); }
+            function excel_articulos($company_name, $mes) { return response(DescargaTestCase::SERVIDA, 200); }
         });
     }
 

@@ -385,11 +385,21 @@ Route::get('/power-bi/articulos', 'PowerBiController@articulos');
 Route::get('/article-performance/{company_name}/{meses_atras}', 'ArticlePerformanceController@setArticlesPerformance');
 
 // Reportes
-Route::get('/reportes/inventario/{company_name}/{periodo}', 'ReporteController@inventario');
+/*
+ * Reportes de un comercio por su nombre (sumados a la misión pdf-de-venta-publico en la
+ * verificación del 10/10/2026): hasta acá cualquiera los bajaba escribiendo el company_name en la
+ * URL. Misma regla que el resto de las descargas (DescargaDelComercio), con el dueño resuelto por
+ * `company_name` igual que ReportePdf y ArticleSalesExport: sesión de ese comercio, o la ventana de
+ * transición de ese dueño; si no, o si no hay comercio con ese nombre, 404. Sin token: no se
+ * comparten fuera del sistema.
+ */
+Route::middleware('descarga.comercio:comercio,company_name')->group(function () {
+    Route::get('/reportes/inventario/{company_name}/{periodo}', 'ReporteController@inventario');
 
-Route::get('/reportes/clientes/{company_name}/{periodo}', 'ReporteController@clientes');
+    Route::get('/reportes/clientes/{company_name}/{periodo}', 'ReporteController@clientes');
 
-Route::get('/reportes/excel-articulos/{company_name}/{mes}', 'ReporteController@excel_articulos');
+    Route::get('/reportes/excel-articulos/{company_name}/{mes}', 'ReporteController@excel_articulos');
+});
 
 // Clientes Potenciales
 Route::get('/cliente-potencial/{nombre_negocio}/{email}', 'ClientePotencialController@clientePotencial');

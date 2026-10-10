@@ -20,6 +20,7 @@ use App\Models\ProviderOrder;
 use App\Models\ResumenCaja;
 use App\Models\RoadMap;
 use App\Models\Sale;
+use App\Models\User;
 use Illuminate\Support\Str;
 
 /**
@@ -215,6 +216,7 @@ class PdfLinkHelper
      *     (`sale_nota_credito_id`), o el movimiento de la nota de crédito (`nota_credito_id`).
      *   - acopio_article_delivery (sin `user_id`): su venta (`sale_id`, no nullable).
      *   - apertura_caja (sin `user_id`): su caja (`caja_id` → `cajas.user_id`).
+     *   - comercio: el "id" es el `{company_name}` de las rutas `reportes/*` (ver duenio_por_nombre()).
      * Los padres (la venta de un ticket, de un acopio) se leen con `withTrashed()` cuando el modelo lo
      * tiene: el dueño de una venta borrada sigue siendo el mismo. El recurso pedido, en cambio, se
      * busca con la consulta de siempre, igual que su controlador: si el controlador no lo encuentra,
@@ -229,6 +231,12 @@ class PdfLinkHelper
     {
         if ($tipo === 'articles') {
             return self::duenios_de_articulos($model_id);
+        }
+
+        if ($tipo === 'comercio') {
+            $duenio = self::duenio_por_nombre($model_id);
+
+            return is_null($duenio) ? null : [$duenio];
         }
 
         if (!self::es_id($model_id)) {
@@ -355,6 +363,37 @@ class PdfLinkHelper
         }
 
         return null;
+    }
+
+    /**
+     * Dueño del comercio de las rutas `reportes/inventario|clientes|excel-articulos/{company_name}/…`
+     * (agregadas al alcance en la verificación de la misión, 10/10/2026). Esas rutas no reciben un
+     * id: reciben el nombre del comercio, y el PDF o el Excel sale del usuario que encuentra
+     * `User::where('company_name', $company_name)->first()` (`ReportePdf.php:24` y
+     * `ArticleSalesExport::__construct()`).
+     *
+     * 🔴 SE BUSCA CON LA MISMA CONSULTA QUE ESOS DOS, sin ordenar ni filtrar distinto: si el
+     * middleware resolviera otro usuario que el controlador (por ejemplo, el primer DUEÑO con ese
+     * nombre cuando el controlador toma el primer usuario a secas), el permiso se chequearía sobre
+     * un comercio y el reporte saldría de otro. Si ese usuario es un empleado, el comercio es el de
+     * su dueño.
+     *
+     * @param  mixed  $company_name  El parámetro de la ruta tal cual llegó (Laravel ya lo decodificó).
+     * @return int|null  Id del dueño, o null si el nombre no es texto, está vacío o no es de nadie.
+     */
+    protected static function duenio_por_nombre($company_name)
+    {
+        if (!is_string($company_name) || trim($company_name) === '') {
+            return null;
+        }
+
+        $usuario = User::where('company_name', $company_name)->first(['id', 'owner_id']);
+
+        if (is_null($usuario)) {
+            return null;
+        }
+
+        return (int) (!empty($usuario->owner_id) ? $usuario->owner_id : $usuario->id);
     }
 
     /**

@@ -25,6 +25,7 @@ use Illuminate\Support\Facades\Log;
  *                                                        (SOLO `sale/pdf/{id}`, ver el paso 3)
  *   ->middleware('descarga.comercio:articles,ids')       lista 12-15-40 de artículos
  *   ->middleware('descarga.comercio:cuenta_corriente,credit_account_id,months_ago')
+ *   ->middleware('descarga.comercio:comercio,company_name') reportes por nombre de comercio
  *   ->middleware('descarga.comercio:sesion')             rutas sin id (exports por fecha, listados)
  *
  * Con id, se sirve si se cumple la PRIMERA de estas que aplique:
