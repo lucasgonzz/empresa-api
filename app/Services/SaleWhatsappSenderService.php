@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\SaleWhatsappSendException;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\Sale;
@@ -14,8 +15,8 @@ use App\Models\WhatsappTemplate;
 /**
  * Envío del comprobante de una venta al cliente por el agente de WhatsApp (grupo 137,
  * Prompt 05). Método único público `send_sale()`: resuelve (o crea) el `WhatsappChat` del
- * cliente de la venta, arma la URL pública del PDF (la misma ruta `sale/pdf/{id}` que ya
- * usa hoy el botón `wa.me` histórico de empresa-spa) y decide entre `send_document`
+ * cliente de la venta, arma la URL del PDF con su token (la misma ruta `sale/pdf/{id}` que
+ * usa el botón `wa.me` de empresa-spa, más `?t=`) y decide entre `send_document`
  * (ventana de 24 h abierta) o la plantilla estándar `cc_cli_comprobante` con header
  * DOCUMENT (ventana cerrada, Prompt 04).
  *
@@ -85,7 +86,7 @@ class SaleWhatsappSenderService
 
         $chat = $this->resolve_chat($sale, $owner_id, $config);
 
-        // Misma URL pública que arma hoy WhatsappBtn.vue / ComercioCityMailHelper::new_sale (sale/pdf/{id}, sin auth).
+        // Misma ruta que WhatsappBtn.vue / ComercioCityMailHelper::new_sale (sale/pdf/{id}), con su token.
         $pdf_url = $this->build_pdf_url($sale);
         $filename = 'venta-'.($sale->num ?: $sale->id).'.pdf';
         $client_name = (! is_null($sale->client) && ! empty($sale->client->name)) ? $sale->client->name : 'Cliente';
@@ -239,9 +240,16 @@ class SaleWhatsappSenderService
     }
 
     /**
-     * URL pública del PDF de la venta: misma ruta que ya usa el botón `wa.me` histórico
-     * (`sale/pdf/{id}` en `routes/web.php`, sin middleware de auth). No requiere firma
-     * temporal (`URL::temporarySignedRoute`) porque la ruta ya es pública hoy.
+     * URL del PDF de la venta: la ruta `sale/pdf/{id}` de `routes/web.php` (la misma del botón
+     * `wa.me` de la SPA) con el token del link (`?t=`, PdfLinkHelper).
+     *
+     * 🔴 EL TOKEN NO ES OPCIONAL. Desde la misión pdf-de-venta-publico (10/10/2026) esa ruta ya no
+     * es pública: se sirve con la sesión del comercio o con un token válido para ESA venta, y acá
+     * no hay sesión — el archivo lo baja Meta/Kapso desde su servidor (header DOCUMENT de la
+     * plantilla `cc_cli_comprobante` o `send_document`), y después lo abre el cliente final. Sin
+     * token, pasada la ventana de transición del comercio, Meta recibiría un 404 y el comprobante
+     * no saldría. No se usa una URL firmada de Laravel (`URL::temporarySignedRoute`): no sobrevive
+     * a un cambio de `APP_KEY` ni a la rotación de frentes, y no se puede revocar.
      *
      * @param  Sale  $sale
      * @return string
@@ -250,6 +258,6 @@ class SaleWhatsappSenderService
     {
         $base_url = rtrim((string) (! is_null($sale->user) ? $sale->user->api_url : ''), '/');
 
-        return $base_url.'/sale/pdf/'.$sale->id;
+        return PdfLinkHelper::con_token($base_url.'/sale/pdf/'.$sale->id, 'sale', $sale->id, $sale->user_id);
     }
 }

@@ -307,7 +307,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'client_pesos_id', 'comercio_city_user_id'],
             'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'client', 'params' => [], 'texto' => 'Ver en Clientes'],
+            // `view` es la solapa: sin ella /clientes dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'client', 'params' => ['view' => 'clientes'], 'texto' => 'Ver en Clientes'],
             'aviso_de_baja'      => 'El cliente va a la papelera con su cuenta corriente. Sus ventas quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -321,7 +323,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'comercio_city_user_id', 'should_update_prices', 'precios_incluyen_iva'],
             'claves_de_pantalla' => ['childrens' => []],
-            'ruta'               => ['name' => 'provider', 'params' => [], 'texto' => 'Ver en Proveedores'],
+            // `view` es la solapa: sin ella /proveedores dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'provider', 'params' => ['view' => 'proveedores'], 'texto' => 'Ver en Proveedores'],
             'aviso_de_baja'      => 'El proveedor va a la papelera. Sus artículos y sus compras quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -601,20 +605,6 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_alta'      => null,
             'extension'          => null,
             'revisado'           => 'SaleSenderInfoController: lee con $request->input(); sin efectos.',
-        ],
-        'dealer' => [
-            'etiqueta'           => 'repartidores',
-            'singular'           => 'repartidor',
-            'genero'             => 'm',
-            'descripcion'        => 'Los repartidores (ABM > Ventas).',
-            'operaciones'        => null,
-            'solo_lectura'       => [],
-            'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'abm', 'params' => ['view' => 'ventas', 'sub_view' => 'repartidores'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => null,
-            'aviso_de_alta'      => null,
-            'extension'          => null,
-            'revisado'           => 'DealerController: solo name.',
         ],
         'tipo_envase' => [
             'etiqueta'           => 'tipos de envase',
