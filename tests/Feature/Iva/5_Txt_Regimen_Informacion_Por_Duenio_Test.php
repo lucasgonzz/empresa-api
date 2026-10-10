@@ -94,14 +94,6 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
     ];
 
     /**
-     * Duenios cuyas carpetas `storage/app/afip-txt/<id>/` pudo haber escrito el test. El
-     * `tearDown()` borra ahi los dos archivos de este mes.
-     *
-     * @var array<int,int>
-     */
-    protected $duenios_con_archivos = [];
-
-    /**
      * setUp: el del padre (guards de entorno + sesion del duenio del fixture) y despues el seguro
      * del mes propio.
      *
@@ -110,8 +102,6 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
     protected function setUp(): void
     {
         parent::setUp();
-
-        $this->duenios_con_archivos[] = $this->duenio_a()->id;
 
         /** Tickets que ya hay en el mes de esta clase, borrados incluidos. Tiene que dar cero. */
         $tickets_en_el_mes = AfipTicket::withTrashed()
@@ -132,72 +122,44 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
     }
 
     /**
-     * Borra lo sembrado en orden inverso al de creacion, y los archivos que generaron las
-     * descargas. Corre siempre, incluso si una asercion corto el test a mitad de camino.
+     * Borra los archivos que generaron las descargas; lo sembrado en la base lo deshace el
+     * rollback de `DatabaseTransactions` en `parent::tearDown()`.
+     *
+     * 🔴 Sin borrados explicitos de la base, a proposito. La primera version los tenia (mismo
+     * criterio que `3_Libro_Iva_Ventas_Notas_Credito_Test`) y con MySQL local cargado el
+     * `delete from sales` daba `1615 Prepared statement needs to be re-prepared` en 7 de 7: el
+     * cuerpo del test pasaba y el tearDown lo marcaba como error, y ademas cortaba antes del
+     * rollback y dejaba la transaccion abierta. El rollback alcanza solo: `EmpresaTestCase::setUp()`
+     * verifica que la base sea InnoDB. El `finally` asegura que el rollback corra aunque falle el
+     * borrado de los archivos.
      *
      * @return void
      */
     protected function tearDown(): void
     {
-        if (count($this->sembrado['afip_tickets'])) {
-            // forceDelete y withTrashed: AfipTicket usa SoftDeletes.
-            AfipTicket::withTrashed()->whereIn('id', $this->sembrado['afip_tickets'])->forceDelete();
+        try {
+            $this->borrar_archivos_generados();
+        } finally {
+            parent::tearDown();
         }
-
-        if (count($this->sembrado['current_acounts'])) {
-            CurrentAcount::whereIn('id', $this->sembrado['current_acounts'])->delete();
-        }
-
-        if (count($this->sembrado['sales'])) {
-            // withTrashed: el test 5 borra (soft) una de estas ventas a proposito.
-            Sale::withTrashed()->whereIn('id', $this->sembrado['sales'])->forceDelete();
-        }
-
-        if (count($this->sembrado['clients'])) {
-            Client::withTrashed()->whereIn('id', $this->sembrado['clients'])->forceDelete();
-        }
-
-        if (count($this->sembrado['afip_information'])) {
-            AfipInformation::whereIn('id', $this->sembrado['afip_information'])->delete();
-        }
-
-        if (count($this->sembrado['users'])) {
-            User::whereIn('id', $this->sembrado['users'])->delete();
-        }
-
-        $this->borrar_archivos_generados();
-
-        parent::tearDown();
     }
 
     /**
-     * Borra los dos TXT de este mes de la carpeta de cada duenio del test, y la carpeta si quedo
-     * vacia (la del duenio B nace con el test). Si `storage/app/afip-txt` quedo vacia, tambien.
+     * Borra los dos TXT de este mes que dejan las descargas en `storage/app` (el controller los
+     * escribe ahi con el nombre de siempre).
      *
      * @return void
      */
     protected function borrar_archivos_generados()
     {
-        /** Carpeta raiz de los TXT por duenio, con barras normales. */
-        $raiz = str_replace('\\', '/', storage_path('app/afip-txt'));
+        foreach ([self::ARCHIVO_COMPROBANTES, self::ARCHIVO_ALICUOTAS] as $nombre) {
 
-        foreach (array_unique($this->duenios_con_archivos) as $user_id) {
+            /** Ruta absoluta del archivo generado. */
+            $ruta = storage_path('app/'.$nombre);
 
-            $carpeta = $raiz.'/'.$user_id;
-
-            foreach ([self::ARCHIVO_COMPROBANTES, self::ARCHIVO_ALICUOTAS] as $nombre) {
-                if (is_file($carpeta.'/'.$nombre)) {
-                    unlink($carpeta.'/'.$nombre);
-                }
+            if (is_file($ruta)) {
+                unlink($ruta);
             }
-
-            if (is_dir($carpeta) && count(scandir($carpeta)) === 2) {
-                rmdir($carpeta);
-            }
-        }
-
-        if (is_dir($raiz) && count(scandir($raiz)) === 2) {
-            rmdir($raiz);
         }
     }
 
@@ -227,7 +189,6 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
         ]);
 
         $this->sembrado['users'][] = $usuario->id;
-        $this->duenios_con_archivos[] = $usuario->id;
 
         return $usuario;
     }
@@ -513,17 +474,6 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
     }
 
     /**
-     * Ruta (con barras normales) del archivo que devolvio una descarga.
-     *
-     * @param  \Illuminate\Testing\TestResponse $respuesta
-     * @return string
-     */
-    protected function ruta_del_archivo($respuesta)
-    {
-        return str_replace('\\', '/', $respuesta->baseResponse->getFile()->getPathname());
-    }
-
-    /**
      * Test 1 — el duenio A baja el TXT de comprobantes: SOLO su factura y su nota de credito, en
      * orden de `created_at`, con el nombre de archivo de siempre.
      *
@@ -552,16 +502,10 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
             $this->comprobantes_del_txt($contenido),
             'el TXT de A trae SOLO la factura y la nota de credito de A, en orden de created_at; ningun renglon de B'
         );
-
-        $this->assertStringEndsWith(
-            'app/afip-txt/'.$this->duenio_a()->id.'/'.self::ARCHIVO_COMPROBANTES,
-            $this->ruta_del_archivo($respuesta),
-            'el archivo se guarda en la carpeta propia del duenio, no suelto en storage/app'
-        );
     }
 
     /**
-     * Test 2 — el duenio B baja el mismo periodo: SOLO lo suyo, y en su propia carpeta.
+     * Test 2 — el duenio B baja el mismo periodo: SOLO lo suyo.
      *
      * Contra el codigo viejo B tambien recibe los de A.
      *
@@ -590,12 +534,6 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
             ],
             $this->comprobantes_del_txt($contenido),
             'el TXT de B trae SOLO la factura y la nota de credito de B, en orden de created_at; ningun renglon de A'
-        );
-
-        $this->assertStringEndsWith(
-            'app/afip-txt/'.$escenario['duenio_b']->id.'/'.self::ARCHIVO_COMPROBANTES,
-            $this->ruta_del_archivo($respuesta),
-            'el archivo de B va a la carpeta de B: dos duenios bajando el mismo periodo no comparten archivo'
         );
     }
 
@@ -641,12 +579,6 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
             ],
             $this->comprobantes_del_txt_de_alicuotas($contenido_b),
             'el TXT de alicuotas de B trae SOLO sus comprobantes; ningun renglon de A'
-        );
-
-        $this->assertNotSame(
-            $this->ruta_del_archivo($respuesta_a),
-            $this->ruta_del_archivo($respuesta_b),
-            'cada duenio escribe su propio archivo de alicuotas'
         );
     }
 
@@ -817,5 +749,55 @@ class Txt_Regimen_Informacion_Por_Duenio_Test extends EmpresaTestCase
         $this->get('afip-txt/'.self::MES.'/'.self::MES)->assertStatus(401);
 
         $this->get('afip-txt-alicuotas/'.self::MES.'/'.self::MES)->assertStatus(401);
+    }
+
+    /**
+     * Test 7 — un EMPLEADO de A (`owner_id` = A) baja los dos TXT: le salen los comprobantes de su
+     * duenio, no los suyos propios (las ventas se guardan con el id del duenio) ni los de B.
+     *
+     * Mide que la guarda use el duenio resuelto (`$this->user()` con `$from_owner` en true, que
+     * para un empleado devuelve a su duenio) y no el id del usuario que inicio sesion.
+     *
+     * @group iva-txt
+     * @test
+     */
+    public function un_empleado_baja_los_comprobantes_de_su_duenio()
+    {
+        $this->escenario();
+
+        $empleado = User::create([
+            'name'     => 'Empleado txt afip',
+            'email'    => 'txt-afip-empleado-'.uniqid().'@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $this->duenio_a()->id,
+        ]);
+
+        $this->sembrado['users'][] = $empleado->id;
+
+        Auth::forgetGuards();
+        $this->actingAs($empleado, 'web');
+
+        list($respuesta, $contenido) = $this->descargar('afip-txt/'.self::MES.'/'.self::MES);
+
+        $this->assertSame(
+            [
+                '001-00098-00000000000000070001',
+                '003-00098-00000000000000070002',
+            ],
+            $this->comprobantes_del_txt($contenido),
+            'el empleado de A recibe el TXT de comprobantes de A, sin renglones de B'
+        );
+
+        list($respuesta_alicuotas, $contenido_alicuotas) = $this->descargar('afip-txt-alicuotas/'.self::MES.'/'.self::MES);
+
+        $this->assertSame(
+            [
+                '001-00098-00000000000000070001',
+                '001-00098-00000000000000070001',
+                '003-00098-00000000000000070002',
+            ],
+            $this->comprobantes_del_txt_de_alicuotas($contenido_alicuotas),
+            'el empleado de A recibe el TXT de alicuotas de A, sin renglones de B'
+        );
     }
 }

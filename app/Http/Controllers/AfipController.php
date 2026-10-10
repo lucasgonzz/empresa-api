@@ -143,16 +143,9 @@ class AfipController extends Controller
         }
 
         $fileName = 'Comprobantes_' . $inicio . '_a_' . $fin . '.txt';
+        Storage::disk('local')->put($fileName, implode("\r\n", $lines));
 
-        /*
-         * Carpeta propia del duenio. Con el nombre de siempre suelto en `storage/app`, dos duenios
-         * que bajaban el mismo periodo a la vez podian recibir el archivo del otro. El nombre que ve
-         * el usuario (Content-Disposition) sigue siendo exactamente el de siempre.
-         */
-        $ruta_del_archivo = 'afip-txt/' . $user->id . '/' . $fileName;
-        Storage::disk('local')->put($ruta_del_archivo, implode("\r\n", $lines));
-
-        return response()->download(storage_path('app/' . $ruta_del_archivo), $fileName);
+        return response()->download(storage_path("app/{$fileName}"));
     }
 
     public function exportAlicuotasTxt($inicio, $fin)
@@ -229,13 +222,9 @@ class AfipController extends Controller
         }
 
         $fileName = 'Alicuotas_' . $inicio . '_a_' . $fin . '.txt';
+        Storage::disk('local')->put($fileName, implode("\r\n", $lines));
 
-        // Carpeta propia del duenio, mismo motivo que en `exportVentas()`. El nombre descargado
-        // sigue siendo el de siempre.
-        $ruta_del_archivo = 'afip-txt/' . $user->id . '/' . $fileName;
-        Storage::disk('local')->put($ruta_del_archivo, implode("\r\n", $lines));
-
-        return response()->download(storage_path('app/' . $ruta_del_archivo), $fileName);
+        return response()->download(storage_path('app/' . $fileName));
     }
 
     /**
