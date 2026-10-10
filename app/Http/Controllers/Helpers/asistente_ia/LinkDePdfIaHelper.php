@@ -22,9 +22,9 @@ use App\Models\User;
  * ese link, igual que hoy.
  *
  * Las dos rutas son las MISMAS que ya comparte la pantalla por WhatsApp:
- *   - venta → `{api_url}/sale/pdf/{id}` (`routes/web.php:472`), que es lo que arma
+ *   - venta → `{api_url}/sale/pdf/{id}` (ruta `sale/pdf/{id}` de `routes/web.php`), que es lo que arma
  *     `SaleWhatsappSenderService::build_pdf_url()`.
- *   - presupuesto → `{api_url}/budget/pdf/{id}/1/0` (`routes/web.php:514`), con los dos flags
+ *   - presupuesto → `{api_url}/budget/pdf/{id}/1/0` (ruta `budget/pdf/{id}/{with_prices}/{with_images}` de `routes/web.php`), con los dos flags
  *     obligatorios de la ruta; `1/0` (con precios, sin imágenes) es el combo que usa el botón de
  *     WhatsApp de la SPA (`common-vue/sale-print-buttons/WhatsappBtn.vue:186`).
  *
@@ -33,7 +33,7 @@ use App\Models\User;
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
  * 1. **`sale/ticket-pdf/{id}` ES UNA RUTA MUERTA.** `SaleController@ticketPdf` no existe en ningún
- *    lado del repo (el único hit de ese nombre es la propia línea de `routes/web.php:473`), así que
+ *    lado del repo (el único hit de ese nombre es la propia línea de `sale/ticket-pdf/{id}` en `routes/web.php`), así que
  *    esa URL da 500. `sale/ticket-raw` son bytes de impresora, y `sale/afip-ticket-a4-pdf/{id}`
  *    toma el **afip_ticket_id**, no el de la venta. Para "pasame el PDF" va `sale/pdf/{id}` y nada
  *    más: por eso acá hay una constante y no un parámetro.
