@@ -95,18 +95,18 @@ class Carga_prometida_sin_accion_Test extends TestCase
         parent::setUp();
 
         config([
-            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-p65',
-            'services.deepseek.api_key'         => 'clave-deepseek-de-prueba-p65',
-            'services.deepseek.model'           => 'deepseek-general-p65',
-            'services.deepseek.model_agil'      => 'deepseek-flash-p65',
-            'services.deepseek.model_profundo'  => 'deepseek-pro-p65',
-            'services.deepseek.model_vision'    => 'deepseek-vision-p65',
+            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-p66',
+            'services.deepseek.api_key'         => 'clave-deepseek-de-prueba-p66',
+            'services.deepseek.model'           => 'deepseek-general-p66',
+            'services.deepseek.model_agil'      => 'deepseek-flash-p66',
+            'services.deepseek.model_profundo'  => 'deepseek-pro-p66',
+            'services.deepseek.model_vision'    => 'deepseek-vision-p66',
         ]);
 
         $this->comercio = User::create([
-            'name'         => 'Comercio carga prometida P65',
-            'company_name' => 'Ferreteria P65',
-            'email'        => 'carga-p65-' . uniqid() . '@test.local',
+            'name'         => 'Comercio carga prometida P66',
+            'company_name' => 'Ferreteria P66',
+            'email'        => 'carga-p66-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
 
@@ -201,10 +201,10 @@ class Carga_prometida_sin_accion_Test extends TestCase
                     'user_id'            => $this->comercio->id,
                     'auth_user_id'       => $this->comercio->id,
                     'tipo'               => $par[3],
-                    'clave'              => $par[3] . ':p65-' . $indice,
+                    'clave'              => $par[3] . ':p66-' . $indice,
                     'estado'             => $par[2],
                     'datos'              => [],
-                    'presentacion'       => ['titulo' => 'Carga P65', 'renglones' => [], 'aviso' => null],
+                    'presentacion'       => ['titulo' => 'Carga P66', 'renglones' => [], 'aviso' => null],
                     'resuelta_at'        => $par[2] === AiMessageAction::ESTADO_CONFIRMADA ? Carbon::now() : null,
                 ]);
             }
@@ -233,7 +233,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
      */
     protected function tarea_confirmada_en_el_mensaje_anterior($pedido_nuevo, Carbon $fecha)
     {
-        $detalle = 'Llamar a Herramientas del Interior P65';
+        $detalle = 'Llamar a Herramientas del Interior P66';
 
         $conversation = AiConversation::create([
             'user_id'      => $this->comercio->id,
@@ -301,7 +301,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
      * @param  string  $nombre
      * @return ExpenseConcept
      */
-    protected function subcategoria($nombre = 'Alquiler P65')
+    protected function subcategoria($nombre = 'Alquiler P66')
     {
         return ExpenseConcept::create([
             'num'     => (int) ExpenseConcept::where('user_id', $this->comercio->id)->max('num') + 1,
@@ -334,7 +334,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
      * @param  float  $monto
      * @return array
      */
-    protected function bloque_proponer_gasto($subcategoria, $id = 'toolu_p65_gasto', $monto = 400000)
+    protected function bloque_proponer_gasto($subcategoria, $id = 'toolu_p66_gasto', $monto = 400000)
     {
         return $this->tool_use('proponer_gasto', [
             'subcategoria_id' => $subcategoria->id,
@@ -401,7 +401,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
      */
     protected function secuencia()
     {
-        return Http::sequence()->whenEmpty(Http::response(['error' => ['type' => 'api_error', 'message' => 'la secuencia se agotó (P65)']], 500));
+        return Http::sequence()->whenEmpty(Http::response(['error' => ['type' => 'api_error', 'message' => 'la secuencia se agotó (P66)']], 500));
     }
 
     /**
@@ -511,7 +511,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
                 ->push($this->end_turn(self::TEXTO_DE_LUCAS), 200)
-                ->push($this->respuesta('tool_use', [$this->tool_use('proponer_cambios_en_tarea', ['tarea_id' => $tarea->id, 'fecha' => $miercoles->format('Y-m-d')], 'toolu_p65_cambio')]), 200)
+                ->push($this->respuesta('tool_use', [$this->tool_use('proponer_cambios_en_tarea', ['tarea_id' => $tarea->id, 'fecha' => $miercoles->format('Y-m-d')], 'toolu_p66_cambio')]), 200)
                 ->push($this->end_turn('Te dejé la tarjeta para pasar la tarea al miércoles.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -562,7 +562,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
                 ->push($this->end_turn('Listo, la pasé al miércoles.'), 200)
-                ->push($this->respuesta('tool_use', [$this->tool_use('proponer_cambios_en_tarea', ['tarea_id' => $tarea->id, 'fecha' => $miercoles->format('Y-m-d')], 'toolu_p65_cambio')]), 200)
+                ->push($this->respuesta('tool_use', [$this->tool_use('proponer_cambios_en_tarea', ['tarea_id' => $tarea->id, 'fecha' => $miercoles->format('Y-m-d')], 'toolu_p66_cambio')]), 200)
                 ->push($this->end_turn('Listo, la tarea quedó para el miércoles 14/10/2026.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -735,7 +735,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
     {
         $this->en_modo(ConfianzaDelAgenteIaHelper::DIRECTO);
 
-        $proveedor = Provider::create(['name' => 'Distribuidora Norte P65', 'user_id' => $this->comercio->id, 'num' => 1, 'phone' => '3415551234']);
+        $proveedor = Provider::create(['name' => 'Distribuidora Norte P66', 'user_id' => $this->comercio->id, 'num' => 1, 'phone' => '3415551234']);
 
         list($conversation, $assistant) = $this->conversacion_con_historia([
             ['Dá de alta al proveedor Distribuidora Norte, teléfono 3415551234', 'Proveedor Distribuidora Norte creado, teléfono 3415551234.', AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::TIPO_ALTA],
@@ -797,7 +797,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
                     'entidad'  => 'provider',
                     'registro' => $proveedor->id,
                     'cambios'  => ['phone' => '3415559999'],
-                ], 'toolu_p65_edicion')]), 200)
+                ], 'toolu_p66_edicion')]), 200)
                 ->push($this->end_turn('Listo, le cambié el teléfono a Distribuidora Norte: ahora es 3415559999.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -836,7 +836,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
                 ->push($this->end_turn(self::PROMESA_MEDIDA), 200)
-                ->push($this->respuesta('tool_use', [$this->tool_use('proponer_marcar_tarea_hecha', ['tarea_id' => $tarea->id], 'toolu_p65_hecha')]), 200)
+                ->push($this->respuesta('tool_use', [$this->tool_use('proponer_marcar_tarea_hecha', ['tarea_id' => $tarea->id], 'toolu_p66_hecha')]), 200)
                 ->push($this->end_turn('Listo, marqué la tarea como hecha.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -885,7 +885,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         $anterior = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'contenido' => 'Te dejé la tarjeta del alquiler para confirmar.', 'estado' => 'listo', 'acciones_habilitadas' => true]);
 
-        $propuesta = HerramientasDeCarga::ejecutar('proponer_gasto', $this->bloque_proponer_gasto($alquiler, 'toolu_p65_original', 5000)['input'], $conversation, $anterior);
+        $propuesta = HerramientasDeCarga::ejecutar('proponer_gasto', $this->bloque_proponer_gasto($alquiler, 'toolu_p66_original', 5000)['input'], $conversation, $anterior);
 
         $this->assertFalse($propuesta['is_error'], 'La propuesta del fixture tendría que haber dejado la tarjeta.');
 
@@ -901,7 +901,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
                 ->push($this->end_turn('Listo, lo cambié a 6000.'), 200)
-                ->push($this->respuesta('tool_use', [$this->bloque_proponer_gasto($alquiler, 'toolu_p65_correccion', 6000)]), 200)
+                ->push($this->respuesta('tool_use', [$this->bloque_proponer_gasto($alquiler, 'toolu_p66_correccion', 6000)]), 200)
                 ->push($this->end_turn('Te dejé la tarjeta corregida con 6000 para que la confirmes.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -998,7 +998,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
-                ->push($this->respuesta('tool_use', [$this->tool_use('consultar_tareas', [], 'toolu_p65_consulta')]), 200)
+                ->push($this->respuesta('tool_use', [$this->tool_use('consultar_tareas', [], 'toolu_p66_consulta')]), 200)
                 ->push($this->end_turn(self::MARQUE_MEDIDO), 200)
                 ->push($this->end_turn('No encontré ninguna tarea para hoy: ¿cuál es la que llamaste?'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
@@ -1074,7 +1074,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
-                ->push($this->respuesta('tool_use', [$this->tool_use('consultar_tareas', [], 'toolu_p65_consulta')]), 200)
+                ->push($this->respuesta('tool_use', [$this->tool_use('consultar_tareas', [], 'toolu_p66_consulta')]), 200)
                 ->push($this->end_turn(self::CONSULTA_MEDIDA), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -1124,7 +1124,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
     {
         $this->en_modo(ConfianzaDelAgenteIaHelper::DIRECTO);
 
-        $comisiones = $this->subcategoria('Comisiones bancarias P65');
+        $comisiones = $this->subcategoria('Comisiones bancarias P66');
 
         list($conversation, $assistant) = $this->conversacion('Gasté 15000 de comisiones bancarias, en efectivo');
 
@@ -1132,7 +1132,7 @@ class Carga_prometida_sin_accion_Test extends TestCase
 
         Http::fake([
             'api.deepseek.com/*' => $this->secuencia()
-                ->push($this->respuesta('tool_use', [$this->bloque_proponer_gasto($comisiones, 'toolu_p65_gasto', 15000)]), 200)
+                ->push($this->respuesta('tool_use', [$this->bloque_proponer_gasto($comisiones, 'toolu_p66_gasto', 15000)]), 200)
                 ->push($this->end_turn($texto_medido), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
