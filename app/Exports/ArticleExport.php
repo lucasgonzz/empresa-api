@@ -333,7 +333,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         }
 
         // Solo map_propiedades_de_distribuidora() lee el tipo de envase, y solo con la extensión.
-        if (!ExportHelper::tiene_extencion('propiedades_de_distribuidora')) {
+        if (!ExportHelper::tiene_extencion('articulos_con_propiedades_de_distribuidora')) {
             $omitidas['tipo_envase'] = true;
         }
 
