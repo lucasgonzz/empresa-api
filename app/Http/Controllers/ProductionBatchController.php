@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\ProductionBatchMovementHelper;
 use App\Models\ProductionBatch;
 use App\Models\Recipe;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class ProductionBatchController extends Controller
 {
@@ -32,10 +34,18 @@ class ProductionBatchController extends Controller
         $request->validate([
             // 'article_id'                  => 'required|integer',
             'production_batch_status_id'  => 'required|integer',
-            'recipe_id'                   => 'nullable|integer',
+
+            // La receta es obligatoria y tiene que ser de este comercio: de ella sale el articulo
+            // del lote. Antes `Recipe::find(null)->article_id` daba un 500, y con la receta de otro
+            // comercio el lote salia con el articulo ajeno.
+            'recipe_id'                   => ['required', 'integer', Rule::exists('recipes', 'id')->where('user_id', $this->userId())],
             'recipe_route_id'             => 'nullable|integer',
             'planned_amount'              => 'required|numeric|min:0.0001',
             'notes'                       => 'nullable|string',
+        ], [
+            'recipe_id.required'    => 'Elegí la receta que se va a fabricar en el lote.',
+            'recipe_id.integer'     => 'Elegí la receta que se va a fabricar en el lote.',
+            'recipe_id.exists'      => 'La receta elegida no existe.',
         ]);
 
         $recipe = Recipe::find($request->recipe_id);
@@ -87,8 +97,13 @@ class ProductionBatchController extends Controller
 
     public function destroy($id)
     {
-        $model = ProductionBatch::findOrFail($id);
-        $model->delete();
+        // Solo lotes de este comercio: con el findOrFail pelado un id ajeno se llevaba el lote de
+        // otro dueño (la base de produccion compartida tiene 51 comercios).
+        $model = ProductionBatch::where('user_id', $this->userId())->findOrFail($id);
+
+        // Revierte todos los movimientos del lote (insumos devueltos, producto sacado) y recien
+        // despues lo borra, todo en una transaccion.
+        ProductionBatchMovementHelper::delete_batch($model, $this);
 
         return response(null, 204);
     }
