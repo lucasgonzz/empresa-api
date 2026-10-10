@@ -465,6 +465,11 @@ class Insumo_de_ruta_sin_estado_Test extends ProduccionV2TestCase
      * 0. A un movimiento hacia un estado real, ese insumo no le corresponde. Los otros insumos de
      * la misma ruta, con estado real, si se consumen: el test no puede pasar por no consumir nada.
      *
+     * Ojo con lo que prueba: es una GUARDA de comportamiento. Pasaba igual con el codigo anterior,
+     * porque un pivot en 0 nunca coincidio con un movimiento hacia un estado real. Lo que
+     * discrimina el arreglo de calculate_planned_inputs es el test de reflexion de mas abajo
+     * (el_helper_no_planifica...), que llega al caso "destino 0" que el endpoint ya no deja pasar.
+     *
      * @group produccion_v2
      * @test
      */

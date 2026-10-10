@@ -101,7 +101,7 @@ class Notas_de_la_ruta_Test extends ProduccionV2TestCase
             ['article' => $cano, 'amount' => 2, 'order_production_status_id' => $estado->id],
         ]);
 
-        \Illuminate\Support\Facades\DB::table('recipe_routes')->where('id', $ruta->id)->update(['notes' => 'Nota de antes']);
+        DB::table('recipe_routes')->where('id', $ruta->id)->update(['notes' => 'Nota de antes']);
 
         $respuesta = $this->putJson('api/recipe-route/'.$ruta->id, [
             'notes'     => 'Nota nueva',
@@ -132,7 +132,7 @@ class Notas_de_la_ruta_Test extends ProduccionV2TestCase
             ['article' => $cano, 'amount' => 2, 'order_production_status_id' => $estado->id],
         ]);
 
-        \Illuminate\Support\Facades\DB::table('recipe_routes')->where('id', $ruta->id)->update(['notes' => 'Esta nota tiene que sobrevivir']);
+        DB::table('recipe_routes')->where('id', $ruta->id)->update(['notes' => 'Esta nota tiene que sobrevivir']);
 
         $respuesta = $this->putJson('api/recipe-route/'.$ruta->id, [
             'articles' => $this->insumos_del_request($cano, $estado),
@@ -158,7 +158,7 @@ class Notas_de_la_ruta_Test extends ProduccionV2TestCase
             ['article' => $cano, 'amount' => 2, 'order_production_status_id' => $estado->id],
         ]);
 
-        \Illuminate\Support\Facades\DB::table('recipe_routes')->where('id', $ruta->id)->update(['notes' => 'Nota que el usuario borra']);
+        DB::table('recipe_routes')->where('id', $ruta->id)->update(['notes' => 'Nota que el usuario borra']);
 
         $respuesta = $this->putJson('api/recipe-route/'.$ruta->id, [
             'notes'     => '',
@@ -167,6 +167,6 @@ class Notas_de_la_ruta_Test extends ProduccionV2TestCase
 
         $respuesta->assertStatus(200);
 
-        $this->assertNull(\Illuminate\Support\Facades\DB::table('recipe_routes')->where('id', $ruta->id)->value('notes'));
+        $this->assertNull(DB::table('recipe_routes')->where('id', $ruta->id)->value('notes'));
     }
 }
