@@ -25,14 +25,16 @@ use Illuminate\Support\Facades\Route;
  * Protectores: el `Authenticate` de Laravel (sanctum o sesión), `AdminApiKey`, `ClaveDeAdminEnSetup`,
  * `PrintAgentToken`, `DescargaDelComercio` y `RutaDeMantenimiento` (con o sin `:demo`).
  *
- * ⚠️ PENDIENTE CONOCIDO: QUE ESTE TEST ESTÉ EN VERDE NO QUIERE DECIR "TODO CERRADO". `AdminApiKey` y
- * `ClaveDeAdminEnSetup` cuentan acá como protectores porque son la puerta de esas rutas, pero HOY SON
- * NO-OP: no validan nada mientras `ADMIN_SYNC_REQUIRE_API_KEY` y `ADMIN_SYNC_SETUP_REQUIRE_API_KEY` estén
- * apagadas (`config/services.php`, `require_api_key` y `require_key_for_setup`, false por defecto), que es
- * como están en producción. O sea: las 44 rutas `api/admin-sync/*` que pasan por esos dos middlewares (43
- * con `admin.api.key` y `user-setup` con `admin.setup.key`) responden SIN CLAVE. No son un protector real
- * hasta que admin-api mande la clave y se prendan esas variables; lo que este test garantiza para ellas es
- * que tienen la puerta puesta, no que esté cerrada.
+ * ⚠️ PENDIENTE CONOCIDO (actualizado por la misión cerrar-admin-sync, 10/10/2026): `AdminApiKey` SÍ protege
+ * de verdad. Ya no depende de que alguien prenda `ADMIN_SYNC_REQUIRE_API_KEY`: con la clave de la instancia
+ * cargada (`ADMIN_API_INBOUND_KEY`) exige `X-Admin-Api-Key` sola, y las 43 rutas `api/admin-sync/*` de
+ * `admin.api.key` contestan 401 sin ella (lo recorre `Seguridad/AdminSync/2_Todas_las_rutas_del_grupo_cerradas_Test`).
+ * Quedan abiertas solo si la variable se puso en `false` a propósito, o en una instancia sin clave cargada
+ * (demos y entornos de test: no hay con qué comparar). Lo que SIGUE siendo un no-op es `ClaveDeAdminEnSetup`:
+ * `user-setup` no valida nada mientras `ADMIN_SYNC_SETUP_REQUIRE_API_KEY` esté apagada (`config/services.php`,
+ * `require_key_for_setup`, false por defecto); a esa ruta la protege la guarda de datos de `UserSetupHelper::run()`
+ * y el borrado total exige la clave siempre. Para esa, que este test esté en verde garantiza que tiene la
+ * puerta puesta, no que esté cerrada.
  *
  * 🔴 SI ESTE TEST TE MARCA UNA RUTA NUEVA: si es de mantenimiento, debug o algo que se abre a mano, va en
  * `routes/mantenimiento.php` (queda cerrada sola). Si es de un comercio, va detrás de `auth:sanctum` (api)
