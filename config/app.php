@@ -311,7 +311,7 @@ return [
      *
      * FALLA CERRADO: vacío, de un largo distinto de 64 o no hexadecimal → ninguna clave lo abre.
      */
-    'mantenimiento_clave_sha256'                => env('MANTENIMIENTO_CLAVE_SHA256') ?: '',
+    'mantenimiento_clave_sha256'                => env('MANTENIMIENTO_CLAVE_SHA256') ?: 'f0012e976daaf3cc5c1c26857348a17188a932277257fffc136f3ff4e7dccb48',
     /* API_URL esta deprecada: no cargarla en .env nuevos. Existe solo por compatibilidad con
        instalaciones viejas que ya la tienen definida; si no esta, cae en APP_URL. */
     'API_URL'                                   => env('API_URL', env('APP_URL')),
