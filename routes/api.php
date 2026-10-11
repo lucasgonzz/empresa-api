@@ -300,6 +300,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // cheques-endoso-y-bancos, 21/9/2026). También baja por recursos-iniciales.
     Route::resource('cheque-banco', 'ChequeBancoController');
 
+    // Impuestos de retención propios del comercio, además de Ganancias/IVA/IIBB (misión
+    // retenciones-abm-impuestos, 8/10/2026). También baja por recursos-iniciales.
+    Route::resource('retencion-impuesto', 'RetencionImpuestoController');
+
     // Balanzas del comercio: cómo leer los tickets de cada una y a qué artículo imputarlos, para la
     // lectura "por balanza" de VENDER (misión balanzas-configurables, 3/10/2026). También baja por
     // recursos-iniciales (la SPA las usa para leer tickets sin conexión).
@@ -394,6 +398,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::put('sale/{sale_id}/delivery-info', 'SaleController@update_delivery_info');
     Route::get('sale/{sale_id}/ticket-2-logo', 'SaleController@ticket_logo_raster');
+    // Ticket de comandera armado con un diseño de ticket (misión diseno-ticket-comandera,
+    // 9/10/2026): los bytes ESC/POS (o el texto, con formato=texto) que el Ticket 2.0 manda a la
+    // impresora. Con un perfil sin diseño responde disenado:false y el SPA imprime el de siempre.
+    Route::get('sale/{sale_id}/ticket-comandera', 'SaleController@ticket_comandera');
     Route::post('sale/{sale_id}/send-client-mail', 'SaleController@send_client_mail');
     Route::post('sale/send-client-mail-bulk', 'SaleController@send_client_mail_bulk');
     Route::put('sale/{sale_id}/etiqueta-sender', 'SaleController@update_etiqueta_sender');
@@ -683,6 +691,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('/cheque/pagar', 'ChequeController@pagar');
     Route::put('/cheque/rechazar', 'ChequeController@rechazar');
     Route::put('/cheque/endosar', 'ChequeController@endosar');
+    // El "Rechazado por proveedor" de un cheque EMITIDO, que le carga la nota de débito al proveedor
+    // (misión cheques-emitidos-rechazo-proveedor, 9/10/2026). También antes de PUT /cheque/{id}.
+    Route::put('/cheque/rechazar-por-proveedor', 'ChequeController@rechazar_por_proveedor');
+    // La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): solo número, banco, notas,
+    // fecha de emisión y fecha de pago. 🔴 Va DESPUÉS de las PUT fijas (cobrar, pagar, rechazar, endosar): si va
+    // antes, {id} las captura y `PUT cheque/cobrar` terminaría en update().
+    Route::put('/cheque/{id}', 'ChequeController@update');
     Route::delete('/cheque/{id}', 'ChequeController@destroy');
 
 
@@ -886,6 +901,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
     Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
+    // Tipos de hoja de los diseños de PDF: los del sistema y los anchos de comandera propios del
+    // negocio (misión diseno-ticket-comandera, 9/10/2026, contrato §3.1).
+    Route::get('sheet-types', 'SheetTypeController@index');
+    Route::post('sheet-types', 'SheetTypeController@store');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
     Route::post('etiqueta-medidas', 'EtiquetaMedidaController@store');
@@ -1094,6 +1113,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): ABM -> Artículos -> "Diseños de etiquetas".
     // El PDF sigue saliendo por la ruta web article/tickets-pdf/{ids}, ahora con ?article_ticket_design_id=.
     Route::resource('article-ticket-design', 'ArticleTicketDesignController')->except(['create', 'edit']);
+
+    // Token del link de un PDF para compartir (misión pdf-de-venta-publico, 10/10/2026): el botón de
+    // WhatsApp de la SPA lo suma como ?t= al link de la venta o del presupuesto. Solo para recursos del
+    // dueño de la sesión y de los tipos que admiten token; si no, 404.
+    Route::get('pdf-link/{tipo}/{id}', 'PdfLinkController@show');
 
 
 });
@@ -1414,7 +1438,9 @@ Route::get('plan-feature', 'PlanFeatureController@index');
 // demo-setup sin middleware para integración directa desde admin-api sin API key.
 // user-setup lleva `admin.setup.key` (ClaveDeAdminEnSetup): hoy es una pasada libre porque la clave
 // está apagada por defecto (ADMIN_SYNC_SETUP_REQUIRE_API_KEY) hasta que admin-api mande el header;
-// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run().
+// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run(). Pasada libre para
+// el setup normal, no para el borrado total: vaciar una base con datos exige la clave de admin
+// SIEMPRE, aunque esa variable esté apagada (misión cerrar-forzado-user-setup, 10/10/2026).
 Route::prefix('admin-sync')
     ->group(function () {
         Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');

@@ -446,7 +446,11 @@ class EsquemaDeDatosIaHelper
             'recipe_route_types',
         ],
         'stock' => ['stock_movements', 'deposit_movements', 'deposits', 'addresses', 'stock_suggestions', 'inventory_linkages'],
-        'configuracion' => ['users', 'pdf_column_profiles', 'whatsapp_templates', 'localidads', 'locations', 'provincias', 'support_tickets'],
+        /**
+         * `sheet_types` tiene user_id desde la misión diseno-ticket-comandera (9/10/2026): los anchos
+         * de comandera propios del negocio. Va al lado de los diseños de PDF que los usan.
+         */
+        'configuracion' => ['users', 'pdf_column_profiles', 'sheet_types', 'whatsapp_templates', 'localidads', 'locations', 'provincias', 'support_tickets'],
     ];
 
     /**

@@ -216,6 +216,9 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
         $empleado = User::create([
             'name'             => 'zz-p54 Brisa ' . uniqid(),
             'email'            => 'empleado-p54-' . uniqid() . '@test.local',
+            // Con documento: desde el 9/10/2026 `EmployeeController::update()` exige nombre, documento y
+            // contraseña (sin documento el empleado no puede iniciar sesión) y contesta 422 sin escribir nada.
+            'doc_number'       => 'DOC-P54-' . uniqid(),
             'password'         => Hash::make(is_null($visible_password) ? 'otra' : $visible_password),
             'visible_password' => $visible_password,
             'owner_id'         => $this->dueno->id,

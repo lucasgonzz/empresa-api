@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\Article;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use Carbon\Carbon;
@@ -23,6 +24,10 @@ class SaleProviderOrderHelper {
 		            'provider_id' => $provider->id,
 		            'user_id'     => $client_comercio_city->id,
 		            'provider_order_status_id'	=> 1,
+		            // Mision factura-compra-tres-defectos (9/10/2026): con un modo que se vea al
+		            // abrirla. En NULL el select decia "Seleccione" y la compra se comportaba como
+		            // manual sin decirlo; 'manual' es ese mismo comportamiento, a la vista.
+		            'modo_facturacion'			=> ModoFacturacionHelper::MANUAL,
 		        ]);
 		        Self::attachArticles($sale, $provider_order, $client_comercio_city);
 		        $instance->sendAddModelNotification('provider_order', $provider_order->id, false, $client_comercio_city->id);

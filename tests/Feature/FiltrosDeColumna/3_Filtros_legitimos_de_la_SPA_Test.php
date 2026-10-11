@@ -87,7 +87,7 @@ class Filtros_legitimos_de_la_SPA_Test extends FiltrosDeColumnaTestCase
         ['meli_buying_mode_id', 'select', null],
         ['meli_item_condition_id', 'select', null],
         ['meli_descripcion', 'textarea', null],
-        ['unidades_por_bulto', 'text', null],
+        ['unidades_por_bulto', 'number', null],
         ['contenido', 'text', null],
         ['tipo_envase_id', 'select', null],
         ['default_in_vender', 'number', null],

@@ -35,7 +35,9 @@ class UserSetupController extends Controller
      * borrado total, y no por omisión sino a propósito: el run() recibe el request SIN
      * `forzar_borrado_total` ni `confirmar_base_de_datos`, así que aunque alguien los mande a
      * mano en el POST se ignoran. El que de verdad necesite re-correr el setup sobre una base
-     * con datos lo hace por admin-sync/user-setup, con esos dos campos.
+     * con datos lo hace por admin-sync/user-setup, con esos dos campos Y la clave de admin de la
+     * instancia en X-Admin-Api-Key (desde el servidor del cliente, con la clave de su `.env`; ver
+     * BorradoTotalDeBaseHelper).
      */
     public function setup(Request $request)
     {
@@ -52,7 +54,10 @@ class UserSetupController extends Controller
          * de la base —que suele coincidir con el subdominio del cliente— vaciaría una base de
          * producción, que es justo lo que la guarda existe para impedir. Confirmado en vivo en la
          * verificación de la misión blindar-user-setup. Si te tienta volver a `$request->all()`
-         * "porque es lo mismo que hace la API", no lo es: la API es la puerta que sí puede forzar.
+         * "porque es lo mismo que hace la API", no lo es: la API puede forzar, pero solo con la clave
+         * de admin verificada (misión cerrar-forzado-user-setup, 10/10/2026), y acá no se verifica
+         * ninguna clave. Desde esa misión run() sin la clave ya no fuerza aunque le lleguen los dos
+         * campos; sacarlos acá queda como segunda capa, por si alguien un día le pasa un `true`.
          */
         $datos = $request->except([BorradoTotalDeBaseHelper::FLAG, BorradoTotalDeBaseHelper::CONFIRMACION]);
 

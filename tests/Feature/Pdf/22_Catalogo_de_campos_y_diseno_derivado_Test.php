@@ -40,7 +40,15 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
 
     const URL = 'api/pdf-column-profiles/page-layout-catalog';
 
-    /** Claves exactas de la respuesta (contrato §2.3). */
+    /**
+     * Claves exactas de la respuesta de una HOJA (contrato §2.3).
+     *
+     * Cambio de especificación declarado (misión diseno-ticket-comandera, 9/10/2026, contrato §3.3
+     * de su plan): el catálogo suma en TODOS los casos `es_ticket`, `grilla_de_tabla` y
+     * `columnas_sugeridas`, después de las nueve de siempre (que no cambian ni de orden ni de
+     * valor). Las tres que solo lleva un ticket (`ancho_mm`, `caracteres_por_renglon`,
+     * `tamanos_de_ticket`) no salen en una hoja: las cubre el test 31.
+     */
     const CLAVES_DE_LA_RESPUESTA = [
         'model_name',
         'es_fiscal',
@@ -51,6 +59,9 @@ class Catalogo_de_campos_y_diseno_derivado_Test extends TestCase
         'limites',
         'diseno_derivado',
         'comprobante_de_prueba',
+        'es_ticket',
+        'grilla_de_tabla',
+        'columnas_sugeridas',
     ];
 
     /**

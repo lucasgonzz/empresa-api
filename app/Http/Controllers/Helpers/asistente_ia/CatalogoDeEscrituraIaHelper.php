@@ -307,7 +307,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'client_pesos_id', 'comercio_city_user_id'],
             'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'client', 'params' => [], 'texto' => 'Ver en Clientes'],
+            // `view` es la solapa: sin ella /clientes dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'client', 'params' => ['view' => 'clientes'], 'texto' => 'Ver en Clientes'],
             'aviso_de_baja'      => 'El cliente va a la papelera con su cuenta corriente. Sus ventas quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -321,7 +323,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'comercio_city_user_id', 'should_update_prices', 'precios_incluyen_iva'],
             'claves_de_pantalla' => ['childrens' => []],
-            'ruta'               => ['name' => 'provider', 'params' => [], 'texto' => 'Ver en Proveedores'],
+            // `view` es la solapa: sin ella /proveedores dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'provider', 'params' => ['view' => 'proveedores'], 'texto' => 'Ver en Proveedores'],
             'aviso_de_baja'      => 'El proveedor va a la papelera. Sus artículos y sus compras quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -601,20 +605,6 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_alta'      => null,
             'extension'          => null,
             'revisado'           => 'SaleSenderInfoController: lee con $request->input(); sin efectos.',
-        ],
-        'dealer' => [
-            'etiqueta'           => 'repartidores',
-            'singular'           => 'repartidor',
-            'genero'             => 'm',
-            'descripcion'        => 'Los repartidores (ABM > Ventas).',
-            'operaciones'        => null,
-            'solo_lectura'       => [],
-            'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'abm', 'params' => ['view' => 'ventas', 'sub_view' => 'repartidores'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => null,
-            'aviso_de_alta'      => null,
-            'extension'          => null,
-            'revisado'           => 'DealerController: solo name.',
         ],
         'tipo_envase' => [
             'etiqueta'           => 'tipos de envase',
@@ -904,6 +894,8 @@ class CatalogoDeEscrituraIaHelper
         'client_offer'                 => 'tiene su herramienta (proponer_oferta)',
         'provider_order'               => 'compra con factura: tiene su herramienta y su store() abre transacción y toca stock y cuenta corriente',
         'pdf_column_profiles'          => 'diseños de PDF: tienen su herramienta (proponer_cambio_en_diseno_pdf)',
+        // Misión diseno-ticket-comandera (9/10/2026): `sheet_types` sumó user_id y `POST api/sheet-types`.
+        'sheet_types'                  => 'tipos de hoja: un ancho de comandera se agrega desde el formulario de Diseño de PDF ("+ Agregar un ancho de comandera"), no es un registro del negocio',
         // Del plan: próximas o fuera del alcance.
         'budget'                       => 'presupuesto: tan complejo como la venta, con renglones',
         'movimiento_caja'              => 'plata de caja',
@@ -1011,6 +1003,20 @@ class CatalogoDeEscrituraIaHelper
          * dueño; la baja siempre deja tarjeta).
          */
         'balanza'                      => 'balanzas: su store() lee el request por un helper (la guarda no ve campos), no rige sin "Por balanza" en Configuración y sus datos salen de la etiqueta de la balanza física',
+        /*
+         * Impuestos de retención propios (misión retenciones-abm-impuestos, 8/10/2026). Es un catálogo
+         * por dueño con `name` y nada más, como `cheque_banco`, y su controller scopea y valida por su
+         * cuenta (404 de otra cuenta, 422 si el nombre se repite o si la baja dejaría certificados
+         * huérfanos). Se deja FUERA del ABM genérico a propósito: lo que se ofrece en el selector del
+         * cobro decide en qué renglón de la Posición Fiscal cae un certificado, y esta misión no
+         * quiere que un impuesto fiscal nazca de una frase de chat. Se da de alta desde el ABM de
+         * Tesorería. Reabrir la decisión es mover esta entrada a ENTIDADES con las tres operaciones.
+         *
+         * Esto lo deja afuera del ABM genérico (proponer_alta / proponer_edicion / proponer_baja), no
+         * del asistente: igual que `balanza`, sus rutas siguen ofrecidas por el catálogo de acciones de
+         * pantalla (el alta y la edición pasan por el modo de confianza del dueño; la baja deja tarjeta).
+         */
+        'retencion_impuesto'           => 'impuestos de retención propios: se dan de alta desde el ABM de Tesorería, porque deciden en qué renglón de la Posición Fiscal cae un certificado',
     ];
 
     /**

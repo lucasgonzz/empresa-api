@@ -463,8 +463,18 @@ class PdfColumnService
      */
     public static function get_profile_for_print($user_id, $model_name, $profile_id = null, $only_afip_ticket_profile = null, $prefer_default_column = null)
     {
+        /**
+         * 🔴 Solo perfiles de HOJA (misión diseno-ticket-comandera, 9/10/2026, decisión D4): un
+         * perfil de ticket de comandera se imprime directo en la impresora (ESC/POS), nunca como
+         * PDF. Con el filtro en la consulta base, un `?pdf_column_profile_id=` que apunta a un
+         * ticket no se encuentra y cae al por defecto de hoja, igual que un id de otro dueño; y el
+         * "por defecto" o el "Predeterminado Tienda" nunca puede ser un ticket. Lo usan todos los
+         * PDF de venta (NewSalePdf, SaleLayoutPdf, SaleAfipTicketPdf) y los de presupuesto y
+         * pedido online.
+         */
         $query = PdfColumnProfile::where('user_id', $user_id)
-            ->where('model_name', $model_name);
+            ->where('model_name', $model_name)
+            ->deHoja();
 
         if ($only_afip_ticket_profile === true) {
             $query->where('is_afip_ticket', true);

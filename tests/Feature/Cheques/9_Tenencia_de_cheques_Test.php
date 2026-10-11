@@ -331,9 +331,9 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
         $this->assertSame(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Los ids basura no movieron ninguna caja.');
 
         // Y lo propio sigue andando: rechazar el cheque propio, con el cuerpo que manda la SPA, es
-        // un 200 con el cheque rechazado. (El motivo no se mira: la SPA lo manda como `notas`, la API
-        // lee `rechazado_observaciones` y esa columna es un entero. Es un defecto aparte, no de
-        // tenencia, y queda en los hallazgos de la misión.)
+        // un 200 con el cheque rechazado. (El motivo no se mira acá: es de la misión
+        // cheque-motivo-rechazo, 9/10/2026, que pasó la columna a texto y hace que la API lea
+        // `notas` además de `rechazado_observaciones`. Lo cubre Motivo_del_rechazo_Test.)
         $response = $this->putJson('api/cheque/rechazar', ['cheque_id' => $propio->id, 'notas' => 'Sin fondos']);
 
         $this->assertSame(200, $response->getStatusCode(), 'rechazar un cheque propio: ' . $this->resumen($response));
@@ -1828,6 +1828,16 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
                 'tenencia' => 'cuerpo: cheque_id por cheque_del_dueno() (+ ChequeHelper::problemas_de_endoso_en_payload) y provider_id por proveedor_del_dueno() -> 422, antes de escribir nada; el cheque_banco_id de la copia, por ChequeHelper::cheque_banco_id_de(..., dueño).',
                 'prueba'   => 'Tenencia_de_cheques_Test::no_se_endosa_a_un_proveedor_de_otro_dueno; Endosar_desde_el_modulo_Test; Prevalidacion_de_endoso_Test::un_cheque_id_que_no_es_numero_es_sin_cheque_en_las_tres_puertas',
             ],
+            'PUT api/cheque/rechazar-por-proveedor' => [
+                'accion'   => $cheque . 'rechazar_por_proveedor',
+                'tenencia' => 'cuerpo: cheque_id por cheque_del_dueno() -> 422, antes de escribir nada; la nota de débito va a la cuenta del pago del cheque solo si ese pago es del mismo proveedor, el proveedor es del dueño (ChequeHelper::id_del_dueno, borrado incluido) y la cuenta es de ese proveedor.',
+                'prueba'   => 'Rechazado_por_proveedor_Test::un_cheque_ajeno_inexistente_o_que_no_es_un_id_da_422',
+            ],
+            'PUT api/cheque/{id}' => [
+                'accion'   => $cheque . 'update',
+                'tenencia' => 'ruta: cheque_del_dueno($id) (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El cheque no existe o no es de tu cuenta.", el mismo cuerpo para ajeno, inexistente y basura; el banco del cuerpo, por ChequeHelper::id_del_dueno(ChequeBanco) -> 422, antes de escribir nada; el par endosado se busca siempre con user_id = dueño.',
+                'prueba'   => 'Edicion_acotada_Test::un_cheque_ajeno_inexistente_o_basura_es_404_y_no_toca_nada, ::un_banco_ajeno_o_inexistente_es_422_y_no_escribe_nada y ::un_cheque_endosado_replica_al_otro_papel_todo_menos_las_notas (la copia de otro dueño no se toca)',
+            ],
             'DELETE api/cheque/{id}' => [
                 'accion'   => $cheque . 'destroy',
                 'tenencia' => 'ruta: cheque_del_dueno($id) (id leído con ChequeHelper::id_del_pedido()) -> 404 JSON "El cheque no existe o no es de tu cuenta.", el mismo cuerpo para ajeno, inexistente y basura.',
@@ -1890,7 +1900,7 @@ class Tenencia_de_cheques_Test extends ChequesTestCase
     /**
      * Los tres pedidos que reciben un cheque por el cuerpo, con las claves que manda la SPA
      * (cheques/list/modals/{Cobrar,Pagar,Rechazar}Cheque.vue de develop). Rechazar manda `notas`,
-     * no `rechazado_observaciones`.
+     * no `rechazado_observaciones` (desde la misión cheque-motivo-rechazo la API lee las dos).
      *
      * @param mixed $cheque_id
      * @param mixed $caja_id

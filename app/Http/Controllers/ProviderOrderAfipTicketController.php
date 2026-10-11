@@ -118,7 +118,12 @@ class ProviderOrderAfipTicketController extends Controller
          */
         $provider_order_id = $model->provider_order_id;
 
-        $model->delete();
+        /*
+         * Con sus alícuotas (misión factura-compra-tres-defectos, 9/10/2026): un `$model->delete()`
+         * suelto dejaba el desglose de IVA colgando de una factura que ya no existía. El único
+         * lugar que borra facturas de compra es FacturaDeCompraHelper::borrar_facturas().
+         */
+        FacturaDeCompraHelper::borrar_facturas([$model->id]);
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('provider_order_afip_ticket', $model->id);
 

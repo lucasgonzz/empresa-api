@@ -248,12 +248,20 @@ class PropuestaGastoIaHelper {
             'payment_methods'    => $payment_methods,
         ], $contexto->owner_id, $num_expense_resolver);
 
+        /*
+         * `fecha` (Y-m-d) es el día que tiene que mostrar Gastos para que se vea el gasto: el
+         * listado es por día (from-date) y un gasto con fecha anterior queda en ESE día, no en hoy.
+         * La lee la SPA al tocar "Ver en Gastos" (ai_chat/refrescarPantallaDeLaAccion); es una
+         * clave nueva y opcional: una SPA vieja la ignora, y una SPA nueva con una tarjeta vieja
+         * (sin `fecha`) abre hoy (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+         */
         return [
             'texto' => 'Gasto N° '.$gasto->num.' registrado',
             'ruta'  => [
                 'name'   => 'expense',
                 'params' => new \stdClass(),
                 'texto'  => 'Ver en Gastos',
+                'fecha'  => substr($created_at, 0, 10),
             ],
         ];
     }

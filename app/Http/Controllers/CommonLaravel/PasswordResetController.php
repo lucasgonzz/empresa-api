@@ -10,21 +10,87 @@ use App\Mail\PasswordReset;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 
+/**
+ * Recuperación de contraseña por código al mail (`POST /password-reset/*` de routes/web.php, públicas a
+ * propósito: las usa alguien que no puede iniciar sesión).
+ *
+ * 🔴 HASTA EL 10/10/2026 (misión cerrar-rutas-web-publicas) `update-password` cambiaba la contraseña de
+ * CUALQUIER usuario con solo su email, sin mirar el código, y lo dejaba logueado. Además
+ * `check-verification-code` daba `verified: true` con `null == null` (un usuario que nunca pidió código y
+ * un pedido sin código) y 500 con un email inexistente.
+ *
+ * Cómo funciona ahora (compatible con la SPA de hoy, que en el paso 3 ya manda `email` +
+ * `verification_code` + `password`, en `Step3.vue`, con todo `register_user`):
+ *   - `send-verification-code` genera un código de 6 dígitos con `random_int` y lo guarda en CACHÉ, como
+ *     sha256 y con un contador de intentos, por 30 minutos. Cada pedido nuevo reemplaza al anterior.
+ *   - `check-verification-code` lo compara SIN consumirlo (la SPA lo vuelve a mandar en el paso 3).
+ *   - `update-password` exige el código: sin uno válido, 422 con forma de validación y no toca nada; con
+ *     uno válido cambia la contraseña, BORRA el código (no se reusa) y loguea como siempre.
+ *   - Cada código equivocado (en check o en update) suma un intento; al 5.º el código muere y hay que
+ *     pedir otro. Con códigos de 6 dígitos (`random_int(100000, 999999)`: 900.000 combinaciones), sin
+ *     esto se probaban todas sin límite.
+ *   - Y pedir otro tiene tope: CODIGOS_POR_HORA_MAXIMOS por usuario en una ventana fija de 60 minutos
+ *     (ver puede_emitir_otro_codigo()). Sin ese tope, el de intentos no sirve de nada.
+ *
+ * POR QUÉ EN CACHÉ Y NO EN `users.verification_code`: esa columna NO EXISTE en una instalación nueva (está
+ * comentada en `2014_10_12_000000_create_users_table.php` desde 2023; solo `buyers` la tiene), así que en
+ * cualquier base armada con las migraciones `send-verification-code` daba 500 antes de mandar el mail. La
+ * columna, donde existe, ya no se lee ni se escribe.
+ */
 class PasswordResetController extends Controller
 {
+    /** Minutos que vive un código desde que se pide. */
+    const MINUTOS_DE_VIDA_DEL_CODIGO = 30;
+
+    /** Al llegar a esta cantidad de intentos fallidos, el código se invalida. */
+    const INTENTOS_FALLIDOS_MAXIMOS = 5;
+
+    /**
+     * Códigos que se le pueden emitir a un usuario por ventana de VENTANA_DE_PEDIDOS_EN_MINUTOS.
+     *
+     * 🔴 SIN ESTE TOPE, EL DE INTENTOS NO SIRVE: cada código nuevo arranca con 0 intentos, así que pidiendo
+     * otro código cada 5 intentos fallidos se probaban combinaciones sin ningún límite (y cada pedido le
+     * manda un mail al dueño de la cuenta). Con 5 códigos × 5 intentos son 25 intentos por hora contra
+     * 900.000 combinaciones posibles; y de paso no se le puede llenar la casilla al dueño con pedidos.
+     */
+    const CODIGOS_POR_HORA_MAXIMOS = 5;
+
+    /** Ventana FIJA (desde el primer pedido, no se corre con cada uno) del tope de códigos emitidos. */
+    const VENTANA_DE_PEDIDOS_EN_MINUTOS = 60;
+
+    /** Largo mínimo de la contraseña nueva (la SPA exige más de 6: lo que manda siempre pasa). */
+    const MINIMO_DE_LA_CONTRASENA = 6;
 
     function sendVerificationCode(Request $request) {
-        $user = User::where('email', $request->email)
-                    ->first();
+        $user = $this->usuario_del_pedido($request);
         if (is_null($user)) {
             return response()->json(['email_send' => false], 200);
         }
-        $code = rand(100000, 999999);
-        $user->verification_code = $code;
-        $user->save();
+
+        /*
+         * Tope de códigos por hora (ver CODIGOS_POR_HORA_MAXIMOS). Pasado el tope NO se genera código, NO se
+         * manda mail y NO se toca el código pendiente (el último que se mandó sigue sirviendo). 422 con FORMA
+         * DE VALIDACIÓN (`message` + `errors`): el interceptor global de axios de la SPA
+         * (`show_laravel_validation_toast`) lo muestra como toast con el motivo, igual que el mail rechazado.
+         */
+        if (!$this->puede_emitir_otro_codigo($user)) {
+            return response()->json([
+                'email_send' => false,
+                'message'    => 'Demasiados pedidos de código',
+                'errors'     => [
+                    'email' => ['Pediste demasiados códigos de recuperación. Esperá una hora y volvé a intentar.'],
+                ],
+            ], 422);
+        }
+
+        // random_int y no rand(): es un secreto, tiene que salir de un generador criptográfico.
+        $code = random_int(100000, 999999);
+        $this->guardar_codigo($user, $code);
+        $this->contar_codigo_emitido($user);
 
         try {
             Mail::to($user)->send(new PasswordReset($code));
@@ -57,23 +123,247 @@ class PasswordResetController extends Controller
     }
 
     function checkVerificationCode(Request $request) {
-        $user = User::where('email', $request->email)
-                        ->first();
-        if ($user->verification_code == $request->verification_code) {
-            return response()->json(['verified' => true], 200);
+        $user = $this->usuario_del_pedido($request);
+
+        // Email inexistente, sin código pendiente, vencido o equivocado: la misma respuesta de "código
+        // incorrecto" que la SPA ya sabe mostrar (200 `verified: false`), nunca un 500.
+        if (is_null($user) || !$this->codigo_valido($user, $request->verification_code)) {
+            return response()->json(['verified' => false], 200);
         }
-        return response()->json(['verified' => false], 200);
+
+        // No se consume acá: la SPA vuelve a mandar el mismo código en el paso 3 (update-password).
+        return response()->json(['verified' => true], 200);
     }
 
     function updatePassword(Request $request) {
-        $user = User::where('email', $request->email)
-                        ->first();
+        /*
+         * La contraseña nueva se valida ANTES que el código, a propósito: una contraseña mala no consume el
+         * código ni le suma un intento (el usuario la corrige y reintenta con el mismo código), y como no
+         * mira el email tampoco dice si la cuenta existe. Mínimo MINIMO_DE_LA_CONTRASENA caracteres: la SPA
+         * ya exige más de 6 (Step3.vue), así que lo que manda la SPA de hoy siempre pasa. Antes de esto un
+         * pedido con el código bueno y sin `password` dejaba la contraseña en vacío.
+         */
+        if (!$this->contrasena_nueva_valida($request->input('password'))) {
+            return response()->json([
+                'password_updated' => false,
+                'message'          => 'La contraseña nueva no es válida',
+                'errors'           => [
+                    'password' => ['La contraseña nueva tiene que tener al menos ' . self::MINIMO_DE_LA_CONTRASENA . ' caracteres.'],
+                ],
+            ], 422);
+        }
+
+        $user = $this->usuario_del_pedido($request);
+
+        /*
+         * Sin un código válido no se toca la contraseña ni se loguea a nadie. 422 con FORMA DE VALIDACIÓN
+         * (`message` + `errors`): el interceptor global de axios de la SPA lo convierte en un toast con el
+         * motivo, y el `.then` de Step3.vue no corre (no navega ni pide `auth/me`). La MISMA respuesta para
+         * un email que no existe: si fuera distinta, este endpoint diría qué emails tienen cuenta.
+         */
+        if (is_null($user) || !$this->codigo_valido($user, $request->verification_code)) {
+            return response()->json([
+                'password_updated' => false,
+                'message'          => 'No se pudo cambiar la contraseña',
+                'errors'           => [
+                    'verification_code' => ['El código de verificación no es válido o venció. Pedí uno nuevo y volvé a intentar.'],
+                ],
+            ], 422);
+        }
+
+        // Un código sirve una sola vez: se borra antes de cambiar nada.
+        Cache::forget($this->clave_de_cache($user));
+
         $user->password = bcrypt($request->password);
         $user->save();
 
         if (Auth::attempt(['email' => $request->email, 'password' => $request->password], false)) {
             return response()->json(['password_updated' => true], 200);
         }
+    }
+
+    /**
+     * El usuario del email del pedido, o null.
+     *
+     * Solo con un email de texto no vacío: con `email` ausente, `where('email', null)` se convierte en
+     * `whereNull('email')` y devolvería cualquier usuario sin email (un empleado, por ejemplo).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \App\Models\User|null
+     */
+    protected function usuario_del_pedido(Request $request)
+    {
+        $email = $request->input('email');
+
+        if (!is_string($email) || trim($email) === '') {
+            return null;
+        }
+
+        return User::where('email', $email)->first();
+    }
+
+    /**
+     * ¿La contraseña nueva es texto, no está vacía (ni es solo espacios) y tiene al menos
+     * MINIMO_DE_LA_CONTRASENA caracteres? Se cuentan caracteres, no bytes. `password` no pasa por
+     * TrimStrings (está en su lista de excepciones): los espacios cuentan como parte de la contraseña.
+     *
+     * @param  mixed  $contrasena
+     * @return bool
+     */
+    protected function contrasena_nueva_valida($contrasena)
+    {
+        if (!is_string($contrasena) || trim($contrasena) === '') {
+            return false;
+        }
+
+        return mb_strlen($contrasena) >= self::MINIMO_DE_LA_CONTRASENA;
+    }
+
+    /**
+     * Clave de caché del código pendiente de un usuario (uno por usuario: pedir otro pisa el anterior).
+     *
+     * @param  \App\Models\User  $user
+     * @return string
+     */
+    protected function clave_de_cache(User $user)
+    {
+        return 'password_reset:' . $user->id;
+    }
+
+    /**
+     * Clave de caché del contador de códigos emitidos de un usuario. Es APARTE del código pendiente a
+     * propósito: emitir un código nuevo pisa el pendiente, pero este contador no se reinicia.
+     *
+     * @param  \App\Models\User  $user
+     * @return string
+     */
+    protected function clave_de_pedidos(User $user)
+    {
+        return 'password_reset_pedidos:' . $user->id;
+    }
+
+    /**
+     * Los pedidos de la ventana vigente del usuario: `desde` (timestamp del primero) y `cantidad`. Una
+     * ventana vencida, o nada guardado, cuenta como ventana nueva (null).
+     *
+     * @param  \App\Models\User  $user
+     * @return array|null
+     */
+    protected function pedidos_de_la_ventana(User $user)
+    {
+        $pedidos = Cache::get($this->clave_de_pedidos($user));
+
+        if (!is_array($pedidos) || !isset($pedidos['desde'], $pedidos['cantidad'])) {
+            return null;
+        }
+
+        // now() y no time(): el reloj de Carbon es el que mueven los tests.
+        if ((int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 <= now()->getTimestamp()) {
+            return null;
+        }
+
+        return $pedidos;
+    }
+
+    /**
+     * ¿Se le puede emitir otro código a este usuario en la ventana vigente?
+     *
+     * @param  \App\Models\User  $user
+     * @return bool
+     */
+    protected function puede_emitir_otro_codigo(User $user)
+    {
+        $pedidos = $this->pedidos_de_la_ventana($user);
+
+        return is_null($pedidos) || (int) $pedidos['cantidad'] < self::CODIGOS_POR_HORA_MAXIMOS;
+    }
+
+    /**
+     * Suma un código emitido. La ventana es FIJA: arranca con el primer pedido y no se corre con los
+     * siguientes (si se corriera, pedir uno cada 59 minutos la estiraría para siempre); la caché vive
+     * hasta que la ventana vence.
+     *
+     * @param  \App\Models\User  $user
+     * @return void
+     */
+    protected function contar_codigo_emitido(User $user)
+    {
+        $pedidos = $this->pedidos_de_la_ventana($user);
+
+        if (is_null($pedidos)) {
+            $pedidos = ['desde' => now()->getTimestamp(), 'cantidad' => 0];
+        }
+
+        $pedidos['cantidad'] = (int) $pedidos['cantidad'] + 1;
+
+        $segundos_que_le_quedan = (int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 - now()->getTimestamp();
+
+        Cache::put($this->clave_de_pedidos($user), $pedidos, max(1, $segundos_que_le_quedan));
+    }
+
+    /**
+     * Guarda el código pendiente: su sha256 (el código en claro no queda en ningún lado), los intentos
+     * fallidos y cuándo vence. El vencimiento va también adentro del valor porque el contador se reescribe
+     * con el tiempo que le queda, no con 30 minutos nuevos.
+     *
+     * @param  \App\Models\User  $user
+     * @param  int  $codigo
+     * @return void
+     */
+    protected function guardar_codigo(User $user, $codigo)
+    {
+        $segundos = self::MINUTOS_DE_VIDA_DEL_CODIGO * 60;
+
+        Cache::put($this->clave_de_cache($user), [
+            'codigo_sha256' => hash('sha256', (string) $codigo),
+            'intentos'      => 0,
+            'vence'         => now()->getTimestamp() + $segundos,
+        ], $segundos);
+    }
+
+    /**
+     * ¿El código recibido es el pendiente del usuario y sigue vigente? NO lo consume.
+     *
+     * Un código equivocado (o vacío) suma un intento; al llegar a INTENTOS_FALLIDOS_MAXIMOS el código se
+     * borra y ya no sirve ni el correcto. Uno vencido se borra. Se compara con hash_equals.
+     *
+     * @param  \App\Models\User  $user
+     * @param  mixed  $codigo  Lo que mandó el cliente (la SPA lo manda como texto).
+     * @return bool
+     */
+    protected function codigo_valido(User $user, $codigo)
+    {
+        $clave = $this->clave_de_cache($user);
+        $pendiente = Cache::get($clave);
+
+        if (!is_array($pendiente) || !isset($pendiente['codigo_sha256'], $pendiente['intentos'], $pendiente['vence'])) {
+            return false;
+        }
+
+        // now() y no time(): el reloj de Carbon es el que mueven los tests.
+        $ahora = now()->getTimestamp();
+
+        if ((int) $pendiente['vence'] <= $ahora) {
+            Cache::forget($clave);
+
+            return false;
+        }
+
+        $codigo = is_scalar($codigo) ? trim((string) $codigo) : '';
+
+        if ($codigo !== '' && hash_equals((string) $pendiente['codigo_sha256'], hash('sha256', $codigo))) {
+            return true;
+        }
+
+        $pendiente['intentos'] = (int) $pendiente['intentos'] + 1;
+
+        if ($pendiente['intentos'] >= self::INTENTOS_FALLIDOS_MAXIMOS) {
+            Cache::forget($clave);
+        } else {
+            Cache::put($clave, $pendiente, (int) $pendiente['vence'] - $ahora);
+        }
+
+        return false;
     }
 
 }

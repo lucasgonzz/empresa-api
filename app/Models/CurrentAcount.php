@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\Devoluciones\VarianteEnNotaCreditoEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class CurrentAcount extends Model
@@ -102,7 +103,12 @@ class CurrentAcount extends Model
     }
 
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('amount', 'price', 'discount', 'cost', 'iva_percentage');
+        /*
+            La variante devuelta (misión variantes-mismo-articulo-en-vender, 8/10/2026) entra
+            por la guarda de esquema: en la ventana del deploy la columna no existe y nombrarla
+            tumba toda lectura de una NC con artículos. Ver VarianteEnNotaCreditoEsquemaHelper.
+        */
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(VarianteEnNotaCreditoEsquemaHelper::columnas_pivot(['amount', 'price', 'discount', 'cost', 'iva_percentage']));
     }
 
     public function services() {

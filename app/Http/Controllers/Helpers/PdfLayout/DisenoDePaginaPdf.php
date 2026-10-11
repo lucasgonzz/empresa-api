@@ -20,6 +20,7 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
  *   {"tipo": "salto_de_fila", "id": "salto_1"}      // lo que sigue arranca en una fila nueva
  *   {"tipo": "fijo", "key": "afip_receptor", "cols": 12}   // solo factura de ARCA, solo en "superior"; cols 6..12
  *   {"tipo": "fijo", "key": "afip_pie", "importes": true}   // solo factura de ARCA, solo en "pie"
+ *   {"tipo": "fijo", "key": "afip_emisor"}         // solo factura de ARCA en ticket de comandera, solo en "superior"
  *
  * CAMPO:
  *   {"key": "cliente_nombre", "etiqueta": null, "tamano": 9, "negrita": false, "cursiva": false,
@@ -169,11 +170,19 @@ class DisenoDePaginaPdf
      * Se llama al guardar Y al dibujar: un perfil puede cambiar de "Es factura de ARCA" desde el
      * formulario sin pasar por el diseñador.
      *
+     * TICKET DE COMANDERA (misión diseno-ticket-comandera, 9/10/2026, contrato §3.5): con
+     * `$es_ticket` y fiscal se suma el bloque del emisor (`afip_emisor`, al principio de "superior"
+     * si falta; el del cliente, si falta, va al final de "superior", pegado a la tabla), y los tres
+     * van a lo ancho del rollo (el del cliente queda en 12 columnas). En la hoja el del emisor NO
+     * existe (lo imprime el encabezado del PDF): si llega, se saca. La firma es compatible: sin el
+     * tercer parámetro todo queda como antes.
+     *
      * @param array $diseno     diseño ya normalizado.
      * @param bool  $es_fiscal  is_afip_ticket del perfil.
+     * @param bool  $es_ticket  el perfil es un ticket de comandera (default: hoja).
      * @return array
      */
-    public static function asegurar_fijos($diseno, $es_fiscal)
+    public static function asegurar_fijos($diseno, $es_fiscal, $es_ticket = false)
     {
         foreach (self::ZONAS as $zona) {
             if (! isset($diseno[$zona]) || ! is_array($diseno[$zona])) {
@@ -191,12 +200,65 @@ class DisenoDePaginaPdf
             return $diseno;
         }
 
+        if ($es_ticket) {
+            return self::asegurar_fijos_de_ticket($diseno);
+        }
+
+        /** En la hoja el emisor lo imprime el encabezado del PDF: el bloque fijo del ticket no va. */
+        $diseno['superior'] = array_values(array_filter($diseno['superior'], function ($item) {
+            return ! (isset($item['tipo'], $item['key']) && $item['tipo'] === self::TIPO_FIJO && $item['key'] === CatalogoDeCamposPdf::FIJO_AFIP_EMISOR);
+        }));
+
         if (! self::zona_tiene_fijo($diseno['superior'], CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR)) {
             array_unshift($diseno['superior'], [
                 'tipo' => self::TIPO_FIJO,
                 'key' => CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR,
                 'cols' => 12,
             ]);
+        }
+
+        if (! self::zona_tiene_fijo($diseno['pie'], CatalogoDeCamposPdf::FIJO_AFIP_PIE)) {
+            $diseno['pie'][] = [
+                'tipo' => self::TIPO_FIJO,
+                'key' => CatalogoDeCamposPdf::FIJO_AFIP_PIE,
+                'importes' => true,
+            ];
+        }
+
+        return $diseno;
+    }
+
+    /**
+     * Los tres bloques fijos de una factura de ARCA en un ticket de comandera (decisión D8): el del
+     * emisor y el del cliente en "superior", el de IVA, CAE y QR en "pie". Los que faltan se ponen
+     * (el emisor al principio, el cliente al final de "superior", el pie al final) y el del cliente
+     * queda a lo ancho (12 columnas): en el rollo los tres van siempre a lo ancho.
+     *
+     * @param array $diseno diseño ya normalizado, con las dos zonas como arreglo.
+     * @return array
+     */
+    private static function asegurar_fijos_de_ticket($diseno)
+    {
+        if (! self::zona_tiene_fijo($diseno['superior'], CatalogoDeCamposPdf::FIJO_AFIP_EMISOR)) {
+            array_unshift($diseno['superior'], [
+                'tipo' => self::TIPO_FIJO,
+                'key' => CatalogoDeCamposPdf::FIJO_AFIP_EMISOR,
+            ]);
+        }
+
+        if (! self::zona_tiene_fijo($diseno['superior'], CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR)) {
+            $diseno['superior'][] = [
+                'tipo' => self::TIPO_FIJO,
+                'key' => CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR,
+                'cols' => 12,
+            ];
+        }
+
+        /** El del cliente, a lo ancho del rollo aunque el diseño traiga otro ancho. */
+        foreach ($diseno['superior'] as $i => $item) {
+            if (isset($item['tipo'], $item['key']) && $item['tipo'] === self::TIPO_FIJO && $item['key'] === CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR) {
+                $diseno['superior'][$i]['cols'] = 12;
+            }
         }
 
         if (! self::zona_tiene_fijo($diseno['pie'], CatalogoDeCamposPdf::FIJO_AFIP_PIE)) {
@@ -372,7 +434,13 @@ class DisenoDePaginaPdf
     {
         $key = isset($item['key']) ? $item['key'] : null;
 
+        /**
+         * El del emisor (misión diseno-ticket-comandera) solo existe en el ticket de comandera, pero
+         * acá no se sabe la clase del perfil: se acepta en "superior" y asegurar_fijos() lo saca de
+         * un diseño de hoja.
+         */
         $zona_del_fijo = [
+            CatalogoDeCamposPdf::FIJO_AFIP_EMISOR => 'superior',
             CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR => 'superior',
             CatalogoDeCamposPdf::FIJO_AFIP_PIE => 'pie',
         ];

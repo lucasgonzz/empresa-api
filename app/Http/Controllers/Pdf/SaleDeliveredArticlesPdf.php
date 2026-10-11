@@ -45,8 +45,10 @@ class SaleDeliveredArticlesPdf extends fpdf {
 	}
 
 	function Header() {
+		// El número es la columna num de sales, como en SalePdf. Antes leía num_sale, que no existe:
+		// Eloquent devolvía null y el "N°" del encabezado no salía nunca.
 		$data = [
-			'num' 			=> $this->sale->num_sale,
+			'num' 			=> $this->sale->num,
 			'date'			=> $this->sale->created_at,
 			'title' 		=> 'Articulos entregados',
 			'model_info'	=> $this->sale->client,
@@ -88,7 +90,9 @@ class SaleDeliveredArticlesPdf extends fpdf {
 
 	function printArticle($article) {
 		$y_1 = $this->y;
-		$text = 'Se entregaron '.$article->pivot->delivered_amount.' unidades de '.$article->name;
+		// La cantidad con Numbers::price(), como en el resto de los PDF: la columna es decimal(25,2) y
+		// cruda salía "10.00 unidades".
+		$text = 'Se entregaron '.Numbers::price($article->pivot->delivered_amount).' unidades de '.$article->name;
 		$this->MultiCell(200, 7, $text, 0, 'L', false);
 		// $this->Line(5, $this->y, 205, $this->y);
 	}

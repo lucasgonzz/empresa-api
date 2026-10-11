@@ -192,7 +192,8 @@ class ChequeController extends Controller
      *
      * @param  \Illuminate\Http\Request  $request  {cheque_id, caja_id}, como lo manda PagarCheque.vue.
      * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque o la caja no son de
-     *                                        esta cuenta (o no existen), sin escribir nada.
+     *                                        esta cuenta (o no existen), o si el cheque ya figura como
+     *                                        pagado o rechazado, sin escribir nada.
      */
     function pagar(Request $request) {
 
@@ -201,6 +202,19 @@ class ChequeController extends Controller
         if (is_null($cheque)) {
 
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
+        /*
+         * 🔴 Un cheque que ya tiene marca manual no se vuelve a marcar (misión
+         * cheques-emitidos-rechazo-proveedor, 9/10/2026). Hasta entonces pagar() escribía `cobrado`
+         * sin mirar: una pestaña vieja pisaba un "Rechazado por proveedor" (quedaban la nota de débito
+         * Y el egreso de caja) y pagar dos veces sacaba dos veces la plata de la caja.
+         */
+        $motivo = ChequeHelper::motivo_para_no_pagar($cheque);
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['message' => $motivo], 422);
         }
 
         // La caja se valida ANTES de marcar el cheque: hasta el 3/10/2026 el cheque quedaba pagado
@@ -212,10 +226,43 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
         }
 
-        $cheque->estado_manual = 'cobrado';
-        $cheque->cobrado_en = Carbon::now();
-        $cheque->cobrado_por_id = $this->userId(false);
-        $cheque->save();
+        /*
+         * La marca es condicional y con la fila bloqueada, como la de ChequeHelper::rechazar_por_proveedor():
+         * si otro request lo marcó entre la lectura de arriba y ésta, no se marca ni se mueve la caja.
+         * Se escribe sobre el mismo modelo que se devuelve (la respuesta no cambia de forma).
+         */
+        $user_id = $this->userId();
+        $empleado_id = $this->userId(false);
+
+        $marcado = DB::transaction(function () use ($cheque, $user_id, $empleado_id) {
+
+            $libre = Cheque::where('id', $cheque->id)
+                            ->where('user_id', $user_id)
+                            ->whereNull('estado_manual')
+                            ->lockForUpdate()
+                            ->first(['id']);
+
+            if (is_null($libre)) {
+
+                return false;
+            }
+
+            $cheque->estado_manual = 'cobrado';
+            $cheque->cobrado_en = Carbon::now();
+            $cheque->cobrado_por_id = $empleado_id;
+            $cheque->save();
+
+            return true;
+        });
+
+        if (!$marcado) {
+
+            $actual = $this->cheque_del_dueno($cheque->id);
+
+            $motivo = is_null($actual) ? null : ChequeHelper::motivo_para_no_pagar($actual);
+
+            return response()->json(['message' => is_null($motivo) ? self::MENSAJE_CHEQUE_AJENO : $motivo], 422);
+        }
 
         if ($caja_id > 0) {
             CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
@@ -262,14 +309,24 @@ class ChequeController extends Controller
     }
 
     /**
-     * Marca un cheque como rechazado.
+     * Marca un cheque como rechazado y guarda el motivo del rechazo.
      *
-     * @param  \Illuminate\Http\Request  $request  {cheque_id, rechazado_observaciones}. Ojo:
-     *                                             RechazarCheque.vue manda el motivo como `notas`,
-     *                                             que acá no se lee (y la columna
-     *                                             `rechazado_observaciones` es un entero).
-     * @return \Illuminate\Http\JsonResponse  200 con el cheque; 422 si el cheque no es de esta cuenta
-     *                                        (o no existe), sin escribir nada.
+     * Hasta la misión cheque-motivo-rechazo (9/10/2026) el motivo se perdía SIEMPRE: el modal lo
+     * manda como `notas`, acá se leía `rechazado_observaciones` (que nunca llegaba) y la columna era
+     * un entero. Ahora se aceptan las dos claves (ChequeHelper::motivo_de_rechazo(): si vienen las
+     * dos con texto, gana `rechazado_observaciones`).
+     *
+     * 🔴 Compatibilidad: el SPA sigue mandando `notas` a propósito (la API vieja la ignora sin
+     * romper), y esta API no escribe el motivo mientras la columna siga siendo INT —la ventana de un
+     * deploy entre subir la API y migrar—: rechaza igual, sin motivo, y deja un warning
+     * (ChequeHelper::asignar_motivo_de_rechazo()).
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, rechazado_observaciones | notas}.
+     *                                             RechazarCheque.vue manda {cheque_id, notas}.
+     * @return \Illuminate\Http\JsonResponse  200 con el cheque. 422 sin escribir nada si el cheque no
+     *                                        es de esta cuenta (o no existe), o si el motivo no es un
+     *                                        texto, no es UTF-8 válido o supera los
+     *                                        ChequeHelper::MOTIVO_DE_RECHAZO_MAX caracteres.
      */
     function rechazar(Request $request) {
 
@@ -280,13 +337,27 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
         }
 
+        // El motivo se valida ANTES de marcar nada: un motivo inválido no deja el cheque rechazado.
+        //
+        // 🔴 Las dos claves se leen ACÁ, en el cuerpo de este método, y no adentro del helper: el
+        // catálogo de acciones de pantalla del asistente (CatalogoDeEscrituraIaHelper::claves_que_lee())
+        // saca las claves que acepta cada ruta con una regex sobre el código del método del
+        // controller. Leídas en el helper, el asistente veía solo `cheque_id` y no el motivo.
+        $pedido = ChequeHelper::motivo_de_rechazo($request->input('rechazado_observaciones'), $request->input('notas'));
+
+        if (!is_null($pedido['error'])) {
+
+            return response()->json(['message' => $pedido['error']], 422);
+        }
+
         $cheque->estado_manual = 'rechazado';
         $cheque->rechazado_en = Carbon::now();
         $cheque->rechazado_por_id = $this->userId(false);
-        $cheque->rechazado_observaciones = $request->rechazado_observaciones;
+
+        ChequeHelper::asignar_motivo_de_rechazo($cheque, $pedido['motivo']);
 
         $cheque->save();
-        
+
         return response()->json(['model' => $cheque], 200);
     }
 
@@ -466,6 +537,111 @@ class ChequeController extends Controller
     }
 
     /**
+     * El botón "Rechazado por proveedor" de Cheques → Emitido (misión
+     * cheques-emitidos-rechazo-proveedor, 9/10/2026): marca el cheque emitido como rechazado y, si
+     * salió de un pago a un proveedor, le carga a ese proveedor una nota de débito por lo que el
+     * cheque le había bajado de la deuda (en la moneda de su cuenta), así la deuda vuelve (decisión
+     * de Lucas). Cuándo se marca sin nota (gasto, pago provisorio o borrado, monto desconocido...) lo
+     * dice el `mensaje`. La lógica vive en ChequeHelper::rechazar_por_proveedor(); acá se resuelve el
+     * cheque contra el dueño y se traduce el resultado.
+     *
+     * Es un endpoint aparte de rechazar() a propósito: rechazar() no mueve ninguna cuenta corriente
+     * (es el de los recibidos). El MOTIVO del rechazo, en cambio, se lee y se guarda igual que en
+     * rechazar() (misión cheque-motivo-rechazo): las dos claves, `rechazado_observaciones` y `notas`,
+     * por ChequeHelper::motivo_de_rechazo(); si vienen las dos con texto, gana
+     * `rechazado_observaciones`.
+     *
+     * @param  \Illuminate\Http\Request  $request  {cheque_id, notas?, rechazado_observaciones?}, como lo
+     *                                             manda RechazadoPorProveedor.vue (el motivo, como `notas`).
+     * @return \Illuminate\Http\JsonResponse  200 `{model: Cheque withAll, nota_debito: CurrentAcount|null,
+     *                                        mensaje}`; 422 `{message}` sin escribir nada (ni la marca ni
+     *                                        la nota) si el cheque no es de esta cuenta (o no existe, o
+     *                                        no es un id), si el motivo no es un texto válido o se pasa
+     *                                        de largo, si no es emitido o si ya figura como pagado o
+     *                                        rechazado.
+     */
+    function rechazar_por_proveedor(Request $request) {
+
+        // EL resolvedor de este controller (cheque_del_dueno()): un id ajeno es igual a uno inexistente.
+        $cheque = $this->cheque_del_dueno($request->cheque_id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_AJENO], 422);
+        }
+
+        // El motivo se valida ANTES de marcar nada: un motivo inválido no deja ni la marca ni la nota.
+        //
+        // 🔴 Las dos claves se leen ACÁ, en el cuerpo de este método, y no adentro del helper: el
+        // catálogo de acciones de pantalla del asistente (CatalogoDeEscrituraIaHelper::claves_que_lee())
+        // saca las claves que acepta cada ruta con una regex sobre el código del método del
+        // controller. Es lo mismo que hace rechazar().
+        $motivo = ChequeHelper::motivo_de_rechazo($request->input('rechazado_observaciones'), $request->input('notas'));
+
+        if (!is_null($motivo['error'])) {
+
+            return response()->json(['message' => $motivo['error']], 422);
+        }
+
+        $resultado = ChequeHelper::rechazar_por_proveedor($cheque, $this->userId(), $this->userId(false), $motivo['motivo']);
+
+        if (count($resultado['problemas'])) {
+
+            return response()->json(['message' => implode(' ', $resultado['problemas'])], 422);
+        }
+
+        return response()->json([
+            'model'         => $this->fullModel('Cheque', $cheque->id),
+            'nota_debito'   => $resultado['nota_debito'],
+            'mensaje'       => $resultado['mensaje'],
+        ], 200);
+    }
+
+    /**
+     * La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): solo se pueden
+     * cambiar el número, el banco, las notas, la fecha de emisión y la fecha de pago. Todo lo demás
+     * (tipo, cliente, proveedor, monto, cuenta corriente, caja, estado, endoso...) mueve plata o
+     * cuentas, y este endpoint ni lo mira: se ignora en silencio, porque la SPA manda el modelo
+     * entero en cada guardado y rechazar por "campo de más" rompería el guardado legítimo.
+     *
+     * 🔴 El pedido NO se vuelca al modelo: se leen SUS cinco claves por nombre
+     * (ChequeHelper::CAMPOS_EDITABLES) y nada más. Nunca `$request->all()`, `fill()` ni
+     * `update($request->all())` acá: sería abrirle la puerta a `client_id`, `amount`, `user_id`...
+     * La lógica (reglas del banco, fechas, replicación al par endosado) vive en
+     * ChequeHelper::actualizar_datos().
+     *
+     * @param  \Illuminate\Http\Request  $request  El modelo del cheque; solo cuentan las claves
+     *                                             `numero`, `cheque_banco_id`, `notes`,
+     *                                             `fecha_emision` y `fecha_pago`.
+     * @param  string  $id  El id de la ruta.
+     * @return \Illuminate\Http\JsonResponse  200 `{model}` con el cheque ya actualizado; 404 si el
+     *                                        cheque no es de esta cuenta, no existe o no es un id
+     *                                        (el mismo cuerpo que destroy); 422 `{message}` si el
+     *                                        banco no es de esta cuenta o una fecha es inválida,
+     *                                        sin escribir nada.
+     */
+    function update(Request $request, $id) {
+
+        $cheque = $this->cheque_del_dueno($id);
+
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
+        }
+
+        // Las cinco claves por nombre: `only()` trae solo las que vienen (una ausente no se toca,
+        // una null sí viene y significa "vaciar").
+        $problemas = ChequeHelper::actualizar_datos($cheque, $request->only(ChequeHelper::CAMPOS_EDITABLES), $this->userId());
+
+        if (count($problemas)) {
+
+            return response()->json(['message' => implode(' ', $problemas)], 422);
+        }
+
+        return response()->json(['model' => $this->fullModel('Cheque', $cheque->id)], 200);
+    }
+
+    /**
      * Borra un cheque del dueño.
      *
      * Hasta el 3/10/2026 era `Cheque::find($id)->delete()`: borraba el cheque de cualquier comercio
@@ -478,6 +654,11 @@ class ChequeController extends Controller
      * un aviso, y el ejecutor del asistente (EjecutorAccionDePantallaIaHelper) traduce un
      * JsonResponse con estado >= 400 a un 422 con este mensaje.
      *
+     * Y un cheque EMITIDO rechazado no se borra: 422 `{message}` sin borrar nada
+     * (ChequeHelper::motivo_para_no_borrar(), misión cheques-emitidos-rechazo-proveedor, 9/10/2026).
+     * Si se pudiera, la deuda se contaba dos veces: la nota de débito del rechazo ya la devolvió, y sin
+     * el cheque su pago volvía a ser borrable.
+     *
      * @param  string  $id  El id de la ruta.
      * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
      */
@@ -489,15 +670,59 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CHEQUE_NO_ENCONTRADO], 404);
         }
 
-        $model->delete();
+        $motivo = ChequeHelper::motivo_para_no_borrar($model);
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['message' => $motivo], 422);
+        }
+
+        /*
+         * Si es la copia emitida de un endoso que sigue pendiente, su recibido vuelve a la cartera en
+         * la misma transacción (misión cheque-endoso-deshacer-al-borrar-pago, 9/10/2026): hasta
+         * entonces quedaba endosado para siempre, fuera de la cartera y sin copia. Ver
+         * ChequeHelper::devolver_a_la_cartera_el_origen_de().
+         */
+        $user_id = $this->userId();
+
+        $motivo = DB::transaction(function () use ($model, $user_id) {
+
+            // Releída con la fila bloqueada: si en el medio la marcaron pagada o rechazada, eso manda.
+            $copia = Cheque::where('id', $model->id)->lockForUpdate()->first();
+
+            if (is_null($copia)) {
+
+                return null;
+            }
+
+            // Si la rechazaron por proveedor en el medio, tampoco se borra.
+            $motivo = ChequeHelper::motivo_para_no_borrar($copia);
+
+            if (!is_null($motivo)) {
+
+                return $motivo;
+            }
+
+            ChequeHelper::devolver_a_la_cartera_el_origen_de($copia, $user_id);
+
+            $copia->delete();
+
+            return null;
+        });
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['message' => $motivo], 422);
+        }
+
         return response(null, 200);
     }
 
     /**
      * El cheque que nombra el pedido —en el cuerpo o en la ruta— si es del dueño de la sesión, o
      * null si es de otra cuenta, no existe o lo que llegó no es un id. Es EL resolvedor de los ids
-     * de cheque de este controller: cobrar, pagar, rechazar y endosar contestan 422 si da null, y
-     * destroy 404.
+     * de cheque de este controller: cobrar, pagar, rechazar, rechazar_por_proveedor y endosar
+     * contestan 422 si da null, y update y destroy 404.
      *
      * 🔴 No volver a un `Cheque::find($request->cheque_id)` pelado: un id ajeno se contesta igual
      * que uno inexistente; en una base compartida los ids son correlativos entre comercios, así que

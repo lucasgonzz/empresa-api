@@ -44,6 +44,9 @@ class PosicionFiscalController extends Controller
             'posicion_iva'             => PosicionFiscalHelper::posicion_iva($user_id, $desde, $hasta),
             'posicion_iibb'            => PosicionFiscalHelper::posicion_iibb($user_id, $desde, $hasta),
             'pagos_a_cuenta_ganancias' => PosicionFiscalHelper::pagos_a_cuenta_ganancias($user_id, $desde, $hasta),
+            // Retenciones de impuestos propios del comercio (misión retenciones-abm-impuestos): un
+            // renglón informativo por impuesto, que NO resta en ningún saldo. Vacío si no hay.
+            'otras_retenciones'        => PosicionFiscalHelper::otras_retenciones($user_id, $desde, $hasta),
             'desde'                    => $desde,
             'hasta'                    => $hasta,
         ];

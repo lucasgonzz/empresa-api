@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use App\Http\Controllers\Helpers\SetupErrorHelper;
 use App\Http\Controllers\Helpers\UserSetupHelper;
+use App\Http\Middleware\ClaveDeAdminEnSetup;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -23,6 +24,12 @@ use Illuminate\Support\Facades\Log;
  * todavía no manda ese header a esta ruta: exigirla ya mismo rompería el alta de clientes.
  * Mientras esté apagada, la ruta sigue siendo pública, y por eso lo que la protege de verdad
  * es la guarda de datos que vive dentro de UserSetupHelper::run() (ver BorradoTotalDeBaseHelper).
+ *
+ * 🔴 Pública para el setup normal (base vacía), NO para el borrado total: vaciar una base con datos
+ * (`forzar_borrado_total` + `confirmar_base_de_datos`) exige la clave de admin de la instancia
+ * SIEMPRE, con la variable apagada o prendida (misión cerrar-forzado-user-setup, 10/10/2026). El
+ * nombre de la base se adivina; la clave no. admin-api nunca manda esos dos campos, así que para él
+ * no cambia nada.
  */
 class UserSetupController extends Controller
 {
@@ -38,9 +45,13 @@ class UserSetupController extends Controller
      *
      * Hay DOS 409 distintos, y se distinguen por el cuerpo (no por el código):
      * - `en_curso: true`        → ya hay otro setup corriendo (el candado).
-     * - `base_con_datos: true`  → la base ya tiene datos de negocio y el payload no trae
-     *   `forzar_borrado_total` + `confirmar_base_de_datos` (misión blindar-user-setup, 5/10/2026).
-     *   Con `en_curso: false` y `con_datos` (qué tablas), sin el nombre de la base ni conteos.
+     * - `base_con_datos: true`  → la base ya tiene datos de negocio y no se autorizó el borrado
+     *   total: el payload no trae `forzar_borrado_total` + `confirmar_base_de_datos` (misión
+     *   blindar-user-setup, 5/10/2026), o los trae sin la clave de admin en X-Admin-Api-Key (misión
+     *   cerrar-forzado-user-setup, 10/10/2026). Con `en_curso: false` y `con_datos` (qué tablas), sin
+     *   el nombre de la base ni conteos. 🔴 El cuerpo es el MISMO en todos esos casos, también con el
+     *   nombre de la base acertado: si cambiara, la respuesta serviría para adivinarlo. El motivo real
+     *   queda solo en el log de la instancia.
      *
      * @param Request $request
      */
@@ -71,7 +82,16 @@ class UserSetupController extends Controller
         }
 
         try {
-            $user = UserSetupHelper::run($request->all());
+            /*
+             * 🔴 El segundo argumento es lo único que habilita un borrado total por esta puerta: el
+             * payload puede pedirlo (`forzar_borrado_total` + `confirmar_base_de_datos`), pero sin la
+             * clave de admin de la instancia en X-Admin-Api-Key la guarda lo rechaza igual, aunque
+             * ADMIN_SYNC_SETUP_REQUIRE_API_KEY esté apagada (misión cerrar-forzado-user-setup,
+             * 10/10/2026). Se calcula acá, con el mismo método que usa el middleware, y no se le pasa
+             * el request a run(): el helper no sabe de HTTP y una puerta nueva no hereda la clave sin
+             * verificarla.
+             */
+            $user = UserSetupHelper::run($request->all(), ClaveDeAdminEnSetup::trae_la_clave_de_admin($request));
         } catch (BaseConDatosException $e) {
             /*
              * La guarda de UserSetupHelper::run() se negó ANTES del `migrate:fresh`: no se tocó nada.
@@ -84,6 +104,10 @@ class UserSetupController extends Controller
              * le pegue. Solo se dice QUÉ familias de tablas tienen datos. El detalle con conteos ya
              * quedó en el log de la instancia (lo escribe el helper). `en_curso: false` es para
              * que un admin-api que lee ese campo no confunda este 409 con el del candado.
+             *
+             * Y no se distingue POR QUÉ se rechazó: "sin los campos", "con el nombre errado" y "con
+             * el nombre acertado pero sin la clave" dan este mismo cuerpo, a propósito (ver el
+             * docblock de store()).
              */
             return response()->json([
                 'error'          => $e->getMessage(),
