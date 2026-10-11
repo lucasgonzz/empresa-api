@@ -1438,7 +1438,9 @@ Route::get('plan-feature', 'PlanFeatureController@index');
 // demo-setup sin middleware para integración directa desde admin-api sin API key.
 // user-setup lleva `admin.setup.key` (ClaveDeAdminEnSetup): hoy es una pasada libre porque la clave
 // está apagada por defecto (ADMIN_SYNC_SETUP_REQUIRE_API_KEY) hasta que admin-api mande el header;
-// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run().
+// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run(). Pasada libre para
+// el setup normal, no para el borrado total: vaciar una base con datos exige la clave de admin
+// SIEMPRE, aunque esa variable esté apagada (misión cerrar-forzado-user-setup, 10/10/2026).
 Route::prefix('admin-sync')
     ->group(function () {
         Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');

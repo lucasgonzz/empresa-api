@@ -23,8 +23,10 @@ use Tests\EmpresaTestCase;
  * apuntaba a la URL de Panchito hizo un POST real y le vació la base de producción (102.754 ventas,
  * 6.952 artículos). Ahora `run()` se niega (409, sin tocar nada) si la base ya tiene datos de
  * negocio, salvo que el payload traiga `forzar_borrado_total` Y `confirmar_base_de_datos` con el
- * nombre exacto de la base; y hay un middleware de clave de admin detrás de una variable apagada
- * por defecto.
+ * nombre exacto de la base Y el request traiga la clave de admin de la instancia en X-Admin-Api-Key
+ * (esto último desde la misión cerrar-forzado-user-setup, 10/10/2026: antes alcanzaban los dos
+ * campos, y el nombre de la base se adivina; ver la sección 12); y hay un middleware de clave de
+ * admin detrás de una variable apagada por defecto, que gobierna el setup normal.
  *
  * 🔴 NINGÚN TEST DE ESTA CLASE CORRE UN `migrate:fresh` REAL: vaciaría la base de testing del slot.
  * `Artisan::call` va mockeado y se VERIFICA que el facade sea un `MockInterface` ANTES de postear
@@ -458,6 +460,10 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
      * por el mock, que lo espera una vez por cada valor aceptado del flag), y el borrado total
      * autorizado deja su rastro en el log.
      *
+     * El request trae además la clave de admin de la instancia: desde la misión
+     * cerrar-forzado-user-setup (10/10/2026) el borrado total la exige siempre, y sin ella esto es
+     * el 409 de siempre (ver la sección 12).
+     *
      * @test
      */
     public function con_el_flag_y_la_confirmacion_correcta_llega_al_migrate_fresh_y_deja_rastro_en_el_log()
@@ -468,13 +474,16 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
         $this->migrate_fresh_cortado(count($valores_del_flag));
 
+        // La clave de admin cargada en la instancia; el request la manda en el header.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+
         $base = BorradoTotalDeBaseHelper::nombre_de_la_base();
 
         foreach ($valores_del_flag as $flag) {
             $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload([
                 BorradoTotalDeBaseHelper::FLAG         => $flag,
                 BorradoTotalDeBaseHelper::CONFIRMACION => $base,
-            ]));
+            ]), ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
 
             // NO es el 409: la guarda lo dejó pasar y llegó al migrate:fresh, que el mock cortó con
             // una excepción (el controlador la contesta como 500 `internal error:`).
@@ -605,7 +614,8 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
 
     /**
      * 🔴 La puerta web NO se puede forzar: aunque el POST traiga el flag y el nombre EXACTO de la
-     * base (que es lo que autoriza el borrado total por la API), el controlador los saca antes de
+     * base (que, con la clave de admin, es lo que autoriza el borrado total por la API; el caso con
+     * la clave está en la sección 12), el controlador los saca antes de
      * llegar a `run()` y la guarda se niega igual. Es la cuarta puerta, pública (el formulario es
      * un GET abierto y el CSRF lo saca cualquiera). Confirmado en vivo en la verificación de la
      * misión: sin este filtro, un POST web con los dos campos vaciaba la base.
@@ -814,11 +824,13 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
             $this->assertStringNotContainsString($base, $e->getMessage(), 'El mensaje viaja en la respuesta: sin el nombre de la base.');
         }
 
-        // Autorizada: no tira (y no toca nada: solo mira).
+        // Autorizada: no tira (y no toca nada: solo mira). El `true` es la clave de admin ya verificada
+        // por la puerta: desde la misión cerrar-forzado-user-setup (10/10/2026) sin ella el payload solo
+        // no alcanza (ver la sección 12).
         BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([
             BorradoTotalDeBaseHelper::FLAG         => true,
             BorradoTotalDeBaseHelper::CONFIRMACION => $base,
-        ]);
+        ], true);
 
         $this->assert_base_intacta();
     }
@@ -1034,6 +1046,9 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
     /**
      * El borrado total autorizado también deja la IP y el user agent.
      *
+     * El request trae la clave de admin de la instancia porque, desde la misión
+     * cerrar-forzado-user-setup (10/10/2026), sin ella no hay borrado autorizado (ver la sección 12).
+     *
      * @test
      */
     public function el_borrado_autorizado_deja_en_el_log_la_ip_y_el_user_agent()
@@ -1041,13 +1056,16 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         $this->exigir_base_con_datos();
         $this->migrate_fresh_cortado();
 
+        // La clave de admin cargada en la instancia; el request la manda en el header.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+
         $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.9'])->postJson(
             '/api/admin-sync/user-setup',
             $this->payload([
                 BorradoTotalDeBaseHelper::FLAG         => true,
                 BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
             ]),
-            ['User-Agent' => 'Forense-Autorizado/2.0']
+            ['User-Agent' => 'Forense-Autorizado/2.0', 'X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]
         );
 
         $autorizados = $this->logs_que_contienen(['AUTORIZADO']);
@@ -1362,5 +1380,703 @@ class BlindajeDelUserSetupTest extends EmpresaTestCase
         $this->assertNotEmpty($middleware, 'No se encontró la ruta de demo-setup.');
         $this->assertNotContains('admin.setup.key', $middleware);
         $this->assertNotContains(\App\Http\Middleware\ClaveDeAdminEnSetup::class, $middleware);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 12: el borrado total exige la clave de admin SIEMPRE (misión cerrar-forzado-user-setup,
+    //     10/10/2026)
+    //
+    // Hasta esta misión, el flag + el nombre exacto de la base alcanzaban para vaciar una base con
+    // datos por HTTP, con la clave de la ruta apagada (como está en toda la flota). El nombre de la
+    // base se adivina (suele ser el subdominio del cliente): ahora el forzado exige además que el
+    // request traiga X-Admin-Api-Key igual a la clave de la instancia, con la variable apagada o
+    // prendida. Sin la clave, los dos campos no autorizan nada y el 409 es el de siempre.
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * El payload de siempre más el pedido de borrado total con el nombre EXACTO de la base.
+     *
+     * @param  mixed $flag Valor de `forzar_borrado_total`.
+     * @return array
+     */
+    protected function payload_que_fuerza($flag = true)
+    {
+        return $this->payload([
+            BorradoTotalDeBaseHelper::FLAG         => $flag,
+            BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
+        ]);
+    }
+
+    /**
+     * Las líneas de log del rechazo "pidió el borrado total con el nombre correcto pero sin la
+     * clave": la que hay que buscar para ver si alguien está probando nombres de base.
+     *
+     * @return array
+     */
+    protected function logs_del_forzado_sin_clave()
+    {
+        return $this->logs_que_contienen(['se rechazó un setup', 'SIN la clave de admin']);
+    }
+
+    /**
+     * La clave no aparece en ninguna línea de log, de ningún nivel (mensaje ni contexto): ni entera
+     * ni sus primeros 15 caracteres, que es lo que deja una traza con argumentos (PHP recorta ahí
+     * los strings de cada llamada).
+     *
+     * @param  string $clave
+     * @return void
+     */
+    protected function assert_la_clave_no_esta_en_ningun_log($clave)
+    {
+        $this->assertNotSame('', (string) $clave, 'Una clave vacía está "contenida" en cualquier texto: este chequeo no probaría nada.');
+        $this->assertNotEmpty($this->logs, 'No hubo ninguna línea de log: este chequeo no probaría nada.');
+
+        $principio = substr($clave, 0, 15);
+
+        foreach ($this->logs as $log) {
+            $this->assertStringNotContainsString($clave, $log['texto'], 'Una clave de admin salió en una línea de log (' . $log['nivel'] . ').');
+            $this->assertStringNotContainsString($principio, $log['texto'], 'El principio de una clave de admin (lo que deja una traza) salió en una línea de log (' . $log['nivel'] . ').');
+        }
+    }
+
+    /**
+     * 🔴 EL AGUJERO QUE CIERRA ESTA MISIÓN: el flag (con cada valor que acepta) + el nombre exacto de
+     * la base, SIN header, con la variable apagada y la instancia CON su clave cargada. Antes vaciaba
+     * la base; ahora es el 409 de siempre, no llega a Artisan y no se toca nada.
+     *
+     * @test
+     */
+    public function el_flag_y_el_nombre_exacto_sin_la_clave_de_admin_responde_409_y_no_toca_nada()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        foreach ([true, 1, '1', 'true'] as $flag) {
+            $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza($flag));
+
+            $this->assertSame(
+                409,
+                $respuesta->getStatusCode(),
+                'Flag ' . var_export($flag, true) . ' + nombre exacto, sin la clave de admin: tenía que rebotar.'
+            );
+            $this->assert_409_por_base_con_datos($respuesta);
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Sin la clave de admin no hay borrado autorizado.');
+    }
+
+    /**
+     * Con una clave que no es la de la instancia (otra, con un carácter de más, un pedazo, en
+     * mayúsculas o vacía) el forzado tampoco pasa: 409 y nada.
+     *
+     * @test
+     */
+    public function el_flag_y_el_nombre_exacto_con_una_clave_equivocada_responde_409_y_no_toca_nada()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        $equivocadas = [
+            'otra clave'             => 'otra-clave-que-no-es-la-de-la-instancia',
+            'con un carácter de más' => self::CLAVE_DE_ADMIN . 'x',
+            'solo un pedazo'         => substr(self::CLAVE_DE_ADMIN, 0, -1),
+            'otra capitalización'    => strtoupper(self::CLAVE_DE_ADMIN),
+            'vacía'                  => '',
+        ];
+
+        foreach ($equivocadas as $caso => $clave) {
+            $respuesta = $this->postJson(
+                '/api/admin-sync/user-setup',
+                $this->payload_que_fuerza(),
+                ['X-Admin-Api-Key' => $clave]
+            );
+
+            $this->assertSame(409, $respuesta->getStatusCode(), 'Clave equivocada (' . $caso . '): tenía que rebotar.');
+            $this->assert_409_por_base_con_datos($respuesta);
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Con una clave equivocada no hay borrado autorizado.');
+    }
+
+    /**
+     * La instancia SIN clave cargada (null o vacía, que es como nace una instalación nueva): nadie
+     * fuerza por HTTP, ni sin header, ni con el header vacío ("vacía == vacía" no es una clave), ni
+     * con la clave "correcta" de otra instancia. Falla cerrado.
+     *
+     * @test
+     */
+    public function con_la_instancia_sin_clave_cargada_nadie_fuerza_por_http()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        foreach ([null, ''] as $clave_de_la_instancia) {
+            $this->configurar_la_clave(false, false, $clave_de_la_instancia);
+
+            foreach ([[], ['X-Admin-Api-Key' => ''], ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]] as $headers) {
+                $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), $headers);
+
+                $this->assertSame(
+                    409,
+                    $respuesta->getStatusCode(),
+                    'Instancia sin clave (' . var_export($clave_de_la_instancia, true) . ') y header '
+                    . var_export($headers, true) . ': tenía que rebotar.'
+                );
+                $this->assert_409_por_base_con_datos($respuesta);
+            }
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Sin clave en la instancia no hay borrado autorizado.');
+
+        // El log le dice a la raíz que al SERVIDOR le falta la clave (el 409 no lo dice, a propósito).
+        $sin_clave = $this->logs_del_forzado_sin_clave();
+
+        $this->assertCount(6, $sin_clave, 'Cada forzado sin clave (2 instancias x 3 headers) deja su línea propia.');
+
+        foreach ($sin_clave as $log) {
+            $this->assertStringContainsString('"instancia_con_clave":false', $log['texto']);
+        }
+    }
+
+    /**
+     * 🔴 La clave de la instancia tiene que ser un STRING con algo adentro, y el header también. Un
+     * `ADMIN_API_INBOUND_KEY=true` en el `.env` llega como el bool true y `(string) true` es '1' (un
+     * header `1` habría forzado); un 0 numérico sería '0'; y "   " no es una clave. Con la variable
+     * apagada ninguno fuerza (409, base intacta); con la variable prendida el middleware da 401, porque
+     * usa el mismo criterio.
+     *
+     * @test
+     */
+    public function una_clave_de_la_instancia_que_no_es_un_string_con_contenido_no_fuerza()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        $casos = [
+            "instancia true (bool) y header '1'"     => [true, '1'],
+            "instancia 1 (int) y header '1'"         => [1, '1'],
+            "instancia 0 (int) y header '0'"         => [0, '0'],
+            'instancia en blanco y header en blanco' => ['   ', '   '],
+        ];
+
+        foreach ($casos as $caso => $par) {
+            list($clave_de_la_instancia, $header) = $par;
+
+            $this->configurar_la_clave(false, false, $clave_de_la_instancia);
+
+            $apagada = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => $header]);
+
+            $this->assertSame(409, $apagada->getStatusCode(), $caso . ', variable apagada: tenía que rebotar.');
+            $this->assert_409_por_base_con_datos($apagada);
+
+            $this->configurar_la_clave(true, false, $clave_de_la_instancia);
+
+            $prendida = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => $header]);
+
+            $this->assertSame(401, $prendida->getStatusCode(), $caso . ', variable prendida: el middleware tenía que cortar.');
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Ninguna de esas "claves" autoriza un borrado total.');
+
+        // Para la guarda, ninguna de esas instancias tiene clave: el log lo dice así.
+        $sin_clave = $this->logs_del_forzado_sin_clave();
+
+        $this->assertCount(count($casos), $sin_clave, 'Cada forzado con la variable apagada deja su línea propia.');
+
+        foreach ($sin_clave as $log) {
+            $this->assertStringContainsString('"instancia_con_clave":false', $log['texto']);
+        }
+    }
+
+    /**
+     * Una clave de la instancia con espacios alrededor NO se recorta para comparar (el `trim()` es
+     * solo para decidir si está vacía): con el header idéntico, espacios incluidos, el forzado pasa
+     * como hasta ahora; con el header sin esos espacios, no.
+     *
+     * @test
+     */
+    public function una_clave_con_espacios_alrededor_se_compara_exacta_sin_recortar()
+    {
+        $this->exigir_base_con_datos();
+        $this->migrate_fresh_cortado();
+
+        $con_espacios = '  ' . self::CLAVE_DE_ADMIN . '  ';
+
+        $this->configurar_la_clave(false, false, $con_espacios);
+
+        $recortada = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
+
+        $this->assertSame(409, $recortada->getStatusCode(), 'El header sin los espacios de la clave de la instancia no es la misma clave.');
+        $this->assert_409_por_base_con_datos($recortada);
+
+        $exacta = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => $con_espacios]);
+
+        $this->assertSame(500, $exacta->getStatusCode(), 'Con el header idéntico (espacios incluidos) tenía que llegar al migrate:fresh.');
+        $this->assertStringContainsString(self::CORTE, (string) $exacta->json('error'));
+
+        $this->assert_base_intacta();
+        $this->assertCount(1, $this->logs_que_contienen(['AUTORIZADO']), 'Solo el header idéntico es un borrado autorizado.');
+    }
+
+    /**
+     * Con la clave de admin correcta y la variable APAGADA, el forzado SÍ llega al `migrate:fresh`
+     * (cortado por el mock, una vez por cada valor aceptado del flag), cada uno deja su línea de
+     * borrado autorizado, y la clave no sale en ningún log (ni en la traza del 500).
+     *
+     * @test
+     */
+    public function con_la_clave_de_admin_correcta_y_la_variable_apagada_el_forzado_llega_al_migrate_fresh()
+    {
+        $this->exigir_base_con_datos();
+
+        $valores_del_flag = [true, 1, '1', 'true'];
+
+        $this->migrate_fresh_cortado(count($valores_del_flag));
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        $base = BorradoTotalDeBaseHelper::nombre_de_la_base();
+
+        foreach ($valores_del_flag as $flag) {
+            $respuesta = $this->postJson(
+                '/api/admin-sync/user-setup',
+                $this->payload_que_fuerza($flag),
+                ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]
+            );
+
+            // NO es el 409: la guarda lo dejó pasar y llegó al migrate:fresh, que el mock cortó con
+            // una excepción (el controlador la contesta como 500 `internal error:`).
+            $this->assertSame(
+                500,
+                $respuesta->getStatusCode(),
+                'Flag ' . var_export($flag, true) . ' + nombre exacto + clave correcta: tenía que llegar al migrate:fresh.'
+            );
+            $this->assertStringStartsWith('internal error: ', (string) $respuesta->json('error'));
+            $this->assertStringContainsString(self::CORTE, (string) $respuesta->json('error'));
+            $this->assertNull($respuesta->json('base_con_datos'));
+
+            // El 500 lleva el mensaje del error (que el admin guarda en el lead): la clave, jamás.
+            $this->assertStringNotContainsString(self::CLAVE_DE_ADMIN, $respuesta->getContent(), 'La clave de admin salió en el cuerpo de la respuesta.');
+        }
+
+        $this->assert_base_intacta();
+
+        $autorizados = $this->logs_que_contienen(['AUTORIZADO', $base, 'con_datos']);
+
+        $this->assertCount(count($valores_del_flag), $autorizados, 'Cada borrado autorizado tiene que dejar su línea de log.');
+        $this->assertSame('warning', $autorizados[0]['nivel']);
+        $this->assertSame([], $this->logs_del_forzado_sin_clave(), 'Con la clave correcta no hay rechazo por falta de clave.');
+
+        $this->assert_la_clave_no_esta_en_ningun_log(self::CLAVE_DE_ADMIN);
+    }
+
+    /**
+     * Las dos capas juntas: con la variable PRENDIDA, una clave equivocada la corta el middleware
+     * (401, sin llegar a la guarda), y la correcta pasa el middleware y la guarda y llega al
+     * `migrate:fresh` (cortado por el mock).
+     *
+     * @test
+     */
+    public function con_la_variable_prendida_y_la_clave_correcta_el_forzado_llega_al_migrate_fresh()
+    {
+        $this->exigir_base_con_datos();
+        $this->migrate_fresh_cortado();
+        $this->configurar_la_clave(true, false, self::CLAVE_DE_ADMIN);
+
+        $equivocada = $this->postJson(
+            '/api/admin-sync/user-setup',
+            $this->payload_que_fuerza(),
+            ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN . 'x']
+        );
+
+        $equivocada->assertStatus(401);
+        $equivocada->assertJson(['error' => 'unauthorized']);
+
+        $respuesta = $this->postJson(
+            '/api/admin-sync/user-setup',
+            $this->payload_que_fuerza(),
+            ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]
+        );
+
+        $this->assertSame(500, $respuesta->getStatusCode(), 'Variable prendida + clave correcta + flag + nombre exacto: tenía que llegar al migrate:fresh.');
+        $this->assertStringStartsWith('internal error: ', (string) $respuesta->json('error'));
+        $this->assertStringContainsString(self::CORTE, (string) $respuesta->json('error'));
+        $this->assertNull($respuesta->json('base_con_datos'));
+
+        $this->assert_base_intacta();
+        $this->assertCount(1, $this->logs_que_contienen(['AUTORIZADO']), 'Solo el request con la clave correcta es un borrado autorizado.');
+    }
+
+    /**
+     * 🔴 El 409 no sirve de oráculo: con el nombre de la base ACERTADO y sin la clave, el cuerpo es
+     * idéntico al del nombre errado, al de una clave equivocada y al del payload de siempre. Si
+     * cambiara (otro mensaje, otro campo), probando nombres se sabría cuál es el de la base.
+     *
+     * @test
+     */
+    public function el_409_es_el_mismo_con_el_nombre_de_la_base_acertado_o_errado()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        $base = BorradoTotalDeBaseHelper::nombre_de_la_base();
+
+        $acertado = $this->postJson('/api/admin-sync/user-setup', $this->payload([
+            BorradoTotalDeBaseHelper::FLAG         => true,
+            BorradoTotalDeBaseHelper::CONFIRMACION => $base,
+        ]));
+
+        $errado = $this->postJson('/api/admin-sync/user-setup', $this->payload([
+            BorradoTotalDeBaseHelper::FLAG         => true,
+            BorradoTotalDeBaseHelper::CONFIRMACION => $base . '_no_es',
+        ]));
+
+        $clave_equivocada = $this->postJson(
+            '/api/admin-sync/user-setup',
+            $this->payload_que_fuerza(),
+            ['X-Admin-Api-Key' => 'otra-clave-que-no-es-la-de-la-instancia']
+        );
+
+        $de_siempre = $this->postJson('/api/admin-sync/user-setup', $this->payload());
+
+        foreach ([$acertado, $errado, $clave_equivocada, $de_siempre] as $respuesta) {
+            $this->assert_409_por_base_con_datos($respuesta);
+        }
+
+        $this->assertSame(
+            $errado->getContent(),
+            $acertado->getContent(),
+            'El 409 con el nombre de la base acertado no es igual al del nombre errado: la respuesta sirve para adivinarlo.'
+        );
+        $this->assertSame($de_siempre->getContent(), $acertado->getContent(), 'El 409 con el nombre acertado no es igual al de siempre.');
+        $this->assertSame($de_siempre->getContent(), $clave_equivocada->getContent(), 'El 409 con una clave equivocada no es igual al de siempre.');
+
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * El forzado sin la clave deja su línea de log PROPIA (distinta del rechazo de siempre), con la
+     * base, los conteos, la IP, el user agent y si la instancia tiene clave (`instancia_con_clave`,
+     * un bool, nunca el valor); y ni la clave de la instancia ni la del header salen
+     * en ninguna línea de log. El payload de siempre, en cambio, no deja esa línea.
+     *
+     * @test
+     */
+    public function el_forzado_sin_la_clave_deja_su_linea_propia_en_el_log_y_ninguna_clave()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        $clave_del_header = 'clave-equivocada-del-header-forense-9876543210';
+
+        $respuesta = $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.21'])->postJson(
+            '/api/admin-sync/user-setup',
+            $this->payload_que_fuerza(),
+            ['User-Agent' => 'Adivinador-De-Bases/1.0', 'X-Admin-Api-Key' => $clave_del_header]
+        );
+
+        $this->assert_409_por_base_con_datos($respuesta);
+
+        $sin_clave = $this->logs_del_forzado_sin_clave();
+
+        $this->assertCount(1, $sin_clave, 'El forzado sin la clave tiene que dejar UNA línea propia en el log.');
+        $this->assertSame('warning', $sin_clave[0]['nivel']);
+        $this->assertStringContainsString(BorradoTotalDeBaseHelper::nombre_de_la_base(), $sin_clave[0]['texto']);
+        $this->assertStringContainsString('con_datos', $sin_clave[0]['texto']);
+        $this->assertStringContainsString('"ip":"203.0.113.21"', $sin_clave[0]['texto']);
+        $this->assertStringContainsString('"user_agent":"Adivinador-De-Bases/1.0"', $sin_clave[0]['texto']);
+
+        // La instancia SÍ tiene clave (lo que vino mal fue el header): el log lo distingue con un bool.
+        $this->assertStringContainsString('"instancia_con_clave":true', $sin_clave[0]['texto']);
+
+        // No es un borrado autorizado, y es la única línea de rechazo de ese request.
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']));
+        $this->assertCount(1, $this->logs_que_contienen(['se rechazó un setup']));
+
+        // Ni la clave de la instancia ni la que vino en el header, en ninguna línea de ningún nivel.
+        $this->assert_la_clave_no_esta_en_ningun_log(self::CLAVE_DE_ADMIN);
+        $this->assert_la_clave_no_esta_en_ningun_log($clave_del_header);
+
+        // El rechazo de siempre (sin los dos campos) no deja la línea propia: se distinguen.
+        $this->logs = [];
+
+        $de_siempre = $this->postJson('/api/admin-sync/user-setup', $this->payload(), ['X-Admin-Api-Key' => $clave_del_header]);
+
+        $this->assert_409_por_base_con_datos($de_siempre);
+        $this->assertSame([], $this->logs_del_forzado_sin_clave(), 'El rechazo de siempre no tiene que confundirse con el forzado sin la clave.');
+        $this->assertCount(1, $this->logs_que_contienen(['se rechazó un setup']));
+
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * La puerta web (POST /user-setup) sigue sin forzar aunque el POST traiga el flag, el nombre
+     * exacto Y la clave de admin correcta en el header, con la variable apagada o prendida: el
+     * controlador saca los dos campos y no verifica ninguna clave. Vuelve al formulario con el
+     * motivo y la base queda intacta.
+     *
+     * @test
+     */
+    public function la_puerta_web_no_fuerza_ni_con_la_clave_de_admin_correcta()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        foreach ([false, true] as $variable) {
+            $this->configurar_la_clave($variable, false, self::CLAVE_DE_ADMIN);
+
+            $respuesta = $this->post('/user-setup', [
+                'business_type'                        => 'distribuidora',
+                'user_id'                              => self::ID_DE_USUARIO_LIBRE,
+                BorradoTotalDeBaseHelper::FLAG         => true,
+                BorradoTotalDeBaseHelper::CONFIRMACION => BorradoTotalDeBaseHelper::nombre_de_la_base(),
+            ], ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
+
+            $respuesta->assertRedirect(route('user.form'));
+            $respuesta->assertSessionHas('error');
+            $respuesta->assertSessionMissing('status');
+
+            $mensaje = (string) session('error');
+
+            $this->assertStringContainsString('ya tiene datos de negocio', $mensaje, 'Variable ' . var_export($variable, true) . ': tenía que volver con el motivo.');
+            $this->assertStringNotContainsString(BorradoTotalDeBaseHelper::nombre_de_la_base(), $mensaje);
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'La puerta web no autoriza ningún borrado total.');
+    }
+
+    /**
+     * La guarda, llamada directo: con el payload que pide y confirma, solo `true` ESTRICTO como
+     * segundo argumento deja pasar. Sin el argumento, o con `'1'`, `1`, `'true'`, `[]` o `false`,
+     * tira. La clave sola, sin el payload que pide y confirma, tampoco alcanza. Y una base vacía
+     * pasa sin nada, como siempre.
+     *
+     * @test
+     */
+    public function la_guarda_directa_solo_acepta_el_forzado_con_la_clave_en_true_estricto()
+    {
+        $this->exigir_base_con_datos();
+
+        $base = BorradoTotalDeBaseHelper::nombre_de_la_base();
+
+        $pide_y_confirma = [
+            BorradoTotalDeBaseHelper::FLAG         => true,
+            BorradoTotalDeBaseHelper::CONFIRMACION => $base,
+        ];
+
+        // esta_autorizado() no cambió: el payload pide y confirma...
+        $this->assertTrue(BorradoTotalDeBaseHelper::esta_autorizado($pide_y_confirma));
+
+        // ...pero sin el segundo argumento la guarda tira (una puerta que no verificó la clave no fuerza).
+        $tiro = false;
+
+        try {
+            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($pide_y_confirma);
+        } catch (BaseConDatosException $e) {
+            $tiro = true;
+        }
+
+        $this->assertTrue($tiro, 'Sin el segundo argumento la guarda tenía que tirar aunque el payload pida y confirme.');
+
+        $casi_true = [
+            "el string '1'"    => '1',
+            'el entero 1'      => 1,
+            "el string 'true'" => 'true',
+            'un array vacío'   => [],
+            'un array [true]'  => [true],
+            'false'            => false,
+            'null'             => null,
+        ];
+
+        foreach ($casi_true as $caso => $con_clave) {
+            $tiro = false;
+
+            try {
+                BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($pide_y_confirma, $con_clave);
+            } catch (BaseConDatosException $e) {
+                $tiro = true;
+            }
+
+            $this->assertTrue($tiro, 'Con $con_clave_de_admin = ' . $caso . ' la guarda tenía que tirar: solo true estricto autoriza.');
+        }
+
+        // Cada uno de esos rechazos (payload correcto, sin clave) dejó la línea propia.
+        $this->assertCount(1 + count($casi_true), $this->logs_del_forzado_sin_clave());
+
+        // La clave sola no fuerza nada: sin el payload que pide y confirma, `true` no alcanza.
+        $sin_pedido = [
+            'payload vacío'           => [],
+            'solo el flag'            => [BorradoTotalDeBaseHelper::FLAG => true],
+            'solo la confirmación'    => [BorradoTotalDeBaseHelper::CONFIRMACION => $base],
+            'confirmación equivocada' => [BorradoTotalDeBaseHelper::FLAG => true, BorradoTotalDeBaseHelper::CONFIRMACION => $base . '_x'],
+        ];
+
+        foreach ($sin_pedido as $caso => $data) {
+            $tiro = false;
+
+            try {
+                BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data, true);
+            } catch (BaseConDatosException $e) {
+                $tiro = true;
+            }
+
+            $this->assertTrue($tiro, 'Con la clave pero ' . $caso . ': la guarda tenía que tirar.');
+        }
+
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']), 'Ninguno de los rechazos es un borrado autorizado.');
+
+        // Las dos cosas juntas: no tira (y no toca nada: solo mira).
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($pide_y_confirma, true);
+
+        $this->assertCount(1, $this->logs_que_contienen(['AUTORIZADO']));
+
+        $this->assert_base_intacta();
+
+        // Base vacía y sin nada: no tira, con o sin el segundo argumento (el alta de clientes de siempre).
+        $this->vaciar_las_tablas_de_negocio();
+
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([], false);
+    }
+
+    /**
+     * 🔴 `run()` nace sin la clave: una puerta nueva que llame `UserSetupHelper::run($request->all())`
+     * (o le pase algo que no sea `true` estricto) no puede forzar aunque el payload traiga el flag y
+     * el nombre exacto. La guarda tira antes de cualquier `Artisan::call`.
+     *
+     * @test
+     */
+    public function run_sin_la_clave_no_fuerza_aunque_el_payload_pida_y_confirme()
+    {
+        $this->exigir_base_con_datos();
+        $this->sin_migrate_fresh_jamas();
+
+        foreach (['sin segundo argumento' => null, "con '1'" => '1', 'con 1' => 1, 'con false' => false] as $caso => $con_clave) {
+            $tiro = false;
+
+            try {
+                if ($con_clave === null) {
+                    UserSetupHelper::run($this->payload_que_fuerza());
+                } else {
+                    UserSetupHelper::run($this->payload_que_fuerza(), $con_clave);
+                }
+            } catch (BaseConDatosException $e) {
+                $tiro = true;
+            }
+
+            $this->assertTrue($tiro, 'run() ' . $caso . ': tenía que tirar BaseConDatosException antes del migrate:fresh.');
+        }
+
+        $this->assert_base_intacta();
+        $this->assertSame([], $this->logs_que_contienen(['AUTORIZADO']));
+    }
+
+    /**
+     * El NOMBRE del header no distingue mayúsculas (HTTP): `x-admin-api-key` o `X-ADMIN-API-KEY` con
+     * la clave correcta autorizan igual que `X-Admin-Api-Key` y llegan al `migrate:fresh` (cortado).
+     * Lo que sí distingue mayúsculas es el VALOR (ver el test de la clave equivocada).
+     *
+     * @test
+     */
+    public function el_nombre_del_header_en_otra_capitalizacion_con_la_clave_correcta_llega_al_migrate_fresh()
+    {
+        $this->exigir_base_con_datos();
+
+        $nombres = ['x-admin-api-key', 'X-ADMIN-API-KEY'];
+
+        $this->migrate_fresh_cortado(count($nombres));
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        foreach ($nombres as $nombre) {
+            $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), [$nombre => self::CLAVE_DE_ADMIN]);
+
+            $this->assertSame(500, $respuesta->getStatusCode(), 'Header "' . $nombre . '" con la clave correcta: tenía que llegar al migrate:fresh.');
+            $this->assertStringContainsString(self::CORTE, (string) $respuesta->json('error'));
+            $this->assertNull($respuesta->json('base_con_datos'));
+        }
+
+        $this->assert_base_intacta();
+        $this->assertCount(count($nombres), $this->logs_que_contienen(['AUTORIZADO']));
+    }
+
+    /**
+     * El candado queda libre después de un 409 por forzado sin la clave y después de un forzado
+     * autorizado que revienta en el `migrate:fresh` (cortado: 500). Un candado tomado trabaría todos
+     * los setups de la instancia, incluida el alta del cliente.
+     *
+     * @test
+     */
+    public function el_candado_queda_libre_despues_de_un_forzado_rechazado_y_de_uno_autorizado_que_revienta()
+    {
+        $this->exigir_base_con_datos();
+        $this->migrate_fresh_cortado();
+        $this->configurar_la_clave(false, false, self::CLAVE_DE_ADMIN);
+
+        $rechazado = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza());
+
+        $this->assert_409_por_base_con_datos($rechazado);
+
+        $libre = DemoSetupLockHelper::tomar();
+        $this->assertNotFalse($libre, 'El candado quedó tomado después de un 409 por forzado sin la clave.');
+        DemoSetupLockHelper::soltar($libre);
+
+        $autorizado = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza(), ['X-Admin-Api-Key' => self::CLAVE_DE_ADMIN]);
+
+        $this->assertSame(500, $autorizado->getStatusCode(), 'El forzado autorizado tenía que llegar al migrate:fresh (cortado).');
+        $this->assertStringContainsString(self::CORTE, (string) $autorizado->json('error'));
+
+        $libre = DemoSetupLockHelper::tomar();
+        $this->assertNotFalse($libre, 'El candado quedó tomado después de un forzado autorizado que reventó.');
+        DemoSetupLockHelper::soltar($libre);
+
+        // Y el siguiente request rebota por la base con datos, no por un setup "en curso".
+        $siguiente = $this->postJson('/api/admin-sync/user-setup', $this->payload());
+
+        $this->assert_409_por_base_con_datos($siguiente);
+        $siguiente->assertJson(['en_curso' => false]);
+
+        $this->assert_base_intacta();
+    }
+
+    /**
+     * Base VACÍA + flag + nombre exacto, SIN la clave (con la instancia con clave y sin clave, que es
+     * como nace una instalación nueva): sigue el camino normal y llega al `migrate:fresh` (cortado).
+     * El forzado sin la clave no autoriza nada, pero tampoco frena nunca un alta: con la base vacía
+     * los dos campos sobran y no se miran.
+     *
+     * @test
+     */
+    public function una_base_vacia_con_el_flag_y_el_nombre_sin_la_clave_sigue_el_camino_normal()
+    {
+        $this->vaciar_las_tablas_de_negocio();
+
+        $claves_de_la_instancia = [self::CLAVE_DE_ADMIN, null];
+
+        $this->migrate_fresh_cortado(count($claves_de_la_instancia));
+
+        foreach ($claves_de_la_instancia as $clave_de_la_instancia) {
+            $this->configurar_la_clave(false, false, $clave_de_la_instancia);
+
+            $respuesta = $this->postJson('/api/admin-sync/user-setup', $this->payload_que_fuerza());
+
+            $this->assertSame(
+                500,
+                $respuesta->getStatusCode(),
+                'Base vacía + flag + nombre sin clave (instancia ' . var_export($clave_de_la_instancia, true) . '): tenía que llegar al migrate:fresh, no 409.'
+            );
+            $this->assertStringContainsString(self::CORTE, (string) $respuesta->json('error'));
+            $this->assertNull($respuesta->json('base_con_datos'));
+        }
+
+        // Una base vacía no es noticia: ni rechazo, ni forzado sin clave, ni borrado autorizado.
+        $this->assertSame([], $this->logs_que_contienen(['BorradoTotalDeBaseHelper']));
     }
 }

@@ -420,6 +420,16 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-carga-prometida-sin-accion (tercera vuelta, 10/10/2026): si la persona está
+         * CORRIGIENDO esa tarjeta, decidido una vez para el turno. $corrige_una_tarjeta es true con
+         * CUALQUIER mensaje que no sea una pregunta —también un "Gracias!"—, así que una corrección es
+         * eso con un pedido de clase 'otro' ("no, eran 6000"). La usan la nota del reintento de la carga
+         * (que pide una tarjeta NUEVA, no mandar a confirmar la vieja) y el aviso de después del bucle.
+         */
+        $es_una_correccion = $corrige_una_tarjeta
+            && TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message)) === 'otro';
+
+        /*
          * 🔴 UN TURNO CON FOTO ARRANCA ESCALADO DESDE LA PRIMERA VUELTA (correcciones del 24/9/2026,
          * decisión tomada por la misión asistente-fotos-barras-y-compras en nombre de Lucas). Las 17
          * conversaciones reales mostraron que con el dueño en "ágil" las malas decisiones de un
@@ -523,6 +533,12 @@ class AsistenteIaService
         /* El stop_reason de la última respuesta del modelo, para el log de la guarda. */
         $stop_reason = '';
 
+        /*
+         * Misión asistente-carga-prometida-sin-accion (10/10/2026): true si el único reintento del turno
+         * lo pidió la guarda de la CARGA y no la de la tarjeta. Sólo para el log de un reintento que falla.
+         */
+        $reintento_de_la_carga = false;
+
         while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
@@ -535,6 +551,7 @@ class AsistenteIaService
                         'ai_conversation_id' => $conversation->id,
                         'ai_message_id'      => $assistant_message->id,
                         'iterations'         => $iterations,
+                        'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
                     ]);
 
                     $final_text = $texto_antes_del_reintento;
@@ -607,6 +624,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
+                    'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
                     'excepcion'          => get_class($e),
                     'error'              => $e->getMessage(),
                 ]);
@@ -619,6 +637,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
+                    'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
                     'http'               => $response->status(),
                 ]);
 
@@ -769,6 +788,65 @@ class AsistenteIaService
                 continue;
             }
 
+            /*
+             * 🔴 MISIÓN asistente-carga-prometida-sin-accion (10/10/2026): LA CARGA QUE EL TEXTO DA POR
+             * HECHA TIENE QUE ESTAR HECHA. La guarda de la tarjeta (arriba) sólo ve los textos que nombran
+             * una tarjeta, y el modo "directo" —el default de un negocio nuevo desde el 28/9/2026— no deja
+             * tarjetas: ejecuta. En la medición real contra DeepSeek ágil del 10/10/2026, a "Ya lo llamé"
+             * contestó "Marqué la tarea como hecha." en UNA vuelta `end_turn`, sin herramienta y con el
+             * mensaje en `acciones: []`; a "Cambiale el teléfono a 3415559999", "El teléfono de
+             * Distribuidora Norte quedó cambiado a 3415559999.", igual. Y en "resuelto" la variante es la
+             * inversa: el texto da por registrada una carga que quedó como tarjeta sin confirmar. La
+             * persona cree que está hecho.
+             *
+             * Si el texto da por hecha una carga que este mensaje no EJECUTÓ, y lo que pidió la persona no
+             * deja que sea verdad (afirma_una_carga_que_no_se_hizo), va el MISMO y único reintento del
+             * turno: si ya lo usó la tarjeta, no hay otro. Se mira después de la tarjeta a propósito: si el
+             * texto afirma las dos cosas, la nota que sirve es la de la tarjeta, que le pide al modelo
+             * justamente armarla. La nota de la carga dice qué hay de verdad —nada ejecutado, una tarjeta
+             * de este mensaje esperando el botón, o una de la respuesta anterior que sigue sin confirmar—
+             * y el reintento va al Profundo, como cualquier turno que toca una carga.
+             */
+            if ($guarda_de_tarjeta
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+
+                $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
+
+                if ($tipo_de_carga !== '') {
+
+                    $tarjetas_propuestas = $this->tarjetas_propuestas_del_mensaje($assistant_message);
+
+                    Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se reintenta una vez.', $this->rastro_de_la_carga_prometida(
+                        $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $final_text, $tools, $tipo_de_carga, $tarjetas_propuestas
+                    ));
+
+                    $texto_antes_del_reintento = $final_text;
+                    $reintento_de_la_carga     = true;
+
+                    $messages[] = [
+                        'role'    => 'assistant',
+                        'content' => $final_text,
+                    ];
+
+                    $messages[] = [
+                        'role'    => 'user',
+                        'content' => TarjetaPrometidaIaHelper::nota_para_reintentar_carga(
+                            $this->de_carga($herramientas_pedidas),
+                            $tarjetas_propuestas > 0,
+                            $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message),
+                            $es_una_correccion
+                        ),
+                    ];
+
+                    $toco_una_carga = true;
+                    $final_text = '';
+
+                    continue;
+                }
+            }
+
             break;
         }
 
@@ -829,6 +907,18 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-carga-prometida-sin-accion (cuarta vuelta, 10/10/2026: C): fuera los avisos de
+         * la guarda de la carga que el modelo haya escrito copiando el historial (DeepSeek ya copia
+         * líneas del historial: escribe "[Tarjeta #1765 … estado: confirmada]" él mismo). Un aviso dice
+         * la verdad del turno en que se agregó; copiado en otro puede decir algo falso. El único que
+         * puede llevar esta respuesta es el que agregue la guarda de abajo, si corresponde.
+         */
+        $final_text = TarjetaPrometidaIaHelper::sin_avisos($final_text);
+
+        /* true si la guarda de la tarjeta cambió el texto por el honesto: ahí la de la carga no mira nada. */
+        $la_tarjeta_cambio_el_texto = false;
+
+        /*
          * La guarda de la misión asistente-tarjeta-sin-accion, después del reintento (o sin él, si no
          * quedaba vuelta ni tiempo): si el texto TODAVÍA afirma una tarjeta que no existe, a la persona
          * no le llega. Con una tarjeta `propuesta` de un mensaje anterior el texto se deja: puede estar
@@ -852,6 +942,97 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó; se reemplaza por el texto honesto.', $rastro);
 
                 $final_text = TarjetaPrometidaIaHelper::TEXTO_HONESTO;
+
+                $la_tarjeta_cambio_el_texto = true;
+            }
+        }
+
+        /*
+         * La guarda de la misión asistente-carga-prometida-sin-accion, después del reintento (o sin él,
+         * si no quedaba vuelta ni tiempo, o si el reintento ya lo había usado la tarjeta): si el texto
+         * TODAVÍA da por hecha una carga que este mensaje no ejecutó, con la misma regla que adentro del
+         * bucle. Si el texto ya es el honesto de la tarjeta, no hay nada que mirar.
+         *
+         * 🔴 SE REEMPLAZA SÓLO LA MENTIRA SEGURA; EN TODO LO DEMÁS SE AGREGA UN AVISO (tercera vuelta,
+         * 10/10/2026). El reintento es barato y en lo medido siempre corrigió; el riesgo que queda está en
+         * el texto que reemplaza la respuesta: un "No pude… ¿La intento?" o un "decímelo de nuevo" sobre
+         * algo que SÍ estaba hecho invita a repetirlo, y en "directo" se ejecuta solo y se DUPLICA — y la
+         * clase del pedido, por listas de palabras, nunca va a ser exacta. Entonces:
+         *
+         *   - la MENTIRA SEGURA —la persona pidió una carga ('otro'), el turno entero (con el reintento) no
+         *     pidió ni una herramienta, es la PRIMERA respuesta de una conversación sin `contexto`, en
+         *     toda la conversación no hay ninguna carga confirmada (ni en curso) y no hay ninguna tarjeta
+         *     esperando, ni en este mensaje ni en la respuesta anterior— se reemplaza por
+         *     TEXTO_HONESTO_CARGA: ahí la frase no puede estar contando nada, el modelo no leyó nada y no
+         *     hay nada hecho. Lo de la primera respuesta es de la cuarta vuelta (10/10/2026: A): en una
+         *     conversación con historia el modelo puede saber de un turno anterior que el gasto ya
+         *     estaba ("Ya está cargado: Gasto N° 7", sin herramienta), y ahí el aviso de verificación es
+         *     verdad en los dos escenarios;
+         *   - en lo demás se DEJA la respuesta del modelo (puede traer lo que la persona pidió: una
+         *     consulta, el monto corregido, el número de un registro que ya existía) y se le agrega el
+         *     aviso verdadero que corresponde: el de la tarjeta de este mensaje, el de la corrección (la
+         *     persona corrigió la tarjeta que sigue esperando, y ésa tiene el dato viejo), el de la
+         *     tarjeta de la respuesta anterior o el de verificación. Si el modelo mentía, la persona lo
+         *     ve; si contaba algo hecho antes, el aviso no dice "no pude" ni la invita a repetirlo.
+         */
+        if ($guarda_de_tarjeta && ! $la_tarjeta_cambio_el_texto) {
+
+            $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
+
+            if ($tipo_de_carga !== '') {
+
+                $tarjetas_propuestas = $this->tarjetas_propuestas_del_mensaje($assistant_message);
+                $tarjeta_de_antes    = $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+
+                /* Con el texto CRUDO, igual que la guarda de la tarjeta (ver `el_saneo_saco_algo`). */
+                $rastro = $this->rastro_de_la_carga_prometida(
+                    $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $crudo, $tools, $tipo_de_carga, $tarjetas_propuestas
+                );
+                $rastro['hubo_reintento'] = ! is_null($texto_antes_del_reintento);
+
+                $mentira_segura = TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message)) === 'otro'
+                    && count($herramientas_pedidas) === 0
+                    && $this->es_la_primera_respuesta($conversation, $assistant_message)
+                    && ! $this->hay_cargas_confirmadas_de_antes($conversation, $assistant_message)
+                    && $tarjetas_propuestas === 0
+                    && ! $tarjeta_de_antes;
+
+                if ($mentira_segura) {
+
+                    $final_text = TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA;
+
+                    $rastro['accion']        = 'reemplazo';
+                    $rastro['texto_honesto'] = $final_text;
+
+                    Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se reemplaza por el texto honesto.', $rastro);
+
+                } else {
+
+                    if ($tarjetas_propuestas > 0) {
+
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_CARGA_CON_TARJETA;
+
+                    } elseif ($es_una_correccion) {
+
+                        /* Cuarta vuelta: la tarjeta que sigue esperando tiene el dato que la persona corrigió. */
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_CORRECCION;
+
+                    } elseif ($tarjeta_de_antes) {
+
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_TARJETA_DE_ANTES;
+
+                    } else {
+
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION;
+                    }
+
+                    $final_text = TarjetaPrometidaIaHelper::con_aviso($final_text, $aviso);
+
+                    $rastro['accion'] = 'aviso';
+                    $rastro['aviso']  = $aviso;
+
+                    Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se deja y se le agrega un aviso.', $rastro);
+                }
             }
         }
 
@@ -2092,6 +2273,268 @@ CONFIRMACION;
     }
 
     /**
+     * El tipo de afirmación ('hecho', 'quedo' o 'promesa') si el texto —saneado, como lo leería la
+     * persona— da por HECHA una carga que este mensaje no ejecutó y lo que pidió la persona no deja que
+     * sea verdad, o '' si no (misión asistente-carga-prometida-sin-accion, 10/10/2026). Lo que afirma el
+     * texto lo dice TarjetaPrometidaIaHelper::afirma_una_carga_hecha(); acá se cruza con lo que pasó.
+     *
+     * 🔴 POR QUÉ DECIDE EL PEDIDO DE LA PERSONA (correcciones del chequeo independiente, 10/10/2026). La
+     * primera versión decidía con tres excepciones —la pregunta, el acuse y "el turno sólo consultó"— y
+     * los chequeos encontraron las dos puntas: falsos positivos graves, un "no pude" sobre una carga que
+     * SÍ existe, que invita a repetirla y DUPLICARLA ("¿Lo cargaste?" → "Sí, lo registré el lunes"), y
+     * agujeros: el pedido en forma de pregunta ("¿Me la pasás al miércoles?"), el "dale" a un
+     * ofrecimiento nuevo, y la mentira después de una consulta preparatoria ("Pasala al miércoles" →
+     * consultar_tareas → "Quedó pasada al miércoles", sin proponer_). Lo que separa la verdad de la
+     * mentira no es si hubo herramientas: es qué pidió la persona (TarjetaPrometidaIaHelper::
+     * clase_del_pedido):
+     *
+     *   - 'otro' (un pedido de carga, también en forma de pregunta, o un hecho que la implica): dispara,
+     *     con cualquier tipo y haya pedido herramientas o no.
+     *   - 'consulta' ("¿Ya quedó cargado?", "Mostrame las tareas"): sólo si la respuesta anterior dejó
+     *     una tarjeta que sigue sin confirmar — ahí "Sí, quedó registrado" miente. Si no, está contando
+     *     un estado o algo de otra conversación, y un "no pude" invitaría a duplicarlo.
+     *   - 'acuse_gracias' ("Gracias genio!"): no dispara si la respuesta anterior tiene una carga
+     *     confirmada y ninguna tarjeta esperando. Si la que dejó sigue sin confirmar, "De nada, quedó
+     *     registrado" miente.
+     *   - 'acuse_si' ("Dale"): igual, y además la respuesta anterior no puede terminar preguntando: si
+     *     terminó ofreciendo algo ("¿Querés que también te agende el pago?"), el "dale" es un pedido nuevo.
+     *
+     * Y nunca dispara si en este mensaje hay una carga EJECUTADA (`confirmada`, o `en_curso` mientras
+     * corre); ni si el texto le nombra a la persona la tarjeta que está en el mensaje (medido: "Dejé la
+     * tarjeta para confirmar: a Distribuidora Norte le cambio el teléfono…"; y "Listo, cambié el monto a
+     * $6.000 en la tarjeta. Confirmala y queda registrado."); ni si una tarjeta del mensaje lleva el
+     * aviso de una carga parecida recién confirmada (tercera vuelta, 10/10/2026): la tarjeta ya lo
+     * muestra, y el texto que lo cuenta ("ya quedó registrado un gasto igual…") es verdad. Ahí el texto
+     * ya dice la verdad.
+     *
+     * Lo que pasa cuando dispara —el reintento y, si sigue, el reemplazo sólo en la mentira segura o el
+     * aviso en lo demás— está en responder_con_el_modelo().
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return string
+     */
+    protected function afirma_una_carga_que_no_se_hizo($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message): string
+    {
+        /* sanear() y no limpiar(), por lo mismo que en afirma_una_tarjeta_que_no_existe(). */
+        $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+        $tipo = TarjetaPrometidaIaHelper::afirma_una_carga_hecha($saneado);
+
+        if ($tipo === '') {
+            return '';
+        }
+
+        $ejecutada = AiMessageAction::where('ai_message_id', $assistant_message->id)
+                                    ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+                                    ->exists();
+
+        if ($ejecutada) {
+            return '';
+        }
+
+        $propuestas = AiMessageAction::where('ai_message_id', $assistant_message->id)
+                                     ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                     ->get();
+
+        if ($propuestas->count() > 0 && TarjetaPrometidaIaHelper::nombra_la_tarjeta($saneado)) {
+            return '';
+        }
+
+        $con_carga_parecida = $propuestas->contains(function ($accion) {
+            $aviso = is_array($accion->presentacion) && isset($accion->presentacion['aviso']) ? (string) $accion->presentacion['aviso'] : '';
+
+            return mb_strpos($aviso, TarjetaPrometidaIaHelper::MARCA_DE_CARGA_PARECIDA) !== false;
+        });
+
+        if ($con_carga_parecida) {
+            return '';
+        }
+
+        $clase = TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message));
+
+        if ($clase === 'otro') {
+            return $tipo;
+        }
+
+        $tarjeta_pendiente = $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+
+        if ($clase === 'consulta') {
+            return $tarjeta_pendiente ? $tipo : '';
+        }
+
+        /* Los dos acuses. */
+        if ($tarjeta_pendiente || ! $this->la_respuesta_anterior_tiene_una_carga_confirmada($conversation, $assistant_message)) {
+            return $tipo;
+        }
+
+        if ($clase === 'acuse_si') {
+
+            $anterior = $this->respuesta_anterior_del_asistente($conversation, $assistant_message);
+
+            if (! is_null($anterior) && TarjetaPrometidaIaHelper::termina_preguntando((string) $anterior->contenido)) {
+                return $tipo;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Cuántas tarjetas `propuesta` tiene el mensaje que se está generando: las que esperan el botón.
+     *
+     * @param  AiMessage  $assistant_message
+     * @return int
+     */
+    protected function tarjetas_propuestas_del_mensaje(AiMessage $assistant_message): int
+    {
+        return AiMessageAction::where('ai_message_id', $assistant_message->id)
+                              ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                              ->count();
+    }
+
+    /**
+     * true si algún mensaje ANTERIOR de la conversación tiene una carga confirmada —o en curso, que se
+     * está ejecutando (cuarta vuelta, 10/10/2026)—: ahí el texto que da por hecha una carga puede estar
+     * contando ésa, así que no es la mentira segura y la respuesta no se reemplaza: se le agrega un
+     * aviso (ver TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION).
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function hay_cargas_confirmadas_de_antes(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        return AiMessageAction::where('ai_conversation_id', $conversation->id)
+                              ->where('ai_message_id', '<', $assistant_message->id)
+                              ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+                              ->exists();
+    }
+
+    /**
+     * true si la respuesta que se está generando es la PRIMERA del asistente en la conversación y la
+     * conversación no trae `contexto` (el bloque de datos de una sugerencia del mostrador). Es una de
+     * las condiciones de la mentira segura (cuarta vuelta, 10/10/2026: A): con un turno anterior, o con
+     * datos ya cargados en la conversación, el modelo puede saber que algo ya estaba registrado aunque
+     * en este turno no haya pedido ninguna herramienta ("Ya está cargado: Gasto N° 7").
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function es_la_primera_respuesta(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        if (! is_null($this->respuesta_anterior_del_asistente($conversation, $assistant_message))) {
+            return false;
+        }
+
+        return trim((string) $conversation->getAttribute('contexto')) === '';
+    }
+
+    /**
+     * La respuesta del asistente inmediatamente anterior a la que se está generando, o null.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return AiMessage|null
+     */
+    protected function respuesta_anterior_del_asistente(AiConversation $conversation, AiMessage $assistant_message)
+    {
+        return AiMessage::where('ai_conversation_id', $conversation->id)
+                        ->where('rol', 'assistant')
+                        ->where('id', '<', $assistant_message->id)
+                        ->orderBy('id', 'DESC')
+                        ->first();
+    }
+
+    /**
+     * true si la respuesta INMEDIATAMENTE anterior del asistente contó una carga confirmada: una tarjeta
+     * suya confirmada, o una que se confirmó mientras se escribía (lo que un acuse puede estar
+     * agradeciendo). Sólo esa, como en hay_tarjetas_pendientes_de_antes(): un "gracias" repasa lo último
+     * que se hizo, no algo de diez mensajes atrás.
+     *
+     * 🔴 "O UNA QUE SE CONFIRMÓ MIENTRAS SE ESCRIBÍA". La confirmación determinista (el "dale" a la
+     * tarjeta pendiente) confirma una tarjeta de un mensaje MÁS VIEJO, y la respuesta que lo cuenta —"Listo,
+     * quedó registrado"— no tiene ninguna propia. Mirando sólo las tarjetas de esa respuesta, el
+     * "Gracias!" siguiente → "De nada, quedó registrado el gasto" disparaba sobre algo que sí se hizo.
+     *
+     * Sexta vuelta (10/10/2026): cuenta también la que está `en_curso` (ejecutándose), como
+     * hay_cargas_confirmadas_de_antes().
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function la_respuesta_anterior_tiene_una_carga_confirmada(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        $anterior = $this->respuesta_anterior_del_asistente($conversation, $assistant_message);
+
+        if (is_null($anterior)) {
+            return false;
+        }
+
+        return AiMessageAction::where('ai_conversation_id', $conversation->id)
+                              ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+                              ->where(function ($query) use ($anterior) {
+                                  $query->where('ai_message_id', $anterior->id)
+                                        ->orWhere('resuelta_at', '>=', $anterior->created_at);
+                              })
+                              ->exists();
+    }
+
+    /**
+     * Lo que escribió la persona en el pedido que se está contestando (el último `user` antes del
+     * mensaje), o '' si no hay ninguno o vino sin texto.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return string
+     */
+    protected function pedido_de_la_persona(AiConversation $conversation, AiMessage $assistant_message): string
+    {
+        $contenido = AiMessage::where('ai_conversation_id', $conversation->id)
+                              ->where('rol', 'user')
+                              ->where('id', '<', $assistant_message->id)
+                              ->orderBy('id', 'DESC')
+                              ->value('contenido');
+
+        return (string) $contenido;
+    }
+
+    /**
+     * Lo que se loguea cuando la guarda de la CARGA dispara: el rastro de la tarjeta (herramientas,
+     * `stop_reason`, modelo, si el saneo sacó algo, el texto recortado) más de qué guarda es, qué tipo
+     * de afirmación encontró el detector, cuántas tarjetas esperan el botón en el mensaje —que es lo que
+     * distingue "no se hizo nada" de "quedó como tarjeta"— y cómo se clasificó el pedido de la persona.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  int  $iterations
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  string  $stop_reason
+     * @param  string  $model
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  string  $tipo_de_afirmacion  hecho | quedo | promesa
+     * @param  int  $tarjetas_propuestas
+     * @return array<string, mixed>
+     */
+    protected function rastro_de_la_carga_prometida(AiConversation $conversation, AiMessage $assistant_message, $iterations, array $herramientas_pedidas, $stop_reason, $model, $texto, array $tools, $tipo_de_afirmacion, $tarjetas_propuestas): array
+    {
+        $rastro = $this->rastro_de_la_tarjeta_prometida($conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $texto, $tools);
+
+        $rastro['clase']                      = 'carga';
+        $rastro['tipo_de_afirmacion']         = (string) $tipo_de_afirmacion;
+        $rastro['tarjetas_propuestas']        = (int) $tarjetas_propuestas;
+        $rastro['clase_del_pedido']           = TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message));
+        $rastro['tarjeta_pendiente_de_antes'] = $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+
+        return $rastro;
+    }
+
+    /**
      * Los bloques `image` de un mensaje, en base64, listos para la API.
      *
      * 🔴 El `media_type` sale DE LOS BYTES (AsistenteImagenHelper::media_type,
@@ -2199,6 +2642,13 @@ CONFIRMACION;
 
             return trim($contenido) === '' ? $marca : rtrim($contenido) . "\n" . $marca;
         }
+
+        /*
+         * Misión asistente-carga-prometida-sin-accion (cuarta vuelta, 10/10/2026: C): sin los avisos de la
+         * guarda de la carga ("Ojo: con este mensaje no registré ningún cambio…"). Son para la persona y
+         * dicen la verdad del turno en que se agregaron; si el modelo los lee, los copia en otro turno.
+         */
+        $contenido = TarjetaPrometidaIaHelper::sin_avisos($contenido);
 
         if (! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
             return $contenido;
