@@ -46,6 +46,13 @@ class Recepcion_de_horarios_Test extends EmpresaTestCase
     const LABELS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 
     /**
+     * La clave de admin de la instancia. Desde la misión cerrar-admin-sync (10/10/2026) `AdminApiKey` exige
+     * `X-Admin-Api-Key` sola cuando la instancia tiene clave cargada (como cualquier cliente de producción),
+     * así que el escenario por defecto es el real: la instancia tiene clave y admin-api la manda en cada push.
+     */
+    const CLAVE_DE_ADMIN = 'clave-de-admin-del-test-de-horarios';
+
+    /**
      * Ademas de los guards de EmpresaTestCase, deja la tabla espejo vacia para que cada test
      * arranque de "no hay horario cargado". Corre adentro de la transaccion de
      * `DatabaseTransactions`, asi que no toca nada fuera del test.
@@ -57,6 +64,10 @@ class Recepcion_de_horarios_Test extends EmpresaTestCase
         parent::setUp();
 
         BusinessHoursConfig::query()->delete();
+
+        // La instancia tiene su clave de admin y admin-api la manda, como en producción.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+        $this->withHeader('X-Admin-Api-Key', self::CLAVE_DE_ADMIN);
     }
 
     /**
@@ -497,6 +508,7 @@ class Recepcion_de_horarios_Test extends EmpresaTestCase
             'services.admin_api.require_api_key' => true,
             'services.admin_api.api_key'         => 'k',
         ]);
+        $this->flushHeaders();
 
         $this->putJson(self::RUTA, $this->payload())
             ->assertStatus(401)
