@@ -36,7 +36,7 @@ class AdminApiKey
      */
     public function handle(Request $request, Closure $next)
     {
-        $expected = config('services.admin_api.api_key');
+        $expected = $this->clave_de_la_instancia();
 
         if (! $this->debe_exigir_la_clave($expected)) {
             return $next($request);
@@ -44,7 +44,7 @@ class AdminApiKey
 
         $received = $request->header('X-Admin-Api-Key');
 
-        if (empty($expected) || empty($received) || !hash_equals((string) $expected, (string) $received)) {
+        if ($expected === '' || empty($received) || !hash_equals($expected, (string) $received)) {
             $this->registrar_rechazo($request, ! empty($received));
 
             return response()->json(['error' => 'unauthorized'], 401);
@@ -64,10 +64,30 @@ class AdminApiKey
         $flag = config('services.admin_api.require_api_key');
 
         if ($flag === null) {
-            return is_string($clave_de_la_instancia) && trim($clave_de_la_instancia) !== '';
+            return $clave_de_la_instancia !== '';
         }
 
         return (bool) $flag;
+    }
+
+    /**
+     * La clave de admin de ESTA instancia (`ADMIN_API_INBOUND_KEY`), normalizada para que "tiene clave cargada" y "con qué se compara"
+     * sean la misma cosa:
+     *   - sin espacios ni saltos de línea en los extremos (un `.env` guardado con CRLF no puede dejar la puerta cerrada para siempre);
+     *   - si `env()` la convirtió en booleano (una clave que fuera literalmente `true` o `false`), se vuelve al texto, para que no
+     *     quede "sin clave" y la instancia abierta por un detalle de cómo Laravel lee el `.env`.
+     *
+     * @return string '' si no hay clave cargada.
+     */
+    protected function clave_de_la_instancia()
+    {
+        $clave = config('services.admin_api.api_key');
+
+        if (is_bool($clave)) {
+            return $clave ? 'true' : 'false';
+        }
+
+        return is_scalar($clave) ? trim((string) $clave) : '';
     }
 
     /**
