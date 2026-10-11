@@ -55,14 +55,19 @@ return [
     // - api_key: clave que admin-api envía hacia este cliente (debe coincidir con clients.api_key en admin-api).
     // - inbound_key: clave que este cliente envía hacia admin-api al reportar lecturas (debe coincidir con clients.inbound_api_key en admin-api).
     // - client_uuid: uuid propio de este cliente dentro del admin-api.
-    // - require_api_key: si es false, el middleware admin.api.key no valida X-Admin-Api-Key (solo uso temporal;
-    //   en producción debe ser true). Variable .env: ADMIN_SYNC_REQUIRE_API_KEY.
+    // - require_api_key: TRI-ESTADO (misión cerrar-admin-sync, 10/10/2026). Variable .env: ADMIN_SYNC_REQUIRE_API_KEY.
+    //   * true  => el middleware admin.api.key exige X-Admin-Api-Key.
+    //   * false => no exige (apagado a propósito; es lo único que lo deja abierto en una instancia con clave).
+    //   * null  => variable sin definir o vacía: AUTOMÁTICO. Exige la clave si la instancia tiene
+    //     ADMIN_API_INBOUND_KEY cargada; si no la tiene (demos, tests) no hay con qué comparar y no exige.
+    //   Un valor que no se entiende ('banana') cuenta como sin definir: ante la duda, el automático.
+    //   Ver App\Http\Middleware\AdminApiKey.
     'admin_api' => [
         'url'               => env('ADMIN_API_URL'),
         'api_key'           => env('ADMIN_API_INBOUND_KEY'),
         'inbound_key'       => env('ADMIN_API_OUTBOUND_KEY'),
         'client_uuid'       => env('ADMIN_API_CLIENT_UUID'),
-        'require_api_key'   => env('ADMIN_SYNC_REQUIRE_API_KEY', false),
+        'require_api_key'   => (env('ADMIN_SYNC_REQUIRE_API_KEY') === null || (is_string(env('ADMIN_SYNC_REQUIRE_API_KEY')) && trim(env('ADMIN_SYNC_REQUIRE_API_KEY')) === '')) ? null : filter_var(env('ADMIN_SYNC_REQUIRE_API_KEY'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
         /**
          * Exige X-Admin-Api-Key SOLO en admin-sync/user-setup (middleware ClaveDeAdminEnSetup).
          * Apagada por defecto a propósito: admin-api todavía no manda el header a esa ruta y
