@@ -929,6 +929,8 @@ class CatalogoDeEscrituraIaHelper
         'color'                        => 'variantes: sin solapa en el ABM actual',
         'size'                         => 'variantes: sin solapa en el ABM actual',
         'deposit'                      => 'sin solapa en el ABM actual',
+        // Misión hojas-de-ruta (10/10/2026): se sacó de ENTIDADES porque la solapa "repartidores" del ABM > Ventas ya no existe.
+        'dealer'                       => 'repartidores: la solapa del ABM que el asistente abría ya no existe',
         'error'                        => 'técnica: registro de errores de la SPA (manda mail)',
         'etiqueta_medidas'             => 'impresión de etiquetas: su store() delega el request',
         'inventory_linkage'            => 'se arma con listas de categorías y toca el catálogo de otro cliente',
