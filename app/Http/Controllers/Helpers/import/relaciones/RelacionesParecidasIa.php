@@ -237,6 +237,11 @@ solo para cuando está claro que son cosas distintas.
 Si el valor coincide con un candidato "cargado" y también con uno del "archivo", elegí el
 "cargado": es el nombre que el comercio ya usa.
 
+Usá "seguro": true también cuando lo único que cambia es la forma societaria (SRL, S.R.L.,
+SA, S.A., SAS, Hnos.) o una letra de más o de menos en una palabra larga, y el resto del
+nombre coincide: "Pinturas y Solventes" es "Pinturas y Solventes SRL", y "Ferreteria del Sur
+SA" es "Ferretera del Sur S.A.".
+
 Un candidato que difiere en un número ("Mayorista 2", "Caño 3/4") NUNCA es el mismo con
 seguridad: a lo sumo "seguro": false, y si el número es una medida o un modelo, null.
 
