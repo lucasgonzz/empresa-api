@@ -96,6 +96,16 @@ class Edicion_Baja_Y_Stock_De_Venta_En_Dolares_Test extends EmpresaTestCase
      * siguen en dólares (15 / 10 / 5 por unidad), la venta sigue en moneda 2 y con `valor_dolar`
      * 1200 AUNQUE el PUT mande otro dólar (1500): editar no recotiza.
      *
+     * 🔴 El PUT va SIN `moneda_id` (8/10/2026, misión edicion-completa-ventas-presupuestos). Es la
+     * SPA anterior a esa misión, que manda `valor_dolar` en todos los PUT pero nunca `moneda_id`, y
+     * es el caso que este test fija: una edición común que no habla de la cotización no la pisa. Hasta
+     * ese día el payload mandaba `moneda_id` (lo pone `payload_edicion_venta()`) y daba igual, porque
+     * `update()` ignoraba los dos campos. Desde ese día `moneda_id` es la señal de que el PUT SÍ habla
+     * de la moneda y la cotización (pedido de Lucas: "que se pueda editar la cotización del dólar que se
+     * utilizó en la venta"), y un PUT con `moneda_id` y otra cotización la guarda: lo fija
+     * `EdicionCompletaVenta/2_Cambio_de_moneda_y_cotizacion_Test::cambiar_solo_la_cotizacion_guarda_el_valor_dolar_y_no_toca_renglones_ni_total`.
+     * Ninguna aserción de este test cambió.
+     *
      * @group ventas-en-dolares
      * @test
      */
@@ -108,7 +118,12 @@ class Edicion_Baja_Y_Stock_De_Venta_En_Dolares_Test extends EmpresaTestCase
             $this->item_de_edicion($this->en_dolares, $venta, 4),
         ];
 
-        $this->editar($venta, $this->payload_edicion_venta($venta, $items, ['valor_dolar' => 1500]));
+        $payload = $this->payload_edicion_venta($venta, $items, ['valor_dolar' => 1500]);
+
+        // La SPA vieja: sin `moneda_id` (ver el bloque del método).
+        unset($payload['moneda_id']);
+
+        $this->editar($venta, $payload);
 
         $venta = Sale::find($venta->id);
 

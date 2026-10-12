@@ -26,6 +26,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
+use App\Http\Controllers\Helpers\sale\CambioDeCuentaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
@@ -715,6 +716,42 @@ class SaleController extends Controller
         }
 
         /*
+         * Moneda y cotización de la venta (misión edicion-completa-ventas-presupuestos, 8/10/2026,
+         * pedido de Lucas: "que se pueda editar la cotización del dólar [...] y cambiar la moneda").
+         * Se resuelven ACÁ, antes de la transacción y sin escribir nada, igual que los otros 4xx
+         * tempranos: un 422 es una respuesta, no un fallo que haya que revertir. La asignación va
+         * adentro, antes del primer save() (ver más abajo).
+         *
+         * 🔴 La señal es `moneda_id`, NO `valor_dolar`: la SPA manda `valor_dolar` en todos los PUT
+         * (también la vieja), así que honrarlo a secas pisaría la cotización en cualquier edición
+         * común. Sin `moneda_id` en el request no se toca ni la moneda ni la cotización, idéntico a
+         * antes. La regla completa, en CotizacionDeVentaHelper::resolver_moneda_y_cotizacion_de_update().
+         */
+        $moneda_y_cotizacion = CotizacionDeVentaHelper::resolver_moneda_y_cotizacion_de_update($request, $sale_a_actualizar);
+
+        if (!is_null($moneda_y_cotizacion['error'])) {
+
+            return response()->json($moneda_y_cotizacion['error'], 422);
+        }
+
+        /*
+         * El cambio de CUENTA CORRIENTE (cliente o moneda de una venta que va a la cuenta corriente),
+         * misma misión. La mudanza del débito ya la hace updateCurrentAcountsAndCommissions() más
+         * abajo; acá se frenan, antes de escribir nada, los casos en los que esa mudanza deja la plata
+         * mal: cliente inexistente o de otro comercio, venta con nota de crédito en la cuenta corriente
+         * (la NC no viaja con el débito) o incluida en una facturación consolidada. Ver
+         * CambioDeCuentaDeVentaHelper.
+         */
+        $error_cambio_de_cuenta = CambioDeCuentaDeVentaHelper::validar($request, $sale_a_actualizar, $moneda_y_cotizacion['moneda_id']);
+
+        if (!is_null($error_cambio_de_cuenta)) {
+
+            Log::info('update sale id '.$id.': cambio de cuenta rechazado ('.$error_cambio_de_cuenta['motivo'].').');
+
+            return response()->json($error_cambio_de_cuenta, 422);
+        }
+
+        /*
          * Se lee ANTES de abrir la transacción, y no adentro, por el candado de más abajo: en
          * REPEATABLE READ la primera lectura de la transacción fija la foto de la base, y esta
          * lectura (User + extensiones) era la primera. Ver el comentario del lockForUpdate.
@@ -765,6 +802,18 @@ class SaleController extends Controller
              * bloquea en orden ascendente.
              */
             CuentaCorrienteLock::bloquear('client', [$model->client_id, $request->client_id]);
+
+            /*
+             * Si el débito de la venta se muda (cambio de cliente o de moneda, misión
+             * edicion-completa-ventas-presupuestos), el cliente que queda tiene que tener la cuenta
+             * corriente de la moneda que queda: CurrentAcountFromSaleHelper la usa sin chequear null y
+             * sin ella la edición terminaba en un 500. Va adentro de la transacción (un rechazo
+             * posterior, como el del límite de crédito, la deshace con el rollback), después del
+             * candado y ANTES de attachProperies(): una nota de crédito cargada en este mismo PUT ya
+             * encuentra la cuenta del cliente nuevo. $model todavía tiene el cliente y la moneda
+             * guardados, que es contra lo que se mide el cambio.
+             */
+            CambioDeCuentaDeVentaHelper::asegurar_cuenta_de_destino($request, $model, $moneda_y_cotizacion['moneda_id']);
 
             $previus_articles = $model->articles()->lockForUpdate()->get();
             $previus_combos = $model->combos()->lockForUpdate()->get();
@@ -968,7 +1017,33 @@ class SaleController extends Controller
                 $model->dias_alerta_venta_no_cobrada_personalizado = $this->normalized_dias_alerta_venta_no_cobrada_personalizado($request);
             }
 
-            // $model->valor_dolar                         = $request->valor_dolar;
+            /*
+                Moneda y cotización, ya resueltas y validadas antes de la transacción (misión
+                edicion-completa-ventas-presupuestos, 8/10/2026). Hasta ese día acá había una
+                asignación de `valor_dolar` comentada y `moneda_id` no se tocaba nunca.
+
+                🔴 NO "simplificar" a `$model->valor_dolar = $request->valor_dolar`:
+                  - la CLAVE `moneda_id` AUSENTE (o en null) preserva las dos cosas. La SPA vieja manda
+                    `valor_dolar` en todos los PUT —con el campo bloqueado, y con el dólar del dueño si
+                    la venta no tenía cotización— pero nunca `moneda_id`: honrar su `valor_dolar` le
+                    pisaría la cotización a cualquier venta que se edite para cambiar una cantidad;
+                  - con `moneda_id`, una cotización null, vacía o 0 también PRESERVA la guardada (llega
+                    `valor_dolar` null del helper): un 0 es "no hay dólar cargado", no "borrá la
+                    cotización con la que se preciaron los renglones".
+
+                ⚠️ Tiene que ir ANTES del primer save() y de attachProperies(): SaleHelper::getCost()
+                cotiza el costo de cada renglón nuevo con la `moneda_id` y el `valor_dolar` de la venta
+                EN MEMORIA (mismo motivo que en BudgetController::update()), y
+                updateCurrentAcountsAndCommissions() mete el débito en la cuenta de esta moneda.
+            */
+            if ($moneda_y_cotizacion['actualizar']) {
+
+                $model->moneda_id = $moneda_y_cotizacion['moneda_id'];
+
+                if (!is_null($moneda_y_cotizacion['valor_dolar'])) {
+                    $model->valor_dolar = $moneda_y_cotizacion['valor_dolar'];
+                }
+            }
 
             /*
                 🔴 EDITAR NO CAMBIA EL EMPLEADO DE LA VENTA, salvo que el PUT mande explícitamente
