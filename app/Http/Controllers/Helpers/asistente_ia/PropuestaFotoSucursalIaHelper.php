@@ -174,13 +174,17 @@ class PropuestaFotoSucursalIaHelper
         return [
             'texto' => 'Foto asignada a la sucursal ' . self::nombre_de_sucursal($sucursal),
             /*
-             * El ABM, donde el dueño ve y edita las sucursales. Sin sub-vista puntual: el ruteo del
-             * SPA es /abm/:view?/:sub_view? y el ABM base alcanza para llegar a las sucursales. En
-             * WhatsApp esta ruta no se usa (no hay navegación); en la pantalla la foto no llega.
+             * El ABM, donde el dueño ve y edita las sucursales: la solapa Sucursales del grupo
+             * Sucursales, la misma ruta que la del alta genérica de `address` en el catálogo de
+             * escritura. En WhatsApp esta ruta no se usa (no hay navegación).
+             *
+             * Hasta el 10/10/2026 iba sin params, creyendo que "el ABM base alcanza para llegar a las
+             * sucursales": no alcanza, /abm a secas abre Categorías (misión
+             * ver-en-del-asistente-refresca-destino). Las tarjetas viejas las corrige la SPA.
              */
             'ruta'  => [
                 'name'   => 'abm',
-                'params' => new \stdClass(),
+                'params' => ['view' => 'sucursales', 'sub_view' => 'sucursales'],
                 'texto'  => 'Ver en Sucursales',
             ],
         ];

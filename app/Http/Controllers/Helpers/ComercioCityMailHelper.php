@@ -81,18 +81,34 @@ class ComercioCityMailHelper
 
         $links = [];
 
-
+        /*
+         * 🔴 Los dos links llevan el token (`?t=`, PdfLinkHelper): desde la misión
+         * pdf-de-venta-publico (10/10/2026) las rutas de PDF ya no son públicas y el cliente que
+         * abre el mail no tiene sesión en el sistema. Sin token, el link deja de abrir cuando se
+         * cierra la ventana de transición del comercio. El de la cuenta corriente es de tipo
+         * `credit_account` porque la cantidad (30) es mayor a cero.
+         */
         if ($pdf_profile) {
             $links[] = [
                 'text' => 'Ver comprobante en ComercioCity',
-                'url'  => $sale->user->api_url.'/sale/pdf/'.$sale->id.'?pdf_column_profile_id='.$pdf_profile->id,
+                'url'  => PdfLinkHelper::con_token(
+                    $sale->user->api_url.'/sale/pdf/'.$sale->id.'?pdf_column_profile_id='.$pdf_profile->id,
+                    'sale',
+                    $sale->id,
+                    $sale->user_id
+                ),
             ];
         }
 
         if ($credit_account) {
             $links[] = [
                 'text' => 'Ver mi cuenta corriente en ComercioCity',
-                'url'  => $sale->user->api_url.'/current-acount/pdf/'.$credit_account->id.'/30/simple',
+                'url'  => PdfLinkHelper::con_token(
+                    $sale->user->api_url.'/current-acount/pdf/'.$credit_account->id.'/30/simple',
+                    'credit_account',
+                    $credit_account->id,
+                    $credit_account->user_id
+                ),
             ];
         }
 

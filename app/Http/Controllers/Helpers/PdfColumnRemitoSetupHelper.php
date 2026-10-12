@@ -259,9 +259,15 @@ class PdfColumnRemitoSetupHelper
             return $resultado;
         }
 
+        /**
+         * Solo perfiles de HOJA (misión diseno-ticket-comandera, decisión D4): esta clase cierra las
+         * columnas en los 200 mm de la A4, y un ticket de comandera que alguien haya llamado
+         * "Remito" quedaría con columnas de hoja sobre un rollo de 80 mm.
+         */
         $perfiles_de_venta = PdfColumnProfile::query()
             ->where('user_id', $owner_id)
             ->where('model_name', 'sale')
+            ->deHoja()
             ->where(function ($q) {
                 $q->where('is_afip_ticket', false)->orWhereNull('is_afip_ticket');
             })

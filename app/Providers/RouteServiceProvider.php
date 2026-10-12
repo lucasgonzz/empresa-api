@@ -64,6 +64,17 @@ class RouteServiceProvider extends ServiceProvider
                 ->namespace($this->namespace)
                 ->group(base_path('routes/web.php'));
 
+            /*
+             * Rutas de mantenimiento, debug y administración interna (misión cerrar-rutas-web-publicas,
+             * 10/10/2026). TODO el archivo pasa por `solo.mantenimiento` desde acá, así que una ruta que
+             * se agregue ahí queda cerrada sin acordarse de nada (falla cerrado). Va después de `web`
+             * porque el middleware necesita la sesión, y se carga después de web.php: si alguna URI se
+             * repitiera, gana la de este archivo, que es la cerrada.
+             */
+            Route::middleware(['web', 'solo.mantenimiento'])
+                ->namespace($this->namespace)
+                ->group(base_path('routes/mantenimiento.php'));
+
             Route::prefix('api')
                 ->middleware('api')
                 ->namespace($this->namespace)

@@ -306,7 +306,7 @@ class ExportHelper {
 	}
 
 	static function map_propiedades_de_distribuidora($map, $article) {
-		if (self::tiene_extencion('propiedades_de_distribuidora')) {
+		if (self::tiene_extencion('articulos_con_propiedades_de_distribuidora')) {
 
 			if (!is_null($article->tipo_envase)) {
 				$map[] = $article->tipo_envase->name;
@@ -502,7 +502,7 @@ class ExportHelper {
 	 * @return array Headings con columnas de distribuidora insertadas si aplica la extensión.
 	 */
 	static function set_propiedades_de_distribuidora($headings) {
-		if (self::tiene_extencion('propiedades_de_distribuidora')) {
+		if (self::tiene_extencion('articulos_con_propiedades_de_distribuidora')) {
 
 			// Bloque de stock global comienza en "Stock actual"; las columnas de distribuidora van antes.
 			$stock_index = array_search('Stock actual', $headings);

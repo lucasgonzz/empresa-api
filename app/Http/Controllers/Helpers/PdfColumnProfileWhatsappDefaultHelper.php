@@ -163,8 +163,16 @@ class PdfColumnProfileWhatsappDefaultHelper
      */
     protected static function get_sale_profiles_for_user($user_id, $is_afip_ticket)
     {
+        /**
+         * Solo perfiles de HOJA (misión diseno-ticket-comandera, decisión D4): el link de WhatsApp
+         * abre un PDF, y un ticket de comandera nunca se dibuja como PDF. Sin este filtro, "Ticket
+         * factura" ganaba por nombre (contiene "factura") el predeterminado de WhatsApp de factura
+         * de un dueño sin "Factura comun", y con él el botón Imprimir de la factura del setup
+         * (UserSetupHelper / DemoSetupHelper::set_default_sale_factura_print_option()).
+         */
         return PdfColumnProfile::where('user_id', $user_id)
             ->where('model_name', 'sale')
+            ->deHoja()
             ->where('is_afip_ticket', $is_afip_ticket ? true : false)
             ->with(['pdf_column_options'])
             ->orderBy('id')

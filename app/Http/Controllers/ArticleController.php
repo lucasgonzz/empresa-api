@@ -353,6 +353,11 @@ class ArticleController extends Controller
         $model->calipers                        = $request->calipers;
         $model->juego                           = $request->juego;
 
+        // Propiedades de distribuidora (extensión articulos_con_propiedades_de_distribuidora).
+        // `contenido` se asigna arriba, en el bloque de autopartes, porque lo comparten las dos.
+        $model->unidades_por_bulto              = $request->unidades_por_bulto;
+        $model->tipo_envase_id                  = $request->tipo_envase_id;
+
 
         $model->unidades_individuales              = $request->unidades_individuales;
         $model->unidad_medida_id                   = $request->unidad_medida_id;
@@ -572,6 +577,11 @@ class ArticleController extends Controller
         $model->cm3                             = $request->cm3;
         $model->calipers                        = $request->calipers;
         $model->juego                           = $request->juego;
+
+        // Propiedades de distribuidora (extensión articulos_con_propiedades_de_distribuidora).
+        // `contenido` se asigna arriba, en el bloque de autopartes, porque lo comparten las dos.
+        $model->unidades_por_bulto              = $request->unidades_por_bulto;
+        $model->tipo_envase_id                  = $request->tipo_envase_id;
 
 
 

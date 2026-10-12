@@ -38,6 +38,7 @@ use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\SaleTicketComanderaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTicketRasterHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
@@ -1806,7 +1807,12 @@ class SaleController extends Controller
      * Upsert de datos de envío para la etiqueta (SaleDeliveryInfo 1:1).
      * Solo ventas del usuario actual (owner).
      *
-     * @param Request $request Campos: first_name, last_name, phone, dni, cuit, locality, province, postal_code, email (opcionales).
+     * `address` (calle y número del destinatario) se guarda SOLO si el request trae la clave: un SPA
+     * anterior a la misión etiqueta-envio-direccion (PWA con caché, el otro frente) no la manda, y
+     * no puede borrar una dirección que ya se cargó. Mandarla vacía sí la limpia (la etiqueta vuelve
+     * a usar el domicilio del cliente).
+     *
+     * @param Request $request Campos: first_name, last_name, phone, dni, cuit, address, locality, province, postal_code, email (opcionales).
      * @param int|string $sale_id Id de la venta.
      * @return \Illuminate\Http\JsonResponse Venta completa con sale_delivery_info.
      */
@@ -1820,22 +1826,64 @@ class SaleController extends Controller
             return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
         }
 
+        $campos = [
+            'first_name' => $request->input('first_name'),
+            'last_name' => $request->input('last_name'),
+            'phone' => $request->input('phone'),
+            'dni' => $request->input('dni'),
+            'cuit' => $request->input('cuit'),
+            'locality' => $request->input('locality'),
+            'province' => $request->input('province'),
+            'postal_code' => $request->input('postal_code'),
+            'email' => $request->input('email'),
+        ];
+
+        /** Sin la clave no se toca la dirección guardada (compatibilidad con el SPA viejo). */
+        if ($request->exists('address')) {
+            $campos['address'] = $request->input('address');
+        }
+
         SaleDeliveryInfo::updateOrCreate(
             ['sale_id' => $sale->id],
-            [
-                'first_name' => $request->input('first_name'),
-                'last_name' => $request->input('last_name'),
-                'phone' => $request->input('phone'),
-                'dni' => $request->input('dni'),
-                'cuit' => $request->input('cuit'),
-                'locality' => $request->input('locality'),
-                'province' => $request->input('province'),
-                'postal_code' => $request->input('postal_code'),
-                'email' => $request->input('email'),
-            ]
+            $campos
         );
 
         return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
+    }
+
+    /**
+     * El ticket de comandera de la venta armado con un diseño de ticket (misión
+     * diseno-ticket-comandera, 9/10/2026, contrato §3.6): los bytes ESC/POS en base64 que el Ticket
+     * 2.0 manda a la impresora, o el texto para la vista previa del diseñador (`formato=texto`).
+     *
+     * GET api/sale/{sale_id}/ticket-comandera?pdf_column_profile_id=&afip_ticket_id=&formato=
+     *
+     * 404 si la venta no es del dueño (mismo criterio que ticket_logo_raster()); 422 si el perfil
+     * pedido no es un ticket de venta del dueño. La lógica vive en SaleTicketComanderaHelper.
+     *
+     * @param int                      $sale_id
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function ticket_comandera($sale_id, Request $request)
+    {
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
+        }
+
+        $resultado = SaleTicketComanderaHelper::responder(
+            $sale,
+            $this->userId(),
+            $request->query('pdf_column_profile_id'),
+            $request->query('afip_ticket_id'),
+            $request->query('formato')
+        );
+
+        return response()->json($resultado['body'], $resultado['status']);
     }
 
     /**

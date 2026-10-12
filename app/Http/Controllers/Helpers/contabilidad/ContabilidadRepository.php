@@ -1347,6 +1347,9 @@ class ContabilidadRepository
         list($desde, $hasta) = self::rango($desde, $hasta);
 
         return ProviderOrderAfipTicket::query()
+            // Sin las facturas de compras borradas ni las que nunca llegaron a colgar de una
+            // compra (misión factura-compra-tres-defectos, 9/10/2026): ver el scope en el modelo.
+            ->deCompraExistente()
             ->where('user_id', $user_id)
             ->whereNotNull('total_iva')
             ->where('issued_at', '>=', $desde)
@@ -1472,6 +1475,9 @@ class ContabilidadRepository
         list($desde, $hasta) = self::rango($desde, $hasta);
 
         $row = ProviderOrderAfipTicket::query()
+            // Sin las facturas de compras borradas ni las que nunca llegaron a colgar de una
+            // compra (misión factura-compra-tres-defectos, 9/10/2026): ver el scope en el modelo.
+            ->deCompraExistente()
             ->where('user_id', $user_id)
             ->where('issued_at', '>=', $desde)
             ->where('issued_at', '<=', $hasta)
@@ -1501,6 +1507,9 @@ class ContabilidadRepository
 
         $base = function () use ($user_id, $desde, $hasta) {
             return ProviderOrderAfipTicket::query()
+                // Sin las facturas de compras borradas ni las que nunca llegaron a colgar de una
+                // compra (misión factura-compra-tres-defectos, 9/10/2026): ver el scope en el modelo.
+                ->deCompraExistente()
                 ->where('user_id', $user_id)
                 ->where('issued_at', '>=', $desde)
                 ->where('issued_at', '<=', $hasta)
@@ -1578,6 +1587,9 @@ class ContabilidadRepository
 
         $base = function () use ($user_id, $desde, $hasta) {
             return ProviderOrderAfipTicket::query()
+                // Sin las facturas de compras borradas ni las que nunca llegaron a colgar de una
+                // compra (misión factura-compra-tres-defectos, 9/10/2026): ver el scope en el modelo.
+                ->deCompraExistente()
                 ->where('user_id', $user_id)
                 ->where('issued_at', '>=', $desde)
                 ->where('issued_at', '<=', $hasta)
@@ -1632,6 +1644,9 @@ class ContabilidadRepository
 
         $base = function () use ($user_id, $desde, $hasta) {
             return ProviderOrderAfipTicket::query()
+                // Sin las facturas de compras borradas ni las que nunca llegaron a colgar de una
+                // compra (misión factura-compra-tres-defectos, 9/10/2026): ver el scope en el modelo.
+                ->deCompraExistente()
                 ->where('user_id', $user_id)
                 ->where('issued_at', '>=', $desde)
                 ->where('issued_at', '<=', $hasta)

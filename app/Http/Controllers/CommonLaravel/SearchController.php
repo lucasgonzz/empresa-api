@@ -443,7 +443,10 @@ class SearchController extends Controller
      *                   reimplementar un pedazo de esa traducción acá. Se AND'ean con el grupo de
      *                   coincidencia de texto y con `extra_filters`. Si alguno de estos filtros trae
      *                   `ordenar_de`, ese orden tiene PRIORIDAD sobre `order_by`/`order_direction`
-     *                   (ver más abajo).
+     *                   (ver más abajo). Una key de texto que el modelo declara en
+     *                   `columnas_mostradas_para_filtros()` filtra y ordena por lo que la columna
+     *                   MUESTRA y no por lo guardado (hoy: `banco` de cheque, el banco del catálogo o
+     *                   el texto; ver "COLUMNAS MOSTRADAS" en ColumnFiltersHelper).
      * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
      * - contexto        (string|null) (Prompt 04, grupo 179) Flag opcional que declara que la
      *                   llamada viene de un módulo con lógica propia de búsqueda. Únicamente

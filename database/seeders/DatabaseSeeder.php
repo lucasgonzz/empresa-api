@@ -412,6 +412,14 @@ class DatabaseSeeder extends Seeder
         $this->call(PdfColumnProfileDocumentosSeeder::class);
 
         /*
+            "Ticket remito" y "Ticket factura" de comandera (mision diseno-ticket-comandera,
+            9/10/2026). Mismo motivo que el de documentos de arriba para ir aca: itera
+            `User::whereNull('owner_id')`. Nacen sin diseño (el Ticket 2.0 de siempre). Tambien lo
+            corren UserSetupHelper::base_seeders() y DemoSetupHelper::base_seeders().
+        */
+        $this->call(PdfTicketComanderaSeeder::class);
+
+        /*
             "Diseño predeterminado" de Vender (misión diseno-vender-configurable, 28/9/2026): uno
             por dueño, con layout null (= el diseño del sistema que arma el SPA). Mismo motivo que
             los dos de arriba para ir acá y no en common_seeders(): itera
