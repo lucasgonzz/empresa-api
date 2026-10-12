@@ -1034,4 +1034,133 @@ class Menciones_Test extends TestCase
             )
         );
     }
+
+    /**
+     * Crea un artículo del comercio con ese nombre, lo borra y devuelve el nombre tal como quedó en
+     * la base —que es lo que emiten las tools que leen `articles` sin filtrar borrados—.
+     *
+     * Con la precondición de que la base guarde los bordes del nombre: si los recortara, el test que
+     * lo usa no probaría nada.
+     *
+     * @param  string  $nombre
+     * @return string
+     */
+    protected function articulo_borrado_con_bordes($nombre)
+    {
+        $borrado = Article::create(['name' => $nombre, 'user_id' => $this->comercio->id]);
+
+        $en_la_base = (string) $borrado->fresh()->name;
+
+        $this->assertSame(
+            $nombre,
+            $en_la_base,
+            'Precondición: la base tiene que guardar el nombre con sus bordes, si no este test no prueba nada.'
+        );
+
+        $borrado->delete();
+
+        return $en_la_base;
+    }
+
+    /**
+     * 🔴 UN BORRADO CON UN BORDE QUE trim() SACA Y LA COLLATION NO IGNORA. " CODO 90 PVC" (con espacio
+     * ADELANTE) borrado: la tool lo devuelve tal cual, depurar() lo recorta a "CODO 90 PVC", y para la
+     * base ese literal ya no es igual al borrado —el espacio de adelante sí cuenta— pero sí al vigente
+     * "Codo 90 PVC". Mirar a los borrados no lo atrapa, porque el borrado ni siquiera coincide: lo
+     * atrapa que el vigente no se llama exactamente como el literal.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_espacio_adelante_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = $this->articulo_borrado_con_bordes(' CODO 90 PVC');
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del borrado " CODO 90 PVC": su literal no puede terminar en la ficha de "Codo 90 PVC".');
+    }
+
+    /**
+     * 🔴 Lo mismo con una TABULACIÓN al final ("CODO 90 PVC\t"): trim() la saca, pero la collation
+     * PAD SPACE solo ignora espacios, no tabulaciones, así que el borrado tampoco coincide y el
+     * vigente parecido quedaba solo.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_tabulacion_al_final_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = $this->articulo_borrado_con_bordes("CODO 90 PVC\t");
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del borrado con tabulación: su literal no puede terminar en la ficha de "Codo 90 PVC".');
+    }
+
+    /**
+     * Y con un ESPACIO al final ("CODO 90 PVC "), que la collation sí ignora: el borrado coincide,
+     * pero tampoco es el vigente. Ningún test de las tandas anteriores tenía este borde.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_espacio_al_final_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = $this->articulo_borrado_con_bordes('CODO 90 PVC ');
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del borrado "CODO 90 PVC ": su literal no puede terminar en la ficha de "Codo 90 PVC".');
+    }
+
+    /**
+     * 🔴 UN LITERAL QUE VINO DE UNA FILA DE OTRO COMERCIO. Si una tool llegara a filtrar mal por
+     * dueño, el literal es el nombre de un artículo AJENO; no puede terminar en la ficha del artículo
+     * del dueño que la base da por igual. Ver al ajeno es imposible (la consulta está scopeada por
+     * dueño, y así tiene que seguir): lo atrapa, otra vez, que el del dueño no se llama exactamente así.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_literal_que_vino_de_otro_comercio_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $ajeno = Article::create(['name' => 'CODO 90 PVC', 'user_id' => $this->otro_comercio->id]);
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => (string) $ajeno->fresh()->name, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'Lo que más se vendió fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'El literal es el nombre de un artículo de otro comercio: no puede abrir la ficha del parecido del dueño.');
+    }
 }
