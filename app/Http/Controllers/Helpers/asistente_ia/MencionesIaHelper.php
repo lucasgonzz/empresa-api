@@ -489,13 +489,28 @@ class MencionesIaHelper
     }
 
     /**
-     * El id de cada literal que la base da por igual al nombre de UN SOLO registro del dueño.
+     * El id de cada literal que la base da por igual al nombre de UN SOLO registro VIGENTE del
+     * dueño, y que no es el nombre exacto de un registro borrado (ver abajo).
      *
-     * 🔴 Un literal que coincide con dos registros NO se resuelve. En un catálogo reimportado es
-     * normal tener dos artículos con el mismo nombre; marcar uno de los dos es mandar al dueño a la
-     * ficha equivocada la mitad de las veces, y no hay dato en el texto que permita desempatar. Y
-     * "iguales" es lo que diga la base: "Acme" y "ACME", o "Kiosco Sur" y "Kiosco Sur ", son el
-     * mismo nombre para ella, así que tampoco se marca ninguno.
+     * 🔴 Un literal que coincide con dos registros vigentes NO se resuelve. En un catálogo
+     * reimportado es normal tener dos artículos con el mismo nombre; marcar uno de los dos es mandar
+     * al dueño a la ficha equivocada la mitad de las veces, y no hay dato en el texto que permita
+     * desempatar. Y "iguales" es lo que diga la base: "Acme" y "ACME", o "Kiosco Sur" y "Kiosco
+     * Sur ", son el mismo nombre para ella, así que tampoco se marca ninguno.
+     *
+     * 🔴 LOS BORRADOS SE MIRAN (withTrashed), PERO NUNCA SE RESUELVE A UNO. Las tools que dan el
+     * nombre sin id leen `articles`/`clients` SIN filtrar borrados: ConsultasSistemaIaHelper::
+     * mas_vendidos(), precios_de_proveedores() y ofertas_activas(), y los interesados de
+     * ActividadDeClientesService::datos_de_clientes(). El literal es la copia (recortada) del nombre
+     * del registro del que habló la tool, y ese registro puede estar BORRADO. Con el scope de
+     * SoftDeletes esta consulta solo veía vigentes y la collation los igualaba: "CODO 90 PVC"
+     * borrado terminaba en la ficha de "Codo 90 PVC", y "José Pérez" borrado en la cuenta corriente
+     * de "Jose Perez", que es OTRA persona (medido: 10 casos así en copias de bases reales). La regla:
+     * si el literal es el nombre EXACTO (byte a byte, tras el mismo trim()) de un registro borrado y
+     * NO el del vigente, la tool habló del borrado y no se marca nada. Si el borrado y el vigente
+     * tienen el mismo nombre exacto —incluido "Bomba X" borrado y "Bomba X " vigente—, es el
+     * producto recreado o reimportado y se resuelve al vigente, como hacía siempre. Y un literal que
+     * no es el nombre exacto de ningún registro sigue resolviéndose por la collation.
      *
      * 🔴 LA IGUALDAD LA DECIDE MYSQL, NO PHP (misión menciones-asistente-collation, 12/10/2026; la
      * clase está en APRENDER_NO_PARCHEAR: "buscar en SQL sin mayúsculas y comparar en PHP con
@@ -533,10 +548,12 @@ class MencionesIaHelper
 
         $literales = array_values(array_unique($nombres));
 
+        // withTrashed: los borrados vienen solo para saber si la tool habló de uno (docblock).
         $query = self::query_de($tipo)
+            ->withTrashed()
             ->where('user_id', $owner_id)
             ->whereIn('name', $literales)
-            ->select('id');
+            ->select('id', 'name', 'deleted_at');
 
         // Una columna por literal: 1 si la base da ese literal por igual al nombre de la fila. Los
         // bindings de selectRaw van al grupo 'select', que se compila antes que los del where.
@@ -544,26 +561,54 @@ class MencionesIaHelper
             $query->selectRaw('(name = ?) as coincide_' . $i, [$literal]);
         }
 
-        $filas = $query->get();
+        /*
+         * toBase(): filas planas en vez de modelos. El recorrido de abajo es literales × filas, y
+         * con modelos cada lectura pasa por el __get de Eloquent (medido: 78 ms con 200 literales).
+         * Eloquent\Builder::toBase() aplica los scopes antes de soltar el builder, así que el
+         * withTrashed de arriba sigue valiendo.
+         */
+        $filas = $query->toBase()->get();
 
         $resueltos = [];
 
         foreach ($literales as $i => $literal) {
             $columna = 'coincide_' . $i;
 
-            $ids = [];
+            // id => nombre recortado de cada vigente que la base da por igual al literal.
+            $vigentes = [];
+
+            $es_el_nombre_de_un_borrado = false;
 
             foreach ($filas as $fila) {
-                if ((int) $fila->{$columna} === 1) {
-                    $ids[(int) $fila->id] = true;
+                if ((int) $fila->{$columna} !== 1) {
+                    continue;
+                }
+
+                $nombre = trim((string) $fila->name);
+
+                if (is_null($fila->deleted_at)) {
+                    $vigentes[(int) $fila->id] = $nombre;
+                } elseif ($nombre === $literal) {
+                    $es_el_nombre_de_un_borrado = true;
                 }
             }
 
-            if (count($ids) === 1) {
-                $unico = array_keys($ids);
-
-                $resueltos[$literal] = (int) $unico[0];
+            // Ninguno o más de un vigente: no hay a quién marcar sin tirar una moneda.
+            if (count($vigentes) !== 1) {
+                continue;
             }
+
+            $unico = array_keys($vigentes);
+
+            $id = (int) $unico[0];
+
+            // 🔴 El literal es el nombre exacto de un borrado y no el del vigente: la tool habló del
+            // borrado, y marcarlo sería mandar al dueño a la ficha (o la cuenta) de otro.
+            if ($es_el_nombre_de_un_borrado && $vigentes[$id] !== $literal) {
+                continue;
+            }
+
+            $resueltos[$literal] = $id;
         }
 
         return $resueltos;
@@ -571,7 +616,9 @@ class MencionesIaHelper
 
     /**
      * El query builder del modelo de cada tipo. Los dos usan SoftDeletes, así que un cliente o un
-     * artículo borrado no se puede mencionar: su scope global ya lo deja afuera.
+     * artículo borrado no se puede mencionar: su scope global ya lo deja afuera. La única consulta
+     * que lo levanta es resolver_por_nombre(), y solo para saber si la tool habló de un borrado:
+     * nunca resuelve a uno.
      *
      * @param  string  $tipo
      * @return \Illuminate\Database\Eloquent\Builder
