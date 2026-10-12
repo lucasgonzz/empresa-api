@@ -170,12 +170,19 @@ class SecretosEnErroresDelSetupTest extends EmpresaTestCase
     {
         $this->sin_migrate_fresh();
 
+        // La clave de admin de la instancia: desde la misión cerrar-forzado-user-setup (10/10/2026) el
+        // borrado total de abajo la exige siempre, así que se carga en la instancia y va en el header.
+        $clave_de_admin = 'clave-de-admin-del-test-de-secretos-0123456789';
+
+        config(['services.admin_api.api_key' => $clave_de_admin]);
+
         $respuesta = $this->postJson('/api/admin-sync/user-setup', [
             'business_type'                => 'ferreteria',
             // La base de testing TIENE datos (y la guarda de UserSetupHelper::run() se niega a vaciar
             // una base con datos): para llegar al `migrate:fresh` mockeado hay que autorizar el
-            // borrado como lo haría un operador, con el flag y el nombre exacto de la base. Es seguro
-            // porque Artisan está mockeado y verificado ANTES de postear (sin_migrate_fresh()).
+            // borrado como lo haría un operador, con el flag, el nombre exacto de la base y la clave de
+            // admin en el header. Es seguro porque Artisan está mockeado y verificado ANTES de postear
+            // (sin_migrate_fresh()).
             'forzar_borrado_total'         => true,
             'confirmar_base_de_datos'      => DB::connection()->getDatabaseName(),
             // Un id que ya existe: el INSERT del dueño falla con el QueryException real.
@@ -185,7 +192,7 @@ class SecretosEnErroresDelSetupTest extends EmpresaTestCase
             'email'                        => 'cliente-secretos-'.uniqid().'@test.local',
             'serper_api_key'               => self::CLAVE_SERPER,
             'google_custom_search_api_key' => self::CLAVE_GOOGLE,
-        ]);
+        ], ['X-Admin-Api-Key' => $clave_de_admin]);
 
         $this->sin_secretos_en_la_respuesta_ni_en_el_log($respuesta, 'AdminSync user-setup:');
     }

@@ -199,9 +199,11 @@ class WhatsappBotSendService
     /**
      * Envía un documento (grupo 137, Prompt 05: comprobante de venta) referenciado por URL
      * pública. A diferencia de `admin-api` (que sube el archivo con `upload_media` y manda
-     * `document.id`), acá el PDF ya se sirve por una ruta pública propia
-     * (`sale/pdf/{id}`, sin auth), así que se manda directo como `document.link`: no hace
-     * falta el paso extra de subida a Kapso. Solo funciona dentro de la ventana de 24 h de
+     * `document.id`), acá el PDF ya se sirve por una ruta propia (`sale/pdf/{id}`) que Meta puede
+     * bajar sin sesión gracias al token del link (`?t=`, PdfLinkHelper, misión
+     * pdf-de-venta-publico del 10/10/2026: la ruta ya no es pública, el link lo arma
+     * `SaleWhatsappSenderService` con su token), así que se manda directo como `document.link`: no
+     * hace falta el paso extra de subida a Kapso. Solo funciona dentro de la ventana de 24 h de
      * servicio; fuera de ventana hay que usar `send_template` con header DOCUMENT.
      *
      * @param  string             $to             Número destino (puede incluir prefijo de país).
@@ -411,8 +413,9 @@ class WhatsappBotSendService
      * después se lo puede enviar (misión whatsapp-sidebar-multimedia).
      *
      * 🔴 POR QUÉ SE SUBE EL ARCHIVO Y NO SE MANDA POR `link`, COMO HACE `send_document()`:
-     * el PDF del comprobante se sirve por una ruta pública propia (`sale/pdf/{id}`, sin auth),
-     * así que Meta lo baja solo. Los audios y las fotos de una conversación NO: viven en el
+     * el PDF del comprobante se sirve por una ruta propia (`sale/pdf/{id}`) que Meta puede bajar
+     * sin sesión con el token del link (`?t=`, PdfLinkHelper; desde el 10/10/2026 la ruta ya no
+     * es pública), así que Meta lo baja solo. Los audios y las fotos de una conversación NO: viven en el
      * disco `local`, fuera del docroot, justamente para que una conversación privada no quede
      * accesible por URL a cualquiera que la adivine. No hay URL que Meta pueda bajar, así que
      * el archivo tiene que viajar en el cuerpo de la request. Y en local no habría forma ni

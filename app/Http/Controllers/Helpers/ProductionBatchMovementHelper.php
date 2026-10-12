@@ -157,6 +157,27 @@ class ProductionBatchMovementHelper
     {
         DB::transaction(function () use ($movement, $controller_instance) {
 
+            // 🔴 El movimiento se vuelve a leer ADENTRO de la transaccion y con bloqueo, por lo mismo
+            // que delete_batch(): dos DELETE solapados del mismo movimiento (o un DELETE de movimiento
+            // contra el de su lote) leian los dos el movimiento y los dos devolvian los insumos y
+            // sacaban el producto, sin error, porque el segundo borrado afectaba cero filas. Con el
+            // bloqueo el segundo espera, ya no lo encuentra y no toca el stock.
+            //
+            // El lote ya viene cargado por quien llama (el controller o delete_batch): se reusa
+            // para no releerlo.
+            $batch = $movement->production_batch;
+
+            $movement = ProductionBatchMovement::with('inputs')
+                            ->where('id', $movement->id)
+                            ->lockForUpdate()
+                            ->first();
+
+            if (is_null($movement)) {
+                return;
+            }
+
+            $movement->setRelation('production_batch', $batch);
+
             // revertir stock insumos (devolver)
             foreach ($movement->inputs as $input) {
                 self::apply_input_stock_movement($input, $movement, +1);
@@ -165,7 +186,62 @@ class ProductionBatchMovementHelper
             // revertir producto si había ingresado stock por end_status
             self::apply_output_stock_if_end_status($movement->production_batch, $movement, $controller_instance, -1);
 
+            // Las filas de insumos del movimiento se van con él. No hay clave foránea que lo haga
+            // sola, y quedaban huérfanas apuntando a un movimiento que ya no existe.
+            ProductionBatchMovementInput::where('production_batch_movement_id', $movement->id)->delete();
+
             $movement->delete();
+        });
+    }
+
+    /**
+     * Elimina un lote entero: revierte todos sus movimientos y después borra el lote.
+     *
+     * Cada movimiento se revierte con delete_movement(), o sea por el MISMO camino que el botón de
+     * borrar movimiento: devuelve los insumos, saca el producto que haya dado de alta (leyendo lo
+     * que se registró al crearlo, no lo que la ruta diga ahora) y borra sus filas de insumos. Antes
+     * el lote se borraba y sus movimientos quedaban huérfanos con el stock ya tocado: nada lo
+     * revertía (decisión de Lucas, 10/10/2026: eliminar un lote revierte todo).
+     *
+     * Del más nuevo al más viejo, como los borraría un usuario a mano. Se ordena por id y no por
+     * created_at, que tiene resolución de segundos y empata entre movimientos seguidos.
+     *
+     * Todo va en una transacción: si la reversión de uno falla, no queda un lote a medio revertir.
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @param  mixed                         $controller_instance
+     * @return void
+     */
+    public static function delete_batch(ProductionBatch $batch, $controller_instance)
+    {
+        DB::transaction(function () use ($batch, $controller_instance) {
+
+            // 🔴 El lote se vuelve a leer ADENTRO de la transaccion y con bloqueo. Dos DELETE
+            // solapados del mismo lote (el usuario reintenta ante un timeout mientras la primera
+            // transaccion, larga, sigue corriendo) veian los dos los movimientos y revertian dos
+            // veces: insumos devueltos de mas y producto sacado de mas, sin error, porque el
+            // segundo borrado afectaba cero filas. Con el bloqueo, el segundo espera a que el
+            // primero confirme, ya no encuentra el lote y no toca el stock.
+            $batch = ProductionBatch::where('id', $batch->id)->lockForUpdate()->first();
+
+            if (is_null($batch)) {
+                return;
+            }
+
+            $movements = ProductionBatchMovement::with('inputs')
+                            ->where('production_batch_id', $batch->id)
+                            ->orderBy('id', 'DESC')
+                            ->get();
+
+            foreach ($movements as $movement) {
+
+                // El lote que ya tenemos: evita releerlo por cada movimiento.
+                $movement->setRelation('production_batch', $batch);
+
+                self::delete_movement($movement, $controller_instance);
+            }
+
+            $batch->delete();
         });
     }
 
@@ -229,7 +305,11 @@ class ProductionBatchMovementHelper
         foreach ($recipe_route->articles as $article) {
             $pivot_status_id = $article->pivot->order_production_status_id;
 
-            if (!is_null($pivot_status_id) && (int)$pivot_status_id === (int)$to_status_id) {
+            // Un insumo sin estado (null) o con el estado en 0 no se consume en ningun movimiento.
+            // El 0 es el "Seleccione..." de la SPA: hay rutas guardadas asi en produccion (Quino2),
+            // de antes de que la API rechazara el insumo sin estado, y sin esta guarda un
+            // movimiento hacia el estado 0 los consumiria a todos en silencio.
+            if (!is_null($pivot_status_id) && (int)$pivot_status_id !== 0 && (int)$pivot_status_id === (int)$to_status_id) {
                 $planned = (float)$article->pivot->amount * (float)$movement_amount;
 
                 // Cascada del deposito del que sale el insumo: el del movimiento, si no el de la

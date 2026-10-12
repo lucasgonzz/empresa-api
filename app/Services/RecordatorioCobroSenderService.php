@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\RecordatorioCobroException;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\WhatsappTemplateStandardHelper;
@@ -261,7 +262,12 @@ class RecordatorioCobroSenderService
      *
      * Es el mismo dato que resuelve `documento_principal()` pero sin necesitar las ventas, para
      * que el masivo pueda evaluarlo cliente por cliente antes de encolar nada. Los dos se apoyan
-     * en `build_current_acount_pdf_url()`, así que no pueden contestar distinto.
+     * en `cuenta_con_pdf_armable()` (que es la guarda de `build_current_acount_pdf_url()`), así que
+     * no pueden contestar distinto.
+     *
+     * Usa la guarda y no el armador a propósito: armar la URL emite el token del link
+     * (`pdf_links`), y una pregunta del masivo por cada cliente no tiene que dejar filas de links
+     * que nadie mandó.
      *
      * @param  int     $owner_id
      * @param  Client  $client
@@ -279,7 +285,7 @@ class RecordatorioCobroSenderService
         }
 
         foreach ($this->credit_accounts_ordenadas($client) as $credit_account) {
-            if (! is_null($this->build_current_acount_pdf_url($credit_account, $api_url))) {
+            if ($this->cuenta_con_pdf_armable($credit_account, $api_url)) {
                 return true;
             }
         }
@@ -895,8 +901,12 @@ class RecordatorioCobroSenderService
     }
 
     /**
-     * URL pública del PDF de la venta (`sale/pdf/{id}` de `routes/web.php`, sin auth). Es la
-     * misma que ya usa el botón `wa.me` histórico y `ComercioCityMailHelper`.
+     * URL del PDF de la venta (`sale/pdf/{id}` de `routes/web.php`) con el token del link. Es la
+     * misma ruta que usan el botón `wa.me` de la SPA y `ComercioCityMailHelper`.
+     *
+     * 🔴 Con token porque la ruta ya no es pública (misión pdf-de-venta-publico, 10/10/2026): el
+     * cliente que recibe el recordatorio no tiene sesión en el sistema, y sin `?t=` el link deja de
+     * abrir cuando se cierra la ventana de transición del comercio.
      *
      * @param  \App\Models\Sale  $venta
      * @param  string  $api_url
@@ -908,12 +918,33 @@ class RecordatorioCobroSenderService
             return null;
         }
 
-        return $api_url.'/sale/pdf/'.$venta->id;
+        return PdfLinkHelper::con_token($api_url.'/sale/pdf/'.$venta->id, 'sale', $venta->id, $venta->user_id);
     }
 
     /**
-     * URL pública del PDF de cuenta corriente
-     * (`/current-acount/pdf/{credit_account_id}/60/simple` de `routes/web.php`).
+     * ¿Se puede armar el PDF de cuenta corriente de esta cuenta? Es la guarda de
+     * `build_current_acount_pdf_url()`, separada para que `hay_resumen_de_cuenta()` pregunte lo
+     * mismo SIN emitir el token del link (ver ese método).
+     *
+     * @param  \App\Models\CreditAccount  $credit_account
+     * @param  string  $api_url
+     * @return bool
+     */
+    private function cuenta_con_pdf_armable($credit_account, $api_url)
+    {
+        if ($api_url === '') {
+            return false;
+        }
+
+        return CurrentAcount::where('credit_account_id', $credit_account->id)->exists();
+    }
+
+    /**
+     * URL del PDF de cuenta corriente con el token del link
+     * (`/current-acount/pdf/{credit_account_id}/60/simple?t=...` de `routes/web.php`). El token es
+     * de tipo `credit_account`: con cantidad > 0 el middleware lee el primer parámetro como cuenta.
+     * Viaja igual en el texto libre y en el header DOCUMENT de la plantilla, que Meta baja desde su
+     * servidor sin sesión.
      *
      * 🔴 El primer parámetro se llama `$current_acount_id` en la firma de
      * `CurrentAcountController@pdfFromModel`, pero con `$cantidad_movimientos > 0` se usa como
@@ -931,17 +962,16 @@ class RecordatorioCobroSenderService
      */
     private function build_current_acount_pdf_url($credit_account, $api_url)
     {
-        if ($api_url === '') {
+        if (! $this->cuenta_con_pdf_armable($credit_account, $api_url)) {
             return null;
         }
 
-        $tiene_movimientos = CurrentAcount::where('credit_account_id', $credit_account->id)->exists();
-
-        if (! $tiene_movimientos) {
-            return null;
-        }
-
-        return $api_url.'/current-acount/pdf/'.$credit_account->id.'/'.self::CANTIDAD_MOVIMIENTOS_PDF.'/simple';
+        return PdfLinkHelper::con_token(
+            $api_url.'/current-acount/pdf/'.$credit_account->id.'/'.self::CANTIDAD_MOVIMIENTOS_PDF.'/simple',
+            'credit_account',
+            $credit_account->id,
+            $credit_account->user_id
+        );
     }
 
     /**

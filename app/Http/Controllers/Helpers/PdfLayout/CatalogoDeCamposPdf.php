@@ -23,28 +23,65 @@ namespace App\Http\Controllers\Helpers\PdfLayout;
  * - nombre        cómo se llama en la bandeja del diseñador (puede ser más largo que la etiqueta).
  * - etiqueta      rótulo que se imprime delante del valor ("Cliente: Juan"). '' = sin rótulo.
  * - tipo          'texto' (un renglón), 'texto_largo' (puede ocupar varios renglones) o 'lista'
- *                 (varios renglones: uno por método de pago, por descuento, etc.).
- * - ejemplo       valor de muestra para la vista previa del diseñador (string, o array en 'lista').
+ *                 (varios renglones: uno por método de pago, por descuento, etc.). En el catálogo de
+ *                 ticket existe además 'imagen' (solo el logo: sin rótulo, centrado a lo ancho).
+ * - ejemplo       valor de muestra para la vista previa del diseñador (string, o array en 'lista';
+ *                 null en 'imagen').
  * - aparece_cuando cuándo sale en el PDF, si no sale siempre (texto para el usuario), o null.
  * - repetible     true solo para el texto libre: se puede poner varias veces (cada uno con su id).
  * - zona_sugerida 'superior' o 'pie': donde suele ir (el diseñador lo usa para "Agregar").
  * - estilo        estilo por defecto: tamano (pt), negrita, cursiva, alineacion.
+ *
+ * EL CATÁLOGO DE TICKET (misión diseno-ticket-comandera, 9/10/2026). Un diseño de venta cuyo tipo
+ * de hoja es un rollo de comandera (ticket) se arma con el MISMO catálogo de venta más la categoría
+ * "Negocio" (campos `negocio_*`: logo y datos del negocio), que solo existe ahí: el ticket no tiene
+ * un encabezado aparte (decisión D6), el logo y los datos del negocio se ponen en cajas. El
+ * catálogo de hoja sale exactamente igual que antes: los métodos reciben `$es_ticket` con default
+ * false.
  */
 class CatalogoDeCamposPdf
 {
     /** Modelos de perfil que se diseñan con cajas. 'article' (catálogo de artículos) no. */
     const MODELOS = ['sale', 'budget', 'order'];
 
+    /** El único modelo que puede ser un ticket de comandera (contrato §3.2 del plan de diseno-ticket-comandera). */
+    const MODELO_DE_TICKET = 'sale';
+
     const TIPO_TEXTO = 'texto';
     const TIPO_TEXTO_LARGO = 'texto_largo';
     const TIPO_LISTA = 'lista';
 
+    /**
+     * Una imagen (solo el logo del ticket, `negocio_logo`): no lleva rótulo y sale centrada a todo el
+     * ancho del rollo. El valor que resuelve la fuente es la URL del logo, o null sin logo cargado.
+     */
+    const TIPO_IMAGEN = 'imagen';
+
     /** El único campo repetible: el texto que escribe el usuario. Se guarda con `id` y `texto`. */
     const KEY_TEXTO_LIBRE = 'texto_libre';
+
+    /** El logo del negocio en el catálogo de ticket. */
+    const KEY_NEGOCIO_LOGO = 'negocio_logo';
 
     /** Bloques fijos de la factura de ARCA (solo `sale` con is_afip_ticket): se mueven, no se sacan. */
     const FIJO_AFIP_RECEPTOR = 'afip_receptor';
     const FIJO_AFIP_PIE = 'afip_pie';
+
+    /**
+     * Bloque fijo del EMISOR de la factura, solo en el ticket (decisión D8): razón social, domicilio,
+     * CUIT, IIBB, inicio de actividades, condición frente al IVA, "FACTURA X", código, punto de venta
+     * y número, y fecha. En la hoja eso lo imprime el encabezado del PDF, que el ticket no tiene.
+     */
+    const FIJO_AFIP_EMISOR = 'afip_emisor';
+
+    /**
+     * Medias columnas de la fila de la tabla en el diseñador (decisión D-L3 de Lucas): la tabla se
+     * mueve de a media columna de la grilla de 12 de las cajas.
+     */
+    const GRILLA_DE_TABLA = 24;
+
+    /** Caracteres por renglón de una comandera de 80 mm (la cuenta del Ticket 2.0 de siempre). */
+    const CARACTERES_EN_80_MM = 48;
 
     /** Ejemplos de plata que se repiten en varios campos. */
     const EJEMPLO_SALDO_ANTERIOR = '$15.000';
@@ -62,13 +99,81 @@ class CatalogoDeCamposPdf
     }
 
     /**
+     * ¿El modelo puede diseñarse como ticket de comandera? Solo la venta (contrato §3.2).
+     *
+     * @param string $model_name
+     * @return bool
+     */
+    public static function soporta_ticket($model_name)
+    {
+        return $model_name === self::MODELO_DE_TICKET;
+    }
+
+    /**
+     * Caracteres por renglón de una comandera: la cuenta del Ticket 2.0 de siempre (48 cada 80 mm),
+     * hacia abajo. 80 → 48, 58 → 34, 55 → 33.
+     *
+     * @param int $ancho_mm
+     * @return int
+     */
+    public static function caracteres_por_renglon($ancho_mm)
+    {
+        return (int) floor(((int) $ancho_mm) * self::CARACTERES_EN_80_MM / 80);
+    }
+
+    /**
+     * Los tres tamaños de letra que tiene una comandera (decisión D7), con el tamaño en puntos que
+     * guarda el diseño: menos de 12 es normal, de 12 a 17 alto doble y 18 o más grande (doble alto y
+     * doble ancho: cada letra ocupa dos columnas).
+     *
+     * @return array<int, array{tamano: int, nombre: string}>
+     */
+    public static function tamanos_de_ticket()
+    {
+        return [
+            ['tamano' => 9, 'nombre' => 'Normal'],
+            ['tamano' => 12, 'nombre' => 'Alto doble'],
+            ['tamano' => 18, 'nombre' => 'Grande'],
+        ];
+    }
+
+    /**
+     * Las columnas de la tabla que el diseñador pone visibles cuando el perfil no tiene ninguna
+     * (`value_resolver` del catálogo de columnas, PdfColumnService::default_options()): nombre,
+     * cantidad, precio y subtotal.
+     *
+     * @param string $model_name 'sale' | 'budget' | 'order'
+     * @return array<int, string>
+     */
+    public static function columnas_sugeridas($model_name)
+    {
+        if ($model_name === 'sale') {
+            return ['item_name', 'item_amount', 'item_price', 'item_subtotal'];
+        }
+
+        if ($model_name === 'budget' || $model_name === 'order') {
+            return ['document_item_name', 'document_item_amount', 'document_item_price', 'document_item_subtotal'];
+        }
+
+        return [];
+    }
+
+    /**
      * Categorías de la bandeja del diseñador, en el orden en que se muestran.
      *
      * @param string $model_name 'sale' | 'budget' | 'order'
+     * @param bool   $es_ticket  true = el catálogo de ticket de comandera (suma "Negocio" adelante).
      * @return array<int, array<string, string>> [{key, nombre, icono}] (icono = clase de Bootstrap Icons)
      */
-    public static function categorias($model_name)
+    public static function categorias($model_name, $es_ticket = false)
     {
+        if ($es_ticket && self::soporta_ticket($model_name)) {
+            return array_merge(
+                [['key' => 'negocio', 'nombre' => 'Negocio', 'icono' => 'bi-shop']],
+                self::categorias($model_name)
+            );
+        }
+
         if ($model_name === 'sale') {
             return [
                 ['key' => 'cliente', 'nombre' => 'Cliente', 'icono' => 'bi-person'],
@@ -104,10 +209,15 @@ class CatalogoDeCamposPdf
      * Todos los campos que el diseñador ofrece para un modelo, en el orden de la bandeja.
      *
      * @param string $model_name 'sale' | 'budget' | 'order'
+     * @param bool   $es_ticket  true = el catálogo de ticket de comandera (suma los `negocio_*` adelante).
      * @return array<int, array<string, mixed>>
      */
-    public static function campos($model_name)
+    public static function campos($model_name, $es_ticket = false)
     {
+        if ($es_ticket && self::soporta_ticket($model_name)) {
+            return array_merge(self::campos_de_negocio(), self::campos($model_name));
+        }
+
         if ($model_name === 'sale') {
             return array_merge(
                 self::campos_de_cliente('la venta'),
@@ -144,11 +254,12 @@ class CatalogoDeCamposPdf
      *
      * @param string $model_name
      * @param string $key
+     * @param bool   $es_ticket  true = buscar en el catálogo de ticket.
      * @return array<string, mixed>|null
      */
-    public static function campo($model_name, $key)
+    public static function campo($model_name, $key, $es_ticket = false)
     {
-        foreach (self::campos($model_name) as $campo) {
+        foreach (self::campos($model_name, $es_ticket) as $campo) {
             if ($campo['key'] === $key) {
                 return $campo;
             }
@@ -161,12 +272,13 @@ class CatalogoDeCamposPdf
      * Las keys de los campos de un modelo.
      *
      * @param string $model_name
+     * @param bool   $es_ticket  true = las del catálogo de ticket.
      * @return array<int, string>
      */
-    public static function keys($model_name)
+    public static function keys($model_name, $es_ticket = false)
     {
         $keys = [];
-        foreach (self::campos($model_name) as $campo) {
+        foreach (self::campos($model_name, $es_ticket) as $campo) {
             $keys[] = $campo['key'];
         }
 
@@ -178,11 +290,12 @@ class CatalogoDeCamposPdf
      *
      * @param string $model_name
      * @param string $key
+     * @param bool   $es_ticket  true = buscar en el catálogo de ticket.
      * @return array{tamano:int, negrita:bool, cursiva:bool, alineacion:string}
      */
-    public static function estilo_por_defecto($model_name, $key)
+    public static function estilo_por_defecto($model_name, $key, $es_ticket = false)
     {
-        $campo = self::campo($model_name, $key);
+        $campo = self::campo($model_name, $key, $es_ticket);
 
         return $campo ? $campo['estilo'] : self::estilo();
     }
@@ -192,14 +305,22 @@ class CatalogoDeCamposPdf
      * el bloque del cliente que pide ARCA (arriba) y el cuadro de importes + QR + CAE (en el pie).
      * Se pueden mover dentro de su zona, pero no sacar (DisenoDePaginaPdf::asegurar_fijos).
      *
+     * En el ticket de comandera (decisión D8) son tres —se suma el del emisor, arriba de todo— y van
+     * siempre a lo ancho del rollo: ninguno se redimensiona (`cols_min` 12).
+     *
      * @param string $model_name
      * @param bool   $es_fiscal  is_afip_ticket del perfil.
+     * @param bool   $es_ticket  true = los del ticket de comandera.
      * @return array<int, array<string, mixed>> [{key, zona, nombre, descripcion, redimensionable, cols_min}]
      */
-    public static function fijos($model_name, $es_fiscal)
+    public static function fijos($model_name, $es_fiscal, $es_ticket = false)
     {
         if ($model_name !== 'sale' || ! $es_fiscal) {
             return [];
+        }
+
+        if ($es_ticket) {
+            return self::fijos_de_ticket();
         }
 
         return [
@@ -230,6 +351,43 @@ class CatalogoDeCamposPdf
     }
 
     /**
+     * Los tres bloques fijos de la factura de ARCA en el ticket de comandera (decisión D8), en el
+     * orden en que salen: el emisor y el cliente arriba, y los importes, el CAE y el QR en el pie.
+     * Todos a lo ancho del rollo.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function fijos_de_ticket()
+    {
+        return [
+            [
+                'key' => self::FIJO_AFIP_EMISOR,
+                'zona' => 'superior',
+                'nombre' => 'Datos del negocio para ARCA',
+                'descripcion' => 'Razón social, domicilio, CUIT, ingresos brutos, inicio de actividades, condición frente al IVA, el tipo de factura, el punto de venta y el número, y la fecha. Lo pide ARCA: se puede mover, pero no sacar.',
+                'redimensionable' => false,
+                'cols_min' => 12,
+            ],
+            [
+                'key' => self::FIJO_AFIP_RECEPTOR,
+                'zona' => 'superior',
+                'nombre' => 'Datos del cliente para ARCA',
+                'descripcion' => 'Nombre, CUIT o DNI, condición frente al IVA, domicilio y condición de venta. Lo pide ARCA: se puede mover, pero no sacar.',
+                'redimensionable' => false,
+                'cols_min' => 12,
+            ],
+            [
+                'key' => self::FIJO_AFIP_PIE,
+                'zona' => 'pie',
+                'nombre' => 'IVA, CAE y QR de ARCA',
+                'descripcion' => 'El IVA (contenido o discriminado, según la letra), la leyenda de ingresos brutos de CABA si corresponde, el CAE con su vencimiento y el código QR. Lo pide ARCA: se puede mover, pero no sacar.',
+                'redimensionable' => false,
+                'cols_min' => 12,
+            ],
+        ];
+    }
+
+    /**
      * Formatos de hoja que ofrece el diseñador (siempre vertical). El ancho va a
      * paper_width_mm / printable_width_mm y el alto a paper_height_mm.
      *
@@ -246,6 +404,38 @@ class CatalogoDeCamposPdf
     }
 
     // ── Bloques del catálogo ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Logo y datos del negocio: solo en el catálogo de ticket de comandera (decisión D6). Son los
+     * mismos datos que imprime el encabezado del PDF de siempre (la configuración de ARCA de la
+     * factura, o la de la sucursal de la venta, o la del dueño; y el teléfono, el email y la web del
+     * dueño). Los resuelve CamposDeTicketPdf.
+     *
+     * 🔴 Las keys `negocio_*` se persisten en el diseño de cada cliente: no se renombran nunca. En un
+     * diseño de hoja no existen: el motor de cajas de la hoja las saltea sin error.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function campos_de_negocio()
+    {
+        $con_arca = 'Solo si el negocio tiene cargados sus datos de ARCA.';
+
+        $logo = self::def(self::KEY_NEGOCIO_LOGO, 'negocio', 'Logo del negocio', '', self::TIPO_IMAGEN, null, 'Solo si el negocio (o la sucursal de la venta) tiene logo cargado. Sale centrado, a todo el ancho del rollo.', self::estilo(9, false, false, 'centro'));
+
+        return [
+            $logo,
+            self::def('negocio_nombre', 'negocio', 'Nombre del negocio', '', self::TIPO_TEXTO, 'Ferretería El Tornillo'),
+            self::def('negocio_razon_social', 'negocio', 'Razón social', 'Razón social', self::TIPO_TEXTO, 'El Tornillo S.R.L.', $con_arca),
+            self::def('negocio_cuit', 'negocio', 'CUIT del negocio', 'CUIT', self::TIPO_TEXTO, '30-71234567-8', $con_arca),
+            self::def('negocio_condicion_iva', 'negocio', 'Condición frente al IVA del negocio', 'Condición IVA', self::TIPO_TEXTO, 'Responsable inscripto', $con_arca),
+            self::def('negocio_domicilio', 'negocio', 'Domicilio comercial', 'Domicilio', self::TIPO_TEXTO, 'Belgrano 450, Rosario', 'El domicilio de ARCA; si no está cargado, el de la sucursal de la venta.'),
+            self::def('negocio_ingresos_brutos', 'negocio', 'Ingresos brutos', 'IIBB', self::TIPO_TEXTO, '921-123456-7', $con_arca),
+            self::def('negocio_inicio_actividades', 'negocio', 'Inicio de actividades', 'Inicio de actividades', self::TIPO_TEXTO, '01/03/2015', $con_arca),
+            self::def('negocio_telefono', 'negocio', 'Teléfono del negocio', 'Teléfono', self::TIPO_TEXTO, '341 555-1234', 'Solo si el negocio tiene teléfono cargado.'),
+            self::def('negocio_email', 'negocio', 'Email del negocio', 'Email', self::TIPO_TEXTO, 'ventas@eltornillo.com', 'Solo si el negocio tiene email cargado.'),
+            self::def('negocio_web', 'negocio', 'Web del negocio', 'Web', self::TIPO_TEXTO, 'eltornillo.com.ar', 'Solo si el negocio tiene la dirección de su tienda online cargada.'),
+        ];
+    }
 
     /**
      * Datos del cliente (venta y presupuesto: los dos tienen `client`).
@@ -490,7 +680,7 @@ class CatalogoDeCamposPdf
      * @param string       $nombre
      * @param string       $etiqueta
      * @param string       $tipo
-     * @param string|array $ejemplo
+     * @param string|array|null $ejemplo null solo en el logo del ticket ('imagen').
      * @param string|null  $aparece_cuando
      * @param array|null   $estilo        null = estilo() (9 pt, normal, a la izquierda)
      * @param string       $zona_sugerida 'superior' | 'pie'

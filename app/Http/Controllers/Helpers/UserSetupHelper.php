@@ -37,7 +37,9 @@ use Illuminate\Support\Facades\Log;
  * `run()` empieza llamando a `BorradoTotalDeBaseHelper`, que se niega —con una
  * BaseConDatosException y sin tocar nada— si la base ya tiene datos de negocio, salvo que el
  * payload traiga `forzar_borrado_total` + `confirmar_base_de_datos` (el nombre exacto de la
- * base). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
+ * base) Y quien llama haya verificado la clave de admin de la instancia y la pase como segundo
+ * argumento (misión cerrar-forzado-user-setup, 10/10/2026: el nombre de la base se adivina, no es
+ * una credencial). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
  * producción de Panchito y este método le vació la base entera (102.754 ventas, 6.952
  * artículos) porque la ruta es pública y `migrate:fresh` no pregunta. La guarda está ACÁ y no
  * en los controladores a propósito; el porqué completo está en BorradoTotalDeBaseHelper.
@@ -72,15 +74,23 @@ class UserSetupHelper
      *                                   address_1..3, price_type_1..3,
      *                                   serper_api_key (opcional, misión serper-en-user-setup),
      *                                   forzar_borrado_total + confirmar_base_de_datos (opcionales: solo
-     *                                   para re-correr el setup sobre una base que YA tiene datos, ver
+     *                                   para re-correr el setup sobre una base que YA tiene datos, y
+     *                                   solo valen con $con_clave_de_admin === true; ver
      *                                   BorradoTotalDeBaseHelper)
+     *
+     * @param bool $con_clave_de_admin Si la puerta que llama YA verificó la clave de admin de la
+     *                                 instancia (ClaveDeAdminEnSetup::trae_la_clave_de_admin()). Solo
+     *                                 con `true` el borrado total que pide el payload se acepta. Por
+     *                                 defecto false: una puerta nueva que llame run($request->all())
+     *                                 no puede forzar; para eso tiene que verificar la clave y pasarla
+     *                                 a propósito.
      *
      * @return User Usuario creado
      *
-     * @throws BaseConDatosException Si la base ya tiene datos de negocio y el payload no autoriza el
-     *                               borrado total. No se tocó nada.
+     * @throws BaseConDatosException Si la base ya tiene datos de negocio y no se autorizó el borrado
+     *                               total (payload + clave de admin). No se tocó nada.
      */
-    public static function run(array $data)
+    public static function run(array $data, $con_clave_de_admin = false)
     {
         /*
             🔴 PRIMERA SENTENCIA, ANTES DE CUALQUIER OTRA COSA y antes del `migrate:fresh` de abajo
@@ -92,8 +102,11 @@ class UserSetupHelper
             admin-api le dejó en cero la base de Panchito (102.754 ventas) justamente porque acá no
             se miraba nada. Si te tienta sacarla "porque el controlador ya valida", no: el
             controlador no ve lo que mañana llame a run().
+
+            `$con_clave_de_admin` pasa tal cual: la guarda es la que decide, y solo un `true` estricto
+            (la clave ya verificada por la puerta) habilita el borrado total que pida el payload.
         */
-        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data, $con_clave_de_admin);
 
         // `migrate:fresh` limpia la base antes de cualquier inserción
         Artisan::call('migrate:fresh', ['--force' => true]);
@@ -447,6 +460,13 @@ class UserSetupHelper
             'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileDocumentosSeeder',
+            /*
+                "Ticket remito" y "Ticket factura" de comandera (mision diseno-ticket-comandera,
+                9/10/2026). Itera los duenios como el de documentos de arriba y va despues de
+                PdfColumnProfileSeeder (asegura solo los rollos y el catalogo de columnas). Nacen sin
+                diseño: imprimen el Ticket 2.0 de siempre.
+            */
+            'PdfTicketComanderaSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 

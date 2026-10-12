@@ -39,6 +39,13 @@ class DefaultVersionPorComercioTest extends EmpresaTestCase
     /** Frente en el que ya estaba el comercio vecino, y del que no se tiene que mover. */
     const SPA_VECINA = 'https://hipermax.comerciocity.com';
 
+    /**
+     * La clave de admin de la instancia. Desde la misión cerrar-admin-sync (10/10/2026) `AdminApiKey` exige
+     * `X-Admin-Api-Key` sola cuando la instancia tiene clave cargada (como cualquier cliente de producción),
+     * así que el escenario es el real: la instancia tiene clave y admin-api la manda en cada pedido.
+     */
+    const CLAVE_DE_ADMIN = 'clave-de-admin-del-test-de-default-version';
+
     /** @var User Dueño del comercio al que pertenece esta instancia. */
     protected $comercio;
 
@@ -91,6 +98,10 @@ class DefaultVersionPorComercioTest extends EmpresaTestCase
 
         // La instancia es la del primer comercio.
         config(['app.USER_ID' => $this->comercio->id]);
+
+        // La instancia tiene su clave de admin y admin-api la manda, como en producción.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+        $this->withHeader('X-Admin-Api-Key', self::CLAVE_DE_ADMIN);
     }
 
     /**

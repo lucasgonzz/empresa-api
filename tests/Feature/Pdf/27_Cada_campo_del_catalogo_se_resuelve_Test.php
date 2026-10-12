@@ -151,9 +151,9 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         $this->assertSame('$2.362,50', $valores['venta_total_facturado']);
         $this->assertSame([
             'Juan Perez · 1155555555',
-            'Rosario, Santa Fe (2000)',
+            'Av San Martin 1234, Rosario, Santa Fe (2000)',
             'juan-test@correo.local / DNI 12345678',
-        ], $valores['venta_datos_de_envio'], 'Tres renglones, salteando lo vacío (no tiene CUIT).');
+        ], $valores['venta_datos_de_envio'], 'Tres renglones, salteando lo vacío (no tiene CUIT); la dirección, la del cliente.');
         $this->assertSame('Mercadería en acopio', $valores['venta_en_acopio']);
         $this->assertSame('FOB', $valores['venta_incoterms']);
 
@@ -271,17 +271,17 @@ class Cada_campo_del_catalogo_se_resuelve_Test extends EmpresaTestCase
         $this->assertSame('76123456789012', $fuente->valor('venta_cae', $campo('venta_cae')));
         $this->assertSame([
             'Juan Perez Test · 1155555555',
-            'Rosario Test, Santa Fe Test (2000)',
+            'Av San Martin 1234, Rosario Test, Santa Fe Test (2000)',
             'juan-test@correo.local / DNI 12345678',
         ], $fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio')), 'Teléfono y CP de los datos de envío; el resto, del cliente, como la etiqueta.');
 
-        /** Sin DNI en ningún lado, el CUIT de los datos de envío (la etiqueta también lo rotula "DNI"). */
+        /** Sin DNI en ningún lado, el CUIT de los datos de envío, rotulado "CUIT" (como en la etiqueta). */
         $venta->client->dni = null;
         $venta->client->save();
         \App\Models\SaleDeliveryInfo::where('sale_id', $venta->id)->update(['cuit' => '20-11111111-1']);
         $fuente = new CamposDeVentaPdf(Sale::find($venta->id), $this->dueno, false, 'descriptivo');
         $envio = $fuente->valor('venta_datos_de_envio', $campo('venta_datos_de_envio'));
-        $this->assertSame('juan-test@correo.local / DNI 20-11111111-1', $envio[2]);
+        $this->assertSame('juan-test@correo.local / CUIT 20-11111111-1', $envio[2]);
     }
 
     /**

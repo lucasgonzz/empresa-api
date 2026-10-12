@@ -683,6 +683,37 @@ class EjecutorGenericoIaHelper
     // -------------------------------------------------------------------------------------------
 
     /**
+     * Las pantallas de la SPA que listan por día (`from-date`): un registro que no es de hoy no está
+     * en el día que abren por defecto.
+     */
+    const RUTAS_POR_DIA = ['expense', 'sale', 'budget'];
+
+    /**
+     * La ruta de la pantalla de la entidad y, si esa pantalla lista por día, el día del registro en
+     * `fecha` (Y-m-d de su `created_at`, releído después de guardar). Sin esto, editar por el chat un
+     * gasto de otro día y tocar "Ver en Gastos" abría un día donde el gasto no estaba (misión
+     * ver-en-del-asistente-refresca-destino, 10/10/2026). Es la misma clave opcional que manda
+     * PropuestaGastoIaHelper.
+     *
+     * @param  string  $entidad
+     * @param  object|null  $fila  La fila tal como quedó.
+     * @return array|null
+     */
+    protected static function ruta_con_dia(string $entidad, $fila)
+    {
+        $ruta = Catalogo::ruta_de_pantalla($entidad);
+
+        if (is_null($ruta) || !in_array($ruta['name'], self::RUTAS_POR_DIA, true) || is_null($fila) || empty($fila->created_at)) {
+
+            return $ruta;
+        }
+
+        $ruta['fecha'] = substr((string) $fila->created_at, 0, 10);
+
+        return $ruta;
+    }
+
+    /**
      * El resultado que queda en la tarjeta, releyendo la fila y comparando cada campo pedido con
      * lo guardado.
      *
@@ -760,7 +791,7 @@ class EjecutorGenericoIaHelper
             'entidad'                => $declaracion['entidad'],
             'id'                     => $id,
             'nombre'                 => $nombre,
-            'ruta'                   => Catalogo::ruta_de_pantalla($declaracion['entidad']),
+            'ruta'                   => self::ruta_con_dia($declaracion['entidad'], $fila),
             'params'                 => new \stdClass(),
             'campos_que_no_quedaron' => $no_quedaron,
         ];

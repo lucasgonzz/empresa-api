@@ -307,7 +307,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'client_pesos_id', 'comercio_city_user_id'],
             'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'client', 'params' => [], 'texto' => 'Ver en Clientes'],
+            // `view` es la solapa: sin ella /clientes dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'client', 'params' => ['view' => 'clientes'], 'texto' => 'Ver en Clientes'],
             'aviso_de_baja'      => 'El cliente va a la papelera con su cuenta corriente. Sus ventas quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -321,7 +323,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'comercio_city_user_id', 'should_update_prices', 'precios_incluyen_iva'],
             'claves_de_pantalla' => ['childrens' => []],
-            'ruta'               => ['name' => 'provider', 'params' => [], 'texto' => 'Ver en Proveedores'],
+            // `view` es la solapa: sin ella /proveedores dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'provider', 'params' => ['view' => 'proveedores'], 'texto' => 'Ver en Proveedores'],
             'aviso_de_baja'      => 'El proveedor va a la papelera. Sus artículos y sus compras quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -601,20 +605,6 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_alta'      => null,
             'extension'          => null,
             'revisado'           => 'SaleSenderInfoController: lee con $request->input(); sin efectos.',
-        ],
-        'dealer' => [
-            'etiqueta'           => 'repartidores',
-            'singular'           => 'repartidor',
-            'genero'             => 'm',
-            'descripcion'        => 'Los repartidores (ABM > Ventas).',
-            'operaciones'        => null,
-            'solo_lectura'       => [],
-            'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'abm', 'params' => ['view' => 'ventas', 'sub_view' => 'repartidores'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => null,
-            'aviso_de_alta'      => null,
-            'extension'          => null,
-            'revisado'           => 'DealerController: solo name.',
         ],
         'tipo_envase' => [
             'etiqueta'           => 'tipos de envase',
@@ -904,6 +894,8 @@ class CatalogoDeEscrituraIaHelper
         'client_offer'                 => 'tiene su herramienta (proponer_oferta)',
         'provider_order'               => 'compra con factura: tiene su herramienta y su store() abre transacción y toca stock y cuenta corriente',
         'pdf_column_profiles'          => 'diseños de PDF: tienen su herramienta (proponer_cambio_en_diseno_pdf)',
+        // Misión diseno-ticket-comandera (9/10/2026): `sheet_types` sumó user_id y `POST api/sheet-types`.
+        'sheet_types'                  => 'tipos de hoja: un ancho de comandera se agrega desde el formulario de Diseño de PDF ("+ Agregar un ancho de comandera"), no es un registro del negocio',
         // Del plan: próximas o fuera del alcance.
         'budget'                       => 'presupuesto: tan complejo como la venta, con renglones',
         'movimiento_caja'              => 'plata de caja',
@@ -937,6 +929,8 @@ class CatalogoDeEscrituraIaHelper
         'color'                        => 'variantes: sin solapa en el ABM actual',
         'size'                         => 'variantes: sin solapa en el ABM actual',
         'deposit'                      => 'sin solapa en el ABM actual',
+        // Misión hojas-de-ruta (10/10/2026): se sacó de ENTIDADES porque la solapa "repartidores" del ABM > Ventas ya no existe.
+        'dealer'                       => 'repartidores: la solapa del ABM que el asistente abría ya no existe',
         'error'                        => 'técnica: registro de errores de la SPA (manda mail)',
         'etiqueta_medidas'             => 'impresión de etiquetas: su store() delega el request',
         'inventory_linkage'            => 'se arma con listas de categorías y toca el catálogo de otro cliente',
