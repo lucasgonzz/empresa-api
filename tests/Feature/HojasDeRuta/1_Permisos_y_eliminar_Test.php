@@ -219,10 +219,10 @@ class Permisos_y_eliminar_Test extends EmpresaTestCase
     public function test_el_dueno_ve_todas_aunque_tenga_tildado_solo_sus_hojas()
     {
         // El dueño (owner_id null) no es un empleado: el permiso no lo puede restringir.
-        $owner_permiso = PermissionEmpresa::firstOrCreate(
-            ['slug' => 'road_map.terminadas.only_your'],
-            ['name' => 'road_map.terminadas.only_your', 'model_name' => 'Entregas y hojas de ruta']
-        );
+        $owner_permiso = PermissionEmpresa::where('slug', 'road_map.terminadas.only_your')->first();
+        if (is_null($owner_permiso)) {
+            $owner_permiso = PermissionEmpresa::forceCreate(['slug' => 'road_map.terminadas.only_your', 'name' => 'road_map.terminadas.only_your', 'model_name' => 'Entregas y hojas de ruta']);
+        }
         $this->owner->permissions()->syncWithoutDetaching([$owner_permiso->id]);
 
         $uno = $this->repartidor([]);
