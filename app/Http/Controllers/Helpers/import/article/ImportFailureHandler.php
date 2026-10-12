@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Models\User;
@@ -81,6 +82,9 @@ class ImportFailureHandler
                     . substr($trace_completo, -self::MAX_TRACE_CHARS);
             }
 
+            /* Para borrar al final el archivo de decisiones de ESTA importación (ver el paso 4). */
+            $excel_url = null;
+
             /* 1) ESTADO PRIMERO: es lo que desbloquea al usuario. Se recarga desde la BD para no arrastrar
                   ningún atributo sucio en memoria que pudiera ser la causa misma del fallo. */
             if (!is_null($import_history_id)) {
@@ -100,6 +104,8 @@ class ImportFailureHandler
                     $import_history->failed_chunk_number = $failed_chunk_number;
                     $import_history->failed_at           = Carbon::now();
                     $import_history->save();
+
+                    $excel_url = (string) $import_history->excel_url;
                 }
             }
 
@@ -146,6 +152,19 @@ class ImportFailureHandler
                         'error'   => $cache_error->getMessage(),
                     ));
                 }
+            }
+
+            /*
+             * 4) El archivo de decisiones sobre nombres parecidos de ESTA importación (misión
+             *    importacion-relaciones-parecidas). Con el import en `fallo` ningún lote lo vuelve a
+             *    leer (ProcessArticleChunk corta apenas ve ese estado), y nadie más lo borraría: el
+             *    cierre que lo borra (FinalizeArticleImport) solo corre cuando termina bien. A
+             *    diferencia del volcado de la hoja no se deja para diagnosticar: el `usar` ya quedó
+             *    recordado en import_equivalencias, y el archivo es solo la copia para los lotes.
+             *    No tira (y una compra, que no tiene archivo, no hace nada).
+             */
+            if (!is_null($excel_url)) {
+                EquivalenciasResolver::borrar_archivo_de_decisiones($excel_url, $import_history_id);
             }
 
         } catch (\Throwable $handler_error) {
