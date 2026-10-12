@@ -722,21 +722,28 @@ class Menciones_Test extends TestCase
     }
 
     /**
-     * El contrato del helper: un literal sin id que la BASE da por igual al nombre del cliente —otra
-     * mayúscula, sin la tilde— resuelve a ese cliente, y la mención conserva el literal tal como está
-     * en el texto (es lo que la SPA busca con `indexOf`).
+     * 🔴 UN LITERAL CON OTRA MAYÚSCULA O SIN LA TILDE NO SE MARCA, aunque la base lo dé por igual al
+     * nombre de un único cliente del dueño (misión menciones-asistente-collation, decisión 8 del
+     * plan, 12/10/2026).
      *
-     * ⚠️ Honestamente: hoy ninguna tool emite un nombre con otra capitalización —todas leen
-     * `clients.name` / `articles.name` tal cual— y el filtro 2 (`ocurrencias()`) exige que el literal
-     * esté en el texto con la misma escritura. Este test no reproduce una pérdida de producción: protege
-     * que la igualdad la decida la base y no una segunda regla en PHP.
+     * ⚠️ Esta expectativa cambió A PROPÓSITO. El pedido original —y la primera versión de este test—
+     * esperaba que "ferreteria tucumana" resolviera a "Ferretería Tucumana" por la collation. Pero:
+     * - ninguna tool produce ese literal: las que dan el nombre sin id emiten el `name` crudo de la
+     *   base, así que el literal es siempre la copia (recortada) del nombre del registro del que
+     *   habló la tool; y
+     * - un literal que la base da por igual a un vigente pero que NO es su nombre exacto solo aparece
+     *   cuando vino de OTRO registro —un borrado en otra mayúscula o con bordes, una fila de otro
+     *   comercio—. Resolverlo por la collation es exactamente lo que abría el link a la ficha o a la
+     *   cuenta corriente equivocada (ver los tests de borrados de abajo).
+     * La identidad es el nombre exacto tras el mismo trim(); la collation solo decide la ambigüedad.
+     * Precisión antes que cobertura: un nombre sin marcar no molesta a nadie.
      *
      * @group chat-ia
      * @test
      */
-    public function un_literal_con_otra_mayuscula_y_sin_tilde_resuelve_por_nombre()
+    public function un_literal_con_otra_mayuscula_o_sin_tilde_no_se_marca()
     {
-        $cliente = Client::create(['name' => 'Ferretería Tucumana', 'user_id' => $this->comercio->id]);
+        Client::create(['name' => 'Ferretería Tucumana', 'user_id' => $this->comercio->id]);
 
         $menciones = MencionesIaHelper::cruzar(
             [['tipo' => 'cliente', 'id' => 0, 'texto' => 'ferreteria tucumana']],
@@ -744,10 +751,10 @@ class Menciones_Test extends TestCase
             $this->comercio->id
         );
 
-        $this->assertEquals(
-            [['tipo' => 'cliente', 'id' => $cliente->id, 'texto' => 'ferreteria tucumana']],
+        $this->assertSame(
+            [],
             $menciones,
-            'Si la base dice que el literal es el nombre del cliente (y es único), se marca con el literal del texto.'
+            'El literal no es el nombre exacto de ningún cliente del dueño: no se marca, aunque la base lo dé por igual.'
         );
     }
 
