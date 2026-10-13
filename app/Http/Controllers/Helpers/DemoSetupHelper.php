@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
+use App\Http\Controllers\Helpers\EsquemaDemoSnapshotHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Address;
@@ -218,10 +219,71 @@ class DemoSetupHelper
         // igual que le pasaba a Mercado Pago hasta el 5/9.
         $foto_zipnova = self::foto_de_zipnova(config('app.USER_ID'));
 
-        // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
-        Artisan::call('migrate:fresh', ['--force' => true]);
+        /**
+         * La base se resetea acá, y es obligatorio dejarla limpia antes de los seeders.
+         *
+         * Hay dos caminos para el MISMO resultado, y el rápido se intenta primero (misión M9 del
+         * programa «embudo comercial», 13/10/2026):
+         *
+         * 1. **Restaurar el volcado del esquema** de esta versión (`EsquemaDemoSnapshotHelper`):
+         *    las 435 tablas migradas y vacías, más la tabla `migrations` con las mismas 873 filas
+         *    que dejaría `migrate:fresh`. Es un puñado de `CREATE TABLE` en vez de 873
+         *    transformaciones encadenadas.
+         * 2. **`migrate:fresh`**, el camino de siempre, cuando no hay volcado para esta versión o
+         *    cuando la restauración no pasa su propia verificación.
+         *
+         * El respaldo NO es decorativo y no se puede sacar: `restaurar()` devuelve `false` ante
+         * cualquier duda (no hay archivo, cabecera inválida, cuenta de migraciones distinta, SQL que
+         * falla, `migrations` que no quedó idéntica) y puede dejar la base a medio restaurar. Lo
+         * único que repara eso es el `migrate:fresh` de abajo, que arranca tirando todas las tablas.
+         * O sea: el camino lento es también la reparación del rápido.
+         *
+         * Y después del `migrate:fresh` se deja el volcado escrito para la próxima corrida: así el
+         * mecanismo se ceba solo y no depende de que el pipeline de release empaquete un archivo.
+         * Esa escritura va en try/catch porque es una OPTIMIZACIÓN de la próxima corrida, no un paso
+         * de ésta -- un `storage/` sin permiso de escritura no puede hacer fallar el setup del lead
+         * que está esperando.
+         *
+         * La etapa se sigue llamando `migrate_fresh` en el cronómetro, con ese nombre: es lo que
+         * viaja al admin en el evento `demo.setup.completado` desde el 9/9/2026, y renombrarla
+         * dejaría una etapa vacía del otro lado. Qué camino se usó se informa aparte, en
+         * `esquema_restaurado` al lado de `etapas` y NO adentro: `etapas` es un mapa de
+         * `nombre => segundos` y meterle un booleano rompe a cualquiera que lo sume o lo grafique.
+         * `DemoEventosController` del admin guarda `datos` entero sin leer clave por clave y lo
+         * valida con `nullable|array|max:50` elementos (hoy serían cuatro), así que una clave más es
+         * compatible en las dos direcciones.
+         *
+         * 🔴 Y TODO ESTO SOLO EN UNA INSTANCIA DE DEMO (o en local, o en la suite). Este método corre
+         * TAMBIÉN cuando se instala el sistema de un cliente real, sobre su base recién creada: ahí
+         * el camino sigue siendo `migrate:fresh` pelado, como siempre. No es que el volcado no
+         * funcionaría -- es que no hay ninguna razón para dejarle a un negocio un archivo de 380 KB
+         * con su esquema en `storage/`, ni para meter una pieza nueva en el camino que instala los
+         * 40 clientes a cambio de ahorrar medio minuto UNA vez en la vida de esa instalación. Las
+         * demos se rearman por cada lead; un cliente se instala una sola vez.
+         */
+        $restauracion = ['ok' => false, 'motivo' => 'no es una instancia de demo'];
+
+        if (self::es_instancia_de_demo()) {
+            $restauracion = EsquemaDemoSnapshotHelper::restaurar();
+        }
+
+        if (! $restauracion['ok']) {
+            Artisan::call('migrate:fresh', ['--force' => true]);
+
+            if (self::es_instancia_de_demo()) {
+                try {
+                    EsquemaDemoSnapshotHelper::generar();
+                } catch (\Throwable $e) {
+                    Log::warning(
+                        'DemoSetupHelper: no se pudo dejar el volcado del esquema para la próxima '
+                            . 'corrida: ' . $e->getMessage()
+                    );
+                }
+            }
+        }
 
         $etapas['migrate_fresh'] = self::cronometrar($t_etapa);
+        $esquema_restaurado = $restauracion['ok'];
 
         // Crear el usuario "dueño" del sistema con datos mayormente de demo
         $user = self::create_demo_user($data);
@@ -600,13 +662,21 @@ class DemoSetupHelper
          * semilla:datos (~110 s), y lo que el lead percibia como 8-15 minutos era la cola del
          * admin mas un worker cortado a los 5 minutos.
          */
-        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', ['etapas' => $etapas]);
+        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', [
+            'etapas'             => $etapas,
+            'esquema_restaurado' => $esquema_restaurado,
+        ]);
 
         if (!is_null($canal)) {
             DemoEventoEmitter::emitir(
                 'demo.setup.completado',
                 null,
-                ['user_id' => $user->id, 'duracion_seg' => $duracion_seg, 'etapas' => $etapas],
+                [
+                    'user_id'            => $user->id,
+                    'duracion_seg'       => $duracion_seg,
+                    'etapas'             => $etapas,
+                    'esquema_restaurado' => $esquema_restaurado,
+                ],
                 (string) $canal->eventos_token
             );
         }

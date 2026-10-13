@@ -300,15 +300,39 @@ class SembrarDatosDePrueba extends Command
     /**
      * Resumen de las aperturas de caja que hizo `ejecutar_operaciones()`, para la planilla.
      *
-     * `sembradas` son las que crea este comando (`dias * cajas`); `previas` son las que ya estaban
-     * en la base cuando arrancó (`CajaSeeder` deja una por caja, y `preparar_aperturas_previas()`
-     * les mueve el `created_at` pero NO las borra). `total` es lo que Lucas va a contar en la base:
-     * la suma de las dos. Informar solo `dias * cajas` dejaba la planilla corta por exactamente la
-     * cantidad de cajas del usuario.
+     * `sembradas` son las que crea este comando; `previas` son las que ya estaban en la base cuando
+     * arrancó (`CajaSeeder` deja una por caja, y `preparar_aperturas_previas()` les mueve el
+     * `created_at` pero NO las borra). `total` es lo que Lucas va a contar en la base: la suma de
+     * las dos. Informar solo `dias * cajas` dejaba la planilla corta por exactamente la cantidad de
+     * cajas del usuario.
+     *
+     * 🔴 `sembradas` DEJÓ DE SER `dias * cajas` el 13/10/2026 (misión demo-setup-mas-rapido): ahora
+     * solo se abre la caja que ese día se va a mover, así que es una cuenta real y no una
+     * multiplicación. Se agregó `cierres` por el mismo motivo. Ver `ejecutar_operaciones()`.
      *
      * @var array<string,int>
      */
-    protected $resumen_aperturas = ['dias' => 0, 'cajas' => 0, 'sembradas' => 0, 'previas' => 0, 'total' => 0];
+    protected $resumen_aperturas = [
+        'dias'      => 0,
+        'cajas'     => 0,
+        'sembradas' => 0,
+        'cierres'   => 0,
+        'previas'   => 0,
+        'total'     => 0,
+    ];
+
+    /**
+     * Cuánto costó, en segundos, abrir y cerrar cajas durante `ejecutar_operaciones()`, y cuántas
+     * veces se hizo cada cosa.
+     *
+     * Se mide por separado de la fase `operaciones` porque es la parte que esta misión vino a
+     * recortar: sin el número al lado, un antes/después de la fase entera no dice si el ahorro vino
+     * de las cajas o de otra cosa que cambió en el medio. Viaja en `tiempos` DESPUÉS de `total`, así
+     * que no entra en la suma (igual que `meses`).
+     *
+     * @var array<string,float|int>
+     */
+    protected $costo_de_las_cajas = ['segundos' => 0.0, 'aperturas' => 0, 'cierres' => 0];
 
     /**
      * Aperturas de caja que ya existían antes de esta corrida, contadas por
@@ -549,6 +573,15 @@ class SembrarDatosDePrueba extends Command
                 return $clave !== 'operaciones_cantidad';
             }, ARRAY_FILTER_USE_KEY)), 1);
             $tiempos['meses'] = $meses_atras;
+
+            /*
+                DESPUÉS de `total` a propósito: igual que `meses`, esto NO entra en la suma. Es un
+                desglose de adentro de la fase `operaciones` (abrir y cerrar cajas), no una fase más;
+                sumarlo contaría el mismo tiempo dos veces.
+            */
+            $tiempos['cajas_seg'] = round((float) $this->costo_de_las_cajas['segundos'], 1);
+            $tiempos['cajas_aperturas'] = (int) $this->costo_de_las_cajas['aperturas'];
+            $tiempos['cajas_cierres'] = (int) $this->costo_de_las_cajas['cierres'];
 
             $this->info('Listo. Tiempos por fase (segundos): '.json_encode($tiempos));
             Log::info('semilla:datos: tiempos por fase', $tiempos);
@@ -2018,17 +2051,23 @@ class SembrarDatosDePrueba extends Command
             $dia = $dia->copy()->addDay();
         }
 
-        $sembradas = $dias * $cajas->count();
+        // 🔴 `sembradas` ES LA CUENTA REAL, no `dias * cajas` (13/10/2026): desde que se abre solo la
+        // caja que ese día se va a mover, la multiplicación informaría casi el triple de las
+        // aperturas que de verdad existen (740 contra ~259 en la corrida de tres meses). Las lleva
+        // `abrir_cajas_del_dia()` / `cerrar_cajas_del_dia()`.
+        //
+        // 🔴 Y `total` tampoco es solo `sembradas`: `preparar_aperturas_previas()` no BORRA las
+        // aperturas que ya estaban (las de `CajaSeeder`, una por caja), solo les mueve el
+        // `created_at` al día anterior al primer día sembrado. Siguen en la base, así que Lucas
+        // cuenta más filas de las que decía este renglón. Se informan todas por separado para que la
+        // diferencia se pueda leer sin ir al código.
+        $sembradas = (int) $this->costo_de_las_cajas['aperturas'];
 
-        // 🔴 `total` NO es `dias * cajas`: `preparar_aperturas_previas()` no BORRA las aperturas que
-        // ya estaban (las de `CajaSeeder`, una por caja), solo les mueve el `created_at` al día
-        // anterior al primer día sembrado. Siguen en la base, así que Lucas cuenta más filas de las
-        // que decía este renglón. Se informan las tres cosas por separado para que la diferencia se
-        // pueda leer sin ir al código.
         $this->resumen_aperturas = [
             'dias'      => $dias,
             'cajas'     => $cajas->count(),
             'sembradas' => $sembradas,
+            'cierres'   => (int) $this->costo_de_las_cajas['cierres'],
             'previas'   => $this->aperturas_previas,
             'total'     => $sembradas + $this->aperturas_previas,
         ];
@@ -2221,7 +2260,23 @@ class SembrarDatosDePrueba extends Command
     }
 
     /**
-     * Abre todas las cajas del usuario a las 08:00 del día que se está por sembrar.
+     * Abre, a las 08:00 del día que se está por sembrar, LAS CAJAS DEL USUARIO QUE ESTÉN CERRADAS.
+     *
+     * 🔴 "Las que estén cerradas" y no "todas" desde el 13/10/2026 (misión demo-setup-mas-rapido).
+     * Antes se abrían las diez todos los días y se cerraban las diez todas las noches: 740 aperturas
+     * y 730 cierres para 74 días. Medido en la corrida de tres meses, solo **249** pares caja-día
+     * tienen un movimiento -- un promedio de 3,4 cajas por día, nunca más de 8 --, o sea que dos
+     * tercios de esas aperturas nacían y morían vacías.
+     *
+     * Ahora la caja que no se movió **se queda abierta** con su apertura vacía, y acá no hay nada
+     * que hacer con ella. La que sí se movió la cerró `cerrar_cajas_del_dia()` anoche, así que hoy
+     * aparece cerrada y se vuelve a abrir. Resultado: una apertura por caja y por día en el que esa
+     * caja efectivamente se mueve, más la primera de cada caja.
+     *
+     * El estado se lee de la BASE y no de la colección `$cajas` que recibe: los dos helpers de caja
+     * cargan su propio `Caja` por id y escriben ahí, así que los modelos de la colección quedan con
+     * `current_apertura_caja_id` viejo desde el primer día. Mirarlos a ellos abriría dos veces la
+     * misma caja.
      *
      * El reloj se mueve con `Carbon::setTestNow()` en try/finally: `AperturaCaja` usa
      * `$table->timestamps()`, así que la apertura queda con `created_at` en el pasado, que es lo que
@@ -2235,23 +2290,60 @@ class SembrarDatosDePrueba extends Command
      */
     protected function abrir_cajas_del_dia($cajas, $dia)
     {
+        $cerradas = Caja::whereIn('id', $cajas->pluck('id')->all())
+            ->whereNull('current_apertura_caja_id')
+            ->orderBy('id')
+            ->pluck('id')
+            ->all();
+
+        if (empty($cerradas)) {
+            return;
+        }
+
+        $t = microtime(true);
+
         Carbon::setTestNow($dia->copy()->setTime(8, 0));
 
         try {
-            foreach ($cajas as $caja) {
-                $helper = new CajaAperturaHelper($caja->id);
+            foreach ($cerradas as $caja_id) {
+                $helper = new CajaAperturaHelper($caja_id);
                 $helper->abrir_caja();
             }
         } finally {
             Carbon::setTestNow(null);
         }
+
+        $this->costo_de_las_cajas['segundos'] += microtime(true) - $t;
+        $this->costo_de_las_cajas['aperturas'] += count($cerradas);
     }
 
     /**
-     * Cierra todas las cajas del usuario a las 22:00, después de los movimientos del día.
+     * Cierra a las 22:00, después de los movimientos del día, LAS CAJAS QUE HOY TIENEN ALGÚN
+     * MOVIMIENTO COLGADO DE SU APERTURA ABIERTA.
      *
-     * Se saltea la caja que no tenga `current_apertura_caja_id`: `CajaCierreHelper::cerrar_apertura()`
-     * hace `AperturaCaja::find(null)` y escribe sobre el resultado sin chequearlo, así que cerrar una
+     * 🔴 Por qué no se cierran todas, y por qué el criterio es "tiene movimientos" y no "se abrió
+     * hoy" (13/10/2026, misión demo-setup-mas-rapido):
+     *
+     * El invariante que hay que sostener es uno solo y es el que hace que el dato sea correcto:
+     * **todo `MovimientoCaja` tiene que caer en una apertura ABIERTA de SU caja**, porque
+     * `MovimientoCajaHelper::get_current_aperutra_caja()` resuelve la última `AperturaCaja` de esa
+     * caja por `created_at DESC` y no acepta que le pasen una desde afuera. Si una caja que hoy se
+     * mueve no está abierta, su movimiento se cuelga de una apertura ya cerrada: dato falso.
+     *
+     * Dejar abierta la caja que no se movió sostiene ese invariante sin crear la apertura vacía: el
+     * día que esa caja finalmente se mueva, su apertura (la que viene esperando desde hace días)
+     * está abierta y es la última, así que el movimiento cae bien. Y esa misma noche este método la
+     * encuentra con movimientos y la cierra, así que **ninguna apertura acumula más de un día de
+     * movimientos**.
+     *
+     * Eso último no es un detalle estético: `set_apertura_caja_ingresos_egresos()` recorre TODOS los
+     * movimientos de la apertura en CADA movimiento nuevo. Una sola apertura por caja para los tres
+     * meses -- que es a lo que lleva "abrir una sola caja por día" hecho de frente -- convierte eso
+     * en O(n²) sobre ~400 movimientos y sale MÁS LENTO que el estado anterior. Era la trampa de este
+     * cambio.
+     *
+     * Se saltea la caja sin `current_apertura_caja_id`: `CajaCierreHelper::cerrar_apertura()` hace
+     * `AperturaCaja::find(null)` y escribe sobre el resultado sin chequearlo, así que cerrar una
      * caja ya cerrada tira un fatal.
      *
      * @param \Illuminate\Support\Collection $cajas
@@ -2260,11 +2352,45 @@ class SembrarDatosDePrueba extends Command
      */
     protected function cerrar_cajas_del_dia($cajas, $dia)
     {
+        /* Estado fresco de la base: los modelos de `$cajas` están viejos (ver `abrir_cajas_del_dia`). */
+        $abiertas = Caja::whereIn('id', $cajas->pluck('id')->all())
+            ->whereNotNull('current_apertura_caja_id')
+            ->orderBy('id')
+            ->pluck('current_apertura_caja_id', 'id')
+            ->all();
+
+        if (empty($abiertas)) {
+            return;
+        }
+
+        $con_movimiento = MovimientoCaja::whereIn('apertura_caja_id', array_values($abiertas))
+            ->distinct()
+            ->pluck('apertura_caja_id')
+            ->all();
+
+        if (empty($con_movimiento)) {
+            return;
+        }
+
+        $a_cerrar = [];
+
+        foreach ($abiertas as $caja_id => $apertura_id) {
+            if (in_array($apertura_id, $con_movimiento)) {
+                $a_cerrar[] = $caja_id;
+            }
+        }
+
+        if (empty($a_cerrar)) {
+            return;
+        }
+
+        $t = microtime(true);
+
         Carbon::setTestNow($dia->copy()->setTime(22, 0));
 
         try {
-            foreach ($cajas as $caja) {
-                $helper = new CajaCierreHelper($caja->id);
+            foreach ($a_cerrar as $caja_id) {
+                $helper = new CajaCierreHelper($caja_id);
 
                 if (is_null($helper->caja) || is_null($helper->caja->current_apertura_caja_id)) {
                     continue;
@@ -2275,6 +2401,9 @@ class SembrarDatosDePrueba extends Command
         } finally {
             Carbon::setTestNow(null);
         }
+
+        $this->costo_de_las_cajas['segundos'] += microtime(true) - $t;
+        $this->costo_de_las_cajas['cierres'] += count($a_cerrar);
     }
 
     /**
