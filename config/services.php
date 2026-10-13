@@ -656,4 +656,17 @@ return [
         'spa_url' => env('SPA_URL'),
     ],
 
+    /**
+     * El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026): la página con los
+     * videos, a la que el menú "Centro de recursos" entra con un pase de un solo uso
+     * (CentroRecursosController).
+     *
+     * 🔴 El default va ESCRITO ACÁ y no es un descuido: el `.env` de los clientes no trae esta
+     * variable y nadie la va a agregar. La variable existe solo para poder apuntar a otra página en
+     * desarrollo. El `?:` cubre también el caso `CENTRO_RECURSOS_URL=` en blanco.
+     */
+    'centro_recursos' => [
+        'url' => env('CENTRO_RECURSOS_URL') ?: 'https://recursos.comerciocity.com',
+    ],
+
 ];
