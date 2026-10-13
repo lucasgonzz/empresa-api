@@ -25,6 +25,15 @@ use Illuminate\Http\Request;
 class CentroRecursosController extends Controller
 {
     /**
+     * Clave de sesión que marca un login maestro. La pone AuthController::login() (y la traspasa
+     * login_from_version_session_token()) en los dos modos, `login` y `login full`; es la misma que
+     * ya leen el candado de sesión única y ImageAssignmentRunHelper::CLAVE_DE_SESION_MAESTRO.
+     *
+     * @var string
+     */
+    const CLAVE_DE_SESION_MAESTRO = 'master_login_bypass_user_last_activity';
+
+    /**
      * POST centro-recursos/pase — C1.
      *
      * Body opcional: `{"video": "T1.29"}` para que la página abra directo ese video.
@@ -36,6 +45,11 @@ class CentroRecursosController extends Controller
      * `api` es `url('/')`: la raíz pública de esta API tal como la alcanzó el navegador (con el
      * `/public` del hosting compartido si lo hay). El admin la usa SOLO para reconocer al cliente por
      * el host; para canjear llama a la URL que él tiene cargada, nunca a esta.
+     *
+     * 🔴 LOGIN MAESTRO: la URL va SIN pase (y sin `api`; con `v` si vino), `disponible: true`, y no
+     * se crea ninguna fila. La página abre como invitado. Un login maestro entra como el dueño: con
+     * pase, lo que soporte mira, vota o pregunta quedaría guardado como avance y preguntas del
+     * cliente. El chequeo de disponibilidad (C4) vale igual: con la página caída, tampoco se abre.
      *
      * @param  Request $request
      * @return JsonResponse
@@ -59,24 +73,49 @@ class CentroRecursosController extends Controller
             ], 200);
         }
 
-        $plano = CentroRecursosPaseHelper::crear($request->user(), $video);
+        $parametros = [];
 
-        $parametros = [
-            'pase' => $plano,
-            'api'  => url('/'),
-        ];
+        if (!$this->es_login_maestro()) {
+            $parametros['pase'] = CentroRecursosPaseHelper::crear($request->user(), $video);
+            $parametros['api'] = url('/');
+        }
 
         if (!is_null($video)) {
             $parametros['v'] = $video;
         }
 
-        $url = CentroRecursosDisponibilidadHelper::url_de_la_pagina()
-            . '/?' . http_build_query($parametros, '', '&', PHP_QUERY_RFC3986);
-
         return response()->json([
-            'url'        => $url,
+            'url'        => $this->url_de_la_pagina_con($parametros),
             'disponible' => true,
         ], 200);
+    }
+
+    /**
+     * ¿La sesión de este pedido es un login maestro? Misma señal que el candado de sesión única
+     * (AuthController::is_master_login_activity_bypass_enabled()).
+     *
+     * @return bool
+     */
+    protected function es_login_maestro()
+    {
+        return (bool) session(self::CLAVE_DE_SESION_MAESTRO, false);
+    }
+
+    /**
+     * La URL de la página con sus parámetros: `<página>/?a=…&b=…`, o `<página>/` si no hay ninguno.
+     *
+     * @param  array $parametros
+     * @return string
+     */
+    protected function url_de_la_pagina_con(array $parametros)
+    {
+        $url = CentroRecursosDisponibilidadHelper::url_de_la_pagina() . '/';
+
+        if (empty($parametros)) {
+            return $url;
+        }
+
+        return $url . '?' . http_build_query($parametros, '', '&', PHP_QUERY_RFC3986);
     }
 
     /**

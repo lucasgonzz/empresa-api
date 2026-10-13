@@ -352,6 +352,64 @@ class PaseTest extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Login maestro: la página abre como invitado. La URL no trae `pase` ni `api`, no se crea
+     * ninguna fila y `disponible` es true. Con pase, lo que soporte hiciera en el centro quedaría
+     * guardado como avance y preguntas del cliente.
+     */
+    public function test_con_login_maestro_abre_la_pagina_sin_pase_y_no_crea_fila()
+    {
+        $this->la_pagina_anda();
+
+        // La misma marca que pone AuthController::login() en un login maestro.
+        $this->withSession(['master_login_bypass_user_last_activity' => true]);
+
+        $antes = CentroRecursosPase::count();
+
+        $this->pedir_pase()
+             ->assertStatus(200)
+             ->assertExactJson([
+                 'url'        => 'https://recursos.comerciocity.com/',
+                 'disponible' => true,
+             ]);
+
+        $url = $this->pedir_pase(['video' => 'T1.29'])->assertStatus(200)->assertJson(['disponible' => true])->json('url');
+
+        $this->assertSame('https://recursos.comerciocity.com/?v=T1.29', $url);
+        $this->assertSame(['v' => 'T1.29'], $this->parametros_de($url), 'Sin pase y sin api: solo el video.');
+
+        $this->assertSame($antes, CentroRecursosPase::count(), 'Un login maestro no crea pases.');
+    }
+
+    /**
+     * Con login maestro el chequeo de la página vale igual: caída, no se abre nada.
+     */
+    public function test_con_login_maestro_y_la_pagina_caida_no_esta_disponible()
+    {
+        Http::fake([
+            self::ESTADO => Http::response('error', 500),
+        ]);
+
+        $this->withSession(['master_login_bypass_user_last_activity' => true]);
+
+        $this->pedir_pase()->assertStatus(200)->assertExactJson(['url' => null, 'disponible' => false]);
+    }
+
+    /**
+     * La marca de login maestro en `false` es una sesión común: lleva pase.
+     */
+    public function test_con_la_marca_de_login_maestro_apagada_lleva_pase()
+    {
+        $this->la_pagina_anda();
+
+        $this->withSession(['master_login_bypass_user_last_activity' => false]);
+
+        $parametros = $this->parametros_de($this->pedir_pase()->assertStatus(200)->json('url'));
+
+        $this->assertArrayHasKey('pase', $parametros);
+        $this->assertArrayHasKey('api', $parametros);
+    }
+
+    /**
      * La URL de la página tiene el default escrito en la config (los `.env` de los clientes no la
      * traen), y si se cambia la config, el chequeo y la URL siguen a la nueva.
      */
