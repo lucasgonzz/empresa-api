@@ -283,4 +283,70 @@ class ArticuloSlugAlGuardarTest extends EmpresaTestCase
         $this->assertSame('zz-slug-alta-doble', $this->slug_de($primero));
         $this->assertSame('zz-slug-alta-doble-1', $this->slug_de($segundo));
     }
+
+    /**
+     * Caso 8: un slug guardado como cadena vacía (no solo NULL) también se repone al editar.
+     *
+     * @return void
+     */
+    public function test_un_articulo_con_slug_vacio_recupera_el_slug_al_guardar()
+    {
+        $articulo = $this->crear_articulo('ZZ Slug Vacio', '');
+
+        $this->guardar_por_endpoint($articulo->id, 'ZZ Slug Vacio');
+
+        $this->assertSame('zz-slug-vacio', $this->slug_de($articulo->id));
+    }
+
+    /**
+     * Caso 9: un artículo que quedó con `-1` y se renombra a un nombre libre pierde el sufijo
+     * (el slug sigue al nombre nuevo, que ya no choca con nadie).
+     *
+     * @return void
+     */
+    public function test_renombrar_un_articulo_con_sufijo_a_un_nombre_libre_pierde_el_sufijo()
+    {
+        $this->crear_articulo('ZZ Slug Pierde', 'zz-slug-pierde');
+        $con_sufijo = $this->crear_articulo('ZZ Slug Pierde', 'zz-slug-pierde-1');
+
+        $this->guardar_por_endpoint($con_sufijo->id, 'ZZ Slug Libre Nuevo');
+
+        $this->assertSame('zz-slug-libre-nuevo', $this->slug_de($con_sufijo->id));
+    }
+
+    /**
+     * Caso 10: cambiar solo mayúsculas del nombre no mueve el slug ni lo manda a `-1`
+     * (el slug no distingue mayúsculas, así que el propio artículo no cuenta como choque).
+     *
+     * @return void
+     */
+    public function test_cambiar_solo_las_mayusculas_del_nombre_no_mueve_el_slug()
+    {
+        $id = $this->alta_por_endpoint('ZZ Slug Mayus');
+        $this->assertSame('zz-slug-mayus', $this->slug_de($id));
+
+        $this->guardar_por_endpoint($id, 'ZZ SLUG MAYUS');
+
+        $this->assertSame('zz-slug-mayus', $this->slug_de($id));
+    }
+
+    /**
+     * Caso 11: la unicidad es POR DUEÑO. Dos dueños con el mismo nombre de artículo tienen el
+     * mismo slug base, sin sufijo, y ninguno afecta al otro.
+     *
+     * @return void
+     */
+    public function test_la_unicidad_del_slug_es_por_dueno()
+    {
+        $dueno_actual = (int) auth()->user()->id;
+        $otro_dueno   = $dueno_actual + 100000;
+
+        $this->crear_articulo('ZZ Slug Dueno', 'zz-slug-dueno');
+
+        // El mismo dueño choca y recibe `-1`...
+        $this->assertSame('zz-slug-dueno-1', ArticleHelper::slug('ZZ Slug Dueno', null, $dueno_actual));
+
+        // ...pero otro dueño, que no tiene ese slug, lo recibe limpio.
+        $this->assertSame('zz-slug-dueno', ArticleHelper::slug('ZZ Slug Dueno', null, $otro_dueno));
+    }
 }
