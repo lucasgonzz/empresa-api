@@ -151,6 +151,8 @@ class EsquemaDemoSnapshotHelper
 
         self::negarse_si_hay_vistas();
 
+        self::negarse_si_la_base_esta_atrasada();
+
         $carpeta = dirname($ruta);
 
         if (! is_dir($carpeta) && ! mkdir($carpeta, 0775, true) && ! is_dir($carpeta)) {
@@ -656,6 +658,47 @@ class EsquemaDemoSnapshotHelper
         }
 
         return $nombres;
+    }
+
+    /**
+     * Se niega a volcar si la tabla `migrations` de la base NO es la lista que hay en disco.
+     *
+     * 🔴 Por qué esto no es paranoia (lo encontró `EsquemaSnapshotDeDemoTest` el 13/10/2026, sobre
+     * la base del slot, que estaba atrasada una migración):
+     *
+     * El nombre del archivo sale de la lista de migraciones **en disco** y el contenido sale de la
+     * **base**. Si la base está atrasada, el volcado queda ETIQUETADO como el de la versión nueva y
+     * lleva adentro el esquema de la vieja. La verificación de `restaurar()` lo agarra (compara
+     * `migrations` contra el disco) y cae a `migrate:fresh`, así que no se rompe nada -- pero
+     * entonces ese archivo nunca sirve para nada y cada setup paga una restauración al vacío antes
+     * de migrar igual. Negarse acá cuesta una consulta y evita generar un archivo que miente.
+     *
+     * Adelantada también cuenta: una base con filas en `migrations` que no tienen archivo es una
+     * base de otra rama, y su esquema no es el de este código.
+     *
+     * @return void
+     * @throws \RuntimeException
+     */
+    protected static function negarse_si_la_base_esta_atrasada()
+    {
+        $en_disco = self::migraciones_en_disco();
+        $en_base = self::migraciones_de_la_base();
+
+        $faltan = array_values(array_diff($en_disco, $en_base));
+        $sobran = array_values(array_diff($en_base, $en_disco));
+
+        if (empty($faltan) && empty($sobran)) {
+            return;
+        }
+
+        throw new \RuntimeException(
+            'La base no está en el mismo punto que las migraciones de este código, así que su '
+                . 'esquema no es el de la versión con la que se nombraría el volcado. Sin aplicar: '
+                . count($faltan) . ' (' . implode(', ', array_slice($faltan, 0, 3)) . '). '
+                . 'En la base y no en el código: ' . count($sobran)
+                . ' (' . implode(', ', array_slice($sobran, 0, 3)) . '). '
+                . 'Corré `php artisan migrate --force` antes.'
+        );
     }
 
     /**

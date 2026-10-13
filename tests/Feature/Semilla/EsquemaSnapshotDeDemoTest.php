@@ -189,7 +189,11 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
             'Tiene que haber un CREATE TABLE por tabla de la base.'
         );
 
-        /* Todas las migraciones de disco nombradas en los INSERT, no solo la cantidad. */
+        /*
+            Todas las migraciones nombradas en los INSERT, no solo la cantidad. Un volcado al que le
+            falta una fila hace que un `migrate` posterior -- el que corre `DeploymentService` en
+            cada despliegue -- vuelva a aplicar esa migración sobre tablas que ya existen.
+        */
         $faltantes = [];
 
         foreach ($migraciones_en_disco as $nombre) {
@@ -201,8 +205,10 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
         $this->assertSame(
             [],
             array_slice($faltantes, 0, 5),
-            'Al volcado le faltan migraciones por nombre: un `migrate` posterior las correría de '
-                .'nuevo sobre tablas que ya existen y el despliegue moriría.'
+            'Al volcado le faltan migraciones por nombre. Si la lista que falta es la de una '
+                .'migración reciente, lo que está atrasada es la base del slot y hay que correr '
+                .'`APP_ENV=testing php artisan migrate --force` (NO `migrate:fresh`, que se lleva el '
+                .'fixture). Si no, es el volcado el que está mal armado.'
         );
 
         $this->assertStringContainsString(
@@ -368,6 +374,58 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
             'Al negarse no puede haber dejado un archivo a medias con nombre de volcado válido.'
         );
 
-        $this->assertStringContainsString('vacía', Artisan::output());
+        $this->assertStringContainsStringIgnoringCase('vacía', Artisan::output());
+    }
+
+    /**
+     * Test 6 — `generar()` se niega si la tabla `migrations` de la base no es la lista que hay en
+     * disco.
+     *
+     * 🔴 Lo encontró este mismo archivo el 13/10/2026, con la base del slot atrasada una migración:
+     * el nombre del archivo sale del DISCO y el contenido de la BASE, así que un volcado hecho sobre
+     * una base atrasada queda etiquetado como el de la versión nueva llevando adentro el esquema de
+     * la vieja. La verificación de `restaurar()` lo agarra y cae a `migrate:fresh`, o sea que no
+     * rompe nada — pero ese archivo no sirve nunca y cada setup paga una restauración al vacío antes
+     * de migrar igual.
+     *
+     * Se simula borrando una fila de `migrations` adentro de la transacción del test, que
+     * `DatabaseTransactions` revierte al terminar. No hay DDL de por medio.
+     *
+     * @return void
+     */
+    public function test_generar_se_niega_si_la_base_no_esta_en_el_punto_del_codigo()
+    {
+        $en_disco = EsquemaDemoSnapshotHelper::migraciones_en_disco();
+
+        $this->assertNotEmpty($en_disco, 'Sin migraciones en disco este test no prueba nada.');
+
+        $una = $en_disco[count($en_disco) - 1];
+
+        $borradas = \Illuminate\Support\Facades\DB::table('migrations')
+            ->where('migration', $una)
+            ->delete();
+
+        $this->assertSame(
+            1,
+            $borradas,
+            'La base del slot no tiene la migración ' . $una . ': corré '
+                . '`APP_ENV=testing php artisan migrate --force` antes de la suite.'
+        );
+
+        $ruta = $this->temporal('base-atrasada');
+
+        try {
+            EsquemaDemoSnapshotHelper::generar($ruta);
+
+            $this->fail('generar() tenía que negarse con la base atrasada.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString($una, $e->getMessage());
+            $this->assertStringContainsString('migrate --force', $e->getMessage());
+        }
+
+        $this->assertFileDoesNotExist(
+            $ruta,
+            'Al negarse no puede haber dejado el archivo: se chequea ANTES de abrirlo.'
+        );
     }
 }
