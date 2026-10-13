@@ -228,6 +228,7 @@ class EsquemaDeDatosIaHelper
         'zippin_oauth_states'                => 'estados de OAuth de Zippin',
         'platform_connectors'                => 'credenciales de plataformas conectadas',
         'version_session_transfers'          => 'tokens de traspaso de sesion entre versiones',
+        'centro_recursos_pases'              => 'pases de un solo uso al centro de recursos',
         'print_agents'                       => 'tokens de vinculacion de las impresoras',
         'print_jobs'                         => 'cola de impresion (payload en base64)',
         'whatsapp_bot_configs'               => 'credenciales de Kapso y configuracion del bot',

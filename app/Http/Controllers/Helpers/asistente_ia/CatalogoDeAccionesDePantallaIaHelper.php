@@ -131,6 +131,7 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#password#'                                  => 'sesión y cuenta: contraseñas',
         '#set-comercio-city-user#'                    => 'sesión y cuenta: vincula cuentas de ComercioCity entre sí, y busca usuarios sin filtrar por dueño',
         '#^POST api/user/last-activity$#'             => 'sesión y cuenta: renueva el candado de sesión',
+        '#^POST api/centro-recursos/pase$#'           => 'sesión y cuenta: emite un pase de ingreso al centro de recursos',
         // ── Credenciales ──────────────────────────────────────────────────────────────────────
         '#api/payment-method(/|$)#'                   => 'credenciales: los métodos de pago de la tienda guardan las claves de Mercado Pago',
         '#platform-connector#'                        => 'credenciales: conectores de plataforma',
