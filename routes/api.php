@@ -1569,7 +1569,21 @@ Route::middleware('admin.api.key')
         Route::get('catalogo/categorias/propuestas/{run_id}/pendientes', 'AdminSync\\CatalogoCategoriasController@pendientes')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/listo', 'AdminSync\\CatalogoCategoriasController@listo')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/descartar', 'AdminSync\\CatalogoCategoriasController@descartar')->where('run_id', '[0-9]+');
+
+        // El canje del pase del centro de recursos (misión centro-de-recursos-clientes, 13/10/2026,
+        // contrato C3): el admin lo llama cuando la página le manda un pase que este sistema emitió en
+        // POST centro-recursos/pase. Lo marca usado (una sola vez, vence a los 5 minutos) y devuelve el
+        // usuario. 404 `pase_invalido` si no vale; un cliente viejo sin esta ruta también da 404 y el
+        // admin lo trata igual (la página sigue sin sesión). La clave la pone el middleware del grupo.
+        Route::post('recursos/canjear-pase', 'CentroRecursosController@canjear');
     });
+
+// El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026, contrato C1): el SPA pide un
+// pase de un solo uso cuando el usuario toca "Centro de recursos" en el menú, y abre la página con él.
+// Cualquier usuario logueado, dueño o empleado. Si la página todavía no responde devuelve
+// `disponible: false` y no crea nada. La otra punta del pase es admin-sync/recursos/canjear-pase,
+// en el grupo de arriba.
+Route::middleware('auth:sanctum')->post('centro-recursos/pase', 'CentroRecursosController@pase');
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
 // asistente-por-whatsapp). PÚBLICA a propósito: el dueño lo abre desde el teléfono, en la calle,

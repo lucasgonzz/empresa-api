@@ -608,7 +608,20 @@ class ArticleController extends Controller
 
         
         $model->name = ucfirst($request->name);
-        $model->slug = ArticleHelper::slug($request->name);
+
+        /**
+         * El slug es la URL pública del artículo en la tienda (`/articulos/<slug>/<commerce_id>`):
+         * un link compartido se rompe si cambia. Por eso solo se recalcula si cambió el nombre o
+         * si el artículo no tiene slug todavía.
+         *
+         * Antes se recalculaba en CADA guardado y sin excluir al propio artículo: slug() lo
+         * encontraba a sí mismo con ese slug y le agregaba `-1`, y en el guardado siguiente, con
+         * el slug base ya libre, volvía al original. El slug alternaba `nombre` <-> `nombre-1`.
+         * Cuando sí se recalcula, se pasa `$model->id` para que no choque consigo mismo.
+         */
+        if ($model->isDirty('name') || is_null($model->slug) || $model->slug === '') {
+            $model->slug = ArticleHelper::slug($request->name, $model->id);
+        }
         $model->save();
         
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);

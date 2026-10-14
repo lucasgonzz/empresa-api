@@ -93,9 +93,11 @@ class MencionesIaHelper
      * `interesados_en_un_articulo`—. Sin esto, el ejemplo del propio contrato ("El cliente que más
      * te debe es Ferreteria Tucumana") no tendría mención.
      *
-     * Estos candidatos salen con `id` 0 y se resuelven contra la base por nombre EXACTO Y ÚNICO
-     * del dueño (ver resolver_por_nombre()): si hay dos clientes que se llaman igual, no se marca.
-     * Es un camino más exigente que el del id, no uno más laxo.
+     * Estos candidatos salen con `id` 0 y se resuelven contra la base del dueño por nombre (ver
+     * resolver_por_nombre()): solo si el literal es, tras el mismo trim(), el nombre EXACTO de un
+     * registro vigente del dueño, y solo si la base —su collation, no una comparación de PHP— no lo
+     * da por igual a ningún otro. Con dos clientes que la base da por iguales ("Kiosco Sur" y
+     * "KIOSCO SUR") no se marca ninguno. Es un camino más exigente que el del id, no uno más laxo.
      *
      * `nombre` va solo para la tool que lo usa como nombre de artículo: en otras respuestas esa
      * misma clave es el nombre de una sucursal o de un proveedor.
@@ -262,8 +264,11 @@ class MencionesIaHelper
      *    los mismos caracteres y la misma capitalización, y la ocurrencia tiene que estar
      *    delimitada: "CABLE" adentro de "CABLEADO" no es una mención de "CABLE".
      * 3. 🔴 **La base manda.** Los candidatos con id se confirman: el id tiene que existir, ser del
-     *    dueño y llamarse HOY exactamente como dice el literal. Los candidatos sin id se resuelven
-     *    por nombre, y solo si ese nombre es único entre los del dueño.
+     *    dueño y llamarse HOY como dice el literal (el nombre de la base con el mismo `trim()` que
+     *    ya recibió el literal; en todo lo demás, idéntico). Los candidatos sin id se resuelven por
+     *    nombre con esa misma identidad —el nombre exacto tras el mismo `trim()`—, y solo si la
+     *    base (su collation, no una segunda regla en PHP) no lo da por igual a ningún otro registro
+     *    vigente del dueño.
      * 4. 🔴 **Ambigüedad.** Si el MISMO literal quedó resuelto a más de un (tipo, id) —un artículo y
      *    un cliente que se llaman igual—, se descartan TODOS: elegir uno es tirar una moneda con la
      *    ficha del dueño.
@@ -419,7 +424,18 @@ class MencionesIaHelper
             if ($id > 0) {
                 $nombres = $por_id[$mencion['tipo']];
 
-                if (!isset($nombres[$id]) || (string) $nombres[$id] !== $mencion['texto']) {
+                /*
+                 * 🔴 El nombre de la base pasa por el MISMO trim() que depurar() ya le aplicó al
+                 * literal. Sin eso, un nombre guardado con espacio al final ("Ferretería Tucumana ")
+                 * no coincidía nunca con su propio literal recortado y el cliente no se marcaba por
+                 * NINGUNA de las tools que traen el id (consultar_clientes, consultar_stock_de_articulos,
+                 * consultar_datos): dos reglas de igualdad para el mismo nombre.
+                 *
+                 * En todo lo demás sigue siendo idéntico, a propósito más estricto que la collation:
+                 * acá el id es la identidad y el nombre es solo el control de que la fila es la que
+                 * la tool dijo. Pedir de más no fabrica una mención equivocada.
+                 */
+                if (!isset($nombres[$id]) || trim((string) $nombres[$id]) !== $mencion['texto']) {
                     continue;
                 }
             } else {
@@ -473,22 +489,58 @@ class MencionesIaHelper
     }
 
     /**
-     * El id de cada nombre que sea ÚNICO entre los del dueño.
+     * El id de cada literal que es, tras el mismo trim(), el nombre EXACTO de un registro vigente del
+     * dueño al que la base no le encuentra gemelo (misión menciones-asistente-collation, decisión 8
+     * del plan, 12/10/2026).
      *
-     * 🔴 Un nombre repetido NO se resuelve. En un catálogo reimportado es normal tener dos
-     * artículos con el mismo nombre; marcar uno de los dos es mandar al dueño a la ficha
-     * equivocada la mitad de las veces, y no hay dato en el texto que permita desempatar.
+     * La regla tiene dos partes, y cada una la decide quien sabe decidirla:
      *
-     * ⚠️ La comparación final es en PHP y por eso distingue mayúsculas: el `whereIn` de MySQL no
-     * las distingue (collation), así que "Juan Perez" y "JUAN PEREZ" vuelven los dos y el
-     * agrupado de acá abajo los cuenta como dos nombres distintos —que es lo correcto: el literal
-     * del contrato es EXACTO—, pero además deja al que empate exacto como no-único si su gemelo
-     * comparte la escritura.
+     * 1. 🔴 LA AMBIGÜEDAD LA DECIDE LA BASE. Si el literal coincide —para la collation— con ninguno o
+     *    con más de un vigente del dueño, no se resuelve. En un catálogo reimportado es normal tener
+     *    dos artículos con el mismo nombre; marcar uno es mandar al dueño a la ficha equivocada la
+     *    mitad de las veces, y no hay dato en el texto que permita desempatar. "Iguales" es lo que
+     *    diga la base: "Acme" y "ACME", o "Kiosco Sur" y "Kiosco Sur ", son el mismo nombre para ella
+     *    y no se marca ninguno (indexando por el nombre crudo, la tool que hablaba de "Kiosco Sur "
+     *    terminaba en un link a "Kiosco Sur").
+     * 2. 🔴 LA IDENTIDAD ES EL NOMBRE EXACTO. Ese único vigente tiene que llamarse, recortado, byte a
+     *    byte como el literal. Y el recorte es el MISMO trim() que depurar() ya le aplicó al literal:
+     *    el defecto de develop era recortar de un solo lado —el literal sí, el nombre de la base no—,
+     *    y un nombre guardado con espacio al final no se marcaba NUNCA (en una copia de golonorte, 11
+     *    de 237 artículos).
+     *
+     * 🔴 POR QUÉ LA IDENTIDAD NO ES LA COLLATION. En el tráfico real todo literal sin id es la copia
+     * recortada del `name` de un registro —las tools emiten el nombre crudo de la base—, así que un
+     * literal que la base da por igual a un vigente sin ser su nombre exacto solo aparece cuando vino
+     * de OTRO registro. Y las tools que dan el nombre sin id leen `articles`/`clients` SIN filtrar
+     * borrados (ConsultasSistemaIaHelper::mas_vendidos(), precios_de_proveedores() y
+     * ofertas_activas(), y los interesados de ActividadDeClientesService::datos_de_clientes()).
+     * Resolver por la collation dio, medido, links a OTRO registro: "CODO 90 PVC" borrado a la ficha
+     * de "Codo 90 PVC" y "José Pérez" borrado a la cuenta corriente de "Jose Perez", que es otra
+     * persona (10 casos así en copias de bases reales); un borrado con un borde que trim() saca y la
+     * collation no ignora (" CODO 90 PVC", "CODO 90 PVC\t"), que ni siquiera coincide y deja solo al
+     * vigente parecido; y un literal que vino de una fila de otro comercio. Con la identidad exacta
+     * los borrados no compiten ni hace falta verlos: el scope de SoftDeletes queda como siempre.
+     * Si alguna tool llegara a emitir un nombre que no es el name de la base (texto del usuario, una
+     * copia desnormalizada), no se marca: precisión antes que cobertura.
+     *
+     * Cómo: cada literal trae su propia columna `(name = ?) as coincide_<i>` en la MISMA consulta del
+     * `whereIn` —columna contra parámetro, así que manda la collation de la columna, la misma que
+     * decidió qué filas volvían—, y el nombre exacto se compara sobre esas mismas filas.
+     *
+     * ⚠️ NO "simplificar" la ambigüedad con keyBy('name') ni normalizando en PHP con mb_strtolower +
+     * Str::ascii: es la clase de APRENDER_NO_PARCHEAR "buscar en SQL sin mayúsculas y comparar en PHP
+     * con mayúsculas", dos reglas para la misma igualdad. Medido contra la collation real
+     * (utf8mb4_unicode_ci), Str::ascii da OTRA regla: borra el `°` y el `™` (confunde "Codo 90° PVC"
+     * con "Codo 90 PVC"), iguala `Æ`/`ø` a `ae`/`o` (MySQL no), y al revés distingue lo que MySQL
+     * iguala: el espacio duro al final, o "™" con "TM". Más fina que la base, deja pasar como único a
+     * un nombre que tiene gemelo; más gruesa, descarta nombres que la base distingue. Y cada base de
+     * cliente puede tener otra collation (unicode_ci, general_ci, 0900_ai_ci —que es NO PAD—): solo
+     * la propia base sabe cuál es la suya.
      *
      * @param  string  $tipo
-     * @param  array<int, string>  $nombres
+     * @param  array<int, string>  $nombres  Literales ya recortados por depurar().
      * @param  int  $owner_id
-     * @return array<string, int>  nombre => id
+     * @return array<string, int>  literal (tal como lo pidió el llamador) => id
      */
     protected static function resolver_por_nombre($tipo, array $nombres, $owner_id): array
     {
@@ -497,29 +549,58 @@ class MencionesIaHelper
             return [];
         }
 
-        $filas = self::query_de($tipo)
+        $literales = array_values(array_unique($nombres));
+
+        $query = self::query_de($tipo)
             ->where('user_id', $owner_id)
-            ->whereIn('name', array_values(array_unique($nombres)))
-            ->get(['id', 'name']);
+            ->whereIn('name', $literales)
+            ->select('id', 'name');
 
-        $por_nombre = [];
-
-        foreach ($filas as $fila) {
-            $nombre = (string) $fila->name;
-
-            if (!isset($por_nombre[$nombre])) {
-                $por_nombre[$nombre] = [];
-            }
-
-            $por_nombre[$nombre][] = (int) $fila->id;
+        // Una columna por literal: 1 si la base da ese literal por igual al nombre de la fila. Los
+        // bindings de selectRaw van al grupo 'select', que se compila antes que los del where.
+        foreach ($literales as $i => $literal) {
+            $query->selectRaw('(name = ?) as coincide_' . $i, [$literal]);
         }
+
+        /*
+         * toBase(): filas planas en vez de modelos. El recorrido de abajo es literales × filas, y
+         * con modelos cada lectura pasa por el __get de Eloquent (medido: 78 ms con 200 literales).
+         * Eloquent\Builder::toBase() aplica los scopes antes de soltar el builder, así que el de
+         * SoftDeletes sigue dejando afuera a los borrados.
+         */
+        $filas = $query->toBase()->get();
 
         $resueltos = [];
 
-        foreach ($por_nombre as $nombre => $ids) {
-            if (count($ids) === 1) {
-                $resueltos[$nombre] = $ids[0];
+        foreach ($literales as $i => $literal) {
+            $columna = 'coincide_' . $i;
+
+            // id => nombre recortado de cada vigente que la base da por igual al literal.
+            $iguales = [];
+
+            foreach ($filas as $fila) {
+                if ((int) $fila->{$columna} === 1) {
+                    $iguales[(int) $fila->id] = trim((string) $fila->name);
+                }
             }
+
+            // 1. Ambigüedad, la decide la base: ninguno o más de uno, no hay a quién marcar.
+            if (count($iguales) !== 1) {
+                continue;
+            }
+
+            $unico = array_keys($iguales);
+
+            $id = (int) $unico[0];
+
+            // 2. 🔴 Identidad, el nombre exacto: si el único que la base da por igual no se llama así,
+            // el literal vino de OTRO registro (un borrado, una fila ajena) y marcarlo sería mandar al
+            // dueño a la ficha o a la cuenta corriente equivocada.
+            if ($iguales[$id] !== $literal) {
+                continue;
+            }
+
+            $resueltos[$literal] = $id;
         }
 
         return $resueltos;

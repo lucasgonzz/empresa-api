@@ -61,6 +61,18 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $desempatar_por_nombre = false;
 
+    /**
+     * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
+     * nombres parecidos (`equivalencias` del POST). Viaja hasta ProcessRow, que las lee con
+     * EquivalenciasResolver::decisiones_del_lote(). Lo normal es la RUTA del archivo donde
+     * InitExcelImport las guardó una sola vez (string); un job serializado con el array adentro
+     * (antes de ese cambio, o si el archivo no se pudo escribir) sigue andando igual. Con default
+     * en la declaración: un job serializado antes de la misión se deserializa con [] y corre igual.
+     *
+     * @var array|string
+     */
+    protected $equivalencias = [];
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -102,7 +114,13 @@ class ProcessArticleChunk implements ShouldQueue
              * encolados y serializados sin esta clave se deserializan igual y corren con
              * el comportamiento de siempre.
              */
-            $desempatar_por_nombre = false
+            $desempatar_por_nombre = false,
+
+            /*
+             * Misión `importacion-relaciones-parecidas` (8/10/2026). Va último y con default, igual
+             * que los de arriba. La ruta del archivo de decisiones, o el array (ver la propiedad).
+             */
+            $equivalencias = []
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -130,6 +148,7 @@ class ProcessArticleChunk implements ShouldQueue
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
         $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
         $this->desempatar_por_nombre                                = $desempatar_por_nombre;
+        $this->equivalencias                                        = (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [];
 
         $this->observations = '';
 
@@ -520,6 +539,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->filas_repetidas_del_archivo,
                 $this->precios_incluyen_iva,
                 $this->desempatar_por_nombre,
+                (is_array($this->equivalencias) || is_string($this->equivalencias)) ? $this->equivalencias : []
             );
 
         } catch (\Throwable $e) {

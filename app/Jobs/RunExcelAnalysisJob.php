@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
+use App\Http\Controllers\Helpers\import\relaciones\RelacionesParecidasChequeo;
 use App\Models\ExcelAnalysisRun;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -447,20 +448,10 @@ class RunExcelAnalysisJob implements ShouldQueue
          * Para ellos se cierra la corrida sin recorrer el archivo ni llamar a la IA: la SPA nueva
          * ni siquiera la pide, esto cubre a la SPA que todavía no se desplegó.
          */
-        if ($this->modelo_de_la_recomendacion($run) !== 'article') {
-            $run->update([
-                'estado'    => 'listo',
-                'progreso'  => 100,
-                'paso'      => null,
-                'resultado' => [
-                    'recomendacion_configuracion'                 => null,
-                    'provider_codes_existentes_mismo_proveedor'   => 0,
-                    'provider_codes_existentes_otros_proveedores' => 0,
-                    'formatos_numericos'                          => null,
-                ],
-            ]);
+        $modelo = $this->modelo_de_la_recomendacion($run);
 
-            $this->notificar_fin($run);
+        if ($modelo !== 'article') {
+            $this->cerrar_recomendacion_sin_articulos($run, $excel_full_path, $modelo);
             return;
         }
 
@@ -594,6 +585,20 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'formatos_numericos'                          => $formatos_numericos,
             ];
 
+            /*
+             * Misión importacion-relaciones-parecidas (8/10/2026): solo si la SPA lo pidió. Sin la
+             * bandera el resultado queda con las mismas cuatro claves de siempre.
+             */
+            if ($this->chequea_relaciones($run)) {
+                $run->update([
+                    'progreso' => 90,
+                    'paso'     => 'Revisando proveedores, categorías y marcas…',
+                ]);
+                $this->etapa_del_proceso_en_segundo_plano($run, 'Revisando proveedores, categorías y marcas…', 90);
+
+                $resultado['relaciones_parecidas'] = $this->relaciones_parecidas($run, $excel_full_path, 'article');
+            }
+
             $run->update([
                 'estado'    => 'listo',
                 'progreso'  => 100,
@@ -643,6 +648,151 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             /* Mismo criterio que handle_analisis(): la ruta del servidor va al log, no a la pantalla. */
             $this->finalizar_con_error($run, 'Ocurrió un error inesperado al generar la recomendación. Volvé a intentar; si sigue pasando, avisanos.');
+        }
+    }
+
+    /**
+     * Cierra una corrida de recomendación de clientes o proveedores: la recomendación es de
+     * artículos, así que las cuatro claves de siempre van en null/0 y, si la SPA pidió el chequeo
+     * (`chequear_relaciones`), se suma `relaciones_parecidas`.
+     *
+     * 🔴 Cierra el registro visible del proceso, en el camino bueno y en el de error, igual que la
+     * rama de artículos. Sin eso la píldora de procesos quedaba "en curso" y a las 3 horas
+     * BackgroundProcessHelper::cerrar_colgados() lo marcaba como fallo: un chequeo que había
+     * salido bien se le mostraba al usuario como un error.
+     *
+     * @param  \App\Models\ExcelAnalysisRun $run
+     * @param  string                       $excel_full_path
+     * @param  string                       $modelo  client | provider
+     * @return void
+     */
+    protected function cerrar_recomendacion_sin_articulos(ExcelAnalysisRun $run, $excel_full_path, $modelo)
+    {
+        try {
+            $resultado = [
+                'recomendacion_configuracion'                 => null,
+                'provider_codes_existentes_mismo_proveedor'   => 0,
+                'provider_codes_existentes_otros_proveedores' => 0,
+                'formatos_numericos'                          => null,
+            ];
+
+            /*
+             * Misión importacion-relaciones-parecidas (8/10/2026): con la bandera, la SPA nueva
+             * pide esta corrida SOLO para revisar los nombres parecidos de provincia, localidad,
+             * vendedor y lista de precios (o localidad, en proveedores). Las otras cuatro claves
+             * siguen como siempre. Sin la bandera, idéntico a antes: no se lee el archivo.
+             */
+            if ($this->chequea_relaciones($run)) {
+                $run->update([
+                    'progreso' => 50,
+                    'paso'     => 'Revisando nombres parecidos…',
+                ]);
+                $this->etapa_del_proceso_en_segundo_plano($run, 'Revisando nombres parecidos…', 50);
+
+                $resultado['relaciones_parecidas'] = $this->relaciones_parecidas($run, $excel_full_path, $modelo);
+            }
+
+            $run->update([
+                'estado'    => 'listo',
+                'progreso'  => 100,
+                'paso'      => null,
+                'resultado' => $resultado,
+            ]);
+
+            $this->completar_proceso_en_segundo_plano($run);
+
+            $this->notificar_fin($run);
+
+        } catch (\Illuminate\Database\QueryException $e) {
+            /* Mismo motivo y mismo orden que en handle_analisis(). Ver MENSAJE_ERROR_DE_BASE. */
+            Log::error('RunExcelAnalysisJob: error de base al cerrar la recomendación de ' . $modelo, [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, self::MENSAJE_ERROR_DE_BASE);
+
+        } catch (\RuntimeException $e) {
+            /*
+             * Mismo criterio que las otras dos ramas: un \RuntimeException trae un mensaje escrito
+             * para el usuario (p. ej. ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE). Va DESPUÉS del
+             * de QueryException, que también es un RuntimeException (lo vigila MensajesDeErrorTest).
+             */
+            Log::warning('RunExcelAnalysisJob: error al cerrar la recomendación de ' . $modelo, [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, $e->getMessage());
+
+        } catch (\Throwable $e) {
+            Log::error('RunExcelAnalysisJob: error inesperado al cerrar la recomendación de ' . $modelo, [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+                'trace'                  => $e->getTraceAsString(),
+            ]);
+
+            /* finalizar_con_error() también cierra el proceso visible, como fallido. */
+            $this->finalizar_con_error($run, 'Ocurrió un error inesperado al revisar el archivo. Volvé a intentar; si sigue pasando, avisanos.');
+        }
+    }
+
+    /**
+     * ¿La corrida pidió el chequeo de nombres parecidos? (`chequear_relaciones` del payload, que
+     * guarda getRecomendacion(); ausente en las corridas de la SPA vieja = no.)
+     *
+     * @param  \App\Models\ExcelAnalysisRun $run
+     * @return bool
+     */
+    protected function chequea_relaciones(ExcelAnalysisRun $run)
+    {
+        $payload = $run->payload ?? [];
+
+        return !empty($payload['chequear_relaciones'])
+            && filter_var($payload['chequear_relaciones'], FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * `relaciones_parecidas` del resultado: los nombres de proveedor, categoría, marca, provincia...
+     * del Excel que se parecen a algo que ya existe (o entre sí), para que el usuario decida en el
+     * paso 3 antes de importar.
+     *
+     * 🔴 Tiene su propio try/catch y NUNCA tira: si el chequeo falla, devuelve null y la corrida
+     * termina igual, con la recomendación de siempre. Una lista de nombres parecidos es una ayuda;
+     * perder por ella la recomendación (o trabar la importación de clientes) sería peor que no
+     * tenerla. La IA caída no llega acá: eso ya lo resuelve el chequeo con `ia_consultada: false`.
+     *
+     * @param  \App\Models\ExcelAnalysisRun $run
+     * @param  string                       $excel_full_path
+     * @param  string                       $modelo  article | client | provider
+     * @return array|null
+     */
+    protected function relaciones_parecidas(ExcelAnalysisRun $run, $excel_full_path, $modelo)
+    {
+        try {
+            $payload = $run->payload ?? [];
+
+            $hoja = isset($payload['hoja']) && is_numeric($payload['hoja']) ? (int) $payload['hoja'] : 0;
+
+            ExcelWorkbookReader::asegurar_csv($excel_full_path, $hoja);
+
+            if ($modelo === 'client') {
+                return RelacionesParecidasChequeo::para_clientes($run->user_id, $excel_full_path, $payload);
+            }
+
+            if ($modelo === 'provider') {
+                return RelacionesParecidasChequeo::para_proveedores($run->user_id, $excel_full_path, $payload);
+            }
+
+            return RelacionesParecidasChequeo::para_articulos($run->user_id, $excel_full_path, $payload);
+
+        } catch (\Throwable $e) {
+            Log::warning('RunExcelAnalysisJob: no se pudo revisar los nombres parecidos (la corrida sigue sin esa lista)', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            return null;
         }
     }
 
@@ -922,14 +1072,35 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $es_recomendacion = $run->tipo === 'recomendacion';
 
+            /*
+             * Para clientes y proveedores la "recomendación" no recomienda nada (es de artículos):
+             * si la corrida pidió el chequeo, solo revisa los nombres parecidos (misión
+             * importacion-relaciones-parecidas), así que el aviso habla de eso. Sin la bandera (la
+             * SPA vieja) no revisó nada y el aviso queda como antes.
+             */
+            $solo_nombres_parecidos = $es_recomendacion
+                && $this->chequea_relaciones($run)
+                && $this->modelo_de_la_recomendacion($run) !== 'article';
+
+            /* "de "Clientes.xlsx"" o "del archivo" (no "de el archivo"). */
+            $de_archivo = $presentacion['original_filename'] !== '' ? 'de ' . $archivo : 'del archivo';
+
             if ($run->estado === 'listo') {
-                $message_text = $es_recomendacion
-                    ? 'Está lista la recomendación de importación para ' . $archivo
-                    : 'Terminó el análisis de ' . $archivo;
+                if ($solo_nombres_parecidos) {
+                    $message_text = 'Revisamos los nombres parecidos ' . $de_archivo;
+                } else {
+                    $message_text = $es_recomendacion
+                        ? 'Está lista la recomendación de importación para ' . $archivo
+                        : 'Terminó el análisis de ' . $archivo;
+                }
             } else {
-                $message_text = $es_recomendacion
-                    ? 'No se pudo generar la recomendación para ' . $archivo
-                    : 'No se pudo analizar ' . $archivo;
+                if ($solo_nombres_parecidos) {
+                    $message_text = 'No pudimos revisar los nombres parecidos ' . $de_archivo;
+                } else {
+                    $message_text = $es_recomendacion
+                        ? 'No se pudo generar la recomendación para ' . $archivo
+                        : 'No se pudo analizar ' . $archivo;
+                }
             }
 
             $owner->notify(new GlobalNotification([

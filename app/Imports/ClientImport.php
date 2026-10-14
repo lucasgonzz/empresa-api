@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\Address;
 use App\Models\Client;
 use App\Models\CurrentAcount;
@@ -90,6 +91,23 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     private $props_vaciadas = [];
 
     /**
+     * Decisiones del paso 3 sobre nombres parecidos (provincia, localidad, vendedor, lista de
+     * precios), tal como vinieron del request. Entran por con_equivalencias() y no por el
+     * constructor (misión importacion-relaciones-parecidas, 8/10/2026).
+     *
+     * @var array
+     */
+    private $equivalencias_crudas = [];
+
+    /**
+     * Resolución de las relaciones con las decisiones y las equivalencias recordadas. Se arma la
+     * primera vez que una fila la necesita (ver resolver_relacion()).
+     *
+     * @var \App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver|null
+     */
+    private $equivalencias = null;
+
+    /**
      * @param array       $columns
      * @param bool        $create_and_edit
      * @param int         $start_row
@@ -119,6 +137,55 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         $this->vaciar_valores_en_blanco = filter_var($vaciar_valores_en_blanco, FILTER_VALIDATE_BOOLEAN);
 
         $this->setProps();
+    }
+
+    /**
+     * Las decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Encadenable.
+     *
+     * 🔴 Es un setter y no un parámetro más del constructor A PROPÓSITO: la firma está congelada
+     * (ValoresEnBlancoClientesProveedoresTest exige que el último parámetro sea
+     * vaciar_valores_en_blanco) porque AdminSync\AiExcelImportController construye esta clase con
+     * la firma corta contra clientes reales. AdminSync no llama a esto y sigue igual (solo le
+     * llegan las equivalencias ya recordadas del comercio).
+     *
+     * @param  array $equivalencias
+     * @return $this
+     */
+    public function con_equivalencias(array $equivalencias) {
+        $this->equivalencias_crudas = $equivalencias;
+        $this->equivalencias = null;
+
+        return $this;
+    }
+
+    /**
+     * Resuelve una relación de la fila: decisión del usuario → equivalencia recordada → nombre
+     * exacto → el camino de siempre ($camino_de_hoy, LocalImportHelper sin cambios).
+     *
+     * "Sin especificar" va derecho al camino de siempre, que lo ignora a propósito.
+     *
+     * @param  string      $tipo           provincia | localidad | vendedor | tipo_de_precio
+     * @param  string      $valor
+     * @param  int         $contexto       provincia_id para localidad con provincia, 0 el resto
+     * @param  string|null $padre          provincia tal como vino en el Excel
+     * @param  callable    $camino_de_hoy  fn(string): int|null
+     * @param  int|null    $provincia_id   para crear una localidad con provincia
+     * @return int|null
+     */
+    private function resolver_relacion($tipo, $valor, $contexto, $padre, $camino_de_hoy, $provincia_id = null) {
+        if ($valor === 'Sin especificar') {
+            return call_user_func($camino_de_hoy, $valor);
+        }
+
+        if (is_null($this->equivalencias)) {
+            $this->equivalencias = new EquivalenciasResolver($this->ct->userId(), $this->equivalencias_crudas, EquivalenciasResolver::TIPOS_CLIENTES);
+        }
+
+        $ct = $this->ct;
+
+        return $this->equivalencias->resolver_con_camino_de_hoy($tipo, $valor, $contexto, $padre, $camino_de_hoy, function ($nombre) use ($tipo, $ct, $provincia_id) {
+            return LocalImportHelper::crearRelacionDeImportacion($tipo, $nombre, $ct, $provincia_id);
+        });
     }
 
     /**
@@ -314,8 +381,17 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         $localidad_name = ImportHelper::getColumnValue($row, 'localidad', $this->columns);
         $provincia_id = null;
 
+        /*
+         * Las cuatro relaciones pasan por resolver_relacion() (misión
+         * importacion-relaciones-parecidas): sin decisiones ni equivalencias recordadas, terminan
+         * en el mismo LocalImportHelper de siempre.
+         */
+        $ct = $this->ct;
+
         if (!is_null($provincia_name)) {
-            $provincia_id = LocalImportHelper::saveProvincia($provincia_name, $this->ct);
+            $provincia_id = $this->resolver_relacion('provincia', $provincia_name, 0, null, function ($valor) use ($ct) {
+                return LocalImportHelper::saveProvincia($valor, $ct);
+            });
             $data['provincia_id'] = $provincia_id;
         } else if ($this->debeVaciar('provincia', 'provincia_id', $existing_client)) {
             $this->marcarVaciada($data, 'provincia_id');
@@ -323,24 +399,33 @@ class ClientImport implements ToCollection, WithMultipleSheets {
 
         if (!is_null($localidad_name)) {
             if (!is_null($provincia_id)) {
-                $data['location_id'] = LocalImportHelper::saveLocationWithProvincia($localidad_name, $provincia_id, $this->ct);
+                /* Con provincia: la localidad se compara DENTRO de la provincia que resolvió la fila. */
+                $data['location_id'] = $this->resolver_relacion('localidad', $localidad_name, $provincia_id, $provincia_name, function ($valor) use ($ct, $provincia_id) {
+                    return LocalImportHelper::saveLocationWithProvincia($valor, $provincia_id, $ct);
+                }, $provincia_id);
             } else {
-                LocalImportHelper::saveLocation($localidad_name, $this->ct);
-                $data['location_id'] = $this->ct->getModelBy('locations', 'name', $localidad_name, true, 'id');
+                $data['location_id'] = $this->resolver_relacion('localidad', $localidad_name, 0, null, function ($valor) use ($ct) {
+                    LocalImportHelper::saveLocation($valor, $ct);
+                    return $ct->getModelBy('locations', 'name', $valor, true, 'id');
+                });
             }
         } else if ($this->debeVaciar('localidad', 'location_id', $existing_client)) {
             $this->marcarVaciada($data, 'location_id');
         }
         if (!is_null(ImportHelper::getColumnValue($row, 'vendedor', $this->columns))) {
-            LocalImportHelper::saveSeller(ImportHelper::getColumnValue($row, 'vendedor', $this->columns), $this->ct);
-            $data['seller_id'] = $this->ct->getModelBy('sellers', 'name', ImportHelper::getColumnValue($row, 'vendedor', $this->columns), true, 'id');
+            $data['seller_id'] = $this->resolver_relacion('vendedor', ImportHelper::getColumnValue($row, 'vendedor', $this->columns), 0, null, function ($valor) use ($ct) {
+                LocalImportHelper::saveSeller($valor, $ct);
+                return $ct->getModelBy('sellers', 'name', $valor, true, 'id');
+            });
         } else if ($this->debeVaciar('vendedor', 'seller_id', $existing_client)) {
             $this->marcarVaciada($data, 'seller_id');
         }
         if (!is_null(ImportHelper::getColumnValueByAliases($row, ['tipo_de_precio', 'tipo de precio'], $this->columns))) {
             $tipo_de_precio = ImportHelper::getColumnValueByAliases($row, ['tipo_de_precio', 'tipo de precio'], $this->columns);
-            LocalImportHelper::savePriceType($tipo_de_precio, $this->ct);
-            $data['price_type_id'] = $this->ct->getModelBy('price_types', 'name', $tipo_de_precio, true, 'id');
+            $data['price_type_id'] = $this->resolver_relacion('tipo_de_precio', $tipo_de_precio, 0, null, function ($valor) use ($ct) {
+                LocalImportHelper::savePriceType($valor, $ct);
+                return $ct->getModelBy('price_types', 'name', $valor, true, 'id');
+            });
         } else if ($this->debeVaciarPorAliases(['tipo_de_precio', 'tipo de precio'], 'price_type_id', $existing_client)) {
             $this->marcarVaciada($data, 'price_type_id');
         }

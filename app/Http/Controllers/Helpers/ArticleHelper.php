@@ -1674,28 +1674,52 @@ class ArticleHelper {
         return $variant['stock'];
     }
 
+    /**
+     * Slug único (por dueño) para el nombre de un artículo: `x`, y si está tomado `x-1`, `x-2`…
+     *
+     * El slug es la URL pública del artículo en la tienda, así que tiene que ser estable.
+     *
+     * @param string $name Nombre del artículo.
+     * @param int|null $ignore_id Id del artículo que se está editando: no cuenta como "tomado"
+     *                            (si no, el artículo choca consigo mismo y el slug alterna).
+     * @param int|null $user_id Dueño; por defecto el del usuario logueado.
+     * @return string
+     */
     static function slug($name, $ignore_id = null, $user_id = null) {
         if (is_null($user_id)) {
             $user_id = UserHelper::userId();
         }
+
+        // Base del slug: cada candidato se arma desde acá, nunca desde el candidato anterior
+        $base = Str::slug($name);
+        $slug = $base;
         $index = 1;
-        $slug = Str::slug($name);
-        $repeated_article = Article::where('user_id', $user_id)
-                                    ->where('slug', $slug);
-        if (!is_null($ignore_id)) {
-            $repeated_article = $repeated_article->where('id', '!=', $ignore_id);
-        }
-        $repeated_article = $repeated_article->first();
-        
-        while (!is_null($repeated_article)) {
-            $slug = substr($slug, 0, strlen($name));
-            $slug .= '-'.$index;
-            $repeated_article = Article::where('user_id', $user_id)
-                                        ->where('slug', $slug)
-                                        ->first();
+
+        while (self::slug_tomado($slug, $ignore_id, $user_id)) {
+            $slug = $base.'-'.$index;
             $index++;
         }
         return $slug;
+    }
+
+    /**
+     * Dice si otro artículo del dueño ya usa ese slug. Un solo lugar para la primera
+     * comprobación y para las del bucle, así todas aplican el mismo dueño y el mismo `$ignore_id`.
+     *
+     * @param string $slug
+     * @param int|null $ignore_id Artículo que no se cuenta (el que se está editando).
+     * @param int $user_id
+     * @return bool
+     */
+    private static function slug_tomado($slug, $ignore_id, $user_id) {
+        $consulta = Article::where('user_id', $user_id)
+                            ->where('slug', $slug);
+
+        if (!is_null($ignore_id)) {
+            $consulta->where('id', '!=', $ignore_id);
+        }
+
+        return !is_null($consulta->first());
     }
 
     static function setArticlesKey($articles) {

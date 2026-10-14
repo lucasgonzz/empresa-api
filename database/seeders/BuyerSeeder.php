@@ -15,6 +15,15 @@ class BuyerSeeder extends Seeder
      */
     public function run()
     {
+        /*
+            🔴 CORREOS DE FICCION (13/10/2026). Todo comprador sembrado que no sea de Lucas va con
+            @example.com (dominio reservado, RFC 2606: no tiene casillas y nunca va a tener). Hasta
+            la 4.3.9 iban con nombre.apellido en gmail, casillas que pueden ser de personas reales, y esta
+            semilla la corre el demo setup: "Activar la oferta" en Tienda Online -> Promociones (y
+            cualquier otro mail a un comprador) le escribia a un desconocido con el SMTP del
+            comercio. Los unicos @gmail.com que quedan son los de Lucas (compradores 1 y 2).
+            tests/Feature/Semilla/CorreosDeLaSemillaTest.php lo controla.
+        */
         $lucas = Buyer::create([
             // Los tres num de este bloque estaban repetidos en 1 (bug viejo). Se corrigen de
             // paso a 1/2/3 porque los 12 perfiles nuevos siguen la numeracion correlativa desde
@@ -47,7 +56,7 @@ class BuyerSeeder extends Seeder
             'surname'                   => 'Gonzalez',
             'city'                      => 'Gualeguay',
             'phone'                     => '+5493444622139',
-            'email'                     => 'vendedor@gmail.com',
+            'email'                     => 'vendedor@example.com',
             'password'                  => bcrypt('1234'),
             'seller_id'                 => 1,
             'user_id'                   => config('app.USER_ID'),
@@ -98,21 +107,21 @@ class BuyerSeeder extends Seeder
             cuenta a rehacer es la de arriba: cada cliente que suma perfil es un deudor menos.
         */
         $perfiles_tienda = [
-            ['num' => 4,  'name' => 'Sofia',     'surname' => 'Martinez',  'email' => 'sofia.martinez@gmail.com',   'client_id' => 3],
-            ['num' => 5,  'name' => 'Nicolas',    'surname' => 'Fernandez', 'email' => 'nicolas.fernandez@gmail.com', 'client_id' => 4],
-            ['num' => 6,  'name' => 'Valentina',  'surname' => 'Rodriguez', 'email' => 'valentina.rodriguez@gmail.com', 'client_id' => 5],
-            ['num' => 7,  'name' => 'Tomas',      'surname' => 'Diaz',      'email' => 'tomas.diaz@gmail.com',        'client_id' => 6],
-            ['num' => 8,  'name' => 'Camila',     'surname' => 'Gomez',     'email' => 'camila.gomez@gmail.com',      'client_id' => 7],
-            ['num' => 9,  'name' => 'Mateo',      'surname' => 'Alvarez',   'email' => 'mateo.alvarez@gmail.com',     'client_id' => 8],
-            ['num' => 10, 'name' => 'Julieta',    'surname' => 'Romero',    'email' => 'julieta.romero@gmail.com',    'client_id' => 9],
-            ['num' => 11, 'name' => 'Franco',     'surname' => 'Sosa',      'email' => 'franco.sosa@gmail.com',       'client_id' => 10],
-            ['num' => 12, 'name' => 'Agustina',   'surname' => 'Torres',    'email' => 'agustina.torres@gmail.com',   'client_id' => 11],
-            ['num' => 13, 'name' => 'Bruno',      'surname' => 'Ibanez',    'email' => 'bruno.ibanez@gmail.com',      'client_id' => 12],
-            ['num' => 14, 'name' => 'Martina',    'surname' => 'Acosta',    'email' => 'martina.acosta@gmail.com',    'client_id' => 13],
-            ['num' => 15, 'name' => 'Lautaro',    'surname' => 'Molina',    'email' => 'lautaro.molina@gmail.com',    'client_id' => 14],
-            ['num' => 16, 'name' => 'Emilia',     'surname' => 'Benitez',   'email' => 'emilia.benitez@gmail.com',    'client_id' => 15],
-            ['num' => 17, 'name' => 'Thiago',     'surname' => 'Ledesma',   'email' => 'thiago.ledesma@gmail.com',    'client_id' => 16],
-            ['num' => 18, 'name' => 'Renata',     'surname' => 'Cabrera',   'email' => 'renata.cabrera@gmail.com',    'client_id' => 17],
+            ['num' => 4,  'name' => 'Sofia',     'surname' => 'Martinez',  'email' => 'sofia.martinez@example.com',   'client_id' => 3],
+            ['num' => 5,  'name' => 'Nicolas',    'surname' => 'Fernandez', 'email' => 'nicolas.fernandez@example.com', 'client_id' => 4],
+            ['num' => 6,  'name' => 'Valentina',  'surname' => 'Rodriguez', 'email' => 'valentina.rodriguez@example.com', 'client_id' => 5],
+            ['num' => 7,  'name' => 'Tomas',      'surname' => 'Diaz',      'email' => 'tomas.diaz@example.com',        'client_id' => 6],
+            ['num' => 8,  'name' => 'Camila',     'surname' => 'Gomez',     'email' => 'camila.gomez@example.com',      'client_id' => 7],
+            ['num' => 9,  'name' => 'Mateo',      'surname' => 'Alvarez',   'email' => 'mateo.alvarez@example.com',     'client_id' => 8],
+            ['num' => 10, 'name' => 'Julieta',    'surname' => 'Romero',    'email' => 'julieta.romero@example.com',    'client_id' => 9],
+            ['num' => 11, 'name' => 'Franco',     'surname' => 'Sosa',      'email' => 'franco.sosa@example.com',       'client_id' => 10],
+            ['num' => 12, 'name' => 'Agustina',   'surname' => 'Torres',    'email' => 'agustina.torres@example.com',   'client_id' => 11],
+            ['num' => 13, 'name' => 'Bruno',      'surname' => 'Ibanez',    'email' => 'bruno.ibanez@example.com',      'client_id' => 12],
+            ['num' => 14, 'name' => 'Martina',    'surname' => 'Acosta',    'email' => 'martina.acosta@example.com',    'client_id' => 13],
+            ['num' => 15, 'name' => 'Lautaro',    'surname' => 'Molina',    'email' => 'lautaro.molina@example.com',    'client_id' => 14],
+            ['num' => 16, 'name' => 'Emilia',     'surname' => 'Benitez',   'email' => 'emilia.benitez@example.com',    'client_id' => 15],
+            ['num' => 17, 'name' => 'Thiago',     'surname' => 'Ledesma',   'email' => 'thiago.ledesma@example.com',    'client_id' => 16],
+            ['num' => 18, 'name' => 'Renata',     'surname' => 'Cabrera',   'email' => 'renata.cabrera@example.com',    'client_id' => 17],
         ];
 
         foreach ($perfiles_tienda as $perfil) {

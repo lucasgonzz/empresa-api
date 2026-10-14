@@ -22,12 +22,17 @@ class EmployeeSeeder extends Seeder
         }
     }
 
+    /*
+        Los empleados sembrados van con @example.com (dominio reservado, RFC 2606), uno por empleado:
+        hasta el 13/10/2026 llevaban dos casillas de gmail que no son de Lucas.
+        Ver el comentario de BuyerSeeder::run().
+    */
     function truvari() {
         $models = [
             [
                 'name'              => 'Vendedor',
                 'doc_number'        => '1',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'vendedor@example.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -41,7 +46,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Repartidor',
                 'doc_number'        => '2',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'repartidor@example.com',
                 'password'          => bcrypt('2'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -58,7 +63,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Vendedor y Repartidor',
                 'doc_number'        => '3',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'vendedor.y.repartidor@example.com',
                 'password'          => bcrypt('3'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -76,7 +81,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Lucas',
                 'doc_number'        => '4',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'lucas@example.com',
                 'password'          => bcrypt('4'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -107,7 +112,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Patricio',
                 'doc_number'        => '1',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'patricio@example.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -128,7 +133,7 @@ class EmployeeSeeder extends Seeder
                 'name'              => 'Miguel',
                 'address_id'        => 2,
                 'doc_number'        => '2',
-                'email'             => 'lucasgonzalez550023@gmail.com',
+                'email'             => 'miguel@example.com',
                 'password'          => bcrypt('2'),
                 'visible_password'  => '2',
                 'image_url'         => null,
@@ -147,7 +152,7 @@ class EmployeeSeeder extends Seeder
                 'name'              => 'Franco',
                 'address_id'        => 3,
                 'doc_number'        => '3',
-                'email'             => 'lucasgonzalez550023@gmail.com',
+                'email'             => 'franco@example.com',
                 'password'          => bcrypt('3'),
                 'visible_password'  => '3',
                 'image_url'         => null,
@@ -166,7 +171,7 @@ class EmployeeSeeder extends Seeder
                 'name'              => 'Santiago',
                 'address_id'        => 4,
                 'doc_number'        => '4',
-                'email'             => 'lucasgonzalez550023@gmail.com',
+                'email'             => 'santiago@example.com',
                 'password'          => bcrypt('4'),
                 'visible_password'  => '4',
                 'image_url'         => null,

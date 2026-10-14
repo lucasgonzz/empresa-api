@@ -157,10 +157,17 @@ class LimiteCreditoHelper {
             return null;
         }
 
-        // update() nunca reasigna moneda_id (no está entre los campos que reescribe): en una venta
-        // ya persistida siempre viene seteado, pero se normaliza igual por las dudas. Un 0 (dato
-        // residual de instalaciones viejas) es pesos, igual que en validar_venta_nueva() y en
-        // `CurrentAcountFromSaleHelper`, que es donde la venta se guarda.
+        // La moneda que QUEDA en la venta. Desde el 8/10/2026 (misión
+        // edicion-completa-ventas-presupuestos) `SaleController::update()` SÍ reasigna `moneda_id`
+        // cuando el PUT la manda, antes del primer save(): este $sale (releído después de
+        // attachProperies) ya trae la moneda nueva, así que el tope se controla contra la cuenta a la
+        // que la venta VA a entrar, no contra la de la que sale. Lo mismo con el cliente: si la
+        // edición se lo cambió, ésta es la cuenta del cliente nuevo. Por eso el movimiento que se resta
+        // abajo se busca en ESTA cuenta: si la venta viene de otra moneda o de otro cliente, su débito
+        // todavía está en la cuenta vieja, acá no hay nada que restar y el total entero se suma al
+        // saldo de la cuenta nueva. Un 0 o un NULL (dato residual de instalaciones viejas) es pesos,
+        // igual que en validar_venta_nueva() y en `CurrentAcountFromSaleHelper`, que es donde la venta
+        // se guarda.
         $moneda_id = (int) $sale->moneda_id > 0 ? (int) $sale->moneda_id : 1;
 
         $credit_account = Self::buscar_credit_account_con_limite($client->id, $moneda_id);
