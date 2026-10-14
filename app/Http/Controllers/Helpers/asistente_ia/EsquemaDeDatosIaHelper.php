@@ -256,6 +256,7 @@ class EsquemaDeDatosIaHelper
         'category_proposals'                 => 'staging de la categorizacion con IA: sistemas de categorias propuestos (interno)',
         'category_proposal_nodes'            => 'staging de la categorizacion con IA: arbol de cada sistema propuesto (interno)',
         'category_proposal_items'            => 'staging de la categorizacion con IA: a que categoria cae cada articulo en cada sistema (interno)',
+        'article_description_proposals'      => 'staging de las descripciones automaticas: las que la IA no pudo confirmar, antes de que una persona las apruebe (interno)',
         'sync_from_meli_articles'            => 'sincronizacion con Mercado Libre',
         'sync_from_meli_orders'              => 'sincronizacion con Mercado Libre',
         'sync_to_meli_articles'              => 'sincronizacion con Mercado Libre',

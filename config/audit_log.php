@@ -76,6 +76,7 @@ return [
         \App\Models\CategoryProposal::class             => 'Staging de la categorización con IA: cada sistema de categorías que propuso la skill (una fila por tarjeta). No es un dato del negocio hasta que el dueño elige.',
         \App\Models\CategoryProposalNode::class         => 'Staging de la categorización con IA: el árbol de cada sistema propuesto (hasta cientos de nodos por tarjeta). No es un dato del negocio hasta que el dueño elige.',
         \App\Models\CategoryProposalItem::class         => 'Staging de la categorización con IA: a qué categoría cae cada artículo en cada sistema (una fila por artículo y por tarjeta). El volumen pesaría más que el dato.',
+        \App\Models\ArticleDescriptionProposal::class  => 'Staging de las descripciones automáticas: la que la IA no pudo confirmar espera acá hasta que alguien la aprueba o la descarta. Lo que se publica (la fila de `descriptions`) sí se audita.',
 
         /* ---- Telemetría / tracking de alto volumen ---- */
         \App\Models\BuyerTrackingEvent::class           => 'Telemetría de la tienda: una fila por evento de cada visitante.',
