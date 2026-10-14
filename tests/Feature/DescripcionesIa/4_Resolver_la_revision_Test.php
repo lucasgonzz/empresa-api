@@ -381,6 +381,48 @@ class Resolver_la_revision_Test extends DescripcionesIaTestCase
     }
 
     /**
+     * 🔴 El título entra en `descriptions.title`, que es varchar(191): 192 caracteres es un 422 que
+     * nombra el campo (antes pasaba la validación de 255 y reventaba en el INSERT), en aprobar
+     * editada y en editar una publicada. 191 justos entran.
+     *
+     * @test
+     * @group descripciones_ia
+     */
+    public function un_titulo_de_mas_de_191_caracteres_da_422()
+    {
+        $articulo  = $this->crear_articulo('Taladro');
+        $propuesta = $this->sembrar_propuesta($articulo);
+        $publicado = $this->crear_articulo('Martillo');
+        $de_ia     = $this->sembrar_descripcion($publicado, 'Descripción', 'Martillo de carpintero');
+
+        $largo = str_repeat('a', 192);
+
+        $this->postJson('api/article-description-ai/revision/'.$articulo->id.'/aprobar', [
+            'secciones' => [['title' => $largo, 'content' => 'Texto']],
+        ])->assertStatus(422)->assertJsonValidationErrors(['secciones.0.title']);
+
+        $this->putJson('api/article-description-ai/revision/'.$publicado->id.'/publicada', [
+            'secciones' => [['id' => $de_ia->id, 'title' => $largo, 'content' => 'Texto']],
+        ])->assertStatus(422)->assertJsonValidationErrors(['secciones.0.title']);
+
+        $this->assertSame('a_revisar', $this->propuesta_fresca($propuesta)->status);
+        $this->assertSame('Descripción', Description::find($de_ia->id)->title);
+
+        // 191 justos entran.
+        $justo = str_repeat('b', 191);
+
+        $this->postJson('api/article-description-ai/revision/'.$articulo->id.'/aprobar', [
+            'secciones' => [['title' => $justo, 'content' => 'Texto']],
+        ])->assertStatus(200);
+        $this->assertSame([$justo], $this->descripciones_de($articulo)->pluck('title')->all());
+
+        $this->putJson('api/article-description-ai/revision/'.$publicado->id.'/publicada', [
+            'secciones' => [['id' => $de_ia->id, 'title' => $justo, 'content' => 'Texto']],
+        ])->assertStatus(200);
+        $this->assertSame($justo, Description::find($de_ia->id)->title);
+    }
+
+    /**
      * Con Tienda Nube prendida, aprobar, editar una publicada y quitar le avisan; descartar no (no se
      * publicó nada).
      *

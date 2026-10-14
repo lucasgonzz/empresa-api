@@ -44,6 +44,13 @@ class AiDescriptionReviewHelper
     /** Secciones que puede tener una descripción (las que arma la IA). */
     const MAXIMO_DE_SECCIONES = 3;
 
+    /**
+     * Largo máximo del título de una sección: lo que entra en `descriptions.title` (varchar(191),
+     * por el defaultStringLength del proyecto). Con 255 un título de 192 a 255 caracteres pasaba la
+     * validación y reventaba en el INSERT con un error de SQL en vez de un 422.
+     */
+    const MAXIMO_DEL_TITULO = 191;
+
     /** Por qué el lote saltea un artículo (van al log del job). */
     const MOTIVO_DESCRIPCION_HUMANA   = 'descripcion_humana';
     const MOTIVO_YA_TIENE_DESCRIPCION = 'ya_tiene_descripcion';

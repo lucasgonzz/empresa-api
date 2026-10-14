@@ -71,7 +71,7 @@ class ArticleDescriptionReviewController extends Controller
         $request->validate([
             'secciones'           => 'nullable|array|min:1|max:'.AiDescriptionReviewHelper::MAXIMO_DE_SECCIONES,
             'secciones.*'         => 'array',
-            'secciones.*.title'   => 'required|string|max:255',
+            'secciones.*.title'   => 'required|string|max:'.AiDescriptionReviewHelper::MAXIMO_DEL_TITULO,
             'secciones.*.content' => 'required|string',
         ], $this->mensajes_de_secciones());
 
@@ -136,7 +136,7 @@ class ArticleDescriptionReviewController extends Controller
             'secciones'           => 'required|array|min:1|max:'.AiDescriptionReviewHelper::MAXIMO_DE_SECCIONES,
             'secciones.*'         => 'array',
             'secciones.*.id'      => 'required|integer',
-            'secciones.*.title'   => 'required|string|max:255',
+            'secciones.*.title'   => 'required|string|max:'.AiDescriptionReviewHelper::MAXIMO_DEL_TITULO,
             'secciones.*.content' => 'required|string',
         ], $this->mensajes_de_secciones());
 
@@ -244,7 +244,7 @@ class ArticleDescriptionReviewController extends Controller
             'secciones.*.id.integer'       => 'Falta indicar qué sección se edita.',
             'secciones.*.title.required'   => 'Cada sección necesita un título.',
             'secciones.*.title.string'     => 'Cada sección necesita un título.',
-            'secciones.*.title.max'        => 'El título de una sección puede tener hasta 255 caracteres.',
+            'secciones.*.title.max'        => 'El título de una sección puede tener hasta '.AiDescriptionReviewHelper::MAXIMO_DEL_TITULO.' caracteres.',
             'secciones.*.content.required' => 'Cada sección necesita un texto.',
             'secciones.*.content.string'   => 'Cada sección necesita un texto.',
         ];
