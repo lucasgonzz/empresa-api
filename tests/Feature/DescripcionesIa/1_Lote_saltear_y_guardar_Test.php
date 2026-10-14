@@ -100,6 +100,27 @@ class Lote_saltear_y_guardar_Test extends DescripcionesIaTestCase
     }
 
     /**
+     * 🔴 Reemplazar no pisa lo que tocó una persona: con una descripción de IA aprobada o corregida
+     * (ai_reviewed_at no nulo) el artículo se saltea también con overwrite. Una de IA sin revisar no
+     * frena el overwrite.
+     *
+     * @test
+     * @group descripciones_ia
+     */
+    public function reemplazar_no_pisa_una_descripcion_de_ia_revisada_por_una_persona()
+    {
+        $revisada = $this->crear_articulo('Con revisada');
+        $this->sembrar_descripcion($revisada, 'Descripción', 'Aprobada', ['ai_reviewed_at' => '2026-10-10 10:00:00']);
+
+        $sin_revisar = $this->crear_articulo('Sin revisar');
+        $this->sembrar_descripcion($sin_revisar, 'Descripción', 'Publicada sola');
+
+        $this->assertSame('descripcion_revisada', AiDescriptionReviewHelper::motivo_para_saltear($revisada, true));
+        $this->assertSame('ya_tiene_descripcion', AiDescriptionReviewHelper::motivo_para_saltear($revisada, false));
+        $this->assertNull(AiDescriptionReviewHelper::motivo_para_saltear($sin_revisar, true));
+    }
+
+    /**
      * Sin nada (o con una propuesta ya aprobada y sin descripciones: alguien las borró a mano), se le
      * genera.
      *
@@ -186,35 +207,72 @@ class Lote_saltear_y_guardar_Test extends DescripcionesIaTestCase
     }
 
     /**
-     * Con overwrite se borran las descripciones de IA y la propuesta a revisar; las humanas nunca, y
-     * las propuestas ya resueltas quedan como historia.
+     * Con overwrite y un resultado seguro se borran las descripciones de IA que nadie revisó y la
+     * propuesta a revisar; las humanas y las revisadas nunca, y las propuestas ya resueltas quedan
+     * como historia.
+     *
+     * (Hasta el arreglo A4 del chequeo, este test pedía además que un resultado DUDOSO con overwrite
+     * borrara lo publicado; eso cambió a propósito: ver
+     * reemplazar_con_un_resultado_dudoso_no_despublica_y_aprobar_lo_reemplaza.)
      *
      * @test
      * @group descripciones_ia
      */
-    public function overwrite_borra_lo_de_ia_y_lo_pendiente_pero_nunca_lo_humano()
+    public function overwrite_borra_lo_de_ia_sin_revisar_y_lo_pendiente_pero_nunca_lo_humano()
     {
         $articulo = $this->crear_articulo('Sierra circular');
 
         $humana     = $this->sembrar_descripcion_humana($articulo, 'La escribió el dueño');
         $de_ia      = $this->sembrar_descripcion($articulo, 'Vieja de IA', 'Texto viejo');
+        $revisada   = $this->sembrar_descripcion($articulo, 'Revisada', 'La aprobó una persona', ['ai_reviewed_at' => '2026-10-10 10:00:00']);
         $pendiente  = $this->sembrar_propuesta($articulo);
         $descartada = $this->sembrar_propuesta($articulo, [], ['status' => ArticleDescriptionProposal::STATUS_DESCARTADA]);
 
-        // Publicada: reemplaza la de IA.
         AiDescriptionReviewHelper::guardar_resultado($articulo, $this->resultado('high'), true);
 
         $this->assertNotNull(Description::find($humana->id), 'La humana no se toca.');
-        $this->assertNull(Description::find($de_ia->id), 'La de IA vieja se borró.');
+        $this->assertNotNull(Description::find($revisada->id), 'La revisada no se toca.');
+        $this->assertNull(Description::find($de_ia->id), 'La de IA sin revisar se borró.');
         $this->assertNull($this->propuesta_fresca($pendiente), 'La pendiente quedó reemplazada.');
         $this->assertSame('descartada', $this->propuesta_fresca($descartada)->status, 'Lo resuelto es historia.');
-        $this->assertSame(3, $this->descripciones_de($articulo)->count(), 'La humana + las dos secciones nuevas.');
+        $this->assertSame(4, $this->descripciones_de($articulo)->count(), 'La humana + la revisada + las dos secciones nuevas.');
+    }
 
-        // Dudosa: borra las de IA recién creadas y deja UNA propuesta a revisar.
+    /**
+     * 🔴 Reemplazar con un resultado DUDOSO no despublica: la descripción de IA que se ve sigue a la
+     * vista y solo se reemplaza la propuesta a revisar. Al aprobar la propuesta, lo aprobado
+     * reemplaza a lo que la IA había publicado sola; lo revisado por una persona queda.
+     *
+     * @test
+     * @group descripciones_ia
+     */
+    public function reemplazar_con_un_resultado_dudoso_no_despublica_y_aprobar_lo_reemplaza()
+    {
+        $articulo = $this->crear_articulo('Amoladora angular');
+
+        $publicada = $this->sembrar_descripcion($articulo, 'Publicada', 'La publicó la IA sola', ['ai_confidence' => 'high']);
+        $revisada  = $this->sembrar_descripcion($articulo, 'Revisada', 'La corrigió una persona', ['ai_reviewed_at' => '2026-10-10 10:00:00']);
+        $vieja     = $this->sembrar_propuesta($articulo);
+
         $guardado = AiDescriptionReviewHelper::guardar_resultado($articulo, $this->resultado('low'), true);
 
-        $this->assertSame([$humana->id], $this->descripciones_de($articulo)->pluck('id')->all());
+        $this->assertSame('a_revisar', $guardado['tipo']);
+        $this->assertNotNull(Description::find($publicada->id), 'Lo publicado sigue a la vista.');
+        $this->assertNotNull(Description::find($revisada->id));
+        $this->assertNull($this->propuesta_fresca($vieja), 'La propuesta vieja quedó reemplazada.');
         $this->assertSame([$guardado['proposal_id']], ArticleDescriptionProposal::aRevisar()->where('article_id', $articulo->id)->pluck('id')->all());
+
+        $this->postJson('api/article-description-ai/revision/'.$articulo->id.'/aprobar')->assertStatus(200);
+
+        $this->assertNull(Description::find($publicada->id), 'Lo aprobado reemplaza a lo publicado solo.');
+        $this->assertNotNull(Description::find($revisada->id), 'Lo revisado por una persona queda.');
+
+        $nuevas = Description::where('article_id', $articulo->id)->where('id', '<>', $revisada->id)->orderBy('id')->get();
+        $this->assertSame(['Descripción del producto', 'Características'], $nuevas->pluck('title')->all());
+
+        foreach ($nuevas as $nueva) {
+            $this->assertNotNull($nueva->ai_reviewed_at);
+        }
     }
 
     /**

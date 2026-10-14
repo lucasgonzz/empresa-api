@@ -54,6 +54,7 @@ class AiDescriptionReviewHelper
 
     /** Por qué el lote saltea un artículo (van al log del job). */
     const MOTIVO_DESCRIPCION_HUMANA   = 'descripcion_humana';
+    const MOTIVO_DESCRIPCION_REVISADA = 'descripcion_revisada';
     const MOTIVO_YA_TIENE_DESCRIPCION = 'ya_tiene_descripcion';
     const MOTIVO_PROPUESTA_A_REVISAR  = 'propuesta_a_revisar';
     const MOTIVO_PROPUESTA_DESCARTADA = 'propuesta_descartada';
@@ -84,7 +85,10 @@ class AiDescriptionReviewHelper
      *    revisión, o si tiene una DESCARTADA: lo que el dueño descartó o quitó, la IA no se lo
      *    vuelve a proponer.
      * 3. En modo reemplazar las propuestas no frenan: el que reemplaza pide explícitamente volver a
-     *    generar (guardar_resultado() se encarga de la que estaba a revisar).
+     *    generar (guardar_resultado() se encarga de la que estaba a revisar). Lo que SÍ frena es una
+     *    descripción de IA que tocó una persona (`ai_reviewed_at` no nulo: la aprobó o la corrigió
+     *    en Alertas, o la confirmó en el preview): regenerar no pisa trabajo humano, igual que con
+     *    una escrita a mano.
      *
      * @param  \App\Models\Article $article
      * @param  bool                $overwrite
@@ -97,7 +101,12 @@ class AiDescriptionReviewHelper
         }
 
         if ((bool) $overwrite) {
-            return null;
+            $revisada = $article->descriptions()
+                ->where('ai_generated', true)
+                ->whereNotNull('ai_reviewed_at')
+                ->exists();
+
+            return $revisada ? self::MOTIVO_DESCRIPCION_REVISADA : null;
         }
 
         if ($article->descriptions()->exists()) {
@@ -123,16 +132,19 @@ class AiDescriptionReviewHelper
     /**
      * Guarda lo que generó la IA para un artículo. Quien llama ya pasó por motivo_para_saltear().
      *
-     * - Con overwrite se borran antes las descripciones de IA del artículo (las humanas nunca; igual
-     *   el artículo con una humana no llega acá). Se borran de a una para que el observer de
-     *   embeddings se entere.
      * - La propuesta `a_revisar` que el artículo tuviera queda reemplazada por este resultado (con
      *   overwrite es lo que pide el plan; sin overwrite el lote no llega acá si había una, salvo dos
      *   lotes sobre el mismo artículo a la vez, y así sigue habiendo una sola). Las aprobadas y
      *   descartadas quedan como historia.
      * - Confianza `low`: una propuesta `a_revisar` y NINGUNA fila en `descriptions`. No la ve la
      *   tienda ni la ficha del ERP hasta que alguien la apruebe.
-     * - `medium` / `high`: filas en `descriptions` como siempre, sin `ai_reviewed_at`.
+     *   🔴 Aun con overwrite, lo dudoso NO borra lo publicado: reemplazar una descripción que se ve
+     *   por una que la IA no pudo confirmar dejaba al artículo sin descripción hasta que alguien la
+     *   aprobara. Lo publicado sigue a la vista; al aprobar la propuesta, aprobar() lo reemplaza.
+     * - `medium` / `high`: con overwrite se borran antes las descripciones de IA que nadie revisó
+     *   (las humanas y las revisadas nunca; igual, con alguna de esas el artículo no llega acá: ver
+     *   motivo_para_saltear()), de a una para que el observer de embeddings se entere; después,
+     *   filas en `descriptions` como siempre, sin `ai_reviewed_at`.
      *
      * @param  \App\Models\Article $article
      * @param  array               $result     El de ArticleDescriptionAiService::generate() con
@@ -156,14 +168,8 @@ class AiDescriptionReviewHelper
             }
         }
 
-        if ((bool) $overwrite) {
-            $de_ia = Description::where('article_id', $article->id)
-                ->where('ai_generated', true)
-                ->get();
-
-            foreach ($de_ia as $description) {
-                $description->delete();
-            }
+        if ((bool) $overwrite && $confianza !== 'low') {
+            self::borrar_las_de_ia_sin_revisar($article->id);
         }
 
         ArticleDescriptionProposal::where('article_id', $article->id)
@@ -769,6 +775,13 @@ class AiDescriptionReviewHelper
                 return null;
             }
 
+            /*
+             * Lo aprobado reemplaza a lo que la IA había publicado sola (un "reemplazar" con
+             * resultado dudoso deja lo publicado a la vista hasta este momento, ver
+             * guardar_resultado()). Las humanas y las que ya revisó una persona, nunca.
+             */
+            self::borrar_las_de_ia_sin_revisar($article->id);
+
             $ahora = Carbon::now();
             $a_guardar = self::secciones_de(is_null($secciones) ? $propuesta->sections : $secciones);
 
@@ -1064,6 +1077,26 @@ class AiDescriptionReviewHelper
                 'resolved_by' => self::entero_o_null($resolved_by),
                 'updated_at'  => $ahora,
             ]);
+    }
+
+    /**
+     * Borra las descripciones de IA de un artículo que publicó el lote sin que nadie las revisara
+     * (`ai_generated = 1` y `ai_reviewed_at` nulo). Las humanas y las revisadas nunca. De a una, para
+     * que el observer de embeddings se entere.
+     *
+     * @param  int $article_id
+     * @return void
+     */
+    protected static function borrar_las_de_ia_sin_revisar($article_id)
+    {
+        $sin_revisar = Description::where('article_id', (int) $article_id)
+            ->where('ai_generated', true)
+            ->whereNull('ai_reviewed_at')
+            ->get();
+
+        foreach ($sin_revisar as $description) {
+            $description->delete();
+        }
     }
 
     /**

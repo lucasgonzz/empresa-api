@@ -282,9 +282,11 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
 
             /*
              * 5. Se guarda: lo seguro como descripciones del artículo, lo dudoso como propuesta a
-             * revisar (no se ve en ningún lado hasta que alguien la apruebe). Si se pidió
-             * overwrite, antes se borran SOLO las descripciones de IA previas y la propuesta que
-             * estuviera a revisar; las cargadas a mano por una persona nunca se tocan.
+             * revisar (no se ve en ningún lado hasta que alguien la apruebe). La propuesta que
+             * estuviera a revisar queda reemplazada. Si se pidió overwrite y el resultado es seguro,
+             * antes se borran SOLO las descripciones de IA que nadie revisó; si es dudoso, lo
+             * publicado sigue a la vista hasta que se apruebe la propuesta. Las cargadas a mano y
+             * las revisadas por una persona nunca se tocan.
              */
             $guardado = AiDescriptionReviewHelper::guardar_resultado($article, $result, $this->overwrite);
 
