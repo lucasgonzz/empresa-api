@@ -188,6 +188,17 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#^POST api/category-proposal-items/(aprobar|rechazar)-varios$#'   => 'masiva por POST: aprobar o rechazar los dudosos de la categorización de un saque',
         '#^POST api/category-proposal-items/\{id\}/(aprobar|rechazar)$#'   => 'revisión de la categorización: cada dudoso se decide mirando la sugerencia en Alertas → Catálogo → Categorías',
         '#^PUT api/category-proposal-runs/\{id\}/visto$#'                  => 'marca de pantalla (la propuesta de categorías ya se vio): no tiene sentido por chat',
+        /*
+         * Revisión de las descripciones automáticas (misión alertas-descripciones, 14/10/2026). Mismo
+         * criterio que la categorización: todo lo que ESCRIBE queda afuera. Aprobar publica en la
+         * tienda un texto que la IA no pudo confirmar, quitar borra lo publicado y editar pisa lo que
+         * se ve; cada una se decide leyendo el texto y sus fuentes en Alertas → Catálogo →
+         * Descripciones, y con el dueño en "directo" correrían sin tarjeta. Las lecturas (`resumen`,
+         * `revision`) siguen entrando.
+         */
+        '#^POST api/article-description-ai/revision/(aprobar|descartar)-varios$#' => 'masiva por POST: aprobar o descartar de un saque las descripciones automáticas que la IA no pudo confirmar',
+        '#^POST api/article-description-ai/revision/\{article_id\}/(aprobar|descartar|quitar)$#' => 'revisión de las descripciones automáticas: cada una se decide leyéndola en Alertas → Catálogo → Descripciones',
+        '#^PUT api/article-description-ai/revision/\{article_id\}/publicada$#' => 'revisión de las descripciones automáticas: cada una se decide leyéndola en Alertas → Catálogo → Descripciones',
         // ── Ya tienen herramienta propia (las de recurso van por HERRAMIENTAS_PROPIAS) ────────
         '#api/pdf-column-profiles#'                   => 'tiene su herramienta: proponer_cambio_en_diseno_pdf',
         /*
