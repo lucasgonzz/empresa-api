@@ -75,13 +75,25 @@ class CentroRecursosPaseHelper
         /** Pase aleatorio que viaja en la URL de la página. */
         $plano = Str::random(self::LARGO);
 
-        CentroRecursosPase::create([
+        $datos = [
             'user_id'    => $user->id,
             'token_hash' => hash('sha256', $plano),
             'video'      => $video,
-            'soporte'    => (bool) $soporte,
             'expires_at' => $ahora->copy()->addMinutes(self::TTL_MINUTOS),
-        ]);
+        ];
+
+        /*
+         * 🔴 `soporte` se escribe SOLO cuando es true. Para un usuario común el insert queda idéntico
+         * al de antes de la misión: si este código llega a un cliente antes de que corra la migración
+         * de la columna (la ventana de un upgrade), "Tutoriales" tiene que seguir andando para todos
+         * los usuarios normales en vez de dar 500 por una columna que todavía no existe. Con la
+         * columna presente, el default `false` de la base da el mismo resultado.
+         */
+        if ($soporte === true) {
+            $datos['soporte'] = true;
+        }
+
+        CentroRecursosPase::create($datos);
 
         Log::info('Centro de recursos: pase ' . ($soporte ? 'de soporte ' : '') . 'creado para user_id ' . $user->id);
 

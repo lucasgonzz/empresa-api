@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\CentroRecursos;
 
+use App\Http\Controllers\Helpers\CentroRecursosPaseHelper;
 use App\Models\CentroRecursosPase;
 use App\Models\User;
 use Carbon\Carbon;
@@ -10,8 +11,10 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as PedidoHttp;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Tests\EmpresaTestCase;
 
 /**
@@ -426,6 +429,66 @@ class PaseTest extends EmpresaTestCase
 
         // Una sola consulta a la página para los dos pedidos: `disponible` y `soporte` salen de la misma.
         Http::assertSentCount(1);
+    }
+
+    /**
+     * 🔴 La ventana de un upgrade: este código llega a un cliente ANTES de que corra la migración de
+     * `soporte`. Un usuario común tiene que seguir consiguiendo su pase (y el canje, devolviéndolo
+     * con `soporte: false`) en vez de recibir un 500 por una columna que todavía no existe.
+     *
+     * Se simula con una tabla TEMPORAL del mismo nombre y sin la columna, que en la sesión le gana a
+     * la real: CREATE/DROP TEMPORARY TABLE no hacen commit implícito, así que no rompe el
+     * aislamiento de DatabaseTransactions (un ALTER TABLE sí lo haría).
+     */
+    public function test_sin_la_columna_soporte_un_usuario_comun_igual_consigue_y_canjea_su_pase()
+    {
+        // Con la página que SÍ declara soporte: un usuario común no la usa, y no puede depender de ella.
+        $this->la_pagina_anda_con_soporte();
+
+        DB::statement('CREATE TEMPORARY TABLE centro_recursos_pases (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT UNSIGNED NOT NULL,
+            token_hash CHAR(64) NOT NULL,
+            video VARCHAR(20) NULL,
+            expires_at DATETIME NOT NULL,
+            usado_at DATETIME NULL,
+            created_at TIMESTAMP NULL,
+            updated_at TIMESTAMP NULL,
+            UNIQUE KEY tmp_hash_uq (token_hash)
+        )');
+
+        try {
+            // SHOW COLUMNS ve la tabla temporal (Schema::hasColumn lee information_schema, que no la lista).
+            $columnas = array_map(function ($columna) {
+                return $columna->Field;
+            }, DB::select('SHOW COLUMNS FROM centro_recursos_pases'));
+
+            $this->assertContains('token_hash', $columnas, 'Se está mirando la tabla simulada.');
+            $this->assertNotContains('soporte', $columnas, 'La tabla simulada no tiene la columna.');
+
+            $url = $this->pedir_pase(['video' => 'T1.29'])
+                        ->assertStatus(200)
+                        ->assertJson(['disponible' => true])
+                        ->json('url');
+
+            $parametros = $this->parametros_de($url);
+
+            $this->assertSame(['pase', 'api', 'v'], array_keys($parametros));
+
+            // El canje: sin columna, `soporte` es false y nada revienta.
+            config(['app.USER_ID' => $this->dueno->id]);
+
+            $resultado = CentroRecursosPaseHelper::canjear($parametros['pase']);
+
+            $this->assertNotNull($resultado, 'El pase se canjea aunque la tabla no tenga la columna.');
+            $this->assertSame((int) $this->dueno->id, (int) $resultado['user']->id);
+            $this->assertSame('T1.29', $resultado['video']);
+            $this->assertFalse($resultado['soporte']);
+        } finally {
+            DB::statement('DROP TEMPORARY TABLE centro_recursos_pases');
+        }
+
+        $this->assertTrue(Schema::hasColumn('centro_recursos_pases', 'soporte'), 'Con la tabla temporal fuera, vuelve a verse la real.');
     }
 
     /**

@@ -173,6 +173,34 @@ class CanjearPaseTest extends EmpresaTestCase
     }
 
     /**
+     * 🔴 El INSERT de un pase de un usuario común es idéntico al de antes de la misión: no menciona
+     * la columna `soporte` (si el código llega a un cliente antes de la migración, no puede romper).
+     * Solo el pase de soporte la escribe. Además, un pase normal canjea con `soporte: false`.
+     */
+    public function test_solo_el_pase_de_soporte_escribe_la_columna_soporte()
+    {
+        $inserts = [];
+
+        DB::listen(function ($consulta) use (&$inserts) {
+            if (strpos($consulta->sql, 'insert into `centro_recursos_pases`') === 0) {
+                $inserts[] = $consulta->sql;
+            }
+        });
+
+        $normal = CentroRecursosPaseHelper::crear($this->dueno);
+        $soporte = CentroRecursosPaseHelper::crear($this->dueno, null, true);
+
+        $this->assertCount(2, $inserts, 'Los dos pases se insertaron (y el listener vio los dos).');
+        $this->assertStringNotContainsString('soporte', $inserts[0], 'El pase común no escribe `soporte`.');
+        $this->assertStringContainsString('`soporte`', $inserts[1], 'El pase de soporte sí.');
+
+        $this->assertFalse($this->fila_de($normal)->soporte, 'El default de la base lo deja en false.');
+        $this->assertTrue($this->fila_de($soporte)->soporte);
+
+        $this->canjear($normal)->assertStatus(200)->assertJson(['soporte' => false]);
+    }
+
+    /**
      * El pase de soporte es de un solo uso, igual que uno normal: el segundo canje da `pase_invalido`
      * (un segundo después, para que el UPDATE no pueda "no afectar" por escribir los mismos valores).
      */
