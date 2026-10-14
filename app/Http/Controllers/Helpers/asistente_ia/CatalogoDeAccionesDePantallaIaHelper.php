@@ -202,6 +202,14 @@ class CatalogoDeAccionesDePantallaIaHelper
          * que los de Vender, se leen pero no se crean, editan ni borran por chat.
          */
         '#^(POST|PUT|DELETE) api/article-ticket-design(/|$)#'  => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
+        // ── Lo que el sistema ya no ofrece ────────────────────────────────────────────────────
+        /*
+         * Cupones de la tienda (misión tiendas-demo-y-limpieza-tienda, 14/10/2026, pedido de Lucas):
+         * la tienda dejó de ofrecerlos y el sistema sacó Tienda Online > Cupones. `cupon` salió de
+         * Escritura::ENTIDADES, y sin esta entrada sus rutas de recurso (que CuponController sigue
+         * teniendo, por los pedidos viejos) habrían entrado acá como acciones genéricas.
+         */
+        '#^[A-Z]+ api/cupon(/|$)#'                    => 'cupones de la tienda: la tienda ya no los ofrece y el sistema sacó su pantalla (14/10/2026)',
         /*
          * ── Los endpoints genéricos de la SPA ──────────────────────────────────────────────
          * 🔴 `search/{model_name}`, `global-search/{model_name}`, `previus-next/{model_name}`,
