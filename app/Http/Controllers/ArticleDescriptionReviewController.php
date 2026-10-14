@@ -36,16 +36,21 @@ class ArticleDescriptionReviewController extends Controller
      */
     public function revision(Request $request)
     {
-        $request->validate([
-            'solapa' => 'nullable|in:'.implode(',', AiDescriptionReviewHelper::SOLAPAS),
-        ], [
-            'solapa.in' => 'La solapa tiene que ser a_revisar o publicadas.',
-        ]);
-
         $solapa = $request->query('solapa');
 
-        if (!is_string($solapa) || $solapa === '') {
+        if (is_null($solapa) || $solapa === '') {
             $solapa = AiDescriptionReviewHelper::SOLAPA_A_REVISAR;
+        }
+
+        /*
+         * Con la forma del 422 estándar de Laravel ({message, errors}), pero armado a mano: el
+         * validate() de esta versión pone en `message` el genérico "Los datos enviados no son
+         * válidos." y el comerciante tiene que leer qué pasó.
+         */
+        if (!is_string($solapa) || !in_array($solapa, AiDescriptionReviewHelper::SOLAPAS, true)) {
+            $mensaje = 'Esa solapa no existe: elegí «A revisar» o «Publicadas».';
+
+            return response()->json(['message' => $mensaje, 'errors' => ['solapa' => [$mensaje]]], 422);
         }
 
         return response()->json(AiDescriptionReviewHelper::revision(

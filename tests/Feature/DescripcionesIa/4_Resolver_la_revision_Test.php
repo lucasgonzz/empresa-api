@@ -104,7 +104,7 @@ class Resolver_la_revision_Test extends DescripcionesIaTestCase
         // caso => [cuerpo, el campo que tiene que traer el error]
         $invalidos = [
             'vacías'           => [['secciones' => []], 'secciones'],
-            'cuatro'           => [['secciones' => array_fill(0, 4, ['title' => 'T', 'content' => 'c'])], 'secciones'],
+            'once'             => [['secciones' => array_fill(0, 11, ['title' => 'T', 'content' => 'c'])], 'secciones'],
             'sin título'       => [['secciones' => [['content' => 'c']]], 'secciones.0.title'],
             'sin texto'        => [['secciones' => [['title' => 'T', 'content' => '']]], 'secciones.0.content'],
             'título muy largo' => [['secciones' => [['title' => str_repeat('a', 256), 'content' => 'c']]], 'secciones.0.title'],
@@ -118,6 +118,46 @@ class Resolver_la_revision_Test extends DescripcionesIaTestCase
 
         $this->assertSame('a_revisar', $this->propuesta_fresca($propuesta)->status);
         $this->assertCount(0, $this->descripciones_de($articulo));
+    }
+
+    /**
+     * Hasta 10 secciones (la migración puede juntar más de 3 filas de un artículo en una propuesta):
+     * al aprobar editada y al editar una publicada, 10 entran y 11 no.
+     *
+     * @test
+     * @group descripciones_ia
+     */
+    public function se_aceptan_hasta_diez_secciones()
+    {
+        $diez = [];
+
+        for ($i = 1; $i <= 10; $i++) {
+            $diez[] = ['title' => 'Sección '.$i, 'content' => 'Texto '.$i];
+        }
+
+        $articulo = $this->crear_articulo('Con muchas secciones');
+        $this->sembrar_propuesta($articulo);
+
+        $this->postJson('api/article-description-ai/revision/'.$articulo->id.'/aprobar', [
+            'secciones' => array_merge($diez, [['title' => 'Once', 'content' => 'Once']]),
+        ])->assertStatus(422)->assertJsonValidationErrors(['secciones']);
+
+        $this->postJson('api/article-description-ai/revision/'.$articulo->id.'/aprobar', ['secciones' => $diez])
+            ->assertStatus(200);
+
+        $descripciones = $this->descripciones_de($articulo);
+        $this->assertCount(10, $descripciones);
+
+        // Las diez, editadas como publicadas.
+        $editar = [];
+
+        foreach ($descripciones as $i => $descripcion) {
+            $editar[] = ['id' => $descripcion->id, 'title' => 'Editada '.$i, 'content' => 'Editado '.$i];
+        }
+
+        $this->putJson('api/article-description-ai/revision/'.$articulo->id.'/publicada', ['secciones' => $editar])
+            ->assertStatus(200);
+        $this->assertCount(10, $this->descripciones_de($articulo)->where('ai_reviewed_at', '!==', null));
     }
 
     /**
@@ -390,7 +430,7 @@ class Resolver_la_revision_Test extends DescripcionesIaTestCase
         $invalidos = [
             'sin secciones' => [],
             'sin id'        => ['secciones' => [['title' => 'T', 'content' => 'c']]],
-            'cuatro'        => ['secciones' => array_fill(0, 4, ['id' => $de_ia->id, 'title' => 'T', 'content' => 'c'])],
+            'once'          => ['secciones' => array_fill(0, 11, ['id' => $de_ia->id, 'title' => 'T', 'content' => 'c'])],
             'sin texto'     => ['secciones' => [['id' => $de_ia->id, 'title' => 'T', 'content' => '']]],
         ];
 

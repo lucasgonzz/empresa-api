@@ -246,6 +246,7 @@ class Lectura_de_la_revision_Test extends DescripcionesIaTestCase
         $respuesta = $this->getJson('api/article-description-ai/revision?solapa=todas');
 
         $respuesta->assertStatus(422)->assertJsonValidationErrors(['solapa']);
-        $this->assertNotEmpty($respuesta->json('message'));
+        $this->assertSame('Esa solapa no existe: elegí «A revisar» o «Publicadas».', $respuesta->json('errors.solapa.0'));
+        $this->assertSame('Esa solapa no existe: elegí «A revisar» o «Publicadas».', $respuesta->json('message'));
     }
 }

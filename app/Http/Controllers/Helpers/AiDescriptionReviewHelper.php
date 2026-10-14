@@ -42,8 +42,13 @@ class AiDescriptionReviewHelper
     /** Cuántos artículos acepta un aprobar / descartar en lote (una página es de 100 como mucho). */
     const MAXIMO_EN_LOTE = 100;
 
-    /** Secciones que puede tener una descripción (las que arma la IA). */
-    const MAXIMO_DE_SECCIONES = 3;
+    /**
+     * Secciones que se aceptan al aprobar o editar una descripción. La IA arma de 1 a 3, pero la
+     * migración de datos (y el barrido) junta TODAS las filas dudosas de un artículo en una sola
+     * propuesta, y un artículo con dos corridas viejas puede tener más de 3: con un tope de 3 esa
+     * propuesta no se podía aprobar editada ni corregir publicada.
+     */
+    const MAXIMO_DE_SECCIONES = 10;
 
     /**
      * Largo máximo del título de una sección: lo que entra en `descriptions.title` (varchar(191),
