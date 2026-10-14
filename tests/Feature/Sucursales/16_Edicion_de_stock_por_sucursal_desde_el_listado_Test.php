@@ -551,4 +551,202 @@ class Edicion_de_stock_por_sucursal_desde_el_listado_Test extends SucursalesTest
         $sin = $this->empleado_con([], $a->id);
         $this->assertFalse(PermisoStockPorSucursalHelper::puede_editar($sin, $a->id), 'Sin permisos, ni la suya.');
     }
+
+    // ==========================================================================================
+    //  Segunda ronda (verificadores independientes)
+    // ==========================================================================================
+
+    /**
+     * Foto de las filas del artículo en `address_article`: [address_id => [amount, stock_min, stock_max]].
+     *
+     * @param  \App\Models\Article  $articulo
+     * @return array
+     */
+    protected function filas_del_articulo($articulo)
+    {
+        $filas = DB::table('address_article')->where('article_id', $articulo->id)->orderBy('id')
+                    ->get(['address_id', 'amount', 'stock_min', 'stock_max']);
+
+        $foto = [];
+
+        foreach ($filas as $fila) {
+            $foto[] = [(int) $fila->address_id, (float) $fila->amount, $fila->stock_min, $fila->stock_max];
+        }
+
+        return $foto;
+    }
+
+    /**
+     * Test 9 — el id que valida el permiso tiene que ser el mismo con el que se escribe. Un empleado
+     * acotado a A manda un id que `(int)` lee como A pero que no es un entero ("A.9", A + 0,9,
+     * "Aabc"), o un array, o null: no se escribe nada en ninguna sucursal, sin 500. Con "A" (string
+     * de dígitos) sigue andando como A.
+     *
+     * Medido por el verificador: MySQL estricto guardaba "A.9" como A + 1 sin aviso, o sea stock y
+     * mínimo/máximo en la sucursal de al lado y una fila nueva.
+     *
+     * @test
+     */
+    public function un_id_de_sucursal_que_no_es_entero_no_escribe_nada()
+    {
+        $a = $this->nueva_sucursal('zz Edicion stock id A');
+        $b = $this->nueva_sucursal('zz Edicion stock id B');
+
+        $articulo = $this->nuevo_articulo('zz Edicion stock id');
+        $this->cargar_deposito($articulo, $a, 10);
+        $this->cargar_deposito($articulo, $b, 10);
+
+        $foto = $this->filas_del_articulo($articulo);
+        $movimientos = $this->movimientos_de($articulo)->count();
+
+        $this->como($this->empleado_acotado_a($a));
+
+        $ids_invalidos = [
+            'string con decimales' => $a->id.'.9',
+            'número con decimales' => $a->id + 0.9,
+            'string con letras'    => $a->id.'abc',
+            'array'                => [$a->id],
+            'null'                 => null,
+        ];
+
+        foreach ($ids_invalidos as $que => $id) {
+
+            $this->guardar($articulo, [
+                ['id' => $id, 'pivot' => ['amount' => 50, 'stock_min' => 1, 'stock_max' => 99]],
+            ])->assertStatus(200);
+
+            $this->guardar($articulo, [
+                ['id' => $id, 'pivot' => ['amount' => 50, 'amount_original' => 10, 'stock_min' => 1, 'stock_max' => 99]],
+            ])->assertStatus(200);
+
+            $this->assertSame($foto, $this->filas_del_articulo($articulo), 'Id inválido ('.$que.'): no se escribe ninguna fila.');
+            $this->assertSame($movimientos, $this->movimientos_de($articulo)->count(), 'Id inválido ('.$que.'): ningún movimiento.');
+        }
+
+        // Un string de dígitos es un id válido.
+        $this->guardar($articulo, [
+            ['id' => (string) $a->id, 'pivot' => ['amount' => 50, 'stock_min' => 1, 'stock_max' => 99]],
+        ])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(50, $this->stock_en($articulo, $a->id), self::DELTA, '"A" como string sigue andando.');
+        $this->assertSame([1, 99], $this->min_max_en($articulo, $a));
+        $this->assertEqualsWithDelta(10, $this->stock_en($articulo, $b->id), self::DELTA, 'La de al lado no se toca.');
+        $this->assertSame(1, DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $a->id)->count(), 'Sin filas duplicadas.');
+    }
+
+    /**
+     * Test 10 — dos renglones para la misma sucursal: se aplica uno solo, el último.
+     *
+     * @test
+     */
+    public function un_renglon_repetido_se_aplica_una_sola_vez_y_gana_el_ultimo()
+    {
+        $a = $this->nueva_sucursal('zz Edicion stock repetido A');
+
+        $articulo = $this->articulo_en_cero('zz Edicion stock repetido', [$a]);
+
+        $movimientos = $this->movimientos_de($articulo)->count();
+
+        $this->guardar($articulo, [
+            $this->renglon_nuevo($a, 3, 0),
+            $this->renglon_nuevo($a, 5, 0),
+        ])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(5, $this->stock_en($articulo, $a->id), self::DELTA, 'Gana el último renglón, aplicado una vez.');
+        $this->assertSame($movimientos + 1, $this->movimientos_de($articulo)->count());
+
+        // Lo mismo con la SPA vieja.
+        $this->guardar($articulo, [
+            $this->renglon_viejo($a, 8),
+            $this->renglon_viejo($a, 6),
+        ])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(6, $this->stock_en($articulo, $a->id), self::DELTA);
+        $this->assertSame($movimientos + 2, $this->movimientos_de($articulo)->count());
+    }
+
+    /**
+     * Test 11 — con `amount_original`, el movimiento es lo que el usuario cambió
+     * (`amount - amount_original`), no la diferencia contra la base: si entre el chequeo de
+     * conflictos y la escritura se cuela una venta, la venta queda respetada.
+     *
+     * @test
+     */
+    public function con_amount_original_una_venta_en_el_medio_queda_respetada()
+    {
+        $a = $this->nueva_sucursal('zz Edicion stock carrera A');
+
+        $articulo = $this->nuevo_articulo('zz Edicion stock carrera');
+        $this->cargar_deposito($articulo, $a, 10);
+
+        $helper = new \App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper(
+            $articulo->id,
+            [$this->renglon_nuevo($a, 15, 10)],
+            $this->comercio()
+        );
+
+        $this->assertSame([], $helper->conflictos(), 'Al chequear, la base tiene lo que el usuario veía.');
+
+        // Una venta de 3 en esa sucursal, por afuera, después del chequeo.
+        $this->cargar_deposito($articulo, $a, -3);
+        $this->assertEqualsWithDelta(7, $this->stock_en($articulo, $a->id), self::DELTA);
+
+        $helper->update_addresses();
+
+        $this->assertEqualsWithDelta(12, $this->stock_en($articulo, $a->id), self::DELTA, 'Se suman los 5 que cargó el usuario y la venta queda: 7 + 5.');
+        $this->assertEqualsWithDelta(5, (float) $this->movimientos_de($articulo)->last()->amount, self::DELTA);
+    }
+
+    /**
+     * Test 12 — con la SPA nueva (renglón con `amount_original`), mínimo y máximo en null se
+     * guardan: el usuario los vació. Y vaciarlos en una sucursal sin fila no le abre una.
+     *
+     * @test
+     */
+    public function con_la_spa_nueva_vaciar_minimo_y_maximo_los_borra()
+    {
+        $a = $this->nueva_sucursal('zz Edicion stock vaciar A');
+        $b = $this->nueva_sucursal('zz Edicion stock vaciar B');
+
+        $articulo = $this->nuevo_articulo('zz Edicion stock vaciar');
+        $this->cargar_deposito($articulo, $a, 10);
+
+        DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $a->id)
+            ->update(['stock_min' => 2, 'stock_max' => 40]);
+
+        $movimientos = $this->movimientos_de($articulo)->count();
+
+        $this->guardar($articulo, [
+            $this->renglon_nuevo($a, 10, 10, null, null),
+            $this->renglon_nuevo($b, 0, 0, null, null),
+        ])->assertStatus(200);
+
+        $this->assertSame([null, null], $this->min_max_en($articulo, $a), 'Los dos en null se guardan.');
+        $this->assertEqualsWithDelta(10, $this->stock_en($articulo, $a->id), self::DELTA);
+        $this->assertNull($this->stock_en($articulo, $b->id), 'Vaciar en una sucursal sin fila no le abre una.');
+        $this->assertSame($movimientos, $this->movimientos_de($articulo)->count());
+    }
+
+    /**
+     * Test 13 — con la SPA vieja (y el asistente), mínimo y máximo los dos en null siguen siendo "no
+     * tocar", como siempre.
+     *
+     * @test
+     */
+    public function con_la_spa_vieja_minimo_y_maximo_en_null_no_se_tocan()
+    {
+        $a = $this->nueva_sucursal('zz Edicion stock no tocar A');
+
+        $articulo = $this->nuevo_articulo('zz Edicion stock no tocar');
+        $this->cargar_deposito($articulo, $a, 10);
+
+        DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $a->id)
+            ->update(['stock_min' => 2, 'stock_max' => 40]);
+
+        $this->guardar($articulo, [
+            $this->renglon_viejo($a, 10, null, null),
+        ])->assertStatus(200);
+
+        $this->assertSame([2, 40], $this->min_max_en($articulo, $a), 'Sin amount_original, los dos en null no tocan nada.');
+    }
 }

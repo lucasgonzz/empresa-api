@@ -30,8 +30,15 @@ use Illuminate\Support\Facades\Log;
  *      · con `amount` igual a `amount_original`, no se toca el stock de esa sucursal (sí el mínimo
  *        y el máximo);
  *      · con `amount` distinto y la base ya distinta de `amount_original`, es un CONFLICTO
- *        (`conflictos()`): el controller contesta 409 sin aplicar ningún renglón.
- *  - Sin `amount_original` (SPA vieja, asistente IA) el stock se comporta como siempre.
+ *        (`conflictos()`): el controller contesta 409 sin aplicar ningún renglón;
+ *      · si no hay conflicto, el movimiento es `amount - amount_original` (lo que el usuario
+ *        cambió), no la diferencia contra la base: un movimiento ajeno que se cuele mientras se
+ *        aplica el guardado queda respetado;
+ *      · el mínimo y el máximo se escriben tal cual vienen, incluidos los dos en null (vaciarlos).
+ *  - Sin `amount_original` (SPA vieja, asistente IA) el stock se comporta como siempre (stock final;
+ *    mínimo y máximo los dos en null = no tocar).
+ *  - El id de cada renglón se normaliza una sola vez (entero positivo o se saltea) y un id repetido
+ *    se queda con su último renglón (`renglones_aplicables()`).
  */
 class UpdateAddressesStockHelper {
 
@@ -80,13 +87,29 @@ class UpdateAddressesStockHelper {
 
             $this->address = $address;
 
-            $article_address = $this->get_article_address();
+            if ($this->trae_amount_original($address)) {
 
-            if (!is_null($article_address)) {
+                /*
+                 * Con `amount_original` (SPA nueva) el movimiento es lo que el USUARIO cambió, no la
+                 * diferencia contra la base: conflictos() ya garantizó que la base era
+                 * `amount_original`, así que sin carrera da lo mismo; pero si entre ese chequeo y este
+                 * renglón alguien vende o traslada (la ventana dura todo el bucle: la relación se
+                 * carga en el primer renglón y cada crear() hace sus syncs), el movimiento ajeno queda
+                 * respetado en vez de deshecho.
+                 */
+                $diferencia = self::cantidad($address['pivot']['amount']) - self::cantidad($address['pivot']['amount_original']);
 
-                $diferencia = (float)$address['pivot']['amount'] - $article_address->pivot->amount;
             } else {
-                $diferencia = (float)$address['pivot']['amount'];
+
+                // Sin `amount_original` (SPA vieja, asistente IA): stock FINAL, como siempre.
+                $article_address = $this->get_article_address();
+
+                if (!is_null($article_address)) {
+
+                    $diferencia = (float)$address['pivot']['amount'] - $article_address->pivot->amount;
+                } else {
+                    $diferencia = (float)$address['pivot']['amount'];
+                }
             }
 
             if (
@@ -105,6 +128,38 @@ class UpdateAddressesStockHelper {
         foreach ($this->renglones_aplicables() as $address_data) {
 
             $address_id = $address_data['id'];
+
+            if ($this->trae_amount_original($address_data)) {
+
+                /*
+                 * SPA nueva: manda solo los renglones que el usuario cambió, así que el mínimo y el
+                 * máximo se escriben TAL CUAL vienen, incluidos los dos en null (= los vació). Una
+                 * clave que no viene no se toca.
+                 */
+                $valores = [];
+
+                foreach (['stock_min', 'stock_max'] as $clave) {
+                    if (array_key_exists($clave, $address_data['pivot'])) {
+                        $valores[$clave] = $address_data['pivot'][$clave];
+                    }
+                }
+
+                if (count($valores) == 0) {
+                    continue;
+                }
+
+                if ($this->article->addresses()->where('address_id', $address_id)->exists()) {
+                    $this->article->addresses()->updateExistingPivot($address_id, $valores);
+                } else if (isset($valores['stock_min']) || isset($valores['stock_max'])) {
+                    // Vaciar el mínimo/máximo de una sucursal sin fila no tiene nada que borrar: no se
+                    // le abre una fila vacía.
+                    $this->article->addresses()->attach($address_id, $valores);
+                }
+
+                continue;
+            }
+
+            // SPA vieja y asistente IA: los dos en null = "no tocar", como siempre.
             $stock_min = isset($address_data['pivot']['stock_min']) ? $address_data['pivot']['stock_min'] : null;
             $stock_max = isset($address_data['pivot']['stock_max']) ? $address_data['pivot']['stock_max'] : null;
 
@@ -233,7 +288,16 @@ class UpdateAddressesStockHelper {
      *
      * Un renglón que no se aplica se SALTEA sin error, nunca 403/422: ver el docblock de la clase.
      *
-     * @return array
+     * 🔴 EL ID SE NORMALIZA ACÁ, UNA SOLA VEZ, Y TODO LO DE ABAJO USA EL RENGLÓN NORMALIZADO. El permiso
+     * y la sucursal viva comparan con `(int)`, pero la escritura (where/attach del pivot, el
+     * `to_address_id` del movimiento) usaba el id crudo: un `"2.9"` pasaba el permiso como la 2 y
+     * MySQL lo guardaba como la 3, sin aviso. Un id que no es un entero positivo (`"2.9"`, `2.9`,
+     * `"2abc"`, un array, null, true) se saltea; `"2"` sigue andando como la 2.
+     *
+     * Y un mismo id que llega dos veces se queda con el ÚLTIMO renglón: sin esto, los dos pasaban
+     * conflictos() y el cambio se aplicaba dos veces.
+     *
+     * @return array  Renglones `['id' => int, 'pivot' => array]`.
      */
     function renglones_aplicables() {
 
@@ -245,6 +309,8 @@ class UpdateAddressesStockHelper {
 
         $renglones = is_array($this->addresses) ? $this->addresses : [];
 
+        $por_id = [];
+
         foreach ($renglones as $address) {
 
             if (
@@ -254,6 +320,26 @@ class UpdateAddressesStockHelper {
             ) {
                 continue;
             }
+
+            $id_crudo = array_key_exists('id', $address) ? $address['id'] : null;
+
+            $address_id = self::id_de_sucursal($id_crudo);
+
+            if (is_null($address_id)) {
+
+                Log::warning('UpdateAddressesStockHelper: se saltea un renglón del artículo '.$this->article->id
+                                .' con un id de sucursal que no es un entero: '.json_encode($id_crudo).'.');
+                continue;
+            }
+
+            // Gana el último renglón de cada sucursal.
+            $por_id[$address_id] = [
+                'id'    => $address_id,
+                'pivot' => $address['pivot'],
+            ];
+        }
+
+        foreach ($por_id as $address) {
 
             if (!$this->sucursal_viva($address)) {
                 continue;
@@ -267,6 +353,25 @@ class UpdateAddressesStockHelper {
         }
 
         return $this->aplicables;
+    }
+
+    /**
+     * El id de sucursal como entero positivo, o null si no lo es. Acepta un int o un string de
+     * dígitos (`"2"`); rechaza floats (`2.9`, y también `2.0`: un id nunca viaja con decimales),
+     * strings con decimales o letras, arrays, booleanos y null.
+     *
+     * @param  mixed  $id
+     * @return int|null
+     */
+    static function id_de_sucursal($id) {
+
+        if (!is_int($id) && !is_string($id)) {
+            return null;
+        }
+
+        $entero = filter_var($id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return $entero === false ? null : (int) $entero;
     }
 
     /**
