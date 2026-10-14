@@ -194,9 +194,8 @@ class PermisosCatalogoHelper
                 'buyer.store'                                   => 'Crear clientes de la tienda',
                 'buyer.update'                                  => 'Editar clientes de la tienda',
                 'buyer.delete'                                  => 'Eliminar clientes de la tienda',
-                // Los dos que siguen los consulta el menú (router/routes.js) pero ningún seeder los
-                // creaba: el ítem no aparecía para ningún empleado sin acceso de administrador.
-                'cupon.index'                                   => 'Ver los cupones de la tienda',
+                // El que sigue lo consulta el menú (router/routes.js) pero ningún seeder lo creaba:
+                // el ítem no aparecía para ningún empleado sin acceso de administrador.
                 'mercado_libre.orders'                          => 'Usar MercadoLibre',
             ],
 
@@ -258,6 +257,9 @@ class PermisosCatalogoHelper
                 'whatsapp.see_other_users_chats'                => 'Ver los chats de WhatsApp de otros empleados',
                 'support.see_owner_chats'                       => 'Ver los chats de soporte del dueño',
                 'support.see_other_users_chats'                 => 'Ver los chats de soporte de otros empleados',
+                // Cupones salió de la tienda y del menú el 14/10/2026 (misión tiendas-demo-y-limpieza-tienda):
+                // el permiso queda por los empleados que lo tienen tildado, sin efecto.
+                'cupon.index'                                   => 'Ver los cupones de la tienda (la tienda ya no tiene cupones)',
             ],
         ];
     }
