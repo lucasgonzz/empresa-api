@@ -971,6 +971,22 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
     Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
 
+    /*
+        Alertas → Catálogo → Descripciones (misión alertas-descripciones, 14/10/2026): las que la IA no
+        pudo confirmar (A revisar) y las de IA ya publicadas. Contrato §1.4 del plan. Las rutas fijas
+        (resumen, revision, aprobar-varios, descartar-varios) van ANTES de las que llevan
+        {article_id}, y ese parámetro va restringido a números. Las ve cualquier sesión del comercio,
+        como Imágenes; lo de otro comercio responde 404.
+    */
+    Route::get('article-description-ai/resumen', 'ArticleDescriptionReviewController@resumen');
+    Route::get('article-description-ai/revision', 'ArticleDescriptionReviewController@revision');
+    Route::post('article-description-ai/revision/aprobar-varios', 'ArticleDescriptionReviewController@aprobar_varios');
+    Route::post('article-description-ai/revision/descartar-varios', 'ArticleDescriptionReviewController@descartar_varios');
+    Route::post('article-description-ai/revision/{article_id}/aprobar', 'ArticleDescriptionReviewController@aprobar')->where('article_id', '[0-9]+');
+    Route::post('article-description-ai/revision/{article_id}/descartar', 'ArticleDescriptionReviewController@descartar')->where('article_id', '[0-9]+');
+    Route::put('article-description-ai/revision/{article_id}/publicada', 'ArticleDescriptionReviewController@publicada')->where('article_id', '[0-9]+');
+    Route::post('article-description-ai/revision/{article_id}/quitar', 'ArticleDescriptionReviewController@quitar')->where('article_id', '[0-9]+');
+
 
     Route::post('payment-plan', 'PaymentPlanController@store');
 
