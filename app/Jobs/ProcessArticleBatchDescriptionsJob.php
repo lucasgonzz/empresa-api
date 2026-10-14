@@ -3,9 +3,9 @@
 namespace App\Jobs;
 
 use App\Events\ArticleBatchDescriptionsProcessed;
+use App\Http\Controllers\Helpers\AiDescriptionReviewHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\Article;
-use App\Models\Description;
 use App\Models\GeocoderCounter;
 use App\Services\ArticleDescriptionAiService;
 use App\Services\ProductInfoLookupService;
@@ -25,11 +25,19 @@ use Illuminate\Support\Str;
  * 1. Nunca pisa trabajo humano: un articulo con descripciones cargadas a mano se saltea
  *    SIEMPRE (skipped_existing), en los dos modos. Ademas, en modo automatico
  *    (overwrite=false) tambien se saltea si el articulo ya tiene una descripcion de IA
- *    de una corrida anterior — evita duplicar filas en reintentos. En modo reemplazar
- *    (overwrite=true) se borran (y regeneran) solo las descripciones con ai_generated=true.
- * 2. La baja confianza no se publica sola: una descripcion con confianza 'low' se guarda
- *    pero NO se sincroniza a TiendaNube hasta que una persona la revise (needs_review, ver
- *    ArticleDescriptionAiController::approve()).
+ *    de una corrida anterior — evita duplicar filas en reintentos —, o una propuesta a
+ *    revisar o descartada: lo que el dueño descarto, la IA no se lo vuelve a proponer. En
+ *    modo reemplazar (overwrite=true) se borran (y regeneran) solo las descripciones con
+ *    ai_generated=true.
+ * 2. La baja confianza no se publica sola: desde la mision alertas-descripciones (14/10/2026)
+ *    una descripcion con confianza 'low' NO se guarda en `descriptions` (ahi la mostraban la
+ *    tienda propia y la ficha del ERP) sino como propuesta `a_revisar` en
+ *    article_description_proposals, y recien al aprobarla en Alertas → Catalogo →
+ *    Descripciones pasa a ser una descripcion del articulo (needs_review).
+ *
+ * Las dos decisiones viven en AiDescriptionReviewHelper (motivo_para_saltear() y
+ * guardar_resultado()): este job instancia la busqueda y la IA con `new` y no se puede probar
+ * sin salir a internet; el helper si.
  *
  * IMPORTANTE (bloqueo conocido, ver resumen del prompt 369): este job usa
  * Description::human()/scope ai_generated/ai_confidence/ai_sources, que dependen de la
@@ -202,26 +210,17 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             }
 
             /*
-             * 1. Nunca se toca un articulo con descripcion humana, en NINGUNO de los dos modos.
-             * Ni "automatico" ni "reemplazar" agregan ni pisan nada si ya hay una descripcion
-             * cargada a mano.
+             * 1. Lo que no se toca: con descripcion humana, en NINGUNO de los dos modos; en modo
+             * "automatico", tampoco si ya tiene descripcion de IA (correr el batch dos veces
+             * duplicaba filas) o una propuesta a revisar o descartada. Las reglas, en
+             * AiDescriptionReviewHelper::motivo_para_saltear().
              */
-            if ($article->descriptions()->human()->exists()) {
-                $skipped_existing++;
-                $skipped_existing_names[] = $this->get_article_display_name($article);
-                Log::info('[DescripcionesIA] Artículo con descripción humana, se saltea.', ['article_id' => $article->id]);
-                continue;
-            }
+            $motivo = AiDescriptionReviewHelper::motivo_para_saltear($article, $this->overwrite);
 
-            /*
-             * 2. Modo "automatico" (overwrite=false): si el articulo ya tiene una descripcion
-             * de IA de una corrida anterior, no se vuelve a tocar. Sin este chequeo, correr
-             * el batch dos veces sobre el mismo filtro duplica descripciones de IA.
-             */
-            if (!$this->overwrite && $article->descriptions()->exists()) {
+            if (!is_null($motivo)) {
                 $skipped_existing++;
                 $skipped_existing_names[] = $this->get_article_display_name($article);
-                Log::info('[DescripcionesIA] Artículo ya tiene descripción de IA, se saltea (modo automático).', ['article_id' => $article->id]);
+                Log::info('[DescripcionesIA] Artículo salteado.', ['article_id' => $article->id, 'motivo' => $motivo]);
                 continue;
             }
 
@@ -274,47 +273,27 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             }
 
             /*
-             * 5. Si se pidió overwrite, se borran SOLO las descripciones generadas por IA
-             * previas de este artículo. Las cargadas a mano por una persona nunca se tocan.
+             * 5. Se guarda: lo seguro como descripciones del artículo, lo dudoso como propuesta a
+             * revisar (no se ve en ningún lado hasta que alguien la apruebe). Si se pidió
+             * overwrite, antes se borran SOLO las descripciones de IA previas y la propuesta que
+             * estuviera a revisar; las cargadas a mano por una persona nunca se tocan.
              */
-            if ($this->overwrite) {
-                Description::where('article_id', $article->id)
-                    ->where('ai_generated', true)
-                    ->delete();
-            }
-
-            $description_ids = [];
-            $first_content    = '';
-
-            foreach ($result['sections'] as $section) {
-                $description = Description::create([
-                    'title'         => $section['title'],
-                    'content'       => $section['content'],
-                    'article_id'    => $article->id,
-                    'ai_generated'  => true,
-                    'ai_confidence' => $result['confidence'],
-                    'ai_sources'    => $result['sources'],
-                    // ai_reviewed_at queda NULL: nadie la revisó todavía.
-                ]);
-
-                $description_ids[] = $description->id;
-
-                if ($first_content === '') {
-                    $first_content = $section['content'];
-                }
-            }
+            $guardado = AiDescriptionReviewHelper::guardar_resultado($article, $result, $this->overwrite);
 
             /*
              * needs_review y processed son EXCLUYENTES: acá la baja confianza significa "no
              * publicado todavía", no "publicado con dudas" (a diferencia del batch de imágenes).
+             * `description_ids` sigue en el payload (vacío: lo dudoso ya no crea filas) para no
+             * romperle la forma a un frontend viejo; `proposal_id` es lo nuevo.
              */
-            if ($result['confidence'] === 'low') {
+            if ($guardado['tipo'] === AiDescriptionReviewHelper::GUARDADO_A_REVISAR) {
                 $needs_review++;
                 $needs_review_items[] = [
                     'article_id'      => $article->id,
                     'name'            => $this->get_article_display_name($article),
-                    'description_ids' => $description_ids,
-                    'preview'         => mb_substr($first_content, 0, 140),
+                    'description_ids' => [],
+                    'proposal_id'     => $guardado['proposal_id'],
+                    'preview'         => mb_substr($guardado['primer_texto'], 0, 140),
                 ];
                 // NO se sincroniza a TiendaNube: no se publica sin revisión humana.
             } else {
