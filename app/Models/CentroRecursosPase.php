@@ -10,6 +10,9 @@ use Illuminate\Database\Eloquent\Model;
  * Lo crea y lo canjea `CentroRecursosPaseHelper`; nadie más escribe esta tabla. Solo se guarda el
  * hash del pase (`token_hash`), y además va en `$hidden` para que no salga en ningún JSON ni en el
  * registro de auditoría (que enmascara los campos ocultos).
+ *
+ * `soporte` (misión centro-recursos-soporte-y-tema, 14/10/2026): el pase lo emitió un login maestro
+ * y abre la página en SOLO LECTURA. Lo lee el canje para avisárselo al admin.
  */
 class CentroRecursosPase extends Model
 {
@@ -29,6 +32,7 @@ class CentroRecursosPase extends Model
         'user_id',
         'token_hash',
         'video',
+        'soporte',
         'expires_at',
         'usado_at',
     ];
@@ -49,6 +53,7 @@ class CentroRecursosPase extends Model
      */
     protected $casts = [
         'user_id'    => 'integer',
+        'soporte'    => 'boolean',
         'expires_at' => 'datetime',
         'usado_at'   => 'datetime',
     ];

@@ -21,8 +21,11 @@ use Tests\EmpresaTestCase;
  *    lectura previa: dos canjes simultáneos del mismo pase no pueden ganar los dos.
  *  - En una base compartida (51 comercios en `u767360347_empresa`), un pase de un comercio no se
  *    canjea por la API de otro (`app.USER_ID`), y ese intento no le quema el pase al dueño.
- *  - La forma exacta de la respuesta, que lee admin-api: `user.{id,name,email,owner_id}` y `video`,
- *    y el 404 `{"error": "pase_invalido"}` para todo lo que no vale.
+ *  - La forma exacta de la respuesta, que lee admin-api: `user.{id,name,email,owner_id}`, `video` y
+ *    `soporte`, y el 404 `{"error": "pase_invalido"}` para todo lo que no vale.
+ *  - `soporte` (misión centro-recursos-soporte-y-tema, 14/10/2026): true cuando el pase lo emitió un
+ *    login maestro (el admin abre entonces una sesión de SOLO LECTURA), false en todo lo demás. Se
+ *    agrega a la respuesta sin sacar ni renombrar nada: un admin que no lo conoce lo ignora.
  *  - La clave del admin, cuando el grupo la exige.
  *
  * @group centro-recursos
@@ -133,13 +136,109 @@ class CanjearPaseTest extends EmpresaTestCase
                      'email'    => $this->dueno->email,
                      'owner_id' => null,
                  ],
-                 'video' => 'T1.29',
+                 'video'   => 'T1.29',
+                 'soporte' => false,
              ]);
 
         $fila = $this->fila_de($pase);
 
         $this->assertNotNull($fila->usado_at, 'El canje lo marca usado.');
         $this->assertTrue(Carbon::now()->equalTo($fila->usado_at));
+    }
+
+    /**
+     * 🔴 Un pase de soporte (el que emite un login maestro) vuelve con `soporte: true`, el resto de la
+     * respuesta igual que siempre. El admin lo usa para abrir una sesión de solo lectura.
+     */
+    public function test_un_pase_de_soporte_vuelve_con_soporte_true()
+    {
+        $pase = CentroRecursosPaseHelper::crear($this->dueno, 'T1.29', true);
+
+        $this->assertTrue($this->fila_de($pase)->soporte);
+
+        $this->canjear($pase)
+             ->assertStatus(200)
+             ->assertExactJson([
+                 'user' => [
+                     'id'       => (int) $this->dueno->id,
+                     'name'     => $this->dueno->name,
+                     'email'    => $this->dueno->email,
+                     'owner_id' => null,
+                 ],
+                 'video'   => 'T1.29',
+                 'soporte' => true,
+             ]);
+
+        $this->assertNotNull($this->fila_de($pase)->usado_at, 'El pase de soporte también queda usado.');
+    }
+
+    /**
+     * El pase de soporte es de un solo uso, igual que uno normal: el segundo canje da `pase_invalido`
+     * (un segundo después, para que el UPDATE no pueda "no afectar" por escribir los mismos valores).
+     */
+    public function test_un_pase_de_soporte_sirve_una_sola_vez()
+    {
+        $pase = CentroRecursosPaseHelper::crear($this->dueno, null, true);
+
+        $this->canjear($pase)->assertStatus(200)->assertJson(['soporte' => true]);
+
+        Carbon::setTestNow(Carbon::now()->addSecond());
+
+        $this->canjear($pase)
+             ->assertStatus(404)
+             ->assertExactJson(['error' => 'pase_invalido']);
+    }
+
+    /**
+     * El canje atómico también vale para un pase de soporte: si otro canje gana entre la lectura y el
+     * UPDATE, este pierde y NO devuelve el pase (ni su marca de soporte).
+     */
+    public function test_el_canje_de_un_pase_de_soporte_tambien_es_atomico()
+    {
+        $pase = CentroRecursosPaseHelper::crear($this->dueno, null, true);
+
+        CentroRecursosPase::retrieved(function ($fila) {
+            DB::table('centro_recursos_pases')
+                ->where('id', $fila->id)
+                ->update(['usado_at' => Carbon::now()->subSecond()]);
+        });
+
+        try {
+            $this->assertNull(CentroRecursosPaseHelper::canjear($pase));
+        } finally {
+            CentroRecursosPase::flushEventListeners();
+        }
+    }
+
+    /**
+     * Un pase de los que ya existían antes de la columna (o creado sin la marca) vale como normal:
+     * `soporte: false`. Es lo que garantiza que los pases vivos al desplegar siguen andando igual.
+     */
+    public function test_un_pase_sin_la_marca_de_soporte_canjea_como_normal()
+    {
+        $plano = Str::random(CentroRecursosPaseHelper::LARGO);
+
+        CentroRecursosPase::create([
+            'user_id'    => $this->dueno->id,
+            'token_hash' => hash('sha256', $plano),
+            'expires_at' => Carbon::now()->addMinutes(5),
+        ]);
+
+        $this->canjear($plano)
+             ->assertStatus(200)
+             ->assertJson(['soporte' => false]);
+    }
+
+    /**
+     * El helper devuelve `soporte` como booleano estricto, en los dos casos.
+     */
+    public function test_el_helper_devuelve_soporte_como_booleano()
+    {
+        $normal = CentroRecursosPaseHelper::canjear(CentroRecursosPaseHelper::crear($this->dueno));
+        $soporte = CentroRecursosPaseHelper::canjear(CentroRecursosPaseHelper::crear($this->dueno, null, true));
+
+        $this->assertSame(false, $normal['soporte']);
+        $this->assertSame(true, $soporte['soporte']);
     }
 
     /**
@@ -153,6 +252,8 @@ class CanjearPaseTest extends EmpresaTestCase
 
         $this->assertArrayHasKey('video', $respuesta->json(), 'La clave `video` va siempre, aunque sea null.');
         $this->assertNull($respuesta->json('video'));
+        $this->assertArrayHasKey('soporte', $respuesta->json(), 'La clave `soporte` va siempre, aunque sea false.');
+        $this->assertFalse($respuesta->json('soporte'));
     }
 
     /**
@@ -279,7 +380,8 @@ class CanjearPaseTest extends EmpresaTestCase
                      'email'    => $empleado->email,
                      'owner_id' => (int) $this->dueno->id,
                  ],
-                 'video' => null,
+                 'video'   => null,
+                 'soporte' => false,
              ]);
     }
 
