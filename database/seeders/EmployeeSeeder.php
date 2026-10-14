@@ -105,6 +105,12 @@ class EmployeeSeeder extends Seeder
         porque todos tienen `sale.index` o `client.index`, que es el criterio de Lucas para
         heredarlo. Este seeder lo corre `DemoSetupHelper` y la demo no corre el seeder suelto
         `PermissionComprobantesIndexSeeder`: sin esto los empleados de las demos pierden Comprobantes.
+
+        Misión permiso-crear-movimiento-deposito (14/10/2026): los cuatro llevan también
+        `deposit_movement.store` porque todos tienen `article.index`, que es el criterio de Lucas
+        para heredarlo. Misma razón: la demo no corre el seeder suelto
+        `PermissionCrearMovimientoDepositoSeeder`, y sin esto una demo nueva no podría crear
+        movimientos de depósito con ninguno de los empleados de ejemplo.
     */
     function empleados() {
 
@@ -127,6 +133,7 @@ class EmployeeSeeder extends Seeder
                     'client.update',
                     'sale.store',
                     'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
             [
@@ -146,6 +153,7 @@ class EmployeeSeeder extends Seeder
                     'sale.store',
                     'sale.update',
                     'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
             [
@@ -165,6 +173,7 @@ class EmployeeSeeder extends Seeder
                     'sale.store',
                     'sale.update',
                     'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
             [
@@ -184,6 +193,7 @@ class EmployeeSeeder extends Seeder
                     'sale.store',
                     'sale.update',
                     'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
         ];
