@@ -8,6 +8,7 @@ use App\Models\ArticleDescriptionProposal;
 use App\Models\Description;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * La revisión de las descripciones automáticas (misión alertas-descripciones, 14/10/2026): qué hace
@@ -63,6 +64,9 @@ class AiDescriptionReviewHelper
 
     /** El mensaje de un 404 de propuesta. */
     const MENSAJE_SIN_PROPUESTA = 'Ese artículo no tiene una descripción esperando revisión.';
+
+    /** Artículos por tanda al barrer descripciones viejas pendientes (barrer_pendientes()). */
+    const TANDA_DEL_BARRIDO = 200;
 
     /* ----------------------------------------------------------------------------------------
      * El lote
@@ -229,6 +233,205 @@ class AiDescriptionReviewHelper
     }
 
     /* ----------------------------------------------------------------------------------------
+     * Barrido
+     * -------------------------------------------------------------------------------------- */
+
+    /**
+     * Pone al día lo pendiente de un dueño. Idempotente: corre al principio de resumen(), de
+     * revision() y del lote, y cuando no hay nada que hacer cuesta dos consultas livianas.
+     *
+     * (a) Mueve a propuestas `a_revisar` las descripciones de IA de baja confianza sin revisar que
+     *     todavía estén en `descriptions` (`Description::pendingAiReview()`).
+     *     🔴 POR QUÉ, si la migración `mover_descripciones_ia_pendientes_a_propuestas` ya las movió:
+     *     un lote que estaba corriendo durante el deploy termina con el código VIEJO y las sigue
+     *     guardando ahí, después de que la migración pasó; y la migración no vuelve a correr. Sin
+     *     esto, esas quedan visibles en la tienda sin que nadie las apruebe.
+     * (b) Descarta (sin persona: `resolved_by` null) las propuestas `a_revisar` de un artículo que
+     *     ya tiene una descripción escrita a mano: el dueño la escribió después, y aprobar la
+     *     sugerencia se la duplicaría.
+     *
+     * Nunca lanza: si algo falla queda en el log y el número rojo o la lista se arman igual.
+     *
+     * @param  int $owner_id
+     * @return array  ['movidas' => artículos movidos, 'descartadas' => propuestas descartadas]
+     */
+    public static function barrer_pendientes($owner_id)
+    {
+        $resultado = ['movidas' => 0, 'descartadas' => 0];
+
+        try {
+            $resultado['movidas']     = self::mover_pendientes_viejas((int) $owner_id);
+            $resultado['descartadas'] = self::descartar_las_que_tienen_descripcion_humana((int) $owner_id);
+        } catch (\Throwable $e) {
+            Log::warning('[DescripcionesIA] No se pudo barrer lo pendiente.', [
+                'user_id' => (int) $owner_id,
+                'error'   => $e->getMessage(),
+            ]);
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * (a) de barrer_pendientes().
+     *
+     * 🔴 Es la MISMA lógica que la migración `2026_10_14_180100_mover_descripciones_ia_pendientes_a_propuestas`,
+     * duplicada a propósito: la migración tiene que quedar autónoma (corre con el código de su
+     * versión y no puede depender de un helper que cambie después). Si se toca una, revisar la
+     * otra. La diferencia: acá se acota al dueño, y solo se recorre si un exists() da true.
+     *
+     * @param  int $owner_id
+     * @return int  Cuántos artículos se movieron.
+     */
+    protected static function mover_pendientes_viejas($owner_id)
+    {
+        // Los artículos del dueño, incluidos los de la papelera (DB::table no filtra deleted_at).
+        $pendientes = function () use ($owner_id) {
+            return DB::table('descriptions')
+                ->join('articles', 'articles.id', '=', 'descriptions.article_id')
+                ->where('articles.user_id', $owner_id)
+                ->where('descriptions.ai_generated', 1)
+                ->where('descriptions.ai_confidence', 'low')
+                ->whereNull('descriptions.ai_reviewed_at');
+        };
+
+        if (!$pendientes()->exists()) {
+            return 0;
+        }
+
+        $movidos = 0;
+
+        $pendientes()
+            ->select('descriptions.article_id')
+            ->groupBy('descriptions.article_id')
+            ->chunkById(self::TANDA_DEL_BARRIDO, function ($filas) use ($owner_id, &$movidos) {
+                $article_ids = [];
+
+                foreach ($filas as $fila) {
+                    $article_ids[] = (int) $fila->article_id;
+                }
+
+                $movidos += self::mover_tanda_de_pendientes($owner_id, $article_ids);
+            }, 'descriptions.article_id', 'article_id');
+
+        return $movidos;
+    }
+
+    /**
+     * Una tanda de (a): una propuesta por artículo con sus filas en orden de id (confianza y fuentes
+     * de la primera, fecha de la más vieja) y las filas, borradas. Todo en una transacción.
+     *
+     * @param  int   $owner_id
+     * @param  array $article_ids
+     * @return int
+     */
+    protected static function mover_tanda_de_pendientes($owner_id, array $article_ids)
+    {
+        return DB::transaction(function () use ($owner_id, $article_ids) {
+            $filas = DB::table('descriptions')
+                ->whereIn('article_id', $article_ids)
+                ->where('ai_generated', 1)
+                ->where('ai_confidence', 'low')
+                ->whereNull('ai_reviewed_at')
+                ->orderBy('article_id')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get(['id', 'article_id', 'title', 'content', 'ai_confidence', 'ai_sources', 'created_at']);
+
+            $por_articulo = [];
+
+            foreach ($filas as $fila) {
+                $por_articulo[(int) $fila->article_id][] = $fila;
+            }
+
+            $ahora      = Carbon::now();
+            $propuestas = [];
+            $a_borrar   = [];
+
+            foreach ($por_articulo as $article_id => $filas_del_articulo) {
+                $primera   = $filas_del_articulo[0];
+                $secciones = [];
+                $creada    = null;
+
+                foreach ($filas_del_articulo as $fila) {
+                    $secciones[] = [
+                        'title'   => is_null($fila->title) ? '' : (string) $fila->title,
+                        'content' => is_null($fila->content) ? '' : (string) $fila->content,
+                    ];
+
+                    $a_borrar[] = (int) $fila->id;
+
+                    if (!is_null($fila->created_at) && (is_null($creada) || $fila->created_at < $creada)) {
+                        $creada = $fila->created_at;
+                    }
+                }
+
+                $propuestas[] = [
+                    'user_id'       => $owner_id,
+                    'article_id'    => (int) $article_id,
+                    'sections'      => json_encode($secciones, JSON_UNESCAPED_UNICODE),
+                    'ai_confidence' => $primera->ai_confidence,
+                    // Ya es el JSON [{source, url, title}] que guardó el lote: se copia tal cual.
+                    'ai_sources'    => $primera->ai_sources,
+                    'status'        => ArticleDescriptionProposal::STATUS_A_REVISAR,
+                    'resolved_at'   => null,
+                    'resolved_by'   => null,
+                    'created_at'    => is_null($creada) ? $ahora : $creada,
+                    'updated_at'    => $ahora,
+                ];
+            }
+
+            if (!empty($propuestas)) {
+                DB::table('article_description_proposals')->insert($propuestas);
+            }
+
+            foreach (array_chunk($a_borrar, 1000) as $ids) {
+                DB::table('descriptions')->whereIn('id', $ids)->delete();
+            }
+
+            return count($propuestas);
+        });
+    }
+
+    /**
+     * (b) de barrer_pendientes(). Primero se buscan los ids (una lectura) y solo si hay se escribe:
+     * esto corre en cada resumen y un UPDATE sin filas igual toma locks.
+     *
+     * @param  int $owner_id
+     * @return int  Cuántas propuestas se descartaron.
+     */
+    protected static function descartar_las_que_tienen_descripcion_humana($owner_id)
+    {
+        $ids = DB::table('article_description_proposals')
+            ->where('article_description_proposals.user_id', $owner_id)
+            ->where('article_description_proposals.status', ArticleDescriptionProposal::STATUS_A_REVISAR)
+            ->whereExists(function ($humana) {
+                $humana->select(DB::raw(1))
+                    ->from('descriptions')
+                    ->whereColumn('descriptions.article_id', 'article_description_proposals.article_id')
+                    ->where('descriptions.ai_generated', 0);
+            })
+            ->pluck('article_description_proposals.id')
+            ->all();
+
+        if (empty($ids)) {
+            return 0;
+        }
+
+        $ahora = Carbon::now();
+
+        return (int) DB::table('article_description_proposals')
+            ->whereIn('id', $ids)
+            ->where('status', ArticleDescriptionProposal::STATUS_A_REVISAR)
+            ->update([
+                'status'      => ArticleDescriptionProposal::STATUS_DESCARTADA,
+                'resolved_at' => $ahora,
+                'resolved_by' => null,
+                'updated_at'  => $ahora,
+            ]);
+    }
+
+    /* ----------------------------------------------------------------------------------------
      * Conteos y listados
      * -------------------------------------------------------------------------------------- */
 
@@ -257,6 +460,9 @@ class AiDescriptionReviewHelper
      */
     public static function resumen($owner_id)
     {
+        // Antes de contar, lo que dejó un lote viejo o lo que ya escribió a mano el dueño.
+        self::barrer_pendientes($owner_id);
+
         $conteos = self::conteos($owner_id);
 
         return [
@@ -281,6 +487,9 @@ class AiDescriptionReviewHelper
      */
     public static function revision($owner_id, $solapa, $pagina, $por_pagina, $buscar = '')
     {
+        // Antes de listar, lo que dejó un lote viejo o lo que ya escribió a mano el dueño.
+        self::barrer_pendientes($owner_id);
+
         $pagina     = max(1, (int) $pagina);
         $por_pagina = self::por_pagina($por_pagina);
         $buscar     = is_string($buscar) ? trim($buscar) : '';

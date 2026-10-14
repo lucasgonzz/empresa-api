@@ -138,6 +138,14 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
          */
         $batch_uuid = $this->batch_uuid ? (string) $this->batch_uuid : (string) Str::uuid();
 
+        /*
+         * Antes de decidir qué saltear, se pone al día lo pendiente del dueño: lo dudoso que un lote
+         * con el código viejo dejó en `descriptions` pasa a propuesta, y la propuesta de un artículo
+         * que ya tiene descripción escrita a mano se descarta. Ver
+         * AiDescriptionReviewHelper::barrer_pendientes() (nunca lanza).
+         */
+        AiDescriptionReviewHelper::barrer_pendientes($this->user_id);
+
         // Contadores del resumen final (mismo patrón que ProcessArticleBatchImagesJob).
         $processed              = 0;
         $skipped                = 0;
