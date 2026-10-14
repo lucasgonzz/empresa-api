@@ -1203,9 +1203,30 @@ class ArticleController extends Controller
         return response(null, 200);
     }
 
+    /**
+     * Edición de stock por sucursal del Listado (y del asistente IA, que llega acá con un Request
+     * armado y la persona en el user resolver).
+     *
+     * Misión stock-sucursal-desde-listado (14/10/2026): si alguna sucursal que el usuario cambió
+     * tiene hoy en la base un stock distinto del que él tenía en pantalla (`pivot.amount_original`),
+     * contesta 409 con el motivo, los conflictos y el artículo actualizado, SIN aplicar ningún
+     * renglón. Sin `errors` en la respuesta: así la SPA muestra el `message` tal cual.
+     */
     function update_addresses_stock(Request $request) {
 
-        $helper = new UpdateAddressesStockHelper($request->article_id, $request->addresses);
+        $helper = new UpdateAddressesStockHelper($request->article_id, $request->addresses, $request->user());
+
+        $conflictos = $helper->conflictos();
+
+        if (count($conflictos) > 0) {
+
+            return response()->json([
+                'message'    => UpdateAddressesStockHelper::mensaje_de_conflictos($conflictos),
+                'conflictos' => $conflictos,
+                'model'      => $this->fullModel('Article', $request->article_id),
+            ], 409);
+        }
+
         $helper->update_addresses();
         $helper->set_stock_min_max();
 
