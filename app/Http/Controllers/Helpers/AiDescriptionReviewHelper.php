@@ -65,6 +65,9 @@ class AiDescriptionReviewHelper
     /** El mensaje de un 404 de propuesta. */
     const MENSAJE_SIN_PROPUESTA = 'Ese artículo no tiene una descripción esperando revisión.';
 
+    /** El mensaje del 409 de aprobar un artículo que ya tiene descripción escrita a mano. */
+    const MENSAJE_YA_TIENE_HUMANA = 'Este artículo ya tiene una descripción escrita a mano: la sugerencia se descartó para no duplicarla.';
+
     /** Artículos por tanda al barrer descripciones viejas pendientes (barrer_pendientes()). */
     const TANDA_DEL_BARRIDO = 200;
 
@@ -735,15 +738,20 @@ class AiDescriptionReviewHelper
      * transacción: un doble clic (o aprobar uno y el mismo en lote) no puede crear las descripciones
      * dos veces.
      *
+     * 🔴 Si mientras tanto alguien le escribió al artículo una descripción a mano, aprobar se la
+     * duplicaría: la propuesta queda descartada (con quien la quiso aprobar) y la respuesta es 409.
+     *
      * @param  int        $owner_id
      * @param  int        $article_id
      * @param  array|null $secciones    [{title, content}] ya validadas, o null = las de la propuesta.
      * @param  int|null   $resolved_by
-     * @return array  ['status' => 200|404, 'message' => string|null]
+     * @return array  ['status' => 200|404|409, 'message' => string|null]
      */
     public static function aprobar($owner_id, $article_id, $secciones = null, $resolved_by = null)
     {
-        $article = DB::transaction(function () use ($owner_id, $article_id, $secciones, $resolved_by) {
+        $tiene_humana = false;
+
+        $article = DB::transaction(function () use ($owner_id, $article_id, $secciones, $resolved_by, &$tiene_humana) {
             $propuesta = self::propuesta_a_revisar_bloqueada($owner_id, $article_id);
 
             if (is_null($propuesta)) {
@@ -753,6 +761,13 @@ class AiDescriptionReviewHelper
             $article = Article::where('id', (int) $article_id)
                 ->where('user_id', (int) $owner_id)
                 ->first();
+
+            if ($article->descriptions()->human()->exists()) {
+                $tiene_humana = true;
+                self::resolver($propuesta, ArticleDescriptionProposal::STATUS_DESCARTADA, $resolved_by);
+
+                return null;
+            }
 
             $ahora = Carbon::now();
             $a_guardar = self::secciones_de(is_null($secciones) ? $propuesta->sections : $secciones);
@@ -773,6 +788,10 @@ class AiDescriptionReviewHelper
 
             return $article;
         });
+
+        if ($tiene_humana) {
+            return self::respuesta(409, self::MENSAJE_YA_TIENE_HUMANA);
+        }
 
         if (is_null($article)) {
             return self::respuesta(404, self::MENSAJE_SIN_PROPUESTA);
@@ -815,7 +834,8 @@ class AiDescriptionReviewHelper
 
     /**
      * Aprobar (tal cual) o descartar varios artículos. Los que no tienen propuesta a revisar (ajenos,
-     * borrados, ya resueltos) se ignoran sin error.
+     * borrados, ya resueltos) se ignoran sin error. Al aprobar, los que ya tienen descripción escrita
+     * a mano se descartan igual que de a uno (409 en aprobar()) y no cuentan como resueltos.
      *
      * @param  string   $accion       aprobar | descartar
      * @param  int      $owner_id

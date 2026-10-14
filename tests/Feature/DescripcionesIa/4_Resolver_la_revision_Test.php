@@ -176,6 +176,70 @@ class Resolver_la_revision_Test extends DescripcionesIaTestCase
         $this->assertSame(0, Description::where('article_id', $borrado->id)->count());
     }
 
+    /**
+     * 🔴 Si al aprobar el artículo ya tiene una descripción escrita a mano (alguien la cargó mientras
+     * la sugerencia esperaba), no se duplica: la propuesta queda descartada (con quien la quiso
+     * aprobar) y la respuesta es 409 con el mensaje y los conteos.
+     *
+     * @test
+     * @group descripciones_ia
+     */
+    public function aprobar_un_articulo_con_descripcion_a_mano_la_descarta_con_409()
+    {
+        $articulo  = $this->crear_articulo('Taladro');
+        $propuesta = $this->sembrar_propuesta($articulo);
+        $humana    = $this->sembrar_descripcion_humana($articulo, 'La escribió el dueño');
+
+        $this->postJson('api/article-description-ai/revision/'.$articulo->id.'/aprobar')
+            ->assertStatus(409)
+            ->assertExactJson([
+                'message' => 'Este artículo ya tiene una descripción escrita a mano: la sugerencia se descartó para no duplicarla.',
+                'conteos' => ['a_revisar' => 0, 'publicadas' => 0],
+            ]);
+
+        $propuesta = $this->propuesta_fresca($propuesta);
+        $this->assertSame('descartada', $propuesta->status);
+        $this->assertNotNull($propuesta->resolved_at);
+        $this->assertSame($this->owner->id, (int) $propuesta->resolved_by);
+        $this->assertSame([$humana->id], $this->descripciones_de($articulo)->pluck('id')->all(), 'Solo la humana.');
+
+        // Lo mismo con las secciones editadas.
+        $otro = $this->crear_articulo('Sierra');
+        $this->sembrar_propuesta($otro);
+        $this->sembrar_descripcion_humana($otro);
+
+        $this->postJson('api/article-description-ai/revision/'.$otro->id.'/aprobar', [
+            'secciones' => [['title' => 'Editada', 'content' => 'Editada']],
+        ])->assertStatus(409);
+        $this->assertCount(1, $this->descripciones_de($otro));
+    }
+
+    /**
+     * En lote, los que ya tienen descripción a mano se descartan igual y no cuentan como resueltos.
+     *
+     * @test
+     * @group descripciones_ia
+     */
+    public function aprobar_varios_descarta_los_que_tienen_descripcion_a_mano_sin_contarlos()
+    {
+        $normal     = $this->crear_articulo('Normal');
+        $con_humana = $this->crear_articulo('Con humana');
+        $p_normal   = $this->sembrar_propuesta($normal);
+        $p_humana   = $this->sembrar_propuesta($con_humana);
+        $this->sembrar_descripcion_humana($con_humana);
+
+        $this->postJson('api/article-description-ai/revision/aprobar-varios', [
+            'article_ids' => [$normal->id, $con_humana->id],
+        ])->assertStatus(200)->assertExactJson([
+            'resueltos' => 1,
+            'conteos'   => ['a_revisar' => 0, 'publicadas' => 1],
+        ]);
+
+        $this->assertSame('aprobada', $this->propuesta_fresca($p_normal)->status);
+        $this->assertSame('descartada', $this->propuesta_fresca($p_humana)->status);
+        $this->assertSame(0, Description::where('article_id', $con_humana->id)->where('ai_generated', true)->count());
+    }
+
     // ---------------------------------------------------------------------------------------------
     // En lote
     // ---------------------------------------------------------------------------------------------

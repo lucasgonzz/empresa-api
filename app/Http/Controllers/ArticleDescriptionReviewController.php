@@ -61,10 +61,12 @@ class ArticleDescriptionReviewController extends Controller
      * POST article-description-ai/revision/{article_id}/aprobar {secciones?: [{title, content}]}
      *
      * Sin `secciones` se aprueba tal cual la propuso la IA; con ellas, lo que escribió la persona.
+     * Si el artículo ya tiene una descripción escrita a mano, la sugerencia se descarta y responde
+     * 409 {message, conteos}.
      *
      * @param  \Illuminate\Http\Request $request
      * @param  int $article_id
-     * @return \Illuminate\Http\JsonResponse  {conteos} | 404 {message}
+     * @return \Illuminate\Http\JsonResponse  {conteos} | 404 {message} | 409 {message, conteos}
      */
     public function aprobar(Request $request, $article_id)
     {
@@ -220,6 +222,15 @@ class ArticleDescriptionReviewController extends Controller
      */
     protected function respuesta_con_conteos(array $resultado)
     {
+        // El 409 de aprobar (ya tenía descripción a mano) igual cambió algo: la propuesta quedó
+        // descartada, y la SPA necesita los conteos nuevos para el número rojo.
+        if ($resultado['status'] === 409) {
+            return response()->json([
+                'message' => $resultado['message'],
+                'conteos' => AiDescriptionReviewHelper::conteos($this->userId()),
+            ], 409);
+        }
+
         if ($resultado['status'] !== 200) {
             return response()->json(['message' => $resultado['message']], $resultado['status']);
         }
