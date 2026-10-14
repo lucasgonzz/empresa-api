@@ -683,10 +683,14 @@ class DemoSetupHelper
      * Crea el registro User principal de la demo con defaults tomados del
      * formulario original. Aísla la carga de campos del setup principal.
      *
-     * `doc_number`, `email` y `online` llevan `?? null`: hasta el 25/8/2026 se leían derecho
-     * y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con el
-     * `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
+     * `doc_number`, `email` y `online` se leen sin suponer que vienen: hasta el 25/8/2026 se
+     * leían derecho y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con
+     * el `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
      * admin-sync pasa `$request->all()` tal cual, así que las claves las decide quien llame.
+     *
+     * `online` no cae a null sino a `online_por_defecto()` (14/10/2026): una demo sin URL de
+     * tienda no muestra «Página web → Selección especial» en el Listado. Fuera de las tres demos
+     * sigue dando null, como antes.
      *
      * 🔴 `doc_number` NO lleva un valor por default, y es a propósito. Es el nombre de usuario
      * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y también la
@@ -723,7 +727,10 @@ class DemoSetupHelper
             'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
-            'online'                        => $data['online'] ?? null,
+            // Nunca vacío en una demo: sin él no hay «Página web → Selección especial» (ver online_por_defecto()).
+            'online'                        => (isset($data['online']) && trim((string) $data['online']) !== '')
+                ? $data['online']
+                : self::online_por_defecto(),
             'payment_expired_at'            => Carbon::now()->addMonths(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
@@ -795,6 +802,60 @@ class DemoSetupHelper
             'condicion_iva_precios'         => User::CONDICION_RRII,
             'usar_condicion_fiscal_en_costeo' => 1,
         ]);
+    }
+
+    /**
+     * La URL de la tienda online que va a `users.online` cuando el payload del demo setup no la
+     * trae (o la trae vacía).
+     *
+     * 🔴 POR QUÉ UNA DEMO NO PUEDE QUEDAR CON `users.online` VACÍO (pedido de Lucas, 14/10/2026,
+     * misión tiendas-demo-y-limpieza-tienda): sin esa URL el Listado no muestra «Página web →
+     * Selección especial», y la selección especial no tiene a qué tienda apuntar. admin-api manda
+     * `online` desde `ecommerce_spa_url` de la demo (RunDemoSetupService), pero ese dato puede
+     * faltar, y la demo arrancaba sin la acción que justamente se muestra en los videos.
+     *
+     * De dónde sale, en orden:
+     *
+     *   1. `config('app.DEMO_TIENDA_URL')` (env `DEMO_TIENDA_URL`), para una instancia que no siga la
+     *      convención de nombres o para cambiar de tienda sin tocar código.
+     *   2. El host de `config('app.url')`: las tres demos de producción tienen cada una su tienda
+     *      fija en comerciocity.store (`demo` o `api-demo` → `tienda`, `demo2` → `tienda2`,
+     *      `demo3` → `tienda3`).
+     *   3. Cualquier otro host (un cliente real, local, la suite): null, como antes de este cambio.
+     *
+     * Se lee `config()` y NUNCA `env()`: con `config:cache` activo, `env()` fuera de `config/`
+     * devuelve null. Es pública para poder probarla sola (tests/Feature/Semilla/DemoSetupUrlDeLaTiendaTest.php).
+     *
+     * @return string|null
+     */
+    public static function online_por_defecto()
+    {
+        $configurada = trim((string) config('app.DEMO_TIENDA_URL'));
+
+        if ($configurada !== '') {
+            return $configurada;
+        }
+
+        $url = trim((string) config('app.url'));
+        $host = parse_url($url, PHP_URL_HOST);
+
+        // Un APP_URL sin esquema ("api-demo.comerciocity.com") parse_url lo toma como path.
+        if (empty($host) && $url !== '') {
+            $host = parse_url('https://' . $url, PHP_URL_HOST);
+        }
+
+        $tiendas_por_host = [
+            'demo.comerciocity.com'      => 'https://tienda.comerciocity.store',
+            'api-demo.comerciocity.com'  => 'https://tienda.comerciocity.store',
+            'demo2.comerciocity.com'     => 'https://tienda2.comerciocity.store',
+            'api-demo2.comerciocity.com' => 'https://tienda2.comerciocity.store',
+            'demo3.comerciocity.com'     => 'https://tienda3.comerciocity.store',
+            'api-demo3.comerciocity.com' => 'https://tienda3.comerciocity.store',
+        ];
+
+        $host = strtolower((string) $host);
+
+        return isset($tiendas_por_host[$host]) ? $tiendas_por_host[$host] : null;
     }
 
     /**
