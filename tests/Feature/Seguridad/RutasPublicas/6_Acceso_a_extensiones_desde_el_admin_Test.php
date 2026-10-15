@@ -236,6 +236,21 @@ class Acceso_a_extensiones_desde_el_admin_Test extends RutasPublicasTestCase
         $this->get('/user/extencions/edit')->assertStatus(200);
     }
 
+    /**
+     * Un HEAD (prefetch, vista previa de un enlace) no canjea ni gasta el token: solo un GET.
+     *
+     * @test
+     */
+    public function un_head_no_gasta_el_token()
+    {
+        $token = $this->emitir_un_acceso();
+
+        $this->call('HEAD', '/extensiones', ['acceso' => $token])->assertStatus(404);
+        $this->assertNull($this->acceso_hasta());
+
+        $this->get('/extensiones?acceso=' . $token)->assertStatus(302);
+    }
+
     /** @test */
     public function el_canje_solo_funciona_una_vez()
     {

@@ -185,7 +185,7 @@ class RutaDeMantenimiento
         }
 
         // 6. El token de acceso que emitió el admin, solo en el configurador (`:demo`) y solo en un GET.
-        if ($opcion === self::OPCION_DEMO && $this->es_get_o_head($request) && $this->canjear_el_acceso($request)) {
+        if ($opcion === self::OPCION_DEMO && $request->isMethod('GET') && $this->canjear_el_acceso($request)) {
             return $this->redirigir_sin_la_clave($request);
         }
 
@@ -305,7 +305,14 @@ class RutaDeMantenimiento
         }
 
         // Minúsculas: el token se emite en minúsculas, y así `AB..` y `ab..` no son dos tokens distintos.
-        if (Cache::pull(self::clave_de_cache_del_acceso(strtolower($token))) === null) {
+        /*
+         * Un solo uso, también bajo carrera: `Cache::pull` es un `get` seguido de un `forget` sin lock, y dos
+         * canjes simultáneos podían pasar los dos. `forget` devuelve true UNA sola vez (DEL de redis es atómico y
+         * el segundo `unlink` del store de archivos da false), así que el que no logra borrarla no canjea.
+         */
+        $clave_en_cache = self::clave_de_cache_del_acceso(strtolower($token));
+
+        if (!Cache::has($clave_en_cache) || !Cache::forget($clave_en_cache)) {
             return false;
         }
 
