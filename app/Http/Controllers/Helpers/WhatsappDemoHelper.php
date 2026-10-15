@@ -190,6 +190,7 @@ class WhatsappDemoHelper
     {
         $config = WhatsappBotConfig::where('user_id', $owner_id)->first();
         $es_nueva = is_null($config);
+        $ya_era_de_demo = ! $es_nueva && $config->kapso_api_key === self::CLAVE_FALSA && trim((string) $config->webhook_secret) !== '';
 
         if ($es_nueva) {
             $config = new WhatsappBotConfig();
@@ -197,14 +198,19 @@ class WhatsappDemoHelper
             // Sin personalidad ni habilidades propias: el agente usa los valores de fábrica, y la
             // IA de los chats nuevos nace prendida como en cualquier negocio nuevo.
             $config->ai_enabled_default = true;
-            // El botón «Simular mensaje del cliente» es parte de lo que se filma del módulo. Se
-            // prende solo en el alta: si ya había una fila, lo que el dueño de la demo decidió se respeta.
+        }
+
+        // El botón «Simular mensaje del cliente» es parte de lo que se filma del módulo. Se prende
+        // cuando la fila es nueva o cuando esta es la PRIMERA vez que se convierte en la de una demo
+        // (una base copiada de un cliente real trae el valor de ese cliente, apagado de fábrica, que
+        // no es una decisión de la demo). Si la fila ya era de este helper se respeta lo que se
+        // haya decidido después.
+        if (! $ya_era_de_demo) {
             $config->chat_simulation_enabled = true;
         }
 
         // Si la fila ya era de este helper se conserva su secreto (así dos corridas dejan lo
         // mismo); si no, se genera uno nuevo.
-        $ya_era_de_demo = ! $es_nueva && $config->kapso_api_key === self::CLAVE_FALSA && trim((string) $config->webhook_secret) !== '';
 
         $config->kapso_api_key = self::CLAVE_FALSA;
         $config->phone_number_id = self::PHONE_NUMBER_ID_FALSO;
@@ -525,11 +531,13 @@ class WhatsappDemoHelper
     {
         $vistos = [];
 
+        // Solo las columnas que se usan: en una base copiada de un cliente real pueden ser decenas
+        // de miles de clientes y hidratar el modelo entero se come la memoria.
         return Client::where('user_id', $owner_id)
             ->whereNotNull('phone')
             ->where('phone', '!=', '')
             ->orderBy('id')
-            ->get()
+            ->get(['id', 'name', 'phone'])
             ->filter(function ($cliente) use (&$vistos) {
                 $digitos = WhatsappPhoneHelper::normalize($cliente->phone);
 

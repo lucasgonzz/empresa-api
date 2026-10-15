@@ -955,6 +955,60 @@ class Envio_simulado_Test extends TestCase
     }
 
     /**
+     * El caso negativo en los SEIS caminos de envío, no solo en el texto: con la columna en 1 en
+     * una instalación que no es de demo, cada método le habla a Kapso de verdad.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function fuera_de_una_demo_los_seis_caminos_de_envio_le_hablan_a_kapso()
+    {
+        config(['app.env' => 'production', 'app.FOR_USER' => null]);
+
+        Http::fake([
+            'api.kapso.ai/*/media' => Http::response(['id' => 'MEDIA-REAL'], 200),
+            'api.kapso.ai/*'       => Http::response(['messages' => [['id' => 'wamid.REAL']]], 200),
+            '*'                    => Http::response([], 200),
+        ]);
+
+        $config = $this->config->fresh();
+        $service = new WhatsappBotSendService();
+
+        $plantilla = WhatsappTemplate::create([
+            'user_id'            => $this->owner->id,
+            'name'               => 'Mensaje libre',
+            'meta_template_name' => 'cc_cli_mensaje_libre',
+            'category'           => 'utility',
+            'language'           => 'es_AR',
+            'body_preview'       => 'Hola {{1}}',
+            'variables'          => ['Nombre'],
+            'status'             => 'aprobada',
+            'is_system'          => true,
+        ]);
+
+        $archivo = tempnam(sys_get_temp_dir(), 'wa');
+        file_put_contents($archivo, 'contenido real');
+
+        $ids = [
+            'texto'      => $service->send_text(self::PHONE, 'hola', $config),
+            'plantilla'  => $service->send_template(self::PHONE, $plantilla, ['Juan'], $config),
+            'documento'  => $service->send_document(self::PHONE, 'https://api-test.comerciocity.com/x.pdf', 'x.pdf', '', $config),
+            'imagen'     => $service->send_image(self::PHONE, ['link' => 'https://api-test.comerciocity.com/x.jpg'], '', $config),
+            'audio'      => $service->send_audio(self::PHONE, 'MEDIA-1', 'audio/ogg', $config),
+            'subida'     => $service->upload_media($archivo, 'image/jpeg', 'x.jpg', $config),
+        ];
+
+        @unlink($archivo);
+
+        foreach ($ids as $camino => $id) {
+            $this->assertNotNull($id, $camino . ': tendría que haber salido por Kapso.');
+            $this->assertFalse(WhatsappBotSendService::es_id_simulado($id), $camino . ': no puede ser un id del modo demostración.');
+        }
+
+        Http::assertSentCount(6);
+    }
+
+    /**
      * `modo_demostracion` sale en la configuración (es lo que lee el cartel de la SPA) y refleja
      * el valor efectivo, no la columna cruda.
      *

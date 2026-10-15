@@ -401,6 +401,7 @@ class Envio_simulado_Demo_setup_Test extends TestCase
         $segunda = WhatsappDemoHelper::preparar($this->owner);
 
         $this->assertSame('actualizada', $segunda['config']);
+        $this->assertSame(6, $segunda['plantillas_aprobadas'], 'En la segunda corrida siguen aprobadas las seis: no se informa 0.');
         $this->assertSame(0, $segunda['chats_sembrados'], 'Los clientes ya tienen su chat: no se vuelve a sembrar.');
         $this->assertSame(1, WhatsappBotConfig::where('user_id', $this->owner->id)->count());
         $this->assertSame(6, WhatsappTemplate::where('user_id', $this->owner->id)->count());
@@ -674,6 +675,40 @@ class Envio_simulado_Demo_setup_Test extends TestCase
     }
 
     /**
+     * Las opciones que BORRAN chats no corren sin confirmación: sin terminal (como un script) y sin
+     * `--force` se niegan y no tocan nada; con `--force` hacen lo suyo.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function las_opciones_que_borran_chats_piden_confirmacion_y_sin_terminal_exigen_force()
+    {
+        $real = $this->cliente('Cliente Real', '3415551234', true);
+
+        $chat_real = WhatsappChat::create([
+            'user_id'         => $this->owner->id,
+            'client_id'       => $real->id,
+            'phone'           => '5493415551234',
+            'last_message_at' => now(),
+            'last_inbound_at' => now(),
+        ]);
+
+        config(['app.USER_ID' => $this->owner->id]);
+
+        // Sin --force y sin terminal: no borra, no escribe nada y sale con 1.
+        $this->assertSame(1, Artisan::call('whatsapp:demo-simulado', ['--telefonos-de-ficcion' => true, '--no-interaction' => true]));
+        $this->assertNotNull(WhatsappChat::find($chat_real->id));
+        $this->assertNull(WhatsappBotConfig::where('user_id', $this->owner->id)->first());
+        $this->assertSame('3415551234', $real->fresh()->phone);
+
+        // Con --force: hace lo suyo.
+        $this->assertSame(0, Artisan::call('whatsapp:demo-simulado', ['--telefonos-de-ficcion' => true, '--force' => true]));
+        $this->assertNull(WhatsappChat::find($chat_real->id));
+        $this->assertNotNull(WhatsappBotConfig::where('user_id', $this->owner->id)->first());
+        $this->assertNotSame('3415551234', $real->fresh()->phone);
+    }
+
+    /**
      * El comando de verdad, sobre una instancia de demo.
      *
      * @group whatsapp
@@ -705,7 +740,9 @@ class Envio_simulado_Demo_setup_Test extends TestCase
     {
         $codigo = file_get_contents(base_path('app/Http/Controllers/Helpers/DemoSetupHelper.php'));
 
-        $posicion_semilla = strpos($codigo, "Artisan::call('semilla:datos'");
+        // Ancla en la LLAMADA y no en la primera mención: «Artisan::call('semilla:datos'» aparece antes
+        // en un comentario del método.
+        $posicion_semilla = strpos($codigo, "Artisan::call('semilla:datos', [], \$salida_semilla)");
         $posicion_whatsapp = strpos($codigo, 'self::preparar_whatsapp_de_la_demo($user);');
 
         $this->assertNotFalse($posicion_semilla);

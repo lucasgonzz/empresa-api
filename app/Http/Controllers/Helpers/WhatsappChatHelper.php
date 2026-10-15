@@ -424,6 +424,8 @@ class WhatsappChatHelper
      * 'enviando' nadie más la puede tomar ni borrar, así que no hay con quién correr.
      *
      * `delivery_status` NO se toca: sigue en `pendiente` hasta que llegue el evento de Meta.
+     * La única excepción es un envío del modo demostración (id `SIMULADO.…`): no hay webhook de
+     * Meta que lo avance, así que se deja `entregado` (ver el cuerpo del método).
      * Son dos ejes distintos ("¿lo aprobó un humano?" vs "¿lo entregó Meta?") y mezclarlos
      * rompería el rankeo anti-retroceso de `handle_delivery_status_event()`.
      *

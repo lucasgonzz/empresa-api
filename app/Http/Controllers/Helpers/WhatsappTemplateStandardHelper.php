@@ -142,16 +142,21 @@ class WhatsappTemplateStandardHelper
      * el dueño no se tocan. Idempotente. Si todavía no existen las crea primero.
      *
      * @param  int  $owner_id
-     * @return int  Cantidad de plantillas estándar que quedaron aprobadas.
+     * @return int  Cantidad de plantillas estándar que quedaron aprobadas (las seis, también en las corridas siguientes).
      */
     public static function aprobar_estandar_para($owner_id)
     {
         self::apply_for_owner($owner_id);
 
-        return WhatsappTemplate::where('user_id', $owner_id)
+        $estandar = WhatsappTemplate::where('user_id', $owner_id)
             ->where('is_system', true)
-            ->whereIn('meta_template_name', self::meta_template_names())
-            ->update(['status' => 'aprobada']);
+            ->whereIn('meta_template_name', self::meta_template_names());
+
+        // `update()` devuelve las filas que CAMBIARON: en la segunda corrida son cero aunque las
+        // seis sigan aprobadas, y se leería como «no aprobó nada». Se cuenta lo que quedó aprobado.
+        $estandar->update(['status' => 'aprobada']);
+
+        return $estandar->where('status', 'aprobada')->count();
     }
 
     /**

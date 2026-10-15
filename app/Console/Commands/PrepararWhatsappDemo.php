@@ -38,7 +38,8 @@ class PrepararWhatsappDemo extends Command
         {--telefonos-de-ficcion : Reemplaza los teléfonos de los clientes que no son de ficción (para bases copiadas de un cliente real, como demo3)}
         {--sin-chats : No siembra los chats de ejemplo}
         {--renovar-chats : Borra los chats de ejemplo que sembró este comando y los vuelve a sembrar (fechas de «hace un rato», sin los mensajes que se mandaron filmando)}
-        {--solo-medir : No escribe nada: informa cuántos teléfonos hay, cuántos no son de ficción y cuántos están repetidos}';
+        {--solo-medir : No escribe nada: informa cuántos teléfonos hay, cuántos no son de ficción y cuántos están repetidos}
+        {--force : No pide confirmación antes de borrar chats (--telefonos-de-ficcion y --renovar-chats), para correrlo desde un script}';
 
     /**
      * Descripción del comando para php artisan list.
@@ -69,6 +70,30 @@ class PrepararWhatsappDemo extends Command
         }
 
         $this->line('Dueño: ' . $owner->id . ' (' . $owner->name . ')');
+
+        // 🔴 --telefonos-de-ficcion y --renovar-chats BORRAN chats con sus mensajes, y no se puede
+        // deshacer: en demo y demo2 incluye lo que se armó filmando. Se muestra primero cuántos son
+        // y se pide confirmación; en un script (sin terminal) hace falta --force, y sin él no se borra.
+        $borra = ($this->option('telefonos-de-ficcion') || $this->option('renovar-chats')) && ! $this->option('solo-medir');
+
+        if ($borra && ! $this->option('force')) {
+            try {
+                $medicion = WhatsappDemoHelper::preparar($owner, ['solo_medir' => true]);
+            } catch (\Throwable $e) {
+                $this->error('No se pudo medir antes de borrar: ' . $e->getMessage());
+
+                return 1;
+            }
+
+            $this->line('Chats con un teléfono que no es de ficción (se borrarían con --telefonos-de-ficcion): ' . $medicion['chats_con_telefono_real']);
+            $this->line('Con --renovar-chats se borran además los chats de ejemplo que sembró este comando, y lo que se mandó filmando adentro.');
+
+            if (! $this->confirm('¿Borrar y seguir?', false)) {
+                $this->error('No se borró nada. Para correrlo sin preguntar (desde un script) agregá --force.');
+
+                return 1;
+            }
+        }
 
         try {
             $resumen = WhatsappDemoHelper::preparar($owner, [
