@@ -632,7 +632,7 @@ class WhatsappDemoHelper
                 'direction'        => $mensaje['direccion'],
                 'source'           => $mensaje['source'],
                 'sent_by_user_id'  => null,
-                'body'             => str_replace('{nombre}', self::primer_nombre($cliente), $mensaje['body']),
+                'body'             => $mensaje['body'],
                 // Los salientes ya enviados llevan un id del modo demostración (para que se
                 // distingan en la base de uno real); el pendiente de confirmar no salió.
                 'wa_message_id'    => ($es_saliente && ! $pendiente)
@@ -666,14 +666,14 @@ class WhatsappDemoHelper
             case 'deudor_abierto':
                 return [
                     ['direccion' => 'in',  'source' => 'cliente', 'minutos' => 205, 'body' => 'Hola, buen día! Quería consultarles si ya tienen listo el pedido que les hice la semana pasada'],
-                    ['direccion' => 'out', 'source' => 'manual',  'minutos' => 190, 'body' => 'Hola {nombre}! Sí, ya lo tenemos preparado. Podés pasar a retirarlo cuando quieras', 'entrega' => 'leido'],
+                    ['direccion' => 'out', 'source' => 'manual',  'minutos' => 190, 'body' => 'Hola! Sí, ya lo tenemos preparado. Podés pasar a retirarlo cuando quieras', 'entrega' => 'leido'],
                     ['direccion' => 'in',  'source' => 'cliente', 'minutos' => 40,  'body' => 'Perfecto, paso esta tarde. Gracias!'],
                 ];
 
             case 'deudor_cerrado':
                 return [
                     ['direccion' => 'in',  'source' => 'cliente', 'minutos' => 4330, 'body' => 'Buenas tardes, necesito el comprobante de mi última compra por favor'],
-                    ['direccion' => 'out', 'source' => 'manual',  'minutos' => 4320, 'body' => 'Hola {nombre}! Te lo mando enseguida', 'entrega' => 'leido'],
+                    ['direccion' => 'out', 'source' => 'manual',  'minutos' => 4320, 'body' => 'Hola! Te lo mando enseguida', 'entrega' => 'leido'],
                 ];
 
             case 'comprobante':
@@ -684,31 +684,17 @@ class WhatsappDemoHelper
             case 'ia_a_confirmar':
                 return [
                     ['direccion' => 'in',  'source' => 'cliente', 'minutos' => 30, 'body' => 'Hola! Quería saber si tienen stock del artículo que vi en la tienda online y cuánto sale con envío'],
-                    ['direccion' => 'out', 'source' => 'ia',      'minutos' => 29, 'body' => 'Hola {nombre}! Gracias por escribirnos. Te confirmo en un momento si tenemos stock y cuánto sería el envío a tu zona.', 'ai_status' => 'a_confirmar'],
+                    ['direccion' => 'out', 'source' => 'ia',      'minutos' => 29, 'body' => 'Hola! Gracias por escribirnos. Te confirmo en un momento si tenemos stock y cuánto sería el envío a tu zona.', 'ai_status' => 'a_confirmar'],
                 ];
 
             case 'atendido':
             default:
                 return [
                     ['direccion' => 'in',  'source' => 'cliente', 'minutos' => 300, 'body' => 'Hola, a qué hora cierran hoy?'],
-                    ['direccion' => 'out', 'source' => 'ia',      'minutos' => 299, 'body' => 'Hola {nombre}! Hoy atendemos hasta las 20 hs. Te esperamos!', 'entrega' => 'leido', 'ai_status' => 'enviado'],
+                    ['direccion' => 'out', 'source' => 'ia',      'minutos' => 299, 'body' => 'Hola! Hoy atendemos hasta las 20 hs. Te esperamos!', 'entrega' => 'leido', 'ai_status' => 'enviado'],
                     ['direccion' => 'in',  'source' => 'cliente', 'minutos' => 290, 'body' => 'Genial, gracias'],
                     ['direccion' => 'out', 'source' => 'manual',  'minutos' => 280, 'body' => 'De nada! Cualquier cosa avisanos', 'entrega' => 'leido'],
                 ];
         }
-    }
-
-    /**
-     * Primer nombre del cliente para saludar; si no tiene nombre, un saludo neutro.
-     *
-     * @param  Client  $cliente
-     * @return string
-     */
-    private static function primer_nombre(Client $cliente)
-    {
-        $partes = preg_split('/\s+/', trim((string) $cliente->name));
-        $primero = ($partes && $partes[0] !== '') ? $partes[0] : 'cliente';
-
-        return $primero;
     }
 }
