@@ -297,6 +297,16 @@ class WhatsappBotController extends Controller
             $data['chat_simulation_enabled'] = (bool) $request->chat_simulation_enabled;
         }
 
+        // 🔴 `envio_simulado` NO ESTÁ ACÁ, Y NO SE AGREGA (misión whatsapp-envio-simulado-demos,
+        // 15/10/2026). Es el modo en que `WhatsappBotSendService` NO le habla a Kapso y da los
+        // mensajes por enviados: existe para las instancias de demo, y en un negocio real es el
+        // peor modo de falla de este módulo (comprobantes y recordatorios de cobro que la
+        // pantalla muestra como enviados y nunca salen, sin ningún error). Por eso no hay campo en
+        // el validate ni `$request->has()` para él: lo siembra `WhatsappDemoHelper` o se prende a
+        // mano en la base. Hay un test que manda `envio_simulado` por este endpoint y exige que no
+        // se escriba. Si una pantalla lo necesita algún día, es una decisión de Lucas, no un
+        // campo más de este formulario.
+
         $user_id = $this->userId();
         $current_config = WhatsappBotConfig::where('user_id', $user_id)->first();
 

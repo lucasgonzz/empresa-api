@@ -432,6 +432,11 @@ class WhatsappChatHelper
         $message->ai_status = 'enviado';
         $message->wa_message_id = $wa_message_id;
         $message->ai_auto_send_at = null;
+        // Mismo criterio que en `store_outbound_message()`: un envío del modo demostración no
+        // tiene webhook de Meta que lo avance, así que se da por entregado.
+        if (WhatsappBotSendService::es_id_simulado($wa_message_id)) {
+            $message->delivery_status = 'entregado';
+        }
         $message->save();
 
         $chat = WhatsappChat::find($message->whatsapp_chat_id);
@@ -939,7 +944,10 @@ class WhatsappChatHelper
             'sent_by_user_id' => $sent_by_user_id,
             'body' => $body,
             'wa_message_id' => $wa_message_id,
-            'delivery_status' => 'pendiente',
+            // Un envío del modo demostración (`SIMULADO.…`) nace `entregado`: no hay webhook de
+            // Meta que lo vaya a avanzar, y en `pendiente` se quedaría para siempre con el
+            // relojito. Cualquier otro id (o null) nace `pendiente`, como siempre.
+            'delivery_status' => WhatsappBotSendService::es_id_simulado($wa_message_id) ? 'entregado' : 'pendiente',
             'template_meta_name' => $template_meta_name,
             'media_type' => $media_type,
             'media_url' => $media_url,
