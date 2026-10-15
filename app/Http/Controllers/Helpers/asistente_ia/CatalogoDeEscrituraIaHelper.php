@@ -274,7 +274,7 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => [
                 'status', 'stock', 'final_price', 'final_price_blanco', 'previus_final_price', 'final_price_updated_at',
-                'costo_real', 'base_margen', 'slug', 'featured', 'stock_updated_at', 'needs_sync_with_tn',
+                'costo_real', 'base_margen', 'base_margen_final', 'slug', 'featured', 'stock_updated_at', 'needs_sync_with_tn',
                 'tiendanube_product_id', 'tiendanube_variant_id', 'me_li_id', 'meli_category_id', 'meli_category_name',
                 'listing_type_id', 'need_sync_to_meli', 'handle', 'chunk_number', 'articles_pages', 'provider_article_id',
                 'embedding_generated_at', 'embedding_source_hash', 'condition_id', 'unidades_por_bulto', 'tipo_envase_id',
@@ -676,20 +676,6 @@ class CatalogoDeEscrituraIaHelper
             'extension'          => null,
             'revisado'           => 'DeliveryDayController: solo day_of_week.',
         ],
-        'cupon' => [
-            'etiqueta'           => 'cupones',
-            'singular'           => 'cupón',
-            'genero'             => 'm',
-            'descripcion'        => 'Los cupones de descuento de la tienda online: un código con un monto o un porcentaje y un mínimo de compra (Tienda online > Cupones).',
-            'operaciones'        => null,
-            'solo_lectura'       => ['type', 'buyer_id', 'valid', 'read', 'expiration_date', 'expiration_days'],
-            'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'online', 'params' => ['view' => 'cupones'], 'texto' => 'Ver en Cupones'],
-            'aviso_de_baja'      => 'El cupón deja de poder usarse en la tienda.',
-            'aviso_de_alta'      => null,
-            'extension'          => null,
-            'revisado'           => 'CuponController: store() lee amount, percentage, min_amount y code y fuerza type = normal, con num(). Sin efectos hacia afuera.',
-        ],
         'bodega' => [
             'etiqueta'           => 'bodegas',
             'singular'           => 'bodega',
@@ -931,6 +917,15 @@ class CatalogoDeEscrituraIaHelper
         'deposit'                      => 'sin solapa en el ABM actual',
         // Misión hojas-de-ruta (10/10/2026): se sacó de ENTIDADES porque la solapa "repartidores" del ABM > Ventas ya no existe.
         'dealer'                       => 'repartidores: la solapa del ABM que el asistente abría ya no existe',
+        /*
+         * Misión tiendas-demo-y-limpieza-tienda (14/10/2026, pedido de Lucas): se sacó de ENTIDADES
+         * porque la tienda dejó de ofrecer cupones y el sistema sacó Tienda Online > Cupones. La
+         * tabla y el modelo Cupon quedan (los pedidos viejos con cupón siguen mostrando su
+         * descuento); el CuponController y la ruta `api/cupon` se sacaron después (misión
+         * sacar-cupones-y-login-google, 14/10/2026) y la guarda de
+         * CatalogoDeAccionesDePantallaIaHelper::EXCLUIDAS queda como defensa.
+         */
+        'cupon'                        => 'cupones de la tienda: la tienda ya no los ofrece y el sistema sacó su pantalla (14/10/2026)',
         'error'                        => 'técnica: registro de errores de la SPA (manda mail)',
         'etiqueta_medidas'             => 'impresión de etiquetas: su store() delega el request',
         'inventory_linkage'            => 'se arma con listas de categorías y toca el catálogo de otro cliente',
@@ -1053,13 +1048,12 @@ class CatalogoDeEscrituraIaHelper
 
     /**
      * Obligatorios que la tabla no declara (la columna admite null) pero sin los cuales la fila no
-     * sirve: `[entidad => [columnas]]`. Un cupón sin código no se puede usar en la tienda.
+     * sirve: `[entidad => [columnas]]`. Quedó vacía el 14/10/2026: su única entrada era el `code`
+     * del cupón, que salió de ENTIDADES (ver EXCLUIDAS).
      *
      * @var array<string, array<int, string>>
      */
-    const OBLIGATORIOS_CURADOS = [
-        'cupon' => ['code'],
-    ];
+    const OBLIGATORIOS_CURADOS = [];
 
     /**
      * Lo que el modelo tiene que saber de un campo y la etiqueta sola no dice: `[entidad => [columna

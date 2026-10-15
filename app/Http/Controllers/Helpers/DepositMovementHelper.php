@@ -50,6 +50,17 @@ class DepositMovementHelper {
 		'to_address_id',
 	];
 
+	/**
+	 * Mensaje del 403 cuando alguien sin `deposit_movement.store` intenta CREAR un movimiento
+	 * (misión permiso-crear-movimiento-deposito, 14/10/2026).
+	 *
+	 * Hay dos caminos que crean movimientos —`DepositMovementController::store()` y
+	 * `StockSuggestionController::create_deposit_movement()`, el botón "Crear Movimiento/s de
+	 * Deposito" de las sugerencias de stock— y los dos tienen que decir lo mismo: por eso la
+	 * constante vive acá y no copiada en cada controller. La SPA lo muestra como toast.
+	 */
+	const MENSAJE_SIN_PERMISO_PARA_CREAR = 'No tenés permiso para crear movimientos de depósito.';
+
 	public $deposit_movement;
 	public $previus_articles;
 

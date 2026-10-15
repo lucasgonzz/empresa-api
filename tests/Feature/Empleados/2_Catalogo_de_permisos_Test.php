@@ -83,6 +83,11 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
         // Misión movimientos-deposito-auditoria (3/10/2026): los dos permisos nuevos de los
         // movimientos de depósito. `deposit_movement.update` sigue más abajo (cambió de grupo,
         // no de slug).
+        // Misión permiso-crear-movimiento-deposito (14/10/2026): `deposit_movement.store` también
+        // salió de "Sin efecto por ahora" y pasó a "Stock y depósitos" (cambió de grupo y de
+        // nombre, no de slug): ahora lo chequean `DepositMovementController::store()` y las
+        // sugerencias de stock.
+        'deposit_movement.store',
         'deposit_movement.update_articles',
         'deposit_movement.move_stock',
         'deposit_movement.index.previus_days',
@@ -176,7 +181,6 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
         'reportes',
         'reportes.info_facturacion',
         'deposit_movement.index',
-        'deposit_movement.store',
         'deposit_movement.update',
         'deposit_movement.delete',
         'road_map.terminadas.only_your',

@@ -1537,7 +1537,7 @@ VENTA_CONFIRMA;
   con el ABM genérico: que_puedo_cargar te dice qué entidades podés crear, editar o borrar
   (categorías, subcategorías, marcas, listas de precio, descuentos y recargos, sucursales,
   localidades, vendedores, clientes, proveedores, artículos, subcategorías y categorías de
-  gasto, zonas y días de entrega, cupones, turnos de caja, estados de venta y de producción,
+  gasto, zonas y días de entrega, turnos de caja, estados de venta y de producción,
   y más) y, con una entidad, sus campos. Llamala ANTES de proponer y usá sus claves tal cual.
   Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas nuevas seguís
   usando su propia herramienta: el genérico es para lo que no tiene una.

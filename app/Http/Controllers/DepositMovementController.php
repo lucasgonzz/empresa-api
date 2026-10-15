@@ -19,10 +19,14 @@ use Illuminate\Support\Facades\DB;
  *    movimiento no se puede eliminar.
  *  - Cada cambio de artículos de un movimiento ya creado queda como una
  *    `DepositMovementModification` (foto antes/después).
- *  - Permisos con efecto: `deposit_movement.update` (datos: estado, depósitos, empleado, notas),
- *    `deposit_movement.update_articles` (artículos) y `deposit_movement.move_stock`. El dueño y
- *    los empleados con `admin_access` pueden todo. Ver, crear y eliminar siguen sin chequeo de
- *    permiso (en el catálogo están en "Sin efecto por ahora").
+ *  - Permisos con efecto: `deposit_movement.store` (crear el movimiento, con sus depósitos,
+ *    estado, empleado, notas y los artículos del alta), `deposit_movement.update` (datos: estado,
+ *    depósitos, empleado, notas), `deposit_movement.update_articles` (cambiar los artículos de un
+ *    movimiento ya creado) y `deposit_movement.move_stock`. El dueño y los empleados con
+ *    `admin_access` pueden todo. Ver y eliminar siguen sin chequeo de permiso (en el catálogo
+ *    están en "Sin efecto por ahora"). `deposit_movement.store` lo estrenó la misión
+ *    permiso-crear-movimiento-deposito (14/10/2026); el otro camino que crea movimientos, las
+ *    sugerencias de stock, lo chequea igual (ver `StockSuggestionController::create_deposit_movement()`).
  *
  * Errores para la SPA: `{"message": "..."}` sin clave `errors` (la SPA lo muestra como toast).
  */
@@ -76,6 +80,10 @@ class DepositMovementController extends Controller
      * Crea el movimiento con sus artículos. Crear NUNCA mueve stock, aunque el estado que venga
      * sea "Recibido": el traslado es el botón "Mover stock". Tampoco cuenta como modificación.
      *
+     * - Sin el permiso `deposit_movement.store` (y sin ser dueño ni tener `admin_access`) → 403,
+     *   antes de validar nada y de escribir una sola fila. El permiso cubre TODO el alta: depósitos,
+     *   estado, empleado, notas y los artículos con los que nace el movimiento. Quien puede crear
+     *   pero no tiene `update_articles` crea con artículos y después no puede cambiarlos.
      * - Un estado que no es fijo ni del dueño → 422, antes de escribir nada.
      * - `recibido_at` NO se toma del request: queda NULL. Es la marca de "stock movido" compartida
      *   con la versión anterior del sistema y solo la escribe "Mover stock" (ver
@@ -85,6 +93,12 @@ class DepositMovementController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     public function store(Request $request) {
+
+        // Va PRIMERO, antes de validar el estado: un empleado sin permiso no tiene que enterarse de
+        // nada más que del 403 ni dejar ninguna fila (ni movimiento, ni artículos del pivot).
+        if (!$this->tiene_permiso('deposit_movement.store')) {
+            return response()->json(['message' => DepositMovementHelper::MENSAJE_SIN_PERMISO_PARA_CREAR], 403);
+        }
 
         $error = DepositMovementHelper::error_de_estado($request->all(), $this->userId());
 

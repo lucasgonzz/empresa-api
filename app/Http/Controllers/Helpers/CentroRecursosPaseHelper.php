@@ -28,6 +28,12 @@ use Illuminate\Support\Str;
  *    APIs leen la misma tabla: sin este chequeo, un pase de un comercio se podría canjear por la API
  *    de otro y el admin le abriría la sesión a nombre del cliente equivocado.
  *
+ * PASE DE SOPORTE (misión centro-recursos-soporte-y-tema, 14/10/2026). Un login maestro entra a la
+ * página como el dueño pero en SOLO LECTURA. Su pase se crea con `$soporte = true`, queda marcado en
+ * `centro_recursos_pases.soporte`, y el canje se lo cuenta al admin (`'soporte' => true`) para que
+ * abra una sesión que no puede guardar nada. Es lo único que cambia respecto de un pase normal: el
+ * circuito, la caducidad y el canje atómico son los mismos.
+ *
  * IMPORTANTE (PHP 7.4): nada de match, str_contains, nullsafe ni argumentos nombrados.
  */
 class CentroRecursosPaseHelper
@@ -53,11 +59,12 @@ class CentroRecursosPaseHelper
      * fila por clic y no sirven para nada después de los 5 minutos. Va por query builder, sin
      * eventos de Eloquent: es limpieza, no un cambio del negocio.
      *
-     * @param  User        $user  Usuario autenticado (dueño o empleado).
-     * @param  string|null $video Código del video con el que se abre la página (ej. `T1.29`).
+     * @param  User        $user    Usuario autenticado (dueño o empleado).
+     * @param  string|null $video   Código del video con el que se abre la página (ej. `T1.29`).
+     * @param  bool        $soporte true = pase de un login maestro: la página abre en solo lectura.
      * @return string Pase en claro.
      */
-    public static function crear($user, $video = null)
+    public static function crear($user, $video = null, $soporte = false)
     {
         $ahora = Carbon::now();
 
@@ -68,14 +75,27 @@ class CentroRecursosPaseHelper
         /** Pase aleatorio que viaja en la URL de la página. */
         $plano = Str::random(self::LARGO);
 
-        CentroRecursosPase::create([
+        $datos = [
             'user_id'    => $user->id,
             'token_hash' => hash('sha256', $plano),
             'video'      => $video,
             'expires_at' => $ahora->copy()->addMinutes(self::TTL_MINUTOS),
-        ]);
+        ];
 
-        Log::info('Centro de recursos: pase creado para user_id ' . $user->id);
+        /*
+         * 🔴 `soporte` se escribe SOLO cuando es true. Para un usuario común el insert queda idéntico
+         * al de antes de la misión: si este código llega a un cliente antes de que corra la migración
+         * de la columna (la ventana de un upgrade), "Tutoriales" tiene que seguir andando para todos
+         * los usuarios normales en vez de dar 500 por una columna que todavía no existe. Con la
+         * columna presente, el default `false` de la base da el mismo resultado.
+         */
+        if ($soporte === true) {
+            $datos['soporte'] = true;
+        }
+
+        CentroRecursosPase::create($datos);
+
+        Log::info('Centro de recursos: pase ' . ($soporte ? 'de soporte ' : '') . 'creado para user_id ' . $user->id);
 
         return $plano;
     }
@@ -91,7 +111,7 @@ class CentroRecursosPaseHelper
      * que el admin resuelve para el cliente dueño del pase) tiene que seguir andando.
      *
      * @param  mixed $plano Pase en claro, tal como llegó.
-     * @return array|null `['user' => User, 'video' => string|null]` o null.
+     * @return array|null `['user' => User, 'video' => string|null, 'soporte' => bool]` o null.
      */
     public static function canjear($plano)
     {
@@ -150,8 +170,9 @@ class CentroRecursosPaseHelper
         Log::info('Centro de recursos: pase canjeado para user_id ' . $user->id);
 
         return [
-            'user'  => $user,
-            'video' => $pase->video,
+            'user'    => $user,
+            'video'   => $pase->video,
+            'soporte' => (bool) $pase->soporte,
         ];
     }
 

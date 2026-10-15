@@ -203,7 +203,26 @@ class StockSuggestionController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * "Crear Movimiento/s de Deposito" de una sugerencia: crea un `DepositMovement` por cada par
+     * origen/destino de las líneas elegidas.
+     *
+     * Es el segundo camino que crea movimientos (el primero es `DepositMovementController::store()`),
+     * así que pide el mismo permiso: `deposit_movement.store` (misión
+     * permiso-crear-movimiento-deposito, 14/10/2026). Sin él —y sin ser dueño ni tener
+     * `admin_access`— responde 403 ANTES de leer la sugerencia y de escribir nada. Si no lo pidiera,
+     * quien no puede crear movimientos desde el Listado los crearía igual desde acá.
+     *
+     * @param  \Illuminate\Http\Request  $request  `stock_suggestion_article_ids`: ids de las líneas elegidas.
+     * @param  int  $id  Id de la sugerencia.
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function create_deposit_movement(Request $request, $id) {
+
+        if (!$this->tiene_permiso('deposit_movement.store')) {
+            return response()->json(['message' => DepositMovementHelper::MENSAJE_SIN_PERMISO_PARA_CREAR], 403);
+        }
+
         $suggestion = $this->sugerencia_del_usuario($id);
 
         if (!$suggestion) {
@@ -364,5 +383,25 @@ class StockSuggestionController extends Controller
         return StockSuggestion::where('user_id', $this->userId())
             ->where('id', $id)
             ->first();
+    }
+
+    /**
+     * ¿El usuario autenticado tiene este permiso? El dueño y los empleados con `admin_access`
+     * pueden todo. Mismo criterio que `DepositMovementController::tiene_permiso()` y
+     * `RecordatorioCobroController::check_permiso()`.
+     *
+     * Es privado y propio de este controller a propósito: el `Controller` base no lo declara y cada
+     * controller que lo necesita trae el suyo, así que no se toca el base.
+     *
+     * @param  string  $slug
+     * @return bool
+     */
+    private function tiene_permiso($slug) {
+
+        if ($this->is_admin()) {
+            return true;
+        }
+
+        return $this->user(false)->permissions->contains('slug', $slug);
     }
 }

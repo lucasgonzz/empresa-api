@@ -166,6 +166,14 @@ class DescriptionObserver
         // sin costo en OpenAI. Se prefiere eso antes que un memo de "ya encolado" por
         // proceso, que en un worker de vida larga se quedaría pegado y dejaría artículos
         // sin revectorizar — el modo de falla silencioso es peor que el ruido.
-        GenerateArticleEmbeddingJob::dispatch($article_id);
+        //
+        // 🔴 Con afterCommit() EXPLÍCITO (misión alertas-descripciones, 14/10/2026): aprobar,
+        // editar o quitar una descripción desde Alertas → Catálogo → Descripciones la escribe
+        // adentro de un DB::transaction, y en redis `after_commit` está en false: un worker libre
+        // podía tomar el job antes del commit, leer el artículo sin el cambio y guardar el hash de
+        // la versión vieja (y el siguiente disparo cortaba por hash igual). Fuera de una
+        // transacción despacha en el momento, como antes. Mismo criterio que
+        // ImageAssignmentRunHelper::crear().
+        GenerateArticleEmbeddingJob::dispatch($article_id)->afterCommit();
     }
 }

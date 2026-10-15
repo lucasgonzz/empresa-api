@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\AiDescriptionReviewHelper;
 use App\Jobs\ProcessArticleBatchDescriptionsJob;
 use App\Models\Article;
 use App\Models\Description;
@@ -144,6 +145,18 @@ class ArticleDescriptionAiController extends Controller
                 'ai_reviewed_at' => Carbon::now(),
             ]);
         }
+
+        /*
+         * El articulo ya tiene una descripcion que vio una persona: si el lote le habia dejado una
+         * propuesta esperando revision en Alertas → Catalogo → Descripciones, ya no tiene sentido y
+         * queda descartada (con quien y cuando). Si no, el dueño la veria ahi y al aprobarla le
+         * duplicaria la descripcion.
+         */
+        AiDescriptionReviewHelper::descartar_pendientes_por_descripcion_revisada(
+            $this->userId(),
+            $article->id,
+            $this->userId(false)
+        );
 
         // Ya revisado por una persona: se sincroniza a TiendaNube sin restriccion de confianza.
         $this->sync_tienda_nube($article);
