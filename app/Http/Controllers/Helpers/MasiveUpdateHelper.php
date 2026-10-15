@@ -137,6 +137,21 @@ class MasiveUpdateHelper
             return self::respuesta_de_encolado(422, ['message' => 'Los movimientos de caja no se actualizan en forma masiva.']);
         }
 
+        /*
+         * 🔴 La configuración del bot de WhatsApp tampoco (misión whatsapp-envio-simulado-demos,
+         * 15/10/2026). Esta actualización resuelve los ids con find() sin dueño y asigna cualquier
+         * columna del update_form: por acá cualquier usuario autenticado podía prender
+         * `envio_simulado` (el modo en que los mensajes se dan por enviados sin mandarse) o pisar
+         * la clave de Kapso de OTRO negocio, salteando todo lo que `WhatsappBotController::update_config()`
+         * blinda (solo el dueño, solo sus propios campos, el guard de las tres credenciales). Mismo
+         * corte que los cheques y los movimientos de caja: antes de buscar o encolar nada, para
+         * las dos entradas, comparando la clase resuelta en minúsculas.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\WhatsappBotConfig::class)) {
+            Log::info('Se interrumpio actualizacion: la configuracion de WhatsApp no se actualiza en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'La configuración de WhatsApp no se actualiza en forma masiva.']);
+        }
+
         $from_filter = (boolean) $from_filter;
         $models_id = is_array($models_id) ? $models_id : [];
         // Un filter_form ausente entra al search como lista vacía (sin filtros efectivos → 422),

@@ -127,6 +127,39 @@ class WhatsappTemplateStandardHelper
     }
 
     /**
+     * Marca como `aprobada` las plantillas estándar del owner (misión
+     * whatsapp-envio-simulado-demos). SOLO para el modo demostración: en una demo no hay un
+     * Meta del otro lado que las apruebe, y sin esto el recordatorio de cobro y el comprobante
+     * fuera de la ventana de 24 h se frenan con `plantilla_no_aprobada` y la demo no puede
+     * filmar el camino por plantilla.
+     *
+     * 🔴 Lo llama únicamente `WhatsappDemoHelper`, que se niega fuera de una instancia de demo.
+     * En una instalación de cliente una plantilla `aprobada` que Meta nunca aprobó haría que
+     * el sistema intentara mandarla y Meta la rechazara (le baja la calificación al número),
+     * así que esto no se expone por ninguna ruta ni se llama desde `apply_for_owner()`.
+     *
+     * Toca solo las filas `is_system` con nombre de la lista estándar: las plantillas que armó
+     * el dueño no se tocan. Idempotente. Si todavía no existen las crea primero.
+     *
+     * @param  int  $owner_id
+     * @return int  Cantidad de plantillas estándar que quedaron aprobadas (las seis, también en las corridas siguientes).
+     */
+    public static function aprobar_estandar_para($owner_id)
+    {
+        self::apply_for_owner($owner_id);
+
+        $estandar = WhatsappTemplate::where('user_id', $owner_id)
+            ->where('is_system', true)
+            ->whereIn('meta_template_name', self::meta_template_names());
+
+        // `update()` devuelve las filas que CAMBIARON: en la segunda corrida son cero aunque las
+        // seis sigan aprobadas, y se leería como «no aprobó nada». Se cuenta lo que quedó aprobado.
+        $estandar->update(['status' => 'aprobada']);
+
+        return $estandar->where('status', 'aprobada')->count();
+    }
+
+    /**
      * El `body_preview` del catálogo para un `meta_template_name`, o cadena vacía si ese nombre
      * no es de ninguna plantilla estándar.
      *

@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
+use App\Http\Controllers\Helpers\EsquemaDemoSnapshotHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Http\Controllers\ZipnovaIntegracionController;
@@ -90,6 +91,28 @@ class DemoSetupHelper
 
         // Bases de desarrollo: la máquina de Lucas y la suite.
         return in_array(config('app.env'), ['local', 'testing'], true);
+    }
+
+    /**
+     * Si la etapa `migrate_fresh` puede usar el volcado del esquema (`EsquemaDemoSnapshotHelper`):
+     * en una instancia de demo y en local, y NUNCA en la suite.
+     *
+     * 🔴 Por qué no alcanza con `es_instancia_de_demo()`, que acepta `testing` (15/10/2026): los
+     * tests del setup protegen la base del slot MOCKEANDO `Artisan::call('migrate:fresh')`, y la
+     * restauración no pasa por Artisan. Con un volcado válido en `storage/demo` -- que aparece solo
+     * en cuanto alguien corre un demo setup en local en ese worktree -- la suite le vaciaba el
+     * fixture a la base de testing. Medido: 82 rojos en `tests/Feature/Semilla` con el mensaje
+     * «El marcador desapareció».
+     *
+     * @return bool
+     */
+    private static function usar_volcado_del_esquema()
+    {
+        if (config('app.env') === 'testing') {
+            return false;
+        }
+
+        return config('app.FOR_USER') === 'demo' || config('app.env') === 'local';
     }
 
     /**
@@ -229,10 +252,73 @@ class DemoSetupHelper
         // igual que le pasaba a Mercado Pago hasta el 5/9.
         $foto_zipnova = self::foto_de_zipnova(config('app.USER_ID'));
 
-        // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
-        Artisan::call('migrate:fresh', ['--force' => true]);
+        /**
+         * La base se resetea acá, y es obligatorio dejarla limpia antes de los seeders.
+         *
+         * Hay dos caminos para el MISMO resultado, y el rápido se intenta primero (misión M9 del
+         * programa «embudo comercial», 13/10/2026):
+         *
+         * 1. **Restaurar el volcado del esquema** de esta versión (`EsquemaDemoSnapshotHelper`):
+         *    las tablas migradas, la tabla `migrations` con las mismas filas que dejaría
+         *    `migrate:fresh` y las pocas filas de catálogo que insertan las propias migraciones
+         *    (plataformas, estados de Mercado Libre, plantilla online). Es un puñado de
+         *    `CREATE TABLE` en vez de ~880 transformaciones encadenadas.
+         * 2. **`migrate:fresh`**, el camino de siempre, cuando no hay volcado para esta versión o
+         *    cuando la restauración no pasa su propia verificación.
+         *
+         * El respaldo NO es decorativo y no se puede sacar: `restaurar()` devuelve `false` ante
+         * cualquier duda (no hay archivo, cabecera inválida, cuenta de migraciones distinta, SQL que
+         * falla, `migrations` que no quedó idéntica) y puede dejar la base a medio restaurar. Lo
+         * único que repara eso es el `migrate:fresh` de abajo, que arranca tirando todas las tablas.
+         * O sea: el camino lento es también la reparación del rápido.
+         *
+         * Y después del `migrate:fresh` se deja el volcado escrito para la próxima corrida: así el
+         * mecanismo se ceba solo y no depende de que el pipeline de release empaquete un archivo.
+         * Esa escritura va en try/catch porque es una OPTIMIZACIÓN de la próxima corrida, no un paso
+         * de ésta -- un `storage/` sin permiso de escritura no puede hacer fallar el setup del lead
+         * que está esperando.
+         *
+         * La etapa se sigue llamando `migrate_fresh` en el cronómetro, con ese nombre: es lo que
+         * viaja al admin en el evento `demo.setup.completado` desde el 9/9/2026, y renombrarla
+         * dejaría una etapa vacía del otro lado. Qué camino se usó se informa aparte, en
+         * `esquema_restaurado` al lado de `etapas` y NO adentro: `etapas` es un mapa de
+         * `nombre => segundos` y meterle un booleano rompe a cualquiera que lo sume o lo grafique.
+         * `DemoEventosController` del admin guarda `datos` entero sin leer clave por clave y lo
+         * valida con `nullable|array|max:50` elementos (hoy serían cuatro), así que una clave más es
+         * compatible en las dos direcciones.
+         *
+         * 🔴 Y TODO ESTO SOLO EN UNA INSTANCIA DE DEMO (o en local; nunca en la suite, ver
+         * `usar_volcado_del_esquema()`). Este método corre
+         * TAMBIÉN cuando se instala el sistema de un cliente real, sobre su base recién creada: ahí
+         * el camino sigue siendo `migrate:fresh` pelado, como siempre. No es que el volcado no
+         * funcionaría -- es que no hay ninguna razón para dejarle a un negocio un archivo de 380 KB
+         * con su esquema en `storage/`, ni para meter una pieza nueva en el camino que instala los
+         * 40 clientes a cambio de ahorrar medio minuto UNA vez en la vida de esa instalación. Las
+         * demos se rearman por cada lead; un cliente se instala una sola vez.
+         */
+        $restauracion = ['ok' => false, 'motivo' => 'no es una instancia de demo'];
+
+        if (self::usar_volcado_del_esquema()) {
+            $restauracion = EsquemaDemoSnapshotHelper::restaurar();
+        }
+
+        if (! $restauracion['ok']) {
+            Artisan::call('migrate:fresh', ['--force' => true]);
+
+            if (self::usar_volcado_del_esquema()) {
+                try {
+                    EsquemaDemoSnapshotHelper::generar();
+                } catch (\Throwable $e) {
+                    Log::warning(
+                        'DemoSetupHelper: no se pudo dejar el volcado del esquema para la próxima '
+                            . 'corrida: ' . $e->getMessage()
+                    );
+                }
+            }
+        }
 
         $etapas['migrate_fresh'] = self::cronometrar($t_etapa);
+        $esquema_restaurado = $restauracion['ok'];
 
         // Crear el usuario "dueño" del sistema con datos mayormente de demo
         $user = self::create_demo_user($data);
@@ -518,6 +604,25 @@ class DemoSetupHelper
 
         $etapas['tienda'] = self::cronometrar($t_etapa);
 
+        /**
+         * WhatsApp en modo de ENVÍO SIMULADO (misión whatsapp-envio-simulado-demos, 15/10/2026).
+         *
+         * Hasta esta misión el demo setup dejaba el módulo de WhatsApp sin configuración (el
+         * menú aparecía, pero ningún envío podía salir): el comprobante por WhatsApp y los
+         * recordatorios de cobro no se podían mostrar ni filmar. Ahora la demo queda con la
+         * conexión activa en modo simulado (nada sale a Kapso: ver
+         * `WhatsappBotConfig::esta_en_modo_demostracion()`), las 6 plantillas estándar
+         * aprobadas y cinco chats de ejemplo.
+         *
+         * 🔴 VA DESPUÉS DE `semilla:datos` (necesita los clientes y las ventas sin cobrar para
+         * armar los chats) y NO LEE NADA DEL PAYLOAD: a diferencia de Zipnova y Mercado Pago, no
+         * hay una credencial que viaje desde el admin. Una demo armada con un admin sin
+         * desplegar queda igual de simulada.
+         */
+        self::preparar_whatsapp_de_la_demo($user);
+
+        $etapas['whatsapp'] = self::cronometrar($t_etapa);
+
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
         if (!empty($data['demo_ingreso_token'])) {
@@ -626,18 +731,52 @@ class DemoSetupHelper
          * semilla:datos (~110 s), y lo que el lead percibia como 8-15 minutos era la cola del
          * admin mas un worker cortado a los 5 minutos.
          */
-        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', ['etapas' => $etapas]);
+        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', [
+            'etapas'             => $etapas,
+            'esquema_restaurado' => $esquema_restaurado,
+        ]);
 
         if (!is_null($canal)) {
             DemoEventoEmitter::emitir(
                 'demo.setup.completado',
                 null,
-                ['user_id' => $user->id, 'duracion_seg' => $duracion_seg, 'etapas' => $etapas],
+                [
+                    'user_id'            => $user->id,
+                    'duracion_seg'       => $duracion_seg,
+                    'etapas'             => $etapas,
+                    'esquema_restaurado' => $esquema_restaurado,
+                ],
                 (string) $canal->eventos_token
             );
         }
 
         return $user;
+    }
+
+    /**
+     * Deja el módulo de WhatsApp de la demo en modo de envío simulado, con plantillas aprobadas y
+     * chats de ejemplo (ver `WhatsappDemoHelper`).
+     *
+     * 🔴 No frena nunca el setup: a esta altura la instancia ya está armada, y un error de base
+     * en los chats de ejemplo no justifica dar la demo por fallida. Se loguea y sigue. Y solo corre
+     * en una instancia de demo: en la instalación de un cliente real este mismo helper no tiene que
+     * dejar una configuración de WhatsApp con clave ficticia ni plantillas «aprobadas» que Meta
+     * nunca aprobó.
+     *
+     * @param User $user Dueño de la instancia.
+     * @return void
+     */
+    private static function preparar_whatsapp_de_la_demo(User $user)
+    {
+        if (! self::es_instancia_de_demo()) {
+            return;
+        }
+
+        try {
+            WhatsappDemoHelper::preparar($user);
+        } catch (\Throwable $e) {
+            Log::error('DemoSetupHelper: no se pudo dejar WhatsApp en modo envío simulado; la demo queda sin WhatsApp configurado: ' . $e->getMessage());
+        }
     }
 
     /**
