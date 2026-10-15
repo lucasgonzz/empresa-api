@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use Closure;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -41,6 +42,19 @@ use Illuminate\Support\Facades\Log;
  *   4. La sesión ya está habilitada: `session('mantenimiento_habilitado_hasta')` es posterior a ahora.
  *   5. Viene la clave maestra, en el header `X-Clave-Mantenimiento` o en el query `clave`, y su sha256
  *      coincide con `config('app.mantenimiento_clave_sha256')` (hash_equals). Habilita la sesión por 2 h.
+ *
+ *   6. EL ACCESO DEL ADMIN (misión extensiones-desde-el-admin, 15/10/2026), SOLO en las rutas con `:demo` (el
+ *      configurador). El admin de ComercioCity no tiene la clave maestra pero sí la clave de admin del cliente:
+ *      con ella pide a `POST api/admin-sync/extensiones/acceso` (ExtensionesAccesoController) un token de un
+ *      solo uso (64 hex, en cache solo su sha256, vence a los 120 s) y manda al navegador a
+ *      `/extensiones?acceso=<token>`. Acá se canjea: `Cache::pull` (un solo uso: el segundo canje, o uno
+ *      vencido, es 404), se habilita la sesión con `acceso_extensiones_hasta` (+2 h, id de sesión nuevo) y se
+ *      redirige (302 relativo) a la misma URL sin `acceso`.
+ *      🔴 ALCANCE ACOTADO, a diferencia de la clave maestra: ese flag abre SOLO `extensiones`,
+ *      `users.extencions.edit` y `users.extencions.update` (nunca `helpers/*`, copias de bases ni la
+ *      mensualidad, aunque algún día lleven `:demo`), y si la ruta trae `{user_id}`, solo el de la instancia
+ *      (`config('app.USER_ID')`): el acceso es "configurar ESTE comercio", no cualquiera de una base compartida.
+ *      El token nunca se loguea ni se guarda en claro.
  *
  * Si no: un `Log::warning` (patrón de la ruta, método, IP y si trajo clave — NUNCA la clave ni la URL
  * completa, que la llevaría en el query) y `abort(404)`.
@@ -96,6 +110,18 @@ class RutaDeMantenimiento
     /** Horas que la sesión queda habilitada después de ingresar la clave. */
     const HORAS_DE_SESION = 2;
 
+    /** Clave de la sesión con el timestamp hasta el que el acceso del admin al configurador sigue vigente. */
+    const SESION_ACCESO_EXTENSIONES_HASTA = 'acceso_extensiones_hasta';
+
+    /** Parámetro del query por el que viene el token de acceso del admin (`?acceso=<64 hex>`). */
+    const PARAMETRO_DEL_ACCESO = 'acceso';
+
+    /** Prefijo de la clave de cache con la que se guarda el sha256 de cada token de acceso emitido. */
+    const PREFIJO_DE_CACHE_DEL_ACCESO = 'extensiones_acceso:';
+
+    /** Nombres de las únicas rutas que abre el acceso del admin: las tres del configurador de extensiones. */
+    const RUTAS_DEL_ACCESO_DEL_ADMIN = ['extensiones', 'users.extencions.edit', 'users.extencions.update'];
+
     /**
      * @param  \Illuminate\Http\Request  $request
      * @param  \Closure  $next
@@ -130,6 +156,13 @@ class RutaDeMantenimiento
             return $next($request);
         }
 
+        // 4b. El acceso del admin ya canjeado: vale solo para el configurador y para el comercio de la instancia.
+        if ($opcion === self::OPCION_DEMO
+            && $this->sesion_habilitada($request, self::SESION_ACCESO_EXTENSIONES_HASTA)
+            && $this->ruta_del_acceso_del_admin($request)) {
+            return $next($request);
+        }
+
         // 5. La clave maestra: primero el header (scripts), después el query (a mano).
         $clave_por_header = $this->como_texto($request->header(self::HEADER_DE_LA_CLAVE));
         $clave_por_query  = $this->como_texto($request->query(self::PARAMETRO_DE_LA_CLAVE));
@@ -151,6 +184,11 @@ class RutaDeMantenimiento
             return $next($request);
         }
 
+        // 6. El token de acceso que emitió el admin, solo en el configurador (`:demo`) y solo en un GET.
+        if ($opcion === self::OPCION_DEMO && $this->es_get_o_head($request) && $this->canjear_el_acceso($request)) {
+            return $this->redirigir_sin_la_clave($request);
+        }
+
         // Ni la clave ni la URL completa: la URL la llevaría en el query. Se loguea el PATRÓN de la ruta.
         Log::warning('Ruta de mantenimiento cerrada', [
             'ruta'      => is_null($request->route()) ? null : $request->route()->uri(),
@@ -168,15 +206,16 @@ class RutaDeMantenimiento
      * Sin sesión (la ruta montada sin el grupo `web`) no hay nada que mirar: cerrado.
      *
      * @param  \Illuminate\Http\Request  $request
+     * @param  string  $clave_de_sesion  Qué flag de la sesión mirar (por defecto el de la clave maestra).
      * @return bool
      */
-    protected function sesion_habilitada(Request $request)
+    protected function sesion_habilitada(Request $request, $clave_de_sesion = self::SESION_HABILITADA_HASTA)
     {
         if (!$request->hasSession()) {
             return false;
         }
 
-        $hasta = $request->session()->get(self::SESION_HABILITADA_HASTA);
+        $hasta = $request->session()->get($clave_de_sesion);
 
         // now() y no time(): el reloj de Carbon es el que mueven los tests con travel().
         return is_numeric($hasta) && (int) $hasta > now()->getTimestamp();
@@ -186,9 +225,10 @@ class RutaDeMantenimiento
      * Habilita la sesión por HORAS_DE_SESION desde ahora.
      *
      * @param  \Illuminate\Http\Request  $request
+     * @param  string  $clave_de_sesion  Qué flag de la sesión poner (por defecto el de la clave maestra).
      * @return void
      */
-    protected function habilitar_la_sesion(Request $request)
+    protected function habilitar_la_sesion(Request $request, $clave_de_sesion = self::SESION_HABILITADA_HASTA)
     {
         if (!$request->hasSession()) {
             return;
@@ -201,7 +241,7 @@ class RutaDeMantenimiento
          */
         $request->session()->regenerate();
 
-        $request->session()->put(self::SESION_HABILITADA_HASTA, now()->addHours(self::HORAS_DE_SESION)->getTimestamp());
+        $request->session()->put($clave_de_sesion, now()->addHours(self::HORAS_DE_SESION)->getTimestamp());
     }
 
     /**
@@ -227,6 +267,82 @@ class RutaDeMantenimiento
         }
 
         return hash_equals($hash_esperado, hash('sha256', $clave));
+    }
+
+    /**
+     * La clave de cache de un token de acceso: el prefijo más su sha256. En cache nunca está el token.
+     * Pública y estática porque la usa también ExtensionesAccesoController al emitirlo.
+     *
+     * @param  string  $token
+     * @return string
+     */
+    public static function clave_de_cache_del_acceso($token)
+    {
+        return self::PREFIJO_DE_CACHE_DEL_ACCESO . hash('sha256', (string) $token);
+    }
+
+    /**
+     * Intenta canjear el `?acceso=` del request. Si el token es válido lo CONSUME (`Cache::pull`: un solo
+     * uso) y habilita la sesión para el configurador.
+     *
+     * Falla cerrado: sin sesión, sin parámetro, con algo que no sea texto de 64 hexadecimales, o con un
+     * token desconocido / vencido / ya usado → false. Se mira el formato ANTES de tocar la cache. Se busca
+     * por el sha256 del token, así que no hay comparación de texto en claro que filtre tiempos.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return bool
+     */
+    protected function canjear_el_acceso(Request $request)
+    {
+        if (!$request->hasSession()) {
+            return false;
+        }
+
+        $token = $this->como_texto($request->query(self::PARAMETRO_DEL_ACCESO));
+
+        if (strlen($token) !== 64 || !ctype_xdigit($token)) {
+            return false;
+        }
+
+        // Minúsculas: el token se emite en minúsculas, y así `AB..` y `ab..` no son dos tokens distintos.
+        if (Cache::pull(self::clave_de_cache_del_acceso(strtolower($token))) === null) {
+            return false;
+        }
+
+        $this->habilitar_la_sesion($request, self::SESION_ACCESO_EXTENSIONES_HASTA);
+
+        return true;
+    }
+
+    /**
+     * ¿La ruta de este request es una de las tres que abre el acceso del admin, y, si trae `{user_id}`, es el
+     * del comercio de esta instancia? La comparación del id es de tiempo constante y como texto (la ruta lo
+     * entrega como string; la config puede ser int).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return bool
+     */
+    protected function ruta_del_acceso_del_admin(Request $request)
+    {
+        $ruta = $request->route();
+
+        if (is_null($ruta) || !in_array($ruta->getName(), self::RUTAS_DEL_ACCESO_DEL_ADMIN, true)) {
+            return false;
+        }
+
+        $user_id = $ruta->parameter('user_id');
+
+        if (is_null($user_id)) {
+            return true;
+        }
+
+        $user_id_de_la_instancia = config('app.USER_ID');
+
+        if (!is_scalar($user_id_de_la_instancia) || (string) $user_id_de_la_instancia === '') {
+            return false;
+        }
+
+        return hash_equals((string) $user_id_de_la_instancia, (string) $user_id);
     }
 
     /**
@@ -271,7 +387,8 @@ class RutaDeMantenimiento
 
     /**
      * El path del request (con el base path: en el shared es `/public/...`) más el resto del query, sin
-     * el parámetro de la clave.
+     * el parámetro de la clave ni el del acceso del admin (`acceso`): ninguno de los dos tiene que quedar
+     * en el historial ni en el Referer.
      *
      * Las barras (y las invertidas) del principio se colapsan en una sola: `//otro-host/...` o `/\otro-host`
      * los navegadores los leen como una URL a otro dominio.
@@ -285,7 +402,7 @@ class RutaDeMantenimiento
 
         $query = $request->query();
 
-        unset($query[self::PARAMETRO_DE_LA_CLAVE]);
+        unset($query[self::PARAMETRO_DE_LA_CLAVE], $query[self::PARAMETRO_DEL_ACCESO]);
 
         $resto = http_build_query($query);
 
