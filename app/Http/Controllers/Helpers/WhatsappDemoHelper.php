@@ -117,6 +117,7 @@ class WhatsappDemoHelper
             'telefonos_reemplazados'  => 0,
             'telefonos_repetidos'     => 0,
             'clientes_con_telefono'   => 0,
+            'telefonos_de_siembra'    => 0,
             'telefonos_reales'        => 0,
             'chats_sembrados'         => 0,
             'chats_omitidos'          => [],
@@ -124,6 +125,7 @@ class WhatsappDemoHelper
 
         $medicion = self::medir_telefonos($owner->id);
         $resumen['clientes_con_telefono'] = $medicion['con_telefono'];
+        $resumen['telefonos_de_siembra'] = $medicion['de_siembra'];
         $resumen['telefonos_reales'] = $medicion['reales'];
         $resumen['telefonos_repetidos'] = $medicion['repetidos'];
 
@@ -196,11 +198,17 @@ class WhatsappDemoHelper
     }
 
     /**
-     * Mide los teléfonos de los clientes del dueño: cuántos tienen, cuántos NO son de ficción
-     * (ni de Lucas ni del bloque de este helper) y cuántos están repetidos entre clientes.
+     * Mide los teléfonos de los clientes del dueño: cuántos tienen, cuántos son los que dejan las
+     * siembras (`ClientSeeder`: `3814500001`…, ver `es_telefono_de_siembra()`), cuántos NO son de
+     * ninguna clase de ficción (ni de Lucas, ni del bloque de este helper, ni de la siembra) y
+     * cuántos están repetidos entre clientes.
+     *
+     * 🔴 `reales` es una MEDICIÓN y no la regla de reemplazo: el patrón de la siembra es flojo
+     * (10 dígitos con `500` en el medio) y en una base copiada de un cliente real puede coincidir
+     * con un número verdadero, así que `ordenar_telefonos()` con la opción NO lo toma como ficción.
      *
      * @param  int  $owner_id
-     * @return array  ['con_telefono' => int, 'reales' => int, 'repetidos' => int]
+     * @return array  ['con_telefono' => int, 'de_siembra' => int, 'reales' => int, 'repetidos' => int]
      */
     private static function medir_telefonos($owner_id)
     {
@@ -211,6 +219,7 @@ class WhatsappDemoHelper
             ->get(['id', 'phone']);
 
         $con_telefono = 0;
+        $de_siembra = 0;
         $reales = 0;
         $vistos = [];
         $repetidos = 0;
@@ -224,7 +233,9 @@ class WhatsappDemoHelper
 
             $con_telefono++;
 
-            if (! self::es_telefono_de_ficcion($digitos)) {
+            if (self::es_telefono_de_siembra($digitos)) {
+                $de_siembra++;
+            } elseif (! self::es_telefono_de_ficcion($digitos)) {
                 $reales++;
             }
 
@@ -237,7 +248,20 @@ class WhatsappDemoHelper
             }
         }
 
-        return ['con_telefono' => $con_telefono, 'reales' => $reales, 'repetidos' => $repetidos];
+        return ['con_telefono' => $con_telefono, 'de_siembra' => $de_siembra, 'reales' => $reales, 'repetidos' => $repetidos];
+    }
+
+    /**
+     * ¿Es un teléfono de los que dejan las siembras (`ClientSeeder`)? Diez dígitos con `500` en las
+     * posiciones 5 a 7: `3814500001`, `3425500002`, `1145500003`… Solo sirve para MEDIR (ver
+     * `medir_telefonos()`), nunca para decidir qué se reemplaza.
+     *
+     * @param  string  $digitos
+     * @return bool
+     */
+    private static function es_telefono_de_siembra($digitos)
+    {
+        return preg_match('/^\d{4}500\d{3}$/', substr($digitos, -10)) === 1;
     }
 
     /**
