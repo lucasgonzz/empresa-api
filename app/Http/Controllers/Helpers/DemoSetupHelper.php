@@ -237,9 +237,10 @@ class DemoSetupHelper
          * programa «embudo comercial», 13/10/2026):
          *
          * 1. **Restaurar el volcado del esquema** de esta versión (`EsquemaDemoSnapshotHelper`):
-         *    las 435 tablas migradas y vacías, más la tabla `migrations` con las mismas 873 filas
-         *    que dejaría `migrate:fresh`. Es un puñado de `CREATE TABLE` en vez de 873
-         *    transformaciones encadenadas.
+         *    las tablas migradas, la tabla `migrations` con las mismas filas que dejaría
+         *    `migrate:fresh` y las pocas filas de catálogo que insertan las propias migraciones
+         *    (plataformas, estados de Mercado Libre, plantilla online). Es un puñado de
+         *    `CREATE TABLE` en vez de ~880 transformaciones encadenadas.
          * 2. **`migrate:fresh`**, el camino de siempre, cuando no hay volcado para esta versión o
          *    cuando la restauración no pasa su propia verificación.
          *

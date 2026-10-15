@@ -4,6 +4,7 @@ namespace Tests\Feature\Semilla;
 
 use App\Http\Controllers\Helpers\EsquemaDemoSnapshotHelper;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Tests\EmpresaTestCase;
 
 /**
@@ -139,7 +140,12 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
     {
         $ruta = $this->temporal('generado');
 
-        $resultado = EsquemaDemoSnapshotHelper::generar($ruta);
+        /*
+            Lista de tablas con datos VACÍA a propósito: la base del slot tiene el fixture, y sin la
+            lista explícita `generar()` se niega (bien) porque `users` tiene filas. Acá se prueba el
+            esquema; las filas se prueban en el test 7.
+        */
+        $resultado = EsquemaDemoSnapshotHelper::generar($ruta, []);
 
         $this->assertFileExists($ruta);
 
@@ -374,7 +380,7 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
             'Al negarse no puede haber dejado un archivo a medias con nombre de volcado válido.'
         );
 
-        $this->assertStringContainsStringIgnoringCase('vacía', Artisan::output());
+        $this->assertStringContainsStringIgnoringCase('recién migrada', Artisan::output());
     }
 
     /**
@@ -427,5 +433,160 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
             $ruta,
             'Al negarse no puede haber dejado el archivo: se chequea ANTES de abrirlo.'
         );
+    }
+
+    /**
+     * Test 7 — el volcado se lleva las filas que dejan las migraciones, y se reponen idénticas.
+     *
+     * 🔴 Lo encontró el retome de la misión el 15/10/2026: hay migraciones que INSERTAN filas
+     * (`platforms` 4, `meli_order_statuses` 2, `payment_method_types` 1, `online_templates` 1,
+     * medidas sobre `empresa_demo_m9` recién migrada). Un volcado de solo DDL las perdía y la base
+     * restaurada no era la de un `migrate:fresh`: `meli_order_statuses` no la repone ningún seeder y
+     * las otras quedaban con otros ids.
+     *
+     * Sin DDL de por medio (que haría commit implícito): las filas se siembran, se borran y se
+     * reponen con `DELETE`/`INSERT` adentro de la transacción del test.
+     *
+     * @return void
+     */
+    public function test_el_volcado_se_lleva_las_filas_de_las_migraciones_y_las_repone_identicas()
+    {
+        DB::statement('SET FOREIGN_KEY_CHECKS = 0');
+
+        try {
+            DB::table('platforms')->delete();
+
+            DB::table('platforms')->insert([
+                [
+                    'id'            => 7,
+                    'slug'          => 'prueba-uno',
+                    'name'          => "O'Reilly \\ con barra y comilla",
+                    'client_id'     => null,
+                    'client_secret' => null,
+                    'extra_config'  => json_encode(['a' => "x'y", 'b' => [1, 2]]),
+                    'created_at'    => '2026-10-15 10:00:00',
+                    'updated_at'    => null,
+                ],
+                [
+                    'id'            => 9,
+                    'slug'          => 'prueba-dos',
+                    'name'          => 'Ñandú con acento',
+                    'client_id'     => 'abc',
+                    'client_secret' => null,
+                    'extra_config'  => null,
+                    'created_at'    => null,
+                    'updated_at'    => null,
+                ],
+            ]);
+
+            $antes = $this->filas_de('platforms');
+
+            $ruta = $this->temporal('con-filas');
+            $resultado = EsquemaDemoSnapshotHelper::generar($ruta, ['platforms']);
+
+            $this->assertSame(['platforms' => 2], $resultado['filas']);
+
+            $contenido = file_get_contents($ruta);
+            $this->assertStringContainsString('INSERT INTO `platforms`', $contenido);
+            $this->assertStringContainsString('"filas":{"platforms":2}', $contenido);
+
+            DB::table('platforms')->delete();
+
+            $volcado = EsquemaDemoSnapshotHelper::leer_volcado($ruta);
+            $this->assertSame(['platforms'], array_keys($volcado['datos']));
+
+            foreach ($volcado['datos']['platforms'] as $sentencia) {
+                DB::unprepared($sentencia);
+            }
+
+            $this->assertSame(
+                $antes,
+                $this->filas_de('platforms'),
+                'Las filas repuestas tienen que ser idénticas, ids incluidos: los seeders y la tienda '
+                    . 'buscan estas filas por id o por slug.'
+            );
+        } finally {
+            DB::statement('SET FOREIGN_KEY_CHECKS = 1');
+        }
+    }
+
+    /**
+     * Test 8 — sin lista explícita, `generar()` se niega sobre una base que ya tiene usuarios: sus
+     * filas son del negocio, no de las migraciones.
+     *
+     * @return void
+     */
+    public function test_generar_se_niega_si_la_base_ya_tiene_usuarios()
+    {
+        $this->assertGreaterThan(0, DB::table('users')->count(), 'El fixture del slot trae usuarios.');
+
+        $ruta = $this->temporal('base-usada');
+
+        try {
+            EsquemaDemoSnapshotHelper::generar($ruta);
+
+            $this->fail('generar() tenía que negarse con usuarios en la base.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('recién migrada', $e->getMessage());
+        }
+
+        $this->assertFileDoesNotExist($ruta);
+    }
+
+    /**
+     * Test 9 — `verificar()` cuenta las filas por tabla y rechaza filas en tablas que el volcado no
+     * trae (lo que dejaría el camino rápido si no vaciara algo del lead anterior).
+     *
+     * @return void
+     */
+    public function test_verificar_cuenta_las_filas_de_las_migraciones()
+    {
+        $tablas = count(EsquemaDemoSnapshotHelper::tablas_base());
+        $en_base = EsquemaDemoSnapshotHelper::migraciones_de_la_base();
+
+        $meta = [
+            'version'     => EsquemaDemoSnapshotHelper::version(),
+            'tablas'      => $tablas,
+            'migraciones' => count($en_base),
+        ];
+
+        $con_filas = array_values(array_diff(
+            EsquemaDemoSnapshotHelper::tablas_con_filas(EsquemaDemoSnapshotHelper::tablas_base()),
+            ['migrations']
+        ));
+
+        $todas = [];
+
+        foreach ($con_filas as $tabla) {
+            $todas[$tabla] = DB::table($tabla)->count();
+        }
+
+        $meta['filas'] = $todas;
+        $ok = EsquemaDemoSnapshotHelper::verificar($meta, $en_base);
+        $this->assertTrue($ok['ok'], 'Con las cuentas reales tiene que pasar. Motivo: ' . $ok['motivo']);
+
+        $una = $con_filas[0];
+        $meta['filas'][$una] = $todas[$una] + 1;
+        $mal_contada = EsquemaDemoSnapshotHelper::verificar($meta, $en_base);
+        $this->assertFalse($mal_contada['ok']);
+        $this->assertStringContainsString('`' . $una . '`', $mal_contada['motivo']);
+
+        $meta['filas'] = [];
+        $sobran = EsquemaDemoSnapshotHelper::verificar($meta, $en_base);
+        $this->assertFalse($sobran['ok']);
+        $this->assertStringContainsString('quedaron filas en tablas que el volcado no trae', $sobran['motivo']);
+    }
+
+    /**
+     * Las filas de una tabla, ordenadas por id y como arrays, para comparar antes y después.
+     *
+     * @param string $tabla
+     * @return array<int,array<string,mixed>>
+     */
+    private function filas_de($tabla)
+    {
+        return array_map(function ($fila) {
+            return (array) $fila;
+        }, DB::table($tabla)->orderBy('id')->get()->all());
     }
 }

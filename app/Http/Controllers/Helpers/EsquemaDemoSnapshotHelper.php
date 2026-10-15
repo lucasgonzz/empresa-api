@@ -28,6 +28,17 @@ use Illuminate\Support\Facades\Log;
  * y escribe el volcado para la próxima. Como una instancia de demo se rearma por cada lead, el
  * beneficio entra solo a partir del segundo lead de esa versión.
  *
+ * 🔴 «MIGRADAS Y VACÍAS» ES MENTIRA A MEDIAS, Y POR ESO EL VOLCADO TAMBIÉN LLEVA FILAS (15/10/2026).
+ * Hay migraciones que INSERTAN datos además de crear tablas: los dos estados de `meli_order_statuses`,
+ * las plataformas de Mercado Pago y Zipnova (`asegurar_plataforma_*`), el tipo de pago de Mercado
+ * Pago y la plantilla online ComercioCity. Medido sobre `empresa_demo_m9` recién migrada: `platforms`
+ * 4 filas, `meli_order_statuses` 2, `payment_method_types` 1, `online_templates` 1. Un volcado solo
+ * de DDL dejaba esas tablas vacías: `meli_order_statuses` no la repone ningún seeder, y las otras
+ * las reponen seeders que, sobre una tabla vacía, las crean con OTROS ids que después de un
+ * `migrate:fresh`. O sea, una base distinta, que es justo lo que este helper promete que no pasa.
+ * Ahora `generar()` vuelca también esas filas, los dos caminos de `restaurar()` las reponen y
+ * `verificar()` cuenta fila por tabla.
+ *
  * Todo en PHP puro (`SHOW CREATE TABLE` + `DB::unprepared()`), sin `mysqldump` ni `mysql`: en el
  * shared hosting de Hostinger no hay binarios de cliente de MySQL garantizados, así que un volcado
  * que dependa de ellos no sirve justo donde tiene que servir.
@@ -45,7 +56,23 @@ class EsquemaDemoSnapshotHelper
     const SEPARADOR = "-- //";
 
     /** Primera línea del archivo. Si no está, no es un volcado nuestro y no se toca. */
-    const MARCA = "-- esquema-demo v1";
+    const MARCA = "-- esquema-demo v2";
+
+    /**
+     * Tablas cuyas filas NO son datos de las migraciones aunque las encuentre llenas: `migrations`
+     * va aparte (con `batch` normalizado) y las de infraestructura de Laravel las puede escribir
+     * cualquier cosa que haya corrido en el medio (una cola, una sesión, un lock de caché).
+     */
+    const TABLAS_SIN_DATOS_DE_MIGRACION = [
+        'migrations',
+        'jobs',
+        'failed_jobs',
+        'cache',
+        'cache_locks',
+        'sessions',
+        'password_resets',
+        'personal_access_tokens',
+    ];
 
     /**
      * Huella del conjunto de migraciones que hay en disco. Son los primeros 12 caracteres del sha1
@@ -122,20 +149,28 @@ class EsquemaDemoSnapshotHelper
     }
 
     /**
-     * Genera el volcado de la base ACTUAL, que tiene que estar migrada y sin datos.
+     * Genera el volcado de la base ACTUAL, que tiene que estar RECIÉN MIGRADA: el esquema, la tabla
+     * `migrations` y las filas que insertaron las propias migraciones (ver la cabecera de la clase).
      *
-     * No chequea que esté vacía: el único punto que lo llama es `DemoSetupHelper::run()` justo
-     * después de su `migrate:fresh`, y el comando `demo:snapshot-esquema`, que sí lo chequea antes
-     * de llamar. Lo que sí se verifica acá es que no haya vistas ni tablas que no sean `BASE TABLE`:
-     * este volcado no las sabe reproducir y una vista futura lo rompería en silencio.
+     * Los que lo llaman son `DemoSetupHelper::run()` justo después de su `migrate:fresh` y el
+     * comando `demo:snapshot-esquema`. Como las filas de cualquier tabla llena se toman por «datos
+     * de las migraciones», acá se exige que `users` esté vacía: una base con un usuario ya pasó por
+     * un setup o por seeders, y sus filas son del negocio, no de las migraciones. También se niega
+     * si hay vistas u objetos que no sean `BASE TABLE`: este volcado no los sabe reproducir y una
+     * vista futura lo rompería en silencio.
      *
      * @param string|null $ruta Destino. Null = `ruta()` de la versión en disco.
-     * @return array{ruta: string, version: string, tablas: int, migraciones: int}
+     * @param string[]|null $tablas_con_datos Null (lo normal) = detectarlas: toda tabla con filas
+     *                                        salvo las de `TABLAS_SIN_DATOS_DE_MIGRACION`, con la
+     *                                        guarda de `users` vacía. Una lista explícita saltea la
+     *                                        guarda y vuelca solo esas: es para la suite, que corre
+     *                                        sobre una base con fixture y no puede migrar de cero.
+     * @return array{ruta: string, version: string, tablas: int, migraciones: int, filas: array<string,int>}
      *
-     * @throws \RuntimeException Si hay vistas, si la carpeta no se puede crear o si no se puede
-     *                           escribir el archivo.
+     * @throws \RuntimeException Si hay vistas, si la base no está recién migrada, si la carpeta no
+     *                           se puede crear o si no se puede escribir el archivo.
      */
-    public static function generar($ruta = null)
+    public static function generar($ruta = null, $tablas_con_datos = null)
     {
         $version = self::version();
 
@@ -152,6 +187,23 @@ class EsquemaDemoSnapshotHelper
         self::negarse_si_hay_vistas();
 
         self::negarse_si_la_base_esta_atrasada();
+
+        if (is_null($tablas_con_datos)) {
+            if (in_array('users', $tablas, true) && DB::table('users')->limit(1)->count() > 0) {
+                throw new \RuntimeException(
+                    'La base no está recién migrada: `users` tiene filas, así que lo que hay en las '
+                        . 'tablas es del negocio y no de las migraciones. El volcado tiene que salir '
+                        . 'de una base vacía recién pasada por `php artisan migrate:fresh --force`.'
+                );
+            }
+
+            $tablas_con_datos = array_values(array_diff(
+                self::tablas_con_filas($tablas),
+                self::TABLAS_SIN_DATOS_DE_MIGRACION
+            ));
+        }
+
+        sort($tablas_con_datos);
 
         $carpeta = dirname($ruta);
 
@@ -177,12 +229,19 @@ class EsquemaDemoSnapshotHelper
         try {
             $migraciones = self::migraciones_de_la_base();
 
+            $filas = [];
+
+            foreach ($tablas_con_datos as $tabla) {
+                $filas[$tabla] = (int) DB::table($tabla)->count();
+            }
+
             fwrite($f, self::MARCA . "\n");
             fwrite($f, '-- meta: ' . json_encode([
                 'version'     => $version,
                 'generado'    => date('c'),
                 'tablas'      => count($tablas),
                 'migraciones' => count($migraciones),
+                'filas'       => (object) $filas,
             ]) . "\n");
             fwrite($f, self::SEPARADOR . "\n");
 
@@ -197,6 +256,13 @@ class EsquemaDemoSnapshotHelper
             foreach (self::inserts_de_migrations($migraciones) as $sentencia) {
                 fwrite($f, $sentencia);
                 fwrite($f, "\n" . self::SEPARADOR . "\n");
+            }
+
+            foreach ($tablas_con_datos as $tabla) {
+                foreach (self::inserts_de_datos($tabla) as $sentencia) {
+                    fwrite($f, $sentencia);
+                    fwrite($f, "\n" . self::SEPARADOR . "\n");
+                }
             }
         } catch (\Throwable $e) {
             fclose($f);
@@ -218,6 +284,7 @@ class EsquemaDemoSnapshotHelper
             'version'     => $version,
             'tablas'      => count($tablas),
             'migraciones' => count($migraciones),
+            'filas'       => $filas,
         ];
     }
 
@@ -334,7 +401,7 @@ class EsquemaDemoSnapshotHelper
      * @param string $ruta
      * @return array{tablas: array<string,string>, migrations: string[]}
      */
-    protected static function leer_volcado($ruta)
+    public static function leer_volcado($ruta)
     {
         $contenido = file_get_contents($ruta);
 
@@ -344,6 +411,7 @@ class EsquemaDemoSnapshotHelper
 
         $tablas = [];
         $migrations = [];
+        $datos = [];
 
         foreach (explode("\n" . self::SEPARADOR . "\n", $contenido) as $bruto) {
             $sentencia = trim($bruto);
@@ -360,6 +428,13 @@ class EsquemaDemoSnapshotHelper
 
             if (strpos($sentencia, 'INSERT INTO `migrations`') === 0) {
                 $migrations[] = $sentencia;
+
+                continue;
+            }
+
+            /* Las filas que dejaron las migraciones (ver la cabecera de la clase). */
+            if (preg_match('/^INSERT INTO `([^`]+)`/', $sentencia, $coincidencia)) {
+                $datos[$coincidencia[1]][] = $sentencia;
             }
 
             /* Los `DROP TABLE` del volcado no se guardan: cada camino arma los suyos. */
@@ -369,7 +444,7 @@ class EsquemaDemoSnapshotHelper
             throw new \RuntimeException('El volcado no tiene ningún CREATE TABLE.');
         }
 
-        return ['tablas' => $tablas, 'migrations' => $migrations];
+        return ['tablas' => $tablas, 'migrations' => $migrations, 'datos' => $datos];
     }
 
     /**
@@ -482,9 +557,7 @@ class EsquemaDemoSnapshotHelper
                 DB::unprepared('TRUNCATE TABLE `' . $tabla . '`');
             }
 
-            foreach ($volcado['migrations'] as $sentencia) {
-                DB::unprepared($sentencia);
-            }
+            self::reponer_filas($volcado);
         } finally {
             DB::unprepared('SET FOREIGN_KEY_CHECKS = 1');
         }
@@ -516,11 +589,33 @@ class EsquemaDemoSnapshotHelper
                 DB::unprepared($ddl);
             }
 
-            foreach ($volcado['migrations'] as $sentencia) {
-                DB::unprepared($sentencia);
-            }
+            self::reponer_filas($volcado);
         } finally {
             DB::unprepared('SET FOREIGN_KEY_CHECKS = 1');
+        }
+    }
+
+    /**
+     * `migrations` y las filas que dejaron las migraciones, sobre tablas que ya están vacías.
+     *
+     * Las filas van con su `id` explícito, así que quedan con los mismos ids que les dio el
+     * `migrate:fresh` del que salió el volcado, e InnoDB deja el contador en el máximo + 1, que es
+     * también lo que deja ese `migrate:fresh` (ninguna migración inserta y después borra sobre una
+     * base vacía).
+     *
+     * @param array{tablas: array<string,string>, migrations: string[], datos: array<string,string[]>} $volcado
+     * @return void
+     */
+    protected static function reponer_filas(array $volcado)
+    {
+        foreach ($volcado['migrations'] as $sentencia) {
+            DB::unprepared($sentencia);
+        }
+
+        foreach ($volcado['datos'] as $sentencias) {
+            foreach ($sentencias as $sentencia) {
+                DB::unprepared($sentencia);
+            }
         }
     }
 
@@ -537,7 +632,7 @@ class EsquemaDemoSnapshotHelper
      * @param string[] $tablas
      * @return string[]
      */
-    protected static function tablas_con_filas(array $tablas)
+    public static function tablas_con_filas(array $tablas)
     {
         $con_filas = [];
 
@@ -565,7 +660,7 @@ class EsquemaDemoSnapshotHelper
      * Verifica que lo que quedó en la base después de restaurar sea indistinguible de lo que habría
      * dejado un `migrate:fresh`.
      *
-     * Las dos cosas que se comparan, y el porqué de cada una:
+     * Las tres cosas que se comparan, y el porqué de cada una:
      *
      * 1. **La tabla `migrations`, nombre por nombre y en las dos direcciones.** Es la que decide si
      *    un `php artisan migrate` posterior (el que corre `DeploymentService` en cada despliegue)
@@ -575,6 +670,8 @@ class EsquemaDemoSnapshotHelper
      *    CANTIDAD no alcanza: dos conjuntos distintos pueden tener el mismo largo.
      * 2. **La cantidad de tablas** contra la que declara la cabecera, que es la forma baratísima de
      *    detectar una restauración que se cortó por la mitad.
+     * 3. **Las filas** (solo si la cabecera las declara, que es siempre desde la marca v2): cada
+     *    tabla con la cantidad que dejaron las migraciones, y ninguna otra tabla con filas.
      *
      * @param array<string,mixed> $meta
      * @param string[] $en_disco
@@ -604,6 +701,43 @@ class EsquemaDemoSnapshotHelper
                 'la tabla migrations no quedó idéntica: faltan ' . count($faltan)
                     . ' (' . implode(', ', array_slice($faltan, 0, 3)) . ') y sobran '
                     . count($sobran) . ' (' . implode(', ', array_slice($sobran, 0, 3)) . ')'
+            );
+        }
+
+        /*
+            3. Las filas que dejaron las migraciones: la misma cantidad en cada tabla que declara la
+               cabecera, y NINGUNA otra tabla con filas. Lo segundo es lo que garantiza que el camino
+               rápido (vaciar en vez de recrear) no dejó nada del lead anterior.
+        */
+        $filas_esperadas = isset($meta['filas']) && is_array($meta['filas']) ? $meta['filas'] : [];
+
+        foreach ($filas_esperadas as $tabla => $cantidad) {
+            if (! in_array($tabla, $tablas, true)) {
+                return self::fallo('el volcado trae filas de `' . $tabla . '` y la tabla no quedó');
+            }
+
+            $hay = (int) DB::table($tabla)->count();
+
+            if ($hay !== (int) $cantidad) {
+                return self::fallo(
+                    '`' . $tabla . '` quedó con ' . $hay . ' filas y el volcado declara ' . $cantidad
+                );
+            }
+        }
+
+        $de_mas = [];
+
+        if (isset($meta['filas'])) {
+            $de_mas = array_values(array_diff(
+                self::tablas_con_filas($tablas),
+                array_merge(['migrations'], array_keys($filas_esperadas))
+            ));
+        }
+
+        if (! empty($de_mas)) {
+            return self::fallo(
+                'quedaron filas en tablas que el volcado no trae: '
+                    . implode(', ', array_slice($de_mas, 0, 5))
             );
         }
 
@@ -805,6 +939,46 @@ class EsquemaDemoSnapshotHelper
 
             $sentencias[] = 'INSERT INTO `migrations` (`migration`, `batch`) VALUES '
                 . implode(', ', $valores);
+        }
+
+        return $sentencias;
+    }
+
+    /**
+     * Los `INSERT` de las filas de una tabla, en lotes, con las columnas nombradas y el `id`
+     * explícito. Son tablas de catálogo de un puñado de filas (medido el 15/10/2026: ninguna pasa
+     * de 4).
+     *
+     * Los valores se escapan con `PDO::quote()` de la misma conexión, que es el escapado que
+     * corresponde al juego de caracteres del servidor; `NULL` va como `NULL`.
+     *
+     * @param string $tabla
+     * @return string[]
+     */
+    public static function inserts_de_datos($tabla)
+    {
+        $limpia = str_replace('`', '', $tabla);
+        $pdo = DB::connection()->getPdo();
+        $sentencias = [];
+
+        $filas = DB::select('select * from `' . $limpia . '`');
+
+        foreach (array_chunk($filas, 200) as $lote) {
+            $columnas = array_keys((array) $lote[0]);
+            $valores = [];
+
+            foreach ($lote as $fila) {
+                $partes = [];
+
+                foreach ((array) $fila as $valor) {
+                    $partes[] = is_null($valor) ? 'NULL' : $pdo->quote((string) $valor);
+                }
+
+                $valores[] = '(' . implode(', ', $partes) . ')';
+            }
+
+            $sentencias[] = 'INSERT INTO `' . $limpia . '` (`' . implode('`, `', $columnas)
+                . '`) VALUES ' . implode(', ', $valores);
         }
 
         return $sentencias;
