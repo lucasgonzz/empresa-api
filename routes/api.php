@@ -1464,6 +1464,16 @@ Route::prefix('admin-sync')
 // Ingreso a la demo con la sesion ya iniciada (token emitido por admin-api).
 Route::post('demo/ingreso', 'DemoIngresoController@store');
 
+// Acceso de un solo uso al configurador de extensiones, pedido por el admin (misión extensiones-desde-el-admin,
+// 15/10/2026). `admin.api.key:siempre`: exige X-Admin-Api-Key aunque la instancia no tenga clave cargada,
+// porque esta ruta EMITE un acceso (el tri-estado de `admin.api.key` a secas dejaría pasar sin clave).
+// Se canjea en GET /extensiones?acceso=<token> (RutaDeMantenimiento).
+Route::middleware('admin.api.key:siempre')
+    ->prefix('admin-sync')
+    ->group(function () {
+        Route::post('extensiones/acceso', 'ExtensionesAccesoController@store');
+    });
+
 Route::middleware('admin.api.key')
     ->prefix('admin-sync')
     ->group(function () {

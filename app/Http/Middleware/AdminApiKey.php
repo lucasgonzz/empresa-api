@@ -8,6 +8,9 @@ use Illuminate\Support\Facades\Log;
 
 class AdminApiKey
 {
+    /** Parámetro del middleware (`admin.api.key:siempre`): exige la clave aunque el tri-estado diga que no. */
+    const MODO_SIEMPRE = 'siempre';
+
     /**
      * Valida que el request venga del admin-api central.
      * Compara header X-Admin-Api-Key contra config('services.admin_api.api_key')
@@ -30,15 +33,22 @@ class AdminApiKey
      *
      * Esta puerta no consulta la base ni la sesión: un request sin clave se corta antes de llegar al controlador.
      *
+     * 🔴 VARIANTE `admin.api.key:siempre` (misión extensiones-desde-el-admin, 15/10/2026): para las rutas que
+     * EMITEN un acceso (hoy `admin-sync/extensiones/acceso`). Ignora el tri-estado y exige la clave SIEMPRE:
+     * una instancia sin `ADMIN_API_INBOUND_KEY` cargada (o con el flag en false) contesta 401 igual, porque
+     * "no hay con qué comparar" en una ruta que abre una puerta no puede significar "pasá". Es la misma clase,
+     * con la misma normalización de la clave, y por eso el guardián de rutas la sigue viendo como protegida.
+     *
      * @param Request $request Request HTTP entrante.
      * @param Closure $next Siguiente middleware / controlador.
+     * @param string|null $modo `siempre` para exigir la clave sin mirar el tri-estado; null = el comportamiento de siempre.
      * @return \Symfony\Component\HttpFoundation\Response
      */
-    public function handle(Request $request, Closure $next)
+    public function handle(Request $request, Closure $next, $modo = null)
     {
         $expected = $this->clave_de_la_instancia();
 
-        if (! $this->debe_exigir_la_clave($expected)) {
+        if ($modo !== self::MODO_SIEMPRE && ! $this->debe_exigir_la_clave($expected)) {
             return $next($request);
         }
 
