@@ -94,6 +94,28 @@ class DemoSetupHelper
     }
 
     /**
+     * Si la etapa `migrate_fresh` puede usar el volcado del esquema (`EsquemaDemoSnapshotHelper`):
+     * en una instancia de demo y en local, y NUNCA en la suite.
+     *
+     * 🔴 Por qué no alcanza con `es_instancia_de_demo()`, que acepta `testing` (15/10/2026): los
+     * tests del setup protegen la base del slot MOCKEANDO `Artisan::call('migrate:fresh')`, y la
+     * restauración no pasa por Artisan. Con un volcado válido en `storage/demo` -- que aparece solo
+     * en cuanto alguien corre un demo setup en local en ese worktree -- la suite le vaciaba el
+     * fixture a la base de testing. Medido: 82 rojos en `tests/Feature/Semilla` con el mensaje
+     * «El marcador desapareció».
+     *
+     * @return bool
+     */
+    private static function usar_volcado_del_esquema()
+    {
+        if (config('app.env') === 'testing') {
+            return false;
+        }
+
+        return config('app.FOR_USER') === 'demo' || config('app.env') === 'local';
+    }
+
+    /**
      * Ejecuta el setup completo de una demo para los datos recibidos.
      *
      * @param array<string, mixed> $data Claves esperadas (las opcionales se asumen falsy):
@@ -265,7 +287,8 @@ class DemoSetupHelper
          * valida con `nullable|array|max:50` elementos (hoy serían cuatro), así que una clave más es
          * compatible en las dos direcciones.
          *
-         * 🔴 Y TODO ESTO SOLO EN UNA INSTANCIA DE DEMO (o en local, o en la suite). Este método corre
+         * 🔴 Y TODO ESTO SOLO EN UNA INSTANCIA DE DEMO (o en local; nunca en la suite, ver
+         * `usar_volcado_del_esquema()`). Este método corre
          * TAMBIÉN cuando se instala el sistema de un cliente real, sobre su base recién creada: ahí
          * el camino sigue siendo `migrate:fresh` pelado, como siempre. No es que el volcado no
          * funcionaría -- es que no hay ninguna razón para dejarle a un negocio un archivo de 380 KB
@@ -275,14 +298,14 @@ class DemoSetupHelper
          */
         $restauracion = ['ok' => false, 'motivo' => 'no es una instancia de demo'];
 
-        if (self::es_instancia_de_demo()) {
+        if (self::usar_volcado_del_esquema()) {
             $restauracion = EsquemaDemoSnapshotHelper::restaurar();
         }
 
         if (! $restauracion['ok']) {
             Artisan::call('migrate:fresh', ['--force' => true]);
 
-            if (self::es_instancia_de_demo()) {
+            if (self::usar_volcado_del_esquema()) {
                 try {
                     EsquemaDemoSnapshotHelper::generar();
                 } catch (\Throwable $e) {

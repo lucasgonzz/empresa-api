@@ -313,6 +313,17 @@ class AperturasDeCajaDeLaSemillaTest extends EmpresaTestCase
             'Esa apertura tenía que estar ABIERTA cuando llegó el movimiento.'
         );
 
+        /*
+            🔴 Y tiene que ser una apertura DE ESE DÍA (chequeo independiente del 15/10/2026): si
+            conservara las 08:00 del primer día, el lead vería en la lista de aperturas y cierres una
+            caja abierta tres días seguidos.
+        */
+        $this->assertSame(
+            $tercer_dia->copy()->setTime(8, 0)->format('Y-m-d H:i:s'),
+            Carbon::parse($apertura->created_at)->format('Y-m-d H:i:s'),
+            'La apertura que esperaba vacía tiene que quedar fechada el día en que la caja se movió.'
+        );
+
         $this->invocar('cerrar_cajas_del_dia', $tercer_dia);
 
         $this->assertNull(

@@ -578,6 +578,28 @@ class EsquemaSnapshotDeDemoTest extends EmpresaTestCase
     }
 
     /**
+     * Test 10 — en la suite, el volcado POR DEFECTO no se restaura nunca.
+     *
+     * 🔴 Lo encontró el retome del 15/10/2026: los tests del setup protegen la base del slot
+     * mockeando `migrate:fresh`, y la restauración no pasa por Artisan. Con un volcado válido en
+     * `storage/demo` la suite vaciaba el fixture (82 rojos en `tests/Feature/Semilla`).
+     *
+     * @return void
+     */
+    public function test_en_la_suite_no_se_restaura_el_volcado_por_defecto()
+    {
+        $tablas_antes = count(EsquemaDemoSnapshotHelper::tablas_base());
+        $usuarios_antes = DB::table('users')->count();
+
+        $resultado = EsquemaDemoSnapshotHelper::restaurar();
+
+        $this->assertFalse($resultado['ok']);
+        $this->assertStringContainsString('suite', $resultado['motivo']);
+        $this->assertSame($tablas_antes, count(EsquemaDemoSnapshotHelper::tablas_base()));
+        $this->assertSame($usuarios_antes, DB::table('users')->count());
+    }
+
+    /**
      * Las filas de una tabla, ordenadas por id y como arrays, para comparar antes y después.
      *
      * @param string $tabla

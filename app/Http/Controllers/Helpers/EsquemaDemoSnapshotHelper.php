@@ -59,6 +59,18 @@ class EsquemaDemoSnapshotHelper
     const MARCA = "-- esquema-demo v2";
 
     /**
+     * Las tablas que llenan las propias migraciones sobre una base vacía (medido el 15/10/2026
+     * sobre `empresa_demo_m9` recién migrada). Son las únicas cuyas filas viajan en el volcado: una
+     * tabla con filas que no está acá hace que `generar()` se niegue (ver ahí por qué).
+     */
+    const TABLAS_CON_DATOS_DE_MIGRACION = [
+        'meli_order_statuses',
+        'online_templates',
+        'payment_method_types',
+        'platforms',
+    ];
+
+    /**
      * Tablas cuyas filas NO son datos de las migraciones aunque las encuentre llenas: `migrations`
      * va aparte (con `batch` normalizado) y las de infraestructura de Laravel las puede escribir
      * cualquier cosa que haya corrido en el medio (una cola, una sesión, un lock de caché).
@@ -201,6 +213,26 @@ class EsquemaDemoSnapshotHelper
                 self::tablas_con_filas($tablas),
                 self::TABLAS_SIN_DATOS_DE_MIGRACION
             ));
+
+            /*
+                🔴 Solo las tablas que se SABE que llenan las migraciones (chequeo independiente del
+                15/10/2026). La tienda de la demo comparte la base: si un visitante escribe una fila
+                (un carrito, un rastreo) justo entre el `migrate:fresh` y este volcado, esa fila
+                quedaría en el volcado, `verificar()` la contaría como esperada y todas las demos
+                siguientes nacerían con ella. Ante una tabla que no está en la lista no se adivina:
+                no se escribe el volcado, la próxima corrida vuelve a `migrate:fresh` (lento pero
+                correcto) y el log nombra la tabla. Si es una migración nueva que inserta filas, se
+                la agrega a `TABLAS_CON_DATOS_DE_MIGRACION`.
+            */
+            $desconocidas = array_values(array_diff($tablas_con_datos, self::TABLAS_CON_DATOS_DE_MIGRACION));
+
+            if (! empty($desconocidas)) {
+                throw new \RuntimeException(
+                    'Hay filas en tablas que no se sabe que llenen las migraciones: '
+                        . implode(', ', $desconocidas) . '. Si las inserta una migración, agregalas a '
+                        . 'EsquemaDemoSnapshotHelper::TABLAS_CON_DATOS_DE_MIGRACION.'
+                );
+            }
         }
 
         sort($tablas_con_datos);
@@ -279,6 +311,19 @@ class EsquemaDemoSnapshotHelper
             throw new \RuntimeException('No se pudo mover el volcado a su nombre final: ' . $ruta);
         }
 
+        /*
+            Los volcados de versiones anteriores no se van a usar nunca más (la huella cambió) y son
+            ~380 KB cada uno: se borran. Solo en la carpeta propia, nunca junto a una `--salida`
+            que eligió una persona.
+        */
+        if (realpath(dirname($ruta)) === realpath(self::carpeta())) {
+            foreach ((array) glob(self::carpeta() . DIRECTORY_SEPARATOR . 'esquema-*.sql') as $viejo) {
+                if (is_string($viejo) && basename($viejo) !== basename($ruta)) {
+                    @unlink($viejo);
+                }
+            }
+        }
+
         return [
             'ruta'        => $ruta,
             'version'     => $version,
@@ -304,6 +349,16 @@ class EsquemaDemoSnapshotHelper
      */
     public static function restaurar($ruta = null)
     {
+        /*
+            Segunda guarda, por si alguien llama esto sin pasar por `DemoSetupHelper`: en la suite el
+            volcado POR DEFECTO no se restaura nunca. Vaciaría la base de testing del slot sin pasar
+            por el `migrate:fresh` que los tests mockean para protegerla. Los tests que prueban los
+            rechazos pasan una ruta explícita.
+        */
+        if (is_null($ruta) && config('app.env') === 'testing') {
+            return self::fallo('en la suite no se restaura el volcado por defecto');
+        }
+
         $version = self::version();
 
         if (is_null($ruta)) {
@@ -1005,7 +1060,8 @@ class EsquemaDemoSnapshotHelper
      */
     protected static function leer_meta($ruta)
     {
-        $f = fopen($ruta, 'r');
+        /* Con `@`: un archivo que existe y no se puede leer tiene que caer al respaldo, no tirar. */
+        $f = @fopen($ruta, 'r');
 
         if ($f === false) {
             return null;

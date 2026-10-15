@@ -2290,6 +2290,10 @@ class SembrarDatosDePrueba extends Command
      */
     protected function abrir_cajas_del_dia($cajas, $dia)
     {
+        $t = microtime(true);
+
+        $this->refechar_aperturas_que_esperan($cajas, $dia);
+
         $cerradas = Caja::whereIn('id', $cajas->pluck('id')->all())
             ->whereNull('current_apertura_caja_id')
             ->orderBy('id')
@@ -2297,10 +2301,10 @@ class SembrarDatosDePrueba extends Command
             ->all();
 
         if (empty($cerradas)) {
+            $this->costo_de_las_cajas['segundos'] += microtime(true) - $t;
+
             return;
         }
-
-        $t = microtime(true);
 
         Carbon::setTestNow($dia->copy()->setTime(8, 0));
 
@@ -2315,6 +2319,55 @@ class SembrarDatosDePrueba extends Command
 
         $this->costo_de_las_cajas['segundos'] += microtime(true) - $t;
         $this->costo_de_las_cajas['aperturas'] += count($cerradas);
+    }
+
+    /**
+     * Mueve a las 08:00 de `$dia` las aperturas que quedaron abiertas y VACÍAS de días anteriores.
+     *
+     * 🔴 Lo encontró el chequeo independiente del retome (15/10/2026): sin esto, una caja que no se
+     * movió el día 1 conservaba su apertura de las 08:00 del día 1, y si se movía el día 3 el
+     * movimiento caía en esa apertura, que se cerraba el 3 a las 22:00 -- una apertura de tres
+     * días en la lista de aperturas y cierres que mira el lead. Lo mismo el último día, con
+     * aperturas de semanas atrás recibiendo los movimientos de hoy. Los montos no cambiaban; lo
+     * que veía el lead, sí.
+     *
+     * Re-fecharla (y no cerrarla y abrir otra) mantiene el ahorro: es un `UPDATE` por día, no una
+     * apertura y un cierre por caja. Y es correcto porque una apertura sin movimientos es
+     * exactamente la que se habría abierto hoy: el saldo de la caja no cambió desde que se abrió.
+     * Solo se tocan las que no tienen ningún `MovimientoCaja`, por las dudas.
+     *
+     * @param \Illuminate\Support\Collection $cajas
+     * @param \Carbon\Carbon $dia
+     * @return void
+     */
+    protected function refechar_aperturas_que_esperan($cajas, $dia)
+    {
+        $abiertas = Caja::whereIn('id', $cajas->pluck('id')->all())
+            ->whereNotNull('current_apertura_caja_id')
+            ->pluck('current_apertura_caja_id')
+            ->all();
+
+        if (empty($abiertas)) {
+            return;
+        }
+
+        $con_movimiento = MovimientoCaja::whereIn('apertura_caja_id', $abiertas)
+            ->distinct()
+            ->pluck('apertura_caja_id')
+            ->all();
+
+        $vacias = array_values(array_diff($abiertas, $con_movimiento));
+
+        if (empty($vacias)) {
+            return;
+        }
+
+        $momento = $dia->copy()->setTime(8, 0)->format('Y-m-d H:i:s');
+
+        DB::table('apertura_cajas')
+            ->whereIn('id', $vacias)
+            ->where('created_at', '<', $momento)
+            ->update(['created_at' => $momento, 'updated_at' => $momento]);
     }
 
     /**
