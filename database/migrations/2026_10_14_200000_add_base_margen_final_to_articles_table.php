@@ -20,9 +20,12 @@ class AddBaseMargenFinalToArticlesTable extends Migration
             // tipeando. Null cuando no hay base, o en articulos calculados antes de esta columna
             // (el front cae a `base_margen` hasta el proximo recalculo).
             //
+            // Sin ->after(): en MySQL anterior a 8.0.29 agregar una columna en el medio reconstruye
+            // la tabla `articles`, que en algunos clientes es enorme; al final es instantaneo.
+            //
             // Misma escala que base_margen (22,6) y por el mismo motivo: se escribe en el mismo
             // save() que el resto del articulo, y desbordarla romperia el guardado entero.
-            $table->decimal('base_margen_final', 22, 6)->nullable()->after('base_margen');
+            $table->decimal('base_margen_final', 22, 6)->nullable();
         });
     }
 
