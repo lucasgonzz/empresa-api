@@ -697,6 +697,81 @@ class Envio_simulado_Test extends TestCase
         $this->assertQuedoComoEnviado($fresco);
     }
 
+    /**
+     * Un audio del composer, por el controller real: nota de voz en ogg, la subida y el envío son
+     * simulados los dos y nada sale a Kapso.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_audio_del_composer_queda_enviado_sin_subirlo_a_kapso()
+    {
+        Http::fake(['*' => Http::response([], 200)]);
+
+        $chat = $this->chat_abierto($this->cliente);
+
+        $respuesta = $this->post('api/whatsapp-chats/' . $chat->id . '/media', [
+            // Con contenido: `create()` deja el archivo vacío y el servidor lo rechaza por mime.
+            'file' => UploadedFile::fake()->createWithContent('nota.ogg', 'OggS-FALSO-0123456789-0123456789-0123456789-0123456789')->mimeType('audio/ogg'),
+        ], ['Accept' => 'application/json']);
+
+        $respuesta->assertStatus(201);
+        $this->assertTrue($respuesta->json('enviado'));
+
+        Http::assertNothingSent();
+
+        $mensaje = $this->salientes($chat->id)->first();
+        $this->assertQuedoComoEnviado($mensaje);
+        $this->assertSame('audio', $mensaje->media_type);
+    }
+
+    /**
+     * El botón «Simular mensaje del cliente» queda prendido en las demos. Después de usarlo el chat
+     * tiene `last_inbound_simulated = 1`, y ahí las otras dos puertas de salida (el composer de
+     * fotos y audios, y «Enviar ahora» de la respuesta de la IA) tienen su propio freno. En modo
+     * demostración no tienen que frenar: no hay POST a Kapso que proteger, y frenar deja el
+     * mensaje «sin enviar» justo después de usar el botón de simular.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function despues_de_simular_un_mensaje_el_composer_y_la_confirmacion_de_la_ia_siguen_enviando()
+    {
+        Http::fake(['*' => Http::response([], 200)]);
+
+        $chat = $this->chat_abierto($this->cliente, 1);
+
+        // El composer.
+        $foto = $this->post('api/whatsapp-chats/' . $chat->id . '/media', [
+            'file' => UploadedFile::fake()->image('foto.jpg'),
+        ], ['Accept' => 'application/json']);
+
+        $foto->assertStatus(201);
+        $this->assertTrue($foto->json('enviado'), 'En modo demostración la foto sale aunque el chat esté en simulación.');
+
+        // «Enviar ahora» de la respuesta pendiente de la IA (nace marcada como simulada: responde
+        // a un entrante simulado).
+        $pendiente = WhatsappChatMessage::create([
+            'whatsapp_chat_id' => $chat->id,
+            'direction'        => 'out',
+            'source'           => 'ia',
+            'body'             => 'Respuesta de la IA al mensaje simulado',
+            'delivery_status'  => 'pendiente',
+            'ai_status'        => 'a_confirmar',
+            'is_simulated'     => 1,
+        ]);
+
+        $this->putJson('api/whatsapp-chats/messages/' . $pendiente->id . '/confirm')->assertStatus(200);
+
+        Http::assertNothingSent();
+
+        $fresco = $pendiente->fresh();
+        $this->assertSame('enviado', $fresco->ai_status);
+        $this->assertTrue(WhatsappBotSendService::es_id_simulado($fresco->wa_message_id), 'Sin id quedaba con el relojito de pendiente.');
+        $this->assertSame('entregado', $fresco->delivery_status);
+        $this->assertTrue((bool) $fresco->is_simulated, 'Sigue marcada «Simulado»: responde a un entrante que no escribió el cliente.');
+    }
+
     // ------------------------------------------------------------------------------------------
     // 4. Las guardas locales del service no se aflojan
     // ------------------------------------------------------------------------------------------
@@ -796,6 +871,54 @@ class Envio_simulado_Test extends TestCase
         $edicion->assertStatus(200);
 
         $this->assertTrue((bool) $this->config->fresh()->envio_simulado, 'Editar otros campos no toca el envío simulado, y mandarlo en falso tampoco lo apaga.');
+    }
+
+    /**
+     * La puerta lateral: `PUT update/{model_name}` (la actualización masiva genérica) asigna
+     * cualquier clave del update_form y resuelve los ids sin filtrar por dueño. Por ahí cualquier
+     * usuario autenticado podía prender `envio_simulado` —o pisar la clave de Kapso— en la
+     * configuración de OTRO negocio. La configuración del bot no se actualiza en forma masiva.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_configuracion_de_whatsapp_no_se_actualiza_en_forma_masiva()
+    {
+        // La configuración de OTRO negocio, con el modo apagado.
+        $ajeno = User::create([
+            'name'         => 'Comercio ajeno',
+            'company_name' => 'Comercio ajeno SA',
+            'email'        => 'comercio-ajeno-' . uniqid() . '@test.local',
+            'password'     => Hash::make('secret'),
+        ]);
+
+        $config_ajena = WhatsappBotConfig::create([
+            'user_id'         => $ajeno->id,
+            'kapso_api_key'   => 'kapso-ajena',
+            'phone_number_id' => '5491100000055',
+            'webhook_secret'  => 'secreto-ajeno',
+            'is_active'       => true,
+        ]);
+
+        $cuerpo = [
+            'models_id'   => [$config_ajena->id],
+            'from_filter' => false,
+            'update_form' => [
+                ['type' => 'checkbox', 'key' => 'envio_simulado', 'value' => 1],
+                ['type' => 'text', 'key' => 'kapso_api_key', 'value' => 'pisada'],
+            ],
+        ];
+
+        foreach (['whatsapp_bot_config', 'whatsappBotConfig', 'WhatsappBotConfig'] as $nombre) {
+            $respuesta = $this->putJson('api/update/' . $nombre, $cuerpo);
+
+            $this->assertSame(422, $respuesta->getStatusCode(), 'PUT update/' . $nombre . ': ' . $respuesta->getContent());
+            $this->assertSame('La configuración de WhatsApp no se actualiza en forma masiva.', $respuesta->json('message'));
+        }
+
+        $intacta = $config_ajena->fresh();
+        $this->assertFalse((bool) $intacta->envio_simulado);
+        $this->assertSame('kapso-ajena', $intacta->kapso_api_key);
     }
 
     /**

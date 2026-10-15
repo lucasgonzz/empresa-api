@@ -517,6 +517,108 @@ class Envio_simulado_Demo_setup_Test extends TestCase
         }
     }
 
+    /**
+     * Los chats «abiertos» se cierran a las 24 h y un recordatorio ya mandado frena el siguiente.
+     * `renovar_chats` los borra (con lo que se mandó filmando) y los vuelve a sembrar con fechas de
+     * «hace un rato», sin tocar chats que armó otra cosa.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function renovar_los_chats_repite_la_toma_sin_tocar_los_que_no_son_de_ejemplo()
+    {
+        $this->clientes_de_una_demo();
+
+        WhatsappDemoHelper::preparar($this->owner);
+
+        $abierto = $this->chats()->first(function ($chat) {
+            return $chat->is_within_service_window() && $chat->is_sin_responder();
+        });
+        $this->assertNotNull($abierto);
+
+        // Pasó el tiempo: la ventana se cerró.
+        WhatsappChat::where('id', $abierto->id)->update(['last_inbound_at' => now()->subDays(3)]);
+        $this->assertFalse($abierto->fresh()->is_within_service_window());
+
+        // Y se mandó un recordatorio filmando.
+        WhatsappChatMessage::create([
+            'whatsapp_chat_id' => $abierto->id,
+            'direction'        => 'out',
+            'source'           => RecordatorioCobroSenderService::SOURCE,
+            'body'             => 'Recordatorio filmado',
+            'wa_message_id'    => WhatsappBotSendService::PREFIJO_ID_SIMULADO . 'x',
+            'delivery_status'  => 'entregado',
+        ]);
+
+        // Un chat que armó otra cosa (otro primer mensaje) no es de ejemplo.
+        $ajeno = $this->cliente('Cliente Ajeno Al Ejemplo', '3425500099');
+        $chat_ajeno = WhatsappChat::create([
+            'user_id'         => $this->owner->id,
+            'client_id'       => $ajeno->id,
+            'phone'           => $ajeno->phone,
+            'last_message_at' => now(),
+            'last_inbound_at' => now(),
+        ]);
+        WhatsappChatMessage::create(['whatsapp_chat_id' => $chat_ajeno->id, 'direction' => 'in', 'source' => 'cliente', 'body' => 'Un mensaje cualquiera']);
+
+        $sin_renovar = WhatsappDemoHelper::preparar($this->owner);
+        $this->assertSame(0, $sin_renovar['chats_sembrados'], 'Sin la opción no se vuelve a sembrar.');
+        $this->assertFalse($abierto->fresh()->is_within_service_window());
+
+        $resumen = WhatsappDemoHelper::preparar($this->owner, ['renovar_chats' => true]);
+
+        $this->assertSame(5, $resumen['chats_eliminados']);
+        $this->assertSame(5, $resumen['chats_sembrados']);
+        $this->assertNotNull(WhatsappChat::find($chat_ajeno->id), 'El chat que no es de ejemplo no se toca.');
+        $this->assertSame(6, WhatsappChat::where('user_id', $this->owner->id)->count());
+        $this->assertSame(
+            0,
+            WhatsappChatMessage::whereIn('whatsapp_chat_id', $this->chats()->pluck('id'))->where('source', RecordatorioCobroSenderService::SOURCE)->count(),
+            'El recordatorio que se mandó filmando desapareció: se puede repetir la toma.'
+        );
+
+        $abiertos = $this->chats()->filter(function ($chat) use ($chat_ajeno) {
+            return $chat->id !== $chat_ajeno->id && $chat->is_within_service_window();
+        });
+        $this->assertGreaterThanOrEqual(4, $abiertos->count(), 'Cuatro de los cinco chats vuelven a tener la ventana abierta.');
+    }
+
+    /**
+     * Una base copiada de un cliente real trae SUS conversaciones, con los teléfonos reales
+     * grabados en `whatsapp_chats.phone` (y los envíos salen a ese teléfono). Con la opción de
+     * ficción se miden primero y se borran después, con sus mensajes.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function con_telefonos_de_ficcion_se_borran_los_chats_de_numeros_reales()
+    {
+        $real = $this->cliente('Cliente Real', '3415551234', true);
+
+        $chat_real = WhatsappChat::create([
+            'user_id'         => $this->owner->id,
+            'client_id'       => $real->id,
+            'phone'           => '5493415551234',
+            'last_message_at' => now(),
+            'last_inbound_at' => now(),
+        ]);
+        WhatsappChatMessage::create(['whatsapp_chat_id' => $chat_real->id, 'direction' => 'in', 'source' => 'cliente', 'body' => 'Conversación real de otro negocio']);
+
+        $medicion = WhatsappDemoHelper::preparar($this->owner, ['solo_medir' => true]);
+        $this->assertSame(1, $medicion['chats_con_telefono_real']);
+        $this->assertNotNull(WhatsappChat::find($chat_real->id), 'Medir no borra nada.');
+
+        $sin_opcion = WhatsappDemoHelper::preparar($this->owner, ['chats' => false]);
+        $this->assertSame(0, $sin_opcion['chats_eliminados']);
+        $this->assertNotNull(WhatsappChat::find($chat_real->id), 'Sin la opción de ficción el chat queda como estaba.');
+
+        $resumen = WhatsappDemoHelper::preparar($this->owner, ['telefonos_de_ficcion' => true, 'chats' => false]);
+
+        $this->assertSame(1, $resumen['chats_eliminados']);
+        $this->assertNull(WhatsappChat::find($chat_real->id));
+        $this->assertSame(0, WhatsappChatMessage::where('whatsapp_chat_id', $chat_real->id)->count());
+    }
+
     // ------------------------------------------------------------------------------------------
     // 6. Seguridad
     // ------------------------------------------------------------------------------------------

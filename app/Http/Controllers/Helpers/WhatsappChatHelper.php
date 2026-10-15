@@ -296,7 +296,11 @@ class WhatsappChatHelper
         // Se marca 'enviado' sin `wa_message_id` a propósito: la respuesta queda visible en la
         // conversación, que es todo el punto de simular, y `is_simulated = 1` (que ya trae la
         // fila desde `store_outbound_message()`) deja claro que el cliente nunca la recibió.
-        if ($chat->last_inbound_simulated) {
+        //
+        // En modo demostración (misión whatsapp-envio-simulado-demos) este corte no aplica: el
+        // `send_text()` de abajo no sale a Kapso, devuelve un id ficticio y la respuesta queda
+        // enviada y entregada (con la etiqueta «Simulado», porque responde a un entrante simulado).
+        if ($chat->last_inbound_simulated && ! $config->esta_en_modo_demostracion()) {
             Log::channel('daily')->info('WhatsappChatHelper: respuesta del agente NO enviada, el chat está en modo simulación.', [
                 'message_id' => $message->id,
                 'chat_id'    => $chat->id,

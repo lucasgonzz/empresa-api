@@ -88,6 +88,11 @@ class WhatsappDemoHelper
      *                             teléfonos de los clientes que no sean de ficción (para bases que son
      *                             copia de un cliente real, como demo3).
      *                           - `solo_medir` (bool, default false): no escribir nada, solo informar.
+     *                           - `renovar_chats` (bool, default false): borrar los chats de ejemplo
+     *                             que sembró este helper y volver a sembrarlos. Sirve para repetir una
+     *                             toma: las fechas vuelven a «hace un rato» (la ventana de 24 h de los
+     *                             chats abiertos se cierra al día siguiente) y desaparecen los
+     *                             recordatorios y comprobantes que se mandaron filmando.
      *
      * @return array  Resumen de lo que se hizo (o de lo que se haría con `solo_medir`).
      *
@@ -103,6 +108,7 @@ class WhatsappDemoHelper
             'chats'                => true,
             'telefonos_de_ficcion' => false,
             'solo_medir'           => false,
+            'renovar_chats'        => false,
         ], $opciones);
 
         if (! is_null($owner->owner_id)) {
@@ -119,6 +125,8 @@ class WhatsappDemoHelper
             'clientes_con_telefono'   => 0,
             'telefonos_de_siembra'    => 0,
             'telefonos_reales'        => 0,
+            'chats_con_telefono_real' => 0,
+            'chats_eliminados'        => 0,
             'chats_sembrados'         => 0,
             'chats_omitidos'          => [],
         ];
@@ -128,6 +136,7 @@ class WhatsappDemoHelper
         $resumen['telefonos_de_siembra'] = $medicion['de_siembra'];
         $resumen['telefonos_reales'] = $medicion['reales'];
         $resumen['telefonos_repetidos'] = $medicion['repetidos'];
+        $resumen['chats_con_telefono_real'] = self::chats_con_telefono_real($owner->id)->count();
 
         if ($opciones['solo_medir']) {
             return $resumen;
@@ -141,6 +150,17 @@ class WhatsappDemoHelper
         // índice único (user_id, phone) de `whatsapp_chats` no admite dos chats con el mismo.
         $reemplazos = self::ordenar_telefonos($owner->id, (bool) $opciones['telefonos_de_ficcion']);
         $resumen['telefonos_reemplazados'] = $reemplazos;
+
+        // 🔴 Una base copiada de un cliente real trae SUS conversaciones de WhatsApp, con los
+        // teléfonos reales de sus clientes grabados en `whatsapp_chats.phone` (y los envíos salen
+        // a ese teléfono, no al del cliente). Con la opción de ficción se borran, con sus mensajes.
+        if ($opciones['telefonos_de_ficcion']) {
+            $resumen['chats_eliminados'] += self::eliminar_chats(self::chats_con_telefono_real($owner->id));
+        }
+
+        if ($opciones['renovar_chats']) {
+            $resumen['chats_eliminados'] += self::eliminar_chats(self::chats_sembrados($owner->id));
+        }
 
         if ($opciones['chats']) {
             $sembrado = self::sembrar_chats($owner->id);
@@ -177,6 +197,9 @@ class WhatsappDemoHelper
             // Sin personalidad ni habilidades propias: el agente usa los valores de fábrica, y la
             // IA de los chats nuevos nace prendida como en cualquier negocio nuevo.
             $config->ai_enabled_default = true;
+            // El botón «Simular mensaje del cliente» es parte de lo que se filma del módulo. Se
+            // prende solo en el alta: si ya había una fila, lo que el dueño de la demo decidió se respeta.
+            $config->chat_simulation_enabled = true;
         }
 
         // Si la fila ya era de este helper se conserva su secreto (así dos corridas dejan lo
@@ -190,8 +213,6 @@ class WhatsappDemoHelper
         }
         $config->is_active = true;
         $config->envio_simulado = true;
-        // El botón «Simular mensaje del cliente» es parte de lo que se filma del módulo.
-        $config->chat_simulation_enabled = true;
         $config->save();
 
         return $es_nueva ? 'creada' : 'actualizada';
@@ -419,6 +440,77 @@ class WhatsappDemoHelper
         }
 
         return ['sembrados' => $sembrados, 'omitidos' => $omitidos];
+    }
+
+    /**
+     * Los chats del dueño cuyo teléfono no es de ficción (ni el de Lucas, ni el bloque de este
+     * helper, ni el de la siembra): son conversaciones que vinieron en una base copiada de un
+     * cliente real. Un chat sembrado por este helper usa el teléfono de su cliente, que
+     * `ordenar_telefonos()` ya dejó de ficción, así que no entra acá.
+     *
+     * @param  int  $owner_id
+     * @return \Illuminate\Support\Collection
+     */
+    private static function chats_con_telefono_real($owner_id)
+    {
+        return WhatsappChat::where('user_id', $owner_id)
+            ->get(['id', 'phone'])
+            ->filter(function ($chat) {
+                $digitos = WhatsappPhoneHelper::normalize($chat->phone);
+
+                return $digitos !== '' && ! self::es_telefono_de_ficcion($digitos) && ! self::es_telefono_de_siembra($digitos);
+            })
+            ->values();
+    }
+
+    /**
+     * Los chats que sembró este helper, reconocidos por el texto del primer mensaje (el entrante
+     * con el que arranca cada guion de `guion()`): no hay una columna que los marque y no se
+     * agrega una migración solo para esto. Un chat que alguien armó filmando tiene otro primer
+     * mensaje y no se toca.
+     *
+     * @param  int  $owner_id
+     * @return \Illuminate\Support\Collection
+     */
+    private static function chats_sembrados($owner_id)
+    {
+        $primeros = [];
+        foreach (['deudor_abierto', 'deudor_cerrado', 'comprobante', 'ia_a_confirmar', 'atendido'] as $tipo) {
+            $guion = self::guion($tipo);
+            $primeros[] = $guion[0]['body'];
+        }
+
+        return WhatsappChat::where('user_id', $owner_id)
+            ->get(['id'])
+            ->filter(function ($chat) use ($primeros) {
+                $primero = WhatsappChatMessage::where('whatsapp_chat_id', $chat->id)
+                    ->orderBy('created_at')
+                    ->orderBy('id')
+                    ->first(['body']);
+
+                return ! is_null($primero) && in_array($primero->body, $primeros, true);
+            })
+            ->values();
+    }
+
+    /**
+     * Borra chats con todos sus mensajes.
+     *
+     * @param  \Illuminate\Support\Collection  $chats  Chats (con `id`).
+     * @return int  Cuántos chats se borraron.
+     */
+    private static function eliminar_chats($chats)
+    {
+        $ids = $chats->pluck('id')->all();
+
+        if (count($ids) === 0) {
+            return 0;
+        }
+
+        WhatsappChatMessage::whereIn('whatsapp_chat_id', $ids)->delete();
+        WhatsappChat::whereIn('id', $ids)->delete();
+
+        return count($ids);
     }
 
     /**

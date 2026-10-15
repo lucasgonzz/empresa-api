@@ -22,7 +22,9 @@ use Illuminate\Console\Command;
  * plantillas y reescribe teléfonos. Corrido por error contra el sistema de un cliente real, sale
  * con código 1 sin tocar nada.
  *
- * Es idempotente. `--solo-medir` no escribe nada: cuenta los teléfonos (cuántos hay, cuántos no
+ * Es idempotente. `--renovar-chats` es la excepción a propósito: borra los chats de ejemplo y los
+ * vuelve a sembrar, para repetir una toma (la ventana de 24 h de los chats «abiertos» se cierra al
+ * día siguiente, y un recordatorio ya mandado frena el siguiente por 24 h). `--solo-medir` no escribe nada: cuenta los teléfonos (cuántos hay, cuántos no
  * son de ficción, cuántos están repetidos) para decidir antes de correrlo de verdad.
  */
 class PrepararWhatsappDemo extends Command
@@ -35,6 +37,7 @@ class PrepararWhatsappDemo extends Command
     protected $signature = 'whatsapp:demo-simulado
         {--telefonos-de-ficcion : Reemplaza los teléfonos de los clientes que no son de ficción (para bases copiadas de un cliente real, como demo3)}
         {--sin-chats : No siembra los chats de ejemplo}
+        {--renovar-chats : Borra los chats de ejemplo que sembró este comando y los vuelve a sembrar (fechas de «hace un rato», sin los mensajes que se mandaron filmando)}
         {--solo-medir : No escribe nada: informa cuántos teléfonos hay, cuántos no son de ficción y cuántos están repetidos}';
 
     /**
@@ -72,6 +75,7 @@ class PrepararWhatsappDemo extends Command
                 'chats'                => ! $this->option('sin-chats'),
                 'telefonos_de_ficcion' => (bool) $this->option('telefonos-de-ficcion'),
                 'solo_medir'           => (bool) $this->option('solo-medir'),
+                'renovar_chats'        => (bool) $this->option('renovar-chats'),
             ]);
         } catch (\Throwable $e) {
             $this->error('No se pudo preparar WhatsApp: ' . $e->getMessage());
