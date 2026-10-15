@@ -126,30 +126,52 @@ class CuotasTiendaEsquemaHelper {
     }
 
     /**
-     * Normaliza lo que manda la SPA a "un id positivo o null".
+     * Normaliza lo que manda la SPA a "un id positivo o null". ESTRICTO: solo enteros.
      *
-     * Lo que no es un entero positivo (un 'abc', un -3) también da null: el que decide si eso se
-     * rechaza es `es_un_vinculo_invalido()`, que mira el valor ANTES de normalizarlo.
+     * Se acepta únicamente:
+     *   - un `int` mayor que 0 (lo que manda un JSON con el número pelado), o
+     *   - un string de dígitos que empieza en 1-9 (lo que llega de un form o un query): '7', '12'.
+     *
+     * Todo lo demás da null, y el que decide qué hacer es `es_un_vinculo_invalido()`, que mira el
+     * valor ANTES de normalizarlo: "sin vínculo" (null, '', 0, '0') desvincula; cualquier otra cosa
+     * que acá dé null es un 422. Casos que NO pasan, a propósito:
+     *
+     *   '1.5', 7.0   decimales (un `(int)` los truncaría a 1 y a 7: vincularía a OTRO método)
+     *   '1e3'        notación científica (`is_numeric` la acepta y `(int)` la lee como 1000)
+     *   ' 7 '        espacios (el middleware TrimStrings de Laravel ya los saca de un request, así
+     *                que por HTTP llega '7'; acá no se tolera, para no depender de eso)
+     *   '07', '+7'   ceros a la izquierda o signo (no son la forma en que se escribe un id)
+     *   -4, '-4'     negativos
+     *   true         un booleano no es un id (`false` sí es "sin vínculo")
+     *   un string de dígitos que no entra en un entero de PHP (se desbordaría)
      *
      * @param  mixed  $valor
      * @return int|null
      */
     static function normalizar($valor) {
 
-        if (Self::es_sin_vinculo($valor) || !is_numeric($valor) || (int) $valor <= 0) {
+        if (Self::es_sin_vinculo($valor)) {
             return null;
         }
 
-        return (int) $valor;
+        if (is_int($valor)) {
+            return $valor > 0 ? $valor : null;
+        }
+
+        if (is_string($valor) && preg_match('/^[1-9][0-9]*$/', $valor) === 1 && (string) (int) $valor === $valor) {
+            return (int) $valor;
+        }
+
+        return null;
     }
 
     /**
      * ¿El valor que llegó es un vínculo que no existe?
      *
-     * Es el único caso que se RECHAZA (422): algo que no es "sin vínculo" y tampoco es el id de un
-     * método de pago de cuenta corriente que exista. Ignorarlo lo convertiría en NULL y, en una
-     * edición, borraría un vínculo bueno por un payload mal armado. Sin vínculo (0, '', null) no es
-     * inválido: es desvincular.
+     * Es el único caso que se RECHAZA (422): algo que no es "sin vínculo" y tampoco es el id (un
+     * entero, ver `normalizar()`) de un método de pago de cuenta corriente que exista. Ignorarlo lo
+     * convertiría en NULL y, en una edición, borraría un vínculo bueno por un payload mal armado. Sin
+     * vínculo (0, '', null) no es inválido: es desvincular.
      *
      * Sin la columna no se valida nada: el campo se ignora entero, como antes de la misión.
      *

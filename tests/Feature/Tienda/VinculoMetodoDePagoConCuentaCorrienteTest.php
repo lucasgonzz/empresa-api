@@ -363,24 +363,156 @@ class VinculoMetodoDePagoConCuentaCorrienteTest extends EmpresaTestCase
     }
 
     /**
-     * El normalizador: 0, '', null y '0' son "sin vínculo"; un número en texto es ese id; la basura
-     * no es un id.
+     * El normalizador es ESTRICTO: "sin vínculo" (null, '', 0, '0', false) da null, un entero
+     * positivo (int o string de dígitos) es ese id, y todo lo demás da null para que
+     * `es_un_vinculo_invalido()` lo rechace.
      */
     public function test_el_normalizador_entiende_lo_que_manda_la_spa()
     {
+        // Sin vínculo.
         $this->assertNull(CuotasTiendaEsquemaHelper::normalizar(null));
         $this->assertNull(CuotasTiendaEsquemaHelper::normalizar(''));
         $this->assertNull(CuotasTiendaEsquemaHelper::normalizar(0));
         $this->assertNull(CuotasTiendaEsquemaHelper::normalizar('0'));
-        $this->assertNull(CuotasTiendaEsquemaHelper::normalizar(-4));
-        $this->assertNull(CuotasTiendaEsquemaHelper::normalizar('abc'));
+        $this->assertNull(CuotasTiendaEsquemaHelper::normalizar(false));
+
+        // Un id: entero positivo, pelado o en texto.
         $this->assertSame(12, CuotasTiendaEsquemaHelper::normalizar(12));
         $this->assertSame(12, CuotasTiendaEsquemaHelper::normalizar('12'));
+        $this->assertSame(7, CuotasTiendaEsquemaHelper::normalizar('7'));
+
+        // Lo que NO es un id entero: da null (y el controlador lo rechaza con 422).
+        foreach ($this->valores_que_no_son_un_id_entero() as $descripcion => $valor) {
+            $this->assertNull(
+                CuotasTiendaEsquemaHelper::normalizar($valor),
+                'normalizar() aceptó '.$descripcion.' ('.var_export($valor, true).') como un id: tiene que ser estricto.'
+            );
+        }
+    }
+
+    /**
+     * Lo que NO es "sin vínculo" y tampoco un entero estricto es un vínculo inválido: la guarda lo
+     * marca para el 422.
+     */
+    public function test_los_valores_que_no_son_un_id_entero_son_vinculos_invalidos()
+    {
+        $this->assertTrue(CuotasTiendaEsquemaHelper::hay_columna());
+
+        foreach ($this->valores_que_no_son_un_id_entero() as $descripcion => $valor) {
+            $this->assertTrue(
+                CuotasTiendaEsquemaHelper::es_un_vinculo_invalido($valor),
+                $descripcion.' ('.var_export($valor, true).') tendría que ser un vínculo inválido.'
+            );
+        }
+
+        // Y "sin vínculo" no lo es: es desvincular.
+        foreach ([null, '', 0, '0', false] as $sin_vinculo) {
+            $this->assertFalse(
+                CuotasTiendaEsquemaHelper::es_un_vinculo_invalido($sin_vinculo),
+                var_export($sin_vinculo, true).' es "sin vínculo", no un vínculo inválido.'
+            );
+        }
+    }
+
+    /**
+     * 🔴 Por HTTP: un valor que un `(int)` de PHP leería como OTRO id ('<id>.5' como <id>, '<id>e0'
+     * como <id>) es 422 en el alta y en la edición, y no escribe nada ni pisa el vínculo bueno. Se
+     * prueba con el id de un método que EXISTE, así que si el controlador truncara con `(int)` a
+     * secas el test vincularía a ese método en vez de rechazar.
+     *
+     * Los espacios alrededor (' 7 ') los saca el middleware TrimStrings de Laravel ANTES de llegar al
+     * controlador, así que por HTTP llegan como '7' y SON un id válido; el rechazo de ' 7 ' es del
+     * helper y lo fija el test del normalizador.
+     */
+    public function test_un_vinculo_con_decimales_exponente_o_ceros_es_422_y_no_escribe()
+    {
+        $bueno  = $this->metodo_de_cuenta_corriente('Cta cte buena');
+        $metodo = $this->metodo_de_tienda($bueno->id);
+
+        $cantidad_antes = PaymentMethod::count();
+
+        $invalidos = [
+            $bueno->id.'.5',
+            $bueno->id.'e0',
+            '0'.$bueno->id,
+            '+'.$bueno->id,
+            (float) $bueno->id + 0.5,
+            -$bueno->id,
+            true,
+            'abc',
+        ];
+
+        foreach ($invalidos as $invalido) {
+
+            $this->postJson(self::RUTA, $this->payload_de_alta([self::COLUMNA => $invalido]))
+                ->assertStatus(422);
+
+            $this->putJson(self::RUTA.'/'.$metodo->id, $this->payload_de_edicion($metodo, [
+                'name'        => 'No tiene que guardarse',
+                self::COLUMNA => $invalido,
+            ]))->assertStatus(422);
+
+            $this->assertSame(
+                $bueno->id,
+                $this->vinculo_guardado($metodo->id),
+                var_export($invalido, true).' pisó el vínculo bueno.'
+            );
+            $this->assertNotSame('No tiene que guardarse', PaymentMethod::find($metodo->id)->name);
+        }
+
+        $this->assertSame($cantidad_antes, PaymentMethod::count(), 'Un alta rechazada igual creó la fila.');
+
+        // Un id entero en texto, sí.
+        $otro = $this->metodo_de_cuenta_corriente('Cta cte otra');
+
+        $this->putJson(self::RUTA.'/'.$metodo->id, $this->payload_de_edicion($metodo, [
+            self::COLUMNA => (string) $otro->id,
+        ]))->assertStatus(200);
+
+        $this->assertSame($otro->id, $this->vinculo_guardado($metodo->id));
+
+        // Con espacios alrededor, TrimStrings lo deja en el id y se acepta.
+        $this->putJson(self::RUTA.'/'.$metodo->id, $this->payload_de_edicion($metodo, [
+            self::COLUMNA => ' '.$bueno->id.' ',
+        ]))->assertStatus(200);
+
+        $this->assertSame($bueno->id, $this->vinculo_guardado($metodo->id));
     }
 
     // ---------------------------------------------------------------------------------------------
     // Ayudantes
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Valores que NO son un id entero y tampoco "sin vínculo": la guarda tiene que rechazarlos.
+     *
+     * Son los que un `is_numeric()` + `(int)` dejaría pasar leyéndolos como otro id ('1.5' como 1,
+     * '1e3' como 1000), los que traen espacios, ceros a la izquierda o signo, los negativos, los
+     * booleanos y los números que desbordan un entero.
+     *
+     * @return array<string, mixed>
+     */
+    protected function valores_que_no_son_un_id_entero()
+    {
+        return [
+            'un decimal en texto'         => '1.5',
+            'un decimal pelado'           => 7.0,
+            'un decimal pelado con resto' => 1.5,
+            'notación científica'         => '1e3',
+            'notación científica chica'   => '7e0',
+            'con espacios alrededor'      => ' 7 ',
+            'con espacio adelante'        => ' 7',
+            'con ceros a la izquierda'    => '07',
+            'con signo más'               => '+7',
+            'negativo en texto'           => '-4',
+            'negativo'                    => -4,
+            'texto'                       => 'abc',
+            'hexadecimal'                 => '0x1A',
+            'verdadero'                   => true,
+            'que desborda un entero'      => '99999999999999999999',
+            'un arreglo'                  => [7],
+        ];
+    }
 
     /**
      * Fuerza la memoización de la guarda a "esta base no tiene la columna".
