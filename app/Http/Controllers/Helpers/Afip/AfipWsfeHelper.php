@@ -734,7 +734,7 @@ class AfipWsfeHelper extends Controller
 
         if (isset($result['error'])) {
 
-            $message = $result['error']; 
+            $message = Utf8Helper::convertir_utf8($result['error']); 
 
             if (
                 $message == 'Could not connect to host'

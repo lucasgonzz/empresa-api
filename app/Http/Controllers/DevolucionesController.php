@@ -227,8 +227,33 @@ class DevolucionesController extends Controller
             if ($request->facturar_nota_credito) {
                 
                 $afip_ticket = AfipTicket::find($request->facturar_nota_credito);
-                $afip_helper = new AfipNotaCreditoHelper($afip_ticket, $nota_credito);
-                $afip_helper->init();
+                // makeWith y no `new`: los tests lo reemplazan por un doble que no sale a la red (igual que
+                // FacturarNotaCreditoExistenteHelper).
+                $afip_helper = app()->makeWith(AfipNotaCreditoHelper::class, [
+                    'afip_ticket'   => $afip_ticket,
+                    'nota_credito'  => $nota_credito,
+                ]);
+
+                try {
+
+                    $afip_helper->init();
+
+                } catch (\Throwable $e) {
+
+                    /*
+                     * 🔴 Si ARCA ya autorizo la nota (el comprobante tiene CAE) y lo que fallo es algo
+                     * posterior, el rollback de abajo borraria el unico rastro de una nota que YA existe
+                     * en ARCA y el "volve a intentar" empujaria a emitir una segunda (Los Pena,
+                     * 15/10/2026). Se conserva lo escrito, se reporta el fallo aparte y la devolucion
+                     * sigue. Sin CAE no hay nada que conservar: se relanza y revierte como siempre.
+                     * Mismo criterio que FacturarNotaCreditoExistenteHelper.
+                     */
+                    if (!AfipNotaCreditoHelper::nota_credito_con_cae($nota_credito->id)) {
+                        throw $e;
+                    }
+
+                    report($e);
+                }
             }
             
             DB::commit();
