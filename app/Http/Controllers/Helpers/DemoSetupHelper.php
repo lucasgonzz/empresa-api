@@ -604,6 +604,25 @@ class DemoSetupHelper
 
         $etapas['tienda'] = self::cronometrar($t_etapa);
 
+        /**
+         * WhatsApp en modo de ENVÍO SIMULADO (misión whatsapp-envio-simulado-demos, 15/10/2026).
+         *
+         * Hasta esta misión el demo setup dejaba el módulo de WhatsApp sin configuración (el
+         * menú aparecía, pero ningún envío podía salir): el comprobante por WhatsApp y los
+         * recordatorios de cobro no se podían mostrar ni filmar. Ahora la demo queda con la
+         * conexión activa en modo simulado (nada sale a Kapso: ver
+         * `WhatsappBotConfig::esta_en_modo_demostracion()`), las 6 plantillas estándar
+         * aprobadas y cinco chats de ejemplo.
+         *
+         * 🔴 VA DESPUÉS DE `semilla:datos` (necesita los clientes y las ventas sin cobrar para
+         * armar los chats) y NO LEE NADA DEL PAYLOAD: a diferencia de Zipnova y Mercado Pago, no
+         * hay una credencial que viaje desde el admin. Una demo armada con un admin sin
+         * desplegar queda igual de simulada.
+         */
+        self::preparar_whatsapp_de_la_demo($user);
+
+        $etapas['whatsapp'] = self::cronometrar($t_etapa);
+
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
         if (!empty($data['demo_ingreso_token'])) {
@@ -732,6 +751,32 @@ class DemoSetupHelper
         }
 
         return $user;
+    }
+
+    /**
+     * Deja el módulo de WhatsApp de la demo en modo de envío simulado, con plantillas aprobadas y
+     * chats de ejemplo (ver `WhatsappDemoHelper`).
+     *
+     * 🔴 No frena nunca el setup: a esta altura la instancia ya está armada, y un error de base
+     * en los chats de ejemplo no justifica dar la demo por fallida. Se loguea y sigue. Y solo corre
+     * en una instancia de demo: en la instalación de un cliente real este mismo helper no tiene que
+     * dejar una configuración de WhatsApp con clave ficticia ni plantillas «aprobadas» que Meta
+     * nunca aprobó.
+     *
+     * @param User $user Dueño de la instancia.
+     * @return void
+     */
+    private static function preparar_whatsapp_de_la_demo(User $user)
+    {
+        if (! self::es_instancia_de_demo()) {
+            return;
+        }
+
+        try {
+            WhatsappDemoHelper::preparar($user);
+        } catch (\Throwable $e) {
+            Log::error('DemoSetupHelper: no se pudo dejar WhatsApp en modo envío simulado; la demo queda sin WhatsApp configurado: ' . $e->getMessage());
+        }
     }
 
     /**

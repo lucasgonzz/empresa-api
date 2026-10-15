@@ -379,7 +379,11 @@ class WhatsappChatController extends Controller
         $caption = trim((string) $request->input('caption', ''));
 
         // Ver el docblock: el corte por simulación es lo primero del envío, antes de subir nada.
-        $frenado_por_simulacion = (bool) $chat->last_inbound_simulated;
+        //
+        // En modo demostración (misión whatsapp-envio-simulado-demos) NO hay corte: el envío es
+        // simulado y no sube nada a Kapso, así que el archivo queda enviado aunque el chat tenga
+        // un entrante simulado (el botón «Simular mensaje» queda prendido en las demos).
+        $frenado_por_simulacion = (bool) $chat->last_inbound_simulated && ! $config->esta_en_modo_demostracion();
         $wa_message_id = null;
 
         if (! $frenado_por_simulacion) {
