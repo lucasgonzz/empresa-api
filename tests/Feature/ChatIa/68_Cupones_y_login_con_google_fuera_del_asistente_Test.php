@@ -46,17 +46,23 @@ class Cupones_y_login_con_google_fuera_del_asistente_Test extends EmpresaTestCas
     /**
      * @test
      */
-    public function las_rutas_de_cupones_no_son_acciones_de_pantalla()
+    public function las_rutas_de_cupones_ya_no_existen_y_la_guarda_queda_de_defensa()
     {
+        // CuponController y su ruta se sacaron (misión sacar-cupones-y-login-google, 14/10/2026): sin ruta no hay
+        // nada que el asistente pueda ofrecer. Antes este test recorría la ruta y exigía que estuviera excluida.
+        foreach (app('router')->getRoutes() as $ruta) {
+            $this->assertFalse(strpos($ruta->uri(), 'api/cupon') === 0, 'La ruta ' . $ruta->uri() . ' no debería existir: los cupones se sacaron del sistema.');
+        }
+
+        // Y si alguien vuelve a registrar una ruta de cupones, el asistente tampoco la ofrece: la guarda sigue en EXCLUIDAS.
+        $this->assertArrayHasKey('#^[A-Z]+ api/cupon(/|$)#', Pantalla::EXCLUIDAS);
+        $this->assertStringContainsString('cupones', Pantalla::EXCLUIDAS['#^[A-Z]+ api/cupon(/|$)#']);
+
         foreach (['GET api/cupon', 'POST api/cupon', 'GET api/cupon/{cupon}', 'PUT api/cupon/{cupon}', 'DELETE api/cupon/{cupon}'] as $ruta) {
             list($metodo, $uri) = explode(' ', $ruta, 2);
 
             $this->assertNull(Pantalla::declaracion($metodo, $uri), $ruta . ': no puede ofrecerse como acción de pantalla.');
-
-            $motivo = Pantalla::motivo_de_exclusion($metodo, $uri);
-
-            $this->assertNotNull($motivo, $ruta . ': tiene que estar excluida con motivo.');
-            $this->assertStringContainsString('cupones', $motivo, $ruta . ': el motivo tiene que decir por qué (y no ser otro patrón que la tapó de casualidad).');
+            $this->assertSame(1, preg_match('#^[A-Z]+ api/cupon(/|$)#', $metodo . ' ' . $uri), $ruta . ': la guarda tiene que seguir cubriéndola.');
         }
     }
 

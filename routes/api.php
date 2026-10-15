@@ -770,8 +770,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 
-    Route::resource('/cupon', 'CuponController');
-
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
     // Estado de las integraciones del comercio, para pintar las tarjetas de ABM -> Integraciones.

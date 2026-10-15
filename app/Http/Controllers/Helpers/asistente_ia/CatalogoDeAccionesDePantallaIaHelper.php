@@ -217,8 +217,9 @@ class CatalogoDeAccionesDePantallaIaHelper
         /*
          * Cupones de la tienda (misión tiendas-demo-y-limpieza-tienda, 14/10/2026, pedido de Lucas):
          * la tienda dejó de ofrecerlos y el sistema sacó Tienda Online > Cupones. `cupon` salió de
-         * Escritura::ENTIDADES, y sin esta entrada sus rutas de recurso (que CuponController sigue
-         * teniendo, por los pedidos viejos) habrían entrado acá como acciones genéricas.
+         * Escritura::ENTIDADES, y sin esta entrada sus rutas de recurso (`api/cupon`, que CuponController tenía) habrían entrado acá
+         * como acciones genéricas. El controller y la ruta se sacaron (misión sacar-cupones-y-login-google,
+         * 14/10/2026); la guarda queda como defensa por si vuelven.
          */
         '#^[A-Z]+ api/cupon(/|$)#'                    => 'cupones de la tienda: la tienda ya no los ofrece y el sistema sacó su pantalla (14/10/2026)',
         /*
