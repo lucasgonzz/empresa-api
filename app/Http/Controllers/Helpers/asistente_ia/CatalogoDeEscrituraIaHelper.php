@@ -920,9 +920,10 @@ class CatalogoDeEscrituraIaHelper
         /*
          * Misión tiendas-demo-y-limpieza-tienda (14/10/2026, pedido de Lucas): se sacó de ENTIDADES
          * porque la tienda dejó de ofrecer cupones y el sistema sacó Tienda Online > Cupones. La
-         * tabla y CuponController quedan (los pedidos viejos con cupón siguen mostrando su
-         * descuento); sus rutas también quedan afuera de las acciones de pantalla
-         * (CatalogoDeAccionesDePantallaIaHelper::EXCLUIDAS).
+         * tabla y el modelo Cupon quedan (los pedidos viejos con cupón siguen mostrando su
+         * descuento); el CuponController y la ruta `api/cupon` se sacaron después (misión
+         * sacar-cupones-y-login-google, 14/10/2026) y la guarda de
+         * CatalogoDeAccionesDePantallaIaHelper::EXCLUIDAS queda como defensa.
          */
         'cupon'                        => 'cupones de la tienda: la tienda ya no los ofrece y el sistema sacó su pantalla (14/10/2026)',
         'error'                        => 'técnica: registro de errores de la SPA (manda mail)',
