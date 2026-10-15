@@ -771,7 +771,7 @@ class AfipPdfHelper
     /**
      * ¿El rótulo (negrita) y el valor entran en un renglón de $width, como los dibuja
      * print_label_value_line()? Esa rutina escribe el valor 1 mm (el margen de celda de FPDF)
-     * después del final del rótulo, por eso se suma.
+     * después del final del rótulo, por eso se suma. Se mide como se imprime (ancho_impreso()).
      *
      * @param mixed  $pdf
      * @param string $label
@@ -783,12 +783,27 @@ class AfipPdfHelper
     protected static function label_value_fits($pdf, $label, $value, $width, $font_size = 9): bool
     {
         $pdf->SetFont('Arial', 'B', $font_size);
+        /** El rótulo se mide como lo mide print_label_value_line(): ahí empieza el valor. */
         $label_width = $pdf->GetStringWidth($label);
 
         $pdf->SetFont('Arial', '', $font_size);
-        $value_width = $pdf->GetStringWidth((string) $value);
+        $value_width = self::ancho_impreso($pdf, (string) $value);
 
         return $label_width + $value_width + self::MARGEN_DE_CELDA <= $width;
+    }
+
+    /**
+     * Ancho de un texto tal como sale impreso, con la fuente actual. El Cell() de este FPDF pasa el
+     * texto por utf8_decode() antes de dibujarlo, pero GetStringWidth() mide los bytes UTF-8: una
+     * letra con tilde mediría el doble de lo que ocupa, y un renglón que entra se cortaría de más.
+     *
+     * @param mixed  $pdf
+     * @param string $texto
+     * @return float
+     */
+    protected static function ancho_impreso($pdf, $texto)
+    {
+        return $pdf->GetStringWidth(utf8_decode((string) $texto));
     }
 
     /**
@@ -811,6 +826,7 @@ class AfipPdfHelper
     protected static function print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
     {
         $pdf->SetFont('Arial', 'B', $font_size);
+        /** El rótulo se mide como lo mide print_label_value_line(): ahí empieza el valor. */
         $label_width = $pdf->GetStringWidth($label);
 
         /** Cada Cell() escribe 1 mm adentro de cada borde: el texto tiene el ancho menos esos dos. */
@@ -849,8 +865,9 @@ class AfipPdfHelper
      * Parte un texto en renglones con la fuente actual: el primero de $ancho_primera (lo que deja el
      * rótulo) y el resto de $ancho_resto. Corta en los espacios y también después de una @, un
      * punto, una barra, un guion, una coma o un punto y coma, que es por donde se lee bien un mail,
-     * una web o un teléfono. Un pedazo sin ningún corte posible que no entra en un renglón entero
-     * se parte por letras (sin romper una letra con tilde).
+     * una web o un teléfono; pero no si lo que sigue es un dígito, para no partir una fecha
+     * (01/01/2020), un importe ($163.420,40) ni un CUIT. Un pedazo sin ningún corte posible que no
+     * entra en un renglón entero se parte por letras (sin romper una letra con tilde).
      *
      * @param mixed  $pdf
      * @param string $texto
@@ -860,18 +877,22 @@ class AfipPdfHelper
      */
     protected static function partir_texto($pdf, $texto, $ancho_primera, $ancho_resto): array
     {
-        $pedazos = preg_split('/(?<=[\s@\/\-_.,;])/u', $texto, -1, PREG_SPLIT_NO_EMPTY);
+        /**
+         * Un texto que no es UTF-8 válido hace fallar las expresiones con /u: se corta igual, por
+         * bytes y con lo que Cell() dibujaría de él.
+         */
+        $utf8_valido = preg_match('//u', $texto) === 1;
 
-        if ($pedazos === false) {
-            $pedazos = [$texto];
-        }
+        $pedazos = $utf8_valido
+            ? preg_split('/(?<=\s|@|_|;)|(?<=[\/\-.,])(?!\d)/u', $texto, -1, PREG_SPLIT_NO_EMPTY)
+            : [$texto];
 
         $renglones = [];
         $actual = '';
         $ancho = $ancho_primera;
 
         foreach ($pedazos as $pedazo) {
-            if ($pdf->GetStringWidth(rtrim($actual.$pedazo)) <= $ancho) {
+            if (self::ancho_impreso($pdf, rtrim($actual.$pedazo)) <= $ancho) {
                 $actual .= $pedazo;
 
                 continue;
@@ -883,22 +904,28 @@ class AfipPdfHelper
                 $actual = '';
                 $ancho = $ancho_resto;
                 $pedazo = ltrim($pedazo);
-            } elseif (empty($renglones) && $pdf->GetStringWidth(rtrim($pedazo)) <= $ancho_resto) {
-                /**
-                 * Al lado del rótulo no entra ni el primer pedazo, pero en un renglón entero sí: va
-                 * abajo entero y el rótulo queda solo (partirlo por letras se lee peor).
-                 */
-                $renglones[] = '';
-                $ancho = $ancho_resto;
+            } elseif (empty($renglones)) {
+                $primera_letra = $utf8_valido ? mb_substr($pedazo, 0, 1, 'UTF-8') : substr($pedazo, 0, 1);
+
+                if (self::ancho_impreso($pdf, rtrim($pedazo)) <= $ancho_resto
+                    || self::ancho_impreso($pdf, $primera_letra) > $ancho_primera) {
+                    /**
+                     * Al lado del rótulo no entra ni el primer pedazo: si entra en un renglón entero
+                     * va abajo entero (partirlo por letras se lee peor), y si al lado del rótulo no
+                     * entra ni una letra, también va abajo. El rótulo queda solo.
+                     */
+                    $renglones[] = '';
+                    $ancho = $ancho_resto;
+                }
             }
 
             /** Un pedazo que no entra ni en un renglón entero: por letras, lo que entre en cada uno. */
-            while ($pdf->GetStringWidth(rtrim($pedazo)) > $ancho) {
-                $letras = preg_split('//u', $pedazo, -1, PREG_SPLIT_NO_EMPTY);
+            while (self::ancho_impreso($pdf, rtrim($pedazo)) > $ancho) {
+                $letras = $utf8_valido ? preg_split('//u', $pedazo, -1, PREG_SPLIT_NO_EMPTY) : str_split($pedazo);
                 $prefijo = '';
 
                 foreach ($letras as $letra) {
-                    if ($pdf->GetStringWidth($prefijo.$letra) > $ancho) {
+                    if (self::ancho_impreso($pdf, $prefijo.$letra) > $ancho) {
                         break;
                     }
 

@@ -152,4 +152,40 @@ class EncabezadoCortaLosTextosLargosTest extends TestCase
         /** Cuadrante izquierdo: de x = 7 a 105 (el medio de la A4 de siempre). */
         $this->assertLessThanOrEqual(105 + 0.01, $borde);
     }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function partir($texto, $ancho_primera, $ancho_resto)
+    {
+        $pdf = $this->pdf();
+        $pdf->SetFont('Arial', '', 9);
+
+        $metodo = new ReflectionMethod(AfipPdfHelper::class, 'partir_texto');
+        $metodo->setAccessible(true);
+
+        return $metodo->invoke(null, $pdf, $texto, $ancho_primera, $ancho_resto);
+    }
+
+    public function test_el_mail_corta_despues_de_la_arroba()
+    {
+        $this->assertSame(
+            ['administracion@', 'masquitoreparaciones.com.ar'],
+            $this->partir('administracion@masquitoreparaciones.com.ar', 40, 57)
+        );
+    }
+
+    public function test_no_parte_una_fecha_ni_un_importe()
+    {
+        $this->assertSame(['', 'Fecha', '01/01/2020'], $this->partir('Fecha 01/01/2020', 5, 18));
+        $this->assertSame(['Saldo', '$163.420,40'], $this->partir('Saldo $163.420,40', 12, 20));
+    }
+
+    public function test_un_texto_que_no_es_utf8_valido_se_corta_sin_romper_el_pdf()
+    {
+        $renglones = $this->partir(str_repeat("España ", 4), 10, 20);
+
+        $this->assertGreaterThan(1, count($renglones));
+        $this->assertSame(str_repeat("España", 4), str_replace(' ', '', implode('', $renglones)));
+    }
 }
