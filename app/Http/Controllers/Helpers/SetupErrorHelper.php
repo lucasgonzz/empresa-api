@@ -34,9 +34,19 @@ class SetupErrorHelper
 {
     /**
      * Campos del payload que son secretos por nombre: las dos claves que manda el admin y que el
-     * setup guarda en la fila del dueño.
+     * setup guarda en la fila del dueño, y las credenciales de prueba de Zipnova y Mercado Pago de
+     * las demos (misión credenciales-demo-zipnova-mp, 14/10/2026). Los cuatro nombres nuevos ya los
+     * atrapa PATRON_SECRETO; se listan igual a propósito, para que no dependan de que nadie toque
+     * esa expresión regular. `zipnova_account_id` no va: no es una credencial. `mercadopago_public_key`
+     * es pública por diseño, pero PATRON_SECRETO la tacha igual (`_key$`): sobra, no daña.
      */
-    const CLAVES_SECRETAS = ['serper_api_key', 'google_custom_search_api_key'];
+    const CLAVES_SECRETAS = [
+        'serper_api_key',
+        'google_custom_search_api_key',
+        'zipnova_api_token',
+        'zipnova_api_secret',
+        'mercadopago_access_token',
+    ];
 
     /**
      * Nombre de campo con pinta de secreto. Mismo criterio que EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES

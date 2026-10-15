@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
+use App\Http\Controllers\ZipnovaIntegracionController;
 use App\Models\Address;
 use App\Models\AfipInformation;
 use App\Models\Article;
@@ -27,6 +28,9 @@ use App\Services\DemoEventoEmitter;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
 use App\Services\Zipnova\ZipnovaClient;
+use App\Services\Zipnova\ZipnovaConexionException;
+use App\Services\Zipnova\ZipnovaConexionService;
+use App\Services\Zipnova\ZipnovaException;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -101,7 +105,14 @@ class DemoSetupHelper
      *                                   address_1..3, price_type_1..3,
      *                                   demo_eventos_token, demo_eventos_url, demo_plan,
      *                                   demo_media_urls (mision 50, las cuatro opcionales),
-     *                                   serper_api_key (opcional, misión serper-en-user-setup)
+     *                                   serper_api_key (opcional, misión serper-en-user-setup),
+     *                                   zipnova_api_token + zipnova_api_secret (+ zipnova_account_id
+     *                                   opcional) y mercadopago_access_token + mercadopago_public_key
+     *                                   (opcionales, misión credenciales-demo-zipnova-mp, 14/10/2026:
+     *                                   las credenciales de prueba de las demos, cargadas en el admin;
+     *                                   cada par se usa solo si viaja COMPLETO y gana a la conexión
+     *                                   restaurada y al .env — ver `conectar_zipnova_desde_payload()`
+     *                                   y `conectar_mercado_pago_desde_payload()`)
      *
      * @return User Usuario creado
      *
@@ -489,6 +500,21 @@ class DemoSetupHelper
         if (empty($foto_zipnova)) {
             self::conectar_zipnova_desde_env($user);
         }
+
+        /**
+         * Credenciales de prueba que manda el admin en el payload (misión
+         * credenciales-demo-zipnova-mp, 14/10/2026). PRECEDENCIA: payload completo > conexión
+         * restaurada (la foto) > .env. Por eso van DESPUÉS de las dos ramas de arriba y pisan lo
+         * que hayan dejado: la foto puede ser una conexión vieja o rota, y el .env es solo el
+         * respaldo de cuando el admin no las tiene cargadas.
+         *
+         * Sin los campos en el payload (un admin sin desplegar, o credenciales sin cargar) las dos
+         * llamadas devuelven false sin tocar nada, y la demo queda EXACTAMENTE como antes de esta
+         * misión. Un fallo (Zipnova rechaza las credenciales, no responde, error de base) nunca
+         * frena el setup: se loguea sin valores y queda lo que dejó la cadena de siempre.
+         */
+        self::conectar_mercado_pago_desde_payload($user, $data);
+        self::conectar_zipnova_desde_payload($user, $data);
 
         $etapas['tienda'] = self::cronometrar($t_etapa);
 
@@ -1620,13 +1646,86 @@ class DemoSetupHelper
             return;
         }
 
+        self::conectar_mercado_pago_con($user, $access_token, $public_key, self::ORIGEN_CONFIG);
+    }
+
+    /**
+     * Origen de las credenciales de demo: el `.env` (vía `config()`), el respaldo de siempre.
+     * Solo cambia el texto del log de `conectar_mercado_pago_con()`.
+     */
+    const ORIGEN_CONFIG = 'config';
+
+    /** Origen de las credenciales de demo: el payload que manda el admin (misión credenciales-demo-zipnova-mp). */
+    const ORIGEN_PAYLOAD = 'payload';
+
+    /**
+     * Conecta Mercado Pago con las credenciales de demo del payload del admin, si vinieron
+     * COMPLETAS — misión credenciales-demo-zipnova-mp, 14/10/2026.
+     *
+     * Las dos van juntas (`mercadopago_access_token` y `mercadopago_public_key`): con una sola no
+     * hay con qué cobrar ni con qué armar el checkout, así que un payload a medias se ignora (se
+     * loguea CUÁL falta, nunca un valor) y sigue lo que haya dejado la restauración o el `.env`.
+     *
+     * Escribe lo mismo, en los mismos dos lugares, que `conectar_mercado_pago_desde_env()` (es el
+     * mismo cuerpo: `conectar_mercado_pago_con()`), y también pisa la conexión que haya restaurado
+     * `restaurar_mercado_pago()`. No llama a Mercado Pago: el admin ya las probó contra
+     * `GET /users/me` cuando Lucas las cargó.
+     *
+     * 🔴 Recibe `$data` solo para sacar estas dos claves: el payload entero NUNCA se loguea ni se
+     * persiste (lleva otras credenciales: serper, token de ingreso). Un test lo fija.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed> $data Payload del demo-setup.
+     * @return bool true si quedó conectada con las credenciales del payload.
+     */
+    private static function conectar_mercado_pago_desde_payload(User $user, array $data)
+    {
+        $access_token = self::credencial_del_payload($data, 'mercadopago_access_token');
+        $public_key   = self::credencial_del_payload($data, 'mercadopago_public_key');
+
+        if (is_null($access_token) || is_null($public_key)) {
+            // Se avisa solo si vino ALGUNA de las dos: un payload sin ninguna es el caso normal
+            // (admin sin desplegar o sin credenciales cargadas) y no merece una línea de log.
+            if (!is_null($access_token) || !is_null($public_key)) {
+                Log::warning('DemoSetupHelper: el payload trae credenciales de Mercado Pago incompletas (falta '
+                    . (is_null($access_token) ? 'mercadopago_access_token' : 'mercadopago_public_key')
+                    . '); se ignoran.');
+            }
+
+            return false;
+        }
+
+        return self::conectar_mercado_pago_con($user, $access_token, $public_key, self::ORIGEN_PAYLOAD);
+    }
+
+    /**
+     * Cuerpo compartido de las dos formas de conectar Mercado Pago con credenciales "fijas" de
+     * demo (el `.env` y el payload del admin): escribe el conector y lo espeja en
+     * `payment_methods`, con el mismo método que usa el callback del OAuth. Es el cuerpo que antes
+     * vivía entero en `conectar_mercado_pago_desde_env()`; se movió acá SIN cambiar lo que escribe
+     * (misión credenciales-demo-zipnova-mp, 14/10/2026).
+     *
+     * Nunca lanza: un error se loguea sin valores (de una `QueryException` solo la clase y el
+     * SQLSTATE, porque su mensaje trae el SQL con los bindings, o sea el token) y devuelve false.
+     *
+     * @param User $user Dueño recién creado de la demo (o del sistema local).
+     * @param string $access_token Access Token de Mercado Pago.
+     * @param string $public_key Public Key de Mercado Pago.
+     * @param string $origen `self::ORIGEN_CONFIG` o `self::ORIGEN_PAYLOAD`: solo para el texto del log.
+     * @return bool true si quedó conectada.
+     */
+    private static function conectar_mercado_pago_con(User $user, $access_token, $public_key, $origen)
+    {
+        // Texto del log según de dónde salieron las credenciales (el de la config es el de siempre).
+        $de_donde = $origen === self::ORIGEN_PAYLOAD ? 'del admin' : 'de la config';
+
         try {
             $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
 
             if (!$connector) {
-                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo de la config.');
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo ' . $de_donde . '.');
 
-                return;
+                return false;
             }
 
             $connector->access_token     = $access_token;
@@ -1641,16 +1740,40 @@ class DemoSetupHelper
             $service = new MercadoPagoOAuthService();
             $service->espejar_en_payment_methods((int) $user->id, $access_token, $public_key);
 
-            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo de la config.', [
+            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo ' . $de_donde . '.', [
                 'user_id' => $user->id,
             ]);
+
+            return true;
         } catch (\Throwable $e) {
             $detalle = ($e instanceof \Illuminate\Database\QueryException)
                 ? 'QueryException (SQLSTATE '.$e->getCode().')'
                 : $e->getMessage();
 
-            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo de la config: '.$detalle);
+            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo ' . $de_donde . ': '.$detalle);
+
+            return false;
         }
+    }
+
+    /**
+     * Una credencial del payload, limpia, o null si no vino utilizable (ausente, no es texto o está
+     * vacía después de `trim`). Un número o un array no son una credencial: el admin las manda como
+     * texto, y aceptar otra cosa sería adivinar.
+     *
+     * @param array<string, mixed> $data Payload del demo-setup.
+     * @param string $clave Nombre del campo.
+     * @return string|null
+     */
+    private static function credencial_del_payload(array $data, $clave)
+    {
+        if (!isset($data[$clave]) || !is_string($data[$clave])) {
+            return null;
+        }
+
+        $valor = trim($data[$clave]);
+
+        return $valor === '' ? null : $valor;
     }
 
     /**
@@ -1829,6 +1952,122 @@ class DemoSetupHelper
 
             Log::error('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo de la config: '.$detalle);
         }
+    }
+
+    /**
+     * Conecta Zipnova con las credenciales de demo del payload del admin, si vinieron COMPLETAS
+     * (`zipnova_api_token` y `zipnova_api_secret`; `zipnova_account_id` es opcional) — misión
+     * credenciales-demo-zipnova-mp, 14/10/2026.
+     *
+     * A diferencia de `conectar_zipnova_desde_env()` —que escribe el conector crudo y no llama a
+     * Zipnova—, acá se usa el MISMO servicio que la tarjeta del ABM,
+     * `ZipnovaConexionService::conectar()`, por tres motivos:
+     *  1. VALIDA las credenciales contra `GET /accounts` ANTES de guardar: un token mal cargado en
+     *     el admin no deja una conexión "Conectada" que después no cotiza.
+     *  2. Trae los depósitos y deja el de origen ya elegido: sin eso la demo quedaba conectada pero
+     *     sin poder cotizar hasta que alguien tocaba «Actualizar depósitos» a mano.
+     *  3. Registra el webhook de estados apuntando a ESTA instancia, como cualquier comercio real.
+     *     Si ya había una conexión restaurada con un webhook, `conectar()` lo da de baja y registra
+     *     el nuevo (por eso esto corre DESPUÉS de `restaurar_zipnova()`).
+     *
+     * 🔴 No frena el setup nunca. Si Zipnova rechaza las credenciales (401/403), no responde, o
+     * hay un error de base, se loguea el motivo SIN secretos y devuelve false: no se guardó nada
+     * (el servicio persiste recién después de validar) y queda lo que dejó la cadena de siempre
+     * (conexión restaurada o `.env`).
+     *
+     * Si viaja `zipnova_account_id` y no coincide con la cuenta que devuelve Zipnova, gana lo que
+     * dice Zipnova y se loguea el desacuerdo (sin valores).
+     *
+     * 🔴 Logs sin valores: ni el token, ni el secret, ni el cuerpo de la respuesta de Zipnova ni el
+     * mensaje de la excepción. De una `ZipnovaException` solo se loguea el código HTTP.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed> $data Payload del demo-setup (solo se leen las tres claves de Zipnova).
+     * @return bool true si quedó conectada con las credenciales del payload.
+     */
+    private static function conectar_zipnova_desde_payload(User $user, array $data)
+    {
+        $api_token  = self::credencial_del_payload($data, 'zipnova_api_token');
+        $api_secret = self::credencial_del_payload($data, 'zipnova_api_secret');
+
+        if (is_null($api_token) || is_null($api_secret)) {
+            // Solo se avisa si vino ALGUNA: sin ninguna es el caso normal (ver el equivalente de MP).
+            if (!is_null($api_token) || !is_null($api_secret)) {
+                Log::warning('DemoSetupHelper: el payload trae credenciales de Zipnova incompletas (falta '
+                    . (is_null($api_token) ? 'zipnova_api_token' : 'zipnova_api_secret')
+                    . '); se ignoran.');
+            }
+
+            return false;
+        }
+
+        // Cuenta que dice el admin (opcional): se compara con la que devuelva Zipnova.
+        $account_id_esperado = self::credencial_del_payload($data, 'zipnova_account_id');
+
+        try {
+            $connector = (new ZipnovaConexionService())->conectar(
+                (int) $user->id,
+                $api_token,
+                $api_secret,
+                self::url_del_webhook_de_zipnova()
+            );
+
+            if (!is_null($account_id_esperado) && (string) $connector->platform_user_id !== $account_id_esperado) {
+                Log::warning('DemoSetupHelper: el zipnova_account_id del payload no coincide con la cuenta que devolvió Zipnova; se usó la de Zipnova.', [
+                    'user_id' => $user->id,
+                ]);
+            }
+
+            $config = ZipnovaCredentialsHelper::config_desde_conector($connector);
+
+            Log::info('DemoSetupHelper: Zipnova conectado con las credenciales de demo del admin.', [
+                'user_id'        => $user->id,
+                'origen_elegido' => !empty($config['origin_id']),
+                'webhook_alta'   => !empty($config['webhook_id']),
+            ]);
+
+            return true;
+        } catch (ZipnovaException $e) {
+            // Solo el código HTTP: el mensaje y el body de Zipnova no se loguean (ver el docblock).
+            Log::warning('DemoSetupHelper: Zipnova no aceptó las credenciales de demo del admin (HTTP ' . $e->getStatus() . '); no se conectó y el setup sigue.');
+        } catch (ZipnovaConexionException $e) {
+            // Los mensajes de esta excepción son frases fijas del servicio, sin datos del payload.
+            Log::warning('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo del admin: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            // Una QueryException trae el SQL con los bindings (el token va en el INSERT del conector):
+            // de esa solo la clase y el SQLSTATE. De cualquier otra, solo la clase.
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE ' . $e->getCode() . ')'
+                : get_class($e);
+
+            Log::error('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo del admin: ' . $detalle);
+        }
+
+        return false;
+    }
+
+    /**
+     * URL pública del webhook de Zipnova de ESTA instancia: `<root de la API>/api/zipnova/webhook`.
+     *
+     * Mismo criterio que la tarjeta del ABM (`ZipnovaIntegracionController::conectar()`): sale del
+     * `root()` del request y no de `APP_URL`, porque en el shared hosting la API se sirve bajo
+     * `/public` y los `.env` de los clientes no siempre tienen `APP_URL` al día.
+     *
+     * Fuera de un request HTTP real (artisan, cola, tests) el "request" es el de consola, cuyo root
+     * es `http://localhost`: ahí se usa `config('app.url')`, que es lo único que sabe cuál es esta
+     * instancia. El demo-setup del admin siempre entra por HTTP, así que ese es el camino real.
+     *
+     * @return string
+     */
+    private static function url_del_webhook_de_zipnova()
+    {
+        $root = app()->runningInConsole() ? '' : (string) request()->root();
+
+        if (trim($root) === '') {
+            $root = (string) config('app.url');
+        }
+
+        return rtrim($root, '/') . ZipnovaIntegracionController::RUTA_WEBHOOK;
     }
 
     /**

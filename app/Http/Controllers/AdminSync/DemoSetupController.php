@@ -32,6 +32,16 @@ class DemoSetupController extends Controller
      * nombradas igual porque este docblock es lo único que documenta el contrato del
      * endpoint: las cuatro son opcionales y las persiste DemoSetupHelper::run() al final.
      *
+     * Credenciales de prueba de las demos (misión credenciales-demo-zipnova-mp, 14/10/2026): cinco
+     * campos opcionales más, planos, que admin-api manda solo si Lucas los cargó en Configuración →
+     * Implementación: `zipnova_api_token` + `zipnova_api_secret` (y `zipnova_account_id`, opcional),
+     * `mercadopago_access_token` + `mercadopago_public_key`. DemoSetupHelper::run() conecta Zipnova
+     * y Mercado Pago de la demo con cada par SOLO si viaja completo, y le gana a la conexión
+     * restaurada y al .env (ZIPNOVA_DEMO_* / MERCADOPAGO_DEMO_*, que quedan de respaldo). Sin esos
+     * campos el comportamiento es el de siempre. Son secretos: este controlador no los guarda ni los
+     * loguea (el 500 pasa por SetupErrorHelper, que los tacha), y el endpoint de clientes reales
+     * (`UserSetupController`) no los lee.
+     *
      * El 409 es una respuesta NUEVA de este endpoint (25/8/2026) y es compatible hacia
      * atrás: un admin-api viejo lo lee como `!successful()` y marca el Lead como fallido
      * con el mensaje, que es exactamente lo que queremos — lo importante es que la base
