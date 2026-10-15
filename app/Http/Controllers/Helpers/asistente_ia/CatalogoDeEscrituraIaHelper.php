@@ -274,7 +274,7 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => [
                 'status', 'stock', 'final_price', 'final_price_blanco', 'previus_final_price', 'final_price_updated_at',
-                'costo_real', 'base_margen', 'slug', 'featured', 'stock_updated_at', 'needs_sync_with_tn',
+                'costo_real', 'base_margen', 'base_margen_final', 'slug', 'featured', 'stock_updated_at', 'needs_sync_with_tn',
                 'tiendanube_product_id', 'tiendanube_variant_id', 'me_li_id', 'meli_category_id', 'meli_category_name',
                 'listing_type_id', 'need_sync_to_meli', 'handle', 'chunk_number', 'articles_pages', 'provider_article_id',
                 'embedding_generated_at', 'embedding_source_hash', 'condition_id', 'unidades_por_bulto', 'tipo_envase_id',
