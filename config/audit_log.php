@@ -68,6 +68,7 @@ return [
         \App\Models\SyncedVersionNotificationRead::class => 'Marca de "novedad leída" por usuario: ruido de navegación.',
         \App\Models\VersionSessionTransfer::class       => 'Token de transferencia de sesión entre versiones del SPA: efímero y sensible, sin valor de auditoría.',
         \App\Models\DemoIngresoToken::class             => 'Token de ingreso a una demo: efímero y sensible.',
+        \App\Models\CentroRecursosPase::class           => 'Pase de un solo uso al centro de recursos: efímero y sensible.',
         \App\Models\WhatsappChatMessage::class          => 'Se excluye por volumen: es una fila por cada mensaje de cada chat. El contenido no se pierde, vive en el propio chat y en su tabla; WhatsappChat sí se audita.',
         \App\Models\ImageAssignmentRun::class           => 'Estado de una corrida de asignación de imágenes: se actualiza sin parar mientras corre. La operación ya queda en su propia fila de corrida.',
         \App\Models\ImageAssignmentItem::class          => 'Un renglón por artículo dentro de una corrida de asignación de imágenes: estado de proceso, el volumen pesaría más que el dato.',
@@ -75,6 +76,7 @@ return [
         \App\Models\CategoryProposal::class             => 'Staging de la categorización con IA: cada sistema de categorías que propuso la skill (una fila por tarjeta). No es un dato del negocio hasta que el dueño elige.',
         \App\Models\CategoryProposalNode::class         => 'Staging de la categorización con IA: el árbol de cada sistema propuesto (hasta cientos de nodos por tarjeta). No es un dato del negocio hasta que el dueño elige.',
         \App\Models\CategoryProposalItem::class         => 'Staging de la categorización con IA: a qué categoría cae cada artículo en cada sistema (una fila por artículo y por tarjeta). El volumen pesaría más que el dato.',
+        \App\Models\ArticleDescriptionProposal::class  => 'Staging de las descripciones automáticas: la que la IA no pudo confirmar espera acá hasta que alguien la aprueba o la descarta. Lo que se publica (la fila de `descriptions`) sí se audita.',
 
         /* ---- Telemetría / tracking de alto volumen ---- */
         \App\Models\BuyerTrackingEvent::class           => 'Telemetría de la tienda: una fila por evento de cada visitante.',

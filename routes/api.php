@@ -770,8 +770,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
 
-    Route::resource('/cupon', 'CuponController');
-
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
     // Estado de las integraciones del comercio, para pintar las tarjetas de ABM -> Integraciones.
@@ -970,6 +968,22 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('article-description-ai/pending-review', 'ArticleDescriptionAiController@pending_review');
     Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
     Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
+
+    /*
+        Alertas → Catálogo → Descripciones (misión alertas-descripciones, 14/10/2026): las que la IA no
+        pudo confirmar (A revisar) y las de IA ya publicadas. Contrato §1.4 del plan. Las rutas fijas
+        (resumen, revision, aprobar-varios, descartar-varios) van ANTES de las que llevan
+        {article_id}, y ese parámetro va restringido a números. Las ve cualquier sesión del comercio,
+        como Imágenes; lo de otro comercio responde 404.
+    */
+    Route::get('article-description-ai/resumen', 'ArticleDescriptionReviewController@resumen');
+    Route::get('article-description-ai/revision', 'ArticleDescriptionReviewController@revision');
+    Route::post('article-description-ai/revision/aprobar-varios', 'ArticleDescriptionReviewController@aprobar_varios');
+    Route::post('article-description-ai/revision/descartar-varios', 'ArticleDescriptionReviewController@descartar_varios');
+    Route::post('article-description-ai/revision/{article_id}/aprobar', 'ArticleDescriptionReviewController@aprobar')->where('article_id', '[0-9]+');
+    Route::post('article-description-ai/revision/{article_id}/descartar', 'ArticleDescriptionReviewController@descartar')->where('article_id', '[0-9]+');
+    Route::put('article-description-ai/revision/{article_id}/publicada', 'ArticleDescriptionReviewController@publicada')->where('article_id', '[0-9]+');
+    Route::post('article-description-ai/revision/{article_id}/quitar', 'ArticleDescriptionReviewController@quitar')->where('article_id', '[0-9]+');
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
@@ -1569,7 +1583,21 @@ Route::middleware('admin.api.key')
         Route::get('catalogo/categorias/propuestas/{run_id}/pendientes', 'AdminSync\\CatalogoCategoriasController@pendientes')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/listo', 'AdminSync\\CatalogoCategoriasController@listo')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/descartar', 'AdminSync\\CatalogoCategoriasController@descartar')->where('run_id', '[0-9]+');
+
+        // El canje del pase del centro de recursos (misión centro-de-recursos-clientes, 13/10/2026,
+        // contrato C3): el admin lo llama cuando la página le manda un pase que este sistema emitió en
+        // POST centro-recursos/pase. Lo marca usado (una sola vez, vence a los 5 minutos) y devuelve el
+        // usuario. 404 `pase_invalido` si no vale; un cliente viejo sin esta ruta también da 404 y el
+        // admin lo trata igual (la página sigue sin sesión). La clave la pone el middleware del grupo.
+        Route::post('recursos/canjear-pase', 'CentroRecursosController@canjear');
     });
+
+// El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026, contrato C1): el SPA pide un
+// pase de un solo uso cuando el usuario toca "Centro de recursos" en el menú, y abre la página con él.
+// Cualquier usuario logueado, dueño o empleado. Si la página todavía no responde devuelve
+// `disponible: false` y no crea nada. La otra punta del pase es admin-sync/recursos/canjear-pase,
+// en el grupo de arriba.
+Route::middleware('auth:sanctum')->post('centro-recursos/pase', 'CentroRecursosController@pase');
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
 // asistente-por-whatsapp). PÚBLICA a propósito: el dueño lo abre desde el teléfono, en la calle,

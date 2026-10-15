@@ -283,6 +283,14 @@ return [
     'FOR_USER'                                  => env('FOR_USER'),
 
     /*
+     * URL de la tienda online de la demo (misión tiendas-demo-y-limpieza-tienda, 14/10/2026). La lee
+     * DemoSetupHelper::online_por_defecto() para dejar `users.online` cargado cuando el payload del
+     * demo setup no la trae. Vacía o sin poner, se deriva del host de APP_URL (demo, demo2, demo3).
+     * Vive acá y no en un env() suelto porque env() en código deja de leerse con config:cache.
+     */
+    'DEMO_TIENDA_URL'                           => env('DEMO_TIENDA_URL'),
+
+    /*
      * Rutas de mantenimiento (`routes/mantenimiento.php`, middleware `solo.mantenimiento`, misión
      * cerrar-rutas-web-publicas, 10/10/2026). Ver el docblock de App\Http\Middleware\RutaDeMantenimiento.
      *

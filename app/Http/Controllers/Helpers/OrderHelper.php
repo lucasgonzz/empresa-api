@@ -129,15 +129,6 @@ class OrderHelper {
         }
     }
 
-    static function updateCuponsStatus($order) {
-        foreach ($order->cupons as $cupon) {
-            $cupon->valid = 1;
-            $cupon->order_id = null;
-            $cupon->cart_id = null;
-            $cupon->save();
-        }
-    }
-
     static function sendMail($model) {
         if ($model->order_status->name == 'Confirmado') {
             MessageHelper::sendOrderConfirmedMessage($model);

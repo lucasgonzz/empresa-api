@@ -133,6 +133,8 @@ class EsquemaDeDatosIaHelper
      * `mp_public_key` (_key$) y los tres `*_token_expires_at` (token)—. Lo que se le escapa son
      * las cuatro de abajo: ninguna es un secreto, pero son la otra mitad de un par de credenciales
      * o el identificador de una cuenta de un tercero, y ninguna le contesta nada a un comerciante.
+     * Desde el 14/10/2026 también salen `usar_cupones` y `google_login_enabled`, por otro motivo
+     * (ver su comentario).
      *
      * @var array<string, array<string, string>>
      */
@@ -142,6 +144,14 @@ class EsquemaDeDatosIaHelper
             'google_client_id'  => 'mitad publica de la credencial de Google, no le contesta nada a un comerciante',
             'mp_user_id'        => 'identificador de la cuenta de Mercado Pago, no es un dato del negocio',
             'zippin_account_id' => 'identificador de la cuenta de Zipnova, no es un dato del negocio',
+            /*
+             * No son credenciales: son dos funciones que la tienda dejó de ofrecer (misión
+             * tiendas-demo-y-limpieza-tienda, 14/10/2026, pedido de Lucas). Las columnas quedan
+             * porque una tienda vieja todavía las lee, pero el sistema ya no las muestra ni deja
+             * cambiarlas: contestarlas le haría creer al dueño que es algo que se configura.
+             */
+            'usar_cupones'         => 'la tienda ya no ofrece cupones y el sistema no lo deja configurar',
+            'google_login_enabled' => 'la tienda ya no ofrece el ingreso con Google y el sistema no lo deja configurar',
         ],
         'afip_tickets' => [
             /*
@@ -228,6 +238,7 @@ class EsquemaDeDatosIaHelper
         'zippin_oauth_states'                => 'estados de OAuth de Zippin',
         'platform_connectors'                => 'credenciales de plataformas conectadas',
         'version_session_transfers'          => 'tokens de traspaso de sesion entre versiones',
+        'centro_recursos_pases'              => 'pases de un solo uso al centro de recursos',
         'print_agents'                       => 'tokens de vinculacion de las impresoras',
         'print_jobs'                         => 'cola de impresion (payload en base64)',
         'whatsapp_bot_configs'               => 'credenciales de Kapso y configuracion del bot',
@@ -245,6 +256,7 @@ class EsquemaDeDatosIaHelper
         'category_proposals'                 => 'staging de la categorizacion con IA: sistemas de categorias propuestos (interno)',
         'category_proposal_nodes'            => 'staging de la categorizacion con IA: arbol de cada sistema propuesto (interno)',
         'category_proposal_items'            => 'staging de la categorizacion con IA: a que categoria cae cada articulo en cada sistema (interno)',
+        'article_description_proposals'      => 'staging de las descripciones automaticas: las que la IA no pudo confirmar, antes de que una persona las apruebe (interno)',
         'sync_from_meli_articles'            => 'sincronizacion con Mercado Libre',
         'sync_from_meli_orders'              => 'sincronizacion con Mercado Libre',
         'sync_to_meli_articles'              => 'sincronizacion con Mercado Libre',
@@ -496,7 +508,7 @@ class EsquemaDeDatosIaHelper
          */
         'online_configuration' => [
             'etiqueta'    => 'configuracion de la tienda online',
-            'descripcion' => 'Como esta configurada la tienda online del negocio: si esta pausada, que lista de precios publica, si muestra articulos sin stock, si pide registro para comprar, si tiene envio a domicilio o retiro por local, y que medios (Mercado Pago, Zipnova, Google) estan habilitados. Es una sola fila por negocio. Las credenciales (contraseñas, tokens y claves de Mercado Pago, Zipnova, Google y el SMTP) NO salen por aca: solo se puede saber si cada integracion esta habilitada o no.',
+            'descripcion' => 'Como esta configurada la tienda online del negocio: si esta pausada, que lista de precios publica, si muestra articulos sin stock, si pide registro para comprar, si tiene envio a domicilio o retiro por local, y que medios (Mercado Pago, Zipnova) estan habilitados. Es una sola fila por negocio. Las credenciales (contraseñas, tokens y claves de Mercado Pago, Zipnova y el SMTP) NO salen por aca: solo se puede saber si cada integracion esta habilitada o no.',
             'campos'      => [
                 'pausar_tienda_online'          => ['tipo' => 'checkbox', 'etiqueta' => 'la tienda esta pausada'],
                 'mostrar_catalogo'              => ['tipo' => 'checkbox', 'etiqueta' => 'muestra el catalogo'],
@@ -508,11 +520,9 @@ class EsquemaDeDatosIaHelper
                 'register_to_buy'               => ['tipo' => 'checkbox', 'etiqueta' => 'pide registrarse para comprar'],
                 'has_delivery'                  => ['tipo' => 'checkbox', 'etiqueta' => 'tiene envio a domicilio'],
                 'retiro_por_local'              => ['tipo' => 'checkbox', 'etiqueta' => 'tiene retiro por el local'],
-                'usar_cupones'                  => ['tipo' => 'checkbox', 'etiqueta' => 'usa cupones de descuento'],
                 'save_sale_after_finish_order'  => ['tipo' => 'checkbox', 'etiqueta' => 'genera la venta al confirmarse el pedido'],
                 'mp_enabled'                    => ['tipo' => 'checkbox', 'etiqueta' => 'Mercado Pago habilitado'],
                 'zippin_enabled'                => ['tipo' => 'checkbox', 'etiqueta' => 'Zipnova (envios) habilitado'],
-                'google_login_enabled'          => ['tipo' => 'checkbox', 'etiqueta' => 'ingreso con Google habilitado'],
                 'mail_enabled'                  => ['tipo' => 'checkbox', 'etiqueta' => 'envio de mails habilitado'],
                 'notificar_pedido_al_negocio'   => ['tipo' => 'checkbox', 'etiqueta' => 'avisa al negocio cuando entra un pedido'],
                 'notificar_pedido_al_cliente'   => ['tipo' => 'checkbox', 'etiqueta' => 'avisa al cliente cuando entra su pedido'],

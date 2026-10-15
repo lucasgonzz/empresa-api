@@ -477,6 +477,11 @@ return [
          * bug ya rompió DURACION_REPORTES en producción — ver el comentario de
          * 'embeddings_generacion_pausada' más arriba en este archivo, o
          * CompanyPerformanceController::check_tiempo_ultima_creada().
+         *
+         * 🔴 Esto es el RESPALDO (misión credenciales-demo-zipnova-mp, 14/10/2026): lo normal es
+         * cargar las credenciales de prueba de las demos en el admin (Configuración →
+         * Implementación), que las manda en el payload del demo-setup y le GANAN a estas
+         * variables. Sin variable nueva: los nombres no se tocan.
          */
         'demo_access_token' => env('MERCADOPAGO_DEMO_ACCESS_TOKEN'),
         'demo_public_key'   => env('MERCADOPAGO_DEMO_PUBLIC_KEY'),
@@ -559,6 +564,12 @@ return [
          *
          * demo_account_id es opcional: sin él, el conector queda sin platform_user_id (mismo
          * criterio que un conector recién creado por OAuth antes de resolver la cuenta).
+         *
+         * 🔴 Esto es el RESPALDO (misión credenciales-demo-zipnova-mp, 14/10/2026): lo normal es
+         * cargar las credenciales de prueba de las demos en el admin (Configuración →
+         * Implementación), que las manda en el payload del demo-setup; con ellas la demo se conecta
+         * por `ZipnovaConexionService::conectar()` (valida y deja el depósito de origen elegido) y
+         * gana a estas variables. Sin variable nueva: los nombres no se tocan.
          */
         'demo_api_token'   => env('ZIPNOVA_DEMO_API_TOKEN'),
         'demo_api_secret'  => env('ZIPNOVA_DEMO_API_SECRET'),
@@ -654,6 +665,19 @@ return [
      */
     'mostrador' => [
         'spa_url' => env('SPA_URL'),
+    ],
+
+    /**
+     * El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026): la página con los
+     * videos, a la que el menú "Centro de recursos" entra con un pase de un solo uso
+     * (CentroRecursosController).
+     *
+     * 🔴 El default va ESCRITO ACÁ y no es un descuido: el `.env` de los clientes no trae esta
+     * variable y nadie la va a agregar. La variable existe solo para poder apuntar a otra página en
+     * desarrollo. El `?:` cubre también el caso `CENTRO_RECURSOS_URL=` en blanco.
+     */
+    'centro_recursos' => [
+        'url' => env('CENTRO_RECURSOS_URL') ?: 'https://recursos.comerciocity.com',
     ],
 
 ];

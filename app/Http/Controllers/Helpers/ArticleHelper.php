@@ -313,6 +313,7 @@ class ArticleHelper {
                 'final_price'           => null,
                 'current_final_price'   => null,
                 'base_margen'           => null,
+                'base_margen_final'     => null,
             ];
         }
         
@@ -498,6 +499,7 @@ class ArticleHelper {
                 // margen del articulo que invertir, asi que no hay base que guardar. Se pone en null
                 // en vez de dejar el valor de un calculo anterior, que ya no describiria nada.
                 $article->base_margen = null;
+                $article->base_margen_final = null;
 
             } else {
 
@@ -556,8 +558,10 @@ class ArticleHelper {
                 // Sin costo no hay base: null, para que nadie divida por cero del otro lado.
                 if (!is_null($article->costo_real) && (float) $article->costo_real != 0.0) {
                     $article->base_margen = $final_price;
+                    $article->base_margen_final = Self::base_margen_en_precio_de_venta($article, $final_price, $user);
                 } else {
                     $article->base_margen = null;
+                    $article->base_margen_final = null;
                 }
 
                 if (!is_null($article->percentage_gain)) {
@@ -616,9 +620,20 @@ class ArticleHelper {
                 $res = Self::aplicar_margenes_de_proveedor_y_categoria($article, $res['price']);
 
                 $article->base_margen = $res['price'];
+                $article->base_margen_final = Self::base_margen_en_precio_de_venta($article, $res['price'], $user);
 
                 if ((float) $article->base_margen != 0.0) {
-                    $margen_implicito = ($final_price - $article->base_margen) / $article->base_margen * 100;
+
+                    /*
+                     * El precio manual es lo que paga el cliente: lleva el IVA y los impuestos sobre
+                     * ventas adentro (no se le suma nada, ver $es_precio_manual). La base, en cambio,
+                     * es neta. Se miden en la misma magnitud: al precio se le saca lo que se le debe
+                     * a ARCA y a los fiscos, igual que hace el camino de las listas con un precio
+                     * fijado a mano. Con costo 2.263,64 e IVA 21 %, un precio manual de 3.600 daba
+                     * 59 % (3.600 contra 2.263,64) y el margen real es 31,45 %.
+                     */
+                    $precio_neto = ArticlePricesHelper::quitar_iva_y_sale_taxes($article, $final_price, $user);
+                    $margen_implicito = ($precio_neto - $article->base_margen) / $article->base_margen * 100;
                     $des[] = DesglosePrecioHelper::linea(
                         DesglosePrecioHelper::MARGEN,
                         'Margen implícito',
@@ -628,11 +643,13 @@ class ArticleHelper {
                         'sobre una base de '.Numbers::price($article->base_margen, true),
                         round($margen_implicito, 2).'%',
                         'Ese precio implica un margen del '.round($margen_implicito, 2).'% sobre la base de '.Numbers::price($article->base_margen, true)
+                            .(abs($precio_neto - $final_price) > 0.005 ? ' (sin el IVA ni los impuestos que lleva el precio)' : '')
                     );
                 }
 
             } else {
                 $article->base_margen = null;
+                $article->base_margen_final = null;
             }
         }
 
@@ -899,12 +916,47 @@ class ArticleHelper {
                 // Base del margen del articulo (prompt 357/02): con esto el front deriva en vivo el
                 // margen que implica un precio cargado a mano, con una division.
                 'base_margen'           => $article->base_margen,
+                // La misma base, expresada en precio de venta (con el IVA y los impuestos que
+                // lleva un precio): contra esa el front mide el margen de un precio manual.
+                'base_margen_final'     => $article->base_margen_final,
                 // Capa 3 (Prompt 263): desglose de precio equivalente por metodo de pago (null si el
                 // flag `precio_base_incluye_tarjeta` esta apagado o no hay reglas de recargo configuradas).
                 'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($final_price, $user->id),
             ];
         }
 
+    }
+
+    /**
+     * La base del margen expresada en PRECIO DE VENTA: la base neta llevada a la magnitud en la que
+     * se carga un precio manual (con el IVA y los impuestos sobre ventas que le correspondan).
+     *
+     * Existe porque el front calcula en vivo el margen que implica un precio que se esta tipeando,
+     * y ese precio es lo que paga el cliente mientras `base_margen` es neto. Comparar los dos tal
+     * cual infla el margen en el IVA entero (3.600 sobre 2.263,64 decia ~59 % y el real es ~31 %).
+     * Con esta base la division del front no cambia: (precio - base_final) / base_final.
+     *
+     * Se obtiene con el factor del par acoplado de quitar_iva_y_sale_taxes() (que es un producto de
+     * escalares, asi que alcanza con medirlo sobre 1): si esa funcion cambia, esta cambia con ella.
+     *
+     * @param  mixed       $article
+     * @param  float|null  $base_neta
+     * @param  mixed       $user
+     * @return float|null  null si no hay base o si el factor no permite dividir.
+     */
+    static function base_margen_en_precio_de_venta($article, $base_neta, $user) {
+
+        if (is_null($base_neta)) {
+            return null;
+        }
+
+        $factor = (float) ArticlePricesHelper::quitar_iva_y_sale_taxes($article, 1, $user);
+
+        if ($factor <= 0) {
+            return null;
+        }
+
+        return (float) $base_neta / $factor;
     }
 
     static function cotizar($article, $user, $price, $des) {

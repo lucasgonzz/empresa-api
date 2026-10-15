@@ -1756,23 +1756,18 @@ class PropuestaStockIaHelper
      * (listado/components/table-props/address-stock/Index.vue:28-37): admin → sí; con
      * `article.edit_stock_only_sucursal` → solo su propia sucursal; si no, `article.edit_stock`.
      *
+     * Desde la misión stock-sucursal-desde-listado (14/10/2026) la regla vive en un solo lugar,
+     * `PermisoStockPorSucursalHelper`, que es la que usa también la edición de stock por sucursal
+     * del Listado (`UpdateAddressesStockHelper`) para saltear las sucursales que la persona no puede
+     * tocar. Mismo comportamiento que la copia que había acá.
+     *
      * @param  \App\Models\User|null  $persona
      * @param  int  $address_id
      * @return bool
      */
     public static function puede_en_deposito($persona, $address_id): bool
     {
-        if (PermisosIaHelper::es_admin($persona)) {
-
-            return true;
-        }
-
-        if (PermisosIaHelper::puede($persona, self::PERMISO_SOLO_SU_SUCURSAL)) {
-
-            return !is_null($persona) && (int) $persona->address_id === (int) $address_id;
-        }
-
-        return PermisosIaHelper::puede($persona, self::PERMISO);
+        return \App\Http\Controllers\Helpers\article\PermisoStockPorSucursalHelper::puede_editar($persona, $address_id);
     }
 
     /**
