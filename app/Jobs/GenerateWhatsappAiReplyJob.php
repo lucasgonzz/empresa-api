@@ -230,6 +230,13 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return;
             }
 
+            // Misión senal-pedidos-y-consultas-del-agente: si el agente armó un pedido o prometió «lo consulto
+            // y te confirmo», la marca viaja con el borrador (columnas del propio mensaje) y el CHAT recién
+            // queda marcado cuando la respuesta efectivamente sale (`WhatsappChatHelper::mark_ai_message_sent`).
+            // Se mezcla DESPUÉS del chequeo de arriba a propósito: ese chequeo pregunta si la foto del producto
+            // se resolvió, y una marca de seguimiento no es una foto. Sin marca (el caso normal) esto es [].
+            $extra = array_merge($extra, WhatsappChatHelper::columnas_de_seguimiento($respuesta['follow_up'], $respuesta['follow_up_note']));
+
             $message = WhatsappChatHelper::store_pending_ai_message($chat, $texto, $extra);
 
             // El auto-envío decide si sale al instante (ai_confirm_delay_seconds = 0) o si

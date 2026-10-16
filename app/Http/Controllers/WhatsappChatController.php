@@ -595,6 +595,33 @@ class WhatsappChatController extends Controller
     }
 
     /**
+     * Da por atendido el pedido o la consulta que el agente dejó marcados en el chat (misión
+     * senal-pedidos-y-consultas-del-agente): es el botón «Ya lo atendí» de la conversación. Sirve para el
+     * caso en que la persona resolvió el tema por otro lado (por teléfono, en el local) y no le va a escribir
+     * nada al cliente por acá; cuando sí le escribe, la marca se apaga sola (ver
+     * `WhatsappChatHelper::store_outbound_message()`).
+     *
+     * Idempotente: si el chat no tenía marca devuelve 200 igual y no emite nada. El broadcast sale solo si
+     * había algo que apagar, para que el resto de los operadores conectados vean el cambio en vivo.
+     *
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function resolve_follow_up($id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        if ($chat->limpiar_seguimiento()) {
+            WhatsappChatHelper::broadcast_update((int) $chat->user_id, $chat);
+        }
+
+        return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 200);
+    }
+
+    /**
      * Genera una respuesta sugerida con IA para el chat (misma personalidad, mismas reglas
      * fijas y mismo historial que usaría la respuesta automática del webhook) y la PERSISTE
      * como burbuja `a_confirmar` (misión sugerencia-ia-como-borrador, 29/9/2026): el front ya
@@ -690,7 +717,15 @@ class WhatsappChatController extends Controller
         // WhatsappAiAutoSendScheduler::schedule_for_message() después de esto), acá la pidió
         // una persona mirando la pantalla: sale sola cuando ELLA la confirma, nunca por un
         // plazo vencido.
-        $message = WhatsappChatHelper::store_pending_ai_message($chat, $resultado['body']);
+        // Misión senal-pedidos-y-consultas-del-agente: la sugerencia también lleva la marca del modelo. Si la
+        // persona la manda tal cual, la promesa («lo consulto y te confirmo») la hizo el negocio y sigue en
+        // pie, así que el chat queda marcado cuando sale; si la edita, la marca se limpia (ver
+        // `WhatsappChatHelper::update_pending_ai_message`). El marcador en sí nunca está en `body`.
+        $message = WhatsappChatHelper::store_pending_ai_message(
+            $chat,
+            $resultado['body'],
+            WhatsappChatHelper::columnas_de_seguimiento($resultado['follow_up'], $resultado['follow_up_note'])
+        );
 
         // `estado_pendiente()` se lee DESPUÉS de crear el mensaje: antes de esta línea el chat
         // todavía no tenía ningún `a_confirmar` (se acaba de descartar el que hubiera), así

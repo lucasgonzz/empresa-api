@@ -1168,6 +1168,8 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
+    // Misión senal-pedidos-y-consultas-del-agente: «Ya lo atendí», apaga el pedido o la consulta que el agente dejó marcados.
+    Route::put('whatsapp-chats/{id}/resolve-follow-up', 'WhatsappChatController@resolve_follow_up');
 
     // Descarga del adjunto de un mensaje (misión whatsapp-sidebar-multimedia). Va ADENTRO de
     // este grupo y no suelta: los audios y las fotos de una conversación viven en el disco

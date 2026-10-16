@@ -69,7 +69,9 @@ class WhatsappChatUpdated implements ShouldBroadcastNow
      * `estado_pendiente` (misión whatsapp-tablero-clientes) viaja siempre acá: es lo que
      * mantiene el tablero y el resaltado de la fila al día EN VIVO ante cualquier cambio
      * (entrante nuevo, respuesta pendiente generada, confirmada, descartada o fallida),
-     * sin depender de que el front vuelva a pedir el índice completo.
+     * sin depender de que el front vuelva a pedir el índice completo. `follow_up*` (misión
+     * senal-pedidos-y-consultas-del-agente) cumple el mismo papel para el tablero de pedidos y consultas y
+     * el número del menú.
      *
      * @return array
      */
@@ -83,6 +85,12 @@ class WhatsappChatUpdated implements ShouldBroadcastNow
                 'unread_count' => $this->chat->unread_count,
                 'last_message_at' => $this->chat->last_message_at,
                 'estado_pendiente' => $this->chat->estado_pendiente(),
+                // Seguimiento que el agente dejó para que una persona atienda (misión
+                // senal-pedidos-y-consultas-del-agente): 'pedido' | 'consulta' | null. Viaja SIEMPRE, también
+                // cuando es null: es la forma en que el front se entera de que una persona lo apagó.
+                'follow_up' => $this->chat->follow_up,
+                'follow_up_note' => $this->chat->follow_up_note,
+                'follow_up_at' => $this->chat->follow_up_at,
             ],
         ];
     }

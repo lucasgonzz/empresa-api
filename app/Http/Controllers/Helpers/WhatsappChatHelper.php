@@ -448,6 +448,17 @@ class WhatsappChatHelper
         $chat = WhatsappChat::find($message->whatsapp_chat_id);
         if (! is_null($chat)) {
             $chat->last_message_at = now();
+
+            // 🔴 EL SEGUIMIENTO SE MARCA ACÁ, CUANDO EL MENSAJE SALIÓ, Y NO CUANDO SE GENERÓ (misión
+            // senal-pedidos-y-consultas-del-agente). Un borrador que el operador descarta, o que se
+            // borra porque el cliente siguió escribiendo, no le prometió nada a nadie. Este método es
+            // el único por el que pasa todo envío de una respuesta del agente (auto-envío, «mandalo
+            // ahora» y sugerencia confirmada), así que no hay un camino que se escape. Lo que la
+            // marca no hace es apagarse sola con un envío del agente: solo la apaga una persona.
+            if (! empty($message->ai_follow_up)) {
+                $chat->marcar_seguimiento($message->ai_follow_up, $message->ai_follow_up_note);
+            }
+
             $chat->save();
 
             self::broadcast_update((int) $chat->user_id, $chat, $message);
@@ -613,6 +624,14 @@ class WhatsappChatHelper
             $columns = ['ai_auto_send_at' => null];
             if (! is_null($body)) {
                 $columns['body'] = $body;
+
+                // Una persona reescribió el texto: se hizo cargo del contenido, y la marca del modelo
+                // («pedido», «consulta») describía el texto VIEJO. Solo pausar (sin `body`) NO la
+                // toca, y confirmar el borrador tal cual tampoco: la promesa sigue en pie.
+                if (WhatsappChat::seguimiento_disponible()) {
+                    $columns['ai_follow_up'] = null;
+                    $columns['ai_follow_up_note'] = null;
+                }
             }
 
             WhatsappChatMessage::where('id', $message->id)->update($columns);
@@ -660,24 +679,80 @@ class WhatsappChatHelper
      * (`suggest()` descarta el pendiente viejo antes de guardar el nuevo), y si ese lugar
      * cambiara el día de mañana, esta cuenta no tiene por qué enterarse mal.
      *
+     * Misión senal-pedidos-y-consultas-del-agente: se suman los chats con seguimiento (un pedido o una
+     * consulta que el agente dejó para que una persona atienda). El menú muestra
+     * `mensajes_por_aprobar + chats_con_seguimiento`; el tablero usa los dos números por tipo. Se
+     * cuentan CHATS y no mensajes: un cliente con tres promesas sin atender es una persona esperando.
+     * Una SPA vieja ignora las claves nuevas; una SPA nueva contra una API vieja no las recibe y lee 0.
+     *
      * @param  int  $owner_id
-     * @return array{mensajes_por_aprobar: int, chats_esperando_aprobacion: int}
+     * @return array{mensajes_por_aprobar: int, chats_esperando_aprobacion: int, chats_con_seguimiento: int, pedidos_para_confirmar: int, consultas_pendientes: int}
      */
     public static function resumen_pendientes($owner_id)
     {
+        $resumen = [
+            'mensajes_por_aprobar'       => 0,
+            'chats_esperando_aprobacion' => 0,
+            'chats_con_seguimiento'      => 0,
+            'pedidos_para_confirmar'     => 0,
+            'consultas_pendientes'       => 0,
+        ];
+
         $chat_ids = WhatsappChat::where('user_id', $owner_id)->pluck('id')->all();
 
         if ($chat_ids === []) {
-            return ['mensajes_por_aprobar' => 0, 'chats_esperando_aprobacion' => 0];
+            return $resumen;
         }
 
-        $mensajes_por_aprobar = WhatsappChatMessage::whereIn('whatsapp_chat_id', $chat_ids)
+        $resumen['mensajes_por_aprobar'] = WhatsappChatMessage::whereIn('whatsapp_chat_id', $chat_ids)
             ->where('ai_status', 'a_confirmar')
             ->count();
 
+        $resumen['chats_esperando_aprobacion'] = count(self::chat_ids_esperando_aprobacion($chat_ids));
+
+        // Sin las columnas (el código llegó antes que la migración) se queda en 0 y no rompe el resumen
+        // que pide la SPA en cada pantalla.
+        if (WhatsappChat::seguimiento_disponible()) {
+            $por_tipo = WhatsappChat::where('user_id', $owner_id)
+                ->whereNotNull('follow_up')
+                ->selectRaw('follow_up, COUNT(*) as total')
+                ->groupBy('follow_up')
+                ->pluck('total', 'follow_up');
+
+            $resumen['pedidos_para_confirmar'] = (int) $por_tipo->get(WhatsappChat::FOLLOW_UP_PEDIDO, 0);
+            $resumen['consultas_pendientes'] = (int) $por_tipo->get(WhatsappChat::FOLLOW_UP_CONSULTA, 0);
+            $resumen['chats_con_seguimiento'] = $resumen['pedidos_para_confirmar'] + $resumen['consultas_pendientes'];
+        }
+
+        return $resumen;
+    }
+
+    /**
+     * Columnas de la marca de seguimiento para guardar JUNTO con la respuesta del agente
+     * (`store_pending_ai_message($chat, $body, $extra)`): la fila nace ya marcada, así el broadcast del
+     * `create()` y el envío posterior ven lo mismo. Vacío cuando el modelo no marcó nada (el 100% de las
+     * respuestas de antes de esta funcionalidad), cuando el tipo no es uno válido o cuando las columnas
+     * todavía no existen (ventana del deploy: ver `WhatsappChat::seguimiento_disponible()`).
+     *
+     * @param  string|null  $tipo  'pedido' | 'consulta' | '' | null.
+     * @param  string|null  $nota  Detalle ya acotado que escribió el modelo.
+     * @return array<string, string|null>
+     */
+    public static function columnas_de_seguimiento($tipo, $nota = null)
+    {
+        if (! WhatsappChat::seguimiento_disponible()) {
+            return [];
+        }
+
+        if (! in_array($tipo, [WhatsappChat::FOLLOW_UP_PEDIDO, WhatsappChat::FOLLOW_UP_CONSULTA], true)) {
+            return [];
+        }
+
+        $nota = trim((string) $nota);
+
         return [
-            'mensajes_por_aprobar'       => $mensajes_por_aprobar,
-            'chats_esperando_aprobacion' => count(self::chat_ids_esperando_aprobacion($chat_ids)),
+            'ai_follow_up'      => $tipo,
+            'ai_follow_up_note' => $nota === '' ? null : $nota,
         ];
     }
 
@@ -928,7 +1003,9 @@ class WhatsappChatHelper
      *                        (misión whatsapp-sidebar-multimedia).
      *
      *   🔴 `$extra` ES SOLO PARA CAMPOS DE MEDIO (`media_type`, `media_path`, `media_mime`,
-     *   `media_size`), ESTADO DE ENTREGA (`delivery_status`) Y ERROR (`send_error`). No es una
+     *   `media_size`), ESTADO DE ENTREGA (`delivery_status`), ERROR (`send_error`) Y LA MARCA DE
+     *   SEGUIMIENTO DEL AGENTE (`ai_follow_up`, `ai_follow_up_note`; las arma
+     *   `columnas_de_seguimiento()`). No es una
      *   puerta de atrás para escribir cualquier columna: el `array_merge` lo pone ÚLTIMO, así
      *   que una clave de más —o un typo que coincida con una clave fija— pisa en silencio lo
      *   que este método garantiza. `is_simulated`, `direction` y `source` en particular son
@@ -964,6 +1041,18 @@ class WhatsappChatHelper
             // nunca miente sobre si el cliente recibió algo o no.
             'is_simulated' => $chat->last_inbound_simulated ? 1 : 0,
         ], $extra));
+
+        // 🔴 UNA PERSONA ESCRIBIÓ EN EL CHAT: el pedido o la consulta que el agente dejó marcados se dan
+        // por atendidos (misión senal-pedidos-y-consultas-del-agente). Es el ÚNICO lugar por el que
+        // pasa todo mensaje saliente, así que cubre texto, foto, audio, plantilla y comprobante a mano
+        // sin que cada endpoint se acuerde. «Una persona» = hay un empleado que lo mandó
+        // (`sent_by_user_id`) y el origen es manual o plantilla: NO la apagan el agente, el comprobante
+        // automático ni el recordatorio de cobro (aunque lo dispare un empleado, no es contestarle al
+        // cliente por su pedido). Va antes del `save()` y del broadcast para que el broadcast ya lleve
+        // el chat limpio.
+        if (! is_null($sent_by_user_id) && in_array($source, ['manual', 'plantilla'], true)) {
+            $chat->limpiar_seguimiento();
+        }
 
         $chat->last_message_at = now();
         $chat->save();
