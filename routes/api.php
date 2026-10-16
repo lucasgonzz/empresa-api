@@ -1554,6 +1554,13 @@ Route::middleware('admin.api.key')
         // cada minuto y marca DESPUÉS de que el WhatsApp salió. Misma auth que las de arriba.
         Route::get('asistente/avisos-pendientes', 'AdminSync\\AsistenteController@avisos_pendientes');
         Route::post('asistente/avisos/avisado', 'AdminSync\\AsistenteController@aviso_avisado');
+        // Los recordatorios de la Agenda que el admin le manda al dueño por WhatsApp a la hora de la
+        // tarea (misión recordatorios-whatsapp, 16/10/2026): «recordame el viernes a las 10 que…».
+        // Mismo molde que los avisos: el admin consulta cada 5 minutos (y la consulta deja el anuncio
+        // de que consulta, con o sin plantilla) y marca DESPUÉS de que el WhatsApp salió. El id del
+        // recordatorio va en el body porque lleva `:`. Misma auth que las de arriba.
+        Route::get('asistente/recordatorios-pendientes', 'AdminSync\\AsistenteController@recordatorios_pendientes');
+        Route::post('asistente/recordatorios/avisado', 'AdminSync\\AsistenteController@recordatorio_avisado');
         // Consumo de tokens de IA de este comercio (misión tokens-por-cliente): el admin lo
         // recolecta todas las noches, lo espeja en su propia base y ahí le pone precio. Solo
         // LEE ai_token_usages y devuelve contadores; la tabla de precios vive en el admin.
