@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\WhatsappTemplateStandardHelper;
+use App\Jobs\SendRecordatorioCobroJob;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\User;
@@ -15,6 +16,8 @@ use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Models\WhatsappTemplate;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 
 /**
  * Recordatorio de cobro por WhatsApp que sale del módulo de alertas, solapa Cobros (misión
@@ -126,6 +129,14 @@ class RecordatorioCobroSenderService
      * @var string
      */
     const CODE_SIN_RESUMEN_DE_CUENTA = 'sin_resumen_de_cuenta';
+
+    /**
+     * Cuánto vive el progreso de un lote en Cache. Era la constante del mismo nombre de
+     * `RecordatorioCobroController`; se mudó con `encolar_lote()` (misión asistente-envios-a-clientes).
+     *
+     * @var int
+     */
+    const MINUTOS_DE_VIDA_DEL_LOTE = 60;
 
     /**
      * Arma la previsualización del recordatorio sin mandar nada ni crear ninguna fila.
@@ -255,6 +266,108 @@ class RecordatorioCobroSenderService
         }
 
         return null;
+    }
+
+    /**
+     * Evalúa cada cliente, despacha un `SendRecordatorioCobroJob` por cada uno que pueda recibir el
+     * recordatorio y devuelve el lote con los salteados.
+     *
+     * Vivía adentro de `RecordatorioCobroController::encolar()`; se mudó acá en la misión
+     * asistente-envios-a-clientes (16/10/2026) TAL CUAL, para que el asistente de IA encole los
+     * recordatorios por EL MISMO camino que la pantalla (con el sí del dueño). El controller arma
+     * con esto exactamente el mismo 202 de antes.
+     *
+     * 🔴 UN JOB POR CLIENTE, NUNCA UNO POR VENTA. Un cliente con seis ventas vencidas recibe UN
+     * mensaje con las cinco más viejas y una línea "y 1 venta más".
+     *
+     * 🔴 DOS PASADAS, Y EL LOTE SE ESCRIBE EN EL MEDIO. Primero se resuelve quién se saltea y
+     * quién se encola, después se escribe el lote en Cache, y recién en la segunda pasada se
+     * despacha. El motivo está escrito adentro del método, donde se hace.
+     *
+     * Los motivos de salteo que se evalúan acá son INFORMATIVOS y los resuelve
+     * `motivo_de_salteo()`, el MISMO que usa la previsualización: lo que el operador leyó en el
+     * modal es lo que va a salir en `salteados`. La autoridad la tiene el job, que revalida todo
+     * justo antes de enviar. Entre el POST y la corrida puede pasar un rato y otro operador pudo
+     * mandar lo mismo.
+     *
+     * @param  int       $owner_id         Dueño de la empresa.
+     * @param  array     $clientes         Modelos Client (ya del dueño: lo garantiza el que llama).
+     * @param  int       $dias             Umbral de antigüedad con el que el job recalcula las ventas.
+     * @param  int|null  $sent_by_user_id  Persona que lo dispara (el job recorta las ventas con ella).
+     * @return array  {lote_uuid, total_clientes, encolados, salteados: [{client_id, client_name, motivo, mensaje}]}
+     */
+    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null)
+    {
+        $owner_id = (int) $owner_id;
+
+        $lote_uuid = (string) Str::uuid();
+
+        // Sin configuración activa del bot no puede salir nada. No es un error: se devuelve el lote
+        // de siempre con todos los clientes salteados y el motivo escrito, para que la pantalla lo
+        // muestre igual que cualquier otro salteo en vez de dibujar un error de servidor.
+        $config = WhatsappBotConfig::getForUser($owner_id);
+
+        $salteados = [];
+        $a_encolar = [];
+
+        // ---------- PRIMERA PASADA: se decide, no se despacha ----------
+        foreach ($clientes as $client) {
+
+            $chat = self::buscar_chat($owner_id, $client);
+
+            $motivo = $this->motivo_de_salteo($owner_id, $client, $config, $chat);
+
+            if (! is_null($motivo)) {
+                $salteados[] = [
+                    'client_id'   => (int) $client->id,
+                    'client_name' => $client->name,
+                    'motivo'      => $motivo['motivo'],
+                    'mensaje'     => $motivo['mensaje'],
+                ];
+                continue;
+            }
+
+            $a_encolar[] = (int) $client->id;
+        }
+
+        // ---------- EL LOTE SE ESCRIBE ANTES DE DESPACHAR ----------
+        //
+        // 🔴 EL ORDEN DE ESTAS DOS COSAS ES EL BUG QUE ARREGLA ESTE MÉTODO, no una preferencia de
+        // estilo. `QUEUE_CONNECTION` es `sync` por default (`config/queue.php`), y en sync el job
+        // corre INLINE adentro del `dispatch()`. Con el `Cache::put` después del `foreach`, cada
+        // job hacía su `Cache::get()` en `marcar_procesado()`, no encontraba nada, se iba sin
+        // contar, y recién ahí el `put` pisaba todo con ceros: el operador mandaba 20
+        // recordatorios, los 20 salían, y el modal mostraba "0 de 20" durante cinco minutos para
+        // terminar diciendo que se seguían mandando en segundo plano.
+        Cache::put(
+            SendRecordatorioCobroJob::cache_key($owner_id, $lote_uuid),
+            [
+                'uuid'          => $lote_uuid,
+                'total'         => count($a_encolar),
+                'procesados'    => 0,
+                'enviados'      => 0,
+                'fallidos'      => 0,
+                // Los fallos que sólo el job puede detectar, agrupados por motivo. Ver el
+                // docblock de `SendRecordatorioCobroJob::marcar_procesado()`.
+                'motivos_fallo' => [],
+                'fallos'        => [],
+                // Sin nada encolado no hay job que mueva un contador: el lote ya terminó.
+                'terminado'     => count($a_encolar) === 0,
+            ],
+            now()->addMinutes(self::MINUTOS_DE_VIDA_DEL_LOTE)
+        );
+
+        // ---------- SEGUNDA PASADA: recién ahora se despacha ----------
+        foreach ($a_encolar as $client_id) {
+            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid);
+        }
+
+        return [
+            'lote_uuid'      => $lote_uuid,
+            'total_clientes' => count($clientes),
+            'encolados'      => count($a_encolar),
+            'salteados'      => $salteados,
+        ];
     }
 
     /**
@@ -1066,6 +1179,10 @@ class RecordatorioCobroSenderService
      * Resuelve (o crea) el `WhatsappChat` del cliente, igual que `SaleWhatsappSenderService`.
      * Si el chat existía sin cliente vinculado, lo vincula de paso.
      *
+     * Es público desde la misión asistente-envios-a-clientes (16/10/2026): la promoción por WhatsApp
+     * del asistente crea el chat del cliente exactamente como lo crea el recordatorio, y la forma de
+     * no tener dos maneras de hacerlo es usar ésta.
+     *
      * @param  int  $owner_id
      * @param  Client  $client
      * @param  WhatsappBotConfig  $config
@@ -1073,7 +1190,7 @@ class RecordatorioCobroSenderService
      *
      * @throws RecordatorioCobroException  Código 'sin_telefono' si el cliente no tiene teléfono.
      */
-    private function resolve_chat($owner_id, Client $client, WhatsappBotConfig $config)
+    public function resolve_chat($owner_id, Client $client, WhatsappBotConfig $config)
     {
         $phone = WhatsappPhoneHelper::normalize($client->phone);
 
