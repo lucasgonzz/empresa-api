@@ -1145,7 +1145,7 @@ class AsistenteIaService
          * si ejecutara solo, que es exactamente el criterio de la puerta de auto-confirmación.
          */
         $confianza = ConfianzaDelAgenteIaHelper::guardada($owner);
-        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) : '';
+        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) . $this->bloque_de_modulos_apagados($owner) : '';
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -1159,7 +1159,7 @@ class AsistenteIaService
          * tarjeta que la persona confirma" y en WhatsApp no hay tarjeta que
          * tocar: la confirmación es por texto.
          */
-        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones) : '';
+        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones, $confianza) : '';
 
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
@@ -1192,6 +1192,18 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- Leé el pedido como lo diría un comerciante (misión asistente-altas-y-conversacion, 16/10/2026):
+  "lo que más vendo de [proveedor]" es una pregunta de VENTAS: consultar_articulos_mas_vendidos
+  con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
+  compro a [proveedor]" es consultar_compras_a_un_proveedor. Que una frase nombre a un proveedor
+  no la vuelve una pregunta de compras.
+- "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
+  además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
+  monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
+  Nunca compares X contra lo atrasado solo.
+- Si una herramienta devuelve error con opciones porque el nombre no encajó y una opción es
+  claramente lo que dijo la persona (otra letra, sin tilde, abreviado), volvé a llamar con ese
+  nombre exacto y decile cuál usaste; si no es obvio, preguntá cuál.
 - 🔴 Para la PLATA de un renglón (de una venta, una compra, un presupuesto, un pedido o una
   nota de crédito) va siempre el campo `importe`, nunca `price` ni `cost`, que son de UNA
   unidad: sumar el precio o el costo da un número chico y creíble que no es plata. "Cuánto
@@ -1402,9 +1414,20 @@ AUTO_RESUELTO;
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
   nombre parecido, una cuenta en pesos y otra en dólares, varias subcategorías que encajan),
   preguntá en UN solo mensaje corto todo lo que falta, ofreciendo las opciones por su nombre.
-  No supongas montos, personas, cajas ni fechas. 🔴 Si la fecha que pidieron es futura, lo único
-  que puede faltar es el monto y la subcategoría: NO preguntes cómo se paga ni a qué caja va,
-  porque eso se pregunta el día que la tarea se marca como hecha.
+  No supongas montos, personas, cajas ni fechas. Pero lo que la persona YA dijo en esta
+  conversación no se vuelve a preguntar: si en el presupuesto de recién dijo "la sucursal 1", la
+  venta que sigue va con la sucursal 1 salvo que diga otra. Y si la herramienta encontró UN solo
+  artículo (o cliente) para lo que dijo, es ese: no le pidas que lo confirme.
+- 🔴 Lo que acabás de crear o tocar en esta conversación lo dice su línea "[Tarjeta …]", con el
+  id del registro (article_id, client_id…). Si la persona sigue hablando de eso ("llegaron 12",
+  "ponele la categoría", "el que creaste recién"), es ESE registro: usá ese id en `registro` y no
+  lo vuelvas a buscar, ni le pidas el código, la foto o el nombre de nuevo.
+- Si para un gasto (o una tarea con gasto) la subcategoría que nombró la persona no existe, la
+  creás vos con proponer_alta de expense_concept (y la categoría de gasto con expense_category si
+  tampoco existe) y seguís con el gasto. Nunca la mandes a crearla a la pantalla de Gastos.
+- 🔴 Si la fecha que pidieron es futura, lo único que puede faltar es el monto y la
+  subcategoría: NO preguntes cómo se paga ni a qué caja va, porque eso se pregunta el día que la
+  tarea se marca como hecha.
 - Si la herramienta devuelve "faltan", preguntá eso. Si devuelve "error", contá ese motivo
   tal cual y no agregues otro; la excepción es el que empieza con "No se armó ninguna tarjeta"
   y trae opciones: ese es para vos, no para la persona — elegí de las opciones y volvé a llamar
@@ -1460,6 +1483,8 @@ AUTO_RESUELTO;
   avisa al terminar: nunca digas que ya se aplicó. Los proveedores, categorías, subcategorías
   y marcas van por su nombre; si hay varios que encajan, preguntá cuál.
   "Subí (o bajá) el precio X %" es el campo precio_final, no precio_manual.
+  Si la propuesta trae ejemplos_de_precio, contale a la persona dos o tres (precio de venta antes
+  → después) antes de pedir el sí, y repetilos cuando se ejecute.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.
@@ -1479,6 +1504,54 @@ AUTO_RESUELTO;
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Los módulos de carga que ESTE negocio no tiene, en una línea (misión asistente-altas-y-conversacion,
+     * 16/10/2026). Vacío si los tiene todos.
+     *
+     * 🔴 POR QUÉ. En demo3 —sin la extensión de Combos— el asistente contestó "el combo a $28.000 queda
+     * bien de precio, te lo armo" y recién al confirmar dijo "tu cuenta no tiene activado el módulo de
+     * Combos": la herramienta sí lo chequea, pero el modelo prometió antes de llamarla. Con esta línea
+     * lo sabe desde el primer mensaje. Las herramientas siguen declarándose todas (el prefijo del caché
+     * no depende del negocio, ver build_tools()) y siguen chequeando la extensión ellas mismas: esto no
+     * reemplaza ninguna guarda.
+     *
+     * Va al final del bloque de carga, que ya cambia por negocio (el nombre del comercio va antes).
+     *
+     * @param  User|null  $owner
+     * @return string
+     */
+    protected function bloque_de_modulos_apagados($owner): string
+    {
+        if (is_null($owner)) {
+
+            return '';
+        }
+
+        $modulos = [
+            PermisosIaHelper::EXTENCION_COMBOS  => 'Combos (no podés armar combos)',
+            PermisosIaHelper::EXTENCION_OFERTAS => 'Ofertas por cliente (no podés armar ofertas)',
+            'budgets'                           => 'Presupuestos (no podés armar presupuestos)',
+        ];
+
+        $apagados = [];
+
+        foreach ($modulos as $slug => $texto) {
+
+            if (! PermisosIaHelper::tiene_extencion($owner, $slug)) {
+
+                $apagados[] = $texto;
+            }
+        }
+
+        if (! count($apagados)) {
+
+            return '';
+        }
+
+        return '- 🔴 Módulos que este negocio NO tiene: ' . implode('; ', $apagados) . '. Si te piden algo de '
+            . "eso, decilo en la primera respuesta (se activa desde ComercioCity) y no lo ofrezcas ni lo prometas.\n";
     }
 
     /**
@@ -1549,6 +1622,16 @@ VENTA_CONFIRMA;
   tiene), decile que esa pantalla no lo carga. Un campo obligatorio que la persona no dijo se
   pregunta; uno opcional que no dijo no se manda. Las relaciones (categoría, proveedor, marca,
   localidad, vendedor, lista de precios) van por su NOMBRE, nunca por un número.
+- 🔴 Excepción: en el ALTA DE UN ARTÍCULO la categoría y la subcategoría van SIEMPRE que alguna del
+  negocio encaje, aunque la persona no las haya dicho: elegilas del árbol de categorías que te
+  dan que_puedo_cargar y la búsqueda por código de barras (una cinta aisladora va en la de
+  electricidad, un martillo en la de herramientas de mano) y decí en la respuesta cuáles le
+  pusiste. La subcategoría tiene que ser de esa categoría (en que_puedo_cargar se llaman rubro
+  y sub rubro). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
+- Después de un alta o una edición de un artículo decí el precio de venta tal como viene en
+  detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
+  digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
+  detalle.campos_guardados: no cambies un campo por otro (una razón social no es un domicilio).
 - Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
   por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
   preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar
@@ -1727,9 +1810,9 @@ QUIEN;
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @return string
      */
-    protected function bloque_de_whatsapp($con_acciones = false): string
+    protected function bloque_de_whatsapp($con_acciones = false, $confianza = ''): string
     {
-        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto() : '';
+        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto($confianza) : '';
 
         return <<<WHATSAPP
 Estás hablando por WhatsApp, no por la pantalla del sistema:
@@ -1757,20 +1840,47 @@ WHATSAPP;
      *
      * @return string
      */
-    protected function bloque_de_confirmacion_por_texto(): string
+    protected function bloque_de_confirmacion_por_texto($confianza = ''): string
     {
-        return <<<CONFIRMACION
+        /*
+         * 🔴 EN "DIRECTO" LA PRIMERA REGLA ES OTRA (misión asistente-altas-y-conversacion, 16/10/2026).
+         * Hasta acá este bloque iba igual en los tres modos y decía "decí los datos y preguntá si lo
+         * registrás": en "directo" contradecía al bloque de carga ("se hace en el acto") y, como este va
+         * DESPUÉS porque corrige, ganaba. En demo3 el asistente contestó "el combo queda bien de precio,
+         * te lo armo cuando me digas que sí" sin haber llamado a ninguna herramienta (y recién con el sí
+         * descubrió que el negocio no tenía Combos), y preguntó de más en ventas y presupuestos. En
+         * "directo" se llama a la herramienta en la misma vuelta; la confirmación por texto queda para
+         * las que siempre esperan el sí. Los otros dos modos, exactamente como antes.
+         */
+        $primera = (string) $confianza === ConfianzaDelAgenteIaHelper::DIRECTO
+            ? <<<PRIMERA_DIRECTO
+- Con tu confianza en "directo", lo que se hace en el acto también se hace en el acto acá:
+  llamá a la herramienta proponer_ en la MISMA vuelta, sin preguntar antes si lo hacés, y
+  contá lo que quedó hecho. Nunca digas "te lo armo cuando me digas que sí" ni "¿lo
+  registro?" para eso: o lo hacés, o la herramienta te dice por qué no se puede. Preguntá
+  solo lo que de verdad falta para cargarlo (lo que la herramienta te devuelve en "faltan").
+- Lo que SIEMPRE espera el sí (borrar, la actualización masiva, unificar bancos, los permisos
+  de un empleado, lo que emite ante ARCA) se confirma por texto: llamás igual a la
+  herramienta, la respuesta te dice que quedó esperando, y vos decís en una línea qué vas a
+  hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta.
+PRIMERA_DIRECTO
+            : <<<PRIMERA
 - Cómo se confirma una carga acá, que REEMPLAZA lo de la tarjeta: llamás igual a la
   herramienta proponer_ que corresponde, pero no digas que dejaste una tarjeta. Decí los
   datos exactos de lo que vas a cargar (cuánto, a quién, de qué, qué día, cómo se paga) y
   preguntá si lo registrás.
+PRIMERA;
+
+        return <<<CONFIRMACION
+{$primera}
 - Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
   tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
 - 🔴 No podés proponer y confirmar en el mismo mensaje: siempre tiene que haber una
   respuesta de la persona en el medio. Si lo intentás, la herramienta te lo rechaza.
-- Nunca digas que algo quedó cargado hasta que confirmar_carga_pendiente te conteste que
-  sí. Cuando te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la
-  compra) en una línea.
+- Nunca digas que algo quedó cargado hasta que una herramienta te devuelva el `resultado` de
+  lo hecho (la misma proponer_ cuando se hace en el acto, o confirmar_carga_pendiente). Cuando
+  te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la compra, y el
+  total o el precio que traiga `detalle`) en una línea.
 - Si al final del mensaje de la persona hay una nota "[El sistema ya confirmó la tarjeta...]",
   esa carga ya la registró el sistema por su sí: no llames a confirmar_carga_pendiente, contá
   el resultado que dice la nota y seguí con lo que haya quedado pendiente. Si la nota dice que
