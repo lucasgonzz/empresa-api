@@ -111,6 +111,28 @@ class PropuestaTareaIaHelper {
             return $fecha;
         }
 
+        /*
+         * La hora va escrita adelante del detalle (misión asistente-altas-y-conversacion, 16/10/2026). En
+         * demo3, "recordame el viernes a las 10 que tengo que llamar a…" quedó el viernes a las 00:00: la
+         * herramienta no tenía dónde poner la hora y se perdía. La agenda razona por día (AgendaHelper,
+         * AgendaTareaHelper::validar fuerza las 00:00), así que la hora NO va a fecha_realizacion: va
+         * en el texto de la tarea, que es lo que la persona ve en la Agenda y lo que el asistente lee.
+         * Una hora que no se entiende no se adivina: se pregunta.
+         */
+        $hora_pedida = EntradaDeCargaIa::valor($input, 'hora');
+
+        $hora = EntradaDeCargaIa::vacio($hora_pedida) ? null : self::hora_legible($hora_pedida);
+
+        if (!EntradaDeCargaIa::vacio($hora_pedida) && is_null($hora)) {
+
+            return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
+        }
+
+        if (!is_null($hora) && strpos($detalle, $hora) !== 0) {
+
+            $detalle = $hora.' · '.$detalle;
+        }
+
         $datos = self::datos_de_una_tarea_nueva($detalle, $fecha);
 
         $notas = EntradaDeCargaIa::texto($input, 'notas');
@@ -250,7 +272,48 @@ class PropuestaTareaIaHelper {
             'texto'    => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
             'ruta'     => self::ruta_de_la_agenda(),
             'tarea_id' => (int) $tarea->id,
+            'aviso'    => self::AVISO_SIN_RECORDATORIO,
         ];
+    }
+
+    /**
+     * Lo que la tarea NO hace, para que el modelo no lo prometa (misión asistente-altas-y-conversacion,
+     * 16/10/2026). "Recordame el viernes a las 10" sonaba a que el viernes a las 10 le iba a llegar algo
+     * por WhatsApp, y eso no existe todavía: la tarea queda en la Agenda del sistema.
+     */
+    const AVISO_SIN_RECORDATORIO = 'Queda en la Agenda del sistema: a esa hora no le llega ningún aviso por WhatsApp. '
+        . 'Si pidió que se lo recuerdes, decíselo en una línea.';
+
+    /**
+     * "10" / "10hs" / "10:30" / "10.30" / "9 30" → "10:00" / "10:00" / "10:30" / "10:30" / "09:30". null si
+     * no es una hora del día.
+     *
+     * @param  mixed  $valor
+     * @return string|null
+     */
+    public static function hora_legible($valor) {
+
+        if (!is_scalar($valor)) {
+
+            return null;
+        }
+
+        $texto = mb_strtolower(trim((string) $valor));
+
+        if (!preg_match('/^(\d{1,2})(?:\s*[:.h ]\s*(\d{2}))?\s*(?:hs?|horas?)?$/u', $texto, $partes)) {
+
+            return null;
+        }
+
+        $horas = (int) $partes[1];
+        $minutos = isset($partes[2]) && $partes[2] !== '' ? (int) $partes[2] : 0;
+
+        if ($horas > 23 || $minutos > 59) {
+
+            return null;
+        }
+
+        return sprintf('%02d:%02d', $horas, $minutos);
     }
 
     // -------------------------------------------------------------------------------------------

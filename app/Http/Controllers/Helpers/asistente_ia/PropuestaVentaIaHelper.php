@@ -17,6 +17,7 @@ use App\Models\CreditAccount;
 use App\Models\Discount;
 use App\Models\PriceType;
 use App\Models\SaleType;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -1359,8 +1360,68 @@ class PropuestaVentaIaHelper
             return $sucursales[0];
         }
 
+        /*
+         * 🔴 La que ya se dijo en ESTA conversación (misión asistente-altas-y-conversacion, 16/10/2026).
+         * En demo3 el dueño no tiene sucursal propia y el negocio tiene tres: el asistente preguntó
+         * "¿de qué sucursal?" en el presupuesto y otra vez en la venta, aunque se la acababan de decir.
+         * Antes de preguntar se toma la de la última venta o presupuesto de la conversación (de las
+         * últimas horas, la misma ventana que una tarjeta). Si dice otra, la nombra y gana arriba.
+         */
+        $de_la_conversacion = self::sucursal_de_la_conversacion($contexto);
+
+        if (!is_null($de_la_conversacion)) {
+
+            foreach ($sucursales as $sucursal) {
+
+                if ((int) $sucursal->id === $de_la_conversacion) {
+
+                    return $sucursal;
+                }
+            }
+        }
+
         $faltan[] = 'de qué sucursal es la venta';
         $opciones['sucursales'] = $opciones_de_sucursales;
+
+        return null;
+    }
+
+    /**
+     * El address_id de la última venta o presupuesto de esta conversación (propuesto o hecho, de las
+     * últimas AiMessageAction::HORAS_VENCIMIENTO horas), o null. Ver resolver_sucursal().
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return int|null
+     */
+    protected static function sucursal_de_la_conversacion(ContextoDeCargaIa $contexto)
+    {
+        if (is_null($contexto->conversation)) {
+
+            return null;
+        }
+
+        $tarjetas = AiMessageAction::where('ai_conversation_id', (int) $contexto->conversation->id)
+            ->whereIn('tipo', [AiMessageAction::TIPO_VENTA, AiMessageAction::TIPO_PRESUPUESTO])
+            ->whereIn('estado', [
+                AiMessageAction::ESTADO_CONFIRMADA,
+                AiMessageAction::ESTADO_PROPUESTA,
+                AiMessageAction::ESTADO_EN_CURSO,
+                AiMessageAction::ESTADO_REEMPLAZADA,
+            ])
+            ->where('created_at', '>=', Carbon::now()->subHours(AiMessageAction::HORAS_VENCIMIENTO))
+            ->orderBy('id', 'DESC')
+            ->limit(5)
+            ->get(['id', 'datos']);
+
+        foreach ($tarjetas as $tarjeta) {
+
+            $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+            if (isset($datos['payload']['address_id']) && is_numeric($datos['payload']['address_id']) && (int) $datos['payload']['address_id'] > 0) {
+
+                return (int) $datos['payload']['address_id'];
+            }
+        }
 
         return null;
     }

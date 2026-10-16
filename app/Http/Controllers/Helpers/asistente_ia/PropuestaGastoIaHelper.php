@@ -18,6 +18,16 @@ use Carbon\Carbon;
 class PropuestaGastoIaHelper {
 
     /**
+     * Qué hacer si la subcategoría que nombró la persona no está (misión asistente-altas-y-conversacion,
+     * 16/10/2026). En demo3 el dueño pidió "creala vos, ponele servicios" y el asistente contestó "no
+     * puedo crear categorías nuevas de gasto: eso se carga desde la pantalla de Gastos". Sí puede: es
+     * una entidad más del ABM genérico. Esta respuesta no lo decía y el modelo inventó la negativa.
+     */
+    const SI_NO_ESTA = 'Si la subcategoría que nombró la persona no está en la lista, creala vos con proponer_alta '
+        . '(entidad expense_concept, con su nombre y su categoría de gasto; si la categoría tampoco existe, primero '
+        . 'proponer_alta de expense_category) y volvé a llamar a proponer_gasto con la nueva. No la mandes a la pantalla de Gastos.';
+
+    /**
      * Herramienta proponer_gasto.
      *
      * @param  ContextoDeCargaIa  $contexto
@@ -50,7 +60,7 @@ class PropuestaGastoIaHelper {
         if (count($faltan)) {
 
             $opciones = $subcategoria_id <= 0
-                ? ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, '')]
+                ? ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, ''), 'si_no_esta' => self::SI_NO_ESTA]
                 : [];
 
             return RespuestaDeCargaIa::faltan($faltan, $opciones);
@@ -65,7 +75,7 @@ class PropuestaGastoIaHelper {
 
             return RespuestaDeCargaIa::error(
                 'Esa subcategoría de gasto no existe entre las tuyas.',
-                ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, '')]
+                ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, ''), 'si_no_esta' => self::SI_NO_ESTA]
             );
         }
 
