@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
@@ -1458,7 +1459,8 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion (y descripcion si la hay), nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
-- 🔴 La FACTURA de un proveedor no la leés vos: la lee el escaneo del sistema, con su propia IA. Aunque
+- 🔴 La FOTO de la factura de un proveedor no la transcribís vos: la lee el escaneo del sistema, con su
+  propia IA; el RESULTADO de ese escaneo sí lo podés leer con consultar_escaneo_de_factura. Aunque
   la foto viaje en el mensaje, NO transcribas ni adelantes montos, renglones, artículos ni datos de la
   factura como si los hubieras leído (un número tuyo se lee como un dato confirmado y puede estar mal).
   Lo único que podés sacar de la foto es el nombre del emisor, y sólo si la persona no te dijo de qué
@@ -1466,8 +1468,16 @@ AUTO_RESUELTO;
   el proveedor no existe, la herramienta lo da de alta sola (no uses proponer_alta antes); la sucursal
   NO la preguntes (si no la dijo, la herramienta usa la de la persona); y si la factura dice otra razón
   social que la que dijo la persona, no lo cuestiones ni lo preguntes: manda lo que dijo la persona.
-  Después contá que el escaneo corre en segundo plano, que cuando termina el aviso le aparece EN EL
-  SISTEMA (en la pantalla, no por WhatsApp) y que los artículos se revisan desde Compras.
+  Después contá que el escaneo corre en segundo plano, que los artículos se revisan desde Compras y
+  por dónde le llega el aviso cuando termina TAL COMO LO DICE EL RESULTADO de la herramienta (por
+  WhatsApp con el link para revisarla, o en la pantalla del sistema): no prometas el otro camino.
+  Si la persona te dice a qué compra ya cargada va la factura ("adjuntala a la compra 12"), pasá su
+  número en compra_num.
+- 🔴 Lo que SÍ podés contar es lo que leyó el escaneo, con consultar_escaneo_de_factura: cuando te
+  pregunten qué trae la factura, si ya la leyó o cuánto dio, consultala y contá el resultado (total,
+  renglones reconocidos y sin match, datos dudosos) como "lo que leyó el escaneo", que se confirma al
+  revisarlo en Compras. Si está en proceso, decí que todavía se está leyendo. Nunca digas que no podés
+  saber qué trae la factura: consultá el escaneo.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma
@@ -3597,6 +3607,39 @@ CONFIRMACION;
                         isset($input['codigo']) ? (string) $input['codigo'] : '',
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         ($assistant_message instanceof AiMessage) ? $assistant_message : null
+                    );
+                },
+            ],
+            /*
+             * 🔴 MISIÓN asistente-aviso-escaneo-factura (16/10/2026), al final por la regla del
+             * prefijo del caché. En demo3, a «y? ya la leiste? que trae» el asistente contestaba que
+             * la factura no la lee él: tenía razón sobre la FOTO (no la transcribe, ver el prompt),
+             * pero el RESULTADO del escaneo ya estaba y nadie se lo daba. Es de lectura y va en todos
+             * los canales: en el sistema también sirve para «¿qué trajo la factura de la compra 12?».
+             * `provider_order_scans` sigue excluida del esquema genérico: la lectura va por acá.
+             */
+            [
+                'name' => 'consultar_escaneo_de_factura',
+                'description' => 'Devuelve lo que LEYÓ el escaneo de una factura de compra (el que corre solo cuando se carga la foto de la factura): estado (en_proceso, listo, error, revisado, descartado o sin_escaneo), proveedor de la compra, comprobante, total, neto, IVA, cuántos renglones trae, cuántos reconoció entre los artículos del negocio y cuántos quedaron sin match (artículos nuevos para dar de alta o asociar), los renglones (nombre leído, cantidad, costo y con qué artículo del negocio coincide), los campos dudosos y el link para revisarlo (url, puede venir en null). Usala cuando pregunten qué trae o qué leyó la factura, cuánto dio el total o si ya terminó el escaneo. Sin compra_num trae el último escaneo de esta conversación (o del negocio) de las últimas 48 horas. Contá los datos como "lo que leyó el escaneo", no como confirmados: se confirman al revisar en Compras. Si está en_proceso, decí que todavía se está leyendo. Pasá el link TAL CUAL si viene; si es null, no armes uno. Si la respuesta trae "error", contá ese motivo.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'compra_num' => [
+                            'type'        => 'integer',
+                            'description' => 'Opcional: el N° de la compra cuyo escaneo se quiere ver, como lo ve la persona en Compras. Sin él, el último escaneo.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                /*
+                 * La conversación viaja para el permiso (QUIÉN pregunta, `provider_order.index`) y
+                 * para preferir el escaneo que salió de esta misma charla.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return EscaneoDeFacturaIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        isset($input['compra_num']) ? $input['compra_num'] : null
                     );
                 },
             ],

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
@@ -86,7 +87,10 @@ class AsistenteController extends Controller
      *
      * Campos: `texto` (obligatorio, hasta MAX_TEXTO), `tipo` (texto|audio|imagen),
      * `ai_conversation_id` (opcional: solo cuando el admin lo dedujo de una cita),
-     * `whatsapp_message_id` (opcional), `imagenes[]` (0 a AsistenteImagenHelper::MAX_IMAGENES).
+     * `whatsapp_message_id` (opcional), `imagenes[]` (0 a AsistenteImagenHelper::MAX_IMAGENES),
+     * `avisos` (opcional, "1": el admin consulta avisos-pendientes) y `spa_url` (opcional: la URL
+     * del sistema de este cliente que conoce el admin). Los dos últimos son de la misión
+     * asistente-aviso-escaneo-factura y ver AvisosDelAsistenteHelper::anunciar().
      *
      * Guarda el mensaje del dueño, deja el assistant 'pendiente' y despacha el job de siempre.
      * Contesta 202 con los dos ids: el admin hace polling con la ruta 2 y manda el texto por
@@ -110,6 +114,15 @@ class AsistenteController extends Controller
         }
 
         $dueno = AsistenteCanalHelper::dueno();
+
+        /*
+         * Misión asistente-aviso-escaneo-factura (16/10/2026): el admin nuevo anuncia en CADA mensaje
+         * que consulta los avisos (`avisos = 1`) y con qué URL se abre el sistema de este cliente
+         * (`spa_url`). Se guarda por dueño ANTES de cualquier validación: el anuncio es del admin, no
+         * del mensaje, y un mensaje rechazado igual dice qué admin está del otro lado. Sin los campos
+         * (admin viejo) el anuncio se borra y ningún escaneo promete un aviso por WhatsApp.
+         */
+        AvisosDelAsistenteHelper::anunciar((int) $dueno->id, $request->input('avisos'), $request->input('spa_url'));
 
         $texto = trim((string) $request->input('texto'));
 
@@ -320,6 +333,13 @@ class AsistenteController extends Controller
             'ai_conversation_id' => (int) $assistant->ai_conversation_id,
             'ai_message_id'      => (int) $assistant->id,
             'estado'             => (string) $assistant->estado,
+            /*
+             * Misión asistente-aviso-escaneo-factura (16/10/2026), clave aditiva: esta versión
+             * atiende avisos-pendientes y avisos/avisado. El admin la usa para levantar la pausa que
+             * pone cuando avisos-pendientes le dio 404 (un cliente que se actualizó después). Un
+             * admin viejo la ignora.
+             */
+            'admite_avisos'      => true,
         ], 202);
     }
 
@@ -554,6 +574,75 @@ class AsistenteController extends Controller
 
             $reporte->avisado_at = now();
             $reporte->save();
+        }
+
+        return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * GET admin-sync/asistente/avisos-pendientes  (query opcional `spa_url`)
+     *
+     * Los avisos que el asistente le tiene que mandar al dueño por WhatsApp porque terminó algo que
+     * corría en segundo plano —hoy, el escaneo de una factura que mandó por WhatsApp—, del más viejo
+     * al más nuevo (misión asistente-aviso-escaneo-factura, 16/10/2026). Mismo molde que
+     * informes-pendientes: el admin consulta, manda el WhatsApp y recién después marca con
+     * avisos/avisado. La lista y los textos los arma AvisosDelAsistenteHelper::pendientes().
+     *
+     * `texto` viaja SIN el link: lo agrega el admin al mandar (`url`, o su `client_apis.spa_url` +
+     * `ruta` si `url` vino en null).
+     *
+     * @param  Request  $request
+     * @return JsonResponse  200 {avisos:[{id, tipo, ai_conversation_id, texto, ruta, url}]} · 401 · 403 · 409
+     */
+    public function avisos_pendientes(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        return response()->json([
+            'avisos' => AvisosDelAsistenteHelper::pendientes($dueno, $request->query('spa_url')),
+        ], 200);
+    }
+
+    /**
+     * POST admin-sync/asistente/avisos/avisado  body {id, url?, whatsapp_message_id?}
+     *
+     * Sella el aviso como mandado y lo deja en su conversación como un mensaje del asistente (ver
+     * AvisosDelAsistenteHelper::marcar_avisado). Igual que informes/{id}/avisado, el admin lo llama
+     * SOLO después de que el WhatsApp salió: si el envío falla, el aviso sigue pendiente.
+     *
+     * Idempotente: una segunda llamada no pisa la marca ni duplica el mensaje.
+     *
+     * @param  Request  $request
+     * @return JsonResponse  200 {ok:true} · 401 · 403 · 404 id desconocido o de otro dueño · 409
+     */
+    public function aviso_avisado(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        $encontrado = AvisosDelAsistenteHelper::marcar_avisado(
+            $dueno,
+            $request->input('id'),
+            $request->input('url'),
+            $request->input('whatsapp_message_id')
+        );
+
+        if (!$encontrado) {
+
+            return response()->json(['message' => 'Aviso no encontrado.'], 404);
         }
 
         return response()->json(['ok' => true], 200);

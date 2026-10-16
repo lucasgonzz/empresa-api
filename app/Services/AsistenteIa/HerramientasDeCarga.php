@@ -1401,7 +1401,7 @@ class HerramientasDeCarga
         return [
             [
                 'name'         => 'proponer_compra_con_factura',
-                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. 🔴 El proveedor es EL QUE DIJO LA PERSONA, nunca el emisor que leés en la factura: si la factura dice otra razón social, no lo cuestiones ni lo preguntes. Recién si la persona no nombró ningún proveedor, usá el emisor de la factura. Llamala en la misma vuelta, sin preguntar nada antes: no transcribas montos, fechas ni renglones de la factura (los lee el escaneo) y no preguntes la sucursal (si no la dijo, uso la suya). Las fotos las saco solas de las que te mandó y todavía no se usaron: no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga (no uses proponer_alta antes); si no lo nombró la persona, queda una tarjeta para que lo confirme. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Los artículos no se cargan acá: el escaneo corre en segundo plano y cuando termina el aviso le aparece a la persona EN EL SISTEMA (no por WhatsApp); los revisa desde Compras. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. 🔴 El proveedor es EL QUE DIJO LA PERSONA, nunca el emisor que leés en la factura: si la factura dice otra razón social, no lo cuestiones ni lo preguntes. Recién si la persona no nombró ningún proveedor, usá el emisor de la factura. Llamala en la misma vuelta, sin preguntar nada antes: no transcribas montos, fechas ni renglones de la factura (los lee el escaneo) y no preguntes la sucursal (si no la dijo, uso la suya). Las fotos las saco solas de las que te mandó y todavía no se usaron: no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga (no uses proponer_alta antes); si no lo nombró la persona, queda una tarjeta para que lo confirme. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Si la persona te dice a qué compra YA CARGADA va la factura ("adjuntala a la compra 12", "es de la compra 12"), pasá su número en compra_num: la factura va a esa compra aunque ya tenga artículos y con el proveedor de esa compra; sin compra_num, la uso si hay una vacía reciente del proveedor o armo una nueva. Los artículos no se cargan acá: el escaneo corre en segundo plano y los revisa la persona desde Compras. Cuando termina, el aviso llega como dice el `resultado` (por WhatsApp con el link para revisarla, o en la pantalla del sistema): contalo con esas palabras y no prometas el otro camino. Si después te pregunta qué trajo la factura, usá consultar_escaneo_de_factura. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1422,6 +1422,15 @@ class HerramientasDeCarga
                         'cuit'        => [
                             'type'        => 'string',
                             'description' => 'Opcional: el CUIT del proveedor, si la persona lo dijo o si no nombró ningún proveedor y lo leés en la factura. Sólo los dígitos.',
+                        ],
+                        /*
+                         * Misión asistente-aviso-escaneo-factura (16/10/2026), también al FINAL por
+                         * la regla del prefijo del caché: la compra ya cargada que nombró el dueño
+                         * (PropuestaCompraConFacturaIaHelper::proponer_sobre_compra_indicada).
+                         */
+                        'compra_num'  => [
+                            'type'        => 'integer',
+                            'description' => 'Opcional: el N° de una compra YA CARGADA a la que la persona pidió adjuntar la factura ("adjuntala a la compra 12"). Sólo si lo dijo; nunca lo inventes ni lo deduzcas.',
                         ],
                     ],
                     'required'   => ['proveedor'],

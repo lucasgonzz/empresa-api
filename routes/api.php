@@ -1548,6 +1548,12 @@ Route::middleware('admin.api.key')
         // en la próxima corrida.
         Route::get('asistente/informes-pendientes', 'AdminSync\\AsistenteController@informes_pendientes');
         Route::post('asistente/informes/{id}/avisado', 'AdminSync\\AsistenteController@informe_avisado');
+        // Los avisos de "terminó" que el admin le manda al dueño por WhatsApp (misión
+        // asistente-aviso-escaneo-factura, 16/10/2026): hoy, el escaneo de una factura que mandó por
+        // WhatsApp, con el link que abre la revisión. Mismo molde que los informes: el admin consulta
+        // cada minuto y marca DESPUÉS de que el WhatsApp salió. Misma auth que las de arriba.
+        Route::get('asistente/avisos-pendientes', 'AdminSync\\AsistenteController@avisos_pendientes');
+        Route::post('asistente/avisos/avisado', 'AdminSync\\AsistenteController@aviso_avisado');
         // Consumo de tokens de IA de este comercio (misión tokens-por-cliente): el admin lo
         // recolecta todas las noches, lo espeja en su propia base y ahí le pone precio. Solo
         // LEE ai_token_usages y devuelve contadores; la tabla de precios vive en el admin.

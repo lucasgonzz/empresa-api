@@ -116,6 +116,10 @@ class Tools_de_lectura_Test extends TestCase
             // Un código con el verificador roto a propósito: corta en la validación GS1 y contesta
             // sin salir a la red (el camino entero lo cubre Busqueda_por_codigo_de_barras_Test).
             'buscar_producto_por_codigo_de_barras'     => ['codigo' => '7798111212033'],
+            // Misión asistente-aviso-escaneo-factura (16/10/2026): lo que leyó el escaneo de una
+            // factura. Sin escaneos en este comercio: acá se prueba que la tool corre y contesta (el
+            // camino entero lo cubre AsistenteWhatsapp/15_Aviso_del_escaneo_por_whatsapp_Test).
+            'consultar_escaneo_de_factura'             => [],
         ];
 
         $nombres = $this->service->nombres_de_lectura();
