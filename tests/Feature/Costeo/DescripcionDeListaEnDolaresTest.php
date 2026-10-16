@@ -64,7 +64,7 @@ class DescripcionDeListaEnDolaresTest extends EmpresaTestCase
      * @param  array  $dolares Campos de la entrada en dolares (moneda 2).
      * @return \App\Models\Article
      */
-    protected function articulo_con_listas($pesos, $dolares)
+    protected function articulo_con_listas($pesos, $dolares, $campos_del_articulo = [])
     {
         $base = [
             'price_type_id'             => $this->lista->id,
@@ -74,14 +74,14 @@ class DescripcionDeListaEnDolaresTest extends EmpresaTestCase
             'cotizar_desde_otra_moneda' => 0,
         ];
 
-        return $this->crear_articulo('zz Articulo listas en dolares', [
+        return $this->crear_articulo('zz Articulo listas en dolares', array_merge([
             'cost'               => 1000,
             'percentage_gain'    => 0,
             'price_type_monedas' => [
                 array_merge($base, ['moneda_id' => $this->PESO],  $pesos),
                 array_merge($base, ['moneda_id' => $this->DOLAR], $dolares),
             ],
-        ]);
+        ], $campos_del_articulo));
     }
 
     /**
@@ -275,6 +275,53 @@ class DescripcionDeListaEnDolaresTest extends EmpresaTestCase
 
         $total = $this->lineas_de_tipo($detalle, 'total');
         $this->assertSame(Numbers::price(2000, true), end($total)['valor']);
+    }
+
+    /**
+     * Sin costo, el calculo solo cotiza de una moneda a la otra si la otra tiene un precio fijado a
+     * mano. Con la otra en margen, la explicacion NO puede contar una cotizacion que no ocurrio.
+     *
+     * @test
+     */
+    public function sin_costo_no_se_cuenta_una_cotizacion_que_el_calculo_no_hizo()
+    {
+        $articulo = $this->articulo_con_listas(
+            ['cotizar_desde_otra_moneda' => 1],
+            ['percentage' => 20],
+            ['cost' => null]
+        );
+
+        $response = $this->pedir_desglose($articulo, $this->PESO);
+        $response->assertStatus(200);
+
+        $detalle = $response->json('detalle');
+
+        $this->assertCount(0, $this->lineas_de_tipo($detalle, 'cotizacion'));
+        $this->assertContains('Sin costo para calcular', array_column($this->lineas_de_tipo($detalle, 'nota'), 'etiqueta'));
+    }
+
+    /**
+     * Y la contracara: sin costo pero con la otra moneda fijada a mano, el calculo SI cotiza y la
+     * explicacion lo cuenta.
+     *
+     * @test
+     */
+    public function sin_costo_con_la_otra_moneda_fijada_a_mano_si_se_cuenta_la_cotizacion()
+    {
+        $articulo = $this->articulo_con_listas(
+            ['cotizar_desde_otra_moneda' => 1],
+            ['setear_precio_final' => 1, 'final_price' => 2],
+            ['cost' => null]
+        );
+
+        $response = $this->pedir_desglose($articulo, $this->PESO);
+        $response->assertStatus(200);
+
+        $detalle = $response->json('detalle');
+        $guardada = $this->entrada_guardada($articulo, $this->PESO);
+
+        $this->assertEqualsWithDelta(2000, (float) $guardada->final_price, 1e-6, 'USD 2 x $1000');
+        $this->assertCount(1, $this->lineas_de_tipo($detalle, 'cotizacion'));
     }
 
     /**

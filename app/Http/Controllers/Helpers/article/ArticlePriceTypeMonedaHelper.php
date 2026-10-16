@@ -322,7 +322,18 @@ class ArticlePriceTypeMonedaHelper {
         $cotiza      = (int) $entrada->cotizar_desde_otra_moneda === 1;
         $otra_cotiza = !is_null($otra) && (int) $otra->cotizar_desde_otra_moneda === 1;
 
-        if ($cotiza && !is_null($otra) && !$otra_cotiza && in_array($moneda_id, [1, 2])) {
+        // Sin costo base el calculo SOLO cotiza de una moneda a la otra si hay dolar y la otra tiene
+        // un precio fijado a mano mayor a cero ("MODO SIN COSTO" de calcular_precios_por_...). Si
+        // no, no toca la entrada, y la explicacion no puede afirmar una cotizacion que no ocurrio.
+        $cotiza_sin_costo = !is_null($otra)
+                            && $rate > 0
+                            && (int) $otra->setear_precio_final === 1
+                            && (float) $otra->final_price > 0;
+
+        if (
+            $cotiza && !is_null($otra) && !$otra_cotiza && in_array($moneda_id, [1, 2])
+            && (!is_null($base_cost) || $cotiza_sin_costo)
+        ) {
 
             // Moneda derivada: el precio sale del de la otra moneda, cotizado con el dolar de la cuenta.
             $nombre_otra = Moneda::find($otra->moneda_id);
