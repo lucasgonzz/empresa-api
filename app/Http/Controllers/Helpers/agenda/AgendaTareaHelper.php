@@ -23,6 +23,9 @@ use Carbon\Carbon;
  */
 class AgendaTareaHelper {
 
+    /** El prefijo «HH:MM · » con el que la hora va escrita adelante del detalle (ver hora_del_detalle()). */
+    const PATRON_HORA_DEL_DETALLE = '/^(\d{2}):(\d{2}) · /u';
+
     /**
      * Validación mínima del body de alta/edición de una tarea (contrato §2 de la misión de la
      * agenda). Devuelve el array de columnas listo para guardar, o un string con el mensaje del 422.
@@ -131,7 +134,21 @@ class AgendaTareaHelper {
 
         $notas = self::valor($datos, 'notas');
 
+        /*
+         * 🔴 LA HORA DEL RECORDATORIO SALE DEL TEXTO, NO DE UN CAMPO APARTE (misión
+         * recordatorios-whatsapp, 16/10/2026). La hora vive escrita adelante del detalle («10:00 ·
+         * Llamar a…») porque es lo que el dueño ve y edita en la Agenda, que no tiene un campo de
+         * hora (decisión de Lucas). Si el recordatorio leyera un campo propio, el dueño que en la
+         * pantalla cambia «10:00» por «11:00» —o borra la hora— seguiría recibiendo el WhatsApp a la
+         * hora vieja. Derivándola acá la siguen a la vez la pantalla (`POST/PUT api/pending`), la
+         * tarea nueva del asistente y sus cambios, sin tocar ningún llamador.
+         *
+         * Lo que NO se devuelve: `avisar_por_whatsapp` ni `avisado_at`. Los pone solo el asistente
+         * (cuando confirma el dueño) y el endpoint del admin: un update desde la pantalla no tiene
+         * que prender ni apagar el aviso.
+         */
         return [
+            'hora_aviso'             => self::hora_del_detalle($detalle),
             'detalle'                => $detalle,
             'fecha_realizacion'      => $fecha_realizacion->format('Y-m-d 00:00:00'),
             'es_recurrente'          => $es_recurrente ? 1 : 0,
@@ -238,6 +255,46 @@ class AgendaTareaHelper {
         }
 
         return $fecha->startOfDay();
+    }
+
+    /**
+     * La hora del prefijo «HH:MM · » del detalle como "HH:MM:00" (lo que se guarda en `hora_aviso`),
+     * o null si el detalle no empieza así o la hora no es del día (25:00, 10:75).
+     *
+     * El prefijo es exactamente el que escribe el asistente (PropuestaTareaIaHelper::proponer_tarea):
+     * dos dígitos, dos puntos, dos dígitos, espacio, punto medio, espacio. Lo que no tiene esa forma
+     * («a las 10 llamar…», «9:00 · …») es texto de la persona y no se interpreta.
+     *
+     * @param  string  $detalle
+     * @return string|null
+     */
+    static function hora_del_detalle($detalle) {
+
+        if (!is_string($detalle) || !preg_match(self::PATRON_HORA_DEL_DETALLE, $detalle, $partes)) {
+
+            return null;
+        }
+
+        $horas = (int) $partes[1];
+        $minutos = (int) $partes[2];
+
+        if ($horas > 23 || $minutos > 59) {
+
+            return null;
+        }
+
+        return sprintf('%02d:%02d:00', $horas, $minutos);
+    }
+
+    /**
+     * El detalle sin el prefijo «HH:MM · » (si lo tiene), recortado.
+     *
+     * @param  string  $detalle
+     * @return string
+     */
+    static function detalle_sin_hora($detalle) {
+
+        return trim((string) preg_replace(self::PATRON_HORA_DEL_DETALLE, '', (string) $detalle));
     }
 
     /**
