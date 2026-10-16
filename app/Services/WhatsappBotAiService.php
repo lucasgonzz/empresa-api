@@ -283,7 +283,7 @@ SUMMARY;
      *
      * @var string
      */
-    private const CONSULTA_PROMISE_PATTERN = '/\b(consulto|consultar|consultamos|averiguo|averiguar|averiguamos|verifico|verificar|chequeo|chequear)\b[^.!?\n]{0,40}?\by\s+te\s+(confirmo|confirmamos|aviso|avisamos|respondo)\b/iu';
+    private const CONSULTA_PROMISE_PATTERN = '/\b(consulto|consultar(?:l[oae])?|consultamos|averiguo|averiguar(?:l[oae])?|averiguamos|verifico|verificar(?:l[oae])?|chequeo|chequear(?:l[oae])?)\b[^.!?\n]{0,40}?\by\s+te\s+(confirmo|confirmamos|aviso|avisamos|respondo)\b/iu';
 
     /**
      * Una oración que ofrece en vez de prometer («si querés, lo consulto y te confirmo»): no es una promesa

@@ -290,6 +290,7 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
             'red de seguridad: lo prometió y no marcó' => ["Eso lo consulto y te confirmo.", 'Eso lo consulto y te confirmo.', 'consulta', '', ''],
             'red de seguridad no pisa la marca del modelo' => ["Lo averiguo y te aviso.\n[CONSULTA:el flete]", 'Lo averiguo y te aviso.', 'consulta', 'el flete', ''],
             'red de seguridad: variante con el encargado' => ["Lo consulto con el encargado y te confirmo.", 'Lo consulto con el encargado y te confirmo.', 'consulta', '', ''],
+            'red de seguridad: con el pronombre pegado (consultarlo)' => ["¡Hola! Dejame consultarlo y te confirmo si tenemos taladro percutor.", '¡Hola! Dejame consultarlo y te confirmo si tenemos taladro percutor.', 'consulta', '', ''],
             'red de seguridad: voy a averiguar' => ["Voy a averiguar y te aviso.", 'Voy a averiguar y te aviso.', 'consulta', '', ''],
             'un ofrecimiento condicional no es una promesa' => ["Si querés te armo el pedido y te lo confirmamos con el total.", 'Si querés te armo el pedido y te lo confirmamos con el total.', '', '', ''],
             'ofrecer consultar tampoco es prometerlo' => ["Si querés, lo consulto y te confirmo.", 'Si querés, lo consulto y te confirmo.', '', '', ''],
