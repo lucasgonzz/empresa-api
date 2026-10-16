@@ -886,6 +886,9 @@ class CatalogoDeEscrituraIaHelper
         'budget'                       => 'presupuesto: tan complejo como la venta, con renglones',
         'movimiento_caja'              => 'plata de caja',
         'movimiento_entre_caja'        => 'plata de caja',
+        // Misión destrabar-videos-centro (16/10/2026): `concepto_movimiento_cajas` sumó user_id
+        // (conceptos propios de cada comercio; los del sistema, en NULL, no se tocan).
+        'concepto_movimiento_caja'     => 'conceptos de movimientos de caja: se crean desde ABM > Caja y los del sistema no se tocan',
         'cheque'                       => 'cheques: se cargan desde la pantalla de cobros',
         'order'                        => 'pedidos de la tienda: su store() no lee campos y el pedido nace en la tienda',
         'afip_selected_payment_method' => 'facturación (afip_*)',
