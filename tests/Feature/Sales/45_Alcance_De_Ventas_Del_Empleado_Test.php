@@ -37,7 +37,13 @@ class Alcance_De_Ventas_Del_Empleado_Test extends EmpresaTestCase
     /** Día fijo y lejano, que ningún otro test usa. */
     public $dia = '2037-08-10';
 
-    /** `sales.address_id` no tiene FK: alcanza con dos ids distintos. */
+    /**
+     * `sales.address_id` no tiene FK, así que para las VENTAS cualquier id sirve. Pero `sucursal_1`
+     * además es la sucursal asignada a empleados acotados, y `alcance_permitido()` solo acota si esa
+     * `Address` existe y es del dueño: tiene que ser la "Principal" del fixture (id 1, del usuario
+     * 500), la misma que asume 20_Listado_De_Ventas_Paginado_Test. `sucursal_2` no existe en el
+     * fixture y solo se usa en ventas.
+     */
     public $sucursal_1 = 1;
     public $sucursal_2 = 2;
 

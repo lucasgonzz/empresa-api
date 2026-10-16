@@ -204,8 +204,10 @@ class ListadoVentasHelper
      * Espejo de `sales_to_show`: solapa de sucursal, solapa de empleado y las tres show options.
      *
      * Con "ver consolidadas" prendido, una contenedora sin `address_id` / `employee_id` pasa la
-     * solapa igual (`_mostrarContenedorConSucursal` / `_mostrarContenedorConEmpleado`), y pasa el
-     * filtro de metodo de pago igual: las contenedoras no tienen medios de pago propios.
+     * solapa que ELIGIO LA PERSONA igual (`_mostrarContenedorConSucursal` /
+     * `_mostrarContenedorConEmpleado`), y pasa el filtro de metodo de pago igual: las contenedoras
+     * no tienen medios de pago propios. La excepcion NO rige cuando el eje lo fija el servidor por
+     * permisos (`alcance_permitido()`): ahi la contenedora no pasa (ver el comentario del cuerpo).
      *
      * @param  \Illuminate\Database\Eloquent\Builder $query
      * @param  Request $request
