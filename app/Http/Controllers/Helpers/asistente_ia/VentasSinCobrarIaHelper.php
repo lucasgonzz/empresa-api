@@ -189,6 +189,80 @@ class VentasSinCobrarIaHelper
     }
 
     /**
+     * TODOS LOS CLIENTES QUE CUMPLEN EL FILTRO, sin el tope de veinte del ranking (misión
+     * asistente-envios-a-clientes, 16/10/2026).
+     *
+     * 🔴 ES EL MISMO FILTRO DE `ventas_sin_cobrar()`, INVOCADO Y NO COPIADO. "Mandales un recordatorio
+     * a los que me deben más de X hace más de N días" tiene que alcanzar EXACTAMENTE a los clientes que
+     * el asistente le listó al dueño cuando le preguntó quiénes le deben: deuda TOTAL de X o más y
+     * alguna venta impaga de N días o más, con el mismo recorte por persona y el mismo umbral. Por eso
+     * se arma con las mismas cuatro piezas (`query_de_ventas()`, `deuda_agrupada_por_cliente()`,
+     * `con_deuda_total()` y `filtrar_y_ordenar_clientes()`) y en el mismo orden; lo único distinto es
+     * que no se corta en veinte, porque el recordatorio va a todos los que cumplen.
+     *
+     * Las ventas sin cliente cargado no entran: no hay a quién avisarle.
+     *
+     * @param  int  $owner_id
+     * @param  int|null  $dias  Ver ventas_sin_cobrar(): null = 0 = todas.
+     * @param  \App\Models\User|null  $persona  Quien le escribe al asistente (el recorte sale de ella).
+     * @param  float|null  $monto_minimo  Deuda TOTAL mínima.
+     * @return array{dias: int, clientes: array<int, array<string, mixed>>}  Los clientes, de mayor a
+     *         menor deuda total, con `cliente_id`, `cliente` (nombre), `deuda_total_en_pesos`,
+     *         `deuda_atrasada_en_pesos` y `dias_de_la_venta_mas_vieja`; y el `dias` que se aplicó.
+     */
+    public static function clientes_deudores(int $owner_id, $dias = null, $persona = null, $monto_minimo = null): array
+    {
+        $owner = User::find($owner_id);
+
+        if (is_null($owner)) {
+            return ['dias' => 0, 'clientes' => []];
+        }
+
+        $employee_id = self::employee_id_del_recorte($persona, $owner_id);
+
+        $dias = self::umbral_de_dias($dias, $persona, $owner);
+
+        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias);
+
+        $por_cliente = [];
+        $ids = [];
+
+        foreach (self::deuda_agrupada_por_cliente($base) as $fila) {
+            $cliente_id = (int) $fila->cliente_id;
+
+            // Sin cliente no hay a quién mandarle nada.
+            if ($cliente_id <= 0) {
+                continue;
+            }
+
+            $ids[] = $cliente_id;
+
+            $ventas = (int) $fila->ventas;
+
+            $por_cliente[] = [
+                'cliente_id'            => $cliente_id,
+                'ventas_sin_cobrar'     => $ventas,
+                'pendiente_en_pesos'    => round((float) $fila->pendiente_en_pesos, 2),
+                'ventas_en_otra_moneda' => $ventas - (int) $fila->ventas_en_pesos,
+            ];
+        }
+
+        $por_cliente = self::con_deuda_total($por_cliente, $ids, $owner_id, $employee_id);
+
+        $por_cliente = self::filtrar_y_ordenar_clientes($por_cliente, self::monto_minimo_valido($monto_minimo));
+
+        $nombres = empty($ids) ? [] : DB::table('clients')->whereIn('id', $ids)->pluck('name', 'id')->all();
+
+        foreach ($por_cliente as $indice => $cliente) {
+            $id = $cliente['cliente_id'];
+
+            $por_cliente[$indice]['cliente'] = isset($nombres[$id]) ? (string) $nombres[$id] : 'cliente borrado';
+        }
+
+        return ['dias' => $dias, 'clientes' => $por_cliente];
+    }
+
+    /**
      * LO QUE CADA CLIENTE DEBE EN TOTAL, además de lo del conjunto pedido (misión
      * asistente-altas-y-conversacion, 16/10/2026).
      *
@@ -409,6 +483,9 @@ class VentasSinCobrarIaHelper
      * de guarda de tenencia: una persona que no es este dueño ni empleado suyo nunca ensancha el
      * conjunto, se recorta a sí misma y no ve nada.
      *
+     * Es público desde la misión asistente-envios-a-clientes (16/10/2026): el recordatorio de cobro
+     * del asistente arma la vista previa con las ventas del mismo recorte, y la regla es una sola.
+     *
      * ⚠️ Sin persona identificada NO se recorta, y eso no abre ningún agujero: desde el chat siempre
      * llega una, porque `ai_conversations` nace con tenencia doble (`user_id` la cuenta y
      * `auth_user_id` la persona) en todos sus caminos de alta. Los llamadores que pueden quedar sin
@@ -419,7 +496,7 @@ class VentasSinCobrarIaHelper
      * @param  int  $owner_id
      * @return int|null
      */
-    protected static function employee_id_del_recorte($persona, $owner_id)
+    public static function employee_id_del_recorte($persona, $owner_id)
     {
         if (is_null($persona)) {
 

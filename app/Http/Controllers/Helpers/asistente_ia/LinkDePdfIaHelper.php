@@ -178,10 +178,13 @@ class LinkDePdfIaHelper
      * Se busca con el dueño de la conversación y el modelo `budget`: el default de una venta o de
      * otro comercio nunca sale acá.
      *
+     * Es público desde la misión asistente-envios-a-clientes (16/10/2026): el presupuesto que el
+     * asistente le MANDA al cliente lleva el mismo link que el que le pasa al dueño.
+     *
      * @param  int  $owner_id
      * @return string  '' o '?pdf_column_profile_id=<id>'.
      */
-    protected static function query_del_diseno_del_presupuesto($owner_id): string
+    public static function query_del_diseno_del_presupuesto($owner_id): string
     {
         $perfil_id = PdfColumnProfile::where('user_id', (int) $owner_id)
             ->where('model_name', 'budget')
