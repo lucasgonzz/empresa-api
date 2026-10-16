@@ -554,6 +554,59 @@ class Busqueda_De_Ventas_Con_Totales_Y_Alcance_Test extends EmpresaTestCase
         $this->assertSame(1, $sucursal['sin_empleado']);
     }
 
+    /**
+     * Los contadores salen de UNA sola pasada (`GROUP BY address_id, employee_id` plegado en PHP): lo
+     * que NULL y 0 significan tiene que seguir igual. Sucursal NULL o 0 no cuenta para ninguna
+     * sucursal; empleado NULL o 0 es «sin empleado»; y una misma sucursal / empleado repartida en
+     * varias filas del GROUP BY se suma.
+     *
+     * @test
+     */
+    public function los_contadores_suman_las_combinaciones_y_tratan_null_y_cero_como_siempre()
+    {
+        $this->actuar_como($this->owner);
+
+        // Sin sucursal (NULL y 0) y sin empleado (0): no suman a ninguna sucursal; el 0 de empleado es «sin empleado».
+        $this->crear_venta(1, null, null);
+        $this->crear_venta(1, 0, 0);
+        // Mismo empleado A en una tercera combinación de sucursal ya existente.
+        $this->crear_venta(1, $this->empleado_a->id, $this->sucursal_1);
+
+        $totales = $this->buscar_global([])['totales'];
+
+        $this->assertSame(9, $totales['cantidad']);
+        $this->assertSame(
+            [['address_id' => $this->sucursal_1, 'cantidad' => 4], ['address_id' => $this->sucursal_2, 'cantidad' => 3]],
+            $totales['por_sucursal'],
+            'Sucursal NULL o 0 no cuenta; sucursal 1 = 3 base + 1 de A; ordenadas por id.'
+        );
+        $this->assertSame(
+            [['employee_id' => $this->empleado_a->id, 'cantidad' => 3], ['employee_id' => $this->empleado_b->id, 'cantidad' => 2]],
+            $totales['por_empleado']
+        );
+        $this->assertSame(4, $totales['sin_empleado'], 'Los 2 del dueño de la base + empleado NULL + empleado 0.');
+    }
+
+    /**
+     * 🔴 La búsqueda NO calcula el IVA de los totales (`total_sin_iva`, `costos_sin_iva`,
+     * `ventas_con_iva_sin_medir`): esa consulta agrupa los comprobantes de todo el historial entre la
+     * primera y la última fecha del conjunto, y una búsqueda de todas las fechas la pagaría en cada
+     * clic. Si alguien la agrega «para que se parezca al listado del día», este test se pone rojo.
+     *
+     * @test
+     */
+    public function la_busqueda_no_calcula_el_iva_de_los_totales()
+    {
+        $this->actuar_como($this->owner);
+
+        $totales = $this->buscar_global([])['totales'];
+
+        $this->assertArrayHasKey('total', $totales['pesos']);
+        foreach (['total_sin_iva', 'costos_sin_iva', 'ventas_con_iva_sin_medir'] as $clave) {
+            $this->assertArrayNotHasKey($clave, $totales['pesos'], $clave);
+        }
+    }
+
     // ---------------------------------------------------------------------------------------
     // 8. search/sale/null/1 (el paginador pelado)
     // ---------------------------------------------------------------------------------------

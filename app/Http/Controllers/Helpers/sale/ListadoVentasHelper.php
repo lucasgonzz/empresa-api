@@ -675,48 +675,62 @@ class ListadoVentasHelper
      */
     static function conteos_por_solapa($query_base)
     {
-        /* `sale.address_id && ...` en el front: NULL y 0 no cuentan para ninguna sucursal. */
-        $por_sucursal = (clone $query_base)->toBase()
-                            ->selectRaw('sales.address_id AS address_id, COUNT(*) AS cantidad')
-                            ->whereNotNull('sales.address_id')
-                            ->where('sales.address_id', '<>', 0)
-                            ->groupBy('sales.address_id')
-                            ->get()
-                            ->map(function ($fila) {
-                                return [
-                                    'address_id' => (int) $fila->address_id,
-                                    'cantidad'   => (int) $fila->cantidad,
-                                ];
-                            })
-                            ->values()
-                            ->all();
+        /*
+         * 🔴 UNA SOLA PASADA POR EL CONJUNTO, no tres. Las tres cuentas (por sucursal, por empleado y
+         * "sin empleado") salen de UN `GROUP BY address_id, employee_id` que se pliega en PHP. Antes
+         * eran tres consultas, y eso no importaba sobre un dia; sobre una BUSQUEDA (todas las fechas
+         * del dueño, o el historial entero tras "Limpiar") cada consulta recorre todas las ventas que
+         * matchean, y medido en una copia de un cliente real (31 mil ventas) cada pasada tarda ~0,2 s.
+         * Las dos listas y el entero son EXACTAMENTE los de siempre.
+         */
+        $filas = (clone $query_base)->toBase()
+                    ->selectRaw('sales.address_id AS address_id, sales.employee_id AS employee_id, COUNT(*) AS cantidad')
+                    ->groupBy('sales.address_id', 'sales.employee_id')
+                    ->get();
 
-        /* `sale.employee_id && ...` en el front: NULL y 0 van a la solapa del dueño (sin_empleado). */
-        $por_empleado = (clone $query_base)->toBase()
-                            ->selectRaw('sales.employee_id AS employee_id, COUNT(*) AS cantidad')
-                            ->whereNotNull('sales.employee_id')
-                            ->where('sales.employee_id', '<>', 0)
-                            ->groupBy('sales.employee_id')
-                            ->get()
-                            ->map(function ($fila) {
-                                return [
-                                    'employee_id' => (int) $fila->employee_id,
-                                    'cantidad'    => (int) $fila->cantidad,
-                                ];
-                            })
-                            ->values()
-                            ->all();
+        $por_sucursal = [];
+        $por_empleado = [];
+        $sin_empleado = 0;
 
-        $sin_empleado = (clone $query_base)->toBase()
-                            ->where(function ($q) {
-                                $q->whereNull('sales.employee_id')
-                                  ->orWhere('sales.employee_id', 0);
-                            })
-                            ->count();
+        foreach ($filas as $fila) {
+            $cantidad = (int) $fila->cantidad;
+
+            /* `sale.address_id && ...` en el front: NULL y 0 no cuentan para ninguna sucursal. */
+            $address_id = (int) $fila->address_id;
+
+            if ($address_id !== 0) {
+                $por_sucursal[$address_id] = (isset($por_sucursal[$address_id]) ? $por_sucursal[$address_id] : 0) + $cantidad;
+            }
+
+            /* `sale.employee_id && ...` en el front: NULL y 0 van a la solapa del dueño (sin_empleado). */
+            $employee_id = (int) $fila->employee_id;
+
+            if ($employee_id !== 0) {
+                $por_empleado[$employee_id] = (isset($por_empleado[$employee_id]) ? $por_empleado[$employee_id] : 0) + $cantidad;
+            } else {
+                $sin_empleado += $cantidad;
+            }
+        }
+
+        /* Orden por id: MySQL 8 no garantiza el orden de un GROUP BY, y la respuesta tiene que ser estable. */
+        ksort($por_sucursal);
+        ksort($por_empleado);
+
+        $lista_por_sucursal = [];
+
+        foreach ($por_sucursal as $address_id => $cantidad) {
+            $lista_por_sucursal[] = ['address_id' => (int) $address_id, 'cantidad' => (int) $cantidad];
+        }
+
+        $lista_por_empleado = [];
+
+        foreach ($por_empleado as $employee_id => $cantidad) {
+            $lista_por_empleado[] = ['employee_id' => (int) $employee_id, 'cantidad' => (int) $cantidad];
+        }
 
         return [
-            'por_sucursal' => $por_sucursal,
-            'por_empleado' => $por_empleado,
+            'por_sucursal' => $lista_por_sucursal,
+            'por_empleado' => $lista_por_empleado,
             'sin_empleado' => (int) $sin_empleado,
         ];
     }
@@ -989,7 +1003,9 @@ class ListadoVentasHelper
      * Devuelve dos cosas:
      *   - `conjunto`: el builder filtrado, CON su orden y sus columnas, para que el llamador siga con
      *     su `orderBy` y su `paginate` (si el pedido trae `ordenar_de`, ese orden se respeta).
-     *   - `totales`: la misma forma que `totales` de `GET sale/from-date/ventas`. Los contadores por
+     *   - `totales`: la misma forma que `totales` de `GET sale/from-date/ventas`, SALVO las tres
+     *     claves opcionales de IVA (`total_sin_iva`, `costos_sin_iva`, `ventas_con_iva_sin_medir`),
+     *     que la busqueda no calcula (ver el comentario del cuerpo). Los contadores por
      *     solapa salen de la BASE (sin solapa ni show options, como en el listado del dia) ya acotada
      *     por el alcance.
      *
@@ -1027,10 +1043,15 @@ class ListadoVentasHelper
 
         $totales = self::totales_de_los_agregados($agregados);
 
-        $totales['pesos'] = array_merge(
-            $totales['pesos'],
-            self::totales_sin_iva($para_totales, $user_id, $totales['pesos']['costos'], $agregados)
-        );
+        /*
+         * 🔴 SIN `totales_sin_iva()` EN LA BUSQUEDA, A PROPOSITO. NO LO "COMPLETES" PARA QUE SE PAREZCA
+         * AL LISTADO DEL DIA. Esa funcion agrupa los comprobantes (`afip_tickets`) de TODAS las ventas del
+         * dueño entre la primera y la ultima fecha del conjunto, dos veces: sobre un dia es barato; sobre
+         * una busqueda de todas las fechas (o el historial entero tras "Limpiar") es lo mas caro del
+         * pedido, y se pagaria en cada clic y en cada cambio de pagina. Las tres claves (`total_sin_iva`,
+         * `costos_sin_iva`, `ventas_con_iva_sin_medir`) son OPCIONALES para la SPA: sin ellas no dibuja el
+         * renglon "sin IVA", que el modo busqueda nunca tuvo (el navegador sumaba solo `total`).
+         */
 
         $totales['metodo_de_pago'] = self::total_del_metodo_de_pago($para_totales, $pedido);
 
