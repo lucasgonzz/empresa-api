@@ -5,6 +5,7 @@ namespace Tests\Feature\AsistenteWhatsapp;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\RecordatoriosDelAsistenteHelper;
+use App\Models\AiConversation;
 use App\Models\AiMessageAction;
 use App\Models\Pending;
 use Illuminate\Support\Facades\Cache;
@@ -24,6 +25,8 @@ class Recordatorio_al_confirmar_la_tarea_Test extends RecordatoriosTestCase
      */
     public function la_tarea_del_dueno_con_hora_pide_el_aviso()
     {
+        RecordatoriosDelAsistenteHelper::anunciar($this->comercio->id, '0');
+
         $resultado = $this->confirmar_tarea($this->tarjeta_de_tarea('10:00 · ZZR16 Llamar a Juan'));
 
         $tarea = Pending::find($resultado['tarea_id']);
@@ -103,8 +106,9 @@ class Recordatorio_al_confirmar_la_tarea_Test extends RecordatoriosTestCase
 
         $this->assertSame(PropuestaTareaIaHelper::AVISO_SIN_RECORDATORIO, $sin_anuncio['aviso']);
 
-        // En los tres casos la tarea pide el aviso igual: lo que cambia es solo qué se promete.
-        $this->assertSame(4, Pending::where('user_id', $this->comercio->id)->where('detalle', 'like', '%ZZR16%')->where('avisar_por_whatsapp', 1)->count());
+        // Con anuncio la tarea pide el aviso; sin anuncio no (un admin viejo no tiene que mandar un aviso que nadie prometió).
+        $this->assertSame(3, Pending::where('user_id', $this->comercio->id)->where('detalle', 'like', '%ZZR16%')->where('avisar_por_whatsapp', 1)->count());
+        $this->assertFalse(Pending::find($sin_anuncio['tarea_id'])->avisar_por_whatsapp);
     }
 
     /**
@@ -115,6 +119,8 @@ class Recordatorio_al_confirmar_la_tarea_Test extends RecordatoriosTestCase
      */
     public function los_cambios_con_hora_reescriben_el_prefijo_y_la_hora_del_aviso()
     {
+        RecordatoriosDelAsistenteHelper::anunciar($this->comercio->id, '1');
+
         $tarea = $this->tarea(['detalle' => '10:00 · ZZR16 Pagar la luz', 'avisar_por_whatsapp' => 0]);
 
         $conversacion = $this->conversacion_whatsapp();
@@ -134,7 +140,7 @@ class Recordatorio_al_confirmar_la_tarea_Test extends RecordatoriosTestCase
 
         $resultado = PropuestaTareaIaHelper::ejecutar_cambios($contexto, $accion);
 
-        $this->assertSame(PropuestaTareaIaHelper::AVISO_SIN_RECORDATORIO, $resultado['aviso'], 'Sin anuncio del admin no se promete el aviso.');
+        $this->assertSame('A las 11:00 de ese día le llega un recordatorio por WhatsApp. Decíselo en una línea.', $resultado['aviso']);
 
         $tarea = $tarea->fresh();
 
@@ -180,5 +186,115 @@ class Recordatorio_al_confirmar_la_tarea_Test extends RecordatoriosTestCase
         ]);
 
         $this->assertNotEmpty($rara['faltan']);
+    }
+
+    /* ─────────────────────── correcciones del chequeo independiente ─────────────────────── */
+
+    /**
+     * Sin anuncio del admin la tarea NO pide el aviso: el texto «no le llega» es verdad también el día
+     * que se despliegue el admin nuevo.
+     *
+     * @test
+     */
+    public function sin_anuncio_del_admin_la_tarea_no_pide_el_aviso()
+    {
+        $resultado = $this->confirmar_tarea($this->tarjeta_de_tarea('10:00 · ZZR16 Sin anuncio'));
+
+        $tarea = Pending::find($resultado['tarea_id']);
+
+        $this->assertFalse($tarea->avisar_por_whatsapp);
+        $this->assertSame('10:00:00', $tarea->hora_aviso);
+        $this->assertSame(PropuestaTareaIaHelper::AVISO_SIN_RECORDATORIO, $resultado['aviso']);
+    }
+
+    /**
+     * Una hora que ya pasó no se promete: la puntual no avisa nunca; la recurrente, desde la próxima.
+     *
+     * @test
+     */
+    public function una_hora_que_ya_paso_no_se_promete()
+    {
+        RecordatoriosDelAsistenteHelper::anunciar($this->comercio->id, '1');
+
+        // Hoy a las 10, confirmada a las 10:30.
+        $puntual = $this->confirmar_tarea($this->tarjeta_de_tarea('10:00 · ZZR16 Ya pasó', ['fecha_realizacion' => self::HOY]));
+
+        $this->assertSame(PropuestaTareaIaHelper::AVISO_HORA_PASADA, $puntual['aviso']);
+
+        $recurrente = $this->confirmar_tarea($this->tarjeta_de_tarea('10:00 · ZZR16 Semanal ya pasó', [
+            'fecha_realizacion'    => self::HOY,
+            'es_recurrente'        => true,
+            'unidad_frecuencia_id' => $this->unidad('week')->id,
+            'cantidad_frecuencia'  => 1,
+        ]));
+
+        $this->assertSame('A las 10:00 de cada repetición, desde la próxima, le llega un recordatorio por WhatsApp. Decíselo en una línea.', $recurrente['aviso']);
+
+        // Hoy más tarde, sí.
+        $mas_tarde = $this->confirmar_tarea($this->tarjeta_de_tarea('18:00 · ZZR16 Más tarde', ['fecha_realizacion' => self::HOY]));
+
+        $this->assertSame('A las 18:00 de ese día le llega un recordatorio por WhatsApp. Decíselo en una línea.', $mas_tarde['aviso']);
+    }
+
+    /**
+     * Un empleado le cambia la hora a una tarea que pidió el dueño: el recordatorio sigue (es del
+     * estado de la tarea) y el modelo dice que le llega AL DUEÑO.
+     *
+     * @test
+     */
+    public function el_empleado_que_cambia_la_hora_de_la_tarea_del_dueno_dice_que_le_llega_al_dueno()
+    {
+        RecordatoriosDelAsistenteHelper::anunciar($this->comercio->id, '1');
+
+        $this->empleado->admin_access = 1;
+        $this->empleado->save();
+
+        $tarea = $this->tarea(['detalle' => '11:00 · ZZR16 Pagar el alquiler']);
+
+        $conversacion = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->empleado->id,
+            'origen'       => AiConversation::ORIGEN_WHATSAPP,
+        ]);
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversacion, $this->empleado->fresh());
+
+        $respuesta = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'hora'     => '12',
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $resultado = PropuestaTareaIaHelper::ejecutar_cambios($contexto, AiMessageAction::find($respuesta['tarjeta_id']));
+
+        $this->assertTrue($tarea->fresh()->avisar_por_whatsapp, 'El empleado no apaga el recordatorio que pidió el dueño.');
+        $this->assertSame('12:00:00', $tarea->fresh()->hora_aviso);
+        $this->assertSame('A las 12:00 de ese día le llega al dueño un recordatorio por WhatsApp. Decíselo en una línea.', $resultado['aviso']);
+
+        // Sin plantilla, la versión para el empleado.
+        RecordatoriosDelAsistenteHelper::anunciar($this->comercio->id, '0');
+
+        $respuesta = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'hora'     => '13',
+        ]);
+
+        $resultado = PropuestaTareaIaHelper::ejecutar_cambios($contexto, AiMessageAction::find($respuesta['tarjeta_id']));
+
+        $this->assertSame(PropuestaTareaIaHelper::AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON, $resultado['aviso']);
+
+        // Y una tarea del empleado que no pedía el aviso sigue sin pedirlo aunque él le ponga hora.
+        $sin_pedido = $this->tarea(['detalle' => 'ZZR16 Sin hora', 'hora_aviso' => null, 'avisar_por_whatsapp' => 0]);
+
+        $respuesta = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $sin_pedido->id,
+            'hora'     => '15',
+        ]);
+
+        $resultado = PropuestaTareaIaHelper::ejecutar_cambios($contexto, AiMessageAction::find($respuesta['tarjeta_id']));
+
+        $this->assertFalse($sin_pedido->fresh()->avisar_por_whatsapp);
+        $this->assertSame(PropuestaTareaIaHelper::AVISO_SIN_RECORDATORIO, $resultado['aviso']);
     }
 }

@@ -278,7 +278,8 @@ class PropuestaTareaIaHelper {
 
         /*
          * El recordatorio por WhatsApp (misión recordatorios-whatsapp, 16/10/2026): lo pide la tarea con
-         * hora que confirma EL DUEÑO. La hora ya viene en `hora_aviso` (validar() la deriva del prefijo).
+         * hora que confirma EL DUEÑO con un admin que anunció que consulta. La hora ya viene en
+         * `hora_aviso` (validar() la deriva del prefijo).
          */
         $columnas['avisar_por_whatsapp'] = self::pide_el_recordatorio($contexto, $columnas) ? 1 : 0;
 
@@ -288,7 +289,7 @@ class PropuestaTareaIaHelper {
             'texto'    => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
             'ruta'     => self::ruta_de_la_agenda(),
             'tarea_id' => (int) $tarea->id,
-            'aviso'    => self::aviso_del_recordatorio($contexto, $columnas),
+            'aviso'    => self::aviso_del_recordatorio($contexto, $tarea),
         ];
     }
 
@@ -301,8 +302,9 @@ class PropuestaTareaIaHelper {
      * por WhatsApp, y eso no existía: la tarea quedaba en la Agenda del sistema.
      *
      * Desde la misión recordatorios-whatsapp (16/10/2026) el aviso existe, pero este sigue siendo el
-     * texto de todo caso en que no llega: sin hora, confirmada por un empleado, o con un admin que no
-     * anunció que consulta los recordatorios (ver aviso_del_recordatorio()).
+     * texto de todo caso en que no llega: sin hora, una tarea que no pide el aviso (la creó un
+     * empleado, o se creó sin anuncio del admin) o un admin que dejó de consultar los recordatorios
+     * (ver aviso_del_recordatorio()).
      */
     const AVISO_SIN_RECORDATORIO = 'Queda en la Agenda del sistema: a esa hora no le llega ningún aviso por WhatsApp. '
         . 'Si pidió que se lo recuerdes, decíselo en una línea.';
@@ -314,12 +316,24 @@ class PropuestaTareaIaHelper {
     const AVISO_RECORDATORIO_SI_HABLARON = 'Queda en la Agenda. Si ese día estuvo hablando con vos por WhatsApp le llega un recordatorio a esa hora; '
         . 'si no, no: no le prometas el aviso.';
 
+    /** Lo mismo, cuando el que habla es un empleado: el recordatorio es del dueño, no suyo. */
+    const AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON = 'Queda en la Agenda. Si ese día el dueño estuvo hablando con el asistente por WhatsApp, '
+        . 'a esa hora le llega a él un recordatorio; si no, no: no le prometas el aviso.';
+
+    /** Una tarea puntual cuya hora ya pasó: ningún recordatorio va a salir. */
+    const AVISO_HORA_PASADA = 'Queda en la Agenda, pero esa hora ya pasó: no llega ningún recordatorio por WhatsApp. No lo prometas.';
+
     /**
-     * true si la tarea pide el recordatorio por WhatsApp: tiene hora y la confirma el dueño.
+     * true si la tarea pide el recordatorio por WhatsApp: tiene hora, la confirma el dueño y el admin
+     * anunció que consulta los recordatorios.
      *
      * 🔴 SOLO EL DUEÑO. El recordatorio sale al teléfono de la ficha del cliente, que es el del dueño:
      * un empleado que le pide «recordame…» al asistente desde el sistema no tiene por qué disparar un
      * WhatsApp al celular de su jefe. La tarea igual queda en la Agenda, con su hora.
+     *
+     * 🔴 Y SOLO CON EL ANUNCIO DEL ADMIN (chequeo independiente del 16/10/2026). Con un admin viejo
+     * el asistente le dice al dueño que a esa hora no le llega nada; si la tarea pidiera el aviso igual,
+     * el día que se despliegue el admin nuevo le llegaría un WhatsApp que nadie le prometió.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $columnas  AgendaTareaHelper::validar()
@@ -327,7 +341,9 @@ class PropuestaTareaIaHelper {
      */
     protected static function pide_el_recordatorio(ContextoDeCargaIa $contexto, array $columnas) {
 
-        return !empty($columnas['hora_aviso']) && self::confirma_el_dueno($contexto);
+        return !empty($columnas['hora_aviso'])
+            && self::confirma_el_dueno($contexto)
+            && RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id);
     }
 
     /**
@@ -342,38 +358,55 @@ class PropuestaTareaIaHelper {
     }
 
     /**
-     * El aviso que lee el modelo al confirmarse la tarea: qué decirle al dueño del recordatorio.
+     * El aviso que lee el modelo al confirmarse la tarea: qué decir del recordatorio.
+     *
+     * 🔴 SALE DEL ESTADO DE LA TAREA, NO DE QUIÉN HABLA. Lo que decide si el WhatsApp llega es
+     * `avisar_por_whatsapp` de la tarea ya guardada: un empleado que le cambia la hora a una tarea que
+     * pidió el dueño no apaga el recordatorio, y el modelo tiene que decírselo así —le llega AL DUEÑO—.
      *
      * 🔴 SE PROMETE SOLO LO QUE EL ADMIN ANUNCIÓ (RecordatoriosDelAsistenteHelper::anunciar()). Con la
      * plantilla de Meta el recordatorio sale siempre; sin ella, solo con la ventana de 24 h abierta;
-     * sin anuncio (un admin viejo, o caído hace más de dos horas) no sale nunca, y el texto es el de
-     * siempre. La tarea pide el aviso igual en los tres casos: cuando el admin nuevo llegue, mandará
-     * los que venzan desde ahí.
+     * sin anuncio (un admin viejo, o caído hace más de dos horas), nunca.
+     *
+     * 🔴 Y NO SE PROMETE UNA HORA QUE YA PASÓ (chequeo independiente del 16/10/2026): una puntual de
+     * hoy a las 10 confirmada a las 10:30 no avisa nunca (RecordatoriosDelAsistenteHelper::pendientes()
+     * pide que el momento sea posterior a la creación). En una recurrente cuya primera vez ya pasó, el
+     * recordatorio sale desde la próxima repetición, y eso es lo que se dice.
      *
      * @param  ContextoDeCargaIa  $contexto
-     * @param  array  $columnas  AgendaTareaHelper::validar()
+     * @param  \App\Models\Pending  $tarea  La tarea ya guardada.
      * @return string
      */
-    protected static function aviso_del_recordatorio(ContextoDeCargaIa $contexto, array $columnas) {
+    protected static function aviso_del_recordatorio(ContextoDeCargaIa $contexto, $tarea) {
 
-        if (!self::pide_el_recordatorio($contexto, $columnas)) {
+        if (!$tarea->avisar_por_whatsapp || empty($tarea->hora_aviso) || !RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id)) {
 
             return self::AVISO_SIN_RECORDATORIO;
         }
 
-        if (RecordatoriosDelAsistenteHelper::admin_avisa_con_plantilla($contexto->owner_id)) {
+        $hora = substr((string) $tarea->hora_aviso, 0, 5);
 
-            return 'A las '.substr((string) $columnas['hora_aviso'], 0, 5).' de ese día'
-                .(!empty($columnas['es_recurrente']) ? ' y de cada repetición' : '')
-                .' le llega un recordatorio por WhatsApp. Decíselo en una línea.';
+        $recurrente = AgendaHelper::regla_valida($tarea);
+
+        $ya_paso = AgendaHelper::fecha_base($tarea)->setTimeFromTimeString((string) $tarea->hora_aviso)->lte(Carbon::now());
+
+        if ($ya_paso && !$recurrente) {
+
+            return self::AVISO_HORA_PASADA;
         }
 
-        if (RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id)) {
+        $al_dueno = !self::confirma_el_dueno($contexto);
 
-            return self::AVISO_RECORDATORIO_SI_HABLARON;
+        if (!RecordatoriosDelAsistenteHelper::admin_avisa_con_plantilla($contexto->owner_id)) {
+
+            return $al_dueno ? self::AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON : self::AVISO_RECORDATORIO_SI_HABLARON;
         }
 
-        return self::AVISO_SIN_RECORDATORIO;
+        $cuando = $ya_paso
+            ? 'A las '.$hora.' de cada repetición, desde la próxima,'
+            : 'A las '.$hora.' de ese día'.($recurrente ? ' y de cada repetición' : '');
+
+        return $cuando.' le llega '.($al_dueno ? 'al dueño ' : '').'un recordatorio por WhatsApp. Decíselo en una línea.';
     }
 
     /**
@@ -723,7 +756,7 @@ class PropuestaTareaIaHelper {
         // Solo con hora: una edición del monto o de las notas no tiene nada que decir del recordatorio.
         if (!empty($columnas['hora_aviso'])) {
 
-            $resultado['aviso'] = self::aviso_del_recordatorio($contexto, $columnas);
+            $resultado['aviso'] = self::aviso_del_recordatorio($contexto, $pending);
         }
 
         return $resultado;
