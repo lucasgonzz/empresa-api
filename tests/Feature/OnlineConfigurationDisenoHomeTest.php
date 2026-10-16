@@ -120,6 +120,7 @@ class OnlineConfigurationDisenoHomeTest extends TestCase
      * PHP 7.4 y se guardaria "0": este caso es el que exige la comparacion estricta.
      *
      * @test
+     * @group configuracion-online
      */
     public function el_cero_de_seleccione_queda_en_ultimos_ingresos()
     {
