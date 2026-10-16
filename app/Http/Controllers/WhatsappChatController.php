@@ -106,6 +106,10 @@ class WhatsappChatController extends Controller
         }
 
         $model = $this->fullModel('WhatsappChat', $chat->id);
+        if (is_null($model)) {
+            // Se borró entre la búsqueda de arriba y esta carga: para quien pide es lo mismo que no existir.
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
 
         // Mismo estado para el tablero y el color de la fila que arma el índice. Es un atributo
         // dinámico (no una columna): sin esto la fila nueva nacería sin rojo ni amarillo.

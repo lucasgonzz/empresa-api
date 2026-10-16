@@ -306,8 +306,13 @@ class Chat_nuevo_en_vivo_Test extends TestCase
 
         $this->actingAs($this->empleado, 'web');
 
-        $this->getJson('api/whatsapp-chats/' . $chat_ajeno->id)->assertStatus(404);
-        $this->getJson('api/whatsapp-chats/987654321')->assertStatus(404);
+        // Los dos llegan al controlador y es él quien contesta 404 (no una ruta inexistente).
+        $this->getJson('api/whatsapp-chats/' . $chat_ajeno->id)
+            ->assertStatus(404)
+            ->assertJsonPath('message', 'Chat no encontrado.');
+        $this->getJson('api/whatsapp-chats/987654321')
+            ->assertStatus(404)
+            ->assertJsonPath('message', 'Chat no encontrado.');
     }
 
     /**
@@ -326,8 +331,11 @@ class Chat_nuevo_en_vivo_Test extends TestCase
         $this->assertArrayHasKey('mensajes_por_aprobar', $resumen->json());
         $this->assertArrayNotHasKey('model', $resumen->json());
 
-        // Un segmento que no es un número no llega al controlador.
-        $this->getJson('api/whatsapp-chats/abc')->assertStatus(404);
+        // Un segmento que no es un número no llega al controlador: el 404 es el de una ruta que no existe y no el
+        // del chat que no se encontró (sin el `where` de la ruta, `show('abc')` contestaría «Chat no encontrado.»).
+        $respuesta = $this->getJson('api/whatsapp-chats/abc');
+        $respuesta->assertStatus(404);
+        $this->assertNotEquals('Chat no encontrado.', $respuesta->json('message'));
     }
 
     /**
