@@ -63,6 +63,20 @@ class OnlineConfigurationController extends Controller
         $model->mostrar_novedades_en_home       = $request->boolean('mostrar_novedades_en_home', $model->mostrar_novedades_en_home ?? true);
         $model->mostrar_marca_en_nav            = $request->boolean('mostrar_marca_en_nav', $model->mostrar_marca_en_nav ?? true);
 
+        // Diseño de la portada de la tienda, que lee tienda-spa (Home.vue): 'ultimos_ingresos' es
+        // el inicio de siempre (Destacados, Novedades y Ultimos ingresos) y 'lista_categorias'
+        // muestra, debajo del banner, todas las categorias en una lista desplegable. Mismo
+        // criterio que mostrar_novedades_en_home: si el PUT no trae la clave (pantalla vieja de
+        // empresa-spa), se conserva lo guardado. Si la trae con un valor que no es ninguno de los
+        // dos (o vacio), vuelve al de siempre.
+        if ($request->has('diseno_home')) {
+            $diseno_home = $request->input('diseno_home');
+            if (!in_array($diseno_home, ['ultimos_ingresos', 'lista_categorias'], true)) {
+                $diseno_home = 'ultimos_ingresos';
+            }
+            $model->diseno_home = $diseno_home;
+        }
+
         // Ignorar stock en la tienda online: si esta prendido, ningun articulo se muestra agotado
         // ni tiene tope de cantidad al comprar (mismo comportamiento que ya existe hoy para un
         // articulo con stock null). Arranca en false, al reves que el toggle de arriba: es un
