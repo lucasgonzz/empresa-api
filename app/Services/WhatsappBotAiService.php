@@ -222,7 +222,22 @@ SUMMARY;
      *
      * @var string
      */
-    private const PHOTO_MARKER_PATTERN = '/\s*\[FOTO:([^\]\n]+)\]\s*$/';
+    private const PHOTO_MARKER_PATTERN = '/\s*\[FOTO:([^\]\n]+)\]+\s*$/';
+
+    /**
+     * La misma marca de foto pero MAL ESCRITA, en una línea propia al final (misión
+     * parser-marcas-mal-formadas-del-agente, medida contra DeepSeek el 16/10/2026): `[http://FOTO:7791000000011]`
+     * (el modelo la tomó por un link), `FOTO:7791000000011` sin corchetes, `[FOTO]` / `[FOTO:]` sin código, con las
+     * letras separadas (`[F O T O:…]`) o envuelta en markdown (`*[FOTO:…]*`). Antes de esto se quedaban a la vista del
+     * cliente.
+     *
+     * Solo cuenta si ocupa una línea entera: la forma sin corchetes exige además un código con al menos seis dígitos,
+     * para no llevarse una línea como «Foto: adjunta» o «Foto: IMG2024». Grupo 1 = contenido de la forma con
+     * corchetes (después de los dos puntos); grupo 2 = código de la forma sin corchetes.
+     *
+     * @var string
+     */
+    private const PHOTO_LOOSE_MARKER_PATTERN = '/(?:^|\n)[ \t]*[*_`]*(?:\[[ \t]*(?:https?:\/\/[ \t]*)?F[ \t]?O[ \t]?T[ \t]?O[ \t]*(?::([^\[\]\n]*))?\]+|F[ \t]?O[ \t]?T[ \t]?O[ \t]*:[ \t]*(?=(?:[\w\-]*?\d){6})([\w\-]{6,40})\.?)[*_`]*[ \t]*$/iu';
 
     /**
      * Marcas de seguimiento (misión senal-pedidos-y-consultas-del-agente): `[PEDIDO:<detalle>]` cuando el
@@ -245,7 +260,7 @@ SUMMARY;
      *
      * @var string
      */
-    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(P\s*E\s*D\s*I\s*D\s*O|C\s*O\s*N\s*S\s*U\s*L\s*T\s*A)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]*|\s*\]+)[*_`]*/iu';
+    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(?:(?-i:\p{Lu}{1,3})[ \t]*\n\s*)?(P\s*E\s*D\s*I\s*D\s*O|C\s*O\s*N\s*S\s*U\s*L\s*T\s*A)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]*|\s*\]+)[*_`]*/iu';
 
     /**
      * Una marca INVENTADA por el modelo al final del texto: una línea que es solo `[MAYÚSCULAS]` o
@@ -258,7 +273,7 @@ SUMMARY;
      *
      * @var string
      */
-    private const INVENTED_MARKER_PATTERN = '/(?:^|\n)[ \t]*\[\s*(?!F\s?O\s?T\s?O\b)(?:[A-ZÁÉÍÓÚÑ_][ ]?){3,}\s*(?::(?:[^\[\]\n]|\[[^\]\n]*\])*)?\][ \t]*$/u';
+    private const INVENTED_MARKER_PATTERN = '/(?:^|\n)[ \t]*[*_`]*\[\s*(?!F\s?O\s?T\s?O\b)(?:[A-ZÁÉÍÓÚÑ_][ ]?){1,}\s*(?::(?:[^\[\]\n]|\[[^\]\n]*\])*)?\][*_`]*[ \t]*$/u';
 
     /**
      * Un corchete que se abre al FINAL del texto y no se cierra: una marca cortada por el proveedor a mitad de
@@ -268,6 +283,45 @@ SUMMARY;
      * @var string
      */
     private const TRUNCATED_MARKER_PATTERN = '/\s*\[[^\[\]\n]{0,200}$/u';
+
+    /*
+     * Misión parser-marcas-mal-formadas-del-agente (16/10/2026). Medido contra DeepSeek en ~5.400 respuestas, el
+     * modelo a veces improvisa en la ÚLTIMA línea del texto algo que parece una marca y no lo es, y el cliente lo
+     * recibía tal cual por WhatsApp. Las formas que se vieron, con las reglas de `stray_last_line()` que las sacan:
+     *  - una línea ENTERA entre corchetes: `[Carrusel de fotos de productos]`, `[Código de barras: 7791…]`,
+     *    `[Nosotros hoy, viernes, cerramos a las 20:00.]`;
+     *  - una línea que EMPIEZA con un corchete y sigue con texto: `[COSAS] El vendedor anterior había dicho…` (el
+     *    razonamiento interno del modelo), `[CALCULANDO...] no, perdón. Las marcas van exactas…`;
+     *  - el código de barras de la foto suelto en su propia línea: `7791000000011`.
+     * Solo se mira la última línea (nunca texto del medio) y solo después de sacar las marcas válidas.
+     */
+
+    /** Una línea que es solo un código de barras de 13 dígitos (con markdown o un punto pegado). No empieza con 54: es un teléfono. */
+    private const BARCODE_LINE_PATTERN = '/^[*_`]*(?!54)(\d{13})(?!\d)[*_`.]*$/u';
+
+    /** Una línea entera entre corchetes, sin corchetes adentro. Grupo 1 = el contenido. */
+    private const BRACKET_LINE_PATTERN = '/^\[([^\[\]]+)\]$/u';
+
+    /** Una línea que empieza con un grupo entre corchetes (no `[texto](url)` ni `[a][b]`) y sigue con texto. Grupo 1 = el corchete; grupo 2 = lo que sigue. */
+    private const BRACKET_LEAD_LINE_PATTERN = '/^\[([^\[\]]{1,300})\](?![(\[])[ \t]*(\S.*)$/u';
+
+    /** Una etiqueta en mayúsculas (`COSAS`, `CALCULANDO...`): lo que escribe un modelo cuando inventa una marca. */
+    private const UPPERCASE_TAG_PATTERN = '/^[A-ZÁÉÍÓÚÑ_][A-ZÁÉÍÓÚÑ_ .…]{0,29}$/u';
+
+    /** Una etiqueta de «estoy trabajando» (`CALCULANDO...`, `PENSANDO…`): termina en puntos suspensivos. Ninguna etiqueta de un negocio lo hace. */
+    private const PROGRESS_TAG_PATTERN = '/(?:\.{3}|…)$/u';
+
+    /** Palabras que tiene que tener la prosa que sigue a una etiqueta en mayúsculas para tomarla por razonamiento del modelo y no por un aviso del negocio. */
+    private const REASONING_MIN_WORDS = 20;
+
+    /** Un contenido entre corchetes que lleva un DATO (un link, un precio, un número de pedido): no es una marca, no se saca. */
+    private const BRACKET_DATA_PATTERN = '/https?:\/\/|\$\s?\d|#\s?\d|(?:n[°º]|nro\.?|n[uú]mero)\s*\d/iu';
+
+    /** Prosa de más de una oración: un punto, signo de cierre o dos puntos seguido de una mayúscula. */
+    private const MULTI_SENTENCE_PATTERN = '/[.!?]\s+\p{Lu}/u';
+
+    /** La línea anterior presenta el código («El código de barras es:»): el código suelto de abajo es la respuesta, no basura. */
+    private const BARCODE_INTRO_PATTERN = '/:\s*$|c[óo]digo|barras|\bean\b|\bsku\b|n[uú]mero|tel[eé]fono|whatsapp|seguimiento|comprobante|transferencia/iu';
 
     /**
      * Guarda de coherencia de la marca: se DESCARTA solo cuando la respuesta es pura cortesía («¡De nada! Cualquier
@@ -549,9 +603,11 @@ RULE;
      *  1. Las marcas de seguimiento se sacan de CUALQUIER lugar (medio del texto, minúscula, sin cerrar,
      *     envueltas en markdown) y recién después se corta la cola. Pueden venir con `[FOTO:…]` en cualquier
      *     orden: sacarlas primero deja la foto al final en los dos órdenes.
-     *  2. La cola se limpia de a una, hasta cuatro vueltas y en cualquier orden: `[FOTO:…]`, una marca inventada
-     *     por el modelo (`[CUOTA:…]`) o un corchete cortado a mitad de camino (`[C`). Una marca inventada
-     *     pegada después de la foto no se lleva la foto.
+     *  2. La cola se limpia de a una, hasta seis vueltas y en cualquier orden: `[FOTO:…]` (también mal escrita:
+     *     `[http://FOTO:…]`, `FOTO:…` sin corchetes), una marca inventada por el modelo (`[CUOTA:…]`, `[CU]`), un
+     *     corchete cortado a mitad de camino (`[C`) o una última línea que no es una marca pero tampoco texto para
+     *     el cliente (`stray_last_line()`: línea entera entre corchetes, `[COSAS] razonamiento…`, un código de
+     *     barras suelto). Una marca inventada pegada después de la foto no se lleva la foto.
      *  3. Guarda de coherencia: si la respuesta es pura cortesía y no compromete nada
      *     (`FOLLOW_UP_COURTESY_PATTERN` sin `FOLLOW_UP_COMMITMENT_PATTERN`), la marca se descarta (igual se saca
      *     del texto). Erra hacia el lado seguro: ante la duda, la marca se conserva.
@@ -604,7 +660,7 @@ RULE;
         // La cola, de a una y en cualquier orden. `split_photo_marker()` devuelve el texto tal cual (byte por
         // byte) cuando no hay foto, y `strip_tail_marker()` también cuando no hay nada que sacar.
         $bar_code = '';
-        for ($vuelta = 0; $vuelta < 4; $vuelta++) {
+        for ($vuelta = 0; $vuelta < 6; $vuelta++) {
             $foto = $this->split_photo_marker($cuerpo);
 
             // Se mira si el cuerpo CAMBIÓ y no si hay código: un `[FOTO:   ]` con el código en blanco es una
@@ -618,7 +674,7 @@ RULE;
                 continue;
             }
 
-            $limpio = $this->strip_tail_marker($cuerpo, $follow_up);
+            $limpio = $this->strip_tail_marker($cuerpo, $follow_up, $bar_code);
             if ($limpio === $cuerpo) {
                 break;
             }
@@ -653,12 +709,16 @@ RULE;
      * rastro en el log (acotado: es texto del modelo y puede traer datos del cliente) para poder contar cuán
      * seguido pasa.
      *
+     * Y, si no hubo ninguna de las dos, una última línea que no es una marca pero tampoco es texto para el
+     * cliente (`stray_last_line()`).
+     *
      * @param string $cuerpo
-     * @param string $follow_up Solo para el log.
+     * @param string $follow_up Tipo de la marca de seguimiento que ya se sacó (o vacío); también va al log.
+     * @param string $bar_code  Código de la foto que ya se sacó (o vacío).
      *
      * @return string
      */
-    private function strip_tail_marker(string $cuerpo, string $follow_up): string
+    private function strip_tail_marker(string $cuerpo, string $follow_up, string $bar_code = ''): string
     {
         foreach ([self::INVENTED_MARKER_PATTERN, self::TRUNCATED_MARKER_PATTERN] as $patron) {
             if (! preg_match($patron, $cuerpo, $matches, PREG_OFFSET_CAPTURE)) {
@@ -673,7 +733,133 @@ RULE;
             return rtrim(substr($cuerpo, 0, $matches[0][1]));
         }
 
+        $inicio = $this->stray_last_line($cuerpo, $follow_up !== '' || $bar_code !== '');
+        if (! is_null($inicio)) {
+            Log::channel('daily')->info('WhatsappBotAiService: el modelo dejó una última línea interna entre corchetes o un código suelto, se saca del texto.', [
+                'marca'     => mb_substr(trim(substr($cuerpo, $inicio)), 0, 60, 'UTF-8'),
+                'follow_up' => $follow_up,
+            ]);
+
+            return rtrim(substr($cuerpo, 0, $inicio));
+        }
+
         return $cuerpo;
+    }
+
+    /**
+     * Mira SOLO la última línea del cuerpo (ya sin las marcas válidas) y devuelve dónde empieza si es basura
+     * interna del modelo que el cliente no tiene que leer, o null si no hay nada que sacar. Nunca toca texto del
+     * medio: una línea rara con texto normal después se queda (preferimos dejar pasar una fuga rara a borrarle
+     * información al cliente).
+     *
+     * Qué cuenta como basura (medido contra DeepSeek, ver `BARCODE_LINE_PATTERN` y las demás):
+     *  1. Un código de barras de 13 dígitos solo en su línea, salvo que la línea de arriba lo presente
+     *     («El código de barras es:», «Tu número de seguimiento es») o sea otro código de una lista que ya empezó con
+     *     una presentación. Lo deja suelto un modelo que mezcla la foto con el texto.
+     *  2. Una línea ENTERA entre corchetes (`[Carrusel de fotos…]`, `[Código de barras: …]`, `[Nosotros hoy…]`, también
+     *     entre asteriscos), salvo que lleve un dato (un link, un precio, un número de pedido: `[Pedido #123]`) o que
+     *     la línea de arriba también sea una línea entera entre corchetes (una lista de opciones, no una acotación).
+     *  3. Una línea que EMPIEZA con un corchete y sigue con texto, sin datos en el corchete, cuando hay evidencia
+     *     de que el modelo estaba improvisando:
+     *       - etiqueta en mayúsculas (`[COSAS] El vendedor anterior había dicho… Hay que corregirlo…`): solo si es una
+     *         etiqueta de «estoy trabajando» (`[CALCULANDO...]`) o si lo que sigue es razonamiento: prosa de varias
+     *         oraciones y de al menos `REASONING_MIN_WORDS` palabras. Una etiqueta así se parece a lo que ponen los
+     *         negocios (`[OFERTA]`, `[IMPORTANTE] Los precios no incluyen IVA. Consultá antes de venir.`), así que
+     *         esos avisos, cortos, se quedan, haya marcas o no;
+     *       - oración de al menos cuatro palabras (`[Hay algo más que estés buscando…?] Cualquier cosa…`): si la
+     *         respuesta ya traía una marca válida o lo que sigue es prosa, y lo que sigue no lleva un dato (un link,
+     *         un precio: `[Seguí tu pedido desde acá] https://…`). No se parece a nada que escriba un negocio.
+     *     Límite conocido y aceptado: un aviso del negocio de 20 palabras o más en varias oraciones, detrás de una
+     *     etiqueta en mayúsculas y en la última línea, se saca; el log (`marca`) deja contar cuán seguido pasa.
+     *
+     * Una respuesta que es UNA sola línea basura queda vacía (sin texto para el cliente): el job no manda nada y el
+     * chat queda para que lo atienda una persona. Es preferible a mandarle los corchetes.
+     *
+     * @param string $cuerpo
+     * @param bool   $hay_marcas true si la respuesta traía una marca de seguimiento o de foto válida.
+     *
+     * @return int|null Posición (en bytes) donde empieza el salto de línea anterior a la última línea, o 0.
+     */
+    private function stray_last_line(string $cuerpo, bool $hay_marcas)
+    {
+        $base = rtrim($cuerpo);
+        if ($base === '') {
+            return null;
+        }
+
+        $salto  = strrpos($base, "\n");
+        $inicio = $salto === false ? 0 : $salto;
+        $linea  = trim(substr($base, $salto === false ? 0 : $salto + 1));
+        if ($linea === '') {
+            return null;
+        }
+
+        // Las líneas de arriba, de la más cercana a la más lejana, para mirar de qué vienen acompañadas.
+        $previas = $inicio === 0 ? [] : array_reverse(preg_split('/\n/', rtrim(substr($base, 0, $inicio))));
+
+        if (preg_match(self::BARCODE_LINE_PATTERN, $linea)) {
+            // Una lista de códigos: se sube hasta la primera línea que no es otro código para ver si ella los presenta.
+            $presenta = '';
+            foreach ($previas as $previa) {
+                if (trim($previa) === '') {
+                    continue;
+                }
+                if (! preg_match(self::BARCODE_LINE_PATTERN, trim($previa))) {
+                    $presenta = $previa;
+                    break;
+                }
+            }
+
+            return preg_match(self::BARCODE_INTRO_PATTERN, $presenta) ? null : $inicio;
+        }
+
+        // Una línea entre corchetes envuelta en markdown (`*[Carrusel de fotos]*`) es la misma línea.
+        $sin_markdown = preg_replace('/^[*_`]+|[*_`]+$/u', '', $linea);
+
+        if (is_string($sin_markdown) && preg_match(self::BRACKET_LINE_PATTERN, $sin_markdown, $matches)) {
+            if (preg_match(self::BRACKET_DATA_PATTERN, $matches[1])) {
+                return null;
+            }
+
+            // Si la línea de arriba también es una línea entera entre corchetes, es una lista de opciones.
+            if (isset($previas[0]) && preg_match(self::BRACKET_LINE_PATTERN, trim($previas[0]))) {
+                return null;
+            }
+
+            return $inicio;
+        }
+
+        if (preg_match(self::BRACKET_LEAD_LINE_PATTERN, $linea, $matches)) {
+            $corchete  = trim($matches[1]);
+            $resto     = $matches[2];
+            $palabras  = preg_split('/\s+/u', $corchete, -1, PREG_SPLIT_NO_EMPTY);
+            $del_resto = preg_split('/\s+/u', $resto, -1, PREG_SPLIT_NO_EMPTY);
+
+            if (preg_match(self::BRACKET_DATA_PATTERN, $corchete)) {
+                return null;
+            }
+
+            $prosa = (bool) preg_match(self::MULTI_SENTENCE_PATTERN, $resto);
+
+            // Una etiqueta en mayúsculas se parece a las que ponen los negocios (`[OFERTA]`, `[IMPORTANTE]`): se saca la
+            // línea si es una etiqueta de «estoy trabajando» (`[CALCULANDO...]`) o si lo que sigue es razonamiento
+            // largo (prosa de varias oraciones). Una marca válida en la misma respuesta NO alcanza.
+            if (preg_match(self::UPPERCASE_TAG_PATTERN, $corchete)) {
+                if (preg_match(self::PROGRESS_TAG_PATTERN, $corchete)) {
+                    return $inicio;
+                }
+
+                return ($prosa && $del_resto !== false && count($del_resto) >= self::REASONING_MIN_WORDS) ? $inicio : null;
+            }
+
+            // Una oración entre corchetes no se parece a nada que escriba un negocio: alcanza con que el modelo ya
+            // estuviera en modo marcas (o con la prosa), siempre que lo que sigue no lleve un dato (un link, un precio).
+            if ($palabras !== false && count($palabras) >= 4 && ! preg_match(self::BRACKET_DATA_PATTERN, $resto)) {
+                return ($hay_marcas || $prosa) ? $inicio : null;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -749,15 +935,31 @@ RULE;
      */
     private function split_photo_marker(string $texto): array
     {
-        // Sin marcador no se toca nada: el texto sale byte por byte como lo devolvió el modelo.
-        if (! preg_match(self::PHOTO_MARKER_PATTERN, $texto, $matches, PREG_OFFSET_CAPTURE)) {
-            return ['body' => $texto, 'bar_code' => ''];
+        if (preg_match(self::PHOTO_MARKER_PATTERN, $texto, $matches, PREG_OFFSET_CAPTURE)) {
+            return [
+                'body'     => trim(substr($texto, 0, $matches[0][1])),
+                'bar_code' => trim((string) $matches[1][0]),
+            ];
         }
 
-        return [
-            'body'     => trim(substr($texto, 0, $matches[0][1])),
-            'bar_code' => trim((string) $matches[1][0]),
-        ];
+        // La misma marca mal escrita en una línea propia al final (`[http://FOTO:…]`, `FOTO:…` sin corchetes, `[FOTO]`).
+        // El código solo se aprovecha si tiene pinta de código: `[FOTO: ver abajo]` sale del texto pero no adjunta nada.
+        if (preg_match(self::PHOTO_LOOSE_MARKER_PATTERN, $texto, $matches, PREG_OFFSET_CAPTURE)) {
+            $codigo = '';
+            foreach ([1, 2] as $grupo) {
+                if (isset($matches[$grupo]) && trim((string) $matches[$grupo][0]) !== '') {
+                    $codigo = trim((string) $matches[$grupo][0]);
+                }
+            }
+
+            return [
+                'body'     => trim(substr($texto, 0, $matches[0][1])),
+                'bar_code' => preg_match('/^[\w\-]{3,40}$/u', $codigo) ? $codigo : '',
+            ];
+        }
+
+        // Sin marcador no se toca nada: el texto sale byte por byte como lo devolvió el modelo.
+        return ['body' => $texto, 'bar_code' => ''];
     }
 
     /**
