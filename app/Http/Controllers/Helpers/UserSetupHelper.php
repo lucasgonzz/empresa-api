@@ -588,7 +588,19 @@ class UserSetupHelper
             'online_template_id'        => self::online_template_id_comerciocity(),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
-            'default_article_image_url' => 'http://empresa.local:8000/storage/169705209718205.jpg',
+            // 🔴 NO VOLVER A PONER UNA URL FIJA ACA. Hasta el 15/10/2026 esta linea escribia
+            // `http://empresa.local:8000/storage/169705209718205.jpg`, la imagen de la maquina de
+            // desarrollo de Lucas, en CADA comercio nuevo. `tienda-spa` usa este valor como foto de
+            // todo articulo sin imagen, asi que la tienda de Masquito (cliente 19) mostraba iconos
+            // rotos en el buscador, "Imagen no encontrada" en las tarjetas y contenido mixto (http
+            // dentro de https: el navegador le sacaba el candado). Nace en NULL a proposito: es un
+            // estado que la tienda ya soporta (`articleImage()` devuelve null, `Tarjeta.vue` la
+            // documenta como opcional, `SeoContexto` y `Mail/Advise` lo tratan) y el dueño carga la
+            // suya despues desde la configuracion de la tienda. Los comercios que ya nacieron con la
+            // URL de desarrollo se limpian con `tienda:limpiar-imagen-por-defecto-de-desarrollo`.
+            // El test `Tienda/ImagenPorDefectoDeDesarrolloTest` falla si cualquier literal de este
+            // archivo vuelve a nombrar un host de desarrollo.
+            'default_article_image_url' => null,
             'pausar_tienda_online'      => 0,
             // El gris que apoya las tarjetas blancas de la ficha, como hace Mercado Libre
             // (pedido de Lucas, 17/9/2026). Va aca ademas de en la migracion que pinto a los
