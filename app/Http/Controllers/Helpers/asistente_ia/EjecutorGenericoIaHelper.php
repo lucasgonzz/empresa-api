@@ -382,7 +382,7 @@ class EjecutorGenericoIaHelper
 
         $fila = DB::table('articles')
                     ->where('id', $article_id)
-                    ->first(['percentage_gain', 'apply_provider_percentage_gain', 'provider_id', 'provider_price_list_id', 'category_id']);
+                    ->first(['user_id', 'percentage_gain', 'apply_provider_percentage_gain', 'provider_id', 'provider_price_list_id', 'category_id']);
 
         if (is_null($fila) || (!is_null($fila->percentage_gain) && (float) $fila->percentage_gain > 0)) {
 
@@ -403,6 +403,16 @@ class EjecutorGenericoIaHelper
         }
 
         if (!empty($fila->category_id) && (float) DB::table('categories')->where('id', (int) $fila->category_id)->value('percentage_gain') > 0) {
+
+            return false;
+        }
+
+        /*
+         * Y la ganancia general de la cuenta (users.percentage_gain, que setFinalPrice suma antes que
+         * todo): con ella el artículo SÍ tiene margen aunque no tenga uno propio (revisor de merge,
+         * 16/10/2026).
+         */
+        if (!empty($fila->user_id) && (float) DB::table('users')->where('id', (int) $fila->user_id)->value('percentage_gain') > 0) {
 
             return false;
         }

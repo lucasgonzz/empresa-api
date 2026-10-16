@@ -107,6 +107,7 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
         $this->columnas_originales = [
             'listas_de_precio' => $this->dueno->listas_de_precio,
             'agente_confianza' => $this->dueno->agente_confianza,
+            'percentage_gain'  => $this->dueno->percentage_gain,
         ];
 
         $this->dar_extension('asistente_ia');
@@ -796,6 +797,30 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
         $guardados = array_column($resultado['campos_guardados'], 'valor', 'etiqueta');
 
         $this->assertSame(FormatoIaHelper::monto(9000), $guardados['Costo'], json_encode($guardados));
+    }
+
+    /**
+     * Revisor de merge (16/10/2026): con la ganancia general de la cuenta (users.percentage_gain) el
+     * artículo SÍ tiene margen aunque no tenga uno propio: el texto no puede decir "SIN margen".
+     *
+     * @test
+     */
+    public function con_la_ganancia_general_de_la_cuenta_no_dice_sin_margen()
+    {
+        $this->dueno_con(['agente_confianza' => 'directo', 'percentage_gain' => 30]);
+
+        list($conversation, $assistant) = $this->conversacion('Cargame la pinza, me costó 5000');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Pinza margen general P72', 'cost' => 5000],
+        ]);
+
+        $this->assertSame('confirmada', isset($respuesta['estado']) ? $respuesta['estado'] : null, json_encode($respuesta));
+
+        $resultado = $this->resultado_de($respuesta['tarjeta_id']);
+
+        $this->assertStringNotContainsString('SIN margen', (string) $resultado['precio_de_venta_texto']);
     }
 
     /**
