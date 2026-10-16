@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -87,10 +88,21 @@ class AddRecordatorioToPendingsTable extends Migration
             return;
         }
 
-        if (Schema::hasColumn('pendings', 'avisado_at')) {
+        /*
+         * El índice se mira por su nombre y no por la columna: un up() cortado a la mitad puede haber
+         * dejado `avisado_at` sin el índice (o al revés), y un dropIndex de algo que no existe voltea
+         * el rollback entero.
+         */
+        if (!empty(DB::select("SHOW INDEX FROM pendings WHERE Key_name = 'pendings_recordatorio_idx'"))) {
 
             Schema::table('pendings', function (Blueprint $table) {
                 $table->dropIndex('pendings_recordatorio_idx');
+            });
+        }
+
+        if (Schema::hasColumn('pendings', 'avisado_at')) {
+
+            Schema::table('pendings', function (Blueprint $table) {
                 $table->dropColumn('avisado_at');
             });
         }
