@@ -115,6 +115,27 @@ class OnlineConfigurationDisenoHomeTest extends TestCase
     }
 
     /**
+     * El select de empresa-spa antepone siempre la opcion "Seleccione..." con value 0
+     * (getOptions de common-vue). Con un in_array laxo, 0 == 'ultimos_ingresos' da true en
+     * PHP 7.4 y se guardaria "0": este caso es el que exige la comparacion estricta.
+     *
+     * @test
+     */
+    public function el_cero_de_seleccione_queda_en_ultimos_ingresos()
+    {
+        $config = $this->crear_configuracion_autenticado();
+        $config->diseno_home = 'lista_categorias';
+        $config->save();
+
+        $response = $this->putJson('api/online-configuration/' . $config->id, $this->payload_completo($config, [
+            'diseno_home' => 0,
+        ]));
+
+        $response->assertStatus(200);
+        $this->assertSame('ultimos_ingresos', $config->fresh()->diseno_home);
+    }
+
+    /**
      * La clave viene pero en null (o vacia, que el middleware de Laravel convierte en null):
      * tambien vuelve al de siempre.
      *
