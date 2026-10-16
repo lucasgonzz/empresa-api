@@ -10,6 +10,7 @@ use App\Models\AiMessageAction;
 use App\Models\Article;
 use App\Models\Iva;
 use App\Models\UnidadMedida;
+use App\Services\AuditLog\AuditContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -967,6 +968,14 @@ class PropuestaActualizacionMasivaIaHelper
 
             $owner = $contexto->owner;
 
+            /*
+             * El contador de filas de auditoría del lote vive en memoria (AuditContext::marco()), no
+             * en la base: el rollback deshace las filas pero no el conteo, y una propuesta con
+             * ejemplos le comería tope (`max_filas_por_lote`) al resto del request. Se guarda acá y
+             * se devuelve después del rollback (chequeo independiente, 16/10/2026).
+             */
+            $auditoria = self::conteo_de_auditoria();
+
             DB::beginTransaction();
 
             try {
@@ -1008,6 +1017,8 @@ class PropuestaActualizacionMasivaIaHelper
             } finally {
 
                 DB::rollBack();
+
+                self::restaurar_conteo_de_auditoria($auditoria);
             }
 
         } catch (\Throwable $e) {
@@ -1021,6 +1032,50 @@ class PropuestaActualizacionMasivaIaHelper
         }
 
         return $ejemplos;
+    }
+
+    /**
+     * El conteo en memoria del lote de auditoría (filas, omitidas, id de la fila truncada), o null
+     * si no se puede leer.
+     *
+     * @return array|null
+     */
+    protected static function conteo_de_auditoria()
+    {
+        try {
+
+            $marco = AuditContext::marco();
+
+            return [
+                'marco'       => $marco,
+                'filas'       => isset($marco->filas) ? $marco->filas : 0,
+                'omitidas'    => isset($marco->omitidas) ? $marco->omitidas : 0,
+                'id_truncada' => isset($marco->id_truncada) ? $marco->id_truncada : null,
+            ];
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+    }
+
+    /**
+     * Devuelve el conteo de auditoría a como estaba antes de los ejemplos (lo escrito adentro se
+     * revirtió con el rollback, incluida una fila `truncated` que se hubiera creado).
+     *
+     * @param  array|null  $conteo
+     * @return void
+     */
+    protected static function restaurar_conteo_de_auditoria($conteo)
+    {
+        if (!is_array($conteo) || !is_object($conteo['marco'])) {
+
+            return;
+        }
+
+        $conteo['marco']->filas = $conteo['filas'];
+        $conteo['marco']->omitidas = $conteo['omitidas'];
+        $conteo['marco']->id_truncada = $conteo['id_truncada'];
     }
 
     /**
