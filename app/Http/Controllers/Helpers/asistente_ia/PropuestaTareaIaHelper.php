@@ -276,26 +276,105 @@ class PropuestaTareaIaHelper {
         $columnas['completado'] = 0;
         $columnas['user_id'] = $contexto->owner_id;
 
+        /*
+         * El recordatorio por WhatsApp (misión recordatorios-whatsapp, 16/10/2026): lo pide la tarea con
+         * hora que confirma EL DUEÑO. La hora ya viene en `hora_aviso` (validar() la deriva del prefijo).
+         */
+        $columnas['avisar_por_whatsapp'] = self::pide_el_recordatorio($contexto, $columnas) ? 1 : 0;
+
         $tarea = Pending::create($columnas);
 
         return [
             'texto'    => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
             'ruta'     => self::ruta_de_la_agenda(),
             'tarea_id' => (int) $tarea->id,
-            'aviso'    => self::AVISO_SIN_RECORDATORIO,
+            'aviso'    => self::aviso_del_recordatorio($contexto, $columnas),
         ];
     }
+
+    /** El largo de pendings.detalle (string). */
+    const LARGO_DETALLE = 255;
 
     /**
      * Lo que la tarea NO hace, para que el modelo no lo prometa (misión asistente-altas-y-conversacion,
      * 16/10/2026). "Recordame el viernes a las 10" sonaba a que el viernes a las 10 le iba a llegar algo
-     * por WhatsApp, y eso no existe todavía: la tarea queda en la Agenda del sistema.
+     * por WhatsApp, y eso no existía: la tarea quedaba en la Agenda del sistema.
+     *
+     * Desde la misión recordatorios-whatsapp (16/10/2026) el aviso existe, pero este sigue siendo el
+     * texto de todo caso en que no llega: sin hora, confirmada por un empleado, o con un admin que no
+     * anunció que consulta los recordatorios (ver aviso_del_recordatorio()).
      */
-    /** El largo de pendings.detalle (string). */
-    const LARGO_DETALLE = 255;
-
     const AVISO_SIN_RECORDATORIO = 'Queda en la Agenda del sistema: a esa hora no le llega ningún aviso por WhatsApp. '
         . 'Si pidió que se lo recuerdes, decíselo en una línea.';
+
+    /**
+     * El recordatorio con un admin que consulta pero SIN la plantilla de Meta: sale solo si la ventana
+     * de 24 h de WhatsApp está abierta, o sea si ese día el dueño le habló al asistente.
+     */
+    const AVISO_RECORDATORIO_SI_HABLARON = 'Queda en la Agenda. Si ese día estuvo hablando con vos por WhatsApp le llega un recordatorio a esa hora; '
+        . 'si no, no: no le prometas el aviso.';
+
+    /**
+     * true si la tarea pide el recordatorio por WhatsApp: tiene hora y la confirma el dueño.
+     *
+     * 🔴 SOLO EL DUEÑO. El recordatorio sale al teléfono de la ficha del cliente, que es el del dueño:
+     * un empleado que le pide «recordame…» al asistente desde el sistema no tiene por qué disparar un
+     * WhatsApp al celular de su jefe. La tarea igual queda en la Agenda, con su hora.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $columnas  AgendaTareaHelper::validar()
+     * @return bool
+     */
+    protected static function pide_el_recordatorio(ContextoDeCargaIa $contexto, array $columnas) {
+
+        return !empty($columnas['hora_aviso']) && self::confirma_el_dueno($contexto);
+    }
+
+    /**
+     * true si la persona que confirma es el dueño de la cuenta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return bool
+     */
+    protected static function confirma_el_dueno(ContextoDeCargaIa $contexto) {
+
+        return is_null($contexto->persona) || (int) $contexto->persona->id === (int) $contexto->owner_id;
+    }
+
+    /**
+     * El aviso que lee el modelo al confirmarse la tarea: qué decirle al dueño del recordatorio.
+     *
+     * 🔴 SE PROMETE SOLO LO QUE EL ADMIN ANUNCIÓ (RecordatoriosDelAsistenteHelper::anunciar()). Con la
+     * plantilla de Meta el recordatorio sale siempre; sin ella, solo con la ventana de 24 h abierta;
+     * sin anuncio (un admin viejo, o caído hace más de dos horas) no sale nunca, y el texto es el de
+     * siempre. La tarea pide el aviso igual en los tres casos: cuando el admin nuevo llegue, mandará
+     * los que venzan desde ahí.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $columnas  AgendaTareaHelper::validar()
+     * @return string
+     */
+    protected static function aviso_del_recordatorio(ContextoDeCargaIa $contexto, array $columnas) {
+
+        if (!self::pide_el_recordatorio($contexto, $columnas)) {
+
+            return self::AVISO_SIN_RECORDATORIO;
+        }
+
+        if (RecordatoriosDelAsistenteHelper::admin_avisa_con_plantilla($contexto->owner_id)) {
+
+            return 'A las '.substr((string) $columnas['hora_aviso'], 0, 5).' de ese día'
+                .(!empty($columnas['es_recurrente']) ? ' y de cada repetición' : '')
+                .' le llega un recordatorio por WhatsApp. Decíselo en una línea.';
+        }
+
+        if (RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id)) {
+
+            return self::AVISO_RECORDATORIO_SI_HABLARON;
+        }
+
+        return self::AVISO_SIN_RECORDATORIO;
+    }
 
     /**
      * "10" / "10hs" / "10:30" / "10.30" / "9 30" → "10:00" / "10:00" / "10:30" / "10:30" / "09:30". null si

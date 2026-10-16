@@ -418,7 +418,7 @@ class HerramientasDeCarga
                         ],
                         'hora'            => [
                             'type'        => 'string',
-                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. Ojo: a esa hora NO le llega ningún aviso por WhatsApp: la tarea queda en la Agenda.',
+                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. No prometas un aviso por WhatsApp a esa hora: el resultado de la tarea confirmada (su "aviso") dice si le llega un recordatorio y cómo decírselo.',
                         ],
                         'repetir'         => self::esquema_de_repeticion(),
                         'subcategoria_id' => [
