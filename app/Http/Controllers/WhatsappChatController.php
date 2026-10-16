@@ -83,6 +83,38 @@ class WhatsappChatController extends Controller
     }
 
     /**
+     * Un chat del owner autenticado, con la MISMA forma que una fila del índice (`index()`): la
+     * relación `client`, `estado_pendiente` calculado y las columnas del seguimiento del agente
+     * (misión patch-chat-nuevo-en-vivo).
+     *
+     * Existe para el cliente que escribe por PRIMERA VEZ: el broadcast `WhatsappChatUpdated` es
+     * liviano a propósito (no trae `phone`, `display_name` ni `client`), así que la SPA no puede armar
+     * la fila con lo que le llega y le pide el chat entero a este endpoint. La alternativa era volver a
+     * pedir `GET whatsapp-chats`, que trae la bandeja completa sin paginar por cada contacto nuevo.
+     *
+     * 404 si el chat no existe o es de otro negocio (mismo criterio que el resto de los endpoints del
+     * chat: `find_owned_chat`).
+     *
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function show($id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        $model = $this->fullModel('WhatsappChat', $chat->id);
+
+        // Mismo estado para el tablero y el color de la fila que arma el índice. Es un atributo
+        // dinámico (no una columna): sin esto la fila nueva nacería sin rojo ni amarillo.
+        WhatsappChatHelper::attach_estados_pendientes(collect([$model]));
+
+        return response()->json(['model' => $model], 200);
+    }
+
+    /**
      * Mensajes de un chat del owner autenticado, paginados y ordenados del más nuevo
      * al más viejo (paginación estándar del proyecto: page/per_page).
      *

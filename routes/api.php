@@ -1155,10 +1155,15 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::get('whatsapp-chats', 'WhatsappChatController@index');
 
     // Contrato 3 de la misión sugerencia-ia-como-borrador. Va ANTES de cualquier
-    // `whatsapp-chats/{id}` (hoy solo existe con sufijo, como `{id}/messages`, pero se declara
-    // acá para que el día que se agregue un `GET whatsapp-chats/{id}` puro, 'resumen' no caiga
-    // adentro de ese `{id}` en vez de resolver a este endpoint.
+    // `whatsapp-chats/{id}` para que 'resumen' no caiga adentro de ese `{id}` en vez de resolver
+    // a este endpoint (el `GET whatsapp-chats/{id}` puro existe desde la misión patch-chat-nuevo-en-vivo,
+    // justo debajo, y además lleva un `where` numérico por si alguien reordena las rutas).
     Route::get('whatsapp-chats/resumen', 'WhatsappChatController@resumen');
+
+    // Un chat suelto, con la misma forma que una fila del índice (misión patch-chat-nuevo-en-vivo): la SPA lo pide
+    // cuando el broadcast `WhatsappChatUpdated` trae un chat que todavía no está en su bandeja (un cliente que escribe
+    // por primera vez), en vez de recargar el índice entero.
+    Route::get('whatsapp-chats/{id}', 'WhatsappChatController@show')->where('id', '[0-9]+');
 
     Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
     Route::post('whatsapp-chats', 'WhatsappChatController@store');
