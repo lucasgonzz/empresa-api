@@ -655,9 +655,12 @@ class UserController extends Controller
             ->orderBy('position', 'ASC')
             ->get(['id', 'percentage', 'setear_precio_final', 'incluir_en_lista_de_precios_de_excel', 'position']);
 
-        $last_position = PriceType::where('user_id', $owner_user->id)
-                                ->orderBy('position', 'DESC')
-                                ->first()->position;
+        // Última posición = la mayor de las listas ya cargadas arriba. Antes era una segunda query con
+        // `->first()->position`, que con CERO listas creadas (el caso de las demos) tiraba "Trying to
+        // get property 'position' of non-object" y devolvía 500 DESPUÉS de haber guardado el flag:
+        // el segundo guardado "andaba" solo porque ya veía el flag sin cambios y salía antes.
+        // Sin listas queda null, y con null ningún `price_type` coincide (no hay ninguno).
+        $last_position = $price_types->max('position');
 
         Log::info('Last position: '.$last_position);
 
