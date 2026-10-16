@@ -230,6 +230,34 @@ class Recordatorios_de_cobro_por_el_asistente_Test extends EmpresaTestCase
     }
 
     /**
+     * M1 del chequeo: una tarjeta sin ids no le manda a nadie (con la lista vacía, el filtro entendería
+     * "todos los que deben", y serían clientes que el dueño no vio).
+     *
+     * @test
+     */
+    public function una_tarjeta_sin_clientes_no_le_manda_a_nadie()
+    {
+        $perez = $this->cliente('Juan Perez', '5493444101010');
+        $this->venta_impaga($perez, 40, 300000);
+
+        list($conversation, $assistant) = $this->vuelta('mandales el recordatorio');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_recordatorios_de_cobro', []);
+
+        $tarjeta = AiMessageAction::find($propuesta['tarjeta_id']);
+        $datos = $tarjeta->datos;
+        $datos['client_ids'] = [];
+        $tarjeta->datos = $datos;
+        $tarjeta->save();
+
+        $intento = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $propuesta['tarjeta_id']);
+
+        $this->assertTrue(empty($intento['ok']), json_encode($intento));
+        $this->assertStringContainsString('no tiene a quién mandarle', $intento['error']);
+        $this->assertCount(0, $this->recordatorios_enviados());
+    }
+
+    /**
      * Los gates: el permiso del recordatorio (un empleado sin él no puede) y la extensión de WhatsApp.
      *
      * @test

@@ -291,6 +291,73 @@ class ConfirmacionDeterministaIaHelper
     }
 
     /**
+     * Cómo empieza un sí explícito a un ENVÍO A CLIENTES, ya normalizado (sin tildes, en minúsculas).
+     * Ver es_si_para_envio().
+     */
+    const INICIOS_DE_SI_PARA_ENVIO = [
+        'si', 'dale', 'ok', 'okey', 'listo', 'de una', 'mandalo', 'manda', 'mandale', 'mandales',
+        'envia', 'envialo', 'confirmo', 'perfecto', 'va', 'joya', 'obvio',
+    ];
+
+    /** Largo máximo de un sí a un envío: más que eso ya es otra cosa (una corrección, un pedido). */
+    const LARGO_MAXIMO_DE_SI_PARA_ENVIO = 60;
+
+    /**
+     * true si el mensaje del dueño es un SÍ EXPLÍCITO a un envío a clientes (misión
+     * asistente-envios-a-clientes, corrección 2 del chequeo del 16/10/2026).
+     *
+     * 🔴 POR QUÉ ES MÁS ESTRICTO QUE es_afirmacion(), Y POR QUÉ LO MIRA EL CÓDIGO Y NO EL MODELO. La
+     * condición de Lucas es "siempre con un sí explícito". Para un envío, el modelo podía leer como sí un
+     * "gracias", un "esperá, cambiá el texto" o un "¿y a cuántos?" y llamar a confirmar_carga_pendiente:
+     * un WhatsApp que salió no se desmanda. Acá se acepta una afirmación corta que EMPIEZA con un sí
+     * (o es una de las de es_afirmacion()), y nada que pregunte, niegue, corrija o pida esperar.
+     *
+     * @param  string|null  $texto
+     * @return bool
+     */
+    public static function es_si_para_envio($texto)
+    {
+        $texto = (string) $texto;
+
+        // Una pregunta no es un sí ("¿y a cuántos?", "¿dale?"). Antes de normalizar: saca los signos.
+        if (preg_match('/[?¿]/u', $texto)) {
+
+            return false;
+        }
+
+        if (mb_strlen(trim($texto)) > self::LARGO_MAXIMO_DE_SI_PARA_ENVIO) {
+
+            return false;
+        }
+
+        $normalizado = self::normalizar($texto);
+
+        if ($normalizado === '') {
+
+            return false;
+        }
+
+        // Lo que niega, pone una condición, corrige o pide esperar: decide el dueño de nuevo, no el sí.
+        if (preg_match('/\b(no|pero|antes)\b/', $normalizado)
+            || strpos($normalizado, 'cambi') !== false
+            || strpos($normalizado, 'esper') !== false) {
+
+            return false;
+        }
+
+        if (self::es_afirmacion($texto)) {
+
+            return true;
+        }
+
+        $inicios = implode('|', array_map(function ($inicio) {
+            return preg_quote(self::normalizar($inicio), '/');
+        }, self::INICIOS_DE_SI_PARA_ENVIO));
+
+        return (bool) preg_match('/^(' . $inicios . ')\b/', $normalizado);
+    }
+
+    /**
      * true si el último mensaje del asistente dejó una tarjeta que sigue pendiente (de menos de
      * MINUTOS_MAXIMOS) y el mensaje de la persona NO la confirmó: es el turno en el que la persona
      * CORRIGE la carga ("sí, pero cambiale el nombre", "ponele otro precio").

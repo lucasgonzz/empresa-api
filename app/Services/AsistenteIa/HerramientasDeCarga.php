@@ -248,6 +248,20 @@ class HerramientasDeCarga
     ];
 
     /**
+     * Los tres ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, 16/10/2026), juntos para las
+     * guardas que valen solo para ellos: el sí explícito y el corte de MCP en
+     * ConfirmacionPorTextoIaHelper::rechazo(), y el bloque que AsistenteIaService agrega al mensaje.
+     * Los tres están además en NUNCA_AUTO_CONFIRMABLES.
+     *
+     * @var array<int, string>
+     */
+    const TIPOS_DE_ENVIO = [
+        AiMessageAction::TIPO_ENVIO_COMPROBANTE,
+        AiMessageAction::TIPO_RECORDATORIOS_COBRO,
+        AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+    ];
+
+    /**
      * Lo que se le dice al modelo cuando la auto-ejecución de una tarjeta lanzó: ver el 🔴 del
      * catch de quizas_auto_confirmar().
      */
@@ -571,7 +585,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_oferta',
-                'description'  => 'Arma la tarjeta de una oferta para UN cliente sobre UN artículo, para que la persona la confirme: NO la activa. El descuento puede ser plano (porcentaje) o por tramos de cantidad comprada (tramos: cuanto más lleva, más descuento). Conseguí los ids con consultar_clientes y consultar_stock_de_articulos. La oferta se le muestra a ese cliente en la tienda online; desde acá NO se le manda ningún mail ni WhatsApp. Cada artículo tiene un descuento máximo según su costo y su precio de hoy: si te pasás, la herramienta te dice cuál es y NO se recorta solo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una oferta para UN cliente sobre UN artículo, para que la persona la confirme: NO la activa. El descuento puede ser plano (porcentaje) o por tramos de cantidad comprada (tramos: cuanto más lleva, más descuento). Conseguí los ids con consultar_clientes y consultar_stock_de_articulos. La oferta se le muestra a ese cliente en la tienda online; desde acá NO se le manda ningún mail ni WhatsApp de la oferta (una promoción por WhatsApp a los clientes sí: proponer_promocion_por_whatsapp). Cada artículo tiene un descuento máximo según su costo y su precio de hoy: si te pasás, la herramienta te dice cuál es y NO se recorta solo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1392,7 +1406,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'proponer_envio_de_comprobante',
-                'description'  => 'Prepara el ENVÍO de un comprobante (una venta, un presupuesto o un recibo de pago) al CLIENTE de ese comprobante, por el WhatsApp del negocio y/o por mail. Usala cuando te piden "mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail": no le des el link a la persona en su lugar. El comprobante va por el número que ve la persona (el N° de la venta, del presupuesto o del pago). Por WhatsApp sale como mensaje con el PDF si el cliente escribió en las últimas 24 horas, y si no como plantilla con el PDF; por mail, con el detalle y el link al PDF. Si no dicen por dónde, va por todos los que se pueda y la respuesta dice por qué no por los otros. 🔴 SIEMPRE espera el sí de la persona, en cualquier modo y aunque te pidan que lo hagas sin preguntar: un mensaje que salió no se desmanda. Mostrale lo que dice `para_mostrar` (a quién, a qué número o mail y el texto exacto) y preguntá si lo mandás. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara el ENVÍO de un comprobante (una venta, un presupuesto o un recibo de pago) al CLIENTE de ese comprobante, por el WhatsApp del negocio y/o por mail. Usala cuando te piden "mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail": no le des el link a la persona en su lugar. El comprobante va por el número que ve la persona (el N° de la venta, del presupuesto o del pago). Por WhatsApp sale como mensaje con el PDF si el cliente escribió en las últimas 24 horas, y si no como plantilla (la venta con el PDF; el presupuesto y el recibo con el link al PDF en el texto); por mail, con el detalle y el link al PDF. Si no dicen por dónde, va por todos los que se pueda y la respuesta dice por qué no por los otros. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo y aunque te pidan que lo hagas sin preguntar: un mensaje que salió no se desmanda. A quién, por dónde y el texto exacto los muestra el sistema solo (la tarjeta, o un bloque al final de tu mensaje por WhatsApp): vos decí en una frase qué vas a mandar. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1421,7 +1435,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_recordatorios_de_cobro',
-                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí de la persona, en cualquier modo: mostrale lo que dice `para_mostrar` (a quiénes, cuántos, a quiénes no y por qué, y el texto exacto del primero) y preguntá si lo mandás. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Si la respuesta trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1445,7 +1459,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_promocion_por_whatsapp',
-                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda, o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` es lo que sale, redactado con la persona: qué se ofrece y a qué precio, sin saludo (el saludo con el nombre lo pongo yo). Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. 🔴 SIEMPRE espera el sí de la persona, en cualquier modo: mostrale lo que dice `para_mostrar` (a quiénes, cuántos, a quiénes no y por qué, y el texto exacto) y preguntá si la mandás. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda, o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` es lo que sale, redactado con la persona: qué se ofrece y a qué precio, sin saludo (el saludo con el nombre lo pongo yo). Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [

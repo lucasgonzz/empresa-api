@@ -168,6 +168,20 @@ class PropuestaRecordatoriosCobroIaHelper
 
         sort($ids_que_reciben);
 
+        // Lo que el sistema le agrega al mensaje por WhatsApp antes del sí (DestinatariosIaHelper::bloque()).
+        $bloque = DestinatariosIaHelper::bloque(
+            'Recordatorio de cobro por WhatsApp',
+            [
+                DestinatariosIaHelper::linea_de_destinatarios($nombres),
+                'Filtro: ' . self::descripcion_del_filtro($monto_minimo, $evaluacion['dias'], $client_ids),
+                'Cómo sale: ' . self::descripcion_de_canales($por_canal),
+            ],
+            $grupos,
+            'El texto que sale (el de ' . $primero->name . ')',
+            $texto_que_sale,
+            $aclaracion
+        );
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
@@ -179,6 +193,7 @@ class PropuestaRecordatoriosCobroIaHelper
                 'dias'         => (int) $evaluacion['dias'],
                 'monto_minimo' => $monto_minimo,
                 'nombrados'    => count($client_ids) > 0,
+                'bloque'       => $bloque,
             ],
             [
                 'titulo'          => 'Recordatorio de cobro por WhatsApp a ' . count($nombres) . ' ' . (count($nombres) === 1 ? 'cliente' : 'clientes'),
@@ -219,6 +234,15 @@ class PropuestaRecordatoriosCobroIaHelper
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
         $ids = self::ids(isset($datos['client_ids']) ? $datos['client_ids'] : []);
+
+        /*
+         * 🔴 M1 del chequeo: sin ids no se manda a NADIE. evaluar() con la lista vacía entiende "todos
+         * los del filtro", y eso sería mandarle a gente que el dueño no vio.
+         */
+        if (!count($ids)) {
+
+            throw new AccionIaException(422, 'Esta tarjeta no tiene a quién mandarle: pedímela de nuevo.');
+        }
 
         $dias = isset($datos['dias']) ? (int) $datos['dias'] : 0;
 

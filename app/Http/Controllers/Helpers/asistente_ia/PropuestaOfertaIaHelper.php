@@ -353,7 +353,9 @@ class PropuestaOfertaIaHelper {
      */
     protected static function aviso(ContextoDeCargaIa $contexto, $client_id, $article_id) {
 
-        $aviso = 'La oferta va a verse en la tienda cuando ese cliente entre. Desde acá no se le manda ningún mail ni WhatsApp.';
+        // Misión asistente-envios-a-clientes (16/10/2026): la promoción por WhatsApp sí existe, y se dice.
+        $aviso = 'La oferta va a verse en la tienda cuando ese cliente entre. Desde acá no se le manda ningún mail ni WhatsApp de esta oferta; '
+            . 'si querés avisarles a tus clientes, pedime una promoción por WhatsApp.';
 
         $activa = ClientOffer::where('user_id', $contexto->owner_id)
                             ->where('client_id', (int) $client_id)

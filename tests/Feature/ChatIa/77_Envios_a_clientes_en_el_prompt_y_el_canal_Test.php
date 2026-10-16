@@ -67,6 +67,13 @@ class Envios_a_clientes_en_el_prompt_y_el_canal_Test extends EmpresaTestCase
             $this->assertStringContainsString('proponer_recordatorios_de_cobro con monto_minimo = X y dias = N', $prompt, $modo);
             $this->assertStringContainsString('primero proponer_combo', $prompt, $modo);
             $this->assertStringContainsString('NO le pases el link a la', $prompt, $modo);
+            // Corrección 6: sin Combos, la promo de los artículos; nunca un combo que no existe.
+            $this->assertStringContainsString('Si el negocio NO tiene el módulo de Combos', $prompt, $modo);
+            $this->assertStringContainsString('nunca mandes una promo que nombre un combo que no existe', $prompt, $modo);
+            // Corrección 8: la oferta no se manda, pero una promoción por WhatsApp sí.
+            $this->assertStringContainsString('Una PROMOCIÓN por WhatsApp a los', $prompt, $modo);
+            // Corrección 1: el bloque lo agrega el sistema, el modelo no lo repite.
+            $this->assertStringContainsString('los agrega el sistema solo', $prompt, $modo);
         }
 
         $directo = $this->prompt(ConfianzaDelAgenteIaHelper::DIRECTO);
@@ -106,11 +113,12 @@ class Envios_a_clientes_en_el_prompt_y_el_canal_Test extends EmpresaTestCase
     }
 
     /**
-     * MCP: las tres se nombran entre lo que siempre confirma y avisan que salen del negocio.
+     * MCP: los tres envíos NO se exponen (un agente externo no le escribe a los clientes) y siguen
+     * nombrados entre lo que siempre confirma (la lista se deriva de NUNCA_AUTO_CONFIRMABLES).
      *
      * @test
      */
-    public function mcp_nombra_los_envios_y_les_pone_la_pista_de_que_salen()
+    public function mcp_no_expone_los_envios()
     {
         foreach ([
             AiMessageAction::TIPO_ENVIO_COMPROBANTE,
@@ -121,8 +129,8 @@ class Envios_a_clientes_en_el_prompt_y_el_canal_Test extends EmpresaTestCase
         }
 
         foreach (['proponer_envio_de_comprobante', 'proponer_recordatorios_de_cobro', 'proponer_promocion_por_whatsapp'] as $nombre) {
-            $this->assertTrue(McpHerramientasHelper::existe($nombre), $nombre . ' no está en el MCP');
-            $this->assertContains($nombre, McpHerramientasHelper::SALEN_A_INTERNET);
+            $this->assertFalse(McpHerramientasHelper::existe($nombre), $nombre . ' no tiene que estar en el MCP');
+            $this->assertContains($nombre, McpHerramientasHelper::EXCLUIDAS);
         }
     }
 

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Services\AsistenteIa\HerramientasDeCarga;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -45,6 +46,17 @@ class ConfirmacionPorTextoIaHelper
 
     /** Lo que se le contesta a la IA cuando la tarjeta se propuso en la pantalla, no por WhatsApp. */
     const MENSAJE_OTRO_CANAL = 'Esa carga la propusiste en el sistema, así que se confirma desde ahí con el botón.';
+
+    /**
+     * Lo que se le contesta al modelo cuando quiere confirmar un ENVÍO A CLIENTES sin un sí explícito
+     * del dueño (ver ConfirmacionDeterministaIaHelper::es_si_para_envio()).
+     */
+    const MENSAJE_ENVIO_SIN_SI = 'El dueño no dijo que sí a este envío: no lo mandé. Preguntale si lo mandás '
+        . 'y esperá a que te conteste que sí en un mensaje suyo. Si te pidió un cambio, armá la propuesta de nuevo.';
+
+    /** Lo que se le contesta a un envío a clientes propuesto por MCP (no se confirma por ahí). */
+    const MENSAJE_ENVIO_POR_MCP = 'Un envío a clientes no se confirma por MCP: lo tiene que mandar una persona desde '
+        . 'el sistema o por WhatsApp, después de ver a quiénes y el texto.';
 
     /**
      * La nota que acompaña a toda carga ya ejecutada.
@@ -317,6 +329,25 @@ class ConfirmacionPorTextoIaHelper
         if (is_null($pedido) || (int) $pedido->id < (int) $propuso->id) {
 
             return RespuestaDeCargaIa::error(self::MENSAJE_MISMO_TURNO);
+        }
+
+        /*
+         * 🔴 LOS ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, correcciones 2 y 3 del chequeo):
+         * el sí lo verifica el CÓDIGO, no la lectura del modelo, y por MCP no se confirman nunca (un
+         * agente externo podría proponer y confirmar 250 WhatsApps sin que una persona lea la tarjeta;
+         * las herramientas ni se exponen por ahí, esto es el cinturón).
+         */
+        if (in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
+
+            if ((string) $propuso->canal === AiMessage::CANAL_MCP) {
+
+                return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_POR_MCP);
+            }
+
+            if (!ConfirmacionDeterministaIaHelper::es_si_para_envio($pedido->contenido)) {
+
+                return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_SIN_SI);
+            }
         }
 
         return null;

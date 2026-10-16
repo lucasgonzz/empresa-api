@@ -34,8 +34,20 @@ class McpHerramientasHelper
      * proponer_compra_con_factura arma la compra con las fotos que el dueño mandó por WhatsApp en
      * esa conversación; un cliente MCP no manda fotos, así que solo podría contestar "no tengo
      * ninguna foto".
+     *
+     * 🔴 Y LOS TRES ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, corrección 3 del chequeo del
+     * 16/10/2026): proponer_envio_de_comprobante, proponer_recordatorios_de_cobro y
+     * proponer_promocion_por_whatsapp. Un agente externo autónomo podría proponer y confirmar 250
+     * WhatsApps a clientes reales sin que una persona lea la tarjeta: eso lo manda una persona, desde
+     * el sistema o por WhatsApp. Como cinturón, ConfirmacionPorTextoIaHelper::rechazo() tampoco confirma
+     * un envío propuesto por MCP.
      */
-    const EXCLUIDAS = ['proponer_compra_con_factura'];
+    const EXCLUIDAS = [
+        'proponer_compra_con_factura',
+        'proponer_envio_de_comprobante',
+        'proponer_recordatorios_de_cobro',
+        'proponer_promocion_por_whatsapp',
+    ];
 
     /** Prefijos de las tools que solo leen: van con readOnlyHint = true. */
     const PREFIJOS_DE_LECTURA = ['consultar_', 'que_puedo_', 'resumir_', 'mostrar_', 'contar_'];
@@ -59,14 +71,6 @@ class McpHerramientasHelper
      */
     const SALEN_A_INTERNET = [
         'buscar_producto_por_codigo_de_barras',
-        /*
-         * Misión asistente-envios-a-clientes (16/10/2026): los tres envíos les escriben a los
-         * clientes del negocio por WhatsApp o por mail. No se quedan adentro del negocio: le llegan a
-         * terceros, que es justo lo que la pista avisa.
-         */
-        'proponer_envio_de_comprobante',
-        'proponer_recordatorios_de_cobro',
-        'proponer_promocion_por_whatsapp',
     ];
 
     /**

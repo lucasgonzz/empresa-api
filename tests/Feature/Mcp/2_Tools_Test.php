@@ -117,7 +117,9 @@ class Tools_Test extends McpTestCase
 
         foreach (HerramientasDeCarga::nombres(true) as $nombre) {
 
-            if ($nombre === 'proponer_compra_con_factura') {
+            // La de fotos y, desde la misión asistente-envios-a-clientes (16/10/2026), los tres envíos a
+            // clientes: un agente externo no le escribe a los clientes del negocio (ver EXCLUIDAS).
+            if (in_array($nombre, McpHerramientasHelper::EXCLUIDAS, true)) {
                 continue;
             }
 

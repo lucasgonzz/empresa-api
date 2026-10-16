@@ -1038,6 +1038,14 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-envios-a-clientes (corrección 1 del chequeo, 16/10/2026): en los canales sin
+         * botones, el bloque de cada envío a clientes que este turno dejó esperando el sí va al final
+         * del mensaje, armado por el sistema. Va DESPUÉS de las guardas de arriba (que miran lo que
+         * escribió el modelo) y ANTES de las menciones (que cruzan el texto final).
+         */
+        $final_text = $this->con_los_bloques_de_envio($final_text, $assistant_message);
+
+        /*
          * §1 del contrato: las menciones salen de cruzar lo que devolvieron las tools de ESTA
          * respuesta contra el texto que escribió el modelo. Va acá y no adentro del loop porque
          * recién con el texto final se sabe a quién nombró.
@@ -1418,7 +1426,8 @@ AUTO_RESUELTO;
   corriente. Eso pasa recién cuando la persona lo confirma desde la pantalla de
   Presupuestos, y eso no lo hacés vos: decíselo.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
-  ni WhatsApp, y eso decíselo a la persona.
+  ni WhatsApp de la oferta, y eso decíselo a la persona. Una PROMOCIÓN por WhatsApp a los
+  clientes sí se manda: proponer_promocion_por_whatsapp.
 - "Mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail" sobre una venta, un
   presupuesto o un pago = proponer_envio_de_comprobante con su número. NO le pases el link a la
   persona para que lo mande ella: el envío lo hacés vos, con su sí.
@@ -1429,7 +1438,11 @@ AUTO_RESUELTO;
 - "Armá un combo y mandales una promo" = primero proponer_combo (si el negocio tiene Combos) y,
   ya creado, proponer_promocion_por_whatsapp con el nombre del combo. El texto de la promo lo
   redactás con la persona (qué se ofrece y a qué precio) y es lo que sale, tal cual. Nunca
-  inventes un link: lo arma la herramienta.
+  inventes un link: lo arma la herramienta. 🔴 Si el negocio NO tiene el módulo de Combos,
+  decíselo al dueño en ese mismo mensaje y ofrecé la promo del o de los artículos, cada uno con
+  su link; nunca mandes una promo que nombre un combo que no existe.
+- Por WhatsApp, a quiénes les llega, el texto exacto y la pregunta los agrega el sistema solo,
+  al final de tu mensaje: vos decí en una frase corta qué vas a mandar y no los repitas.
 {$regla_de_la_tarjeta}
 - Antes de proponer, juntá todos los datos. Si falta algo (cuánto, a quién, cómo se pagó, a
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
@@ -2534,6 +2547,63 @@ CONFIRMACION;
         }
 
         return '';
+    }
+
+    /**
+     * Le agrega al texto final el bloque de cada ENVÍO A CLIENTES que este mensaje dejó esperando el sí
+     * (misión asistente-envios-a-clientes, corrección 1 del chequeo del 16/10/2026).
+     *
+     * 🔴 POR QUÉ LO HACE EL CÓDIGO. La condición de Lucas es que el dueño vea a quiénes, cuántos, a
+     * quiénes no y el texto exacto ANTES del sí. Si eso quedaba en manos del modelo, alcanzaba con que
+     * resumiera ("¿te lo mando a los 40?") para que el sí no valiera. El bloque lo arma cada propuesta
+     * (`datos.bloque`, DestinatariosIaHelper::bloque()) con los mismos datos de la tarjeta, y acá se pega
+     * tal cual, uno por tarjeta, cerrando con la pregunta. El modelo dice una frase corta y no lo repite
+     * (DestinatariosIaHelper::COMO_MOSTRARLO).
+     *
+     * Solo en los canales que confirman por texto (WhatsApp y MCP): en el sistema lo muestra la tarjeta.
+     * Solo las tarjetas que siguen `propuesta`: una reemplazada por una corrección del mismo turno no se
+     * muestra. Nunca lanza: si algo falla, la respuesta sale igual (y la tarjeta sigue esperando el sí).
+     *
+     * @param  string  $texto
+     * @param  AiMessage  $assistant_message
+     * @return string
+     */
+    protected function con_los_bloques_de_envio($texto, AiMessage $assistant_message): string
+    {
+        try {
+
+            if (! $assistant_message->confirma_por_texto()) {
+                return (string) $texto;
+            }
+
+            $tarjetas = AiMessageAction::where('ai_message_id', $assistant_message->id)
+                                       ->whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
+                                       ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                       ->orderBy('id')
+                                       ->get();
+
+            foreach ($tarjetas as $tarjeta) {
+
+                $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+                $bloque = isset($datos['bloque']) ? trim((string) $datos['bloque']) : '';
+
+                if ($bloque === '' || mb_strpos((string) $texto, $bloque) !== false) {
+                    continue;
+                }
+
+                $texto = rtrim((string) $texto) . "\n\n" . $bloque;
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AsistenteIaService: no se pudo agregar el bloque de un envío a clientes.', [
+                'ai_message_id' => (int) $assistant_message->id,
+                'error'         => $e->getMessage(),
+            ]);
+        }
+
+        return (string) $texto;
     }
 
     /**

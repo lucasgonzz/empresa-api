@@ -35,23 +35,98 @@ class DestinatariosIaHelper
     const TEXTO_CONFIRMAR = 'Mandar';
 
     /**
-     * La instrucción que acompaña a la respuesta de las tres propuestas de envío.
+     * La pregunta con la que cierra el bloque que el sistema le agrega al mensaje por WhatsApp.
+     */
+    const PREGUNTA = '¿Lo mando? Respondé sí para mandarlo.';
+
+    /**
+     * La instrucción que acompaña a la respuesta de las tres propuestas de envío (reemplaza a la nota
+     * de siempre).
      *
-     * 🔴 POR QUÉ HACE FALTA, ADEMÁS DE LA NOTA DE SIEMPRE. Por WhatsApp la nota de una propuesta dice
-     * "decí en una línea qué vas a hacer" (HerramientasDeCarga::NOTA_PROPUESTA_POR_TEXTO), y para un
-     * gasto alcanza. Para un envío a clientes no: una línea ("le mando el recordatorio a 12 clientes")
-     * no le deja al dueño ver a quiénes ni qué texto sale, y el sí que da no vale como decisión. Esta
-     * instrucción viaja en la misma respuesta y le dice al modelo qué mostrar, con qué datos y en qué
-     * orden.
+     * 🔴 DESDE EL CHEQUEO DEL 16/10/2026 LO QUE SE MUESTRA NO DEPENDE DEL MODELO. Por WhatsApp (y por
+     * cualquier canal que confirma por texto) el SISTEMA le agrega al final del mensaje el bloque ya
+     * armado (bloque(): a quiénes, cuántos, a quiénes no y por qué, el texto exacto y la pregunta); en el
+     * sistema lo muestra la tarjeta. Por eso esta instrucción le pide al modelo lo contrario de antes:
+     * UNA frase corta de qué va a mandar, sin repetir la lista ni el texto (saldrían duplicados) y sin
+     * hacer la pregunta (ya va en el bloque).
      */
     const COMO_MOSTRARLO = 'ESTO ES UN ENVÍO A CLIENTES Y SIEMPRE ESPERA EL SÍ DE LA PERSONA, en cualquier modo. '
-        . 'Antes de preguntar, mostrale con los datos de `para_mostrar`, tal cual y sin resumir: '
-        . '1) a quiénes les llega (`destinatarios`) y cuántos son (`cantidad`); '
-        . '2) a quiénes NO y por qué (`no_les_llega`), si hay alguno; '
-        . '3) el texto EXACTO que sale (`texto_que_sale`), palabra por palabra, y la aclaración si viene. '
-        . 'Recién después preguntale si lo mandás. Todavía NO salió nada y no digas que salió: en el sistema '
-        . 'lo manda ella con el botón Mandar; por un canal sin botones (WhatsApp), cuando te conteste que sí, '
-        . 'llamás a confirmar_carga_pendiente con este tarjeta_id.';
+        . 'Todavía NO salió nada: no digas que salió. A quiénes les llega, cuántos, a quiénes no y el texto '
+        . 'exacto los muestra el sistema solo (en el sistema, la tarjeta; por WhatsApp, un bloque que se agrega '
+        . 'al final de tu mensaje, con la pregunta). Vos decí en UNA frase corta qué vas a mandar (por ejemplo '
+        . '"Te preparo el recordatorio de cobro para 12 clientes.") y nada más: NO repitas la lista, ni la '
+        . 'cantidad de no enviados, ni el texto, y NO hagas la pregunta. Cuando te conteste que sí en un '
+        . 'mensaje suyo, llamás a confirmar_carga_pendiente con este tarjeta_id.';
+
+    /**
+     * El bloque que se le muestra al dueño ANTES del sí, en texto plano (la conversación también se lee
+     * desde el panel, que no interpreta markdown): lo guarda cada propuesta en `datos.bloque` y
+     * AsistenteIaService lo agrega al final del mensaje en los canales que confirman por texto.
+     *
+     *   Mandar el presupuesto N° 900004 a Marcos Perez
+     *   A quiénes (12): Ana, Beto, … y 3 más
+     *   A quiénes no (2):
+     *   1, no tiene teléfono cargado: Carla
+     *   El texto que sale:
+     *   …
+     *   ¿Lo mando? Respondé sí para mandarlo.
+     *
+     * @param  string  $titulo
+     * @param  array<int, string>  $destinos  Líneas de "a quién / por dónde", ya armadas.
+     * @param  array  $grupos  agrupar_por_motivo() de los que no reciben.
+     * @param  string  $titulo_del_texto  "El texto que sale (el de Juan Perez)".
+     * @param  string  $texto
+     * @param  string|null  $aclaracion
+     * @return string
+     */
+    public static function bloque($titulo, array $destinos, array $grupos, $titulo_del_texto, $texto, $aclaracion = null)
+    {
+        $lineas = [(string) $titulo];
+
+        foreach ($destinos as $destino) {
+            $lineas[] = (string) $destino;
+        }
+
+        if (count($grupos)) {
+
+            $total = 0;
+
+            foreach ($grupos as $grupo) {
+                $total += (int) $grupo['cantidad'];
+            }
+
+            $lineas[] = 'A quiénes no (' . $total . '):';
+
+            foreach ($grupos as $grupo) {
+                $lineas[] = $grupo['cantidad'] . ', ' . lcfirst(rtrim((string) $grupo['mensaje'], '.')) . ': ' . $grupo['clientes'];
+            }
+        }
+
+        $lineas[] = '';
+        $lineas[] = (string) $titulo_del_texto . ':';
+        $lineas[] = (string) $texto;
+
+        if (!is_null($aclaracion) && trim((string) $aclaracion) !== '') {
+            $lineas[] = '';
+            $lineas[] = (string) $aclaracion;
+        }
+
+        $lineas[] = '';
+        $lineas[] = self::PREGUNTA;
+
+        return implode("\n", $lineas);
+    }
+
+    /**
+     * La línea "A quiénes (N): …" del bloque.
+     *
+     * @param  array<int, string>  $nombres
+     * @return string
+     */
+    public static function linea_de_destinatarios(array $nombres)
+    {
+        return 'A quiénes (' . count($nombres) . '): ' . self::lista_de_nombres($nombres);
+    }
 
     /**
      * "Ana, Beto, Carla y 12 más": hasta MAXIMO_DE_NOMBRES nombres y el resto contado.
