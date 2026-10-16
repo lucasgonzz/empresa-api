@@ -258,8 +258,12 @@ class ArticleHelper {
      *        desglose del costo real y del precio final unico se concatenan las lineas del calculo
      *        de ESA lista (prompt 357/01), asi el front recibe un solo array que cuenta la cadena
      *        completa. Con null el desglose sale identico al historico: no toca ningun calculo.
+     * @param $moneda_id_para_descripcion int|null Solo cuenta junto con el anterior y en una cuenta
+     *        con `ventas_en_dolares`, donde cada lista tiene un precio POR MONEDA: es la moneda de
+     *        la lista cuyo desglose se pide (ArticlePriceTypeMonedaHelper::describir_lista_en_moneda()).
+     *        Con null, o en una cuenta sin dolares, no cambia nada.
      */
-    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null) {
+    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null, $moneda_id_para_descripcion = null) {
 
         // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
 
@@ -473,6 +477,12 @@ class ArticleHelper {
                         // este grupo; aca solo se preserva el mismo ruteo que el modo normal.
                         ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $cost, $user);
 
+                        // El "?" de la tarjeta de una lista en una cuenta con dolares: se narra lo que
+                        // el calculo de arriba acaba de dejar (no se vuelve a calcular nada).
+                        if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
+                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $cost, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                        }
+
                     } else {
                         $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types, $price_type_id_para_descripcion);
                     }
@@ -534,6 +544,11 @@ class ArticleHelper {
                     if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
                         // Calculamos por tipo de precio y por moneda
                         ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
+
+                        // Idem la rama de arriba: desglose de la lista y moneda pedidas.
+                        if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
+                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $final_price, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                        }
                         
                     } else {
                         // El desglose de la lista pedida se concatena al $des que se viene armando,
