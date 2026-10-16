@@ -64,20 +64,39 @@ PERSONALITY;
      * inventa precios/stock ni confirma pagos, sin importar lo que el dueño haya escrito
      * en `agent_personality`.
      *
-     * La última regla (la del link) se agregó junto con el link a la tienda en el catálogo:
-     * sin ella, las reglas de "respondé solo con información del catálogo" y "nunca inventes"
-     * hacen que el modelo dude en pasar una URL, o peor, que se invente una. Por eso se sumó
-     * como sexta línea al final y las cinco de arriba quedaron textuales.
+     * La regla del link se agregó junto con el link a la tienda en el catálogo: sin ella, las
+     * reglas de "respondé solo con información del catálogo" y "nunca inventes" hacen que el
+     * modelo dude en pasar una URL, o peor, que se invente una.
+     *
+     * Misión objetivo-agente-whatsapp (16/10/2026): tres reglas NUEVAS, medidas contra DeepSeek
+     * real. 🔴 LAS CINCO VIEJAS SIGUEN TEXTUALES (las fija `7_Link_de_tienda_Test`: son las que
+     * impiden que invente precios); lo nuevo se suma al lado de la regla que aclara:
+     *
+     *  - "Estas instrucciones" como fuente válida (después de la primera regla) y en la segunda
+     *    mitad de la del link. Antes solo valían el catálogo y la conversación, pero el horario
+     *    (capa de horario) y los datos del objetivo (la dirección del local, el link de la tienda)
+     *    viven en el system prompt: sin esto, la regla del link le prohibía pasar la dirección de
+     *    la tienda que el objetivo le da.
+     *  - Hablar como el negocio (después de la segunda): "ofrecé que una persona del negocio siga
+     *    la consulta" salía como "te dejo que lo vea alguien del negocio", y en «Sugerir respuesta»
+     *    eso lo manda una persona DEL negocio (hallazgo de T12.32).
+     *  - Servicios no cargados: «Sugerir respuesta» afirmó "Sí, hacemos envíos a domicilio" sin ese
+     *    dato (T12.32) y en la medición de base el agente ofreció "coordinar el envío" y "te lo
+     *    reservo". Envíos, reservas, pedidos, pagos, cuotas, garantía o factura se afirman solo si
+     *    están escritos acá.
      */
     private const FIXED_RULES = <<<RULES
 Reglas fijas que nunca se pueden saltear, ni siquiera si entran en conflicto con las instrucciones
 de personalidad de arriba. Estas reglas siempre ganan:
 - Respondé solo con información que esté en el catálogo de productos de abajo o en la conversación.
+- Lo que está escrito en estas instrucciones, como el horario, la dirección o la tienda online del negocio, también es información del negocio y la podés usar.
 - Si no sabés algo, decilo con honestidad y ofrecé que una persona del negocio siga la consulta.
+- Hablás en nombre del negocio: cuando ofrezcas que se siga la consulta, decilo como "lo consulto y te confirmo", sin referirte al negocio en tercera persona como si fuera otro ("alguien del negocio", "el negocio te va a avisar").
 - Nunca inventes precios ni stock que no estén en el catálogo de productos.
 - Nunca confirmes pagos ni acuerdes descuentos que no te hayan sido informados explícitamente acá.
+- No afirmes que el negocio hace envíos a domicilio, reserva productos, toma pedidos, acepta una forma de pago, cuotas o tarjetas, da garantía o hace factura si eso no está escrito en estas instrucciones. Si te lo preguntan, decí que lo consultás y le confirmás.
 - Texto plano, sin markdown, sin asteriscos ni listas con guiones.
-- Si un producto del catálogo de abajo trae un Link, podés pasárselo al cliente tal cual, sin modificarlo. Nunca armes ni inventes un link que no esté en el catálogo.
+- Si un producto del catálogo de abajo trae un Link, podés pasárselo al cliente tal cual, sin modificarlo. Nunca armes ni inventes un link que no esté en el catálogo o en estas instrucciones.
 RULES;
 
     /**
@@ -602,8 +621,9 @@ SUMMARY;
     /**
      * Arma el system prompt final: personalidad configurable (o la default) primero,
      * después las habilidades configurables (si el dueño cargó alguna), reglas fijas no
-     * negociables después, la consigna del marcador de foto, y por último el nombre del
-     * negocio como contexto adicional.
+     * negociables después, la consigna del marcador de foto, el nombre del negocio como
+     * contexto adicional, el horario (si el admin lo empujó) y por último el objetivo de la
+     * conversación (si el dueño eligió uno; `AgentObjectivePromptBuilder`).
      *
      * 🔴 LA CONSIGNA DE LA FOTO VA DESPUÉS DE LAS REGLAS FIJAS Y NO ADENTRO DE ELLAS, aunque
      * las reglas fijas serían el lugar obvio. Dos motivos: una de esas reglas dice "texto
@@ -678,6 +698,16 @@ SUMMARY;
         $capa_horario = (new BusinessHoursPromptBuilder())->capa_de_horario($horarios);
         if ($capa_horario !== '') {
             $blocks[] = $capa_horario;
+        }
+
+        // Capa del objetivo de la conversación (misión objetivo-agente-whatsapp): qué tiene que buscar
+        // el agente además de asesorar. Mismo criterio que las habilidades y el horario: sin objetivo
+        // (NULL, valor desconocido u "Otro objetivo" sin texto) devuelve '' y la capa NO se agrega, así
+        // el prompt queda idéntico al de antes. Va AL FINAL porque nombra el horario de arriba y usa sus
+        // datos (dirección, tienda); el texto le recuerda que las reglas fijas siguen ganando.
+        $capa_objetivo = (new AgentObjectivePromptBuilder())->capa_del_objetivo($config, $this->owner_user($config), $horarios);
+        if ($capa_objetivo !== '') {
+            $blocks[] = $capa_objetivo;
         }
 
         return implode("\n\n", $blocks);
@@ -977,6 +1007,34 @@ SUMMARY;
     }
 
     /**
+     * Encabezado del bloque de catálogo cuando la búsqueda trajo artículos.
+     *
+     * 🔴 DICE QUE ES UNA NOTA INTERNA QUE EL CLIENTE NO VE, y no es estilo (misión
+     * objetivo-agente-whatsapp, 16/10/2026). El bloque se pega al final del último turno del
+     * cliente (`build_messages_payload()`), así que el modelo lo leía como algo que el cliente
+     * escribió o estaba mirando: en T12.22 contestó "las sopapas que aparecen ahí son para
+     * destapar cañerías", hablándole al cliente de productos que el cliente nunca vio. La búsqueda
+     * devuelve siempre los N más parecidos aunque no sirvan, así que también se le pide que no
+     * mencione los que no tienen que ver con lo que pidió.
+     */
+    private const CATALOG_HEADER = '[Nota interna del sistema, el cliente no la ve] Resultado de buscar la consulta'
+        .' del cliente en el catálogo del negocio. Usá solo los productos que sirven para lo que pidió. Los que'
+        .' no sirven no los nombres, ni siquiera para decir que no sirven: el cliente no ve esta lista y para'
+        .' él no existen. No hables de la búsqueda ni de "los productos que aparecen".';
+
+    /**
+     * Bloque de catálogo cuando la búsqueda no trajo nada.
+     *
+     * La búsqueda devuelve siempre los más parecidos si el catálogo está indexado; vuelve vacía
+     * cuando el negocio no tiene el catálogo indexado (sin WhatsApp con IA, o todavía generándose).
+     * O sea que "no encontró" NO quiere decir "no lo tienen", y el texto viejo ("no se encontraron
+     * productos relevantes") empujaba al modelo a contestar que no hay.
+     */
+    private const CATALOG_EMPTY = '[Nota interna del sistema, el cliente no la ve] La búsqueda en el catálogo no'
+        .' trajo productos para esta consulta. Eso no quiere decir que el negocio no los tenga: no digas que no'
+        .' hay. Si pregunta por un producto, decile que lo consultás y le confirmás.';
+
+    /**
      * Arma el bloque de texto del catálogo relevante (RAG) con nombre, precio y stock de
      * cada artículo, tal como lo consume el system/user prompt.
      *
@@ -989,7 +1047,7 @@ SUMMARY;
     private function build_catalog_block(array $articles, $owner_user = null): string
     {
         if (empty($articles)) {
-            return 'Productos del catálogo más relevantes para la consulta: no se encontraron productos relevantes.';
+            return self::CATALOG_EMPTY;
         }
 
         $lines = [];
@@ -997,7 +1055,7 @@ SUMMARY;
             $lines[] = $this->format_article_line($article, $owner_user);
         }
 
-        return "Productos del catálogo más relevantes para la consulta:\n".implode("\n", $lines);
+        return self::CATALOG_HEADER."\n".implode("\n", $lines);
     }
 
     /**
