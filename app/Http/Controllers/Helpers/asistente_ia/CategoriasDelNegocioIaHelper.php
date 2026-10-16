@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\DB;
  *      sola, deduce la categoría.
  *
  * 🔴 "Sin categoría" sigue siendo una respuesta válida: es_sin_categoria() reconoce el vacío explícito
- * ("", null mandado a propósito, "sin categoría", "ninguna", 0) y el alta se arma sin categoría, como
+ * ("", 0, "sin categoría", "ninguna"; null es "no vino") y el alta se arma sin categoría, como
  * antes. Lo único que cambia es que el modelo ya no puede OLVIDARSE de la categoría.
  *
  * Todo filtra por el dueño (`user_id`) y saca lo borrado (`deleted_at`): las dos tablas usan
@@ -220,7 +220,11 @@ class CategoriasDelNegocioIaHelper
     // -------------------------------------------------------------------------------------------
 
     /**
-     * true si el valor dice "sin categoría" a propósito: null, "", 0, "sin categoría", "ninguna"...
+     * true si el valor dice "sin categoría" a propósito: "", 0, false, "sin categoría", "ninguna"...
+     *
+     * 🔴 null NO (chequeo independiente, 16/10/2026): un `category_id: null` es lo que manda un
+     * modelo que no eligió nada, no una decisión de la persona, y tomarlo como "sin categoría"
+     * esquivaba la guarda del alta. null se trata como "no vino".
      *
      * @param  mixed  $valor
      * @return bool
@@ -229,7 +233,7 @@ class CategoriasDelNegocioIaHelper
     {
         if (is_null($valor)) {
 
-            return true;
+            return false;
         }
 
         if (is_bool($valor)) {
@@ -369,6 +373,39 @@ class CategoriasDelNegocioIaHelper
             self::NO_SE_ARMO . 'no hay ninguna subcategoría que se llame como "' . $texto . '". Elegí del árbol la categoría y la subcategoría que corresponden (o mandá sub_category_id vacío) y volvé a llamar en este mismo mensaje.',
             ['categorias' => $arbol['categorias']]
         );
+    }
+
+    /**
+     * Los nombres de las subcategorías vivas de una categoría del dueño, ordenados.
+     *
+     * @param  int  $owner_id
+     * @param  int  $category_id
+     * @return array<int, string>
+     */
+    public static function subcategorias_de($owner_id, $category_id): array
+    {
+        return array_map('strval', DB::table('sub_categories')
+                                        ->where('user_id', (int) $owner_id)
+                                        ->whereNull('deleted_at')
+                                        ->where('category_id', (int) $category_id)
+                                        ->orderBy('name')
+                                        ->limit(self::TOPE_DE_SUBCATEGORIAS)
+                                        ->pluck('name')
+                                        ->all());
+    }
+
+    /**
+     * El nombre de una categoría del dueño, o null.
+     *
+     * @param  int  $owner_id
+     * @param  int  $category_id
+     * @return string|null
+     */
+    public static function nombre_de_categoria($owner_id, $category_id)
+    {
+        $categoria = self::categoria((int) $owner_id, (int) $category_id);
+
+        return is_null($categoria) ? null : (string) $categoria->name;
     }
 
     /**
