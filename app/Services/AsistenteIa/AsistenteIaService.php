@@ -1629,7 +1629,10 @@ VENTA_CONFIRMA;
   dan que_puedo_cargar y la búsqueda por código de barras (una cinta aisladora va en la de
   electricidad, un martillo en la de herramientas de mano) y decí en la respuesta cuáles le
   pusiste. La subcategoría tiene que ser de esa categoría (en que_puedo_cargar se llaman rubro
-  y sub rubro). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
+  y sub rubro). Si la categoría tiene subcategorías, la subcategoría es obligatoria ("" solo si
+  ninguna encaja). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
+  Si un error trae opciones.reenvia_igual, volvé a llamar con ese objeto TAL CUAL (con la foto, la
+  descripción y el código), agregándole solo lo que pide.
 - Después de un alta o una edición de un artículo decí el precio de venta tal como viene en
   detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
   digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
