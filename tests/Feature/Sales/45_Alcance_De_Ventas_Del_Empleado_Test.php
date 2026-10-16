@@ -482,7 +482,15 @@ class Alcance_De_Ventas_Del_Empleado_Test extends EmpresaTestCase
             'address_id'   => $address_id,
         ], $extra));
 
-        $this->dar_permisos($user, $slugs);
+        /*
+         * Todo empleado de este test lleva "Ver ventas de días anteriores" (`sale.index.previus_days`).
+         * Las ventas son de un día fijo y lejano, y desde la misión alcance-de-ventas-caminos-faltantes
+         * (16/10/2026) un empleado SIN ese permiso recibe solo las ventas de HOY por mandato del
+         * servidor: sin el permiso no vería ninguna. Este test es del ALCANCE (sucursal / empleado),
+         * no de los días: el recorte por días se prueba en 47_Candados_De_Ventas_Por_Ruta_Y_Dias_Anteriores.
+         * No cambia ninguna aserción: solo la precondición de los empleados.
+         */
+        $this->dar_permisos($user, array_merge($slugs, ['sale.index.previus_days']));
 
         return $user->fresh();
     }
@@ -496,7 +504,8 @@ class Alcance_De_Ventas_Del_Empleado_Test extends EmpresaTestCase
      */
     protected function empleado_acotado_a_sus_ventas($empleado)
     {
-        $this->dar_permisos($empleado, ['sale.index.employees.only_your']);
+        /* Con "días anteriores", por lo mismo que `crear_empleado()` (ver el comentario de ahí). */
+        $this->dar_permisos($empleado, ['sale.index.employees.only_your', 'sale.index.previus_days']);
 
         return $empleado->fresh();
     }
