@@ -46,9 +46,14 @@ class ProviderOrderScanAltaHelper
      * @param  array  $imagenes  UploadedFile[] o arrays ['binario', 'nombre_original'].
      * @param  mixed  $persona  La persona que disparó el escaneo (User o null): va en auth_user_id
      *                          para que el aviso de "terminó" no le llegue a todos los empleados.
+     * @param  array  $origen  Opcional (misión asistente-aviso-escaneo-factura, 16/10/2026): de
+     *                         dónde salió el escaneo, para avisar por WhatsApp cuando termine.
+     *                         Claves: `ai_conversation_id` (int|null) y `avisar_por_whatsapp`
+     *                         (bool). Lo pasa solo el asistente; la pantalla no lo manda y el
+     *                         escaneo nace con null / 0, exactamente como antes.
      * @return array  ['status' => int, 'body' => array]
      */
-    public static function crear(ProviderOrder $orden, array $imagenes, $persona = null)
+    public static function crear(ProviderOrder $orden, array $imagenes, $persona = null, array $origen = [])
     {
         $owner_id = (int) $orden->user_id;
 
@@ -125,7 +130,7 @@ class ProviderOrderScanAltaHelper
                 $orden_de_la_imagen++;
             }
 
-            $scan = ProviderOrderScan::create([
+            $scan = ProviderOrderScan::create(array_merge([
                 'uuid'              => $uuid,
                 'user_id'           => $owner_id,
                 /*
@@ -137,7 +142,7 @@ class ProviderOrderScanAltaHelper
                 'provider_order_id' => $orden->id,
                 'estado'            => 'pendiente',
                 'progreso'          => 0,
-            ]);
+            ], self::columnas_de_origen($origen)));
 
             foreach ($guardadas as $datos) {
 
@@ -195,6 +200,36 @@ class ProviderOrderScanAltaHelper
                 'message' => 'Ocurrió un error inesperado al iniciar el escaneo: ' . $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Las columnas de origen del escaneo, a partir del `$origen` de crear(). Sin `$origen` (la
+     * pantalla) devuelve un array vacío y el create queda exactamente como era: las columnas nuevas
+     * toman su default de la migración.
+     *
+     * Solo se aceptan las dos claves conocidas, con su tipo: el array viene de código propio, pero
+     * un `create()` con `$guarded = []` escribiría cualquier clave que alguien le agregue por error.
+     *
+     * @param  array  $origen
+     * @return array
+     */
+    protected static function columnas_de_origen(array $origen)
+    {
+        $columnas = [];
+
+        if (array_key_exists('ai_conversation_id', $origen)) {
+
+            $id = (int) $origen['ai_conversation_id'];
+
+            $columnas['ai_conversation_id'] = $id > 0 ? $id : null;
+        }
+
+        if (array_key_exists('avisar_por_whatsapp', $origen)) {
+
+            $columnas['avisar_por_whatsapp'] = $origen['avisar_por_whatsapp'] ? 1 : 0;
+        }
+
+        return $columnas;
     }
 
     /**
