@@ -39,7 +39,7 @@ use Tests\TestCase;
  * - Es un eje APARTE del rojo/amarillo (`estado_pendiente`): un chat puede tener las dos cosas a la vez.
  * - `GET whatsapp-chats/resumen` cuenta pedidos y consultas acotado al dueño; el índice y el broadcast
  *   exponen los campos nuevos.
- * - El prompt trae la consigna AL FINAL, así el de antes queda como prefijo.
+ * - El prompt trae la consigna ANTES de las capas opcionales (nombre, horario, objetivo): esas se suman siempre al final y el prompt de antes queda como prefijo (lo fijan los tests 21 y 28).
  *
  * 🔴 `Queue::fake()` en casi todos los casos: con `QUEUE_CONNECTION=sync` el `->delay()` del auto-envío se
  * ignora y la respuesta saldría antes de poder mirarla. El caso del envío inmediato (demora 0) es la excepción
