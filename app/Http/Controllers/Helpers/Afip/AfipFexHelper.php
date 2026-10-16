@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\Afip;
 
 use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
+use App\Http\Controllers\Helpers\Utf8Helper;
 use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSFEX;
@@ -160,7 +161,7 @@ class AfipFexHelper
     function saveErrors($result) {
 
         AfipError::create([
-            'message'   => $result['error'],
+            'message'   => Utf8Helper::convertir_utf8($result['error']),
             'code'      => null,
             'sale_id'   => $this->sale->id,
             'afip_ticket_id'   => $this->afip_ticket->id,
@@ -358,7 +359,7 @@ class AfipFexHelper
 
         if (isset($result['error'])) {
 
-            $message = $result['error']; 
+            $message = Utf8Helper::convertir_utf8($result['error']); 
 
             if (
                 $message == 'Could not connect to host'
@@ -553,7 +554,7 @@ class AfipFexHelper
                 if (isset($result_afip->FEXGetCMPResult->FEXErr)) {
 
                     AfipError::create([
-                        'message'   => $result_afip->FEXGetCMPResult->FEXErr->ErrMsg,
+                        'message'   => Utf8Helper::convertir_utf8($result_afip->FEXGetCMPResult->FEXErr->ErrMsg),
                         'code'      => $result_afip->FEXGetCMPResult->FEXErr->ErrCode,
                         'sale_id'   => $this->sale->id,
                         'afip_ticket_id'   => $this->afip_ticket->id,

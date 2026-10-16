@@ -205,11 +205,9 @@ class AfipNotaCreditoHelper
 
         if (!$result['hubo_un_error']) {
 
+            $autorizada = false;
+
             $result = $result['result'];
-
-            $this->checkObservations($result);
-
-            $this->checkErrors($result);
 
           //   'result' => 
           // (object) array(
@@ -272,7 +270,15 @@ class AfipNotaCreditoHelper
 
                 $this->update_afip_ticket($data);
 
+                $autorizada = true;
             }
+
+            /*
+             * Las observaciones y los errores se guardan DESPUES de dejar el CAE escrito, nunca antes:
+             * si ARCA ya autorizo la nota, una excepcion al registrar un texto de ARCA no puede dejar
+             * el comprobante sin su CAE (ver guardar_observaciones_y_errores()).
+             */
+            $this->guardar_observaciones_y_errores($result, $autorizada);
             
         } else {
             Log::info('HUBO UN ERROR:');
@@ -402,33 +408,7 @@ class AfipNotaCreditoHelper
 
             $result = $result['result'];
 
-            $this->checkObservations($result);
-
-            $this->checkErrors($result);
-
-
-            if (isset($result->FECAESolicitarResult->FeCabResp) && $result->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
-
-                $data = [
-                    'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
-                    'cbte_nro'          => $cbte_nro,
-                    'cbte_letra'        => AfipWsHelper::getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
-                    'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
-                    'importe_total'     => $importes['total'],
-                    'moneda_id'         => $moneda_id,
-                    'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
-                    'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
-                    'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
-                    'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
-                    'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
-                    'importe_iva'       => $importes['iva'],
-                    'afip_fecha_emision'=> $fecha_emision->format('Y-m-d'),
-                ];
-
-                $this->update_afip_ticket($data);
-
-                $this->update_sale_total_facturado($data);
-            }
+            $this->registrar_respuesta_interna($result, $cbte_nro, $importes, $moneda_id, $fecha_emision);
 
         } else {
             Log::info('HUBO UN ERROR:');
@@ -438,15 +418,136 @@ class AfipNotaCreditoHelper
         return true;
     }
 
+    /**
+     * Lo que se hace con la respuesta de ARCA a FECAESolicitar de una nota de credito interna:
+     * primero el CAE (y el total facturado de la venta), recien despues las observaciones y los
+     * errores. Esta separado de interno() para poder ejercitarlo sin salir a la red.
+     *
+     * @param  object  $result      Arbol deserializado de la respuesta (lo que viene en ['result']).
+     * @param  int     $cbte_nro    Numero de comprobante que se pidio.
+     * @param  array   $importes    Importes calculados (total, iva, ...).
+     * @param  string  $moneda_id
+     * @param  \Carbon\Carbon  $fecha_emision
+     * @return void
+     */
+    function registrar_respuesta_interna($result, $cbte_nro, $importes, $moneda_id, $fecha_emision) {
+
+        $autorizada = isset($result->FECAESolicitarResult->FeCabResp) && $result->FECAESolicitarResult->FeCabResp->Resultado == 'A';
+
+        if ($autorizada) {
+
+            $data = [
+                'cuit_negocio'      => $result->FECAESolicitarResult->FeCabResp->Cuit,
+                'cbte_nro'          => $cbte_nro,
+                'cbte_letra'        => AfipWsHelper::getTipoLetra($result->FECAESolicitarResult->FeCabResp->CbteTipo),
+                'cbte_tipo'         => $result->FECAESolicitarResult->FeCabResp->CbteTipo,
+                'importe_total'     => $importes['total'],
+                'moneda_id'         => $moneda_id,
+                'resultado'         => $result->FECAESolicitarResult->FeCabResp->Resultado,
+                'concepto'          => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Concepto,
+                'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
+                'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
+                'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
+                'importe_iva'       => $importes['iva'],
+                'afip_fecha_emision'=> $fecha_emision->format('Y-m-d'),
+            ];
+
+            $this->update_afip_ticket($data);
+
+            $this->update_sale_total_facturado($data);
+        }
+
+        /*
+         * Despues del CAE y no antes: ARCA ya autorizo la nota y esos datos viven solo en memoria
+         * hasta que update_afip_ticket() los escribe. Antes, un fallo al guardar una observacion
+         * (15/10/2026, Los Pena: error 1366 por un acento en latin1) saltaba antes de esa linea,
+         * el controlador revertia la transaccion entera y la nota quedaba autorizada en ARCA sin
+         * ningun registro en el sistema; reintentar emitia una segunda.
+         */
+        $this->guardar_observaciones_y_errores($result, $autorizada);
+    }
+
+    /**
+     * Registra lo que ARCA contesto en Errors y en Observaciones, SIN poder tirar abajo una nota ya
+     * autorizada.
+     *
+     * Si la nota salio con CAE, lo que se guarde aca es informativo y el comprobante ya existe en
+     * ARCA: una excepcion al escribir un texto (encoding, columna, lo que sea) no puede propagarse,
+     * porque DevolucionesController::store() revertiria la transaccion y la nota quedaria
+     * autorizada en ARCA y perdida en el sistema (Los Pena, 15/10/2026). Se reporta y se sigue. Si
+     * la nota NO se autorizo, lo guardado es el unico resultado util del intento y un fallo se
+     * propaga como siempre.
+     *
+     * @param  object  $result      Arbol deserializado de la respuesta de ARCA.
+     * @param  bool    $autorizada  true si ARCA devolvio Resultado = 'A'.
+     * @return void
+     */
+    function guardar_observaciones_y_errores($result, $autorizada) {
+
+        foreach (['checkObservations', 'checkErrors'] as $paso) {
+
+            try {
+
+                $this->$paso($result);
+
+            } catch (\Throwable $e) {
+
+                if (!$autorizada) {
+                    throw $e;
+                }
+
+                Log::error('Nota de credito autorizada por ARCA: no se pudo guardar '.$paso.': '.$e->getMessage());
+
+                report($e);
+            }
+        }
+    }
+
+    /**
+     * Los nodos Errors/Observaciones de ARCA traen UN hijo (objeto) o VARIOS (lista); lo deja siempre
+     * como lista de arrays con los textos en UTF-8. El SoapClient corre con encoding ISO-8859-1
+     * (WS::__construct), asi que el arbol deserializado trae latin1 y hay que convertirlo antes de
+     * guardarlo: un acento de la Resolucion General 5616 rompia el INSERT con el error 1366.
+     *
+     * @param  object|array|null  $hijos  Contenido de ->Obs o ->Err.
+     * @return array<int,array>
+     */
+    function lista_de_arca_en_utf8($hijos) {
+
+        if (is_null($hijos)) {
+            return [];
+        }
+
+        $hijos = Utf8Helper::convertir_utf8($hijos);
+
+        // Un solo hijo: viene como {Code, Msg}. Varios: viene como lista de {Code, Msg}.
+        if (isset($hijos['Msg']) || isset($hijos['Code'])) {
+            $hijos = [$hijos];
+        }
+
+        $lista = [];
+
+        foreach ($hijos as $hijo) {
+
+            $hijo = (array) $hijo;
+
+            if (isset($hijo['Msg'])) {
+                $lista[] = $hijo;
+            }
+        }
+
+        return $lista;
+    }
+
     function checkErrors($result) {
         $errors = null;
         if (isset($result->FECAESolicitarResult->Errors)) {
             $errors = $result->FECAESolicitarResult->Errors;
-            $errors = Utf8Helper::convertir_utf8($errors);
-            foreach ($errors as $error) {
+            $errors = isset($errors->Err) ? $errors->Err : $errors;
+            foreach ($this->lista_de_arca_en_utf8($errors) as $error) {
                 AfipError::create([
                     'message'   => $error['Msg'],
-                    'code'      => $error['Code'],
+                    'code'      => isset($error['Code']) ? $error['Code'] : null,
                     'sale_id'   => $this->sale->id,
                     'afip_ticket_id'   => $this->created_afip_ticket->id
                 ]);
@@ -457,27 +558,18 @@ class AfipNotaCreditoHelper
     function checkObservations($result) {
         $observations = null;
         if (isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
-            $observations = (array)$result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
+            $observations = $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones;
+            $observations = isset($observations->Obs) ? $observations->Obs : null;
 
-            if (isset($observations['Msg'])) {
+            // La rama de "varias observaciones" miraba $observations['Obs'], una clave que no existe
+            // en este arbol: con mas de una observacion no se guardaba ninguna.
+            foreach ($this->lista_de_arca_en_utf8($observations) as $observation) {
                 AfipError::create([
-                    'message'   => $observations['Msg'],
-                    'code'      => $observations['Code'],
+                    'message'   => $observation['Msg'],
+                    'code'      => isset($observation['Code']) ? $observation['Code'] : null,
                     'sale_id'   => $this->sale->id,
                     'afip_ticket_id'   => $this->created_afip_ticket->id
                 ]);
-            } else if (
-                isset($observations['Obs'])
-                && is_array($observations['Obs'])
-            ) {
-                foreach ($observations['Obs'] as $observation) {
-                    AfipError::create([
-                        'message'   => $observation['Msg'],
-                        'code'      => $observation['Code'],
-                        'sale_id'   => $this->sale->id,
-                        'afip_ticket_id'   => $this->created_afip_ticket->id
-                    ]);
-                }
             }
         }
     }
@@ -485,7 +577,7 @@ class AfipNotaCreditoHelper
     function save_error($result) {
 
         AfipError::create([
-            'message'           => isset($result['error']) ? $result['error'] : null,
+            'message'           => isset($result['error']) ? Utf8Helper::convertir_utf8($result['error']) : null,
             'code'              => 'Error del lado de AFIP',
             'sale_id'           => $this->sale->id,
             'afip_ticket_id'    => $this->created_afip_ticket->id,
@@ -555,6 +647,22 @@ class AfipNotaCreditoHelper
         }
 
         $this->created_afip_ticket = AfipTicket::create($datos);
+    }
+
+    /**
+     * true si la nota de credito ya tiene un comprobante con CAE guardado. Lo usa el controlador para
+     * decidir, ante una excepcion posterior a la autorizacion, si revertir la transaccion borraria
+     * el unico rastro de una nota que ya existe en ARCA.
+     *
+     * @param  int  $nota_credito_id
+     * @return bool
+     */
+    static function nota_credito_con_cae($nota_credito_id) {
+
+        return AfipTicket::where('nota_credito_id', $nota_credito_id)
+                    ->whereNotNull('cae')
+                    ->where('cae', '<>', '')
+                    ->exists();
     }
 
     function update_sale_total_facturado($data) {

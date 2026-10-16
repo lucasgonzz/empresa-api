@@ -53,6 +53,20 @@ class WSFE extends WSN
     }
 
     /**
+     * El WSDL de WSFE tiene que declarar `CondicionIVAReceptorId` (RG 5616): es el campo que el
+     * sistema manda en cada comprobante, y si el WSDL no lo conoce PHP lo descarta sin avisar.
+     * Un WSDL en cache sin ese campo se trata como vencido y se vuelve a descargar.
+     *
+     * @return bool
+     */
+    protected function wsdl_cache_tiene_lo_necesario()
+    {
+        $contenido = @file_get_contents($this->wsdl_cache_file);
+
+        return $contenido !== false && strpos($contenido, 'CondicionIVAReceptorId') !== false;
+    }
+
+    /**
      * isTesting
      *
      * Retorna si utiliza servicio de homologación.

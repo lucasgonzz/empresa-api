@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\CuotasTiendaEsquemaHelper;
 use App\Models\PaymentMethod;
 use Illuminate\Http\Request;
 
@@ -17,8 +18,24 @@ class PaymentMethodController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * Da de alta un método de pago de la tienda.
+     *
+     * `current_acount_payment_method_id` (misión tienda-cuotas-mercado-pago, 15/10/2026) es el
+     * vínculo con el método de pago de cuenta corriente cuyas cuotas se le ofrecen al comprador de
+     * la tienda cuando este método es de tipo Mercado Pago. Va por `CuotasTiendaEsquemaHelper`: sin
+     * la columna (deploy que sube los archivos antes de migrar) el alta es la de siempre.
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function store(Request $request) {
-        $model = PaymentMethod::create([
+
+        if (CuotasTiendaEsquemaHelper::es_un_vinculo_invalido($request->current_acount_payment_method_id)) {
+            return $this->respuesta_vinculo_invalido();
+        }
+
+        $model = PaymentMethod::create(CuotasTiendaEsquemaHelper::agregar_al_payload([
             // 'num'                       => $this->num('payment_methods'),
             'name'                      => $request->name,
             'description'               => $request->description,
@@ -27,7 +44,7 @@ class PaymentMethodController extends Controller
             'public_key'                => $request->public_key,
             'access_token'              => $request->access_token,
             'user_id'                   => $this->userId(),
-        ]);
+        ], $request->current_acount_payment_method_id));
         $this->sendAddModelNotification('payment_method', $model->id);
         return response()->json(['model' => $this->fullModel('PaymentMethod', $model->id)], 201);
     }  
@@ -52,11 +69,26 @@ class PaymentMethodController extends Controller
      * Se usa `has()` y no `filled()` a propósito: mandar el campo explícitamente vacío TIENE que
      * poder borrar la credencial. Lo que no puede es borrarla por omisión.
      *
+     * 🔴 `current_acount_payment_method_id` (el vínculo con el método de cuenta corriente, misión
+     * tienda-cuotas-mercado-pago, 15/10/2026) sigue EXACTAMENTE el mismo patrón y por el mismo
+     * motivo: SE ASIGNA SOLO SI EL REQUEST LO TRAE. Una SPA vieja (o cualquier cliente de la API que
+     * no conozca el campo) edita un método de pago sin mandarlo, y una asignación incondicional
+     * dejaría el vínculo en NULL: la tienda perdería sus cuotas sin que nadie toque nada. Con `has()`
+     * mandarlo vacío o en 0 («Seleccione ...» del select) SÍ desvincula, que es lo que el dueño pide
+     * cuando lo hace a propósito. Además va detrás de `CuotasTiendaEsquemaHelper`: sin la columna ni
+     * se mira.
+     *
      * @param Request $request
      * @param int|string $id
      * @return \Illuminate\Http\JsonResponse
      */
     public function update(Request $request, $id) {
+
+        if ($request->has('current_acount_payment_method_id')
+            && CuotasTiendaEsquemaHelper::es_un_vinculo_invalido($request->current_acount_payment_method_id)) {
+            return $this->respuesta_vinculo_invalido();
+        }
+
         $model = PaymentMethod::find($id);
         $model->name                        = $request->name;
         $model->description                 = $request->description;
@@ -67,6 +99,9 @@ class PaymentMethodController extends Controller
         }
         if ($request->has('access_token')) {
             $model->access_token            = $request->access_token;
+        }
+        if ($request->has('current_acount_payment_method_id')) {
+            CuotasTiendaEsquemaHelper::asignar_al_modelo($model, $request->current_acount_payment_method_id);
         }
         $model->save();
         $this->sendAddModelNotification('payment_method', $model->id);
@@ -79,5 +114,21 @@ class PaymentMethodController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('payment_method', $model->id);
         return response(null);
+    }
+
+    /**
+     * 422 de un vínculo que apunta a un método de pago de cuenta corriente que no existe.
+     *
+     * No se escribe nada: ni el alta ni la edición llegan a tocar la base.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function respuesta_vinculo_invalido() {
+        return response()->json([
+            'message' => 'El método de pago de cuenta corriente elegido no existe.',
+            'errors'  => [
+                'current_acount_payment_method_id' => ['El método de pago de cuenta corriente elegido no existe.'],
+            ],
+        ], 422);
     }
 }
