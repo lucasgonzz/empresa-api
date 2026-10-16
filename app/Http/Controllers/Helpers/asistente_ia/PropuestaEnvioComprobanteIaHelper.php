@@ -13,6 +13,8 @@ use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\User;
+use App\Models\WhatsappChat;
+use App\Models\WhatsappChatMessage;
 use App\Services\SaleWhatsappSenderService;
 use Illuminate\Support\Facades\Log;
 
@@ -24,8 +26,10 @@ use Illuminate\Support\Facades\Log;
  * 🔴 NO SE INVENTA NINGÚN CAMINO DE ENVÍO:
  *   - venta por WhatsApp → `SaleWhatsappSenderService::send_sale()` tal cual (el del botón del modal
  *     de Ventas);
- *   - presupuesto y recibo por WhatsApp → `send_comprobante()`, el método hermano con el MISMO molde
- *     (ventana abierta: documento; cerrada: plantilla `cc_cli_comprobante` con el PDF);
+ *   - presupuesto y recibo por WhatsApp → `send_comprobante()`, el método hermano (ventana abierta:
+ *     documento con su epígrafe; cerrada: la plantilla de MENSAJE LIBRE con el link del PDF en el texto,
+ *     porque `cc_cli_comprobante` dice "de tu compra… ¡Gracias por tu compra!", falso para un
+ *     presupuesto — corrección 4 del chequeo del 16/10/2026);
  *   - venta por mail → `ComercioCityMailHelper::new_sale(..., force_send)` tal cual (el del botón
  *     "Enviar correo al cliente"), dejando `sales.send_mail = true` como lo deja ese botón;
  *   - presupuesto y recibo por mail → `nuevo_presupuesto()` / `nuevo_recibo()`, mismo molde que la
@@ -165,12 +169,15 @@ class PropuestaEnvioComprobanteIaHelper
         }
 
         $nombre = self::nombre($tipo, $modelo);
-        $negocio = self::nombre_del_negocio($contexto->owner);
+        $negocio = (new SaleWhatsappSenderService())->nombre_del_negocio($contexto->owner);
 
         $renglones = [
             ['etiqueta' => 'Cliente', 'valor' => (string) $client->name],
             ['etiqueta' => $tipo === self::TIPO_RECIBO ? 'Importe' : 'Total', 'valor' => FormatoIaHelper::monto(self::total_de($tipo, $modelo), self::moneda_de($tipo, $modelo))],
         ];
+
+        // Las líneas de "a quién y por dónde" del bloque que se le muestra al dueño por WhatsApp.
+        $destinos = ['A quién: ' . $client->name];
 
         $textos = [];
 
@@ -178,38 +185,60 @@ class PropuestaEnvioComprobanteIaHelper
 
             $whatsapp = $evaluados[self::CANAL_WHATSAPP];
 
-            $renglones[] = [
-                'etiqueta' => 'Por WhatsApp',
-                'valor'    => $whatsapp['telefono'] . ($whatsapp['camino'] === 'mensaje'
-                    ? ' (como mensaje con el PDF, porque escribió en las últimas 24 horas)'
-                    : ' (como plantilla de WhatsApp con el PDF adjunto)'),
-            ];
+            $como = $whatsapp['camino'] === 'mensaje'
+                ? ' (como mensaje con el PDF, porque escribió en las últimas 24 horas)'
+                : ($tipo === self::TIPO_VENTA
+                    ? ' (como plantilla de WhatsApp con el PDF adjunto)'
+                    : ' (como plantilla de WhatsApp, con el link al PDF en el texto)');
 
-            $textos['whatsapp'] = $whatsapp['camino'] === 'mensaje'
-                ? self::epigrafe($tipo, $modelo, $negocio)
-                : (new SaleWhatsappSenderService())->texto_de_la_plantilla($contexto->owner_id, self::nombre_del_cliente($client), self::numero_de($tipo, $modelo), $negocio);
+            $renglones[] = ['etiqueta' => 'Por WhatsApp', 'valor' => $whatsapp['telefono'] . $como];
+            $destinos[] = 'Por WhatsApp: ' . $whatsapp['telefono'] . $como;
+
+            $textos['whatsapp'] = self::texto_por_whatsapp($contexto, $tipo, $modelo, $client, $whatsapp['camino'], $negocio, $pdf_url);
         }
 
         if (in_array(self::CANAL_MAIL, $van, true)) {
 
             $renglones[] = ['etiqueta' => 'Por mail', 'valor' => (string) $evaluados[self::CANAL_MAIL]['email']];
+            $destinos[] = 'Por mail: ' . $evaluados[self::CANAL_MAIL]['email'];
 
-            $textos['mail'] = 'Mail "' . self::asunto_del_mail($tipo) . '" con el detalle (cliente, número, ' . ($tipo === self::TIPO_RECIBO ? 'importe' : 'total') . ' y fecha) y el link al PDF.';
+            // 🔴 El asunto y el texto REALES, del mismo payload que se encola (no una descripción).
+            $textos['mail'] = self::texto_del_mail(self::payload_del_mail($tipo, $modelo, $pdf_url));
         }
 
         foreach ($no_van as $canal => $motivo) {
             $renglones[] = ['etiqueta' => 'No va por ' . self::nombre_de_canal($canal), 'valor' => (string) $motivo];
+            $destinos[] = 'No va por ' . self::nombre_de_canal($canal) . ': ' . rtrim((string) $motivo, '.');
         }
 
         $renglones[] = ['etiqueta' => 'PDF', 'valor' => $pdf_url];
+        $destinos[] = 'PDF: ' . $pdf_url;
 
         if (isset($textos['whatsapp'])) {
-            $renglones[] = ['etiqueta' => 'Texto por WhatsApp', 'valor' => $textos['whatsapp'] . ' [PDF adjunto]'];
+            $renglones[] = ['etiqueta' => 'Texto por WhatsApp', 'valor' => $textos['whatsapp']];
         }
 
         if (isset($textos['mail'])) {
             $renglones[] = ['etiqueta' => 'Mail', 'valor' => $textos['mail']];
         }
+
+        // M3: el mismo comprobante ya salió hace un rato (desde acá, otra conversación o la pantalla).
+        $aviso = self::aviso_de_envio_reciente($contexto, $tipo, $modelo);
+
+        $texto_que_sale = [];
+
+        foreach ($textos as $canal => $texto) {
+            $texto_que_sale[] = ($canal === 'whatsapp' ? 'Por WhatsApp: ' : 'Por mail: ') . $texto;
+        }
+
+        $bloque = DestinatariosIaHelper::bloque(
+            'Mandar ' . $nombre . ' a ' . $client->name,
+            $destinos,
+            [],
+            'El texto que sale',
+            implode("\n\n", $texto_que_sale),
+            $aviso
+        );
 
         $creada = AccionesIaHelper::crear(
             $contexto,
@@ -222,21 +251,17 @@ class PropuestaEnvioComprobanteIaHelper
                 'client_id' => (int) $client->id,
                 'canales'   => $van,
                 'pdf_url'   => $pdf_url,
+                // Lo que el sistema le agrega al mensaje por WhatsApp (ver DestinatariosIaHelper::bloque()).
+                'bloque'    => $bloque,
             ],
             [
                 'titulo'          => 'Mandar ' . $nombre . ' a ' . $client->name,
                 'renglones'       => $renglones,
-                'aviso'           => null,
+                'aviso'           => $aviso,
                 'texto_confirmar' => DestinatariosIaHelper::TEXTO_CONFIRMAR,
             ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
-
-        $texto_que_sale = [];
-
-        foreach ($textos as $canal => $texto) {
-            $texto_que_sale[] = ($canal === 'whatsapp' ? 'Por WhatsApp: ' : 'Por mail: ') . $texto;
-        }
 
         $grupos = [];
 
@@ -252,11 +277,180 @@ class PropuestaEnvioComprobanteIaHelper
         $para_mostrar['por_whatsapp'] = in_array(self::CANAL_WHATSAPP, $van, true) ? $evaluados[self::CANAL_WHATSAPP]['telefono'] : null;
         $para_mostrar['por_mail'] = in_array(self::CANAL_MAIL, $van, true) ? $evaluados[self::CANAL_MAIL]['email'] : null;
 
+        if (!is_null($aviso)) {
+            $para_mostrar['aviso'] = $aviso;
+        }
+
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, [
             'para_mostrar' => $para_mostrar,
             // Reemplaza a la nota de siempre: ver DestinatariosIaHelper::COMO_MOSTRARLO.
             'nota'         => DestinatariosIaHelper::COMO_MOSTRARLO,
         ]);
+    }
+
+    /**
+     * El texto EXACTO que sale por WhatsApp: el epígrafe del documento con la ventana abierta; con la
+     * ventana cerrada, la plantilla `cc_cli_comprobante` para la venta (como send_sale) y la de mensaje
+     * libre para el presupuesto y el recibo (ver SaleWhatsappSenderService::TEMPLATE_MENSAJE_LIBRE).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $tipo
+     * @param  mixed  $modelo
+     * @param  Client  $client
+     * @param  string  $camino  'mensaje' | 'plantilla'
+     * @param  string  $negocio
+     * @param  string  $pdf_url
+     * @return string
+     */
+    protected static function texto_por_whatsapp(ContextoDeCargaIa $contexto, $tipo, $modelo, Client $client, $camino, $negocio, $pdf_url)
+    {
+        $service = new SaleWhatsappSenderService();
+
+        if ($camino === 'mensaje') {
+
+            return self::epigrafe($tipo, $modelo, $negocio) . ' [PDF adjunto]';
+        }
+
+        if ($tipo === self::TIPO_VENTA) {
+
+            return $service->texto_de_la_plantilla($contexto->owner_id, self::nombre_del_cliente($client), self::numero_de($tipo, $modelo), $negocio) . ' [PDF adjunto]';
+        }
+
+        return $service->texto_del_mensaje_libre($contexto->owner_id, self::nombre_del_cliente($client), $negocio, self::mensaje_libre($tipo, $modelo, $pdf_url));
+    }
+
+    /**
+     * El {{3}} de `cc_cli_mensaje_libre` para un presupuesto o un recibo: qué es y dónde se ve. La
+     * plantilla dice "Hola {{1}}, te escribimos de {{2}}: {{3}}. Podés responder este mensaje…", así
+     * que el conjunto queda "…te escribimos de X: te mandamos el presupuesto N° 12. Lo ves acá: link."
+     *
+     * @param  string  $tipo
+     * @param  mixed  $modelo
+     * @param  string  $pdf_url
+     * @return string
+     */
+    protected static function mensaje_libre($tipo, $modelo, $pdf_url)
+    {
+        $que = $tipo === self::TIPO_PRESUPUESTO
+            ? 'te mandamos el presupuesto N° ' . self::numero_de($tipo, $modelo)
+            : 'te mandamos el recibo de tu pago N° ' . self::numero_de($tipo, $modelo);
+
+        return $que . '. Lo ves acá: ' . $pdf_url;
+    }
+
+    /**
+     * El contenido del mail de cada comprobante, del MISMO armador que usa el envío.
+     *
+     * @param  string  $tipo
+     * @param  mixed  $modelo
+     * @param  string  $pdf_url
+     * @return \App\Mail\ComercioCityMailPayload
+     */
+    protected static function payload_del_mail($tipo, $modelo, $pdf_url)
+    {
+        if ($tipo === self::TIPO_VENTA) {
+            return ComercioCityMailHelper::payload_de_venta($modelo, false);
+        }
+
+        if ($tipo === self::TIPO_PRESUPUESTO) {
+            return ComercioCityMailHelper::payload_de_presupuesto($modelo, $pdf_url);
+        }
+
+        return ComercioCityMailHelper::payload_de_recibo($modelo, $pdf_url);
+    }
+
+    /**
+     * Asunto y texto principal del mail, como los lee el cliente: 'Asunto: "X". Título. Párrafos.'
+     *
+     * @param  \App\Mail\ComercioCityMailPayload  $payload
+     * @return string
+     */
+    protected static function texto_del_mail($payload)
+    {
+        $partes = [];
+
+        if (!empty($payload->title)) {
+            $partes[] = rtrim((string) $payload->title, '.') . '.';
+        }
+
+        foreach ((array) $payload->paragraphs as $parrafo) {
+            $partes[] = (string) $parrafo;
+        }
+
+        return 'Asunto: "' . $payload->subject . '". ' . implode(' ', $partes);
+    }
+
+    /**
+     * M3 del chequeo: si este mismo comprobante ya salió en los últimos 10 minutos, la tarjeta lo
+     * avisa ("ya se lo mandaste a las HH:MM"). Mira dos cosas: una tarjeta de envío del mismo
+     * comprobante confirmada (desde cualquier conversación del negocio) y un WhatsApp saliente del
+     * negocio con el link de ese PDF (el botón de la pantalla o este asistente). El mail de la
+     * pantalla no deja registro con hora, así que ese no se ve.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $tipo
+     * @param  mixed  $modelo
+     * @return string|null
+     */
+    protected static function aviso_de_envio_reciente(ContextoDeCargaIa $contexto, $tipo, $modelo)
+    {
+        $desde = now()->subMinutes(10);
+
+        $tarjeta = AiMessageAction::where('user_id', $contexto->owner_id)
+            ->where('tipo', AiMessageAction::TIPO_ENVIO_COMPROBANTE)
+            ->where('clave', self::clave($tipo, $modelo->id))
+            ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+            ->where('resuelta_at', '>=', $desde)
+            ->orderBy('resuelta_at', 'DESC')
+            ->first();
+
+        $ruta = self::ruta_del_pdf($tipo, $modelo);
+
+        $whatsapp = WhatsappChatMessage::where('direction', 'out')
+            ->where('created_at', '>=', $desde)
+            ->whereIn('whatsapp_chat_id', WhatsappChat::where('user_id', $contexto->owner_id)->select('id'))
+            ->where(function ($q) use ($ruta) {
+                $q->where('media_url', 'like', '%' . $ruta . '%')->orWhere('body', 'like', '%' . $ruta . '%');
+            })
+            ->orderBy('created_at', 'DESC')
+            ->first();
+
+        $cuando = null;
+
+        if (!is_null($tarjeta) && !is_null($tarjeta->resuelta_at)) {
+            $cuando = $tarjeta->resuelta_at;
+        }
+
+        if (!is_null($whatsapp) && (is_null($cuando) || $whatsapp->created_at->gt($cuando))) {
+            $cuando = $whatsapp->created_at;
+        }
+
+        if (is_null($cuando)) {
+            return null;
+        }
+
+        return 'Ojo: ' . self::singular($tipo) . ' ya se lo mandaste a las ' . $cuando->copy()->timezone(config('app.timezone'))->format('H:i')
+            . '. Mandalo de nuevo solo si de verdad hace falta.';
+    }
+
+    /**
+     * El pedazo de la ruta del PDF que identifica al comprobante ('/budget/pdf/12/').
+     *
+     * @param  string  $tipo
+     * @param  mixed  $modelo
+     * @return string
+     */
+    protected static function ruta_del_pdf($tipo, $modelo)
+    {
+        if ($tipo === self::TIPO_VENTA) {
+            return '/sale/pdf/' . (int) $modelo->id . '?';
+        }
+
+        if ($tipo === self::TIPO_PRESUPUESTO) {
+            return '/budget/pdf/' . (int) $modelo->id . '/';
+        }
+
+        return '/current-acount/pdf/' . (int) $modelo->id . '?';
     }
 
     /**
@@ -414,8 +608,8 @@ class PropuestaEnvioComprobanteIaHelper
                     $contexto->owner_id,
                     $pdf_url,
                     ($tipo === self::TIPO_PRESUPUESTO ? 'presupuesto-' : 'recibo-') . self::numero_de($tipo, $modelo) . '.pdf',
-                    self::numero_de($tipo, $modelo),
-                    self::epigrafe($tipo, $modelo, self::nombre_del_negocio($contexto->owner)),
+                    self::epigrafe($tipo, $modelo, $service->nombre_del_negocio($contexto->owner)),
+                    self::mensaje_libre($tipo, $modelo, $pdf_url),
                     $persona_id,
                     ucfirst(self::nombre($tipo, $modelo)) . ' no tiene un cliente con teléfono cargado.'
                 );
@@ -436,13 +630,37 @@ class PropuestaEnvioComprobanteIaHelper
             return ['ok' => false, 'texto' => 'una falla del sistema'];
         }
 
-        $mensaje->loadMissing('whatsapp_chat');
+        /*
+         * 🔴 DE ACÁ PARA ABAJO NADA PUEDE LANZAR (M2 del chequeo): Kapso ya aceptó el mensaje, y una
+         * excepción haría que la tarjeta quedara "sin confirmar" con el WhatsApp ya en el teléfono del
+         * cliente. Leer el chat es solo para decir a qué número fue: si falla, va el de la ficha.
+         */
+        $telefono = (string) $client->phone;
 
-        $telefono = !is_null($mensaje->whatsapp_chat) ? (string) $mensaje->whatsapp_chat->phone : (string) $client->phone;
+        try {
+
+            $mensaje->loadMissing('whatsapp_chat');
+
+            if (!is_null($mensaje->whatsapp_chat)) {
+                $telefono = (string) $mensaje->whatsapp_chat->phone;
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('PropuestaEnvioComprobanteIaHelper: el WhatsApp salió pero no se pudo leer su chat', ['error' => $e->getMessage()]);
+        }
+
+        if ((string) $mensaje->source !== 'plantilla') {
+            $como = ' (como mensaje, con el PDF)';
+        } elseif ($tipo === self::TIPO_VENTA) {
+            $como = ' (como plantilla, con el PDF)';
+        } else {
+            $como = ' (como plantilla, con el link al PDF)';
+        }
 
         return [
             'ok'    => true,
-            'texto' => 'por WhatsApp al ' . $telefono . ((string) $mensaje->source === 'plantilla' ? ' (como plantilla, con el PDF)' : ' (como mensaje, con el PDF)'),
+            'texto' => 'por WhatsApp al ' . $telefono . $como,
         ];
     }
 
@@ -525,7 +743,12 @@ class PropuestaEnvioComprobanteIaHelper
 
         if (PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION_WHATSAPP)) {
 
-            $como = (new SaleWhatsappSenderService())->como_saldria($contexto->owner_id, $client);
+            // La plantilla de la ventana cerrada: la de comprobante para la venta, mensaje libre para el resto.
+            $como = (new SaleWhatsappSenderService())->como_saldria(
+                $contexto->owner_id,
+                $client,
+                $tipo === self::TIPO_VENTA ? SaleWhatsappSenderService::TEMPLATE_META_NAME : SaleWhatsappSenderService::TEMPLATE_MENSAJE_LIBRE
+            );
 
             $whatsapp = $como['puede']
                 ? ['puede' => true, 'camino' => $como['camino'], 'telefono' => $como['telefono']]
@@ -664,6 +887,18 @@ class PropuestaEnvioComprobanteIaHelper
 
         if ($tipo === self::TIPO_VENTA) {
 
+            /*
+             * 🔴 El link de la venta es el MISMO que lleva su mail (ComercioCityMailHelper::payload_de_venta():
+             * con `pdf_column_profile_id` y su token), así el dueño ve el que le llega al cliente. Si el
+             * mail no arma ese link (no hay ninguna opción de PDF cargada), el de siempre de la venta.
+             */
+            foreach ((array) ComercioCityMailHelper::payload_de_venta($modelo, false)->links as $link) {
+
+                if (isset($link['url']) && strpos((string) $link['url'], '/sale/pdf/' . (int) $modelo->id . '?') !== false) {
+                    return (string) $link['url'];
+                }
+            }
+
             return PdfLinkHelper::con_token($base . '/sale/pdf/' . (int) $modelo->id, 'sale', (int) $modelo->id, (int) $modelo->user_id);
         }
 
@@ -731,19 +966,6 @@ class PropuestaEnvioComprobanteIaHelper
         }
 
         return ($tipo === self::TIPO_PRESUPUESTO ? 'Presupuesto' : 'Recibo') . ' N° ' . self::numero_de($tipo, $modelo) . ' de ' . $negocio;
-    }
-
-    /**
-     * El nombre del negocio como lo firma send_sale(): el `name` del dueño, o "nuestro negocio".
-     *
-     * @param  User|null  $owner
-     * @return string
-     */
-    protected static function nombre_del_negocio($owner)
-    {
-        $nombre = is_null($owner) ? '' : trim((string) $owner->name);
-
-        return $nombre === '' ? 'nuestro negocio' : $nombre;
     }
 
     /**
@@ -859,21 +1081,6 @@ class PropuestaEnvioComprobanteIaHelper
     protected static function moneda_de($tipo, $modelo)
     {
         return is_null($modelo->moneda_id) ? null : (int) $modelo->moneda_id;
-    }
-
-    /**
-     * El asunto del mail de cada comprobante (el mismo que arma ComercioCityMailHelper).
-     *
-     * @param  string  $tipo
-     * @return string
-     */
-    protected static function asunto_del_mail($tipo)
-    {
-        if ($tipo === self::TIPO_VENTA) {
-            return 'Nueva venta registrada';
-        }
-
-        return $tipo === self::TIPO_PRESUPUESTO ? 'Te enviamos un presupuesto' : 'Te enviamos el recibo de tu pago';
     }
 
     /**

@@ -59,6 +59,19 @@ class SaleWhatsappSenderService
     const CODE_ENVIO_NO_CONFIRMADO = 'envio_no_confirmado';
 
     /**
+     * La plantilla estándar de MENSAJE LIBRE (utility: Nombre, Negocio, Mensaje), con la que salen el
+     * presupuesto y el recibo cuando la ventana de 24 h está cerrada (misión asistente-envios-a-clientes,
+     * corrección del chequeo del 16/10/2026).
+     *
+     * 🔴 POR QUÉ NO `cc_cli_comprobante`: su cuerpo aprobado dice "te enviamos el comprobante X de tu
+     * compra… ¡Gracias por tu compra!", que es FALSO para un presupuesto (todavía no compró nada) y raro
+     * para un recibo. Con mensaje libre el texto dice lo que es y lleva el link del PDF con su token.
+     *
+     * @var string
+     */
+    const TEMPLATE_MENSAJE_LIBRE = 'cc_cli_mensaje_libre';
+
+    /**
      * Envía el comprobante de la venta al cliente vinculado.
      *
      * @param  Sale      $sale             Venta a enviar (debe tener `client_id` con teléfono).
@@ -179,15 +192,17 @@ class SaleWhatsappSenderService
      * @param  int          $owner_id         Dueño del negocio (`user_id` del comprobante).
      * @param  string       $pdf_url          URL pública del PDF, ya con su token.
      * @param  string       $filename         Nombre del archivo que ve el cliente ('presupuesto-12.pdf').
-     * @param  string       $numero           El número que ve el cliente (va en la variable {{2}} de la plantilla).
      * @param  string       $caption          Epígrafe del documento con la ventana abierta.
+     * @param  string       $mensaje          El {{3}} de `cc_cli_mensaje_libre` con la ventana cerrada:
+     *                                        qué es y el link del PDF ("te mandamos el presupuesto N° 12.
+     *                                        Lo ves acá: https://…").
      * @param  int|null     $sent_by_user_id  Persona que lo disparó (la del asistente).
      * @param  string       $sin_telefono     Mensaje del corte 'sin_telefono', con el nombre del comprobante.
      * @return WhatsappChatMessage  El mensaje `out` ya persistido.
      *
      * @throws SaleWhatsappSendException  Los mismos códigos que `send_sale()`.
      */
-    public function send_comprobante(Client $client, $owner_id, $pdf_url, $filename, $numero, $caption, $sent_by_user_id = null, $sin_telefono = 'El comprobante no tiene un cliente con teléfono cargado.')
+    public function send_comprobante(Client $client, $owner_id, $pdf_url, $filename, $caption, $mensaje, $sent_by_user_id = null, $sin_telefono = 'El comprobante no tiene un cliente con teléfono cargado.')
     {
         $owner_id = (int) $owner_id;
 
@@ -222,26 +237,24 @@ class SaleWhatsappSenderService
             );
         }
 
-        // Ventana cerrada: la plantilla aprobada cc_cli_comprobante, la misma de la venta.
-        $template = $this->plantilla_de_comprobante_aprobada($owner_id);
+        // Ventana cerrada: la plantilla de MENSAJE LIBRE, con el link del PDF en el texto (ver TEMPLATE_MENSAJE_LIBRE).
+        $template = $this->plantilla_aprobada($owner_id, self::TEMPLATE_MENSAJE_LIBRE);
 
         if (is_null($template)) {
-            throw new SaleWhatsappSendException('La plantilla de comprobante todavía no está aprobada en Meta.', 'plantilla_no_aprobada');
+            throw new SaleWhatsappSendException('La plantilla de mensaje libre todavía no está aprobada en Meta.', 'plantilla_no_aprobada');
         }
 
-        $variables = $this->variables_de_la_plantilla($client_name, $numero, $business_name);
+        $variables = $this->variables_del_mensaje_libre($client_name, $business_name, $mensaje);
 
-        $wa_message_id = $send_service->send_template($chat->phone, $template, $variables, $config, $pdf_url, $filename);
+        $wa_message_id = $send_service->send_template($chat->phone, $template, $variables, $config);
 
         $this->fallar_si_no_hubo_envio($wa_message_id, 'plantilla');
 
-        return WhatsappChatHelper::store_outbound_document_message(
+        return WhatsappChatHelper::store_outbound_template_message(
             $chat,
             $template->render_body($variables),
             $wa_message_id,
             $sent_by_user_id,
-            'plantilla',
-            $pdf_url,
             $template->meta_template_name
         );
     }
@@ -258,10 +271,12 @@ class SaleWhatsappSenderService
      *
      * @param  int          $owner_id
      * @param  Client|null  $client
+     * @param  string       $plantilla  La que se usaría con la ventana cerrada: `cc_cli_comprobante`
+     *                                  para la venta, TEMPLATE_MENSAJE_LIBRE para presupuesto y recibo.
      * @return array  {puede: bool, camino: 'mensaje'|'plantilla'|null, telefono: string|null,
      *                 motivo: string|null, mensaje: string|null}
      */
-    public function como_saldria($owner_id, $client)
+    public function como_saldria($owner_id, $client, $plantilla = self::TEMPLATE_META_NAME)
     {
         $owner_id = (int) $owner_id;
 
@@ -285,10 +300,12 @@ class SaleWhatsappSenderService
             return ['puede' => true, 'camino' => 'mensaje', 'telefono' => $telefono, 'motivo' => null, 'mensaje' => null];
         }
 
-        if (is_null($this->plantilla_de_comprobante_aprobada($owner_id))) {
+        if (is_null($this->plantilla_aprobada($owner_id, $plantilla))) {
             return $this->no_saldria(
                 'plantilla_no_aprobada',
-                'El cliente no le escribió al negocio en las últimas 24 horas y la plantilla de comprobante todavía no está aprobada en Meta.'
+                'El cliente no le escribió al negocio en las últimas 24 horas y la plantilla de '
+                . ($plantilla === self::TEMPLATE_MENSAJE_LIBRE ? 'mensaje libre' : 'comprobante')
+                . ' todavía no está aprobada en Meta.'
             );
         }
 
@@ -329,6 +346,96 @@ class SaleWhatsappSenderService
     }
 
     /**
+     * El texto EXACTO de `cc_cli_mensaje_libre` para un presupuesto o un recibo, ya renderizado: el de
+     * la plantilla del negocio si existe y, si no, el cuerpo estándar del catálogo. Lo usa la tarjeta.
+     *
+     * @param  int     $owner_id
+     * @param  string  $client_name
+     * @param  string  $business_name
+     * @param  string  $mensaje
+     * @return string
+     */
+    public function texto_del_mensaje_libre($owner_id, $client_name, $business_name, $mensaje)
+    {
+        return $this->renderizar(
+            $owner_id,
+            self::TEMPLATE_MENSAJE_LIBRE,
+            $this->variables_del_mensaje_libre($client_name, $business_name, $mensaje)
+        );
+    }
+
+    /**
+     * El nombre del negocio como lo firman los mensajes de comprobante: el `name` del dueño, como
+     * send_sale(). Público para que la tarjeta muestre el mismo.
+     *
+     * @param  \App\Models\User|null  $owner
+     * @return string
+     */
+    public function nombre_del_negocio($owner)
+    {
+        $nombre = is_null($owner) ? '' : trim((string) $owner->name);
+
+        return $nombre === '' ? 'nuestro negocio' : $nombre;
+    }
+
+    /**
+     * Las variables de `cc_cli_mensaje_libre` [Nombre, Negocio, Mensaje], limpias para Meta: un
+     * parámetro con saltos de línea, tabulaciones o cuatro espacios seguidos lo rechaza y el envío
+     * volvería null.
+     *
+     * @param  string  $client_name
+     * @param  string  $business_name
+     * @param  string  $mensaje
+     * @return array<int, string>
+     */
+    private function variables_del_mensaje_libre($client_name, $business_name, $mensaje)
+    {
+        return [self::para_meta($client_name), self::para_meta($business_name), self::para_meta($mensaje)];
+    }
+
+    /**
+     * Un texto apto para una variable de plantilla de Meta: sin saltos de línea ni tabulaciones, sin
+     * espacios repetidos y sin el punto final (el cuerpo de la plantilla ya pone uno después).
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    public static function para_meta($texto)
+    {
+        $texto = str_replace(["\r\n", "\r", "\n", "\t"], ' ', (string) $texto);
+
+        return rtrim(trim(preg_replace('/ {2,}/', ' ', $texto)), '.');
+    }
+
+    /**
+     * El cuerpo de una plantilla con sus variables: el de la plantilla del negocio si existe, o el
+     * estándar del catálogo si todavía no la tiene (solo para mostrar).
+     *
+     * @param  int     $owner_id
+     * @param  string  $meta_template_name
+     * @param  array   $variables
+     * @return string
+     */
+    private function renderizar($owner_id, $meta_template_name, array $variables)
+    {
+        $template = WhatsappTemplate::where('user_id', (int) $owner_id)
+            ->where('meta_template_name', $meta_template_name)
+            ->first();
+
+        if (! is_null($template)) {
+            return $template->render_body($variables);
+        }
+
+        $body = WhatsappTemplateStandardHelper::body_preview_de($meta_template_name);
+
+        foreach ($variables as $index => $valor) {
+            $body = str_replace('{{'.($index + 1).'}}', (string) $valor, $body);
+        }
+
+        return $body;
+    }
+
+    /**
      * Las variables de `cc_cli_comprobante`, en el orden que declara WhatsappTemplateStandardHelper:
      * [Nombre, Nº de comprobante, Negocio].
      *
@@ -343,15 +450,16 @@ class SaleWhatsappSenderService
     }
 
     /**
-     * La plantilla `cc_cli_comprobante` del owner, solo si ya está aprobada en Meta.
+     * Una plantilla del owner (por defecto `cc_cli_comprobante`), solo si ya está aprobada en Meta.
      *
-     * @param  int  $owner_id
+     * @param  int     $owner_id
+     * @param  string  $meta_template_name
      * @return WhatsappTemplate|null
      */
-    private function plantilla_de_comprobante_aprobada($owner_id)
+    private function plantilla_aprobada($owner_id, $meta_template_name = self::TEMPLATE_META_NAME)
     {
         $template = WhatsappTemplate::where('user_id', (int) $owner_id)
-            ->where('meta_template_name', self::TEMPLATE_META_NAME)
+            ->where('meta_template_name', $meta_template_name)
             ->first();
 
         if (is_null($template) || $template->status !== 'aprobada') {

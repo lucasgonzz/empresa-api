@@ -97,9 +97,20 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         $this->assertSame(1, $respuesta['para_mostrar']['cantidad']);
         $this->assertSame('5493444001122', $respuesta['para_mostrar']['por_whatsapp']);
         $this->assertSame('marcos@test.local', $respuesta['para_mostrar']['por_mail']);
-        // Sin chat abierto sale como plantilla cc_cli_comprobante: el texto es el de la plantilla.
-        $this->assertStringContainsString('Hola Marcos Perez, te enviamos el comprobante 900004', $respuesta['para_mostrar']['texto_que_sale']);
-        $this->assertStringContainsString('Te enviamos un presupuesto', $respuesta['para_mostrar']['texto_que_sale']);
+        /*
+         * Sin chat abierto, el presupuesto sale con la plantilla de MENSAJE LIBRE (cc_cli_comprobante
+         * diría "de tu compra", que es falso para un presupuesto), con el link del PDF en el texto.
+         */
+        $this->assertStringContainsString(
+            'Hola Marcos Perez, te escribimos de ZZE Ferreteria Envios: te mandamos el presupuesto N° 900004. Lo ves acá: https://',
+            $respuesta['para_mostrar']['texto_que_sale']
+        );
+        $this->assertStringNotContainsString('de tu compra', $respuesta['para_mostrar']['texto_que_sale']);
+        // Del mail, el asunto y el texto REALES del payload que se encola.
+        $this->assertStringContainsString(
+            'Por mail: Asunto: "Te enviamos un presupuesto". Tu presupuesto. Te enviamos el presupuesto que preparamos para vos.',
+            $respuesta['para_mostrar']['texto_que_sale']
+        );
 
         $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
 
@@ -148,16 +159,16 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         $this->assertStringContainsString('El presupuesto N° 900004 mandado a Marcos Perez', $confirmada['resultado']);
         $this->assertCount(2, $confirmada['detalle']['enviados'], json_encode($confirmada));
 
-        // WhatsApp: la plantilla cc_cli_comprobante con el PDF, guardada en el chat (que se creó).
+        // WhatsApp: la plantilla de mensaje libre con el link del PDF, guardada en el chat (que se creó).
         $mensaje = WhatsappChatMessage::where('direction', 'out')->whereIn('whatsapp_chat_id', function ($q) {
             $q->select('id')->from('whatsapp_chats')->where('user_id', $this->dueno->id);
         })->first();
 
         $this->assertNotNull($mensaje);
         $this->assertSame('plantilla', $mensaje->source);
-        $this->assertSame('cc_cli_comprobante', $mensaje->template_meta_name);
-        $this->assertSame('document', $mensaje->media_type);
-        $this->assertStringContainsString('/budget/pdf/' . $presupuesto->id, $mensaje->media_url);
+        $this->assertSame('cc_cli_mensaje_libre', $mensaje->template_meta_name);
+        $this->assertStringContainsString('te mandamos el presupuesto N° 900004. Lo ves acá: ', $mensaje->body);
+        $this->assertStringContainsString('/budget/pdf/' . $presupuesto->id . '/1/0', $mensaje->body);
         $this->assertTrue(WhatsappBotSendService::es_id_simulado($mensaje->wa_message_id));
 
         // Mail: el mismo molde que la venta, con el link al PDF.
@@ -210,6 +221,96 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         });
 
         $this->assertTrue((bool) Sale::find($venta->id)->send_mail, 'La marca send_mail del botón del listado.');
+    }
+
+    /**
+     * 🔴 El link de la venta que ve el dueño es EL MISMO que lleva el mail (con pdf_column_profile_id).
+     *
+     * @test
+     */
+    public function el_link_de_la_venta_es_el_mismo_que_lleva_su_mail()
+    {
+        $ana = $this->cliente('Ana Gomez', null, 'ana@test.local');
+        $venta = $this->venta_impaga($ana, 0, 12500, 4883);
+
+        list($conversation, $assistant) = $this->vuelta('mandale la venta 4883 por mail');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'venta', 'numero' => 4883]);
+
+        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
+
+        $tarjeta = AiMessageAction::find($propuesta['tarjeta_id']);
+
+        $del_mail = null;
+
+        foreach (\App\Http\Controllers\Helpers\ComercioCityMailHelper::payload_de_venta(Sale::find($venta->id))->links as $link) {
+            if (strpos($link['url'], '/sale/pdf/') !== false) {
+                $del_mail = $link['url'];
+            }
+        }
+
+        $this->assertNotNull($del_mail, 'El mail de la venta tiene que llevar el link del comprobante.');
+        $this->assertStringContainsString('pdf_column_profile_id=', $del_mail);
+        $this->assertSame($del_mail, $tarjeta->datos['pdf_url']);
+        $this->assertStringContainsString('Asunto: "Nueva venta registrada"', $propuesta['para_mostrar']['texto_que_sale']);
+    }
+
+    /**
+     * M3: si el mismo comprobante ya salió hace un rato, la tarjeta lo avisa con la hora.
+     *
+     * @test
+     */
+    public function si_el_comprobante_ya_salio_hace_un_rato_la_tarjeta_lo_avisa()
+    {
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list($conversation, $assistant) = $this->vuelta('mandale el presupuesto 900004');
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'presupuesto', 'numero' => 900004]);
+
+        $this->assertArrayNotHasKey('aviso', $primera['para_mostrar']);
+
+        $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $primera['tarjeta_id']);
+
+        // Otra conversación, un rato después: el mismo presupuesto.
+        list($otra, $assistant_otra) = $this->vuelta('mandale el presupuesto 900004 a Marcos');
+
+        $segunda = $this->herramienta($otra, $assistant_otra, 'proponer_envio_de_comprobante', ['tipo' => 'presupuesto', 'numero' => 900004]);
+
+        $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
+        $this->assertStringContainsString('ya se lo mandaste a las', $segunda['para_mostrar']['aviso']);
+        $this->assertStringContainsString('ya se lo mandaste a las', AiMessageAction::find($segunda['tarjeta_id'])->presentacion['aviso']);
+    }
+
+    /**
+     * El recibo por WhatsApp con la ventana cerrada sale con mensaje libre y dice que es un recibo.
+     *
+     * @test
+     */
+    public function el_recibo_por_whatsapp_dice_que_es_un_recibo()
+    {
+        $luis = $this->cliente('Luis Diaz', '5493444005566', null);
+
+        CurrentAcount::create([
+            'user_id'     => $this->dueno->id,
+            'client_id'   => $luis->id,
+            'status'      => 'pago_from_client',
+            'num_receipt' => 78,
+            'detalle'     => 'Pago N°78',
+            'haber'       => 30000,
+            'debe'        => 0,
+            'saldo'       => 0,
+            'moneda_id'   => 1,
+        ]);
+
+        list($conversation, $assistant) = $this->vuelta('mandale el recibo 78 a Luis');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'recibo', 'numero' => 78]);
+
+        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
+        $this->assertStringContainsString('te mandamos el recibo de tu pago N° 78. Lo ves acá: https://', $propuesta['para_mostrar']['texto_que_sale']);
+        $this->assertStringContainsString('/current-acount/pdf/', $propuesta['para_mostrar']['texto_que_sale']);
     }
 
     /**
@@ -271,8 +372,8 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
      */
     public function un_canal_que_no_se_puede_se_dice_y_sin_ninguno_no_hay_tarjeta()
     {
-        // Plantilla sin aprobar y sin chat: por WhatsApp no; por mail sí.
-        $this->desaprobar_plantilla('cc_cli_comprobante');
+        // La plantilla de mensaje libre (la del presupuesto) sin aprobar y sin chat: por WhatsApp no; por mail sí.
+        $this->desaprobar_plantilla('cc_cli_mensaje_libre');
 
         $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
         $this->presupuesto($marcos);
@@ -289,7 +390,7 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
 
         $etiquetas = array_column($tarjeta->presentacion['renglones'], 'valor', 'etiqueta');
 
-        $this->assertStringContainsString('plantilla de comprobante todavía no está aprobada', $etiquetas['No va por WhatsApp']);
+        $this->assertStringContainsString('plantilla de mensaje libre todavía no está aprobada', $etiquetas['No va por WhatsApp']);
 
         // Sin teléfono ni mail: no hay por dónde.
         $sin_nada = $this->cliente('Sin Datos', null, null);

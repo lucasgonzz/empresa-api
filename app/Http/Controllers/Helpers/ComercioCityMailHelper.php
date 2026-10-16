@@ -46,6 +46,45 @@ class ComercioCityMailHelper
             return;
         }
 
+        $payload = self::payload_de_venta($sale, $updated);
+
+        /*
+         * 🔴 DECIDIDO: este ->queue() NO mira los rechazos (RechazosDeCorreoHelper) y NO se vuelve sincrónico. Un mail encolado se manda en un worker: si el
+         * servidor SMTP rechaza la casilla (un 550 en el RCPT TO, que SwiftMailer no convierte en excepción) pasa ahí, cuando quien lo pidió ya no está, y
+         * acá no hay nada que leer. Lo que se hace: el listener AnotarMailRechazadoPorElServidor deja el rechazo en el log. Lo que NO se hace, y por qué:
+         *   - volverlo sincrónico: el request de guardar la venta se quedaría esperando al SMTP;
+         *   - tirar en el worker: con QUEUE_CONNECTION=sync la excepción VUELVE a este request (un 500 sobre una venta que ya hizo commit en SaleController).
+         *     (Además, un job que tira pasa por Handler::report() y de ahí a GitHub; eso solo se evitaría sumando la excepción a Handler::$dontReport, pero no
+         *     alcanza por el motivo de arriba.)
+         * El log de abajo se escribe al ENCOLAR y no dice si el mail salió. La decisión está en TodoEnvioDeMailMiraLosRechazosTest::ENCOLADOS.
+         *
+         * Límite dicho, el mismo que el de `notificada_email_at` de las ofertas (ver abajo): `SaleController::send_client_mail()` y `send_client_mail_bulk()` (el botón
+         * "Enviar correo al cliente" del listado de ventas) llegan acá con `$force_send`, contestan 200 y escriben `sales.send_mail = true` apenas ENCOLAN: un rechazo en
+         * el worker no lo revierte. (`send_mail` es a la vez la casilla "enviar mail" del formulario de venta, o sea una preferencia: no es un defecto de este helper.)
+         */
+        Mail::to($email)->queue(new ComercioCityMail($payload));
+
+        Log::info('Se mando mail a '.$email);
+    }
+
+    /**
+     * El contenido del mail de una venta, tal cual lo encola new_sale(): asunto, textos, renglones y
+     * links (el del comprobante con `pdf_column_profile_id` y su token).
+     *
+     * Sacado de new_sale() SIN cambiar una coma (misión asistente-envios-a-clientes, 16/10/2026) para
+     * que el asistente le muestre al dueño, antes del sí, el asunto y el texto REALES del mail y el
+     * mismo link que lleva. Lo que el dueño lee es lo que sale.
+     *
+     * @param Sale $sale Venta con cliente.
+     * @param bool $updated Si true, asunto y textos de "venta actualizada".
+     * @return ComercioCityMailPayload
+     */
+    public static function payload_de_venta(Sale $sale, $updated = false)
+    {
+        $sale->loadMissing('client', 'moneda');
+
+        $client = $sale->client;
+
         $numVenta = $sale->num !== null && $sale->num !== '' ? (string) $sale->num : (string) $sale->id;
         $totalStr = self::format_total($sale);
         $fechaStr = self::format_created_at($sale);
@@ -116,7 +155,7 @@ class ComercioCityMailHelper
         }
 
 
-        $payload = new ComercioCityMailPayload([
+        return new ComercioCityMailPayload([
             'subject' => $updated ? 'Venta actualizada' : 'Nueva venta registrada',
             'title' => $updated ? 'Se actualizo tu venta' : 'Se registró una venta',
             'paragraphs' => [
@@ -128,24 +167,6 @@ class ComercioCityMailHelper
             'closing' => 'Muchas gracias por elegirnos.',
             'preheader' => 'Venta #' . $numVenta . ' · ' . $totalStr,
         ]);
-
-        /*
-         * 🔴 DECIDIDO: este ->queue() NO mira los rechazos (RechazosDeCorreoHelper) y NO se vuelve sincrónico. Un mail encolado se manda en un worker: si el
-         * servidor SMTP rechaza la casilla (un 550 en el RCPT TO, que SwiftMailer no convierte en excepción) pasa ahí, cuando quien lo pidió ya no está, y
-         * acá no hay nada que leer. Lo que se hace: el listener AnotarMailRechazadoPorElServidor deja el rechazo en el log. Lo que NO se hace, y por qué:
-         *   - volverlo sincrónico: el request de guardar la venta se quedaría esperando al SMTP;
-         *   - tirar en el worker: con QUEUE_CONNECTION=sync la excepción VUELVE a este request (un 500 sobre una venta que ya hizo commit en SaleController).
-         *     (Además, un job que tira pasa por Handler::report() y de ahí a GitHub; eso solo se evitaría sumando la excepción a Handler::$dontReport, pero no
-         *     alcanza por el motivo de arriba.)
-         * El log de abajo se escribe al ENCOLAR y no dice si el mail salió. La decisión está en TodoEnvioDeMailMiraLosRechazosTest::ENCOLADOS.
-         *
-         * Límite dicho, el mismo que el de `notificada_email_at` de las ofertas (ver abajo): `SaleController::send_client_mail()` y `send_client_mail_bulk()` (el botón
-         * "Enviar correo al cliente" del listado de ventas) llegan acá con `$force_send`, contestan 200 y escriben `sales.send_mail = true` apenas ENCOLAN: un rechazo en
-         * el worker no lo revierte. (`send_mail` es a la vez la casilla "enviar mail" del formulario de venta, o sea una preferencia: no es un defecto de este helper.)
-         */
-        Mail::to($email)->queue(new ComercioCityMail($payload));
-
-        Log::info('Se mando mail a '.$email);
     }
 
     /**
@@ -279,10 +300,29 @@ class ComercioCityMailHelper
             return null;
         }
 
+        self::encolar_al_cliente($email, self::payload_de_presupuesto($budget, $pdf_url));
+
+        return $email;
+    }
+
+    /**
+     * El contenido del mail de un presupuesto, tal cual lo encola nuevo_presupuesto(). Público para
+     * que el asistente le muestre al dueño el asunto y el texto reales antes del sí.
+     *
+     * @param \App\Models\Budget $budget  Presupuesto con su cliente.
+     * @param string             $pdf_url URL del PDF, YA con su token.
+     * @return ComercioCityMailPayload
+     */
+    public static function payload_de_presupuesto(Budget $budget, $pdf_url)
+    {
+        $budget->loadMissing('client');
+
+        $client = $budget->client;
+
         $numero = $budget->num !== null && $budget->num !== '' ? (string) $budget->num : (string) $budget->id;
         $total = self::format_monto($budget->total, $budget->moneda_id);
 
-        $payload = new ComercioCityMailPayload([
+        return new ComercioCityMailPayload([
             'subject' => 'Te enviamos un presupuesto',
             'title' => 'Tu presupuesto',
             'paragraphs' => [
@@ -290,7 +330,7 @@ class ComercioCityMailHelper
                 'En el link de abajo podés ver el detalle completo.',
             ],
             'detail_lines' => [
-                ['label' => 'Cliente', 'value' => $client->name ?: '—', 'bold_label' => true],
+                ['label' => 'Cliente', 'value' => (!is_null($client) && $client->name) ? $client->name : '—', 'bold_label' => true],
                 ['label' => 'Nº presupuesto', 'value' => $numero, 'bold_label' => true],
                 ['label' => 'Total', 'value' => $total, 'bold_label' => true],
                 ['label' => 'Fecha', 'value' => self::format_fecha_hora($budget->created_at), 'bold_label' => true],
@@ -301,10 +341,6 @@ class ComercioCityMailHelper
             'closing' => 'Muchas gracias por elegirnos.',
             'preheader' => 'Presupuesto #' . $numero . ' · ' . $total,
         ]);
-
-        self::encolar_al_cliente($email, $payload);
-
-        return $email;
     }
 
     /**
@@ -328,10 +364,29 @@ class ComercioCityMailHelper
             return null;
         }
 
+        self::encolar_al_cliente($email, self::payload_de_recibo($recibo, $pdf_url));
+
+        return $email;
+    }
+
+    /**
+     * El contenido del mail de un recibo, tal cual lo encola nuevo_recibo(). Público para que el
+     * asistente le muestre al dueño el asunto y el texto reales antes del sí.
+     *
+     * @param \App\Models\CurrentAcount $recibo  Pago de un cliente.
+     * @param string                    $pdf_url URL del PDF, YA con su token.
+     * @return ComercioCityMailPayload
+     */
+    public static function payload_de_recibo(CurrentAcount $recibo, $pdf_url)
+    {
+        $recibo->loadMissing('client');
+
+        $client = $recibo->client;
+
         $numero = $recibo->num_receipt !== null && $recibo->num_receipt !== '' ? (string) $recibo->num_receipt : (string) $recibo->id;
         $monto = self::format_monto($recibo->haber, $recibo->moneda_id);
 
-        $payload = new ComercioCityMailPayload([
+        return new ComercioCityMailPayload([
             'subject' => 'Te enviamos el recibo de tu pago',
             'title' => 'Recibimos tu pago',
             'paragraphs' => [
@@ -339,7 +394,7 @@ class ComercioCityMailHelper
                 'En el link de abajo podés ver el detalle completo.',
             ],
             'detail_lines' => [
-                ['label' => 'Cliente', 'value' => $client->name ?: '—', 'bold_label' => true],
+                ['label' => 'Cliente', 'value' => (!is_null($client) && $client->name) ? $client->name : '—', 'bold_label' => true],
                 ['label' => 'Nº recibo', 'value' => $numero, 'bold_label' => true],
                 ['label' => 'Importe', 'value' => $monto, 'bold_label' => true],
                 ['label' => 'Fecha', 'value' => self::format_fecha_hora($recibo->created_at), 'bold_label' => true],
@@ -350,10 +405,6 @@ class ComercioCityMailHelper
             'closing' => 'Muchas gracias por elegirnos.',
             'preheader' => 'Recibo #' . $numero . ' · ' . $monto,
         ]);
-
-        self::encolar_al_cliente($email, $payload);
-
-        return $email;
     }
 
     /**
