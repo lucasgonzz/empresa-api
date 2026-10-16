@@ -12,9 +12,11 @@ use App\Http\Controllers\Helpers\MasiveUpdateHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\ExtencionEmpresa;
+use App\Models\Image;
 use App\Models\MasiveUpdate;
 use App\Models\Provider;
 use App\Models\SubCategory;
@@ -28,6 +30,8 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
+use Intervention\Image\ImageManager;
 use Tests\EmpresaTestCase;
 
 /**
@@ -84,6 +88,9 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
     /** @var Category */
     protected $electricidad;
 
+    /** @var array<int, string> Archivos de imágenes que el alta con foto dejó en storage/app/public. */
+    protected $archivos_a_limpiar = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -92,6 +99,8 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
         config(['services.anthropic.api_key' => 'clave-de-prueba-p72']);
 
         Http::fake();
+
+        Storage::fake('local');
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
@@ -109,6 +118,14 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
 
     protected function tearDown(): void
     {
+        foreach ($this->archivos_a_limpiar as $nombre) {
+            $ruta = storage_path() . '/app/public/' . $nombre;
+
+            if ($nombre !== '' && is_file($ruta)) {
+                @unlink($ruta);
+            }
+        }
+
         User::where('id', $this->dueno->id)->update($this->columnas_originales);
 
         foreach ($this->extensiones_enganchadas as $extencion) {
@@ -340,7 +357,7 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
         $this->assertNull(Article::where('user_id', $this->dueno->id)->where('name', 'Cinta aisladora P72')->first());
 
         // "Sin categoría" a propósito: se arma, sin categoría, como antes.
-        foreach (['', 'sin categoría', null] as $vacio) {
+        foreach (['', 'sin categoría', 0] as $vacio) {
 
             list($conversation, $assistant) = $this->conversacion('Cargala sin categoría');
 
@@ -355,6 +372,138 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
 
             $this->assertNull($tarjeta->datos['payload']['category_id']);
         }
+
+        /*
+         * 🔴 Un null crudo NO es "sin categoría" (chequeo independiente): es lo que manda un modelo que
+         * no eligió nada, y esquivaba la guarda.
+         */
+        list($conversation, $assistant) = $this->conversacion();
+
+        $con_null = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Cinta aisladora P72 null', 'price' => 3500, 'category_id' => null, 'sub_category_id' => null],
+        ]);
+
+        $this->assertFalse($con_null['ok'], json_encode($con_null));
+        $this->assertStringStartsWith('No se armó ninguna tarjeta: falta la categoría', (string) $con_null['error']);
+    }
+
+    /**
+     * 🔴 Con una categoría que tiene subcategorías, sin sub_category_id no se arma: el error trae las
+     * subcategorías DE ESA categoría. El vacío explícito ("") sí se acepta, y una categoría sin
+     * subcategorías no pide nada.
+     *
+     * @test
+     */
+    public function una_categoria_con_subcategorias_exige_la_subcategoria_o_el_vacio_explicito()
+    {
+        $this->con_categorias();
+
+        $pinturas = Category::create(['name' => 'Pinturas P72', 'user_id' => $this->dueno->id, 'num' => 974]);
+
+        list($conversation, $assistant) = $this->conversacion('Cargame el martillo');
+
+        $sin_sub = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Martillo sin sub P72', 'category_id' => 'Herramientas P72'],
+        ]);
+
+        $this->assertFalse($sin_sub['ok'], json_encode($sin_sub));
+        $this->assertStringStartsWith('No se armó ninguna tarjeta: falta la subcategoría', (string) $sin_sub['error']);
+        $this->assertSame(['Accesorios P72', 'Eléctricas P72', 'Manuales P72'], $sin_sub['opciones']['sub_category_id']);
+        $this->assertSame('Martillo sin sub P72', $sin_sub['opciones']['reenvia_igual']['datos']['name']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        $vacia = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Martillo sin sub P72', 'category_id' => 'Herramientas P72', 'sub_category_id' => ''],
+        ]);
+
+        $this->assertTrue(!empty($vacia['ok']), json_encode($vacia));
+
+        $payload = AiMessageAction::find($vacia['tarjeta_id'])->datos['payload'];
+
+        $this->assertSame((int) $this->herramientas->id, (int) $payload['category_id']);
+        $this->assertNull($payload['sub_category_id']);
+
+        $sin_subcategorias = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Látex P72', 'category_id' => 'Pinturas P72'],
+        ]);
+
+        $this->assertTrue(!empty($sin_subcategorias['ok']), json_encode($sin_subcategorias));
+        $this->assertSame((int) $pinturas->id, (int) AiMessageAction::find($sin_subcategorias['tarjeta_id'])->datos['payload']['category_id']);
+    }
+
+    /**
+     * 🔴 El reintento no pierde nada: el error de la categoría trae `opciones.reenvia_igual` con la
+     * llamada que llegó (datos y extras), y reenviarla sumando la categoría y la subcategoría crea el
+     * artículo con la foto y la descripción.
+     *
+     * @test
+     */
+    public function el_reintento_con_reenvia_igual_crea_el_articulo_con_la_foto()
+    {
+        $this->con_categorias();
+
+        list($conversation, $assistant) = $this->conversacion('Me llegaron estos martillos, cargalo');
+
+        // La foto de internet, colgada del assistant en curso (como la deja la búsqueda por código).
+        $binario = (string) (new ImageManager())->canvas(12, 12, '#0B84F8')->encode('png');
+        $path = 'asistente_imagenes/' . $this->dueno->id . '/' . $assistant->id . '/1.png';
+
+        Storage::disk('local')->put($path, $binario);
+
+        $foto = AiMessageImagen::create([
+            'ai_message_id' => $assistant->id,
+            'user_id'       => $this->dueno->id,
+            'orden'         => 1,
+            'path'          => $path,
+            'mime'          => 'image/png',
+            'bytes'         => strlen($binario),
+        ]);
+
+        $error = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Martillo Tramontina P72', 'bar_code' => '7891114091069'],
+            'imagen_id'   => $foto->id,
+            'descripcion' => 'Martillo de uña con cabo de madera.',
+        ]);
+
+        $this->assertFalse($error['ok'], json_encode($error));
+        $this->assertStringContainsString('EXACTAMENTE los mismos datos y extras', (string) $error['error']);
+        $this->assertNull(AiMessageImagen::find($foto->id)->gestionada_at, 'El error no sella la foto.');
+
+        $reenvia = $error['opciones']['reenvia_igual'];
+
+        $this->assertSame('article', $reenvia['entidad']);
+        $this->assertSame((int) $foto->id, (int) $reenvia['imagen_id']);
+        $this->assertSame('Martillo de uña con cabo de madera.', $reenvia['descripcion']);
+        $this->assertSame(['name' => 'Martillo Tramontina P72', 'bar_code' => '7891114091069'], $reenvia['datos']);
+
+        // El modelo reenvía EXACTAMENTE eso, sumando la categoría y la subcategoría.
+        $reenvia['datos']['category_id'] = 'Herramientas P72';
+        $reenvia['datos']['sub_category_id'] = 'Manuales P72';
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $reenvia);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Martillo Tramontina P72')->first();
+
+        $this->assertNotNull($articulo);
+
+        foreach (Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->get() as $image) {
+            $this->archivos_a_limpiar[] = basename((string) $image->hosting_url);
+        }
+
+        $this->assertSame('7891114091069', $articulo->bar_code);
+        $this->assertSame((int) $this->herramientas->id, (int) $articulo->category_id);
+        $this->assertSame((int) $this->sub_de('Manuales P72', $this->herramientas)->id, (int) $articulo->sub_category_id);
+        $this->assertSame(1, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count(), 'El artículo nace con la foto.');
+        $this->assertSame(1, DB::table('descriptions')->where('article_id', $articulo->id)->count(), 'Y con la descripción.');
     }
 
     /**
@@ -562,6 +711,44 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
         $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $de_otra['error']);
     }
 
+    /**
+     * Ubicar un registro por nombre para editarlo: la frase entera como siempre; lo que encaja SOLO
+     * por palabras vuelve como `faltan` con las opciones, aunque sea uno (elegir mal es grave).
+     *
+     * @test
+     */
+    public function la_edicion_por_nombre_que_encaja_solo_por_palabras_pregunta()
+    {
+        $articulo = Article::create([
+            'name'    => 'DUCHA DE MANO METAL GLOA P72',
+            'user_id' => $this->dueno->id,
+            'status'  => 'active',
+            'cost'    => 1000,
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion('Subile el costo a la ducha gloa');
+
+        $por_palabras = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'article',
+            'registro' => 'ducha gloa p72',
+            'cambios'  => ['cost' => 1100],
+        ]);
+
+        $this->assertFalse($por_palabras['ok'], json_encode($por_palabras));
+        $this->assertCount(1, $por_palabras['faltan']);
+        $this->assertSame([['id' => (int) $articulo->id, 'nombre' => 'DUCHA DE MANO METAL GLOA P72']], $por_palabras['opciones']['article']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        $por_frase = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'article',
+            'registro' => 'metal gloa p72',
+            'cambios'  => ['cost' => 1100],
+        ]);
+
+        $this->assertTrue(!empty($por_frase['ok']), json_encode($por_frase));
+        $this->assertSame((int) $articulo->id, (int) AiMessageAction::find($por_frase['tarjeta_id'])->datos['id']);
+    }
+
     // =====================================================================
     // 3. El precio de venta en el resultado
     // =====================================================================
@@ -601,6 +788,9 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
         $this->assertEqualsWithDelta($final, (float) $resultado['precio_de_venta'], self::DELTA);
         $this->assertStringContainsString('precio de venta ' . FormatoIaHelper::monto($final), $resultado['precio_de_venta_texto']);
         $this->assertStringContainsString('costo ' . FormatoIaHelper::monto(9000), $resultado['precio_de_venta_texto']);
+
+        // 🔴 Sin margen: el texto lo dice (el martillo de demo3 se vendía al costo más el IIBB).
+        $this->assertStringContainsString('SIN margen de ganancia: se vende al costo más impuestos', $resultado['precio_de_venta_texto']);
 
         // Y lo que quedó guardado en cada campo de la tarjeta, legible.
         $guardados = array_column($resultado['campos_guardados'], 'valor', 'etiqueta');
