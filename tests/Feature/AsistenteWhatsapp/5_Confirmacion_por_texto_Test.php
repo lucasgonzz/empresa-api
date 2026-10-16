@@ -128,10 +128,12 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
          * (proponer_movimiento_de_stock, proponer_stock_en_deposito, proponer_presupuesto y
          * proponer_permiso_de_empleado), y la misión asistente-mcp (22/9/2026) sumó las cuatro
          * acciones de pantalla después de ésas (que_acciones_de_pantalla_hay,
-         * consultar_por_pantalla, proponer_accion_de_pantalla y proponer_borrado_por_pantalla). Son
-         * las mismas que fija ChatIa/15_Acciones_service_y_job_Test.
+         * consultar_por_pantalla, proponer_accion_de_pantalla y proponer_borrado_por_pantalla), y la
+         * misión asistente-envios-a-clientes (16/10/2026) sumó los tres envíos a clientes al final
+         * (proponer_envio_de_comprobante, proponer_recordatorios_de_cobro y
+         * proponer_promocion_por_whatsapp). Son las mismas que fija ChatIa/15_Acciones_service_y_job_Test.
          */
-        $this->assertCount(39, $nombres, 'Treinta y seis de la pantalla más las tres del canal de WhatsApp.');
+        $this->assertCount(42, $nombres, 'Treinta y nueve de la pantalla más las tres del canal de WhatsApp.');
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(

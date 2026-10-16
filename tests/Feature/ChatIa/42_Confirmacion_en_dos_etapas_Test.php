@@ -447,6 +447,15 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
                 AiMessageAction::TIPO_PRESUPUESTO,
                 AiMessageAction::TIPO_ACCION_PANTALLA,
                 AiMessageAction::TIPO_BORRADO_PANTALLA,
+                /*
+                 * Misión asistente-envios-a-clientes (16/10/2026), a propósito y por un motivo
+                 * vecino al de los controllers: lo que hacen SALE DEL SISTEMA (Kapso en el acto, un
+                 * mail encolado, un job por cliente que con la cola sync manda adentro del dispatch).
+                 * Un rollback no desmanda un WhatsApp: ver el comentario en TIPOS_DE_DOS_ETAPAS.
+                 */
+                AiMessageAction::TIPO_ENVIO_COMPROBANTE,
+                AiMessageAction::TIPO_RECORDATORIOS_COBRO,
+                AiMessageAction::TIPO_PROMOCION_WHATSAPP,
             ],
             EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS
         );
