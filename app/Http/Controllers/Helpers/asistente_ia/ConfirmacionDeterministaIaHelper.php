@@ -157,13 +157,23 @@ class ConfirmacionDeterministaIaHelper
 
         $texto = is_object($accion->resultado) && isset($accion->resultado->texto) ? (string) $accion->resultado->texto : '';
 
-        return [
+        $exito = [
             'ok'         => true,
             'tarjeta_id' => (int) $accion_id,
             'estado'     => AiMessageAction::ESTADO_CONFIRMADA,
             'resultado'  => $texto,
             'nota'       => ConfirmacionPorTextoIaHelper::NOTA_EJECUTADA,
         ];
+
+        /* El mismo `detalle` que arma traducir() para la confirmación que ganó: el aviso tiene que llegar igual. */
+        $detalle = ConfirmacionPorTextoIaHelper::detalle_del_resultado($accion->resultado, (string) $accion->tipo);
+
+        if (count($detalle)) {
+
+            $exito['detalle'] = $detalle;
+        }
+
+        return $exito;
     }
 
     /**
@@ -185,7 +195,7 @@ class ConfirmacionDeterministaIaHelper
             return '[El sistema ya confirmó la tarjeta #' . $id . ' por el sí de la persona. Resultado: '
                 . ($texto === '' ? 'quedó registrada (sin número que decir)' : $texto)
                 . '. Contale el resultado con esas palabras y seguí con lo que haya quedado pendiente del pedido; '
-                . 'no la vuelvas a confirmar.]';
+                . 'no la vuelvas a confirmar.' . self::aviso_del_resultado($resultado) . ']';
         }
 
         $error = isset($resultado['error']) ? trim((string) $resultado['error']) : '';
@@ -193,6 +203,29 @@ class ConfirmacionDeterministaIaHelper
         return '[El sistema intentó confirmar la tarjeta #' . $id . ' por el sí de la persona y NO se pudo: '
             . ($error === '' ? EjecutorAccionesIaHelper::MENSAJE_ERROR_GENERICO : $error)
             . '. Contale ese motivo tal cual y no digas que quedó cargado.]';
+    }
+
+    /**
+     * " Aviso de esta carga: …" con el `aviso` que trae el resultado de la ejecución, o "".
+     *
+     * 🔴 SIN ESTO EL «DALE» SE COMÍA EL AVISO (chequeo independiente de la misión
+     * recordatorios-whatsapp, 16/10/2026). confirmar_carga_pendiente le devuelve al modelo el
+     * `detalle` entero de traducir(), y ahí viene el `aviso` del resultado; esta nota leía solo el
+     * texto. Hoy el único resultado de ejecución que trae `aviso` es el de la Agenda (tarea nueva y
+     * cambios): es lo que dice si a esa hora le llega un recordatorio por WhatsApp o que no se lo
+     * prometa. Sin él, el «dale» que confirma «recordame el viernes a las 10» dejaba al modelo
+     * prometiendo —o negando— un aviso a ciegas.
+     *
+     * @param  array  $resultado  Lo que devolvió la confirmación.
+     * @return string
+     */
+    protected static function aviso_del_resultado(array $resultado)
+    {
+        $aviso = isset($resultado['detalle']['aviso']) && is_scalar($resultado['detalle']['aviso'])
+            ? trim((string) $resultado['detalle']['aviso'])
+            : '';
+
+        return $aviso === '' ? '' : ' Aviso de esta carga, para vos: ' . $aviso;
     }
 
     /**

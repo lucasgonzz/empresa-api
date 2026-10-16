@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
+use App\Http\Controllers\Helpers\asistente_ia\RecordatoriosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
@@ -643,6 +644,79 @@ class AsistenteController extends Controller
         if (!$encontrado) {
 
             return response()->json(['message' => 'Aviso no encontrado.'], 404);
+        }
+
+        return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * GET admin-sync/asistente/recordatorios-pendientes  (query `plantilla=1|0`)
+     *
+     * Los recordatorios de la Agenda que vencieron y todavía no salieron (misión
+     * recordatorios-whatsapp, 16/10/2026): «recordame el viernes a las 10 que…», consultado por el
+     * admin cada 5 minutos. Mismo molde que avisos-pendientes: el admin consulta, manda el WhatsApp
+     * por el número del asistente y recién después marca con recordatorios/avisado. La lista y los
+     * textos los arma RecordatoriosDelAsistenteHelper::pendientes().
+     *
+     * 🔴 LA CONSULTA ES EL ANUNCIO. Antes de contestar se guarda, por dueño y por dos horas, que el
+     * admin consulta y si tiene la plantilla de Meta (`plantilla=1`): es lo único que habilita al
+     * asistente a prometerle al dueño que el recordatorio le va a llegar. Un admin viejo nunca pega
+     * acá, y entonces no se promete nada.
+     *
+     * @param  Request  $request
+     * @return JsonResponse  200 {recordatorios:[{id, tarea_id, fecha, hora, detalle, texto, ai_conversation_id, ruta}]} · 401 · 403 · 409
+     */
+    public function recordatorios_pendientes(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        RecordatoriosDelAsistenteHelper::anunciar((int) $dueno->id, $request->query('plantilla'));
+
+        return response()->json([
+            'recordatorios' => RecordatoriosDelAsistenteHelper::pendientes($dueno),
+        ], 200);
+    }
+
+    /**
+     * POST admin-sync/asistente/recordatorios/avisado  body {id, whatsapp_message_id?}
+     *
+     * Sella el recordatorio de ese día como mandado y lo deja en la conversación de WhatsApp del
+     * dueño como un mensaje del asistente (ver RecordatoriosDelAsistenteHelper::marcar_avisado). El
+     * `id` viaja en el BODY y no en la ruta: lleva `:`. Igual que avisos/avisado, el admin lo llama
+     * SOLO después de que el WhatsApp salió.
+     *
+     * Idempotente: una segunda llamada no pisa la marca ni duplica el mensaje.
+     *
+     * @param  Request  $request
+     * @return JsonResponse  200 {ok:true} · 401 · 403 · 404 id desconocido, mal formado o de otro dueño · 409
+     */
+    public function recordatorio_avisado(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        $encontrado = RecordatoriosDelAsistenteHelper::marcar_avisado(
+            $dueno,
+            $request->input('id'),
+            $request->input('whatsapp_message_id')
+        );
+
+        if (!$encontrado) {
+
+            return response()->json(['message' => 'Recordatorio no encontrado.'], 404);
         }
 
         return response()->json(['ok' => true], 200);
