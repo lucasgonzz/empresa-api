@@ -301,6 +301,8 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
             'el compromiso con otras palabras no pierde la marca: dejé' => ["Dejé tu compra lista.\n[PEDIDO:1 taladro]", 'Dejé tu compra lista.', 'pedido', '1 taladro', ''],
             'el compromiso con otras palabras no pierde la marca: el jefe' => ["Lo hablo con mi jefe y te digo.\n[CONSULTA:descuento por cantidad]", 'Lo hablo con mi jefe y te digo.', 'consulta', 'descuento por cantidad', ''],
             'el compromiso con otras palabras no pierde la marca: una persona' => ["Te paso con una persona del equipo.\n[CONSULTA:reclamo por una compra]", 'Te paso con una persona del equipo.', 'consulta', 'reclamo por una compra', ''],
+            'la palabra con las letras separadas' => ["Dejame averiguarlo y te confirmo.\n\n[C O N S U L T A:si hacen envíos a San Benito]", 'Dejame averiguarlo y te confirmo.', 'consulta', 'si hacen envíos a San Benito', ''],
+            'marca inventada con las letras separadas' => ["Sí, aceptamos tarjeta en hasta 3 cuotas.\n[C U O T A:3 cuotas]", 'Sí, aceptamos tarjeta en hasta 3 cuotas.', '', '', ''],
             'foto con el código en blanco: sale del texto' => ["Tenemos el taladro.\n[FOTO:   ]", 'Tenemos el taladro.', '', '', ''],
             'la marca iba primera: el cuerpo sale recortado' => ["[CONSULTA:x] Lo consulto y te confirmo.", 'Lo consulto y te confirmo.', 'consulta', 'x', ''],
             'un corchete de cierre de más' => ["Lo consulto y te confirmo.\n[CONSULTA:x]]", 'Lo consulto y te confirmo.', 'consulta', 'x', ''],

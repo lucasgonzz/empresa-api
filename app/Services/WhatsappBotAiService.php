@@ -208,11 +208,13 @@ SUMMARY;
      * corchetes no es una marca. `\b` evita llevarse `[PEDIDOS]`; el `\s*` del principio se come el espacio de
      * antes para no dejar un hueco en la oración. El detalle admite un nivel de corchetes adentro
      * (`[CONSULTA:precio de [la mecha] de 8 mm]`): si cortara en el primer `]`, el resto quedaría a la vista.
+     * Las letras de la palabra pueden venir separadas por espacios (`[C O N S U L T A:…]`): medido contra DeepSeek
+     * (16/10/2026), una respuesta salió así y sin esto la marca entera le llegaba al cliente.
      * Grupo 1 = tipo; grupo 2 = detalle (no existe en la forma `[PEDIDO]`).
      *
      * @var string
      */
-    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(PEDIDO|CONSULTA)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]*|\s*\]+)[*_`]*/iu';
+    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(P\s*E\s*D\s*I\s*D\s*O|C\s*O\s*N\s*S\s*U\s*L\s*T\s*A)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]*|\s*\]+)[*_`]*/iu';
 
     /**
      * Una marca INVENTADA por el modelo al final del texto: una línea que es solo `[MAYÚSCULAS]` o
@@ -225,7 +227,7 @@ SUMMARY;
      *
      * @var string
      */
-    private const INVENTED_MARKER_PATTERN = '/(?:^|\n)[ \t]*\[\s*(?!FOTO\b)[A-ZÁÉÍÓÚÑ_]{3,}\s*(?::(?:[^\[\]\n]|\[[^\]\n]*\])*)?\][ \t]*$/u';
+    private const INVENTED_MARKER_PATTERN = '/(?:^|\n)[ \t]*\[\s*(?!F\s?O\s?T\s?O\b)(?:[A-ZÁÉÍÓÚÑ_][ ]?){3,}\s*(?::(?:[^\[\]\n]|\[[^\]\n]*\])*)?\][ \t]*$/u';
 
     /**
      * Un corchete que se abre al FINAL del texto y no se cierra: una marca cortada por el proveedor a mitad de
@@ -547,7 +549,8 @@ RULE;
             self::FOLLOW_UP_MARKER_PATTERN,
             function ($matches) use (&$follow_up, &$follow_up_note, &$saco_marca) {
                 $saco_marca = true;
-                $tipo = mb_strtolower($matches[1], 'UTF-8');
+                // Sin los espacios entre letras (`C O N S U L T A` → `consulta`).
+                $tipo = mb_strtolower((string) preg_replace('/\s+/', '', $matches[1]), 'UTF-8');
                 $nota = $this->clean_follow_up_note(isset($matches[2]) ? $matches[2] : '');
 
                 // El pedido gana a la consulta; entre dos del mismo tipo, la primera.
