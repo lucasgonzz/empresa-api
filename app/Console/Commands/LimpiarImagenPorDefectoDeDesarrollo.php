@@ -120,14 +120,25 @@ class LimpiarImagenPorDefectoDeDesarrollo extends Command
         $aplicar = (bool) $this->option('aplicar');
 
         $user_id = $this->option('user_id');
-        $acotar = !is_null($user_id) && $user_id !== '';
+
+        /*
+         * "Se escribio --user_id" y "option() devolvio un valor" NO son lo mismo. `{--user_id=}` es
+         * una opcion con valor OPCIONAL: `--user_id` pelado (sin `=` ni valor) llega como null,
+         * igual que si no se hubiera escrito, y `--user_id=` llega como ''. Si "sin valor" se
+         * tomara como "sin filtro", `--aplicar --user_id $ID` con `$ID` vacio en el shell terminaria
+         * limpiando A TODOS los dueños de la base en vez de uno. Por eso se mira tambien la linea de
+         * comandos con hasParameterOption(), que anda igual con la consola real y con el input de
+         * `Artisan::call()` (el de los tests).
+         */
+        $acotar = !is_null($user_id) || $this->input->hasParameterOption('--user_id');
 
         /*
          * Un --user_id mal tipeado no se castea en silencio: (int) "2700x" da 2700 y con --aplicar
-         * el comando escribiria sobre un dueño que nadie pidio. Se corta antes de leer nada.
+         * el comando escribiria sobre un dueño que nadie pidio. Pelado, vacio, no numerico, cero:
+         * se corta antes de leer nada.
          */
-        if ($acotar && !ctype_digit((string) $user_id)) {
-            $this->error('--user_id tiene que ser un numero entero (recibi "' . $user_id . '"). No se hizo nada.');
+        if ($acotar && (!ctype_digit((string) $user_id) || (int) $user_id < 1)) {
+            $this->error('--user_id tiene que ser un numero entero positivo (recibi "' . (string) $user_id . '"). No se hizo nada.');
             return 1;
         }
 

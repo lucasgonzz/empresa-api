@@ -702,6 +702,32 @@ class ImagenPorDefectoDeDesarrolloTest extends EmpresaTestCase
     }
 
     /**
+     * `--user_id` PELADO (sin valor) y `--user_id=` (vacío) se rechazan igual que uno inválido: no
+     * se toman como "sin filtro". Con la opción de valor opcional de Laravel, el pelado llega como
+     * null (indistinguible de no haberlo escrito) y el vacío como '': si el comando los tratara como
+     * "barrer todo", `--aplicar --user_id $ID` con `$ID` vacío limpiaría a TODOS los dueños.
+     *
+     * En el input de `Artisan::call()` un `null` es la opción pelada.
+     *
+     * @return void
+     */
+    public function test_un_user_id_pelado_o_vacio_o_cero_corta_sin_tocar_nada()
+    {
+        $dueno = $this->crear_dueno();
+        $configuracion = $this->crear_configuracion($dueno, self::URL_DEL_CASO);
+
+        foreach ([null, '', '0', 0] as $sin_valor) {
+
+            list($codigo, $salida) = $this->correr(['--aplicar' => true, '--user_id' => $sin_valor]);
+
+            $this->assertSame(1, $codigo, '--user_id con ' . var_export($sin_valor, true) . ' tendría que cortar con código 1.');
+            $this->assertStringContainsString('No se hizo nada', $salida);
+            $this->assertStringNotContainsString('--- Resumen ---', $salida, 'Cortó tarde: llegó a barrer.');
+            $this->assertSame(self::URL_DEL_CASO, $this->url_de($configuracion), 'Se escribió con un --user_id sin valor.');
+        }
+    }
+
+    /**
      * El comando está registrado (lo carga `Kernel::commands()` al escanear la carpeta) y NO está
      * agendado en el scheduler: se corre a mano, por cliente, con Lucas adelante.
      *
