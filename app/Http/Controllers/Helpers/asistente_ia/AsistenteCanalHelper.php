@@ -161,14 +161,7 @@ class AsistenteCanalHelper
             return $pedida;
         }
 
-        $reciente = AiConversation::where('user_id', $dueno->id)
-                                    ->where('auth_user_id', $dueno->id)
-                                    ->where('origen', AiConversation::ORIGEN_WHATSAPP)
-                                    ->whereNotNull('last_message_at')
-                                    ->where('last_message_at', '>', Carbon::now()->subHours(self::HORAS_CORTE))
-                                    ->orderBy('last_message_at', 'DESC')
-                                    ->orderBy('id', 'DESC')
-                                    ->first();
+        $reciente = self::conversacion_vigente($dueno);
 
         /*
          * 🔴 UN HILO POR TAREA. Con conversación vigente, la IA decide si este mensaje sigue el
@@ -193,6 +186,29 @@ class AsistenteCanalHelper
             'auth_user_id' => $dueno->id,
             'origen'       => AiConversation::ORIGEN_WHATSAPP,
         ]);
+    }
+
+    /**
+     * La conversación de WhatsApp vigente del dueño: la última que habló hace menos de HORAS_CORTE,
+     * o null. Es el paso 2 de conversacion(), sin la decisión de tema ni la creación.
+     *
+     * Existe aparte desde la misión recordatorios-whatsapp (16/10/2026): el recordatorio de la
+     * Agenda viaja con el id de la conversación donde va a caer la respuesta del dueño, y tiene que
+     * ser exactamente la que este canal elegiría. Es una consulta pura: no llama a la IA ni crea nada.
+     *
+     * @param  \App\Models\User  $dueno
+     * @return \App\Models\AiConversation|null
+     */
+    public static function conversacion_vigente(User $dueno)
+    {
+        return AiConversation::where('user_id', $dueno->id)
+                                ->where('auth_user_id', $dueno->id)
+                                ->where('origen', AiConversation::ORIGEN_WHATSAPP)
+                                ->whereNotNull('last_message_at')
+                                ->where('last_message_at', '>', Carbon::now()->subHours(self::HORAS_CORTE))
+                                ->orderBy('last_message_at', 'DESC')
+                                ->orderBy('id', 'DESC')
+                                ->first();
     }
 
     /**

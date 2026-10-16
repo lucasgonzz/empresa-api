@@ -55,12 +55,33 @@ class NormalizarMargenCero extends Command
     protected $description = 'Pone en null los margenes de ganancia guardados en 0, que dejan trabados el precio manual y el margen en la ficha del articulo.';
 
     /**
-     * @return int  0 siempre que el comando haya podido correr.
+     * @return int  0 si el comando pudo correr; 1 si el --user_id es invalido (no se toca nada).
      */
     public function handle()
     {
         $aplicar = (bool) $this->option('aplicar');
         $user_id = $this->option('user_id');
+
+        /*
+         * "Se escribio --user_id" y "option() devolvio un valor" NO son lo mismo. `{--user_id=}` es
+         * una opcion con valor OPCIONAL: `--user_id` pelado llega como null (igual que si no se
+         * hubiera escrito) y `--user_id=` llega como ''. Si "sin valor" se tomara como "sin filtro",
+         * `--aplicar --user_id $ID` con `$ID` vacio en el shell normalizaria A TODOS los dueños de
+         * la base en vez de uno. Por eso se mira tambien la linea de comandos con
+         * hasParameterOption(), que anda igual con la consola real y con `Artisan::call()`.
+         * Mismo criterio que articles:limpiar-imagen-por-defecto-de-desarrollo.
+         */
+        $acotar = !is_null($user_id) || $this->input->hasParameterOption('--user_id');
+
+        /*
+         * Un --user_id mal tipeado no se castea en silencio: (int) "500x" da 500 y con --aplicar se
+         * escribiria sobre un dueño que nadie pidio. Pelado, vacio, no numerico o cero: se corta
+         * ANTES de leer o escribir nada.
+         */
+        if ($acotar && (!ctype_digit((string) $user_id) || (int) $user_id < 1)) {
+            $this->error('--user_id tiene que ser un numero entero positivo (recibi "' . (string) $user_id . '"). No se hizo nada.');
+            return 1;
+        }
 
         /*
          * Se compara contra 0 y no con un LIKE sobre el texto: la columna es
@@ -71,7 +92,7 @@ class NormalizarMargenCero extends Command
         $query = Article::whereNotNull('percentage_gain')
                         ->where('percentage_gain', '=', 0);
 
-        if (!is_null($user_id) && $user_id !== '') {
+        if ($acotar) {
             $query->where('user_id', (int) $user_id);
             $this->line('Limitado al user_id ' . (int) $user_id . '.');
         }
@@ -130,7 +151,7 @@ class NormalizarMargenCero extends Command
                         ->whereNull('deleted_at')
                         ->whereNotNull('percentage_gain')
                         ->where('percentage_gain', '=', 0)
-                        ->when(!is_null($user_id) && $user_id !== '', function ($q) use ($user_id) {
+                        ->when($acotar, function ($q) use ($user_id) {
                             return $q->where('user_id', (int) $user_id);
                         })
                         ->update([
