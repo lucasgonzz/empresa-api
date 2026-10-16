@@ -447,10 +447,23 @@ class PropuestaTareaIaHelper {
 
         $detalle = EntradaDeCargaIa::texto($input, 'detalle');
 
-        if ($detalle !== '') {
+        /*
+         * La hora (misión recordatorios-whatsapp, 16/10/2026): va escrita adelante del detalle, igual
+         * que en proponer_tarea, y AgendaTareaHelper::validar() deriva de ahí `hora_aviso`, así que
+         * reescribir el prefijo es mover el recordatorio. Una hora que no se entiende se pregunta.
+         */
+        $hora_pedida = EntradaDeCargaIa::valor($input, 'hora');
 
-            $nuevos['detalle'] = $detalle;
+        $quitar_hora = self::es_quitar_la_hora($hora_pedida);
+
+        $hora = $quitar_hora || EntradaDeCargaIa::vacio($hora_pedida) ? null : self::hora_legible($hora_pedida);
+
+        if (!$quitar_hora && !EntradaDeCargaIa::vacio($hora_pedida) && is_null($hora)) {
+
+            return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
         }
+
+        $nuevos['detalle'] = self::detalle_con_hora($nuevos['detalle'], $detalle, $hora, $quitar_hora);
 
         $fecha_pedida = EntradaDeCargaIa::valor($input, 'fecha');
 
@@ -690,13 +703,99 @@ class PropuestaTareaIaHelper {
             $pending->{$columna} = $valor;
         }
 
+        /*
+         * Misma regla que la tarea nueva: un cambio con hora que confirma el dueño pide el
+         * recordatorio. Sin hora no se toca (el recordatorio igual no sale: no hay `hora_aviso`).
+         */
+        if (self::pide_el_recordatorio($contexto, $columnas)) {
+
+            $pending->avisar_por_whatsapp = 1;
+        }
+
         $pending->save();
 
-        return [
+        $resultado = [
             'texto'    => 'Tarea actualizada',
             'ruta'     => self::ruta_de_la_agenda(),
             'tarea_id' => (int) $pending->id,
         ];
+
+        // Solo con hora: una edición del monto o de las notas no tiene nada que decir del recordatorio.
+        if (!empty($columnas['hora_aviso'])) {
+
+            $resultado['aviso'] = self::aviso_del_recordatorio($contexto, $columnas);
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * El detalle de la tarjeta de cambios con la hora puesta, cambiada o sacada.
+     *
+     * - `hora` explícita: se escribe adelante del detalle (el pedido, o el actual), sacando la que
+     *   hubiera. 🔴 La hora pedida le gana a un prefijo que venga en el detalle: el modelo suele
+     *   reenviar el detalle de la tarjeta anterior con la hora vieja adelante (mismo caso que
+     *   proponer_tarea), y nunca tiene que quedar «11:00 · 10:00 · llamar…».
+     * - "sin hora": se saca.
+     * - sin `hora`: un detalle nuevo CON prefijo manda (es la hora que escribió el modelo); uno nuevo
+     *   SIN prefijo conserva la hora que la tarea tenía. Cambiar el texto de «llamar a Juan» no tiene
+     *   por qué apagar su recordatorio.
+     *
+     * @param  string  $actual  El detalle guardado.
+     * @param  string  $pedido  El `detalle` de la herramienta ('' si no vino).
+     * @param  string|null  $hora  "HH:MM" pedida, o null.
+     * @param  bool  $quitar_hora
+     * @return string
+     */
+    protected static function detalle_con_hora($actual, $pedido, $hora, $quitar_hora) {
+
+        $base = $pedido !== '' ? $pedido : (string) $actual;
+
+        if ($quitar_hora) {
+
+            return AgendaTareaHelper::detalle_sin_hora($base);
+        }
+
+        if (!is_null($hora)) {
+
+            return mb_substr($hora.' · '.AgendaTareaHelper::detalle_sin_hora($base), 0, self::LARGO_DETALLE);
+        }
+
+        $hora_actual = AgendaTareaHelper::hora_del_detalle((string) $actual);
+
+        if ($pedido !== '' && is_null(AgendaTareaHelper::hora_del_detalle($pedido)) && !is_null($hora_actual)) {
+
+            return mb_substr(substr($hora_actual, 0, 5).' · '.AgendaTareaHelper::detalle_sin_hora($pedido), 0, self::LARGO_DETALLE);
+        }
+
+        return $base;
+    }
+
+    /**
+     * true si la `hora` de proponer_cambios_en_tarea pide sacar la hora ("sin hora", "ninguna"...).
+     *
+     * 🔴 UN VACÍO NO SACA LA HORA. La IA suele mandar las claves opcionales en blanco (mismo motivo
+     * por el que unas notas vacías no borran las que había): si "" sacara la hora, cualquier cambio
+     * de fecha apagaría el recordatorio sin que nadie lo haya pedido. Para sacarla hay que decirlo.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function es_quitar_la_hora($valor) {
+
+        if ($valor === false) {
+
+            return true;
+        }
+
+        if (!is_string($valor)) {
+
+            return false;
+        }
+
+        $texto = preg_replace('/\s+/u', ' ', mb_strtolower(trim($valor)));
+
+        return in_array($texto, ['sin hora', 'sin', 'ninguna', 'no', 'quitar', 'quitar hora', 'quitar la hora', 'sacar', 'sacar hora', 'sacar la hora', 'borrar', 'borrar hora', 'borrar la hora'], true);
     }
 
     // -------------------------------------------------------------------------------------------

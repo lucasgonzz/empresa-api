@@ -439,7 +439,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_cambios_en_tarea',
-                'description'  => 'Arma la tarjeta con cambios en una tarea de la agenda (detalle, fecha, repetición, gasto asociado o notas), para que la persona la confirme: NO la modifica. Mandá solo lo que cambia. Si la respuesta trae "faltan", preguntá eso. Si trae "error" con opciones.tareas, ese tarea_id no era de ninguna tarea y no se armó nada: no se lo cuentes a la persona; elegí de esa lista la que pidió (o buscala con consultar_tareas por su texto) y volvé a llamar ahora con su tarea_id. Si trae "duda", el número también era el de una tarjeta: hacé lo que dice. Con otro "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta con cambios en una tarea de la agenda (detalle, fecha, hora, repetición, gasto asociado o notas), para que la persona la confirme: NO la modifica. Mandá solo lo que cambia. Si la respuesta trae "faltan", preguntá eso. Si trae "error" con opciones.tareas, ese tarea_id no era de ninguna tarea y no se armó nada: no se lo cuentes a la persona; elegí de esa lista la que pidió (o buscala con consultar_tareas por su texto) y volvé a llamar ahora con su tarea_id. Si trae "duda", el número también era el de una tarjeta: hacé lo que dice. Con otro "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -453,6 +453,10 @@ class HerramientasDeCarga
                         'fecha'                 => [
                             'type'        => 'string',
                             'description' => 'AAAA-MM-DD. En una tarea que se repite es la primera fecha de la regla.',
+                        ],
+                        'hora'                  => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM para poner o cambiar la hora de la tarea ("a las 11" es "11:00"), o "sin hora" para sacarla. Va escrita adelante del detalle: no la pongas también en "detalle". Sin esta clave la tarea conserva la hora que tenía.',
                         ],
                         'repetir'               => self::esquema_de_repeticion(),
                         'quitar_repeticion'     => [

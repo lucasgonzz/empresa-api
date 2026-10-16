@@ -106,4 +106,79 @@ class Recordatorio_al_confirmar_la_tarea_Test extends RecordatoriosTestCase
         // En los tres casos la tarea pide el aviso igual: lo que cambia es solo qué se promete.
         $this->assertSame(4, Pending::where('user_id', $this->comercio->id)->where('detalle', 'like', '%ZZR16%')->where('avisar_por_whatsapp', 1)->count());
     }
+
+    /**
+     * proponer_cambios_en_tarea con `hora`: reescribe el prefijo (sin apilar horas), `hora_aviso` lo
+     * sigue y, confirmado por el dueño, pide el aviso. "sin hora" la saca.
+     *
+     * @test
+     */
+    public function los_cambios_con_hora_reescriben_el_prefijo_y_la_hora_del_aviso()
+    {
+        $tarea = $this->tarea(['detalle' => '10:00 · ZZR16 Pagar la luz', 'avisar_por_whatsapp' => 0]);
+
+        $conversacion = $this->conversacion_whatsapp();
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversacion);
+
+        $respuesta = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'hora'     => '11',
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame('11:00 · ZZR16 Pagar la luz', $accion->datos['detalle']);
+
+        $resultado = PropuestaTareaIaHelper::ejecutar_cambios($contexto, $accion);
+
+        $this->assertSame(PropuestaTareaIaHelper::AVISO_SIN_RECORDATORIO, $resultado['aviso'], 'Sin anuncio del admin no se promete el aviso.');
+
+        $tarea = $tarea->fresh();
+
+        $this->assertSame('11:00 · ZZR16 Pagar la luz', $tarea->detalle);
+        $this->assertSame('11:00:00', $tarea->hora_aviso);
+        $this->assertTrue($tarea->avisar_por_whatsapp, 'El dueño confirmó un cambio con hora: pide el aviso.');
+
+        // Un detalle nuevo SIN hora conserva la que tenía: cambiar el texto no saca el recordatorio.
+        $sin_prefijo = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'detalle'  => 'ZZR16 Pagar la luz y el gas',
+        ]);
+
+        $this->assertSame('11:00 · ZZR16 Pagar la luz y el gas', AiMessageAction::find($sin_prefijo['tarjeta_id'])->datos['detalle']);
+
+        // La hora pedida le gana al prefijo viejo que el modelo reenvía en el detalle: nunca dos horas.
+        $reenviado = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'detalle'  => '11:00 · ZZR16 Pagar la luz',
+            'hora'     => '12',
+        ]);
+
+        $this->assertSame('12:00 · ZZR16 Pagar la luz', AiMessageAction::find($reenviado['tarjeta_id'])->datos['detalle']);
+
+        // "sin hora" la saca, y con ella el recordatorio.
+        $sacar = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'hora'     => 'sin hora',
+        ]);
+
+        $accion = AiMessageAction::find($sacar['tarjeta_id']);
+
+        $this->assertSame('ZZR16 Pagar la luz', $accion->datos['detalle']);
+
+        PropuestaTareaIaHelper::ejecutar_cambios($contexto, $accion);
+
+        $this->assertNull($tarea->fresh()->hora_aviso);
+
+        // Una hora que no se entiende se pregunta.
+        $rara = PropuestaTareaIaHelper::proponer_cambios($contexto, $this->mensaje($conversacion, 'assistant', 'pendiente'), [
+            'tarea_id' => $tarea->id,
+            'hora'     => '25',
+        ]);
+
+        $this->assertNotEmpty($rara['faltan']);
+    }
 }
