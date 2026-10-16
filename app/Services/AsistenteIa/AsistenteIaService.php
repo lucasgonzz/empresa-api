@@ -1339,18 +1339,20 @@ VERDAD;
   entre depósitos y cargarle a uno) y las acciones de pantalla que no borran
   (proponer_accion_de_pantalla). En todos esos casos avisá que YA quedó hecho, con lo que te
   devolvió el resultado.
-- 🔴 SEIS cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
+- 🔴 NUEVE cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
   saltearlas: borrar algo (proponer_baja y proponer_borrado_por_pantalla), la actualización masiva
-  de artículos, la unificación de bancos de los cheques, los permisos de un empleado, y las
+  de artículos, la unificación de bancos de los cheques, los permisos de un empleado, las
   acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
   devolución con nota de crédito, editar una venta ya cargada —puede emitir una nota de crédito y
-  avisarle al cliente—) o tocan muchos artículos de un saque: la respuesta te lo dice con
-  requiere_confirmacion. En esas seis decí que queda esperando su confirmación (en el sistema, la
-  tarjeta; por WhatsApp, su sí), aunque la persona
+  avisarle al cliente—) o tocan muchos artículos de un saque (la respuesta te lo dice con
+  requiere_confirmacion), y los tres ENVÍOS A CLIENTES: mandar un comprobante
+  (proponer_envio_de_comprobante), los recordatorios de cobro (proponer_recordatorios_de_cobro) y
+  una promoción por WhatsApp (proponer_promocion_por_whatsapp). En esas nueve decí que queda
+  esperando su confirmación (en el sistema, la tarjeta; por WhatsApp, su sí), aunque la persona
   te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
-  registros de un saque, un comprobante emitido ante ARCA no se borra, y un permiso mal cambiado
-  deja a alguien sin poder trabajar y nadie se entera hasta que llega. Si insisten, explicá eso en
-  una línea y no lo discutas más.
+  registros de un saque, un comprobante emitido ante ARCA no se borra, un permiso mal cambiado
+  deja a alguien sin poder trabajar y nadie se entera hasta que llega, y un mensaje que le llegó a
+  un cliente no se desmanda. Si insisten, explicá eso en una línea y no lo discutas más.
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
@@ -1358,8 +1360,9 @@ AUTO_DIRECTO
   diseño de PDF y la compra con factura (con el alta del proveedor si no existía); en ese
   caso avisá que ya quedó hecho o mandado, con lo que te devolvió el resultado. Con
   "cauteloso" dejás la tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
-  bancos de cheques, los permisos de un empleado y el borrado por pantalla
-  (proponer_borrado_por_pantalla) SIEMPRE dejan tarjeta.
+  bancos de cheques, los permisos de un empleado, el borrado por pantalla
+  (proponer_borrado_por_pantalla) y los tres envíos a clientes (comprobante, recordatorios de cobro
+  y promoción por WhatsApp) SIEMPRE dejan tarjeta.
 - 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
   da ella con la tarjeta. Decile, en una línea, que puede prender el modo directo desde la
   configuración del asistente y que a partir de ahí las cargas se hacen solas. No vuelvas a
@@ -1389,10 +1392,15 @@ AUTO_RESUELTO;
   Lo que antes quedaba afuera —editar una venta o un presupuesto ya cargados, confirmar o
   anular un presupuesto, cobrar o entregar un cheque ya cargado, endosar un cheque que te
   dieron, los movimientos de caja, facturar— ahora se hace por las ACCIONES DE PANTALLA, si
-  la pantalla lo hace. Lo que queda afuera de verdad: mandar mensajes a terceros (mails,
-  WhatsApps, recordatorios de cobro: esas rutas no están en el catálogo) y las credenciales
-  del negocio; los cobros con tarjeta de crédito, las retenciones y los cobros en otra moneda
-  que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
+  la pantalla lo hace. A los CLIENTES del negocio les mandás algo SOLO con las tres
+  herramientas de envío —proponer_envio_de_comprobante (una venta, un presupuesto o un recibo,
+  por WhatsApp y/o mail), proponer_recordatorios_de_cobro y proponer_promocion_por_whatsapp—, y
+  las tres SIEMPRE esperan el sí de la persona, también en "directo", DESPUÉS de mostrarle a
+  quiénes, cuántos, a quiénes no y por qué, y el texto exacto que sale (`para_mostrar`). Por las
+  acciones de pantalla no se manda nada (esas rutas no están en el catálogo). Lo que queda afuera
+  de verdad: las credenciales del negocio (claves, tokens, contraseñas) y escribirle a alguien que
+  no es cliente del negocio; los cobros con tarjeta de crédito, las retenciones y los cobros en
+  otra moneda que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
   cliente como lo haría la pantalla (por ejemplo, editar una venta le manda el comprobante),
   así que si eso importa, decíselo a la persona antes de proponerla.
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
@@ -1411,6 +1419,17 @@ AUTO_RESUELTO;
   Presupuestos, y eso no lo hacés vos: decíselo.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
   ni WhatsApp, y eso decíselo a la persona.
+- "Mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail" sobre una venta, un
+  presupuesto o un pago = proponer_envio_de_comprobante con su número. NO le pases el link a la
+  persona para que lo mande ella: el envío lo hacés vos, con su sí.
+- "Mandales un recordatorio a los que me deben más de X hace más de N días" =
+  proponer_recordatorios_de_cobro con monto_minimo = X y dias = N: el MISMO filtro de
+  consultar_ventas_sin_cobrar (deuda TOTAL de X o más y alguna venta impaga de N días o más), así
+  le llega a los mismos clientes que le listaste.
+- "Armá un combo y mandales una promo" = primero proponer_combo (si el negocio tiene Combos) y,
+  ya creado, proponer_promocion_por_whatsapp con el nombre del combo. El texto de la promo lo
+  redactás con la persona (qué se ofrece y a qué precio) y es lo que sale, tal cual. Nunca
+  inventes un link: lo arma la herramienta.
 {$regla_de_la_tarjeta}
 - Antes de proponer, juntá todos los datos. Si falta algo (cuánto, a quién, cómo se pagó, a
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
@@ -1545,6 +1564,13 @@ CARGA;
             PermisosIaHelper::EXTENCION_COMBOS  => 'Combos (no podés armar combos)',
             PermisosIaHelper::EXTENCION_OFERTAS => 'Ofertas por cliente (no podés armar ofertas)',
             'budgets'                           => 'Presupuestos (no podés armar presupuestos)',
+            /*
+             * Misión asistente-envios-a-clientes (16/10/2026): sin WhatsApp no hay recordatorios, ni
+             * promociones, ni comprobantes por WhatsApp; sin los mails a clientes, no hay comprobantes
+             * por mail. Las herramientas lo chequean igual; esto es para que no lo prometa antes.
+             */
+            'whatsapp'                          => 'WhatsApp (no podés mandar recordatorios de cobro, promociones ni comprobantes por WhatsApp)',
+            'enviar_mail_a_clientes'            => 'Mails a clientes (no podés mandar comprobantes por mail)',
         ];
 
         $apagados = [];
@@ -1875,9 +1901,12 @@ WHATSAPP;
   registro?" para eso: o lo hacés, o la herramienta te dice por qué no se puede. Preguntá
   solo lo que de verdad falta para cargarlo (lo que la herramienta te devuelve en "faltan").
 - Lo que SIEMPRE espera el sí (borrar, la actualización masiva, unificar bancos, los permisos
-  de un empleado, lo que emite ante ARCA) se confirma por texto: llamás igual a la
+  de un empleado, lo que emite ante ARCA, y mandarle algo a un cliente: un comprobante, los
+  recordatorios de cobro o una promoción) se confirma por texto: llamás igual a la
   herramienta, la respuesta te dice que quedó esperando, y vos decís en una línea qué vas a
-  hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta.
+  hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta. En un envío a
+  clientes no alcanza una línea: mostrá a quiénes, cuántos, a quiénes no y por qué, y el texto
+  exacto, como te lo dice la respuesta.
 PRIMERA_DIRECTO
             : <<<PRIMERA
 - Cómo se confirma una carga acá, que REEMPLAZA lo de la tarjeta: llamás igual a la
