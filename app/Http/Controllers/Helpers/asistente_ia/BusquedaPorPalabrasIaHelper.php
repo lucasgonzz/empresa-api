@@ -41,11 +41,18 @@ class BusquedaPorPalabrasIaHelper
 
     /**
      * Le agrega a la consulta el filtro por el texto que dijo la persona: la frase entera en alguna
-     * columna, o cada palabra que importa en alguna columna. Con texto vacío no filtra nada.
+     * columna, o cada palabra que importa en la PRIMERA columna (el nombre). Con texto vacío no
+     * filtra nada.
+     *
+     * 🔴 LAS PALABRAS SUELTAS SE BUSCAN SOLO EN EL NOMBRE (chequeo independiente, 16/10/2026). Con
+     * las palabras también contra el código de barras y el de proveedor, un número corto del pedido
+     * ("pintura blanca 4 litros") encajaba en el código de casi cualquier artículo, y un artículo que
+     * no tenía nada que ver quedaba como único candidato. Los códigos se siguen buscando como siempre:
+     * por la frase entera.
      *
      * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $query
      * @param  string  $texto
-     * @param  array<int, string>  $columnas  Las columnas donde buscar ('name', 'bar_code', 'articles.name'...).
+     * @param  array<int, string>  $columnas  Las columnas donde buscar la frase; la primera es el nombre ('name', 'articles.name'...).
      * @return \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder
      */
     public static function filtrar($query, $texto, array $columnas)
@@ -59,7 +66,9 @@ class BusquedaPorPalabrasIaHelper
 
         $palabras = self::palabras($texto);
 
-        return $query->where(function ($sub) use ($texto, $palabras, $columnas) {
+        $nombre = array_values($columnas)[0];
+
+        return $query->where(function ($sub) use ($texto, $palabras, $columnas, $nombre) {
 
             // La frase entera, como siempre.
             $sub->where(function ($frase) use ($texto, $columnas) {
@@ -68,23 +77,151 @@ class BusquedaPorPalabrasIaHelper
             });
 
             /*
-             * O cada palabra en alguna columna. Con una sola palabra igual a la frase no suma nada,
-             * pero con el plural recortado ("duchas") sí: por eso no se saltea.
+             * O cada palabra en el nombre. Con una sola palabra igual a la frase no suma nada, pero
+             * con el plural recortado ("duchas") sí: por eso no se saltea.
              */
             if (count($palabras)) {
 
-                $sub->orWhere(function ($todas) use ($palabras, $columnas) {
+                $sub->orWhere(function ($todas) use ($palabras, $nombre) {
 
                     foreach ($palabras as $palabra) {
 
-                        $todas->where(function ($una) use ($palabra, $columnas) {
-
-                            self::alguna_columna($una, $palabra, $columnas);
-                        });
+                        $todas->where($nombre, 'LIKE', '%' . addcslashes($palabra, '%_\\') . '%');
                     }
                 });
             }
         });
+    }
+
+    /**
+     * Ordena primero lo que tiene la FRASE ENTERA (lo que se encontraba antes), y después lo que
+     * encaja solo por palabras. Se llama ANTES del orderBy de siempre: con un tope de filas, lo que
+     * encaja por frase no puede quedar afuera por lo que encaja por palabras.
+     *
+     * Las columnas las pone el código que llama (nunca la persona); el texto viaja como binding.
+     *
+     * @param  mixed  $query
+     * @param  string  $texto
+     * @param  array<int, string>  $columnas
+     * @return mixed
+     */
+    public static function ordenar_por_frase($query, $texto, array $columnas)
+    {
+        $texto = trim((string) $texto);
+
+        if ($texto === '' || !count($columnas)) {
+
+            return $query;
+        }
+
+        $escapado = '%' . addcslashes($texto, '%_\\') . '%';
+
+        $condiciones = [];
+        $bindings = [];
+
+        foreach ($columnas as $columna) {
+
+            $condiciones[] = $columna . ' LIKE ?';
+            $bindings[] = $escapado;
+        }
+
+        return $query->orderByRaw('CASE WHEN (' . implode(' OR ', $condiciones) . ') THEN 0 ELSE 1 END', $bindings);
+    }
+
+    /**
+     * Los candidatos que tienen la frase entera en alguna de las columnas (lo que encontraba la
+     * búsqueda de antes), comparando sin acentos ni mayúsculas. Vacío si todos encajan solo por
+     * palabras.
+     *
+     * @param  iterable  $candidatos  Filas con esas columnas (modelos o stdClass).
+     * @param  string  $texto
+     * @param  array<int, string>  $columnas  Sin prefijo de tabla ('name', 'bar_code'...).
+     * @return array
+     */
+    public static function por_frase($candidatos, $texto, array $columnas)
+    {
+        $frase = self::normalizar($texto);
+
+        $con_la_frase = [];
+
+        foreach ($candidatos as $candidato) {
+
+            foreach ($columnas as $columna) {
+
+                $valor = isset($candidato->{$columna}) ? self::normalizar((string) $candidato->{$columna}) : '';
+
+                if ($frase !== '' && $valor !== '' && mb_strpos($valor, $frase) !== false) {
+
+                    $con_la_frase[] = $candidato;
+
+                    break;
+                }
+            }
+        }
+
+        return $con_la_frase;
+    }
+
+    /**
+     * true si es seguro tomar SIN PREGUNTAR un artículo que encajó solo por palabras: cada palabra
+     * está en su nombre, y cada palabra con números ("4", "10mm", "1/2") está como palabra entera del
+     * nombre, no adentro de otra ("4" no encaja en "1/4" ni en "40"). Un número es casi siempre la
+     * medida o la presentación: si no coincide entero, es otro artículo y se pregunta.
+     *
+     * @param  string  $nombre
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function es_seguro($nombre, $texto)
+    {
+        $palabras = self::palabras($texto);
+
+        if (!count($palabras)) {
+
+            return false;
+        }
+
+        $nombre = self::normalizar($nombre);
+
+        /* Se corta por espacios y separadores, no por "/" ni ".": "1/4" y "1.5" son UNA medida. */
+        $tokens = array_map(function ($token) {
+            return trim($token, "\"'.:");
+        }, preg_split('/[\s,;()]+/u', $nombre, -1, PREG_SPLIT_NO_EMPTY));
+
+        foreach ($palabras as $palabra) {
+
+            $palabra = self::normalizar($palabra);
+
+            if (preg_match('/\d/u', $palabra)) {
+
+                if (!in_array($palabra, $tokens, true)) {
+
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (mb_strpos($nombre, $palabra) === false) {
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Minúsculas y sin acentos, como compara la base (collation _ci) y ConsultasSistemaIaHelper::normalize_text.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function normalizar($texto)
+    {
+        return strtr(mb_strtolower(trim((string) $texto)), [
+            'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n',
+        ]);
     }
 
     /**
