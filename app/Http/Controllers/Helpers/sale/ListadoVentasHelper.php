@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Helpers\sale;
 
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Address;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -33,6 +35,17 @@ class ListadoVentasHelper
 
     /** Techo de `per_page`: mas que esto vuelve a ser "bajar el dia entero", que es lo que se quiere evitar. */
     const PER_PAGE_MAXIMO = 200;
+
+    /**
+     * Los cuatro permisos que acotan QUE ventas ve un empleado. Son los mismos slugs que leen la SPA
+     * (`get_address_param` / `get_employee_param` de mixins/route_functions.js y los dos navs de
+     * Ventas) y el catalogo de permisos (PermisosCatalogoHelper): si se cambia el criterio de uno,
+     * se cambia en los tres lados.
+     */
+    const PERMISO_SUCURSALES_TODAS = 'sale.index.addresses.all';
+    const PERMISO_SUCURSAL_PROPIA = 'sale.index.addresses.only_your';
+    const PERMISO_EMPLEADOS_TODOS = 'sale.index.employees.all';
+    const PERMISO_EMPLEADO_PROPIO = 'sale.index.employees.only_your';
 
     /**
      * Estado de la cuenta corriente de la venta tal como lo ve el navegador: el `status` de la
@@ -191,8 +204,10 @@ class ListadoVentasHelper
      * Espejo de `sales_to_show`: solapa de sucursal, solapa de empleado y las tres show options.
      *
      * Con "ver consolidadas" prendido, una contenedora sin `address_id` / `employee_id` pasa la
-     * solapa igual (`_mostrarContenedorConSucursal` / `_mostrarContenedorConEmpleado`), y pasa el
-     * filtro de metodo de pago igual: las contenedoras no tienen medios de pago propios.
+     * solapa que ELIGIO LA PERSONA igual (`_mostrarContenedorConSucursal` /
+     * `_mostrarContenedorConEmpleado`), y pasa el filtro de metodo de pago igual: las contenedoras
+     * no tienen medios de pago propios. La excepcion NO rige cuando el eje lo fija el servidor por
+     * permisos (`alcance_permitido()`): ahi la contenedora no pasa (ver el comentario del cuerpo).
      *
      * @param  \Illuminate\Database\Eloquent\Builder $query
      * @param  Request $request
@@ -202,14 +217,53 @@ class ListadoVentasHelper
     {
         $consolidadas = self::mostrar_consolidadas($request);
 
+        /*
+         * 🔴 EL ALCANCE DEL EMPLEADO LO IMPONE EL SERVIDOR, NO EL PEDIDO. NO LO "SIMPLIFIQUES" DE
+         * VUELTA A LEER SOLO LA QUERY STRING (misión ventas-total-visible-al-empleado, 16/10/2026).
+         *
+         * Hasta esa misión las solapas eran lo unico que acotaba lo que veia un empleado, y las
+         * armaba la SPA: la API filtraba por lo que le llegara. Era inocuo mientras el empleado sin
+         * `sale.index.total` no veia ningun numero; desde que todo empleado ve el Total, un pedido
+         * armado a mano (`address_id` / `employee_id` ajenos, o ninguno) devolveria el total de
+         * ventas que no tiene permitido ver. Mismo criterio que `RoadMapController::solo_sus_hojas()`.
+         *
+         * Se PISA el valor del pedido (no se intersecta) porque asi la SPA y la API no pueden
+         * discrepar: la solapa que la SPA arma para un empleado acotado es, por construccion, la
+         * que impone el servidor, y donde la SPA se equivoca (dos empleados con el mismo nombre, un
+         * nombre que no aparece en el catalogo) manda el servidor. Todo lo que sale de este conjunto
+         * --filas, COUNT del paginador, totales, sub-total del metodo de pago-- queda acotado junto.
+         *
+         * 🔴 LIMITES, para que nadie lea esto como "el servidor ya impone el alcance en todos
+         * lados": vale SOLO para este modo paginado (el de la pantalla de Ventas con `per_page`).
+         * Siguen siendo de la SPA, y no cambian con esta mision: el listado SIN `per_page`
+         * (Deposito, Por entregar, Por estado), el buscador general y los filtros de columna
+         * (`search/sale`, `global-search/sale`), los dos Excel, los contadores "(N)" de las solapas
+         * (`conteos_por_solapa`) y el permiso `sale.index.previus_days` (dias anteriores).
+         *
+         * Con el eje FIJADO por el servidor las contenedoras de facturacion consolidada NO pasan por
+         * la excepcion de "ver consolidadas": una contenedora nunca tiene sucursal ni empleado y su
+         * total repite el de ventas de cualquiera, asi que dejarla pasar le sumaba al empleado
+         * acotado importes que no son suyos. Con el eje libre (dueño, admin, "todos") la excepcion
+         * sigue como siempre: la solapa que eligio la persona no es una restriccion.
+         */
+        $alcance = self::alcance_permitido();
+
         /* Solapa de sucursal. */
         $address_id = $request->query('address_id');
 
+        /* La contenedora entra a la solapa de sucursal solo si el eje lo eligio la persona. */
+        $consolidadas_en_sucursal = $consolidadas;
+
+        if (!is_null($alcance['address_id'])) {
+            $address_id = $alcance['address_id'];
+            $consolidadas_en_sucursal = false;
+        }
+
         if (!is_null($address_id) && $address_id !== '') {
-            $query->where(function ($q) use ($address_id, $consolidadas) {
+            $query->where(function ($q) use ($address_id, $consolidadas_en_sucursal) {
                 $q->where('sales.address_id', $address_id);
 
-                if ($consolidadas) {
+                if ($consolidadas_en_sucursal) {
                     $q->orWhere(function ($q2) {
                         $q2->where('sales.is_consolidacion_facturacion', 1)
                            ->whereNull('sales.address_id');
@@ -222,6 +276,16 @@ class ListadoVentasHelper
         $only_owner = self::bandera($request, 'only_owner');
         $employee_id = $request->query('employee_id');
 
+        /* La contenedora entra a la solapa de empleado solo si el eje lo eligio la persona. */
+        $consolidadas_en_empleado = $consolidadas;
+
+        if (!is_null($alcance['employee_id'])) {
+            /* Un empleado acotado a sus ventas no puede pedir la solapa del dueño ni la de otro. */
+            $employee_id = $alcance['employee_id'];
+            $only_owner = false;
+            $consolidadas_en_empleado = false;
+        }
+
         if ($only_owner) {
             /* `!sale.employee_id` en el front: NULL y 0 son las dos formas de "sin empleado". */
             $query->where(function ($q) {
@@ -229,10 +293,10 @@ class ListadoVentasHelper
                   ->orWhere('sales.employee_id', 0);
             });
         } else if (!is_null($employee_id) && $employee_id !== '') {
-            $query->where(function ($q) use ($employee_id, $consolidadas) {
+            $query->where(function ($q) use ($employee_id, $consolidadas_en_empleado) {
                 $q->where('sales.employee_id', $employee_id);
 
-                if ($consolidadas) {
+                if ($consolidadas_en_empleado) {
                     $q->orWhere(function ($q2) {
                         $q2->where('sales.is_consolidacion_facturacion', 1)
                            ->whereNull('sales.employee_id');
@@ -625,6 +689,61 @@ class ListadoVentasHelper
         SaleArticlesEagerLoadHelper::apply_images_if_preferred($query, $user_id);
 
         return $query->forPage($page, $per_page)->get();
+    }
+
+    /**
+     * Alcance de ventas que el usuario de la sesion TIENE PERMITIDO ver, resuelto en el servidor a
+     * partir de sus permisos (y no de lo que mande el pedido).
+     *
+     * Es el espejo de lo que la SPA hace para armar las solapas de un empleado:
+     *
+     *   - Dueño (sin `owner_id`) o administrador (`admin_access`): sin restriccion. Es lo que dice
+     *     `can()` de la SPA y `Controller::is_admin()`.
+     *   - Sucursal: `addresses.all` gana sobre `addresses.only_your` ("si tiene tambien el de todas,
+     *     gana ese", dice el catalogo de permisos). Con `only_your` queda acotado a su
+     *     `users.address_id`; si no tiene sucursal asignada, o la que tiene ya no existe (se borro
+     *     y el id quedo colgado: `users.address_id` no tiene FK), NO se acota, porque la SPA
+     *     tampoco (`get_address_param` no la encuentra en el catalogo y cae a "todas") y acotar a
+     *     una sucursal inexistente le sacaria todas las ventas de golpe.
+     *   - Empleado: igual, `employees.all` gana sobre `employees.only_your`, que acota a sus propias
+     *     ventas (`sales.employee_id = users.id`).
+     *   - Sin ninguno de los permisos de un eje: sin restriccion en ese eje. Es lo que pasa hoy y
+     *     nadie pierde visibilidad por un permiso que nunca tuvo tildado (mismo criterio que
+     *     `RoadMapController::solo_sus_hojas()`).
+     *
+     * Esto NO mira `sale.index.total`: ese permiso decidia si la SPA mostraba el bloque de totales
+     * y ya no manda sobre el Total. La API nunca condiciono los totales a ese permiso.
+     *
+     * @param  \App\Models\User|null $usuario Usuario logueado (no el dueño). Null = el de la sesion.
+     * @return array ['address_id' => int|null, 'employee_id' => int|null]. Null = sin restriccion en ese eje.
+     */
+    static function alcance_permitido($usuario = null)
+    {
+        $alcance = ['address_id' => null, 'employee_id' => null];
+
+        if (is_null($usuario)) {
+            $usuario = UserHelper::user(false);
+        }
+
+        if (is_null($usuario) || is_null($usuario->owner_id) || $usuario->admin_access) {
+            return $alcance;
+        }
+
+        $permisos = $usuario->permissions->pluck('slug')->all();
+
+        if (!in_array(self::PERMISO_SUCURSALES_TODAS, $permisos)
+            && in_array(self::PERMISO_SUCURSAL_PROPIA, $permisos)
+            && $usuario->address_id
+            && Address::where('id', $usuario->address_id)->where('user_id', $usuario->owner_id)->exists()) {
+            $alcance['address_id'] = (int) $usuario->address_id;
+        }
+
+        if (!in_array(self::PERMISO_EMPLEADOS_TODOS, $permisos)
+            && in_array(self::PERMISO_EMPLEADO_PROPIO, $permisos)) {
+            $alcance['employee_id'] = (int) $usuario->id;
+        }
+
+        return $alcance;
     }
 
     /**
