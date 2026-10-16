@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -143,8 +144,45 @@ class ProviderOrderController extends Controller
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }
 
+    /**
+     * 🔴 La compra se resuelve por DUEÑO antes de leerla (misión tenencia-compra-show, 16/10/2026).
+     * Hasta hoy `show()` era `fullModel('ProviderOrder', $id)`, que busca por id pelado: en una base
+     * compartida (`u767360347_empresa`, 51 comercios, ids correlativos) devolvía la compra de otro
+     * comercio con su proveedor, artículos, costos y facturas. La compra ajena, la inexistente y lo
+     * que no es un id se contestan igual: 404. Ver compra_del_dueno_o_404().
+     */
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ProviderOrder', $id)], 200);
+
+        $no_es_del_dueno = $this->compra_del_dueno_o_404($id);
+
+        if (!is_null($no_es_del_dueno)) {
+            return $no_es_del_dueno;
+        }
+
+        return response()->json(['model' => $this->fullModel('ProviderOrder', (int) $id)], 200);
+    }
+
+    /**
+     * La tenencia de la compra que llega por id en la ruta (show, update, destroy). Devuelve null si
+     * la compra es del dueño de la sesión (un empleado cuenta como su dueño: `userId()`), y si no el
+     * 404 JSON que el llamador tiene que devolver SIN tocar nada. El mismo mensaje para la compra de
+     * otro comercio, la que no existe y un id que no es un id (`12abc`, `true`, `0`): no se confirma
+     * qué hay del otro lado. Reusa la lectura estricta y la consulta por dueño de ChequeHelper, que
+     * es la regla de tenencia del proyecto.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function compra_del_dueno_o_404($id) {
+
+        $id_del_dueno = ChequeHelper::id_del_dueno(ProviderOrder::class, $id, $this->userId());
+
+        if (is_null($id_del_dueno)) {
+
+            return response()->json(['message' => 'La compra no existe o no es de tu cuenta.'], 404);
+        }
+
+        return null;
     }
 
     /**
@@ -228,6 +266,14 @@ class ProviderOrderController extends Controller
     }
 
     public function update(Request $request, $id) {
+
+        // Tenencia ANTES de abrir la transacción y de pedir candados: sobre la compra de otro
+        // comercio no se escribe nada (ni la compra, ni los artículos, ni la cuenta del proveedor).
+        $no_es_del_dueno = $this->compra_del_dueno_o_404($id);
+
+        if (!is_null($no_es_del_dueno)) {
+            return $no_es_del_dueno;
+        }
 
         /*
          * Misma transacción que store() (tanda correctivos 2408, ítem 14): la actualización
@@ -322,7 +368,16 @@ class ProviderOrderController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderOrder::find($id);
+
+        // Tenencia antes de cualquier otra cosa: ProviderOrder es borrado duro, y borrar la compra de
+        // otro comercio devolvía su stock y rehacía la cuenta corriente de su proveedor.
+        $no_es_del_dueno = $this->compra_del_dueno_o_404($id);
+
+        if (!is_null($no_es_del_dueno)) {
+            return $no_es_del_dueno;
+        }
+
+        $model = ProviderOrder::find((int) $id);
 
         /*
          * 🔴 Una compra con notas de crédito a proveedor VIVAS no se borra (misión
@@ -453,7 +508,15 @@ class ProviderOrderController extends Controller
             Log::info($request->file('models')->getError());
         }
 
-        $provider_order = ProviderOrder::find($request->provider_order_id);
+        /*
+         * 🔴 La compra se busca por DUEÑO (misión tenencia-compra-show, 16/10/2026): con el
+         * `provider_order_id` de otro comercio, el import le adjuntaba los artículos del Excel, le
+         * movía el stock y le tocaba la cuenta corriente de su proveedor. Ajena e inexistente dan el
+         * mismo 404 de siempre.
+         */
+        $provider_order_id = ChequeHelper::id_del_dueno(ProviderOrder::class, $request->provider_order_id, $this->userId());
+
+        $provider_order = is_null($provider_order_id) ? null : ProviderOrder::find($provider_order_id);
 
         if (is_null($provider_order)) {
             return response()->json(['message' => 'No se encontró la compra a importar'], 404);
