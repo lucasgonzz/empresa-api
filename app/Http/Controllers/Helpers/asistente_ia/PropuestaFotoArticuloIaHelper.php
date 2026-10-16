@@ -364,15 +364,14 @@ class PropuestaFotoArticuloIaHelper
 
         $normalizado = ConsultasSistemaIaHelper::normalize_text($texto);
 
-        /* El `%` y el `_` que escriba la persona son literales, no comodines de LIKE. */
-        $escapado = addcslashes($texto, '%_\\');
-
+        /* El `%` y el `_` que escriba la persona son literales: los escapa BusquedaPorPalabrasIaHelper. */
         $candidatos = (clone $base)
-            ->where(function ($sub) use ($escapado) {
-                $sub->where('name', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
-            })
+            ->where(function ($sub) use ($texto) {
+                // Por palabras sueltas (misión asistente-altas-y-conversacion): ver BusquedaPorPalabrasIaHelper.
+                BusquedaPorPalabrasIaHelper::filtrar($sub, $texto, ['name', 'bar_code', 'provider_code']);
+            });
+
+        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($candidatos, $texto, ['name', 'bar_code', 'provider_code'])
             ->orderBy('name')
             ->limit(self::TOPE_CANDIDATOS + 1)
             ->get(self::COLUMNAS);
@@ -390,7 +389,21 @@ class PropuestaFotoArticuloIaHelper
             );
         }
 
-        if (count($candidatos) === 1) {
+        /*
+         * 🔴 Lo que tiene la FRASE ENTERA manda, como antes de la búsqueda por palabras; si nada la
+         * tiene, un artículo que encajó solo por palabras se toma sin preguntar únicamente si es
+         * seguro (cada número del pedido es una medida entera de su nombre): "pintura blanca 4 litros"
+         * no puede terminar en la de 1 litro. Si no, va como opción (chequeo independiente, 16/10/2026).
+         */
+        $con_la_frase = BusquedaPorPalabrasIaHelper::por_frase($candidatos, $texto, ['name', 'bar_code', 'provider_code']);
+
+        if (count($con_la_frase)) {
+
+            $candidatos = collect($con_la_frase);
+        }
+
+        if (count($candidatos) === 1
+            && (count($con_la_frase) || BusquedaPorPalabrasIaHelper::es_seguro((string) $candidatos[0]->name, $texto))) {
 
             return $candidatos[0];
         }

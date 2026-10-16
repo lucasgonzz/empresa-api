@@ -57,8 +57,11 @@ class ConfirmacionPorTextoIaHelper
      * contestó SaleController::store()). Si `resultado` viene vacío, no hay número que decir.
      */
     const NOTA_EJECUTADA = 'Ahora sí quedó registrado. Contale a la persona lo que dice `resultado`, '
-        . 'en una línea. 🔴 El número, el nombre y el total salen DE AHÍ, palabra por palabra: no los '
-        . 'saques de tu memoria ni de la conversación, y si `resultado` no trae número, no digas ninguno.';
+        . 'en una línea, y si viene `detalle`, sumá lo que importa de ahí: el total de una venta o un '
+        . 'presupuesto, el precio de venta de un artículo, qué campo quedó con qué valor (con su nombre '
+        . 'tal cual: una razón social no es un domicilio) y lo que no quedó. 🔴 El número, el nombre y el '
+        . 'total salen DE AHÍ (`resultado` y `detalle`), palabra por palabra: no los saques de tu memoria '
+        . 'ni de la conversación, y si no vienen, no digas ninguno.';
 
     /**
      * Confirma una carga propuesta en un turno anterior y devuelve el resultado para el tool_result.
@@ -362,19 +365,117 @@ class ConfirmacionPorTextoIaHelper
                 $texto = (string) $model->resultado->texto;
             }
 
-            return [
+            $respuesta = [
                 'ok'         => true,
                 'tarjeta_id' => (int) $accion_id,
                 'estado'     => is_null($model) ? null : (string) $model->estado,
                 'resultado'  => $texto,
                 'nota'       => self::NOTA_EJECUTADA,
             ];
+
+            $detalle = is_null($model) ? [] : self::detalle_del_resultado($model->resultado, (string) $model->tipo);
+
+            if (count($detalle)) {
+
+                $respuesta['detalle'] = $detalle;
+            }
+
+            return $respuesta;
         }
 
         $mensaje = isset($body['message']) ? (string) $body['message'] : EjecutorAccionesIaHelper::MENSAJE_ERROR_GENERICO;
 
         return RespuestaDeCargaIa::error($mensaje);
     }
+
+    /**
+     * Las claves del resultado que el modelo puede repetir además del texto, ya listas para leer
+     * (misión asistente-altas-y-conversacion, 16/10/2026).
+     *
+     * 🔴 POR QUÉ. Hasta acá traducir() le pasaba al modelo SOLO `resultado.texto` ("Presupuesto N° 900004
+     * creado") y NOTA_EJECUTADA le prohíbe dar un número que no venga ahí: en demo3 el asistente creó
+     * el presupuesto y la venta sin decir el total (el `total` estaba en el resultado y no llegaba), y
+     * del alta de un cliente contestó "con domicilio en Ferreteria El Clavo" —que era la razón social—
+     * porque no tenía de dónde saber qué campo quedó con qué valor y lo redactó leyendo el pedido.
+     *
+     * Es una LISTA CERRADA a propósito: el resultado de cada carga trae también rutas, ids y
+     * parámetros para la pantalla, y nada de eso tiene que llegarle al modelo ni a la persona. El
+     * `texto` no cambia (hay tests que lo comparan tal cual).
+     *
+     * @param  mixed  $resultado  El `resultado` de la tarjeta (objeto, como lo castea AiMessageAction).
+     * @return array<string, mixed>
+     */
+    public static function detalle_del_resultado($resultado, $tipo = '')
+    {
+        if (!is_object($resultado) && !is_array($resultado)) {
+
+            return [];
+        }
+
+        $resultado = json_decode(json_encode($resultado), true);
+
+        if (!is_array($resultado)) {
+
+            return [];
+        }
+
+        $detalle = [];
+
+        if (isset($resultado['numero']) && is_numeric($resultado['numero']) && (int) $resultado['numero'] > 0) {
+
+            $detalle['numero'] = (int) $resultado['numero'];
+        }
+
+        if (isset($resultado['total']) && is_numeric($resultado['total'])) {
+
+            $detalle['total'] = FormatoIaHelper::monto((float) $resultado['total']);
+        }
+
+        /*
+         * El registro que se acaba de CREAR o EDITAR, para usarlo en la misma vuelta (crear la
+         * subcategoría de gasto y cargar el gasto con ella, o cargarle stock al artículo recién creado)
+         * sin volver a buscarlo. Nunca el de una baja: ver AccionesIaHelper::linea_de_historial().
+         */
+        if (in_array((string) $tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION], true)
+            && isset($resultado['entidad'], $resultado['id']) && is_string($resultado['entidad'])
+            && is_numeric($resultado['id']) && (int) $resultado['id'] > 0) {
+
+            $detalle['registro'] = ['entidad' => $resultado['entidad'], 'id' => (int) $resultado['id']];
+        }
+
+        foreach (self::CLAVES_DEL_DETALLE as $clave) {
+
+            if (!array_key_exists($clave, $resultado)) {
+
+                continue;
+            }
+
+            $valor = $resultado[$clave];
+
+            if (is_null($valor) || $valor === '' || (is_array($valor) && !count($valor))) {
+
+                continue;
+            }
+
+            $detalle[$clave] = $valor;
+        }
+
+        return $detalle;
+    }
+
+    /**
+     * Las claves del resultado, además de `numero` y `total`, que viajan en `detalle` tal cual.
+     * Las agrega quien arma cada resultado (EjecutorGenericoIaHelper para las altas y ediciones,
+     * PropuestaActualizacionMasivaIaHelper para la masiva).
+     */
+    const CLAVES_DEL_DETALLE = [
+        'precio_de_venta_texto',
+        'campos_guardados',
+        'campos_que_no_quedaron',
+        'cambios_aplicados',
+        'ejemplos_de_precio',
+        'aviso',
+    ];
 
     /**
      * Corre la carga con la persona autenticada y deja la autenticación como estaba.

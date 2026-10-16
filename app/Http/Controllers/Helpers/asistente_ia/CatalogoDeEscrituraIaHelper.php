@@ -1582,6 +1582,18 @@ class CatalogoDeEscrituraIaHelper
 
             $respuesta['listas_de_precio'] = MargenesPorListaIaHelper::para_que_puedo_cargar($contexto);
             $respuesta['depositos'] = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
+
+            /*
+             * Y el árbol de categorías y subcategorías (misión asistente-altas-y-conversacion,
+             * 16/10/2026, D5): en demo3 la cinta y el martillo quedaron sin categoría porque el
+             * modelo no tenía de dónde elegirla. Solo si el negocio tiene categorías.
+             */
+            $categorias = CategoriasDelNegocioIaHelper::para_respuesta($contexto->owner_id);
+
+            if (!is_null($categorias)) {
+
+                $respuesta['categorias_del_negocio'] = $categorias;
+            }
         }
 
         return $respuesta;

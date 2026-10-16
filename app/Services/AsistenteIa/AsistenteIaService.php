@@ -1146,7 +1146,7 @@ class AsistenteIaService
          * si ejecutara solo, que es exactamente el criterio de la puerta de auto-confirmación.
          */
         $confianza = ConfianzaDelAgenteIaHelper::guardada($owner);
-        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) : '';
+        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) . $this->bloque_de_modulos_apagados($owner) : '';
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -1160,7 +1160,7 @@ class AsistenteIaService
          * tarjeta que la persona confirma" y en WhatsApp no hay tarjeta que
          * tocar: la confirmación es por texto.
          */
-        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones) : '';
+        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones, $confianza) : '';
 
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
@@ -1193,6 +1193,18 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- Leé el pedido como lo diría un comerciante (misión asistente-altas-y-conversacion, 16/10/2026):
+  "lo que más vendo de [proveedor]" es una pregunta de VENTAS: consultar_articulos_mas_vendidos
+  con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
+  compro a [proveedor]" es consultar_compras_a_un_proveedor. Que una frase nombre a un proveedor
+  no la vuelve una pregunta de compras.
+- "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
+  además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
+  monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
+  Nunca compares X contra lo atrasado solo.
+- Si una herramienta devuelve error con opciones porque el nombre no encajó y una opción es
+  claramente lo que dijo la persona (otra letra, sin tilde, abreviado), volvé a llamar con ese
+  nombre exacto y decile cuál usaste; si no es obvio, preguntá cuál.
 - 🔴 Para la PLATA de un renglón (de una venta, una compra, un presupuesto, un pedido o una
   nota de crédito) va siempre el campo `importe`, nunca `price` ni `cost`, que son de UNA
   unidad: sumar el precio o el costo da un número chico y creíble que no es plata. "Cuánto
@@ -1333,7 +1345,8 @@ VERDAD;
   acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
   devolución con nota de crédito, editar una venta ya cargada —puede emitir una nota de crédito y
   avisarle al cliente—) o tocan muchos artículos de un saque: la respuesta te lo dice con
-  requiere_confirmacion. En esas seis decí que dejaste la tarjeta para confirmar, aunque la persona
+  requiere_confirmacion. En esas seis decí que queda esperando su confirmación (en el sistema, la
+  tarjeta; por WhatsApp, su sí), aunque la persona
   te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
   registros de un saque, un comprobante emitido ante ARCA no se borra, y un permiso mal cambiado
   deja a alguien sin poder trabajar y nadie se entera hasta que llega. Si insisten, explicá eso en
@@ -1403,9 +1416,21 @@ AUTO_RESUELTO;
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
   nombre parecido, una cuenta en pesos y otra en dólares, varias subcategorías que encajan),
   preguntá en UN solo mensaje corto todo lo que falta, ofreciendo las opciones por su nombre.
-  No supongas montos, personas, cajas ni fechas. 🔴 Si la fecha que pidieron es futura, lo único
-  que puede faltar es el monto y la subcategoría: NO preguntes cómo se paga ni a qué caja va,
-  porque eso se pregunta el día que la tarea se marca como hecha.
+  No supongas montos, personas, cajas ni fechas. Pero lo que la persona YA dijo en esta
+  conversación no se vuelve a preguntar: si en el presupuesto de recién dijo "la sucursal 1", la
+  venta que sigue va con la sucursal 1 salvo que diga otra. Y si la herramienta encontró UN solo
+  artículo (o cliente) para lo que dijo, es ese: no le pidas que lo confirme.
+- 🔴 Lo que acabás de crear o tocar en esta conversación lo dice su línea "[Tarjeta …]", con el
+  id del registro (article_id, client_id…). Si la persona sigue hablando de eso ("llegaron 12",
+  "ponele la categoría", "el que creaste recién"), es ESE registro: usá ese id (en `registro` para
+  editarlo, en articulo_id para su stock) y no lo vuelvas a buscar, ni le pidas el código, la foto o
+  el nombre de nuevo. En "directo", el id de lo que acabás de crear viene en detalle.registro.
+- Si para un gasto (o una tarea con gasto) la subcategoría que nombró la persona no existe, la
+  creás vos con proponer_alta de expense_concept (y la categoría de gasto con expense_category si
+  tampoco existe) y seguís con el gasto. Nunca la mandes a crearla a la pantalla de Gastos.
+- 🔴 Si la fecha que pidieron es futura, lo único que puede faltar es el monto y la
+  subcategoría: NO preguntes cómo se paga ni a qué caja va, porque eso se pregunta el día que la
+  tarea se marca como hecha.
 - Si la herramienta devuelve "faltan", preguntá eso. Si devuelve "error", contá ese motivo
   tal cual y no agregues otro; la excepción es el que empieza con "No se armó ninguna tarjeta"
   y trae opciones: ese es para vos, no para la persona — elegí de las opciones y volvé a llamar
@@ -1470,6 +1495,8 @@ AUTO_RESUELTO;
   avisa al terminar: nunca digas que ya se aplicó. Los proveedores, categorías, subcategorías
   y marcas van por su nombre; si hay varios que encajan, preguntá cuál.
   "Subí (o bajá) el precio X %" es el campo precio_final, no precio_manual.
+  Si la propuesta trae ejemplos_de_precio, contale a la persona dos o tres (precio de venta antes
+  → después) antes de pedir el sí, y repetilos cuando se ejecute.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.
@@ -1489,6 +1516,54 @@ AUTO_RESUELTO;
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Los módulos de carga que ESTE negocio no tiene, en una línea (misión asistente-altas-y-conversacion,
+     * 16/10/2026). Vacío si los tiene todos.
+     *
+     * 🔴 POR QUÉ. En demo3 —sin la extensión de Combos— el asistente contestó "el combo a $28.000 queda
+     * bien de precio, te lo armo" y recién al confirmar dijo "tu cuenta no tiene activado el módulo de
+     * Combos": la herramienta sí lo chequea, pero el modelo prometió antes de llamarla. Con esta línea
+     * lo sabe desde el primer mensaje. Las herramientas siguen declarándose todas (el prefijo del caché
+     * no depende del negocio, ver build_tools()) y siguen chequeando la extensión ellas mismas: esto no
+     * reemplaza ninguna guarda.
+     *
+     * Va al final del bloque de carga, que ya cambia por negocio (el nombre del comercio va antes).
+     *
+     * @param  User|null  $owner
+     * @return string
+     */
+    protected function bloque_de_modulos_apagados($owner): string
+    {
+        if (is_null($owner)) {
+
+            return '';
+        }
+
+        $modulos = [
+            PermisosIaHelper::EXTENCION_COMBOS  => 'Combos (no podés armar combos)',
+            PermisosIaHelper::EXTENCION_OFERTAS => 'Ofertas por cliente (no podés armar ofertas)',
+            'budgets'                           => 'Presupuestos (no podés armar presupuestos)',
+        ];
+
+        $apagados = [];
+
+        foreach ($modulos as $slug => $texto) {
+
+            if (! PermisosIaHelper::tiene_extencion($owner, $slug)) {
+
+                $apagados[] = $texto;
+            }
+        }
+
+        if (! count($apagados)) {
+
+            return '';
+        }
+
+        return '- 🔴 Módulos que este negocio NO tiene: ' . implode('; ', $apagados) . '. Si te piden algo de '
+            . "eso, decilo en la primera respuesta (se activa desde ComercioCity) y no lo ofrezcas ni lo prometas.\n";
     }
 
     /**
@@ -1559,6 +1634,19 @@ VENTA_CONFIRMA;
   tiene), decile que esa pantalla no lo carga. Un campo obligatorio que la persona no dijo se
   pregunta; uno opcional que no dijo no se manda. Las relaciones (categoría, proveedor, marca,
   localidad, vendedor, lista de precios) van por su NOMBRE, nunca por un número.
+- 🔴 Excepción: en el ALTA DE UN ARTÍCULO la categoría y la subcategoría van SIEMPRE que alguna del
+  negocio encaje, aunque la persona no las haya dicho: elegilas del árbol de categorías que te
+  dan que_puedo_cargar y la búsqueda por código de barras (una cinta aisladora va en la de
+  electricidad, un martillo en la de herramientas de mano) y decí en la respuesta cuáles le
+  pusiste. La subcategoría tiene que ser de esa categoría (en que_puedo_cargar se llaman rubro
+  y sub rubro). Si la categoría tiene subcategorías, la subcategoría es obligatoria ("" solo si
+  ninguna encaja). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
+  Si un error trae opciones.reenvia_igual, volvé a llamar con ese objeto TAL CUAL (con la foto, la
+  descripción y el código), agregándole solo lo que pide.
+- Después de un alta o una edición de un artículo decí el precio de venta tal como viene en
+  detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
+  digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
+  detalle.campos_guardados: no cambies un campo por otro (una razón social no es un domicilio).
 - Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
   por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
   preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar
@@ -1737,9 +1825,9 @@ QUIEN;
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @return string
      */
-    protected function bloque_de_whatsapp($con_acciones = false): string
+    protected function bloque_de_whatsapp($con_acciones = false, $confianza = ''): string
     {
-        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto() : '';
+        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto($confianza) : '';
 
         return <<<WHATSAPP
 Estás hablando por WhatsApp, no por la pantalla del sistema:
@@ -1767,20 +1855,47 @@ WHATSAPP;
      *
      * @return string
      */
-    protected function bloque_de_confirmacion_por_texto(): string
+    protected function bloque_de_confirmacion_por_texto($confianza = ''): string
     {
-        return <<<CONFIRMACION
+        /*
+         * 🔴 EN "DIRECTO" LA PRIMERA REGLA ES OTRA (misión asistente-altas-y-conversacion, 16/10/2026).
+         * Hasta acá este bloque iba igual en los tres modos y decía "decí los datos y preguntá si lo
+         * registrás": en "directo" contradecía al bloque de carga ("se hace en el acto") y, como este va
+         * DESPUÉS porque corrige, ganaba. En demo3 el asistente contestó "el combo queda bien de precio,
+         * te lo armo cuando me digas que sí" sin haber llamado a ninguna herramienta (y recién con el sí
+         * descubrió que el negocio no tenía Combos), y preguntó de más en ventas y presupuestos. En
+         * "directo" se llama a la herramienta en la misma vuelta; la confirmación por texto queda para
+         * las que siempre esperan el sí. Los otros dos modos, exactamente como antes.
+         */
+        $primera = (string) $confianza === ConfianzaDelAgenteIaHelper::DIRECTO
+            ? <<<PRIMERA_DIRECTO
+- Con tu confianza en "directo", lo que se hace en el acto también se hace en el acto acá:
+  llamá a la herramienta proponer_ en la MISMA vuelta, sin preguntar antes si lo hacés, y
+  contá lo que quedó hecho. Nunca digas "te lo armo cuando me digas que sí" ni "¿lo
+  registro?" para eso: o lo hacés, o la herramienta te dice por qué no se puede. Preguntá
+  solo lo que de verdad falta para cargarlo (lo que la herramienta te devuelve en "faltan").
+- Lo que SIEMPRE espera el sí (borrar, la actualización masiva, unificar bancos, los permisos
+  de un empleado, lo que emite ante ARCA) se confirma por texto: llamás igual a la
+  herramienta, la respuesta te dice que quedó esperando, y vos decís en una línea qué vas a
+  hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta.
+PRIMERA_DIRECTO
+            : <<<PRIMERA
 - Cómo se confirma una carga acá, que REEMPLAZA lo de la tarjeta: llamás igual a la
   herramienta proponer_ que corresponde, pero no digas que dejaste una tarjeta. Decí los
   datos exactos de lo que vas a cargar (cuánto, a quién, de qué, qué día, cómo se paga) y
   preguntá si lo registrás.
+PRIMERA;
+
+        return <<<CONFIRMACION
+{$primera}
 - Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
   tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
 - 🔴 No podés proponer y confirmar en el mismo mensaje: siempre tiene que haber una
   respuesta de la persona en el medio. Si lo intentás, la herramienta te lo rechaza.
-- Nunca digas que algo quedó cargado hasta que confirmar_carga_pendiente te conteste que
-  sí. Cuando te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la
-  compra) en una línea.
+- Nunca digas que algo quedó cargado hasta que una herramienta te devuelva el `resultado` de
+  lo hecho (la misma proponer_ cuando se hace en el acto, o confirmar_carga_pendiente). Cuando
+  te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la compra, y el
+  total o el precio que traiga `detalle`) en una línea.
 - Si al final del mensaje de la persona hay una nota "[El sistema ya confirmó la tarjeta...]",
   esa carga ya la registró el sistema por su sí: no llames a confirmar_carga_pendiente, contá
   el resultado que dice la nota y seguí con lo que haya quedado pendiente. Si la nota dice que
@@ -2887,7 +3002,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -2904,6 +3019,10 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Último día del rango, AAAA-MM-DD, inclusive. Manda sobre dias.',
                         ],
+                        'proveedor' => [
+                            'type' => 'string',
+                            'description' => 'Nombre del proveedor tal como lo dijo la persona, para "lo que más vendo de [proveedor]": acota a los artículos cuyo proveedor es ese. Sin esto, todos los artículos.',
+                        ],
                     ],
                     'required' => [],
                 ],
@@ -2912,7 +3031,9 @@ CONFIRMACION;
                         $owner_id,
                         self::dias_del_enum($input),
                         isset($input['desde']) ? $input['desde'] : null,
-                        isset($input['hasta']) ? $input['hasta'] : null
+                        isset($input['hasta']) ? $input['hasta'] : null,
+                        0,
+                        isset($input['proveedor']) ? (string) $input['proveedor'] : null
                     );
                 },
             ],
@@ -3219,7 +3340,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'resumir_datos',
-                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -3382,13 +3503,17 @@ CONFIRMACION;
              */
             [
                 'name' => 'consultar_ventas_sin_cobrar',
-                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
+                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. Cada cliente trae deuda_total_en_pesos (TODO lo que debe), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda total. 🔴 "Los que me deben más de X hace más de N días" = deuda TOTAL de X o más Y alguna deuda de más de N días: mandá dias = N y monto_minimo = X, y contestá con deuda_total_en_pesos de cada cliente. NUNCA compares X contra lo atrasado solo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
+                        ],
+                        'monto_minimo' => [
+                            'type' => 'number',
+                            'description' => 'Deuda TOTAL mínima del cliente, en pesos, para "los que me deben más de X". Se compara contra todo lo que debe el cliente (deuda_total_en_pesos), no contra lo atrasado. Va junto con dias cuando la pregunta dice además "hace más de N días".',
                         ],
                     ],
                     'required' => [],
@@ -3408,7 +3533,11 @@ CONFIRMACION;
                         ? ContextoDeCargaIa::de_la_conversacion($conversation)->persona
                         : null;
 
-                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona);
+                    $monto_minimo = (isset($input['monto_minimo']) && is_numeric($input['monto_minimo']))
+                        ? (float) $input['monto_minimo']
+                        : null;
+
+                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona, $monto_minimo);
                 },
             ],
             /*
@@ -3456,7 +3585,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'buscar_producto_por_codigo_de_barras',
-                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion e imagen_id; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
+                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion, imagen_id y, si vuelve categorias_del_negocio, category_id y sub_category_id: elegí vos del árbol la categoría que corresponde al producto y una subcategoría DE ESA categoría (por nombre), sin preguntarle a la persona; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
