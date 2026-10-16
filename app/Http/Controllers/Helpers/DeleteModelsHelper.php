@@ -54,6 +54,10 @@ class DeleteModelsHelper
         // 404 si no es del dueño) y no borra nada. Sin esto la masiva lo contaba como eliminado y el
         // listado lo sacaba de pantalla aunque seguía en la caja.
         'movimiento_caja',
+        // Concepto de movimiento de caja del sistema, ya usado en movimientos o de otro dueño
+        // (misión destrabar-videos-centro, 16/10/2026): ConceptoMovimientoCajaController::destroy()
+        // responde 422 (o 404 si es ajeno) y no borra nada.
+        'concepto_movimiento_caja',
     ];
 
     /**

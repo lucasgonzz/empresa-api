@@ -138,6 +138,18 @@ class MasiveUpdateHelper
         }
 
         /*
+         * 🔴 Los conceptos de movimiento de caja tampoco (misión destrabar-videos-centro,
+         * 16/10/2026). Esta actualización resuelve los ids con find() sin dueño: por acá se podía
+         * renombrar un concepto del sistema (que el código busca por id fijo y por nombre) o el de
+         * otro comercio, salteando lo que ConceptoMovimientoCajaController::update() blinda. Mismo
+         * corte que los de arriba.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\ConceptoMovimientoCaja::class)) {
+            Log::info('Se interrumpio actualizacion: los conceptos de movimiento de caja no se actualizan en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'Los conceptos de movimiento de caja no se actualizan en forma masiva.']);
+        }
+
+        /*
          * 🔴 La configuración del bot de WhatsApp tampoco (misión whatsapp-envio-simulado-demos,
          * 15/10/2026). Esta actualización resuelve los ids con find() sin dueño y asigna cualquier
          * columna del update_form: por acá cualquier usuario autenticado podía prender
