@@ -13,6 +13,7 @@ use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAgentScheduler;
 use App\Services\WhatsappBotAiService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -68,6 +69,12 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
 
     /** Payloads que viajaron a Kapso. */
     protected $payloads_kapso = [];
+
+    /** true = Kapso contesta con un error 500 (el envío no sale). */
+    protected $kapso_falla = false;
+
+    /** Callback que corre en el medio de la llamada a la IA (simula que una persona actúa mientras el modelo piensa). */
+    protected $durante_la_ia = null;
 
     protected function setUp(): void
     {
@@ -139,6 +146,10 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
         Http::fake([
             'api.openai.com/*' => Http::response(['data' => [['embedding' => [1.0, 0.0, 0.0]]]], 200),
             'api.anthropic.com/*' => function () {
+                if (! is_null($this->durante_la_ia)) {
+                    call_user_func($this->durante_la_ia);
+                }
+
                 return Http::response([
                     'model'   => 'claude-de-prueba',
                     'content' => [['type' => 'text', 'text' => $this->texto_de_la_ia]],
@@ -147,6 +158,10 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
             },
             'api.kapso.ai/*' => function ($request) {
                 $this->payloads_kapso[] = $request->data();
+
+                if ($this->kapso_falla) {
+                    return Http::response(['error' => 'kapso caido'], 500);
+                }
 
                 return Http::response(['messages' => [['id' => 'wamid.F29']]], 200);
             },
@@ -224,7 +239,7 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
      */
     protected function marcar($chat, $tipo = 'pedido')
     {
-        $chat->marcar_seguimiento($tipo, 'Detalle de prueba');
+        $chat->mark_follow_up($tipo, 'Detalle de prueba');
         $chat->save();
 
         return $chat->fresh();
@@ -262,8 +277,8 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
             'pedido al final'             => ["Listo, te lo anoto.\n[PEDIDO:2 taladros Bosch, a nombre de Marcos]", 'Listo, te lo anoto.', 'pedido', '2 taladros Bosch, a nombre de Marcos', ''],
             'consulta al final'           => ["Lo consulto y te confirmo.\n[CONSULTA:si hacen envíos a San Benito]", 'Lo consulto y te confirmo.', 'consulta', 'si hacen envíos a San Benito', ''],
             'sin detalle'                 => ["Lo consulto y te confirmo.\n[CONSULTA]", 'Lo consulto y te confirmo.', 'consulta', '', ''],
-            'foto antes de la marca'      => ["Este te sirve.\n[FOTO:7791234567890]\n[PEDIDO:1 taladro]", 'Este te sirve.', 'pedido', '1 taladro', '7791234567890'],
-            'foto despues de la marca'    => ["Este te sirve.\n[PEDIDO:1 taladro]\n[FOTO:7791234567890]", 'Este te sirve.', 'pedido', '1 taladro', '7791234567890'],
+            'foto antes de la marca'      => ["Este te sirve, te lo dejo anotado.\n[FOTO:7791234567890]\n[PEDIDO:1 taladro]", 'Este te sirve, te lo dejo anotado.', 'pedido', '1 taladro', '7791234567890'],
+            'foto despues de la marca'    => ["Este te sirve, te lo dejo anotado.\n[PEDIDO:1 taladro]\n[FOTO:7791234567890]", 'Este te sirve, te lo dejo anotado.', 'pedido', '1 taladro', '7791234567890'],
             'en minuscula y sin cerrar'   => ["Lo consulto.\n[consulta: envío a domicilio", 'Lo consulto.', 'consulta', 'envío a domicilio', ''],
             'en el medio de la oracion'   => ['Te lo anoto [PEDIDO:2 tornillos] y te confirmamos.', 'Te lo anoto y te confirmamos.', 'pedido', '2 tornillos', ''],
             'las dos: gana el pedido'     => ["Anotado.\n[CONSULTA:el envío]\n[PEDIDO:3 mechas]", 'Anotado.', 'pedido', '3 mechas', ''],
@@ -271,10 +286,21 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
             'marca inventada: se saca sin señal' => ["Sí, aceptamos tarjeta en hasta 3 cuotas.\n[CUOTA:3 cuotas sin interés]", 'Sí, aceptamos tarjeta en hasta 3 cuotas.', '', '', ''],
             'marca inventada + promesa: la red lo marca' => ["Lo consulto y te confirmo si aceptamos cuotas.\n[CUOTA:confirmar si aceptan tarjeta]", 'Lo consulto y te confirmo si aceptamos cuotas.', 'consulta', '', ''],
             'marca inventada tras la real' => ["Anotado.\n[PEDIDO:2 taladros]\n[ENVIO]", 'Anotado.', 'pedido', '2 taladros', ''],
+            'marca inventada despues de la foto: no se lleva la foto' => ["Este te sirve.\n[FOTO:7791234567890]\n[CUOTA:x]", 'Este te sirve.', '', '', '7791234567890'],
             'red de seguridad: lo prometió y no marcó' => ["Eso lo consulto y te confirmo.", 'Eso lo consulto y te confirmo.', 'consulta', '', ''],
             'red de seguridad no pisa la marca del modelo' => ["Lo averiguo y te aviso.\n[CONSULTA:el flete]", 'Lo averiguo y te aviso.', 'consulta', 'el flete', ''],
+            'red de seguridad: variante con el encargado' => ["Lo consulto con el encargado y te confirmo.", 'Lo consulto con el encargado y te confirmo.', 'consulta', '', ''],
+            'red de seguridad: voy a averiguar' => ["Voy a averiguar y te aviso.", 'Voy a averiguar y te aviso.', 'consulta', '', ''],
             'un ofrecimiento condicional no es una promesa' => ["Si querés te armo el pedido y te lo confirmamos con el total.", 'Si querés te armo el pedido y te lo confirmamos con el total.', '', '', ''],
-            'corchetes anidados'          => ["Dale.\n[CONSULTA:precio de [la mecha] de 8 mm]", 'Dale.', 'consulta', 'precio de la mecha de 8 mm', ''],
+            'ofrecer consultar tampoco es prometerlo' => ["Si querés, lo consulto y te confirmo.", 'Si querés, lo consulto y te confirmo.', '', '', ''],
+            'una marca que el texto no respalda se descarta' => ["¡De nada! Cualquier cosa, avisame.\n[CONSULTA:si hacen envíos]", '¡De nada! Cualquier cosa, avisame.', '', '', ''],
+            'marca cortada: corchete suelto' => ["Hoy cerramos a las 20:00.\n\n[C", 'Hoy cerramos a las 20:00.', '', '', ''],
+            'marca cortada: a medio escribir' => ["Lo consulto y te confirmo.\n[CONSU", 'Lo consulto y te confirmo.', 'consulta', '', ''],
+            'foto cortada' => ["Este te sirve.\n[FOTO:77", 'Este te sirve.', '', '', ''],
+            'marca con el detalle cortado' => ["Lo consulto y te confirmo.\n[CONSULTA:el fl", 'Lo consulto y te confirmo.', 'consulta', 'el fl', ''],
+            'marca envuelta en markdown'  => ["Anotado.\n*[PEDIDO:2 taladros]*", 'Anotado.', 'pedido', '2 taladros', ''],
+            'corchetes anidados'          => ["Dale, lo consulto y te confirmo.\n[CONSULTA:precio de [la mecha] de 8 mm]", 'Dale, lo consulto y te confirmo.', 'consulta', 'precio de la mecha de 8 mm', ''],
+            'corchetes legítimos no se tocan' => ['Tu [Pedido #123] está en camino. [Pedido mínimo: $5000]. Mirá [Pedido online](https://x.com/p).', 'Tu [Pedido #123] está en camino. [Pedido mínimo: $5000]. Mirá [Pedido online](https://x.com/p).', '', '', ''],
         ];
 
         foreach ($casos as $nombre => $caso) {
@@ -284,7 +310,9 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
             $this->assertEquals($caso[2], $resultado['follow_up'], "[$nombre] el tipo.");
             $this->assertEquals($caso[3], $resultado['follow_up_note'], "[$nombre] el detalle.");
             $this->assertEquals($caso[4], $resultado['bar_code'], "[$nombre] la foto sigue andando.");
-            $this->assertDoesNotMatchRegularExpression('/\[\s*(PEDIDO|CONSULTA|FOTO)/iu', $resultado['body'], "[$nombre] ni rastro del marcador.");
+            if ($nombre !== 'corchetes legítimos no se tocan') {
+                $this->assertDoesNotMatchRegularExpression('/\[\s*(PEDIDO|CONSULTA|FOTO)[\s:\]]/iu', $resultado['body'], "[$nombre] ni rastro del marcador.");
+            }
         }
     }
 
@@ -668,7 +696,7 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
     {
         $chat = $this->chat_con_entrante();
 
-        $this->assertTrue($chat->marcar_seguimiento('consulta', 'precio del flete'));
+        $this->assertTrue($chat->mark_follow_up('consulta', 'precio del flete'));
         $chat->save();
         $desde = $chat->fresh()->follow_up_at;
         $this->assertNotNull($desde);
@@ -676,26 +704,26 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
         // Una consulta nueva del mismo tipo actualiza la nota pero NO mueve "desde cuándo espera".
         $chat = $chat->fresh();
         $this->travel(5)->minutes();
-        $this->assertTrue($chat->marcar_seguimiento('consulta', 'medidas'));
+        $this->assertTrue($chat->mark_follow_up('consulta', 'medidas'));
         $chat->save();
         $chat->refresh();
         $this->assertEquals('medidas', $chat->follow_up_note);
         $this->assertEquals($desde->timestamp, $chat->follow_up_at->timestamp);
 
         // Un pedido sube la consulta.
-        $this->assertTrue($chat->marcar_seguimiento('pedido', '2 taladros'));
+        $this->assertTrue($chat->mark_follow_up('pedido', '2 taladros'));
         $chat->save();
         $chat->refresh();
         $this->assertEquals('pedido', $chat->follow_up);
         $this->assertGreaterThan($desde->timestamp, $chat->follow_up_at->timestamp);
 
         // Una consulta nueva NO baja un pedido pendiente.
-        $this->assertFalse($chat->marcar_seguimiento('consulta', 'otra cosa'));
+        $this->assertFalse($chat->mark_follow_up('consulta', 'otra cosa'));
         $this->assertEquals('pedido', $chat->follow_up);
         $this->assertEquals('2 taladros', $chat->follow_up_note);
 
         // Un tipo inválido no marca nada.
-        $this->assertFalse($this->chat_con_entrante($this->comercio, '5493416020000')->marcar_seguimiento('cualquier-cosa'));
+        $this->assertFalse($this->chat_con_entrante($this->comercio, '5493416020000')->mark_follow_up('cualquier-cosa'));
     }
 
     /**
@@ -777,5 +805,274 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
         $this->assertEquals(0, $response->json('pedidos_para_confirmar'));
         $this->assertEquals(0, $response->json('consultas_pendientes'));
         $this->assertEquals(0, $response->json('mensajes_por_aprobar'));
+    }
+
+    /* ------------------------------------------------------------------------------------------------
+     | Casos que marcaron los chequeos independientes
+     | ------------------------------------------------------------------------------------------------ */
+
+    /**
+     * 🔴 Un envío manual que FALLÓ no es una respuesta: el cliente no recibió nada y el pedido no se puede perder.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_envio_manual_que_fallo_no_apaga_el_seguimiento()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->kapso_falla = true;
+
+        $chat = $this->marcar($this->chat_con_entrante(), 'pedido');
+        $this->actingAs($this->empleado, 'web');
+
+        $response = $this->postJson('api/whatsapp-chats/' . $chat->id . '/messages', ['body' => 'Hola, ya te confirmo el pedido.']);
+        $response->assertStatus(201);
+        $this->assertFalse($response->json('enviado'), 'Premisa: el envío no salió.');
+
+        $this->assertEquals('pedido', $chat->fresh()->follow_up, 'El cliente no recibió nada: el pedido sigue marcado.');
+
+        // Con un empleado y sin id de Kapso, ni el helper directo apaga nada.
+        WhatsappChatHelper::store_outbound_manual_message($chat->fresh(), 'otro intento', null, $this->empleado->id);
+        $this->assertEquals('pedido', $chat->fresh()->follow_up);
+
+        // Y cuando sí sale, se apaga.
+        $this->kapso_falla = false;
+        $this->postJson('api/whatsapp-chats/' . $chat->id . '/messages', ['body' => 'Ahora sí: tu pedido está confirmado.'])->assertStatus(201);
+        $this->assertNull($chat->fresh()->follow_up);
+    }
+
+    /**
+     * Si una persona REESCRIBE el borrador del agente y lo manda, le escribió al cliente: el seguimiento que el
+     * chat ya tuviera se da por atendido. Mandarlo tal cual no lo apaga.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function editar_y_mandar_un_borrador_del_agente_apaga_el_seguimiento_y_mandarlo_tal_cual_no()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = 'Hola, sí, el taladro sale $89.500.';
+
+        // Chat A: la persona reescribe el borrador y lo manda.
+        $chat_a = $this->marcar($this->chat_con_entrante(), 'pedido');
+        $this->correr_job($chat_a);
+        $borrador_a = $this->saliente($chat_a);
+        $this->assertNull($borrador_a->ai_follow_up, 'Premisa: este borrador no trae marca.');
+
+        $this->actingAs($this->empleado, 'web');
+        $this->putJson('api/whatsapp-chats/messages/' . $borrador_a->id, ['body' => 'Hola Marcos, ya está tu pedido, pasá a buscarlo.'])->assertStatus(200);
+        $this->putJson('api/whatsapp-chats/messages/' . $borrador_a->id . '/confirm')->assertStatus(200);
+
+        $this->assertNull($chat_a->fresh()->follow_up, 'Una persona le escribió al cliente: el pedido se da por atendido.');
+        $enviado = $borrador_a->fresh();
+        $this->assertEquals('ia', $enviado->source, 'El remitente que se muestra sigue siendo la IA.');
+        $this->assertEquals($this->empleado->id, (int) $enviado->sent_by_user_id);
+
+        // Chat B: el borrador sale tal cual (nadie lo tocó): el pedido sigue pendiente.
+        $chat_b = $this->marcar($this->chat_con_entrante($this->comercio, '5493416027777'), 'pedido');
+        $this->correr_job($chat_b);
+        $borrador_b = $this->saliente($chat_b);
+        $this->putJson('api/whatsapp-chats/messages/' . $borrador_b->id . '/confirm')->assertStatus(200);
+
+        $this->assertEquals('pedido', $chat_b->fresh()->follow_up, 'Confirmar sin tocar no es atender el pedido.');
+    }
+
+    /**
+     * Un envío del agente que falla vuelve el borrador a `a_confirmar` CON su marca y no marca el chat (todavía no
+     * salió ninguna promesa).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_envio_del_agente_que_falla_deja_el_borrador_marcado_y_el_chat_sin_marcar()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = "Lo consulto y te confirmo.\n[CONSULTA:si hacen envíos]";
+
+        $chat = $this->chat_con_entrante();
+        $this->correr_job($chat);
+        $mensaje = $this->saliente($chat);
+
+        $this->kapso_falla = true;
+        $this->actingAs($this->empleado, 'web');
+        $this->putJson('api/whatsapp-chats/messages/' . $mensaje->id . '/confirm')->assertStatus(422);
+
+        $mensaje->refresh();
+        $this->assertEquals('a_confirmar', $mensaje->ai_status);
+        $this->assertEquals('consulta', $mensaje->ai_follow_up, 'La marca sigue en el borrador para el reintento.');
+        $this->assertNull($chat->fresh()->follow_up, 'No salió: el cliente no recibió ninguna promesa.');
+
+        // El reintento que sí sale marca el chat.
+        $this->kapso_falla = false;
+        $this->putJson('api/whatsapp-chats/messages/' . $mensaje->id . '/confirm')->assertStatus(200);
+        $this->assertEquals('consulta', $chat->fresh()->follow_up);
+    }
+
+    /**
+     * En un chat en simulación el envío se frena (el cliente no recibe nada) pero la respuesta queda en la
+     * conversación y el seguimiento se marca igual: es lo que le deja ver al dueño cómo funciona.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_chat_en_simulacion_tambien_queda_marcado()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = "Anotado tu pedido, te lo confirmamos.\n[PEDIDO:2 taladros]";
+
+        $chat = $this->chat_con_entrante();
+        $chat->last_inbound_simulated = 1;
+        $chat->save();
+
+        $this->correr_job($chat);
+        $mensaje = $this->saliente($chat);
+
+        $this->actingAs($this->empleado, 'web');
+        $this->putJson('api/whatsapp-chats/messages/' . $mensaje->id . '/confirm')->assertStatus(200);
+
+        $this->assertCount(0, $this->payloads_kapso, 'El envío está frenado: no salió nada a Kapso.');
+        $this->assertEquals('pedido', $chat->fresh()->follow_up);
+    }
+
+    /**
+     * La respuesta que es SOLO la marca (sin texto para el cliente) no se persiste en el job y en «Sugerir
+     * respuesta» dice la verdad: no había texto (antes decía «solo generó una foto»).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function una_respuesta_que_es_solo_la_marca_no_se_manda_y_suggest_explica_por_que()
+    {
+        Queue::fake();
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = '[PEDIDO:2 taladros]';
+
+        $chat = $this->chat_con_entrante();
+        $this->correr_job($chat);
+        $this->assertNull($this->saliente($chat), 'Sin texto no hay nada que persistir ni que mandarle al cliente.');
+
+        $this->actingAs($this->empleado, 'web');
+        $response = $this->postJson('api/whatsapp-chats/' . $chat->id . '/suggest');
+        $response->assertStatus(422);
+        $this->assertStringContainsString('no generó ningún texto', (string) $response->json('message'));
+        $this->assertStringNotContainsString('foto', (string) $response->json('message'));
+    }
+
+    /**
+     * El broadcast que sale al guardar el borrador lleva el chat tal cual está AHORA: si una persona apagó el
+     * seguimiento mientras la IA pensaba, no se lo vuelve a mostrar.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function el_broadcast_del_job_no_reenvia_un_seguimiento_que_una_persona_apago_mientras_pensaba_la_ia()
+    {
+        Queue::fake();
+        Event::fake([WhatsappChatUpdated::class]);
+        $this->fakes_de_red();
+        $this->texto_de_la_ia = 'El Bosch sale $89.500.';
+
+        $chat = $this->marcar($this->chat_con_entrante(), 'pedido');
+        $this->durante_la_ia = function () use ($chat) {
+            // «Ya lo atendí», en el medio de la llamada a la IA.
+            $chat->clear_follow_up();
+        };
+
+        $this->correr_job($chat);
+
+        Event::assertDispatched(WhatsappChatUpdated::class, function ($evento) {
+            return ! is_null($evento->message) && $evento->message->ai_status === 'a_confirmar' && is_null($evento->chat->follow_up);
+        });
+    }
+
+    /**
+     * `clear_follow_up()` va por query a propósito: con un modelo VIEJO en memoria (que todavía cree que no hay
+     * marca) tiene que apagarla igual.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function apagar_el_seguimiento_funciona_con_un_modelo_viejo_en_memoria()
+    {
+        $chat = $this->chat_con_entrante();
+        $viejo = WhatsappChat::find($chat->id);
+
+        $otro = WhatsappChat::find($chat->id);
+        $otro->mark_follow_up('pedido', '2 taladros');
+        $otro->save();
+
+        $this->assertNull($viejo->follow_up, 'Premisa: el modelo viejo no se enteró.');
+        $this->assertTrue($viejo->clear_follow_up());
+        $this->assertNull(WhatsappChat::find($chat->id)->follow_up);
+    }
+
+    /**
+     * Un mismo tipo sin detalle (lo que marca la red de seguridad) no borra el detalle que ya había.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function una_marca_del_mismo_tipo_sin_detalle_no_borra_el_detalle_anterior()
+    {
+        $chat = $this->chat_con_entrante();
+
+        $chat->mark_follow_up('consulta', 'precio del flete');
+        $chat->save();
+
+        $chat = $chat->fresh();
+        $chat->mark_follow_up('consulta', '');
+        $chat->save();
+        $this->assertEquals('precio del flete', $chat->fresh()->follow_up_note);
+
+        $chat = $chat->fresh();
+        $chat->mark_follow_up('consulta', null);
+        $chat->save();
+        $this->assertEquals('precio del flete', $chat->fresh()->follow_up_note);
+
+        $chat = $chat->fresh();
+        $chat->mark_follow_up('consulta', 'medidas');
+        $chat->save();
+        $this->assertEquals('medidas', $chat->fresh()->follow_up_note, 'Con detalle nuevo, el detalle nuevo.');
+    }
+
+    /**
+     * «Ya lo atendí» avisa al resto de los operadores (broadcast) solo si había algo que apagar.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function ya_lo_atendi_emite_el_broadcast_solo_si_habia_algo_que_apagar()
+    {
+        Event::fake([WhatsappChatUpdated::class]);
+
+        $chat = $this->marcar($this->chat_con_entrante(), 'consulta');
+        $this->actingAs($this->empleado, 'web');
+
+        $this->putJson('api/whatsapp-chats/' . $chat->id . '/resolve-follow-up')->assertStatus(200);
+        Event::assertDispatchedTimes(WhatsappChatUpdated::class, 1);
+
+        $this->putJson('api/whatsapp-chats/' . $chat->id . '/resolve-follow-up')->assertStatus(200);
+        Event::assertDispatchedTimes(WhatsappChatUpdated::class, 1);
+    }
+
+    /**
+     * El comprobante que un empleado manda a mano es contestarle al cliente: apaga el seguimiento (el automático no).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_comprobante_mandado_a_mano_por_un_empleado_apaga_el_seguimiento()
+    {
+        $chat = $this->marcar($this->chat_con_entrante(), 'pedido');
+
+        WhatsappChatHelper::store_outbound_document_message($chat->fresh(), 'Comprobante', 'wamid.D1', null, 'sistema', 'https://ejemplo.test/c.pdf');
+        $this->assertEquals('pedido', $chat->fresh()->follow_up, 'El automático no es una persona.');
+
+        WhatsappChatHelper::store_outbound_document_message($chat->fresh(), 'Comprobante', 'wamid.D2', $this->empleado->id, 'manual', 'https://ejemplo.test/c.pdf');
+        $this->assertNull($chat->fresh()->follow_up, 'El del empleado, sí.');
     }
 }

@@ -614,7 +614,7 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'Chat no encontrado.'], 404);
         }
 
-        if ($chat->limpiar_seguimiento()) {
+        if ($chat->clear_follow_up()) {
             WhatsappChatHelper::broadcast_update((int) $chat->user_id, $chat);
         }
 
@@ -699,6 +699,7 @@ class WhatsappChatController extends Controller
                 'error_api'      => 'No se pudo generar la sugerencia: falló la conexión con la IA.',
                 'excepcion'      => 'No se pudo generar la sugerencia: ocurrió un error inesperado.',
                 'solo_foto'      => 'La IA solo generó el envío de una foto de producto, sin texto para sugerir. Usá el clip para mandarla.',
+                'sin_texto'      => 'La IA no generó ningún texto para sugerir. Probá de nuevo.',
             ];
             $motivo = $resultado['motivo'];
             return response()->json([
@@ -724,7 +725,7 @@ class WhatsappChatController extends Controller
         $message = WhatsappChatHelper::store_pending_ai_message(
             $chat,
             $resultado['body'],
-            WhatsappChatHelper::columnas_de_seguimiento($resultado['follow_up'], $resultado['follow_up_note'])
+            WhatsappChatHelper::follow_up_columns($resultado['follow_up'], $resultado['follow_up_note'])
         );
 
         // `estado_pendiente()` se lee DESPUÉS de crear el mensaje: antes de esta línea el chat
@@ -947,7 +948,9 @@ class WhatsappChatController extends Controller
             }
         }
 
-        $actualizado = WhatsappChatHelper::update_pending_ai_message($message, $body);
+        // El empleado que reescribe el texto queda registrado en el mensaje: si lo manda, el seguimiento que el
+        // chat tuviera se da por atendido (ver `WhatsappChatHelper::mark_ai_message_sent()`).
+        $actualizado = WhatsappChatHelper::update_pending_ai_message($message, $body, is_null($body) ? null : $this->userId(false));
 
         if (is_null($actualizado)) {
             // Perdió la carrera contra el chequeo de arriba (por ejemplo, el auto-envío

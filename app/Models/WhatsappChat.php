@@ -26,11 +26,11 @@ class WhatsappChat extends Model
     const FOLLOW_UP_CONSULTA = 'consulta';
 
     /**
-     * Resultado memoizado de `seguimiento_disponible()` (una consulta al esquema por proceso).
+     * Resultado memoizado de `follow_up_available()`: solo se guarda el `true` (ver ese método).
      *
      * @var bool|null
      */
-    private static $seguimiento_disponible = null;
+    private static $follow_up_available = null;
 
     protected $guarded = [];
 
@@ -183,20 +183,28 @@ class WhatsappChat extends Model
      * ventana serían 500 y respuestas del agente perdidas sin ningún error a la vista; con ella, el
      * seguimiento simplemente no se marca hasta que la migración corre.
      *
-     * Se memoiza por proceso: `Schema::hasColumn` pega contra el catálogo de MySQL y esto se llama
-     * en cada envío. Un proceso que arrancó antes de la migración sigue sin seguimiento hasta que
-     * se recicla, que es el comportamiento seguro.
+     * 🔴 SE MEMOIZA SOLO EL SÍ, NUNCA EL NO (mismo criterio que `Address::columna_madre_existe()` y
+     * `ChequeHelper::columna_de_motivo_acepta_texto()`). Un worker de cola de larga vida que evalúe esto en la
+     * ventana entre el deploy del código y la migración, y guardara el `false`, se quedaría sin seguimiento
+     * hasta que lo reinicien, y sin ningún error. Con el sí memoizado, el costo de `Schema::hasColumn` (una
+     * consulta al catálogo de MySQL) se paga una vez por proceso cuando la migración ya corrió.
+     *
+     * Se miran las ÚLTIMAS columnas que crea la migración (`follow_up_at` y `ai_follow_up_note`) y no las
+     * primeras: una migración cortada a mitad de camino no puede dar «disponible» con una columna que falta.
      *
      * @return bool
      */
-    public static function seguimiento_disponible()
+    public static function follow_up_available()
     {
-        if (is_null(self::$seguimiento_disponible)) {
-            self::$seguimiento_disponible = Schema::hasColumn('whatsapp_chats', 'follow_up')
-                && Schema::hasColumn('whatsapp_chat_messages', 'ai_follow_up');
+        if (self::$follow_up_available === true) {
+            return true;
         }
 
-        return self::$seguimiento_disponible;
+        if (Schema::hasColumn('whatsapp_chats', 'follow_up_at') && Schema::hasColumn('whatsapp_chat_messages', 'ai_follow_up_note')) {
+            self::$follow_up_available = true;
+        }
+
+        return self::$follow_up_available === true;
     }
 
     /**
@@ -209,17 +217,17 @@ class WhatsappChat extends Model
      *    pedido nuevo sí sube una consulta. Es lo más caro de perder, y el tablero lo cuenta aparte.
      *  - `follow_up_at` es «desde cuándo espera»: solo se escribe cuando el chat pasa a un tipo
      *    distinto (de nada a algo, o de consulta a pedido). Otro mensaje del mismo tipo no lo mueve.
-     *  - La nota es la del último mensaje que marcó del mismo tipo (el modelo ve toda la conversación,
-     *    así que la última describe el pedido completo y no solo el último renglón).
+     *  - La nota es la del último mensaje que marcó del mismo tipo y trajo detalle (el modelo ve toda la
+     *    conversación, así que la última describe el pedido completo y no solo el último renglón).
      *
      * @param string      $tipo Una de las constantes FOLLOW_UP_*.
      * @param string|null $nota Detalle que escribió el modelo (ya acotado), o null.
      *
      * @return bool true si el modelo quedó con cambios para guardar.
      */
-    public function marcar_seguimiento($tipo, $nota = null)
+    public function mark_follow_up($tipo, $nota = null)
     {
-        if (! self::seguimiento_disponible()) {
+        if (! self::follow_up_available()) {
             return false;
         }
 
@@ -233,11 +241,16 @@ class WhatsappChat extends Model
         }
 
         if ($this->follow_up !== $tipo) {
+            // Pasa de nada a algo, o de consulta a pedido: empieza una espera nueva y la nota es la de ahora.
             $this->follow_up_at = now();
+            $this->follow_up_note = $nota;
+        } elseif (! is_null($nota) && trim((string) $nota) !== '') {
+            // Mismo tipo: la nota nueva reemplaza a la vieja SOLO si trae algo (una consulta marcada por la red de
+            // seguridad no trae detalle, y no tiene que borrar el que ya había).
+            $this->follow_up_note = $nota;
         }
 
         $this->follow_up = $tipo;
-        $this->follow_up_note = $nota;
 
         return true;
     }
@@ -255,9 +268,9 @@ class WhatsappChat extends Model
      *
      * @return bool true si había un seguimiento y se apagó.
      */
-    public function limpiar_seguimiento()
+    public function clear_follow_up()
     {
-        if (! self::seguimiento_disponible()) {
+        if (! self::follow_up_available()) {
             return false;
         }
 

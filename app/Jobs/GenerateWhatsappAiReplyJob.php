@@ -235,7 +235,13 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             // queda marcado cuando la respuesta efectivamente sale (`WhatsappChatHelper::mark_ai_message_sent`).
             // Se mezcla DESPUÉS del chequeo de arriba a propósito: ese chequeo pregunta si la foto del producto
             // se resolvió, y una marca de seguimiento no es una foto. Sin marca (el caso normal) esto es [].
-            $extra = array_merge($extra, WhatsappChatHelper::columnas_de_seguimiento($respuesta['follow_up'], $respuesta['follow_up_note']));
+            $extra = array_merge($extra, WhatsappChatHelper::follow_up_columns($respuesta['follow_up'], $respuesta['follow_up_note']));
+
+            // El chat se cargó al arrancar el job y la llamada a la IA pudo tardar hasta 60 segundos: en ese lapso una
+            // persona pudo apagar el seguimiento («Ya lo atendí») o contestarle al cliente. `store_pending_ai_message()`
+            // emite el broadcast con el chat que tiene en la mano, así que sin releerlo reenviaría un `follow_up` viejo
+            // y la pantalla volvería a mostrar lo que la persona ya había dado por atendido.
+            $chat->refresh();
 
             $message = WhatsappChatHelper::store_pending_ai_message($chat, $texto, $extra);
 

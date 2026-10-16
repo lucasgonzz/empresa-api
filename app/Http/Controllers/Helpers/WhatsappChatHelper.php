@@ -455,8 +455,17 @@ class WhatsappChatHelper
             // el único por el que pasa todo envío de una respuesta del agente (auto-envío, «mandalo
             // ahora» y sugerencia confirmada), así que no hay un camino que se escape. Lo que la
             // marca no hace es apagarse sola con un envío del agente: solo la apaga una persona.
+            //
+            // Y si una PERSONA reescribió el texto del borrador antes de mandarlo (`update_pending_ai_message()` deja
+            // su id en `sent_by_user_id`), esa persona le escribió al cliente: el seguimiento que el chat ya tuviera
+            // se da por atendido, igual que cuando manda un mensaje propio. Se apaga ANTES de marcar, así el mensaje
+            // no apaga lo que él mismo acaba de marcar.
+            if (! is_null($message->sent_by_user_id)) {
+                $chat->clear_follow_up();
+            }
+
             if (! empty($message->ai_follow_up)) {
-                $chat->marcar_seguimiento($message->ai_follow_up, $message->ai_follow_up_note);
+                $chat->mark_follow_up($message->ai_follow_up, $message->ai_follow_up_note);
             }
 
             $chat->save();
@@ -605,14 +614,20 @@ class WhatsappChatHelper
      * @param  WhatsappChatMessage  $message  Mensaje con `ai_status = 'a_confirmar'` (ya
      *                                         validado por el caller).
      * @param  string|null  $body  Texto nuevo (ya trimeado y no vacío), o null para solo pausar.
+     * @param  int|null  $editor_id  Empleado que reescribió el texto (misión
+     *                               senal-pedidos-y-consultas-del-agente): con `$body` se guarda en
+     *                               `sent_by_user_id`, que en una respuesta del agente solo vale algo cuando una
+     *                               persona la tocó. El remitente que se muestra sigue siendo «IA» (la SPA mira
+     *                               `source` primero); lo usa `mark_ai_message_sent()` para dar por atendido el
+     *                               seguimiento del chat.
      * @return WhatsappChatMessage|null  El mensaje actualizado, o null si perdió la condición
      *                                   (ya no estaba en 'a_confirmar' al momento del UPDATE).
      */
-    public static function update_pending_ai_message(WhatsappChatMessage $message, $body = null)
+    public static function update_pending_ai_message(WhatsappChatMessage $message, $body = null, $editor_id = null)
     {
         (new WhatsappAiAutoSendScheduler())->cancel_for_message((int) $message->id);
 
-        return DB::transaction(function () use ($message, $body) {
+        return DB::transaction(function () use ($message, $body, $editor_id) {
             $estado_actual = WhatsappChatMessage::where('id', $message->id)
                 ->lockForUpdate()
                 ->value('ai_status');
@@ -628,9 +643,13 @@ class WhatsappChatHelper
                 // Una persona reescribió el texto: se hizo cargo del contenido, y la marca del modelo
                 // («pedido», «consulta») describía el texto VIEJO. Solo pausar (sin `body`) NO la
                 // toca, y confirmar el borrador tal cual tampoco: la promesa sigue en pie.
-                if (WhatsappChat::seguimiento_disponible()) {
+                if (WhatsappChat::follow_up_available()) {
                     $columns['ai_follow_up'] = null;
                     $columns['ai_follow_up_note'] = null;
+                }
+
+                if (! is_null($editor_id)) {
+                    $columns['sent_by_user_id'] = (int) $editor_id;
                 }
             }
 
@@ -712,7 +731,7 @@ class WhatsappChatHelper
 
         // Sin las columnas (el código llegó antes que la migración) se queda en 0 y no rompe el resumen
         // que pide la SPA en cada pantalla.
-        if (WhatsappChat::seguimiento_disponible()) {
+        if (WhatsappChat::follow_up_available()) {
             $por_tipo = WhatsappChat::where('user_id', $owner_id)
                 ->whereNotNull('follow_up')
                 ->selectRaw('follow_up, COUNT(*) as total')
@@ -732,15 +751,15 @@ class WhatsappChatHelper
      * (`store_pending_ai_message($chat, $body, $extra)`): la fila nace ya marcada, así el broadcast del
      * `create()` y el envío posterior ven lo mismo. Vacío cuando el modelo no marcó nada (el 100% de las
      * respuestas de antes de esta funcionalidad), cuando el tipo no es uno válido o cuando las columnas
-     * todavía no existen (ventana del deploy: ver `WhatsappChat::seguimiento_disponible()`).
+     * todavía no existen (ventana del deploy: ver `WhatsappChat::follow_up_available()`).
      *
      * @param  string|null  $tipo  'pedido' | 'consulta' | '' | null.
      * @param  string|null  $nota  Detalle ya acotado que escribió el modelo.
      * @return array<string, string|null>
      */
-    public static function columnas_de_seguimiento($tipo, $nota = null)
+    public static function follow_up_columns($tipo, $nota = null)
     {
-        if (! WhatsappChat::seguimiento_disponible()) {
+        if (! WhatsappChat::follow_up_available()) {
             return [];
         }
 
@@ -1005,7 +1024,7 @@ class WhatsappChatHelper
      *   🔴 `$extra` ES SOLO PARA CAMPOS DE MEDIO (`media_type`, `media_path`, `media_mime`,
      *   `media_size`), ESTADO DE ENTREGA (`delivery_status`), ERROR (`send_error`) Y LA MARCA DE
      *   SEGUIMIENTO DEL AGENTE (`ai_follow_up`, `ai_follow_up_note`; las arma
-     *   `columnas_de_seguimiento()`). No es una
+     *   `follow_up_columns()`). No es una
      *   puerta de atrás para escribir cualquier columna: el `array_merge` lo pone ÚLTIMO, así
      *   que una clave de más —o un typo que coincida con una clave fija— pisa en silencio lo
      *   que este método garantiza. `is_simulated`, `direction` y `source` en particular son
@@ -1050,8 +1069,12 @@ class WhatsappChatHelper
         // automático ni el recordatorio de cobro (aunque lo dispare un empleado, no es contestarle al
         // cliente por su pedido). Va antes del `save()` y del broadcast para que el broadcast ya lleve
         // el chat limpio.
-        if (! is_null($sent_by_user_id) && in_array($source, ['manual', 'plantilla'], true)) {
-            $chat->limpiar_seguimiento();
+        //
+        // 🔴 SOLO SI EL MENSAJE SALIÓ (`$wa_message_id` con valor). Los tres endpoints manuales guardan la fila
+        // aunque Kapso falle (para que se vea marcada como no enviada): si ese intento fallido apagara la
+        // señal, un pedido desaparecería del tablero y del menú con el cliente sin haber recibido nada.
+        if (! is_null($sent_by_user_id) && in_array($source, ['manual', 'plantilla'], true) && trim((string) $wa_message_id) !== '') {
+            $chat->clear_follow_up();
         }
 
         $chat->last_message_at = now();

@@ -28,8 +28,8 @@ use Illuminate\Support\Facades\Schema;
  * Es un eje APARTE de `ai_status` (¿lo aprobó una persona?) y de `delivery_status` (¿lo entregó Meta?):
  * mezclarlo en cualquiera de los dos rompería la máquina de estados de `WhatsappChatHelper`.
  *
- * Sin foreign keys (convención del proyecto). El índice de `follow_up` es corto (nombre de 14
- * caracteres) y sirve a la cuenta del número del menú (`GET whatsapp-chats/resumen`).
+ * Sin foreign keys (convención del proyecto). El índice de `follow_up` tiene nombre corto
+ * (`wc_follow_up_idx`) y sirve a la cuenta del número del menú (`GET whatsapp-chats/resumen`).
  *
  * Guards idempotentes con `Schema::hasColumn`, mismo criterio que
  * `2026_10_16_120000_add_agent_objective_to_whatsapp_bot_configs_table`.

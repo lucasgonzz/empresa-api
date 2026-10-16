@@ -198,47 +198,82 @@ SUMMARY;
      * agente dejó armado un pedido para que el negocio lo confirme y `[CONSULTA:<detalle>]` cuando prometió
      * averiguar o confirmar algo («lo consulto y te confirmo»). El detalle es opcional.
      *
-     * A diferencia de `[FOTO:...]`, NO está anclada al final: se busca en TODO el texto, con o sin el
-     * corchete de cierre, en mayúscula o minúscula. 🔴 Es a propósito: la consigna pide la marca al final,
-     * pero el prompt es una pedida y no una garantía, y esta marca es basura de implementación que el
-     * cliente del negocio no puede ver nunca. Un modelo que la ponga en el medio, la abra y no la cierre o
-     * la escriba en minúscula igual se la lleva puesta, y la señal no se pierde. `\b` evita llevarse
-     * `[PEDIDOS]`; el `\s*` del principio se come el espacio de antes para no dejar un hueco en la oración.
-     * El detalle admite un nivel de corchetes adentro (`[CONSULTA:precio de [la mecha] de 8 mm]`): si
-     * cortara en el primer `]`, el resto del detalle quedaría a la vista del cliente.
+     * A diferencia de `[FOTO:...]`, NO está anclada al final: se busca en TODO el texto, y sin el corchete de
+     * cierre, en mayúscula o minúscula y hasta envuelta en markdown (`*[PEDIDO:x]*`). 🔴 Es a propósito: la
+     * consigna pide la marca al final, pero el prompt es una pedida y no una garantía, y esta marca es basura de
+     * implementación que el cliente del negocio no puede ver nunca.
+     *
+     * Para NO llevarse texto legítimo (`Tu [Pedido #123] está en camino`, `[Pedido mínimo: $5000]`) la palabra
+     * tiene que ir seguida de `:` (con detalle) o de `]` enseguida (`[PEDIDO]`): una palabra suelta entre
+     * corchetes no es una marca. `\b` evita llevarse `[PEDIDOS]`; el `\s*` del principio se come el espacio de
+     * antes para no dejar un hueco en la oración. El detalle admite un nivel de corchetes adentro
+     * (`[CONSULTA:precio de [la mecha] de 8 mm]`): si cortara en el primer `]`, el resto quedaría a la vista.
+     * Grupo 1 = tipo; grupo 2 = detalle (no existe en la forma `[PEDIDO]`).
      *
      * @var string
      */
-    private const FOLLOW_UP_MARKER_PATTERN = '/\s*\[\s*(PEDIDO|CONSULTA)\b\s*:?((?:[^\[\]\n]|\[[^\]\n]*\])*)\]?/iu';
+    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(PEDIDO|CONSULTA)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]?|\s*\])[*_`]*/iu';
 
     /**
      * Una marca INVENTADA por el modelo al final del texto: una línea que es solo `[MAYÚSCULAS]` o
      * `[MAYÚSCULAS:detalle]` (medido contra DeepSeek el 16/10/2026: ante «lo consulto y te confirmo si aceptamos
      * cuotas» escribió `[CUOTA:confirmar si aceptan tarjeta y pago en 3 cuotas]`, una marca que no existe y que
      * sin esto le llegaba al cliente tal cual). Solo se saca al FINAL y cuando ocupa una línea entera, en
-     * mayúsculas: no toca un `[Link]` ni un código entre corchetes dentro de una oración. No cuenta como señal:
-     * el tipo lo decide el modelo con `[PEDIDO]`/`[CONSULTA]`, no una etiqueta que se inventó.
+     * mayúsculas: no toca un `[Link]` ni un código entre corchetes dentro de una oración. `[FOTO:…]` queda
+     * afuera (la maneja `split_photo_marker`): sin el `(?!FOTO\b)`, una marca inventada pegada después de una
+     * foto se llevaba la foto puesta. No cuenta como señal.
      *
      * @var string
      */
-    private const INVENTED_MARKER_PATTERN = '/(?:^|\n)[ \t]*\[\s*[A-ZÁÉÍÓÚÑ_]{3,}\s*(?::(?:[^\[\]\n]|\[[^\]\n]*\])*)?\][ \t]*$/u';
+    private const INVENTED_MARKER_PATTERN = '/(?:^|\n)[ \t]*\[\s*(?!FOTO\b)[A-ZÁÉÍÓÚÑ_]{3,}\s*(?::(?:[^\[\]\n]|\[[^\]\n]*\])*)?\][ \t]*$/u';
+
+    /**
+     * Un corchete que se abre al FINAL del texto y no se cierra: una marca cortada por el proveedor a mitad de
+     * camino (medido: una respuesta terminó en `…las 20:00.\n\n[C`, sin llegar al tope de tokens). Nadie escribe
+     * un corchete suelto al final de un mensaje a un cliente, así que se saca (hasta 200 caracteres sin `]`).
+     *
+     * @var string
+     */
+    private const TRUNCATED_MARKER_PATTERN = '/\s*\[[^\[\]\n]{0,200}$/u';
+
+    /**
+     * La marca tiene que estar RESPALDADA POR EL TEXTO: la respuesta tiene que comprometer algo (averiguar,
+     * confirmar, avisar, dejar anotado o armado un pedido, pasarle el tema al dueño). Medida contra DeepSeek
+     * (16/10/2026, 380 respuestas con marca): el modelo a veces repite la marca en un «¡De nada! Cualquier cosa,
+     * avisame» porque en la conversación quedó una promesa vieja —incluso cuando una persona ya la había
+     * atendido—, y eso volvía a prender el chat después de «Ya lo atendí». Con esta guarda se descartan 12 de
+     * esas 13 marcas de más y se conservan 188 de las 189 que correspondían. «avisame» (un pedido al cliente) no
+     * cuenta; «te aviso» (un compromiso del agente) sí.
+     *
+     * @var string
+     */
+    private const FOLLOW_UP_COMMITMENT_PATTERN = '/(consult|averigu|verific|chequ|confirm|te avis|te contact|te escrib|te respond|te llam|te cuent|anot|dej[oa]m?os? (el|tu|asent|anot)|arm[oa]m?o?s? (el|tu)|pedido|se lo (paso|comento|traslad)|le (paso|comento|aviso|traslad)|lo (paso|derivo|traslad|comunic|hago saber)|derivo|dueñ|encargad|comunic|asent)/iu';
 
     /**
      * Red de seguridad de la marca de CONSULTA: la frase que las reglas fijas le mandan decir al modelo cuando no
-     * sabe algo («lo consulto y te confirmo») y sus variantes directas. Si el modelo la escribe en el texto pero
-     * se olvida de la marca, la promesa existe igual y el negocio la tiene que atender: sin esto el chat no
-     * quedaba marcado justo en el caso que esta funcionalidad existe para cubrir.
+     * sabe algo («lo consulto y te confirmo») y sus variantes directas («lo consulto con el encargado y te
+     * confirmo», «voy a averiguar y te aviso»). Si el modelo la escribe en el texto pero se olvida de la marca, la
+     * promesa existe igual y el negocio la tiene que atender: sin esto el chat no quedaba marcado justo en el
+     * caso que esta funcionalidad existe para cubrir.
      *
-     * 🔴 ES CHICA A PROPÓSITO. Medida contra DeepSeek (16/10/2026, ~190 turnos): recupera 4 a 6 consultas por
-     * tanda con 0 falsos positivos, porque solo mira «consulto/averiguo y te confirmo/aviso», que es una
-     * promesa concreta. Una versión más amplia (cualquier «te confirmo», «te lo confirmamos», «te armo el
-     * pedido») marcaba también los ofrecimientos condicionales del objetivo «pedido por WhatsApp» («si querés
-     * te armo el pedido y te lo confirmamos»), que no prometen nada. No ampliarla sin volver a medir.
-     * Solo marca 'consulta' y sin detalle; el pedido lo marca únicamente el modelo.
+     * 🔴 ES ACOTADA A PROPÓSITO. Solo mira «consulto/averiguo/verifico … y te confirmo/aviso», una promesa
+     * concreta, y descarta la oración si es un ofrecimiento condicional (`CONSULTA_CONDITIONAL_PATTERN`: «si
+     * querés, lo consulto y te confirmo»). Una versión más amplia (cualquier «te confirmo», «te lo confirmamos»,
+     * «te armo el pedido») marcaba también los ofrecimientos del objetivo «pedido por WhatsApp» («si querés te
+     * armo el pedido y te lo confirmamos»), que no prometen nada. No ampliarla sin volver a medir. Solo marca
+     * 'consulta' y sin detalle; el pedido lo marca únicamente el modelo.
      *
      * @var string
      */
-    private const CONSULTA_PROMISE_PATTERN = '/\b(consulto|averiguo|consultamos|averiguamos)\s+y\s+te\s+(confirmo|confirmamos|aviso|avisamos|respondo)\b/iu';
+    private const CONSULTA_PROMISE_PATTERN = '/\b(consulto|consultar|consultamos|averiguo|averiguar|averiguamos|verifico|verificar|chequeo|chequear)\b[^.!?\n]{0,40}?\by\s+te\s+(confirmo|confirmamos|aviso|avisamos|respondo)\b/iu';
+
+    /**
+     * Una oración que ofrece en vez de prometer («si querés, lo consulto y te confirmo»): no es una promesa
+     * hasta que el cliente acepta, así que la red de seguridad la ignora.
+     *
+     * @var string
+     */
+    private const CONSULTA_CONDITIONAL_PATTERN = '/\b(si\s+(quer[eé]s|quer[eé]is|quieres|quiere|gust[aá]s|te\s+(sirve|parece|interesa|gustar[ií]a)|necesit[aá]s|precis[aá]s)|quer[eé]s\s+que|quieres\s+que)\b|¿\s*te\s+(parece|gustar[ií]a)/iu';
 
     /**
      * Largo máximo del detalle de la marca de seguimiento, en caracteres. La columna es `string(255)`; los
@@ -432,15 +467,17 @@ RULE;
 
             $resultado = $this->split_markers($this->extract_text($body));
             if ($resultado['body'] === '') {
-                // El modelo contestó, pero la respuesta entera era el marcador [FOTO:...]: no
-                // queda texto para un consumidor que espera un cuerpo (el botón "Sugerir
-                // respuesta"). El bar_code se preserva con el `+`: GenerateWhatsappAiReplyJob
-                // sigue pudiendo mandar la foto sola, que para ESE consumidor es un resultado
-                // válido y no un error.
-                Log::channel('daily')->warning('WhatsappBotAiService: la respuesta del modelo era solo el marcador de foto, sin texto.', [
+                // El modelo contestó, pero la respuesta entera eran marcadores ([FOTO:...] y/o una marca de
+                // seguimiento): no queda texto para un consumidor que espera un cuerpo (el botón "Sugerir
+                // respuesta"). El bar_code se preserva con el `+`: GenerateWhatsappAiReplyJob sigue pudiendo
+                // mandar la foto sola, que para ESE consumidor es un resultado válido y no un error.
+                // 'solo_foto' solo si hay foto de verdad; sin foto y sin texto es 'sin_texto' (antes se decía
+                // «solo la foto» también cuando lo único que había era una marca de seguimiento).
+                $motivo = $resultado['bar_code'] !== '' ? 'solo_foto' : 'sin_texto';
+                Log::channel('daily')->warning('WhatsappBotAiService: la respuesta del modelo no trajo texto para el cliente (' . $motivo . ').', [
                     'chat_id' => $chat->id,
                 ]);
-                return $resultado + ['motivo' => 'solo_foto'];
+                return $resultado + ['motivo' => $motivo];
             }
 
             return $resultado + ['motivo' => ''];
@@ -458,15 +495,21 @@ RULE;
      * marcó aparte: el código de barras de `[FOTO:...]` y el seguimiento de `[PEDIDO:…]` /
      * `[CONSULTA:…]` (misión senal-pedidos-y-consultas-del-agente).
      *
-     * 🔴 LAS MARCAS DE SEGUIMIENTO SE SACAN PRIMERO Y DE CUALQUIER LUGAR, y recién después se
-     * corta la foto. Las dos pueden venir juntas y en cualquier orden («texto / [FOTO:1] / [PEDIDO:x]»
-     * o al revés): como la de la foto está anclada al final, sacar primero las de seguimiento deja el
-     * `[FOTO:…]` al final en los dos órdenes. Y a diferencia de la foto, estas se sacan aunque estén en
-     * el medio del texto o sin el corchete de cierre: el cliente no puede ver una marca interna por un
-     * descuido del modelo, y la señal tiene que sobrevivir igual.
+     * 🔴 CUALQUIER COSA QUE EL SISTEMA LE PIDIÓ AL MODELO ESCRIBIR COMO MARCA SALE DEL TEXTO, PASE LO QUE
+     * PASE. En orden:
+     *  1. Las marcas de seguimiento se sacan de CUALQUIER lugar (medio del texto, minúscula, sin cerrar,
+     *     envueltas en markdown) y recién después se corta la cola. Pueden venir con `[FOTO:…]` en cualquier
+     *     orden: sacarlas primero deja la foto al final en los dos órdenes.
+     *  2. La cola se limpia de a una, hasta cuatro vueltas y en cualquier orden: `[FOTO:…]`, una marca inventada
+     *     por el modelo (`[CUOTA:…]`) o un corchete cortado a mitad de camino (`[C`). Una marca inventada
+     *     pegada después de la foto no se lleva la foto.
+     *  3. La marca tiene que estar respaldada por el texto (`FOLLOW_UP_COMMITMENT_PATTERN`): si la respuesta
+     *     no promete nada, la marca se descarta (igual se saca del texto).
+     *  4. Red de seguridad: si el texto promete «lo consulto y te confirmo» y el modelo no marcó, se marca
+     *     'consulta' (`CONSULTA_PROMISE_PATTERN`).
      *
-     * Si vienen las dos, gana `pedido` (es lo más caro de perder). Con más de una del mismo tipo se queda
-     * la primera.
+     * Si vienen las dos marcas, gana `pedido` (es lo más caro de perder). Con más de una del mismo tipo se
+     * queda la primera. Sin ninguna marca el texto sale byte por byte como antes de esta funcionalidad.
      *
      * @param string $texto Respuesta cruda del modelo, con marcadores o sin ellos.
      *
@@ -476,15 +519,12 @@ RULE;
     {
         $follow_up      = '';
         $follow_up_note = '';
-        // true si el modelo escribió alguna marca (cerrada o no): solo entonces se toca el espaciado.
-        $saco_marca = false;
 
         // `preg_replace_callback` devuelve null si el motor de expresiones falla (texto no UTF-8, por
         // ejemplo): en ese caso se sigue con el texto tal cual, sin marcas, que es como andaba antes.
-        $sin_marcas = preg_replace_callback(
+        $cuerpo = preg_replace_callback(
             self::FOLLOW_UP_MARKER_PATTERN,
-            function ($matches) use (&$follow_up, &$follow_up_note, &$saco_marca) {
-                $saco_marca = true;
+            function ($matches) use (&$follow_up, &$follow_up_note) {
                 $tipo = mb_strtolower($matches[1], 'UTF-8');
                 $nota = $this->clean_follow_up_note(isset($matches[2]) ? $matches[2] : '');
 
@@ -499,60 +539,106 @@ RULE;
             $texto
         );
 
-        if (is_null($sin_marcas)) {
-            $sin_marcas = $texto;
+        if (is_null($cuerpo)) {
+            $cuerpo = $texto;
         }
 
-        $resultado = $this->split_photo_marker($sin_marcas);
+        // La cola, de a una y en cualquier orden. `split_photo_marker()` devuelve el texto tal cual (byte por
+        // byte) cuando no hay foto, y `strip_tail_marker()` también cuando no hay nada que sacar.
+        $bar_code = '';
+        for ($vuelta = 0; $vuelta < 4; $vuelta++) {
+            $foto = $this->split_photo_marker($cuerpo);
 
-        // Marcas inventadas al final (`[CUOTA:…]`): se sacan siempre, sin que cuenten como señal.
-        $resultado['body'] = $this->strip_invented_markers($resultado['body'], $follow_up);
+            if ($foto['bar_code'] !== '') {
+                // Si hubiera más de una foto, se queda con la última (la más cercana al final).
+                if ($bar_code === '') {
+                    $bar_code = $foto['bar_code'];
+                }
+                $cuerpo = $foto['body'];
+                continue;
+            }
+
+            $limpio = $this->strip_tail_marker($cuerpo, $follow_up);
+            if ($limpio === $cuerpo) {
+                break;
+            }
+            $cuerpo = $limpio;
+        }
+
+        // La marca tiene que estar respaldada por el texto: sin un compromiso en la respuesta, se descarta.
+        if ($follow_up !== '' && ! preg_match(self::FOLLOW_UP_COMMITMENT_PATTERN, $cuerpo)) {
+            Log::channel('daily')->info('WhatsappBotAiService: se descartó una marca de seguimiento que el texto no respalda.', [
+                'follow_up' => $follow_up,
+            ]);
+            $follow_up      = '';
+            $follow_up_note = '';
+        }
 
         // Red de seguridad: el texto promete «lo consulto y te confirmo» pero el modelo no puso la marca.
-        if ($follow_up === '' && $resultado['body'] !== '' && preg_match(self::CONSULTA_PROMISE_PATTERN, $resultado['body'])) {
+        if ($follow_up === '' && $cuerpo !== '' && $this->promises_consulta($cuerpo)) {
             $follow_up = WhatsappChat::FOLLOW_UP_CONSULTA;
         }
 
-        // Sin marcas de seguimiento el texto sale byte por byte como antes de esta funcionalidad.
-        if ($follow_up === '') {
-            return $resultado + ['follow_up' => '', 'follow_up_note' => ''];
-        }
-
-        // Sacar una marca del medio puede dejar un doble espacio donde estaba; se pliega. Solo si hubo marca
-        // escrita por el modelo: cuando la consulta la detectó la red de seguridad el texto no se toca.
-        if ($saco_marca) {
-            $resultado['body'] = trim((string) preg_replace('/[ \t]{2,}/u', ' ', $resultado['body']));
-        }
-
-        return $resultado + ['follow_up' => $follow_up, 'follow_up_note' => $follow_up_note];
+        return [
+            'body'           => $cuerpo,
+            'bar_code'       => $bar_code,
+            'follow_up'      => $follow_up,
+            'follow_up_note' => $follow_up_note,
+        ];
     }
 
     /**
-     * Saca del final del cuerpo las líneas que son una marca inventada (ver `INVENTED_MARKER_PATTERN`), de a una,
-     * hasta tres: un modelo que inventa una puede inventar dos. Si no hay ninguna devuelve el texto tal cual (byte
-     * por byte). Deja un rastro en el log para poder contar cuán seguido pasa.
+     * Saca UNA marca inventada o un corchete cortado del final del cuerpo (ver `INVENTED_MARKER_PATTERN` y
+     * `TRUNCATED_MARKER_PATTERN`). Si no hay ninguna devuelve el texto tal cual, byte por byte. Deja un
+     * rastro en el log (acotado: es texto del modelo y puede traer datos del cliente) para poder contar cuán
+     * seguido pasa.
      *
      * @param string $cuerpo
      * @param string $follow_up Solo para el log.
      *
      * @return string
      */
-    private function strip_invented_markers(string $cuerpo, string $follow_up): string
+    private function strip_tail_marker(string $cuerpo, string $follow_up): string
     {
-        for ($i = 0; $i < 3; $i++) {
-            if (! preg_match(self::INVENTED_MARKER_PATTERN, $cuerpo, $matches, PREG_OFFSET_CAPTURE)) {
-                break;
+        foreach ([self::INVENTED_MARKER_PATTERN, self::TRUNCATED_MARKER_PATTERN] as $patron) {
+            if (! preg_match($patron, $cuerpo, $matches, PREG_OFFSET_CAPTURE)) {
+                continue;
             }
 
-            Log::channel('daily')->info('WhatsappBotAiService: el modelo inventó una marca interna, se saca del texto.', [
-                'marca'     => trim($matches[0][0]),
+            Log::channel('daily')->info('WhatsappBotAiService: el modelo dejó una marca interna inventada o cortada, se saca del texto.', [
+                'marca'     => mb_substr(trim($matches[0][0]), 0, 60, 'UTF-8'),
                 'follow_up' => $follow_up,
             ]);
 
-            $cuerpo = rtrim(substr($cuerpo, 0, $matches[0][1]));
+            return rtrim(substr($cuerpo, 0, $matches[0][1]));
         }
 
         return $cuerpo;
+    }
+
+    /**
+     * Indica si el texto PROMETE averiguar y confirmar algo («lo consulto y te confirmo») en alguna oración que
+     * no sea un ofrecimiento condicional. Es la red de seguridad de `split_markers()`.
+     *
+     * @param string $cuerpo Texto ya limpio de marcadores.
+     *
+     * @return bool
+     */
+    private function promises_consulta(string $cuerpo): bool
+    {
+        $oraciones = preg_split('/(?<=[.!?\n])\s+/u', $cuerpo);
+
+        if ($oraciones === false) {
+            return false;
+        }
+
+        foreach ($oraciones as $oracion) {
+            if (preg_match(self::CONSULTA_PROMISE_PATTERN, $oracion) && ! preg_match(self::CONSULTA_CONDITIONAL_PATTERN, $oracion)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -631,7 +717,7 @@ RULE;
      * @param string $motivo Vacío en las cinco ramas fuera del array de abajo (no debería
      *                        pasar, pero un string vacío es un motivo inocuo). Valores usados:
      *                        'sin_configurar', 'sin_historial', 'error_api', 'excepcion',
-     *                        'solo_foto'.
+     *                        'solo_foto', 'sin_texto'.
      * @return array{body: string, bar_code: string, follow_up: string, follow_up_note: string, motivo: string}
      */
     private function empty_response(string $motivo = ''): array
