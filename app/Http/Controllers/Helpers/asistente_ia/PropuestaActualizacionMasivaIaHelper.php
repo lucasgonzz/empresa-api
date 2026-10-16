@@ -2,13 +2,17 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\MasiveUpdateHelper;
 use App\Http\Controllers\Helpers\article\precios\PrecioFinalEnMasivaHelper;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\Article;
 use App\Models\Iva;
 use App\Models\UnidadMedida;
+use App\Services\AuditLog\AuditContext;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Actualización masiva de artículos propuesta por el asistente de IA (misión
@@ -238,13 +242,32 @@ class PropuestaActualizacionMasivaIaHelper
             'total_estimado'   => $total,
         ];
 
+        /*
+         * Misión asistente-altas-y-conversacion (16/10/2026, D3, demo3 S07/S08): "subile el costo 8 %
+         * a todo lo de Ferretera del Sur" se confirmó sin que nadie dijera cómo quedaban los precios
+         * de venta, y la ducha saltó de $ 22.415 a $ 29.292. Hasta tres ejemplos, calculados con la
+         * MISMA cuenta que va a hacer la masiva (ver ejemplos_de_precio()). Van en los datos de la
+         * tarjeta (y el resultado de ejecutar() los repite), en el aviso de la tarjeta y en la
+         * respuesta al modelo. No cambian nada de lo que hace la masiva.
+         */
+        $ejemplos = self::ejemplos_de_precio($contexto, $traducido, $cambios, $cambios_traducidos['update_form']);
+
+        $aviso_de_la_tarjeta = self::AVISO;
+
+        if (count($ejemplos)) {
+
+            $datos[self::CLAVE_EJEMPLOS] = $ejemplos;
+
+            $aviso_de_la_tarjeta = self::AVISO . ' ' . self::texto_de_ejemplos($ejemplos) . '.';
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
             self::clave($filtros, $cambios),
             $datos,
-            ['titulo' => self::TITULO, 'renglones' => $renglones, 'aviso' => self::AVISO],
+            ['titulo' => self::TITULO, 'renglones' => $renglones, 'aviso' => $aviso_de_la_tarjeta],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
@@ -258,6 +281,11 @@ class PropuestaActualizacionMasivaIaHelper
         if (count($avisos)) {
 
             $extra['avisos'] = $avisos;
+        }
+
+        if (count($ejemplos)) {
+
+            $extra[self::CLAVE_EJEMPLOS] = self::lineas_de_ejemplos($ejemplos);
         }
 
         return AccionesIaHelper::respuesta_de_propuesta(
@@ -840,7 +868,7 @@ class PropuestaActualizacionMasivaIaHelper
 
         $encolados = isset($resultado['body']['queued_count']) ? (int) $resultado['body']['queued_count'] : 0;
 
-        return [
+        $resultado_de_la_tarjeta = [
             'texto' => 'Actualización masiva encolada: ' . $encolados . ' artículos. Te va a aparecer en el sistema cuando termine.',
             'ruta'  => [
                 'name'   => 'article',
@@ -848,6 +876,240 @@ class PropuestaActualizacionMasivaIaHelper
                 'texto'  => 'Ver el listado',
             ],
         ];
+
+        /*
+         * Los ejemplos de precio que vio la persona al proponer, repetidos (misión
+         * asistente-altas-y-conversacion, D3): la masiva corre en segundo plano y el modelo tiene que
+         * poder decir cómo quedan los precios sin esperar a que termine. `texto` no cambia.
+         */
+        if (isset($datos[self::CLAVE_EJEMPLOS]) && is_array($datos[self::CLAVE_EJEMPLOS]) && count($datos[self::CLAVE_EJEMPLOS])) {
+
+            $resultado_de_la_tarjeta[self::CLAVE_EJEMPLOS] = self::lineas_de_ejemplos($datos[self::CLAVE_EJEMPLOS]);
+        }
+
+        return $resultado_de_la_tarjeta;
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Ejemplos de precio de venta (misión asistente-altas-y-conversacion, D3)
+    // -------------------------------------------------------------------------------------------
+
+    /** La clave de los ejemplos en los datos de la tarjeta, en la respuesta al modelo y en el resultado. */
+    const CLAVE_EJEMPLOS = 'ejemplos_de_precio';
+
+    /** Cuántos ejemplos como máximo. */
+    const MAX_EJEMPLOS = 3;
+
+    /**
+     * Los cambios con los que el precio de venta de después se puede estimar con confianza: los que
+     * solo mueven columnas que lee el cálculo del precio. Un cambio de proveedor (descuentos que se
+     * materializan, embeddings), de categoría, de stock (movimientos) o de un checkbox de la tienda
+     * no se simula: con cualquiera de ellos en la tarjeta no hay ejemplos.
+     */
+    const CAMBIOS_QUE_SE_PUEDEN_ESTIMAR = [
+        'costo', 'margen_de_ganancia', 'precio_manual', self::CAMPO_PRECIO_FINAL,
+        'aplica_margen_del_proveedor', 'costo_en_dolares', 'aplicar_iva', 'iva',
+    ];
+
+    /**
+     * Hasta MAX_EJEMPLOS artículos alcanzados con su precio de venta actual (`final_price`) y el
+     * estimado después de la masiva.
+     *
+     * 🔴 El "después" sale de la MISMA cuenta de la masiva, no de una fórmula aparte: dentro de una
+     * transacción que siempre se revierte, a cada ejemplo se le aplica cada ítem del update_form con
+     * MasiveUpdateHelper::apply_form_change() (lo que hace process_update()) y se le recalcula el
+     * precio con ArticleHelper::setFinalPrice() (lo que hace la tanda), y se relee `final_price`. Así
+     * el ejemplo dice lo que la masiva va a dejar — también cuando el precio guardado no coincide
+     * con la fórmula (demo3: la ducha a $ 22.415 con la fórmula dando otro número), que es
+     * justamente lo que el dueño tiene que ver antes de confirmar. Nada de lo simulado queda: el
+     * cálculo solo escribe en la base (artículo y pivotes de listas) y el rollback lo deshace.
+     *
+     * Solo con cambios de CAMBIOS_QUE_SE_PUEDEN_ESTIMAR; los artículos son los primeros por id con
+     * precio de venta. Protegido: si algo falla, sin ejemplos (la tarjeta se arma igual).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $traducido  FiltroDeArticulosIaHelper::traducir().
+     * @param  array  $cambios  Los cambios ya analizados (con el precio manual convertido si correspondía).
+     * @param  array  $update_form
+     * @return array<int, array{article_id: int, nombre: string, antes: float, despues: float}>
+     */
+    protected static function ejemplos_de_precio(ContextoDeCargaIa $contexto, array $traducido, array $cambios, array $update_form)
+    {
+        if (!count($update_form) || count($update_form) !== count($cambios)) {
+
+            return [];
+        }
+
+        foreach ($cambios as $cambio) {
+
+            $campo = mb_strtolower(EntradaDeCargaIa::texto($cambio, 'campo'));
+
+            if (!in_array($campo, self::CAMBIOS_QUE_SE_PUEDEN_ESTIMAR, true)) {
+
+                return [];
+            }
+        }
+
+        $ejemplos = [];
+
+        try {
+
+            $ids = FiltroDeArticulosIaHelper::query($contexto->owner_id, $traducido['filter_form'], $traducido['imagen'])
+                                        ->where('articles.final_price', '>', 0)
+                                        ->orderBy('articles.id')
+                                        ->limit(self::MAX_EJEMPLOS)
+                                        ->pluck('articles.id')
+                                        ->all();
+
+            if (!count($ids)) {
+
+                return [];
+            }
+
+            $owner = $contexto->owner;
+
+            /*
+             * El contador de filas de auditoría del lote vive en memoria (AuditContext::marco()), no
+             * en la base: el rollback deshace las filas pero no el conteo, y una propuesta con
+             * ejemplos le comería tope (`max_filas_por_lote`) al resto del request. Se guarda acá y
+             * se devuelve después del rollback (chequeo independiente, 16/10/2026).
+             */
+            $auditoria = self::conteo_de_auditoria();
+
+            DB::beginTransaction();
+
+            try {
+
+                foreach ($ids as $id) {
+
+                    $articulo = Article::find((int) $id);
+
+                    if (is_null($articulo)) {
+
+                        continue;
+                    }
+
+                    $antes = (float) $articulo->final_price;
+                    $nombre = (string) $articulo->name;
+
+                    foreach ($update_form as $form) {
+
+                        MasiveUpdateHelper::apply_form_change($articulo, $form, $owner);
+                    }
+
+                    ArticleHelper::setFinalPrice($articulo, (int) $contexto->owner_id, $owner);
+
+                    $despues = DB::table('articles')->where('id', (int) $id)->value('final_price');
+
+                    if (is_null($despues) || (float) $despues <= 0) {
+
+                        continue;
+                    }
+
+                    $ejemplos[] = [
+                        'article_id' => (int) $id,
+                        'nombre'     => $nombre,
+                        'antes'      => round($antes, 2),
+                        'despues'    => round((float) $despues, 2),
+                    ];
+                }
+
+            } finally {
+
+                DB::rollBack();
+
+                self::restaurar_conteo_de_auditoria($auditoria);
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('PropuestaActualizacionMasivaIaHelper: no se pudieron calcular los ejemplos de precio', [
+                'owner_id' => $contexto->owner_id,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+
+        return $ejemplos;
+    }
+
+    /**
+     * El conteo en memoria del lote de auditoría (filas, omitidas, id de la fila truncada), o null
+     * si no se puede leer.
+     *
+     * @return array|null
+     */
+    protected static function conteo_de_auditoria()
+    {
+        try {
+
+            $marco = AuditContext::marco();
+
+            return [
+                'marco'       => $marco,
+                'filas'       => isset($marco->filas) ? $marco->filas : 0,
+                'omitidas'    => isset($marco->omitidas) ? $marco->omitidas : 0,
+                'id_truncada' => isset($marco->id_truncada) ? $marco->id_truncada : null,
+            ];
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+    }
+
+    /**
+     * Devuelve el conteo de auditoría a como estaba antes de los ejemplos (lo escrito adentro se
+     * revirtió con el rollback, incluida una fila `truncated` que se hubiera creado).
+     *
+     * @param  array|null  $conteo
+     * @return void
+     */
+    protected static function restaurar_conteo_de_auditoria($conteo)
+    {
+        if (!is_array($conteo) || !is_object($conteo['marco'])) {
+
+            return;
+        }
+
+        $conteo['marco']->filas = $conteo['filas'];
+        $conteo['marco']->omitidas = $conteo['omitidas'];
+        $conteo['marco']->id_truncada = $conteo['id_truncada'];
+    }
+
+    /**
+     * "Ducha de mano Gloa: $ 22.415,01 → $ 29.291,94", uno por ejemplo.
+     *
+     * @param  array  $ejemplos
+     * @return array<int, string>
+     */
+    protected static function lineas_de_ejemplos(array $ejemplos)
+    {
+        $lineas = [];
+
+        foreach ($ejemplos as $ejemplo) {
+
+            if (!is_array($ejemplo) || !isset($ejemplo['nombre'], $ejemplo['antes'], $ejemplo['despues'])) {
+
+                continue;
+            }
+
+            $lineas[] = $ejemplo['nombre'] . ': ' . FormatoIaHelper::monto($ejemplo['antes']) . ' → ' . FormatoIaHelper::monto($ejemplo['despues']);
+        }
+
+        return $lineas;
+    }
+
+    /**
+     * "Ejemplos de precio de venta: Ducha…: $ 22.415,01 → $ 29.291,94; Llave…: …".
+     *
+     * @param  array  $ejemplos
+     * @return string
+     */
+    protected static function texto_de_ejemplos(array $ejemplos)
+    {
+        return 'Ejemplos de precio de venta: ' . implode('; ', self::lineas_de_ejemplos($ejemplos));
     }
 
     /**

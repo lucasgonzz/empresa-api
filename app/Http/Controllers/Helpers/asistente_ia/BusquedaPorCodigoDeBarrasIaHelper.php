@@ -231,6 +231,22 @@ class BusquedaPorCodigoDeBarrasIaHelper
             $resultado['aviso_foto'] = 'No encontré una foto confiable del producto: proponé el alta sin foto y decile que puede mandar una.';
         }
 
+        /*
+         * Misión asistente-altas-y-conversacion (16/10/2026, D5, demo3 S11): el martillo Tramontina
+         * quedó sin categoría ni subcategoría porque el modelo no veía las del negocio. Con el árbol
+         * acá, el alta sale en la misma vuelta con las dos. Protegido: un árbol que falla no tira la
+         * búsqueda (que ya gastó su llamada a internet).
+         */
+        try {
+            $categorias = CategoriasDelNegocioIaHelper::para_respuesta((int) $owner_id);
+
+            if (! is_null($categorias)) {
+                $resultado['categorias_del_negocio'] = $categorias;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('BusquedaPorCodigoDeBarras: no se pudo armar el árbol de categorías', ['error' => $e->getMessage()]);
+        }
+
         return $resultado;
     }
 

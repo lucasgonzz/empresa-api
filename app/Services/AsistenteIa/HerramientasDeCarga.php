@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AltaDeArticuloConFotoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
@@ -414,6 +415,10 @@ class HerramientasDeCarga
                         'fecha'           => [
                             'type'        => 'string',
                             'description' => 'AAAA-MM-DD. Si se repite, es la primera fecha.',
+                        ],
+                        'hora'            => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. Ojo: a esa hora NO le llega ningún aviso por WhatsApp: la tarea queda en la Agenda.',
                         ],
                         'repetir'         => self::esquema_de_repeticion(),
                         'subcategoria_id' => [
@@ -875,7 +880,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'que_puedo_cargar',
-                'description'  => 'Devuelve qué entidades del sistema podés crear, editar o borrar con proponer_alta, proponer_edicion y proponer_baja (las de ABM, Clientes, Proveedores y Artículos: categorías, subcategorías, marcas, listas de precio, descuentos, sucursales, vendedores, clientes, proveedores, artículos y más), y con una entidad, sus campos: nombre, tipo, si es obligatorio, en qué operaciones se acepta y cómo se ubica un registro. Llamala ANTES de proponer, y usá sus claves tal cual: un campo que no está acá no existe, no lo inventes. NO es para gastos, pagos, tareas, combos, ofertas, compras con factura ni ventas nuevas: esas tienen su propia herramienta.',
+                'description'  => 'Devuelve qué entidades del sistema podés crear, editar o borrar con proponer_alta, proponer_edicion y proponer_baja (las de ABM, Clientes, Proveedores y Artículos: categorías, subcategorías, marcas, listas de precio, descuentos, sucursales, vendedores, clientes, proveedores, artículos y más), y con una entidad, sus campos: nombre, tipo, si es obligatorio, en qué operaciones se acepta y cómo se ubica un registro. Llamala ANTES de proponer, y usá sus claves tal cual: un campo que no está acá no existe, no lo inventes. NO es para cargar un gasto, un pago, una tarea, un combo, una oferta, una compra con factura ni una venta nueva: esas tienen su propia herramienta. Las SUBCATEGORÍAS y CATEGORÍAS DE GASTO sí se crean acá (expense_concept y expense_category): si la que nombró la persona para un gasto no existe, la creás vos.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -889,7 +894,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_alta',
-                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; pero DÓNDE va el margen depende del negocio (que_puedo_cargar de article te lo dice): si trabaja con listas de precio, va POR LISTA en margenes_por_lista y se rechazan percentage_gain, price (precio manual) y apply_provider_percentage_gain —si la persona no dijo para qué lista, preguntale (podés ofrecer "todas")—; si no trabaja con listas, va en percentage_gain. El stock inicial va en stock_inicial (y deposito, solo si el negocio tiene depósitos). 🔴 Lo que le digas a la persona que se carga tiene que estar en los renglones de la tarjeta: si pidió algo que la tarjeta no muestra, decile que eso NO se carga. "Con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
+                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme (con la confianza en "directo" se crea en el acto y te devuelve el resultado). 🔴 Un ARTÍCULO va SIEMPRE con category_id y sub_category_id elegidos por vos del árbol del negocio (categorias_del_negocio) aunque la persona no los haya dicho; si te devuelve un error que empieza con "No se armó ninguna tarjeta", es para vos: elegí y volvé a llamar en el mismo mensaje con exactamente los mismos datos y extras. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos, incluidas las subcategorías y categorías de gasto (expense_concept, expense_category). Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; pero DÓNDE va el margen depende del negocio (que_puedo_cargar de article te lo dice): si trabaja con listas de precio, va POR LISTA en margenes_por_lista y se rechazan percentage_gain, price (precio manual) y apply_provider_percentage_gain —si la persona no dijo para qué lista, preguntale (podés ofrecer "todas")—; si no trabaja con listas, va en percentage_gain. El stock inicial va en stock_inicial (y deposito, solo si el negocio tiene depósitos). 🔴 Lo que le digas a la persona que se carga tiene que estar en los renglones de la tarjeta: si pidió algo que la tarjeta no muestra, decile que eso NO se carga. "Con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -943,7 +948,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_edicion',
-                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme: NO cambia nada. Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme (con la confianza en "directo" se cambia en el acto y te devuelve el resultado). Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1056,7 +1061,7 @@ class HerramientasDeCarga
                         ],
                         'sucursal'             => [
                             'type'        => 'string',
-                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una. Si la persona ya la dijo en esta conversación, mandala; si no la dijo, no la mandes: la herramienta usa la de la persona o la de la última venta o presupuesto de la charla, y recién si no hay ninguna te la pide.',
                         ],
                         'fecha_entrega'        => [
                             'type'        => 'string',
@@ -1220,7 +1225,7 @@ class HerramientasDeCarga
                         ],
                         'sucursal'             => [
                             'type'        => 'string',
-                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una. Si la persona ya la dijo en esta conversación, mandala; si no la dijo, no la mandes: la herramienta usa la de la persona o la de la última venta o presupuesto de la charla, y recién si no hay ninguna te la pide.',
                         ],
                         'reemplaza_a'          => self::esquema_de_reemplazo(),
                     ],
@@ -1492,6 +1497,75 @@ class HerramientasDeCarga
      * @return array  ['content' => string, 'is_error' => bool]
      */
     public static function ejecutar($tool_name, array $input, AiConversation $conversation, $assistant_message): array
+    {
+        $respuesta = self::despachar($tool_name, $input, $conversation, $assistant_message);
+
+        if ($assistant_message instanceof AiMessage && $assistant_message->confirma_por_texto()) {
+
+            return self::con_la_nota_del_canal($respuesta);
+        }
+
+        return $respuesta;
+    }
+
+    /**
+     * En un canal SIN botones (WhatsApp, MCP), la nota de una propuesta que quedó esperando no habla de
+     * tarjeta (misión asistente-altas-y-conversacion, 16/10/2026).
+     *
+     * 🔴 EL CASO REAL. En demo3, por WhatsApp y en "directo", la actualización masiva —que deja tarjeta
+     * siempre— se contestó con "Dejé la tarjeta para confirmar… Confirmala y corre en segundo plano".
+     * En WhatsApp no hay ninguna tarjeta: el dueño tiene que contestar "sí". El prompt de WhatsApp ya lo
+     * decía, pero la nota fresca del tool_result (AccionesIaHelper::NOTA_PROPUESTA, "La tarjeta queda
+     * para que la persona la confirme") le ganaba. Se cambia la nota y nada más: el resto de la
+     * respuesta, igual.
+     *
+     * @param  array  $respuesta  ['content' => json, 'is_error' => bool]
+     * @return array
+     */
+    protected static function con_la_nota_del_canal(array $respuesta): array
+    {
+        if (!empty($respuesta['is_error']) || !isset($respuesta['content']) || !is_string($respuesta['content'])) {
+
+            return $respuesta;
+        }
+
+        $datos = json_decode($respuesta['content'], true);
+
+        $por_texto = [
+            AccionesIaHelper::NOTA_PROPUESTA       => self::NOTA_PROPUESTA_POR_TEXTO,
+            self::NOTA_AUTO_EJECUCION_FALLIDA      => self::NOTA_AUTO_EJECUCION_FALLIDA_POR_TEXTO,
+        ];
+
+        if (!is_array($datos) || !isset($datos['nota']) || !is_string($datos['nota']) || !isset($por_texto[$datos['nota']])) {
+
+            return $respuesta;
+        }
+
+        $datos['nota'] = $por_texto[$datos['nota']];
+
+        return self::resultado($datos);
+    }
+
+    /** La de NOTA_AUTO_EJECUCION_FALLIDA en un canal sin botones: queda esperando el sí, no "como tarjeta". */
+    const NOTA_AUTO_EJECUCION_FALLIDA_POR_TEXTO = 'No se pudo hacer en el acto por una falla del sistema, así que '
+        . 'quedó esperando el sí de la persona. Decile eso y preguntale si lo intentás de nuevo (con su sí, '
+        . 'confirmar_carga_pendiente con este tarjeta_id). No digas "tarjeta", no digas que ya está cargado ni inventes otro motivo.';
+
+    /** La nota de una propuesta que espera el sí de la persona en un canal sin botones. */
+    const NOTA_PROPUESTA_POR_TEXTO = 'Todavía NO está hecho: quedó esperando el sí de la persona. Acá no hay '
+        . 'tarjeta ni botón, así que no digas "tarjeta" ni "confirmala": decí en una línea qué vas a hacer, '
+        . 'con los datos exactos, y preguntá si lo hacés. Con su sí, confirmar_carga_pendiente con este tarjeta_id.';
+
+    /**
+     * El despacho de cada herramienta de carga. Ver ejecutar().
+     *
+     * @param  string  $tool_name
+     * @param  array  $input
+     * @param  AiConversation  $conversation
+     * @param  mixed  $assistant_message
+     * @return array
+     */
+    protected static function despachar($tool_name, array $input, AiConversation $conversation, $assistant_message): array
     {
         $tool_name = (string) $tool_name;
 
