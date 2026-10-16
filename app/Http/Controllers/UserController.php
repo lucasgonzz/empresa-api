@@ -397,6 +397,24 @@ class UserController extends Controller
         }
 
         /**
+         * Preferencia del comercio "el precio de etiqueta ya incluye el recargo de la tarjeta más
+         * cara" (`ArticlePricesHelper::build_payment_method_layer3_cache` la lee del dueño en cada
+         * request; no hay nada que recalcular al cambiarla). Hasta acá ningún bloque la guardaba:
+         * el tilde se prendía, decía "Actualizado" y al reabrir volvía apagado.
+         *
+         * Los tres guards de `aplicar_descuentos_proveedor_al_asignar`, por los mismos motivos:
+         * vive en el dueño, `has()` + descarte del null (un request viejo sin la clave no la
+         * apaga) y solo si quien guarda es el dueño (el modelo de un empleado trae su propia
+         * columna en 0, que nadie escribe).
+         */
+        if ($owner_user && is_null($model->owner_id)
+            && $request->has('precio_base_incluye_tarjeta')
+            && !is_null($request->precio_base_incluye_tarjeta)) {
+            $owner_user->precio_base_incluye_tarjeta = (int) $request->precio_base_incluye_tarjeta;
+            $owner_user->save();
+        }
+
+        /**
          * Cómo lee VENDER los tickets de balanza (misión balanzas-configurables, 3/10/2026):
          * 'ninguno', 'plu' o 'balanzas'. Reemplaza a las extensiones `plu_balanza_bar_code` /
          * `balanza_bar_code` (ver UserHelper::modo_tickets_de_balanza()).
