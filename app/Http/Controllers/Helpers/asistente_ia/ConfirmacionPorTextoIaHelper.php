@@ -373,7 +373,7 @@ class ConfirmacionPorTextoIaHelper
                 'nota'       => self::NOTA_EJECUTADA,
             ];
 
-            $detalle = is_null($model) ? [] : self::detalle_del_resultado($model->resultado);
+            $detalle = is_null($model) ? [] : self::detalle_del_resultado($model->resultado, (string) $model->tipo);
 
             if (count($detalle)) {
 
@@ -405,7 +405,7 @@ class ConfirmacionPorTextoIaHelper
      * @param  mixed  $resultado  El `resultado` de la tarjeta (objeto, como lo castea AiMessageAction).
      * @return array<string, mixed>
      */
-    public static function detalle_del_resultado($resultado)
+    public static function detalle_del_resultado($resultado, $tipo = '')
     {
         if (!is_object($resultado) && !is_array($resultado)) {
 
@@ -429,6 +429,18 @@ class ConfirmacionPorTextoIaHelper
         if (isset($resultado['total']) && is_numeric($resultado['total'])) {
 
             $detalle['total'] = FormatoIaHelper::monto((float) $resultado['total']);
+        }
+
+        /*
+         * El registro que se acaba de CREAR o EDITAR, para usarlo en la misma vuelta (crear la
+         * subcategoría de gasto y cargar el gasto con ella, o cargarle stock al artículo recién creado)
+         * sin volver a buscarlo. Nunca el de una baja: ver AccionesIaHelper::linea_de_historial().
+         */
+        if (in_array((string) $tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION], true)
+            && isset($resultado['entidad'], $resultado['id']) && is_string($resultado['entidad'])
+            && is_numeric($resultado['id']) && (int) $resultado['id'] > 0) {
+
+            $detalle['registro'] = ['entidad' => $resultado['entidad'], 'id' => (int) $resultado['id']];
         }
 
         foreach (self::CLAVES_DEL_DETALLE as $clave) {

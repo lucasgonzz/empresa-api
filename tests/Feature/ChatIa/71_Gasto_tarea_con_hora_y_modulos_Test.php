@@ -195,6 +195,9 @@ class Gasto_tarea_con_hora_y_modulos_Test extends EmpresaTestCase
         $this->assertNotNull($concepto, 'No se creó la subcategoría de gasto.');
         $this->assertSame((int) $categoria->id, (int) $concepto->expense_category_id);
 
+        // Y el modelo recibe su id en la misma vuelta, para cargar el gasto sin volver a buscarla.
+        $this->assertSame(['entidad' => 'expense_concept', 'id' => (int) $concepto->id], $respuesta['detalle']['registro']);
+
         // El prompt también lo dice.
         $prompt = (new AsistenteIaService())->build_system_prompt($conversation, $this->dueno, true, true);
 
@@ -262,6 +265,51 @@ class Gasto_tarea_con_hora_y_modulos_Test extends EmpresaTestCase
 
         $this->assertNotEmpty($rara['faltan']);
         $this->assertSame($antes, Pending::where('user_id', $this->dueno->id)->count());
+    }
+
+    /**
+     * Corregir solo la hora reemplaza la tarjeta (no deja dos) y no apila horas en el detalle.
+     *
+     * @test
+     */
+    public function corregir_la_hora_reemplaza_la_tarjeta_sin_apilar_horas()
+    {
+        User::where('id', $this->dueno->id)->update(['agente_confianza' => ConfianzaDelAgenteIaHelper::CAUTELOSO]);
+
+        $viernes = Carbon::now()->next(Carbon::FRIDAY)->format('Y-m-d');
+
+        list($conversation, $assistant) = $this->conversacion('recordame el viernes a las 10 llamar a ferretera del sur');
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => 'ZZP71 Llamar a Ferretera del Sur',
+            'fecha'   => $viernes,
+            'hora'    => '10',
+        ]);
+
+        $this->assertTrue(! empty($primera['ok']), json_encode($primera));
+
+        // El modelo reenvía el detalle de la tarjeta, con la hora vieja adelante.
+        $segunda = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => '10:00 · ZZP71 Llamar a Ferretera del Sur',
+            'fecha'   => $viernes,
+            'hora'    => '11',
+        ]);
+
+        $this->assertTrue(! empty($segunda['ok']), json_encode($segunda));
+
+        $nueva = AiMessageAction::find($segunda['tarjeta_id']);
+
+        $this->assertSame('11:00 · ZZP71 Llamar a Ferretera del Sur', $nueva->datos['detalle']);
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::find($primera['tarjeta_id'])->estado_guardado());
+
+        // Un detalle largo no pasa el largo de la columna.
+        $larga = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => 'ZZP71 ' . str_repeat('x', 300),
+            'fecha'   => $viernes,
+            'hora'    => '9',
+        ]);
+
+        $this->assertLessThanOrEqual(255, mb_strlen(AiMessageAction::find($larga['tarjeta_id'])->datos['detalle']));
     }
 
     // ---------------------------------------------------------------------

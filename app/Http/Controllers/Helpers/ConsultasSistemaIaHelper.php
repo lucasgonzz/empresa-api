@@ -76,6 +76,9 @@ class ConsultasSistemaIaHelper
         // "ducha gloa" tiene que encontrar DUCHA DE MANO METAL GLOA. Ver BusquedaPorPalabrasIaHelper.
         if ($busqueda !== '') {
             BusquedaPorPalabrasIaHelper::filtrar($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
+
+            // Lo que tiene la frase entera primero: con el tope de filas no puede quedar afuera.
+            BusquedaPorPalabrasIaHelper::ordenar_por_frase($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
         }
 
         $articles = $articles_query
@@ -1379,12 +1382,30 @@ class ConsultasSistemaIaHelper
             ->where(function ($sub) use ($busqueda) {
                 // Por palabras sueltas: ver BusquedaPorPalabrasIaHelper (escapa los comodines solo).
                 BusquedaPorPalabrasIaHelper::filtrar($sub, $busqueda, ['name', 'bar_code', 'provider_code']);
-            })
+            });
+
+        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($candidatos, $busqueda, ['name', 'bar_code', 'provider_code'])
             ->orderBy('name')
             ->limit(self::MAX_RESULTS)
             ->get($columnas);
 
         if ($candidatos->isEmpty()) {
+            return null;
+        }
+
+        /*
+         * 🔴 Con la frase entera manda lo de siempre. Si nada la tiene y encajó solo por palabras,
+         * se contesta sobre uno únicamente si es el único y es seguro (BusquedaPorPalabrasIaHelper::
+         * es_seguro): "el stock del cable 2" no puede terminar hablando de otro cable. Si no, null:
+         * el que llama dice que no lo encontró y el modelo busca con consultar_stock_de_articulos.
+         */
+        $con_la_frase = BusquedaPorPalabrasIaHelper::por_frase($candidatos, $busqueda, ['name', 'bar_code', 'provider_code']);
+
+        if (count($con_la_frase)) {
+            $candidatos = collect($con_la_frase);
+        } elseif (count($candidatos) === 1 && BusquedaPorPalabrasIaHelper::es_seguro((string) $candidatos[0]->name, $busqueda)) {
+            return $candidatos[0];
+        } else {
             return null;
         }
 

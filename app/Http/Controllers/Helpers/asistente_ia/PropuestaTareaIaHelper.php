@@ -128,9 +128,19 @@ class PropuestaTareaIaHelper {
             return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
         }
 
-        if (!is_null($hora) && strpos($detalle, $hora) !== 0) {
+        /*
+         * La clave de reemplazo se arma con el detalle SIN la hora: corregir solo la hora ("mejor a
+         * las 11") reemplaza la tarjeta en vez de dejar dos. Y una hora que ya venía adelante (el
+         * modelo reenvía el detalle de la tarjeta anterior) se saca antes de poner la nueva: nunca
+         * "11:00 · 10:00 · llamar…". La columna es de 255: se recorta (chequeo independiente, 16/10/2026).
+         */
+        $detalle_sin_hora = trim((string) preg_replace('/^\d{2}:\d{2} · /u', '', $detalle));
 
-            $detalle = $hora.' · '.$detalle;
+        $clave = self::clave_de_tarea_nueva($detalle_sin_hora, $fecha);
+
+        if (!is_null($hora)) {
+
+            $detalle = mb_substr($hora.' · '.$detalle_sin_hora, 0, self::LARGO_DETALLE);
         }
 
         $datos = self::datos_de_una_tarea_nueva($detalle, $fecha);
@@ -177,7 +187,7 @@ class PropuestaTareaIaHelper {
             );
         }
 
-        return self::armar_tarea_nueva($contexto, $mensaje, $datos, self::clave_de_tarea_nueva($detalle, $fecha), null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
+        return self::armar_tarea_nueva($contexto, $mensaje, $datos, $clave, null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
     }
 
     /**
@@ -281,6 +291,9 @@ class PropuestaTareaIaHelper {
      * 16/10/2026). "Recordame el viernes a las 10" sonaba a que el viernes a las 10 le iba a llegar algo
      * por WhatsApp, y eso no existe todavía: la tarea queda en la Agenda del sistema.
      */
+    /** El largo de pendings.detalle (string). */
+    const LARGO_DETALLE = 255;
+
     const AVISO_SIN_RECORDATORIO = 'Queda en la Agenda del sistema: a esa hora no le llega ningún aviso por WhatsApp. '
         . 'Si pidió que se lo recuerdes, decíselo en una línea.';
 

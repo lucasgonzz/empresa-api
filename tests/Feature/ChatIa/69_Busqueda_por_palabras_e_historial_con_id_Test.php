@@ -242,6 +242,65 @@ class Busqueda_por_palabras_e_historial_con_id_Test extends EmpresaTestCase
         $this->assertSame((int) $ducha->id, (int) $renglones[0]['id']);
     }
 
+    /**
+     * 🔴 Chequeo independiente: lo que encaja SOLO por palabras no se elige sin preguntar si un número
+     * del pedido no es una medida entera del nombre. "pintura blanca 4 litros" con solo la de 1 litro
+     * (y un 4 en su código de barras) tiene que preguntar, no armar el presupuesto con la de 1 litro.
+     *
+     * @test
+     */
+    public function lo_que_encaja_solo_por_palabras_con_otro_numero_se_pregunta()
+    {
+        User::where('id', $this->dueno->id)->update(['agente_confianza' => ConfianzaDelAgenteIaHelper::CAUTELOSO]);
+
+        $una = $this->articulo_nuevo('ZZP69 PINTURA BLANCA 1/4 LITRO');
+        $una->bar_code = '7790444000444';
+        $una->save();
+
+        list($conversation, $assistant) = $this->conversacion('presupuesto de 2 pintura blanca 4 litros');
+
+        $resultado = HerramientasDeCarga::ejecutar('proponer_presupuesto', [
+            'items'   => [['articulo' => 'zzp69 pintura blanca 4 litros', 'cantidad' => 2]],
+            'cliente' => TestingFerreteriaSeeder::CLIENTE_CONTADO,
+        ], $conversation, $assistant);
+
+        $respuesta = json_decode($resultado['content'], true);
+
+        $this->assertTrue(empty($respuesta['ok']), 'Eligió solo un artículo con otra medida: ' . $resultado['content']);
+        $this->assertNotEmpty($respuesta['faltan']);
+        $this->assertSame((int) $una->id, (int) $respuesta['opciones']['articulos'][0]['articulo_id']);
+
+        // Y las reglas de es_seguro, una por una.
+        $this->assertTrue(BusquedaPorPalabrasIaHelper::es_seguro('DUCHA DE MANO METAL GLOA', 'duchas gloa'));
+        $this->assertTrue(BusquedaPorPalabrasIaHelper::es_seguro('PINTURA BLANCA 4 LITROS', 'pintura blanca 4 litros'));
+        $this->assertFalse(BusquedaPorPalabrasIaHelper::es_seguro('PINTURA BLANCA 1/4 LITRO', 'pintura blanca 4 litros'));
+        $this->assertFalse(BusquedaPorPalabrasIaHelper::es_seguro('CABLE 40 METROS', 'cable 4'));
+        $this->assertTrue(BusquedaPorPalabrasIaHelper::es_seguro('CAÑO 1/2 PULGADA', 'caños 1/2'));
+    }
+
+    /**
+     * Las palabras sueltas se buscan solo en el NOMBRE: los códigos, por la frase entera.
+     *
+     * @test
+     */
+    public function las_palabras_sueltas_no_se_buscan_en_los_codigos()
+    {
+        $con_codigo = $this->articulo_nuevo('ZZP69 LLAVE FRANCESA');
+        $con_codigo->bar_code = 'ZZP69-ALLEN-001';
+        $con_codigo->save();
+
+        $this->assertSame(
+            [],
+            $this->nombres(ConsultasSistemaIaHelper::stock_de_articulos($this->dueno->id, 'zzp69 allen francesa'))
+        );
+
+        // La frase entera en el código, como siempre.
+        $this->assertSame(
+            ['ZZP69 LLAVE FRANCESA'],
+            $this->nombres(ConsultasSistemaIaHelper::stock_de_articulos($this->dueno->id, 'ZZP69-ALLEN-001'))
+        );
+    }
+
     // ---------------------------------------------------------------------
     // La línea de historial
     // ---------------------------------------------------------------------
@@ -297,6 +356,15 @@ class Busqueda_por_palabras_e_historial_con_id_Test extends EmpresaTestCase
         ]);
 
         $this->assertStringNotContainsString('_id:', AccionesIaHelper::linea_de_historial($venta->fresh()));
+
+        // 🔴 Una BAJA confirmada también trae entidad e id, y no se da: es un registro borrado.
+        $baja = $this->tarjeta($conversation, $assistant, AiMessageAction::TIPO_BAJA, AiMessageAction::ESTADO_CONFIRMADA, [
+            'texto'   => 'Proveedor Acme borrado',
+            'entidad' => 'provider',
+            'id'      => 55,
+        ]);
+
+        $this->assertStringNotContainsString('provider_id', AccionesIaHelper::linea_de_historial($baja->fresh()));
     }
 
     /**
@@ -350,6 +418,6 @@ class Busqueda_por_palabras_e_historial_con_id_Test extends EmpresaTestCase
         $prompt = (new AsistenteIaService())->build_system_prompt($conversation, $this->dueno->fresh(), true);
 
         $this->assertStringContainsString('Lo que acabás de crear o tocar en esta conversación', $prompt);
-        $this->assertStringContainsString('usá ese id en `registro`', $prompt);
+        $this->assertStringContainsString('usá ese id (en `registro` para', $prompt);
     }
 }

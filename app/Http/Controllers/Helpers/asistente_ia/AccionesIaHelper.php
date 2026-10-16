@@ -450,7 +450,14 @@ class AccionesIaHelper {
          */
         $del_registro = '';
 
-        if ($de_la_tarea === '' && $estado !== '' && (string) $accion->estado === AiMessageAction::ESTADO_CONFIRMADA
+        /*
+         * Solo un ALTA o una EDICIÓN (chequeo independiente, 16/10/2026): el resultado de una baja
+         * también trae entidad e id, y "provider_id: 55" de un proveedor recién borrado llevaría al
+         * modelo a editar algo que ya no existe.
+         */
+        if ($de_la_tarea === '' && $estado !== ''
+            && in_array((string) $accion->tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION], true)
+            && (string) $accion->estado === AiMessageAction::ESTADO_CONFIRMADA
             && is_object($accion->resultado) && isset($accion->resultado->entidad, $accion->resultado->id)
             && is_scalar($accion->resultado->entidad) && is_numeric($accion->resultado->id) && (int) $accion->resultado->id > 0) {
 
