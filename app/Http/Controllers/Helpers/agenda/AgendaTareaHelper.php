@@ -23,6 +23,9 @@ use Carbon\Carbon;
  */
 class AgendaTareaHelper {
 
+    /** El prefijo «HH:MM · » con el que la hora va escrita adelante del detalle (ver hora_del_detalle()). */
+    const PATRON_HORA_DEL_DETALLE = '/^(\d{2}):(\d{2}) · /u';
+
     /**
      * Validación mínima del body de alta/edición de una tarea (contrato §2 de la misión de la
      * agenda). Devuelve el array de columnas listo para guardar, o un string con el mensaje del 422.
@@ -131,7 +134,21 @@ class AgendaTareaHelper {
 
         $notas = self::valor($datos, 'notas');
 
+        /*
+         * 🔴 LA HORA DEL RECORDATORIO SALE DEL TEXTO, NO DE UN CAMPO APARTE (misión
+         * recordatorios-whatsapp, 16/10/2026). La hora vive escrita adelante del detalle («10:00 ·
+         * Llamar a…») porque es lo que el dueño ve y edita en la Agenda, que no tiene un campo de
+         * hora (decisión de Lucas). Si el recordatorio leyera un campo propio, el dueño que en la
+         * pantalla cambia «10:00» por «11:00» —o borra la hora— seguiría recibiendo el WhatsApp a la
+         * hora vieja. Derivándola acá la siguen a la vez la pantalla (`POST/PUT api/pending`), la
+         * tarea nueva del asistente y sus cambios, sin tocar ningún llamador.
+         *
+         * Lo que NO se devuelve: `avisar_por_whatsapp` ni `avisado_at`. Los pone solo el asistente
+         * (cuando confirma el dueño) y el endpoint del admin: un update desde la pantalla no tiene
+         * que prender ni apagar el aviso.
+         */
         return [
+            'hora_aviso'             => self::hora_del_detalle($detalle),
             'detalle'                => $detalle,
             'fecha_realizacion'      => $fecha_realizacion->format('Y-m-d 00:00:00'),
             'es_recurrente'          => $es_recurrente ? 1 : 0,
@@ -238,6 +255,111 @@ class AgendaTareaHelper {
         }
 
         return $fecha->startOfDay();
+    }
+
+    /**
+     * La hora del prefijo «HH:MM · » del detalle como "HH:MM:00" (lo que se guarda en `hora_aviso`),
+     * o null si el detalle no empieza así o la hora no es del día (25:00, 10:75).
+     *
+     * El prefijo es exactamente el que escribe el asistente (PropuestaTareaIaHelper::proponer_tarea):
+     * dos dígitos, dos puntos, dos dígitos, espacio, punto medio, espacio. Lo que no tiene esa forma
+     * («a las 10 llamar…», «9:00 · …») es texto de la persona y no se interpreta.
+     *
+     * @param  string  $detalle
+     * @return string|null
+     */
+    static function hora_del_detalle($detalle) {
+
+        if (!is_string($detalle) || !preg_match(self::PATRON_HORA_DEL_DETALLE, $detalle, $partes)) {
+
+            return null;
+        }
+
+        $horas = (int) $partes[1];
+        $minutos = (int) $partes[2];
+
+        if ($horas > 23 || $minutos > 59) {
+
+            return null;
+        }
+
+        return sprintf('%02d:%02d:00', $horas, $minutos);
+    }
+
+    /**
+     * Recalcula `avisado_at` cuando a una tarea EXISTENTE le cambia lo que decide su recordatorio: la
+     * hora, la fecha o el pedido de aviso. Lo llama el evento `updating` de Pending, antes de guardar.
+     *
+     * - Si el momento NUEVO de hoy ya pasó y hoy le toca → `avisado_at = ahora`: la hora que ya pasó
+     *   no dispara un WhatsApp al toque. Sin esto, editar a las 10:30 una tarea de hoy «a las 10:15»
+     *   (o prenderle el aviso a esa hora) le mandaba al dueño un «te recuerdo» de algo que acababa de
+     *   tocar.
+     * - Si no (la hora nueva todavía no llegó, o hoy no le toca) → `avisado_at = null`.
+     *
+     * 🔴 POR QUÉ SE BORRA LA MARCA DE HOY. La marca es por día: sin esto, «mejor a las 11» después
+     * del recordatorio de las 10 no volvía a salir ese día, y el asistente ya le había dicho al dueño
+     * que a las 11 le llegaba (lo encontró el chequeo independiente del 16/10/2026).
+     *
+     * No toca nada si ninguno de los tres campos cambió: la marca que pone el sello del admin se
+     * guarda sin cambiar ninguno de ellos.
+     *
+     * @param  \App\Models\Pending  $pending  La tarea, con los valores nuevos todavía sin guardar.
+     * @return void
+     */
+    static function recalcular_marca_del_recordatorio($pending) {
+
+        if (!$pending->exists || !$pending->isDirty(['hora_aviso', 'fecha_realizacion', 'avisar_por_whatsapp'])) {
+
+            return;
+        }
+
+        if (empty($pending->hora_aviso)) {
+
+            $pending->avisado_at = null;
+
+            return;
+        }
+
+        $ahora = Carbon::now();
+        $hoy = $ahora->copy()->startOfDay();
+
+        $momento = $hoy->copy()->setTimeFromTimeString((string) $pending->hora_aviso);
+
+        $pending->avisado_at = $momento->lte($ahora) && self::le_toca_el($pending, $hoy) ? $ahora : null;
+    }
+
+    /**
+     * ¿Ese día es una ocurrencia de la tarea, con los valores que tiene en memoria? Si la unidad de
+     * repetición cambió en el mismo guardado, la relación cargada es la vieja: se recarga la nueva.
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \Carbon\Carbon  $dia
+     * @return bool
+     */
+    protected static function le_toca_el($pending, Carbon $dia) {
+
+        if ($pending->es_recurrente) {
+
+            $unidad = $pending->relationLoaded('unidad_frecuencia') ? $pending->unidad_frecuencia : null;
+
+            if (is_null($unidad) || (int) $unidad->id !== (int) $pending->unidad_frecuencia_id) {
+
+                $pending->setRelation('unidad_frecuencia', UnidadFrecuencia::find($pending->unidad_frecuencia_id));
+            }
+        }
+
+        return AgendaHelper::es_ocurrencia($pending, $dia);
+    }
+
+    /**
+     * El detalle sin el prefijo «HH:MM · » (si lo tiene), recortado.
+     *
+     * @param  string  $detalle
+     * @return string
+     */
+    static function detalle_sin_hora($detalle) {
+
+        return trim((string) preg_replace(self::PATRON_HORA_DEL_DETALLE, '', (string) $detalle));
     }
 
     /**

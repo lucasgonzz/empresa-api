@@ -84,6 +84,36 @@ PERSONALITY;
      *    dato (T12.32) y en la medición de base el agente ofreció "coordinar el envío" y "te lo
      *    reservo". Envíos, reservas, pedidos, pagos, cuotas, garantía o factura se afirman solo si
      *    están escritos acá.
+     *
+     * Misión agente-no-niega-reservas (16/10/2026): UNA regla más, pegada a la de servicios no cargados.
+     * Medido contra DeepSeek real, «No afirmes que el negocio … reserva productos» se leía como «el negocio
+     * no reserva»: ante «¿me lo guardás hasta mañana?» el agente contestaba «no hacemos reservas» o «no
+     * puedo reservarlo» (17 de 60 respuestas sin nada escrito por el dueño; 7 de 15 con el objetivo «Que
+     * pase por el local»), que es OTRA afirmación no cargada (le niega al cliente algo que el negocio
+     * quizás sí hace) y contradice el «decí que lo consultás» de la regla de arriba. La anterior sigue
+     * textual (la fija `28_Objetivo_del_agente_Test`).
+     *
+     * 🔴 La redacción importa más de lo que parece; se midió con cuatro versiones antes de esta (y la
+     * corrección vive SOLO acá: sumarla también a la capa del objetivo «local» pisaba lo que escribía el
+     * dueño, ver `AgentObjectivePromptBuilder`):
+     *  - Con frases de ejemplo entre comillas («nada de "no hacemos reservas"») el modelo las toma como
+     *    PROHIBIDAS aun cuando el dueño las escribió: con «No hacemos reservas ni apartados» en las
+     *    habilidades, la negativa del dueño pasó de salir 15 de 15 a 2 de 15 («eso lo consulto y te
+     *    confirmo»). Por eso la regla no cita ninguna frase.
+     *  - Con una regla de dos mitades («si dice que sí, decile que sí; si dice que no, que no; si no dice
+     *    nada, consultá») el modelo empezó a AFIRMAR lo que nadie dijo («dale, te lo aparto»: 12 de 60
+     *    contra 3 de 60 de la base).
+     *  - Con solo «decir que NO hace algo también es afirmar algo que no sabés» dejó de negar de plano, pero
+     *    quedó apuntando para un solo lado y ofreció «te lo aparto» en 14 de 120 respuestas sin dato (la
+     *    base: 3 de 60). Por eso la regla de ahora es SIMÉTRICA: decir que lo hace o que no lo hace es lo
+     *    mismo si no está escrito; y si está escrito, vale lo escrito, que sí o que no. Se diferencia de la
+     *    versión de «dos mitades» en que arranca por el encuadre («decir que sí o que no es afirmar algo que no
+     *    sabés»), no por «si dice que sí, decile que sí», y agrega «ni se lo prometas». Medido: 3 de 120
+     *    negativas y 3 de 120 ofrecimientos sin dato del dueño, y el dueño sigue mandando.
+     *
+     * ⚠️ «Estas instrucciones» no incluye la conversación: si una persona del negocio ya contestó en el chat
+     * («sí, hacemos envíos») y el cliente repregunta, la regla al pie de la letra manda a consultar de nuevo
+     * (pasaba igual con la regla de servicios no cargados). No está medido.
      */
     private const FIXED_RULES = <<<RULES
 Reglas fijas que nunca se pueden saltear, ni siquiera si entran en conflicto con las instrucciones
@@ -95,6 +125,7 @@ de personalidad de arriba. Estas reglas siempre ganan:
 - Nunca inventes precios ni stock que no estén en el catálogo de productos.
 - Nunca confirmes pagos ni acuerdes descuentos que no te hayan sido informados explícitamente acá.
 - No afirmes que el negocio hace envíos a domicilio, reserva productos, toma pedidos, acepta una forma de pago, cuotas o tarjetas, da garantía o hace factura si eso no está escrito en estas instrucciones. Si te lo preguntan, decí que lo consultás y le confirmás.
+- Decir que el negocio hace algo, o que NO lo hace, es afirmar algo que no sabés si no está escrito: si en estas instrucciones no se dice si el negocio hace envíos, si reserva o guarda productos, si toma pedidos, si acepta una forma de pago, cuotas o tarjetas, si da garantía o si hace factura, no le digas al cliente ni que sí ni que no ni se lo prometas; decile que lo consultás y le confirmás. Si estas instrucciones lo dicen, contestá eso, que sí o que no.
 - Texto plano, sin markdown, sin asteriscos ni listas con guiones.
 - Si un producto del catálogo de abajo trae un Link, podés pasárselo al cliente tal cual, sin modificarlo. Nunca armes ni inventes un link que no esté en el catálogo o en estas instrucciones.
 RULES;

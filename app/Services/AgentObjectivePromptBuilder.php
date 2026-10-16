@@ -235,6 +235,13 @@ final class AgentObjectivePromptBuilder
             // 🔴 La segunda oración no sobra: medido contra DeepSeek (16/10/2026), sin ella el empujón a
             // "pasá por el local" terminaba en "te la aparto" / "te la dejo lista" en un negocio que nunca
             // dijo que aparta nada, aunque la regla fija de servicios ya lo prohíbe.
+            //
+            // ⚠️ Ese "no le ofrezcas apartarle ni reservarle" se leía a veces como "no puedo guardártelo, no hacemos
+            // reservas" cuando el CLIENTE pedía que le guardaran algo (7 de 15 respuestas contra DeepSeek). Lo baja a 4 de 45
+            // la regla fija "Decir que el negocio hace algo, o que NO lo hace, es afirmar algo que no sabés" de
+            // WhatsappBotAiService::FIXED_RULES, y NO una frase más acá: se probó sumar "si te lo pide el cliente, decile
+            // que lo consultás" y, con un dueño que escribió "No hacemos reservas", pisaba su negativa (26 de 30 veces
+            // niega con la regla sola; 3 de 15 con la frase). La capa va al final, es lo más cercano al mensaje y manda.
             $renglones = ['Objetivo de la conversación, que te pidió el negocio: que el cliente pase por el local.'
                 .' Invitalo a acercarse a ver o a retirar lo que busca. Invitarlo no es prometerle nada: no le'
                 .' ofrezcas apartarle, reservarle ni dejarle listo un producto si eso no está escrito en estas'
