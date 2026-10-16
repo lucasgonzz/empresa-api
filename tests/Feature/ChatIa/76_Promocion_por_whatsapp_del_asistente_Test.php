@@ -297,6 +297,126 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 CORRECCIÓN 5: los topes cuentan lo RESERVADO. Con los jobs todavía sin correr (la cola no
+     * despacha), la promo confirmada ya ocupa sus clientes: la segunda no les vuelve a escribir.
+     *
+     * @test
+     */
+    public function el_cliente_de_una_promo_confirmada_no_entra_en_la_segunda()
+    {
+        \Illuminate\Support\Facades\Queue::fake();
+
+        $this->cliente('Ana Gomez', '5493444202020');
+        $this->cliente('Bruno Diaz', '5493444303030');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo');
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+
+        $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $primera['tarjeta_id']);
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+        $this->assertCount(0, $this->promociones_enviadas(), 'Con la cola falsa todavía no salió nada.');
+        \Illuminate\Support\Facades\Queue::assertPushed(\App\Jobs\SendPromocionWhatsappJob::class, 2);
+
+        $this->cliente('Carla Ruiz', '5493444404040');
+
+        list($otra, $assistant_otra) = $this->vuelta('mandales otra promo');
+
+        $segunda = $this->herramienta($otra, $assistant_otra, 'proponer_promocion_por_whatsapp', ['texto' => '2x1 en tornillos']);
+
+        $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
+        $this->assertSame('Carla Ruiz', $segunda['para_mostrar']['destinatarios']);
+        $this->assertSame(PropuestaPromocionWhatsappIaHelper::MOTIVO_RECIBIO_HACE_POCO, $segunda['para_mostrar']['no_les_llega'][0]['motivo']);
+        $this->assertSame(2, $segunda['para_mostrar']['no_les_llega'][0]['cantidad']);
+    }
+
+    /**
+     * 🔴 CORRECCIÓN 5: dos promos confirmadas seguidas no pasan de 250 en 24 horas, aunque la primera no
+     * haya mandado nada todavía.
+     *
+     * @test
+     */
+    public function dos_promos_confirmadas_seguidas_no_pasan_de_250()
+    {
+        \Illuminate\Support\Facades\Queue::fake();
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo');
+
+        // Una promo ya confirmada con 249 destinatarios (ids que no son de este negocio: alcanza con la reserva).
+        AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $assistant->id,
+            'user_id'            => $this->dueno->id,
+            'auth_user_id'       => $this->dueno->id,
+            'tipo'               => AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+            'clave'              => 'promocion_whatsapp:reserva-p76',
+            'estado'             => AiMessageAction::ESTADO_CONFIRMADA,
+            'datos'              => ['client_ids' => range(900000001, 900000249)],
+            'presentacion'       => ['titulo' => 'Promo anterior', 'renglones' => []],
+            'resuelta_at'        => now()->subHour(),
+        ]);
+
+        $this->cliente('Ana Gomez', '5493444202020');
+        $this->cliente('Bruno Diaz', '5493444303030');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertSame(1, $respuesta['para_mostrar']['cantidad']);
+
+        $motivos = array_column($respuesta['para_mostrar']['no_les_llega'], 'motivo');
+
+        $this->assertContains(PropuestaPromocionWhatsappIaHelper::MOTIVO_TOPE, $motivos);
+
+        $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $this->assertSame(1, $confirmada['detalle']['encolados'], json_encode($confirmada));
+    }
+
+    /**
+     * 🔴 CORRECCIÓN 6 (S13 sin Combos): un texto que habla de un combo sin decir cuál no se arma. Y M4:
+     * la vigencia corta y el cuerpo de la plantilla medido antes del sí.
+     *
+     * @test
+     */
+    public function un_combo_que_no_se_nombra_la_vigencia_larga_y_la_plantilla_larga_cortan()
+    {
+        $this->cliente('Bruno Diaz', '5493444303030');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo del combo');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => 'Llevá el Combo Asado a $ 25.000']);
+
+        $this->assertTrue(empty($respuesta['ok']));
+        $this->assertStringContainsString('habla de un combo pero no me dijiste cuál', $respuesta['error']);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', [
+            'texto' => '20% en todo', 'vigencia' => str_repeat('el domingo que viene ', 4),
+        ]);
+
+        $this->assertTrue(empty($respuesta['ok']));
+        $this->assertStringContainsString('La vigencia es muy larga', $respuesta['error']);
+
+        // Un cliente que no escribió en 24 horas (sale por plantilla) con un nombre largo, un negocio con
+        // nombre largo y 684 caracteres de texto: armado, el cuerpo de la plantilla pasa de 1000 y Meta no
+        // lo acepta.
+        User::where('id', $this->dueno->id)->update(['company_name' => str_repeat('Ferreteria Industrial ', 5)]);
+
+        $largo = $this->cliente('Bruno ' . str_repeat('Diaz Gonzalez ', 7), '5493444909090');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', [
+            'texto'      => str_repeat('Oferta increíble. ', 38),
+            'client_ids' => [$largo->id],
+        ]);
+
+        $this->assertTrue(empty($respuesta['ok']));
+        $this->assertStringContainsString('Meta no la acepta', $respuesta['error']);
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
      * La plantilla de promoción sin aprobar: el que no escribió en 24 horas se saltea con el motivo; si
      * no queda nadie, no hay tarjeta.
      *

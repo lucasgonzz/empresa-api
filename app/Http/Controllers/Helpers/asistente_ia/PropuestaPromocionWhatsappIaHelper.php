@@ -19,6 +19,8 @@ use App\Models\WhatsappTemplate;
 use App\Services\RecordatorioCobroSenderService;
 use App\Services\WhatsappBotSendService;
 use Carbon\Carbon;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * "ARMÁ UN COMBO Y MANDALES UNA PROMO A TODOS LOS CLIENTES CON EL LINK A LA TIENDA" (misión
@@ -75,6 +77,23 @@ class PropuestaPromocionWhatsappIaHelper
     /** Largo máximo del texto de la promo: una variable de plantilla no puede ser un testamento. */
     const LARGO_MAXIMO_DEL_TEXTO = 700;
 
+    /** Largo máximo de la vigencia (M4 del chequeo): es la "Fecha límite" de la plantilla, no un párrafo. */
+    const LARGO_MAXIMO_DE_LA_VIGENCIA = 40;
+
+    /**
+     * Largo máximo del cuerpo de la plantilla ya armado (M4 del chequeo). Meta acepta hasta 1024
+     * caracteres en el cuerpo de un mensaje de plantilla: con un texto largo, un link largo y un nombre
+     * largo se puede pasar, y Meta lo rechazaría en el envío (envio_no_confirmado, cliente por cliente).
+     * Se mide en la propuesta, con margen, y se le pide al dueño acortar ANTES del sí.
+     */
+    const LARGO_MAXIMO_DE_LA_PLANTILLA = 1000;
+
+    /** Cuánto se espera el candado del negocio en el job antes de rendirse (segundos). */
+    const ESPERA_DEL_CANDADO = 15;
+
+    /** Cuánto dura el candado del negocio si el proceso muere adentro (segundos). */
+    const VIDA_DEL_CANDADO = 30;
+
     /**
      * La "Fecha límite" cuando el dueño no dijo hasta cuándo vale.
      *
@@ -126,6 +145,25 @@ class PropuestaPromocionWhatsappIaHelper
         }
 
         $vigencia_dicha = self::vigencia_limpia(EntradaDeCargaIa::texto($input, 'vigencia'));
+
+        if (mb_strlen($vigencia_dicha) > self::LARGO_MAXIMO_DE_LA_VIGENCIA) {
+
+            return RespuestaDeCargaIa::error('La vigencia es muy larga: tiene que completar "Válida hasta el ..." en pocas palabras (máximo ' . self::LARGO_MAXIMO_DE_LA_VIGENCIA . ' caracteres), por ejemplo "domingo 20/10".');
+        }
+
+        /*
+         * 🔴 S13 EN DEMO3 (sin el módulo de Combos): el modelo armó una promo que nombraba "el combo"
+         * sin que existiera ningún combo. Si el texto habla de un combo y no vino cuál, no se arma: una
+         * promo que nombra un combo que no existe manda al cliente a buscar algo que no está en la tienda.
+         */
+        if (self::habla_de_un_combo($texto) && EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'combo')) && EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'combo_id'))) {
+
+            return RespuestaDeCargaIa::error(
+                'El texto de la promo habla de un combo pero no me dijiste cuál (combo o combo_id). Si el combo existe, '
+                . 'pasámelo; si el negocio no tiene Combos o no lo armaste, decíselo al dueño y ofrecé la promo del o de '
+                . 'los artículos con su link, sin nombrar un combo que no existe.'
+            );
+        }
 
         $destino = self::resolver_destino($contexto, $input);
 
@@ -196,6 +234,20 @@ class PropuestaPromocionWhatsappIaHelper
 
         $texto_que_sale = implode("\n\n— y a los que no escribieron en las últimas 24 horas, como plantilla de WhatsApp:\n", $textos);
 
+        // M4: el cuerpo de la plantilla tiene que entrar en lo que acepta Meta (ver LARGO_MAXIMO_DE_LA_PLANTILLA).
+        if (isset($primero_por_canal['plantilla'])) {
+
+            $largo = mb_strlen(end($textos));
+
+            if ($largo > self::LARGO_MAXIMO_DE_LA_PLANTILLA) {
+
+                return RespuestaDeCargaIa::error(
+                    'Con ese texto la plantilla de WhatsApp queda de ' . $largo . ' caracteres y Meta no la acepta (el máximo '
+                    . 'es ' . self::LARGO_MAXIMO_DE_LA_PLANTILLA . '). Pedile al dueño un texto más corto.'
+                );
+            }
+        }
+
         $renglones = [
             ['etiqueta' => 'Le llega a ' . count($nombres), 'valor' => DestinatariosIaHelper::lista_de_nombres($nombres)],
             ['etiqueta' => 'Cómo sale', 'valor' => self::descripcion_de_canales($evaluacion['por_canal'])],
@@ -219,6 +271,20 @@ class PropuestaPromocionWhatsappIaHelper
 
         sort($ids_que_reciben);
 
+        // Lo que el sistema le agrega al mensaje por WhatsApp antes del sí (DestinatariosIaHelper::bloque()).
+        $bloque = DestinatariosIaHelper::bloque(
+            'Promoción por WhatsApp',
+            [
+                DestinatariosIaHelper::linea_de_destinatarios($nombres),
+                'Cómo sale: ' . self::descripcion_de_canales($evaluacion['por_canal']),
+                'Link: ' . (is_null($destino['link']) ? 'sin link (el negocio no tiene tienda online cargada)' : $destino['link']),
+            ],
+            $grupos,
+            'El texto que sale',
+            $texto_que_sale,
+            implode(' ', $avisos)
+        );
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
@@ -232,6 +298,7 @@ class PropuestaPromocionWhatsappIaHelper
                 'link'              => $destino['link'],
                 'article_id'        => isset($destino['article_id']) ? $destino['article_id'] : null,
                 'combo_id'          => isset($destino['combo_id']) ? $destino['combo_id'] : null,
+                'bloque'            => $bloque,
             ],
             [
                 'titulo'          => 'Promoción por WhatsApp a ' . count($nombres) . ' ' . (count($nombres) === 1 ? 'cliente' : 'clientes'),
@@ -301,7 +368,8 @@ class PropuestaPromocionWhatsappIaHelper
          * que entre la tarjeta y el sí recibió otra promo, o el que ya no entra en el tope del día, se
          * informa y no se encola. El job vuelve a mirar todo justo antes de mandar.
          */
-        $evaluacion = self::evaluar($contexto->owner_id, self::clientes($contexto->owner_id, $ids));
+        // La propia tarjeta (que en dos etapas ya está "en_curso") no se cuenta como reserva de sí misma.
+        $evaluacion = self::evaluar($contexto->owner_id, self::clientes($contexto->owner_id, $ids), (int) $accion->id);
 
         $no_salieron = [];
 
@@ -332,7 +400,8 @@ class PropuestaPromocionWhatsappIaHelper
                 $texto,
                 $destino['link'],
                 $vigencia,
-                $persona_id
+                $persona_id,
+                (int) $accion->id
             );
         }
 
@@ -363,12 +432,48 @@ class PropuestaPromocionWhatsappIaHelper
      * @param  string|null  $link
      * @param  string  $vigencia  La que dijo el dueño ('' = no dijo).
      * @param  int|null  $sent_by_user_id
+     * @param  int|null  $accion_id  La tarjeta que lo encoló: no cuenta como reserva de sí misma.
      * @return array{ok: bool, motivo: string|null, mensaje_id: int|null}
      */
-    public static function enviar_a_cliente($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null)
+    public static function enviar_a_cliente($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null, $accion_id = null)
     {
         $owner_id = (int) $owner_id;
 
+        /*
+         * 🔴 EL CANDADO DEL NEGOCIO (corrección 5 del chequeo). Revalidar los topes, mandar y persistir
+         * tiene que ser UNA cosa: con dos workers (o dos promos confirmadas seguidas), dos jobs podían
+         * leer "quedan 10 lugares" a la vez y mandar 20. Con el candado, el segundo espera a que el
+         * primero haya persistido su fila, y la cuenta la ve.
+         */
+        try {
+
+            return Cache::lock('promocion_whatsapp:' . $owner_id, self::VIDA_DEL_CANDADO)->block(
+                self::ESPERA_DEL_CANDADO,
+                function () use ($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id) {
+                    return self::enviar_con_el_candado_tomado($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id);
+                }
+            );
+
+        } catch (LockTimeoutException $e) {
+
+            return ['ok' => false, 'motivo' => 'candado_ocupado', 'mensaje_id' => null];
+        }
+    }
+
+    /**
+     * Lo que hace enviar_a_cliente() adentro del candado: revalidar, mandar, persistir.
+     *
+     * @param  int  $owner_id
+     * @param  int  $client_id
+     * @param  string  $texto
+     * @param  string|null  $link
+     * @param  string  $vigencia
+     * @param  int|null  $sent_by_user_id
+     * @param  int|null  $accion_id
+     * @return array{ok: bool, motivo: string|null, mensaje_id: int|null}
+     */
+    protected static function enviar_con_el_candado_tomado($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id)
+    {
         $client = Client::where('id', (int) $client_id)->where('user_id', $owner_id)->first();
 
         if (is_null($client)) {
@@ -381,7 +486,7 @@ class PropuestaPromocionWhatsappIaHelper
             return ['ok' => false, 'motivo' => self::MOTIVO_SIN_CONFIGURACION, 'mensaje_id' => null];
         }
 
-        $evaluacion = self::evaluar($owner_id, [$client]);
+        $evaluacion = self::evaluar($owner_id, [$client], $accion_id);
 
         if (!count($evaluacion['reciben'])) {
             return ['ok' => false, 'motivo' => $evaluacion['salteados'][0]['motivo'], 'mensaje_id' => null];
@@ -507,6 +612,94 @@ class PropuestaPromocionWhatsappIaHelper
             ->where('created_at', '>=', now()->subDay())
             ->whereIn('whatsapp_chat_id', WhatsappChat::where('user_id', (int) $owner_id)->select('id'))
             ->count();
+    }
+
+    /**
+     * Los clientes reservados por tarjetas de promoción del negocio ya CONFIRMADAS o EN CURSO: los de las
+     * últimas 24 horas (para el tope del día) y los de los últimos DIAS_ENTRE_PROMOCIONES días (para el
+     * freno por cliente). Salen de `datos.client_ids`, que son los que el dueño vio y confirmó.
+     *
+     * @param  int  $owner_id
+     * @param  int|null  $excluir_accion_id
+     * @return array{ultimas_24_horas: array<int, int>, ultimos_7_dias: array<int, int>}
+     */
+    public static function reservas($owner_id, $excluir_accion_id = null)
+    {
+        $query = AiMessageAction::where('user_id', (int) $owner_id)
+            ->where('tipo', AiMessageAction::TIPO_PROMOCION_WHATSAPP)
+            ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+            ->where('updated_at', '>=', now()->subDays(self::DIAS_ENTRE_PROMOCIONES));
+
+        if (!is_null($excluir_accion_id)) {
+            $query->where('id', '!=', (int) $excluir_accion_id);
+        }
+
+        $hace_un_dia = now()->subDay();
+
+        $dia = [];
+        $semana = [];
+
+        foreach ($query->get() as $tarjeta) {
+
+            $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+            // Cuándo se confirmó; una en curso todavía no tiene resuelta_at.
+            $cuando = !is_null($tarjeta->resuelta_at) ? $tarjeta->resuelta_at : $tarjeta->updated_at;
+
+            foreach (self::ids(isset($datos['client_ids']) ? $datos['client_ids'] : []) as $id) {
+
+                $semana[$id] = $id;
+
+                if (!is_null($cuando) && $cuando->gte($hace_un_dia)) {
+                    $dia[$id] = $id;
+                }
+            }
+        }
+
+        return ['ultimas_24_horas' => array_values($dia), 'ultimos_7_dias' => array_values($semana)];
+    }
+
+    /**
+     * Cuántos lugares del tope del día están ocupados: las promociones que ya salieron en 24 horas
+     * más los clientes reservados que todavía no recibieron la suya (para no contar dos veces al que
+     * ya la recibió y además está en la tarjeta que la mandó).
+     *
+     * @param  int  $owner_id
+     * @param  array<int, int>  $reservados
+     * @return int
+     */
+    protected static function ocupados_en_24_horas($owner_id, array $reservados)
+    {
+        $enviadas = self::enviadas_en_24_horas($owner_id);
+
+        if (!count($reservados)) {
+            return $enviadas;
+        }
+
+        $ya_recibieron = WhatsappChat::where('user_id', (int) $owner_id)
+            ->whereIn('client_id', $reservados)
+            ->whereIn('id', WhatsappChatMessage::where('direction', 'out')
+                ->where('source', self::SOURCE)
+                ->where('created_at', '>=', now()->subDay())
+                ->select('whatsapp_chat_id'))
+            ->pluck('client_id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
+
+        return $enviadas + count(array_diff($reservados, $ya_recibieron));
+    }
+
+    /**
+     * true si el texto de la promo nombra un combo ("combo", "combos").
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    protected static function habla_de_un_combo($texto)
+    {
+        return (bool) preg_match('/\bcombos?\b/u', mb_strtolower((string) $texto));
     }
 
     /**
@@ -749,17 +942,25 @@ class PropuestaPromocionWhatsappIaHelper
      * lo consume. Y una vez agotado el cupo, el resto se saltea por el tope sin mirar su chat: con
      * miles de clientes, no se hace una consulta por cada uno que igual no va a recibir.
      *
+     * 🔴 LOS TOPES CUENTAN TAMBIÉN LO RESERVADO (corrección 5 del chequeo): los destinatarios de las
+     * tarjetas de promoción ya confirmadas (o en curso) del mismo negocio, aunque sus jobs todavía no
+     * hayan mandado nada. Sin eso, dos promos confirmadas seguidas veían el mismo cupo y la segunda le
+     * volvía a escribir al cliente de la primera.
+     *
      * @param  int  $owner_id
      * @param  array<int, Client>  $clientes
+     * @param  int|null  $excluir_accion_id  La tarjeta que se está ejecutando (no es reserva de sí misma).
      * @return array{reciben: array, salteados: array, por_canal: array{texto: int, plantilla: int}}
      */
-    protected static function evaluar($owner_id, array $clientes)
+    protected static function evaluar($owner_id, array $clientes, $excluir_accion_id = null)
     {
         $config = WhatsappBotConfig::getForUser((int) $owner_id);
 
         $plantilla = self::plantilla_aprobada($owner_id);
 
-        $cupo = self::TOPE_POR_DIA - self::enviadas_en_24_horas($owner_id);
+        $reservas = self::reservas($owner_id, $excluir_accion_id);
+
+        $cupo = self::TOPE_POR_DIA - self::ocupados_en_24_horas($owner_id, $reservas['ultimas_24_horas']);
 
         $reciben = [];
         $salteados = [];
@@ -789,11 +990,12 @@ class PropuestaPromocionWhatsappIaHelper
 
             $ultima = is_null($chat) ? null : self::ultima_promocion_reciente($chat);
 
-            if (!is_null($ultima)) {
+            // Recibió una en los últimos 7 días, o está en una promo ya confirmada que todavía sale.
+            if (!is_null($ultima) || in_array((int) $client->id, $reservas['ultimos_7_dias'], true)) {
                 $salteados[] = [
                     'nombre'  => $nombre,
                     'motivo'  => self::MOTIVO_RECIBIO_HACE_POCO,
-                    'mensaje' => 'Ya recibió una promoción en los últimos ' . self::DIAS_ENTRE_PROMOCIONES . ' días (una cada ' . self::DIAS_ENTRE_PROMOCIONES . ').',
+                    'mensaje' => 'Ya recibió (o está por recibir) una promoción en los últimos ' . self::DIAS_ENTRE_PROMOCIONES . ' días (una cada ' . self::DIAS_ENTRE_PROMOCIONES . ').',
                 ];
                 continue;
             }

@@ -25,6 +25,10 @@ use Illuminate\Support\Facades\Log;
  * Kapso se loguean y el job termina. Con `QUEUE_CONNECTION=sync` una excepción volvería a la
  * confirmación del dueño, que ya encoló al resto.
  *
+ * 🔴 Revalidar, mandar y persistir van adentro del candado del negocio
+ * (`Cache::lock("promocion_whatsapp:{owner_id}")`, en enviar_a_cliente()): dos jobs del mismo negocio
+ * no pueden leer el mismo cupo a la vez.
+ *
  * Recibe ids y textos, no modelos: entre el despacho y la corrida el cliente pudo cambiar, y el
  * helper lo vuelve a leer.
  */
@@ -65,15 +69,25 @@ class SendPromocionWhatsappJob implements ShouldQueue
     protected $sent_by_user_id;
 
     /**
+     * La tarjeta que encoló este envío: sus clientes son reservas para los topes de las OTRAS promos,
+     * no de sí misma (ver PropuestaPromocionWhatsappIaHelper::reservas()).
+     *
+     * @var int|null
+     */
+    protected $accion_id;
+
+    /**
      * @param  int  $owner_id
      * @param  int  $client_id
      * @param  string  $texto  El texto de la promo, tal cual lo vio el dueño en la tarjeta.
      * @param  string|null  $link
      * @param  string  $vigencia
      * @param  int|null  $sent_by_user_id  La persona que la pidió al asistente.
+     * @param  int|null  $accion_id  La tarjeta que lo encoló.
      */
-    public function __construct($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null)
+    public function __construct($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null, $accion_id = null)
     {
+        $this->accion_id = is_null($accion_id) ? null : (int) $accion_id;
         $this->owner_id = (int) $owner_id;
         $this->client_id = (int) $client_id;
         $this->texto = (string) $texto;
@@ -97,7 +111,8 @@ class SendPromocionWhatsappJob implements ShouldQueue
                 $this->texto,
                 $this->link,
                 $this->vigencia,
-                $this->sent_by_user_id
+                $this->sent_by_user_id,
+                $this->accion_id
             );
 
             if ($salida['ok']) {
