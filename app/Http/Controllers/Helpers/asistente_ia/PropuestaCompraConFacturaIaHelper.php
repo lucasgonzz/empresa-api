@@ -141,9 +141,9 @@ class PropuestaCompraConFacturaIaHelper
          * solo una compra VACÍA de los últimos DIAS_DE_REUSO días) no cambia: es la que corre cuando
          * nadie nombró ninguna compra.
          */
-        $compra_num = EntradaDeCargaIa::valor($input, 'compra_num');
+        $compra_num = self::numero_de_compra(EntradaDeCargaIa::valor($input, 'compra_num'));
 
-        if (!EntradaDeCargaIa::vacio($compra_num)) {
+        if (!is_null($compra_num)) {
 
             $compra = self::compra_por_numero($contexto, $compra_num);
 
@@ -343,11 +343,6 @@ class PropuestaCompraConFacturaIaHelper
      */
     protected static function compra_por_numero(ContextoDeCargaIa $contexto, $compra_num)
     {
-        if (!is_numeric($compra_num) || (int) $compra_num <= 0) {
-
-            return RespuestaDeCargaIa::error('Decime el número de la compra tal como lo ves en Compras (por ejemplo, la compra 12).');
-        }
-
         $compra = ProviderOrder::where('user_id', $contexto->owner_id)
                                 ->where('num', (int) $compra_num)
                                 ->first();
@@ -361,6 +356,27 @@ class PropuestaCompraConFacturaIaHelper
         }
 
         return $compra;
+    }
+
+    /**
+     * El `compra_num` del input como entero positivo, o null = «no vino».
+     *
+     * 🔴 0, "0", vacío o algo que no es un número cuentan como que NO VINO, no como un número mal
+     * dicho (chequeo independiente del 16/10/2026): DeepSeek rellena los enteros opcionales con 0, y
+     * tratarlo como "la compra 0" cortaba TODAS las cargas con factura pidiendo un número que nadie
+     * había dicho. Mismo criterio que EscaneoDeFacturaIaHelper::numero_o_null de la consulta.
+     *
+     * @param  mixed  $valor
+     * @return int|null
+     */
+    protected static function numero_de_compra($valor)
+    {
+        if (is_null($valor) || is_bool($valor) || $valor === '' || !is_numeric($valor) || (int) $valor <= 0) {
+
+            return null;
+        }
+
+        return (int) $valor;
     }
 
     /**
@@ -777,8 +793,17 @@ class PropuestaCompraConFacturaIaHelper
          * compra_reciente_en_curso() para no crear una segunda compra con la página 2 de la misma
          * factura.
          */
+        /*
+         * «Con el link» se promete solo si hay con qué armarlo (la spa_url que anunció el admin o la
+         * SPA_URL del .env): el admin igual puede armarlo con la suya, pero lo que se promete tiene
+         * que poder cumplirse desde acá.
+         */
+        $con_link = $avisa_por_whatsapp && !is_null(AvisosDelAsistenteHelper::base_del_link($contexto->owner_id));
+
         $cierre = $avisa_por_whatsapp
-            ? ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá con el link para revisarla en Compras.'
+            ? ($con_link
+                ? ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá con el link para revisarla en Compras.'
+                : ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá para que la revises en Compras.')
             : ' Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
                 . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.';
 
