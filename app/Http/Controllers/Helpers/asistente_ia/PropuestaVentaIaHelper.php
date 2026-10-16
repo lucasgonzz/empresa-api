@@ -1139,13 +1139,10 @@ class PropuestaVentaIaHelper
 
         $normalizado = ConsultasSistemaIaHelper::normalize_text($texto);
 
-        $escapado = addcslashes($texto, '%_\\');
-
         $candidatos = (clone $base)
-            ->where(function ($sub) use ($escapado) {
-                $sub->where('name', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
+            ->where(function ($sub) use ($texto) {
+                // Por palabras sueltas (misión asistente-altas-y-conversacion): ver BusquedaPorPalabrasIaHelper.
+                BusquedaPorPalabrasIaHelper::filtrar($sub, $texto, ['name', 'bar_code', 'provider_code']);
             })
             ->orderBy('name')
             ->limit(self::TOPE_CANDIDATOS + 1)

@@ -439,6 +439,24 @@ class AccionesIaHelper {
 
         $de_la_tarea = is_null($tarea_id) ? '' : ' · tarea_id: '.$tarea_id;
 
-        return '[Tarjeta #'.$accion->id.' · '.$titulo.' · '.$detalle.$de_la_tarea.' · estado: '.$estado.']';
+        /*
+         * 🔴 Y la de un alta o una edición confirmada dice el id del REGISTRO (misión
+         * asistente-altas-y-conversacion, 16/10/2026). En demo3 (conv 9) el asistente creó el martillo
+         * por su código de barras y, en el mensaje siguiente —"llegaron 12, ponele la categoría"—, pidió
+         * de nuevo el código: "en el catálogo hay varios martillos Tramontina parecidos". Los resultados
+         * de las herramientas no viajan entre mensajes, y esta línea decía "Artículo Martillo... creado"
+         * sin ningún dato para ubicarlo: lo buscó por nombre y no supo cuál era. Con el id lo edita
+         * directo (proponer_edicion acepta el id en `registro`). Mismo molde que el tarea_id de arriba.
+         */
+        $del_registro = '';
+
+        if ($de_la_tarea === '' && $estado !== '' && (string) $accion->estado === AiMessageAction::ESTADO_CONFIRMADA
+            && is_object($accion->resultado) && isset($accion->resultado->entidad, $accion->resultado->id)
+            && is_scalar($accion->resultado->entidad) && is_numeric($accion->resultado->id) && (int) $accion->resultado->id > 0) {
+
+            $del_registro = ' · '.$accion->resultado->entidad.'_id: '.(int) $accion->resultado->id;
+        }
+
+        return '[Tarjeta #'.$accion->id.' · '.$titulo.' · '.$detalle.$de_la_tarea.$del_registro.' · estado: '.$estado.']';
     }
 }

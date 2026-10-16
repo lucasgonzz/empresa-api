@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\Address;
 use App\Models\Article;
@@ -71,12 +72,10 @@ class ConsultasSistemaIaHelper
             ->where('status', 'active');
 
         // Si hay una palabra clave útil, se filtra por nombre / código de barras / código de proveedor.
+        // Por palabras sueltas y no por la frase pegada (misión asistente-altas-y-conversacion, 16/10/2026):
+        // "ducha gloa" tiene que encontrar DUCHA DE MANO METAL GLOA. Ver BusquedaPorPalabrasIaHelper.
         if ($busqueda !== '') {
-            $articles_query->where(function ($sub) use ($busqueda) {
-                $sub->where('name', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $busqueda . '%');
-            });
+            BusquedaPorPalabrasIaHelper::filtrar($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
         }
 
         $articles = $articles_query
@@ -677,10 +676,7 @@ class ConsultasSistemaIaHelper
             ->where('provider_price_offers.user_id', $owner_id);
 
         if ($busqueda !== '') {
-            $query->where(function ($sub) use ($busqueda) {
-                $sub->where('articles.name', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('providers.name', 'LIKE', '%' . $busqueda . '%');
-            });
+            BusquedaPorPalabrasIaHelper::filtrar($query, $busqueda, ['articles.name', 'providers.name']);
         }
 
         // Orden global por fecha (no agrupado por par primero) para que el
@@ -752,10 +748,7 @@ class ConsultasSistemaIaHelper
             ->where('client_offers.hasta', '>=', $hoy);
 
         if ($busqueda !== '') {
-            $query->where(function ($sub) use ($busqueda) {
-                $sub->where('clients.name', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('articles.name', 'LIKE', '%' . $busqueda . '%');
-            });
+            BusquedaPorPalabrasIaHelper::filtrar($query, $busqueda, ['clients.name', 'articles.name']);
         }
 
         // Primero las que se vencen antes: es lo urgente y lo que el
@@ -1178,16 +1171,15 @@ class ConsultasSistemaIaHelper
          * CriteriosDeOfertaService::articulos_que_matchean(). Un término real como "50%" o
          * "cable_2" los trae adentro, y sin escaparlos "50%" matchea todo lo que empieza con 50.
          * Acá pesa más que en el motor de ofertas: allá un comodín trae artículos de más, acá
-         * CAMBIA SOBRE CUÁL ARTÍCULO se contesta.
+         * CAMBIA SOBRE CUÁL ARTÍCULO se contesta. Desde el 16/10/2026 los escapa
+         * BusquedaPorPalabrasIaHelper, palabra por palabra.
          */
-        $escapado = addcslashes($busqueda, '%_\\');
 
         $candidatos = Article::query()
             ->where('user_id', $owner_id)
-            ->where(function ($sub) use ($escapado) {
-                $sub->where('name', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
+            ->where(function ($sub) use ($busqueda) {
+                // Por palabras sueltas: ver BusquedaPorPalabrasIaHelper (escapa los comodines solo).
+                BusquedaPorPalabrasIaHelper::filtrar($sub, $busqueda, ['name', 'bar_code', 'provider_code']);
             })
             ->orderBy('name')
             ->limit(self::MAX_RESULTS)
