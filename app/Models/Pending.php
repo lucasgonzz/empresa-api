@@ -34,6 +34,21 @@ class Pending extends Model
         'avisado_at'          => 'datetime',
     ];
 
+    /**
+     * Al editar una tarea existente, la marca del recordatorio sigue a la hora nueva (misión
+     * recordatorios-whatsapp, 16/10/2026). Va en el modelo y no en cada llamador porque la hora se
+     * cambia por tres caminos —el PUT de la pantalla, los cambios del asistente y cualquier save
+     * futuro— y los tres tienen que dar lo mismo. Ver AgendaTareaHelper::recalcular_marca_del_recordatorio().
+     *
+     * @return void
+     */
+    protected static function booted()
+    {
+        static::updating(function (Pending $pending) {
+            \App\Http\Controllers\Helpers\agenda\AgendaTareaHelper::recalcular_marca_del_recordatorio($pending);
+        });
+    }
+
     function scopeWithAll($q) {
         $q->with('unidad_frecuencia', 'expense_concept');
     }

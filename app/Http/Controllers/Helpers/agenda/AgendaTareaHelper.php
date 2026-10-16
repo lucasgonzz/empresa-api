@@ -287,6 +287,71 @@ class AgendaTareaHelper {
     }
 
     /**
+     * Recalcula `avisado_at` cuando a una tarea EXISTENTE le cambia lo que decide su recordatorio: la
+     * hora, la fecha o el pedido de aviso. Lo llama el evento `updating` de Pending, antes de guardar.
+     *
+     * - Si el momento NUEVO de hoy ya pasó y hoy le toca → `avisado_at = ahora`: la hora que ya pasó
+     *   no dispara un WhatsApp al toque. Sin esto, editar a las 10:30 una tarea de hoy «a las 10:15»
+     *   (o prenderle el aviso a esa hora) le mandaba al dueño un «te recuerdo» de algo que acababa de
+     *   tocar.
+     * - Si no (la hora nueva todavía no llegó, o hoy no le toca) → `avisado_at = null`.
+     *
+     * 🔴 POR QUÉ SE BORRA LA MARCA DE HOY. La marca es por día: sin esto, «mejor a las 11» después
+     * del recordatorio de las 10 no volvía a salir ese día, y el asistente ya le había dicho al dueño
+     * que a las 11 le llegaba (lo encontró el chequeo independiente del 16/10/2026).
+     *
+     * No toca nada si ninguno de los tres campos cambió: la marca que pone el sello del admin se
+     * guarda sin cambiar ninguno de ellos.
+     *
+     * @param  \App\Models\Pending  $pending  La tarea, con los valores nuevos todavía sin guardar.
+     * @return void
+     */
+    static function recalcular_marca_del_recordatorio($pending) {
+
+        if (!$pending->exists || !$pending->isDirty(['hora_aviso', 'fecha_realizacion', 'avisar_por_whatsapp'])) {
+
+            return;
+        }
+
+        if (empty($pending->hora_aviso)) {
+
+            $pending->avisado_at = null;
+
+            return;
+        }
+
+        $ahora = Carbon::now();
+        $hoy = $ahora->copy()->startOfDay();
+
+        $momento = $hoy->copy()->setTimeFromTimeString((string) $pending->hora_aviso);
+
+        $pending->avisado_at = $momento->lte($ahora) && self::le_toca_el($pending, $hoy) ? $ahora : null;
+    }
+
+    /**
+     * ¿Ese día es una ocurrencia de la tarea, con los valores que tiene en memoria? Si la unidad de
+     * repetición cambió en el mismo guardado, la relación cargada es la vieja: se recarga la nueva.
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \Carbon\Carbon  $dia
+     * @return bool
+     */
+    protected static function le_toca_el($pending, Carbon $dia) {
+
+        if ($pending->es_recurrente) {
+
+            $unidad = $pending->relationLoaded('unidad_frecuencia') ? $pending->unidad_frecuencia : null;
+
+            if (is_null($unidad) || (int) $unidad->id !== (int) $pending->unidad_frecuencia_id) {
+
+                $pending->setRelation('unidad_frecuencia', UnidadFrecuencia::find($pending->unidad_frecuencia_id));
+            }
+        }
+
+        return AgendaHelper::es_ocurrencia($pending, $dia);
+    }
+
+    /**
      * El detalle sin el prefijo «HH:MM · » (si lo tiene), recortado.
      *
      * @param  string  $detalle

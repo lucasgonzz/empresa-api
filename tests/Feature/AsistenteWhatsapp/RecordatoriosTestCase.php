@@ -136,14 +136,16 @@ abstract class RecordatoriosTestCase extends AsistenteWhatsappTestCase
     }
 
     /**
-     * El id del contrato de una tarea para hoy.
+     * El id del contrato de una tarea: "recordatorio:{id}-{created_at unix}:{Y-m-d}:{HHMM}".
      *
      * @param  \App\Models\Pending  $tarea
+     * @param  string  $dia  Y-m-d de la ocurrencia.
      * @return string
      */
-    protected function id_de($tarea)
+    protected function id_de($tarea, $dia = self::HOY)
     {
-        return 'recordatorio:' . $tarea->id . '-' . $tarea->created_at->timestamp . ':' . self::HOY;
+        return 'recordatorio:' . $tarea->id . '-' . $tarea->created_at->timestamp . ':' . $dia
+            . ':' . str_replace(':', '', substr((string) $tarea->hora_aviso, 0, 5));
     }
 
     /**

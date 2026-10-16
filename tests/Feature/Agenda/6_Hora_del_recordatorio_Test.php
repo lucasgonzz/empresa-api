@@ -4,6 +4,7 @@ namespace Tests\Feature\Agenda;
 
 use App\Http\Controllers\Helpers\agenda\AgendaTareaHelper;
 use App\Models\Pending;
+use Carbon\Carbon;
 
 /**
  * Misión recordatorios-whatsapp (16/10/2026) — la hora del recordatorio sale del texto.
@@ -78,5 +79,42 @@ class Hora_del_recordatorio_Test extends AgendaTestCase
 
         $this->assertNull($tarea->hora_aviso);
         $this->assertTrue($tarea->avisar_por_whatsapp);
+    }
+
+
+    /**
+     * Por el PUT de la pantalla: cambiar la hora después del recordatorio borra la marca de hoy si la
+     * hora nueva todavía no llegó, y la pone en "ahora" si ya pasó (no dispara un WhatsApp al toque).
+     *
+     * @test
+     */
+    public function cambiar_la_hora_por_la_pantalla_recalcula_la_marca_del_recordatorio()
+    {
+        Carbon::setTestNow(Carbon::parse('2026-10-16 10:30:00'));
+
+        try {
+
+            $tarea = $this->crear_tarea(['detalle' => '10:00 · Llamar a Juan', 'fecha_realizacion' => '2026-10-16']);
+
+            // El asistente pidió el aviso y el admin ya lo mandó a las 10:02 (sin pasar por el modelo).
+            Pending::where('id', $tarea->id)->update(['avisar_por_whatsapp' => 1, 'avisado_at' => '2026-10-16 10:02:00']);
+
+            $this->putJson('api/pending/' . $tarea->id, ['detalle' => '11:00 · Llamar a Juan', 'fecha_realizacion' => '2026-10-16'])->assertStatus(200);
+
+            $this->assertNull($tarea->fresh()->avisado_at, '«Mejor a las 11»: la marca de hoy se borra y a las 11 vuelve a salir.');
+
+            $this->putJson('api/pending/' . $tarea->id, ['detalle' => '10:15 · Llamar a Juan', 'fecha_realizacion' => '2026-10-16'])->assertStatus(200);
+
+            $this->assertSame('2026-10-16 10:30:00', $tarea->fresh()->avisado_at->format('Y-m-d H:i:s'), 'Una hora que ya pasó no dispara el aviso al toque.');
+
+            // Editar otra cosa (las notas) no toca la marca.
+            $this->putJson('api/pending/' . $tarea->id, ['detalle' => '10:15 · Llamar a Juan', 'fecha_realizacion' => '2026-10-16', 'notas' => 'urgente'])->assertStatus(200);
+
+            $this->assertSame('2026-10-16 10:30:00', $tarea->fresh()->avisado_at->format('Y-m-d H:i:s'));
+
+        } finally {
+
+            Carbon::setTestNow();
+        }
     }
 }

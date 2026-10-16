@@ -38,7 +38,7 @@ use Illuminate\Support\Facades\DB;
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/recordatorios-pendientes?plantilla=1|0
  *        → 200 {recordatorios:[{id, tarea_id, fecha, hora, detalle, texto, ai_conversation_id, ruta}]}
- *        (`id` = "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}")
+ *        (`id` = "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}:{HHMM}")
  *   POST admin-sync/asistente/recordatorios/avisado {id, whatsapp_message_id?} → 200 {ok:true} · 404
  *
  * PHP 7.4: sin match, sin nullsafe, sin str_contains.
@@ -126,21 +126,28 @@ class RecordatoriosDelAsistenteHelper
     /**
      * Los recordatorios que vencieron y todavía no salieron, por hora y con tope.
      *
-     * Una tarea entra si es del dueño, pide el aviso (`avisar_por_whatsapp = 1`), tiene hora y HOY le
-     * toca: la puntual, si su fecha es hoy y no está hecha; la recurrente, si hoy es una de sus
-     * ocurrencias (AgendaHelper::es_ocurrencia, que respeta el fin de la recurrencia) y esa ocurrencia
-     * no tiene su PendingCompleted. Además el momento —hoy a la hora de la tarea— tiene que estar en
-     * [ahora − HORAS_DE_GRACIA, ahora] y ser posterior a la creación de la tarea, y la tarea no tiene
-     * que haberse avisado hoy.
+     * Una tarea entra si es del dueño, pide el aviso (`avisar_por_whatsapp = 1`), tiene hora y ese día
+     * le toca: la puntual, si su fecha es ese día y no está hecha; la recurrente, si ese día es una de
+     * sus ocurrencias (AgendaHelper::es_ocurrencia, que respeta el fin de la recurrencia) y esa
+     * ocurrencia no tiene su PendingCompleted. Además el momento —ese día a la hora de la tarea— tiene
+     * que estar en [ahora − HORAS_DE_GRACIA, ahora] y ser posterior a la creación de la tarea, y la
+     * tarea no tiene que haberse avisado ese día.
+     *
+     * 🔴 LA GRACIA CRUZA LA MEDIANOCHE. Entre las 00:00 y las 02:59 el margen arranca ayer, así que
+     * también entra la ocurrencia de AYER (un recordatorio de las 23:58 que el admin vio recién a las
+     * 00:00), con su fecha en el `id` y en el texto («ayer 23:58»). Sin esto, todo recordatorio de las
+     * últimas horas del día que no saliera antes de la medianoche se perdía.
      *
      * 🔴 «POSTERIOR A LA CREACIÓN» NO ES UN DETALLE. Una tarea creada a las 15 «para hoy a las 10» ya
      * venció cuando nace: sin esta guarda, el dueño recibía un «te recuerdo» de algo que acababa de
      * pedir, que es exactamente lo contrario de un recordatorio.
      *
-     * 🔴 LA MARCA ES POR DÍA (`avisado_at` anterior a hoy 00:00), NO «AVISADO SÍ/NO». Con una sola
-     * columna sirve para la recurrente (cada ocurrencia se avisa su día) y para una puntual que se
-     * movió de día después de avisada. El costo: si el mismo día, ya avisada, se le cambia la hora a
-     * más tarde, ese día no se vuelve a avisar (el admin además reclama por `id`, que es por día).
+     * 🔴 LA MARCA ES POR DÍA (`avisado_at` anterior al día de la ocurrencia), NO «AVISADO SÍ/NO». Con
+     * una sola columna sirve para la recurrente (cada ocurrencia se avisa su día) y para una puntual
+     * que se movió de día después de avisada. Un cambio de HORA el mismo día lo resuelve la tarea al
+     * guardarse (AgendaTareaHelper::recalcular_marca_del_recordatorio()): «mejor a las 11» después del
+     * aviso de las 10 vuelve a salir a las 11, y con otro `id` (lleva la hora), así que el reclamo que
+     * el admin guardó para las 10 no lo tapa.
      *
      * Todo en la zona de la app (America/Argentina/Buenos_Aires), que es la que define qué es "hoy"
      * para el comercio, igual que la Agenda.
@@ -154,54 +161,73 @@ class RecordatoriosDelAsistenteHelper
         $hoy = $ahora->copy()->startOfDay();
         $desde = $ahora->copy()->subHours(self::HORAS_DE_GRACIA);
 
+        /* Los días cuyas ocurrencias pueden caer en el margen: hoy, y ayer si el margen cruza la medianoche. */
+        $dias = [$hoy];
+
+        if ($desde->lt($hoy)) {
+
+            array_unshift($dias, $hoy->copy()->subDay());
+        }
+
+        $primero = $dias[0];
+
         $query = Pending::where('user_id', (int) $dueno->id)
                         ->where('avisar_por_whatsapp', 1)
                         ->whereNotNull('hora_aviso')
-                        ->where('hora_aviso', '<=', $ahora->format('H:i:s'))
-                        /* Una tarea cuya primera fecha es posterior a hoy no puede tocar hoy. */
+                        /* Una tarea cuya primera fecha es posterior a hoy no puede tocar en el margen. */
                         ->where('fecha_realizacion', '<=', $hoy->format('Y-m-d 23:59:59'))
+                        /* Avisada hoy no entra en ningún día del margen; el resto se mira por día abajo. */
                         ->where(function ($q) use ($hoy) {
                             $q->whereNull('avisado_at')
                                 ->orWhere('avisado_at', '<', $hoy->format('Y-m-d H:i:s'));
                         })
-                        ->where(function ($q) use ($hoy) {
+                        ->where(function ($q) use ($primero) {
                             $q->whereNull('fecha_fin_recurrencia')
-                                ->orWhere('fecha_fin_recurrencia', '>=', $hoy->format('Y-m-d'));
+                                ->orWhere('fecha_fin_recurrencia', '>=', $primero->format('Y-m-d'));
                         });
 
-        /* La gracia acota la hora por abajo solo si no cruza la medianoche (a las 01:00 empieza en 00:00). */
-        if ($desde->isSameDay($hoy)) {
+        /* Sin cruzar la medianoche, la hora se acota en la consulta; cruzándola, va en memoria. */
+        if (count($dias) === 1) {
 
-            $query->where('hora_aviso', '>=', $desde->format('H:i:s'));
+            $query->where('hora_aviso', '<=', $ahora->format('H:i:s'))
+                    ->where('hora_aviso', '>=', $desde->format('H:i:s'));
         }
 
         $tareas = $query->with('unidad_frecuencia')->orderBy('id')->get();
 
-        // Una sola query para las completadas de hoy, indexadas en memoria (como la Agenda).
-        $completadas = AgendaHelper::indice_de_completadas((int) $dueno->id, $hoy, $hoy);
+        // Una sola query para las completadas del margen, indexadas en memoria (como la Agenda).
+        $completadas = AgendaHelper::indice_de_completadas((int) $dueno->id, $primero, $hoy);
 
         $vencidos = [];
 
         foreach ($tareas as $tarea) {
 
-            if (!self::toca_hoy($tarea, $hoy, $completadas)) {
+            foreach ($dias as $dia) {
 
-                continue;
+                $momento = self::momento($tarea, $dia);
+
+                if ($momento->lt($desde) || $momento->gt($ahora)) {
+
+                    continue;
+                }
+
+                if (!is_null($tarea->created_at) && !$momento->gt($tarea->created_at)) {
+
+                    continue;
+                }
+
+                if (!is_null($tarea->avisado_at) && Carbon::parse($tarea->avisado_at)->gte($dia)) {
+
+                    continue;
+                }
+
+                if (!self::toca_el($tarea, $dia, $completadas)) {
+
+                    continue;
+                }
+
+                $vencidos[] = ['momento' => $momento, 'tarea' => $tarea, 'dia' => $dia];
             }
-
-            $momento = self::momento($tarea, $hoy);
-
-            if ($momento->lt($desde) || $momento->gt($ahora)) {
-
-                continue;
-            }
-
-            if (!is_null($tarea->created_at) && !$momento->gt($tarea->created_at)) {
-
-                continue;
-            }
-
-            $vencidos[] = ['momento' => $momento, 'tarea' => $tarea];
         }
 
         usort($vencidos, function ($a, $b) {
@@ -228,6 +254,7 @@ class RecordatoriosDelAsistenteHelper
         foreach ($vencidos as $vencido) {
 
             $tarea = $vencido['tarea'];
+            $dia = $vencido['dia'];
 
             $recordatorios[] = [
                 /*
@@ -236,12 +263,12 @@ class RecordatoriosDelAsistenteHelper
                  * reclamo por `id`, así que la primera tarea de la demo siguiente se daba por «ya
                  * avisada». Misma razón que el uuid de los avisos de escaneo.
                  */
-                'id'                 => self::id_del_recordatorio($tarea, $hoy),
+                'id'                 => self::id_del_recordatorio($tarea, $dia),
                 'tarea_id'           => (int) $tarea->id,
-                'fecha'              => $hoy->format('Y-m-d'),
+                'fecha'              => $dia->format('Y-m-d'),
                 'hora'               => self::hora($tarea),
                 'detalle'            => AgendaTareaHelper::detalle_sin_hora($tarea->detalle),
-                'texto'              => self::texto_del_recordatorio($tarea, $hoy),
+                'texto'              => self::texto_del_recordatorio($tarea, $dia),
                 'ai_conversation_id' => is_null($conversacion) ? null : (int) $conversacion->id,
                 'ruta'               => self::RUTA_DE_LA_AGENDA,
             ];
@@ -301,6 +328,17 @@ class RecordatoriosDelAsistenteHelper
 
             $dia = $partes['fecha'];
 
+            /*
+             * El WhatsApp salió para una hora que la tarea ya no tiene (la cambiaron entre la consulta y
+             * el sello): se contesta 200 —salió, el admin no tiene nada que reintentar— pero no se sella
+             * ni se deja en la conversación. Sellarlo taparía el recordatorio de la hora nueva, que es
+             * otro `id` y sale cuando le toque.
+             */
+            if (str_replace(':', '', self::hora($tarea)) !== $partes['hora']) {
+
+                return true;
+            }
+
             /* Idempotente: un segundo sello del mismo día no pisa la marca ni duplica el mensaje. */
             if (!is_null($tarea->avisado_at) && Carbon::parse($tarea->avisado_at)->gte($dia)) {
 
@@ -344,7 +382,16 @@ class RecordatoriosDelAsistenteHelper
         /* Un asterisco adentro del detalle cortaría la negrita a la mitad. */
         $detalle = trim(str_replace('*', '', AgendaTareaHelper::detalle_sin_hora($tarea->detalle)));
 
-        $cuando = $fecha->isSameDay(Carbon::today()) ? 'hoy' : 'el ' . $fecha->format('d/m');
+        $cuando = 'el ' . $fecha->format('d/m');
+
+        if ($fecha->isSameDay(Carbon::today())) {
+
+            $cuando = 'hoy';
+
+        } elseif ($fecha->isSameDay(Carbon::yesterday())) {
+
+            $cuando = 'ayer';
+        }
 
         $texto = '⏰ Te recuerdo: *' . $detalle . '* (' . $cuando . ' ' . self::hora($tarea) . ').';
 
@@ -364,23 +411,23 @@ class RecordatoriosDelAsistenteHelper
     }
 
     /**
-     * ¿Hoy es un día de la tarea y está sin hacer? Mismo criterio que la Agenda: la puntual está hecha
-     * con su PendingCompleted o con el flag `completado`; la recurrente, solo con el PendingCompleted
-     * de esa ocurrencia (ver AgendaHelper::armar_ocurrencia()).
+     * ¿Ese día es un día de la tarea y está sin hacer? Mismo criterio que la Agenda: la puntual está
+     * hecha con su PendingCompleted o con el flag `completado`; la recurrente, solo con el
+     * PendingCompleted de esa ocurrencia (ver AgendaHelper::armar_ocurrencia()).
      *
      * @param  \App\Models\Pending  $tarea
-     * @param  \Carbon\Carbon  $hoy
-     * @param  array  $completadas  AgendaHelper::indice_de_completadas() de hoy.
+     * @param  \Carbon\Carbon  $dia
+     * @param  array  $completadas  AgendaHelper::indice_de_completadas() del margen.
      * @return bool
      */
-    protected static function toca_hoy(Pending $tarea, Carbon $hoy, array $completadas): bool
+    protected static function toca_el(Pending $tarea, Carbon $dia, array $completadas): bool
     {
-        if (!AgendaHelper::es_ocurrencia($tarea, $hoy)) {
+        if (!AgendaHelper::es_ocurrencia($tarea, $dia)) {
 
             return false;
         }
 
-        if (!is_null(AgendaHelper::completada_de($completadas, $tarea, $hoy))) {
+        if (!is_null(AgendaHelper::completada_de($completadas, $tarea, $dia))) {
 
             return false;
         }
@@ -412,7 +459,11 @@ class RecordatoriosDelAsistenteHelper
     }
 
     /**
-     * El `id` del contrato: "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}".
+     * El `id` del contrato: "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}:{HHMM}".
+     *
+     * 🔴 LA HORA VA ADENTRO. El admin reclama cada recordatorio por su `id` y no lo vuelve a mandar:
+     * sin la hora, «mejor a las 11» después del aviso de las 10 tenía el mismo `id` que el de las 10 y
+     * el reclamo viejo lo tapaba. Para el admin el `id` es opaco: lo guarda y lo devuelve tal cual.
      *
      * @param  \App\Models\Pending  $tarea
      * @param  \Carbon\Carbon  $dia
@@ -420,7 +471,8 @@ class RecordatoriosDelAsistenteHelper
      */
     protected static function id_del_recordatorio(Pending $tarea, Carbon $dia): string
     {
-        return self::PREFIJO_ID . ':' . (int) $tarea->id . '-' . self::unix_de_creacion($tarea) . ':' . $dia->format('Y-m-d');
+        return self::PREFIJO_ID . ':' . (int) $tarea->id . '-' . self::unix_de_creacion($tarea) . ':' . $dia->format('Y-m-d')
+            . ':' . str_replace(':', '', self::hora($tarea));
     }
 
     /**
@@ -435,10 +487,11 @@ class RecordatoriosDelAsistenteHelper
     }
 
     /**
-     * Las tres partes del `id` del contrato, o null si no tiene esa forma o la fecha no es real.
+     * Las partes del `id` del contrato, o null si no tiene esa forma, la fecha no es real o la hora no
+     * es del día.
      *
      * @param  mixed  $id
-     * @return array|null  {pending_id:int, creada:int, fecha:Carbon}
+     * @return array|null  {pending_id:int, creada:int, fecha:Carbon, hora:"HHMM"}
      */
     protected static function partes_del_id($id)
     {
@@ -449,14 +502,14 @@ class RecordatoriosDelAsistenteHelper
 
         $id = trim((string) $id);
 
-        if (!preg_match('/^' . self::PREFIJO_ID . ':(\d{1,10})-(\d{1,12}):(\d{4}-\d{2}-\d{2})$/', $id, $partes)) {
+        if (!preg_match('/^' . self::PREFIJO_ID . ':(\d{1,10})-(\d{1,12}):(\d{4}-\d{2}-\d{2}):(\d{2})(\d{2})$/', $id, $partes)) {
 
             return null;
         }
 
         $fecha = AgendaTareaHelper::parsear_fecha($partes[3]);
 
-        if (is_null($fecha) || (int) $partes[1] <= 0) {
+        if (is_null($fecha) || (int) $partes[1] <= 0 || (int) $partes[4] > 23 || (int) $partes[5] > 59) {
 
             return null;
         }
@@ -465,6 +518,7 @@ class RecordatoriosDelAsistenteHelper
             'pending_id' => (int) $partes[1],
             'creada'     => (int) $partes[2],
             'fecha'      => $fecha,
+            'hora'       => $partes[4] . $partes[5],
         ];
     }
 
