@@ -7,6 +7,38 @@ use Illuminate\Database\Eloquent\Model;
 
 class WhatsappBotConfig extends Model
 {
+    /*
+     * Objetivos de la conversación que el dueño le puede poner al agente (misión
+     * objetivo-agente-whatsapp, columna `agent_objective`). NULL = sin objetivo, que es como quedan
+     * todos los negocios que ya existían: el system prompt no cambia.
+     */
+
+    /** Que el cliente pase por el local (usa las sucursales con domicilio y el horario). */
+    const OBJETIVO_VISITAR_LOCAL = 'visit_branch';
+
+    /** Que el cliente compre en la tienda online (usa `users.online`). */
+    const OBJETIVO_COMPRAR_ONLINE = 'buy_online';
+
+    /** Que el cliente deje el pedido por el chat, para que el negocio lo confirme. */
+    const OBJETIVO_PEDIDO_POR_WHATSAPP = 'order_by_whatsapp';
+
+    /** Otro objetivo: lo escribe el dueño en `agent_objective_detail` (sin texto, no hay objetivo). */
+    const OBJETIVO_PERSONALIZADO = 'custom';
+
+    /**
+     * Lista cerrada de valores válidos de `agent_objective`. La usan la validación del endpoint
+     * (`WhatsappBotController::update_config`) y el armado de la capa del prompt
+     * (`AgentObjectivePromptBuilder`), que trata cualquier otro valor como sin objetivo.
+     *
+     * @var array<int, string>
+     */
+    const OBJETIVOS = [
+        self::OBJETIVO_VISITAR_LOCAL,
+        self::OBJETIVO_COMPRAR_ONLINE,
+        self::OBJETIVO_PEDIDO_POR_WHATSAPP,
+        self::OBJETIVO_PERSONALIZADO,
+    ];
+
     protected $guarded = [];
 
     protected $casts = [
