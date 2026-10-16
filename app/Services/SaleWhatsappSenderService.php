@@ -6,6 +6,8 @@ use App\Exceptions\SaleWhatsappSendException;
 use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
+use App\Http\Controllers\Helpers\WhatsappTemplateStandardHelper;
+use App\Models\Client;
 use App\Models\Sale;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
@@ -157,6 +159,221 @@ class SaleWhatsappSenderService
     }
 
     /**
+     * Envía al cliente un comprobante que NO es una venta —un presupuesto o un recibo— por el MISMO
+     * molde que `send_sale()` (misión asistente-envios-a-clientes, 16/10/2026): ventana de 24 h
+     * abierta → `send_document` con el epígrafe que manda el que llama; cerrada → la plantilla
+     * `cc_cli_comprobante` [Nombre, Nº de comprobante, Negocio] con el PDF como header DOCUMENT.
+     *
+     * 🔴 ES UN MÉTODO HERMANO Y NO UNA GENERALIZACIÓN DE `send_sale()`, A PROPÓSITO. `send_sale()` lo
+     * usan el botón del modal de Ventas (`SaleController@send_whatsapp_agent`) y el job automático
+     * (`SendSaleWhatsappJob`), y su comportamiento —el epígrafe, el nombre del archivo, el `source`
+     * de la fila— no puede cambiar por esta misión. Lo que sí se comparte es todo lo que no es de la
+     * venta: la resolución del chat (`resolve_chat_del_cliente()`), el corte si Kapso no confirmó
+     * (`fallar_si_no_hubo_envio()`) y la persistencia (`store_outbound_document_message()`), que son
+     * los mismos tres pasos, con las mismas guardas y en el mismo orden.
+     *
+     * El que llama arma la URL del PDF CON su token (`PdfLinkHelper::con_token()`): cada comprobante
+     * tiene su ruta y su tipo de token, y este service no tiene por qué saber cuál es cuál.
+     *
+     * @param  Client       $client           Cliente al que va (el del comprobante).
+     * @param  int          $owner_id         Dueño del negocio (`user_id` del comprobante).
+     * @param  string       $pdf_url          URL pública del PDF, ya con su token.
+     * @param  string       $filename         Nombre del archivo que ve el cliente ('presupuesto-12.pdf').
+     * @param  string       $numero           El número que ve el cliente (va en la variable {{2}} de la plantilla).
+     * @param  string       $caption          Epígrafe del documento con la ventana abierta.
+     * @param  int|null     $sent_by_user_id  Persona que lo disparó (la del asistente).
+     * @param  string       $sin_telefono     Mensaje del corte 'sin_telefono', con el nombre del comprobante.
+     * @return WhatsappChatMessage  El mensaje `out` ya persistido.
+     *
+     * @throws SaleWhatsappSendException  Los mismos códigos que `send_sale()`.
+     */
+    public function send_comprobante(Client $client, $owner_id, $pdf_url, $filename, $numero, $caption, $sent_by_user_id = null, $sin_telefono = 'El comprobante no tiene un cliente con teléfono cargado.')
+    {
+        $owner_id = (int) $owner_id;
+
+        // Configuración activa del bot del owner: sin ella no hay `phone_number_id`/`kapso_api_key` para enviar nada.
+        $config = WhatsappBotConfig::getForUser($owner_id);
+        if (is_null($config)) {
+            throw new SaleWhatsappSendException('No hay una configuración de WhatsApp activa para esta empresa.', 'sin_configuracion');
+        }
+        $config->loadMissing('user');
+
+        $chat = $this->resolve_chat_del_cliente($client, $owner_id, $config, $sin_telefono);
+
+        $client_name = ! empty($client->name) ? $client->name : 'Cliente';
+        $business_name = trim((string) ($config->user->name ?: '')) ?: 'nuestro negocio';
+
+        $send_service = new WhatsappBotSendService();
+
+        if ($chat->is_within_service_window()) {
+            // Ventana abierta: el documento directo, con el epígrafe que armó el que llama.
+            $wa_message_id = $send_service->send_document($chat->phone, $pdf_url, $filename, $caption, $config);
+
+            // 🔴 Antes de persistir, igual que en send_sale(): un null es "no salió".
+            $this->fallar_si_no_hubo_envio($wa_message_id, 'documento');
+
+            return WhatsappChatHelper::store_outbound_document_message(
+                $chat,
+                $caption,
+                $wa_message_id,
+                $sent_by_user_id,
+                is_null($sent_by_user_id) ? 'sistema' : 'manual',
+                $pdf_url
+            );
+        }
+
+        // Ventana cerrada: la plantilla aprobada cc_cli_comprobante, la misma de la venta.
+        $template = $this->plantilla_de_comprobante_aprobada($owner_id);
+
+        if (is_null($template)) {
+            throw new SaleWhatsappSendException('La plantilla de comprobante todavía no está aprobada en Meta.', 'plantilla_no_aprobada');
+        }
+
+        $variables = $this->variables_de_la_plantilla($client_name, $numero, $business_name);
+
+        $wa_message_id = $send_service->send_template($chat->phone, $template, $variables, $config, $pdf_url, $filename);
+
+        $this->fallar_si_no_hubo_envio($wa_message_id, 'plantilla');
+
+        return WhatsappChatHelper::store_outbound_document_message(
+            $chat,
+            $template->render_body($variables),
+            $wa_message_id,
+            $sent_by_user_id,
+            'plantilla',
+            $pdf_url,
+            $template->meta_template_name
+        );
+    }
+
+    /**
+     * Cómo saldría HOY un comprobante por WhatsApp a este cliente, SIN mandar nada ni crear ninguna
+     * fila (misión asistente-envios-a-clientes): para que la tarjeta del asistente diga, antes del sí,
+     * a qué número va, si sale como mensaje o como plantilla, y con qué texto — o por qué no se puede.
+     *
+     * Responde las MISMAS preguntas que `send_sale()` / `send_comprobante()` en el MISMO orden
+     * (configuración → teléfono → ventana → plantilla aprobada), pero de solo lectura: busca el chat
+     * igual que `resolve_chat_del_cliente()` (por cliente, después por teléfono exacto) y no lo crea.
+     * Es informativo: la autoridad es el envío, que vuelve a mirar todo al confirmar.
+     *
+     * @param  int          $owner_id
+     * @param  Client|null  $client
+     * @return array  {puede: bool, camino: 'mensaje'|'plantilla'|null, telefono: string|null,
+     *                 motivo: string|null, mensaje: string|null}
+     */
+    public function como_saldria($owner_id, $client)
+    {
+        $owner_id = (int) $owner_id;
+
+        $config = WhatsappBotConfig::getForUser($owner_id);
+
+        if (is_null($config)) {
+            return $this->no_saldria('sin_configuracion', 'El negocio no tiene WhatsApp conectado (no hay una configuración activa).');
+        }
+
+        $phone = WhatsappPhoneHelper::normalize(! is_null($client) ? $client->phone : null);
+
+        if ($phone === '') {
+            return $this->no_saldria('sin_telefono', 'El cliente no tiene teléfono cargado.');
+        }
+
+        $chat = $this->buscar_chat_del_cliente($client, $owner_id, $phone);
+
+        $telefono = is_null($chat) ? $phone : (string) $chat->phone;
+
+        if (! is_null($chat) && $chat->is_within_service_window()) {
+            return ['puede' => true, 'camino' => 'mensaje', 'telefono' => $telefono, 'motivo' => null, 'mensaje' => null];
+        }
+
+        if (is_null($this->plantilla_de_comprobante_aprobada($owner_id))) {
+            return $this->no_saldria(
+                'plantilla_no_aprobada',
+                'El cliente no le escribió al negocio en las últimas 24 horas y la plantilla de comprobante todavía no está aprobada en Meta.'
+            );
+        }
+
+        return ['puede' => true, 'camino' => 'plantilla', 'telefono' => $telefono, 'motivo' => null, 'mensaje' => null];
+    }
+
+    /**
+     * El texto EXACTO que lleva la plantilla `cc_cli_comprobante` para este cliente y este número,
+     * ya renderizado: el de la plantilla del negocio si existe y, si no, el cuerpo estándar del
+     * catálogo (solo para mostrar: sin plantilla aprobada no se manda). Lo usa la tarjeta del
+     * asistente para mostrar lo que sale antes del sí.
+     *
+     * @param  int     $owner_id
+     * @param  string  $client_name
+     * @param  string  $numero
+     * @param  string  $business_name
+     * @return string
+     */
+    public function texto_de_la_plantilla($owner_id, $client_name, $numero, $business_name)
+    {
+        $variables = $this->variables_de_la_plantilla($client_name, $numero, $business_name);
+
+        $template = WhatsappTemplate::where('user_id', (int) $owner_id)
+            ->where('meta_template_name', self::TEMPLATE_META_NAME)
+            ->first();
+
+        if (! is_null($template)) {
+            return $template->render_body($variables);
+        }
+
+        $body = WhatsappTemplateStandardHelper::body_preview_de(self::TEMPLATE_META_NAME);
+
+        foreach ($variables as $index => $valor) {
+            $body = str_replace('{{'.($index + 1).'}}', (string) $valor, $body);
+        }
+
+        return $body;
+    }
+
+    /**
+     * Las variables de `cc_cli_comprobante`, en el orden que declara WhatsappTemplateStandardHelper:
+     * [Nombre, Nº de comprobante, Negocio].
+     *
+     * @param  string  $client_name
+     * @param  string  $numero
+     * @param  string  $business_name
+     * @return array<int, string>
+     */
+    private function variables_de_la_plantilla($client_name, $numero, $business_name)
+    {
+        return [(string) $client_name, (string) $numero, (string) $business_name];
+    }
+
+    /**
+     * La plantilla `cc_cli_comprobante` del owner, solo si ya está aprobada en Meta.
+     *
+     * @param  int  $owner_id
+     * @return WhatsappTemplate|null
+     */
+    private function plantilla_de_comprobante_aprobada($owner_id)
+    {
+        $template = WhatsappTemplate::where('user_id', (int) $owner_id)
+            ->where('meta_template_name', self::TEMPLATE_META_NAME)
+            ->first();
+
+        if (is_null($template) || $template->status !== 'aprobada') {
+            return null;
+        }
+
+        return $template;
+    }
+
+    /**
+     * La respuesta de como_saldria() cuando no sale.
+     *
+     * @param  string  $motivo
+     * @param  string  $mensaje
+     * @return array
+     */
+    private function no_saldria($motivo, $mensaje)
+    {
+        return ['puede' => false, 'camino' => null, 'telefono' => null, 'motivo' => $motivo, 'mensaje' => $mensaje];
+    }
+
+    /**
      * Corta el envío si `WhatsappBotSendService` no devolvió un `wa_message_id`.
      *
      * Los tres métodos de ese service (`send_text`, `send_document`, `send_template`) se tragan
@@ -202,25 +419,31 @@ class SaleWhatsappSenderService
      */
     private function resolve_chat(Sale $sale, $owner_id, WhatsappBotConfig $config)
     {
-        $client = $sale->client;
+        return $this->resolve_chat_del_cliente($sale->client, $owner_id, $config, 'La venta no tiene un cliente con teléfono cargado.');
+    }
+
+    /**
+     * Lo que hacía `resolve_chat()` adentro, sacado tal cual para que `send_comprobante()` lo use
+     * con el cliente de un presupuesto o de un recibo (misión asistente-envios-a-clientes). Para la
+     * venta no cambia nada: mismo orden de búsqueda, mismo alta y mismo mensaje del corte.
+     *
+     * @param  Client|null        $client
+     * @param  int                $owner_id
+     * @param  WhatsappBotConfig  $config
+     * @param  string             $sin_telefono  Mensaje del corte 'sin_telefono'.
+     * @return WhatsappChat
+     *
+     * @throws SaleWhatsappSendException  Código 'sin_telefono' si no hay cliente con teléfono cargado.
+     */
+    private function resolve_chat_del_cliente($client, $owner_id, WhatsappBotConfig $config, $sin_telefono)
+    {
         $phone = WhatsappPhoneHelper::normalize(! is_null($client) ? $client->phone : null);
 
         if ($phone === '') {
-            throw new SaleWhatsappSendException('La venta no tiene un cliente con teléfono cargado.', 'sin_telefono');
+            throw new SaleWhatsappSendException($sin_telefono, 'sin_telefono');
         }
 
-        $chat = null;
-        if (! is_null($client)) {
-            $chat = WhatsappChat::where('user_id', $owner_id)
-                ->where('client_id', $client->id)
-                ->first();
-        }
-
-        if (is_null($chat)) {
-            $chat = WhatsappChat::where('user_id', $owner_id)
-                ->where('phone', $phone)
-                ->first();
-        }
+        $chat = $this->buscar_chat_del_cliente($client, $owner_id, $phone);
 
         if (is_null($chat)) {
             $chat = WhatsappChat::create([
@@ -234,6 +457,34 @@ class SaleWhatsappSenderService
             // El chat existía (ej: el cliente ya había escrito antes) pero todavía no estaba vinculado.
             $chat->client_id = $client->id;
             $chat->save();
+        }
+
+        return $chat;
+    }
+
+    /**
+     * El chat existente del cliente, sin crear nada: primero por `client_id`, después por el
+     * teléfono exacto. Es la búsqueda que hacía `resolve_chat()` desde siempre, compartida con
+     * `como_saldria()` para que la vista previa y el envío miren el MISMO chat.
+     *
+     * @param  Client|null  $client
+     * @param  int          $owner_id
+     * @param  string       $phone  Ya normalizado.
+     * @return WhatsappChat|null
+     */
+    private function buscar_chat_del_cliente($client, $owner_id, $phone)
+    {
+        $chat = null;
+        if (! is_null($client)) {
+            $chat = WhatsappChat::where('user_id', $owner_id)
+                ->where('client_id', $client->id)
+                ->first();
+        }
+
+        if (is_null($chat)) {
+            $chat = WhatsappChat::where('user_id', $owner_id)
+                ->where('phone', $phone)
+                ->first();
         }
 
         return $chat;
