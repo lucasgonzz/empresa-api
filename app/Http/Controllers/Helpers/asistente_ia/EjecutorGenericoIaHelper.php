@@ -260,31 +260,61 @@ class EjecutorGenericoIaHelper
                 $resultado['precio_de_venta'] = null;
                 $resultado['precio_de_venta_texto'] = null;
 
-                if ($ya_dijo_las_listas) {
-
-                    return $resultado;
-                }
-
                 $precios = [];
                 $partes = [];
 
-                $pivotes = DB::table('article_price_type')
-                                ->where('article_id', $article_id)
-                                ->pluck('final_price', 'price_type_id')
-                                ->all();
+                // Ninguna lista con margen (ni con precio fijo): se vende al costo más impuestos.
+                $todas_en_cero = true;
+                $hay_listas = false;
+
+                $pivotes = [];
+
+                foreach (DB::table('article_price_type')
+                            ->where('article_id', $article_id)
+                            ->get(['price_type_id', 'final_price', 'percentage', 'setear_precio_final']) as $pivote) {
+
+                    $pivotes[(int) $pivote->price_type_id] = $pivote;
+                }
 
                 foreach (MargenesPorListaIaHelper::listas_del_dueno($contexto->owner_id) as $lista) {
 
-                    $precio = isset($pivotes[(int) $lista->id]) && !is_null($pivotes[(int) $lista->id]) && (float) $pivotes[(int) $lista->id] > 0
-                        ? (float) $pivotes[(int) $lista->id]
+                    $hay_listas = true;
+
+                    $pivote = isset($pivotes[(int) $lista->id]) ? $pivotes[(int) $lista->id] : null;
+
+                    $precio = !is_null($pivote) && !is_null($pivote->final_price) && (float) $pivote->final_price > 0
+                        ? (float) $pivote->final_price
                         : null;
+
+                    $margen = !is_null($pivote) && !is_null($pivote->percentage)
+                        ? (float) $pivote->percentage
+                        : (is_null($lista->percentage) ? 0.0 : (float) $lista->percentage);
+
+                    if ((!is_null($pivote) && !empty($pivote->setear_precio_final)) || $margen > 0) {
+
+                        $todas_en_cero = false;
+                    }
 
                     $precios[] = ['lista' => (string) $lista->name, 'precio' => $precio];
                     $partes[] = $lista->name.' '.(is_null($precio) ? 'sin precio' : FormatoIaHelper::monto($precio));
                 }
 
+                $sin_margen = $hay_listas && $todas_en_cero && !is_null($articulo->cost) && (float) $articulo->cost > 0;
+
+                $aviso_sin_margen = 'SIN margen de ganancia en ninguna lista: se vende al costo más impuestos';
+
+                if ($ya_dijo_las_listas) {
+
+                    // El texto ya trae los precios por lista: solo se suma el aviso del margen cero.
+                    $resultado['precio_de_venta_texto'] = $sin_margen ? $aviso_sin_margen : null;
+
+                    return $resultado;
+                }
+
                 $resultado['precios_por_lista'] = $precios;
-                $resultado['precio_de_venta_texto'] = count($partes) ? 'precios de venta por lista: '.implode(', ', $partes) : null;
+                $resultado['precio_de_venta_texto'] = count($partes)
+                    ? 'precios de venta por lista: '.implode(', ', $partes).($sin_margen ? ' ('.$aviso_sin_margen.')' : '')
+                    : null;
 
                 return $resultado;
             }
@@ -310,7 +340,14 @@ class EjecutorGenericoIaHelper
                     ? 'US$ '.number_format((float) $articulo->cost, 2, ',', '.')
                     : FormatoIaHelper::monto($articulo->cost);
 
-                $texto .= ' (costo '.$costo.')';
+                /*
+                 * 🔴 Con costo y SIN margen (chequeo independiente, 16/10/2026, el martillo de demo3:
+                 * costo 9.000, precio 9.278,35 = el costo más el IIBB). Un "precio de venta $ X" a
+                 * secas suena a precio armado, y el dueño está vendiendo sin ganar nada.
+                 */
+                $texto .= self::sin_margen($article_id, $articulo)
+                    ? ' (costo '.$costo.', SIN margen de ganancia: se vende al costo más impuestos)'
+                    : ' (costo '.$costo.')';
             }
 
             $resultado['precio_de_venta'] = round($final, 2);
@@ -325,6 +362,52 @@ class EjecutorGenericoIaHelper
         }
 
         return $resultado;
+    }
+
+    /**
+     * true si el precio de un artículo con costo (sin listas) no lleva ningún margen: ni el suyo,
+     * ni el del proveedor (si lo aplica), ni el de la lista del proveedor, ni el de su categoría, y
+     * sin precio manual. Mismas fuentes que suma ArticleHelper::setFinalPrice().
+     *
+     * @param  int  $article_id
+     * @param  object  $articulo  La fila con `price`.
+     * @return bool
+     */
+    protected static function sin_margen(int $article_id, $articulo): bool
+    {
+        if (!is_null($articulo->price) && (float) $articulo->price > 0) {
+
+            return false;
+        }
+
+        $fila = DB::table('articles')
+                    ->where('id', $article_id)
+                    ->first(['percentage_gain', 'apply_provider_percentage_gain', 'provider_id', 'provider_price_list_id', 'category_id']);
+
+        if (is_null($fila) || (!is_null($fila->percentage_gain) && (float) $fila->percentage_gain > 0)) {
+
+            return false;
+        }
+
+        if (!empty($fila->apply_provider_percentage_gain)) {
+
+            if (!empty($fila->provider_price_list_id)) {
+
+                return false;
+            }
+
+            if (!empty($fila->provider_id) && (float) DB::table('providers')->where('id', (int) $fila->provider_id)->value('percentage_gain') > 0) {
+
+                return false;
+            }
+        }
+
+        if (!empty($fila->category_id) && (float) DB::table('categories')->where('id', (int) $fila->category_id)->value('percentage_gain') > 0) {
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -888,10 +971,31 @@ class EjecutorGenericoIaHelper
 
             $guardado = !is_null($fila) && isset($fila->{$columna}) ? $fila->{$columna} : null;
 
-            $guardados[] = [
-                'etiqueta' => Str::ucfirst($campo['etiqueta']),
-                'valor'    => self::guardado_legible($campo, $guardado, $fila),
-            ];
+            /*
+             * Protegido (chequeo independiente, 16/10/2026): el alta o la edición ya se hizo, y una
+             * relación rara que lanza al leer su nombre no puede devolverla como error. Si falla, el
+             * resultado va sin `campos_guardados`.
+             */
+            if (!is_null($guardados)) {
+
+                try {
+
+                    $guardados[] = [
+                        'etiqueta' => Str::ucfirst($campo['etiqueta']),
+                        'valor'    => self::guardado_legible($campo, $guardado, $fila),
+                    ];
+
+                } catch (\Throwable $e) {
+
+                    Log::warning('EjecutorGenericoIaHelper: no se pudo leer lo guardado de un campo', [
+                        'entidad' => $declaracion['entidad'],
+                        'campo'   => $columna,
+                        'error'   => $e->getMessage(),
+                    ]);
+
+                    $guardados = null;
+                }
+            }
 
             if (self::quedo($campo, $valor, $guardado)) {
 
@@ -928,6 +1032,11 @@ class EjecutorGenericoIaHelper
              */
             'campos_guardados'       => $guardados,
         ];
+
+        if (is_null($guardados)) {
+
+            unset($resultado['campos_guardados']);
+        }
 
         if ($operacion === Catalogo::OP_EDICION) {
 
