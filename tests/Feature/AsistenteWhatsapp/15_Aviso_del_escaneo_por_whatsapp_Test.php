@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderScanAltaHelper;
+use App\Http\Controllers\ProviderOrderScanController;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
@@ -476,6 +477,30 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
         $this->assertSame(1, ProviderOrderScan::where('provider_order_id', $compra->id)->count());
     }
 
+    /**
+     * 🔴 `compra_num` en 0, "0", vacío o no numérico es como si no hubiera venido: DeepSeek rellena
+     * los enteros opcionales con 0, y eso no puede cortar la carga pidiendo un número.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_num_en_cero_o_vacio_es_como_si_no_viniera()
+    {
+        foreach ([0, '0', '', 'abc', null] as $valor) {
+
+            list($conversation, $generandose) = $this->escena();
+
+            $respuesta = $this->proponer($conversation, $generandose, ['compra_num' => $valor]);
+
+            $this->assertTrue($respuesta['ok'], 'compra_num = ' . var_export($valor, true) . ': ' . json_encode($respuesta));
+
+            $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+            $this->assertFalse($accion->datos['compra_indicada']);
+            $this->assertStringContainsString('Se crea una compra nueva', $this->que_se_hace($accion->id));
+        }
+    }
+
     /* ───────────── 1.b / 1.c el escaneo nace sabiendo si avisar, y el texto lo dice ───────────── */
 
     /**
@@ -508,6 +533,38 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
         $this->assertStringContainsString('Creé la Compra N° ' . $compra->num . ' de Ferretera del Sur', $resultado['resultado']);
         $this->assertStringContainsString('te aviso por acá con el link', $resultado['resultado']);
         $this->assertStringNotContainsString('no por WhatsApp', $resultado['resultado']);
+    }
+
+    /**
+     * Con aviso pero sin ninguna base del link (el admin no mandó spa_url y no hay SPA_URL), el texto
+     * promete el aviso por acá pero no «con el link».
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function con_aviso_y_sin_base_del_link_no_promete_el_link()
+    {
+        AvisosDelAsistenteHelper::anunciar($this->comercio->id, '1', null);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $respuesta = $this->proponer($conversation, $generandose);
+
+        $resultado = $this->confirmar($conversation, $generandose, $respuesta['tarjeta_id']);
+
+        $this->assertStringContainsString('te aviso por acá para que la revises en Compras', $resultado['resultado']);
+        $this->assertStringNotContainsString('con el link', $resultado['resultado']);
+    }
+
+    /**
+     * El 202 del POST de mensajes anuncia que esta versión atiende los avisos (clave aditiva).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_202_de_mensajes_dice_que_admite_avisos()
+    {
+        $this->mandar()->assertStatus(202)->assertJson(['admite_avisos' => true]);
     }
 
     /**
@@ -695,7 +752,7 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
         $ruta = '/proveedores/compras?compra=' . $compra->id . '&escaneo=' . $scan->uuid;
 
         $this->assertSame([
-            'id'                 => 'escaneo_factura:' . $scan->id,
+            'id'                 => 'escaneo_factura:' . $scan->uuid,
             'tipo'               => 'escaneo_factura',
             'ai_conversation_id' => (int) $conversation->id,
             'texto'              => $avisos[0]['texto'],
@@ -807,7 +864,7 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
 
         $ids = array_column($this->pendientes()->json('avisos'), 'id');
 
-        $this->assertSame(['escaneo_factura:' . $viejo->id, 'escaneo_factura:' . $nuevo->id], $ids);
+        $this->assertSame(['escaneo_factura:' . $viejo->uuid, 'escaneo_factura:' . $nuevo->uuid], $ids);
     }
 
     /* ─────────────────────────── 1.d avisos/avisado ─────────────────────────── */
@@ -829,11 +886,11 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
 
         $texto = AvisosDelAsistenteHelper::texto_del_aviso($scan);
 
-        $this->avisado(['id' => 'escaneo_factura:' . $scan->id, 'url' => $url, 'whatsapp_message_id' => 'wamid.aviso'])
+        $this->avisado(['id' => 'escaneo_factura:' . $scan->uuid, 'url' => $url, 'whatsapp_message_id' => 'wamid.aviso'])
             ->assertStatus(200)
             ->assertExactJson(['ok' => true]);
 
-        $this->avisado(['id' => 'escaneo_factura:' . $scan->id, 'url' => $url])->assertStatus(200);
+        $this->avisado(['id' => 'escaneo_factura:' . $scan->uuid, 'url' => $url])->assertStatus(200);
 
         $this->assertNotNull($scan->fresh()->avisado_por_whatsapp_at);
 
@@ -872,8 +929,8 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
             'avisar_por_whatsapp' => 1,
         ]);
 
-        $this->avisado(['id' => 'escaneo_factura:' . $ajeno->id])->assertStatus(404);
-        $this->avisado(['id' => 'escaneo_factura:999999999'])->assertStatus(404);
+        $this->avisado(['id' => 'escaneo_factura:' . $ajeno->uuid])->assertStatus(404);
+        $this->avisado(['id' => 'escaneo_factura:00000000-0000-4000-8000-000000000000'])->assertStatus(404);
         $this->avisado(['id' => 'informe:1'])->assertStatus(404);
         $this->avisado([])->assertStatus(404);
 
@@ -890,10 +947,120 @@ class Aviso_del_escaneo_por_whatsapp_Test extends AsistenteWhatsappTestCase
     {
         $scan = $this->escaneo($this->compra(12));
 
-        $this->postJson('api/admin-sync/asistente/avisos/avisado', ['id' => 'escaneo_factura:' . $scan->id], $this->headers(false))
+        $this->postJson('api/admin-sync/asistente/avisos/avisado', ['id' => 'escaneo_factura:' . $scan->uuid], $this->headers(false))
             ->assertStatus(401);
 
         $this->assertNull($scan->fresh()->avisado_por_whatsapp_at);
+    }
+
+    /**
+     * 🔴 El id del aviso es el uuid, no el id de la fila: las demos corren `migrate:fresh` y el
+     * autoincremental se repite, mientras el admin guarda su reclamo por id siete días. El formato
+     * viejo (por id de fila) ya no se reconoce.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_id_del_aviso_es_el_uuid_del_escaneo()
+    {
+        $scan = $this->escaneo($this->compra(12));
+
+        $this->assertSame('escaneo_factura:' . $scan->uuid, $this->pendientes()->json('avisos')[0]['id']);
+
+        $this->avisado(['id' => 'escaneo_factura:' . $scan->id])->assertStatus(404);
+
+        $this->assertNull($scan->fresh()->avisado_por_whatsapp_at);
+
+        $this->avisado(['id' => 'escaneo_factura:' . $scan->uuid])->assertStatus(200);
+
+        $this->assertNotNull($scan->fresh()->avisado_por_whatsapp_at);
+    }
+
+    /**
+     * Un escaneo colgado (sigue en curso más allá de la ventana de vencimiento: la cola se quedó sin
+     * consumidor) se avisa como error; uno en curso reciente, todavía no.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function un_escaneo_colgado_se_avisa_como_que_la_lectura_se_corto()
+    {
+        $colgado = $this->escaneo($this->compra(12), ['estado' => 'procesando', 'resultado' => null]);
+        $this->terminado_hace($colgado, now()->subMinutes(ProviderOrderScanController::MINUTOS_ESCANEO_EN_CURSO + 5));
+
+        $this->escaneo($this->compra(13), ['estado' => 'pendiente', 'resultado' => null]);
+
+        $avisos = $this->pendientes()->json('avisos');
+
+        $this->assertCount(1, $avisos);
+        $this->assertSame('escaneo_factura:' . $colgado->uuid, $avisos[0]['id']);
+        $this->assertSame(
+            'No pude leer la factura de *Ferretera del Sur* (compra N° 12): la lectura se cortó y no terminó. Podés volver a escanearla desde la compra.',
+            $avisos[0]['texto']
+        );
+    }
+
+    /**
+     * La ventana de 24 h se mide desde que nació el escaneo: una escritura posterior (el dueño mira
+     * el aviso de la pantalla y se sella `visto_at`) no la estira.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_ventana_de_24_horas_se_mide_por_created_at()
+    {
+        $viejo = $this->escaneo($this->compra(12));
+
+        DB::table('provider_order_scans')->where('id', $viejo->id)->update([
+            'created_at' => now()->subHours(25),
+            'updated_at' => now(),
+            'visto_at'   => now(),
+        ]);
+
+        $this->assertSame([], $this->pendientes()->json('avisos'));
+    }
+
+    /**
+     * La `url` que manda el admin en avisado se guarda solo si es segura (https, o http de un host
+     * local); si no, el mensaje queda sin link. El sello sale igual.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function avisado_con_una_url_insegura_deja_el_mensaje_sin_link()
+    {
+        $conversation = $this->conversacion_whatsapp();
+
+        $scan = $this->escaneo($this->compra(12), ['ai_conversation_id' => $conversation->id]);
+
+        $this->avisado(['id' => 'escaneo_factura:' . $scan->uuid, 'url' => 'http://ferreteria.comerciocity.com/proveedores/compras'])
+            ->assertStatus(200);
+
+        $mensaje = AiMessage::where('ai_conversation_id', $conversation->id)->first();
+
+        $this->assertSame(AvisosDelAsistenteHelper::texto_del_aviso($scan->fresh()), $mensaje->contenido);
+        $this->assertNotNull($scan->fresh()->avisado_por_whatsapp_at);
+    }
+
+    /**
+     * https siempre; http solo para hosts locales de desarrollo.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_base_del_link_exige_https_salvo_en_hosts_locales()
+    {
+        $this->assertNull(AvisosDelAsistenteHelper::url_valida('http://ferreteria.comerciocity.com'));
+        $this->assertSame(self::SPA_URL, AvisosDelAsistenteHelper::url_valida(self::SPA_URL . '/'));
+        $this->assertSame('http://empresa.local', AvisosDelAsistenteHelper::url_valida('http://empresa.local'));
+        $this->assertSame('http://localhost:8180', AvisosDelAsistenteHelper::url_valida('http://localhost:8180/'));
+        $this->assertSame('http://demo.test', AvisosDelAsistenteHelper::url_valida('http://demo.test'));
+        $this->assertNull(AvisosDelAsistenteHelper::url_valida('ftp://ferreteria.comerciocity.com'));
+        $this->assertNull(AvisosDelAsistenteHelper::url_valida('https://user:pass@ferreteria.comerciocity.com'));
+
+        $this->mandar(['avisos' => '1', 'spa_url' => 'http://ferreteria.comerciocity.com'])->assertStatus(202);
+
+        $this->assertNull(AvisosDelAsistenteHelper::base_del_link($this->comercio->id));
     }
 
     /* ─────────────────────── 1.e consultar_escaneo_de_factura ─────────────────────── */

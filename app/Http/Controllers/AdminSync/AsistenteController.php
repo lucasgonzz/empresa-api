@@ -333,6 +333,13 @@ class AsistenteController extends Controller
             'ai_conversation_id' => (int) $assistant->ai_conversation_id,
             'ai_message_id'      => (int) $assistant->id,
             'estado'             => (string) $assistant->estado,
+            /*
+             * Misión asistente-aviso-escaneo-factura (16/10/2026), clave aditiva: esta versión
+             * atiende avisos-pendientes y avisos/avisado. El admin la usa para levantar la pausa que
+             * pone cuando avisos-pendientes le dio 404 (un cliente que se actualizó después). Un
+             * admin viejo la ignora.
+             */
+            'admite_avisos'      => true,
         ], 202);
     }
 

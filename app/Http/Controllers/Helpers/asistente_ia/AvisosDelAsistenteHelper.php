@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\ProviderOrderScanController;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\ProviderOrderScan;
@@ -34,6 +35,7 @@ use Illuminate\Support\Facades\DB;
  *
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/avisos-pendientes?spa_url=   → 200 {avisos:[{id, tipo, ai_conversation_id, texto, ruta, url|null}]}
+ *        (`id` = "escaneo_factura:{uuid}")
  *   POST admin-sync/asistente/avisos/avisado {id, url?, whatsapp_message_id?} → 200 {ok:true} · 404
  *
  * PHP 7.4: sin match, sin nullsafe, sin str_contains.
@@ -47,7 +49,7 @@ class AvisosDelAsistenteHelper
     const DIAS_DEL_ANUNCIO = 30;
 
     /**
-     * Horas después de terminado el escaneo en las que el aviso todavía se manda. Coinciden con la
+     * Horas desde que nació el escaneo (`created_at`) en las que el aviso todavía se manda. Coinciden con la
      * ventana de 24 h de WhatsApp: un aviso que el admin no pudo mandar en un día (ventana cerrada)
      * ya no le sirve al dueño como aviso, y sigue teniendo el botón rojo en Compras.
      */
@@ -153,10 +155,20 @@ class AvisosDelAsistenteHelper
     /**
      * Los avisos pendientes del dueño, del más viejo al más nuevo y con tope.
      *
-     * Un escaneo entra si: pidió el aviso (`avisar_por_whatsapp = 1`), terminó (`listo` o `error`),
-     * no se avisó todavía, terminó hace menos de HORAS_DEL_AVISO (por `updated_at`, que es la última
-     * escritura del job) y no lo gestionó ya el dueño desde la pantalla — si ya lo confirmó o
-     * descartó, «revisalo» es un aviso viejo.
+     * Un escaneo entra si: pidió el aviso (`avisar_por_whatsapp = 1`), no se avisó todavía, nació
+     * hace menos de HORAS_DEL_AVISO, no lo gestionó ya el dueño desde la pantalla —si ya lo confirmó
+     * o descartó, «revisalo» es un aviso viejo— y terminó: `listo`, `error` o COLGADO.
+     *
+     * 🔴 COLGADO = sigue en `pendiente`/`procesando` más allá de la ventana de vencimiento del
+     * controlador (MINUTOS_ESCANEO_EN_CURSO). Pasa cuando la cola se queda sin consumidor: ningún
+     * worker lo va a terminar y, sin esto, el aviso que se le prometió al dueño no salía nunca. Se
+     * avisa como error («la lectura se cortó»): EscaneoDeFacturaIaHelper::estado_para_la_persona()
+     * ya lo trata así.
+     *
+     * 🔴 LA VENTANA SE MIDE POR `created_at`, NO POR `updated_at` (chequeo independiente del
+     * 16/10/2026): `updated_at` lo mueve cualquier escritura posterior —`visto_at` cuando el dueño
+     * mira el aviso de la pantalla— y estiraba la ventana sin que el escaneo hubiera cambiado.
+     * `created_at` es fijo: un aviso vale 24 h desde que se mandó la factura.
      *
      * @param  \App\Models\User  $dueno
      * @param  mixed  $spa_url_pedida  La `spa_url` de la query, o null.
@@ -169,10 +181,16 @@ class AvisosDelAsistenteHelper
         $scans = ProviderOrderScan::where('user_id', (int) $dueno->id)
                                     ->where('avisar_por_whatsapp', 1)
                                     ->whereNull('avisado_por_whatsapp_at')
-                                    ->whereIn('estado', [ProviderOrderScan::ESTADO_LISTO, 'error'])
                                     ->whereNull('gestionado_at')
-                                    ->where('updated_at', '>=', Carbon::now()->subHours(self::HORAS_DEL_AVISO))
-                                    ->orderBy('updated_at')
+                                    ->where('created_at', '>=', Carbon::now()->subHours(self::HORAS_DEL_AVISO))
+                                    ->where(function ($query) {
+                                        $query->whereIn('estado', [ProviderOrderScan::ESTADO_LISTO, 'error'])
+                                                ->orWhere(function ($colgado) {
+                                                    $colgado->whereIn('estado', ProviderOrderScanController::ESTADOS_EN_CURSO)
+                                                            ->where('created_at', '<', Carbon::now()->subMinutes(ProviderOrderScanController::MINUTOS_ESCANEO_EN_CURSO));
+                                                });
+                                    })
+                                    ->orderBy('created_at')
                                     ->orderBy('id')
                                     ->limit(self::TOPE_AVISOS)
                                     ->get();
@@ -184,7 +202,14 @@ class AvisosDelAsistenteHelper
             $ruta = EscaneoDeFacturaIaHelper::ruta_de_revision($scan);
 
             $avisos[] = [
-                'id'                 => self::TIPO_ESCANEO_FACTURA . ':' . (int) $scan->id,
+                /*
+                 * 🔴 POR UUID, NO POR EL ID DE LA FILA (chequeo independiente del 16/10/2026). Las
+                 * demos corren `migrate:fresh` en cada reseteo y el autoincremental vuelve a 1; el
+                 * admin guarda el reclamo `asistente_aviso:{client}:{id}` siete días, así que el
+                 * primer escaneo de la demo siguiente se daba por «ya avisado» y nunca salía. El
+                 * uuid no se repite entre reseteos.
+                 */
+                'id'                 => self::TIPO_ESCANEO_FACTURA . ':' . (string) $scan->uuid,
                 'tipo'               => self::TIPO_ESCANEO_FACTURA,
                 'ai_conversation_id' => is_null($scan->ai_conversation_id) ? null : (int) $scan->ai_conversation_id,
                 'texto'              => self::texto_del_aviso($scan),
@@ -206,24 +231,31 @@ class AvisosDelAsistenteHelper
      * juntas (un reintento del admin) no dejan dos mensajes.
      *
      * @param  \App\Models\User  $dueno
-     * @param  mixed  $id  El `id` del contrato ("escaneo_factura:{scan_id}").
+     * @param  mixed  $id  El `id` del contrato ("escaneo_factura:{uuid}").
      * @param  mixed  $url  El link que salió en el WhatsApp, o null.
      * @param  mixed  $whatsapp_message_id  El wamid del WhatsApp que salió, o null.
      * @return bool  false si el aviso no existe o no es de este dueño (el 404 del contrato).
      */
     public static function marcar_avisado(User $dueno, $id, $url = null, $whatsapp_message_id = null): bool
     {
-        $scan_id = self::id_de_escaneo($id);
+        $uuid = self::uuid_de_escaneo($id);
 
-        if (is_null($scan_id)) {
+        if (is_null($uuid)) {
 
             return false;
         }
 
-        return DB::transaction(function () use ($dueno, $scan_id, $url, $whatsapp_message_id) {
+        /*
+         * La `url` que manda el admin pasa por el mismo filtro que la base del link: lo que no es
+         * https (o http de un host local) no se guarda en el historial, y el mensaje queda sin link.
+         */
+        $url = self::url_segura($url);
 
+        return DB::transaction(function () use ($dueno, $uuid, $url, $whatsapp_message_id) {
+
+            /* Siempre dentro del dueño: el uuid solo no alcanza para saber de quién es. */
             $scan = ProviderOrderScan::where('user_id', (int) $dueno->id)
-                                        ->where('id', $scan_id)
+                                        ->where('uuid', $uuid)
                                         ->where('avisar_por_whatsapp', 1)
                                         ->lockForUpdate()
                                         ->first();
@@ -478,12 +510,14 @@ class AvisosDelAsistenteHelper
     }
 
     /**
-     * El id de la fila del escaneo a partir del `id` del contrato, o null si no es de este tipo.
+     * El uuid del escaneo a partir del `id` del contrato ("escaneo_factura:{uuid}"), o null si no es
+     * de este tipo o no tiene forma de uuid. Ver el 🔴 de pendientes(): el id es el uuid y no el de
+     * la fila para que un `migrate:fresh` de demo no repita ids que el admin ya reclamó.
      *
      * @param  mixed  $id
-     * @return int|null
+     * @return string|null
      */
-    protected static function id_de_escaneo($id)
+    protected static function uuid_de_escaneo($id)
     {
         $id = trim((string) $id);
 
@@ -494,24 +528,30 @@ class AvisosDelAsistenteHelper
             return null;
         }
 
-        $numero = substr($id, strlen($prefijo));
+        $uuid = substr($id, strlen($prefijo));
 
-        if ($numero === '' || !ctype_digit($numero) || (int) $numero <= 0) {
+        /* Los uuid de ProviderOrderScanAltaHelper (Str::uuid): hex y guiones, 64 como mucho (la columna). */
+        if (!is_string($uuid) || !preg_match('/^[A-Za-z0-9\-]{1,64}$/', $uuid)) {
 
             return null;
         }
 
-        return (int) $numero;
+        return $uuid;
     }
 
     /**
-     * Una URL http/https con host, sin barra final, o null. Sin query ni fragmento: a la base se le
-     * pega la ruta con su propia query.
+     * Una URL completa en la que se puede confiar para mandarle al dueño, o null.
+     *
+     * 🔴 HTTPS SIEMPRE, salvo hosts locales de desarrollo (localhost, 127.0.0.1, *.test, *.local),
+     * donde se acepta http (chequeo independiente del 16/10/2026). El link sale en un WhatsApp al
+     * teléfono del dueño y abre su sistema con sesión: un http contra un dominio real es un link que
+     * viaja en claro, y un esquema raro (`javascript:`) directamente no es un link. Sin credenciales
+     * en la URL. La query se acepta (la `url` del aviso la trae); el fragmento no.
      *
      * @param  mixed  $url
-     * @return string|null
+     * @return string|null  La URL recortada, sin tocar su contenido.
      */
-    public static function url_valida($url)
+    public static function url_segura($url)
     {
         if (!is_string($url)) {
 
@@ -520,7 +560,7 @@ class AvisosDelAsistenteHelper
 
         $url = trim($url);
 
-        if ($url === '' || mb_strlen($url) > 255) {
+        if ($url === '' || mb_strlen($url) > 2000) {
 
             return null;
         }
@@ -532,17 +572,76 @@ class AvisosDelAsistenteHelper
             return null;
         }
 
-        if (!in_array(strtolower($partes['scheme']), ['http', 'https'], true)) {
+        if (isset($partes['fragment']) || isset($partes['user']) || isset($partes['pass'])) {
 
             return null;
         }
 
-        if (isset($partes['query']) || isset($partes['fragment']) || isset($partes['user'])) {
+        $esquema = strtolower($partes['scheme']);
+
+        if ($esquema === 'https') {
+
+            return $url;
+        }
+
+        if ($esquema === 'http' && self::es_host_local($partes['host'])) {
+
+            return $url;
+        }
+
+        return null;
+    }
+
+    /**
+     * La BASE del link al SPA: una url_segura() de hasta 255 caracteres, sin query y sin barra
+     * final (a la base se le pega la ruta con su propia query), o null.
+     *
+     * @param  mixed  $url
+     * @return string|null
+     */
+    public static function url_valida($url)
+    {
+        $segura = self::url_segura($url);
+
+        if (is_null($segura) || mb_strlen($segura) > 255) {
 
             return null;
         }
 
-        return rtrim($url, '/');
+        $partes = parse_url($segura);
+
+        if (isset($partes['query'])) {
+
+            return null;
+        }
+
+        return rtrim($segura, '/');
+    }
+
+    /**
+     * true si el host es de desarrollo local (el único caso donde se acepta http).
+     *
+     * @param  string  $host
+     * @return bool
+     */
+    protected static function es_host_local($host)
+    {
+        $host = strtolower(trim((string) $host, '[]'));
+
+        if (in_array($host, ['localhost', '127.0.0.1', '::1'], true)) {
+
+            return true;
+        }
+
+        foreach (['.test', '.local', '.localhost'] as $sufijo) {
+
+            if (strlen($host) > strlen($sufijo) && substr($host, -strlen($sufijo)) === $sufijo) {
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
