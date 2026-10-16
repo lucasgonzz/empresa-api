@@ -212,7 +212,7 @@ SUMMARY;
      *
      * @var string
      */
-    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(PEDIDO|CONSULTA)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]?|\s*\])[*_`]*/iu';
+    private const FOLLOW_UP_MARKER_PATTERN = '/\s*[*_`]*\[\s*(PEDIDO|CONSULTA)\b(?:\s*:((?:[^\[\]\n]|\[[^\]\n]*\])*)\]*|\s*\]+)[*_`]*/iu';
 
     /**
      * Una marca INVENTADA por el modelo al final del texto: una línea que es solo `[MAYÚSCULAS]` o
@@ -237,17 +237,33 @@ SUMMARY;
     private const TRUNCATED_MARKER_PATTERN = '/\s*\[[^\[\]\n]{0,200}$/u';
 
     /**
-     * La marca tiene que estar RESPALDADA POR EL TEXTO: la respuesta tiene que comprometer algo (averiguar,
-     * confirmar, avisar, dejar anotado o armado un pedido, pasarle el tema al dueño). Medida contra DeepSeek
-     * (16/10/2026, 380 respuestas con marca): el modelo a veces repite la marca en un «¡De nada! Cualquier cosa,
-     * avisame» porque en la conversación quedó una promesa vieja —incluso cuando una persona ya la había
-     * atendido—, y eso volvía a prender el chat después de «Ya lo atendí». Con esta guarda se descartan 12 de
-     * esas 13 marcas de más y se conservan 188 de las 189 que correspondían. «avisame» (un pedido al cliente) no
-     * cuenta; «te aviso» (un compromiso del agente) sí.
+     * Guarda de coherencia de la marca: se DESCARTA solo cuando la respuesta es pura cortesía («¡De nada! Cualquier
+     * cosa, avisame.») y no compromete nada (`FOLLOW_UP_COMMITMENT_PATTERN`). Medida contra DeepSeek (16/10/2026,
+     * 380 respuestas con marca): el modelo a veces repite la marca en un «¡De nada!» porque en la conversación quedó
+     * una promesa vieja —incluso cuando una persona ya la había atendido—, y eso volvía a prender el chat después de
+     * «Ya lo atendí». Con esta guarda se descartan 18 de las 21 marcas de más y se conservan las 268 que
+     * correspondían.
+     *
+     * 🔴 LA GUARDA ERRA HACIA EL LADO SEGURO, Y NO ES UN AJUSTE ESTÉTICO. Una primera versión exigía que el texto
+     * trajera ciertas palabras («consult», «pedido», «confirm»…): descartaba marcas legítimas con otras frases
+     * («te reservo los 2 taladros», «dejé tu compra lista», «lo hablo con mi jefe y te digo») —perder un pedido sin
+     * ningún aviso es justo lo que esta funcionalidad existe para evitar— y dejaba pasar las viejas con palabras
+     * sueltas («cualquier consulta, avisame»). Una marca de más cuesta un clic en «Ya lo atendí»; una de menos, un
+     * pedido perdido: por eso solo se descarta lo que es CLARAMENTE cortesía.
      *
      * @var string
      */
-    private const FOLLOW_UP_COMMITMENT_PATTERN = '/(consult|averigu|verific|chequ|confirm|te avis|te contact|te escrib|te respond|te llam|te cuent|anot|dej[oa]m?os? (el|tu|asent|anot)|arm[oa]m?o?s? (el|tu)|pedido|se lo (paso|comento|traslad)|le (paso|comento|aviso|traslad)|lo (paso|derivo|traslad|comunic|hago saber)|derivo|dueñ|encargad|comunic|asent)/iu';
+    private const FOLLOW_UP_COURTESY_PATTERN = '/(?<!\p{L})(?:de nada|gracias|con gusto|un placer|hasta luego|hasta pronto|chau|saludos|que tengas|cualquier cosa|cualquier otra cosa|quedo a disposici|a tu disposici|estoy por ac|ac[aá] estoy|buen d[ií]a|buenas tardes|buenas noches)(?!\p{L})/iu';
+
+    /**
+     * Lo que cuenta como un COMPROMISO del agente en el texto (verbos en primera persona o futuro, «te/le/se lo
+     * <verbo>», «voy a», o el pase a una persona del negocio). Los sustantivos sueltos NO cuentan («consulta»,
+     * «pedido»): «Cualquier consulta, avisame» y «Gracias por tu pedido» son cortesía. «avisame» (un pedido al
+     * cliente) tampoco: «te aviso» (un compromiso del agente) sí.
+     *
+     * @var string
+     */
+    private const FOLLOW_UP_COMMITMENT_PATTERN = '/(?<!\p{L})(?:consult|averigu|verific|chequ|revis|confirm|avis|contact|escrib|respond|llam|mand|deriv|reserv|separ|dej|arm|anot|asent|habl|pas|trasmit|comunic|cuent)(?:o|ar|aré|aremos|amos|é|aron|ado|ada|ados|adas|ó)(?!\p{L})|(?<!\p{L})(?:te|le|les|se)\s+(?:lo\s+|la\s+|los\s+|las\s+)?(?:consult|averigu|verific|chequ|revis|confirm|avis|contact|escrib|respond|llam|mand|deriv|reserv|separ|dej|arm|anot|asent|habl|pas|trasmit|comunic|cuent)|(?<!\p{L})(?:veo|ver[eé]|hago saber|voy a)(?!\p{L})|due[ñn]o|encargad|asesor|jefe|responsable|equipo|alguien|una persona/iu';
 
     /**
      * Red de seguridad de la marca de CONSULTA: la frase que las reglas fijas le mandan decir al modelo cuando no
@@ -503,8 +519,9 @@ RULE;
      *  2. La cola se limpia de a una, hasta cuatro vueltas y en cualquier orden: `[FOTO:…]`, una marca inventada
      *     por el modelo (`[CUOTA:…]`) o un corchete cortado a mitad de camino (`[C`). Una marca inventada
      *     pegada después de la foto no se lleva la foto.
-     *  3. La marca tiene que estar respaldada por el texto (`FOLLOW_UP_COMMITMENT_PATTERN`): si la respuesta
-     *     no promete nada, la marca se descarta (igual se saca del texto).
+     *  3. Guarda de coherencia: si la respuesta es pura cortesía y no compromete nada
+     *     (`FOLLOW_UP_COURTESY_PATTERN` sin `FOLLOW_UP_COMMITMENT_PATTERN`), la marca se descarta (igual se saca
+     *     del texto). Erra hacia el lado seguro: ante la duda, la marca se conserva.
      *  4. Red de seguridad: si el texto promete «lo consulto y te confirmo» y el modelo no marcó, se marca
      *     'consulta' (`CONSULTA_PROMISE_PATTERN`).
      *
@@ -520,11 +537,16 @@ RULE;
         $follow_up      = '';
         $follow_up_note = '';
 
+        // true si se sacó alguna marca de seguimiento: solo entonces se recorta el cuerpo (una marca que iba
+        // primera deja un espacio o un salto de línea al principio).
+        $saco_marca = false;
+
         // `preg_replace_callback` devuelve null si el motor de expresiones falla (texto no UTF-8, por
         // ejemplo): en ese caso se sigue con el texto tal cual, sin marcas, que es como andaba antes.
         $cuerpo = preg_replace_callback(
             self::FOLLOW_UP_MARKER_PATTERN,
-            function ($matches) use (&$follow_up, &$follow_up_note) {
+            function ($matches) use (&$follow_up, &$follow_up_note, &$saco_marca) {
+                $saco_marca = true;
                 $tipo = mb_strtolower($matches[1], 'UTF-8');
                 $nota = $this->clean_follow_up_note(isset($matches[2]) ? $matches[2] : '');
 
@@ -541,6 +563,8 @@ RULE;
 
         if (is_null($cuerpo)) {
             $cuerpo = $texto;
+        } elseif ($saco_marca) {
+            $cuerpo = trim($cuerpo);
         }
 
         // La cola, de a una y en cualquier orden. `split_photo_marker()` devuelve el texto tal cual (byte por
@@ -549,7 +573,9 @@ RULE;
         for ($vuelta = 0; $vuelta < 4; $vuelta++) {
             $foto = $this->split_photo_marker($cuerpo);
 
-            if ($foto['bar_code'] !== '') {
+            // Se mira si el cuerpo CAMBIÓ y no si hay código: un `[FOTO:   ]` con el código en blanco es una
+            // marca igual y tiene que salir del texto (con `bar_code` vacío, sin foto que adjuntar).
+            if ($foto['body'] !== $cuerpo) {
                 // Si hubiera más de una foto, se queda con la última (la más cercana al final).
                 if ($bar_code === '') {
                     $bar_code = $foto['bar_code'];
@@ -565,9 +591,9 @@ RULE;
             $cuerpo = $limpio;
         }
 
-        // La marca tiene que estar respaldada por el texto: sin un compromiso en la respuesta, se descarta.
-        if ($follow_up !== '' && ! preg_match(self::FOLLOW_UP_COMMITMENT_PATTERN, $cuerpo)) {
-            Log::channel('daily')->info('WhatsappBotAiService: se descartó una marca de seguimiento que el texto no respalda.', [
+        // Guarda de coherencia: una respuesta que es pura cortesía y no compromete nada no puede dejar una marca.
+        if ($follow_up !== '' && preg_match(self::FOLLOW_UP_COURTESY_PATTERN, $cuerpo) && ! preg_match(self::FOLLOW_UP_COMMITMENT_PATTERN, $cuerpo)) {
+            Log::channel('daily')->info('WhatsappBotAiService: se descartó una marca de seguimiento en una respuesta que es solo cortesía.', [
                 'follow_up' => $follow_up,
             ]);
             $follow_up      = '';
