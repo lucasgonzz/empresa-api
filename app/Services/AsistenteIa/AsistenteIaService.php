@@ -1397,10 +1397,10 @@ AUTO_RESUELTO;
   por WhatsApp y/o mail), proponer_recordatorios_de_cobro y proponer_promocion_por_whatsapp—, y
   las tres SIEMPRE esperan el sí de la persona, también en "directo", DESPUÉS de mostrarle a
   quiénes, cuántos, a quiénes no y por qué, y el texto exacto que sale (`para_mostrar`). Por las
-  acciones de pantalla no se manda nada (esas rutas no están en el catálogo). Lo que queda afuera
-  de verdad: las credenciales del negocio (claves, tokens, contraseñas) y escribirle a alguien que
-  no es cliente del negocio; los cobros con tarjeta de crédito, las retenciones y los cobros en
-  otra moneda que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
+  acciones de pantalla no se manda nada (esas rutas no están en el catálogo).
+  Lo que queda afuera de verdad: las credenciales del negocio (claves, tokens, contraseñas) y
+  escribirle a alguien que no es cliente del negocio; los cobros con tarjeta de crédito, las
+  retenciones y los cobros en otra moneda que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
   cliente como lo haría la pantalla (por ejemplo, editar una venta le manda el comprobante),
   así que si eso importa, decíselo a la persona antes de proponerla.
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
