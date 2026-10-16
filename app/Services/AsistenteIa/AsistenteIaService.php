@@ -3378,13 +3378,17 @@ CONFIRMACION;
              */
             [
                 'name' => 'consultar_ventas_sin_cobrar',
-                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
+                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. Cada cliente trae deuda_total_en_pesos (TODO lo que debe), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda total. 🔴 "Los que me deben más de X hace más de N días" = deuda TOTAL de X o más Y alguna deuda de más de N días: mandá dias = N y monto_minimo = X, y contestá con deuda_total_en_pesos de cada cliente. NUNCA compares X contra lo atrasado solo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
+                        ],
+                        'monto_minimo' => [
+                            'type' => 'number',
+                            'description' => 'Deuda TOTAL mínima del cliente, en pesos, para "los que me deben más de X". Se compara contra todo lo que debe el cliente (deuda_total_en_pesos), no contra lo atrasado. Va junto con dias cuando la pregunta dice además "hace más de N días".',
                         ],
                     ],
                     'required' => [],
@@ -3404,7 +3408,11 @@ CONFIRMACION;
                         ? ContextoDeCargaIa::de_la_conversacion($conversation)->persona
                         : null;
 
-                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona);
+                    $monto_minimo = (isset($input['monto_minimo']) && is_numeric($input['monto_minimo']))
+                        ? (float) $input['monto_minimo']
+                        : null;
+
+                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona, $monto_minimo);
                 },
             ],
             /*
