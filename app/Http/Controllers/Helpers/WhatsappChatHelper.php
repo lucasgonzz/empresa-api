@@ -974,6 +974,32 @@ class WhatsappChatHelper
     }
 
     /**
+     * Guarda un mensaje `out` de una PROMOCIÓN que el asistente le mandó a un cliente con el sí del
+     * dueño (misión asistente-envios-a-clientes, 16/10/2026) y emite el broadcast.
+     *
+     * 🔴 EXISTE POR EL `source`, IGUAL QUE store_outbound_recordatorio_message(): los dos topes de la
+     * promoción —250 por negocio en 24 horas y una por cliente cada 7 días— se cuentan con las filas
+     * `source = 'promocion'`, así que la fila TIENE que quedar marcada en los dos caminos (texto libre
+     * y plantilla). Con `'plantilla'` o `'manual'` el tope no vería nada y el dueño podría mandarle la
+     * misma promo a todos sus clientes cada vez que lo pide. `'promocion'` son 9 caracteres: entra en
+     * el `string(20)` de la columna.
+     *
+     * Wrapper nuevo y no un parámetro más, por el mismo motivo que el del recordatorio: no cambia
+     * ninguna firma existente.
+     *
+     * @param  WhatsappChat  $chat  Chat del cliente.
+     * @param  string  $body  El mensaje tal cual salió (texto libre, o la plantilla ya renderizada).
+     * @param  string|null  $wa_message_id  Id que devolvió Kapso. Nunca null acá: el que llama corta antes si no hubo envío.
+     * @param  int|null  $sent_by_user_id  La persona que lo pidió al asistente.
+     * @param  string|null  $template_meta_name  Solo en el camino de plantilla (`cc_cli_promocion`).
+     * @return WhatsappChatMessage
+     */
+    public static function store_outbound_promocion_message(WhatsappChat $chat, $body, $wa_message_id, $sent_by_user_id, $template_meta_name = null)
+    {
+        return self::store_outbound_message($chat, $body, $wa_message_id, 'promocion', $sent_by_user_id, $template_meta_name);
+    }
+
+    /**
      * Guarda un mensaje `out` con una foto o un audio que mandó el operador desde el composer
      * (endpoint `POST whatsapp-chats/{id}/media`, misión whatsapp-sidebar-multimedia) y emite
      * el broadcast.

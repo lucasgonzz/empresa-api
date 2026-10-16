@@ -97,6 +97,19 @@ class EjecutorAccionesIaHelper {
          */
         AiMessageAction::TIPO_ACCION_PANTALLA,
         AiMessageAction::TIPO_BORRADO_PANTALLA,
+        /*
+         * Los envíos a clientes (misión asistente-envios-a-clientes, 16/10/2026), por la razón más
+         * pura de todas: lo que hacen SALE DEL SISTEMA. El comprobante llama a Kapso en el acto y
+         * encola un mail; los recordatorios y la promoción despachan un job por cliente (que con
+         * `QUEUE_CONNECTION=sync` corre inline y llama a Kapso adentro del dispatch). Nada de eso se
+         * revierte con un rollback: con la transacción del ejecutor abierta, un error después del
+         * primer envío dejaría la tarjeta "sin confirmar" con el mensaje ya en el teléfono del cliente,
+         * y un segundo sí lo mandaría dos veces. Por eso cada helper decide qué lanza (solo si no salió
+         * nada) y qué devuelve como "salió por acá, por allá no".
+         */
+        AiMessageAction::TIPO_ENVIO_COMPROBANTE,
+        AiMessageAction::TIPO_RECORDATORIOS_COBRO,
+        AiMessageAction::TIPO_PROMOCION_WHATSAPP,
     ];
 
     /**
@@ -674,6 +687,20 @@ class EjecutorAccionesIaHelper {
             case AiMessageAction::TIPO_ACCION_PANTALLA:
             case AiMessageAction::TIPO_BORRADO_PANTALLA:
                 return EjecutorAccionDePantallaIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Los envíos a clientes (misión asistente-envios-a-clientes, 16/10/2026). Nunca llegan acá
+             * desde la auto-confirmación: sus tipos están en NUNCA_AUTO_CONFIRMABLES. Los tres están en
+             * TIPOS_DE_DOS_ETAPAS (ver ahí por qué).
+             */
+            case AiMessageAction::TIPO_ENVIO_COMPROBANTE:
+                return PropuestaEnvioComprobanteIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_RECORDATORIOS_COBRO:
+                return PropuestaRecordatoriosCobroIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_PROMOCION_WHATSAPP:
+                return PropuestaPromocionWhatsappIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

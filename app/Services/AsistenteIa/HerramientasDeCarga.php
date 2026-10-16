@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaEnvioComprobanteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
@@ -26,6 +27,8 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPermisoEmpleadoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaPromocionWhatsappIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
@@ -217,6 +220,14 @@ class HerramientasDeCarga
      * tabla como para decir si el modelo usa SoftDeletes o qué queda colgado. Lo que no se puede
      * deshacer lo confirma siempre la persona.
      *
+     * 🔴 LOS TRES ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, 16/10/2026):
+     * `envio_de_comprobante`, `recordatorios_de_cobro` y `promocion_por_whatsapp`. Le escriben a
+     * terceros —los clientes del negocio— por el WhatsApp del negocio o por mail, y un mensaje que
+     * salió no se desmanda: no es reversible ni con otra carga ni "si alguien se entera". La
+     * promoción, además, puede llegarle a cientos de personas y bajarle la calificación al número de
+     * WhatsApp Business. Decisión de Lucas: siempre con confirmación explícita, después de que el dueño
+     * vio a quiénes, cuántos y el texto exacto, NUNCA en modo directo.
+     *
      * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
      * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
      * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda. Las
@@ -231,6 +242,9 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_UNIFICAR_BANCOS,
         AiMessageAction::TIPO_PERMISO_EMPLEADO,
         AiMessageAction::TIPO_BORRADO_PANTALLA,
+        AiMessageAction::TIPO_ENVIO_COMPROBANTE,
+        AiMessageAction::TIPO_RECORDATORIOS_COBRO,
+        AiMessageAction::TIPO_PROMOCION_WHATSAPP,
     ];
 
     /**
@@ -1369,6 +1383,106 @@ class HerramientasDeCarga
                     'required'   => ['ruta', 'descripcion'],
                 ],
             ],
+            /*
+             * Misión asistente-envios-a-clientes (16/10/2026), al FINAL de lo que había por la regla
+             * del prefijo del caché: los ENVÍOS A CLIENTES del negocio. Las tres SIEMPRE esperan el sí
+             * de la persona, en los tres modos (NUNCA_AUTO_CONFIRMABLES), y sus `case` no pasan por la
+             * auto-confirmación. Viven en los dos canales: en el sistema dejan tarjeta con el botón
+             * Mandar; por WhatsApp, el sí del dueño.
+             */
+            [
+                'name'         => 'proponer_envio_de_comprobante',
+                'description'  => 'Prepara el ENVÍO de un comprobante (una venta, un presupuesto o un recibo de pago) al CLIENTE de ese comprobante, por el WhatsApp del negocio y/o por mail. Usala cuando te piden "mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail": no le des el link a la persona en su lugar. El comprobante va por el número que ve la persona (el N° de la venta, del presupuesto o del pago). Por WhatsApp sale como mensaje con el PDF si el cliente escribió en las últimas 24 horas, y si no como plantilla con el PDF; por mail, con el detalle y el link al PDF. Si no dicen por dónde, va por todos los que se pueda y la respuesta dice por qué no por los otros. 🔴 SIEMPRE espera el sí de la persona, en cualquier modo y aunque te pidan que lo hagas sin preguntar: un mensaje que salió no se desmanda. Mostrale lo que dice `para_mostrar` (a quién, a qué número o mail y el texto exacto) y preguntá si lo mandás. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tipo'        => [
+                            'type' => 'string',
+                            'enum' => ['venta', 'presupuesto', 'recibo'],
+                            'description' => 'Qué comprobante. "recibo" es el comprobante de un PAGO que hizo el cliente a su cuenta corriente.',
+                        ],
+                        'numero'      => [
+                            'type'        => 'integer',
+                            'description' => 'El número del comprobante como lo ve la persona (N° de venta, de presupuesto o de pago).',
+                        ],
+                        'id'          => [
+                            'type'        => 'integer',
+                            'description' => 'Solo si otra herramienta te devolvió el id y no tenés el número.',
+                        ],
+                        'canales'     => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'string', 'enum' => ['whatsapp', 'mail']],
+                            'description' => 'Por dónde, si la persona lo dijo. Si no lo dijo, no lo mandes: va por todos los que se pueda.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['tipo'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_recordatorios_de_cobro',
+                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí de la persona, en cualquier modo: mostrale lo que dice `para_mostrar` (a quiénes, cuántos, a quiénes no y por qué, y el texto exacto del primero) y preguntá si lo mandás. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'monto_minimo' => [
+                            'type'        => 'number',
+                            'description' => 'Deuda TOTAL mínima del cliente, en pesos ("más de 50 mil" = 50000). Sin esto, cualquier deuda.',
+                        ],
+                        'dias'         => [
+                            'type'        => 'integer',
+                            'description' => 'Que tenga alguna venta impaga de esta cantidad de días o más ("hace más de un mes" = 30). Sin esto, cualquier antigüedad.',
+                        ],
+                        'client_ids'   => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Solo si la persona nombró clientes puntuales: sus ids (de consultar_clientes o consultar_ventas_sin_cobrar).',
+                        ],
+                        'reemplaza_a'  => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_promocion_por_whatsapp',
+                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda, o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` es lo que sale, redactado con la persona: qué se ofrece y a qué precio, sin saludo (el saludo con el nombre lo pongo yo). Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. 🔴 SIEMPRE espera el sí de la persona, en cualquier modo: mostrale lo que dice `para_mostrar` (a quiénes, cuántos, a quiénes no y por qué, y el texto exacto) y preguntá si la mandás. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'texto'       => [
+                            'type'        => 'string',
+                            'description' => 'El texto de la promo, tal cual va a salir (sin saludo ni link): "Llevá el combo Asado Completo a $25.000".',
+                        ],
+                        'article_id'  => [
+                            'type'        => 'integer',
+                            'description' => 'Si la promo es de un artículo y tenés su id.',
+                        ],
+                        'articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Si la promo es de un artículo y no tenés su id: su nombre o código.',
+                        ],
+                        'combo_id'    => [
+                            'type'        => 'integer',
+                            'description' => 'Si la promo es de un combo y tenés su id.',
+                        ],
+                        'combo'       => [
+                            'type'        => 'string',
+                            'description' => 'Si la promo es de un combo: su nombre, como quedó creado.',
+                        ],
+                        'vigencia'    => [
+                            'type'        => 'string',
+                            'description' => 'Hasta cuándo vale, si la persona lo dijo, para completar "Válida hasta el ...": "domingo 20/10", "fin de mes". Si no lo dijo, no lo mandes.',
+                        ],
+                        'client_ids'  => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Solo si la persona pidió mandarla a clientes puntuales: sus ids. Sin esto, a todos los clientes con teléfono.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['texto'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1933,6 +2047,24 @@ class HerramientasDeCarga
                     EntradaDeCargaIa::texto($input, 'descripcion'),
                     EntradaDeCargaIa::valor($input, 'reemplaza_a')
                 ));
+
+            /*
+             * Misión asistente-envios-a-clientes (16/10/2026): los envíos a clientes.
+             * 🔴 SIN pasar por la puerta de la auto-confirmación, a propósito: los tres SIEMPRE esperan
+             * el sí de la persona, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES): un mensaje que
+             * salió no se desmanda. (Estos comentarios no nombran la función de la puerta: los tests
+             * 36, 51 y 55 leen cada `case` como texto y buscan ese nombre.)
+             */
+            case 'proponer_envio_de_comprobante':
+                return self::resultado(PropuestaEnvioComprobanteIaHelper::proponer($contexto, $assistant_message, $input));
+
+            // 🔴 SIN la auto-confirmación, a propósito (ver NUNCA_AUTO_CONFIRMABLES).
+            case 'proponer_recordatorios_de_cobro':
+                return self::resultado(PropuestaRecordatoriosCobroIaHelper::proponer($contexto, $assistant_message, $input));
+
+            // 🔴 SIN la auto-confirmación, a propósito (ver NUNCA_AUTO_CONFIRMABLES).
+            case 'proponer_promocion_por_whatsapp':
+                return self::resultado(PropuestaPromocionWhatsappIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));

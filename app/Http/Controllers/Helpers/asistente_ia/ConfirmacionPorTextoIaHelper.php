@@ -475,6 +475,14 @@ class ConfirmacionPorTextoIaHelper
         'cambios_aplicados',
         'ejemplos_de_precio',
         'aviso',
+        /*
+         * Los envíos a clientes (misión asistente-envios-a-clientes, 16/10/2026): qué salió por cada
+         * canal, cuántos quedaron encolados y a quiénes NO les llegó y por qué. Sin esto el modelo
+         * solo tendría el `texto` y no podría contarle al dueño que por mail no salió.
+         */
+        'enviados',
+        'encolados',
+        'no_salieron',
     ];
 
     /**

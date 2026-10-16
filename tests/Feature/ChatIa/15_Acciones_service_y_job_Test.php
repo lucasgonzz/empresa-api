@@ -731,10 +731,12 @@ class Acciones_service_y_job_Test extends TestCase
         // proponer_movimiento_de_stock, proponer_stock_en_deposito, proponer_presupuesto,
         // proponer_permiso_de_empleado) + las 4 de asistente-mcp (22/9/2026: las acciones de
         // pantalla, que_acciones_de_pantalla_hay, consultar_por_pantalla,
-        // proponer_accion_de_pantalla, proponer_borrado_por_pantalla). El número se toca SOLO
+        // proponer_accion_de_pantalla, proponer_borrado_por_pantalla) + las 3 de
+        // asistente-envios-a-clientes (16/10/2026: proponer_envio_de_comprobante,
+        // proponer_recordatorios_de_cobro, proponer_promocion_por_whatsapp). El número se toca SOLO
         // cuando se agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya
         // pedido, es que algo se declaró (o se borró) de más.
-        $this->assertCount(36, HerramientasDeCarga::definiciones());
+        $this->assertCount(39, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -789,7 +791,7 @@ class Acciones_service_y_job_Test extends TestCase
             array_slice(HerramientasDeCarga::nombres(), 28, 4)
         );
 
-        // ...y las cuatro acciones de pantalla de asistente-mcp al final de todo.
+        // ...las cuatro acciones de pantalla de asistente-mcp después de aquéllas...
         $this->assertSame(
             [
                 'que_acciones_de_pantalla_hay',
@@ -797,7 +799,17 @@ class Acciones_service_y_job_Test extends TestCase
                 'proponer_accion_de_pantalla',
                 'proponer_borrado_por_pantalla',
             ],
-            array_slice(HerramientasDeCarga::nombres(), 32)
+            array_slice(HerramientasDeCarga::nombres(), 32, 4)
+        );
+
+        // ...y los tres envíos a clientes de asistente-envios-a-clientes (16/10/2026) al final de todo.
+        $this->assertSame(
+            [
+                'proponer_envio_de_comprobante',
+                'proponer_recordatorios_de_cobro',
+                'proponer_promocion_por_whatsapp',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 36)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

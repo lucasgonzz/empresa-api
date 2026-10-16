@@ -59,6 +59,14 @@ class McpHerramientasHelper
      */
     const SALEN_A_INTERNET = [
         'buscar_producto_por_codigo_de_barras',
+        /*
+         * Misión asistente-envios-a-clientes (16/10/2026): los tres envíos les escriben a los
+         * clientes del negocio por WhatsApp o por mail. No se quedan adentro del negocio: le llegan a
+         * terceros, que es justo lo que la pista avisa.
+         */
+        'proponer_envio_de_comprobante',
+        'proponer_recordatorios_de_cobro',
+        'proponer_promocion_por_whatsapp',
     ];
 
     /**
