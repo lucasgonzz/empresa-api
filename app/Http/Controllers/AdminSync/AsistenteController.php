@@ -63,8 +63,15 @@ class AsistenteController extends Controller
      */
     const AUDIO_SIN_TRANSCRIPCION = '[Audio sin transcripción]';
 
-    /** Lo que se le contesta al dueño cuando el audio llegó sin transcribir. */
-    const RESPUESTA_AUDIO_SIN_TRANSCRIPCION = 'No me llegó lo que dijiste en el audio. ¿Me lo escribís?';
+    /**
+     * Lo que se le contesta al dueño cuando el audio llegó sin transcribir.
+     *
+     * Misión asistente-envios-a-clientes (16/10/2026): suma "o me mandás una nota de voz". El caso
+     * real (S19) fue un audio reenviado COMO ARCHIVO, que no se transcribe; la nota de voz grabada en
+     * el momento sí. Desde esa misión el admin manda también ese archivo de audio como `tipo=audio`
+     * sin texto, así que esta respuesta tiene que ofrecerle al dueño las dos salidas.
+     */
+    const RESPUESTA_AUDIO_SIN_TRANSCRIPCION = 'No me llegó lo que dijiste en el audio. ¿Me lo escribís o me mandás una nota de voz?';
 
     /**
      * Cuántos días hacia atrás, contando hoy, se buscan informes sin avisar.
