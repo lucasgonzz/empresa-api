@@ -424,8 +424,24 @@ class ImagenPorDefectoDeDesarrolloTest extends EmpresaTestCase
             'con espacios alrededor'                => ['  http://empresa.local:8000/foto.jpg  ', true],
             'https real de un cliente'              => [self::URL_REAL, false],
             'el logo https de las demos'            => ['https://api.comerciocity.com/public/storage/comerciocity-logo-cuadrado.webp', false],
+            'sin esquema, con puerto'               => ['empresa.local:8000/storage/foto.jpg', true],
+            'localhost sin esquema, con puerto'     => ['localhost:8000/foto.jpg', true],
+            'sin esquema ni puerto'                 => ['localhost/foto.jpg', true],
+            'esquema relativo'                      => ['//localhost/foto.jpg', true],
+            'subdominio de empresa.local'           => ['http://tienda.empresa.local/foto.jpg', true],
+            'con usuario y puerto'                  => ['http://dev@localhost:8000/foto.jpg', true],
             'https cuyo path no tiene la marca'     => ['https://cdn.ejemplo.com/empresa/local/foto.jpg', false],
             'https con guion en vez de punto'       => ['https://cdn.ejemplo.com/empresa-local/foto.jpg', false],
+            // 🔴 La marca dentro del dominio o del archivo de una URL real NO es un host de
+            // desarrollo. Con la busqueda por subcadena estas se limpiaban (las marcaron dos
+            // revisores independientes el 16/10/2026); comparando el host no.
+            'marca dentro del dominio (localhostel)'  => ['https://www.localhostel.com.ar/img/default.jpg', false],
+            'marca dentro del dominio (localidad)'    => ['https://img.empresa.localidad.com.ar/foto.jpg', false],
+            'marca en el nombre del archivo'          => ['https://api.cliente.com.ar/public/storage/logo-localhost.png', false],
+            'empresa.local como nombre de archivo'    => ['https://api.cliente.com.ar/public/storage/empresa.local.logo.png', false],
+            'la marca es el INICIO de otro dominio'   => ['http://localhost.ejemplo.com/foto.jpg', false],
+            'la marca en la query de una URL real'    => ['https://cdn.ejemplo.com/img?origen=http://localhost/x.jpg', false],
+            'otro host de desarrollo fuera de pedido' => ['http://miregistrodeventas.local:8001/storage/foto.webp', false],
             'null'                                  => [null, false],
             'vacío'                                 => ['', false],
             'solo espacios'                         => ['   ', false],
@@ -535,6 +551,8 @@ class ImagenPorDefectoDeDesarrolloTest extends EmpresaTestCase
         $intactas = [
             'https real'                => self::URL_REAL,
             'https con path parecido'   => 'https://cdn.ejemplo.com/empresa/local/foto.jpg',
+            'marca dentro del dominio'  => 'https://www.localhostel.com.ar/img/default.jpg',
+            'marca en el archivo'       => 'https://api.cliente.com.ar/public/storage/logo-localhost.png',
             'texto vacío'               => '',
             'null'                      => null,
         ];
@@ -575,10 +593,71 @@ class ImagenPorDefectoDeDesarrolloTest extends EmpresaTestCase
 
         list($codigo, $salida) = $this->correr(['--aplicar' => true, '--user_id' => $empleado]);
 
-        $this->assertSame(0, $codigo);
+        // Acotar a un empleado no revisa a nadie: es un error (código 1), no un "todo limpio".
+        $this->assertSame(1, $codigo);
         $this->assertSame(self::URL_DEL_CASO, $this->url_de($configuracion), '--user_id con el id de un empleado lo tocó.');
-        $this->assertSame(0, $this->contador($salida, 'duenos_revisados'));
-        $this->assertSame(0, $this->contador($salida, 'limpiadas'));
+        $this->assertStringContainsString('no es el de un dueño', $salida);
+        $this->assertStringNotContainsString('Nada para hacer', $salida);
+        $this->assertStringNotContainsString('--- Resumen ---', $salida);
+    }
+
+    /**
+     * Un `--user_id` numérico que no es el de ningún usuario (por ejemplo, el id del CLIENTE en el
+     * admin, que no es el del comercio) corta con código 1 y NO dice "Nada para hacer": ese mensaje
+     * hace creer que el comercio está limpio cuando no se revisó a nadie.
+     *
+     * @return void
+     */
+    public function test_un_user_id_que_no_es_un_dueno_corta_en_vez_de_decir_nada_para_hacer()
+    {
+        $inexistente = (int) DB::table('users')->max('id') + 1000;
+
+        list($codigo, $salida) = $this->correr(['--aplicar' => true, '--user_id' => $inexistente]);
+
+        $this->assertSame(1, $codigo);
+        $this->assertStringContainsString('no es el de un dueño', $salida);
+        $this->assertStringNotContainsString('Nada para hacer', $salida);
+    }
+
+    /**
+     * Una imagen `http://` que NO es de desarrollo no se toca, pero el comando la lista como
+     * `[http_sin_limpiar]` y la cuenta: dentro de una tienda https es el mismo contenido mixto, y
+     * decidir qué hacer con ella es del dueño. La de desarrollo de al lado sí se limpia.
+     *
+     * @return void
+     */
+    public function test_una_http_que_no_es_de_desarrollo_se_lista_pero_no_se_toca()
+    {
+        $http_ajena = 'http://cdn.otro-dominio.com.ar/storage/logo.jpg';
+
+        $dueno_http = $this->crear_dueno();
+        $dueno_dev = $this->crear_dueno();
+        $dueno_https = $this->crear_dueno();
+        $configuracion_http = $this->crear_configuracion($dueno_http, $http_ajena);
+        $configuracion_dev = $this->crear_configuracion($dueno_dev, self::URL_DEL_CASO);
+        $configuracion_https = $this->crear_configuracion($dueno_https, self::URL_REAL);
+
+        // Cuántas http:// ajenas hay en la base de testing (las del test incluidas), contadas con
+        // SQL y no con el predicado del comando: es el oráculo independiente del contador.
+        $http_esperadas = DB::table('online_configurations')
+            ->whereIn('user_id', DB::table('users')->whereNull('owner_id')->pluck('id')->all())
+            ->where('default_article_image_url', 'like', 'http://%')
+            ->where('default_article_image_url', 'not like', '%empresa.local%')
+            ->where('default_article_image_url', 'not like', '%localhost%')
+            ->count();
+
+        list($codigo, $salida) = $this->correr(['--aplicar' => true]);
+
+        $this->assertSame(0, $codigo);
+        $this->assertSame($http_ajena, $this->url_de($configuracion_http), 'Se tocó una http:// que no es de desarrollo.');
+        $this->assertNull($this->url_de($configuracion_dev), 'La de desarrollo no se limpió.');
+        $this->assertSame(self::URL_REAL, $this->url_de($configuracion_https));
+
+        $this->assertStringContainsString('[http_sin_limpiar] user_id=' . $dueno_http . ' | online_configuration_id=' . $configuracion_http . ' | valor=' . $http_ajena, $salida);
+        $this->assertStringNotContainsString('[http_sin_limpiar] user_id=' . $dueno_https, $salida, 'Una https figura como http_sin_limpiar.');
+        $this->assertStringNotContainsString('[http_sin_limpiar] user_id=' . $dueno_dev, $salida, 'Una de desarrollo figura como http_sin_limpiar.');
+        $this->assertSame($http_esperadas, $this->contador($salida, 'con_http_sin_limpiar'));
+        $this->assertGreaterThanOrEqual(1, $this->contador($salida, 'con_http_sin_limpiar'));
     }
 
     /**

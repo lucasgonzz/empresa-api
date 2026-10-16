@@ -588,7 +588,7 @@ class UserSetupHelper
             'online_template_id'        => self::online_template_id_comerciocity(),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
-            // 🔴 NO VOLVER A PONER UNA URL FIJA ACA. Hasta el 15/10/2026 esta linea escribia
+            // 🔴 NO VOLVER A PONER UNA URL FIJA ACA. Hasta el 16/10/2026 esta linea escribia
             // `http://empresa.local:8000/storage/169705209718205.jpg`, la imagen de la maquina de
             // desarrollo de Lucas, en CADA comercio nuevo. `tienda-spa` usa este valor como foto de
             // todo articulo sin imagen, asi que la tienda de Masquito (cliente 19) mostraba iconos
