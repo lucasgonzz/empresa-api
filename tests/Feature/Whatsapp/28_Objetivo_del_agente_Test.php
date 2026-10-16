@@ -368,10 +368,19 @@ class Objetivo_del_agente_Test extends TestCase
 
         $sin_objetivo = $this->system_generado();
         $this->assertStringNotContainsString(self::MARCA_CAPA, $sin_objetivo);
+        $this->assertStringNotContainsString('Cómo llevarlo:', $sin_objetivo);
+        $this->assertStringNotContainsString('Para cumplir el objetivo', $sin_objetivo);
         $this->assertStringNotContainsString("\n\n\n\n", $sin_objetivo, 'Sin capa no puede quedar un bloque vacío.');
         // La capa va al final: si alguien sacara el `if` que la guarda, el bloque vacío dejaría un "\n\n"
         // colgando al final del prompt (y no en el medio).
         $this->assertSame(rtrim($sin_objetivo), $sin_objetivo, 'Sin capa no puede quedar un separador colgando al final.');
+
+        // Con objetivo, todo lo anterior queda intacto: la capa se SUMA al final (mismo chequeo que el test 21).
+        $this->poner_objetivo('order_by_whatsapp');
+        $con_objetivo = $this->system_generado();
+        $this->assertSame(0, strpos($con_objetivo, $sin_objetivo . "
+
+" . self::MARCA_CAPA), 'La capa va al final, sin tocar lo de antes.');
 
         $this->poner_objetivo('vender_mas_que_nunca');
         $this->assertSame($sin_objetivo, $this->system_generado(), 'Un valor desconocido se comporta como sin objetivo.');
@@ -430,33 +439,35 @@ class Objetivo_del_agente_Test extends TestCase
 
         $system = $this->system_generado();
 
-        $this->assertStringContainsString('El negocio no tiene cargada la dirección del local', $system);
+        $this->assertStringContainsString('El sistema no tiene cargada la dirección del local. Salvo que esté escrita en estas instrucciones', $system);
         $this->assertStringContainsString('Nunca inventes una dirección.', $system);
-        $this->assertStringContainsString('No tenés el horario de atención', $system);
+        $this->assertStringContainsString('El sistema no tiene cargado el horario de atención. Salvo que esté escrito en estas instrucciones', $system);
         $this->assertStringNotContainsString('Tucumán', $system, 'Una sucursal con solo el nombre no es una dirección.');
     }
 
     /**
-     * Que compre en la tienda online: con `users.online` la capa trae la dirección; sin ella, prohíbe
-     * inventarla y no empuja la tienda.
+     * Que compre en la tienda online: con `users.online` la capa trae la dirección y la consigna del
+     * producto sin Link; sin ella el objetivo es imposible y la capa NO se agrega (queda como sin objetivo).
      *
      * @group whatsapp
      * @test
      */
-    public function comprar_online_usa_la_tienda_cargada_y_sin_ella_no_la_inventa()
+    public function comprar_online_usa_la_tienda_cargada_y_sin_ella_no_hay_objetivo()
     {
         $this->poner_objetivo('buy_online');
 
         $this->poner_tienda(self::TIENDA);
         $con_tienda = $this->system_generado();
         $this->assertStringContainsString('que el cliente compre en la tienda online', $con_tienda);
-        $this->assertStringContainsString('La tienda online del negocio es ' . self::TIENDA . '.', $con_tienda);
+        $this->assertStringContainsString('La dirección de la tienda online del negocio es: ' . self::TIENDA, $con_tienda);
+        $this->assertStringContainsString('Si un producto no trae Link, no está publicado en la tienda', $con_tienda);
 
         $this->poner_tienda(null);
         $sin_tienda = $this->system_generado();
-        $this->assertStringContainsString('no tiene cargada la dirección de su tienda online', $sin_tienda);
-        $this->assertStringContainsString('no menciones la tienda por tu cuenta', $sin_tienda);
-        $this->assertStringNotContainsString(self::TIENDA, $sin_tienda);
+        $this->assertStringNotContainsString(self::MARCA_CAPA, $sin_tienda, 'Sin tienda cargada el objetivo es imposible: no hay capa.');
+
+        $this->poner_objetivo(null);
+        $this->assertSame($this->system_generado(), $sin_tienda, 'Tienda online sin dirección = sin objetivo, byte por byte.');
     }
 
     /**
@@ -519,6 +530,26 @@ class Objetivo_del_agente_Test extends TestCase
     }
 
     /**
+     * El bloque de catálogo CON resultados también va como nota interna que el cliente no ve, y pide no
+     * nombrar los productos que no sirven (el hallazgo de «las sopapas que aparecen ahí», T12.22).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function el_catalogo_con_resultados_va_como_nota_interna()
+    {
+        $metodo = new \ReflectionMethod(WhatsappBotAiService::class, 'build_catalog_block');
+        $metodo->setAccessible(true);
+
+        $articulo = (object) ['name' => 'Sopapa para inodoro', 'final_price' => 3200, 'stock' => 25, 'bar_code' => '7791', 'slug' => 'sopapa', 'online' => 1];
+        $bloque   = $metodo->invoke(new WhatsappBotAiService(), [$articulo], null);
+
+        $this->assertStringStartsWith('[Nota interna del sistema, el cliente no la ve] Resultado de buscar', $bloque);
+        $this->assertStringContainsString('ni siquiera para decir que no sirven', $bloque);
+        $this->assertStringContainsString('- Sopapa para inodoro | Precio: $3.200,00 | Stock: 25', $bloque);
+    }
+
+    /**
      * «Sugerir respuesta» usa el mismo prompt: el objetivo viaja.
      *
      * @group whatsapp
@@ -537,7 +568,7 @@ class Objetivo_del_agente_Test extends TestCase
         $this->postJson('api/whatsapp-chats/' . $this->chat->id . '/suggest')->assertStatus(200);
 
         $this->assertNotNull($this->payload_anthropic);
-        $this->assertStringContainsString('La tienda online del negocio es ' . self::TIENDA . '.', (string) $this->payload_anthropic['system']);
+        $this->assertStringContainsString('La dirección de la tienda online del negocio es: ' . self::TIENDA, (string) $this->payload_anthropic['system']);
     }
 
     /**

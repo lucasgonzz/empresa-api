@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Address;
 use App\Models\WhatsappBotConfig;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -25,7 +26,8 @@ use Illuminate\Support\Facades\Log;
  *     dirección, las sucursales con domicilio cargado (`addresses` del dueño, sin las de compradores de
  *     la tienda); el horario, la capa de horario que ya existe. Si falta un dato, el texto se lo dice al
  *     modelo con todas las letras y le prohíbe inventarlo: un objetivo que empuja a "pasá por el local"
- *     sin dirección cargada es exactamente el contexto donde un modelo se inventa una calle.
+ *     sin dirección cargada es exactamente el contexto donde un modelo se inventa una calle. Y si el dato
+ *     que falta hace imposible el objetivo (la tienda online sin su dirección), la capa no se agrega.
  *
  *  3. **El objetivo nunca va por delante del cliente.** Primero se resuelve lo que preguntó; el
  *     objetivo se trae cuando viene al caso, sin repetirlo en cada mensaje ni insistir. Las reglas fijas
@@ -112,7 +114,24 @@ final class AgentObjectivePromptBuilder
             // En "Otro objetivo" el detalle ES el objetivo: no hay frase fija ni datos del sistema.
             $renglones = ['Objetivo de la conversación, que te pidió el negocio: '.$detalle];
         } else {
-            $contexto  = $this->contexto((int) $config->user_id, $owner_user, $horarios);
+            // Solo "que pase por el local" usa las sucursales y el horario; "tienda" usa solo la URL, y
+            // "pedido", nada. Así una respuesta del agente no paga una consulta a `addresses` que no usa.
+            if ($objetivo === WhatsappBotConfig::OBJETIVO_VISITAR_LOCAL) {
+                $contexto = $this->contexto((int) $config->user_id, $owner_user, $horarios);
+            } else {
+                $contexto = ['tienda_online' => $this->tienda_online($owner_user), 'sucursales' => [], 'hay_horario' => false];
+            }
+
+            // 🔴 "Que compre en la tienda online" SIN la dirección de la tienda (`users.online`) es un
+            // objetivo que no se puede cumplir, y lo más probable es que el negocio ni tenga tienda: la
+            // capa NO se agrega y el agente queda como sin objetivo. Antes se agregaba con un "no la
+            // menciones por tu cuenta", pero convivía con el "orientalo hacia este objetivo" de
+            // COMO_LLEVARLO y, medido contra DeepSeek, igual ofrecía la tienda y prometía el link. La
+            // pantalla se lo avisa al dueño en el recuadro "Lo que va a usar el agente".
+            if ($objetivo === WhatsappBotConfig::OBJETIVO_COMPRAR_ONLINE && is_null($contexto['tienda_online'])) {
+                return '';
+            }
+
             $renglones = $this->renglones_del_objetivo($objetivo, $contexto);
 
             if ($detalle !== '') {
@@ -169,11 +188,6 @@ final class AgentObjectivePromptBuilder
      */
     public function contexto(int $owner_id, $owner_user, BusinessHoursReader $horarios): array
     {
-        $tienda = '';
-        if (! is_null($owner_user)) {
-            $tienda = $this->texto_seguro((string) ($owner_user->online ?? ''), self::LARGO_URL);
-        }
-
         $hay_horario = false;
         try {
             $hay_horario = $horarios->hay_dato();
@@ -182,10 +196,29 @@ final class AgentObjectivePromptBuilder
         }
 
         return [
-            'tienda_online' => $tienda === '' ? null : $tienda,
+            'tienda_online' => $this->tienda_online($owner_user),
             'sucursales'    => $this->sucursales($owner_id),
             'hay_horario'   => $hay_horario,
         ];
+    }
+
+    /**
+     * La dirección de la tienda online del negocio (`users.online`, la misma que arma el Link de cada
+     * producto en el catálogo), saneada, o null si no está cargada.
+     *
+     * @param \App\Models\User|null $owner_user Dueño del negocio, o null.
+     *
+     * @return string|null
+     */
+    private function tienda_online($owner_user): ?string
+    {
+        if (is_null($owner_user)) {
+            return null;
+        }
+
+        $tienda = $this->texto_seguro((string) ($owner_user->online ?? ''), self::LARGO_URL);
+
+        return $tienda === '' ? null : $tienda;
     }
 
     /**
@@ -217,47 +250,72 @@ final class AgentObjectivePromptBuilder
             } else {
                 // 🔴 El objetivo empuja a "pasá por el local": sin esta frase, la pregunta "¿dónde están?"
                 // es el lugar exacto donde un modelo completa una calle de su cosecha.
-                $renglones[] = 'El negocio no tiene cargada la dirección del local: podés invitarlo a pasar, pero si'
-                    .' te pregunta dónde están, decile que se la confirmás. Nunca inventes una dirección.';
+                //
+                // "Salvo que esté escrita en estas instrucciones": el dueño puede haber escrito la dirección
+                // en las indicaciones, la personalidad o las habilidades (chequeo independiente, 16/10). Sin
+                // la salvedad, esta frase se la prohibía aunque estuviera ahí arriba.
+                $renglones[] = 'El sistema no tiene cargada la dirección del local. Salvo que esté escrita en estas'
+                    .' instrucciones, podés invitarlo a pasar, pero si te pregunta dónde están, decile que se la'
+                    .' confirmás. Nunca inventes una dirección.';
             }
 
             if ($contexto['hay_horario']) {
                 $renglones[] = 'Para decirle cuándo pasar, usá el horario de atención de arriba.';
             } else {
-                $renglones[] = 'No tenés el horario de atención: no digas a qué hora abren ni a qué hora cierran.';
+                // Misma salvedad: el placeholder de la pantalla sugiere justamente "los sábados abrimos
+                // hasta las 13" como indicación.
+                //
+                // Y el día de hoy: sin la capa de horario el modelo no sabe qué día es, y medido contra
+                // DeepSeek (16/10/2026, un viernes) contestó "hoy, sábado, abrimos hasta las 13" con el
+                // horario que el dueño escribió en las indicaciones. La capa de horario ya trae su "Hoy es…";
+                // acá se agrega solo cuando esa capa no está. Mismo nombre de día que usa esa capa.
+                $hoy = BusinessHoursReader::LABELS_POR_DOW[(int) Carbon::now(config('app.timezone'))->dayOfWeek];
+
+                $renglones[] = 'El sistema no tiene cargado el horario de atención. Salvo que esté escrito en estas'
+                    .' instrucciones, no digas a qué hora abren ni a qué hora cierran. Hoy es '
+                    .$this->en_minuscula($hoy).'.';
             }
 
             return $renglones;
         }
 
         if ($objetivo === WhatsappBotConfig::OBJETIVO_COMPRAR_ONLINE) {
-            $renglones = ['Objetivo de la conversación, que te pidió el negocio: que el cliente compre en la tienda'
-                .' online del negocio.'];
-
-            if (! is_null($contexto['tienda_online'])) {
-                $renglones[] = 'La tienda online del negocio es '.$contexto['tienda_online'].'. Cuando le interese un'
-                    .' producto, pasale el Link de ese producto si viene en el catálogo; si no, la dirección de la'
-                    .' tienda. Los dos tal cual, sin modificarlos.';
-            } else {
-                // Sin `users.online` tampoco hay Link por producto (WhatsappBotAiService::article_url() lo
-                // necesita): no hay ningún link verdadero para pasar. Medido contra DeepSeek: con solo "no la
-                // inventes", igual ofrecía la tienda en cada respuesta y prometía "el link te lo confirmo".
-                // Sin el dato el objetivo no se puede cumplir, así que no se lo empuja: solo se contesta si
-                // el cliente pregunta.
-                $renglones[] = 'Pero el negocio no tiene cargada la dirección de su tienda online, así que este objetivo'
-                    .' no lo podés llevar adelante: no menciones la tienda por tu cuenta, no la inventes ni pases ningún'
-                    .' link. Solo si el cliente pregunta por comprar online, decile que la dirección se la confirmás.';
-            }
-
-            return $renglones;
+            // Sin `tienda_online` no se llega acá: capa_del_objetivo() corta antes (objetivo imposible).
+            //
+            // 🔴 La frase del producto SIN Link no sobra: el Link falta justamente cuando el artículo no está
+            // publicado en la tienda (`articles.online = 0`) o no tiene slug (WhatsappBotAiService::article_url()),
+            // y sin ella el agente lo mandaba a comprar a la tienda algo que ahí no está.
+            //
+            // Y la última: la capa de horario le dice que "puede recordarle hasta qué hora están hoy", y con
+            // este objetivo eso terminaba en "o pasá por el local" en casi cada respuesta (diluía el objetivo).
+            return [
+                'Objetivo de la conversación, que te pidió el negocio: que el cliente compre en la tienda online del'
+                    .' negocio.',
+                // La URL va al final del renglón y sin punto pegado: un "https://x.com.ar." invita a copiar
+                // el punto adentro del link.
+                'La dirección de la tienda online del negocio es: '.$contexto['tienda_online'],
+                // 🔴 "Nunca armes un link": medido contra DeepSeek (16/10/2026), con la dirección de la tienda a
+                // la vista y el Link de otro producto en el catálogo, el modelo ARMÓ el link de un producto no
+                // publicado juntando la tienda con el nombre (un 404 en la tienda del cliente).
+                'Cuando le interese un producto, pasale el Link de ese producto que viene en el catálogo, tal cual.'
+                    .' Si un producto no trae Link, no está publicado en la tienda: no tiene link, no le digas que lo'
+                    .' compre ahí y resolvelo por acá. Nunca armes un link de producto juntando la dirección de la'
+                    .' tienda con el nombre o el código del producto: el único link de un producto es el que trae'
+                    .' su renglón del catálogo.',
+                'Priorizá la tienda: no lo invites a pasar por el local salvo que el cliente lo pregunte.',
+            ];
         }
 
         // Pedido por WhatsApp: no necesita datos externos. El agente arma el pedido; lo confirma el negocio.
+        // 🔴 No dice "cómo lo retira o lo recibe": medido, el modelo lo repetía tal cual y le insinuaba al
+        // cliente un envío que el negocio puede no hacer. El pedido queda escrito en la conversación (no se
+        // carga solo como venta): la pantalla se lo aclara al dueño.
         return [
             'Objetivo de la conversación, que te pidió el negocio: que el cliente te deje el pedido por este chat.',
             'Cuando quiera comprar, armá el pedido con él: qué productos y cuántos de cada uno, y a nombre de quién.'
-                .' Repasale el pedido en un mensaje y decile que se lo confirmamos, con el total y cómo lo retira o'
-                .' lo recibe. No lo des por confirmado vos, ni acuerdes el pago, el envío o el retiro.',
+                .' Repasale el pedido en un mensaje y decile que se lo confirmamos con el total y los pasos a seguir.'
+                .' No lo des por confirmado vos, ni acuerdes el pago, el envío o el retiro.',
+            'Priorizá el pedido por acá: no lo invites a pasar por el local salvo que el cliente lo pregunte.',
         ];
     }
 
@@ -341,6 +399,23 @@ final class AgentObjectivePromptBuilder
         }
 
         return $sucursales;
+    }
+
+    /**
+     * Pasa el nombre de un día a minúscula respetando las tildes ('Miércoles' => 'miércoles'), igual que
+     * `BusinessHoursPromptBuilder::en_minuscula()`: `strtolower()` a secas rompe los acentos en UTF-8.
+     *
+     * @param string $texto Nombre del día.
+     *
+     * @return string
+     */
+    private function en_minuscula(string $texto): string
+    {
+        if (function_exists('mb_strtolower')) {
+            return mb_strtolower($texto, 'UTF-8');
+        }
+
+        return strtolower($texto);
     }
 
     /**
