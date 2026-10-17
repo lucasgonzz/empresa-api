@@ -19,14 +19,18 @@ class MercadoPagoOAuthController extends Controller
      * abrir para conectar su cuenta. No redirige desde el backend: el SPA es quien abre la
      * ventana de autorización.
      *
+     * Le pasa al servicio el host de esta API (`$request->getHost()`), que viaja en el `state`
+     * para que la URL central del admin sepa a qué backend reenviar el callback.
+     *
+     * @param Request $request
      * @return \Illuminate\Http\JsonResponse
      */
-    public function connect()
+    public function connect(Request $request)
     {
         $service = new MercadoPagoOAuthService();
 
         try {
-            $url = $service->build_authorization_url($this->userId());
+            $url = $service->build_authorization_url($this->userId(), $request->getHost());
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }

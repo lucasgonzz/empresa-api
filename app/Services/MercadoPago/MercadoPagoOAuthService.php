@@ -119,20 +119,61 @@ class MercadoPagoOAuthService
     }
 
     /**
+     * `redirect_uri` que se le manda a Mercado Pago, tanto al pedir la autorización como al
+     * canjear el `code` (Mercado Pago exige que las dos sean IDÉNTICAS, por eso las dos puntas
+     * pasan por acá y no cada una por su lado).
+     *
+     * Misión mp-redireccion-central-admin (17/10/2026): por defecto es la URL CENTRAL del admin
+     * (`services.mercadopago.oauth_relay_url`), la única que se registra en la app de Mercado
+     * Pago. Si esa config viene vacía (`MP_OAUTH_RELAY_URL=` en desarrollo local) se cae a la
+     * legacy `oauth_redirect_uri`, la callback propia de este backend, como se hacía antes.
+     *
+     * @return string|null null si no hay ninguna de las dos configuradas.
+     */
+    protected function redirect_uri_efectiva()
+    {
+        $relay = config('services.mercadopago.oauth_relay_url');
+
+        if (!empty($relay)) {
+            return $relay;
+        }
+
+        return config('services.mercadopago.oauth_redirect_uri');
+    }
+
+    /**
+     * Indica si el OAuth está yendo por la URL central del admin (y por lo tanto el `state`
+     * tiene que llevar el host de este backend para que el admin sepa a quién reenviar).
+     *
+     * @return bool
+     */
+    protected function usa_relay_central()
+    {
+        return !empty(config('services.mercadopago.oauth_relay_url'));
+    }
+
+    /**
      * Arma la URL de autorización de Mercado Pago para que el comercio autenticado la abra
      * desde el SPA, generando y persistiendo antes un `state` aleatorio atado a su conector
      * (protección anti-CSRF, prompt 598).
      *
+     * Con la URL central del admin activa, el `state` que viaja a Mercado Pago es
+     * `<aleatorio>_<host>`: el aleatorio es el que se persiste en `oauth_states` (el host NO se
+     * guarda) y el host es el dominio de esta API, que el admin usa para reenviar el callback al
+     * backend correcto. El `_` separa sin ambigüedad: no aparece en el aleatorio (alfanumérico)
+     * ni en un hostname válido.
+     *
      * @param int $user_id Comercio (owner) autenticado que pide conectar su cuenta.
+     * @param string|null $host Host de esta API (`$request->getHost()`), para el `state` del relay.
      * @return string URL completa de autorización de Mercado Pago.
      */
-    public function build_authorization_url($user_id)
+    public function build_authorization_url($user_id, $host = null)
     {
-        $redirect_uri = config('services.mercadopago.oauth_redirect_uri');
+        $redirect_uri = $this->redirect_uri_efectiva();
         $credentials = $this->app_credentials();
 
         if (empty($credentials['client_id']) || empty($redirect_uri)) {
-            throw new \RuntimeException('Faltan MP_APP_ID / MP_OAUTH_REDIRECT_URI en la configuración de Mercado Pago.');
+            throw new \RuntimeException('Faltan MP_APP_ID / MP_OAUTH_RELAY_URL (o MP_OAUTH_REDIRECT_URI) en la configuración de Mercado Pago.');
         }
 
         $connector = $this->connector_for_user($user_id);
@@ -145,6 +186,14 @@ class MercadoPagoOAuthService
         // vencimiento corto, para que el callback pueda validarlo y saber a qué conector
         // corresponde el `code` que Mercado Pago le devuelva.
         $state = OauthState::create_for_connector($connector);
+
+        // Solo con relay central y con un host que tenga forma de hostname (el admin valida con
+        // la misma regla y rechaza el resto): si no, el state viaja sin sufijo, como siempre.
+        $host = strtolower(trim((string) $host));
+
+        if ($this->usa_relay_central() && preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/', $host)) {
+            $state = $state . '_' . $host;
+        }
 
         $query = http_build_query([
             'client_id'     => $credentials['client_id'],
@@ -176,10 +225,21 @@ class MercadoPagoOAuthService
             return $this->redirect_to_spa(false);
         }
 
+        // Si el callback viene por la URL central del admin, el `state` puede traer el sufijo
+        // `_<host>` que armó `build_authorization_url()` (el admin normalmente lo recorta antes
+        // de reenviar, pero acá se acepta de las dos formas). El aleatorio es alfanumérico, así
+        // que el primer `_` marca dónde empieza el host. Un state sin `_` pasa tal cual.
+        $state = (string) $state;
+        $guion = strpos($state, '_');
+
+        if ($guion !== false) {
+            $state = substr($state, 0, $guion);
+        }
+
         // Consumir el state: valida que exista, no haya vencido y no se haya usado antes, y
         // devuelve la fila con el comercio y (si lo tiene) el conector que inició el connect.
         // Se consume una sola vez.
-        $oauth_state = OauthState::consume((string) $state);
+        $oauth_state = OauthState::consume($state);
 
         if (is_null($oauth_state)) {
             Log::warning('MercadoPagoOAuthService: state inválido, vencido o ya usado.');
@@ -207,7 +267,8 @@ class MercadoPagoOAuthService
         }
 
         $credentials = $this->app_credentials();
-        $redirect_uri = config('services.mercadopago.oauth_redirect_uri');
+        // La MISMA redirect_uri que se mandó al autorizar: si difiere, Mercado Pago rechaza el canje.
+        $redirect_uri = $this->redirect_uri_efectiva();
 
         if (empty($credentials['client_id']) || empty($credentials['client_secret']) || empty($redirect_uri)) {
             Log::error('MercadoPagoOAuthService: faltan credenciales de la app de Mercado Pago en configuración.');

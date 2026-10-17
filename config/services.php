@@ -447,9 +447,18 @@ return [
         'app_id'             => env('MP_APP_ID'),
         // client_secret de la app de ComercioCity. Nunca debe loguearse ni exponerse en un response.
         'app_secret'         => env('MP_APP_SECRET'),
-        // URL de este backend a la que Mercado Pago redirige tras autorizar (debe coincidir
-        // exactamente con la registrada en la app de Mercado Pago Developers).
+        // LEGACY: URL de ESTE backend a la que Mercado Pago redirigía tras autorizar (debía
+        // coincidir exactamente con la registrada en la app de Mercado Pago Developers, o sea
+        // una por cliente). Desde la misión mp-redireccion-central-admin (17/10/2026) solo se
+        // usa como respaldo cuando `oauth_relay_url` viene vacía (desarrollo local).
         'oauth_redirect_uri' => env('MP_OAUTH_REDIRECT_URI'),
+        // URL CENTRAL del admin a la que Mercado Pago redirige tras autorizar, para TODOS los
+        // clientes: es la única que se registra en la app de Mercado Pago Developers. El admin
+        // lee el host que viaja en el `state` y reenvía el callback al backend de este cliente.
+        // Es la `redirect_uri` tanto de la autorización como del canje del code (Mercado Pago
+        // exige que sean idénticas). El default está acá a propósito, para no tener que tocar
+        // el `.env` de cada cliente; `MP_OAUTH_RELAY_URL=` vacío la apaga y vuelve a la legacy.
+        'oauth_relay_url'    => env('MP_OAUTH_RELAY_URL', 'https://api-admin.comerciocity.com/api/mercadopago/callback'),
         // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
         // con ?mp=ok o ?mp=error agregado. Configurable porque empresa-api y empresa-spa pueden
         // vivir en dominios distintos según el cliente.
