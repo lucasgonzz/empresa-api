@@ -165,6 +165,7 @@ class Permiso_dias_anteriores_de_ventas_Test extends EmpresaTestCase
         $resultado = (new PermissionVentasDiasAnterioresSeeder())->aplicar();
 
         $this->assertEquals(1, $resultado['empleados']);
+        $this->assertEquals(1, $this->filas_de_dias($administrador, [PermissionEmpresa::where('slug', self::SLUG)->first()->id]));
         $this->assertFalse(ListadoVentasHelper::solo_hoy_permitido(User::find($administrador->id)));
     }
 
@@ -206,6 +207,13 @@ class Permiso_dias_anteriores_de_ventas_Test extends EmpresaTestCase
 
         $this->assertEquals(1, $resultado['permisos_creados']);
         $this->assertEquals(0, $resultado['empleados']);
+        $this->assertEquals(
+            0,
+            DB::table('permission_empresa_user')
+                ->where('permission_empresa_id', PermissionEmpresa::where('slug', self::SLUG)->first()->id)
+                ->count(),
+            'No se inserta ninguna fila del pivot'
+        );
     }
 
     /**
@@ -277,10 +285,14 @@ class Permiso_dias_anteriores_de_ventas_Test extends EmpresaTestCase
         // Ya lo tiene, colgado del id duplicado de `sale.index.previus_days`: no recibe otra fila.
         $ya_lo_tiene = $this->empleado([$sale_index_1->id, $dias_2->id]);
 
+        // Colgado de LOS DOS ids duplicados de `sale.index` a la vez: recibe UNA sola fila y cuenta una vez
+        // (es lo que garantiza el `distinct()` del seeder; sin él recibiría dos).
+        $con_los_dos_ids = $this->empleado([$sale_index_1->id, $sale_index_2->id]);
+
         $resultado = (new PermissionVentasDiasAnterioresSeeder())->aplicar();
 
         $this->assertEquals(0, $resultado['permisos_creados'], 'Con el slug ya presente (aunque repetido) no se crea otra fila');
-        $this->assertEquals(1, $resultado['empleados']);
+        $this->assertEquals(2, $resultado['empleados'], 'El del segundo id y el que tiene los dos ids; el que ya lo tenía no cuenta');
         $this->assertEquals(2, PermissionEmpresa::where('slug', self::SLUG)->count());
 
         $ids_dias = [$dias_1->id, $dias_2->id];
@@ -291,6 +303,8 @@ class Permiso_dias_anteriores_de_ventas_Test extends EmpresaTestCase
 
         $this->assertEquals(1, $this->filas_de_dias($ya_lo_tiene, $ids_dias));
         $this->assertEquals(1, $this->filas_de_dias($ya_lo_tiene, [$dias_2->id]), 'Conserva la fila que ya tenía');
+
+        $this->assertEquals(1, $this->filas_de_dias($con_los_dos_ids, $ids_dias), 'Con los dos ids de sale.index recibe UNA sola fila');
     }
 
     /**

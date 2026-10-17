@@ -46,8 +46,11 @@ use Illuminate\Support\Facades\DB;
  * NO en `DatabaseSeeder`: las bases nuevas lo reciben por el catálogo (`PermissionSeeder`) y los
  * empleados de las demos por `EmployeeSeeder`.
  *
- * Es por BASE DE DATOS (`run_scope: per_database`): las bases compartidas por varios comercios lo
- * corren una sola vez y alcanza a todos sus usuarios.
+ * Es por BASE DE DATOS (`run_scope: per_database`): como `permission_empresas` y el pivot son de la base
+ * entera, en una base compartida por varios comercios una sola corrida alcanza a todos sus usuarios con
+ * `sale.index`. El despliegue evita repetirlo entre los clientes que el admin agrupa en el mismo
+ * `shared_database_group_id`; un comercio de esa base que el admin no agrupa lo vuelve a correr en su
+ * propio upgrade (es idempotente, pero ver la advertencia de arriba sobre quien perdió el permiso).
  *
  * PHP 7.4: sin argumentos nombrados ni funciones flecha con tipos.
  */
