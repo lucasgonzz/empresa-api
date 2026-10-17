@@ -193,6 +193,7 @@ class ModoFacturacionHelper
             Log::info($value);
 
             ProviderOrderAfipTicketIva::create([
+                'user_id'                       => $ticket->user_id,
                 'provider_order_afip_ticket_id' => $ticket->id,
                 'iva_id'                        => $iva_id,
                 'neto'                          => $value['neto'],
@@ -456,6 +457,7 @@ class ModoFacturacionHelper
                 ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $ticket_aparte->id)->delete();
 
                 ProviderOrderAfipTicketIva::create([
+                    'user_id'                        => $ticket_aparte->user_id,
                     'provider_order_afip_ticket_id' => $ticket_aparte->id,
                     'iva_id'                         => (int)$extra_cost->iva_id,
                     'neto'                           => $valor_redondeado['neto'],

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\providerOrder\TenenciaDeLaCompraHelper;
 use App\Models\ProviderOrderDiscount;
 use Illuminate\Http\Request;
 
@@ -17,8 +18,30 @@ class ProviderOrderDiscountController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * 🔴 Tenencia (misión tenencia-compra-hermanos, 17/10/2026): ver
+     * ProviderOrderExtraCostController::costo_del_dueno(). Null si es de otro comercio, no existe o
+     * no es un id.
+     *
+     * @param  mixed  $id
+     * @return ProviderOrderDiscount|null
+     */
+    protected function descuento_del_dueno($id) {
+        return TenenciaDeLaCompraHelper::hijo(ProviderOrderDiscount::class, $id, $this->userId());
+    }
+
+    protected function no_encontrado() {
+        return TenenciaDeLaCompraHelper::no_encontrado('El descuento');
+    }
+
     public function store(Request $request) {
+
+        if (TenenciaDeLaCompraHelper::compra_ajena_en_cuerpo($request->model_id, $this->userId())) {
+            return TenenciaDeLaCompraHelper::no_encontrado('La compra');
+        }
+
         $model = ProviderOrderDiscount::create([
+            'user_id'                   => $this->userId(),
             'description'               => $request->description,
             'percentage'                => $request->percentage,
             'monto'                     => $request->monto,
@@ -33,11 +56,23 @@ class ProviderOrderDiscountController extends Controller
     }  
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ProviderOrderDiscount', $id)], 200);
+
+        $model = $this->descuento_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrado();
+        }
+
+        return response()->json(['model' => $this->fullModel('ProviderOrderDiscount', $model->id)], 200);
     }
 
     public function update(Request $request, $id) {
-        $model = ProviderOrderDiscount::find($id);
+        $model = $this->descuento_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrado();
+        }
+
         $model->description               = $request->description;
         $model->percentage                = $request->percentage;
         $model->monto                     = $request->monto;
@@ -47,7 +82,12 @@ class ProviderOrderDiscountController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderOrderDiscount::find($id);
+        $model = $this->descuento_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrado();
+        }
+
         ImageController::deleteModelImages($model);
         $model->delete();
         $this->sendDeleteModelNotification('ProviderOrderDiscount', $model->id);

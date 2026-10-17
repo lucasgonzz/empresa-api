@@ -3,14 +3,37 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\providerOrder\TenenciaDeLaCompraHelper;
 use App\Models\ProviderOrderExtraCost;
 use Illuminate\Http\Request;
 
 class ProviderOrderExtraCostController extends Controller
 {
 
+    /**
+     * 🔴 Tenencia (misión tenencia-compra-hermanos, 17/10/2026): el costo extra se resuelve por su
+     * `user_id` (marcado desde el alta, para el que todavía no cuelga de nada) y, si no lo tiene, por
+     * el de su compra. Null si es de otro comercio, no existe o no es un id.
+     *
+     * @param  mixed  $id
+     * @return ProviderOrderExtraCost|null
+     */
+    protected function costo_del_dueno($id) {
+        return TenenciaDeLaCompraHelper::hijo(ProviderOrderExtraCost::class, $id, $this->userId());
+    }
+
+    protected function no_encontrado() {
+        return TenenciaDeLaCompraHelper::no_encontrado('El costo extra');
+    }
+
     public function store(Request $request) {
+
+        if (TenenciaDeLaCompraHelper::compra_ajena_en_cuerpo($request->model_id, $this->userId())) {
+            return TenenciaDeLaCompraHelper::no_encontrado('La compra');
+        }
+
         $model = ProviderOrderExtraCost::create([
+            'user_id'                   => $this->userId(),
             'description'               => $request->description,
             'value'                     => $request->value,
             'provider_order_id'         => $request->model_id,
@@ -32,11 +55,23 @@ class ProviderOrderExtraCostController extends Controller
     }  
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ProviderOrderExtraCost', $id)], 200);
+
+        $model = $this->costo_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrado();
+        }
+
+        return response()->json(['model' => $this->fullModel('ProviderOrderExtraCost', $model->id)], 200);
     }
 
     public function update(Request $request, $id) {
-        $model = ProviderOrderExtraCost::find($id);
+        $model = $this->costo_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrado();
+        }
+
         $model->description          = $request->description;
         $model->value                = $request->value;
         // Naturaleza contable del costo extra (Prompt 264). Solo se pisa si el request lo manda
@@ -56,7 +91,12 @@ class ProviderOrderExtraCostController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderOrderExtraCost::find($id);
+        $model = $this->costo_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrado();
+        }
+
         ImageController::deleteModelImages($model);
         $model->delete();
         $this->sendDeleteModelNotification('ProviderOrderExtraCost', $model->id);
