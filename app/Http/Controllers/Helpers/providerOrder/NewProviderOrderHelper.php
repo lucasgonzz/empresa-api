@@ -432,6 +432,7 @@ class NewProviderOrderHelper {
             }
 
             ProviderOrderDiscount::create([
+                'user_id'            => $this->provider_order->user_id,
                 'description'        => 'Bonificación de proveedor',
                 'percentage'         => $provider_discount->percentage,
                 'provider_order_id'  => $this->provider_order->id,

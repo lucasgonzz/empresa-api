@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
+use App\Http\Controllers\Helpers\providerOrder\TenenciaDeLaCompraHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
 use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoProveedorHelper;
@@ -87,6 +88,15 @@ class ProviderOrderController extends Controller
      * demo y misma respuesta 201 con el fullModel.
      */
     public function store(Request $request) {
+
+        // El proveedor y los artículos del cuerpo tienen que ser del dueño (misión
+        // tenencia-compra-hermanos, 17/10/2026): sin esto la compra se colgaba de la cuenta
+        // corriente de otro comercio y le movía el stock y los precios a un artículo ajeno.
+        $cuerpo_ajeno = $this->cuerpo_ajeno_o_404($request);
+
+        if (!is_null($cuerpo_ajeno)) {
+            return $cuerpo_ajeno;
+        }
 
         $model = ProviderOrderAltaHelper::crear([
             'user_id'                                   => $this->userId(),
@@ -186,6 +196,38 @@ class ProviderOrderController extends Controller
     }
 
     /**
+     * 🔴 El `provider_id` y los `articles` del cuerpo de la compra (store y update) tienen que ser del
+     * dueño de la sesión (misión tenencia-compra-hermanos, 17/10/2026; el hallazgo 2 de
+     * tenencia-compra-show). Devuelve null si están bien y, si no, un 404 JSON que el llamador
+     * contesta SIN escribir nada: con un proveedor ajeno la compra entraba a la cuenta corriente de
+     * otro comercio, y con un artículo ajeno se le movían el stock y los precios.
+     *
+     * @param  Request  $request
+     * @param  int|null  $provider_id_actual  El proveedor que la compra YA tiene (update): si el
+     *                                        cuerpo no lo cambia no se vuelve a juzgar, así una compra
+     *                                        vieja con un proveedor dado de baja sigue editándose.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function cuerpo_ajeno_o_404($request, $provider_id_actual = null) {
+
+        $user_id = $this->userId();
+
+        $cambia_proveedor = is_null($provider_id_actual) || (string) $provider_id_actual !== (string) $request->provider_id;
+
+        if ($cambia_proveedor && TenenciaDeLaCompraHelper::proveedor_ajeno($request->provider_id, $user_id)) {
+
+            return TenenciaDeLaCompraHelper::no_encontrado('El proveedor');
+        }
+
+        if (TenenciaDeLaCompraHelper::algun_articulo_ajeno($request->articles, $user_id)) {
+
+            return TenenciaDeLaCompraHelper::no_encontrado('Uno de los artículos');
+        }
+
+        return null;
+    }
+
+    /**
      * El modo de facturación con el que nace una compra cargada desde la pantalla: el que eligió
      * el usuario si es uno de los tres válidos, y 'automatico' si no eligió ninguno (ver el
      * comentario en store()).
@@ -273,6 +315,12 @@ class ProviderOrderController extends Controller
 
         if (!is_null($no_es_del_dueno)) {
             return $no_es_del_dueno;
+        }
+
+        $cuerpo_ajeno = $this->cuerpo_ajeno_o_404($request, ProviderOrder::where('id', $id)->value('provider_id'));
+
+        if (!is_null($cuerpo_ajeno)) {
+            return $cuerpo_ajeno;
         }
 
         /*

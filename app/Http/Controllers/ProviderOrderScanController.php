@@ -1205,6 +1205,7 @@ class ProviderOrderScanController extends Controller
             $iva_importe = $this->numero_o_null(isset($fila['iva_importe']) ? $fila['iva_importe'] : null);
 
             ProviderOrderAfipTicketIva::create([
+                'user_id'                       => $ticket->user_id,
                 'provider_order_afip_ticket_id' => $ticket->id,
                 'iva_id'                        => (int) $iva_id,
                 'neto'                          => $this->numero_o_null(isset($fila['neto']) ? $fila['neto'] : null),
