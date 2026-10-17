@@ -44,6 +44,18 @@ class SendPromocionWhatsappJob implements ShouldQueue
     public $tries = 1;
 
     /**
+     * Hasta cuándo se puede reintentar (I4 del segundo chequeo): solo vuelve a la cola cuando el candado
+     * del negocio estaba tomado (no se mandó nada), y como mucho durante 10 minutos. Con retryUntil
+     * definido, Laravel 8 deja de mirar `$tries` para decidir si el job falló por intentos.
+     *
+     * @return \DateTime
+     */
+    public function retryUntil()
+    {
+        return now()->addMinutes(10);
+    }
+
+    /**
      * El mismo margen que el recordatorio: una sola llamada a Kapso.
      *
      * @var int
@@ -121,6 +133,22 @@ class SendPromocionWhatsappJob implements ShouldQueue
                     'owner_id'  => $this->owner_id,
                     'client_id' => $this->client_id,
                 ]);
+
+                return;
+            }
+
+            /*
+             * I4 del segundo chequeo: el candado del negocio estaba tomado por otro envío. No se mandó
+             * NADA, así que reintentar no duplica: vuelve a la cola en 30 segundos, hasta retryUntil().
+             */
+            if ($salida['motivo'] === 'candado_ocupado') {
+
+                Log::warning('SendPromocionWhatsappJob: el candado del negocio estaba tomado; se reintenta en 30 segundos.', [
+                    'owner_id'  => $this->owner_id,
+                    'client_id' => $this->client_id,
+                ]);
+
+                $this->release(30);
 
                 return;
             }

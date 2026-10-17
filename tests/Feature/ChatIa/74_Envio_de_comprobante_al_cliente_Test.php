@@ -93,23 +93,23 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
 
         // Lo que se le muestra al dueño antes del sí, y la instrucción de mostrarlo.
         $this->assertSame(DestinatariosIaHelper::COMO_MOSTRARLO, $respuesta['nota']);
-        $this->assertSame('Marcos Perez', $respuesta['para_mostrar']['destinatarios']);
-        $this->assertSame(1, $respuesta['para_mostrar']['cantidad']);
-        $this->assertSame('5493444001122', $respuesta['para_mostrar']['por_whatsapp']);
-        $this->assertSame('marcos@test.local', $respuesta['para_mostrar']['por_mail']);
+        $this->assertSame('Marcos Perez', $this->para_mostrar($respuesta)['destinatarios']);
+        $this->assertSame(1, $this->para_mostrar($respuesta)['cantidad']);
+        $this->assertSame('5493444001122', $this->para_mostrar($respuesta)['por_whatsapp']);
+        $this->assertSame('marcos@test.local', $this->para_mostrar($respuesta)['por_mail']);
         /*
          * Sin chat abierto, el presupuesto sale con la plantilla de MENSAJE LIBRE (cc_cli_comprobante
          * diría "de tu compra", que es falso para un presupuesto), con el link del PDF en el texto.
          */
         $this->assertStringContainsString(
             'Hola Marcos Perez, te escribimos de ZZE Ferreteria Envios: te mandamos el presupuesto N° 900004. Lo ves acá: https://',
-            $respuesta['para_mostrar']['texto_que_sale']
+            $this->para_mostrar($respuesta)['texto_que_sale']
         );
-        $this->assertStringNotContainsString('de tu compra', $respuesta['para_mostrar']['texto_que_sale']);
+        $this->assertStringNotContainsString('de tu compra', $this->para_mostrar($respuesta)['texto_que_sale']);
         // Del mail, el asunto y el texto REALES del payload que se encola.
         $this->assertStringContainsString(
             'Por mail: Asunto: "Te enviamos un presupuesto". Tu presupuesto. Te enviamos el presupuesto que preparamos para vos.',
-            $respuesta['para_mostrar']['texto_que_sale']
+            $this->para_mostrar($respuesta)['texto_que_sale']
         );
 
         $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
@@ -202,7 +202,7 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
-        $this->assertStringContainsString('Comprobante de tu compra en ZZE Ferreteria Envios', $propuesta['para_mostrar']['texto_que_sale']);
+        $this->assertStringContainsString('Comprobante de tu compra en ZZE Ferreteria Envios', $this->para_mostrar($propuesta)['texto_que_sale']);
 
         $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $propuesta['tarjeta_id']);
 
@@ -252,7 +252,7 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         $this->assertNotNull($del_mail, 'El mail de la venta tiene que llevar el link del comprobante.');
         $this->assertStringContainsString('pdf_column_profile_id=', $del_mail);
         $this->assertSame($del_mail, $tarjeta->datos['pdf_url']);
-        $this->assertStringContainsString('Asunto: "Nueva venta registrada"', $propuesta['para_mostrar']['texto_que_sale']);
+        $this->assertStringContainsString('Asunto: "Nueva venta registrada"', $this->para_mostrar($propuesta)['texto_que_sale']);
     }
 
     /**
@@ -269,7 +269,7 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
 
         $primera = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'presupuesto', 'numero' => 900004]);
 
-        $this->assertArrayNotHasKey('aviso', $primera['para_mostrar']);
+        $this->assertArrayNotHasKey('aviso', $this->para_mostrar($primera));
 
         $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $primera['tarjeta_id']);
 
@@ -279,7 +279,7 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         $segunda = $this->herramienta($otra, $assistant_otra, 'proponer_envio_de_comprobante', ['tipo' => 'presupuesto', 'numero' => 900004]);
 
         $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
-        $this->assertStringContainsString('ya se lo mandaste a las', $segunda['para_mostrar']['aviso']);
+        $this->assertStringContainsString('ya se lo mandaste a las', $this->para_mostrar($segunda)['aviso']);
         $this->assertStringContainsString('ya se lo mandaste a las', AiMessageAction::find($segunda['tarjeta_id'])->presentacion['aviso']);
     }
 
@@ -309,8 +309,8 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         $propuesta = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'recibo', 'numero' => 78]);
 
         $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
-        $this->assertStringContainsString('te mandamos el recibo de tu pago N° 78. Lo ves acá: https://', $propuesta['para_mostrar']['texto_que_sale']);
-        $this->assertStringContainsString('/current-acount/pdf/', $propuesta['para_mostrar']['texto_que_sale']);
+        $this->assertStringContainsString('te mandamos el recibo de tu pago N° 78. Lo ves acá: https://', $this->para_mostrar($propuesta)['texto_que_sale']);
+        $this->assertStringContainsString('/current-acount/pdf/', $this->para_mostrar($propuesta)['texto_que_sale']);
     }
 
     /**

@@ -599,6 +599,21 @@ class SaleWhatsappSenderService
     }
 
     /**
+     * La URL del PDF que send_sale() ADJUNTA por WhatsApp (misión asistente-envios-a-clientes, segundo
+     * chequeo): es otra que la del mail (esa lleva `pdf_column_profile_id`), y la tarjeta del asistente
+     * muestra cada una en su canal. Es build_pdf_url() tal cual, expuesta.
+     *
+     * @param  Sale  $sale
+     * @return string
+     */
+    public function url_del_pdf_que_adjunta(Sale $sale)
+    {
+        $sale->loadMissing('user');
+
+        return $this->build_pdf_url($sale);
+    }
+
+    /**
      * URL del PDF de la venta: la ruta `sale/pdf/{id}` de `routes/web.php` (la misma del botón
      * `wa.me` de la SPA) con el token del link (`?t=`, PdfLinkHelper).
      *

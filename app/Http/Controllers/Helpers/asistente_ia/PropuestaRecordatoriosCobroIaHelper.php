@@ -123,7 +123,7 @@ class PropuestaRecordatoriosCobroIaHelper
         }
 
         /*
-         * 🔴 EL TEXTO EXACTO: el cuerpo REAL de previsualizar() para el primero, que es el mismo
+         * 🔴 EL TEXTO EXACTO: el cuerpo REAL de armar_contenido() para el primero, que es el mismo
          * armado que va a usar enviar() (los dos pasan por armar_contenido()). A cada uno le llega el
          * suyo, con sus ventas y sus montos: eso lo dice la aclaración.
          */
@@ -131,12 +131,22 @@ class PropuestaRecordatoriosCobroIaHelper
 
         $ventas_del_primero = self::ventas_del_cliente($contexto, $primero->id, $evaluacion['dias']);
 
-        $preview = $service->previsualizar($contexto->owner_id, $primero, $ventas_del_primero, is_null($contexto->persona) ? null : $contexto->persona->id);
+        /*
+         * 🔴 LOS DOS CAMINOS, SIEMPRE QUE LA PLANTILLA ESTÉ APROBADA (I2 del segundo chequeo). Entre el
+         * bloque y el job la ventana de un cliente se puede abrir o cerrar, y el job manda por el camino
+         * que corresponda en ese momento: el dueño tiene que haber visto los dos. Sin plantilla aprobada,
+         * los que no escribieron en 24 horas ya quedaron salteados y sale solo el mensaje.
+         */
+        $textos = $service->textos_de_los_dos_caminos($contexto->owner_id, $primero, $ventas_del_primero);
 
-        $texto_que_sale = (string) $preview['body'];
+        $texto_que_sale = is_null($textos['plantilla'])
+            ? $textos['texto_libre']
+            : "Como mensaje (a los que escribieron en las últimas 24 horas):\n" . $textos['texto_libre']
+                . "\n\nComo plantilla de WhatsApp (al resto, con el resumen de su cuenta en PDF):\n" . $textos['plantilla'];
 
         $nombres = [];
         $ids_que_reciben = [];
+        $caminos = [];
         $por_canal = ['texto_libre' => 0, 'plantilla' => 0];
 
         foreach ($reciben as $fila) {
@@ -145,14 +155,15 @@ class PropuestaRecordatoriosCobroIaHelper
 
             $chat = RecordatorioCobroSenderService::buscar_chat($contexto->owner_id, $fila['client']);
 
-            $por_canal[(!is_null($chat) && $chat->is_within_service_window()) ? 'texto_libre' : 'plantilla']++;
+            $camino = (!is_null($chat) && $chat->is_within_service_window()) ? 'texto_libre' : 'plantilla';
+
+            $caminos[(int) $fila['client']->id] = $camino;
+            $por_canal[$camino]++;
         }
 
         $aclaracion = 'A cada cliente le llega su propio recordatorio, con SUS ventas impagas'
             . ($evaluacion['dias'] > 0 ? ' de ' . $evaluacion['dias'] . ' días o más' : '')
-            . ' y sus montos. El texto de arriba es el de ' . $primero->name . ' ('
-            . ($preview['canal'] === 'texto_libre' ? 'como mensaje, porque escribió en las últimas 24 horas' : 'como plantilla de WhatsApp, con el resumen de su cuenta en PDF')
-            . ').';
+            . ' y sus montos: el texto de arriba es el de ' . $primero->name . '.';
 
         $renglones = [
             ['etiqueta' => 'Filtro', 'valor' => self::descripcion_del_filtro($monto_minimo, $evaluacion['dias'], $client_ids)],
@@ -168,19 +179,24 @@ class PropuestaRecordatoriosCobroIaHelper
 
         sort($ids_que_reciben);
 
-        // Lo que el sistema le agrega al mensaje por WhatsApp antes del sí (DestinatariosIaHelper::bloque()).
-        $bloque = DestinatariosIaHelper::bloque(
+        // Lo que el sistema le agrega al mensaje por WhatsApp antes del sí, con las listas que entren (M1).
+        $bloque = DestinatariosIaHelper::bloque_que_entra(
             'Recordatorio de cobro por WhatsApp',
+            $nombres,
             [
-                DestinatariosIaHelper::linea_de_destinatarios($nombres),
                 'Filtro: ' . self::descripcion_del_filtro($monto_minimo, $evaluacion['dias'], $client_ids),
                 'Cómo sale: ' . self::descripcion_de_canales($por_canal),
             ],
-            $grupos,
+            $salteados,
             'El texto que sale (el de ' . $primero->name . ')',
             $texto_que_sale,
             $aclaracion
         );
+
+        if (is_null($bloque)) {
+
+            return RespuestaDeCargaIa::error(DestinatariosIaHelper::MENSAJE_BLOQUE_LARGO);
+        }
 
         $creada = AccionesIaHelper::crear(
             $contexto,
@@ -193,7 +209,11 @@ class PropuestaRecordatoriosCobroIaHelper
                 'dias'         => (int) $evaluacion['dias'],
                 'monto_minimo' => $monto_minimo,
                 'nombrados'    => count($client_ids) > 0,
+                // Cómo salía cada uno al proponer (el bloque muestra los dos caminos: ver arriba).
+                'caminos'      => $caminos,
                 'bloque'       => $bloque,
+                // Las partes del bloque, para la tarjeta y los tests: al modelo no le llegan (M4).
+                'para_mostrar' => DestinatariosIaHelper::para_mostrar($nombres, $grupos, $texto_que_sale, $aclaracion),
             ],
             [
                 'titulo'          => 'Recordatorio de cobro por WhatsApp a ' . count($nombres) . ' ' . (count($nombres) === 1 ? 'cliente' : 'clientes'),
@@ -204,13 +224,20 @@ class PropuestaRecordatoriosCobroIaHelper
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
+        // B1: un solo envío esperando el sí por conversación.
+        $reemplazadas = DestinatariosIaHelper::reemplazar_otros_envios($contexto, $creada['accion']->id);
+
         $resumen = 'Recordatorio de cobro por WhatsApp a ' . count($nombres) . ' ' . (count($nombres) === 1 ? 'cliente' : 'clientes');
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, [
-            'para_mostrar' => DestinatariosIaHelper::para_mostrar($nombres, $grupos, $texto_que_sale, $aclaracion),
-            // Reemplaza a la nota de siempre: ver el docblock de DestinatariosIaHelper::COMO_MOSTRARLO.
-            'nota'         => DestinatariosIaHelper::COMO_MOSTRARLO,
-        ]);
+        $no_reciben = count($salteados);
+
+        return DestinatariosIaHelper::respuesta_al_modelo(
+            $creada,
+            $resumen,
+            count($nombres),
+            $resumen . ($no_reciben ? '; a ' . $no_reciben . ' no les llega.' : '.'),
+            $reemplazadas
+        );
     }
 
     /**

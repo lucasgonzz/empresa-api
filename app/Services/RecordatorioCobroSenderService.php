@@ -199,6 +199,39 @@ class RecordatorioCobroSenderService
     }
 
     /**
+     * El recordatorio de este cliente por LOS DOS CAMINOS, ya armado (misión asistente-envios-a-clientes,
+     * segundo chequeo del 16/10/2026): cómo sale como mensaje de texto (ventana de 24 h abierta) y cómo
+     * como plantilla (cerrada), sin mandar nada.
+     *
+     * 🔴 POR QUÉ LOS DOS. Entre que el asistente le muestra el recordatorio al dueño y el job lo manda,
+     * la ventana de un cliente se puede abrir o cerrar, y el job manda por el camino que corresponda en
+     * ese momento. Si el dueño hubiera visto uno solo, el otro saldría sin haberse visto. Los dos usan
+     * armar_contenido(), el mismo armado que enviar().
+     *
+     * @param  int  $owner_id
+     * @param  Client  $client
+     * @param  array|\Illuminate\Support\Collection  $ventas
+     * @return array{texto_libre: string, plantilla: string|null}  plantilla null si no está aprobada.
+     */
+    public function textos_de_los_dos_caminos($owner_id, Client $client, $ventas)
+    {
+        $config = WhatsappBotConfig::getForUser((int) $owner_id);
+
+        $texto_libre = $this->armar_contenido((int) $owner_id, $client, $ventas, true, $config);
+
+        $plantilla = null;
+
+        if (! is_null($this->plantilla_aprobada((int) $owner_id))) {
+            $plantilla = $this->armar_contenido((int) $owner_id, $client, $ventas, false, $config);
+        }
+
+        return [
+            'texto_libre' => (string) $texto_libre['body'],
+            'plantilla'   => is_null($plantilla) ? null : (string) $plantilla['body'],
+        ];
+    }
+
+    /**
      * Por qué NO se le puede mandar el recordatorio a este cliente, o null si sí se le puede.
      *
      * 🔴 UNA SOLA IMPLEMENTACIÓN PARA LA PANTALLA Y PARA EL MASIVO. La previsualización y

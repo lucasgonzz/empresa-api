@@ -109,7 +109,7 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
 
         $link = 'https://tienda-zze.test/articulos/zze-taladro-percutor-750w/' . $this->dueno->id;
 
-        $mostrar = $respuesta['para_mostrar'];
+        $mostrar = $this->para_mostrar($respuesta);
 
         // Por defecto, todos los que tienen teléfono (el que no tiene, ni aparece).
         $this->assertSame('Ana Gomez y Bruno Diaz', $mostrar['destinatarios']);
@@ -117,8 +117,9 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
 
         // Ventana abierta: texto libre con el nombre, la vigencia que dijo el dueño y el link.
         $this->assertStringContainsString("Hola Ana Gomez! Taladro percutor 750W a \$ 89.990\ncon envío gratis\nVálida hasta el domingo.\n" . $link, $mostrar['texto_que_sale']);
-        // Ventana cerrada: la plantilla de marketing, con el detalle en una línea (sin el salto).
-        $this->assertStringContainsString('Hola Bruno Diaz! En ZZE Ferreteria Envios tenemos una promo para vos: Taladro percutor 750W a $ 89.990 con envío gratis. Miralo en ' . $link, $mostrar['texto_que_sale']);
+        // Los DOS caminos, con el nombre del primero (I2 del segundo chequeo): la plantilla de marketing, con
+        // el detalle en una línea (sin el salto).
+        $this->assertStringContainsString('Hola Ana Gomez! En ZZE Ferreteria Envios tenemos una promo para vos: Taladro percutor 750W a $ 89.990 con envío gratis. Miralo en ' . $link, $mostrar['texto_que_sale']);
         $this->assertStringContainsString('Válida hasta el domingo.', $mostrar['texto_que_sale']);
 
         $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
@@ -258,9 +259,9 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
-        $this->assertSame('Ana Gomez y Bruno Diaz', $respuesta['para_mostrar']['destinatarios']);
-        $this->assertSame(PropuestaPromocionWhatsappIaHelper::MOTIVO_RECIBIO_HACE_POCO, $respuesta['para_mostrar']['no_les_llega'][0]['motivo']);
-        $this->assertSame('Ya Recibio', $respuesta['para_mostrar']['no_les_llega'][0]['clientes']);
+        $this->assertSame('Ana Gomez y Bruno Diaz', $this->para_mostrar($respuesta)['destinatarios']);
+        $this->assertSame(PropuestaPromocionWhatsappIaHelper::MOTIVO_RECIBIO_HACE_POCO, $this->para_mostrar($respuesta)['no_les_llega'][0]['motivo']);
+        $this->assertSame('Ya Recibio', $this->para_mostrar($respuesta)['no_les_llega'][0]['clientes']);
 
         // 249 promociones ya salieron hoy (de otro chat del negocio): queda lugar para UNA.
         $otro_chat = WhatsappChat::create([
@@ -288,9 +289,9 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local, hoy']);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
-        $this->assertSame(1, $respuesta['para_mostrar']['cantidad']);
+        $this->assertSame(1, $this->para_mostrar($respuesta)['cantidad']);
 
-        $motivos = array_column($respuesta['para_mostrar']['no_les_llega'], 'mensaje', 'motivo');
+        $motivos = array_column($this->para_mostrar($respuesta)['no_les_llega'], 'mensaje', 'motivo');
 
         $this->assertArrayHasKey(PropuestaPromocionWhatsappIaHelper::MOTIVO_TOPE, $motivos);
         $this->assertStringContainsString('tope de 250 promociones por día', $motivos[PropuestaPromocionWhatsappIaHelper::MOTIVO_TOPE]);
@@ -326,9 +327,9 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
         $segunda = $this->herramienta($otra, $assistant_otra, 'proponer_promocion_por_whatsapp', ['texto' => '2x1 en tornillos']);
 
         $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
-        $this->assertSame('Carla Ruiz', $segunda['para_mostrar']['destinatarios']);
-        $this->assertSame(PropuestaPromocionWhatsappIaHelper::MOTIVO_RECIBIO_HACE_POCO, $segunda['para_mostrar']['no_les_llega'][0]['motivo']);
-        $this->assertSame(2, $segunda['para_mostrar']['no_les_llega'][0]['cantidad']);
+        $this->assertSame('Carla Ruiz', $this->para_mostrar($segunda)['destinatarios']);
+        $this->assertSame(PropuestaPromocionWhatsappIaHelper::MOTIVO_RECIBIO_HACE_POCO, $this->para_mostrar($segunda)['no_les_llega'][0]['motivo']);
+        $this->assertSame(2, $this->para_mostrar($segunda)['no_les_llega'][0]['cantidad']);
     }
 
     /**
@@ -352,7 +353,8 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
             'tipo'               => AiMessageAction::TIPO_PROMOCION_WHATSAPP,
             'clave'              => 'promocion_whatsapp:reserva-p76',
             'estado'             => AiMessageAction::ESTADO_CONFIRMADA,
-            'datos'              => ['client_ids' => range(900000001, 900000249)],
+            // I3: la reserva son los que de verdad se encolaron (`client_ids_encolados`), y todavía no salieron.
+            'datos'              => ['client_ids' => range(900000001, 900000249), 'client_ids_encolados' => range(900000001, 900000249)],
             'presentacion'       => ['titulo' => 'Promo anterior', 'renglones' => []],
             'resuelta_at'        => now()->subHour(),
         ]);
@@ -363,9 +365,9 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
-        $this->assertSame(1, $respuesta['para_mostrar']['cantidad']);
+        $this->assertSame(1, $this->para_mostrar($respuesta)['cantidad']);
 
-        $motivos = array_column($respuesta['para_mostrar']['no_les_llega'], 'motivo');
+        $motivos = array_column($this->para_mostrar($respuesta)['no_les_llega'], 'motivo');
 
         $this->assertContains(PropuestaPromocionWhatsappIaHelper::MOTIVO_TOPE, $motivos);
 

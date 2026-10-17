@@ -211,8 +211,26 @@ class PropuestaEnvioComprobanteIaHelper
             $destinos[] = 'No va por ' . self::nombre_de_canal($canal) . ': ' . rtrim((string) $motivo, '.');
         }
 
-        $renglones[] = ['etiqueta' => 'PDF', 'valor' => $pdf_url];
-        $destinos[] = 'PDF: ' . $pdf_url;
+        /*
+         * 🔴 EL PDF QUE SE MUESTRA ES EL QUE VA, EN CADA CANAL (I2 del segundo chequeo). La venta por
+         * WhatsApp adjunta `/sale/pdf/{id}` (SaleWhatsappSenderService::url_del_pdf_que_adjunta()) y su
+         * mail lleva el link con `pdf_column_profile_id`: son dos, y cada uno va en su renglón. El
+         * presupuesto y el recibo llevan el mismo en los dos canales.
+         */
+        $pdf_por_whatsapp = $tipo === self::TIPO_VENTA
+            ? (new SaleWhatsappSenderService())->url_del_pdf_que_adjunta($modelo)
+            : $pdf_url;
+
+        if (in_array(self::CANAL_WHATSAPP, $van, true) && in_array(self::CANAL_MAIL, $van, true) && $pdf_por_whatsapp !== $pdf_url) {
+            $renglones[] = ['etiqueta' => 'PDF por WhatsApp', 'valor' => $pdf_por_whatsapp];
+            $renglones[] = ['etiqueta' => 'PDF por mail', 'valor' => $pdf_url];
+            $destinos[] = 'PDF por WhatsApp: ' . $pdf_por_whatsapp;
+            $destinos[] = 'PDF por mail: ' . $pdf_url;
+        } else {
+            $el_pdf = in_array(self::CANAL_WHATSAPP, $van, true) ? $pdf_por_whatsapp : $pdf_url;
+            $renglones[] = ['etiqueta' => 'PDF', 'valor' => $el_pdf];
+            $destinos[] = 'PDF: ' . $el_pdf;
+        }
 
         if (isset($textos['whatsapp'])) {
             $renglones[] = ['etiqueta' => 'Texto por WhatsApp', 'valor' => $textos['whatsapp']];
@@ -251,6 +269,8 @@ class PropuestaEnvioComprobanteIaHelper
                 'client_id' => (int) $client->id,
                 'canales'   => $van,
                 'pdf_url'   => $pdf_url,
+                // I2: cómo sale por WhatsApp (mensaje | plantilla); si cambia antes del sí, no se manda.
+                'caminos'   => in_array(self::CANAL_WHATSAPP, $van, true) ? [self::CANAL_WHATSAPP => $evaluados[self::CANAL_WHATSAPP]['camino']] : [],
                 // Lo que el sistema le agrega al mensaje por WhatsApp (ver DestinatariosIaHelper::bloque()).
                 'bloque'    => $bloque,
             ],
@@ -273,7 +293,7 @@ class PropuestaEnvioComprobanteIaHelper
 
         $para_mostrar = DestinatariosIaHelper::para_mostrar([(string) $client->name], $grupos, implode("\n", $texto_que_sale), 'PDF: ' . $pdf_url);
 
-        // Por canal, para que el modelo pueda decir "por WhatsApp al 3444..." y "por mail a ...".
+        // Por canal: lo que dice "por WhatsApp al 3444..." y "por mail a ...".
         $para_mostrar['por_whatsapp'] = in_array(self::CANAL_WHATSAPP, $van, true) ? $evaluados[self::CANAL_WHATSAPP]['telefono'] : null;
         $para_mostrar['por_mail'] = in_array(self::CANAL_MAIL, $van, true) ? $evaluados[self::CANAL_MAIL]['email'] : null;
 
@@ -281,11 +301,28 @@ class PropuestaEnvioComprobanteIaHelper
             $para_mostrar['aviso'] = $aviso;
         }
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, [
-            'para_mostrar' => $para_mostrar,
-            // Reemplaza a la nota de siempre: ver DestinatariosIaHelper::COMO_MOSTRARLO.
-            'nota'         => DestinatariosIaHelper::COMO_MOSTRARLO,
-        ]);
+        // Las partes del bloque, para la tarjeta y los tests: al modelo no le llegan (M4).
+        self::guardar_para_mostrar($creada['accion'], $para_mostrar);
+
+        // B1: un solo envío esperando el sí por conversación.
+        $reemplazadas = DestinatariosIaHelper::reemplazar_otros_envios($contexto, $creada['accion']->id);
+
+        return DestinatariosIaHelper::respuesta_al_modelo($creada, $resumen, 1, $resumen . '.', $reemplazadas);
+    }
+
+    /**
+     * Guarda en `datos.para_mostrar` las partes de lo que se le muestra al dueño (no viajan al modelo).
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  array  $para_mostrar
+     * @return void
+     */
+    protected static function guardar_para_mostrar(AiMessageAction $accion, array $para_mostrar)
+    {
+        $datos = is_array($accion->datos) ? $accion->datos : [];
+        $datos['para_mostrar'] = $para_mostrar;
+        $accion->datos = $datos;
+        $accion->save();
     }
 
     /**
@@ -377,7 +414,17 @@ class PropuestaEnvioComprobanteIaHelper
             $partes[] = (string) $parrafo;
         }
 
-        return 'Asunto: "' . $payload->subject . '". ' . implode(' ', $partes);
+        // Los renglones de detalle (cliente, número, total, fecha), como los ve el cliente.
+        $detalle = [];
+
+        foreach ((array) $payload->detail_lines as $renglon) {
+            if (isset($renglon['label'], $renglon['value'])) {
+                $detalle[] = $renglon['label'] . ': ' . $renglon['value'];
+            }
+        }
+
+        return 'Asunto: "' . $payload->subject . '". ' . implode(' ', $partes)
+            . (count($detalle) ? ' ' . implode('. ', $detalle) . '.' : '');
     }
 
     /**
@@ -499,6 +546,23 @@ class PropuestaEnvioComprobanteIaHelper
         }
 
         $canales = isset($datos['canales']) && is_array($datos['canales']) ? $datos['canales'] : [];
+
+        /*
+         * 🔴 LO QUE SALE ES LO QUE SE MOSTRÓ (I2 del segundo chequeo). Si entre la tarjeta y el sí la
+         * ventana de 24 h se abrió o se cerró, el WhatsApp saldría con OTRO texto (el epígrafe o la
+         * plantilla) que el dueño no leyó. No se manda nada: el modelo vuelve a mostrárselo.
+         */
+        if (in_array(self::CANAL_WHATSAPP, $canales, true) && isset($datos['caminos'][self::CANAL_WHATSAPP])) {
+
+            $hoy = self::evaluar_canales($contexto, $tipo, $modelo, $client)[self::CANAL_WHATSAPP];
+
+            if (!empty($hoy['puede']) && $hoy['camino'] !== $datos['caminos'][self::CANAL_WHATSAPP]) {
+
+                throw new AccionIaException(422, 'No lo mandé: cambió cómo sale por WhatsApp (ahora saldría como '
+                    . ($hoy['camino'] === 'mensaje' ? 'mensaje' : 'plantilla') . ', y el dueño vio el otro texto). '
+                    . 'Volvé a mostrárselo y pedile el sí de nuevo.');
+            }
+        }
 
         $pdf_url = isset($datos['pdf_url']) ? (string) $datos['pdf_url'] : '';
 

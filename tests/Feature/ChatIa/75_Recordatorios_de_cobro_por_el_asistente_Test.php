@@ -91,7 +91,7 @@ class Recordatorios_de_cobro_por_el_asistente_Test extends EmpresaTestCase
         $this->assertArrayNotHasKey('estado', $respuesta, 'Se ejecutó solo en directo.');
         $this->assertSame(DestinatariosIaHelper::COMO_MOSTRARLO, $respuesta['nota']);
 
-        $mostrar = $respuesta['para_mostrar'];
+        $mostrar = $this->para_mostrar($respuesta);
 
         $this->assertSame('Juan Perez', $mostrar['destinatarios']);
         $this->assertSame(1, $mostrar['cantidad']);
@@ -139,7 +139,7 @@ class Recordatorios_de_cobro_por_el_asistente_Test extends EmpresaTestCase
 
         $propuesta = $this->herramienta($conversation, $assistant, 'proponer_recordatorios_de_cobro', ['monto_minimo' => 200000, 'dias' => 30]);
 
-        $this->assertSame(2, $propuesta['para_mostrar']['cantidad'], json_encode($propuesta));
+        $this->assertSame(2, $this->para_mostrar($propuesta)['cantidad'], json_encode($propuesta));
 
         // Un cliente NUEVO que empieza a cumplir después de la tarjeta no recibe nada: no lo vio.
         $nuevo = $this->cliente('Cliente Nuevo', '5493444505050');
@@ -220,8 +220,8 @@ class Recordatorios_de_cobro_por_el_asistente_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
-        $this->assertSame('Juan Perez', $respuesta['para_mostrar']['destinatarios']);
-        $this->assertSame('Al Dia', $respuesta['para_mostrar']['no_les_llega'][0]['clientes']);
+        $this->assertSame('Juan Perez', $this->para_mostrar($respuesta)['destinatarios']);
+        $this->assertSame('Al Dia', $this->para_mostrar($respuesta)['no_les_llega'][0]['clientes']);
         $this->assertStringNotContainsString('Ajeno', json_encode($respuesta, JSON_UNESCAPED_UNICODE));
 
         $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
