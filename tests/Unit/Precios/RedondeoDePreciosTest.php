@@ -10,7 +10,8 @@ use Tests\TestCase;
  * Tarea 4 — unitarias de `ArticleHelper::redondear()`, el cálculo aislado que decide el precio
  * final que ve el cliente.
  *
- * 🔴 El método NO se tocó en esta tarea y no hay que tocarlo. Estos tests existen para DOCUMENTAR
+ * 🔴 El método NO se tocó en la Tarea 4 y no hay que tocarlo sin una razón (el 17/10/2026 se le sumó solo el
+ * sentido `redondear_centenas_para_arriba`, que apagado deja todo igual). Estos tests existen para DOCUMENTAR
  * el comportamiento que la fachada `modo_redondeo` tiene que preservar: son la línea base contra la
  * que se compara si algún día alguien decide unificar los `ceil`/`round` o cambiar el orden de los
  * `if`. Si alguno de estos se pone rojo sin que nadie haya cambiado el método a propósito, lo que
@@ -121,6 +122,23 @@ class RedondeoDePreciosTest extends TestCase
 
         // Un múltiplo exacto de 100 no se mueve: ceil es idempotente ahí.
         $this->assertEquals(1500, ArticleHelper::redondear(1500, $con)['price']);
+    }
+
+    /**
+     * Apagada la opción, el desglose del precio conserva el texto histórico ("por centenas"); con
+     * ella prendida dice el sentido. Fija que el cambio no tocó lo que ven los clientes que no la usan.
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function el_desglose_de_centenas_conserva_su_texto_sin_la_opcion()
+    {
+        $sin = ArticleHelper::redondear(159907.50, $this->user(['redondear_centenas_en_vender']));
+        $con = ArticleHelper::redondear(159907.50, $this->user(['redondear_centenas_en_vender', 'redondear_centenas_para_arriba']));
+
+        $this->assertStringContainsString('Redondeando por centenas = ', json_encode($sin['des']));
+        $this->assertStringNotContainsString('hacia arriba', json_encode($sin['des']));
+        $this->assertStringContainsString('hacia arriba', json_encode($con['des']));
     }
 
     /**
