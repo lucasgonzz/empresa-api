@@ -111,6 +111,12 @@ class EmployeeSeeder extends Seeder
         para heredarlo. Misma razón: la demo no corre el seeder suelto
         `PermissionCrearMovimientoDepositoSeeder`, y sin esto una demo nueva no podría crear
         movimientos de depósito con ninguno de los empleados de ejemplo.
+
+        Misión seeder-dias-anteriores-de-ventas (17/10/2026): los tres que tienen `sale.index`
+        (Miguel, Franco y Santiago) llevan también `sale.index.previus_days`, que es el criterio de
+        Lucas para heredarlo. Misma razón: la demo no corre el seeder suelto
+        `PermissionVentasDiasAnterioresSeeder`, y sin esto no verían otros días en Ventas (desde el
+        16/10/2026 el servidor lo exige). Patricio es administrador y no tiene `sale.index`.
     */
     function empleados() {
 
@@ -152,6 +158,7 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'sale.index.previus_days',
                     'comprobantes.index',
                     'deposit_movement.store',
                 ],
@@ -172,6 +179,7 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'sale.index.previus_days',
                     'comprobantes.index',
                     'deposit_movement.store',
                 ],
@@ -192,6 +200,7 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'sale.index.previus_days',
                     'comprobantes.index',
                     'deposit_movement.store',
                 ],
