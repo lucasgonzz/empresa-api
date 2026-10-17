@@ -54,6 +54,17 @@ class ConfirmacionPorTextoIaHelper
     const MENSAJE_ENVIO_SIN_SI = 'El dueño no dijo que sí a este envío: no lo mandé. Preguntale si lo mandás '
         . 'y esperá a que te conteste que sí en un mensaje suyo. Si te pidió un cambio, armá la propuesta de nuevo.';
 
+    /**
+     * Lo que se le contesta al modelo cuando no se puede asegurar que el "sí" contesta a ESTE envío tal
+     * como el dueño lo vio (B1 del segundo chequeo): ver envio_no_visto().
+     */
+    const MENSAJE_ENVIO_NO_VISTO = 'No lo mandé: no puedo asegurar que el dueño vio exactamente esto justo antes de '
+        . 'decir que sí. Volvé a mostrarle lo que se va a mandar (armá la propuesta de nuevo) y pedile el sí.';
+
+    /** Lo que se le contesta al modelo cuando el último mensaje tiene más de un envío esperando el sí. */
+    const MENSAJE_VARIOS_ENVIOS = 'No mandé nada: había más de un envío esperando el sí en el mismo mensaje, y un solo '
+        . '"sí" no alcanza para saber a cuál contesta. Proponé un envío por vez y pedile el sí a cada uno.';
+
     /** Lo que se le contesta a un envío a clientes propuesto por MCP (no se confirma por ahí). */
     const MENSAJE_ENVIO_POR_MCP = 'Un envío a clientes no se confirma por MCP: lo tiene que mandar una persona desde '
         . 'el sistema o por WhatsApp, después de ver a quiénes y el texto.';
@@ -348,6 +359,90 @@ class ConfirmacionPorTextoIaHelper
 
                 return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_SIN_SI);
             }
+
+            $no_visto = self::envio_no_visto($conversation, $accion, $propuso, $pedido);
+
+            if (!is_null($no_visto)) {
+
+                return RespuestaDeCargaIa::error($no_visto);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔴 EL SÍ ATADO A LO QUE EL DUEÑO VIO (B1 del segundo chequeo, 16/10/2026). Para un envío a
+     * clientes no alcanza con que la tarjeta sea de otro turno: el "sí" tiene que estar contestando
+     * ESE bloque, recién leído. El motivo del rechazo, o null si se puede confirmar:
+     *
+     *   1. la tarjeta es del ÚLTIMO mensaje del asistente anterior al "sí" (un "sí" a otra pregunta no
+     *      confirma una tarjeta de hace tres mensajes, ni una vieja que una corrección no llegó a pisar);
+     *   2. se propuso hace menos de ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS (una tarjeta de
+     *      ayer no se confirma con un "sí" de hoy);
+     *   3. su bloque está ADENTRO del mensaje que leyó el dueño (si ese mensaje salió sin el bloque —por
+     *      ejemplo por un texto de respaldo—, el dueño no vio a quiénes ni qué texto);
+     *   4. no hay ningún mensaje del dueño DESPUÉS del "sí" (un "sí" seguido de "esperá");
+     *   5. ese mensaje no tiene MÁS de un envío esperando (un "sí" no dice a cuál contesta). Al proponer
+     *      ya se reemplazan los otros (DestinatariosIaHelper::reemplazar_otros_envios()): esto es el
+     *      cinturón.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  \App\Models\AiMessage  $propuso  El mensaje del asistente que la propuso.
+     * @param  \App\Models\AiMessage  $pedido  El "sí" del dueño.
+     * @return string|null
+     */
+    protected static function envio_no_visto(AiConversation $conversation, AiMessageAction $accion, AiMessage $propuso, AiMessage $pedido)
+    {
+        // 1. El último mensaje del asistente antes del "sí".
+        $ultimo = AiMessage::where('ai_conversation_id', $conversation->id)
+                           ->where('rol', 'assistant')
+                           ->where('id', '<', $pedido->id)
+                           ->orderBy('id', 'DESC')
+                           ->first();
+
+        if (is_null($ultimo) || (int) $ultimo->id !== (int) $propuso->id) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 2. Reciente.
+        if (is_null($accion->created_at)
+            || $accion->created_at->lt(now()->subMinutes(ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS))) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 3. El bloque, adentro de lo que el dueño leyó.
+        $datos = is_array($accion->datos) ? $accion->datos : [];
+        $bloque = isset($datos['bloque']) ? trim((string) $datos['bloque']) : '';
+
+        if ($bloque === '' || mb_strpos((string) $propuso->contenido, $bloque) === false) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 4. Nada del dueño después del "sí".
+        $despues = AiMessage::where('ai_conversation_id', $conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '>', $pedido->id)
+                            ->exists();
+
+        if ($despues) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 5. Un solo envío esperando en ese mensaje.
+        $envios = AiMessageAction::where('ai_message_id', $propuso->id)
+                                 ->whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
+                                 ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                 ->count();
+
+        if ($envios > 1) {
+
+            return self::MENSAJE_VARIOS_ENVIOS;
         }
 
         return null;

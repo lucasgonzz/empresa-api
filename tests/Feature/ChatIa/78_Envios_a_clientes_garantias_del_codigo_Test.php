@@ -90,12 +90,13 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 CORRECCIÓN 1: el modelo cierra con una frase que no dice nada, y el mensaje igual trae los dos
-     * bloques (uno por tarjeta) con destinatarios, cantidad, texto y la pregunta.
+     * 🔴 CORRECCIÓN 1: el modelo cierra con una frase que no dice nada, y el mensaje igual trae el bloque
+     * (destinatarios, cantidad, texto y la pregunta). Desde el segundo chequeo (B1), un envío nuevo
+     * reemplaza al que estaba esperando: con dos en el mismo turno queda el último, y un solo bloque.
      *
      * @test
      */
-    public function por_whatsapp_el_mensaje_trae_el_bloque_de_cada_envio_aunque_el_modelo_no_lo_diga()
+    public function por_whatsapp_el_mensaje_trae_el_bloque_del_envio_aunque_el_modelo_no_lo_diga()
     {
         $this->clientes_que_deben();
 
@@ -113,18 +114,18 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
 
         $this->assertStringStartsWith('Te dejo preparadas las dos cosas.', $texto);
 
-        // El de la promo: a quiénes, cuántos, el texto exacto.
-        $this->assertStringContainsString("Promoción por WhatsApp\nA quiénes (2): Ana Gomez y Bruno Diaz", $texto);
-        $this->assertStringContainsString('Hola Ana Gomez! En ZZE Ferreteria Envios tenemos una promo para vos: 20% en todo el local', $texto);
-
-        // El del recordatorio: a quién y el texto real del primero.
+        // El del recordatorio (el último): a quién y el texto real del primero.
         $this->assertStringContainsString("Recordatorio de cobro por WhatsApp\nA quiénes (1): Ana Gomez", $texto);
         $this->assertStringContainsString('El texto que sale (el de Ana Gomez):', $texto);
 
-        // Uno por tarjeta, y los dos cierran con la pregunta.
-        $this->assertSame(2, substr_count($texto, DestinatariosIaHelper::PREGUNTA));
+        // La promo quedó reemplazada: su bloque no va, y la pregunta aparece una sola vez.
+        $this->assertStringNotContainsString("Promoción por WhatsApp\nA quiénes", $texto);
+        $this->assertSame(1, substr_count($texto, DestinatariosIaHelper::PREGUNTA));
 
-        $this->assertSame(2, AiMessageAction::where('ai_message_id', $assistant->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $tarjetas = AiMessageAction::where('ai_message_id', $assistant->id)->orderBy('id')->get();
+
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, $tarjetas[0]->estado_guardado());
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjetas[1]->estado_guardado());
     }
 
     /**
@@ -158,11 +159,24 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
      */
     public function el_si_para_un_envio_es_explicito()
     {
-        foreach (['sí', 'Si', 'dale mandalo', 'si, mandá', 'ok', 'Dale!', 'mandale nomás', 'de una', 'listo, enviá'] as $si) {
+        // I1 del segundo chequeo: cobertura TOTAL con vocabulario cerrado.
+        foreach ([
+            'sí', 'Si', 'dale mandalo', 'si, mandá', 'ok', 'Dale!', 'mandale nomás', 'de una', 'listo, enviá',
+            'mandáselo', 'Mandaselos', 'de acuerdo', 'sisi', 'sí, mandales a todos', 'ok, enviá porfa',
+        ] as $si) {
             $this->assertTrue(ConfirmacionDeterministaIaHelper::es_si_para_envio($si), $si);
         }
 
-        foreach (['gracias', 'esperá cambiá el texto', 'no', '¿y a cuántos?', 'sí, pero sacá a Pérez', 'dale, antes cambiale el precio', 'no, mejor mañana', ''] as $no) {
+        foreach ([
+            'gracias', 'esperá cambiá el texto', 'no', '¿y a cuántos?', 'sí, pero sacá a Pérez', 'dale, antes cambiale el precio',
+            'no, mejor mañana', '',
+            // Las correcciones que empiezan con un sí (las del segundo chequeo).
+            'mandale solo a Pérez', 'mandales a los de Rosario nomás', 'sí, sacá a Pérez', 'si, menos a Juan', 'si, sin el link',
+            'sí, mañana', 'sí, después', 'dale, mandalo después de las 18', 'si querés mandalo el lunes',
+            'si lo tenés listo, avisame', 'listo, ya lo mandé yo', 'perfecto, después lo vemos', 'dale ni en pedo',
+            // Decisión: "gracias" cierra la charla, no autoriza un envío; y un emoji solo no es un sí.
+            'listo, gracias', '👍',
+        ] as $no) {
             $this->assertFalse(ConfirmacionDeterministaIaHelper::es_si_para_envio($no), $no);
         }
 
@@ -181,13 +195,12 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
 
         Http::fake(['*' => Http::response([], 200)]);
 
-        list($conversation, $assistant) = $this->vuelta('mandales una promo');
+        // Una conversación por respuesta: cada "sí" tiene que contestar al último mensaje (B1).
+        foreach (['gracias', 'esperá cambiá el texto', 'no', '¿y a cuántos?', 'sí, sacá a Pérez'] as $respuesta_del_dueno) {
 
-        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+            list($conversation, $assistant) = $this->vuelta('mandales una promo');
 
-        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
-
-        foreach (['gracias', 'esperá cambiá el texto', 'no', '¿y a cuántos?'] as $respuesta_del_dueno) {
+            $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
 
             $intento = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $propuesta['tarjeta_id'], $respuesta_del_dueno);
 
@@ -195,6 +208,10 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
             $this->assertSame(ConfirmacionPorTextoIaHelper::MENSAJE_ENVIO_SIN_SI, $intento['error'], $respuesta_del_dueno);
             $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($propuesta['tarjeta_id'])->estado_guardado());
         }
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
 
         $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $propuesta['tarjeta_id'], 'sí');
 

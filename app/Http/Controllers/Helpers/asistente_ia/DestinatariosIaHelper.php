@@ -2,6 +2,10 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Models\AiMessageAction;
+use App\Services\AsistenteIa\HerramientasDeCarga;
+use Carbon\Carbon;
+
 /**
  * Cómo se le muestra al dueño A QUIÉNES les va a llegar un envío del asistente, antes del sí (misión
  * asistente-envios-a-clientes, 16/10/2026).
@@ -35,6 +39,23 @@ class DestinatariosIaHelper
     const TEXTO_CONFIRMAR = 'Mandar';
 
     /**
+     * Largo máximo del bloque de un envío (M1 del segundo chequeo). WhatsApp corta los mensajes largos y
+     * el bloque va al final del mensaje del asistente: si no entra, el dueño ve la lista cortada y su sí
+     * no vale. Con más de esto se rearma con menos nombres; si igual no entra, no se propone.
+     */
+    const LARGO_MAXIMO_DEL_BLOQUE = 3000;
+
+    /** Largo máximo del mensaje entero por WhatsApp (el texto del modelo más el bloque). */
+    const LARGO_MAXIMO_DEL_MENSAJE = 3500;
+
+    /** Las listas que se prueban, de más a menos, hasta que el bloque entra: [nombres, nombres por motivo]. */
+    const LISTAS_QUE_SE_PRUEBAN = [[15, 5], [8, 3], [3, 1]];
+
+    /** Lo que se le contesta al modelo si el bloque no entra ni con las listas más cortas. */
+    const MENSAJE_BLOQUE_LARGO = 'No te lo propongo: el texto es tan largo que no entra en un WhatsApp junto con '
+        . 'a quiénes les llega, y el dueño tiene que poder leer todo antes de decir que sí. Pedile un texto más corto.';
+
+    /**
      * La pregunta con la que cierra el bloque que el sistema le agrega al mensaje por WhatsApp.
      */
     const PREGUNTA = '¿Lo mando? Respondé sí para mandarlo.';
@@ -66,7 +87,7 @@ class DestinatariosIaHelper
      *   Mandar el presupuesto N° 900004 a Marcos Perez
      *   A quiénes (12): Ana, Beto, … y 3 más
      *   A quiénes no (2):
-     *   1, no tiene teléfono cargado: Carla
+     *   No tiene teléfono cargado (1): Carla
      *   El texto que sale:
      *   …
      *   ¿Lo mando? Respondé sí para mandarlo.
@@ -98,7 +119,7 @@ class DestinatariosIaHelper
             $lineas[] = 'A quiénes no (' . $total . '):';
 
             foreach ($grupos as $grupo) {
-                $lineas[] = $grupo['cantidad'] . ', ' . lcfirst(rtrim((string) $grupo['mensaje'], '.')) . ': ' . $grupo['clientes'];
+                $lineas[] = rtrim((string) $grupo['mensaje'], '.') . ' (' . $grupo['cantidad'] . '): ' . $grupo['clientes'];
             }
         }
 
@@ -121,11 +142,112 @@ class DestinatariosIaHelper
      * La línea "A quiénes (N): …" del bloque.
      *
      * @param  array<int, string>  $nombres
+     * @param  int|null  $maximo
      * @return string
      */
-    public static function linea_de_destinatarios(array $nombres)
+    public static function linea_de_destinatarios(array $nombres, $maximo = null)
     {
-        return 'A quiénes (' . count($nombres) . '): ' . self::lista_de_nombres($nombres);
+        return 'A quiénes (' . count($nombres) . '): ' . self::lista_de_nombres($nombres, $maximo);
+    }
+
+    /**
+     * El bloque de un envío a muchos (recordatorios, promoción), con las listas tan largas como
+     * entren en LARGO_MAXIMO_DEL_BLOQUE (M1 del segundo chequeo): primero 15 nombres y 5 por motivo,
+     * después menos. null si ni con las más cortas entra (el que llama no propone).
+     *
+     * @param  string  $titulo
+     * @param  array<int, string>  $nombres  De los que reciben.
+     * @param  array<int, string>  $otras_lineas  Las que van después de "A quiénes" (filtro, cómo sale, link).
+     * @param  array  $salteados  Crudos: [{nombre, motivo, mensaje}].
+     * @param  string  $titulo_del_texto
+     * @param  string  $texto
+     * @param  string|null  $aclaracion
+     * @return string|null
+     */
+    public static function bloque_que_entra($titulo, array $nombres, array $otras_lineas, array $salteados, $titulo_del_texto, $texto, $aclaracion = null)
+    {
+        foreach (self::LISTAS_QUE_SE_PRUEBAN as $listas) {
+
+            $destinos = array_merge([self::linea_de_destinatarios($nombres, $listas[0])], $otras_lineas);
+
+            $bloque = self::bloque($titulo, $destinos, self::agrupar_por_motivo($salteados, $listas[1]), $titulo_del_texto, $texto, $aclaracion);
+
+            if (mb_strlen($bloque) <= self::LARGO_MAXIMO_DEL_BLOQUE) {
+                return $bloque;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Lo que vuelve al MODELO de una propuesta de envío (M4 del segundo chequeo): la cantidad y UNA
+     * línea, nada más. A quiénes, a quiénes no y el texto los pone el sistema (la tarjeta o el bloque):
+     * si el modelo los recibiera enteros, DeepSeek los repetía y el dueño los leía dos veces.
+     *
+     * @param  array  $creada  Lo que devolvió AccionesIaHelper::crear().
+     * @param  string  $resumen
+     * @param  int  $cantidad  Cuántos reciben.
+     * @param  string  $linea  "Promoción por WhatsApp a 12 clientes; a 3 no les llega."
+     * @param  array<int, int>  $reemplazadas  Las otras propuestas de envío que esta dejó reemplazadas.
+     * @return array
+     */
+    public static function respuesta_al_modelo(array $creada, $resumen, $cantidad, $linea, array $reemplazadas = [])
+    {
+        $extra = [
+            'cantidad' => (int) $cantidad,
+            'linea'    => (string) $linea,
+            // Reemplaza a la nota de siempre: ver COMO_MOSTRARLO.
+            'nota'     => self::COMO_MOSTRARLO,
+        ];
+
+        if (count($reemplazadas)) {
+            $extra['reemplazo'] = array_values(array_unique(array_merge($creada['reemplazadas'], $reemplazadas)));
+            $extra['nota'] = self::COMO_MOSTRARLO . ' ' . self::NOTA_DE_REEMPLAZO;
+        }
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
+    }
+
+    /** Lo que se le dice al modelo cuando la propuesta nueva dejó reemplazada otra de envío. */
+    const NOTA_DE_REEMPLAZO = 'La propuesta de envío que estaba esperando el sí quedó reemplazada por ésta: los envíos se '
+        . 'confirman de a uno. Si la otra también hacía falta, proponela de nuevo después de que el dueño conteste ésta.';
+
+    /**
+     * 🔴 UN ENVÍO ESPERANDO EL SÍ POR CONVERSACIÓN (B1 del segundo chequeo). Al proponer un envío, las
+     * otras propuestas de envío de la conversación que siguen esperando pasan a 'reemplazada'. Si no, un
+     * "sí" del dueño podía quedar contestando dos bloques a la vez —o una tarjeta vieja que el dueño ya
+     * había corregido— y salir lo que no miró. ConfirmacionPorTextoIaHelper::rechazo() lo vuelve a mirar
+     * como cinturón.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $accion_id  La recién creada (no se toca).
+     * @return array<int, int>  Las que quedaron reemplazadas.
+     */
+    public static function reemplazar_otros_envios(ContextoDeCargaIa $contexto, $accion_id)
+    {
+        $ids = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+            ->where('id', '!=', (int) $accion_id)
+            ->whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
+            ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+            ->pluck('id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
+
+        if (!count($ids)) {
+            return [];
+        }
+
+        AiMessageAction::whereIn('id', $ids)
+            ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+            ->update([
+                'estado'      => AiMessageAction::ESTADO_REEMPLAZADA,
+                'resuelta_at' => Carbon::now(),
+            ]);
+
+        return $ids;
     }
 
     /**
@@ -170,10 +292,13 @@ class DestinatariosIaHelper
      * Los salteados agrupados por motivo, en el orden en que aparece cada motivo por primera vez.
      *
      * @param  array<int, array{nombre: string, motivo: string, mensaje: string}>  $salteados
+     * @param  int|null  $maximo_por_motivo  Cuántos nombres por motivo (MAXIMO_DE_NOMBRES_POR_MOTIVO si no viene).
      * @return array<int, array{motivo: string, mensaje: string, cantidad: int, clientes: string}>
      */
-    public static function agrupar_por_motivo(array $salteados)
+    public static function agrupar_por_motivo(array $salteados, $maximo_por_motivo = null)
     {
+        $maximo_por_motivo = is_null($maximo_por_motivo) ? self::MAXIMO_DE_NOMBRES_POR_MOTIVO : (int) $maximo_por_motivo;
+
         $grupos = [];
 
         foreach ($salteados as $salteado) {
@@ -198,7 +323,7 @@ class DestinatariosIaHelper
                 'motivo'   => $grupo['motivo'],
                 'mensaje'  => $grupo['mensaje'],
                 'cantidad' => count($grupo['nombres']),
-                'clientes' => self::lista_de_nombres($grupo['nombres'], self::MAXIMO_DE_NOMBRES_POR_MOTIVO),
+                'clientes' => self::lista_de_nombres($grupo['nombres'], $maximo_por_motivo),
             ];
         }
 
@@ -227,7 +352,8 @@ class DestinatariosIaHelper
     }
 
     /**
-     * Lo que va en `para_mostrar` de la respuesta al modelo: la misma información que la tarjeta.
+     * Lo que va en `datos.para_mostrar` de la tarjeta (desde el segundo chequeo ya no viaja al modelo,
+     * ver respuesta_al_modelo()): la misma información que el bloque, en partes.
      *
      * @param  array<int, string>  $nombres  De los que reciben, en orden.
      * @param  array  $grupos  agrupar_por_motivo() de los que no.

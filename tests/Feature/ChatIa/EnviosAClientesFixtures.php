@@ -307,12 +307,67 @@ trait EnviosAClientesFixtures
      */
     protected function confirmar_en_la_vuelta_siguiente($conversation, AiMessage $propuso, $tarjeta_id, $si = 'sí, mandalo')
     {
-        $propuso->estado = 'listo';
-        $propuso->contenido = 'Te muestro a quiénes y el texto. ¿Lo mando?';
-        $propuso->save();
+        $this->cerrar_la_vuelta($propuso);
 
         list($conversation, $siguiente) = $this->vuelta($si, $conversation);
 
         return $this->herramienta($conversation, $siguiente, 'confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]);
+    }
+
+    /**
+     * Deja 'listo' el mensaje que propuso, con el contenido que le llegó al dueño: la frase del modelo
+     * y, como lo agrega AsistenteIaService, el bloque de cada envío que quedó esperando el sí. Sin el
+     * bloque adentro, el sí no confirma (ConfirmacionPorTextoIaHelper::envio_no_visto()).
+     *
+     * @param  AiMessage  $propuso
+     * @param  bool  $con_el_bloque
+     * @return void
+     */
+    protected function cerrar_la_vuelta(AiMessage $propuso, $con_el_bloque = true)
+    {
+        $contenido = 'Te preparo el envío.';
+
+        if ($con_el_bloque) {
+
+            foreach (\App\Models\AiMessageAction::where('ai_message_id', $propuso->id)->where('estado', \App\Models\AiMessageAction::ESTADO_PROPUESTA)->get() as $tarjeta) {
+
+                $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+                if (isset($datos['bloque'])) {
+                    $contenido .= "\n\n" . $datos['bloque'];
+                }
+            }
+        }
+
+        $propuso->estado = 'listo';
+        $propuso->contenido = $contenido;
+        $propuso->save();
+    }
+
+    /**
+     * Lo que se le muestra al dueño de una propuesta, en partes (`datos.para_mostrar` de la tarjeta):
+     * desde el segundo chequeo no viaja en la respuesta al modelo.
+     *
+     * @param  array  $respuesta  La respuesta de la herramienta proponer_.
+     * @return array
+     */
+    protected function para_mostrar(array $respuesta)
+    {
+        $this->assertArrayNotHasKey('para_mostrar', $respuesta, 'Al modelo no le llega el bloque entero (M4).');
+
+        $tarjeta = \App\Models\AiMessageAction::find($respuesta['tarjeta_id']);
+
+        return $tarjeta->datos['para_mostrar'];
+    }
+
+    /**
+     * El bloque que el sistema agrega al mensaje por WhatsApp.
+     *
+     * @param  array  $respuesta
+     * @return string
+     */
+    protected function bloque(array $respuesta)
+    {
+        return (string) \App\Models\AiMessageAction::find($respuesta['tarjeta_id'])->datos['bloque'];
     }
 }

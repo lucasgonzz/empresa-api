@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
+use App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
@@ -2582,6 +2583,8 @@ CONFIRMACION;
                                        ->orderBy('id')
                                        ->get();
 
+            $bloques = [];
+
             foreach ($tarjetas as $tarjeta) {
 
                 $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
@@ -2592,8 +2595,34 @@ CONFIRMACION;
                     continue;
                 }
 
-                $texto = rtrim((string) $texto) . "\n\n" . $bloque;
+                $bloques[] = $bloque;
             }
+
+            if (! count($bloques)) {
+                return (string) $texto;
+            }
+
+            $los_bloques = implode("\n\n", $bloques);
+
+            /*
+             * M1 del segundo chequeo: el mensaje entero tiene que entrar en un WhatsApp. El bloque ya se
+             * armó para entrar solo (DestinatariosIaHelper::bloque_que_entra()); si el texto del modelo
+             * lo pasa del tope, se recorta EL TEXTO DEL MODELO (hasta el último punto que entra), nunca el
+             * bloque: es lo que el dueño tiene que leer entero antes del sí.
+             */
+            $lugar = DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE - mb_strlen($los_bloques) - 2;
+
+            $texto = rtrim((string) $texto);
+
+            if (mb_strlen($texto) > $lugar) {
+
+                $corto = mb_substr($texto, 0, max(0, $lugar));
+                $punto = mb_strrpos($corto, '.');
+
+                $texto = $punto === false ? '' : mb_substr($corto, 0, $punto + 1);
+            }
+
+            $texto = trim($texto) === '' ? $los_bloques : $texto . "\n\n" . $los_bloques;
 
         } catch (\Throwable $e) {
 

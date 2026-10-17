@@ -324,26 +324,43 @@ class ConfirmacionDeterministaIaHelper
     }
 
     /**
-     * Cómo empieza un sí explícito a un ENVÍO A CLIENTES, ya normalizado (sin tildes, en minúsculas).
-     * Ver es_si_para_envio().
+     * El VOCABULARIO CERRADO de un sí a un ENVÍO A CLIENTES (segundo chequeo del 16/10/2026). Ver
+     * es_si_para_envio(): CADA palabra del mensaje tiene que estar acá, y al menos una tiene que ser
+     * una afirmación o un verbo de mandar.
      */
-    const INICIOS_DE_SI_PARA_ENVIO = [
-        'si', 'dale', 'ok', 'okey', 'listo', 'de una', 'mandalo', 'manda', 'mandale', 'mandales',
-        'envia', 'envialo', 'confirmo', 'perfecto', 'va', 'joya', 'obvio',
+    const AFIRMACIONES_DE_ENVIO = [
+        'si', 'sisi', 'dale', 'ok', 'okey', 'oka', 'listo', 'perfecto', 'de acuerdo', 'joya', 'obvio',
+        'va', 'claro', 'confirmo', 'de una',
     ];
+
+    /** Los verbos de mandar que valen como sí (ya normalizados: sin tildes). */
+    const VERBOS_DE_ENVIO = [
+        'mandalo', 'mandala', 'mandalos', 'mandalas', 'mandale', 'mandales', 'mandaselo', 'mandaselos',
+        'mandasela', 'mandaselas', 'manda', 'envialo', 'enviala', 'envialos', 'envialas', 'envia',
+        'enviale', 'enviales',
+    ];
+
+    /**
+     * Lo que puede acompañar al sí sin cambiarlo. 🔴 "gracias" NO está, a propósito: "listo, gracias"
+     * cierra la charla, no autoriza un envío (decisión fijada en el test 78).
+     */
+    const ACOMPANANTES_DE_ENVIO = ['nomas', 'ya', 'a todos', 'todo', 'porfa', 'por favor'];
 
     /** Largo máximo de un sí a un envío: más que eso ya es otra cosa (una corrección, un pedido). */
     const LARGO_MAXIMO_DE_SI_PARA_ENVIO = 60;
 
     /**
      * true si el mensaje del dueño es un SÍ EXPLÍCITO a un envío a clientes (misión
-     * asistente-envios-a-clientes, corrección 2 del chequeo del 16/10/2026).
+     * asistente-envios-a-clientes, correcciones del 16/10/2026).
      *
-     * 🔴 POR QUÉ ES MÁS ESTRICTO QUE es_afirmacion(), Y POR QUÉ LO MIRA EL CÓDIGO Y NO EL MODELO. La
-     * condición de Lucas es "siempre con un sí explícito". Para un envío, el modelo podía leer como sí un
-     * "gracias", un "esperá, cambiá el texto" o un "¿y a cuántos?" y llamar a confirmar_carga_pendiente:
-     * un WhatsApp que salió no se desmanda. Acá se acepta una afirmación corta que EMPIEZA con un sí
-     * (o es una de las de es_afirmacion()), y nada que pregunte, niegue, corrija o pida esperar.
+     * 🔴 COBERTURA TOTAL CON LISTA CERRADA, como es_afirmacion(). La primera versión miraba solo cómo
+     * EMPEZABA el mensaje y aceptaba correcciones que el dueño escribía arrancando con un sí: "mandale
+     * solo a Pérez", "sí, sacá a Pérez", "si, sin el link", "sí, mañana", "dale, mandalo después de las
+     * 18", "listo, ya lo mandé yo". Un WhatsApp que salió no se desmanda, así que acá vale lo contrario:
+     * TODAS las palabras tienen que ser de AFIRMACIONES_DE_ENVIO, VERBOS_DE_ENVIO o
+     * ACOMPANANTES_DE_ENVIO, y al menos una tiene que ser de las dos primeras. Cualquier otra palabra
+     * (un nombre, una hora, "después", "solo", "sin", "gracias") y no es un sí. Un emoji solo tampoco:
+     * normalizado queda vacío. Con un signo de pregunta, tampoco.
      *
      * @param  string|null  $texto
      * @return bool
@@ -370,24 +387,48 @@ class ConfirmacionDeterministaIaHelper
             return false;
         }
 
-        // Lo que niega, pone una condición, corrige o pide esperar: decide el dueño de nuevo, no el sí.
-        if (preg_match('/\b(no|pero|antes)\b/', $normalizado)
-            || strpos($normalizado, 'cambi') !== false
-            || strpos($normalizado, 'esper') !== false) {
+        $si = array_merge(self::frases(self::AFIRMACIONES_DE_ENVIO), self::frases(self::VERBOS_DE_ENVIO));
+        $acompanantes = self::frases(self::ACOMPANANTES_DE_ENVIO);
 
-            return false;
+        $palabras = explode(' ', $normalizado);
+        $total = count($palabras);
+        $hubo_si = false;
+        $i = 0;
+
+        while ($i < $total) {
+
+            $avance = 0;
+
+            // Primero las frases de dos palabras ("de acuerdo", "a todos"), después las de una.
+            foreach ([2, 1] as $largo) {
+
+                if ($i + $largo > $total) {
+                    continue;
+                }
+
+                $frase = implode(' ', array_slice($palabras, $i, $largo));
+
+                if (in_array($frase, $si, true)) {
+                    $hubo_si = true;
+                    $avance = $largo;
+                    break;
+                }
+
+                if (in_array($frase, $acompanantes, true)) {
+                    $avance = $largo;
+                    break;
+                }
+            }
+
+            // Una palabra fuera del vocabulario: no es un sí.
+            if ($avance === 0) {
+                return false;
+            }
+
+            $i += $avance;
         }
 
-        if (self::es_afirmacion($texto)) {
-
-            return true;
-        }
-
-        $inicios = implode('|', array_map(function ($inicio) {
-            return preg_quote(self::normalizar($inicio), '/');
-        }, self::INICIOS_DE_SI_PARA_ENVIO));
-
-        return (bool) preg_match('/^(' . $inicios . ')\b/', $normalizado);
+        return $hubo_si;
     }
 
     /**
