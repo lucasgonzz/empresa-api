@@ -68,6 +68,7 @@ class UserSetupHelper
      *                                   business_type (required),
      *                                   use_deposits, use_price_lists, iva_included,
      *                                   ask_amount_in_vender, redondear_centenas_en_vender,
+     *                                   redondear_centenas_para_arriba (opcional),
      *                                   omitir_cuentas_corrientes, ventas_con_fecha_de_entrega,
      *                                   cajas, usar_codigos_de_barra, codigos_de_barra_por_defecto,
      *                                   consultora_de_precios, imagenes, produccion,
@@ -261,6 +262,8 @@ class UserSetupHelper
             'iva_included'                  => !empty($data['iva_included']) ? 1 : 0,
             'ask_amount_in_vender'          => !empty($data['ask_amount_in_vender']) ? 1 : 0,
             'redondear_centenas_en_vender'  => !empty($data['redondear_centenas_en_vender']) ? 1 : 0,
+            // Sentido del redondeo por centenas (ceil). Opcional: el admin hoy no lo manda y queda en 0.
+            'redondear_centenas_para_arriba' => !empty($data['redondear_centenas_para_arriba']) ? 1 : 0,
             // omitir_cuentas_corrientes llega como booleano directo (al revés del demo)
             'siempre_omitir_en_cuenta_corriente' => !empty($data['omitir_cuentas_corrientes']) ? 1 : 0,
             // Si trabaja con costos en dolares, define si el precio final de esos articulos queda cotizado a pesos (1) o en dolares (0).

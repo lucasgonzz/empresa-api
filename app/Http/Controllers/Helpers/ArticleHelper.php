@@ -1062,14 +1062,24 @@ class ArticleHelper {
         if ($user->redondear_centenas_en_vender) {
 
             if ($price > 100) {
-                
-                $price = round($price, -2);
+
+                // `redondear_centenas_para_arriba` cambia el sentido del redondeo: siempre hacia la
+                // centena de arriba (ceil) en vez de la más cercana (round). Sola, sin centenas
+                // prendido, no hace nada: este `if` no se ejecuta. Apagada es exactamente lo de antes.
+                if ($user->redondear_centenas_para_arriba) {
+                    $price = ceil($price / 100) * 100;
+                    $sentido = 'por centenas, hacia arriba';
+                } else {
+                    $price = round($price, -2);
+                    $sentido = 'por centenas';
+                }
+
                 $des[] = DesglosePrecioHelper::linea(
                     DesglosePrecioHelper::REDONDEO,
                     'Redondeo',
-                    'por centenas',
+                    $sentido,
                     Numbers::price($price, true),
-                    'Redondeando por centenas = '.Numbers::price($price, true)
+                    'Redondeando '.$sentido.' = '.Numbers::price($price, true)
                 );
             }
         }

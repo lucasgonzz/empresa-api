@@ -905,6 +905,7 @@ class DemoSetupHelper
             'iva_included'                  => !empty($data['iva_included']) ? 1 : 0,
             'ask_amount_in_vender'          => 1,
             'redondear_centenas_en_vender'  => 0,
+            'redondear_centenas_para_arriba' => 0,
             'siempre_omitir_en_cuenta_corriente' => 0,
             'base_de_datos'                 => 'empresa_prueba_1',
             // API key de Google Custom Search: la manda admin-api (RunDemoSetupService, configurable
