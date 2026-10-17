@@ -392,6 +392,18 @@ class PropuestaPromocionWhatsappIaHelper
             throw new AccionIaException(422, (string) $destino['error'] . ' No mandé nada.');
         }
 
+        /*
+         * 🔴 LO QUE SALE VA A DONDE SE MOSTRÓ (B1 de la revisión de merge): si el link recalculado no es
+         * el que el dueño vio (cambió la dirección de la tienda o el slug del artículo), no se manda.
+         */
+        $link_mostrado = array_key_exists('link', $datos) ? $datos['link'] : null;
+
+        if ($destino['link'] !== $link_mostrado) {
+
+            throw new AccionIaException(422, 'No mandé nada: cambió el link de la promo desde que se la mostré al dueño '
+                . '(ahora sería ' . (is_null($destino['link']) ? 'sin link' : $destino['link']) . '). Volvé a mostrársela y pedile el sí de nuevo.');
+        }
+
         if (WhatsappBotConfig::getForUser($contexto->owner_id) === null) {
 
             throw new AccionIaException(422, 'El negocio no tiene WhatsApp conectado (no hay una configuración activa): no se mandó nada.');

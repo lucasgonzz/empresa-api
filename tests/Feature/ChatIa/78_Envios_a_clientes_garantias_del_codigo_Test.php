@@ -160,9 +160,10 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
     public function el_si_para_un_envio_es_explicito()
     {
         // I1 del segundo chequeo: cobertura TOTAL con vocabulario cerrado.
+        // Revisión de merge: las afirmaciones débiles (ok, listo, va, de acuerdo...) valen SOLO con un verbo de mandar.
         foreach ([
-            'sí', 'Si', 'dale mandalo', 'si, mandá', 'ok', 'Dale!', 'mandale nomás', 'de una', 'listo, enviá',
-            'mandáselo', 'Mandaselos', 'de acuerdo', 'sisi', 'sí, mandales a todos', 'ok, enviá porfa',
+            'sí', 'Si', 'dale', 'dale mandalo', 'si, mandá', 'Dale!', 'mandale nomás', 'de una', 'listo, enviá',
+            'mandáselo', 'Mandaselos', 'sisi', 'sí, mandales a todos', 'ok, enviá porfa', 'ok mandalo', 'confirmo',
         ] as $si) {
             $this->assertTrue(ConfirmacionDeterministaIaHelper::es_si_para_envio($si), $si);
         }
@@ -176,6 +177,8 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
             'si lo tenés listo, avisame', 'listo, ya lo mandé yo', 'perfecto, después lo vemos', 'dale ni en pedo',
             // Decisión: "gracias" cierra la charla, no autoriza un envío; y un emoji solo no es un sí.
             'listo, gracias', '👍',
+            // Las débiles solas: pueden ser la respuesta a un recordatorio de tarea o a un aviso.
+            'listo', 'ok', 'va', 'listo ya', 'de acuerdo', 'perfecto', 'joya',
         ] as $no) {
             $this->assertFalse(ConfirmacionDeterministaIaHelper::es_si_para_envio($no), $no);
         }

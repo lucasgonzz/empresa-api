@@ -174,8 +174,9 @@ class SaleWhatsappSenderService
     /**
      * Envía al cliente un comprobante que NO es una venta —un presupuesto o un recibo— por el MISMO
      * molde que `send_sale()` (misión asistente-envios-a-clientes, 16/10/2026): ventana de 24 h
-     * abierta → `send_document` con el epígrafe que manda el que llama; cerrada → la plantilla
-     * `cc_cli_comprobante` [Nombre, Nº de comprobante, Negocio] con el PDF como header DOCUMENT.
+     * abierta → `send_document` con el epígrafe que manda el que llama; cerrada → la plantilla de
+     * MENSAJE LIBRE `cc_cli_mensaje_libre` [Nombre, Negocio, Mensaje] con el link del PDF en el texto
+     * (ver TEMPLATE_MENSAJE_LIBRE: `cc_cli_comprobante` diría "de tu compra").
      *
      * 🔴 ES UN MÉTODO HERMANO Y NO UNA GENERALIZACIÓN DE `send_sale()`, A PROPÓSITO. `send_sale()` lo
      * usan el botón del modal de Ventas (`SaleController@send_whatsapp_agent`) y el job automático

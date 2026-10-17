@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -252,7 +253,12 @@ class ConfirmacionPorTextoIaHelper
      */
     public static function cancelar(AiConversation $conversation, AiMessage $assistant_message, $accion_id)
     {
-        $rechazo = self::rechazo($conversation, $assistant_message, $accion_id);
+        /*
+         * Cancelar es siempre seguro: no le exige a un envío a clientes el sí explícito ni que sea lo
+         * recién visto (revisión de merge, 16/10/2026). Con esas guardas, un "no, dejalo" no podía
+         * cancelar la promo que justamente estaba rechazando.
+         */
+        $rechazo = self::rechazo($conversation, $assistant_message, $accion_id, false);
 
         if (!is_null($rechazo)) {
 
@@ -268,9 +274,11 @@ class ConfirmacionPorTextoIaHelper
      * @param  \App\Models\AiConversation  $conversation
      * @param  \App\Models\AiMessage  $assistant_message
      * @param  mixed  $accion_id
+     * @param  bool  $para_confirmar  false al CANCELAR: las guardas de los envíos (el sí explícito y lo
+     *                                recién visto) solo valen para mandar.
      * @return array|null
      */
-    protected static function rechazo(AiConversation $conversation, AiMessage $assistant_message, $accion_id)
+    protected static function rechazo(AiConversation $conversation, AiMessage $assistant_message, $accion_id, $para_confirmar = true)
     {
         $accion = AiMessageAction::where('id', (int) $accion_id)
                                     ->where('ai_conversation_id', $conversation->id)
@@ -348,14 +356,19 @@ class ConfirmacionPorTextoIaHelper
          * agente externo podría proponer y confirmar 250 WhatsApps sin que una persona lea la tarjeta;
          * las herramientas ni se exponen por ahí, esto es el cinturón).
          */
-        if (in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
+        if ($para_confirmar && in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
 
             if ((string) $propuso->canal === AiMessage::CANAL_MCP) {
 
                 return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_POR_MCP);
             }
 
-            if (!ConfirmacionDeterministaIaHelper::es_si_para_envio($pedido->contenido)) {
+            /*
+             * Un mensaje con foto no es un sí a un envío (B4 de la revisión de merge), igual que en
+             * la confirmación determinista: la foto puede ser el pedido de otra cosa.
+             */
+            if (AiMessageImagen::where('ai_message_id', $pedido->id)->exists()
+                || !ConfirmacionDeterministaIaHelper::es_si_para_envio($pedido->contenido)) {
 
                 return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_SIN_SI);
             }

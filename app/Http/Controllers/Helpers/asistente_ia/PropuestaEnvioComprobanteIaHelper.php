@@ -271,6 +271,11 @@ class PropuestaEnvioComprobanteIaHelper
                 'pdf_url'   => $pdf_url,
                 // I2: cómo sale por WhatsApp (mensaje | plantilla); si cambia antes del sí, no se manda.
                 'caminos'   => in_array(self::CANAL_WHATSAPP, $van, true) ? [self::CANAL_WHATSAPP => $evaluados[self::CANAL_WHATSAPP]['camino']] : [],
+                // B2: a qué número y a qué mail se le mostró que va; si cambian antes del sí, no se manda.
+                'destinos'  => [
+                    self::CANAL_WHATSAPP => in_array(self::CANAL_WHATSAPP, $van, true) ? (string) $evaluados[self::CANAL_WHATSAPP]['telefono'] : null,
+                    self::CANAL_MAIL     => in_array(self::CANAL_MAIL, $van, true) ? (string) $evaluados[self::CANAL_MAIL]['email'] : null,
+                ],
                 // Lo que el sistema le agrega al mensaje por WhatsApp (ver DestinatariosIaHelper::bloque()).
                 'bloque'    => $bloque,
             ],
@@ -552,9 +557,32 @@ class PropuestaEnvioComprobanteIaHelper
          * ventana de 24 h se abrió o se cerró, el WhatsApp saldría con OTRO texto (el epígrafe o la
          * plantilla) que el dueño no leyó. No se manda nada: el modelo vuelve a mostrárselo.
          */
+        $hoy_por_canal = self::evaluar_canales($contexto, $tipo, $modelo, $client);
+
+        /*
+         * 🔴 Y VA A DONDE SE MOSTRÓ (B2 de la revisión de merge): si el teléfono o el mail del cliente
+         * cambiaron desde la tarjeta, el comprobante le llegaría a otro número o a otra casilla que la
+         * que el dueño vio. No se manda nada.
+         */
+        $destinos = isset($datos['destinos']) && is_array($datos['destinos']) ? $datos['destinos'] : [];
+
+        foreach ([self::CANAL_WHATSAPP => 'telefono', self::CANAL_MAIL => 'email'] as $canal => $clave) {
+
+            if (!in_array($canal, $canales, true) || !isset($destinos[$canal]) || empty($hoy_por_canal[$canal]['puede'])) {
+                continue;
+            }
+
+            if ((string) $hoy_por_canal[$canal][$clave] !== (string) $destinos[$canal]) {
+
+                throw new AccionIaException(422, 'No lo mandé: cambió ' . ($canal === self::CANAL_WHATSAPP ? 'el teléfono' : 'el mail')
+                    . ' del cliente desde que se lo mostré al dueño (ahora sería ' . $hoy_por_canal[$canal][$clave] . '). '
+                    . 'Volvé a mostrárselo y pedile el sí de nuevo.');
+            }
+        }
+
         if (in_array(self::CANAL_WHATSAPP, $canales, true) && isset($datos['caminos'][self::CANAL_WHATSAPP])) {
 
-            $hoy = self::evaluar_canales($contexto, $tipo, $modelo, $client)[self::CANAL_WHATSAPP];
+            $hoy = $hoy_por_canal[self::CANAL_WHATSAPP];
 
             if (!empty($hoy['puede']) && $hoy['camino'] !== $datos['caminos'][self::CANAL_WHATSAPP]) {
 

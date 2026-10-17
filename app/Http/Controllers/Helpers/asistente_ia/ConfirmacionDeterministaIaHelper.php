@@ -329,8 +329,17 @@ class ConfirmacionDeterministaIaHelper
      * una afirmación o un verbo de mandar.
      */
     const AFIRMACIONES_DE_ENVIO = [
-        'si', 'sisi', 'dale', 'ok', 'okey', 'oka', 'listo', 'perfecto', 'de acuerdo', 'joya', 'obvio',
-        'va', 'claro', 'confirmo', 'de una',
+        'si', 'sisi', 'dale', 'confirmo', 'de una',
+    ];
+
+    /**
+     * Las afirmaciones DÉBILES (revisión de merge, 16/10/2026): valen como sí a un envío SOLO con un
+     * verbo de mandar al lado ("ok mandalo", "listo, mandá"). Solas no: un recordatorio de tarea o el
+     * aviso de un escaneo pueden salir por WhatsApp sin quedar como último mensaje del asistente, y el
+     * "listo"/"ok" del dueño a ESO no puede mandar una promo.
+     */
+    const AFIRMACIONES_DEBILES_DE_ENVIO = [
+        'ok', 'okey', 'oka', 'listo', 'va', 'joya', 'perfecto', 'claro', 'obvio', 'de acuerdo',
     ];
 
     /** Los verbos de mandar que valen como sí (ya normalizados: sin tildes). */
@@ -357,8 +366,9 @@ class ConfirmacionDeterministaIaHelper
      * EMPEZABA el mensaje y aceptaba correcciones que el dueño escribía arrancando con un sí: "mandale
      * solo a Pérez", "sí, sacá a Pérez", "si, sin el link", "sí, mañana", "dale, mandalo después de las
      * 18", "listo, ya lo mandé yo". Un WhatsApp que salió no se desmanda, así que acá vale lo contrario:
-     * TODAS las palabras tienen que ser de AFIRMACIONES_DE_ENVIO, VERBOS_DE_ENVIO o
-     * ACOMPANANTES_DE_ENVIO, y al menos una tiene que ser de las dos primeras. Cualquier otra palabra
+     * TODAS las palabras tienen que ser de AFIRMACIONES_DE_ENVIO, AFIRMACIONES_DEBILES_DE_ENVIO,
+     * VERBOS_DE_ENVIO o ACOMPANANTES_DE_ENVIO, y tiene que haber una afirmación fuerte o un verbo de
+     * mandar (las débiles solas no alcanzan). Cualquier otra palabra
      * (un nombre, una hora, "después", "solo", "sin", "gracias") y no es un sí. Un emoji solo tampoco:
      * normalizado queda vacío. Con un signo de pregunta, tampoco.
      *
@@ -388,7 +398,8 @@ class ConfirmacionDeterministaIaHelper
         }
 
         $si = array_merge(self::frases(self::AFIRMACIONES_DE_ENVIO), self::frases(self::VERBOS_DE_ENVIO));
-        $acompanantes = self::frases(self::ACOMPANANTES_DE_ENVIO);
+        // Las débiles se aceptan como palabras, pero no alcanzan solas para el sí.
+        $acompanantes = array_merge(self::frases(self::ACOMPANANTES_DE_ENVIO), self::frases(self::AFIRMACIONES_DEBILES_DE_ENVIO));
 
         $palabras = explode(' ', $normalizado);
         $total = count($palabras);
