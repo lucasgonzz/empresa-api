@@ -378,9 +378,7 @@ class Objetivo_del_agente_Test extends TestCase
         // Con objetivo, todo lo anterior queda intacto: la capa se SUMA al final (mismo chequeo que el test 21).
         $this->poner_objetivo('order_by_whatsapp');
         $con_objetivo = $this->system_generado();
-        $this->assertSame(0, strpos($con_objetivo, $sin_objetivo . "
-
-" . self::MARCA_CAPA), 'La capa va al final, sin tocar lo de antes.');
+        $this->assertSame(0, strpos($con_objetivo, $sin_objetivo . "\n\n" . self::MARCA_CAPA), 'La capa va al final, sin tocar lo de antes.');
 
         $this->poner_objetivo('vender_mas_que_nunca');
         $this->assertSame($sin_objetivo, $this->system_generado(), 'Un valor desconocido se comporta como sin objetivo.');

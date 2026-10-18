@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Tests\EmpresaTestCase;
+use Database\Seeders\PdfColumnOptionSeeder;
 
 /**
  * Misión asistente-envios-a-clientes (16/10/2026) — proponer_envio_de_comprobante.
@@ -52,6 +53,11 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
 
         Http::fake(['*' => Http::response([], 200)]);
         Mail::fake();
+
+        /* El link del comprobante sale de la primera PdfColumnOption (ComercioCityMailHelper::payload_de_venta),
+           y la base que arma el gate (migrate:fresh + TestingFerreteriaSeeder) no trae ese catalogo: el test lo
+           siembra en vez de depender de lo que tenga la base de quien lo corre. */
+        $this->seed(PdfColumnOptionSeeder::class);
     }
 
     protected function presupuesto($client, $num = 900004, $total = 99813.83, $owner_id = null)
