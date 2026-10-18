@@ -47,8 +47,10 @@ class ConsultasDeCargaIaHelper {
 
         if ($busqueda !== '') {
 
-            // Los comodines del LIKE se escapan: un nombre con "%" o "_" tiene que buscarse literal.
-            $query->where('name', 'LIKE', '%'.addcslashes($busqueda, '%_\\').'%');
+            // Por palabras sueltas en el nombre (misión asistente-altas-y-conversacion, 16/10/2026): "ferretería
+            // sur" encuentra "Ferretería del Sur". Los comodines los escapa BusquedaPorPalabrasIaHelper.
+            BusquedaPorPalabrasIaHelper::filtrar($query, $busqueda, ['name']);
+            BusquedaPorPalabrasIaHelper::ordenar_por_frase($query, $busqueda, ['name']);
         }
 
         $resultado = [];

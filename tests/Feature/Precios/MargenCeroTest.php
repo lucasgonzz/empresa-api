@@ -230,4 +230,58 @@ class MargenCeroTest extends TestCase
         $this->assertNotNull($fresco->percentage_gain, 'En modo reporte no se escribe nada.');
         $this->assertEquals(0, (float) $fresco->percentage_gain);
     }
+
+    /**
+     * Un --user_id pelado, vacio, no numerico o en cero corta con codigo 1 y sin tocar nada.
+     *
+     * Antes, pelado (null) y vacio ('') se tomaban como "sin filtro": `--aplicar --user_id $ID`
+     * con `$ID` vacio en el shell normalizaba a TODOS los dueños. En un ArrayInput (Artisan::call)
+     * un null es la opcion pelada, igual que en la consola real.
+     *
+     * @return void
+     */
+    public function test_un_user_id_pelado_o_vacio_o_no_numerico_o_cero_corta_sin_tocar_nada()
+    {
+        $sucio = $this->crear_articulo(['cost' => 100, 'percentage_gain' => 0, 'price' => 250]);
+
+        $casos = [
+            'pelado'      => null,
+            'vacio'       => '',
+            'no numerico' => 'abc',
+            'con basura'  => '500x',
+            'cero'        => '0',
+            'negativo'    => '-3',
+        ];
+
+        foreach ($casos as $nombre => $valor) {
+            $codigo = Artisan::call('articles:normalizar-margen-cero', ['--aplicar' => true, '--user_id' => $valor]);
+
+            $this->assertSame(1, $codigo, "--user_id $nombre tiene que cortar con codigo 1.");
+            $this->assertStringContainsString('No se hizo nada', Artisan::output(), "--user_id $nombre tiene que avisar que no se hizo nada.");
+
+            $fresco = DB::table('articles')->where('id', $sucio->id)->first();
+
+            $this->assertNotNull($fresco->percentage_gain, "--user_id $nombre no tiene que escribir nada.");
+            $this->assertEquals(0, (float) $fresco->percentage_gain);
+        }
+    }
+
+    /**
+     * Sin la opcion el comando sigue barriendo a todos (comportamiento intacto), y con un id
+     * valido solo a ese dueño.
+     *
+     * @return void
+     */
+    public function test_sin_user_id_sigue_andando_y_con_id_valido_acota()
+    {
+        $sucio = $this->crear_articulo(['cost' => 100, 'percentage_gain' => 0, 'price' => 250]);
+
+        $codigo = Artisan::call('articles:normalizar-margen-cero', ['--aplicar' => true, '--user_id' => '999999999']);
+        $this->assertSame(0, $codigo);
+        $this->assertEquals(0, (float) DB::table('articles')->where('id', $sucio->id)->value('percentage_gain'), 'Otro dueño: no se toca.');
+
+        $codigo = Artisan::call('articles:normalizar-margen-cero', ['--aplicar' => true]);
+        $this->assertSame(0, $codigo);
+        $this->assertNull(DB::table('articles')->where('id', $sucio->id)->value('percentage_gain'), 'Sin la opcion barre todos los dueños, como siempre.');
+    }
 }

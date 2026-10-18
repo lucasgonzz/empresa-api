@@ -21,12 +21,33 @@ class Pending extends Model
      * contrato nuevo de la agenda promete `true`/`false` y en PHP `"0"` es truthy adentro de un
      * `if`: el cast cierra las dos cosas.
      *
+     * `avisar_por_whatsapp` y `avisado_at` son del recordatorio por WhatsApp (misión
+     * recordatorios-whatsapp, 16/10/2026, ver RecordatoriosDelAsistenteHelper). `hora_aviso` queda
+     * sin cast a propósito: es TIME y vuelve como "HH:MM:SS", que es justo lo que se compara.
+     *
      * @var array<string,string>
      */
     protected $casts = [
-        'es_recurrente' => 'boolean',
-        'completado'    => 'boolean',
+        'es_recurrente'       => 'boolean',
+        'completado'          => 'boolean',
+        'avisar_por_whatsapp' => 'boolean',
+        'avisado_at'          => 'datetime',
     ];
+
+    /**
+     * Al editar una tarea existente, la marca del recordatorio sigue a la hora nueva (misión
+     * recordatorios-whatsapp, 16/10/2026). Va en el modelo y no en cada llamador porque la hora se
+     * cambia por tres caminos —el PUT de la pantalla, los cambios del asistente y cualquier save
+     * futuro— y los tres tienen que dar lo mismo. Ver AgendaTareaHelper::recalcular_marca_del_recordatorio().
+     *
+     * @return void
+     */
+    protected static function booted()
+    {
+        static::updating(function (Pending $pending) {
+            \App\Http\Controllers\Helpers\agenda\AgendaTareaHelper::recalcular_marca_del_recordatorio($pending);
+        });
+    }
 
     function scopeWithAll($q) {
         $q->with('unidad_frecuencia', 'expense_concept');

@@ -96,6 +96,21 @@ class PropuestaGenericaIaHelper
             $extras = AltaDeArticuloConFotoIaHelper::heredar($contexto, $reemplaza_a, $extras);
         }
 
+        /*
+         * Misión asistente-altas-y-conversacion (16/10/2026, D5): la subcategoría de un artículo se
+         * resuelve DENTRO de su categoría, así que sale de `datos` antes de validar y se resuelve
+         * después, con la categoría ya resuelta (ver categoria_del_alta_de_articulo()). El "sin
+         * categoría" a propósito se normaliza a null para que validar_campos() lo tome como vacío.
+         */
+        $subcategoria_pedida = null;
+
+        $datos_recibidos = $datos;
+
+        if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+
+            list($datos, $subcategoria_pedida) = self::separar_categoria_del_articulo($declaracion, $datos);
+        }
+
         $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $datos);
 
         if (RespuestaDeCargaIa::es_negativa($validado)) {
@@ -156,6 +171,32 @@ class PropuestaGenericaIaHelper
             return RespuestaDeCargaIa::faltan($faltan);
         }
 
+        /*
+         * 🔴 Misión asistente-altas-y-conversacion (16/10/2026, D5, demo3 S10 y S11): un artículo de
+         * un negocio con categorías no se arma SIN categoría porque el modelo se la olvidó. Va antes
+         * de los extras a propósito: un error acá no deja fotos anotadas ni nada escrito, y en
+         * "directo" no hay tarjeta que auto-confirmar. Ver categoria_del_alta_de_articulo().
+         */
+        $aviso_de_la_categoria = null;
+
+        if ($es_articulo) {
+
+            $con_categoria = self::categoria_del_alta_de_articulo(
+                $contexto,
+                $validado,
+                $subcategoria_pedida,
+                self::llamada_para_reenviar($declaracion, $datos_recibidos, $extras, $reemplaza_a)
+            );
+
+            if (RespuestaDeCargaIa::es_negativa($con_categoria)) {
+
+                return $con_categoria;
+            }
+
+            $validado = $con_categoria['validado'];
+            $aviso_de_la_categoria = $con_categoria['aviso'];
+        }
+
         $payload = self::payload_de_alta($declaracion, $validado['payload']);
 
         $nombre = self::nombre_pedido($declaracion, $validado['payload']);
@@ -175,6 +216,11 @@ class PropuestaGenericaIaHelper
         if (!is_null($aviso_de_lo_heredado)) {
 
             $aviso = is_null($aviso) ? $aviso_de_lo_heredado : $aviso.' '.$aviso_de_lo_heredado;
+        }
+
+        if (!is_null($aviso_de_la_categoria)) {
+
+            $aviso = is_null($aviso) ? $aviso_de_la_categoria : $aviso.' '.$aviso_de_la_categoria;
         }
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
@@ -302,8 +348,8 @@ class PropuestaGenericaIaHelper
 
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA).(is_null($nombre) ? '' : ' '.$nombre).self::resumen_de_renglones($renglones, $nombre);
 
-        // El aviso viaja también al modelo cuando habla de listas o de algo que se descartó.
-        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado);
+        // El aviso viaja también al modelo cuando habla de listas, de algo que se descartó o de la subcategoría que se sacó.
+        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $avisa_al_modelo ? ['aviso' => $aviso] : []);
     }
@@ -368,6 +414,382 @@ class PropuestaGenericaIaHelper
         $revalidado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $combinados);
 
         return RespuestaDeCargaIa::es_negativa($revalidado) ? $validado : $revalidado;
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Categoría y subcategoría de un artículo (misión asistente-altas-y-conversacion, D5)
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Separa la subcategoría de lo que mandó el modelo para un artículo y normaliza el "sin
+     * categoría" a propósito.
+     *
+     * La subcategoría sale porque resolver_relacion() la buscaría por nombre entre TODAS las del
+     * negocio, sin mirar de qué categoría cuelga ("Accesorios" puede estar en Baño y en Cocina), y la
+     * categoría todavía no está resuelta cuando le toca. Se resuelve después, con
+     * CategoriasDelNegocioIaHelper::resolver_subcategoria(). Un "sin subcategoría" explícito ("", 0,
+     * "ninguna") se deja como null (validar_campos() lo toma como vacío); un null crudo se SACA, como
+     * si no hubiera venido; y una lista se deja como está para que validar_campos() la rechace con su
+     * mensaje de siempre.
+     *
+     * @param  array  $declaracion
+     * @param  array  $valores  `datos` del alta o `cambios` de la edición.
+     * @return array  [los valores sin la subcategoría, la subcategoría pedida o null]
+     */
+    protected static function separar_categoria_del_articulo(array $declaracion, array $valores): array
+    {
+        $alias = self::alias_de_campos($declaracion);
+
+        $subcategoria = null;
+
+        foreach ($valores as $clave => $valor) {
+
+            $clave_normalizada = self::normalizar_clave((string) $clave);
+
+            $columna = isset($alias[$clave_normalizada]) ? $alias[$clave_normalizada] : null;
+
+            if ($columna !== 'category_id' && $columna !== 'sub_category_id') {
+
+                continue;
+            }
+
+            if (is_array($valor) || is_object($valor)) {
+
+                continue;
+            }
+
+            // 🔴 null es "no vino" (chequeo independiente, 16/10/2026): no esquiva la guarda del alta.
+            if (is_null($valor)) {
+
+                unset($valores[$clave]);
+
+                continue;
+            }
+
+            if (CategoriasDelNegocioIaHelper::es_sin_categoria($valor)) {
+
+                $valores[$clave] = null;
+
+                continue;
+            }
+
+            if ($columna === 'sub_category_id') {
+
+                $subcategoria = $valor;
+
+                unset($valores[$clave]);
+            }
+        }
+
+        return [$valores, $subcategoria];
+    }
+
+    /**
+     * La categoría y la subcategoría del alta de un artículo, ya validada (y combinada con la tarjeta
+     * que corrige, si la hay):
+     *
+     *  - Con subcategoría pedida: se resuelve DENTRO de la categoría (error con las subcategorías de
+     *    esa categoría si no es de ella) o, si no vino categoría, se deduce de la subcategoría.
+     *  - Una subcategoría heredada de la tarjeta corregida que no es de la categoría nueva se saca, y
+     *    el aviso lo dice; con la categoría vaciada a propósito, también.
+     *  - 🔴 Sin `category_id` (no vino; null cuenta como que no vino) en un negocio con categorías:
+     *    NO se arma la tarjeta. El error empieza con "No se armó ninguna tarjeta" y trae el árbol en
+     *    `opciones.categorias`: el prompt le dice al modelo que ese error es para él, que elija y
+     *    vuelva a llamar en el mismo mensaje. En un negocio sin categorías, todo como antes.
+     *  - 🔴 Con una categoría que TIENE subcategorías y sin `sub_category_id` (chequeo independiente,
+     *    16/10/2026): tampoco se arma; el error trae las subcategorías DE ESA categoría. El martillo de
+     *    demo3 quedó con la categoría y sin la subcategoría que existía. `sub_category_id` vacío
+     *    explícito ("") es "sin subcategoría" y se acepta.
+     *  - 🔴 Todo error de acá trae `opciones.reenvia_igual`: la llamada que llegó (datos y extras, sin
+     *    la categoría ni la subcategoría). Si el modelo vuelve a llamar sin la foto, la descripción o
+     *    el stock inicial que había mandado, el alta sale sin ellos y nadie lo nota.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $validado
+     * @param  mixed  $subcategoria_pedida
+     * @param  array  $reenvia_igual  llamada_para_reenviar().
+     * @return array  ['validado' => ..., 'aviso' => string|null] o la respuesta negativa.
+     */
+    protected static function categoria_del_alta_de_articulo(ContextoDeCargaIa $contexto, array $validado, $subcategoria_pedida, array $reenvia_igual = [])
+    {
+        $payload = $validado['payload'];
+        $aviso = null;
+
+        $vino_categoria = array_key_exists('category_id', $payload);
+        $category_id = $vino_categoria && !self::vacio($payload['category_id']) ? (int) $payload['category_id'] : null;
+
+        if (!is_null($subcategoria_pedida)) {
+
+            $sub = CategoriasDelNegocioIaHelper::resolver_subcategoria($contexto->owner_id, $category_id, $subcategoria_pedida);
+
+            if (RespuestaDeCargaIa::es_negativa($sub)) {
+
+                return self::con_reenvio($sub, $reenvia_igual);
+            }
+
+            $validado = self::con_campo($validado, 'sub_category_id', $sub['sub_category_id'], $sub['subcategoria']);
+
+            if (is_null($category_id) && !is_null($sub['category_id'])) {
+
+                $validado = self::con_campo($validado, 'category_id', $sub['category_id'], $sub['categoria']);
+            }
+
+        } elseif (isset($payload['sub_category_id']) && !self::vacio($payload['sub_category_id'])) {
+
+            // Una subcategoría que llegó por herencia de la tarjeta que se corrige.
+            $sub_id = (int) $payload['sub_category_id'];
+
+            if (is_null($category_id) && !$vino_categoria) {
+
+                $de = CategoriasDelNegocioIaHelper::categoria_de_la_subcategoria($contexto->owner_id, $sub_id);
+
+                if (!is_null($de)) {
+
+                    $validado = self::con_campo($validado, 'category_id', $de['id'], $de['nombre']);
+                }
+
+            } elseif (is_null($category_id) || !CategoriasDelNegocioIaHelper::es_de_la_categoria($sub_id, $category_id)) {
+
+                $nombre_sub = CategoriasDelNegocioIaHelper::nombre_de_subcategoria($sub_id);
+
+                $validado = self::sin_campo($validado, 'sub_category_id');
+
+                $aviso = 'La subcategoría "'.(is_null($nombre_sub) ? '#'.$sub_id : $nombre_sub).'" no es de la categoría que queda: el artículo se carga sin subcategoría.';
+            }
+        }
+
+        $volve_a_llamar = 'volvé a llamar a proponer_alta en este mismo mensaje con EXACTAMENTE los mismos datos y extras de opciones.reenvia_igual (la foto, la descripción, el código, el stock: todo), sumando ';
+
+        if (!array_key_exists('category_id', $validado['payload']) && CategoriasDelNegocioIaHelper::tiene_categorias($contexto->owner_id)) {
+
+            $arbol = CategoriasDelNegocioIaHelper::arbol($contexto->owner_id);
+
+            return RespuestaDeCargaIa::error(
+                CategoriasDelNegocioIaHelper::NO_SE_ARMO.'falta la categoría del artículo y el negocio trabaja con categorías. '
+                .'Elegí de opciones.categorias la categoría que corresponde a este producto (y una subcategoría DE ESA categoría, si alguna encaja) y '
+                .$volve_a_llamar.'category_id y sub_category_id por nombre. '
+                .'Si la persona pidió que quede sin categoría, mandá category_id vacío ("").'
+                .(is_null($arbol['aviso']) ? '' : ' '.$arbol['aviso']),
+                ['categorias' => $arbol['categorias'], 'reenvia_igual' => $reenvia_igual]
+            );
+        }
+
+        $categoria_final = isset($validado['payload']['category_id']) && !self::vacio($validado['payload']['category_id'])
+            ? (int) $validado['payload']['category_id']
+            : null;
+
+        if (!is_null($categoria_final) && !array_key_exists('sub_category_id', $validado['payload'])) {
+
+            $subcategorias = CategoriasDelNegocioIaHelper::subcategorias_de($contexto->owner_id, $categoria_final);
+
+            if (count($subcategorias)) {
+
+                $nombre = CategoriasDelNegocioIaHelper::nombre_de_categoria($contexto->owner_id, $categoria_final);
+
+                return RespuestaDeCargaIa::error(
+                    CategoriasDelNegocioIaHelper::NO_SE_ARMO.'falta la subcategoría: la categoría "'.$nombre.'" tiene subcategorías. '
+                    .'Elegí de opciones.sub_category_id la que corresponde a este producto y '
+                    .$volve_a_llamar.'category_id "'.$nombre.'" y esa sub_category_id. '
+                    .'Si ninguna encaja, mandá sub_category_id vacío ("").',
+                    ['sub_category_id' => $subcategorias, 'reenvia_igual' => $reenvia_igual]
+                );
+            }
+        }
+
+        return ['validado' => $validado, 'aviso' => $aviso];
+    }
+
+    /**
+     * La llamada a proponer_alta tal como llegó, para que el modelo la reenvíe igual después de un
+     * "No se armó ninguna tarjeta" de la categoría: `entidad`, `datos` sin la categoría ni la
+     * subcategoría, los extras con sus claves de herramienta (sin las marcas internas de "quitar") y
+     * `reemplaza_a` si vino.
+     *
+     * @param  array  $declaracion
+     * @param  array  $datos  Los `datos` como llegaron (antes de separar la subcategoría).
+     * @param  array  $extras  Los extras ya separados (y heredados, si es una corrección).
+     * @param  mixed  $reemplaza_a
+     * @return array
+     */
+    protected static function llamada_para_reenviar(array $declaracion, array $datos, array $extras, $reemplaza_a): array
+    {
+        $alias = self::alias_de_campos($declaracion);
+
+        foreach ($datos as $clave => $valor) {
+
+            $clave_normalizada = self::normalizar_clave((string) $clave);
+
+            $columna = isset($alias[$clave_normalizada]) ? $alias[$clave_normalizada] : null;
+
+            if ($columna === 'category_id' || $columna === 'sub_category_id') {
+
+                unset($datos[$clave]);
+            }
+        }
+
+        $llamada = ['entidad' => $declaracion['entidad'], 'datos' => (object) $datos];
+
+        foreach (AltaDeArticuloConFotoIaHelper::claves() as $clave) {
+
+            if (array_key_exists($clave, $extras)) {
+
+                $llamada[$clave] = $extras[$clave];
+            }
+        }
+
+        if (is_numeric($reemplaza_a) && (int) $reemplaza_a > 0) {
+
+            $llamada['reemplaza_a'] = (int) $reemplaza_a;
+        }
+
+        return $llamada;
+    }
+
+    /**
+     * Una respuesta negativa con `opciones.reenvia_igual` sumado (si hay qué reenviar).
+     *
+     * @param  array  $respuesta
+     * @param  array  $reenvia_igual
+     * @return array
+     */
+    protected static function con_reenvio(array $respuesta, array $reenvia_igual): array
+    {
+        if (!count($reenvia_igual)) {
+
+            return $respuesta;
+        }
+
+        $opciones = isset($respuesta['opciones']) ? json_decode(json_encode($respuesta['opciones']), true) : [];
+
+        $opciones = is_array($opciones) ? $opciones : [];
+
+        $opciones['reenvia_igual'] = $reenvia_igual;
+
+        $respuesta['opciones'] = $opciones;
+
+        if (isset($respuesta['error']) && is_string($respuesta['error'])) {
+
+            $respuesta['error'] .= ' Al volver a llamar, mandá EXACTAMENTE los mismos datos y extras de opciones.reenvia_igual (la foto, la descripción, el código, el stock: todo).';
+        }
+
+        return $respuesta;
+    }
+
+    /**
+     * La categoría y la subcategoría de la edición de un artículo:
+     *
+     *  - Con subcategoría pedida: si la edición cambia la categoría, se resuelve dentro de la nueva;
+     *    si la vacía a propósito, se deduce de la subcategoría; si no la toca, se busca primero en la
+     *    categoría actual del artículo y, si no está ahí, entre todas (y la categoría cambia a la de
+     *    la subcategoría, con su renglón en la tarjeta).
+     *  - Si cambia la categoría y la subcategoría actual no cuelga de la nueva (o la categoría queda
+     *    vacía), la subcategoría se limpia y el aviso lo dice.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $validado
+     * @param  mixed  $subcategoria_pedida
+     * @param  object  $fila  El artículo como está.
+     * @return array  ['validado' => ..., 'aviso' => string|null] o la respuesta negativa.
+     */
+    protected static function categoria_de_la_edicion_de_articulo(ContextoDeCargaIa $contexto, array $validado, $subcategoria_pedida, $fila)
+    {
+        $payload = $validado['payload'];
+        $aviso = null;
+
+        $cambia_la_categoria = array_key_exists('category_id', $payload);
+        $categoria_nueva = $cambia_la_categoria && !self::vacio($payload['category_id']) ? (int) $payload['category_id'] : null;
+        $categoria_actual = isset($fila->category_id) && !self::vacio($fila->category_id) ? (int) $fila->category_id : null;
+        $sub_actual = isset($fila->sub_category_id) && !self::vacio($fila->sub_category_id) ? (int) $fila->sub_category_id : null;
+
+        if (!is_null($subcategoria_pedida)) {
+
+            if ($cambia_la_categoria) {
+
+                $sub = CategoriasDelNegocioIaHelper::resolver_subcategoria($contexto->owner_id, $categoria_nueva, $subcategoria_pedida);
+
+            } else {
+
+                $sub = CategoriasDelNegocioIaHelper::resolver_subcategoria($contexto->owner_id, $categoria_actual, $subcategoria_pedida, true);
+            }
+
+            if (RespuestaDeCargaIa::es_negativa($sub)) {
+
+                return $sub;
+            }
+
+            $validado = self::con_campo($validado, 'sub_category_id', $sub['sub_category_id'], $sub['subcategoria']);
+
+            $categoria_que_queda = $cambia_la_categoria ? $categoria_nueva : $categoria_actual;
+
+            if (!is_null($sub['category_id']) && $sub['category_id'] !== $categoria_que_queda) {
+
+                $validado = self::con_campo($validado, 'category_id', $sub['category_id'], $sub['categoria']);
+            }
+
+            return ['validado' => $validado, 'aviso' => $aviso];
+        }
+
+        if ($cambia_la_categoria && !array_key_exists('sub_category_id', $payload) && !is_null($sub_actual)
+            && (is_null($categoria_nueva) || !CategoriasDelNegocioIaHelper::es_de_la_categoria($sub_actual, $categoria_nueva))) {
+
+            $nombre_sub = CategoriasDelNegocioIaHelper::nombre_de_subcategoria($sub_actual);
+
+            $validado = self::con_campo($validado, 'sub_category_id', null, null);
+
+            $aviso = 'La subcategoría "'.(is_null($nombre_sub) ? '#'.$sub_actual : $nombre_sub).'" no es de la categoría nueva: se le saca la subcategoría.';
+        }
+
+        return ['validado' => $validado, 'aviso' => $aviso];
+    }
+
+    /**
+     * Pone un campo resuelto en lo validado (payload, pedidos y el nombre para el renglón).
+     *
+     * @param  array  $validado
+     * @param  string  $columna
+     * @param  mixed  $valor
+     * @param  string|null  $nombre
+     * @return array
+     */
+    protected static function con_campo(array $validado, string $columna, $valor, $nombre): array
+    {
+        $validado['payload'][$columna] = $valor;
+        $validado['pedidos'][$columna] = $valor;
+
+        if (!isset($validado['nombres']) || !is_array($validado['nombres'])) {
+
+            $validado['nombres'] = [];
+        }
+
+        if (is_null($nombre)) {
+
+            unset($validado['nombres'][$columna]);
+
+        } else {
+
+            $validado['nombres'][$columna] = $nombre;
+        }
+
+        return $validado;
+    }
+
+    /**
+     * Saca un campo de lo validado.
+     *
+     * @param  array  $validado
+     * @param  string  $columna
+     * @return array
+     */
+    protected static function sin_campo(array $validado, string $columna): array
+    {
+        unset($validado['payload'][$columna], $validado['pedidos'][$columna]);
+
+        if (isset($validado['nombres']) && is_array($validado['nombres'])) {
+
+            unset($validado['nombres'][$columna]);
+        }
+
+        return $validado;
     }
 
     // -------------------------------------------------------------------------------------------
@@ -467,6 +889,14 @@ class PropuestaGenericaIaHelper
             return RespuestaDeCargaIa::error('No mandaste ningún cambio. Decime qué campo cambia y a qué valor.');
         }
 
+        // La subcategoría se resuelve con la categoría que queda (misma regla que el alta, D5).
+        $subcategoria_pedida = null;
+
+        if ($es_articulo) {
+
+            list($cambios, $subcategoria_pedida) = self::separar_categoria_del_articulo($declaracion, $cambios);
+        }
+
         $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_EDICION, $cambios);
 
         if (RespuestaDeCargaIa::es_negativa($validado)) {
@@ -489,6 +919,27 @@ class PropuestaGenericaIaHelper
 
                 return $escondido;
             }
+        }
+
+        /*
+         * Misión asistente-altas-y-conversacion (16/10/2026, D5, demo3 S11): la categoría y la
+         * subcategoría de un artículo quedan coherentes. El martillo quedó con la categoría nueva y la
+         * subcategoría vacía aunque existía "Herramientas Manuales"; y al revés, cambiar la categoría
+         * dejaba colgada una subcategoría de otra. Ver categoria_de_la_edicion_de_articulo().
+         */
+        $aviso_de_la_categoria = null;
+
+        if ($es_articulo) {
+
+            $coherente = self::categoria_de_la_edicion_de_articulo($contexto, $validado, $subcategoria_pedida, $fila);
+
+            if (RespuestaDeCargaIa::es_negativa($coherente)) {
+
+                return $coherente;
+            }
+
+            $validado = $coherente['validado'];
+            $aviso_de_la_categoria = $coherente['aviso'];
         }
 
         $nombre_actual = Catalogo::nombre_de_fila($declaracion['entidad'], $fila);
@@ -563,6 +1014,12 @@ class PropuestaGenericaIaHelper
         if (!count($cambios_reales) && !count($margenes_que_cambian)) {
 
             return RespuestaDeCargaIa::error(Str::ucfirst($declaracion['singular']).' "'.$nombre_actual.'" ya está así: no hay nada distinto para cambiar.');
+        }
+
+        // La subcategoría que se saca porque no es de la categoría nueva: la tarjeta y el modelo lo dicen.
+        if (!is_null($aviso_de_la_categoria)) {
+
+            $aviso_de_la_edicion = is_null($aviso_de_la_edicion) ? $aviso_de_la_categoria : $aviso_de_la_edicion.' '.$aviso_de_la_categoria;
         }
 
         // El updated_at del registro al armar la tarjeta: si alguien lo edita en el medio, confirmar da 409 (vencida).
@@ -885,8 +1342,14 @@ class PropuestaGenericaIaHelper
 
         $columna = $declaracion['columna_nombre'];
 
-        $candidatas = self::consulta_del_dueno($contexto, $declaracion)
-                            ->where($columna, 'LIKE', '%'.self::escapar_like($texto).'%')
+        /*
+         * Misión asistente-altas-y-conversacion (chequeo independiente, 16/10/2026, D6): la frase
+         * entera O cada palabra del nombre ("ducha gloa" encuentra "DUCHA DE MANO METAL GLOA"), con
+         * lo que tiene la frase primero. Solo la columna del nombre: ver BusquedaPorPalabrasIaHelper.
+         */
+        $consulta = BusquedaPorPalabrasIaHelper::filtrar(self::consulta_del_dueno($contexto, $declaracion), $texto, [$columna]);
+
+        $candidatas = BusquedaPorPalabrasIaHelper::ordenar_por_frase($consulta, $texto, [$columna])
                             ->orderBy($columna)
                             ->limit(self::MAX_OPCIONES + 1)
                             ->get();
@@ -895,6 +1358,24 @@ class PropuestaGenericaIaHelper
 
             return RespuestaDeCargaIa::error('No encontré '.($declaracion['genero'] === 'f' ? 'ninguna ' : 'ningún ').$etiqueta.' que se llame como "'.$texto.'".');
         }
+
+        $con_la_frase = BusquedaPorPalabrasIaHelper::por_frase($candidatas, $texto, [$columna]);
+
+        /*
+         * 🔴 Lo que encaja SOLO por palabras nunca se toma sin preguntar, aunque sea uno: en una
+         * edición o una baja, elegir mal es grave (y "pinza 10" encaja por palabras con "pinza 100").
+         * Vuelve como `faltan` con las opciones, para que la persona diga cuál.
+         */
+        if (!count($con_la_frase)) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál de '.($declaracion['genero'] === 'f' ? 'estas ' : 'estos ').$declaracion['etiqueta'].' es: ninguno se llama exactamente "'.$texto.'", estos tienen esas palabras en el nombre'],
+                [$declaracion['entidad'] => self::opciones_de_relacion($candidatas, $columna)]
+            );
+        }
+
+        // Con la frase, lo de siempre: solo entre los que la tienen.
+        $candidatas = $con_la_frase;
 
         if (count($candidatas) === 1) {
 

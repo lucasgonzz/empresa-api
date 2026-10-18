@@ -1374,7 +1374,13 @@ class ArticleController extends Controller
             return response()->json(['message' => 'No se encontro el articulo'], 404);
         }
 
-        $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
+        // `moneda_id` (opcional): en una cuenta con `ventas_en_dolares` cada lista tiene un precio por
+        // moneda, y el "?" de cada bloque pide el de la suya. Sin el parametro -o en una cuenta sin
+        // dolares- el endpoint contesta exactamente lo de siempre, asi que un front viejo no nota nada.
+        $moneda_id = request()->query('moneda_id');
+        $moneda_id = is_numeric($moneda_id) ? (int) $moneda_id : null;
+
+        $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id, $moneda_id);
 
         // Mismo guard que el endpoint hermano de arriba, por el mismo motivo.
         if (!is_array($detalle)) {

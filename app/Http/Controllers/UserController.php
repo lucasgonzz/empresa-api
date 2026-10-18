@@ -86,6 +86,8 @@ class UserController extends Controller
         // Tarea 4: faltaban en el snapshot, ver el comentario de check_actualizar_articulos().
         $current_redondear_centenas_en_vender   = (int) $model->redondear_centenas_en_vender;
         $current_redondear_miles_en_vender      = (int) $model->redondear_miles_en_vender;
+        // Sentido del redondeo por centenas (ceil en vez de round): mueve precios, va en el snapshot.
+        $current_redondear_centenas_para_arriba = (int) $model->redondear_centenas_para_arriba;
         $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
         // Condicion de IVA para precios (RRII/MT) previa al guardado, para detectar si cambio y disparar el recalculo masivo.
         $current_condicion_iva_precios          = $model->condicion_iva_precios;
@@ -133,6 +135,15 @@ class UserController extends Controller
         // La traduccion vive en un metodo aparte para que la garantia de no-op quede en un solo
         // lugar y con su explicacion al lado.
         $this->aplicar_modo_redondeo($model, $request);
+
+        // Opción "Redondear centenas hacia arriba". Solo se escribe si el request la trae: una SPA
+        // vieja (o un PUT parcial) no la manda, y asignar null pisaría la preferencia del cliente
+        // (y la columna es NOT NULL). No es una de las cinco columnas del select, así que
+        // `aplicar_modo_redondeo()` no la toca: elegir otro modo la deja como estaba, y sin
+        // centenas prendido no tiene ningún efecto.
+        if ($request->has('redondear_centenas_para_arriba')) {
+            $model->redondear_centenas_para_arriba = $request->boolean('redondear_centenas_para_arriba') ? 1 : 0;
+        }
 
         $model->header_articulos_pdf            = $request->header_articulos_pdf;
         $model->default_version                 = $request->default_version;
@@ -483,7 +494,8 @@ class UserController extends Controller
                 $current_condicion_iva_precios,
                 $current_usar_condicion_fiscal_en_costeo,
                 $current_redondear_centenas_en_vender,
-                $current_redondear_miles_en_vender
+                $current_redondear_miles_en_vender,
+                $current_redondear_centenas_para_arriba
             )
         ) {
             $notifications[] = [
@@ -655,9 +667,12 @@ class UserController extends Controller
             ->orderBy('position', 'ASC')
             ->get(['id', 'percentage', 'setear_precio_final', 'incluir_en_lista_de_precios_de_excel', 'position']);
 
-        $last_position = PriceType::where('user_id', $owner_user->id)
-                                ->orderBy('position', 'DESC')
-                                ->first()->position;
+        // Última posición = la mayor de las listas ya cargadas arriba. Antes era una segunda query con
+        // `->first()->position`, que con CERO listas creadas (el caso de las demos) tiraba "Trying to
+        // get property 'position' of non-object" y devolvía 500 DESPUÉS de haber guardado el flag:
+        // el segundo guardado "andaba" solo porque ya veía el flag sin cambios y salía antes.
+        // Sin listas queda null, y con null ningún `price_type` coincide (no hay ninguno).
+        $last_position = $price_types->max('position');
 
         Log::info('Last position: '.$last_position);
 
@@ -968,6 +983,9 @@ class UserController extends Controller
      * @param int $current_usar_condicion_fiscal_en_costeo Valor previo del flag usar_condicion_fiscal_en_costeo.
      * @param int $current_redondear_centenas_en_vender Valor previo del flag redondear_centenas_en_vender.
      * @param int $current_redondear_miles_en_vender Valor previo del flag redondear_miles_en_vender.
+     * @param int $current_redondear_centenas_para_arriba Valor previo del flag redondear_centenas_para_arriba
+     *            (sentido del redondeo por centenas). Opcional para no romper a quien llame con la firma vieja:
+     *            null equivale a "sin dato previo" y no cuenta como cambio.
      * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
      *
      * 🔴 Tarea 4 — `redondear_centenas_en_vender` y `redondear_miles_en_vender` se agregaron acá el
@@ -995,7 +1013,8 @@ class UserController extends Controller
         $current_condicion_iva_precios,
         $current_usar_condicion_fiscal_en_costeo,
         $current_redondear_centenas_en_vender,
-        $current_redondear_miles_en_vender
+        $current_redondear_miles_en_vender,
+        $current_redondear_centenas_para_arriba = null
     ) {
 
         /** @var bool $cambio_el_dolar El dólar de la cuenta cambió en este guardado. */
@@ -1015,7 +1034,9 @@ class UserController extends Controller
             || $model->condicion_iva_precios != $current_condicion_iva_precios
             || (int) $model->usar_condicion_fiscal_en_costeo !== (int) $current_usar_condicion_fiscal_en_costeo
             || (int) $model->redondear_centenas_en_vender !== (int) $current_redondear_centenas_en_vender
-            || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender;
+            || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender
+            || (!is_null($current_redondear_centenas_para_arriba)
+                && (int) $model->redondear_centenas_para_arriba !== (int) $current_redondear_centenas_para_arriba);
 
         if ($cambio_el_dolar || $cambio_otro_parametro) {
             Log::info($model->dollar.' | '.$current_dolar);

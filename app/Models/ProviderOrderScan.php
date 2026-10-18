@@ -45,6 +45,15 @@ class ProviderOrderScan extends Model
         'aplicado'      => 'array',
         'visto_at'      => 'datetime',
         'gestionado_at' => 'datetime',
+        /*
+         * Misión asistente-aviso-escaneo-factura (16/10/2026): el escaneo que nace de una compra
+         * pedida por WhatsApp recuerda su conversación y si el admin le tiene que avisar al dueño
+         * cuando termine (ver la migración add_aviso_por_whatsapp_to_provider_order_scans_table y
+         * AvisosDelAsistenteHelper). Desde la pantalla quedan en null / 0 / null.
+         */
+        'ai_conversation_id'      => 'integer',
+        'avisar_por_whatsapp'     => 'boolean',
+        'avisado_por_whatsapp_at' => 'datetime',
     ];
 
     /**

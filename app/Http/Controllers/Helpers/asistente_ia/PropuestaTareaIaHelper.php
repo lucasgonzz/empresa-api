@@ -111,6 +111,38 @@ class PropuestaTareaIaHelper {
             return $fecha;
         }
 
+        /*
+         * La hora va escrita adelante del detalle (misión asistente-altas-y-conversacion, 16/10/2026). En
+         * demo3, "recordame el viernes a las 10 que tengo que llamar a…" quedó el viernes a las 00:00: la
+         * herramienta no tenía dónde poner la hora y se perdía. La agenda razona por día (AgendaHelper,
+         * AgendaTareaHelper::validar fuerza las 00:00), así que la hora NO va a fecha_realizacion: va
+         * en el texto de la tarea, que es lo que la persona ve en la Agenda y lo que el asistente lee.
+         * Una hora que no se entiende no se adivina: se pregunta.
+         */
+        $hora_pedida = EntradaDeCargaIa::valor($input, 'hora');
+
+        $hora = EntradaDeCargaIa::vacio($hora_pedida) ? null : self::hora_legible($hora_pedida);
+
+        if (!EntradaDeCargaIa::vacio($hora_pedida) && is_null($hora)) {
+
+            return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
+        }
+
+        /*
+         * La clave de reemplazo se arma con el detalle SIN la hora: corregir solo la hora ("mejor a
+         * las 11") reemplaza la tarjeta en vez de dejar dos. Y una hora que ya venía adelante (el
+         * modelo reenvía el detalle de la tarjeta anterior) se saca antes de poner la nueva: nunca
+         * "11:00 · 10:00 · llamar…". La columna es de 255: se recorta (chequeo independiente, 16/10/2026).
+         */
+        $detalle_sin_hora = trim((string) preg_replace('/^\d{2}:\d{2} · /u', '', $detalle));
+
+        $clave = self::clave_de_tarea_nueva($detalle_sin_hora, $fecha);
+
+        if (!is_null($hora)) {
+
+            $detalle = mb_substr($hora.' · '.$detalle_sin_hora, 0, self::LARGO_DETALLE);
+        }
+
         $datos = self::datos_de_una_tarea_nueva($detalle, $fecha);
 
         $notas = EntradaDeCargaIa::texto($input, 'notas');
@@ -155,7 +187,7 @@ class PropuestaTareaIaHelper {
             );
         }
 
-        return self::armar_tarea_nueva($contexto, $mensaje, $datos, self::clave_de_tarea_nueva($detalle, $fecha), null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
+        return self::armar_tarea_nueva($contexto, $mensaje, $datos, $clave, null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
     }
 
     /**
@@ -244,13 +276,169 @@ class PropuestaTareaIaHelper {
         $columnas['completado'] = 0;
         $columnas['user_id'] = $contexto->owner_id;
 
+        /*
+         * El recordatorio por WhatsApp (misión recordatorios-whatsapp, 16/10/2026): lo pide la tarea con
+         * hora que confirma EL DUEÑO con un admin que anunció que consulta. La hora ya viene en
+         * `hora_aviso` (validar() la deriva del prefijo).
+         */
+        $columnas['avisar_por_whatsapp'] = self::pide_el_recordatorio($contexto, $columnas) ? 1 : 0;
+
         $tarea = Pending::create($columnas);
 
         return [
             'texto'    => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
             'ruta'     => self::ruta_de_la_agenda(),
             'tarea_id' => (int) $tarea->id,
+            'aviso'    => self::aviso_del_recordatorio($contexto, $tarea),
         ];
+    }
+
+    /** El largo de pendings.detalle (string). */
+    const LARGO_DETALLE = 255;
+
+    /**
+     * Lo que la tarea NO hace, para que el modelo no lo prometa (misión asistente-altas-y-conversacion,
+     * 16/10/2026). "Recordame el viernes a las 10" sonaba a que el viernes a las 10 le iba a llegar algo
+     * por WhatsApp, y eso no existía: la tarea quedaba en la Agenda del sistema.
+     *
+     * Desde la misión recordatorios-whatsapp (16/10/2026) el aviso existe, pero este sigue siendo el
+     * texto de todo caso en que no llega: sin hora, una tarea que no pide el aviso (la creó un
+     * empleado, o se creó sin anuncio del admin) o un admin que dejó de consultar los recordatorios
+     * (ver aviso_del_recordatorio()).
+     */
+    const AVISO_SIN_RECORDATORIO = 'Queda en la Agenda del sistema: a esa hora no le llega ningún aviso por WhatsApp. '
+        . 'Si pidió que se lo recuerdes, decíselo en una línea.';
+
+    /**
+     * El recordatorio con un admin que consulta pero SIN la plantilla de Meta: sale solo si la ventana
+     * de 24 h de WhatsApp está abierta, o sea si ese día el dueño le habló al asistente.
+     */
+    const AVISO_RECORDATORIO_SI_HABLARON = 'Queda en la Agenda. Si ese día estuvo hablando con vos por WhatsApp le llega un recordatorio a esa hora; '
+        . 'si no, no: no le prometas el aviso.';
+
+    /** Lo mismo, cuando el que habla es un empleado: el recordatorio es del dueño, no suyo. */
+    const AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON = 'Queda en la Agenda. Si ese día el dueño estuvo hablando con el asistente por WhatsApp, '
+        . 'a esa hora le llega a él un recordatorio; si no, no: no le prometas el aviso.';
+
+    /** Una tarea puntual cuya hora ya pasó: ningún recordatorio va a salir. */
+    const AVISO_HORA_PASADA = 'Queda en la Agenda, pero esa hora ya pasó: no llega ningún recordatorio por WhatsApp. No lo prometas.';
+
+    /**
+     * true si la tarea pide el recordatorio por WhatsApp: tiene hora, la confirma el dueño y el admin
+     * anunció que consulta los recordatorios.
+     *
+     * 🔴 SOLO EL DUEÑO. El recordatorio sale al teléfono de la ficha del cliente, que es el del dueño:
+     * un empleado que le pide «recordame…» al asistente desde el sistema no tiene por qué disparar un
+     * WhatsApp al celular de su jefe. La tarea igual queda en la Agenda, con su hora.
+     *
+     * 🔴 Y SOLO CON EL ANUNCIO DEL ADMIN (chequeo independiente del 16/10/2026). Con un admin viejo
+     * el asistente le dice al dueño que a esa hora no le llega nada; si la tarea pidiera el aviso igual,
+     * el día que se despliegue el admin nuevo le llegaría un WhatsApp que nadie le prometió.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $columnas  AgendaTareaHelper::validar()
+     * @return bool
+     */
+    protected static function pide_el_recordatorio(ContextoDeCargaIa $contexto, array $columnas) {
+
+        return !empty($columnas['hora_aviso'])
+            && self::confirma_el_dueno($contexto)
+            && RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id);
+    }
+
+    /**
+     * true si la persona que confirma es el dueño de la cuenta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return bool
+     */
+    protected static function confirma_el_dueno(ContextoDeCargaIa $contexto) {
+
+        return is_null($contexto->persona) || (int) $contexto->persona->id === (int) $contexto->owner_id;
+    }
+
+    /**
+     * El aviso que lee el modelo al confirmarse la tarea: qué decir del recordatorio.
+     *
+     * 🔴 SALE DEL ESTADO DE LA TAREA, NO DE QUIÉN HABLA. Lo que decide si el WhatsApp llega es
+     * `avisar_por_whatsapp` de la tarea ya guardada: un empleado que le cambia la hora a una tarea que
+     * pidió el dueño no apaga el recordatorio, y el modelo tiene que decírselo así —le llega AL DUEÑO—.
+     *
+     * 🔴 SE PROMETE SOLO LO QUE EL ADMIN ANUNCIÓ (RecordatoriosDelAsistenteHelper::anunciar()). Con la
+     * plantilla de Meta el recordatorio sale siempre; sin ella, solo con la ventana de 24 h abierta;
+     * sin anuncio (un admin viejo, o caído hace más de dos horas), nunca.
+     *
+     * 🔴 Y NO SE PROMETE UNA HORA QUE YA PASÓ (chequeo independiente del 16/10/2026): una puntual de
+     * hoy a las 10 confirmada a las 10:30 no avisa nunca (RecordatoriosDelAsistenteHelper::pendientes()
+     * pide que el momento sea posterior a la creación). En una recurrente cuya primera vez ya pasó, el
+     * recordatorio sale desde la próxima repetición, y eso es lo que se dice.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Pending  $tarea  La tarea ya guardada.
+     * @return string
+     */
+    protected static function aviso_del_recordatorio(ContextoDeCargaIa $contexto, $tarea) {
+
+        if (!$tarea->avisar_por_whatsapp || empty($tarea->hora_aviso) || !RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id)) {
+
+            return self::AVISO_SIN_RECORDATORIO;
+        }
+
+        $hora = substr((string) $tarea->hora_aviso, 0, 5);
+
+        $recurrente = AgendaHelper::regla_valida($tarea);
+
+        $ya_paso = AgendaHelper::fecha_base($tarea)->setTimeFromTimeString((string) $tarea->hora_aviso)->lte(Carbon::now());
+
+        if ($ya_paso && !$recurrente) {
+
+            return self::AVISO_HORA_PASADA;
+        }
+
+        $al_dueno = !self::confirma_el_dueno($contexto);
+
+        if (!RecordatoriosDelAsistenteHelper::admin_avisa_con_plantilla($contexto->owner_id)) {
+
+            return $al_dueno ? self::AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON : self::AVISO_RECORDATORIO_SI_HABLARON;
+        }
+
+        $cuando = $ya_paso
+            ? 'A las '.$hora.' de cada repetición, desde la próxima,'
+            : 'A las '.$hora.' de ese día'.($recurrente ? ' y de cada repetición' : '');
+
+        return $cuando.' le llega '.($al_dueno ? 'al dueño ' : '').'un recordatorio por WhatsApp. Decíselo en una línea.';
+    }
+
+    /**
+     * "10" / "10hs" / "10:30" / "10.30" / "9 30" → "10:00" / "10:00" / "10:30" / "10:30" / "09:30". null si
+     * no es una hora del día.
+     *
+     * @param  mixed  $valor
+     * @return string|null
+     */
+    public static function hora_legible($valor) {
+
+        if (!is_scalar($valor)) {
+
+            return null;
+        }
+
+        $texto = mb_strtolower(trim((string) $valor));
+
+        if (!preg_match('/^(\d{1,2})(?:\s*[:.h ]\s*(\d{2}))?\s*(?:hs?|horas?)?$/u', $texto, $partes)) {
+
+            return null;
+        }
+
+        $horas = (int) $partes[1];
+        $minutos = isset($partes[2]) && $partes[2] !== '' ? (int) $partes[2] : 0;
+
+        if ($horas > 23 || $minutos > 59) {
+
+            return null;
+        }
+
+        return sprintf('%02d:%02d', $horas, $minutos);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -292,10 +480,23 @@ class PropuestaTareaIaHelper {
 
         $detalle = EntradaDeCargaIa::texto($input, 'detalle');
 
-        if ($detalle !== '') {
+        /*
+         * La hora (misión recordatorios-whatsapp, 16/10/2026): va escrita adelante del detalle, igual
+         * que en proponer_tarea, y AgendaTareaHelper::validar() deriva de ahí `hora_aviso`, así que
+         * reescribir el prefijo es mover el recordatorio. Una hora que no se entiende se pregunta.
+         */
+        $hora_pedida = EntradaDeCargaIa::valor($input, 'hora');
 
-            $nuevos['detalle'] = $detalle;
+        $quitar_hora = self::es_quitar_la_hora($hora_pedida);
+
+        $hora = $quitar_hora || EntradaDeCargaIa::vacio($hora_pedida) ? null : self::hora_legible($hora_pedida);
+
+        if (!$quitar_hora && !EntradaDeCargaIa::vacio($hora_pedida) && is_null($hora)) {
+
+            return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
         }
+
+        $nuevos['detalle'] = self::detalle_con_hora($nuevos['detalle'], $detalle, $hora, $quitar_hora);
 
         $fecha_pedida = EntradaDeCargaIa::valor($input, 'fecha');
 
@@ -535,13 +736,99 @@ class PropuestaTareaIaHelper {
             $pending->{$columna} = $valor;
         }
 
+        /*
+         * Misma regla que la tarea nueva: un cambio con hora que confirma el dueño pide el
+         * recordatorio. Sin hora no se toca (el recordatorio igual no sale: no hay `hora_aviso`).
+         */
+        if (self::pide_el_recordatorio($contexto, $columnas)) {
+
+            $pending->avisar_por_whatsapp = 1;
+        }
+
         $pending->save();
 
-        return [
+        $resultado = [
             'texto'    => 'Tarea actualizada',
             'ruta'     => self::ruta_de_la_agenda(),
             'tarea_id' => (int) $pending->id,
         ];
+
+        // Solo con hora: una edición del monto o de las notas no tiene nada que decir del recordatorio.
+        if (!empty($columnas['hora_aviso'])) {
+
+            $resultado['aviso'] = self::aviso_del_recordatorio($contexto, $pending);
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * El detalle de la tarjeta de cambios con la hora puesta, cambiada o sacada.
+     *
+     * - `hora` explícita: se escribe adelante del detalle (el pedido, o el actual), sacando la que
+     *   hubiera. 🔴 La hora pedida le gana a un prefijo que venga en el detalle: el modelo suele
+     *   reenviar el detalle de la tarjeta anterior con la hora vieja adelante (mismo caso que
+     *   proponer_tarea), y nunca tiene que quedar «11:00 · 10:00 · llamar…».
+     * - "sin hora": se saca.
+     * - sin `hora`: un detalle nuevo CON prefijo manda (es la hora que escribió el modelo); uno nuevo
+     *   SIN prefijo conserva la hora que la tarea tenía. Cambiar el texto de «llamar a Juan» no tiene
+     *   por qué apagar su recordatorio.
+     *
+     * @param  string  $actual  El detalle guardado.
+     * @param  string  $pedido  El `detalle` de la herramienta ('' si no vino).
+     * @param  string|null  $hora  "HH:MM" pedida, o null.
+     * @param  bool  $quitar_hora
+     * @return string
+     */
+    protected static function detalle_con_hora($actual, $pedido, $hora, $quitar_hora) {
+
+        $base = $pedido !== '' ? $pedido : (string) $actual;
+
+        if ($quitar_hora) {
+
+            return AgendaTareaHelper::detalle_sin_hora($base);
+        }
+
+        if (!is_null($hora)) {
+
+            return mb_substr($hora.' · '.AgendaTareaHelper::detalle_sin_hora($base), 0, self::LARGO_DETALLE);
+        }
+
+        $hora_actual = AgendaTareaHelper::hora_del_detalle((string) $actual);
+
+        if ($pedido !== '' && is_null(AgendaTareaHelper::hora_del_detalle($pedido)) && !is_null($hora_actual)) {
+
+            return mb_substr(substr($hora_actual, 0, 5).' · '.AgendaTareaHelper::detalle_sin_hora($pedido), 0, self::LARGO_DETALLE);
+        }
+
+        return $base;
+    }
+
+    /**
+     * true si la `hora` de proponer_cambios_en_tarea pide sacar la hora ("sin hora", "ninguna"...).
+     *
+     * 🔴 UN VACÍO NO SACA LA HORA. La IA suele mandar las claves opcionales en blanco (mismo motivo
+     * por el que unas notas vacías no borran las que había): si "" sacara la hora, cualquier cambio
+     * de fecha apagaría el recordatorio sin que nadie lo haya pedido. Para sacarla hay que decirlo.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function es_quitar_la_hora($valor) {
+
+        if ($valor === false) {
+
+            return true;
+        }
+
+        if (!is_string($valor)) {
+
+            return false;
+        }
+
+        $texto = preg_replace('/\s+/u', ' ', mb_strtolower(trim($valor)));
+
+        return in_array($texto, ['sin hora', 'sin', 'ninguna', 'no', 'quitar', 'quitar hora', 'quitar la hora', 'sacar', 'sacar hora', 'sacar la hora', 'borrar', 'borrar hora', 'borrar la hora'], true);
     }
 
     // -------------------------------------------------------------------------------------------

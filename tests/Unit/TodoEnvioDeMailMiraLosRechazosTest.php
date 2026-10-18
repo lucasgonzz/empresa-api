@@ -101,7 +101,10 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
      * @var array<string, int>
      */
     const ENCOLADOS = [
-        'Http/Controllers/Helpers/ComercioCityMailHelper.php' => 2,
+        // new_sale() y nueva_oferta(), más encolar_al_cliente() desde el 16/10/2026 (misión asistente-envios-a-clientes): los mails de
+        // presupuesto y de recibo que manda el asistente con el sí del dueño. Mismo motivo que la venta: el rechazo pasa en el worker, el
+        // asistente dice "encolado" y no "entregado", y el listener de `MessageSent` lo deja en el log.
+        'Http/Controllers/Helpers/ComercioCityMailHelper.php' => 3,
     ];
 
     /**

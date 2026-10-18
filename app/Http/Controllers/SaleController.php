@@ -109,6 +109,17 @@ class SaleController extends Controller
              * ventas que la pantalla no muestra (5/10/2026, ver el docblock del scope).
              */
             $models = $models->delModuloVentas();
+
+            /*
+             * 🔴 DIAS ANTERIORES (`sale.index.previus_days`), IMPUESTO POR EL SERVIDOR (mision
+             * alcance-de-ventas-caminos-faltantes, 16/10/2026). Un empleado sin el permiso recibe
+             * SIEMPRE las ventas de hoy, pida la fecha, el rango o la ausencia de fecha que pida.
+             * Antes lo imponia solo la SPA (y a medias: escondia la tira de dias pero no el
+             * calendario). Solo el modulo `ventas`: Deposito, Por entregar y Por estado tienen
+             * permisos propios. Va ANTES del scope de fechas de mas abajo, que es el que consume
+             * estos valores. Dueño y administrador no se acotan nunca.
+             */
+            list($from_date, $until_date) = ListadoVentasHelper::acotar_fechas($from_date, $until_date);
         }
 
         if (!is_null($from_date)) {
@@ -149,6 +160,20 @@ class SaleController extends Controller
                 ListadoVentasHelper::respuesta_paginada($models, $request, $modulo, $this->userId()),
                 200
             );
+        }
+
+        /*
+         * 🔴 SIN `per_page` EL ALCANCE DEL EMPLEADO TAMBIEN LO IMPONE EL SERVIDOR, pero solo en el
+         * modulo `ventas` (mision alcance-de-ventas-caminos-faltantes, 16/10/2026). Antes este camino
+         * devolvia el dia entero con todas las filas e importes, sin mirar los permisos: un empleado
+         * acotado ("solo sus ventas" / "solo su sucursal") las leia pegandole al endpoint sin
+         * `per_page`. En el modo paginado el alcance se aplica adentro de
+         * `ListadoVentasHelper::aplicar_filtros_de_pantalla()`; aca va la forma pelada. Deposito, Por
+         * entregar y Por estado (otros `modulo`) pegan a este mismo camino y NO se acotan: tienen sus
+         * propios permisos.
+         */
+        if ($modulo == 'ventas') {
+            $models = ListadoVentasHelper::aplicar_alcance($models);
         }
 
         $models = $models->orderBy('created_at', 'DESC')
@@ -1780,7 +1805,32 @@ class SaleController extends Controller
 
     }
 
+    /**
+     * Guarda de los cuatro Excel de ventas: solo el dueño o un administrador puede exportar.
+     *
+     * Devuelve el 403 listo para retornar, o null si puede seguir. Es lo que la pantalla ya
+     * prometia (`is_admin` en `Total.vue` esconde los botones) y que el servidor no exigia
+     * (mision alcance-de-ventas-caminos-faltantes, 16/10/2026). La regla vive en
+     * `ListadoVentasHelper::puede_exportar()` y es null-safe: sin usuario de sesion tambien es 403.
+     *
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    private function respuesta_si_no_puede_exportar()
+    {
+        if (ListadoVentasHelper::puede_exportar()) {
+            return null;
+        }
+
+        return response()->json(['message' => ListadoVentasHelper::MENSAJE_SIN_PERMISO_PARA_EXPORTAR], 403);
+    }
+
     function excel_export($from_date, $until_date = null) {
+
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
 
         $models = Sale::where('user_id', $this->userId())
                         /** Excluye ventas contenedoras de facturación del export Excel. */
@@ -1808,6 +1858,12 @@ class SaleController extends Controller
     }
 
     function excel_breakdown_export($from_date, $until_date = null) {
+
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
 
         $models = Sale::where('user_id', $this->userId())
                         /** Excluye ventas contenedoras de facturación del export desglosado. */
@@ -2265,12 +2321,19 @@ class SaleController extends Controller
     /**
      * Export Excel de ventas fidedigno a la pantalla (botón "Excel").
      * Recibe el estado completo del filtro por POST y reconstruye el set completo.
+     * Solo dueño o administrador: cualquier otro usuario recibe 403 (respuesta_si_no_puede_exportar).
      *
      * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
      */
     function excel_export_view(Request $request)
     {
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
+
         $models = $this->resolve_sales_for_export($request);
 
         return Excel::download(
@@ -2281,12 +2344,19 @@ class SaleController extends Controller
 
     /**
      * Export Excel desglosado por artículo, fidedigno a la pantalla (botón "Excel full").
+     * Solo dueño o administrador: cualquier otro usuario recibe 403 (respuesta_si_no_puede_exportar).
      *
      * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
      */
     function excel_breakdown_export_view(Request $request)
     {
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
+
         $models = $this->resolve_sales_for_export($request);
 
         return Excel::download(

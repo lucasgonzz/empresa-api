@@ -213,7 +213,12 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
 
         $this->assertArrayHasKey('state', $query);
 
-        $guardado = OauthState::where('state', $query['state'])->first();
+        // Desde mp-redireccion-central-admin el state que viaja a Mercado Pago es
+        // `<aleatorio>_<host>` y en la base queda solo el aleatorio: se busca por la parte
+        // anterior al primer `_` (sin relay no hay `_` y el state es el aleatorio entero).
+        $state_aleatorio = explode('_', $query['state'], 2)[0];
+
+        $guardado = OauthState::where('state', $state_aleatorio)->first();
 
         $this->assertNotNull($guardado, 'El state de la URL no quedó persistido en oauth_states.');
         $this->assertNotNull(

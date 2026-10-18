@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Representa una conversación de WhatsApp entre la empresa y un teléfono (un chat por
@@ -15,6 +16,22 @@ use Illuminate\Database\Eloquent\Model;
  */
 class WhatsappChat extends Model
 {
+    /**
+     * Valores de `follow_up` / `ai_follow_up` (misión senal-pedidos-y-consultas-del-agente): lo que el
+     * agente dejó para que una persona atienda. 'pedido' = armó un pedido que el negocio tiene que
+     * confirmar; 'consulta' = prometió averiguar o confirmar algo («lo consulto y te confirmo»).
+     * Es el vocabulario del marcador que el modelo escribe (`[PEDIDO:…]` / `[CONSULTA:…]`).
+     */
+    const FOLLOW_UP_PEDIDO = 'pedido';
+    const FOLLOW_UP_CONSULTA = 'consulta';
+
+    /**
+     * Resultado memoizado de `follow_up_available()`: solo se guarda el `true` (ver ese método).
+     *
+     * @var bool|null
+     */
+    private static $follow_up_available = null;
+
     protected $guarded = [];
 
     protected $casts = [
@@ -22,6 +39,8 @@ class WhatsappChat extends Model
         'ai_enabled' => 'boolean',
         'last_message_at' => 'datetime',
         'last_inbound_at' => 'datetime',
+        // Desde cuándo espera el seguimiento (misión senal-pedidos-y-consultas-del-agente).
+        'follow_up_at' => 'datetime',
         // Contador del debounce del agente (misión whatsapp-agente). Lo escribe y lo lee
         // `WhatsappAgentScheduler` por query builder crudo, no por el modelo; el cast está
         // para que si alguna vez sale serializado en una respuesta o en un broadcast salga
@@ -154,5 +173,116 @@ class WhatsappChat extends Model
         }
 
         return null;
+    }
+
+    /**
+     * Indica si el esquema ya tiene las columnas del seguimiento (misión
+     * senal-pedidos-y-consultas-del-agente). Existe por la VENTANA DEL DEPLOY: el código nuevo
+     * puede quedar sirviendo unos segundos antes de que corra la migración, y el hilo caliente del
+     * agente (guardar y enviar su respuesta) escribe y lee estas columnas. Sin esta guarda, esa
+     * ventana serían 500 y respuestas del agente perdidas sin ningún error a la vista; con ella, el
+     * seguimiento simplemente no se marca hasta que la migración corre.
+     *
+     * 🔴 SE MEMOIZA SOLO EL SÍ, NUNCA EL NO (mismo criterio que `Address::columna_madre_existe()` y
+     * `ChequeHelper::columna_de_motivo_acepta_texto()`). Un worker de cola de larga vida que evalúe esto en la
+     * ventana entre el deploy del código y la migración, y guardara el `false`, se quedaría sin seguimiento
+     * hasta que lo reinicien, y sin ningún error. Con el sí memoizado, el costo de `Schema::hasColumn` (una
+     * consulta al catálogo de MySQL) se paga una vez por proceso cuando la migración ya corrió.
+     *
+     * Se miran las ÚLTIMAS columnas que crea la migración (`follow_up_at` y `ai_follow_up_note`) y no las
+     * primeras: una migración cortada a mitad de camino no puede dar «disponible» con una columna que falta.
+     *
+     * @return bool
+     */
+    public static function follow_up_available()
+    {
+        if (self::$follow_up_available === true) {
+            return true;
+        }
+
+        if (Schema::hasColumn('whatsapp_chats', 'follow_up_at') && Schema::hasColumn('whatsapp_chat_messages', 'ai_follow_up_note')) {
+            self::$follow_up_available = true;
+        }
+
+        return self::$follow_up_available === true;
+    }
+
+    /**
+     * Deja el chat marcado para que una persona lo atienda: el agente armó un pedido o prometió
+     * averiguar algo y el mensaje YA SALIÓ (lo llama `WhatsappChatHelper::mark_ai_message_sent()`).
+     * Modifica el modelo en memoria; el caller hace el `save()`.
+     *
+     * Reglas:
+     *  - 'pedido' gana a 'consulta': una consulta nueva NO baja un pedido que sigue esperando; un
+     *    pedido nuevo sí sube una consulta. Es lo más caro de perder, y el tablero lo cuenta aparte.
+     *  - `follow_up_at` es «desde cuándo espera»: solo se escribe cuando el chat pasa a un tipo
+     *    distinto (de nada a algo, o de consulta a pedido). Otro mensaje del mismo tipo no lo mueve.
+     *  - La nota es la del último mensaje que marcó del mismo tipo y trajo detalle (el modelo ve toda la
+     *    conversación, así que la última describe el pedido completo y no solo el último renglón).
+     *
+     * @param string      $tipo Una de las constantes FOLLOW_UP_*.
+     * @param string|null $nota Detalle que escribió el modelo (ya acotado), o null.
+     *
+     * @return bool true si el modelo quedó con cambios para guardar.
+     */
+    public function mark_follow_up($tipo, $nota = null)
+    {
+        if (! self::follow_up_available()) {
+            return false;
+        }
+
+        if (! in_array($tipo, [self::FOLLOW_UP_PEDIDO, self::FOLLOW_UP_CONSULTA], true)) {
+            return false;
+        }
+
+        // Un pedido pendiente no se degrada a consulta.
+        if ($this->follow_up === self::FOLLOW_UP_PEDIDO && $tipo === self::FOLLOW_UP_CONSULTA) {
+            return false;
+        }
+
+        if ($this->follow_up !== $tipo) {
+            // Pasa de nada a algo, o de consulta a pedido: empieza una espera nueva y la nota es la de ahora.
+            $this->follow_up_at = now();
+            $this->follow_up_note = $nota;
+        } elseif (! is_null($nota) && trim((string) $nota) !== '') {
+            // Mismo tipo: la nota nueva reemplaza a la vieja SOLO si trae algo (una consulta marcada por la red de
+            // seguridad no trae detalle, y no tiene que borrar el que ya había).
+            $this->follow_up_note = $nota;
+        }
+
+        $this->follow_up = $tipo;
+
+        return true;
+    }
+
+    /**
+     * Apaga el seguimiento del chat: una persona lo atendió (escribió en el chat o apretó «Ya lo
+     * atendí»). Idempotente: sin seguimiento no hace nada y devuelve false.
+     *
+     * 🔴 VA POR QUERY Y NO POR `save()`, A PROPÓSITO. El modelo que llega acá puede estar viejo
+     * (el controller lo cargó antes de que otro proceso —el envío del agente— lo marcara): si en
+     * memoria `follow_up` ya es null, Eloquent no ve ningún cambio y NO escribe el UPDATE, y la marca
+     * se queda en la base para siempre. El `WHERE follow_up IS NOT NULL` hace la escritura
+     * independiente de lo que crea el modelo en memoria; después se lo pone al día para que el
+     * broadcast que sigue lleve el estado real.
+     *
+     * @return bool true si había un seguimiento y se apagó.
+     */
+    public function clear_follow_up()
+    {
+        if (! self::follow_up_available()) {
+            return false;
+        }
+
+        $apagadas = (int) self::where('id', $this->id)
+            ->whereNotNull('follow_up')
+            ->update(['follow_up' => null, 'follow_up_note' => null, 'follow_up_at' => null]);
+
+        foreach (['follow_up', 'follow_up_note', 'follow_up_at'] as $columna) {
+            $this->setAttribute($columna, null);
+            $this->syncOriginalAttribute($columna);
+        }
+
+        return $apagadas > 0;
     }
 }

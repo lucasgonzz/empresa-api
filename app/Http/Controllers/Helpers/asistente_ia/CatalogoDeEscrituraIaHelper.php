@@ -948,6 +948,11 @@ class CatalogoDeEscrituraIaHelper
         'promocion_vinoteca'           => 'promoción con artículos (relación que el genérico no maneja)',
         'provider_order_afip_ticket'   => 'facturación de compras (afip)',
         'provider_order_scan'          => 'escaneo de factura: flujo',
+        // Misión tenencia-compra-hermanos (17/10/2026): las tres sumaron user_id (migración 2026_10_17_100000).
+        // Son hijas de la compra (que tiene su herramienta) y se cargan desde la compra, no sueltas.
+        'provider_order_afip_ticket_iva' => 'facturación de compras (afip): alícuotas de IVA de la factura de una compra',
+        'provider_order_discount'      => 'descuento de una compra: se carga desde la compra',
+        'provider_order_extra_cost'    => 'costo extra de una compra: se carga desde la compra',
         'recipe'                       => 'receta con artículos (relación que el genérico no maneja)',
         'resumen_caja'                 => 'tesorería: cierre de caja',
         'road_map'                     => 'hoja de ruta con ventas (relación que el genérico no maneja)',
@@ -1582,6 +1587,18 @@ class CatalogoDeEscrituraIaHelper
 
             $respuesta['listas_de_precio'] = MargenesPorListaIaHelper::para_que_puedo_cargar($contexto);
             $respuesta['depositos'] = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
+
+            /*
+             * Y el árbol de categorías y subcategorías (misión asistente-altas-y-conversacion,
+             * 16/10/2026, D5): en demo3 la cinta y el martillo quedaron sin categoría porque el
+             * modelo no tenía de dónde elegirla. Solo si el negocio tiene categorías.
+             */
+            $categorias = CategoriasDelNegocioIaHelper::para_respuesta($contexto->owner_id);
+
+            if (!is_null($categorias)) {
+
+                $respuesta['categorias_del_negocio'] = $categorias;
+            }
         }
 
         return $respuesta;

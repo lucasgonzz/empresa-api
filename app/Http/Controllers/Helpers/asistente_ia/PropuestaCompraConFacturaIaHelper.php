@@ -54,6 +54,16 @@ use Carbon\Carbon;
  *      pantalla al revisar el escaneo, que es cuando de verdad se mueve stock.
  *   3. EN "RESUELTO" SE EJECUTA DIRECTO (ver HerramientasDeCarga::AUTO_CONFIRMABLES); en "cauteloso",
  *      UNA confirmación que cubre todo, incluido el alta del proveedor.
+ *
+ * 🔴 MISIÓN asistente-aviso-escaneo-factura (16/10/2026), dos cosas más:
+ *
+ *   4. «ADJUNTALA A LA COMPRA 12» SE CUMPLE. Con `compra_num` la factura va a la compra que nombró el
+ *      dueño aunque ya tenga artículos (la tarjeta lo avisa y en la revisión elige qué renglones
+ *      sumar); el proveedor de esa compra manda sobre el que nombró. Sin `compra_num` sigue la regla
+ *      conservadora de arriba.
+ *   5. EL AVISO DE "TERMINÓ EL ESCANEO" PUEDE LLEGAR POR WHATSAPP, con el link a la revisión, si el
+ *      admin del cliente anunció que lo manda (AvisosDelAsistenteHelper). El escaneo nace con su
+ *      conversación y con `avisar_por_whatsapp`, y el texto del resultado dice por dónde llega.
  */
 class PropuestaCompraConFacturaIaHelper
 {
@@ -104,7 +114,8 @@ class PropuestaCompraConFacturaIaHelper
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
-     * @param  array  $input  proveedor*, sucursal
+     * @param  array  $input  proveedor*, sucursal, cuit, reemplaza_a, compra_num (el N° de una compra
+     *                        ya cargada a la que se adjunta la factura; ver proponer_sobre_compra_indicada)
      * @return array  Respuesta de la herramienta (propuesta creada o respuesta de negocio).
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)
@@ -120,6 +131,28 @@ class PropuestaCompraConFacturaIaHelper
                 'Esta cuenta no tiene contratada la lectura de facturas de compra, así que no puedo procesar la foto. '
                 . 'La compra la podés cargar a mano desde Compras.'
             );
+        }
+
+        /*
+         * 🔴 LA COMPRA QUE INDICÓ EL DUEÑO VA POR SU PROPIO CAMINO (misión
+         * asistente-aviso-escaneo-factura, decisión 3 de Lucas del 16/10/2026): «adjuntala a la
+         * compra 12» se cumple aunque esa compra ya tenga artículos — el dueño eligió la compra, y en
+         * la revisión del escaneo elige qué renglones sumar. La regla automática de abajo (reusar
+         * solo una compra VACÍA de los últimos DIAS_DE_REUSO días) no cambia: es la que corre cuando
+         * nadie nombró ninguna compra.
+         */
+        $compra_num = self::numero_de_compra(EntradaDeCargaIa::valor($input, 'compra_num'));
+
+        if (!is_null($compra_num)) {
+
+            $compra = self::compra_por_numero($contexto, $compra_num);
+
+            if (RespuestaDeCargaIa::es_negativa($compra)) {
+
+                return $compra;
+            }
+
+            return self::proponer_sobre_compra_indicada($contexto, $mensaje, $input, $compra);
         }
 
         /*
@@ -222,17 +255,7 @@ class PropuestaCompraConFacturaIaHelper
             $renglones[] = ['etiqueta' => 'Sucursal', 'valor' => self::nombre_de_sucursal($sucursal)];
         }
 
-        $cuantas = count($imagen_ids) === 1 ? '1 foto' : count($imagen_ids) . ' fotos';
-
-        /*
-         * Si quedaron fotos afuera del escaneo, la tarjeta lo dice ANTES de que el dueño confirme:
-         * al confirmar se sellan todas (si no, las que sobran se colarían en la próxima compra),
-         * así que tiene que poder decir "pará, esa no es de esta factura".
-         */
-        if (count($consideradas_ids) > count($imagen_ids)) {
-
-            $cuantas .= ' (de ' . count($consideradas_ids) . ' sin usar; van las más nuevas)';
-        }
+        $cuantas = self::descripcion_de_fotos($imagen_ids, $consideradas_ids);
 
         $renglones[] = ['etiqueta' => 'Fotos de la factura', 'valor' => $cuantas];
 
@@ -261,6 +284,12 @@ class PropuestaCompraConFacturaIaHelper
             /* Las que se sellan al confirmar: superset de imagen_ids (ver imagenes_sin_gestionar). */
             'imagen_ids_miradas'    => $consideradas_ids,
             'reusar_provider_order' => is_null($a_reusar) ? null : (int) $a_reusar->id,
+            /*
+             * false: la compra la eligió la regla automática (vacía y reciente) o es nueva. Con true
+             * (proponer_sobre_compra_indicada) la nombró el dueño y orden_para_la_factura() no se cae
+             * a una compra nueva aunque tenga artículos.
+             */
+            'compra_indicada'       => false,
             /*
              * Espejo de `prefill_prop_on_select` del formulario de la SPA (src/models/provider_order.js):
              * al elegir el proveedor, la compra hereda su default de costos brutos. Si acá se
@@ -299,6 +328,251 @@ class PropuestaCompraConFacturaIaHelper
         }
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
+    }
+
+    /**
+     * La compra del dueño con ese número (el N° que ve en Compras), o la respuesta negativa.
+     *
+     * Se busca por `num` del DUEÑO, sin filtro de días ni de artículos: la nombró él, y puede ser de
+     * hace un mes. Un número que no existe es un rechazo recuperable (sin tarjeta): el modelo se lo
+     * cuenta y el dueño corrige el número o pide una compra nueva.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $compra_num
+     * @return \App\Models\ProviderOrder|array
+     */
+    protected static function compra_por_numero(ContextoDeCargaIa $contexto, $compra_num)
+    {
+        $compra = ProviderOrder::where('user_id', $contexto->owner_id)
+                                ->where('num', (int) $compra_num)
+                                ->first();
+
+        if (is_null($compra)) {
+
+            return RespuestaDeCargaIa::error(
+                'No encontré ninguna compra N° ' . (int) $compra_num . ' entre las tuyas. '
+                . 'Fijate el número en Compras, o decime si armo una compra nueva con la factura.'
+            );
+        }
+
+        return $compra;
+    }
+
+    /**
+     * El `compra_num` del input como entero positivo, o null = «no vino».
+     *
+     * 🔴 0, "0", vacío o algo que no es un número cuentan como que NO VINO, no como un número mal
+     * dicho (chequeo independiente del 16/10/2026): DeepSeek rellena los enteros opcionales con 0, y
+     * tratarlo como "la compra 0" cortaba TODAS las cargas con factura pidiendo un número que nadie
+     * había dicho. Mismo criterio que EscaneoDeFacturaIaHelper::numero_o_null de la consulta.
+     *
+     * @param  mixed  $valor
+     * @return int|null
+     */
+    protected static function numero_de_compra($valor)
+    {
+        if (is_null($valor) || is_bool($valor) || $valor === '' || !is_numeric($valor) || (int) $valor <= 0) {
+
+            return null;
+        }
+
+        return (int) $valor;
+    }
+
+    /**
+     * La tarjeta que adjunta la factura a la compra que nombró el dueño («adjuntala a la compra 12»).
+     *
+     * Las reglas (decisión 3 de Lucas, 16/10/2026):
+     *   - EL PROVEEDOR DE LA COMPRA MANDA. Si el dueño nombró a otro, la factura va igual a esa
+     *     compra con SU proveedor y la tarjeta lo avisa: mezclar dos proveedores en una compra
+     *     desarma la cuenta corriente de los dos.
+     *   - CON ARTÍCULOS SE USA IGUAL, y la tarjeta avisa cuántos tiene: en la revisión del escaneo
+     *     el dueño elige qué renglones sumar, así que nada se duplica sin que él lo vea.
+     *   - CON UN ESCANEO EN CURSO, el mismo corte que en el resto del sistema: dos escaneos sobre una
+     *     compra se pisarían.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
+     * @param  array  $input
+     * @param  \App\Models\ProviderOrder  $compra
+     * @return array
+     */
+    protected static function proponer_sobre_compra_indicada(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input, ProviderOrder $compra)
+    {
+        $proveedor = is_null($compra->provider_id)
+            ? null
+            : Provider::where('user_id', $contexto->owner_id)->where('id', (int) $compra->provider_id)->first();
+
+        if (is_null($proveedor)) {
+
+            return RespuestaDeCargaIa::error(
+                'La compra N° ' . $compra->num . ' no tiene proveedor cargado. Asignáselo desde Compras y pedímelo de nuevo.'
+            );
+        }
+
+        if (self::tiene_escaneo_en_curso($compra)) {
+
+            return RespuestaDeCargaIa::error(
+                'La compra N° ' . $compra->num . ' ya tiene un escaneo en curso. Esperá a que termine y pedímelo de nuevo.'
+            );
+        }
+
+        $fotos = self::imagenes_sin_gestionar($contexto, $mensaje);
+
+        if (!count($fotos['paginas'])) {
+
+            return RespuestaDeCargaIa::error(
+                'No tengo ninguna foto de factura sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la cargo.'
+            );
+        }
+
+        $imagen_ids = self::ids_de($fotos['paginas']);
+
+        $consideradas_ids = self::ids_de($fotos['consideradas']);
+
+        $cuantas = self::descripcion_de_fotos($imagen_ids, $consideradas_ids);
+
+        $articulos = $compra->articles()->count();
+
+        $avisos = [];
+
+        $nota = [];
+
+        $nombrado = EntradaDeCargaIa::texto($input, 'proveedor');
+
+        if (self::es_otro_proveedor($contexto, $nombrado, $proveedor)) {
+
+            $avisos[] = 'La compra N° ' . $compra->num . ' es de ' . $proveedor->name . ', no de "' . $nombrado . '": la factura va a esa compra, con su proveedor.';
+
+            $nota[] = 'La compra N° ' . $compra->num . ' es de ' . $proveedor->name . ' y no del proveedor que nombró la persona: decíselo.';
+        }
+
+        if ($articulos > 0) {
+
+            $cuantos = $articulos === 1 ? '1 artículo' : $articulos . ' artículos';
+
+            $avisos[] = 'La compra N° ' . $compra->num . ' ya tiene ' . $cuantos . ': al revisar el escaneo elegís qué renglones sumar.';
+
+            $nota[] = 'La compra ya tiene ' . $cuantos . ' cargados: contale que al revisar el escaneo elige qué renglones sumar.';
+        }
+
+        $que_pasa = 'Se adjunta la factura a la compra N° ' . $compra->num
+            . ($articulos > 0 ? ', que ya tiene ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos') : '');
+
+        $renglones = [
+            ['etiqueta' => 'Proveedor', 'valor' => (string) $proveedor->name],
+            ['etiqueta' => 'Compra', 'valor' => 'N° ' . $compra->num],
+            ['etiqueta' => 'Fotos de la factura', 'valor' => $cuantas],
+            ['etiqueta' => 'Qué se hace', 'valor' => $que_pasa],
+        ];
+
+        $datos = [
+            'provider_id'           => (int) $proveedor->id,
+            'proveedor'             => (string) $proveedor->name,
+            'proveedor_nuevo'       => null,
+            /* La compra ya tiene su sucursal (o ninguna): no se toca. */
+            'address_id'            => is_null($compra->address_id) ? null : (int) $compra->address_id,
+            'sucursal'              => null,
+            'imagen_ids'            => $imagen_ids,
+            'imagen_ids_miradas'    => $consideradas_ids,
+            'reusar_provider_order' => (int) $compra->id,
+            'compra_indicada'       => true,
+            'precios_incluyen_iva'  => (bool) $compra->precios_incluyen_iva,
+        ];
+
+        $creada = AccionesIaHelper::crear(
+            $contexto,
+            $mensaje,
+            AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+            self::clave($proveedor->id),
+            $datos,
+            [
+                'titulo'    => 'Compra con factura',
+                'renglones' => $renglones,
+                'aviso'     => count($avisos) ? implode(' ', $avisos) : null,
+            ],
+            EntradaDeCargaIa::valor($input, 'reemplaza_a')
+        );
+
+        $extra = count($nota) ? ['nota' => implode(' ', $nota)] : [];
+
+        return AccionesIaHelper::respuesta_de_propuesta(
+            $creada,
+            'Compra N° ' . $compra->num . ' de ' . $proveedor->name . ' · ' . $cuantas . ' · ' . $que_pasa,
+            $extra
+        );
+    }
+
+    /**
+     * true si la persona nombró un proveedor y NO es el de la compra.
+     *
+     * Primero por el reconocimiento de siempre (ProveedorDeLaFacturaIaHelper::existente, normalizado
+     * contra `name` y `razon_social`); si el nombre no es de ningún proveedor, se compara normalizado
+     * y en las dos direcciones contra el de la compra («Distribuidora Sur» y «Distribuidora Sur
+     * S.R.L.» son el mismo). Sin nombre no hay nada que avisar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombrado
+     * @param  \App\Models\Provider  $proveedor  El de la compra.
+     * @return bool
+     */
+    protected static function es_otro_proveedor(ContextoDeCargaIa $contexto, $nombrado, Provider $proveedor)
+    {
+        $nombrado = trim((string) $nombrado);
+
+        if ($nombrado === '') {
+
+            return false;
+        }
+
+        $existente = ProveedorDeLaFacturaIaHelper::existente($contexto->owner_id, $nombrado);
+
+        if (!is_null($existente)) {
+
+            return (int) $existente->id !== (int) $proveedor->id;
+        }
+
+        $buscado = ProveedorDeLaFacturaIaHelper::normalizar($nombrado);
+
+        if ($buscado === '') {
+
+            return false;
+        }
+
+        foreach ([$proveedor->name, $proveedor->razon_social] as $nombre) {
+
+            $propio = ProveedorDeLaFacturaIaHelper::normalizar((string) $nombre);
+
+            if ($propio !== '' && (mb_strpos($propio, $buscado) !== false || mb_strpos($buscado, $propio) !== false)) {
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * «1 foto», «3 fotos» y, si quedaron fotos afuera del escaneo, cuántas había sin usar.
+     *
+     * Si quedaron fotos afuera, la tarjeta lo dice ANTES de que el dueño confirme: al confirmar se
+     * sellan todas (si no, las que sobran se colarían en la próxima compra), así que tiene que poder
+     * decir "pará, esa no es de esta factura".
+     *
+     * @param  array  $imagen_ids
+     * @param  array  $consideradas_ids
+     * @return string
+     */
+    protected static function descripcion_de_fotos(array $imagen_ids, array $consideradas_ids)
+    {
+        $cuantas = count($imagen_ids) === 1 ? '1 foto' : count($imagen_ids) . ' fotos';
+
+        if (count($consideradas_ids) > count($imagen_ids)) {
+
+            $cuantas .= ' (de ' . count($consideradas_ids) . ' sin usar; van las más nuevas)';
+        }
+
+        return $cuantas;
     }
 
     /**
@@ -378,7 +652,7 @@ class PropuestaCompraConFacturaIaHelper
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, provider_id, provider_order_id}
      *
      * @throws AccionIaException  422 si la carga ya no se puede hacer.
      */
@@ -443,7 +717,9 @@ class PropuestaCompraConFacturaIaHelper
             throw new AccionIaException(422, 'Las fotos de esa factura ya se usaron en otra compra. Mandámelas de nuevo.');
         }
 
-        $orden = self::orden_para_la_factura($contexto, $proveedor, $datos);
+        $destino = self::orden_para_la_factura($contexto, $proveedor, $datos);
+
+        $orden = $destino['orden'];
 
         $paginas = [];
 
@@ -467,7 +743,21 @@ class PropuestaCompraConFacturaIaHelper
             throw new AccionIaException(422, 'No pude leer las fotos de esa factura. Mandámelas de nuevo.');
         }
 
-        $resultado = ProviderOrderScanAltaHelper::crear($orden, $paginas, $contexto->persona);
+        /*
+         * 🔴 EL AVISO POR WHATSAPP SE PIDE SOLO SI VA A LLEGAR (misión asistente-aviso-escaneo-factura,
+         * 16/10/2026): la carga vino por WhatsApp Y el admin de este cliente anunció que consulta los
+         * avisos (AvisosDelAsistenteHelper::anunciar). Con un admin viejo el escaneo nace sin aviso y
+         * el texto de abajo sigue diciendo que el aviso es en la pantalla, como siempre.
+         *
+         * La conversación se guarda igual en los dos casos: es lo que deja que
+         * consultar_escaneo_de_factura encuentre "la factura de esta charla".
+         */
+        $avisa_por_whatsapp = self::avisa_por_whatsapp($contexto, $accion);
+
+        $resultado = ProviderOrderScanAltaHelper::crear($orden, $paginas, $contexto->persona, [
+            'ai_conversation_id'  => is_null($contexto->conversation) ? null : (int) $contexto->conversation->id,
+            'avisar_por_whatsapp' => $avisa_por_whatsapp,
+        ]);
 
         if ((int) $resultado['status'] !== 202) {
 
@@ -486,23 +776,39 @@ class PropuestaCompraConFacturaIaHelper
         AsistenteImagenHelper::marcar_gestionadas(self::ids_de($miradas));
 
         /*
-         * El aviso de que el escaneo terminó ya existe y no lo escribe esto: lo manda
-         * RunProviderOrderScanJob::notificar_fin() por el proceso en segundo plano.
-         */
-        /*
-         * El aviso es EN EL SISTEMA (la notificación de la pantalla): por WhatsApp no llega nada
-         * cuando termina el escaneo, y el texto no puede hacerle esperar al dueño un mensaje que no
-         * va a venir.
+         * El aviso de que el escaneo terminó no lo escribe esto. En la pantalla lo manda
+         * RunProviderOrderScanJob::notificar_fin() por el proceso en segundo plano; por WhatsApp lo
+         * manda el admin cuando consulta GET admin-sync/asistente/avisos-pendientes (solo si el
+         * escaneo nació con `avisar_por_whatsapp`).
+         *
+         * 🔴 EL TEXTO DICE QUÉ PASÓ Y CÓMO LLEGA EL AVISO, sin prometer lo que no va a venir:
+         *   - «Creé la Compra N° X…» vs «Adjunté la factura a la Compra N° X…»: el dueño tiene que
+         *     saber si se armó una compra nueva o si la factura fue a una que ya existía.
+         *   - Con el aviso pedido → «te aviso por acá con el link»; sin él (admin viejo, o la carga
+         *     no vino por WhatsApp) → el aviso es en la pantalla, como antes de esta misión.
+         * «Compra N° X» va con mayúscula en los dos casos: es como lo dice el listado de Compras, y
+         * lo que buscan los tests de la carga.
          *
          * `provider_id` y `provider_order_id` no son para la persona: los lee
          * compra_reciente_en_curso() para no crear una segunda compra con la página 2 de la misma
          * factura.
          */
+        /*
+         * «Con el link» se promete solo si hay con qué armarlo (la spa_url que anunció el admin o la
+         * SPA_URL del .env): el admin igual puede armarlo con la suya, pero lo que se promete tiene
+         * que poder cumplirse desde acá.
+         */
+        $con_link = $avisa_por_whatsapp && !is_null(AvisosDelAsistenteHelper::base_del_link($contexto->owner_id));
+
+        $cierre = $avisa_por_whatsapp
+            ? ($con_link
+                ? ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá con el link para revisarla en Compras.'
+                : ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá para que la revises en Compras.')
+            : ' Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
+                . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.';
+
         return [
-            'texto'             => 'Compra N° ' . $orden->num . ' cargada a ' . $proveedor->name
-                . ($creado ? ' (proveedor nuevo, lo di de alta)' : '')
-                . '. Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
-                . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.',
+            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado) . $cierre,
             /*
              * Compras es la solapa 'compras' de la ruta 'provider' de la SPA (/proveedores/compras).
              * Hasta el 10/10/2026 iba name 'proveedores', que no existe en router/index.js y dejaba
@@ -524,19 +830,58 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
-     * La compra a la que se le cuelga la factura: la vacía que la tarjeta prometió reusar, si
-     * todavía está vacía, o una nueva.
+     * La compra a la que se le cuelga la factura: la que nombró el dueño, la vacía que la tarjeta
+     * prometió reusar si todavía está vacía, o una nueva.
+     *
+     * 🔴 CON `compra_indicada` NO HAY CAÍDA A UNA COMPRA NUEVA (decisión 3 de Lucas, 16/10/2026): el
+     * dueño eligió esa compra sabiendo que tenía artículos —la tarjeta se lo dijo— y en la revisión
+     * del escaneo elige qué renglones sumar. Lo que sí se revalida: que siga siendo suya, que exista
+     * con el mismo proveedor y que no tenga un escaneo en curso. Si algo de eso cambió entre la
+     * propuesta y el sí, se corta con el motivo en vez de mandar la factura a otro lado.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\Provider  $proveedor
      * @param  array  $datos
-     * @return \App\Models\ProviderOrder
+     * @return array  ['orden' => \App\Models\ProviderOrder, 'adjuntada' => bool] — `adjuntada` es
+     *                true si la factura fue a una compra que ya existía (indicada o vacía reusada).
      *
      * @throws AccionIaException
      */
     protected static function orden_para_la_factura(ContextoDeCargaIa $contexto, Provider $proveedor, array $datos)
     {
         $a_reusar = isset($datos['reusar_provider_order']) ? (int) $datos['reusar_provider_order'] : 0;
+
+        if ($a_reusar > 0 && !empty($datos['compra_indicada'])) {
+
+            $indicada = ProviderOrder::where('user_id', $contexto->owner_id)
+                                        ->where('id', $a_reusar)
+                                        ->where('provider_id', $proveedor->id)
+                                        ->first();
+
+            if (is_null($indicada)) {
+
+                throw new AccionIaException(422, 'Esa compra ya no existe o cambió de proveedor. Pedímelo de nuevo.');
+            }
+
+            if (self::tiene_escaneo_en_curso($indicada)) {
+
+                throw new AccionIaException(422, 'Esa compra ya tiene un escaneo en curso. Esperá a que termine.');
+            }
+
+            /*
+             * La bandera del IVA se prende solo en una compra VACÍA, con el mismo criterio que la
+             * vacía reusada de abajo. A una compra con artículos que el dueño cargó a mano no se le
+             * cambia cómo suma su total: prender la bandera le recalcularía los renglones que ya
+             * tenía en la próxima confirmación.
+             */
+            if (self::esta_vacia($indicada) && !$indicada->total_with_iva) {
+
+                $indicada->total_with_iva = 1;
+                $indicada->save();
+            }
+
+            return ['orden' => $indicada, 'adjuntada' => true];
+        }
 
         if ($a_reusar > 0) {
 
@@ -584,7 +929,7 @@ class PropuestaCompraConFacturaIaHelper
                     $orden->save();
                 }
 
-                return $orden;
+                return ['orden' => $orden, 'adjuntada' => true];
             }
         }
 
@@ -624,7 +969,58 @@ class PropuestaCompraConFacturaIaHelper
             'articles'                 => [],
         ]);
 
-        return $model;
+        return ['orden' => $model, 'adjuntada' => false];
+    }
+
+    /**
+     * La primera frase del resultado: qué se hizo con la compra.
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @param  \App\Models\Provider  $proveedor
+     * @param  bool  $adjuntada  La factura fue a una compra que ya existía.
+     * @param  bool  $proveedor_creado  El proveedor se dio de alta en esta misma carga.
+     * @return string
+     */
+    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado)
+    {
+        if (!$adjuntada) {
+
+            return 'Creé la Compra N° ' . $orden->num . ' de ' . $proveedor->name
+                . ($proveedor_creado ? ' (proveedor nuevo, lo di de alta)' : '') . '.';
+        }
+
+        $articulos = $orden->articles()->count();
+
+        $como_estaba = $articulos > 0
+            ? 'ya estaba cargada, con ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos')
+                . ': al revisar el escaneo elegís qué renglones sumar'
+            : 'ya estaba creada y sin artículos';
+
+        return 'Adjunté la factura a la Compra N° ' . $orden->num . ' de ' . $proveedor->name . ' (' . $como_estaba . ').';
+    }
+
+    /**
+     * true si el aviso de "terminó el escaneo" tiene que salir por WhatsApp: la tarjeta la propuso
+     * un mensaje de WhatsApp y el admin de este dueño anunció que consulta los avisos.
+     *
+     * Se mira el canal del mensaje que PROPUSO la tarjeta, no el de quien la confirma: la compra con
+     * factura solo se declara en WhatsApp (sus fotos solo existen ahí), y el aviso tiene que volver
+     * por donde vino la foto.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return bool
+     */
+    protected static function avisa_por_whatsapp(ContextoDeCargaIa $contexto, AiMessageAction $accion)
+    {
+        $propuso = AiMessage::find((int) $accion->ai_message_id);
+
+        if (is_null($propuso) || !$propuso->es_de_whatsapp()) {
+
+            return false;
+        }
+
+        return AvisosDelAsistenteHelper::admin_avisa($contexto->owner_id);
     }
 
     /**

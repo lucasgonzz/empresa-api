@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\User;
 use App\Services\Mostrador\RecolectorBase;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -59,9 +60,11 @@ class VentasSinCobrarIaHelper
      *                          cascada por rol de la pantalla.
      * @param  \App\Models\User|null  $persona  Quien le escribe al asistente. null = sin recorte (ver
      *                                          `employee_id_del_recorte()`).
+     * @param  float|null  $monto_minimo  Deuda TOTAL mínima de un cliente para entrar al ranking, en
+     *                                    pesos. null = sin mínimo (ver `filtrar_y_ordenar_clientes()`).
      * @return array<string, mixed>  Con la clave `error` cuando el pedido no se puede atender
      */
-    public static function ventas_sin_cobrar(int $owner_id, $dias = null, $persona = null): array
+    public static function ventas_sin_cobrar(int $owner_id, $dias = null, $persona = null, $monto_minimo = null): array
     {
         $owner = User::find($owner_id);
 
@@ -75,6 +78,334 @@ class VentasSinCobrarIaHelper
 
         $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias);
 
+        $filas = self::deuda_agrupada_por_cliente($base);
+
+        $ventas_totales = 0;
+        $ventas_en_otra_moneda = 0;
+        $pendiente_total = 0.0;
+        $sin_cliente = 0;
+        $por_cliente = [];
+        $ids = [];
+
+        foreach ($filas as $fila) {
+            $cliente_id = (int) $fila->cliente_id;
+            $ventas = (int) $fila->ventas;
+            $en_pesos = (int) $fila->ventas_en_pesos;
+            $pendiente = round((float) $fila->pendiente_en_pesos, 2);
+
+            $ventas_totales += $ventas;
+            $ventas_en_otra_moneda += ($ventas - $en_pesos);
+            $pendiente_total += $pendiente;
+
+            if ($cliente_id <= 0) {
+                $sin_cliente += $ventas;
+                continue;
+            }
+
+            $ids[] = $cliente_id;
+
+            $por_cliente[] = [
+                'cliente_id'                 => $cliente_id,
+                'ventas_sin_cobrar'          => $ventas,
+                'pendiente_en_pesos'         => $pendiente,
+                'ventas_en_otra_moneda'      => $ventas - $en_pesos,
+            ];
+        }
+
+        // Con borrados: el cliente pudo borrarse después de la venta, y la deuda sigue siendo real.
+        $nombres = empty($ids) ? [] : DB::table('clients')->whereIn('id', $ids)->pluck('name', 'id')->map(function ($v) {
+            return (string) $v;
+        })->all();
+
+        $por_cliente = self::con_deuda_total($por_cliente, $ids, $owner_id, $employee_id);
+
+        $clientes_sin_el_minimo = count($por_cliente);
+
+        $monto_minimo = self::monto_minimo_valido($monto_minimo);
+
+        // 🔴 Antes del tope de clientes: si no, uno que cumple podía quedar afuera de los veinte.
+        $por_cliente = self::filtrar_y_ordenar_clientes($por_cliente, $monto_minimo);
+
+        $clientes_encontrados = count($por_cliente);
+
+        $deuda_total_de_estos = 0.0;
+
+        foreach ($por_cliente as $cliente) {
+            $deuda_total_de_estos += $cliente['deuda_total_en_pesos'];
+        }
+
+        $lista = [];
+
+        foreach (array_slice($por_cliente, 0, self::TOPE_DE_CLIENTES) as $cliente) {
+            $id = $cliente['cliente_id'];
+
+            $lista[] = array_merge(
+                ['cliente' => isset($nombres[$id]) ? $nombres[$id] : 'cliente borrado'],
+                $cliente
+            );
+        }
+
+        $respuesta = [
+            'criterio' => 'Las ventas que todavia tienen deuda en la cuenta corriente del cliente: el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema. Una venta de mostrador en efectivo no esta aca porque no genero deuda, no porque exista un dato que diga que se cobro.',
+            // Que el modelo sepa si esta mirando todo el negocio o solo lo de quien le escribe: sin
+            // esto presentaria el numero recortado como el total, que es mentirle al que pregunta.
+            'alcance'                                => is_null($employee_id)
+                ? 'Todas las ventas del negocio.'
+                : 'SOLO las ventas que cargo la persona que te escribe: en la pantalla "Ventas sin cobrar" tampoco ve las de sus companeros. No presentes este numero como el total del negocio.',
+            'dias_de_antiguedad_pedidos'             => $dias,
+            'ventas_sin_cobrar'                      => $ventas_totales,
+            'total_pendiente_en_pesos'               => round($pendiente_total, 2),
+            // Las que no entran en ese total por estar en otra moneda (la extensión ventas_en_dolares).
+            'ventas_en_otra_moneda'                  => $ventas_en_otra_moneda,
+            // Ventas impagas sin cliente cargado: no entran en el ranking pero sí en el total.
+            'ventas_sin_cliente'                     => $sin_cliente,
+            'venta_mas_vieja'                        => self::venta_mas_vieja($base),
+            'clientes_con_deuda'                     => $clientes_encontrados,
+            'clientes_en_esta_lista'                 => count($lista),
+            'clientes'                               => $lista,
+        ];
+
+        /*
+         * 🔴 CÓMO SE LEE CADA CLIENTE, dicho en la respuesta y no solo en la descripción: con `dias`
+         * los totales de arriba son SOLO lo atrasado, pero cada cliente trae también todo lo que
+         * debe. Sin esta línea el modelo vuelve a comparar el monto que dijo el dueño contra lo
+         * atrasado, que es el error que motivó el cambio.
+         */
+        $respuesta['como_leer_cada_cliente'] = $dias > 0
+            ? 'Con dias = ' . $dias . ': ventas_sin_cobrar, total_pendiente_en_pesos y venta_mas_vieja de arriba son SOLO lo que tiene ' . $dias . ' dias o mas. En cada cliente, deuda_total_en_pesos es TODO lo que debe (incluidas las ventas recientes), deuda_atrasada_en_pesos lo que tiene ' . $dias . ' dias o mas y dias_de_la_venta_mas_vieja la antiguedad de su venta impaga mas vieja. Un cliente esta en la lista porque tiene deuda atrasada; la lista va de mayor a menor deuda total.'
+            : 'En cada cliente, deuda_total_en_pesos es todo lo que debe y dias_de_la_venta_mas_vieja la antiguedad de su venta impaga mas vieja. La lista va de mayor a menor deuda total.';
+
+        if (! is_null($monto_minimo)) {
+            $respuesta['monto_minimo_pedido'] = $monto_minimo;
+            // Cuántos tenían deuda (atrasada, si hubo dias) antes de aplicar el mínimo.
+            $respuesta['clientes_con_deuda_sin_el_monto_minimo'] = $clientes_sin_el_minimo;
+            $respuesta['filtro_de_monto'] = 'Solo los clientes cuya deuda TOTAL (deuda_total_en_pesos) es de ' . $monto_minimo . ' pesos o mas. clientes_con_deuda es cuantos cumplen.';
+        }
+
+        // La deuda total sumada de los clientes que cumplen (todos, no solo los que viajan en la lista).
+        $respuesta['deuda_total_en_pesos_de_estos_clientes'] = round($deuda_total_de_estos, 2);
+
+        return $respuesta;
+    }
+
+    /**
+     * TODOS LOS CLIENTES QUE CUMPLEN EL FILTRO, sin el tope de veinte del ranking (misión
+     * asistente-envios-a-clientes, 16/10/2026).
+     *
+     * 🔴 ES EL MISMO FILTRO DE `ventas_sin_cobrar()`, INVOCADO Y NO COPIADO. "Mandales un recordatorio
+     * a los que me deben más de X hace más de N días" tiene que alcanzar EXACTAMENTE a los clientes que
+     * el asistente le listó al dueño cuando le preguntó quiénes le deben: deuda TOTAL de X o más y
+     * alguna venta impaga de N días o más, con el mismo recorte por persona y el mismo umbral. Por eso
+     * se arma con las mismas cuatro piezas (`query_de_ventas()`, `deuda_agrupada_por_cliente()`,
+     * `con_deuda_total()` y `filtrar_y_ordenar_clientes()`) y en el mismo orden; lo único distinto es
+     * que no se corta en veinte, porque el recordatorio va a todos los que cumplen.
+     *
+     * Las ventas sin cliente cargado no entran: no hay a quién avisarle.
+     *
+     * @param  int  $owner_id
+     * @param  int|null  $dias  Ver ventas_sin_cobrar(): null = 0 = todas.
+     * @param  \App\Models\User|null  $persona  Quien le escribe al asistente (el recorte sale de ella).
+     * @param  float|null  $monto_minimo  Deuda TOTAL mínima.
+     * @return array{dias: int, clientes: array<int, array<string, mixed>>}  Los clientes, de mayor a
+     *         menor deuda total, con `cliente_id`, `cliente` (nombre), `deuda_total_en_pesos`,
+     *         `deuda_atrasada_en_pesos` y `dias_de_la_venta_mas_vieja`; y el `dias` que se aplicó.
+     */
+    public static function clientes_deudores(int $owner_id, $dias = null, $persona = null, $monto_minimo = null): array
+    {
+        $owner = User::find($owner_id);
+
+        if (is_null($owner)) {
+            return ['dias' => 0, 'clientes' => []];
+        }
+
+        $employee_id = self::employee_id_del_recorte($persona, $owner_id);
+
+        $dias = self::umbral_de_dias($dias, $persona, $owner);
+
+        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias);
+
+        $por_cliente = [];
+        $ids = [];
+
+        foreach (self::deuda_agrupada_por_cliente($base) as $fila) {
+            $cliente_id = (int) $fila->cliente_id;
+
+            // Sin cliente no hay a quién mandarle nada.
+            if ($cliente_id <= 0) {
+                continue;
+            }
+
+            $ids[] = $cliente_id;
+
+            $ventas = (int) $fila->ventas;
+
+            $por_cliente[] = [
+                'cliente_id'            => $cliente_id,
+                'ventas_sin_cobrar'     => $ventas,
+                'pendiente_en_pesos'    => round((float) $fila->pendiente_en_pesos, 2),
+                'ventas_en_otra_moneda' => $ventas - (int) $fila->ventas_en_pesos,
+            ];
+        }
+
+        $por_cliente = self::con_deuda_total($por_cliente, $ids, $owner_id, $employee_id);
+
+        $por_cliente = self::filtrar_y_ordenar_clientes($por_cliente, self::monto_minimo_valido($monto_minimo));
+
+        $nombres = empty($ids) ? [] : DB::table('clients')->whereIn('id', $ids)->pluck('name', 'id')->all();
+
+        foreach ($por_cliente as $indice => $cliente) {
+            $id = $cliente['cliente_id'];
+
+            $por_cliente[$indice]['cliente'] = isset($nombres[$id]) ? (string) $nombres[$id] : 'cliente borrado';
+        }
+
+        return ['dias' => $dias, 'clientes' => $por_cliente];
+    }
+
+    /**
+     * LO QUE CADA CLIENTE DEBE EN TOTAL, además de lo del conjunto pedido (misión
+     * asistente-altas-y-conversacion, 16/10/2026).
+     *
+     * 🔴 EL CASO REAL. Por WhatsApp en demo3 el dueño pidió "los que me deben más de 200 mil hace más
+     * de 20 días". El asistente llamó con `dias = 20` y el conjunto quedó recortado a las ventas de
+     * 20 días o más, así que el monto de cada cliente era SOLO lo atrasado: filtró "lo vencido suma
+     * más de 200 mil" y contestó que no había ninguno. Lo que el dueño quiere decir —y lo que entiende
+     * cualquiera que cobra— es: clientes que me deben más de 200 mil EN TOTAL y que tienen deuda de
+     * hace más de 20 días. En demo3 eran 3.
+     *
+     * Por eso cada cliente del conjunto pedido se completa con la deuda del conjunto SIN umbral
+     * (`query_de_ventas(..., false)`: toda la deuda viva, con el mismo recorte por persona) y con la
+     * antigüedad de su venta impaga más vieja. Las claves de siempre (`ventas_sin_cobrar`,
+     * `pendiente_en_pesos`, `ventas_en_otra_moneda`) no cambian: siguen siendo las del conjunto
+     * pedido, que es lo que leen los tests y el resto de la respuesta.
+     *
+     * @param  array<int, array<string, mixed>>  $por_cliente
+     * @param  array<int, int>  $ids
+     * @param  int  $owner_id
+     * @param  int|null  $employee_id
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function con_deuda_total(array $por_cliente, array $ids, $owner_id, $employee_id)
+    {
+        if (empty($por_cliente)) {
+
+            return $por_cliente;
+        }
+
+        $toda = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, 0, false);
+
+        $totales = [];
+
+        foreach (self::deuda_agrupada_por_cliente($toda, $ids) as $fila) {
+            $totales[(int) $fila->cliente_id] = round((float) $fila->pendiente_en_pesos, 2);
+        }
+
+        /*
+         * La venta impaga más vieja de cada cliente, del conjunto entero y no del pedido: es la que
+         * dice "hace cuánto me debe". Se agrupa por `sales.client_id`, que es el cliente de la cuenta
+         * corriente de esa venta.
+         */
+        $mas_viejas = (clone $toda)
+            ->whereIn('sales.client_id', $ids)
+            ->toBase()
+            ->groupBy('sales.client_id')
+            ->selectRaw('sales.client_id as cliente_id, MIN(sales.created_at) as primera')
+            ->pluck('primera', 'cliente_id')
+            ->all();
+
+        $hoy = now()->startOfDay();
+
+        foreach ($por_cliente as $indice => $cliente) {
+            $id = $cliente['cliente_id'];
+
+            // Lo del conjunto pedido está siempre adentro del total: el max solo cubre un redondeo.
+            $total = isset($totales[$id]) ? max($totales[$id], $cliente['pendiente_en_pesos']) : $cliente['pendiente_en_pesos'];
+
+            $por_cliente[$indice]['deuda_total_en_pesos'] = $total;
+            $por_cliente[$indice]['deuda_atrasada_en_pesos'] = $cliente['pendiente_en_pesos'];
+            $por_cliente[$indice]['dias_de_la_venta_mas_vieja'] = (isset($mas_viejas[$id]) && ! is_null($mas_viejas[$id]))
+                ? (int) Carbon::parse($mas_viejas[$id])->startOfDay()->diffInDays($hoy)
+                : null;
+        }
+
+        return $por_cliente;
+    }
+
+    /**
+     * El `monto_minimo` que pidió el modelo, limpio: null si no mandó nada usable, o si mandó cero o
+     * menos, que no acota nada.
+     *
+     * @param  mixed  $monto_minimo
+     * @return float|null
+     */
+    protected static function monto_minimo_valido($monto_minimo)
+    {
+        if (is_null($monto_minimo) || ! is_numeric($monto_minimo)) {
+
+            return null;
+        }
+
+        $monto_minimo = (float) $monto_minimo;
+
+        return $monto_minimo > 0 ? $monto_minimo : null;
+    }
+
+    /**
+     * QUIÉN ENTRA AL RANKING Y EN QUÉ ORDEN.
+     *
+     * Entra todo cliente del conjunto pedido (con `dias`, el que tiene algo de esa antigüedad) y, con
+     * `monto_minimo`, solo si su deuda TOTAL llega a ese monto: "me deben más de 200 mil hace más de
+     * 20 días" = deuda total de 200 mil o más Y deuda de 20 días o más. 🔴 El filtro va ANTES del
+     * tope de clientes: filtrando después, un cliente que cumple podía quedar afuera por no estar
+     * entre los veinte que más deben.
+     *
+     * Orden: deuda total de mayor a menor, que es lo que el dueño mira primero; a igual deuda total,
+     * más deuda del conjunto pedido primero, y después más ventas. Sin `dias` la deuda total es la de
+     * siempre (salvo una venta con su propio umbral de alerta todavía sin cumplir), así que el orden
+     * de antes no cambia.
+     *
+     * @param  array<int, array<string, mixed>>  $por_cliente
+     * @param  float|null  $monto_minimo
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function filtrar_y_ordenar_clientes(array $por_cliente, $monto_minimo)
+    {
+        if (! is_null($monto_minimo)) {
+            $por_cliente = array_values(array_filter($por_cliente, function ($cliente) use ($monto_minimo) {
+                return $cliente['deuda_total_en_pesos'] >= $monto_minimo;
+            }));
+        }
+
+        usort($por_cliente, function ($a, $b) {
+            if ($a['deuda_total_en_pesos'] != $b['deuda_total_en_pesos']) {
+                return $b['deuda_total_en_pesos'] <=> $a['deuda_total_en_pesos'];
+            }
+
+            if ($a['pendiente_en_pesos'] != $b['pendiente_en_pesos']) {
+                return $b['pendiente_en_pesos'] <=> $a['pendiente_en_pesos'];
+            }
+
+            return $b['ventas_sin_cobrar'] <=> $a['ventas_sin_cobrar'];
+        });
+
+        return $por_cliente;
+    }
+
+    /**
+     * LA DEUDA AGRUPADA POR CLIENTE, sobre las filas de `current_acounts` de un conjunto de ventas.
+     *
+     * Es el agregado que vivía adentro de `ventas_sin_cobrar()`, sacado tal cual (misión
+     * asistente-altas-y-conversacion, 16/10/2026) para poder correrlo dos veces: sobre el conjunto
+     * pedido (con `dias`, lo atrasado) y sobre el conjunto sin umbral (la deuda total de cada
+     * cliente, `con_deuda_total()`). Una sola definición de "cuánto debe": las dos cuentas no pueden
+     * divergir.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $base  Las ventas (de `query_de_ventas()`).
+     * @param  array<int, int>|null  $solo_clientes  Si viene, acota a esos `current_acounts.client_id`.
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function deuda_agrupada_por_cliente($base, $solo_clientes = null)
+    {
         /*
          * Los totales se calculan sobre las filas de `current_acounts` del conjunto y NO sobre las
          * ventas: la deuda viva es `debe - pagandose` de la cuenta corriente, no el total de la
@@ -117,10 +448,16 @@ class VentasSinCobrarIaHelper
          * existen en `credit_accounts`, así que no hay ambigüedad. Las que sí compartirían nombre
          * (`saldo`, `user_id`, `moneda_id`, `id`) van calificadas acá.
          */
-        $filas = DB::table('current_acounts')
+        $query = DB::table('current_acounts')
             ->leftJoin('credit_accounts', 'credit_accounts.id', '=', 'current_acounts.credit_account_id')
             ->whereIn('current_acounts.sale_id', (clone $base)->select('sales.id'))
-            ->where($condicion)
+            ->where($condicion);
+
+        if (! is_null($solo_clientes)) {
+            $query->whereIn('current_acounts.client_id', $solo_clientes);
+        }
+
+        return $query
             ->groupByRaw('COALESCE(current_acounts.client_id, 0)')
             ->selectRaw(
                 'COALESCE(current_acounts.client_id, 0) as cliente_id, '
@@ -129,84 +466,6 @@ class VentasSinCobrarIaHelper
                 . 'SUM(CASE WHEN ' . $moneda . ' IN (' . $pesos . ') THEN current_acounts.debe - COALESCE(current_acounts.pagandose, 0) ELSE 0 END) as pendiente_en_pesos'
             )
             ->get();
-
-        $ventas_totales = 0;
-        $ventas_en_otra_moneda = 0;
-        $pendiente_total = 0.0;
-        $sin_cliente = 0;
-        $por_cliente = [];
-        $ids = [];
-
-        foreach ($filas as $fila) {
-            $cliente_id = (int) $fila->cliente_id;
-            $ventas = (int) $fila->ventas;
-            $en_pesos = (int) $fila->ventas_en_pesos;
-            $pendiente = round((float) $fila->pendiente_en_pesos, 2);
-
-            $ventas_totales += $ventas;
-            $ventas_en_otra_moneda += ($ventas - $en_pesos);
-            $pendiente_total += $pendiente;
-
-            if ($cliente_id <= 0) {
-                $sin_cliente += $ventas;
-                continue;
-            }
-
-            $ids[] = $cliente_id;
-
-            $por_cliente[] = [
-                'cliente_id'                 => $cliente_id,
-                'ventas_sin_cobrar'          => $ventas,
-                'pendiente_en_pesos'         => $pendiente,
-                'ventas_en_otra_moneda'      => $ventas - $en_pesos,
-            ];
-        }
-
-        // Con borrados: el cliente pudo borrarse después de la venta, y la deuda sigue siendo real.
-        $nombres = empty($ids) ? [] : DB::table('clients')->whereIn('id', $ids)->pluck('name', 'id')->map(function ($v) {
-            return (string) $v;
-        })->all();
-
-        usort($por_cliente, function ($a, $b) {
-            if ($a['pendiente_en_pesos'] == $b['pendiente_en_pesos']) {
-                return $b['ventas_sin_cobrar'] <=> $a['ventas_sin_cobrar'];
-            }
-
-            return $b['pendiente_en_pesos'] <=> $a['pendiente_en_pesos'];
-        });
-
-        $clientes_encontrados = count($por_cliente);
-
-        $lista = [];
-
-        foreach (array_slice($por_cliente, 0, self::TOPE_DE_CLIENTES) as $cliente) {
-            $id = $cliente['cliente_id'];
-
-            $lista[] = array_merge(
-                ['cliente' => isset($nombres[$id]) ? $nombres[$id] : 'cliente borrado'],
-                $cliente
-            );
-        }
-
-        return [
-            'criterio' => 'Las ventas que todavia tienen deuda en la cuenta corriente del cliente: el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema. Una venta de mostrador en efectivo no esta aca porque no genero deuda, no porque exista un dato que diga que se cobro.',
-            // Que el modelo sepa si esta mirando todo el negocio o solo lo de quien le escribe: sin
-            // esto presentaria el numero recortado como el total, que es mentirle al que pregunta.
-            'alcance'                                => is_null($employee_id)
-                ? 'Todas las ventas del negocio.'
-                : 'SOLO las ventas que cargo la persona que te escribe: en la pantalla "Ventas sin cobrar" tampoco ve las de sus companeros. No presentes este numero como el total del negocio.',
-            'dias_de_antiguedad_pedidos'             => $dias,
-            'ventas_sin_cobrar'                      => $ventas_totales,
-            'total_pendiente_en_pesos'               => round($pendiente_total, 2),
-            // Las que no entran en ese total por estar en otra moneda (la extensión ventas_en_dolares).
-            'ventas_en_otra_moneda'                  => $ventas_en_otra_moneda,
-            // Ventas impagas sin cliente cargado: no entran en el ranking pero sí en el total.
-            'ventas_sin_cliente'                     => $sin_cliente,
-            'venta_mas_vieja'                        => self::venta_mas_vieja($base),
-            'clientes_con_deuda'                     => $clientes_encontrados,
-            'clientes_en_esta_lista'                 => count($lista),
-            'clientes'                               => $lista,
-        ];
     }
 
     /**
@@ -224,6 +483,9 @@ class VentasSinCobrarIaHelper
      * de guarda de tenencia: una persona que no es este dueño ni empleado suyo nunca ensancha el
      * conjunto, se recorta a sí misma y no ve nada.
      *
+     * Es público desde la misión asistente-envios-a-clientes (16/10/2026): el recordatorio de cobro
+     * del asistente arma la vista previa con las ventas del mismo recorte, y la regla es una sola.
+     *
      * ⚠️ Sin persona identificada NO se recorta, y eso no abre ningún agujero: desde el chat siempre
      * llega una, porque `ai_conversations` nace con tenencia doble (`user_id` la cuenta y
      * `auth_user_id` la persona) en todos sus caminos de alta. Los llamadores que pueden quedar sin
@@ -234,7 +496,7 @@ class VentasSinCobrarIaHelper
      * @param  int  $owner_id
      * @return int|null
      */
-    protected static function employee_id_del_recorte($persona, $owner_id)
+    public static function employee_id_del_recorte($persona, $owner_id)
     {
         if (is_null($persona)) {
 

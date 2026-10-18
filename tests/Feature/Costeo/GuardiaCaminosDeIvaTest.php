@@ -79,6 +79,11 @@ class GuardiaCaminosDeIvaTest extends TestCase
         ['archivo' => self::ARTICLE_PRICES_HELPER, 'metodo' => 'aplicar_precios_segun_listas_de_precios', 'esperado' => 1],
         ['archivo' => self::ARTICLE_PRICES_HELPER, 'metodo' => 'aplicar_precios_segun_listas_de_precios_y_categorias', 'esperado' => 1],
         ['archivo' => self::ARTICLE_PRICE_TYPE_MONEDA_HELPER, 'metodo' => 'calcular_precios_por_price_type_y_moneda', 'esperado' => 1],
+        // NO es un camino de calculo: es la NARRACION del "?" de una lista en una cuenta con dolares
+        // (16/10/2026). Llama a aplicar_iva() solo para obtener los renglones del desglose, sobre un
+        // numero que el calculo de arriba ya dejo guardado; no escribe ningun precio. Esta en la
+        // guardia para que el dia que su cuenta diverja de calc_normal() se vea.
+        ['archivo' => self::ARTICLE_PRICE_TYPE_MONEDA_HELPER, 'metodo' => 'lineas_de_calculo_normal', 'esperado' => 1],
     ];
 
     /**
@@ -95,7 +100,9 @@ class GuardiaCaminosDeIvaTest extends TestCase
     private const TOTAL_POR_ARCHIVO = [
         self::ARTICLE_HELPER                    => 3,
         self::ARTICLE_PRICES_HELPER              => 2,
-        self::ARTICLE_PRICE_TYPE_MONEDA_HELPER   => 3,
+        // 4 = las 2 del codigo muerto VIEJO_*, la de calcular_precios_por_price_type_y_moneda() y la de
+        // lineas_de_calculo_normal() (solo narra, ver self::CASOS).
+        self::ARTICLE_PRICE_TYPE_MONEDA_HELPER   => 4,
     ];
 
     /** @test */

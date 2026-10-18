@@ -10,7 +10,8 @@ use Tests\TestCase;
  * Tarea 4 — unitarias de `ArticleHelper::redondear()`, el cálculo aislado que decide el precio
  * final que ve el cliente.
  *
- * 🔴 El método NO se tocó en esta tarea y no hay que tocarlo. Estos tests existen para DOCUMENTAR
+ * 🔴 El método NO se tocó en la Tarea 4 y no hay que tocarlo sin una razón (el 17/10/2026 se le sumó solo el
+ * sentido `redondear_centenas_para_arriba`, que apagado deja todo igual). Estos tests existen para DOCUMENTAR
  * el comportamiento que la fachada `modo_redondeo` tiene que preservar: son la línea base contra la
  * que se compara si algún día alguien decide unificar los `ceil`/`round` o cambiar el orden de los
  * `if`. Si alguno de estos se pone rojo sin que nadie haya cambiado el método a propósito, lo que
@@ -41,6 +42,7 @@ class RedondeoDePreciosTest extends TestCase
         $columnas = [
             'redondear_miles_en_vender',
             'redondear_centenas_en_vender',
+            'redondear_centenas_para_arriba',
             'redondear_precios_en_decenas',
             'redondear_de_a_50',
             'redondear_precios_en_centavos',
@@ -96,6 +98,108 @@ class RedondeoDePreciosTest extends TestCase
         // 120 baja a 100: es round, no ceil. Con ceil daría 200.
         $this->assertEquals(100, ArticleHelper::redondear(120, $this->user(['redondear_centenas_en_vender']))['price']);
         $this->assertEquals(200, ArticleHelper::redondear(180, $this->user(['redondear_centenas_en_vender']))['price']);
+    }
+
+    /**
+     * `redondear_centenas_para_arriba`: con centenas prendido el redondeo va siempre a la centena de
+     * ARRIBA (ceil), que es lo que hacía el sistema antes de la Tarea 4 y lo que espera Feitoamao.
+     * El caso del pedido: 159.907,50 -> 160.000 con la opción, 159.900 sin ella.
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function centenas_para_arriba_sube_siempre_a_la_centena_de_arriba()
+    {
+        $con = $this->user(['redondear_centenas_en_vender', 'redondear_centenas_para_arriba']);
+        $sin = $this->user(['redondear_centenas_en_vender']);
+
+        $this->assertEquals(160000, ArticleHelper::redondear(159907.50, $con)['price']);
+        $this->assertEquals(159900, ArticleHelper::redondear(159907.50, $sin)['price']);
+
+        // 120 sube a 200 con la opción (con round bajaba a 100).
+        $this->assertEquals(200, ArticleHelper::redondear(120, $con)['price']);
+        $this->assertEquals(100, ArticleHelper::redondear(120, $sin)['price']);
+
+        // Un múltiplo exacto de 100 no se mueve: ceil es idempotente ahí.
+        $this->assertEquals(1500, ArticleHelper::redondear(1500, $con)['price']);
+    }
+
+    /**
+     * Apagada la opción, el desglose del precio conserva el texto histórico ("por centenas"); con
+     * ella prendida dice el sentido. Fija que el cambio no tocó lo que ven los clientes que no la usan.
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function el_desglose_de_centenas_conserva_su_texto_sin_la_opcion()
+    {
+        $sin = ArticleHelper::redondear(159907.50, $this->user(['redondear_centenas_en_vender']));
+        $con = ArticleHelper::redondear(159907.50, $this->user(['redondear_centenas_en_vender', 'redondear_centenas_para_arriba']));
+
+        $this->assertStringContainsString('Redondeando por centenas = ', json_encode($sin['des']));
+        $this->assertStringNotContainsString('hacia arriba', json_encode($sin['des']));
+        $this->assertStringContainsString('hacia arriba', json_encode($con['des']));
+    }
+
+    /**
+     * El guard de `> 100` rige también con la opción: un artículo de $80 no se vuelve $100.
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function centenas_para_arriba_respeta_el_guard_de_mayor_a_100()
+    {
+        $con = $this->user(['redondear_centenas_en_vender', 'redondear_centenas_para_arriba']);
+
+        $this->assertEquals(80, ArticleHelper::redondear(80, $con)['price']);
+        $this->assertEquals(100, ArticleHelper::redondear(100, $con)['price']);
+        // Recién arriba de 100 entra: 100,5 -> 200.
+        $this->assertEquals(200, ArticleHelper::redondear(100.5, $con)['price']);
+    }
+
+    /**
+     * La opción sola, sin `redondear_centenas_en_vender`, no hace nada: no es un modo de redondeo
+     * propio sino el sentido del de centenas.
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function centenas_para_arriba_sin_centenas_prendido_no_redondea()
+    {
+        $solo = $this->user(['redondear_centenas_para_arriba']);
+
+        $this->assertEquals(159907.50, ArticleHelper::redondear(159907.50, $solo)['price']);
+        $this->assertEquals(120, ArticleHelper::redondear(120, $solo)['price']);
+    }
+
+    /**
+     * Un usuario que no tiene el atributo (por ejemplo, una fila anterior a la migración) se
+     * comporta como siempre: al más cercano.
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function sin_el_atributo_de_para_arriba_centenas_sigue_siendo_al_mas_cercano()
+    {
+        $user = new User();
+        $user->redondear_centenas_en_vender = 1;
+
+        $this->assertEquals(100, ArticleHelper::redondear(120, $user)['price']);
+        $this->assertEquals(159900, ArticleHelper::redondear(159907.50, $user)['price']);
+    }
+
+    /**
+     * Encadena como el resto de los flags: centenas hacia arriba y después de a 50 sobre ese
+     * resultado (ya es múltiplo de 100, así que de a 50 no lo mueve).
+     *
+     * @group precios-unit
+     * @test
+     */
+    public function centenas_para_arriba_se_encadena_con_los_otros_flags()
+    {
+        $user = $this->user(['redondear_centenas_en_vender', 'redondear_centenas_para_arriba', 'redondear_de_a_50']);
+
+        $this->assertEquals(200, ArticleHelper::redondear(104, $user)['price']);
     }
 
     /**

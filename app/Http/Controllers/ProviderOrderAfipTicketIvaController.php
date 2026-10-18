@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
+use App\Http\Controllers\Helpers\providerOrder\TenenciaDeLaCompraHelper;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderAfipTicketIva;
 use Illuminate\Http\Request;
@@ -29,13 +30,36 @@ class ProviderOrderAfipTicketIvaController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * 🔴 Tenencia (misión tenencia-compra-hermanos, 17/10/2026): la alícuota se resuelve por su
+     * `user_id` (marcado desde el alta) y, si no lo tiene, por el de su factura. Null si es de otro
+     * comercio, no existe o no es un id.
+     *
+     * @param  mixed  $id
+     * @return ProviderOrderAfipTicketIva|null
+     */
+    protected function alicuota_del_dueno($id) {
+        return TenenciaDeLaCompraHelper::hijo(ProviderOrderAfipTicketIva::class, $id, $this->userId());
+    }
+
+    protected function no_encontrada() {
+        return TenenciaDeLaCompraHelper::no_encontrado('La alícuota');
+    }
+
     public function store(Request $request) {
+
+        // Primero la tenencia de la factura, antes de mirar su modo: no se confirma ni el modo de una
+        // factura ajena.
+        if (TenenciaDeLaCompraHelper::factura_ajena_en_cuerpo($request->model_id, $this->userId())) {
+            return TenenciaDeLaCompraHelper::no_encontrado('La factura');
+        }
 
         if (FacturaDeCompraHelper::factura_en_modo_automatico($request->model_id)) {
             return response()->json(['message' => self::MENSAJE_MODO_AUTOMATICO], 422);
         }
 
         $model = ProviderOrderAfipTicketIva::create([
+            'user_id'                           => $this->userId(),
             'provider_order_afip_ticket_id'     => $request->model_id,
             'iva_id'                            => $request->iva_id,
             'neto'                              => $request->neto,
@@ -51,11 +75,27 @@ class ProviderOrderAfipTicketIvaController extends Controller
     }
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicketIva', $id)], 200);
+
+        $model = $this->alicuota_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrada();
+        }
+
+        return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicketIva', $model->id)], 200);
     }
 
     public function update(Request $request, $id) {
-        $model = ProviderOrderAfipTicketIva::find($id);
+        $model = $this->alicuota_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrada();
+        }
+
+        // Moverla a la factura de otro comercio también es escribir sobre esa factura y su compra.
+        if (TenenciaDeLaCompraHelper::factura_ajena_en_cuerpo($request->provider_order_afip_ticket_id, $this->userId())) {
+            return TenenciaDeLaCompraHelper::no_encontrado('La factura');
+        }
 
         /*
          * Se chequea contra la factura a la que la alícuota pertenece HOY, no contra la que venga
@@ -97,7 +137,11 @@ class ProviderOrderAfipTicketIvaController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderOrderAfipTicketIva::find($id);
+        $model = $this->alicuota_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrada();
+        }
 
         if (FacturaDeCompraHelper::factura_en_modo_automatico($model->provider_order_afip_ticket_id)) {
             return response()->json(['message' => self::MENSAJE_MODO_AUTOMATICO], 422);
