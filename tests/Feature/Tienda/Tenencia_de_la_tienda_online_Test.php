@@ -8,6 +8,7 @@ use App\Models\DeliveryZone;
 use App\Models\OnlineConfiguration;
 use App\Models\Order;
 use App\Models\PaymentMethod;
+use App\Models\PaymentMethodInstallment;
 use App\Models\Title;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -394,5 +395,123 @@ class Tenencia_de_la_tienda_online_Test extends EmpresaTestCase
 
         $this->assertContains($mia->id, $ids);
         $this->assertNotContains($ajena->id, $ids);
+    }
+
+    /**
+     * Las cuotas de un método de pago (`payment-method-installment`) no tienen `user_id`: su dueño es
+     * el del método del que cuelgan. Ajeno → 404 sin tocar nada; propio → como siempre; y un alta
+     * colgada de un método ajeno → 404 sin crear nada.
+     *
+     * @test
+     */
+    public function las_cuotas_de_un_metodo_de_pago_ajeno_dan_404()
+    {
+        $yo      = $this->usuario_de_prueba()->id;
+        $ajeno   = $this->metodo_de_pago($this->otro_dueno()->id);
+        $propio  = $this->metodo_de_pago($yo);
+        $cuota_a = PaymentMethodInstallment::create(['payment_method_id' => $ajeno->id, 'name' => 'Ajena', 'installments' => 3]);
+        $foto    = $cuota_a->fresh()->toArray();
+
+        $this->getJson('api/payment-method-installment/' . $cuota_a->id)->assertStatus(404);
+        $this->putJson('api/payment-method-installment/' . $cuota_a->id, ['name' => 'Robada', 'installments' => 12])->assertStatus(404);
+        $this->deleteJson('api/payment-method-installment/' . $cuota_a->id)->assertStatus(404);
+        $this->getJson('api/payment-method-installment/99999999')->assertStatus(404);
+        $this->getJson('api/payment-method-installment/abc')->assertStatus(404);
+        $this->assertEquals($foto, $cuota_a->fresh()->toArray(), 'La cuota ajena quedó como estaba.');
+
+        $antes = PaymentMethodInstallment::where('payment_method_id', $ajeno->id)->count();
+        $this->postJson('api/payment-method-installment', ['model_id' => $ajeno->id, 'name' => 'Colgada', 'installments' => 6])->assertStatus(404);
+        $this->assertSame($antes, PaymentMethodInstallment::where('payment_method_id', $ajeno->id)->count(), 'No se le colgó nada al método ajeno.');
+
+        $alta = $this->postJson('api/payment-method-installment', ['model_id' => $propio->id, 'name' => 'Propia', 'installments' => 6]);
+        $alta->assertStatus(201);
+        $id = (int) $alta->json('model.id');
+
+        $this->getJson('api/payment-method-installment/' . $id)->assertStatus(200);
+        $this->putJson('api/payment-method-installment/' . $id, ['name' => 'Editada', 'installments' => 9])->assertStatus(200);
+        $this->assertSame('Editada', PaymentMethodInstallment::find($id)->name);
+        $this->deleteJson('api/payment-method-installment/' . $id)->assertStatus(200);
+        $this->assertNull(PaymentMethodInstallment::find($id));
+    }
+
+    /**
+     * La guarda va ANTES de la validación del vínculo de cuotas de `PaymentMethodController@update`:
+     * un vínculo inválido sobre un método PROPIO sigue dando 422, y sobre uno AJENO da 404.
+     *
+     * @test
+     */
+    public function el_vinculo_invalido_da_422_al_dueno_y_404_sobre_un_metodo_ajeno()
+    {
+        $propio = $this->metodo_de_pago($this->usuario_de_prueba()->id);
+        $ajeno  = $this->metodo_de_pago($this->otro_dueno()->id);
+        $cuerpo = ['name' => 'X', 'current_acount_payment_method_id' => 99999999];
+
+        $this->putJson('api/payment-method/' . $propio->id, $cuerpo)->assertStatus(422);
+        $this->putJson('api/payment-method/' . $ajeno->id, $cuerpo)->assertStatus(404);
+    }
+
+    /**
+     * El borrado masivo genérico (`PUT api/delete/{modelo}`) delega en estos `destroy()`: lo ajeno no
+     * se borra, no se cuenta como eliminado ni se devuelve en `models`; lo propio se borra como siempre.
+     *
+     * @test
+     */
+    public function el_borrado_masivo_no_borra_ni_devuelve_lo_ajeno()
+    {
+        $yo = $this->usuario_de_prueba()->id;
+
+        $casos = [
+            'delivery_zone'  => 'forma_de_envio',
+            'delivery_day'   => 'dia_de_entrega',
+            'title'          => 'banner',
+            'payment_method' => 'metodo_de_pago',
+            'buyer'          => 'comprador',
+            'order'          => 'pedido',
+        ];
+
+        foreach ($casos as $modelo => $fabrica) {
+            $ajeno  = $this->{$fabrica}($this->otro_dueno()->id);
+            $propio = $this->{$fabrica}($yo);
+
+            // De a uno: con más de un id el borrado masivo corre en segundo plano (job) y la respuesta
+            // no trae el detalle.
+            $r_ajeno = $this->putJson('api/delete/' . $modelo, ['models_id' => [$ajeno->id]]);
+            $r_ajeno->assertStatus(200);
+            $this->assertSame([], $r_ajeno->json('models'), "$modelo: lo ajeno no figura como eliminado.");
+            $this->assertSame([(int) $ajeno->id], collect($r_ajeno->json('not_deleted'))->pluck('id')->map(function ($i) { return (int) $i; })->all(), "$modelo: lo ajeno figura como rechazado.");
+
+            $r_propio = $this->putJson('api/delete/' . $modelo, ['models_id' => [$propio->id]]);
+            $r_propio->assertStatus(200);
+            $this->assertSame([(int) $propio->id], collect($r_propio->json('models'))->pluck('id')->map(function ($i) { return (int) $i; })->all(), "$modelo: lo propio figura como eliminado.");
+
+            $this->assertNotNull($ajeno->fresh(), "$modelo ajeno sigue existiendo.");
+            $this->assertNull($propio->fresh(), "$modelo propio se borró.");
+        }
+    }
+
+    /**
+     * El empleado del dueño opera también pedidos, compradores y métodos de pago del dueño; el de otro
+     * comercio no ve ninguno.
+     *
+     * @test
+     */
+    public function el_empleado_tambien_opera_pedidos_compradores_y_metodos_de_pago_del_dueno()
+    {
+        $dueno    = $this->usuario_de_prueba();
+        $pedido   = $this->pedido($dueno->id);
+        $comprador = $this->comprador($dueno->id);
+        $metodo   = $this->metodo_de_pago($dueno->id);
+
+        $this->actuar_como($this->crear_usuario('Empleado tienda 2', 'tienda-tenencia-emp2-', $dueno->id));
+
+        $this->getJson('api/order/' . $pedido->id)->assertStatus(200);
+        $this->getJson('api/buyer/' . $comprador->id)->assertStatus(200);
+        $this->getJson('api/payment-method/' . $metodo->id)->assertStatus(200);
+
+        $this->actuar_como($this->crear_usuario('Empleado de otro 2', 'tienda-tenencia-emp2-otro-', $this->otro_dueno()->id));
+
+        $this->getJson('api/order/' . $pedido->id)->assertStatus(404);
+        $this->getJson('api/buyer/' . $comprador->id)->assertStatus(404);
+        $this->getJson('api/payment-method/' . $metodo->id)->assertStatus(404);
     }
 }

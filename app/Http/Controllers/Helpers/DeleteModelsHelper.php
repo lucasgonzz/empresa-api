@@ -58,6 +58,17 @@ class DeleteModelsHelper
         // (misión destrabar-videos-centro, 16/10/2026): ConceptoMovimientoCajaController::destroy()
         // responde 422 (o 404 si es ajeno) y no borra nada.
         'concepto_movimiento_caja',
+        // Registros de la tienda online que no son del dueño de la sesión (misión
+        // tenencia-tienda-online, 19/10/2026): sus destroy() responden 404 y no borran nada. Sin esto
+        // la masiva contaba como eliminado (y devolvía entero en `deleted_models`) el registro de otro
+        // comercio mandando su id.
+        'delivery_zone',
+        'delivery_day',
+        'title',
+        'payment_method',
+        'payment_method_installment',
+        'buyer',
+        'order',
     ];
 
     /**
