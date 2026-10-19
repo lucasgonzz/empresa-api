@@ -265,7 +265,33 @@ class PropuestaCompraConFacturaIaHelper
         /* Nunca pregunta (decisión de Lucas, 24/9/2026): ver resolver_sucursal(). */
         $sucursal = self::resolver_sucursal($contexto, EntradaDeCargaIa::texto($input, 'sucursal'));
 
-        $a_reusar = is_null($proveedor_nuevo) ? self::compra_reusable($contexto, $proveedor) : null;
+        /*
+         * 🔴 QUÉ COMPRA RECIBE LA FACTURA SIN QUE NADIE LA NOMBRE (misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026; ver el 🔴 del docblock de la clase):
+         *   - `compra_nueva: true` = la persona pidió una compra nueva (típicamente contestando la
+         *     pregunta de abajo): no se pregunta ni se reusa nada.
+         *   - Si no, la compra de HOY limpia (es_reusable_sin_nombrarla()) se reusa en silencio.
+         *   - Si no hay ésa pero hay una igual de limpia de 1 a DIAS_DE_REUSO días atrás, se PREGUNTA
+         *     antes de crear la tarjeta: en "resuelto" y "directo" esta herramienta se ejecuta sola,
+         *     así que preguntar después ya sería tarde. La foto no se sella, y en el turno siguiente la
+         *     vuelve a encontrar imagenes_sin_gestionar(): la última tanda de
+         *     FotosDeLaConversacionIaHelper saltea los mensajes del dueño sin fotos del final («nueva»,
+         *     «sumala a la 12»). Lo fija 19_Compra_con_factura_no_se_pega_a_otra_Test.
+         * Con un proveedor que todavía no existe no hay compras suyas: ni reuso ni pregunta.
+         */
+        $pidio_nueva = self::pidio_compra_nueva(EntradaDeCargaIa::valor($input, 'compra_nueva'));
+
+        $a_reusar = (is_null($proveedor_nuevo) && !$pidio_nueva) ? self::compra_reusable($contexto, $proveedor) : null;
+
+        if (is_null($proveedor_nuevo) && !$pidio_nueva && is_null($a_reusar)) {
+
+            $dudosa = self::compra_vacia_de_dias_atras($contexto, $proveedor);
+
+            if (!is_null($dudosa)) {
+
+                return self::pregunta_por_la_compra_vacia($dudosa, $proveedor);
+            }
+        }
 
         $imagen_ids = self::ids_de($fotos['paginas']);
 
@@ -1471,6 +1497,108 @@ class PropuestaCompraConFacturaIaHelper
         }
 
         return null;
+    }
+
+    /**
+     * EL CASO DUDOSO: la compra más nueva del proveedor, de 1 a DIAS_DE_REUSO días atrás (antes de
+     * hoy), que está limpia (sin artículos, sin escaneos y sin factura cargada a mano), o null.
+     *
+     * No se reusa en silencio porque puede ser una compra que quedó abierta de otra cosa (la regla de
+     * antes del 19/10/2026 la tomaba, y así una factura de hoy terminó en la Compra 13 del 16/10),
+     * pero tampoco se ignora: si el dueño la armó ayer en la pantalla esperando la factura, crear
+     * otra le dejaría dos compras para la misma mercadería. Se le pregunta (pregunta_por_la_compra_vacia()).
+     * Una con escaneo o con factura NO es dudosa: ya tiene su factura, y la de hoy va a una nueva sin
+     * preguntar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Provider  $proveedor
+     * @return \App\Models\ProviderOrder|null
+     */
+    protected static function compra_vacia_de_dias_atras(ContextoDeCargaIa $contexto, Provider $proveedor)
+    {
+        $candidatas = ProviderOrder::where('user_id', $contexto->owner_id)
+                                    ->where('provider_id', $proveedor->id)
+                                    ->where('created_at', '>=', Carbon::today()->subDays(self::DIAS_DE_REUSO))
+                                    ->where('created_at', '<', Carbon::today())
+                                    ->orderBy('id', 'DESC')
+                                    ->limit(self::TOPE_CANDIDATOS)
+                                    ->get();
+
+        foreach ($candidatas as $candidata) {
+
+            if (self::esta_limpia($candidata)) {
+
+                return $candidata;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * La pregunta por la compra vacía de otro día, como `faltan` para el modelo y SIN crear nada: ni
+     * tarjeta, ni compra, ni escaneo, ni sello en las fotos. El modelo le pregunta al dueño en una
+     * línea y, con la respuesta, vuelve a llamar con `compra_num` (esa compra) o con `compra_nueva`.
+     *
+     * `opciones.compra_vacia` lleva el número y la fecha para que la pregunta los diga tal cual
+     * («¿la sumo a la Compra N° 12 del 16/10 o armo una nueva?»), y `como_seguir` le dice al modelo
+     * con qué parámetro volver y que la foto la sigue teniendo la herramienta (en la prueba del
+     * 24/9 el asistente le pidió al dueño que reenviara una foto que ya tenía).
+     *
+     * @param  \App\Models\ProviderOrder  $compra
+     * @param  \App\Models\Provider  $proveedor
+     * @return array  RespuestaDeCargaIa::faltan(...)
+     */
+    protected static function pregunta_por_la_compra_vacia(ProviderOrder $compra, Provider $proveedor)
+    {
+        $creada = Carbon::parse($compra->created_at);
+
+        return RespuestaDeCargaIa::faltan(
+            [
+                'si la factura va a la Compra N° ' . $compra->num . ' de ' . $proveedor->name . ' del ' . $creada->format('d/m')
+                . ', que está vacía (sin artículos ni factura), o si armo una compra nueva',
+            ],
+            [
+                'compra_vacia' => [
+                    'compra_num' => (int) $compra->num,
+                    'fecha'      => $creada->format('d/m/Y'),
+                    'proveedor'  => (string) $proveedor->name,
+                ],
+                'como_seguir'  => 'Preguntale eso en una sola línea y no digas que cargaste nada: todavía no armé ninguna tarjeta. '
+                    . 'Si te dice que va a esa compra, volvé a llamar con compra_num ' . (int) $compra->num
+                    . '; si te dice que es otra compra o que arme una nueva, volvé a llamar con compra_nueva true. '
+                    . 'La foto de la factura la sigo teniendo: no se la pidas de nuevo.',
+            ]
+        );
+    }
+
+    /**
+     * `compra_nueva` del input como sí/no. Solo un sí explícito cuenta: true, 1 o "true"/"1"/"si"/"sí".
+     * Todo lo demás (false, 0, "", null, basura) es como si no hubiera venido, con el mismo criterio
+     * que numero_de_compra(): DeepSeek rellena los opcionales con su valor vacío, y un falso no puede
+     * cambiar a dónde va la factura.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function pidio_compra_nueva($valor)
+    {
+        if (is_bool($valor)) {
+
+            return $valor;
+        }
+
+        if (is_int($valor) || is_float($valor)) {
+
+            return (int) $valor === 1;
+        }
+
+        if (!is_string($valor)) {
+
+            return false;
+        }
+
+        return in_array(mb_strtolower(trim($valor)), ['true', '1', 'si', 'sí'], true);
     }
 
     /**

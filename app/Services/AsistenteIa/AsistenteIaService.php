@@ -1378,6 +1378,14 @@ AUTO_DIRECTO
   proponer lo mismo esperando que la insistencia lo habilite.
 AUTO_RESUELTO;
 
+        /*
+         * Misión asistente-arreglos-segunda-prueba (19/10/2026), N4: el renglón de la compra con
+         * factura suma la pregunta por la compra vacía de otro día. Desde ese día la herramienta solo
+         * suma la factura sola a una compra de HOY vacía y sin factura (la Factura 0003-00012398 de
+         * la prueba terminó en la Compra 13 del 16/10, que ya tenía escaneada la 0003-00012345); con
+         * una vacía de otro día devuelve "faltan", y el modelo tiene que preguntar sin pedir la foto
+         * otra vez y volver con compra_num o compra_nueva.
+         */
         return <<<CARGA
 {$titulo_de_carga}
 - Gastos, pagos de clientes, pagos a proveedores (con efectivo, transferencia o CHEQUE),
@@ -1505,7 +1513,10 @@ AUTO_RESUELTO;
   por dónde le llega el aviso cuando termina TAL COMO LO DICE EL RESULTADO de la herramienta (por
   WhatsApp con el link para revisarla, o en la pantalla del sistema): no prometas el otro camino.
   Si la persona te dice a qué compra ya cargada va la factura ("adjuntala a la compra 12"), pasá su
-  número en compra_num.
+  número en compra_num. Sin compra_num, la herramienta suma la factura sola solo a una compra de hoy
+  vacía y sin factura; si te devuelve "faltan" con una compra vacía de otro día (opciones.compra_vacia),
+  preguntale en una línea si la sumás a esa compra o armás una nueva, sin pedirle la foto de nuevo, y
+  con lo que conteste volvé a llamar con compra_num (esa compra) o con compra_nueva: true.
 - 🔴 Lo que SÍ podés contar es lo que leyó el escaneo, con consultar_escaneo_de_factura: cuando te
   pregunten qué trae la factura, si ya la leyó o cuánto dio, consultala y contá el resultado (total,
   renglones reconocidos y sin match, datos dudosos) como "lo que leyó el escaneo", que se confirma al
