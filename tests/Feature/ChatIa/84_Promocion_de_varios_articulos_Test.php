@@ -275,6 +275,37 @@ class Promocion_de_varios_articulos_Test extends EmpresaTestCase
     }
 
     /**
+     * Revisión del 19/10/2026: el renglón que sale es "<nombre>: <link>", así que un artículo renombrado
+     * entre la tarjeta y el sí tampoco sale (mismo link, otro renglón).
+     *
+     * @test
+     */
+    public function al_confirmar_se_revalida_tambien_el_nombre_de_cada_articulo()
+    {
+        $taladro = $this->articulo_de_la_tienda('ZZE Taladro 750W', 'zze-taladro-750w');
+        $amoladora = $this->articulo_de_la_tienda('ZZE Amoladora 115', 'zze-amoladora-115');
+
+        $this->cliente('Ana Gomez', '5493444101010');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', [
+            'texto'       => 'Taladro y amoladora con 20% off',
+            'article_ids' => [$taladro->id, $amoladora->id],
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        Article::where('id', $amoladora->id)->update(['name' => 'ZZE Amoladora 115 PRO']);
+
+        $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $this->assertTrue(empty($confirmada['ok']), json_encode($confirmada));
+        $this->assertStringContainsString('cambió el nombre de alguno de los artículos', $confirmada['error']);
+        $this->assertCount(0, $this->promociones_enviadas());
+    }
+
+    /**
      * 🔴 El texto lo redacta el modelo: sin texto es un ERROR para él (no un `faltan` que termine en
      * "dictame la promo"), y un texto con un link escrito también (los pone el sistema).
      *

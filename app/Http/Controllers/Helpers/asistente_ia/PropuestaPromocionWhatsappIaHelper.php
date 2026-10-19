@@ -517,6 +517,28 @@ class PropuestaPromocionWhatsappIaHelper
                 throw new AccionIaException(422, 'No mandé nada: cambió el link de alguno de los artículos de la promo desde que se la mostré al '
                     . 'dueño (ahora serían ' . implode(', ', $ahora) . '). Volvé a mostrársela y pedile el sí de nuevo.');
             }
+
+            /*
+             * Y EL NOMBRE (revisión del 19/10/2026): el renglón que sale es "<nombre>: <link>", así que un
+             * artículo renombrado entre la tarjeta y el sí saldría con un renglón que el dueño no leyó.
+             */
+            $nombres_antes = [];
+
+            foreach ($articulos_mostrados as $articulo) {
+                $nombres_antes[] = isset($articulo['nombre']) ? (string) $articulo['nombre'] : '';
+            }
+
+            $nombres_ahora = [];
+
+            foreach ($links as $articulo) {
+                $nombres_ahora[] = (string) $articulo['nombre'];
+            }
+
+            if ($nombres_antes !== $nombres_ahora) {
+
+                throw new AccionIaException(422, 'No mandé nada: cambió el nombre de alguno de los artículos de la promo desde que se la mostré al '
+                    . 'dueño (ahora serían ' . implode(', ', $nombres_ahora) . '). Volvé a mostrársela y pedile el sí de nuevo.');
+            }
         }
 
         if (WhatsappBotConfig::getForUser($contexto->owner_id) === null) {
