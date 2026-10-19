@@ -152,6 +152,14 @@ class AutorizacionConEspacioTest extends TestCase
         // Un sufijo ajeno disfrazado adelante del propio tampoco.
         $this->autorizar('private-chat.user.' . $this->empleado->id . '@' . $this->otro_espacio . '@' . $this->espacio)
             ->assertStatus(403);
+
+        // Y es un 403 pelado: el "recargá la página" es solo para la pestaña con el SPA viejo.
+        $respuesta = $this->autorizar('private-chat.user.' . $this->empleado->id . '@' . $this->otro_espacio);
+        $this->assertNotSame(
+            PusherBroadcasterConEspacio::MENSAJE_PESTANA_VIEJA,
+            $respuesta->json('message'),
+            'Un sufijo de otro sistema no es una pestaña vieja: no se le explica nada.'
+        );
     }
 
     /**
@@ -167,6 +175,14 @@ class AutorizacionConEspacioTest extends TestCase
         $this->autorizar('private-chat.user.' . $this->empleado->id)->assertStatus(403);
         $this->autorizar('private-App.Models.User.' . $this->empleado->id)->assertStatus(403);
         $this->autorizar('private-whatsapp.' . $this->dueno->id)->assertStatus(403);
+
+        /*
+         * Es lo que pide una pestaña que quedó abierta con el SPA de antes del release: el 403 trae
+         * el texto que el interceptor de axios muestra como aviso amarillo, en vez del genérico.
+         */
+        $this->autorizar('private-chat.user.' . $this->empleado->id)
+            ->assertStatus(403)
+            ->assertJson(['message' => PusherBroadcasterConEspacio::MENSAJE_PESTANA_VIEJA]);
     }
 
     /**

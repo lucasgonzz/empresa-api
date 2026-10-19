@@ -57,20 +57,19 @@ return [
     |   `.env` de empresa-api y el de tienda-api del mismo cliente), cuando las dos ya están en la
     |   versión nueva. Con un solo lado en estricto, ese cliente deja de oír al otro.
     |
-    | 🔴 Solo un falso EXPLÍCITO (`false`, `0`, `off`, `no`) pasa a estricto. Un valor vacío
-    | (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`) o mal tipeado queda en transición: `env()` devuelve ''
-    | para una línea vacía y `filter_var('', FILTER_VALIDATE_BOOLEAN)` da false, o sea que sin este
-    | cuidado un `.env` a medio editar cortaba en silencio la comunicación con una tienda vieja. Es la
-    | misma trampa que documenta `PUSHER_TIMEOUT` más abajo. Equivocarse para el lado de la transición
-    | es lo seguro: es exactamente el comportamiento de antes de esta misión para esos canales.
+    | 🔴 Solo un falso EXPLÍCITO (`false`, `0`, `off`, `no`) pasa a estricto. Una línea vacía
+    | (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`), un `null`/`(null)` escrito o un valor mal tipeado
+    | quedan en transición: `env()` devuelve '' para la línea vacía y null para `null`, y
+    | `filter_var()` da false para los dos, o sea que sin este cuidado un `.env` a medio editar
+    | cortaba en silencio la comunicación con una tienda vieja. Es la misma trampa que documenta
+    | `PUSHER_TIMEOUT` más abajo. Equivocarse para el lado de la transición es lo seguro: es
+    | exactamente el comportamiento de antes de esta misión para esos canales. tienda-api usa la MISMA
+    | expresión: las dos mitades de un sistema leen igual el mismo valor.
     |
     */
 
-    'canales_viejos_de_tienda' => filter_var(
-        env('BROADCAST_CANALES_VIEJOS_DE_TIENDA') === '' ? 'true' : env('BROADCAST_CANALES_VIEJOS_DE_TIENDA', 'true'),
-        FILTER_VALIDATE_BOOLEAN,
-        FILTER_NULL_ON_FAILURE
-    ) !== false,
+    'canales_viejos_de_tienda' => in_array(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA'), [null, ''], true)
+        || filter_var(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== false,
 
     /*
     |--------------------------------------------------------------------------

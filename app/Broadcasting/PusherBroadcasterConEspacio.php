@@ -27,6 +27,17 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 class PusherBroadcasterConEspacio extends PusherBroadcaster
 {
     /**
+     * Lo que ve una pestaña que quedó abierta con el SPA de ANTES del release.
+     *
+     * Esa pestaña pide los privados sin sufijo (`private-chat.user.5`), este broadcaster los rechaza
+     * —a propósito: por ese nombre ya no sale nada de este sistema y sí puede llegar lo de otro— y el
+     * interceptor de axios del SPA muestra el `message` de un 4xx como aviso amarillo. Sin texto, el
+     * aviso era el genérico "Hubo un error y no pudimos leer el detalle", una vez por canal privado y en
+     * cada reconexión, hasta el F5. Con este texto, el mismo aviso dice qué hacer.
+     */
+    const MENSAJE_PESTANA_VIEJA = 'Hay una versión nueva del sistema: recargá la página para seguir recibiendo los avisos en vivo.';
+
+    /**
      * Convierte los canales lógicos de un evento en los nombres físicos por los que sale.
      *
      * Cada canal pasa por `EspacioDeCanales::nombres_para_emitir()`: el físico siempre, y además el
@@ -84,6 +95,15 @@ class PusherBroadcasterConEspacio extends PusherBroadcaster
         $canal_logico = EspacioDeCanales::canal_para_autorizar($request->channel_name);
 
         if ($canal_logico === null) {
+            /*
+             * Un nombre SIN ningún `@` es el de una pestaña con el SPA viejo: se le dice que recargue.
+             * Un nombre con un sufijo que no es el propio (otro sistema, o algo armado a mano) es un
+             * 403 pelado: no hay nada que explicarle.
+             */
+            if (strpos((string) $request->channel_name, EspacioDeCanales::SEPARADOR) === false) {
+                throw new AccessDeniedHttpException(self::MENSAJE_PESTANA_VIEJA);
+            }
+
             throw new AccessDeniedHttpException;
         }
 

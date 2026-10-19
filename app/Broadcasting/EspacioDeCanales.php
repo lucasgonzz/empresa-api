@@ -32,8 +32,15 @@ use Illuminate\Support\Facades\DB;
  * - `APP_ENV` separa una copia local de una base real (el MySQL local tiene `ferretotal`) de la de
  *   producción aunque se llamen igual: los slots emiten a la MISMA app de Pusher que la flota.
  * - `CLAVE` es el secret de Pusher (o una constante si está vacío). Con el secret, el nombre del canal
- *   no se adivina desde afuera sabiendo el nombre de la base. Es consistente donde importa: dos
+ *   no se calcula desde afuera sabiendo el nombre de la base. Es consistente donde importa: dos
  *   procesos que comparten canales están en la misma app de Pusher, y una app tiene un solo secret.
+ *   ⚠️ Eso NO lo vuelve secreto: el espacio viaja a todo usuario logueado (`User::canales_en_vivo`)
+ *   y, en un sistema con tienda, a cualquier comprador o ficha de invitado (`Buyer::canales_en_vivo`
+ *   de tienda-api, y `POST /api/buyer` es pública). Lo que separa a los sistemas es que cada uno
+ *   emite y autoriza SOLO con el suyo; un canal público sigue siendo público. Y mientras quede un
+ *   empresa-api VIEJO en la misma app, su `auth()` de vendor firma cualquier nombre que matchee el
+ *   patrón (`chat.user.{id}` acepta `chat.user.2600@xxx`): el cruce intencional en un privado se
+ *   cierra recién cuando toda la flota tiene este código.
  *
  * Sufijo y no prefijo: el `private-` de Pusher queda adelante sin tocarlo, y un listado de canales
  * por prefijo (`filter_by_prefix=global_notification.`) sigue dando un canal por comercio.
@@ -249,9 +256,9 @@ class EspacioDeCanales
      *
      * Misma función que en tienda-api, para que las dos mitades lean igual el mismo valor: solo un
      * falso EXPLÍCITO es estricto (un bool false, o el texto 'false'/'0'/'off'/'no'). Si la clave
-     * falta en la config (un `config:cache` hecho antes de este release) el valor es null, y lo
-     * seguro ahí es la transición, que es exactamente el comportamiento de hoy para los canales que
-     * cruzan con la tienda; lo mismo con un vacío o un valor mal tipeado.
+     * falta en la config (un `config:cache` hecho antes de este release) `config()` devuelve el
+     * default `true`; si está pero en null, o vacía, o mal tipeada, también es transición: lo seguro,
+     * porque es exactamente el comportamiento de hoy para los canales que cruzan con la tienda.
      *
      * @return bool true = transición (con y sin espacio), false = estricto (solo con espacio).
      */

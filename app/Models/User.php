@@ -163,10 +163,24 @@ class User extends Authenticatable
      *
      * No sale de una columna ni hace una query: el espacio se calcula una vez por proceso.
      *
-     * @return array{espacio: string, canales_viejos_de_tienda: bool}
+     * 🔴 El try/catch no es decorativo: este atributo va en CADA serialización del usuario, incluido
+     * el login y `GET /api/user`. Si calcular el espacio tirara (una config rota), sin la guarda se
+     * caería el login entero; con ella, el SPA recibe `espacio: null` y escucha como antes (sin
+     * avisos en vivo, pero entrando). Mismo criterio que el accessor de `Buyer` en tienda-api.
+     *
+     * @return array{espacio: string|null, canales_viejos_de_tienda: bool}
      */
     public function getCanalesEnVivoAttribute() {
-        return EspacioDeCanales::para_el_spa();
+        try {
+            return EspacioDeCanales::para_el_spa();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('canales_en_vivo: no se pudo calcular el espacio de los canales: ' . $e->getMessage());
+
+            return [
+                'espacio'                  => null,
+                'canales_viejos_de_tienda' => true,
+            ];
+        }
     }
 
     function scopeWithAll($query) {

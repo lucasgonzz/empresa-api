@@ -256,10 +256,12 @@ class EspacioDeCanalesTest extends TestCase
     {
         /** Valor del .env => lo que tiene que quedar en la config. */
         $casos = [
-            ''      => true,
-            'true'  => true,
-            '1'     => true,
-            'flase' => true,
+            ''       => true,
+            'null'   => true,
+            '(null)' => true,
+            'true'   => true,
+            '1'      => true,
+            'flase'  => true,
             'false' => false,
             '0'     => false,
             'off'   => false,
