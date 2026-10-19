@@ -161,4 +161,33 @@ class Order extends Model
     function envio() {
         return $this->hasOne(Envio::class)->latestOfMany();
     }
+
+    /**
+     * Si el envío de este pedido sale por Zipnova (misión formas-envio-direcciones-maps,
+     * 19/10/2026).
+     *
+     * Hacen falta las DOS cosas:
+     *  - `envio_opcion` con algo adentro: el comprador eligió un correo de Zipnova en la tienda.
+     *    Todo el ERP decide "es Zipnova" por esta columna; una forma de envío propia (una
+     *    `delivery_zone`, por ejemplo "Acordar con el vendedor") NO la escribe nunca.
+     *  - `envio_proveedor` vacío o `'zipnova'`. Vacío es el pedido de una tienda que todavía no
+     *    escribía el proveedor (compatibilidad del 14/8/2026); cualquier otro valor es un envío
+     *    de otro proveedor que no tiene que salir a Zipnova aunque arrastre una `envio_opcion`.
+     *
+     * Es la única pregunta que se hacen `OrderController::gestionar_envio_zipnova()` (al
+     * confirmar y al cancelar) y `EnvioController@generar` (el botón del modal): si dijeran cosas
+     * distintas, un pedido podría salir a Zipnova —y cobrarse— por un camino y no por el otro.
+     *
+     * @return bool
+     */
+    function envio_va_por_zipnova() {
+
+        if (!is_array($this->envio_opcion) || count($this->envio_opcion) === 0) {
+            return false;
+        }
+
+        $proveedor = is_null($this->envio_proveedor) ? '' : trim((string) $this->envio_proveedor);
+
+        return $proveedor === '' || strtolower($proveedor) === Envio::PROVEEDOR_ZIPNOVA;
+    }
 }

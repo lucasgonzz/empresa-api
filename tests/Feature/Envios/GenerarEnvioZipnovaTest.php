@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Envios;
 
+use App\Models\DeliveryZone;
 use App\Models\Envio;
 use App\Models\Order;
 use App\Models\Platform;
@@ -36,6 +37,12 @@ use Tests\EmpresaTestCase;
  * 5. El webhook sincroniza un envío conocido (y descarta uno de otra cuenta), cancelar llama al
  *    endpoint y sincroniza (y traduce el 401 de "ya no se puede"), la etiqueta vuelve como PDF,
  *    el comando toca solo los no finales y deja en `not_found` lo que Zipnova ya no tiene.
+ * 7. 🔴 La puerta de la confirmación (misión formas-envio-direcciones-maps, 19/10/2026, pedido
+ *    de Lucas): `POST envio/generar` sobre un pedido "Sin confirmar" o "Cancelado" es 422 y no
+ *    sale a Zipnova ni escribe fila; un pedido con forma de envío propia o de otro proveedor no
+ *    sale a Zipnova ni al confirmarlo ni desde el botón. Por esa puerta, los tests que llaman a
+ *    generar (puntos 1 a 3 y el 5j) corren desde esa misión sobre un pedido ya confirmado
+ *    (`pedido_confirmado_con_envio()`): cambió el escenario, no lo que afirman.
  *
  * Todo con `Http::fake()`: nada sale a la red. El pedido se arma con el mismo fixture que las
  * suites de `tests/Feature/Pedidos` (`PedidosDePrueba`).
@@ -183,6 +190,34 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     }
 
     /**
+     * El mismo pedido de `pedido_con_envio()`, pero ya en el estado dado (por defecto
+     * "Confirmado"), escrito directo en la base: sin pasar por `PUT order/{id}`, así no nace la
+     * venta ni se dispara la generación automática del envío.
+     *
+     * Desde la misión formas-envio-direcciones-maps (19/10/2026) `POST envio/generar` opera solo
+     * sobre un pedido confirmado: pedido de Lucas, el envío se le confirma a Zipnova —y se
+     * cobra— recién cuando el comercio confirma el pedido. Los tests de generar que hasta esa
+     * misión corrían sobre un pedido "Sin confirmar" usan este: es el escenario que el botón
+     * "Generar envío" del modal tiene ahora en producción (por ejemplo, el reintento sobre un
+     * pedido confirmado cuya generación automática falló). Lo que afirman no cambió.
+     *
+     * @param int|null $client_id Cliente del ERP asociado al comprador.
+     * @param array<string, mixed> $opcion Cambios sobre la opción elegida.
+     * @param array<string, mixed> $destino Cambios sobre el destino.
+     * @param string $estado Nombre del estado en que queda el pedido.
+     * @return Order
+     */
+    protected function pedido_confirmado_con_envio($client_id = null, array $opcion = [], array $destino = [], $estado = 'Confirmado')
+    {
+        $pedido = $this->pedido_con_envio($client_id, $opcion, $destino);
+
+        $pedido->order_status_id = $this->estado($estado)->id;
+        $pedido->save();
+
+        return $pedido->fresh();
+    }
+
+    /**
      * Fixture real del 201 de `POST /shipments` (misma forma que `GET /shipments/{id}`), con
      * cambios encima.
      *
@@ -307,7 +342,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
         $martillo->timestamps = false;
         $martillo->save();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         // Zipnova devuelve en el 201 el mismo external_id que se le mandó: la fixture lo imita.
         $this->fakear_creacion_ok(['external_id' => 'CC-' . $this->user_id() . '-' . $pedido->id]);
@@ -466,7 +501,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio(
+        $pedido = $this->pedido_confirmado_con_envio(
             null,
             ['key' => '12|pickup_point|carrier_dropoff', 'carrier_id' => 12, 'carrier_name' => 'Correo Argentino', 'service_type' => 'pickup_point', 'service_name' => 'Retiro en sucursal', 'es_punto_de_retiro' => true, 'point_id' => 501],
             ['calle' => null, 'numero' => null, 'piso_depto' => null, 'point_id' => 501]
@@ -499,7 +534,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
         });
 
         // Sin sucursal elegida, un retiro en sucursal no se puede generar.
-        $sin_sucursal = $this->pedido_con_envio(
+        $sin_sucursal = $this->pedido_confirmado_con_envio(
             null,
             ['service_type' => 'pickup_point', 'es_punto_de_retiro' => true, 'point_id' => null],
             ['calle' => null, 'numero' => null, 'point_id' => null]
@@ -522,7 +557,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         Http::fake();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
 
@@ -552,7 +587,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
         $respuesta->assertStatus(422);
         $this->assertStringContainsString('forma de envío', $respuesta->json('message'));
 
-        $incompleto = $this->pedido_con_envio(null, [], ['documento' => '12', 'numero' => '']);
+        $incompleto = $this->pedido_confirmado_con_envio(null, [], ['documento' => '12', 'numero' => '']);
 
         $respuesta = $this->postJson('api/envio/generar/' . $incompleto->id);
 
@@ -583,7 +618,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
 
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
 
@@ -652,7 +687,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
 
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
 
@@ -677,7 +712,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
         $cancelado = $this->envio_generado($pedido, ['proveedor_envio_id' => '100', 'status' => 'cancelled', 'status_name' => 'Cancelado']);
 
         $this->fakear_creacion_ok();
@@ -714,7 +749,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         $segunda = null;
         $fila_durante = null;
@@ -764,7 +799,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         $this->fakear_creacion_ok();
 
@@ -785,7 +820,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         $this->conectar_zipnova();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
 
         $this->fakear_creacion_ok();
 
@@ -1397,7 +1432,7 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     {
         Http::fake();
 
-        $pedido = $this->pedido_con_envio();
+        $pedido = $this->pedido_confirmado_con_envio();
         $this->envio_generado($pedido, ['status' => 'new']);
         $this->envio_generado($pedido, ['proveedor_envio_id' => '111', 'status' => 'in_transit']);
 
@@ -1447,5 +1482,168 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
         $this->assertSame('200', $encontrado['envio']['proveedor_envio_id']);
         $this->assertSame('Andreani', $encontrado['envio_opcion']['carrier_name'], 'envio_opcion no se serializa como json (falta el cast).');
         $this->assertSame('Juan', $encontrado['envio_destino']['nombre']);
+    }
+
+    /**
+     * 7a. 🔴 La puerta de la confirmación (misión formas-envio-direcciones-maps, 19/10/2026,
+     *     pedido de Lucas): generar sobre un pedido "Sin confirmar" es 422 con el mensaje que
+     *     dice cuándo se genera, y NO sale a Zipnova ni escribe una fila en `envios`. Todo lo
+     *     demás está en orden (conector, opción elegida, destino completo, fake del 201 listo):
+     *     la única razón del rechazo es el estado.
+     *
+     * @return void
+     */
+    public function test_generar_sobre_un_pedido_sin_confirmar_da_422_y_no_llama_a_zipnova()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+
+        $pedido = $this->pedido_con_envio();
+
+        $this->assertSame('Sin confirmar', $pedido->order_status->name, 'El fixture tenía que dejar el pedido sin confirmar.');
+
+        $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('El envío se genera cuando confirmás el pedido.', $respuesta->json('message'));
+
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count(), 'Generar sobre un pedido sin confirmar escribió una fila en envios.');
+        $this->assertSame('Sin confirmar', $pedido->fresh()->order_status->name, 'Generar no puede tocar el estado del pedido.');
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * 7b. Generar sobre un pedido "Cancelado" es 422 y tampoco sale a Zipnova.
+     *
+     * @return void
+     */
+    public function test_generar_sobre_un_pedido_cancelado_da_422_y_no_llama_a_zipnova()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+
+        $pedido = $this->pedido_confirmado_con_envio(null, [], [], 'Cancelado');
+
+        $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('No se puede generar el envío de un pedido cancelado.', $respuesta->json('message'));
+
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count(), 'Generar sobre un pedido cancelado escribió una fila en envios.');
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * 7c. La puerta es "confirmado o más adelante", no "exactamente Confirmado": un pedido
+     *     "Terminado" o "Entregado" (por ejemplo, uno que se confirmó saltando estados y cuya
+     *     generación automática falló) se genera desde el botón.
+     *
+     * @return void
+     */
+    public function test_generar_sobre_un_pedido_terminado_o_entregado_genera()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+
+        foreach (['Terminado', 'Entregado'] as $estado) {
+
+            $pedido = $this->pedido_confirmado_con_envio(null, [], [], $estado);
+
+            $this->postJson('api/envio/generar/' . $pedido->id)->assertStatus(200);
+
+            $fila = $this->envio_del_pedido($pedido);
+
+            $this->assertNotNull($fila, 'Un pedido "' . $estado . '" no generó el envío.');
+            $this->assertSame(self::SHIPMENT_ID, $fila->proveedor_envio_id);
+        }
+
+        Http::assertSentCount(2);
+    }
+
+    /**
+     * 7d. Una forma de envío PROPIA (una `delivery_zone`, acá "Acordar con el vendedor" con el
+     *     costo a convenir): el pedido tiene envío a domicilio pero no `envio_opcion`. Confirmarlo
+     *     crea la venta y no toca Zipnova ni `envios`; y el botón de generar dice que el pedido no
+     *     salió por Zipnova (no "confirmalo primero": ya está confirmado y confirmar no genera).
+     *
+     * @return void
+     */
+    public function test_confirmar_un_pedido_con_forma_de_envio_propia_no_toca_zipnova()
+    {
+        Http::fake();
+
+        $this->conectar_zipnova();
+
+        $zona = DeliveryZone::create([
+            'user_id'          => $this->user_id(),
+            'name'             => 'Acordar con el vendedor',
+            'description'      => 'Coordinamos la entrega por WhatsApp',
+            'price'            => 0,
+            'costo_a_convenir' => 1,
+        ]);
+
+        $pedido = $this->crear_pedido($this->cliente_cc()->id);
+        $pedido->deliver = 1;
+        $pedido->delivery_zone_id = $zona->id;
+        $pedido->save();
+
+        $this->putJson('api/order/' . $pedido->id, $this->payload_de_estado('Confirmado'))->assertStatus(200);
+
+        $this->assertSame('Confirmado', $pedido->fresh()->order_status->name);
+        $this->assertNotNull(Sale::where('order_id', $pedido->id)->first(), 'Confirmar el pedido con forma propia no creó la venta.');
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count(), 'Un pedido con forma de envío propia dejó una fila en envios.');
+
+        $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('El pedido no tiene una forma de envío de Zipnova elegida.', $respuesta->json('message'));
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count());
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * 7e. Un pedido con `envio_opcion` pero de OTRO proveedor no sale a Zipnova: ni al
+     *     confirmarlo ni desde el botón. Sin proveedor escrito (tienda vieja) o con "zipnova" en
+     *     cualquier caja, sí.
+     *
+     * @return void
+     */
+    public function test_un_pedido_de_otro_proveedor_no_sale_a_zipnova()
+    {
+        Http::fake();
+
+        $this->conectar_zipnova();
+
+        $pedido = $this->pedido_con_envio($this->cliente_cc()->id);
+        $pedido->envio_proveedor = 'otro';
+        $pedido->save();
+
+        $this->assertFalse($pedido->fresh()->envio_va_por_zipnova());
+
+        $this->putJson('api/order/' . $pedido->id, $this->payload_de_estado('Confirmado'))->assertStatus(200);
+
+        $this->assertNotNull(Sale::where('order_id', $pedido->id)->first(), 'Confirmar el pedido de otro proveedor no creó la venta.');
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count(), 'Confirmar un pedido de otro proveedor dejó una fila en envios.');
+
+        $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('El pedido no tiene una forma de envío de Zipnova elegida.', $respuesta->json('message'));
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count());
+
+        Http::assertNothingSent();
+
+        // El predicado, en los bordes: sin proveedor escrito (tienda vieja), vacío o "Zipnova"
+        // con otra caja es Zipnova; sin opción elegida no lo es, diga lo que diga el proveedor.
+        $opcion = $this->opcion_elegida();
+
+        $this->assertTrue((new Order(['envio_opcion' => $opcion, 'envio_proveedor' => null]))->envio_va_por_zipnova());
+        $this->assertTrue((new Order(['envio_opcion' => $opcion, 'envio_proveedor' => '']))->envio_va_por_zipnova());
+        $this->assertTrue((new Order(['envio_opcion' => $opcion, 'envio_proveedor' => 'Zipnova']))->envio_va_por_zipnova());
+        $this->assertFalse((new Order(['envio_opcion' => null, 'envio_proveedor' => 'zipnova']))->envio_va_por_zipnova());
+        $this->assertFalse((new Order(['envio_opcion' => [], 'envio_proveedor' => 'zipnova']))->envio_va_por_zipnova());
     }
 }
