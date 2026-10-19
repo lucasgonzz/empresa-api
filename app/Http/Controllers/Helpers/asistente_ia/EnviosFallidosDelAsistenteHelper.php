@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\AiEnvioFallido;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\Client;
 use App\Models\User;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
@@ -370,7 +372,9 @@ class EnviosFallidosDelAsistenteHelper
      *
      * Ejemplos:
      *   «No le llegó el presupuesto N° 900005 a Marcos Perez por mail (marcos@test.local): el servidor de
-     *    correo rechazó la casilla. Por WhatsApp sí salió. Si querés, pedime que se lo mande de nuevo.»
+     *    correo rechazó la casilla. Por WhatsApp sí salió.»
+     *   «No le llegó el presupuesto N° 900005 a Marcos Perez por mail (marcos@test.local): el servidor de
+     *    correo no lo aceptó. Si querés, se lo mando por WhatsApp.»
      *   «De los recordatorios de cobro, 3 no salieron por WhatsApp: Ana, Juan y Pedro (WhatsApp no confirmó
      *    el envío).»
      *
@@ -393,8 +397,18 @@ class EnviosFallidosDelAsistenteHelper
 
             $otro = self::el_otro_canal_salio($fila);
 
+            /*
+             * Qué se le ofrece (revisión del 19/10/2026). Si por el otro canal salió, el cliente ya lo
+             * tiene: alcanza con decirlo. Si no salió por mail y el negocio puede mandarlo por WhatsApp,
+             * se ofrece eso y no "de nuevo": un mail rechazado por el servidor (el 401 de demo3, una
+             * casilla que no existe) vuelve a fallar igual. Si no, el reintento de siempre.
+             */
             if (!is_null($otro)) {
-                $texto .= ' Por ' . $otro . ' sí salió.';
+                return $texto . ' Por ' . $otro . ' sí salió.';
+            }
+
+            if ($fila->canal === AiEnvioFallido::CANAL_MAIL && self::se_puede_por_whatsapp($fila)) {
+                return $texto . ' Si querés, se lo mando por WhatsApp.';
             }
 
             return $texto . ' Si querés, pedime que se lo mande de nuevo.';
@@ -626,6 +640,39 @@ class EnviosFallidosDelAsistenteHelper
         }
 
         return $nombre_del_otro;
+    }
+
+    /**
+     * true si el comprobante de esta fila se le podría mandar al cliente por WhatsApp: el negocio tiene el
+     * módulo y el cliente de la tarjeta tiene un teléfono cargado. Sin las dos cosas, ofrecerlo sería
+     * prometer un envío que no puede salir. Nunca lanza (false).
+     *
+     * @param  \App\Models\AiEnvioFallido  $fila
+     * @return bool
+     */
+    protected static function se_puede_por_whatsapp(AiEnvioFallido $fila)
+    {
+        try {
+
+            $accion = AiMessageAction::find((int) $fila->ai_message_action_id);
+
+            $owner = User::find((int) $fila->owner_id);
+
+            if (is_null($accion) || !PermisosIaHelper::tiene_extencion($owner, PropuestaEnvioComprobanteIaHelper::EXTENSION_WHATSAPP)) {
+
+                return false;
+            }
+
+            $datos = is_array($accion->datos) ? $accion->datos : [];
+
+            $client = isset($datos['client_id']) ? Client::where('id', (int) $datos['client_id'])->where('user_id', (int) $fila->owner_id)->first() : null;
+
+            return !is_null($client) && WhatsappPhoneHelper::normalize($client->phone) !== '';
+
+        } catch (\Throwable $e) {
+
+            return false;
+        }
     }
 
     /**

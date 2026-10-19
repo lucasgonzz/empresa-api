@@ -244,8 +244,9 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
         (new SendQueuedMailable($mail))->failed(new \RuntimeException('otra vez'));
         $this->assertSame(1, AiEnvioFallido::where('ai_message_action_id', $propuesta['tarjeta_id'])->count());
 
+        // Por WhatsApp sí salió: el cliente ya lo tiene, alcanza con decirlo (revisión del 19/10/2026).
         $texto = 'No le llegó el presupuesto N° 900005 a Marcos Perez por mail (marcos@test.local): el servidor de correo no lo aceptó. '
-            . 'Por WhatsApp sí salió. Si querés, pedime que se lo mande de nuevo.';
+            . 'Por WhatsApp sí salió.';
 
         // GET avisos-pendientes, como lo consulta el admin: el tipo nuevo, sin ruta ni url.
         $pendientes = $this->getJson('api/admin-sync/asistente/avisos-pendientes?spa_url=' . urlencode(self::SPA_URL), ['X-Admin-Api-Key' => self::CLAVE]);
@@ -826,6 +827,54 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
 
             Carbon::setTestNow();
         }
+    }
+
+    /**
+     * Revisión del 19/10/2026: un mail que no salió y no fue por WhatsApp. Si el negocio puede mandarlo
+     * por WhatsApp (el módulo y el teléfono del cliente), el aviso ofrece eso: un 401 del servidor de
+     * correo vuelve a fallar si se reintenta por mail. Sin teléfono, el reintento de siempre.
+     *
+     * @test
+     */
+    public function el_aviso_de_un_mail_que_no_salio_ofrece_mandarlo_por_whatsapp_si_se_puede()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        // El dueño pidió solo por mail, y el cliente tiene teléfono.
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list(, $propuesta) = $this->mandar_el_presupuesto(['canales' => ['mail']]);
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertCount(1, $avisos);
+        $this->assertSame(
+            'No le llegó el presupuesto N° 900005 a Marcos Perez por mail (marcos@test.local): el servidor de correo no lo aceptó. Si querés, se lo mando por WhatsApp.',
+            $avisos[0]['texto']
+        );
+
+        $this->assertTrue(AvisosDelAsistenteHelper::marcar_avisado($this->dueno, $avisos[0]['id']));
+
+        // Sin teléfono no se ofrece WhatsApp.
+        $ana = $this->cliente('Ana Gomez', null, 'ana@test.local');
+        Budget::create(['user_id' => $this->dueno->id, 'client_id' => $ana->id, 'num' => 900007, 'total' => 1000, 'moneda_id' => 1]);
+
+        list($conversation, $assistant) = $this->vuelta('mandale el presupuesto 900007 a Ana');
+
+        $otra = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'presupuesto', 'numero' => 900007]);
+
+        $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $otra['tarjeta_id']);
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->last()))->failed(new \RuntimeException('401'));
+
+        $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertCount(1, $avisos);
+        $this->assertStringEndsWith('Si querés, pedime que se lo mande de nuevo.', $avisos[0]['texto']);
     }
 
     // ---------------------------------------------------------------------
