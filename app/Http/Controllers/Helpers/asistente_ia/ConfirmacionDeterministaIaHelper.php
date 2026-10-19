@@ -459,7 +459,8 @@ class ConfirmacionDeterministaIaHelper
      * las fuertes y las débiles de envío, los verbos de mandar) o un acompañante (los de las cargas y los
      * de envío), con al menos una afirmación. Con signo de pregunta no ("¿ok?" pregunta), ni con una
      * palabra de más ("ok pero sacá a Pérez" es una corrección: decide el modelo), ni más largo que
-     * LARGO_MAXIMO ya normalizado. Un "gracias" o un "bueno" solos no son nada.
+     * LARGO_MAXIMO ya normalizado. Un "gracias" o un "bueno" solos no son nada. Un 👍, 👌 o ✅ solos sí son
+     * un casi sí (es_solo_un_gesto_de_ok(), segunda revisión del 19/10).
      *
      * @param  string|null  $texto
      * @return bool  false también si ES un sí para envío (ése lo resuelve la confirmación, no esto).
@@ -481,6 +482,16 @@ class ConfirmacionDeterministaIaHelper
         }
 
         $normalizado = self::normalizar($texto);
+
+        /*
+         * 👍, 👌 o ✅ solos (segunda revisión independiente, 19/10): normalizados quedan vacíos, y sin esto
+         * el pulgar del dueño volvía al modelo y al círculo de A8. Es un casi sí: la respuesta fija, que
+         * NO manda nada (para mandar sigue haciendo falta el sí de es_si_para_envio()).
+         */
+        if ($normalizado === '' && self::es_solo_un_gesto_de_ok($texto)) {
+
+            return true;
+        }
 
         if ($normalizado === '' || mb_strlen($normalizado) > self::LARGO_MAXIMO) {
 
@@ -535,6 +546,29 @@ class ConfirmacionDeterministaIaHelper
         }
 
         return $hubo_afirmacion;
+    }
+
+    /**
+     * true si el mensaje es SOLO 👍, 👌 o ✅ (uno o varios, con espacios), sin ningún texto ni otro emoji.
+     * Antes de comparar se sacan el selector de variante (U+FE0F) y los tonos de piel (U+1F3FB a
+     * U+1F3FF) que agregan los teclados: «👍🏻» es el mismo pulgar. Lo usa es_casi_si_para_envio() (misión
+     * asistente-arreglos-segunda-prueba, segunda revisión independiente del 19/10).
+     *
+     * 🔴 Lista CERRADA, como las de las afirmaciones: un ❤️, un 🙏 o un 🙂 no dicen «ok» a un envío.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    protected static function es_solo_un_gesto_de_ok($texto)
+    {
+        $sin_adornos = preg_replace('/[\s\x{FE0F}\x{1F3FB}-\x{1F3FF}]+/u', '', (string) $texto);
+
+        if (!is_string($sin_adornos) || $sin_adornos === '') {
+
+            return false;
+        }
+
+        return (bool) preg_match('/^(?:\x{1F44D}|\x{1F44C}|\x{2705})+$/u', $sin_adornos);
     }
 
     /**

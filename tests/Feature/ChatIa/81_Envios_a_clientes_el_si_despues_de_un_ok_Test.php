@@ -373,10 +373,47 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
             $this->assertTrue(ConfirmacionDeterministaIaHelper::es_casi_si_para_envio($casi), $casi);
         }
 
+        // El 👍 dejó de estar en esta lista el 19/10 (pedido de la raíz): ver el test de los gestos.
         foreach (['sí', 'si, mandalo', 'dale', 'ok mandalo', 'confirmo', '¿ok?', 'ok pero sacá a Pérez', 'no',
-                  'gracias', 'bueno', '', '👍', 'listo, ya lo mandé yo', 'esperá', 'ok ' . str_repeat('listo ', 10)] as $no) {
+                  'gracias', 'bueno', '', 'listo, ya lo mandé yo', 'esperá', 'ok ' . str_repeat('listo ', 10)] as $no) {
             $this->assertFalse(ConfirmacionDeterministaIaHelper::es_casi_si_para_envio($no), $no);
         }
+    }
+
+    /**
+     * 🟡 Segunda revisión independiente (19/10): UN 👍 VOLVÍA AL CÍRCULO DE A8. Normalizado queda vacío y
+     * no era ni sí ni casi sí: decidía el modelo, que pedía el sí sin el bloque. Ahora 👍, 👌 o ✅ solos o
+     * repetidos (con el tono de piel o el selector de variante que agregan los teclados) son un casi sí:
+     * la respuesta fija, que no manda nada. Un emoji con texto se mira por el texto, y cualquier otro
+     * emoji solo sigue sin ser nada.
+     *
+     * @test
+     */
+    public function un_pulgar_arriba_es_un_casi_si_y_lo_contesta_el_sistema()
+    {
+        foreach (['👍', '👍👍', '👍 👍', '👌', '✅', '✅✅✅', '👍🏻', '✔️👍'] as $gesto) {
+
+            $esperado = $gesto !== '✔️👍';
+
+            $this->assertSame($esperado, ConfirmacionDeterministaIaHelper::es_casi_si_para_envio($gesto), $gesto);
+        }
+
+        foreach (['❤️', '🙂', '👎', '🙏', '👍 no', '👍?'] as $no) {
+            $this->assertFalse(ConfirmacionDeterministaIaHelper::es_casi_si_para_envio($no), $no);
+        }
+
+        // Para MANDAR sigue sin alcanzar (decisión de B1, test 78).
+        $this->assertFalse(ConfirmacionDeterministaIaHelper::es_si_para_envio('👍'));
+
+        // De punta a punta por el job: la respuesta fija, sin el modelo y sin mandar nada.
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+
+        list($conversation, $al_pulgar) = $this->turno($conversation, '👍');
+
+        $this->assertSame(PedidoDelSiParaEnvioIaHelper::RESPUESTA_AL_CASI_SI . "\n\n" . $this->bloque_de($tarjeta_id), $al_pulgar->contenido);
+        $this->assertSame(0, $this->pedidos_al_modelo());
+        $this->assertSame([(int) $al_pulgar->id], $this->mostrado_en($tarjeta_id));
+        $this->assertCount(0, $this->promociones_enviadas());
     }
 
     /**
