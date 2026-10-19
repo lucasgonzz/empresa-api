@@ -89,11 +89,36 @@ class PedidoDelSiParaEnvioIaHelper
      * bloque sin volver a proponer y el sí siguiente rebotaba igual. Con el bloque pegado por el sistema y
      * registrado en `mostrado_en`, el sí siguiente ya vale: lo único que tiene que hacer el modelo es
      * pedirlo en una línea.
+     *
+     * 🔴 REDACTADA CONDICIONAL (revisión independiente, 19/10): el pegado no se hace si el texto del modelo
+     * le hace una pregunta al dueño (ver AsistenteIaService::con_el_envio_que_espera_el_si()), así que la
+     * nota no puede prometerlo sin condición: le dice que se pega SI no pregunta nada, y le pide la línea
+     * sin preguntas.
      */
-    const NOTA_SE_VUELVE_A_MOSTRAR = 'Esta vez NO armes la propuesta de nuevo: el sistema le vuelve a mostrar este '
-        . 'mismo envío al dueño al final de tu mensaje, completo y con su pregunta. Vos decile en UNA línea que, '
-        . 'para mandarlo, necesitás que te conteste «sí». No copies la lista ni el texto del envío, no lo '
-        . 'vuelvas a proponer y no lo intentes confirmar otra vez en este turno.';
+    const NOTA_SE_VUELVE_A_MOSTRAR = 'Esta vez NO armes la propuesta de nuevo: si tu mensaje no le hace ninguna '
+        . 'pregunta al dueño, el sistema le vuelve a mostrar este mismo envío al final, completo y con su pregunta. '
+        . 'Vos decile en UNA línea, sin preguntas, que para mandarlo necesitás que te conteste «sí». No copies la '
+        . 'lista ni el texto del envío, no lo vuelvas a proponer y no lo intentes confirmar otra vez en este turno.';
+
+    /**
+     * La nota que viaja pegada al último mensaje del dueño en el payload, ANTES del loop, cuando el sistema
+     * va a volver a mostrar al final de la respuesta el envío que quedó esperando el sí
+     * (AsistenteIaService::con_la_nota_del_envio_que_espera_el_si(); el molde es la nota de la
+     * confirmación determinista).
+     *
+     * 🔴 POR QUÉ, Y ES POR LA REVISIÓN INDEPENDIENTE DEL 19/10: promo → «¿cuánto vendí hoy?» → «Vendiste
+     * $ 120.000. ¿Querés el detalle?» → «sí» (era para el detalle) → el modelo daba el detalle y cerraba con
+     * «¿Querés que te lo mande también por mail?», el sistema pegaba el bloque debajo y lo registraba, y el
+     * «dale» a lo del mail confirmaba la promo. Con esta nota el modelo sabe ANTES de escribir que no tiene
+     * que hacer ninguna pregunta; y si igual pregunta, el pegado no se hace (decide B1, como en develop).
+     *
+     * Entre corchetes, como las otras notas del sistema que viajan con el mensaje de la persona.
+     */
+    const NOTA_PARA_EL_TURNO = '[El sistema le va a volver a mostrar al dueño, al final de tu respuesta, el envío a '
+        . 'clientes que quedó esperando su «sí» (completo y con su pregunta), siempre que tu respuesta no le haga '
+        . 'ninguna pregunta. Contestale lo que te pidió en una línea y SIN hacerle ninguna pregunta (si su «sí» '
+        . 'era para ese envío, decile que para mandarlo necesitás que te conteste «sí» después de verlo). No '
+        . 'copies el envío ni lo vuelvas a proponer.]';
 
     /**
      * El último mensaje del asistente ANTERIOR al sí si ese mensaje le mostró al dueño el bloque de esta

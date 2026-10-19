@@ -206,6 +206,18 @@ class AsistenteIaService
     protected $fotos_del_payload = [];
 
     /**
+     * El id del envío a clientes que este turno decidió, ANTES del loop, volver a mostrar al final de la
+     * respuesta (misión asistente-arreglos-segunda-prueba, N2, revisión independiente del 19/10), o null.
+     *
+     * Lo escribe con_la_nota_del_envio_que_espera_el_si() —que es la que le avisa al modelo— y lo lee
+     * con_el_envio_que_espera_el_si(): el bloque solo se pega si el modelo SUPO que se iba a pegar (y por
+     * eso no le hizo ninguna pregunta al dueño). Se limpia en cada responder().
+     *
+     * @var int|null
+     */
+    protected $envio_que_espera_el_si = null;
+
+    /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
      * es un error: sin clave, el job deja el mensaje en error amigable sin salir a la red.
      *
@@ -269,6 +281,7 @@ class AsistenteIaService
         $this->candidatos_a_mencion = [];
         $this->menciones = [];
         $this->adjuntos = [];
+        $this->envio_que_espera_el_si = null;
 
         $owner = User::find($conversation->user_id);
 
@@ -385,6 +398,9 @@ class AsistenteIaService
         if (! is_null($confirmacion_determinista)) {
             $messages = $this->con_nota_en_el_ultimo_user($messages, ConfirmacionDeterministaIaHelper::nota($confirmacion_determinista));
         }
+
+        // N2: si al final se va a volver a mostrar un envío que espera el sí, el modelo lo sabe desde ya.
+        $messages = $this->con_la_nota_del_envio_que_espera_el_si($messages, $conversation, $assistant_message);
 
         /*
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
@@ -2677,6 +2693,13 @@ CONFIRMACION;
      * rebotar el sí del dueño, que es justo lo que esto vino a cortar. El sí siguiente lo vuelve a
      * intentar. Nunca lanza (lo protege el try de con_los_bloques_de_envio()).
      *
+     * 🔴 Y NO SE PEGA DEBAJO DE OTRA PREGUNTA (revisión independiente, 19/10). Si el texto del modelo —sin
+     * la copia del bloque— tiene «?» o «¿», el dueño tendría dos preguntas en el mismo mensaje y su «dale»
+     * podría estar contestando la otra («¿Querés que te lo mande también por mail?»), con el envío ya
+     * registrado como visto. Ahí no se pega ni se registra y decide B1, como en develop. Tampoco se pega
+     * si el envío no es el que el turno decidió ANTES del loop (`$envio_que_espera_el_si`): el modelo tiene
+     * que haber recibido la nota que le pide no preguntar.
+     *
      * @param  string  $texto  El texto final del modelo, ya pasado por las guardas.
      * @param  AiMessage  $assistant_message  El assistant que se está generando.
      * @return string
@@ -2691,13 +2714,32 @@ CONFIRMACION;
 
         $accion = \App\Http\Controllers\Helpers\asistente_ia\PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant_message);
 
-        if (is_null($accion)) {
+        // Lo decidido antes del loop (y avisado al modelo) tiene que seguir valiendo para ESTE envío.
+        if (is_null($accion) || is_null($this->envio_que_espera_el_si) || (int) $this->envio_que_espera_el_si !== (int) $accion->id) {
             return (string) $texto;
         }
 
         $bloque = \App\Http\Controllers\Helpers\asistente_ia\PedidoDelSiParaEnvioIaHelper::bloque($accion);
 
         if ($bloque === '') {
+            return (string) $texto;
+        }
+
+        /*
+         * La copia que haya hecho el modelo se va: el bloque que vale es el del sistema, al final. Y los
+         * renglones vacíos que deja el hueco se juntan en uno.
+         */
+        $sin_la_copia = trim((string) preg_replace("/\n{3,}/", "\n\n", str_replace($bloque, '', (string) $texto)));
+
+        // El modelo le hizo otra pregunta: el bloque no va abajo (ver el 🔴 de arriba).
+        if (preg_match('/[?¿]/u', $sin_la_copia)) {
+
+            Log::info('AsistenteIaService: el envío que espera el sí no se vuelve a mostrar porque la respuesta del modelo hace otra pregunta.', [
+                'ai_conversation_id' => (int) $conversation->id,
+                'ai_message_id'      => (int) $assistant_message->id,
+                'tarjeta_id'         => (int) $accion->id,
+            ]);
+
             return (string) $texto;
         }
 
@@ -2711,16 +2753,44 @@ CONFIRMACION;
             'tarjeta_id'         => (int) $accion->id,
         ]);
 
-        /*
-         * La copia que haya hecho el modelo se va: el bloque que vale es el del sistema, al final. Y los
-         * renglones vacíos que deja el hueco se juntan en uno.
-         */
-        $sin_la_copia = trim((string) preg_replace("/\n{3,}/", "\n\n", str_replace($bloque, '', (string) $texto)));
-
         return $this->texto_que_entra_con(
             $sin_la_copia,
             \App\Http\Controllers\Helpers\asistente_ia\PedidoDelSiParaEnvioIaHelper::ENCABEZADO_DEL_REMOSTRADO . "\n\n" . $bloque
         );
+    }
+
+    /**
+     * Si al final de este turno se va a volver a mostrar un envío a clientes que espera el sí, le suma al
+     * último mensaje del dueño en el payload la nota PedidoDelSiParaEnvioIaHelper::NOTA_PARA_EL_TURNO y
+     * anota la decisión en `$envio_que_espera_el_si`; si no, deja los mensajes como estaban (misión
+     * asistente-arreglos-segunda-prueba, N2, revisión independiente del 19/10).
+     *
+     * 🔴 POR QUÉ ANTES DEL LOOP. Si el modelo se entera recién por el rechazo de confirmar_carga_pendiente
+     * —o no se entera nunca, porque estaba contestando otra cosa—, escribe libre y puede cerrar con otra
+     * pregunta («¿Querés que te lo mande también por mail?»); con el bloque pegado abajo, el «dale» a ESA
+     * pregunta confirmaba el envío. Avisado desde el arranque, contesta en una línea y sin preguntar. La
+     * decisión es la misma función que usan el rechazo y el pegado
+     * (PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar()); el molde de la nota es el de la
+     * confirmación determinista (con_nota_en_el_ultimo_user()).
+     *
+     * @param  array  $messages  El payload de mensajes ya armado.
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message  El assistant que se está generando.
+     * @return array
+     */
+    protected function con_la_nota_del_envio_que_espera_el_si(array $messages, AiConversation $conversation, AiMessage $assistant_message): array
+    {
+        $this->envio_que_espera_el_si = null;
+
+        $accion = \App\Http\Controllers\Helpers\asistente_ia\PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant_message);
+
+        if (is_null($accion)) {
+            return $messages;
+        }
+
+        $this->envio_que_espera_el_si = (int) $accion->id;
+
+        return $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\PedidoDelSiParaEnvioIaHelper::NOTA_PARA_EL_TURNO);
     }
 
     /**

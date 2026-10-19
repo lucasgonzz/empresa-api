@@ -653,6 +653,54 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     }
 
     /**
+     * 🟡 Revisión independiente (19/10): EL BLOQUE NO SE PEGA DEBAJO DE UNA RESPUESTA QUE TERMINA CON OTRA
+     * PREGUNTA. Promo → «¿cuánto vendí hoy?» → «Vendiste $ 120.000. ¿Querés el detalle?» → «sí» (para el
+     * detalle) → el modelo da el detalle y pregunta «¿Querés que te lo mande también por mail?». Si el
+     * sistema pegara el bloque y lo registrara, el «dale» a lo del mail confirmaría la promo. Antes del
+     * loop el modelo recibe la nota de que el sistema le va a volver a mostrar el envío si no pregunta
+     * nada; si igual pregunta, no se pega ni se registra y decide B1.
+     *
+     * @test
+     */
+    public function una_respuesta_que_termina_con_otra_pregunta_no_lleva_el_bloque_y_el_dale_a_esa_pregunta_no_manda()
+    {
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+        $bloque = $this->bloque_de($tarjeta_id);
+
+        $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000. ¿Querés el detalle?');
+
+        $this->el_modelo_contesta($this->end_turn('Vendiste 3 cajas de tornillos y 2 martillos. ¿Querés que te lo mande también por mail?'));
+
+        list($conversation, $al_detalle) = $this->turno($conversation, 'sí');
+
+        // El modelo supo, antes de contestar, que el envío vuelve al final si no pregunta nada.
+        $ultimo_pedido = Http::recorded(function ($request) {
+            return strpos($request->url(), 'api.anthropic.com') !== false;
+        })->last()[0]->data();
+
+        $this->assertStringContainsString(
+            PedidoDelSiParaEnvioIaHelper::NOTA_PARA_EL_TURNO,
+            json_encode(end($ultimo_pedido['messages']), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        );
+
+        // Igual preguntó: no se pega ni se registra.
+        $this->assertSame('Vendiste 3 cajas de tornillos y 2 martillos. ¿Querés que te lo mande también por mail?', $al_detalle->contenido);
+        $this->assertStringNotContainsString($bloque, $al_detalle->contenido);
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
+
+        // El «dale» (a lo del mail): aunque el modelo intente confirmar la promo, no sale.
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
+            $this->end_turn('Listo, te lo mando por mail.')
+        );
+
+        $this->turno($conversation, 'dale');
+
+        $this->assertCount(0, $this->promociones_enviadas(), 'El «dale» contestaba lo del mail, no la promo.');
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
      * Variante del revisor: un «no, dejalo» que el modelo no canceló, seguido de un «sí» a otra pregunta,
      * no hace reaparecer el envío que el dueño rechazó.
      *
