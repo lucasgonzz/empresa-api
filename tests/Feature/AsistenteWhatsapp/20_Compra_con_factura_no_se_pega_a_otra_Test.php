@@ -884,6 +884,37 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertTrue($sola['ok'], json_encode($sola));
     }
 
+    /**
+     * El número de factura escrito a mano en la compra (`numero_comprobante`) también es "otra
+     * factura": la pantalla de la compra no carga `fecha_emision_comprobante` (está comentado en el
+     * modelo de la SPA) y el campo que el dueño sí llena es el número. El revisor midió que una compra
+     * de hoy con '0003-00012345' se reusaba como vacía. Uno vacío o con espacios no cuenta.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_compra_de_hoy_con_numero_de_comprobante_a_mano_no_se_reusa()
+    {
+        $hoy = $this->compra(47);
+
+        DB::table('provider_orders')->where('id', $hoy->id)->update(['numero_comprobante' => '0003-00012345']);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $respuesta = $this->proponer($conversation, $generandose);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame('Se crea una compra nueva', $this->que_se_hace($respuesta['tarjeta_id']));
+
+        DB::table('provider_orders')->where('id', $hoy->id)->update(['numero_comprobante' => '  ']);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $vacio = $this->proponer($conversation, $generandose);
+
+        $this->assertSame('Se usa la compra N° 47, que está vacía', $this->que_se_hace($vacio['tarjeta_id']));
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================

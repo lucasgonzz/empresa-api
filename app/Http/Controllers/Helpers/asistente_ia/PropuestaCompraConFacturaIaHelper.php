@@ -1730,8 +1730,9 @@ class PropuestaCompraConFacturaIaHelper
      *      artículos pero CON una factura. Es exactamente la Compra 13 de demo3, que ya tenía la
      *      0003-00012345 y recibió la 0003-00012398 del 19/10. Hasta ese día solo se miraba el escaneo
      *      EN CURSO.
-     *   4. SIN FACTURA CARGADA A MANO: una fila en `provider_order_afip_tickets` o la fecha del
-     *      comprobante cargada en la pantalla de la compra son otra factura, aunque nadie la escaneó.
+     *   4. SIN FACTURA CARGADA A MANO: una fila en `provider_order_afip_tickets`, la fecha del
+     *      comprobante o el número de comprobante escrito en la pantalla de la compra son otra
+     *      factura, aunque nadie la escaneó (ver tiene_factura_cargada()).
      *   5. CREADA HOY (huso de la app, Carbon::today()): la compra que el dueño acaba de armar en la
      *      pantalla para esta factura. Una de otro día no se toma en silencio: se le pregunta
      *      (compra_vacia_de_dias_atras()).
@@ -1800,8 +1801,14 @@ class PropuestaCompraConFacturaIaHelper
 
     /**
      * true si la compra tiene una factura cargada a mano desde su pantalla: una fila en
-     * `provider_order_afip_tickets` o la fecha del comprobante (`fecha_emision_comprobante`). Ver la
-     * condición 4 de es_reusable_sin_nombrarla().
+     * `provider_order_afip_tickets`, la fecha del comprobante (`fecha_emision_comprobante`) o el
+     * número de comprobante (`numero_comprobante`). Ver la condición 4 de es_reusable_sin_nombrarla().
+     *
+     * 🔴 EL NÚMERO ES EL QUE DE VERDAD LLENA EL DUEÑO (revisión independiente de la misión
+     * asistente-arreglos-segunda-prueba, 19/10/2026): la pantalla de la compra no carga
+     * `fecha_emision_comprobante` (está comentado en el modelo de la SPA) y el campo que sí se tipea
+     * es `numero_comprobante`. El revisor midió que una compra de hoy con '0003-00012345' escrito ahí
+     * se reusaba como vacía. Uno vacío o con solo espacios no cuenta.
      *
      * @param  \App\Models\ProviderOrder  $orden
      * @return bool
@@ -1809,6 +1816,11 @@ class PropuestaCompraConFacturaIaHelper
     protected static function tiene_factura_cargada(ProviderOrder $orden)
     {
         if (!is_null($orden->fecha_emision_comprobante)) {
+
+            return true;
+        }
+
+        if (trim((string) $orden->numero_comprobante) !== '') {
 
             return true;
         }
