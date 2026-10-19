@@ -697,6 +697,95 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Segunda revisión independiente (19/10), reproducido con el job real sobre el re-pegado general:
+     * UNA CORRECCIÓN ESCRITA COMO PREGUNTA. Promo a Ana y a Juan → «¿le sacás a Juan?» → el modelo dice
+     * «Listo, saqué a Juan.» sin volver a proponer → «dale» → «sí». Con el re-pegado volvía el bloque viejo
+     * y el «sí» le mandaba a Juan; en el camino de develop los dos rebotan y no sale nada.
+     *
+     * @test
+     */
+    public function una_correccion_escrita_como_pregunta_no_le_manda_a_juan()
+    {
+        $this->cliente('Juan Perez', '5493444777777');
+
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+
+        $this->el_modelo_contesta($this->end_turn('Listo, saqué a Juan.'));
+
+        $this->turno($conversation, '¿le sacás a Juan?');
+
+        foreach (['dale', 'sí'] as $si) {
+
+            $this->el_modelo_contesta(
+                $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
+                $this->end_turn('Necesito mostrártela de nuevo sin Juan.')
+            );
+
+            list($conversation, $respuesta) = $this->turno($conversation, $si);
+
+            $this->assertStringNotContainsString($this->bloque_de($tarjeta_id), $respuesta->contenido, $si);
+        }
+
+        $this->assertCount(0, $this->promociones_enviadas(), 'No sale a Juan.');
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
+     * Segunda revisión: «¿la mandás a las 18?» → el modelo dice que sí sin volver a proponer → «ok». El
+     * «ok» ya no contesta un bloque a la vista (no es el caso fijo: decide el modelo) y no es un sí para
+     * mandar: no sale nada en el momento.
+     *
+     * @test
+     */
+    public function la_mandas_a_las_18_y_un_ok_no_la_manda_en_el_momento()
+    {
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+
+        $this->el_modelo_contesta($this->end_turn('Dale, la mando a las 18.'));
+
+        $this->turno($conversation, '¿la mandás a las 18?');
+
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
+            $this->end_turn('Perfecto.')
+        );
+
+        list($conversation, $al_ok) = $this->turno($conversation, 'ok');
+
+        $this->assertSame('Perfecto.', $al_ok->contenido, 'No es la respuesta fija: el bloque no estaba en el último mensaje.');
+        $this->assertSame(3, $this->pedidos_al_modelo());
+        $this->assertCount(0, $this->promociones_enviadas());
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
+     * Segunda revisión: UN OFRECIMIENTO SIN SIGNO DE PREGUNTA. Promo → «¿cuánto vendí hoy?» → «Vendiste
+     * $ 120.000. Si querés, también te lo mando por mail.» → «dale» (a lo del mail). No manda la promo.
+     *
+     * @test
+     */
+    public function un_ofrecimiento_sin_signo_de_pregunta_y_un_dale_no_mandan_la_promo()
+    {
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+
+        $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000. Si querés, también te lo mando por mail.');
+
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
+            $this->end_turn('Listo, te lo mando por mail.')
+        );
+
+        list($conversation, $al_dale) = $this->turno($conversation, 'dale');
+
+        $this->assertStringNotContainsString($this->bloque_de($tarjeta_id), $al_dale->contenido);
+        $this->assertCount(0, $this->promociones_enviadas());
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
      * Un mensaje del MODELO con el bloque copiado no cuenta como «a la vista» (`mostrado_en` lo escribe
      * solo el sistema): el «sí» a ese mensaje no manda.
      *
