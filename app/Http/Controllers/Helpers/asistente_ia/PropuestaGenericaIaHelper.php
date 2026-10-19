@@ -1855,6 +1855,9 @@ class PropuestaGenericaIaHelper
 
         $buscado = self::normalizar_nombre($texto);
 
+        /* Para la comparación EXACTA: sin signos ni espacios (ver clave_de_marca()). */
+        $clave_buscada = self::clave_de_marca($texto);
+
         $marcas = $consulta_base()->orderBy($columna_nombre)->limit(self::TOPE_DE_MARCAS)->get(['id', $columna_nombre])->all();
 
         $exactas = [];
@@ -1869,7 +1872,7 @@ class PropuestaGenericaIaHelper
                 continue;
             }
 
-            if ($nombre === $buscado) {
+            if ($clave_buscada !== '' && self::clave_de_marca((string) $marca->{$columna_nombre}) === $clave_buscada) {
 
                 $exactas[] = $marca;
 
@@ -1940,7 +1943,7 @@ class PropuestaGenericaIaHelper
      */
     protected static function marca_con_el_mismo_nombre(ContextoDeCargaIa $contexto, $nombre)
     {
-        $buscado = self::normalizar_nombre($nombre);
+        $buscado = self::clave_de_marca($nombre);
 
         if ($buscado === '') {
 
@@ -1955,7 +1958,7 @@ class PropuestaGenericaIaHelper
 
         foreach ($marcas as $marca) {
 
-            if (self::normalizar_nombre((string) $marca->name) === $buscado) {
+            if (self::clave_de_marca((string) $marca->name) === $buscado) {
 
                 return $marca;
             }
@@ -1966,7 +1969,8 @@ class PropuestaGenericaIaHelper
 
     /**
      * Un nombre para comparar: sin tildes (Str::ascii), en minúsculas y con los espacios colapsados.
-     * «  ZZÁrbol   Copco » y «zzarbol copco» son el mismo.
+     * «  ZZÁrbol   Copco » y «zzarbol copco» son el mismo. Es la forma POR PALABRAS, para las
+     * parecidas; la igualdad se mide con clave_de_marca().
      *
      * @param  string  $nombre
      * @return string
@@ -1976,6 +1980,21 @@ class PropuestaGenericaIaHelper
         $limpio = Str::lower(Str::ascii(trim((string) $nombre)));
 
         return trim((string) preg_replace('/\s+/u', ' ', $limpio));
+    }
+
+    /**
+     * La clave con la que dos marcas son LA MISMA: sin tildes, en minúsculas y sin ningún signo ni
+     * espacio (solo letras y dígitos). Segunda revisión independiente (19/10/2026): en "directo" se
+     * crearon «ZZPhilips.», «zz 3m» y «ZZ-3M» con «ZZPhilips» y «ZZ3M» cargadas, porque la igualdad
+     * todavía miraba la puntuación y los espacios internos. La usan la coincidencia exacta de
+     * resolver_marca(), marca_con_el_mismo_nombre() y alta_de_marca_pendiente().
+     *
+     * @param  string  $nombre
+     * @return string  Vacío si el nombre no tiene ni una letra ni un dígito.
+     */
+    protected static function clave_de_marca($nombre)
+    {
+        return (string) preg_replace('/[^a-z0-9]/', '', Str::lower(Str::ascii(trim((string) $nombre))));
     }
 
     /**
@@ -2033,8 +2052,9 @@ class PropuestaGenericaIaHelper
 
     /**
      * true si en esta conversación hay una tarjeta de alta de MARCA con ese nombre todavía propuesta
-     * (sin confirmar, sin cancelar y sin vencer). Se compara el nombre sin mayúsculas ni espacios de
-     * más contra lo que va a crear la tarjeta (`datos.payload.name`). Ver marca_que_no_esta().
+     * (sin confirmar, sin cancelar y sin vencer). Se compara con clave_de_marca() —sin mayúsculas,
+     * tildes, signos ni espacios— contra lo que va a crear la tarjeta (`datos.payload.name`), la misma
+     * igualdad que el resto de las marcas. Ver marca_que_no_esta().
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $nombre
@@ -2047,7 +2067,7 @@ class PropuestaGenericaIaHelper
             return false;
         }
 
-        $buscado = mb_strtolower(trim((string) $nombre));
+        $buscado = self::clave_de_marca($nombre);
 
         if ($buscado === '') {
 
@@ -2071,7 +2091,7 @@ class PropuestaGenericaIaHelper
                 continue;
             }
 
-            if (mb_strtolower(trim((string) $datos['payload']['name'])) === $buscado) {
+            if (self::clave_de_marca((string) $datos['payload']['name']) === $buscado) {
 
                 return true;
             }

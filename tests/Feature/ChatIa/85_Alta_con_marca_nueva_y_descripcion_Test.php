@@ -649,6 +649,46 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
         $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'Solo la tarjeta de la marca.');
     }
 
+    /**
+     * Casi duplicadas por puntuación o espacios internos (segunda revisión independiente): en
+     * "directo" se crearon «ZZPhilips.», «zz 3m» y «ZZ-3M» con «ZZPhilips» y «ZZ3M» cargadas. La
+     * comparación exacta y la de «ya existe» van sin signos ni espacios: las tres son la existente, y
+     * un artículo con «zz 3m» queda con ZZ3M.
+     *
+     * @test
+     */
+    public function una_marca_que_solo_cambia_en_signos_o_espacios_es_la_misma()
+    {
+        $philips = Brand::create(['name' => 'ZZPhilips', 'user_id' => $this->dueno->id, 'num' => 985]);
+        $tres_m = Brand::create(['name' => 'ZZ3M', 'user_id' => $this->dueno->id, 'num' => 986]);
+
+        $this->dueno_con(['agente_confianza' => 'directo']);
+
+        foreach (['ZZPhilips.' => $philips, 'zz 3m' => $tres_m, 'ZZ-3M' => $tres_m] as $pedido => $existente) {
+
+            list($conversation, $assistant) = $this->conversacion_con_foto();
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+                'entidad' => 'brand',
+                'datos'   => ['name' => $pedido],
+            ]);
+
+            $this->assertFalse($respuesta['ok'], '«' . $pedido . '» ya existe: ' . json_encode($respuesta));
+            $this->assertStringContainsString('brand_id ' . $existente->id, (string) $respuesta['error']);
+        }
+
+        $this->assertSame(2, Brand::where('user_id', $this->dueno->id)->where('name', 'LIKE', 'ZZ%')->count(), 'No se creó ninguna casi duplicada.');
+
+        $this->dueno_con(['agente_confianza' => 'cauteloso']);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $alta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('zz 3m'));
+
+        $this->assertTrue(!empty($alta['ok']), json_encode($alta));
+        $this->assertSame((int) $tres_m->id, (int) AiMessageAction::find($alta['tarjeta_id'])->datos['payload']['brand_id']);
+    }
+
     // =====================================================================
     // 2. El prompt y la herramienta
     // =====================================================================
