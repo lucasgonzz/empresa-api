@@ -74,10 +74,13 @@ class WhatsappTemplateStandardHelper
             // la plantilla, el body es inmutable: cualquier retoque obliga a darla de alta de
             // nuevo y a esperar otra revisión. Por eso están resueltas acá y no "más adelante":
             //
-            // 1. {{3}} LLEVA EL SUSTANTIVO ("1 venta" / "7 ventas") y el body dice "Tenés {{3}}
-            //    pendientes de pago". Si {{3}} fuera sólo el número sobre un body que dijera
-            //    "{{3}} ventas pendientes", un cliente con una sola venta leería "Tenés 1 ventas
-            //    pendientes de pago". El singular no se puede resolver desde texto fijo.
+            // 1. {{3}} LLEVA EL SUSTANTIVO ("7 ventas") y el body dice "Tenés {{3}} pendientes de
+            //    pago". Si {{3}} fuera sólo el número sobre un body que dijera "{{3}} ventas
+            //    pendientes", un cliente con una sola venta leería "Tenés 1 ventas pendientes de
+            //    pago". ⚠️ Esto NO quedaba resuelto del todo: con {{3}} = "1 venta" el "pendientes"
+            //    fijo seguía en plural ("Tenés 1 venta pendientes de pago", visto en demo3 el
+            //    19/10/2026). Como el body ya está aprobado, con una sola venta {{3}} es "1 venta
+            //    con saldos" (RecordatorioCobroSenderService::cantidad_de_ventas_en_palabras()).
             // 2. EL BODY NO PROMETE EL ADJUNTO. Decía "Te adjuntamos el resumen de tu cuenta
             //    corriente", y el header DOCUMENT no siempre puede armarse (owner sin `api_url`,
             //    cliente sin movimientos en la cuenta). Prometerle al cliente un archivo que no

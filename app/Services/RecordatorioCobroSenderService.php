@@ -677,11 +677,13 @@ class RecordatorioCobroSenderService
         // Mismo orden que declara `WhatsappTemplateStandardHelper` para `cc_cli_recordatorio_cobro`:
         // [Nombre, Negocio, Cantidad de ventas, Montos pendientes].
         //
-        // 🔴 LA VARIABLE {{3}} LLEVA EL SUSTANTIVO ADENTRO ("1 venta" / "7 ventas") y el body dice
-        // "Tenés {{3}} pendientes de pago". El singular no se puede resolver desde el body de una
-        // plantilla de Meta —es texto fijo—, así que si {{3}} fuera sólo el número, un cliente con
-        // una sola venta leería "Tenés 1 ventas pendientes de pago". El camino de texto libre ya
-        // conjuga bien (`body_texto_libre()`); esto lo empareja.
+        // 🔴 LA VARIABLE {{3}} LLEVA EL SUSTANTIVO ADENTRO ("7 ventas") y el body APROBADO EN META
+        // dice "Tenés {{3}} pendientes de pago": el "pendientes" es texto fijo y está en plural. El
+        // singular no se puede resolver desde el body (no se toca: cambiarlo obliga a otra revisión
+        // de Meta), así que con UNA sola venta {{3}} es una frase cuyo sustantivo es plural:
+        // "1 venta con saldos" → "Tenés 1 venta con saldos pendientes de pago". Ver
+        // `cantidad_de_ventas_en_palabras()`. El camino de texto libre ya conjuga bien
+        // (`body_texto_libre()`); esto lo empareja.
         $variables = [$nombre_cliente, $nombre_negocio, $this->cantidad_de_ventas_en_palabras($total_ventas), $etiqueta_totales];
 
         $template = $this->plantilla_aprobada($owner_id);
@@ -1279,15 +1281,21 @@ class RecordatorioCobroSenderService
     }
 
     /**
-     * "1 venta" / "7 ventas", para que la variable `{{3}}` de la plantilla lleve el sustantivo
-     * conjugado y el body de Meta pueda ser texto fijo.
+     * La variable `{{3}}` de la plantilla, que tiene que concordar con el "pendientes" FIJO del body
+     * aprobado en Meta ("Tenés {{3}} pendientes de pago por un total de {{4}}").
+     *
+     * 🔴 EL CASO REAL (segunda prueba por WhatsApp contra demo3, 19/10/2026): un cliente con una sola
+     * venta recibió "Tenés 1 venta pendientes de pago". Con "1 venta" el plural del body queda colgado;
+     * el body no se puede tocar (está aprobado en Meta y cambiarlo es otra revisión), así que el
+     * singular se arregla acá: "1 venta con saldos" → "Tenés 1 venta con saldos pendientes de pago".
+     * Con dos o más, "7 ventas" → "Tenés 7 ventas pendientes de pago", igual que siempre.
      *
      * @param  int  $total_ventas
      * @return string
      */
     private function cantidad_de_ventas_en_palabras($total_ventas)
     {
-        return ((int) $total_ventas === 1) ? '1 venta' : (int) $total_ventas.' ventas';
+        return ((int) $total_ventas === 1) ? '1 venta con saldos' : (int) $total_ventas.' ventas';
     }
 
     /**
