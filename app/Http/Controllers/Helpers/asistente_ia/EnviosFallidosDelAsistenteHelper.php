@@ -149,20 +149,7 @@ class EnviosFallidosDelAsistenteHelper
                 return null;
             }
 
-            $chat = WhatsappChat::find((int) $mensaje->whatsapp_chat_id);
-
-            $cliente = null;
-            $telefono = null;
-
-            if (!is_null($chat)) {
-
-                $telefono = (string) $chat->phone;
-
-                $chat->loadMissing('client');
-
-                // El cliente vinculado al chat; sin vínculo, el nombre que reporta WhatsApp.
-                $cliente = !is_null($chat->client) ? (string) $chat->client->name : (string) $chat->display_name;
-            }
+            list($cliente, $telefono) = self::cliente_y_telefono_del_mensaje($mensaje);
 
             $motivo = self::MOTIVO_WHATSAPP_NO_ENTREGADO;
 
@@ -179,6 +166,118 @@ class EnviosFallidosDelAsistenteHelper
 
             return null;
         }
+    }
+
+    /**
+     * Un WhatsApp del asistente que Meta dio por fallido y DESPUÉS por entregado o leído: el fallo no era
+     * tal y no se le avisa al dueño "no le llegó" (revisión del 19/10/2026). Nunca lanza.
+     *
+     * 🔴 POR QUÉ PASA. Con el rango de estados corregido un `failed` después del `sent` se guarda, y un
+     * `delivered` posterior (Meta reintenta y entrega, o los eventos llegan desordenados) le gana: la
+     * burbuja queda `entregado`. Sin esto, la fila del envío fallido seguía y el dueño recibía el aviso de
+     * algo que el cliente sí recibió.
+     *
+     * Qué se neutraliza: SOLO lo que todavía no se avisó (si ya se avisó, el aviso salió y no se
+     * desmanda). En un comprobante (una fila por tarjeta y canal) la fila deja de pedir aviso. En un lote
+     * se le resta ese cliente (cantidad y nombre) a la fila sin avisar que lo tiene; si queda en cero, deja
+     * de pedir aviso. El cliente se identifica igual que al registrarlo (cliente_y_telefono_del_mensaje).
+     * El `updated_at` no se toca: es el reloj de la calma del lote.
+     *
+     * @param  \App\Models\WhatsappChatMessage  $mensaje  La fila que acaba de pasar de fallido a entregado o leído.
+     * @return void
+     */
+    public static function deshacer_whatsapp_rechazado(WhatsappChatMessage $mensaje)
+    {
+        try {
+
+            if (empty($mensaje->ai_message_action_id)) {
+
+                return;
+            }
+
+            list($cliente) = self::cliente_y_telefono_del_mensaje($mensaje);
+
+            // Recortado igual que al registrarlo, para que el nombre coincida.
+            $cliente = self::recortar($cliente, 191);
+
+            $filas = AiEnvioFallido::where('ai_message_action_id', (int) $mensaje->ai_message_action_id)
+                                    ->where('canal', AiEnvioFallido::CANAL_WHATSAPP)
+                                    ->whereNull('avisado_por_whatsapp_at')
+                                    ->where('avisar_por_whatsapp', 1)
+                                    ->orderBy('id', 'DESC')
+                                    ->get();
+
+            foreach ($filas as $fila) {
+
+                if ($fila->tipo_envio === AiEnvioFallido::TIPO_COMPROBANTE) {
+
+                    $fila->avisar_por_whatsapp = false;
+                    $fila->motivo = self::sumar_motivo($fila->motivo, 'después WhatsApp lo entregó');
+                    $fila->timestamps = false;
+                    $fila->save();
+
+                    return;
+                }
+
+                $nombres = $fila->lista_de_nombres();
+
+                $posicion = array_search((string) $cliente, $nombres, true);
+
+                if ($posicion === false) {
+                    continue;
+                }
+
+                array_splice($nombres, $posicion, 1);
+
+                $fila->cantidad = max(0, (int) $fila->cantidad - 1);
+                $fila->nombres = self::nombres_en_json($nombres);
+
+                if ((int) $fila->cantidad === 0) {
+                    $fila->avisar_por_whatsapp = false;
+                }
+
+                /*
+                 * El primer nombre del lote (y su teléfono) es el que se usa con un solo fallo: si el que
+                 * salió es ése, pasa el siguiente, sin teléfono (el de la fila era el del que sí recibió).
+                 */
+                if ($fila->cliente === $cliente) {
+                    $fila->cliente = count($nombres) ? (string) $nombres[0] : $fila->cliente;
+                    $fila->destino = null;
+                }
+
+                $fila->timestamps = false;
+                $fila->save();
+
+                return;
+            }
+
+        } catch (\Throwable $e) {
+            // Sin esto, lo peor que pasa es un aviso de más.
+        }
+    }
+
+    /**
+     * El cliente (nombre) y el teléfono de un WhatsApp saliente, como los ve el aviso: el cliente vinculado
+     * al chat o, sin vínculo, el nombre que reporta WhatsApp.
+     *
+     * @param  \App\Models\WhatsappChatMessage  $mensaje
+     * @return array{0: string|null, 1: string|null}
+     */
+    protected static function cliente_y_telefono_del_mensaje(WhatsappChatMessage $mensaje)
+    {
+        $chat = WhatsappChat::find((int) $mensaje->whatsapp_chat_id);
+
+        if (is_null($chat)) {
+
+            return [null, null];
+        }
+
+        $chat->loadMissing('client');
+
+        return [
+            !is_null($chat->client) ? (string) $chat->client->name : (string) $chat->display_name,
+            (string) $chat->phone,
+        ];
     }
 
     /**

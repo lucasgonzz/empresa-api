@@ -776,6 +776,116 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
     }
 
     // ---------------------------------------------------------------------
+    // Revisión del 19/10/2026: un failed que después Meta desmiente
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 `failed` y después `delivered`: el mensaje queda entregado (le gana en el rango) y el aviso de
+     * "no le llegó" que todavía no salió se neutraliza.
+     *
+     * @test
+     */
+    public function un_failed_que_despues_se_entrega_no_se_avisa()
+    {
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', null);
+        $this->presupuesto($marcos);
+
+        list(, $propuesta, $confirmada) = $this->mandar_el_presupuesto();
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        $mensaje = WhatsappChatMessage::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['wa_message_id' => 'wamid.N3VUELVE', 'delivery_status' => 'pendiente']);
+
+        $payload = ['message' => ['id' => 'wamid.N3VUELVE']];
+
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.sent', $payload);
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.failed', $payload);
+
+        $this->assertCount(1, AvisosDelAsistenteHelper::pendientes($this->dueno), 'Con el failed, el aviso queda pendiente.');
+
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.delivered', $payload);
+
+        $this->assertSame('entregado', $mensaje->fresh()->delivery_status);
+
+        $fila = AiEnvioFallido::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+
+        $this->assertFalse($fila->avisar_por_whatsapp, 'Le llegó: no hay nada que avisar.');
+        $this->assertSame([], AvisosDelAsistenteHelper::pendientes($this->dueno));
+    }
+
+    /**
+     * En un lote se resta solo ese cliente: de "Ana y Juan no la recibieron", si a Ana después le llega,
+     * el aviso habla solo de Juan.
+     *
+     * @test
+     */
+    public function en_un_lote_el_que_despues_se_entrega_sale_del_aviso()
+    {
+        $this->el_admin_avisa();
+
+        $ana = $this->cliente('Ana Gomez', '5493444101010');
+        $juan = $this->cliente('Juan Perez', '5493444202020');
+        $this->chat_abierto($ana);
+        $this->chat_abierto($juan);
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo a todos');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+
+        $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $propuesta['tarjeta_id']);
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        $ids = [];
+
+        foreach ([$ana, $juan] as $client) {
+
+            $mensaje = WhatsappChatMessage::where('ai_message_action_id', $propuesta['tarjeta_id'])
+                ->whereIn('whatsapp_chat_id', WhatsappChat::where('client_id', $client->id)->select('id'))
+                ->first();
+
+            $this->assertNotNull($mensaje, 'La promo que salió queda anotada con su tarjeta.');
+
+            $wamid = 'wamid.LOTE' . $client->id;
+
+            WhatsappChatMessage::where('id', $mensaje->id)->update(['wa_message_id' => $wamid, 'delivery_status' => 'enviado']);
+
+            WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.failed', ['message' => ['id' => $wamid]]);
+
+            $ids[(int) $client->id] = $wamid;
+        }
+
+        $fila = AiEnvioFallido::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+
+        $this->assertSame(2, $fila->cantidad);
+
+        // A Ana le llega igual.
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.delivered', ['message' => ['id' => $ids[(int) $ana->id]]]);
+
+        $fila = $fila->fresh();
+
+        $this->assertSame(1, $fila->cantidad);
+        $this->assertSame(['Juan Perez'], $fila->lista_de_nombres());
+        $this->assertTrue($fila->avisar_por_whatsapp);
+
+        Carbon::setTestNow(Carbon::now()->addMinutes(EnviosFallidosDelAsistenteHelper::MINUTOS_DE_CALMA_DEL_LOTE + 1));
+
+        try {
+            $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+            $this->assertCount(1, $avisos);
+            $this->assertStringStartsWith('No le salió la promoción a Juan Perez por WhatsApp', $avisos[0]['texto']);
+            $this->assertStringNotContainsString('5493444101010', $avisos[0]['texto'], 'El teléfono de Ana no va en el aviso de Juan.');
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Ayudas
     // ---------------------------------------------------------------------
 

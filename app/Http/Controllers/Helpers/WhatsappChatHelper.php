@@ -1162,6 +1162,9 @@ class WhatsappChatHelper
             return;
         }
 
+        // El estado de antes, para saber si un `delivered`/`read` viene a desmentir un `failed` (abajo).
+        $estado_anterior = (string) $message->delivery_status;
+
         $message->delivery_status = $new_status;
         if ($new_status === 'fallido') {
             $message->send_error = self::extract_failure_reason($payload);
@@ -1177,6 +1180,16 @@ class WhatsappChatHelper
          */
         if ($new_status === 'fallido' && ! empty($message->ai_message_action_id)) {
             EnviosFallidosDelAsistenteHelper::registrar_whatsapp_rechazado($message);
+        }
+
+        /*
+         * Y al revés (revisión del 19/10/2026): un `failed` que después Meta desmiente con un `delivered`
+         * o un `read` (le gana en el rango) no era un fallo. Si el dueño todavía no recibió el aviso, se
+         * neutraliza: no se le dice "no le llegó" sobre algo que el cliente recibió. Tampoco puede romper
+         * el webhook.
+         */
+        if ($estado_anterior === 'fallido' && in_array($new_status, ['entregado', 'leido'], true) && ! empty($message->ai_message_action_id)) {
+            EnviosFallidosDelAsistenteHelper::deshacer_whatsapp_rechazado($message);
         }
 
         $chat = WhatsappChat::find($message->whatsapp_chat_id);
