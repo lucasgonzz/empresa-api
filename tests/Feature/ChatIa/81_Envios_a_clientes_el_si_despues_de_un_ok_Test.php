@@ -309,6 +309,8 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
         list($conversation, $al_ok) = $this->turno($conversation, 'ok');
 
         $this->assertSame(PedidoDelSiParaEnvioIaHelper::RESPUESTA_AL_CASI_SI . "\n\n" . $bloque, $al_ok->contenido);
+        // El texto, palabra por palabra (revisión del 19/10: «solo», para que a un «sí, gracias» no le suene raro).
+        $this->assertStringStartsWith("Para mandarlo necesito que me contestes solo «sí». Te lo dejo de nuevo:\n\n", $al_ok->contenido);
         $this->assertStringEndsWith(DestinatariosIaHelper::PREGUNTA, $al_ok->contenido);
         $this->assertSame(2, $this->pedidos_al_modelo(), 'El «ok» no le llega al modelo.');
         $this->assertSame([(int) $al_ok->id], $this->mostrado_en($tarjeta->id));

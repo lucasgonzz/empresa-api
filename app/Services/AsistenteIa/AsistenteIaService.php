@@ -322,7 +322,7 @@ class AsistenteIaService
          * 🔴 MISIÓN asistente-arreglos-segunda-prueba (N2, 19/10/2026): EL «OK» A UN ENVÍO LO CONTESTA EL
          * SISTEMA, SIN EL MODELO. Si el dueño contestó un «casi sí» («ok», «listo», «perfecto»…, que NO
          * alcanza para mandar) al bloque de un envío a clientes que acaba de ver, el pedido del sí lo arma
-         * el código —«Para mandarlo necesito que me contestes «sí». Te lo dejo de nuevo:» y el bloque— y
+         * el código —«Para mandarlo necesito que me contestes solo «sí». Te lo dejo de nuevo:» y el bloque— y
          * ese mensaje queda registrado en `mostrado_en` de la tarjeta, así el «sí» siguiente manda. Caso
          * real (segunda prueba contra demo3, A8): el modelo contestaba «necesito un sí» en un mensaje sin
          * el bloque y cada «sí» rebotaba con MENSAJE_ENVIO_NO_VISTO; hicieron falta tres. Las guardas

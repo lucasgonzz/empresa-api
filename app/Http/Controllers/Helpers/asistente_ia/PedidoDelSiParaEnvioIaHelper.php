@@ -66,9 +66,11 @@ class PedidoDelSiParaEnvioIaHelper
     /**
      * Lo que contesta el sistema, sin el modelo, a un «casi sí» al bloque recién mostrado. Va seguido de
      * una línea en blanco y el bloque, que ya cierra con DestinatariosIaHelper::PREGUNTA («¿Lo mando?
-     * Respondé sí para mandarlo.»). Texto pedido en el plan de la misión, palabra por palabra.
+     * Respondé sí para mandarlo.»). Texto del plan de la misión, con el «solo» que sumó la revisión
+     * independiente del 19/10: sin él, a un «sí, gracias» (que es un casi sí: el «gracias» no entra en el
+     * sí para mandar) el sistema le contestaba «necesito que me contestes «sí»», que suena raro.
      */
-    const RESPUESTA_AL_CASI_SI = 'Para mandarlo necesito que me contestes «sí». Te lo dejo de nuevo:';
+    const RESPUESTA_AL_CASI_SI = 'Para mandarlo necesito que me contestes solo «sí». Te lo dejo de nuevo:';
 
     /**
      * La línea con la que el sistema presenta el bloque que vuelve a pegar al final del mensaje de un
