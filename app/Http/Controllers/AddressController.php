@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\address\AjusteDePreciosDeSucursalHelper;
 use App\Http\Controllers\Helpers\address\EliminarSucursalHelper;
 use App\Models\Address;
@@ -226,7 +227,10 @@ class AddressController extends Controller
      */
     protected function registro_ajeno_o_404($id) {
 
-        if (is_null(EliminarSucursalHelper::direccion_del_dueno($id, $this->userId()))) {
+        // Solo un id entero positivo (texto o número): `direccion_del_dueno` acepta todo lo que pase
+        // `is_numeric` (`1.9`, `1e0`) y el `find($id)` de después no encontraría nada (un 500 en el update).
+        if (ChequeHelper::id_del_pedido($id) === 0
+            || is_null(EliminarSucursalHelper::direccion_del_dueno($id, $this->userId()))) {
             return response()->json(['message' => Self::MENSAJE_SUCURSAL_INEXISTENTE], 404);
         }
 

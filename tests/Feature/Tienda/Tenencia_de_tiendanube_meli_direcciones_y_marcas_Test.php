@@ -364,6 +364,24 @@ class Tenencia_de_tiendanube_meli_direcciones_y_marcas_Test extends EmpresaTestC
     }
 
     /**
+     * Un id que no es un entero (`<id propio>.9`, `<id propio>e0`, `-1`) no es un id: 404 igual que lo
+     * inexistente. `is_numeric` los dejaría pasar y el `find` de después daría 500 en el update.
+     *
+     * @test
+     */
+    public function una_sucursal_con_un_id_decimal_o_exponencial_da_404_y_no_500()
+    {
+        $propia = $this->sucursal($this->usuario_de_prueba()->id);
+
+        foreach ([$propia->id . '.9', $propia->id . 'e0', '-' . $propia->id, ' ' . $propia->id] as $id) {
+            $this->assertSame(404, $this->getJson('api/address/' . rawurlencode($id))->getStatusCode(), "GET address/$id");
+            $this->assertSame(404, $this->putJson('api/address/' . rawurlencode($id), ['street' => 'X'])->getStatusCode(), "PUT address/$id");
+        }
+
+        $this->assertSame('Calle original', $propia->fresh()->street);
+    }
+
+    /**
      * Un EMPLEADO del dueño opera lo del dueño (`userId()` lo resuelve al dueño); el empleado de
      * OTRO comercio, no.
      *
