@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\CuotasTiendaEsquemaHelper;
 use App\Models\PaymentMethod;
@@ -50,6 +51,11 @@ class PaymentMethodController extends Controller
     }  
 
     public function show($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         return response()->json(['model' => $this->fullModel('PaymentMethod', $id)], 200);
     }
 
@@ -83,6 +89,10 @@ class PaymentMethodController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     public function update(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
 
         if ($request->has('current_acount_payment_method_id')
             && CuotasTiendaEsquemaHelper::es_un_vinculo_invalido($request->current_acount_payment_method_id)) {
@@ -109,6 +119,11 @@ class PaymentMethodController extends Controller
     }
 
     public function destroy($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = PaymentMethod::find($id);
         $model->delete();
         ImageController::deleteModelImages($model);
@@ -130,5 +145,18 @@ class PaymentMethodController extends Controller
                 'current_acount_payment_method_id' => ['El método de pago de cuenta corriente elegido no existe.'],
             ],
         ], 422);
+    }
+
+    /**
+     * El método de pago de la tienda tiene que ser del comercio de la sesión.
+     *
+     * Devuelve null si el registro es del dueño de la sesión y, si no, el 404 que el método contesta
+     * tal cual (ajeno, inexistente y no-id dan lo mismo). Ver `TenenciaDeLaTiendaHelper`.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+        return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(PaymentMethod::class, $id, $this->userId(), 'El método de pago no existe o no es de tu cuenta.');
     }
 }

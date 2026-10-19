@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Exceptions\MailRechazadoPorElServidorException;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ClientMailConfigHelper;
@@ -25,6 +26,11 @@ class OnlineConfigurationController extends Controller
     }
 
     public function update(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = OnlineConfiguration::find($id);
         $model->pausar_tienda_online            = $request->pausar_tienda_online;    
         $model->register_to_buy                 = $request->register_to_buy;    
@@ -311,5 +317,18 @@ class OnlineConfigurationController extends Controller
             'logo_source'        => $result['logo_source'],
             'logo_is_monochrome' => $result['logo_is_monochrome'],
         ], 200);
+    }
+
+    /**
+     * La configuración online tiene que ser la del comercio de la sesión.
+     *
+     * Devuelve null si el registro es del dueño de la sesión y, si no, el 404 que el método contesta
+     * tal cual (ajeno, inexistente y no-id dan lo mismo). Ver `TenenciaDeLaTiendaHelper`.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+        return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(OnlineConfiguration::class, $id, $this->userId(), 'La configuración de la tienda no existe o no es de tu cuenta.');
     }
 }

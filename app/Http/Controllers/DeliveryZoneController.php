@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\DeliveryZone;
 use Illuminate\Http\Request;
@@ -58,6 +59,11 @@ class DeliveryZoneController extends Controller
     }
 
     public function show($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         return response()->json(['model' => $this->fullModel('DeliveryZone', $id)], 200);
     }
 
@@ -73,6 +79,11 @@ class DeliveryZoneController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     public function update(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = DeliveryZone::find($id);
 
         $hay_columna = $this->hay_columna_costo_a_convenir();
@@ -95,6 +106,11 @@ class DeliveryZoneController extends Controller
     }
 
     public function destroy($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = DeliveryZone::find($id);
         $model->delete();
         ImageController::deleteModelImages($model);
@@ -151,5 +167,18 @@ class DeliveryZoneController extends Controller
      */
     protected function hay_columna_costo_a_convenir() {
         return Schema::hasColumn('delivery_zones', 'costo_a_convenir');
+    }
+
+    /**
+     * La forma de envío propia tiene que ser del comercio de la sesión.
+     *
+     * Devuelve null si el registro es del dueño de la sesión y, si no, el 404 que el método contesta
+     * tal cual (ajeno, inexistente y no-id dan lo mismo). Ver `TenenciaDeLaTiendaHelper`.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+        return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(DeliveryZone::class, $id, $this->userId(), 'La forma de envío no existe o no es de tu cuenta.');
     }
 }

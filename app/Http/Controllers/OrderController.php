@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
@@ -55,12 +56,22 @@ class OrderController extends Controller
     }
 
     public function show($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = $this->fullModel('Order', $id);
         $model = OrderHelper::setArticlesVariant([$model])[0];
         return response()->json(['model' => $model], 200);
     }
 
     public function update(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         /**
          * Pedido a actualizar.
          * Se usa como base para evaluar transición de estado y creación de venta.
@@ -502,6 +513,11 @@ class OrderController extends Controller
     }
 
     public function destroy($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = Order::find($id);
         $model->delete();
         ImageController::deleteModelImages($model);
@@ -650,5 +666,18 @@ class OrderController extends Controller
         }
 
         new OrderPdf($model);
+    }
+
+    /**
+     * El pedido de la tienda tiene que ser del comercio de la sesión.
+     *
+     * Devuelve null si el registro es del dueño de la sesión y, si no, el 404 que el método contesta
+     * tal cual (ajeno, inexistente y no-id dan lo mismo). Ver `TenenciaDeLaTiendaHelper`.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+        return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(Order::class, $id, $this->userId(), 'El pedido no existe o no es de tu cuenta.');
     }
 }
