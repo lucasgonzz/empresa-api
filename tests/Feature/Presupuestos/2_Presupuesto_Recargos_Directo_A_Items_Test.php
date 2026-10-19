@@ -805,7 +805,9 @@ class Presupuesto_Recargos_Directo_A_Items_Test extends TestCase
     }
 
     /**
-     * Con la opcion activa los DESCUENTOS se siguen aplicando: la opcion es solo de recargos.
+     * Con la opcion de RECARGOS activa los DESCUENTOS se siguen aplicando: esa opcion es solo de
+     * recargos. (Dejan de aplicarse unicamente si su propia opcion hermana, de descuentos, esta
+     * activa: ver `tests/Feature/DescuentosEnPrecios`.)
      *
      * El numero lo dice todo: 110 x 5 = 550, menos el 10% de descuento = 495. Si la guarda hubiera
      * quedado envolviendo tambien los `foreach ($budget->discounts ...)` —estan pegados, uno arriba
@@ -901,7 +903,9 @@ class Presupuesto_Recargos_Directo_A_Items_Test extends TestCase
      *
      * Lo que se verifica es que la guarda existe Y QUE ENVUELVE AL FOREACH DE RECARGOS, no al de
      * descuentos: los dos loops estan pegados y mover la llave un renglon para arriba dejaria de
-     * imprimir los descuentos, que si se siguen listando.
+     * imprimir los descuentos. (Hoy el foreach de descuentos esta anidado en SU PROPIA guarda, la de
+     * `aplicar_descuentos_directo_a_items`, y este test solo exige que siga ENCIMA de la guarda de
+     * recargos.)
      *
      * @group presupuestos
      * @test
@@ -936,8 +940,8 @@ class Presupuesto_Recargos_Directo_A_Items_Test extends TestCase
         $this->assertLessThan(
             $pos_guarda,
             $pos_descuentos,
-            'El foreach de descuentos tiene que quedar ARRIBA de la guarda, o sea fuera: la opcion '
-                .'es solo de recargos y los descuentos se siguen listando siempre.'
+            'El foreach de descuentos tiene que quedar ARRIBA de la guarda de recargos, o sea fuera: '
+                .'esa opcion es solo de recargos (los descuentos tienen su propia guarda, anidada).'
         );
     }
 }

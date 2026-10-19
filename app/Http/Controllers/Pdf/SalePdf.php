@@ -650,8 +650,18 @@ class SalePdf extends fpdf {
 		}
 	}
 
+	/*
+		🔴 Con `aplicar_descuentos_directo_a_items` el descuento YA ESTA adentro del precio de cada
+		renglon (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), asi que listarlo
+		tambien en el pie lo hace leer como que se resta dos veces —y el pedido de la opcion es
+		justamente que NO aparezca discriminado en el comprobante—. Gemelo de la guarda de recargos
+		de `surchages()`, mas abajo.
+	*/
 	function discounts() {
-		if (count($this->sale->discounts) >= 1) {
+		if (
+			count($this->sale->discounts) >= 1
+			&& !$this->sale->aplicar_descuentos_directo_a_items
+		) {
 		    $this->SetFont('Arial', 'B', 11);
 
 		    $total_descuento = 0;
@@ -778,7 +788,10 @@ class SalePdf extends fpdf {
 	function totalFinal() {
 		if (
 				(
-					count($this->sale->discounts) >= 1 
+					(
+						count($this->sale->discounts) >= 1
+						&& !$this->sale->aplicar_descuentos_directo_a_items
+					)
 					|| (
 						count($this->sale->surchages) >= 1
 						&& !$this->sale->aplicar_recargos_directo_a_items

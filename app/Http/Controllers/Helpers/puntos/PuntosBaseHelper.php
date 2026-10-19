@@ -254,9 +254,20 @@ class PuntosBaseHelper {
          * Capa 2: la lista de Descuentos de la venta (`discount_sale`). Se aplican EN CASCADA,
          * uno sobre el resultado del anterior, igual que en el front y en el calculador de
          * AFIP: dos descuentos del 10% dan 19%, no 20%.
+         *
+         * 🔴 `aplicar_descuentos_directo_a_items` es la guarda gemela de la de recargos de mas abajo
+         * (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026): con esa bandera prendida el
+         * descuento ya viene metido en el `price` de cada renglon (la base de acumulacion lo suma
+         * renglon por renglon), asi que aplicarlo otra vez aca otorgaria MENOS puntos de los que
+         * corresponden. Es la misma condicion que pone `AfipItemCalculator` y la misma que pone
+         * `aplicar_discounts()` en la SPA. No es un detalle de estilo: sin ella, un cliente que compra
+         * con la opcion prendida cobraria sistematicamente menos puntos que con ella apagada.
          */
-        foreach ($sale->discounts as $discount) {
-            $factor -= $factor * self::a_float($discount->pivot->percentage) / 100;
+        if (!$sale->aplicar_descuentos_directo_a_items) {
+
+            foreach ($sale->discounts as $discount) {
+                $factor -= $factor * self::a_float($discount->pivot->percentage) / 100;
+            }
         }
 
         /*

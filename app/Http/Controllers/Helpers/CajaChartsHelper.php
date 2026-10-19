@@ -177,8 +177,20 @@ class CajaChartsHelper {
 		$cost = Self::get_article_costo_realt($article);
 		if (!is_null($cost)) {
 			$price_vendido = $article->pivot->price;
-			foreach ($sale->discounts as $discount) {
-				$price_vendido -= $price_vendido * $discount->pivot->percentage / 100;
+			/*
+				🔴 Con `aplicar_descuentos_directo_a_items` el `pivot->price` YA TRAE el descuento de la venta
+				adentro (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026): restarlo de nuevo
+				subestimaba la rentabilidad del articulo, y el reporte decia que se ganaba menos de lo que se
+				cobro. Por eso la guarda.
+
+				⚠️ Los recargos de mas abajo NO tienen la guarda equivalente: es el hallazgo 6 abierto de la
+				mision del 28/9/2026 (`aplicar_recargos_directo_a_items` tampoco se mira aca, y con esa opcion
+				la rentabilidad sale SOBRESTIMADA). Esta mision no lo arregla.
+			*/
+			if (!$sale->aplicar_descuentos_directo_a_items) {
+				foreach ($sale->discounts as $discount) {
+					$price_vendido -= $price_vendido * $discount->pivot->percentage / 100;
+				}
 			}
 			foreach ($sale->surchages as $surchage) {
 				$price_vendido += $price_vendido * $surchage->pivot->percentage / 100;

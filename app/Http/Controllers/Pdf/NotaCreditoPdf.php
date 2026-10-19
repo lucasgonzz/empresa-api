@@ -182,7 +182,20 @@ class NotaCreditoPdf extends fpdf {
 
 		if (!is_null($this->model->sale)) {
 
-			if ($is_article || $this->model->sale->discounts_in_services) {
+			/*
+				🔴 SOLO SI LA VENTA NO TIENE LA OPCION PRENDIDA (decision de Lucas, 8/10/2026: corregir
+				la nota de credito para descuentos Y recargos; el de recargos era el hallazgo 1 del
+				informe del 28/9/2026). Con `aplicar_descuentos_directo_a_items` /
+				`aplicar_recargos_directo_a_items` el `price` del renglon devuelto YA TRAE ese ajuste
+				adentro, y aplicarlo de nuevo en el total del PDF acreditaba de menos (descuento) o de
+				mas (recargo) que la nota de credito que se guardo. Es la misma regla que
+				`SaleHelper::checkNotaCredito()`, que calcula el `haber`: PDF y cuenta corriente tienen
+				que decir lo mismo. Cada opcion gobierna SU PROPIO ajuste.
+			*/
+			if (
+				($is_article || $this->model->sale->discounts_in_services)
+				&& !$this->model->sale->aplicar_descuentos_directo_a_items
+			) {
 
 				foreach ($this->model->sale->discounts as $discount) {
 					$total_para_sumar_a_global -= $total_para_sumar_a_global * $discount->pivot->percentage / 100;
@@ -190,7 +203,10 @@ class NotaCreditoPdf extends fpdf {
 
 			}
 
-			if ($is_article || $this->model->sale->surchages_in_services) {
+			if (
+				($is_article || $this->model->sale->surchages_in_services)
+				&& !$this->model->sale->aplicar_recargos_directo_a_items
+			) {
 
 				foreach ($this->model->sale->surchages as $surchage) {
 					$total_para_sumar_a_global += $total_para_sumar_a_global * $surchage->pivot->percentage / 100;
@@ -218,14 +234,25 @@ class NotaCreditoPdf extends fpdf {
 			$this->SetFont('Arial', 'B', 10);
 
 
-			foreach ($this->model->sale->discounts as $discount) {
-				$this->x = 5;
-				$this->Cell(200, 5, '- '.$discount->name.' '.$discount->pivot->percentage.'%', $this->b, 1, 'R');
+			/*
+				Las lineas del pie siguen la misma regla que la cuenta de `getTotal()`: un descuento o
+				un recargo que ya esta adentro del precio de cada renglon no se lista (mismo criterio
+				que en el PDF de la venta). Listarlo contradeciria el total que se imprime.
+			*/
+			if (!$this->model->sale->aplicar_descuentos_directo_a_items) {
+
+				foreach ($this->model->sale->discounts as $discount) {
+					$this->x = 5;
+					$this->Cell(200, 5, '- '.$discount->name.' '.$discount->pivot->percentage.'%', $this->b, 1, 'R');
+				}
 			}
 
-			foreach ($this->model->sale->surchages as $surchage) {
-				$this->x = 5;
-				$this->Cell(200, 5, '+ '.$surchage->name.' '.$surchage->pivot->percentage.'%', $this->b, 1, 'R');
+			if (!$this->model->sale->aplicar_recargos_directo_a_items) {
+
+				foreach ($this->model->sale->surchages as $surchage) {
+					$this->x = 5;
+					$this->Cell(200, 5, '+ '.$surchage->name.' '.$surchage->pivot->percentage.'%', $this->b, 1, 'R');
+				}
 			}
 
 			$this->SetFont('Arial', '', 8);

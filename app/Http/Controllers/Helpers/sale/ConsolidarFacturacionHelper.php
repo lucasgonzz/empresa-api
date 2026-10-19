@@ -371,6 +371,14 @@ class ConsolidarFacturacionHelper extends Controller
      * cuando la hay— le bajaria el precio a cada renglon al abrirla y el recargo no apareceria en
      * ningun lado. NULL es la verdad de este comprobante. Lo mismo en combos y servicios, mas abajo.
      *
+     * 🔴 Y TAMBIEN MENOS `price_sin_descuentos_de_venta` Y MENOS EL FLAG `aplicar_descuentos_directo_a_items`
+     * (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), por el mismo motivo y a proposito:
+     * la consolidada no copia ni `discounts` ni el flag de las originales. Para ella `price` es el
+     * precio final —ya con el descuento que cada original llevara adentro— y punto; copiar el precio
+     * original haria que VENDER, con el flag en 0, le subiera el precio a cada renglon al abrirla.
+     * Lo mismo en combos y servicios, mas abajo. (Que la consolidada no herede los descuentos al pie
+     * de las originales es el hallazgo 7 del informe del 28/9/2026, abierto.)
+     *
      * `name`, `iva_percentage` y `price_sin_iva` se copian desde el 5/10/2026 (decisión de Lucas).
      * Antes no, y la factura consolidada salía con el IVA ACTUAL del artículo en vez del del momento
      * de la venta (`AfipItemCalculator::resolve_article_iva_percentage()` prioriza el del pivot y

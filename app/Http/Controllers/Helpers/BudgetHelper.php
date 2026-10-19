@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
@@ -98,7 +99,7 @@ class BudgetHelper {
 
 	        $employee_id = SaleHelper::getEmployeeId();
 
-	        $sale = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
+	        $sale = Sale::create(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
 	            'num' 					=> $ct->num('sales'),
 	            'user_id' 				=> UserHelper::userId(),
 	            'client_id' 			=> $budget->client_id,
@@ -115,6 +116,12 @@ class BudgetHelper {
 	            // el recargo adentro del precio, asi que SaleHelper::getTotalSale() tampoco lo tiene
 	            // que volver a sumar (pedido explicito de Lucas).
 	            'aplicar_recargos_directo_a_items' => $budget->aplicar_recargos_directo_a_items,
+	            // Y la hermana para descuentos (mision descuentos-aplicar-al-precio-del-articulo,
+	            // 8/10/2026), por el mismo motivo: los renglones pasan con el precio del presupuesto,
+	            // que ya trae el descuento adentro, y la venta no lo tiene que volver a restar.
+	            // Entra por la guarda de esquema que envuelve el array: en la ventana del deploy la
+	            // columna no existe y confirmar un presupuesto es mostrador normal.
+	            'aplicar_descuentos_directo_a_items' => $budget->aplicar_descuentos_directo_a_items,
             	'price_type_id'         => Self::get_price_type_id($budget),
             	'sale_status_id'        => $budget->sale_status_id,
             	// Misma semántica que en SaleController: si no viene definido en el presupuesto, descontar stock por defecto.
@@ -170,7 +177,7 @@ class BudgetHelper {
 	         * null viaja igual al INSERT, que revienta con `Unknown column`. Ver
 	         * `ForzarTotalEsquemaHelper`.
 	         */
-	        ], $budget->forzar_total_monto, 'sales'), 'sales'));
+	        ], $budget->forzar_total_monto, 'sales'), 'sales'), 'sales'));
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 
 	        Self::attachSaleServices($sale, $budget);
@@ -390,6 +397,10 @@ class BudgetHelper {
 			 * nace de un presupuesto con la opcion prendida quedaria bloqueada en VENDER desde el
 			 * primer segundo, aunque el presupuesto no lo estuviera. Lo mismo en los tres
 			 * `attachSale*` de abajo.
+			 *
+			 * 🔴 Y LO MISMO PARA LA BASE DE DESCUENTOS (`price_sin_descuentos_de_venta`, el precio
+			 * original; mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), que viaja en los
+			 * cuatro `attachSale*` por su propia guarda de esquema, anidada con la de recargos.
 			 */
 			/*
 			 * 🔴 La VARIANTE del renglon pasa a la venta (mision presupuestos-con-variantes,
@@ -403,7 +414,7 @@ class BudgetHelper {
 			 */
 			$variante = Self::variante_para_la_venta($article);
 
-			$sale->articles()->attach($article->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$sale->articles()->attach($article->id, DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $price,
@@ -414,7 +425,7 @@ class BudgetHelper {
 				'name'				=> $article->pivot->name,
 				'article_variant_id'	=> $variante['article_variant_id'],
 				'variant_description'	=> $variante['variant_description'],
-			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'));
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'));
 
 			Log::info('sale articles:');
 			Log::info($sale->articles);
@@ -465,10 +476,10 @@ class BudgetHelper {
 
 		foreach($budget->promocion_vinotecas as $promo) {
 			
-			$sale->promocion_vinotecas()->attach($promo->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$sale->promocion_vinotecas()->attach($promo->id, DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $promo->pivot->amount,
 				'price'	    		=> $promo->pivot->price,
-			], RecargosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot), 'promocion_vinoteca_sale'));
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot), 'promocion_vinoteca_sale'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot), 'promocion_vinoteca_sale'));
 
 			$promo_array = [
 				'id'		=> $promo->id,
@@ -529,7 +540,7 @@ class BudgetHelper {
 				VENDER no. Dos filas de la misma tabla, una fechada y la otra no, segun por que
 				puerta entro la venta.
 			*/
-			$sale->combos()->attach($combo->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$sale->combos()->attach($combo->id, DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $combo->pivot->amount,
 				'price'	    		=> $combo->pivot->price,
 				/*
@@ -542,7 +553,7 @@ class BudgetHelper {
 				*/
 				'cost'				=> ComboCostoDeVentaHelper::costo_unitario($sale, $combo->id),
 				'created_at'		=> Carbon::now(),
-			], RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot), 'combo_sale'));
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot), 'combo_sale'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot), 'combo_sale'));
 
 			$articles_array = [];
 
@@ -571,10 +582,10 @@ class BudgetHelper {
 		
 		foreach($budget->services as $service) {
 			
-			$sale->services()->attach($service->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$sale->services()->attach($service->id, DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $service->pivot->amount,
 				'price'	    		=> $service->pivot->price,
-			], RecargosEnPreciosEsquemaHelper::base_del_pivot($service->pivot), 'sale_service'));
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($service->pivot), 'sale_service'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($service->pivot), 'sale_service'));
 
 		}
 	}
@@ -690,19 +701,40 @@ class BudgetHelper {
 			se pasa del margen de 3 de `BudgetController::store()` y el guardado muere con
 			"El total del presupuesto no corresponde con los productos ingresados" (500).
 
-			Los DESCUENTOS si se siguen aplicando: la opcion es solo de recargos, el precio del
-			pivot no los trae adentro.
+			Los DESCUENTOS se siguen aplicando con ESTA opcion: el precio del pivot no los trae adentro
+			por ella. Solo dejan de aplicarse cuando su propia opcion hermana, de descuentos
+			(`aplicar_descuentos_directo_a_items`), esta activa: es la guarda `$aplicar_discounts` de
+			mas abajo. Cada opcion gobierna SU ajuste.
 
 			Misma guarda, mismo motivo y mismo estilo que `SaleHelper::getTotalSale()`, que es
 			donde este comportamiento ya estaba resuelto del lado de las ventas.
 		*/
 		$aplicar_surchages = !$budget->aplicar_recargos_directo_a_items;
 
+		/*
+			🔴 Y LA GUARDA GEMELA PARA LOS DESCUENTOS (mision descuentos-aplicar-al-precio-del-articulo,
+			8/10/2026): con `aplicar_descuentos_directo_a_items` el precio que viaja en el pivot YA TIENE
+			EL DESCUENTO ADENTRO, y el `total` que manda la SPA no lo vuelve a restar. Si aca los cuatro
+			`foreach ($budget->discounts ...)` corren igual, el descuento se resta DOS VECES, la
+			diferencia contra `$budget->total` se pasa del margen de 3 de `BudgetController::store()` y
+			el guardado muere con "El total del presupuesto no corresponde con los productos
+			ingresados" (500) —o, peor, en una edicion, se guarda un presupuesto que al confirmarse
+			nace con el descuento restado dos veces—.
+
+			Envuelve a LOS CUATRO buckets (articulos, promociones, combos y servicios), como la de
+			recargos. En los servicios, el descuento solo viaja adentro con `discounts_in_services`; sin
+			esa opcion no esta adentro NI se resta al pie, que es lo que ya hacia el `if` de servicios.
+			No "simplificar" sacando un bucket de esta guarda.
+		*/
+		$aplicar_discounts = !$budget->aplicar_descuentos_directo_a_items;
+
 		foreach ($budget->articles as $article) {
 			$total_article = Self::totalArticle($article);
 
-			foreach ($budget->discounts as $discount) {
-				$total_article -= $discount->pivot->percentage * $total_article / 100;
+			if ($aplicar_discounts) {
+				foreach ($budget->discounts as $discount) {
+					$total_article -= $discount->pivot->percentage * $total_article / 100;
+				}
 			}
 			if ($aplicar_surchages) {
 				foreach ($budget->surchages as $surchage) {
@@ -716,8 +748,10 @@ class BudgetHelper {
 		foreach ($budget->promocion_vinotecas as $promo) {
 			$total_article = Self::totalArticle($promo);
 
-			foreach ($budget->discounts as $discount) {
-				$total_article -= $discount->pivot->percentage * $total_article / 100;
+			if ($aplicar_discounts) {
+				foreach ($budget->discounts as $discount) {
+					$total_article -= $discount->pivot->percentage * $total_article / 100;
+				}
 			}
 			if ($aplicar_surchages) {
 				foreach ($budget->surchages as $surchage) {
@@ -751,8 +785,10 @@ class BudgetHelper {
 		foreach (ComboEsquemaHelper::combos_del_presupuesto($budget) as $combo) {
 			$total_combo = Self::totalArticle($combo);
 
-			foreach ($budget->discounts as $discount) {
-				$total_combo -= $discount->pivot->percentage * $total_combo / 100;
+			if ($aplicar_discounts) {
+				foreach ($budget->discounts as $discount) {
+					$total_combo -= $discount->pivot->percentage * $total_combo / 100;
+				}
 			}
 			if ($aplicar_surchages) {
 				foreach ($budget->surchages as $surchage) {
@@ -766,7 +802,7 @@ class BudgetHelper {
 		foreach ($budget->services as $service) {
 			$total_service = Self::totalArticle($service);
 
-			if ($budget->discounts_in_services) {
+			if ($budget->discounts_in_services && $aplicar_discounts) {
 				foreach ($budget->discounts as $discount) {
 					$total_service -= $discount->pivot->percentage * $total_service / 100;
 				}
@@ -890,7 +926,7 @@ class BudgetHelper {
 				$niveles_de_la_base = [$article];
 			}
 
-			$base = Self::base_para_renglon($niveles_de_la_base, $id, $price, $bases_guardadas);
+			$bases = Self::bases_para_renglon($niveles_de_la_base, $id, $price, $bases_guardadas);
 			
 			$cost = SaleHelper::getCost($budget, $article);
 
@@ -958,7 +994,7 @@ class BudgetHelper {
 			 * La variante entra por su guarda de esquema: sin las columnas (ventana del deploy) el
 			 * pivot queda exactamente como antes.
 			 */
-			$budget->articles()->attach($article['id'], VarianteEnPresupuestoEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$budget->articles()->attach($article['id'], VarianteEnPresupuestoEsquemaHelper::agregar_al_pivot(DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
 									'cost' 		=> $cost,
@@ -966,7 +1002,7 @@ class BudgetHelper {
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
 									'name' 		=> $pivot_name,
-								], $base, 'article_budget'), $variante['article_variant_id'], $variante['variant_description']));
+								], $bases['recargos'], 'article_budget'), $bases['descuentos'], 'article_budget'), $variante['article_variant_id'], $variante['variant_description']));
 		}
 	}
 
@@ -1256,8 +1292,10 @@ class BudgetHelper {
 		foreach ($renglones as $renglon) {
 
 			$snapshot[$renglon->id][] = [
-				'price'	=> $renglon->pivot->price,
-				'base'	=> RecargosEnPreciosEsquemaHelper::base_del_pivot($renglon->pivot),
+				'price'				=> $renglon->pivot->price,
+				'base'				=> RecargosEnPreciosEsquemaHelper::base_del_pivot($renglon->pivot),
+				// La base de DESCUENTOS (el precio original) viaja en la misma foto: se preserva con la misma regla.
+				'base_descuentos'	=> DescuentosEnPreciosEsquemaHelper::base_del_pivot($renglon->pivot),
 			];
 		}
 
@@ -1301,13 +1339,90 @@ class BudgetHelper {
 	 */
 	static function base_para_renglon($niveles, $id, $price, &$snapshot) {
 
+		// Solo la base de recargos. Los `attach*` de este archivo usan `bases_para_renglon()`, que resuelve las dos.
+		$bases = Self::bases_para_renglon($niveles, $id, $price, $snapshot);
+
+		return $bases['recargos'];
+	}
+
+	/**
+	 * Las DOS bases con las que se re-adjunta un renglon del presupuesto: la de recargos
+	 * (`price_sin_recargos_de_venta`) y la de descuentos (`price_sin_descuentos_de_venta`, el
+	 * precio original; mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026).
+	 *
+	 * Cada base sigue LA REGLA DE `base_para_renglon()` (clave ausente + mismo precio = se preserva
+	 * la guardada; precio cambiado = NULL; clave presente manda lo que vino, null incluido) y se
+	 * resuelve APARTE de la otra: son dos claves del request (`price_vender_sin_recargos` y
+	 * `price_vender_sin_descuentos`) y un emisor puede conocer una y no la otra. Una SPA anterior a
+	 * esta mision, por ejemplo, manda la de recargos y NO la de descuentos: la de recargos sale de lo
+	 * que mando y la de descuentos se preserva, igual que si el form generico no mandara ninguna.
+	 *
+	 * 🔴 Y POR ESO LA SPA TIENE QUE MANDAR `price_vender_sin_descuentos` SIEMPRE, en null cuando el
+	 * renglon no lleva el descuento adentro (como hace con `price_vender_sin_recargos`). Una clave
+	 * omitida se lee como "este emisor no sabe de descuentos" y preserva la base guardada si el precio
+	 * no cambio; si el vendedor apago la opcion y el precio justo coincide, quedaria una base colgada
+	 * en un renglon que ya no tiene el descuento adentro.
+	 *
+	 * El renglon del snapshot se consume UNA sola vez aunque se le pidan las dos bases: dos renglones
+	 * del mismo id y el mismo precio no pueden llevarse los dos la misma foto. Se consume solo si
+	 * alguna de las dos claves falta; si viajaron las dos no hay nada que preservar y la foto queda
+	 * para otro renglon.
+	 *
+	 * @param  array   $niveles   Arrays del renglon donde buscar las claves, en orden de prioridad.
+	 * @param  int     $id        Id del articulo / servicio / promo / combo.
+	 * @param  mixed   $price     El precio con el que se va a re-adjuntar.
+	 * @param  array   $snapshot  De `snapshot_de_bases()`, por referencia.
+	 * @return array{recargos: float|null, descuentos: float|null}
+	 */
+	static function bases_para_renglon($niveles, $id, $price, &$snapshot) {
+
+		$recargos = null;
+		$descuentos = null;
+		$trae_recargos = false;
+		$trae_descuentos = false;
+
 		foreach ($niveles as $nivel) {
 
-			if (RecargosEnPreciosEsquemaHelper::tiene_clave($nivel)) {
+			if (!$trae_recargos && RecargosEnPreciosEsquemaHelper::tiene_clave($nivel)) {
 
-				return RecargosEnPreciosEsquemaHelper::base_del_item($nivel);
+				$recargos = RecargosEnPreciosEsquemaHelper::base_del_item($nivel);
+				$trae_recargos = true;
+			}
+
+			if (!$trae_descuentos && DescuentosEnPreciosEsquemaHelper::tiene_clave($nivel)) {
+
+				$descuentos = DescuentosEnPreciosEsquemaHelper::base_del_item($nivel);
+				$trae_descuentos = true;
 			}
 		}
+
+		if ($trae_recargos && $trae_descuentos) {
+
+			return ['recargos' => $recargos, 'descuentos' => $descuentos];
+		}
+
+		$guardado = Self::tomar_del_snapshot($id, $price, $snapshot);
+
+		if (!$trae_recargos) {
+			$recargos = is_null($guardado) ? null : $guardado['base'];
+		}
+
+		if (!$trae_descuentos) {
+			$descuentos = is_null($guardado) ? null : $guardado['base_descuentos'];
+		}
+
+		return ['recargos' => $recargos, 'descuentos' => $descuentos];
+	}
+
+	/**
+	 * Saca del snapshot el renglon guardado con ese id y ese precio, o null si no hay ninguno.
+	 *
+	 * @param  int    $id
+	 * @param  mixed  $price
+	 * @param  array  $snapshot  De `snapshot_de_bases()`, por referencia.
+	 * @return array|null  `['price' => ..., 'base' => ..., 'base_descuentos' => ...]`
+	 */
+	static function tomar_del_snapshot($id, $price, &$snapshot) {
 
 		if (!isset($snapshot[$id])) {
 			return null;
@@ -1323,7 +1438,7 @@ class BudgetHelper {
 
 				array_splice($snapshot[$id], $indice, 1);
 
-				return $guardado['base'];
+				return $guardado;
 			}
 		}
 
@@ -1369,12 +1484,12 @@ class BudgetHelper {
 			$amount = $service['pivot']['amount'];
 			$price = $service['pivot']['price'];
 
-			$base = Self::base_para_renglon([$service['pivot'], $service], $id, $price, $bases_guardadas);
+			$bases = Self::bases_para_renglon([$service['pivot'], $service], $id, $price, $bases_guardadas);
 
-			$budget->services()->attach($service['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$budget->services()->attach($service['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
-								], $base, 'budget_service'));
+								], $bases['recargos'], 'budget_service'), $bases['descuentos'], 'budget_service'));
 		}
 	}
 
@@ -1389,12 +1504,12 @@ class BudgetHelper {
 			$amount = $service['pivot']['amount'];
 			$price = $service['pivot']['price'];
 
-			$base = Self::base_para_renglon([$service['pivot'], $service], $id, $price, $bases_guardadas);
+			$bases = Self::bases_para_renglon([$service['pivot'], $service], $id, $price, $bases_guardadas);
 
-			$budget->promocion_vinotecas()->attach($service['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$budget->promocion_vinotecas()->attach($service['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
-								], $base, 'budget_promocion_vinoteca'));
+								], $bases['recargos'], 'budget_promocion_vinoteca'), $bases['descuentos'], 'budget_promocion_vinoteca'));
 		}
 	}
 
@@ -1454,12 +1569,12 @@ class BudgetHelper {
 			$amount = $combo['pivot']['amount'];
 			$price = $combo['pivot']['price'];
 
-			$base = Self::base_para_renglon([$combo['pivot'], $combo], (int) $combo['id'], $price, $bases_guardadas);
+			$bases = Self::bases_para_renglon([$combo['pivot'], $combo], (int) $combo['id'], $price, $bases_guardadas);
 
-			$budget->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$budget->combos()->attach($combo['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
-								], $base, 'budget_combo'));
+								], $bases['recargos'], 'budget_combo'), $bases['descuentos'], 'budget_combo'));
 		}
 	}
 

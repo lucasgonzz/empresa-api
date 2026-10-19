@@ -78,7 +78,7 @@ class Venta_por_asistente_Test extends EmpresaTestCase
         'cuota_descuento', 'cuota_recargo', 'monto_credito_real', 'caja_id', 'moneda_id', 'valor_dolar',
         'afip_tipo_comprobante_id', 'descuento', 'forzar_total_monto', 'puntos_canjeados',
         'descuento_puntos', 'fecha_entrega', 'incoterms', 'observations_ocultas',
-        'aplicar_recargos_directo_a_items', 'sale_status_id', 'discount_stock', 'iva_aplicado',
+        'aplicar_recargos_directo_a_items', 'aplicar_descuentos_directo_a_items', 'sale_status_id', 'discount_stock', 'iva_aplicado',
         'price_description', 'send_mail', 'dias_alerta_venta_no_cobrada_personalizado', 'log',
     ];
 

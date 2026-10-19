@@ -356,6 +356,10 @@ class PropuestaPresupuestoIaHelper
      *     pase (decisión de Lucas del 18/9/2026: un presupuesto confirmado va siempre a la cuenta).
      *   - `aplicar_recargos_directo_a_items` en 0: sin recargos no hay nada que aplicar, y con el
      *     flag prendido `getTotal()` dejaría de sumarlos.
+     *   - `aplicar_descuentos_directo_a_items` en 0 (misión descuentos-aplicar-al-precio-del-articulo,
+     *     8/10/2026): el asistente SÍ puede agregar un descuento de venta, pero lo arma al pie —los
+     *     renglones van con el precio de lista—, y con el flag prendido `getTotal()` dejaría de
+     *     restarlo y el total del presupuesto no cerraría.
      *
      * Los artículos van PLANOS (sin `pivot`), que es la forma del alta: con `pivot` es la forma del
      * update, y `attachArticles()` lee una u otra según la clave (`:643`).
@@ -409,6 +413,7 @@ class PropuestaPresupuestoIaHelper
             'surchages_in_services'            => 0,
             'discounts_in_services'            => 0,
             'aplicar_recargos_directo_a_items' => 0,
+            'aplicar_descuentos_directo_a_items' => 0,
             'forzar_total_monto'               => null,
             'valor_dolar'                      => null,
             'omitir_en_cuenta_corriente'       => 0,
