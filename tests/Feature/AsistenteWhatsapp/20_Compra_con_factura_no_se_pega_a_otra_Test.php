@@ -942,6 +942,36 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertSame('Se crea una compra nueva', $this->que_se_hace($correccion['tarjeta_id']));
     }
 
+    /**
+     * Al confirmar, «de hoy» es el día en que se creó la TARJETA, no el del sí: tarjeta a las 23:59
+     * con la compra vacía que el dueño armó ese día, sí a las 00:01 → la factura va a esa compra (antes
+     * iba a una compra nueva y dejaba sin usar la que el dueño había armado para esa factura). Se
+     * simula moviendo la compra y la tarjeta a ayer a la noche, sin depender de la hora del test.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_revalidacion_compara_contra_el_dia_de_la_tarjeta()
+    {
+        $de_anoche = $this->compra(48);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $respuesta = $this->proponer($conversation, $generandose);
+
+        $this->assertSame('Se usa la compra N° 48, que está vacía', $this->que_se_hace($respuesta['tarjeta_id']));
+
+        DB::table('provider_orders')->where('id', $de_anoche->id)->update(['created_at' => Carbon::yesterday()->setTime(23, 50)]);
+        DB::table('ai_message_actions')->where('id', $respuesta['tarjeta_id'])->update(['created_at' => Carbon::yesterday()->setTime(23, 59)]);
+
+        $resultado = $this->confirmar($conversation, $generandose, $respuesta['tarjeta_id']);
+
+        $this->assertTrue($resultado['ok'], json_encode($resultado));
+        $this->assertSame(1, $this->compras_del_proveedor(), 'La factura va a la compra de anoche, no a una nueva.');
+        $this->assertSame(1, ProviderOrderScan::where('provider_order_id', $de_anoche->id)->count());
+        $this->assertStringContainsString('Adjunté la factura a la Compra N° 48', $resultado['resultado']);
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================

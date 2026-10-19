@@ -912,7 +912,13 @@ class PropuestaCompraConFacturaIaHelper
             throw new AccionIaException(422, 'Las fotos de esa factura ya se usaron en otra compra. Mandámelas de nuevo.');
         }
 
-        $destino = self::orden_para_la_factura($contexto, $proveedor, $datos);
+        /*
+         * El día contra el que se revalida la compra vacía prometida es el de la TARJETA (ver el ⚠️ de
+         * orden_para_la_factura()). Sin fecha guardada, hoy.
+         */
+        $dia_de_la_tarjeta = is_null($accion->created_at) ? Carbon::today() : Carbon::parse($accion->created_at)->startOfDay();
+
+        $destino = self::orden_para_la_factura($contexto, $proveedor, $datos, $dia_de_la_tarjeta);
 
         $orden = $destino['orden'];
 
@@ -1047,13 +1053,20 @@ class PropuestaCompraConFacturaIaHelper
      * (es_reusable_sin_nombrarla(), misión asistente-arreglos-segunda-prueba, 19/10/2026). Entre la
      * tarjeta y el sí pueden pasar horas: si la compra ganó artículos, un escaneo (en cualquier
      * estado: otra factura cargada desde la pantalla u otra tarjeta del asistente) o una factura a
-     * mano, o si ya no es de hoy, la factura va a una compra NUEVA. Hasta esta misión solo se miraba si
-     * había ganado artículos, y un escaneo en curso cortaba con un 422 que, después de esperar, volvía
-     * a caer en la misma compra: el hueco por el que la factura de hoy terminó en la Compra 13.
+     * mano, o si no es del día de la tarjeta, la factura va a una compra NUEVA. Hasta esta misión solo
+     * se miraba si había ganado artículos, y un escaneo en curso cortaba con un 422 que, después de
+     * esperar, volvía a caer en la misma compra: el hueco por el que la factura de hoy terminó en la
+     * Compra 13.
+     *
+     * ⚠️ "DEL DÍA" ES EL DÍA EN QUE SE CREÓ LA TARJETA, NO EL DEL SÍ (revisión independiente,
+     * 19/10/2026): tarjeta a las 23:59 con la compra vacía que el dueño armó ese día y sí a las 00:01
+     * tiene que ir a esa compra; comparando contra "hoy" iba a una nueva y dejaba sin usar la que el
+     * dueño había armado para esa factura. Por eso `$desde`.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\Provider  $proveedor
      * @param  array  $datos
+     * @param  \Carbon\Carbon|null  $desde  El comienzo del día en que se creó la tarjeta (null = hoy).
      * @return array  ['orden' => \App\Models\ProviderOrder, 'adjuntada' => bool, 'descartada_num' => int|null]
      *                — `adjuntada` es true si la factura fue a una compra que ya existía (indicada o
      *                vacía reusada); `descartada_num` es el N° de la compra que la tarjeta prometió
@@ -1062,7 +1075,7 @@ class PropuestaCompraConFacturaIaHelper
      *
      * @throws AccionIaException
      */
-    protected static function orden_para_la_factura(ContextoDeCargaIa $contexto, Provider $proveedor, array $datos)
+    protected static function orden_para_la_factura(ContextoDeCargaIa $contexto, Provider $proveedor, array $datos, $desde = null)
     {
         $a_reusar = isset($datos['reusar_provider_order']) ? (int) $datos['reusar_provider_order'] : 0;
 
@@ -1112,7 +1125,7 @@ class PropuestaCompraConFacturaIaHelper
              * "la compra de esta factura": se crea una nueva en vez de mezclarlas. La tarjeta decía
              * otra cosa, pero el resultado se lo cuenta al dueño con el número real y el motivo.
              */
-            if (!is_null($orden) && !self::es_reusable_sin_nombrarla($orden, $proveedor)) {
+            if (!is_null($orden) && !self::es_reusable_sin_nombrarla($orden, $proveedor, $desde)) {
 
                 $descartada_num = (int) $orden->num;
 
@@ -1775,22 +1788,24 @@ class PropuestaCompraConFacturaIaHelper
      *      factura, aunque nadie la escaneó (ver tiene_factura_cargada()).
      *   5. CREADA HOY (huso de la app, Carbon::today()): la compra que el dueño acaba de armar en la
      *      pantalla para esta factura. Una de otro día no se toma en silencio: se le pregunta
-     *      (compra_vacia_de_dias_atras()).
+     *      (compra_vacia_de_dias_atras()). Al CONFIRMAR, "hoy" es el día en que se creó la tarjeta
+     *      (`$desde`, ver orden_para_la_factura()).
      *
      * El dueño (`user_id`) no se mira acá: las dos consultas que traen la compra ya filtran por él.
      *
      * @param  \App\Models\ProviderOrder  $orden
      * @param  \App\Models\Provider  $proveedor  El proveedor de la factura.
+     * @param  \Carbon\Carbon|null  $desde  Desde cuándo cuenta como "del día" (null = hoy a las 00:00).
      * @return bool
      */
-    protected static function es_reusable_sin_nombrarla(ProviderOrder $orden, Provider $proveedor)
+    protected static function es_reusable_sin_nombrarla(ProviderOrder $orden, Provider $proveedor, $desde = null)
     {
         if ((int) $orden->provider_id !== (int) $proveedor->id) {
 
             return false;
         }
 
-        return self::es_de_hoy($orden) && self::esta_limpia($orden);
+        return self::es_de_hoy($orden, $desde) && self::esta_limpia($orden);
     }
 
     /**
@@ -1811,19 +1826,23 @@ class PropuestaCompraConFacturaIaHelper
     /**
      * true si la compra se creó hoy, en el huso de la app (config app.timezone, el mismo con el que
      * se guardó `created_at`). Una compra sin fecha no cuenta como de hoy: no hay cómo saber que es
-     * la de esta factura.
+     * la de esta factura. Con `$desde` (el comienzo del día de la tarjeta, al confirmar), "hoy" es
+     * ese día en adelante.
      *
      * @param  \App\Models\ProviderOrder  $orden
+     * @param  \Carbon\Carbon|null  $desde
      * @return bool
      */
-    protected static function es_de_hoy(ProviderOrder $orden)
+    protected static function es_de_hoy(ProviderOrder $orden, $desde = null)
     {
         if (is_null($orden->created_at)) {
 
             return false;
         }
 
-        return Carbon::parse($orden->created_at)->gte(Carbon::today());
+        $desde = $desde instanceof Carbon ? $desde : Carbon::today();
+
+        return Carbon::parse($orden->created_at)->gte($desde);
     }
 
     /**
