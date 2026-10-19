@@ -37,7 +37,9 @@ use Illuminate\Support\Facades\Log;
  * `run()` empieza llamando a `BorradoTotalDeBaseHelper`, que se niega —con una
  * BaseConDatosException y sin tocar nada— si la base ya tiene datos de negocio, salvo que el
  * payload traiga `forzar_borrado_total` + `confirmar_base_de_datos` (el nombre exacto de la
- * base). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
+ * base) Y quien llama haya verificado la clave de admin de la instancia y la pase como segundo
+ * argumento (misión cerrar-forzado-user-setup, 10/10/2026: el nombre de la base se adivina, no es
+ * una credencial). Antes no había nada: el 5/10/2026 un test de admin-api le pegó por error a la
  * producción de Panchito y este método le vació la base entera (102.754 ventas, 6.952
  * artículos) porque la ruta es pública y `migrate:fresh` no pregunta. La guarda está ACÁ y no
  * en los controladores a propósito; el porqué completo está en BorradoTotalDeBaseHelper.
@@ -66,21 +68,30 @@ class UserSetupHelper
      *                                   business_type (required),
      *                                   use_deposits, use_price_lists, iva_included,
      *                                   ask_amount_in_vender, redondear_centenas_en_vender,
+     *                                   redondear_centenas_para_arriba (opcional),
      *                                   omitir_cuentas_corrientes, ventas_con_fecha_de_entrega,
      *                                   cajas, usar_codigos_de_barra, codigos_de_barra_por_defecto,
      *                                   consultora_de_precios, imagenes, produccion,
      *                                   address_1..3, price_type_1..3,
      *                                   serper_api_key (opcional, misión serper-en-user-setup),
      *                                   forzar_borrado_total + confirmar_base_de_datos (opcionales: solo
-     *                                   para re-correr el setup sobre una base que YA tiene datos, ver
+     *                                   para re-correr el setup sobre una base que YA tiene datos, y
+     *                                   solo valen con $con_clave_de_admin === true; ver
      *                                   BorradoTotalDeBaseHelper)
+     *
+     * @param bool $con_clave_de_admin Si la puerta que llama YA verificó la clave de admin de la
+     *                                 instancia (ClaveDeAdminEnSetup::trae_la_clave_de_admin()). Solo
+     *                                 con `true` el borrado total que pide el payload se acepta. Por
+     *                                 defecto false: una puerta nueva que llame run($request->all())
+     *                                 no puede forzar; para eso tiene que verificar la clave y pasarla
+     *                                 a propósito.
      *
      * @return User Usuario creado
      *
-     * @throws BaseConDatosException Si la base ya tiene datos de negocio y el payload no autoriza el
-     *                               borrado total. No se tocó nada.
+     * @throws BaseConDatosException Si la base ya tiene datos de negocio y no se autorizó el borrado
+     *                               total (payload + clave de admin). No se tocó nada.
      */
-    public static function run(array $data)
+    public static function run(array $data, $con_clave_de_admin = false)
     {
         /*
             🔴 PRIMERA SENTENCIA, ANTES DE CUALQUIER OTRA COSA y antes del `migrate:fresh` de abajo
@@ -92,8 +103,11 @@ class UserSetupHelper
             admin-api le dejó en cero la base de Panchito (102.754 ventas) justamente porque acá no
             se miraba nada. Si te tienta sacarla "porque el controlador ya valida", no: el
             controlador no ve lo que mañana llame a run().
+
+            `$con_clave_de_admin` pasa tal cual: la guarda es la que decide, y solo un `true` estricto
+            (la clave ya verificada por la puerta) habilita el borrado total que pida el payload.
         */
-        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data);
+        BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion($data, $con_clave_de_admin);
 
         // `migrate:fresh` limpia la base antes de cualquier inserción
         Artisan::call('migrate:fresh', ['--force' => true]);
@@ -248,6 +262,8 @@ class UserSetupHelper
             'iva_included'                  => !empty($data['iva_included']) ? 1 : 0,
             'ask_amount_in_vender'          => !empty($data['ask_amount_in_vender']) ? 1 : 0,
             'redondear_centenas_en_vender'  => !empty($data['redondear_centenas_en_vender']) ? 1 : 0,
+            // Sentido del redondeo por centenas (ceil). Opcional: el admin hoy no lo manda y queda en 0.
+            'redondear_centenas_para_arriba' => !empty($data['redondear_centenas_para_arriba']) ? 1 : 0,
             // omitir_cuentas_corrientes llega como booleano directo (al revés del demo)
             'siempre_omitir_en_cuenta_corriente' => !empty($data['omitir_cuentas_corrientes']) ? 1 : 0,
             // Si trabaja con costos en dolares, define si el precio final de esos articulos queda cotizado a pesos (1) o en dolares (0).
@@ -447,6 +463,13 @@ class UserSetupHelper
             'PdfColumnSinPreciosSeeder',
             'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileDocumentosSeeder',
+            /*
+                "Ticket remito" y "Ticket factura" de comandera (mision diseno-ticket-comandera,
+                9/10/2026). Itera los duenios como el de documentos de arriba y va despues de
+                PdfColumnProfileSeeder (asegura solo los rollos y el catalogo de columnas). Nacen sin
+                diseño: imprimen el Ticket 2.0 de siempre.
+            */
+            'PdfTicketComanderaSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 
@@ -568,7 +591,19 @@ class UserSetupHelper
             'online_template_id'        => self::online_template_id_comerciocity(),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
-            'default_article_image_url' => 'http://empresa.local:8000/storage/169705209718205.jpg',
+            // 🔴 NO VOLVER A PONER UNA URL FIJA ACA. Hasta el 16/10/2026 esta linea escribia
+            // `http://empresa.local:8000/storage/169705209718205.jpg`, la imagen de la maquina de
+            // desarrollo de Lucas, en CADA comercio nuevo. `tienda-spa` usa este valor como foto de
+            // todo articulo sin imagen, asi que la tienda de Masquito (cliente 19) mostraba iconos
+            // rotos en el buscador, "Imagen no encontrada" en las tarjetas y contenido mixto (http
+            // dentro de https: el navegador le sacaba el candado). Nace en NULL a proposito: es un
+            // estado que la tienda ya soporta (`articleImage()` devuelve null, `Tarjeta.vue` la
+            // documenta como opcional, `SeoContexto` y `Mail/Advise` lo tratan) y el dueño carga la
+            // suya despues desde la configuracion de la tienda. Los comercios que ya nacieron con la
+            // URL de desarrollo se limpian con `tienda:limpiar-imagen-por-defecto-de-desarrollo`.
+            // El test `Tienda/ImagenPorDefectoDeDesarrolloTest` falla si cualquier literal de este
+            // archivo vuelve a nombrar un host de desarrollo.
+            'default_article_image_url' => null,
             'pausar_tienda_online'      => 0,
             // El gris que apoya las tarjetas blancas de la ficha, como hace Mercado Libre
             // (pedido de Lucas, 17/9/2026). Va aca ademas de en la migracion que pinto a los

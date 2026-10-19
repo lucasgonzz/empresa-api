@@ -22,12 +22,17 @@ class EmployeeSeeder extends Seeder
         }
     }
 
+    /*
+        Los empleados sembrados van con @example.com (dominio reservado, RFC 2606), uno por empleado:
+        hasta el 13/10/2026 llevaban dos casillas de gmail que no son de Lucas.
+        Ver el comentario de BuyerSeeder::run().
+    */
     function truvari() {
         $models = [
             [
                 'name'              => 'Vendedor',
                 'doc_number'        => '1',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'vendedor@example.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -41,7 +46,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Repartidor',
                 'doc_number'        => '2',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'repartidor@example.com',
                 'password'          => bcrypt('2'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -58,7 +63,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Vendedor y Repartidor',
                 'doc_number'        => '3',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'vendedor.y.repartidor@example.com',
                 'password'          => bcrypt('3'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -76,7 +81,7 @@ class EmployeeSeeder extends Seeder
             [
                 'name'              => 'Lucas',
                 'doc_number'        => '4',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'lucas@example.com',
                 'password'          => bcrypt('4'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -95,13 +100,31 @@ class EmployeeSeeder extends Seeder
         $this->crear_empleados($models);
     }
 
+    /*
+        Misión permisos-navegacion-empleados (9/10/2026): los cuatro llevan `comprobantes.index`
+        porque todos tienen `sale.index` o `client.index`, que es el criterio de Lucas para
+        heredarlo. Este seeder lo corre `DemoSetupHelper` y la demo no corre el seeder suelto
+        `PermissionComprobantesIndexSeeder`: sin esto los empleados de las demos pierden Comprobantes.
+
+        Misión permiso-crear-movimiento-deposito (14/10/2026): los cuatro llevan también
+        `deposit_movement.store` porque todos tienen `article.index`, que es el criterio de Lucas
+        para heredarlo. Misma razón: la demo no corre el seeder suelto
+        `PermissionCrearMovimientoDepositoSeeder`, y sin esto una demo nueva no podría crear
+        movimientos de depósito con ninguno de los empleados de ejemplo.
+
+        Misión seeder-dias-anteriores-de-ventas (17/10/2026): los tres que tienen `sale.index`
+        (Miguel, Franco y Santiago) llevan también `sale.index.previus_days`, que es el criterio de
+        Lucas para heredarlo. Misma razón: la demo no corre el seeder suelto
+        `PermissionVentasDiasAnterioresSeeder`, y sin esto no verían otros días en Ventas (desde el
+        16/10/2026 el servidor lo exige). Patricio es administrador y no tiene `sale.index`.
+    */
     function empleados() {
 
         $models = [
             [
                 'name'              => 'Patricio',
                 'doc_number'        => '1',
-                'email'             => 'lucasgonzalez550022@gmail.com',
+                'email'             => 'patricio@example.com',
                 'password'          => bcrypt('1'),
                 'visible_password'  => '1',
                 'owner_id'          => 500,
@@ -115,13 +138,15 @@ class EmployeeSeeder extends Seeder
                     'client.index',
                     'client.update',
                     'sale.store',
+                    'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
             [
                 'name'              => 'Miguel',
                 'address_id'        => 2,
                 'doc_number'        => '2',
-                'email'             => 'lucasgonzalez550023@gmail.com',
+                'email'             => 'miguel@example.com',
                 'password'          => bcrypt('2'),
                 'visible_password'  => '2',
                 'image_url'         => null,
@@ -133,13 +158,16 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'sale.index.previus_days',
+                    'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
             [
                 'name'              => 'Franco',
                 'address_id'        => 3,
                 'doc_number'        => '3',
-                'email'             => 'lucasgonzalez550023@gmail.com',
+                'email'             => 'franco@example.com',
                 'password'          => bcrypt('3'),
                 'visible_password'  => '3',
                 'image_url'         => null,
@@ -151,13 +179,16 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'sale.index.previus_days',
+                    'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
             [
                 'name'              => 'Santiago',
                 'address_id'        => 4,
                 'doc_number'        => '4',
-                'email'             => 'lucasgonzalez550023@gmail.com',
+                'email'             => 'santiago@example.com',
                 'password'          => bcrypt('4'),
                 'visible_password'  => '4',
                 'image_url'         => null,
@@ -169,6 +200,9 @@ class EmployeeSeeder extends Seeder
                     'sale.index',
                     'sale.store',
                     'sale.update',
+                    'sale.index.previus_days',
+                    'comprobantes.index',
+                    'deposit_movement.store',
                 ],
             ],
         ];

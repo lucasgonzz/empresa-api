@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Models\User;
@@ -215,6 +216,13 @@ class FinalizeArticleImport implements ShouldQueue
         Log::info('Se limpio cache');
 
         self::borrar_archivos_derivados((string) $import_history->excel_url);
+
+        /*
+         * Las decisiones del paso 3 sobre nombres parecidos (misión importacion-relaciones-
+         * parecidas): SOLO el archivo de esta importación, por su id. No entra en el patrón de
+         * arriba a propósito: otra importación de la misma subida puede estar usando el suyo.
+         */
+        EquivalenciasResolver::borrar_archivo_de_decisiones((string) $import_history->excel_url, $import_history->id);
 
         /**
          * Evento de la demo (misión 50). Se emite ACÁ y no en AiExcelImportController, que es

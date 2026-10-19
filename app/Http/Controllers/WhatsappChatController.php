@@ -83,6 +83,42 @@ class WhatsappChatController extends Controller
     }
 
     /**
+     * Un chat del owner autenticado, con la MISMA forma que una fila del índice (`index()`): la
+     * relación `client`, `estado_pendiente` calculado y las columnas del seguimiento del agente
+     * (misión patch-chat-nuevo-en-vivo).
+     *
+     * Existe para el cliente que escribe por PRIMERA VEZ: el broadcast `WhatsappChatUpdated` es
+     * liviano a propósito (no trae `phone`, `display_name` ni `client`), así que la SPA no puede armar
+     * la fila con lo que le llega y le pide el chat entero a este endpoint. La alternativa era volver a
+     * pedir `GET whatsapp-chats`, que trae la bandeja completa sin paginar por cada contacto nuevo.
+     *
+     * 404 si el chat no existe o es de otro negocio (mismo criterio que el resto de los endpoints del
+     * chat: `find_owned_chat`).
+     *
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function show($id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        $model = $this->fullModel('WhatsappChat', $chat->id);
+        if (is_null($model)) {
+            // Se borró entre la búsqueda de arriba y esta carga: para quien pide es lo mismo que no existir.
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        // Mismo estado para el tablero y el color de la fila que arma el índice. Es un atributo
+        // dinámico (no una columna): sin esto la fila nueva nacería sin rojo ni amarillo.
+        WhatsappChatHelper::attach_estados_pendientes(collect([$model]));
+
+        return response()->json(['model' => $model], 200);
+    }
+
+    /**
      * Mensajes de un chat del owner autenticado, paginados y ordenados del más nuevo
      * al más viejo (paginación estándar del proyecto: page/per_page).
      *
@@ -379,7 +415,11 @@ class WhatsappChatController extends Controller
         $caption = trim((string) $request->input('caption', ''));
 
         // Ver el docblock: el corte por simulación es lo primero del envío, antes de subir nada.
-        $frenado_por_simulacion = (bool) $chat->last_inbound_simulated;
+        //
+        // En modo demostración (misión whatsapp-envio-simulado-demos) NO hay corte: el envío es
+        // simulado y no sube nada a Kapso, así que el archivo queda enviado aunque el chat tenga
+        // un entrante simulado (el botón «Simular mensaje» queda prendido en las demos).
+        $frenado_por_simulacion = (bool) $chat->last_inbound_simulated && ! $config->esta_en_modo_demostracion();
         $wa_message_id = null;
 
         if (! $frenado_por_simulacion) {
@@ -591,6 +631,33 @@ class WhatsappChatController extends Controller
     }
 
     /**
+     * Da por atendido el pedido o la consulta que el agente dejó marcados en el chat (misión
+     * senal-pedidos-y-consultas-del-agente): es el botón «Ya lo atendí» de la conversación. Sirve para el
+     * caso en que la persona resolvió el tema por otro lado (por teléfono, en el local) y no le va a escribir
+     * nada al cliente por acá; cuando sí le escribe, la marca se apaga sola (ver
+     * `WhatsappChatHelper::store_outbound_message()`).
+     *
+     * Idempotente: si el chat no tenía marca devuelve 200 igual y no emite nada. El broadcast sale solo si
+     * había algo que apagar, para que el resto de los operadores conectados vean el cambio en vivo.
+     *
+     * @param  int  $id
+     * @return JsonResponse
+     */
+    public function resolve_follow_up($id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
+        }
+
+        if ($chat->clear_follow_up()) {
+            WhatsappChatHelper::broadcast_update((int) $chat->user_id, $chat);
+        }
+
+        return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 200);
+    }
+
+    /**
      * Genera una respuesta sugerida con IA para el chat (misma personalidad, mismas reglas
      * fijas y mismo historial que usaría la respuesta automática del webhook) y la PERSISTE
      * como burbuja `a_confirmar` (misión sugerencia-ia-como-borrador, 29/9/2026): el front ya
@@ -668,6 +735,7 @@ class WhatsappChatController extends Controller
                 'error_api'      => 'No se pudo generar la sugerencia: falló la conexión con la IA.',
                 'excepcion'      => 'No se pudo generar la sugerencia: ocurrió un error inesperado.',
                 'solo_foto'      => 'La IA solo generó el envío de una foto de producto, sin texto para sugerir. Usá el clip para mandarla.',
+                'sin_texto'      => 'La IA no generó ningún texto para sugerir. Probá de nuevo.',
             ];
             $motivo = $resultado['motivo'];
             return response()->json([
@@ -686,7 +754,15 @@ class WhatsappChatController extends Controller
         // WhatsappAiAutoSendScheduler::schedule_for_message() después de esto), acá la pidió
         // una persona mirando la pantalla: sale sola cuando ELLA la confirma, nunca por un
         // plazo vencido.
-        $message = WhatsappChatHelper::store_pending_ai_message($chat, $resultado['body']);
+        // Misión senal-pedidos-y-consultas-del-agente: la sugerencia también lleva la marca del modelo. Si la
+        // persona la manda tal cual, la promesa («lo consulto y te confirmo») la hizo el negocio y sigue en
+        // pie, así que el chat queda marcado cuando sale; si la edita, la marca se limpia (ver
+        // `WhatsappChatHelper::update_pending_ai_message`). El marcador en sí nunca está en `body`.
+        $message = WhatsappChatHelper::store_pending_ai_message(
+            $chat,
+            $resultado['body'],
+            WhatsappChatHelper::follow_up_columns($resultado['follow_up'], $resultado['follow_up_note'])
+        );
 
         // `estado_pendiente()` se lee DESPUÉS de crear el mensaje: antes de esta línea el chat
         // todavía no tenía ningún `a_confirmar` (se acaba de descartar el que hubiera), así
@@ -908,7 +984,9 @@ class WhatsappChatController extends Controller
             }
         }
 
-        $actualizado = WhatsappChatHelper::update_pending_ai_message($message, $body);
+        // El empleado que reescribe el texto queda registrado en el mensaje: si lo manda, el seguimiento que el
+        // chat tuviera se da por atendido (ver `WhatsappChatHelper::mark_ai_message_sent()`).
+        $actualizado = WhatsappChatHelper::update_pending_ai_message($message, $body, is_null($body) ? null : $this->userId(false));
 
         if (is_null($actualizado)) {
             // Perdió la carrera contra el chequeo de arriba (por ejemplo, el auto-envío

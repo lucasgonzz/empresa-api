@@ -503,9 +503,18 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
     {
         $nombres = HerramientasDeCarga::nombres();
 
+        /*
+         * Desde la misión asistente-envios-a-clientes (16/10/2026) las cuatro ya no son las últimas:
+         * los tres envíos a clientes se sumaron atrás, por la misma regla del prefijo del caché. Las
+         * cuatro siguen juntas, en su orden, y lo único que va después son esos tres.
+         */
         $this->assertSame(
             ['que_acciones_de_pantalla_hay', 'consultar_por_pantalla', 'proponer_accion_de_pantalla', 'proponer_borrado_por_pantalla'],
-            array_slice($nombres, -4)
+            array_slice($nombres, -7, 4)
+        );
+        $this->assertSame(
+            ['proponer_envio_de_comprobante', 'proponer_recordatorios_de_cobro', 'proponer_promocion_por_whatsapp'],
+            array_slice($nombres, -3)
         );
 
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
@@ -516,7 +525,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
             $definiciones[$definicion['name']] = $definicion;
         }
 
-        foreach (array_slice($nombres, -4) as $nombre) {
+        foreach (array_slice($nombres, -7, 4) as $nombre) {
             $this->assertStringContainsString("case '" . $nombre . "':", $contenido, $nombre);
             $this->assertTrue(HerramientasDeCarga::maneja($nombre), $nombre);
             $this->assertContains($nombre, HerramientasDeCarga::nombres(true), $nombre . ' tiene que estar también en el canal de WhatsApp');

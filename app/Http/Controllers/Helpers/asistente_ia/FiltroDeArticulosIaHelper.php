@@ -402,10 +402,18 @@ class FiltroDeArticulosIaHelper
 
         $modelo = $definicion['modelo'];
 
-        // Los comodines del LIKE se escapan: un nombre con "%" o "_" tiene que buscarse literal.
-        $candidatos = $modelo::where('user_id', $owner_id)
-                                ->where('name', 'LIKE', '%' . addcslashes($nombre, '%_\\') . '%')
-                                ->orderBy('name')
+        /*
+         * Por palabras sueltas, con la frase entera primero (misión asistente-altas-y-conversacion,
+         * 16/10/2026): "ferretería sur" encuentra "Ferretería del Sur". Los comodines los escapa
+         * BusquedaPorPalabrasIaHelper. Lo que encaja solo por palabras se toma sin preguntar únicamente
+         * si es el único y es seguro: una masiva sobre el proveedor equivocado toca cientos de precios.
+         */
+        $query = $modelo::where('user_id', $owner_id);
+
+        BusquedaPorPalabrasIaHelper::filtrar($query, $nombre, ['name']);
+        BusquedaPorPalabrasIaHelper::ordenar_por_frase($query, $nombre, ['name']);
+
+        $candidatos = $query->orderBy('name')
                                 ->limit(20)
                                 ->get();
 
@@ -416,7 +424,15 @@ class FiltroDeArticulosIaHelper
             );
         }
 
-        if (count($candidatos) === 1) {
+        $con_la_frase = BusquedaPorPalabrasIaHelper::por_frase($candidatos, $nombre, ['name']);
+
+        if (count($con_la_frase)) {
+
+            $candidatos = collect($con_la_frase);
+        }
+
+        if (count($candidatos) === 1
+            && (count($con_la_frase) || BusquedaPorPalabrasIaHelper::es_seguro((string) $candidatos[0]->name, $nombre))) {
 
             return $candidatos[0];
         }

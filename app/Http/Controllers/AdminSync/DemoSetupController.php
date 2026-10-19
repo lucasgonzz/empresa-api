@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\AdminSync;
 
+use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
@@ -30,6 +31,16 @@ class DemoSetupController extends Controller
      * `demo_media_urls`) llegan al helper sin necesitar ninguna lista acá. Se dejan
      * nombradas igual porque este docblock es lo único que documenta el contrato del
      * endpoint: las cuatro son opcionales y las persiste DemoSetupHelper::run() al final.
+     *
+     * Credenciales de prueba de las demos (misión credenciales-demo-zipnova-mp, 14/10/2026): cinco
+     * campos opcionales más, planos, que admin-api manda solo si Lucas los cargó en Configuración →
+     * Implementación: `zipnova_api_token` + `zipnova_api_secret` (y `zipnova_account_id`, opcional),
+     * `mercadopago_access_token` + `mercadopago_public_key`. DemoSetupHelper::run() conecta Zipnova
+     * y Mercado Pago de la demo con cada par SOLO si viaja completo, y le gana a la conexión
+     * restaurada y al .env (ZIPNOVA_DEMO_* / MERCADOPAGO_DEMO_*, que quedan de respaldo). Sin esos
+     * campos el comportamiento es el de siempre. Son secretos: este controlador no los guarda ni los
+     * loguea (el 500 pasa por SetupErrorHelper, que los tacha), y el endpoint de clientes reales
+     * (`UserSetupController`) no los lee.
      *
      * El 409 es una respuesta NUEVA de este endpoint (25/8/2026) y es compatible hacia
      * atrás: un admin-api viejo lo lee como `!successful()` y marca el Lead como fallido
@@ -62,6 +73,22 @@ class DemoSetupController extends Controller
 
         try {
             $user = DemoSetupHelper::run($request->all());
+        } catch (BaseConDatosException $e) {
+            /*
+             * La guarda de instancia de DemoSetupHelper::run() (10/10/2026) se negó ANTES del
+             * `migrate:fresh`: esta no es una instancia de demo y su base tiene datos. No se tocó
+             * nada. Mismo cuerpo que el 409 de admin-sync/user-setup, y por los mismos motivos: va
+             * antes del catch (\Throwable) porque un rechazo esperado no es un error de servidor;
+             * no lleva el nombre de la base ni conteos porque esta ruta es pública; y `en_curso:
+             * false` lo distingue del 409 del candado. Un admin-api viejo lo lee como
+             * `!successful()` y marca el lead como fallido con el mensaje.
+             */
+            return response()->json([
+                'error'          => $e->getMessage(),
+                'base_con_datos' => true,
+                'en_curso'       => false,
+                'con_datos'      => $e->con_datos(),
+            ], 409);
         } catch (\Throwable $e) {
             /*
              * 🔴 Sin secretos ANTES de loguear y de responder (misión serper-en-user-setup, revisión

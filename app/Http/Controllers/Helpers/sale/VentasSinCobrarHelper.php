@@ -118,9 +118,16 @@ class VentasSinCobrarHelper {
 	 * @param int|null $employee_id Si viene, recorta a las ventas de ese empleado
 	 *                              (`ver_solo_las_ventas_suyas`). null = sin recorte.
 	 * @param int      $dias        Umbral general de antiguedad, en dias.
+	 * @param bool     $con_umbral  false = sin NINGUN umbral de antiguedad, ni el general ni el
+	 *                              propio de cada venta: TODA la deuda viva. Lo usa el asistente para
+	 *                              la "deuda total" de un cliente (mision asistente-altas-y-conversacion,
+	 *                              16/10/2026): "me deben mas de X hace mas de N dias" compara X contra
+	 *                              todo lo que el cliente debe, y una venta con su propio umbral de
+	 *                              alerta todavia sin cumplir sigue siendo plata que debe. Por defecto
+	 *                              true: los demas llamadores no cambian.
 	 * @return \Illuminate\Database\Eloquent\Builder
 	 */
-	static function query_de_ventas($owner_id, $employee_id, $dias) {
+	static function query_de_ventas($owner_id, $employee_id, $dias, $con_umbral = true) {
 
 		$sales = Sale::where('user_id', $owner_id)
 						->soloVentasReales()
@@ -133,10 +140,14 @@ class VentasSinCobrarHelper {
 						//     });
 						//     // $query->where('saldo', '>', 300);
 						// })
-						->whereRaw(
-							'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
-							[$dias]
-						);
+						;
+
+		if ($con_umbral) {
+			$sales = $sales->whereRaw(
+				'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
+				[$dias]
+			);
+		}
 
 		if (!is_null($employee_id)) {
 			$sales = $sales->where('employee_id', $employee_id);

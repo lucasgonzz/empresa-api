@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
+use App\Http\Controllers\Helpers\providerOrder\TenenciaDeLaCompraHelper;
 use App\Models\ProviderOrderAfipTicket;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
@@ -19,7 +20,31 @@ class ProviderOrderAfipTicketController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * 🔴 Tenencia (misión tenencia-compra-hermanos, 17/10/2026): la factura que llega por id en la
+     * ruta tiene que ser del dueño de la sesión (un empleado cuenta como su dueño). Devuelve la
+     * factura, o null si es de otro comercio, no existe o no es un id: el llamador contesta
+     * `no_encontrada()` SIN tocar nada.
+     *
+     * @param  mixed  $id
+     * @return ProviderOrderAfipTicket|null
+     */
+    protected function factura_del_dueno($id) {
+        return TenenciaDeLaCompraHelper::hijo(ProviderOrderAfipTicket::class, $id, $this->userId());
+    }
+
+    protected function no_encontrada() {
+        return TenenciaDeLaCompraHelper::no_encontrado('La factura');
+    }
+
     public function store(Request $request) {
+
+        // La compra a la que se cuelga tiene que ser del dueño: si no, se le recalculaba el total y
+        // la cuenta del proveedor a otro comercio.
+        if (TenenciaDeLaCompraHelper::compra_ajena_en_cuerpo($request->model_id, $this->userId())) {
+            return TenenciaDeLaCompraHelper::no_encontrado('La compra');
+        }
+
         $issued_at = $request->issued_at;
         if ($issued_at == '') {
             $issued_at = Carbon::now();
@@ -62,11 +87,27 @@ class ProviderOrderAfipTicketController extends Controller
     }
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicket', $id)], 200);
+
+        $model = $this->factura_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrada();
+        }
+
+        return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicket', $model->id)], 200);
     }
 
     public function update(Request $request, $id) {
-        $model = ProviderOrderAfipTicket::find($id);
+        $model = $this->factura_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrada();
+        }
+
+        // Mover la factura a la compra de otro comercio también es escribir sobre esa compra.
+        if (TenenciaDeLaCompraHelper::compra_ajena_en_cuerpo($this->get_model_id($request, 'provider_order_id'), $this->userId())) {
+            return TenenciaDeLaCompraHelper::no_encontrado('La compra');
+        }
 
         /*
          * Las dos cosas que hay que mirar ANTES de pisar nada:
@@ -110,7 +151,11 @@ class ProviderOrderAfipTicketController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderOrderAfipTicket::find($id);
+        $model = $this->factura_del_dueno($id);
+
+        if (is_null($model)) {
+            return $this->no_encontrada();
+        }
 
         /*
          * Se guarda ANTES del delete: el recálculo tiene que correr sobre la compra ya sin esta
@@ -118,7 +163,12 @@ class ProviderOrderAfipTicketController extends Controller
          */
         $provider_order_id = $model->provider_order_id;
 
-        $model->delete();
+        /*
+         * Con sus alícuotas (misión factura-compra-tres-defectos, 9/10/2026): un `$model->delete()`
+         * suelto dejaba el desglose de IVA colgando de una factura que ya no existía. El único
+         * lugar que borra facturas de compra es FacturaDeCompraHelper::borrar_facturas().
+         */
+        FacturaDeCompraHelper::borrar_facturas([$model->id]);
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('provider_order_afip_ticket', $model->id);
 

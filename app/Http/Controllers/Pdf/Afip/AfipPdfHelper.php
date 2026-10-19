@@ -80,7 +80,8 @@ class AfipPdfHelper
 
     /**
      * Campos del emisor que se imprimen con print_label_value_multiline() (soportan
-     * texto largo en varias líneas). El resto usa print_label_value_line() (renglón simple).
+     * texto largo en varias líneas). El resto usa print_label_value_auto(): el renglón simple de
+     * siempre si entra, varias líneas si no (15/10/2026).
      *
      * 'condicion_iva' se agregó acá (Prompt 554) porque valores largos como
      * "Responsable inscripto" desbordaban el ancho de la columna izquierda (calculado en
@@ -163,6 +164,9 @@ class AfipPdfHelper
     const GEOMETRIA_X0 = 5;
     const GEOMETRIA_ANCHO = 200;
     const GEOMETRIA_Y0 = 5;
+
+    /** Margen interno de una celda de FPDF (1 mm con la escala en mm): Cell() escribe el texto ahí adentro. */
+    const MARGEN_DE_CELDA = 1;
 
     /**
      * ¿La instancia declara su propia geometría? (misión diseno-pdf-configurable, 1/10/2026)
@@ -707,10 +711,10 @@ class AfipPdfHelper
     }
 
     /**
-     * Renglón rótulo + valor que en el PDF de siempre es el de print_label_value_line() (un solo
-     * renglón, exactamente como antes) y en un diseño con cajas corta en varias líneas
+     * Renglón rótulo + valor que en un diseño con cajas corta siempre en varias líneas
      * (print_label_value_multiline()): en una hoja angosta (A5) "Condición frente al IVA:
-     * Responsable inscripto" se metía en la columna de al lado.
+     * Responsable inscripto" se metía en la columna de al lado. En el PDF de siempre es el renglón
+     * de siempre cuando entra, y corta solo cuando no (print_label_value_auto()).
      *
      * @param mixed  $pdf
      * @param string $label
@@ -729,7 +733,221 @@ class AfipPdfHelper
             return;
         }
 
-        self::print_label_value_line($pdf, $label, $value, $x, $width, $font_size, $line_height);
+        self::print_label_value_auto($pdf, $label, $value, $x, $width, $font_size, $line_height);
+    }
+
+    /**
+     * Renglón rótulo + valor que corta línea solo cuando no entra en su ancho (pedido de Lucas,
+     * 15/10/2026: en el comprobante de Masquito el mail del emisor se metía en el cuadrante de la
+     * derecha).
+     *
+     * - Si entra, es print_label_value_line() tal cual: el PDF de un negocio con textos que entran
+     *   sale exactamente igual que antes.
+     * - Si no entra, es print_label_value_multiline(): corta en los espacios y una palabra más
+     *   larga que la columna (un mail, una web) va al renglón siguiente y, si tampoco entra, se
+     *   corta por letras. Deja $pdf->y debajo del último renglón, así el bloque que lo contiene
+     *   crece y todo lo que sigue se corre.
+     *
+     * @param mixed  $pdf
+     * @param string $label
+     * @param string $value
+     * @param float  $x
+     * @param float  $width
+     * @param int    $font_size
+     * @param int    $line_height
+     * @return void
+     */
+    protected static function print_label_value_auto($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    {
+        if (self::label_value_fits($pdf, $label, $value, $width, $font_size)) {
+            self::print_label_value_line($pdf, $label, $value, $x, $width, $font_size, $line_height);
+
+            return;
+        }
+
+        self::print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size, $line_height);
+    }
+
+    /**
+     * ¿El rótulo (negrita) y el valor entran en un renglón de $width, como los dibuja
+     * print_label_value_line()? Esa rutina escribe el valor 1 mm (el margen de celda de FPDF)
+     * después del final del rótulo, por eso se suma. Se mide como se imprime (ancho_impreso()).
+     *
+     * @param mixed  $pdf
+     * @param string $label
+     * @param string $value
+     * @param float  $width
+     * @param int    $font_size
+     * @return bool
+     */
+    protected static function label_value_fits($pdf, $label, $value, $width, $font_size = 9): bool
+    {
+        $pdf->SetFont('Arial', 'B', $font_size);
+        /** El rótulo se mide como lo mide print_label_value_line(): ahí empieza el valor. */
+        $label_width = $pdf->GetStringWidth($label);
+
+        $pdf->SetFont('Arial', '', $font_size);
+        $value_width = self::ancho_impreso($pdf, (string) $value);
+
+        return $label_width + $value_width + self::MARGEN_DE_CELDA <= $width;
+    }
+
+    /**
+     * Ancho de un texto tal como sale impreso, con la fuente actual. El Cell() de este FPDF pasa el
+     * texto por utf8_decode() antes de dibujarlo, pero GetStringWidth() mide los bytes UTF-8: una
+     * letra con tilde mediría el doble de lo que ocupa, y un renglón que entra se cortaría de más.
+     *
+     * @param mixed  $pdf
+     * @param string $texto
+     * @return float
+     */
+    protected static function ancho_impreso($pdf, $texto)
+    {
+        return $pdf->GetStringWidth(utf8_decode((string) $texto));
+    }
+
+    /**
+     * Rótulo + valor que no entra en un renglón: el rótulo en negrita con el principio del valor y
+     * el resto en los renglones de abajo, todos dentro de $width. Deja $pdf->y debajo del último.
+     *
+     * Por qué no Write(): Write() corta solo en los espacios, y una palabra sin espacios que no
+     * entra en lo que queda del renglón (un mail) la manda entera abajo, dejando el rótulo solo, y
+     * si tampoco entra ahí la parte por letras donde caiga ("...reparaciones.c" / "om.ar").
+     *
+     * @param mixed  $pdf
+     * @param string $label
+     * @param string $value
+     * @param float  $x
+     * @param float  $width
+     * @param int    $font_size
+     * @param int    $line_height
+     * @return void
+     */
+    protected static function print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    {
+        $pdf->SetFont('Arial', 'B', $font_size);
+        /** El rótulo se mide como lo mide print_label_value_line(): ahí empieza el valor. */
+        $label_width = $pdf->GetStringWidth($label);
+
+        /** Cada Cell() escribe 1 mm adentro de cada borde: el texto tiene el ancho menos esos dos. */
+        $ancho_resto = $width - 2 * self::MARGEN_DE_CELDA;
+        $ancho_primera = $ancho_resto - $label_width;
+
+        /** Una columna en la que ni el rótulo entra: como antes, con Write(). */
+        if ($ancho_primera <= 0) {
+            self::print_label_value_write($pdf, $label, $value, $x, $width, $font_size, $line_height);
+
+            return;
+        }
+
+        $pdf->SetFont('Arial', '', $font_size);
+        $renglones = self::partir_texto($pdf, (string) $value, $ancho_primera, $ancho_resto);
+
+        foreach ($renglones as $indice => $texto) {
+            $pdf->x = $x;
+
+            if ($indice === 0) {
+                $pdf->SetFont('Arial', 'B', $font_size);
+                $pdf->Cell($label_width, $line_height, $label, 0, 0, 'L');
+                $pdf->SetFont('Arial', '', $font_size);
+                $pdf->Cell($width - $label_width, $line_height, $texto, 0, 1, 'L');
+
+                continue;
+            }
+
+            $pdf->Cell($width, $line_height, $texto, 0, 1, 'L');
+        }
+
+        $pdf->x = $x;
+    }
+
+    /**
+     * Parte un texto en renglones con la fuente actual: el primero de $ancho_primera (lo que deja el
+     * rótulo) y el resto de $ancho_resto. Corta en los espacios y también después de una @, un
+     * punto, una barra, un guion, una coma o un punto y coma, que es por donde se lee bien un mail,
+     * una web o un teléfono; pero no si lo que sigue es un dígito, para no partir una fecha
+     * (01/01/2020), un importe ($163.420,40) ni un CUIT. Un pedazo sin ningún corte posible que no
+     * entra en un renglón entero se parte por letras (sin romper una letra con tilde).
+     *
+     * @param mixed  $pdf
+     * @param string $texto
+     * @param float  $ancho_primera
+     * @param float  $ancho_resto
+     * @return array<int, string> Al menos un renglón (vacío si el texto lo es).
+     */
+    protected static function partir_texto($pdf, $texto, $ancho_primera, $ancho_resto): array
+    {
+        /**
+         * Un texto que no es UTF-8 válido hace fallar las expresiones con /u: se corta igual, por
+         * bytes y con lo que Cell() dibujaría de él.
+         */
+        $utf8_valido = preg_match('//u', $texto) === 1;
+
+        $pedazos = $utf8_valido
+            ? preg_split('/(?<=\s|@|_|;)|(?<=[\/\-.,])(?!\d)/u', $texto, -1, PREG_SPLIT_NO_EMPTY)
+            : [$texto];
+
+        $renglones = [];
+        $actual = '';
+        $ancho = $ancho_primera;
+
+        foreach ($pedazos as $pedazo) {
+            if (self::ancho_impreso($pdf, rtrim($actual.$pedazo)) <= $ancho) {
+                $actual .= $pedazo;
+
+                continue;
+            }
+
+            if (trim($actual) !== '') {
+                /** El pedazo no entra: el renglón se cierra y el pedazo arranca el siguiente. */
+                $renglones[] = rtrim($actual);
+                $actual = '';
+                $ancho = $ancho_resto;
+                $pedazo = ltrim($pedazo);
+            } elseif (empty($renglones)) {
+                $primera_letra = $utf8_valido ? mb_substr($pedazo, 0, 1, 'UTF-8') : substr($pedazo, 0, 1);
+
+                if (self::ancho_impreso($pdf, rtrim($pedazo)) <= $ancho_resto
+                    || self::ancho_impreso($pdf, $primera_letra) > $ancho_primera) {
+                    /**
+                     * Al lado del rótulo no entra ni el primer pedazo: si entra en un renglón entero
+                     * va abajo entero (partirlo por letras se lee peor), y si al lado del rótulo no
+                     * entra ni una letra, también va abajo. El rótulo queda solo.
+                     */
+                    $renglones[] = '';
+                    $ancho = $ancho_resto;
+                }
+            }
+
+            /** Un pedazo que no entra ni en un renglón entero: por letras, lo que entre en cada uno. */
+            while (self::ancho_impreso($pdf, rtrim($pedazo)) > $ancho) {
+                $letras = $utf8_valido ? preg_split('//u', $pedazo, -1, PREG_SPLIT_NO_EMPTY) : str_split($pedazo);
+                $prefijo = '';
+
+                foreach ($letras as $letra) {
+                    if (self::ancho_impreso($pdf, $prefijo.$letra) > $ancho) {
+                        break;
+                    }
+
+                    $prefijo .= $letra;
+                }
+
+                /** Ni una letra entra (columna degenerada): va una igual, para que el bucle termine. */
+                if ($prefijo === '') {
+                    $prefijo = $letras[0];
+                }
+
+                $renglones[] = $prefijo;
+                $pedazo = (string) substr($pedazo, strlen($prefijo));
+                $ancho = $ancho_resto;
+            }
+
+            $actual = $pedazo;
+        }
+
+        $renglones[] = rtrim($actual);
+
+        return $renglones;
     }
 
     /**
@@ -749,6 +967,36 @@ class AfipPdfHelper
      * @return void
      */
     protected static function print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    {
+        /**
+         * Lo que entra en un renglón sale exactamente como siempre (Write). Lo que no entra lo corta
+         * print_label_value_wrapped(), que corta un mail o una web después de la @, el punto o la
+         * barra en vez de partirlos por la mitad de una palabra (15/10/2026).
+         */
+        if (!self::label_value_fits($pdf, $label, $value, $width, $font_size)) {
+            self::print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size, $line_height);
+
+            return;
+        }
+
+        self::print_label_value_write($pdf, $label, $value, $x, $width, $font_size, $line_height);
+    }
+
+    /**
+     * Rótulo + valor con Write() y márgenes temporales: lo que hacía print_label_value_multiline()
+     * hasta el 15/10/2026. Queda para el renglón que entra (sale igual que siempre) y para el caso
+     * raro en que ni el rótulo entra en la columna.
+     *
+     * @param mixed  $pdf
+     * @param string $label
+     * @param string $value
+     * @param float  $x
+     * @param float  $width
+     * @param int    $font_size
+     * @param int    $line_height
+     * @return void
+     */
+    protected static function print_label_value_write($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
     {
         /**
          * Establecer márgenes temporales para que Write() haga el wrap desde $x.
@@ -1333,7 +1581,7 @@ class AfipPdfHelper
                     continue;
                 }
 
-                self::print_label_value_line(
+                self::print_label_value_auto(
                     $pdf,
                     'Punto de Venta: ',
                     $field_values['punto_venta'],
@@ -1352,11 +1600,11 @@ class AfipPdfHelper
                 }
 
                 if (in_array('punto_venta', $field_keys, true) && array_key_exists('punto_venta', $field_values)) {
-                    if (self::tiene_geometria($pdf) && !self::pair_line_fits($pdf, 'Punto de Venta: ', $field_values['punto_venta'], 'Factura Nro: ', $field_values['numero_comprobante'], $width)) {
+                    if (!self::pair_line_fits($pdf, 'Punto de Venta: ', $field_values['punto_venta'], 'Factura Nro: ', $field_values['numero_comprobante'], $width)) {
                         /**
-                         * En una hoja angosta de un diseño con cajas (A5) el par no entra en un
-                         * renglón partido al medio y los textos se pisan: va en dos renglones. El
-                         * PDF de siempre (sin geometría) no pasa por acá.
+                         * Cuando el par no entra en un renglón partido al medio (una hoja angosta de
+                         * un diseño con cajas, o un logo grande en el PDF de siempre) los textos se
+                         * pisan: va en dos renglones. Si entra, el renglón de siempre.
                          */
                         self::print_label_value_multiline($pdf, 'Punto de Venta: ', $field_values['punto_venta'], $x, $width, self::$header_row_font_size, self::$header_row_line_height);
                         self::print_label_value_multiline($pdf, 'Factura Nro: ', $field_values['numero_comprobante'], $x, $width, self::$header_row_font_size, self::$header_row_line_height);
@@ -1374,7 +1622,7 @@ class AfipPdfHelper
                         );
                     }
                 } else {
-                    self::print_label_value_line(
+                    self::print_label_value_auto(
                         $pdf,
                         'N° Comprobante: ',
                         $field_values['numero_comprobante'],
@@ -1429,7 +1677,11 @@ class AfipPdfHelper
                     $pdf->MultiCell($width, self::$header_row_line_height, $field_values['__owner_name'], 0, 'L');
                 }
             } else {
-                self::print_label_value_line(
+                /**
+                 * El resto (mail, teléfono, web, CUIT, IIBB, fechas): el renglón de siempre si entra,
+                 * en varias líneas si no (el mail de Masquito se metía en el cuadrante de la derecha).
+                 */
+                self::print_label_value_auto(
                     $pdf,
                     $label,
                     $value,
@@ -1667,7 +1919,7 @@ class AfipPdfHelper
                 ? self::$receptor_field_labels[$field_key]
                 : (ucfirst(str_replace('_', ' ', $field_key)).': ');
 
-            self::print_label_value_line(
+            self::print_label_value_auto(
                 $pdf,
                 $label,
                 $receptor_field_values[$field_key],
@@ -1689,7 +1941,7 @@ class AfipPdfHelper
 
         if (!is_null($current_acount_data)) {
 
-            self::print_label_value_line(
+            self::print_label_value_auto(
                 $pdf,
                 'Saldo anterior: ',
                 '$'.Numbers::price($current_acount_data['saldo_anterior']),
@@ -1697,7 +1949,7 @@ class AfipPdfHelper
                 $right_content_width
             );
 
-            self::print_label_value_line(
+            self::print_label_value_auto(
                 $pdf,
                 'Compra actual: ',
                 '$'.Numbers::price($current_acount_data['compra_actual']),
@@ -1705,7 +1957,7 @@ class AfipPdfHelper
                 $right_content_width
             );
 
-            self::print_label_value_line(
+            self::print_label_value_auto(
                 $pdf,
                 'Saldo: ',
                 '$'.Numbers::price($current_acount_data['saldo']),
@@ -1714,7 +1966,7 @@ class AfipPdfHelper
             );
 
             if (!is_null($current_acount_data['vendedor'])) {
-                self::print_label_value_line(
+                self::print_label_value_auto(
                     $pdf,
                     'Vendedor: ',
                     (string) $current_acount_data['vendedor'],

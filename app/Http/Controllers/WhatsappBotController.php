@@ -4,8 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
+use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
+use App\Services\AgentObjectivePromptBuilder;
+use App\Services\BusinessHoursReader;
 use App\Services\WhatsappAgentScheduler;
 use App\Services\WhatsappInboundMediaService;
 use Illuminate\Http\JsonResponse;
@@ -180,7 +183,34 @@ class WhatsappBotController extends Controller
         }
 
         $config = WhatsappBotConfig::where('user_id', $this->userId())->first();
-        return response()->json(['model' => $config], 200);
+        return response()->json([
+            'model'             => $config,
+            'objective_context' => $this->objective_context(),
+        ], 200);
+    }
+
+    /**
+     * Los datos reales que usa el agente para cumplir un objetivo de la conversación (misión
+     * objetivo-agente-whatsapp): el link de la tienda online, las sucursales con domicilio y si hay
+     * horario de atención. Sale del MISMO armado que la capa del prompt
+     * (`AgentObjectivePromptBuilder::contexto()`), así la pantalla de configuración le muestra al dueño
+     * exactamente lo que el agente va a usar —y qué le falta cargar— en vez de una aproximación.
+     *
+     * Viaja en una clave aparte de `model` a propósito: es derivado (no se guarda) y opcional para la
+     * SPA. Una SPA vieja no la lee; una SPA nueva contra una API vieja no la recibe y la pantalla se
+     * arma sin la vista previa.
+     *
+     * @return array{tienda_online: string|null, sucursales: array<int, string>, hay_horario: bool}
+     */
+    private function objective_context(): array
+    {
+        $owner_id = (int) $this->userId();
+
+        return (new AgentObjectivePromptBuilder())->contexto(
+            $owner_id,
+            User::find($owner_id),
+            BusinessHoursReader::for_user_o_instancia($owner_id)
+        );
     }
 
     /**
@@ -189,8 +219,9 @@ class WhatsappBotController extends Controller
      * Los campos técnicos (kapso_api_key, phone_number_id, webhook_secret, is_active) se
      * cargan desde ABM → Integraciones (equipo de ComercioCity). Los campos de
      * configuración funcional del agente (agent_personality, agent_skills,
-     * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled, chat_simulation_enabled;
-     * grupo 137, Prompt 07, más la misión personalizacion-agente-whatsapp) se editan desde
+     * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled, chat_simulation_enabled,
+     * agent_objective, agent_objective_detail; grupo 137, Prompt 07, más las misiones
+     * personalizacion-agente-whatsapp y objetivo-agente-whatsapp) se editan desde
      * la pantalla de Configuración del módulo WhatsApp, solo visible para el dueño. Ambas
      * pantallas pegan al mismo endpoint pero cada una manda solo sus propios campos: cada campo
      * se arma con `$request->has(...)` para no pisar con `null`/`false` lo que la otra
@@ -226,6 +257,10 @@ class WhatsappBotController extends Controller
             // Si el dueño habilitó el botón de simular mensajes del cliente en la conversación
             // y en la bandeja (misión personalizacion-agente-whatsapp, addendum Parte B).
             'chat_simulation_enabled'  => 'sometimes|boolean',
+            // Objetivo de la conversación (misión objetivo-agente-whatsapp): una clave de la lista
+            // cerrada, o null/'' para "sin objetivo". El detalle son indicaciones libres del dueño.
+            'agent_objective'          => 'sometimes|nullable|string|in:' . implode(',', WhatsappBotConfig::OBJETIVOS),
+            'agent_objective_detail'   => 'sometimes|nullable|string|max:1000',
         ]);
 
         // Se arranca vacío y se agrega cada campo solo si vino en el request.
@@ -297,6 +332,30 @@ class WhatsappBotController extends Controller
             $data['chat_simulation_enabled'] = (bool) $request->chat_simulation_enabled;
         }
 
+        // Objetivo de la conversación (misión objetivo-agente-whatsapp). Cada uno en su propio `if`,
+        // por el mismo motivo que todos los de arriba: la pantalla de Conexión pega a este endpoint sin
+        // estos campos y no los puede pisar. '' se guarda como NULL: "sin objetivo" es una sola cosa en
+        // la base, y NULL es lo que deja el prompt idéntico al de antes.
+        if ($request->has('agent_objective')) {
+            $objetivo = trim((string) $request->agent_objective);
+            $data['agent_objective'] = $objetivo === '' ? null : $objetivo;
+        }
+
+        if ($request->has('agent_objective_detail')) {
+            $detalle = trim((string) $request->agent_objective_detail);
+            $data['agent_objective_detail'] = $detalle === '' ? null : $detalle;
+        }
+
+        // 🔴 `envio_simulado` NO ESTÁ ACÁ, Y NO SE AGREGA (misión whatsapp-envio-simulado-demos,
+        // 15/10/2026). Es el modo en que `WhatsappBotSendService` NO le habla a Kapso y da los
+        // mensajes por enviados: existe para las instancias de demo, y en un negocio real es el
+        // peor modo de falla de este módulo (comprobantes y recordatorios de cobro que la
+        // pantalla muestra como enviados y nunca salen, sin ningún error). Por eso no hay campo en
+        // el validate ni `$request->has()` para él: lo siembra `WhatsappDemoHelper` o se prende a
+        // mano en la base. Hay un test que manda `envio_simulado` por este endpoint y exige que no
+        // se escriba. Si una pantalla lo necesita algún día, es una decisión de Lucas, no un
+        // campo más de este formulario.
+
         $user_id = $this->userId();
         $current_config = WhatsappBotConfig::where('user_id', $user_id)->first();
 
@@ -338,7 +397,10 @@ class WhatsappBotController extends Controller
             $data
         );
 
-        return response()->json(['model' => $config], 200);
+        return response()->json([
+            'model'             => $config,
+            'objective_context' => $this->objective_context(),
+        ], 200);
     }
 
     /**

@@ -274,7 +274,7 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => [
                 'status', 'stock', 'final_price', 'final_price_blanco', 'previus_final_price', 'final_price_updated_at',
-                'costo_real', 'base_margen', 'slug', 'featured', 'stock_updated_at', 'needs_sync_with_tn',
+                'costo_real', 'base_margen', 'base_margen_final', 'slug', 'featured', 'stock_updated_at', 'needs_sync_with_tn',
                 'tiendanube_product_id', 'tiendanube_variant_id', 'me_li_id', 'meli_category_id', 'meli_category_name',
                 'listing_type_id', 'need_sync_to_meli', 'handle', 'chunk_number', 'articles_pages', 'provider_article_id',
                 'embedding_generated_at', 'embedding_source_hash', 'condition_id', 'unidades_por_bulto', 'tipo_envase_id',
@@ -307,7 +307,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'client_pesos_id', 'comercio_city_user_id'],
             'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'client', 'params' => [], 'texto' => 'Ver en Clientes'],
+            // `view` es la solapa: sin ella /clientes dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'client', 'params' => ['view' => 'clientes'], 'texto' => 'Ver en Clientes'],
             'aviso_de_baja'      => 'El cliente va a la papelera con su cuenta corriente. Sus ventas quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -321,7 +323,9 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['saldo', 'saldo_pesos', 'saldo_dolares', 'status', 'pagos_checkeados', 'comercio_city_user_id', 'should_update_prices', 'precios_incluyen_iva'],
             'claves_de_pantalla' => ['childrens' => []],
-            'ruta'               => ['name' => 'provider', 'params' => [], 'texto' => 'Ver en Proveedores'],
+            // `view` es la solapa: sin ella /proveedores dibuja solo la barra de solapas y el cuerpo queda
+            // en blanco (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+            'ruta'               => ['name' => 'provider', 'params' => ['view' => 'proveedores'], 'texto' => 'Ver en Proveedores'],
             'aviso_de_baja'      => 'El proveedor va a la papelera. Sus artículos y sus compras quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
@@ -602,20 +606,6 @@ class CatalogoDeEscrituraIaHelper
             'extension'          => null,
             'revisado'           => 'SaleSenderInfoController: lee con $request->input(); sin efectos.',
         ],
-        'dealer' => [
-            'etiqueta'           => 'repartidores',
-            'singular'           => 'repartidor',
-            'genero'             => 'm',
-            'descripcion'        => 'Los repartidores (ABM > Ventas).',
-            'operaciones'        => null,
-            'solo_lectura'       => [],
-            'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'abm', 'params' => ['view' => 'ventas', 'sub_view' => 'repartidores'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => null,
-            'aviso_de_alta'      => null,
-            'extension'          => null,
-            'revisado'           => 'DealerController: solo name.',
-        ],
         'tipo_envase' => [
             'etiqueta'           => 'tipos de envase',
             'singular'           => 'tipo de envase',
@@ -685,20 +675,6 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_alta'      => null,
             'extension'          => null,
             'revisado'           => 'DeliveryDayController: solo day_of_week.',
-        ],
-        'cupon' => [
-            'etiqueta'           => 'cupones',
-            'singular'           => 'cupón',
-            'genero'             => 'm',
-            'descripcion'        => 'Los cupones de descuento de la tienda online: un código con un monto o un porcentaje y un mínimo de compra (Tienda online > Cupones).',
-            'operaciones'        => null,
-            'solo_lectura'       => ['type', 'buyer_id', 'valid', 'read', 'expiration_date', 'expiration_days'],
-            'claves_de_pantalla' => [],
-            'ruta'               => ['name' => 'online', 'params' => ['view' => 'cupones'], 'texto' => 'Ver en Cupones'],
-            'aviso_de_baja'      => 'El cupón deja de poder usarse en la tienda.',
-            'aviso_de_alta'      => null,
-            'extension'          => null,
-            'revisado'           => 'CuponController: store() lee amount, percentage, min_amount y code y fuerza type = normal, con num(). Sin efectos hacia afuera.',
         ],
         'bodega' => [
             'etiqueta'           => 'bodegas',
@@ -904,10 +880,15 @@ class CatalogoDeEscrituraIaHelper
         'client_offer'                 => 'tiene su herramienta (proponer_oferta)',
         'provider_order'               => 'compra con factura: tiene su herramienta y su store() abre transacción y toca stock y cuenta corriente',
         'pdf_column_profiles'          => 'diseños de PDF: tienen su herramienta (proponer_cambio_en_diseno_pdf)',
+        // Misión diseno-ticket-comandera (9/10/2026): `sheet_types` sumó user_id y `POST api/sheet-types`.
+        'sheet_types'                  => 'tipos de hoja: un ancho de comandera se agrega desde el formulario de Diseño de PDF ("+ Agregar un ancho de comandera"), no es un registro del negocio',
         // Del plan: próximas o fuera del alcance.
         'budget'                       => 'presupuesto: tan complejo como la venta, con renglones',
         'movimiento_caja'              => 'plata de caja',
         'movimiento_entre_caja'        => 'plata de caja',
+        // Misión destrabar-videos-centro (16/10/2026): `concepto_movimiento_cajas` sumó user_id
+        // (conceptos propios de cada comercio; los del sistema, en NULL, no se tocan).
+        'concepto_movimiento_caja'     => 'conceptos de movimientos de caja: se crean desde ABM > Caja y los del sistema no se tocan',
         'cheque'                       => 'cheques: se cargan desde la pantalla de cobros',
         'order'                        => 'pedidos de la tienda: su store() no lee campos y el pedido nace en la tienda',
         'afip_selected_payment_method' => 'facturación (afip_*)',
@@ -937,6 +918,17 @@ class CatalogoDeEscrituraIaHelper
         'color'                        => 'variantes: sin solapa en el ABM actual',
         'size'                         => 'variantes: sin solapa en el ABM actual',
         'deposit'                      => 'sin solapa en el ABM actual',
+        // Misión hojas-de-ruta (10/10/2026): se sacó de ENTIDADES porque la solapa "repartidores" del ABM > Ventas ya no existe.
+        'dealer'                       => 'repartidores: la solapa del ABM que el asistente abría ya no existe',
+        /*
+         * Misión tiendas-demo-y-limpieza-tienda (14/10/2026, pedido de Lucas): se sacó de ENTIDADES
+         * porque la tienda dejó de ofrecer cupones y el sistema sacó Tienda Online > Cupones. La
+         * tabla y el modelo Cupon quedan (los pedidos viejos con cupón siguen mostrando su
+         * descuento); el CuponController y la ruta `api/cupon` se sacaron después (misión
+         * sacar-cupones-y-login-google, 14/10/2026) y la guarda de
+         * CatalogoDeAccionesDePantallaIaHelper::EXCLUIDAS queda como defensa.
+         */
+        'cupon'                        => 'cupones de la tienda: la tienda ya no los ofrece y el sistema sacó su pantalla (14/10/2026)',
         'error'                        => 'técnica: registro de errores de la SPA (manda mail)',
         'etiqueta_medidas'             => 'impresión de etiquetas: su store() delega el request',
         'inventory_linkage'            => 'se arma con listas de categorías y toca el catálogo de otro cliente',
@@ -956,6 +948,11 @@ class CatalogoDeEscrituraIaHelper
         'promocion_vinoteca'           => 'promoción con artículos (relación que el genérico no maneja)',
         'provider_order_afip_ticket'   => 'facturación de compras (afip)',
         'provider_order_scan'          => 'escaneo de factura: flujo',
+        // Misión tenencia-compra-hermanos (17/10/2026): las tres sumaron user_id (migración 2026_10_17_100000).
+        // Son hijas de la compra (que tiene su herramienta) y se cargan desde la compra, no sueltas.
+        'provider_order_afip_ticket_iva' => 'facturación de compras (afip): alícuotas de IVA de la factura de una compra',
+        'provider_order_discount'      => 'descuento de una compra: se carga desde la compra',
+        'provider_order_extra_cost'    => 'costo extra de una compra: se carga desde la compra',
         'recipe'                       => 'receta con artículos (relación que el genérico no maneja)',
         'resumen_caja'                 => 'tesorería: cierre de caja',
         'road_map'                     => 'hoja de ruta con ventas (relación que el genérico no maneja)',
@@ -1059,13 +1056,12 @@ class CatalogoDeEscrituraIaHelper
 
     /**
      * Obligatorios que la tabla no declara (la columna admite null) pero sin los cuales la fila no
-     * sirve: `[entidad => [columnas]]`. Un cupón sin código no se puede usar en la tienda.
+     * sirve: `[entidad => [columnas]]`. Quedó vacía el 14/10/2026: su única entrada era el `code`
+     * del cupón, que salió de ENTIDADES (ver EXCLUIDAS).
      *
      * @var array<string, array<int, string>>
      */
-    const OBLIGATORIOS_CURADOS = [
-        'cupon' => ['code'],
-    ];
+    const OBLIGATORIOS_CURADOS = [];
 
     /**
      * Lo que el modelo tiene que saber de un campo y la etiqueta sola no dice: `[entidad => [columna
@@ -1591,6 +1587,18 @@ class CatalogoDeEscrituraIaHelper
 
             $respuesta['listas_de_precio'] = MargenesPorListaIaHelper::para_que_puedo_cargar($contexto);
             $respuesta['depositos'] = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
+
+            /*
+             * Y el árbol de categorías y subcategorías (misión asistente-altas-y-conversacion,
+             * 16/10/2026, D5): en demo3 la cinta y el martillo quedaron sin categoría porque el
+             * modelo no tenía de dónde elegirla. Solo si el negocio tiene categorías.
+             */
+            $categorias = CategoriasDelNegocioIaHelper::para_respuesta($contexto->owner_id);
+
+            if (!is_null($categorias)) {
+
+                $respuesta['categorias_del_negocio'] = $categorias;
+            }
         }
 
         return $respuesta;

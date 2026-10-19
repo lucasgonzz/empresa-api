@@ -12,7 +12,9 @@ use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
+use App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
@@ -22,11 +24,13 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeFotosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
@@ -410,10 +414,22 @@ class AsistenteIaService
          * DeepSeek falló 4 de 4 (mintió "cambié el nombre" sin herramienta, o rearmó la tarjeta con
          * otra foto y la descripción cortada). Ver la_persona_corrige_una_tarjeta_pendiente().
          */
-        if (is_null($confirmacion_determinista)
-            && ConfirmacionDeterministaIaHelper::la_persona_corrige_una_tarjeta_pendiente($conversation, $assistant_message)) {
+        $corrige_una_tarjeta = is_null($confirmacion_determinista)
+            && ConfirmacionDeterministaIaHelper::la_persona_corrige_una_tarjeta_pendiente($conversation, $assistant_message);
+
+        if ($corrige_una_tarjeta) {
             $toco_una_carga = true;
         }
+
+        /*
+         * Misión asistente-carga-prometida-sin-accion (tercera vuelta, 10/10/2026): si la persona está
+         * CORRIGIENDO esa tarjeta, decidido una vez para el turno. $corrige_una_tarjeta es true con
+         * CUALQUIER mensaje que no sea una pregunta —también un "Gracias!"—, así que una corrección es
+         * eso con un pedido de clase 'otro' ("no, eran 6000"). La usan la nota del reintento de la carga
+         * (que pide una tarjeta NUEVA, no mandar a confirmar la vieja) y el aviso de después del bucle.
+         */
+        $es_una_correccion = $corrige_una_tarjeta
+            && TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message)) === 'otro';
 
         /*
          * 🔴 UN TURNO CON FOTO ARRANCA ESCALADO DESDE LA PRIMERA VUELTA (correcciones del 24/9/2026,
@@ -481,6 +497,50 @@ class AsistenteIaService
         $iterations = 0;
         $final_text = '';
 
+        /*
+         * 🔴 MISIÓN asistente-tarjeta-sin-accion (10/10/2026): LA TARJETA QUE EL TEXTO PROMETE TIENE QUE
+         * EXISTIR. En `demo` (DeepSeek ágil, modo resuelto) el asistente contestó "Dejé la tarjeta para
+         * confirmar el borrado…" y "Dejo la tarjeta para agendar el pago del 15/10…" con el mensaje en
+         * `acciones: []`: la persona busca la tarjeta y no hay nada que confirmar. Cuatro caminos dan ese
+         * síntoma y el bucle no distinguía ninguno: (A) el modelo cierra con texto sin pedir la
+         * herramienta; (B) la pide pero el proveedor no marca `stop_reason: tool_use` y el bucle la
+         * tiraba; (C) escribe la llamada como texto y TextoFinalIaHelper borra esa oración; (D) la
+         * `proponer_*` contesta "faltan" y el modelo igual dice que la dejó.
+         *
+         * B se arregla en la rama del tool_use. Para A, C y D: si el texto final afirma una tarjeta y
+         * este mensaje no tiene NINGUNA, se reintenta UNA vez con una nota del sistema (ver
+         * TarjetaPrometidaIaHelper) y, si sigue sin tarjeta, el texto se cambia por uno honesto. Sólo en
+         * el canal con botones: en WhatsApp y MCP no hay tarjeta, la confirmación es por texto.
+         *
+         * 🔴 Y NUNCA DESPUÉS DE UNA CONFIRMACIÓN DETERMINISTA (chequeo adversarial del 10/10/2026): ahí
+         * la carga YA se hizo con una tarjeta de un mensaje anterior, este mensaje no tiene ninguna, y
+         * "listo, la tarjeta que te dejé quedó registrada" terminaba cambiado por "No pude armar la
+         * tarjeta" — la persona la volvía a pedir y se duplicaba.
+         */
+        $guarda_de_tarjeta = $con_acciones
+            && ! $assistant_message->confirma_por_texto()
+            && is_null($confirmacion_determinista);
+
+        /* Las herramientas que el modelo pidió en este turno, en orden: rastro para el log de la guarda. */
+        $herramientas_pedidas = [];
+
+        /*
+         * El texto que afirmaba una tarjeta inexistente, mientras corre el reintento (null si no hay
+         * reintento en curso). Si el reintento falla —red, HTTP, presupuesto, techo de vueltas— la
+         * respuesta vuelve a este texto y la guarda de después del bucle decide con él: una vuelta de
+         * más nunca le puede llegar a la persona como un error que antes no tenía.
+         */
+        $texto_antes_del_reintento = null;
+
+        /* El stop_reason de la última respuesta del modelo, para el log de la guarda. */
+        $stop_reason = '';
+
+        /*
+         * Misión asistente-carga-prometida-sin-accion (10/10/2026): true si el único reintento del turno
+         * lo pidió la guarda de la CARGA y no la de la tarjeta. Sólo para el log de un reintento que falla.
+         */
+        $reintento_de_la_carga = false;
+
         while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
@@ -488,6 +548,18 @@ class AsistenteIaService
              * cortar, pero no se arranca una nueva con el tiempo vencido.
              */
             if ((time() - $inicio_del_loop) > self::PRESUPUESTO_SEGUNDOS) {
+                if (! is_null($texto_antes_del_reintento)) {
+                    Log::warning('AsistenteIaService: el presupuesto cortó el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
+                        'ai_conversation_id' => $conversation->id,
+                        'ai_message_id'      => $assistant_message->id,
+                        'iterations'         => $iterations,
+                        'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
+                    ]);
+
+                    $final_text = $texto_antes_del_reintento;
+                    break;
+                }
+
                 Log::warning('AsistenteIaService: presupuesto de tiempo del loop agotado.', [
                     'ai_conversation_id' => $conversation->id,
                     'iterations'         => $iterations,
@@ -537,13 +609,43 @@ class AsistenteIaService
              * El mismo payload para los dos proveedores; `agregar_thinking` solo suma la clave
              * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
              */
-            $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
-                'model'      => $model,
-                'max_tokens' => self::MAX_TOKENS,
-                'system'     => $system,
-                'tools'      => $tools,
-                'messages'   => $messages,
-            ], $thinking));
+            try {
+                $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
+                    'model'      => $model,
+                    'max_tokens' => self::MAX_TOKENS,
+                    'system'     => $system,
+                    'tools'      => $tools,
+                    'messages'   => $messages,
+                ], $thinking));
+            } catch (\Throwable $e) {
+                /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
+                if (is_null($texto_antes_del_reintento)) {
+                    throw $e;
+                }
+
+                Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
+                    'excepcion'          => get_class($e),
+                    'error'              => $e->getMessage(),
+                ]);
+
+                $final_text = $texto_antes_del_reintento;
+                break;
+            }
+
+            if (! $response->successful() && ! is_null($texto_antes_del_reintento)) {
+                Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
+                    'http'               => $response->status(),
+                ]);
+
+                $final_text = $texto_antes_del_reintento;
+                break;
+            }
 
             if (! $response->successful()) {
                 /*
@@ -588,7 +690,40 @@ class AsistenteIaService
                 ? $response_body['content']
                 : [];
 
-            if ($stop_reason === 'tool_use') {
+            /*
+             * 🔴 (B) de la misión asistente-tarjeta-sin-accion: una respuesta que TRAE bloques
+             * `tool_use` se ejecuta aunque el `stop_reason` diga otra cosa. Antes se miraba sólo el
+             * `stop_reason`, y si el proveedor devolvía "Dejo la tarjeta para…" + el `tool_use` con
+             * `end_turn`, el bucle tomaba el texto como final y tiraba la llamada: la persona leía la
+             * tarjeta y la tarjeta no existía. Anthropic nunca manda un `tool_use` con `end_turn`, así que
+             * para Claude no cambia nada; el log dice si DeepSeek lo hace. Con `max_tokens` (o un corte
+             * del proveedor) NO: el bloque puede venir cortado y ejecutarlo sería cargar con datos a
+             * medias (ahí entra la guarda). Y tampoco en la última vuelta o con el tiempo vencido: ahí
+             * ejecutar dejaría el turno sin texto y el mensaje en error con la carga hecha —la persona
+             * la repetiría—, mientras que el texto, si afirma una tarjeta, lo resuelve la guarda.
+             */
+            $pide_herramientas = $stop_reason === 'tool_use'
+                || (! in_array($stop_reason, ['max_tokens', 'refusal', 'model_context_window_exceeded'], true)
+                    && $this->tiene_tool_use($content_blocks)
+                    && $iterations < $max_iterations
+                    && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS);
+
+            if ($pide_herramientas && $stop_reason !== 'tool_use') {
+                Log::warning('AsistenteIaService: el modelo pidió herramientas sin stop_reason tool_use; se ejecutan igual.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'stop_reason'        => $stop_reason,
+                    'modelo'             => $model,
+                ]);
+            }
+
+            if ($pide_herramientas) {
+                foreach ($content_blocks as $block) {
+                    if (is_array($block) && ($block['type'] ?? '') === 'tool_use') {
+                        $herramientas_pedidas[] = (string) ($block['name'] ?? '');
+                    }
+                }
+
                 /*
                  * Antes de ejecutar nada: si entre lo que pidió hay una tool de carga, el turno
                  * queda escalado y las vueltas que siguen van con el Profundo. Se mira acá y no
@@ -616,7 +751,117 @@ class AsistenteIaService
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
             $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
+
+            /*
+             * (A, C y D) de la misión asistente-tarjeta-sin-accion: el texto afirma una tarjeta y este
+             * mensaje no tiene ninguna. UN reintento, con el texto como turno del asistente y la nota
+             * del sistema como turno de la persona, y escalado al Profundo: la decisión de cargar la
+             * toma el modelo bueno, igual que en cuanto el turno toca una carga. Sólo si quedan vuelta
+             * y tiempo; si no, la guarda de después del bucle lo resuelve con el texto honesto.
+             *
+             * El turno del asistente va como TEXTO y no con sus bloques: si trajera un `tool_use`
+             * cortado por `max_tokens`, la API exigiría su `tool_result`.
+             */
+            if ($guarda_de_tarjeta
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && $this->afirma_una_tarjeta_que_no_existe($final_text, $tools, $assistant_message)) {
+
+                Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó; se reintenta una vez.', $this->rastro_de_la_tarjeta_prometida(
+                    $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $final_text, $tools
+                ));
+
+                $texto_antes_del_reintento = $final_text;
+
+                $messages[] = [
+                    'role'    => 'assistant',
+                    'content' => $final_text,
+                ];
+
+                $messages[] = [
+                    'role'    => 'user',
+                    'content' => TarjetaPrometidaIaHelper::nota_para_reintentar($this->de_carga($herramientas_pedidas)),
+                ];
+
+                $toco_una_carga = true;
+                $final_text = '';
+
+                continue;
+            }
+
+            /*
+             * 🔴 MISIÓN asistente-carga-prometida-sin-accion (10/10/2026): LA CARGA QUE EL TEXTO DA POR
+             * HECHA TIENE QUE ESTAR HECHA. La guarda de la tarjeta (arriba) sólo ve los textos que nombran
+             * una tarjeta, y el modo "directo" —el default de un negocio nuevo desde el 28/9/2026— no deja
+             * tarjetas: ejecuta. En la medición real contra DeepSeek ágil del 10/10/2026, a "Ya lo llamé"
+             * contestó "Marqué la tarea como hecha." en UNA vuelta `end_turn`, sin herramienta y con el
+             * mensaje en `acciones: []`; a "Cambiale el teléfono a 3415559999", "El teléfono de
+             * Distribuidora Norte quedó cambiado a 3415559999.", igual. Y en "resuelto" la variante es la
+             * inversa: el texto da por registrada una carga que quedó como tarjeta sin confirmar. La
+             * persona cree que está hecho.
+             *
+             * Si el texto da por hecha una carga que este mensaje no EJECUTÓ, y lo que pidió la persona no
+             * deja que sea verdad (afirma_una_carga_que_no_se_hizo), va el MISMO y único reintento del
+             * turno: si ya lo usó la tarjeta, no hay otro. Se mira después de la tarjeta a propósito: si el
+             * texto afirma las dos cosas, la nota que sirve es la de la tarjeta, que le pide al modelo
+             * justamente armarla. La nota de la carga dice qué hay de verdad —nada ejecutado, una tarjeta
+             * de este mensaje esperando el botón, o una de la respuesta anterior que sigue sin confirmar—
+             * y el reintento va al Profundo, como cualquier turno que toca una carga.
+             */
+            if ($guarda_de_tarjeta
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+
+                $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
+
+                if ($tipo_de_carga !== '') {
+
+                    $tarjetas_propuestas = $this->tarjetas_propuestas_del_mensaje($assistant_message);
+
+                    Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se reintenta una vez.', $this->rastro_de_la_carga_prometida(
+                        $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $final_text, $tools, $tipo_de_carga, $tarjetas_propuestas
+                    ));
+
+                    $texto_antes_del_reintento = $final_text;
+                    $reintento_de_la_carga     = true;
+
+                    $messages[] = [
+                        'role'    => 'assistant',
+                        'content' => $final_text,
+                    ];
+
+                    $messages[] = [
+                        'role'    => 'user',
+                        'content' => TarjetaPrometidaIaHelper::nota_para_reintentar_carga(
+                            $this->de_carga($herramientas_pedidas),
+                            $tarjetas_propuestas > 0,
+                            $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message),
+                            $es_una_correccion
+                        ),
+                    ];
+
+                    $toco_una_carga = true;
+                    $final_text = '';
+
+                    continue;
+                }
+            }
+
             break;
+        }
+
+        /*
+         * El reintento de la tarjeta se quedó sin texto (se comió las vueltas que quedaban pidiendo
+         * herramientas), o con uno que el saneo deja VACÍO (la llamada escrita como texto y nada más,
+         * o la nota del sistema repetida): se vuelve al texto de antes y la guarda de abajo decide con
+         * él. Sin esto, el saneo vacío devolvía el crudo y la persona leía la llamada o la nota interna
+         * (chequeo adversarial del 10/10/2026).
+         */
+        if (! is_null($texto_antes_del_reintento)
+            && trim(TextoFinalIaHelper::limpiar($final_text, $this->nombres_de_herramientas($tools))) === '') {
+            $final_text = $texto_antes_del_reintento;
         }
 
         /*
@@ -662,6 +907,144 @@ class AsistenteIaService
                 'el loop terminó sin texto final en la iteración ' . $iterations
             );
         }
+
+        /*
+         * Misión asistente-carga-prometida-sin-accion (cuarta vuelta, 10/10/2026: C): fuera los avisos de
+         * la guarda de la carga que el modelo haya escrito copiando el historial (DeepSeek ya copia
+         * líneas del historial: escribe "[Tarjeta #1765 … estado: confirmada]" él mismo). Un aviso dice
+         * la verdad del turno en que se agregó; copiado en otro puede decir algo falso. El único que
+         * puede llevar esta respuesta es el que agregue la guarda de abajo, si corresponde.
+         */
+        $final_text = TarjetaPrometidaIaHelper::sin_avisos($final_text);
+
+        /* true si la guarda de la tarjeta cambió el texto por el honesto: ahí la de la carga no mira nada. */
+        $la_tarjeta_cambio_el_texto = false;
+
+        /*
+         * La guarda de la misión asistente-tarjeta-sin-accion, después del reintento (o sin él, si no
+         * quedaba vuelta ni tiempo): si el texto TODAVÍA afirma una tarjeta que no existe, a la persona
+         * no le llega. Con una tarjeta `propuesta` de un mensaje anterior el texto se deja: puede estar
+         * hablando de ésa, y el reintento ya le pidió al modelo que no diga "nueva" si no la armó. Sin
+         * ninguna, va el texto honesto.
+         */
+        if ($guarda_de_tarjeta && $this->afirma_una_tarjeta_que_no_existe($final_text, $tools, $assistant_message)) {
+            /* Con el texto CRUDO, el de antes del saneo: si no, `el_saneo_saco_algo` daría siempre false. */
+            $rastro = $this->rastro_de_la_tarjeta_prometida(
+                $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $crudo, $tools
+            );
+            $rastro['hubo_reintento'] = ! is_null($texto_antes_del_reintento);
+
+            /*
+             * Si la persona está CORRIGIENDO esa tarjeta ("no, era 6000"), la de antes no salva nada: el
+             * texto dice que dejó la nueva y lo único confirmable sería la vieja, con el dato viejo.
+             */
+            if (! $corrige_una_tarjeta && $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message)) {
+                Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó, pero hay una pendiente de antes; se deja.', $rastro);
+            } else {
+                Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó; se reemplaza por el texto honesto.', $rastro);
+
+                $final_text = TarjetaPrometidaIaHelper::TEXTO_HONESTO;
+
+                $la_tarjeta_cambio_el_texto = true;
+            }
+        }
+
+        /*
+         * La guarda de la misión asistente-carga-prometida-sin-accion, después del reintento (o sin él,
+         * si no quedaba vuelta ni tiempo, o si el reintento ya lo había usado la tarjeta): si el texto
+         * TODAVÍA da por hecha una carga que este mensaje no ejecutó, con la misma regla que adentro del
+         * bucle. Si el texto ya es el honesto de la tarjeta, no hay nada que mirar.
+         *
+         * 🔴 SE REEMPLAZA SÓLO LA MENTIRA SEGURA; EN TODO LO DEMÁS SE AGREGA UN AVISO (tercera vuelta,
+         * 10/10/2026). El reintento es barato y en lo medido siempre corrigió; el riesgo que queda está en
+         * el texto que reemplaza la respuesta: un "No pude… ¿La intento?" o un "decímelo de nuevo" sobre
+         * algo que SÍ estaba hecho invita a repetirlo, y en "directo" se ejecuta solo y se DUPLICA — y la
+         * clase del pedido, por listas de palabras, nunca va a ser exacta. Entonces:
+         *
+         *   - la MENTIRA SEGURA —la persona pidió una carga ('otro'), el turno entero (con el reintento) no
+         *     pidió ni una herramienta, es la PRIMERA respuesta de una conversación sin `contexto`, en
+         *     toda la conversación no hay ninguna carga confirmada (ni en curso) y no hay ninguna tarjeta
+         *     esperando, ni en este mensaje ni en la respuesta anterior— se reemplaza por
+         *     TEXTO_HONESTO_CARGA: ahí la frase no puede estar contando nada, el modelo no leyó nada y no
+         *     hay nada hecho. Lo de la primera respuesta es de la cuarta vuelta (10/10/2026: A): en una
+         *     conversación con historia el modelo puede saber de un turno anterior que el gasto ya
+         *     estaba ("Ya está cargado: Gasto N° 7", sin herramienta), y ahí el aviso de verificación es
+         *     verdad en los dos escenarios;
+         *   - en lo demás se DEJA la respuesta del modelo (puede traer lo que la persona pidió: una
+         *     consulta, el monto corregido, el número de un registro que ya existía) y se le agrega el
+         *     aviso verdadero que corresponde: el de la tarjeta de este mensaje, el de la corrección (la
+         *     persona corrigió la tarjeta que sigue esperando, y ésa tiene el dato viejo), el de la
+         *     tarjeta de la respuesta anterior o el de verificación. Si el modelo mentía, la persona lo
+         *     ve; si contaba algo hecho antes, el aviso no dice "no pude" ni la invita a repetirlo.
+         */
+        if ($guarda_de_tarjeta && ! $la_tarjeta_cambio_el_texto) {
+
+            $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
+
+            if ($tipo_de_carga !== '') {
+
+                $tarjetas_propuestas = $this->tarjetas_propuestas_del_mensaje($assistant_message);
+                $tarjeta_de_antes    = $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+
+                /* Con el texto CRUDO, igual que la guarda de la tarjeta (ver `el_saneo_saco_algo`). */
+                $rastro = $this->rastro_de_la_carga_prometida(
+                    $conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $crudo, $tools, $tipo_de_carga, $tarjetas_propuestas
+                );
+                $rastro['hubo_reintento'] = ! is_null($texto_antes_del_reintento);
+
+                $mentira_segura = TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message)) === 'otro'
+                    && count($herramientas_pedidas) === 0
+                    && $this->es_la_primera_respuesta($conversation, $assistant_message)
+                    && ! $this->hay_cargas_confirmadas_de_antes($conversation, $assistant_message)
+                    && $tarjetas_propuestas === 0
+                    && ! $tarjeta_de_antes;
+
+                if ($mentira_segura) {
+
+                    $final_text = TarjetaPrometidaIaHelper::TEXTO_HONESTO_CARGA;
+
+                    $rastro['accion']        = 'reemplazo';
+                    $rastro['texto_honesto'] = $final_text;
+
+                    Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se reemplaza por el texto honesto.', $rastro);
+
+                } else {
+
+                    if ($tarjetas_propuestas > 0) {
+
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_CARGA_CON_TARJETA;
+
+                    } elseif ($es_una_correccion) {
+
+                        /* Cuarta vuelta: la tarjeta que sigue esperando tiene el dato que la persona corrigió. */
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_CORRECCION;
+
+                    } elseif ($tarjeta_de_antes) {
+
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_TARJETA_DE_ANTES;
+
+                    } else {
+
+                        $aviso = TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION;
+                    }
+
+                    $final_text = TarjetaPrometidaIaHelper::con_aviso($final_text, $aviso);
+
+                    $rastro['accion'] = 'aviso';
+                    $rastro['aviso']  = $aviso;
+
+                    Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se deja y se le agrega un aviso.', $rastro);
+                }
+            }
+        }
+
+        /*
+         * Misión asistente-envios-a-clientes (corrección 1 del chequeo, 16/10/2026): en los canales sin
+         * botones, el bloque de cada envío a clientes que este turno dejó esperando el sí va al final
+         * del mensaje, armado por el sistema. Va DESPUÉS de las guardas de arriba (que miran lo que
+         * escribió el modelo) y ANTES de las menciones (que cruzan el texto final).
+         */
+        $final_text = $this->con_los_bloques_de_envio($final_text, $assistant_message);
 
         /*
          * §1 del contrato: las menciones salen de cruzar lo que devolvieron las tools de ESTA
@@ -772,7 +1155,7 @@ class AsistenteIaService
          * si ejecutara solo, que es exactamente el criterio de la puerta de auto-confirmación.
          */
         $confianza = ConfianzaDelAgenteIaHelper::guardada($owner);
-        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) : '';
+        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) . $this->bloque_de_modulos_apagados($owner) : '';
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -786,7 +1169,7 @@ class AsistenteIaService
          * tarjeta que la persona confirma" y en WhatsApp no hay tarjeta que
          * tocar: la confirmación es por texto.
          */
-        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones) : '';
+        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones, $confianza) : '';
 
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
@@ -819,6 +1202,18 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- Leé el pedido como lo diría un comerciante (misión asistente-altas-y-conversacion, 16/10/2026):
+  "lo que más vendo de [proveedor]" es una pregunta de VENTAS: consultar_articulos_mas_vendidos
+  con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
+  compro a [proveedor]" es consultar_compras_a_un_proveedor. Que una frase nombre a un proveedor
+  no la vuelve una pregunta de compras.
+- "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
+  además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
+  monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
+  Nunca compares X contra lo atrasado solo.
+- Si una herramienta devuelve error con opciones porque el nombre no encajó y una opción es
+  claramente lo que dijo la persona (otra letra, sin tilde, abreviado), volvé a llamar con ese
+  nombre exacto y decile cuál usaste; si no es obvio, preguntá cuál.
 - 🔴 Para la PLATA de un renglón (de una venta, una compra, un presupuesto, un pedido o una
   nota de crédito) va siempre el campo `importe`, nunca `price` ni `cost`, que son de UNA
   unidad: sumar el precio o el costo da un número chico y creíble que no es plata. "Cuánto
@@ -953,17 +1348,20 @@ VERDAD;
   entre depósitos y cargarle a uno) y las acciones de pantalla que no borran
   (proponer_accion_de_pantalla). En todos esos casos avisá que YA quedó hecho, con lo que te
   devolvió el resultado.
-- 🔴 SEIS cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
+- 🔴 NUEVE cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
   saltearlas: borrar algo (proponer_baja y proponer_borrado_por_pantalla), la actualización masiva
-  de artículos, la unificación de bancos de los cheques, los permisos de un empleado, y las
+  de artículos, la unificación de bancos de los cheques, los permisos de un empleado, las
   acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
   devolución con nota de crédito, editar una venta ya cargada —puede emitir una nota de crédito y
-  avisarle al cliente—) o tocan muchos artículos de un saque: la respuesta te lo dice con
-  requiere_confirmacion. En esas seis decí que dejaste la tarjeta para confirmar, aunque la persona
+  avisarle al cliente—) o tocan muchos artículos de un saque (la respuesta te lo dice con
+  requiere_confirmacion), y los tres ENVÍOS A CLIENTES: mandar un comprobante
+  (proponer_envio_de_comprobante), los recordatorios de cobro (proponer_recordatorios_de_cobro) y
+  una promoción por WhatsApp (proponer_promocion_por_whatsapp). En esas nueve decí que queda
+  esperando su confirmación (en el sistema, la tarjeta; por WhatsApp, su sí), aunque la persona
   te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
-  registros de un saque, un comprobante emitido ante ARCA no se borra, y un permiso mal cambiado
-  deja a alguien sin poder trabajar y nadie se entera hasta que llega. Si insisten, explicá eso en
-  una línea y no lo discutas más.
+  registros de un saque, un comprobante emitido ante ARCA no se borra, un permiso mal cambiado
+  deja a alguien sin poder trabajar y nadie se entera hasta que llega, y un mensaje que le llegó a
+  un cliente no se desmanda. Si insisten, explicá eso en una línea y no lo discutas más.
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
@@ -971,8 +1369,9 @@ AUTO_DIRECTO
   diseño de PDF y la compra con factura (con el alta del proveedor si no existía); en ese
   caso avisá que ya quedó hecho o mandado, con lo que te devolvió el resultado. Con
   "cauteloso" dejás la tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
-  bancos de cheques, los permisos de un empleado y el borrado por pantalla
-  (proponer_borrado_por_pantalla) SIEMPRE dejan tarjeta.
+  bancos de cheques, los permisos de un empleado, el borrado por pantalla
+  (proponer_borrado_por_pantalla) y los tres envíos a clientes (comprobante, recordatorios de cobro
+  y promoción por WhatsApp) SIEMPRE dejan tarjeta.
 - 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
   da ella con la tarjeta. Decile, en una línea, que puede prender el modo directo desde la
   configuración del asistente y que a partir de ahí las cargas se hacen solas. No vuelvas a
@@ -1002,10 +1401,15 @@ AUTO_RESUELTO;
   Lo que antes quedaba afuera —editar una venta o un presupuesto ya cargados, confirmar o
   anular un presupuesto, cobrar o entregar un cheque ya cargado, endosar un cheque que te
   dieron, los movimientos de caja, facturar— ahora se hace por las ACCIONES DE PANTALLA, si
-  la pantalla lo hace. Lo que queda afuera de verdad: mandar mensajes a terceros (mails,
-  WhatsApps, recordatorios de cobro: esas rutas no están en el catálogo) y las credenciales
-  del negocio; los cobros con tarjeta de crédito, las retenciones y los cobros en otra moneda
-  que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
+  la pantalla lo hace. A los CLIENTES del negocio les mandás algo SOLO con las tres
+  herramientas de envío —proponer_envio_de_comprobante (una venta, un presupuesto o un recibo,
+  por WhatsApp y/o mail), proponer_recordatorios_de_cobro y proponer_promocion_por_whatsapp—, y
+  las tres SIEMPRE esperan el sí de la persona, también en "directo", DESPUÉS de mostrarle a
+  quiénes, cuántos, a quiénes no y por qué, y el texto exacto que sale (`para_mostrar`). Por las
+  acciones de pantalla no se manda nada (esas rutas no están en el catálogo).
+  Lo que queda afuera de verdad: las credenciales del negocio (claves, tokens, contraseñas) y
+  escribirle a alguien que no es cliente del negocio; los cobros con tarjeta de crédito, las
+  retenciones y los cobros en otra moneda que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
   cliente como lo haría la pantalla (por ejemplo, editar una venta le manda el comprobante),
   así que si eso importa, decíselo a la persona antes de proponerla.
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
@@ -1023,17 +1427,47 @@ AUTO_RESUELTO;
   corriente. Eso pasa recién cuando la persona lo confirma desde la pantalla de
   Presupuestos, y eso no lo hacés vos: decíselo.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
-  ni WhatsApp, y eso decíselo a la persona.
+  ni WhatsApp de la oferta, y eso decíselo a la persona. Una PROMOCIÓN por WhatsApp a los
+  clientes sí se manda: proponer_promocion_por_whatsapp.
+- "Mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail" sobre una venta, un
+  presupuesto o un pago = proponer_envio_de_comprobante con su número. NO le pases el link a la
+  persona para que lo mande ella: el envío lo hacés vos, con su sí.
+- "Mandales un recordatorio a los que me deben más de X hace más de N días" =
+  proponer_recordatorios_de_cobro con monto_minimo = X y dias = N: el MISMO filtro de
+  consultar_ventas_sin_cobrar (deuda TOTAL de X o más y alguna venta impaga de N días o más), así
+  le llega a los mismos clientes que le listaste.
+- "Armá un combo y mandales una promo" = primero proponer_combo (si el negocio tiene Combos) y,
+  ya creado, proponer_promocion_por_whatsapp con el nombre del combo. El texto de la promo lo
+  redactás con la persona (qué se ofrece y a qué precio) y es lo que sale, tal cual. Nunca
+  inventes un link: lo arma la herramienta. 🔴 Si el negocio NO tiene el módulo de Combos,
+  decíselo al dueño en ese mismo mensaje y ofrecé la promo del o de los artículos, cada uno con
+  su link; nunca mandes una promo que nombre un combo que no existe.
+- Por WhatsApp, a quiénes les llega, el texto exacto y la pregunta los agrega el sistema solo,
+  al final de tu mensaje: vos decí en una frase corta qué vas a mandar y no los repitas.
 {$regla_de_la_tarjeta}
 - Antes de proponer, juntá todos los datos. Si falta algo (cuánto, a quién, cómo se pagó, a
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
   nombre parecido, una cuenta en pesos y otra en dólares, varias subcategorías que encajan),
   preguntá en UN solo mensaje corto todo lo que falta, ofreciendo las opciones por su nombre.
-  No supongas montos, personas, cajas ni fechas. 🔴 Si la fecha que pidieron es futura, lo único
-  que puede faltar es el monto y la subcategoría: NO preguntes cómo se paga ni a qué caja va,
-  porque eso se pregunta el día que la tarea se marca como hecha.
+  No supongas montos, personas, cajas ni fechas. Pero lo que la persona YA dijo en esta
+  conversación no se vuelve a preguntar: si en el presupuesto de recién dijo "la sucursal 1", la
+  venta que sigue va con la sucursal 1 salvo que diga otra. Y si la herramienta encontró UN solo
+  artículo (o cliente) para lo que dijo, es ese: no le pidas que lo confirme.
+- 🔴 Lo que acabás de crear o tocar en esta conversación lo dice su línea "[Tarjeta …]", con el
+  id del registro (article_id, client_id…). Si la persona sigue hablando de eso ("llegaron 12",
+  "ponele la categoría", "el que creaste recién"), es ESE registro: usá ese id (en `registro` para
+  editarlo, en articulo_id para su stock) y no lo vuelvas a buscar, ni le pidas el código, la foto o
+  el nombre de nuevo. En "directo", el id de lo que acabás de crear viene en detalle.registro.
+- Si para un gasto (o una tarea con gasto) la subcategoría que nombró la persona no existe, la
+  creás vos con proponer_alta de expense_concept (y la categoría de gasto con expense_category si
+  tampoco existe) y seguís con el gasto. Nunca la mandes a crearla a la pantalla de Gastos.
+- 🔴 Si la fecha que pidieron es futura, lo único que puede faltar es el monto y la
+  subcategoría: NO preguntes cómo se paga ni a qué caja va, porque eso se pregunta el día que la
+  tarea se marca como hecha.
 - Si la herramienta devuelve "faltan", preguntá eso. Si devuelve "error", contá ese motivo
-  tal cual y no agregues otro. Si devuelve "confirmada_parecida", avisá que hace un momento
+  tal cual y no agregues otro; la excepción es el que empieza con "No se armó ninguna tarjeta"
+  y trae opciones: ese es para vos, no para la persona — elegí de las opciones y volvé a llamar
+  en el mismo mensaje. Si devuelve "confirmada_parecida", avisá que hace un momento
   se confirmó una carga parecida y que confirme esta solo si es otra carga.
 {$reglas_contra_lo_inventado}
 - Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
@@ -1058,7 +1492,8 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion (y descripcion si la hay), nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
-- 🔴 La FACTURA de un proveedor no la leés vos: la lee el escaneo del sistema, con su propia IA. Aunque
+- 🔴 La FOTO de la factura de un proveedor no la transcribís vos: la lee el escaneo del sistema, con su
+  propia IA; el RESULTADO de ese escaneo sí lo podés leer con consultar_escaneo_de_factura. Aunque
   la foto viaje en el mensaje, NO transcribas ni adelantes montos, renglones, artículos ni datos de la
   factura como si los hubieras leído (un número tuyo se lee como un dato confirmado y puede estar mal).
   Lo único que podés sacar de la foto es el nombre del emisor, y sólo si la persona no te dijo de qué
@@ -1066,8 +1501,16 @@ AUTO_RESUELTO;
   el proveedor no existe, la herramienta lo da de alta sola (no uses proponer_alta antes); la sucursal
   NO la preguntes (si no la dijo, la herramienta usa la de la persona); y si la factura dice otra razón
   social que la que dijo la persona, no lo cuestiones ni lo preguntes: manda lo que dijo la persona.
-  Después contá que el escaneo corre en segundo plano, que cuando termina el aviso le aparece EN EL
-  SISTEMA (en la pantalla, no por WhatsApp) y que los artículos se revisan desde Compras.
+  Después contá que el escaneo corre en segundo plano, que los artículos se revisan desde Compras y
+  por dónde le llega el aviso cuando termina TAL COMO LO DICE EL RESULTADO de la herramienta (por
+  WhatsApp con el link para revisarla, o en la pantalla del sistema): no prometas el otro camino.
+  Si la persona te dice a qué compra ya cargada va la factura ("adjuntala a la compra 12"), pasá su
+  número en compra_num.
+- 🔴 Lo que SÍ podés contar es lo que leyó el escaneo, con consultar_escaneo_de_factura: cuando te
+  pregunten qué trae la factura, si ya la leyó o cuánto dio, consultala y contá el resultado (total,
+  renglones reconocidos y sin match, datos dudosos) como "lo que leyó el escaneo", que se confirma al
+  revisarlo en Compras. Si está en proceso, decí que todavía se está leyendo. Nunca digas que no podés
+  saber qué trae la factura: consultá el escaneo.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma
@@ -1084,6 +1527,9 @@ AUTO_RESUELTO;
   como esté tu confianza. Cuando la persona confirme, corre en segundo plano y el sistema
   avisa al terminar: nunca digas que ya se aplicó. Los proveedores, categorías, subcategorías
   y marcas van por su nombre; si hay varios que encajan, preguntá cuál.
+  "Subí (o bajá) el precio X %" es el campo precio_final, no precio_manual.
+  Si la propuesta trae ejemplos_de_precio, contale a la persona dos o tres (precio de venta antes
+  → después) antes de pedir el sí, y repetilos cuando se ejecute.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.
@@ -1094,13 +1540,70 @@ AUTO_RESUELTO;
   sola, esté como esté tu confianza.
 {$regla_de_auto_ejecucion}
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
-  pasó con cada tarjeta. No las repitas.
+  pasó con cada tarjeta. No las repitas. El #N es el número de la TARJETA (el tarjeta_id: el de
+  reemplaza_a y el de confirmar o cancelar una tarjeta), nunca el id de un registro: el id de una
+  tarea es el tarea_id que trae su línea.
 - Si el mensaje de la persona termina con una nota "[El sistema ya confirmó la tarjeta...]", esa
   carga ya la registró el sistema por su sí: contá el resultado que dice la nota, no digas que
   dejaste una tarjeta y seguí con lo que haya quedado pendiente. Si la nota dice que no se pudo,
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Los módulos de carga que ESTE negocio no tiene, en una línea (misión asistente-altas-y-conversacion,
+     * 16/10/2026). Vacío si los tiene todos.
+     *
+     * 🔴 POR QUÉ. En demo3 —sin la extensión de Combos— el asistente contestó "el combo a $28.000 queda
+     * bien de precio, te lo armo" y recién al confirmar dijo "tu cuenta no tiene activado el módulo de
+     * Combos": la herramienta sí lo chequea, pero el modelo prometió antes de llamarla. Con esta línea
+     * lo sabe desde el primer mensaje. Las herramientas siguen declarándose todas (el prefijo del caché
+     * no depende del negocio, ver build_tools()) y siguen chequeando la extensión ellas mismas: esto no
+     * reemplaza ninguna guarda.
+     *
+     * Va al final del bloque de carga, que ya cambia por negocio (el nombre del comercio va antes).
+     *
+     * @param  User|null  $owner
+     * @return string
+     */
+    protected function bloque_de_modulos_apagados($owner): string
+    {
+        if (is_null($owner)) {
+
+            return '';
+        }
+
+        $modulos = [
+            PermisosIaHelper::EXTENCION_COMBOS  => 'Combos (no podés armar combos)',
+            PermisosIaHelper::EXTENCION_OFERTAS => 'Ofertas por cliente (no podés armar ofertas)',
+            'budgets'                           => 'Presupuestos (no podés armar presupuestos)',
+            /*
+             * Misión asistente-envios-a-clientes (16/10/2026): sin WhatsApp no hay recordatorios, ni
+             * promociones, ni comprobantes por WhatsApp; sin los mails a clientes, no hay comprobantes
+             * por mail. Las herramientas lo chequean igual; esto es para que no lo prometa antes.
+             */
+            'whatsapp'                          => 'WhatsApp (no podés mandar recordatorios de cobro, promociones ni comprobantes por WhatsApp)',
+            'enviar_mail_a_clientes'            => 'Mails a clientes (no podés mandar comprobantes por mail)',
+        ];
+
+        $apagados = [];
+
+        foreach ($modulos as $slug => $texto) {
+
+            if (! PermisosIaHelper::tiene_extencion($owner, $slug)) {
+
+                $apagados[] = $texto;
+            }
+        }
+
+        if (! count($apagados)) {
+
+            return '';
+        }
+
+        return '- 🔴 Módulos que este negocio NO tiene: ' . implode('; ', $apagados) . '. Si te piden algo de '
+            . "eso, decilo en la primera respuesta (se activa desde ComercioCity) y no lo ofrezcas ni lo prometas.\n";
     }
 
     /**
@@ -1159,7 +1662,7 @@ VENTA_CONFIRMA;
   con el ABM genérico: que_puedo_cargar te dice qué entidades podés crear, editar o borrar
   (categorías, subcategorías, marcas, listas de precio, descuentos y recargos, sucursales,
   localidades, vendedores, clientes, proveedores, artículos, subcategorías y categorías de
-  gasto, zonas y días de entrega, cupones, turnos de caja, estados de venta y de producción,
+  gasto, zonas y días de entrega, turnos de caja, estados de venta y de producción,
   y más) y, con una entidad, sus campos. Llamala ANTES de proponer y usá sus claves tal cual.
   Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas nuevas seguís
   usando su propia herramienta: el genérico es para lo que no tiene una.
@@ -1171,6 +1674,19 @@ VENTA_CONFIRMA;
   tiene), decile que esa pantalla no lo carga. Un campo obligatorio que la persona no dijo se
   pregunta; uno opcional que no dijo no se manda. Las relaciones (categoría, proveedor, marca,
   localidad, vendedor, lista de precios) van por su NOMBRE, nunca por un número.
+- 🔴 Excepción: en el ALTA DE UN ARTÍCULO la categoría y la subcategoría van SIEMPRE que alguna del
+  negocio encaje, aunque la persona no las haya dicho: elegilas del árbol de categorías que te
+  dan que_puedo_cargar y la búsqueda por código de barras (una cinta aisladora va en la de
+  electricidad, un martillo en la de herramientas de mano) y decí en la respuesta cuáles le
+  pusiste. La subcategoría tiene que ser de esa categoría (en que_puedo_cargar se llaman rubro
+  y sub rubro). Si la categoría tiene subcategorías, la subcategoría es obligatoria ("" solo si
+  ninguna encaja). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
+  Si un error trae opciones.reenvia_igual, volvé a llamar con ese objeto TAL CUAL (con la foto, la
+  descripción y el código), agregándole solo lo que pide.
+- Después de un alta o una edición de un artículo decí el precio de venta tal como viene en
+  detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
+  digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
+  detalle.campos_guardados: no cambies un campo por otro (una razón social no es un domicilio).
 - Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
   por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
   preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar
@@ -1349,9 +1865,9 @@ QUIEN;
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @return string
      */
-    protected function bloque_de_whatsapp($con_acciones = false): string
+    protected function bloque_de_whatsapp($con_acciones = false, $confianza = ''): string
     {
-        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto() : '';
+        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto($confianza) : '';
 
         return <<<WHATSAPP
 Estás hablando por WhatsApp, no por la pantalla del sistema:
@@ -1379,20 +1895,50 @@ WHATSAPP;
      *
      * @return string
      */
-    protected function bloque_de_confirmacion_por_texto(): string
+    protected function bloque_de_confirmacion_por_texto($confianza = ''): string
     {
-        return <<<CONFIRMACION
+        /*
+         * 🔴 EN "DIRECTO" LA PRIMERA REGLA ES OTRA (misión asistente-altas-y-conversacion, 16/10/2026).
+         * Hasta acá este bloque iba igual en los tres modos y decía "decí los datos y preguntá si lo
+         * registrás": en "directo" contradecía al bloque de carga ("se hace en el acto") y, como este va
+         * DESPUÉS porque corrige, ganaba. En demo3 el asistente contestó "el combo queda bien de precio,
+         * te lo armo cuando me digas que sí" sin haber llamado a ninguna herramienta (y recién con el sí
+         * descubrió que el negocio no tenía Combos), y preguntó de más en ventas y presupuestos. En
+         * "directo" se llama a la herramienta en la misma vuelta; la confirmación por texto queda para
+         * las que siempre esperan el sí. Los otros dos modos, exactamente como antes.
+         */
+        $primera = (string) $confianza === ConfianzaDelAgenteIaHelper::DIRECTO
+            ? <<<PRIMERA_DIRECTO
+- Con tu confianza en "directo", lo que se hace en el acto también se hace en el acto acá:
+  llamá a la herramienta proponer_ en la MISMA vuelta, sin preguntar antes si lo hacés, y
+  contá lo que quedó hecho. Nunca digas "te lo armo cuando me digas que sí" ni "¿lo
+  registro?" para eso: o lo hacés, o la herramienta te dice por qué no se puede. Preguntá
+  solo lo que de verdad falta para cargarlo (lo que la herramienta te devuelve en "faltan").
+- Lo que SIEMPRE espera el sí (borrar, la actualización masiva, unificar bancos, los permisos
+  de un empleado, lo que emite ante ARCA, y mandarle algo a un cliente: un comprobante, los
+  recordatorios de cobro o una promoción) se confirma por texto: llamás igual a la
+  herramienta, la respuesta te dice que quedó esperando, y vos decís en una línea qué vas a
+  hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta. En un envío a
+  clientes no alcanza una línea: mostrá a quiénes, cuántos, a quiénes no y por qué, y el texto
+  exacto, como te lo dice la respuesta.
+PRIMERA_DIRECTO
+            : <<<PRIMERA
 - Cómo se confirma una carga acá, que REEMPLAZA lo de la tarjeta: llamás igual a la
   herramienta proponer_ que corresponde, pero no digas que dejaste una tarjeta. Decí los
   datos exactos de lo que vas a cargar (cuánto, a quién, de qué, qué día, cómo se paga) y
   preguntá si lo registrás.
+PRIMERA;
+
+        return <<<CONFIRMACION
+{$primera}
 - Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
   tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
 - 🔴 No podés proponer y confirmar en el mismo mensaje: siempre tiene que haber una
   respuesta de la persona en el medio. Si lo intentás, la herramienta te lo rechaza.
-- Nunca digas que algo quedó cargado hasta que confirmar_carga_pendiente te conteste que
-  sí. Cuando te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la
-  compra) en una línea.
+- Nunca digas que algo quedó cargado hasta que una herramienta te devuelva el `resultado` de
+  lo hecho (la misma proponer_ cuando se hace en el acto, o confirmar_carga_pendiente). Cuando
+  te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la compra, y el
+  total o el precio que traiga `detalle`) en una línea.
 - Si al final del mensaje de la persona hay una nota "[El sistema ya confirmó la tarjeta...]",
   esa carga ya la registró el sistema por su sí: no llames a confirmar_carga_pendiente, contá
   el resultado que dice la nota y seguí con lo que haya quedado pendiente. Si la nota dice que
@@ -1760,6 +2306,488 @@ CONFIRMACION;
     }
 
     /**
+     * true si entre los bloques de una respuesta hay al menos un `tool_use` (misión
+     * asistente-tarjeta-sin-accion, camino B): es lo que decide si la vuelta ejecuta herramientas, más
+     * allá de lo que diga el `stop_reason`.
+     *
+     * @param  array<int, mixed>  $content_blocks
+     * @return bool
+     */
+    protected function tiene_tool_use(array $content_blocks): bool
+    {
+        foreach ($content_blocks as $block) {
+            if (is_array($block) && ($block['type'] ?? '') === 'tool_use') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * De las herramientas pedidas en el turno, las de carga (las que pueden dejar una tarjeta), sin
+     * repetir y en el orden en que se pidieron.
+     *
+     * @param  array<int, string>  $herramientas
+     * @return array<int, string>
+     */
+    protected function de_carga(array $herramientas): array
+    {
+        $de_carga = [];
+
+        foreach ($herramientas as $nombre) {
+            if (HerramientasDeCarga::es_de_carga($nombre) && ! in_array($nombre, $de_carga, true)) {
+                $de_carga[] = $nombre;
+            }
+        }
+
+        return $de_carga;
+    }
+
+    /**
+     * true si el texto —saneado, como lo leería la persona— afirma una tarjeta para confirmar y el
+     * mensaje que se está generando no tiene NINGUNA tarjeta colgada (misión
+     * asistente-tarjeta-sin-accion). Una tarjeta reemplazada o auto-confirmada en el mismo turno
+     * cuenta como creada: el texto que la nombra no miente.
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function afirma_una_tarjeta_que_no_existe($texto, array $tools, AiMessage $assistant_message): bool
+    {
+        /*
+         * sanear() y no limpiar(): si el saneo deja el texto VACÍO (una sola oración que nombra una
+         * herramienta, "Dejo la tarjeta con proponer_baja…"), a la persona le llega el crudo, así que
+         * la guarda tiene que mirar el crudo — con limpiar() miraba '' y la mentira pasaba.
+         */
+        $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+        if (! TarjetaPrometidaIaHelper::afirma_una_tarjeta($saneado)) {
+            return false;
+        }
+
+        return ! AiMessageAction::where('ai_message_id', $assistant_message->id)->exists();
+    }
+
+    /**
+     * true si la respuesta ANTERIOR del asistente dejó una tarjeta que sigue `propuesta`: el texto que
+     * afirma una tarjeta puede estar hablando de ésa (*"¿y la tarjeta?"* → *"te la dejé, tocá
+     * Confirmar"*).
+     *
+     * 🔴 Sólo la respuesta inmediatamente anterior, no cualquiera de la conversación (chequeo
+     * adversarial del 10/10/2026): el caso 1 de `demo` fue el TERCER pedido de una conversación, y
+     * con una tarjeta vieja sin confirmar de dos pedidos atrás la mentira del tercero pasaba igual.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function hay_tarjetas_pendientes_de_antes(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        $anterior = AiMessage::where('ai_conversation_id', $conversation->id)
+                             ->where('rol', 'assistant')
+                             ->where('id', '<', $assistant_message->id)
+                             ->orderBy('id', 'DESC')
+                             ->first();
+
+        if (is_null($anterior)) {
+            return false;
+        }
+
+        /*
+         * La columna dice `propuesta` también en una tarjeta VENCIDA (getEstadoAttribute la lee como
+         * vencida recién al leer el modelo), y una vencida no se puede confirmar: no salva nada.
+         */
+        return AiMessageAction::where('ai_message_id', $anterior->id)
+                              ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                              ->get()
+                              ->contains(function ($accion) {
+                                  return ! $accion->vencio();
+                              });
+    }
+
+    /**
+     * Lo que se loguea cuando la guarda de la tarjeta prometida dispara. 🔴 Es el rastro que faltó el
+     * 10/10/2026 para saber cuál de los cuatro caminos fue: con las herramientas pedidas y el
+     * `stop_reason` se distingue "no la pidió" (A) de "la pidió y contestó faltan" (D), y con
+     * `el_saneo_saco_algo` "la escribió como texto" (C). El texto va recortado.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  int  $iterations
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  string  $stop_reason
+     * @param  string  $model
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return array<string, mixed>
+     */
+    protected function rastro_de_la_tarjeta_prometida(AiConversation $conversation, AiMessage $assistant_message, $iterations, array $herramientas_pedidas, $stop_reason, $model, $texto, array $tools): array
+    {
+        $texto = (string) $texto;
+
+        return [
+            'ai_conversation_id'   => $conversation->id,
+            'ai_message_id'        => $assistant_message->id,
+            'iterations'           => $iterations,
+            'herramientas_pedidas' => $herramientas_pedidas,
+            'stop_reason'          => (string) $stop_reason,
+            'modelo'               => (string) $model,
+            'el_saneo_saco_algo'   => TextoFinalIaHelper::limpiar($texto, $this->nombres_de_herramientas($tools)) !== $texto,
+            'texto'                => mb_substr($texto, 0, 300),
+        ];
+    }
+
+    /**
+     * El tipo de afirmación ('hecho', 'quedo' o 'promesa') si el texto —saneado, como lo leería la
+     * persona— da por HECHA una carga que este mensaje no ejecutó y lo que pidió la persona no deja que
+     * sea verdad, o '' si no (misión asistente-carga-prometida-sin-accion, 10/10/2026). Lo que afirma el
+     * texto lo dice TarjetaPrometidaIaHelper::afirma_una_carga_hecha(); acá se cruza con lo que pasó.
+     *
+     * 🔴 POR QUÉ DECIDE EL PEDIDO DE LA PERSONA (correcciones del chequeo independiente, 10/10/2026). La
+     * primera versión decidía con tres excepciones —la pregunta, el acuse y "el turno sólo consultó"— y
+     * los chequeos encontraron las dos puntas: falsos positivos graves, un "no pude" sobre una carga que
+     * SÍ existe, que invita a repetirla y DUPLICARLA ("¿Lo cargaste?" → "Sí, lo registré el lunes"), y
+     * agujeros: el pedido en forma de pregunta ("¿Me la pasás al miércoles?"), el "dale" a un
+     * ofrecimiento nuevo, y la mentira después de una consulta preparatoria ("Pasala al miércoles" →
+     * consultar_tareas → "Quedó pasada al miércoles", sin proponer_). Lo que separa la verdad de la
+     * mentira no es si hubo herramientas: es qué pidió la persona (TarjetaPrometidaIaHelper::
+     * clase_del_pedido):
+     *
+     *   - 'otro' (un pedido de carga, también en forma de pregunta, o un hecho que la implica): dispara,
+     *     con cualquier tipo y haya pedido herramientas o no.
+     *   - 'consulta' ("¿Ya quedó cargado?", "Mostrame las tareas"): sólo si la respuesta anterior dejó
+     *     una tarjeta que sigue sin confirmar — ahí "Sí, quedó registrado" miente. Si no, está contando
+     *     un estado o algo de otra conversación, y un "no pude" invitaría a duplicarlo.
+     *   - 'acuse_gracias' ("Gracias genio!"): no dispara si la respuesta anterior tiene una carga
+     *     confirmada y ninguna tarjeta esperando. Si la que dejó sigue sin confirmar, "De nada, quedó
+     *     registrado" miente.
+     *   - 'acuse_si' ("Dale"): igual, y además la respuesta anterior no puede terminar preguntando: si
+     *     terminó ofreciendo algo ("¿Querés que también te agende el pago?"), el "dale" es un pedido nuevo.
+     *
+     * Y nunca dispara si en este mensaje hay una carga EJECUTADA (`confirmada`, o `en_curso` mientras
+     * corre); ni si el texto le nombra a la persona la tarjeta que está en el mensaje (medido: "Dejé la
+     * tarjeta para confirmar: a Distribuidora Norte le cambio el teléfono…"; y "Listo, cambié el monto a
+     * $6.000 en la tarjeta. Confirmala y queda registrado."); ni si una tarjeta del mensaje lleva el
+     * aviso de una carga parecida recién confirmada (tercera vuelta, 10/10/2026): la tarjeta ya lo
+     * muestra, y el texto que lo cuenta ("ya quedó registrado un gasto igual…") es verdad. Ahí el texto
+     * ya dice la verdad.
+     *
+     * Lo que pasa cuando dispara —el reintento y, si sigue, el reemplazo sólo en la mentira segura o el
+     * aviso en lo demás— está en responder_con_el_modelo().
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return string
+     */
+    protected function afirma_una_carga_que_no_se_hizo($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message): string
+    {
+        /* sanear() y no limpiar(), por lo mismo que en afirma_una_tarjeta_que_no_existe(). */
+        $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+        $tipo = TarjetaPrometidaIaHelper::afirma_una_carga_hecha($saneado);
+
+        if ($tipo === '') {
+            return '';
+        }
+
+        $ejecutada = AiMessageAction::where('ai_message_id', $assistant_message->id)
+                                    ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+                                    ->exists();
+
+        if ($ejecutada) {
+            return '';
+        }
+
+        $propuestas = AiMessageAction::where('ai_message_id', $assistant_message->id)
+                                     ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                     ->get();
+
+        if ($propuestas->count() > 0 && TarjetaPrometidaIaHelper::nombra_la_tarjeta($saneado)) {
+            return '';
+        }
+
+        $con_carga_parecida = $propuestas->contains(function ($accion) {
+            $aviso = is_array($accion->presentacion) && isset($accion->presentacion['aviso']) ? (string) $accion->presentacion['aviso'] : '';
+
+            return mb_strpos($aviso, TarjetaPrometidaIaHelper::MARCA_DE_CARGA_PARECIDA) !== false;
+        });
+
+        if ($con_carga_parecida) {
+            return '';
+        }
+
+        $clase = TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message));
+
+        if ($clase === 'otro') {
+            return $tipo;
+        }
+
+        $tarjeta_pendiente = $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+
+        if ($clase === 'consulta') {
+            return $tarjeta_pendiente ? $tipo : '';
+        }
+
+        /* Los dos acuses. */
+        if ($tarjeta_pendiente || ! $this->la_respuesta_anterior_tiene_una_carga_confirmada($conversation, $assistant_message)) {
+            return $tipo;
+        }
+
+        if ($clase === 'acuse_si') {
+
+            $anterior = $this->respuesta_anterior_del_asistente($conversation, $assistant_message);
+
+            if (! is_null($anterior) && TarjetaPrometidaIaHelper::termina_preguntando((string) $anterior->contenido)) {
+                return $tipo;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Le agrega al texto final el bloque de cada ENVÍO A CLIENTES que este mensaje dejó esperando el sí
+     * (misión asistente-envios-a-clientes, corrección 1 del chequeo del 16/10/2026).
+     *
+     * 🔴 POR QUÉ LO HACE EL CÓDIGO. La condición de Lucas es que el dueño vea a quiénes, cuántos, a
+     * quiénes no y el texto exacto ANTES del sí. Si eso quedaba en manos del modelo, alcanzaba con que
+     * resumiera ("¿te lo mando a los 40?") para que el sí no valiera. El bloque lo arma cada propuesta
+     * (`datos.bloque`, DestinatariosIaHelper::bloque()) con los mismos datos de la tarjeta, y acá se pega
+     * tal cual, uno por tarjeta, cerrando con la pregunta. El modelo dice una frase corta y no lo repite
+     * (DestinatariosIaHelper::COMO_MOSTRARLO).
+     *
+     * Solo en los canales que confirman por texto (WhatsApp y MCP): en el sistema lo muestra la tarjeta.
+     * Solo las tarjetas que siguen `propuesta`: una reemplazada por una corrección del mismo turno no se
+     * muestra. Nunca lanza: si algo falla, la respuesta sale igual (y la tarjeta sigue esperando el sí).
+     *
+     * @param  string  $texto
+     * @param  AiMessage  $assistant_message
+     * @return string
+     */
+    protected function con_los_bloques_de_envio($texto, AiMessage $assistant_message): string
+    {
+        try {
+
+            if (! $assistant_message->confirma_por_texto()) {
+                return (string) $texto;
+            }
+
+            $tarjetas = AiMessageAction::where('ai_message_id', $assistant_message->id)
+                                       ->whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
+                                       ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                       ->orderBy('id')
+                                       ->get();
+
+            $bloques = [];
+
+            foreach ($tarjetas as $tarjeta) {
+
+                $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+                $bloque = isset($datos['bloque']) ? trim((string) $datos['bloque']) : '';
+
+                if ($bloque === '' || mb_strpos((string) $texto, $bloque) !== false) {
+                    continue;
+                }
+
+                $bloques[] = $bloque;
+            }
+
+            if (! count($bloques)) {
+                return (string) $texto;
+            }
+
+            $los_bloques = implode("\n\n", $bloques);
+
+            /*
+             * M1 del segundo chequeo: el mensaje entero tiene que entrar en un WhatsApp. El bloque ya se
+             * armó para entrar solo (DestinatariosIaHelper::bloque_que_entra()); si el texto del modelo
+             * lo pasa del tope, se recorta EL TEXTO DEL MODELO (hasta el último punto que entra), nunca el
+             * bloque: es lo que el dueño tiene que leer entero antes del sí.
+             */
+            $lugar = DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE - mb_strlen($los_bloques) - 2;
+
+            $texto = rtrim((string) $texto);
+
+            if (mb_strlen($texto) > $lugar) {
+
+                $corto = mb_substr($texto, 0, max(0, $lugar));
+                $punto = mb_strrpos($corto, '.');
+
+                $texto = $punto === false ? '' : mb_substr($corto, 0, $punto + 1);
+            }
+
+            $texto = trim($texto) === '' ? $los_bloques : $texto . "\n\n" . $los_bloques;
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AsistenteIaService: no se pudo agregar el bloque de un envío a clientes.', [
+                'ai_message_id' => (int) $assistant_message->id,
+                'error'         => $e->getMessage(),
+            ]);
+        }
+
+        return (string) $texto;
+    }
+
+    /**
+     * Cuántas tarjetas `propuesta` tiene el mensaje que se está generando: las que esperan el botón.
+     *
+     * @param  AiMessage  $assistant_message
+     * @return int
+     */
+    protected function tarjetas_propuestas_del_mensaje(AiMessage $assistant_message): int
+    {
+        return AiMessageAction::where('ai_message_id', $assistant_message->id)
+                              ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                              ->count();
+    }
+
+    /**
+     * true si algún mensaje ANTERIOR de la conversación tiene una carga confirmada —o en curso, que se
+     * está ejecutando (cuarta vuelta, 10/10/2026)—: ahí el texto que da por hecha una carga puede estar
+     * contando ésa, así que no es la mentira segura y la respuesta no se reemplaza: se le agrega un
+     * aviso (ver TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION).
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function hay_cargas_confirmadas_de_antes(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        return AiMessageAction::where('ai_conversation_id', $conversation->id)
+                              ->where('ai_message_id', '<', $assistant_message->id)
+                              ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+                              ->exists();
+    }
+
+    /**
+     * true si la respuesta que se está generando es la PRIMERA del asistente en la conversación y la
+     * conversación no trae `contexto` (el bloque de datos de una sugerencia del mostrador). Es una de
+     * las condiciones de la mentira segura (cuarta vuelta, 10/10/2026: A): con un turno anterior, o con
+     * datos ya cargados en la conversación, el modelo puede saber que algo ya estaba registrado aunque
+     * en este turno no haya pedido ninguna herramienta ("Ya está cargado: Gasto N° 7").
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function es_la_primera_respuesta(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        if (! is_null($this->respuesta_anterior_del_asistente($conversation, $assistant_message))) {
+            return false;
+        }
+
+        return trim((string) $conversation->getAttribute('contexto')) === '';
+    }
+
+    /**
+     * La respuesta del asistente inmediatamente anterior a la que se está generando, o null.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return AiMessage|null
+     */
+    protected function respuesta_anterior_del_asistente(AiConversation $conversation, AiMessage $assistant_message)
+    {
+        return AiMessage::where('ai_conversation_id', $conversation->id)
+                        ->where('rol', 'assistant')
+                        ->where('id', '<', $assistant_message->id)
+                        ->orderBy('id', 'DESC')
+                        ->first();
+    }
+
+    /**
+     * true si la respuesta INMEDIATAMENTE anterior del asistente contó una carga confirmada: una tarjeta
+     * suya confirmada, o una que se confirmó mientras se escribía (lo que un acuse puede estar
+     * agradeciendo). Sólo esa, como en hay_tarjetas_pendientes_de_antes(): un "gracias" repasa lo último
+     * que se hizo, no algo de diez mensajes atrás.
+     *
+     * 🔴 "O UNA QUE SE CONFIRMÓ MIENTRAS SE ESCRIBÍA". La confirmación determinista (el "dale" a la
+     * tarjeta pendiente) confirma una tarjeta de un mensaje MÁS VIEJO, y la respuesta que lo cuenta —"Listo,
+     * quedó registrado"— no tiene ninguna propia. Mirando sólo las tarjetas de esa respuesta, el
+     * "Gracias!" siguiente → "De nada, quedó registrado el gasto" disparaba sobre algo que sí se hizo.
+     *
+     * Sexta vuelta (10/10/2026): cuenta también la que está `en_curso` (ejecutándose), como
+     * hay_cargas_confirmadas_de_antes().
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function la_respuesta_anterior_tiene_una_carga_confirmada(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        $anterior = $this->respuesta_anterior_del_asistente($conversation, $assistant_message);
+
+        if (is_null($anterior)) {
+            return false;
+        }
+
+        return AiMessageAction::where('ai_conversation_id', $conversation->id)
+                              ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+                              ->where(function ($query) use ($anterior) {
+                                  $query->where('ai_message_id', $anterior->id)
+                                        ->orWhere('resuelta_at', '>=', $anterior->created_at);
+                              })
+                              ->exists();
+    }
+
+    /**
+     * Lo que escribió la persona en el pedido que se está contestando (el último `user` antes del
+     * mensaje), o '' si no hay ninguno o vino sin texto.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return string
+     */
+    protected function pedido_de_la_persona(AiConversation $conversation, AiMessage $assistant_message): string
+    {
+        $contenido = AiMessage::where('ai_conversation_id', $conversation->id)
+                              ->where('rol', 'user')
+                              ->where('id', '<', $assistant_message->id)
+                              ->orderBy('id', 'DESC')
+                              ->value('contenido');
+
+        return (string) $contenido;
+    }
+
+    /**
+     * Lo que se loguea cuando la guarda de la CARGA dispara: el rastro de la tarjeta (herramientas,
+     * `stop_reason`, modelo, si el saneo sacó algo, el texto recortado) más de qué guarda es, qué tipo
+     * de afirmación encontró el detector, cuántas tarjetas esperan el botón en el mensaje —que es lo que
+     * distingue "no se hizo nada" de "quedó como tarjeta"— y cómo se clasificó el pedido de la persona.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  int  $iterations
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  string  $stop_reason
+     * @param  string  $model
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  string  $tipo_de_afirmacion  hecho | quedo | promesa
+     * @param  int  $tarjetas_propuestas
+     * @return array<string, mixed>
+     */
+    protected function rastro_de_la_carga_prometida(AiConversation $conversation, AiMessage $assistant_message, $iterations, array $herramientas_pedidas, $stop_reason, $model, $texto, array $tools, $tipo_de_afirmacion, $tarjetas_propuestas): array
+    {
+        $rastro = $this->rastro_de_la_tarjeta_prometida($conversation, $assistant_message, $iterations, $herramientas_pedidas, $stop_reason, $model, $texto, $tools);
+
+        $rastro['clase']                      = 'carga';
+        $rastro['tipo_de_afirmacion']         = (string) $tipo_de_afirmacion;
+        $rastro['tarjetas_propuestas']        = (int) $tarjetas_propuestas;
+        $rastro['clase_del_pedido']           = TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message));
+        $rastro['tarjeta_pendiente_de_antes'] = $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+
+        return $rastro;
+    }
+
+    /**
      * Los bloques `image` de un mensaje, en base64, listos para la API.
      *
      * 🔴 El `media_type` sale DE LOS BYTES (AsistenteImagenHelper::media_type,
@@ -1867,6 +2895,13 @@ CONFIRMACION;
 
             return trim($contenido) === '' ? $marca : rtrim($contenido) . "\n" . $marca;
         }
+
+        /*
+         * Misión asistente-carga-prometida-sin-accion (cuarta vuelta, 10/10/2026: C): sin los avisos de la
+         * guarda de la carga ("Ojo: con este mensaje no registré ningún cambio…"). Son para la persona y
+         * dicen la verdad del turno en que se agregaron; si el modelo los lee, los copia en otro turno.
+         */
+        $contenido = TarjetaPrometidaIaHelper::sin_avisos($contenido);
 
         if (! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
             return $contenido;
@@ -2095,7 +3130,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -2112,6 +3147,10 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Último día del rango, AAAA-MM-DD, inclusive. Manda sobre dias.',
                         ],
+                        'proveedor' => [
+                            'type' => 'string',
+                            'description' => 'Nombre del proveedor tal como lo dijo la persona, para "lo que más vendo de [proveedor]": acota a los artículos cuyo proveedor es ese. Sin esto, todos los artículos.',
+                        ],
                     ],
                     'required' => [],
                 ],
@@ -2120,7 +3159,9 @@ CONFIRMACION;
                         $owner_id,
                         self::dias_del_enum($input),
                         isset($input['desde']) ? $input['desde'] : null,
-                        isset($input['hasta']) ? $input['hasta'] : null
+                        isset($input['hasta']) ? $input['hasta'] : null,
+                        0,
+                        isset($input['proveedor']) ? (string) $input['proveedor'] : null
                     );
                 },
             ],
@@ -2427,7 +3468,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'resumir_datos',
-                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -2590,13 +3631,17 @@ CONFIRMACION;
              */
             [
                 'name' => 'consultar_ventas_sin_cobrar',
-                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
+                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. Cada cliente trae deuda_total_en_pesos (TODO lo que debe), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda total. 🔴 "Los que me deben más de X hace más de N días" = deuda TOTAL de X o más Y alguna deuda de más de N días: mandá dias = N y monto_minimo = X, y contestá con deuda_total_en_pesos de cada cliente. NUNCA compares X contra lo atrasado solo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
+                        ],
+                        'monto_minimo' => [
+                            'type' => 'number',
+                            'description' => 'Deuda TOTAL mínima del cliente, en pesos, para "los que me deben más de X". Se compara contra todo lo que debe el cliente (deuda_total_en_pesos), no contra lo atrasado. Va junto con dias cuando la pregunta dice además "hace más de N días".',
                         ],
                     ],
                     'required' => [],
@@ -2616,7 +3661,11 @@ CONFIRMACION;
                         ? ContextoDeCargaIa::de_la_conversacion($conversation)->persona
                         : null;
 
-                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona);
+                    $monto_minimo = (isset($input['monto_minimo']) && is_numeric($input['monto_minimo']))
+                        ? (float) $input['monto_minimo']
+                        : null;
+
+                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona, $monto_minimo);
                 },
             ],
             /*
@@ -2664,7 +3713,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'buscar_producto_por_codigo_de_barras',
-                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion e imagen_id; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
+                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion, imagen_id y, si vuelve categorias_del_negocio, category_id y sub_category_id: elegí vos del árbol la categoría que corresponde al producto y una subcategoría DE ESA categoría (por nombre), sin preguntarle a la persona; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -2686,6 +3735,39 @@ CONFIRMACION;
                         isset($input['codigo']) ? (string) $input['codigo'] : '',
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         ($assistant_message instanceof AiMessage) ? $assistant_message : null
+                    );
+                },
+            ],
+            /*
+             * 🔴 MISIÓN asistente-aviso-escaneo-factura (16/10/2026), al final por la regla del
+             * prefijo del caché. En demo3, a «y? ya la leiste? que trae» el asistente contestaba que
+             * la factura no la lee él: tenía razón sobre la FOTO (no la transcribe, ver el prompt),
+             * pero el RESULTADO del escaneo ya estaba y nadie se lo daba. Es de lectura y va en todos
+             * los canales: en el sistema también sirve para «¿qué trajo la factura de la compra 12?».
+             * `provider_order_scans` sigue excluida del esquema genérico: la lectura va por acá.
+             */
+            [
+                'name' => 'consultar_escaneo_de_factura',
+                'description' => 'Devuelve lo que LEYÓ el escaneo de una factura de compra (el que corre solo cuando se carga la foto de la factura): estado (en_proceso, listo, error, revisado, descartado o sin_escaneo), proveedor de la compra, comprobante, total, neto, IVA, cuántos renglones trae, cuántos reconoció entre los artículos del negocio y cuántos quedaron sin match (artículos nuevos para dar de alta o asociar), los renglones (nombre leído, cantidad, costo y con qué artículo del negocio coincide), los campos dudosos y el link para revisarlo (url, puede venir en null). Usala cuando pregunten qué trae o qué leyó la factura, cuánto dio el total o si ya terminó el escaneo. Sin compra_num trae el último escaneo de esta conversación (o del negocio) de las últimas 48 horas. Contá los datos como "lo que leyó el escaneo", no como confirmados: se confirman al revisar en Compras. Si está en_proceso, decí que todavía se está leyendo. Pasá el link TAL CUAL si viene; si es null, no armes uno. Si la respuesta trae "error", contá ese motivo.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'compra_num' => [
+                            'type'        => 'integer',
+                            'description' => 'Opcional: el N° de la compra cuyo escaneo se quiere ver, como lo ve la persona en Compras. Sin él, el último escaneo.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                /*
+                 * La conversación viaja para el permiso (QUIÉN pregunta, `provider_order.index`) y
+                 * para preferir el escaneo que salió de esta misma charla.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return EscaneoDeFacturaIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        isset($input['compra_num']) ? $input['compra_num'] : null
                     );
                 },
             ],

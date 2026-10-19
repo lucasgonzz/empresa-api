@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\precios\PrecioFinalEnMasivaHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Stock\StockMovementController;
@@ -120,6 +121,47 @@ class MasiveUpdateHelper
         if (strtolower($formated_model_name) === strtolower(\App\Models\Cheque::class)) {
             Log::info('Se interrumpio actualizacion: los cheques no se actualizan en forma masiva.');
             return self::respuesta_de_encolado(422, ['message' => 'Los cheques no se actualizan en forma masiva.']);
+        }
+
+        /*
+         * 🔴 Los movimientos de caja tampoco (misión movimientos-caja-manuales, 9/10/2026), por el
+         * mismo motivo que los cheques: esta actualización resuelve los ids con find() sin dueño y
+         * asigna cualquier columna sin recalcular saldos, así que por acá se podía reescribir el
+         * movimiento de una venta, el de un turno ya arqueado o el de otro comercio, salteando todo
+         * lo que MovimientoCajaController::update() blinda (tenencia, origen, apertura vigente,
+         * importes y recálculo). Mismo corte: antes de buscar o encolar nada, para las dos
+         * entradas, comparando la clase resuelta en minúsculas.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\MovimientoCaja::class)) {
+            Log::info('Se interrumpio actualizacion: los movimientos de caja no se actualizan en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'Los movimientos de caja no se actualizan en forma masiva.']);
+        }
+
+        /*
+         * 🔴 Los conceptos de movimiento de caja tampoco (misión destrabar-videos-centro,
+         * 16/10/2026). Esta actualización resuelve los ids con find() sin dueño: por acá se podía
+         * renombrar un concepto del sistema (que el código busca por id fijo y por nombre) o el de
+         * otro comercio, salteando lo que ConceptoMovimientoCajaController::update() blinda. Mismo
+         * corte que los de arriba.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\ConceptoMovimientoCaja::class)) {
+            Log::info('Se interrumpio actualizacion: los conceptos de movimiento de caja no se actualizan en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'Los conceptos de movimiento de caja no se actualizan en forma masiva.']);
+        }
+
+        /*
+         * 🔴 La configuración del bot de WhatsApp tampoco (misión whatsapp-envio-simulado-demos,
+         * 15/10/2026). Esta actualización resuelve los ids con find() sin dueño y asigna cualquier
+         * columna del update_form: por acá cualquier usuario autenticado podía prender
+         * `envio_simulado` (el modo en que los mensajes se dan por enviados sin mandarse) o pisar
+         * la clave de Kapso de OTRO negocio, salteando todo lo que `WhatsappBotController::update_config()`
+         * blinda (solo el dueño, solo sus propios campos, el guard de las tres credenciales). Mismo
+         * corte que los cheques y los movimientos de caja: antes de buscar o encolar nada, para
+         * las dos entradas, comparando la clase resuelta en minúsculas.
+         */
+        if (strtolower($formated_model_name) === strtolower(\App\Models\WhatsappBotConfig::class)) {
+            Log::info('Se interrumpio actualizacion: la configuracion de WhatsApp no se actualiza en forma masiva.');
+            return self::respuesta_de_encolado(422, ['message' => 'La configuración de WhatsApp no se actualiza en forma masiva.']);
         }
 
         $from_filter = (boolean) $from_filter;
@@ -997,9 +1039,36 @@ class MasiveUpdateHelper
             return CatalogoPorListaHelper::aplicar_en_masiva($model, $form, $owner, $memoria_de_la_corrida);
         }
 
+        /*
+         * "Precio final sube/baja X %" (misión asistente-masiva-precio-manual, 10/10/2026): no es una
+         * columna sino el precio que se cobra, así que tiene su propia rama. La palanca se decide por
+         * artículo, con el comercio: en uno de precio manual sube ese precio; donde el margen no mueve
+         * el precio (listas de precio, listas por categoría, proveedor con costo de lista + IVA) sube
+         * el costo; en el resto de los de costo + margen recalcula SU margen; en uno sin costo ni
+         * precio no escribe nada. Devuelve el cambio con la forma de siempre (sobre `price`, `cost` o
+         * `percentage_gain`), así que la reversión de siempre lo restaura. El dueño va explícito (en
+         * la cola no hay sesión) y la memoria de la corrida hace que el comercio se resuelva una vez
+         * por corrida y el proveedor una vez por proveedor. Detalle en PrecioFinalEnMasivaHelper.
+         */
+        if (PrecioFinalEnMasivaHelper::es_de_la_masiva($form)) {
+            return PrecioFinalEnMasivaHelper::aplicar($model, $form, $owner, $memoria_de_la_corrida);
+        }
+
         if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
+
+            /*
+             * Un porcentaje de nada es nada (misión asistente-masiva-precio-manual, 10/10/2026): con la
+             * columna en null, `null * x / 100` daba 0 y se GUARDABA 0 sin contarlo como cambio (en
+             * PHP null == 0), así que ni el historial ni la reversión se enteraban. En un artículo sin
+             * margen ese `price = 0.00` quedaba leyéndose después como un precio manual de $0. Ahora
+             * no se escribe nada. El stock sigue por su camino de siempre (aplicar_stock_por_movimiento()).
+             */
+            if (is_null($old_value) && !self::es_stock_de_articulo($model, $prop_key)) {
+                return null;
+            }
+
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
             $nuevo = $model->{$prop_key} - $value;
             if (!empty($form['round']) && self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
@@ -1032,6 +1101,12 @@ class MasiveUpdateHelper
         if ($form['type'] == 'number' && strpos($form['key'], 'increment') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
+
+            // Mismo motivo que en la rama de decrement: sobre null no se escribe un 0.
+            if (is_null($old_value) && !self::es_stock_de_articulo($model, $prop_key)) {
+                return null;
+            }
+
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
             $nuevo = $model->{$prop_key} + $value;
             if (!empty($form['round']) && self::costo_declarado_como_bruto($model, $prop_key, $form, $owner)) {
@@ -1644,20 +1719,46 @@ class MasiveUpdateHelper
         }
 
         $is_revert = $masive_update->action == 'revert';
-        $model_label = $masive_update->model_name == 'article' ? 'artículos' : $masive_update->model_name;
+        $es_de_articulos = $masive_update->model_name == 'article';
+        $model_label = $es_de_articulos ? 'artículos' : $masive_update->model_name;
+
+        /*
+         * Una masiva que termina sin cambiar nada NO es un "finalizó correctamente" (misión
+         * asistente-masiva-precio-manual, 10/10/2026): en demo, "subile 10 % el precio manual" a
+         * artículos que calculan con costo + margen terminaba en verde con "Registros afectados: 0"
+         * y nada más, y el dueño entendía que se había aplicado. El modal global
+         * (global-notification/Modal.vue) no pinta `color_variant`, así que lo que importa es el
+         * texto: dice que no cambió nada y cuántos alcanzó. Solo para la actualización; una
+         * reversión en 0 sigue como siempre.
+         */
+        $sin_cambios = $success && !$is_revert && (int) $masive_update->affected_count === 0;
+        $alcanzados = self::cantidad_de_alcanzados($masive_update);
 
         if ($success) {
-            $message = $is_revert
-                ? 'La reversión de la actualización masiva finalizó correctamente'
-                : 'La actualización masiva de ' . $model_label . ' finalizó correctamente';
+            if ($sin_cambios) {
+                $message = 'La actualización masiva de ' . $model_label . ' terminó sin cambiar '
+                    . ($es_de_articulos ? 'ningún artículo' : 'ningún registro');
+            } else {
+                $message = $is_revert
+                    ? 'La reversión de la actualización masiva finalizó correctamente'
+                    : 'La actualización masiva de ' . $model_label . ' finalizó correctamente';
+            }
+
+            $parrafos = [];
+
+            if ($sin_cambios) {
+                $parrafos[] = self::parrafo_de_masiva_sin_cambios($alcanzados, $es_de_articulos);
+            } elseif (!is_null($alcanzados) && $alcanzados !== (int) $masive_update->affected_count) {
+                $parrafos[] = ($es_de_articulos ? 'Artículos' : 'Registros') . ' alcanzados: ' . $alcanzados;
+            }
+
+            $parrafos[] = 'Registros afectados: ' . (int) $masive_update->affected_count;
+            $parrafos[] = 'Cambios aplicados: ' . (int) $masive_update->changes_count;
 
             $info_to_show = [
                 [
                     'title' => 'Resultado',
-                    'parrafos' => [
-                        'Registros afectados: ' . (int) $masive_update->affected_count,
-                        'Cambios aplicados: ' . (int) $masive_update->changes_count,
-                    ],
+                    'parrafos' => $parrafos,
                 ],
             ];
 
@@ -1699,13 +1800,62 @@ class MasiveUpdateHelper
             ];
         }
 
+        if (!$success) {
+            $color_variant = 'danger';
+        } else {
+            $color_variant = $sin_cambios ? 'warning' : 'success';
+        }
+
         $owner_user->notify(new GlobalNotification([
             'message_text' => $message,
-            'color_variant' => $success ? 'success' : 'danger',
+            'color_variant' => $color_variant,
             'functions_to_execute' => $functions_to_execute,
             'info_to_show' => $info_to_show,
             'owner_id' => $owner_user->id,
             'is_only_for_auth_user' => $masive_update->employee_id,
         ]));
+    }
+
+    /**
+     * Cuántos registros alcanzó la masiva: los `resolved_models_id` que quedaron en su criterio al
+     * encolarla. null si no los tiene (una reversión, o una masiva encolada antes de que se
+     * guardaran).
+     *
+     * @param \App\Models\MasiveUpdate $masive_update
+     * @return int|null
+     */
+    protected static function cantidad_de_alcanzados(MasiveUpdate $masive_update)
+    {
+        $criteria = json_decode($masive_update->criteria_json, true);
+
+        if (!is_array($criteria) || !isset($criteria['resolved_models_id']) || !is_array($criteria['resolved_models_id'])) {
+            return null;
+        }
+
+        return count($criteria['resolved_models_id']);
+    }
+
+    /**
+     * El primer párrafo del aviso de una masiva que terminó sin cambiar nada: cuántos alcanzó y por
+     * qué ninguno cambió.
+     *
+     * @param int|null $alcanzados
+     * @param bool $es_de_articulos
+     * @return string
+     */
+    protected static function parrafo_de_masiva_sin_cambios($alcanzados, $es_de_articulos)
+    {
+        $singular = $es_de_articulos ? 'artículo' : 'registro';
+        $plural = $es_de_articulos ? 'artículos' : 'registros';
+
+        if (is_null($alcanzados)) {
+            return 'Ningún ' . $singular . ' cambió: ya tenían esos valores o el cambio no se les aplica.';
+        }
+
+        if ($alcanzados === 1) {
+            return 'Alcanzó a 1 ' . $singular . ', pero no cambió: ya tenía esos valores o el cambio no se le aplica.';
+        }
+
+        return 'Alcanzó a ' . $alcanzados . ' ' . $plural . ', pero ninguno cambió: ya tenían esos valores o el cambio no se les aplica.';
     }
 }

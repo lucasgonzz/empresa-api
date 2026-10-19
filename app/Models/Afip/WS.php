@@ -154,6 +154,11 @@ abstract class WS
         // Si no pudo descargar pero existe un archivo previo, usar stale
         if (file_exists($this->wsdl_cache_file)) {
             Log::warning('AFIP WSDL: no se pudo actualizar, usando WSDL local existente (stale): ' . $this->wsdl_cache_file);
+
+            if (!$this->wsdl_cache_tiene_lo_necesario()) {
+                Log::error('AFIP WSDL: el WSDL local en uso esta desactualizado y NO declara campos que el sistema envia: ' . $this->wsdl_cache_file . '. PHP los descarta en silencio al armar el request.');
+            }
+
             return $this->wsdl_cache_file;
         }
 
@@ -172,6 +177,11 @@ abstract class WS
             return false;
         }
 
+        // Un WSDL viejo no sirve aunque su fecha este al dia (ver wsdl_cache_tiene_lo_necesario()).
+        if (!$this->wsdl_cache_tiene_lo_necesario()) {
+            return false;
+        }
+
         // TTL <= 0 => no vence nunca
         if ((int) $this->wsdl_cache_ttl_seconds <= 0) {
             return true;
@@ -183,6 +193,25 @@ abstract class WS
         }
 
         return (time() - $mtime) <= (int) $this->wsdl_cache_ttl_seconds;
+    }
+
+    /**
+     * Si el WSDL en cache declara todo lo que el sistema le manda al servicio.
+     *
+     * 🔴 PHP SoapClient serializa el request SEGUN EL WSDL: un campo que el WSDL no declara se
+     * descarta en silencio, sin error ni aviso, y ARCA lo contesta como si nunca se hubiera enviado.
+     * Asi pasaba con `CondicionIVAReceptorId` en `public/afip/wsdl/wsfe_wsdl.xml` (WSDL de marzo de
+     * 2025, anterior a ese campo): la observacion 10245 de ARCA aparecia en cada comprobante y desde
+     * el 1/12/2026 ARCA los rechaza. El vencimiento por fecha no alcanza para defenderse de eso:
+     * el archivo que viaja en el release tiene fecha reciente aunque su contenido sea viejo.
+     *
+     * Por defecto no exige nada; cada servicio define lo suyo (ver WSFE).
+     *
+     * @return bool
+     */
+    protected function wsdl_cache_tiene_lo_necesario()
+    {
+        return true;
     }
 
     /**

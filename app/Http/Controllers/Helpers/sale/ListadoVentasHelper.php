@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers\Helpers\sale;
 
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Address;
 use App\Models\Sale;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
@@ -25,6 +28,20 @@ use Illuminate\Support\Facades\DB;
  * Los filtros que se llevan a SQL son el espejo de `src/mixins/sale.js::sales_to_show` (y de su
  * copia en PHP, `SaleController::apply_view_show_option_filters`, que el Excel sigue usando sobre
  * la coleccion cargada). Si se cambia el criterio de un filtro, se cambia en los tres lados.
+ *
+ * ALCANCE DEL EMPLEADO (misiones ventas-total-visible-al-empleado y alcance-de-ventas-caminos-faltantes,
+ * 16/10/2026). Este helper es el UNICO lugar donde viven las reglas que acotan lo que ve un
+ * empleado en la pantalla de Ventas, y las consumen todos los caminos que alimentan esa pantalla:
+ *
+ *   - QUE ventas ve (sucursal / empleado): `alcance_permitido()` + `aplicar_alcance()`.
+ *   - QUE DIAS ve (`sale.index.previus_days`): `solo_hoy_permitido()` + `acotar_fechas()`.
+ *   - Quien puede EXPORTAR a Excel: `puede_exportar()`.
+ *   - La BUSQUEDA de la pantalla (buscador general y filtros de columna), que comparte el endpoint
+ *     generico con otros modulos: `para_busqueda()`, que solo corre si el pedido trae la marca
+ *     `ventas_pantalla` (ver `tiene_marca_de_pantalla()`).
+ *
+ * Si una regla se cambia aca, se cambia para los cuatro caminos a la vez. Lo que sigue sin imponer
+ * el servidor esta listado en el docblock de LIMITES de `aplicar_filtros_de_pantalla()`.
  */
 class ListadoVentasHelper
 {
@@ -33,6 +50,27 @@ class ListadoVentasHelper
 
     /** Techo de `per_page`: mas que esto vuelve a ser "bajar el dia entero", que es lo que se quiere evitar. */
     const PER_PAGE_MAXIMO = 200;
+
+    /**
+     * Los cuatro permisos que acotan QUE ventas ve un empleado. Son los mismos slugs que leen la SPA
+     * (`get_address_param` / `get_employee_param` de mixins/route_functions.js y los dos navs de
+     * Ventas) y el catalogo de permisos (PermisosCatalogoHelper): si se cambia el criterio de uno,
+     * se cambia en los tres lados.
+     */
+    const PERMISO_SUCURSALES_TODAS = 'sale.index.addresses.all';
+    const PERMISO_SUCURSAL_PROPIA = 'sale.index.addresses.only_your';
+    const PERMISO_EMPLEADOS_TODOS = 'sale.index.employees.all';
+    const PERMISO_EMPLEADO_PROPIO = 'sale.index.employees.only_your';
+
+    /**
+     * "Ver ventas de dias anteriores". Sin este permiso un empleado ve SOLO las ventas de hoy
+     * (ver `solo_hoy_permitido()`). Es el mismo slug que lee `ControlFecha.vue` de la SPA para
+     * esconder la tira de dias y el calendario.
+     */
+    const PERMISO_DIAS_ANTERIORES = 'sale.index.previus_days';
+
+    /** Mensaje del 403 de los cuatro Excel de ventas cuando quien los pide no es dueño ni administrador. */
+    const MENSAJE_SIN_PERMISO_PARA_EXPORTAR = 'Solo el dueño o un administrador puede exportar las ventas a Excel.';
 
     /**
      * Estado de la cuenta corriente de la venta tal como lo ve el navegador: el `status` de la
@@ -148,9 +186,19 @@ class ListadoVentasHelper
 
         $totales['metodo_de_pago'] = self::total_del_metodo_de_pago($filtrada, $request);
 
+        /*
+         * 🔴 LOS CONTADORES "(N)" DE LAS SOLAPAS SALEN DE LA BASE YA ACOTADA POR EL ALCANCE DEL
+         * EMPLEADO. NO LOS "SIMPLIFIQUES" DE VUELTA A `conteos_por_solapa($base)` (misión
+         * alcance-de-ventas-caminos-faltantes, 16/10/2026).
+         *
+         * Antes salian de la base a secas: un empleado acotado ("solo sus ventas" / "solo su
+         * sucursal") recibia en `por_sucursal`, `por_empleado` y `sin_empleado` cuantas ventas tenia
+         * cada sucursal y cada compañero. Eran cantidades, no importes, pero eran de ventas que no
+         * tiene permitido ver. `aplicar_alcance()` muta, por eso va sobre un clon: `$base` no se toca.
+         */
         return [
             'models'  => $paginador,
-            'totales' => array_merge($totales, self::conteos_por_solapa($base)),
+            'totales' => array_merge($totales, self::conteos_por_solapa(self::aplicar_alcance(clone $base))),
         ];
     }
 
@@ -191,8 +239,10 @@ class ListadoVentasHelper
      * Espejo de `sales_to_show`: solapa de sucursal, solapa de empleado y las tres show options.
      *
      * Con "ver consolidadas" prendido, una contenedora sin `address_id` / `employee_id` pasa la
-     * solapa igual (`_mostrarContenedorConSucursal` / `_mostrarContenedorConEmpleado`), y pasa el
-     * filtro de metodo de pago igual: las contenedoras no tienen medios de pago propios.
+     * solapa que ELIGIO LA PERSONA igual (`_mostrarContenedorConSucursal` /
+     * `_mostrarContenedorConEmpleado`), y pasa el filtro de metodo de pago igual: las contenedoras
+     * no tienen medios de pago propios. La excepcion NO rige cuando el eje lo fija el servidor por
+     * permisos (`alcance_permitido()`): ahi la contenedora no pasa (ver el comentario del cuerpo).
      *
      * @param  \Illuminate\Database\Eloquent\Builder $query
      * @param  Request $request
@@ -202,14 +252,72 @@ class ListadoVentasHelper
     {
         $consolidadas = self::mostrar_consolidadas($request);
 
+        /*
+         * 🔴 EL ALCANCE DEL EMPLEADO LO IMPONE EL SERVIDOR, NO EL PEDIDO. NO LO "SIMPLIFIQUES" DE
+         * VUELTA A LEER SOLO LA QUERY STRING (misión ventas-total-visible-al-empleado, 16/10/2026).
+         *
+         * Hasta esa misión las solapas eran lo unico que acotaba lo que veia un empleado, y las
+         * armaba la SPA: la API filtraba por lo que le llegara. Era inocuo mientras el empleado sin
+         * `sale.index.total` no veia ningun numero; desde que todo empleado ve el Total, un pedido
+         * armado a mano (`address_id` / `employee_id` ajenos, o ninguno) devolveria el total de
+         * ventas que no tiene permitido ver. Mismo criterio que `RoadMapController::solo_sus_hojas()`.
+         *
+         * Se PISA el valor del pedido (no se intersecta) porque asi la SPA y la API no pueden
+         * discrepar: la solapa que la SPA arma para un empleado acotado es, por construccion, la
+         * que impone el servidor, y donde la SPA se equivoca (dos empleados con el mismo nombre, un
+         * nombre que no aparece en el catalogo) manda el servidor. Todo lo que sale de este conjunto
+         * --filas, COUNT del paginador, totales, sub-total del metodo de pago-- queda acotado junto.
+         *
+         * 🔴 LIMITES, para que nadie lea esto como "el servidor ya impone el alcance en todos
+         * lados". Estado al 16/10/2026 (mision alcance-de-ventas-caminos-faltantes):
+         *
+         * YA LO IMPONE EL SERVIDOR (todos con las funciones de este helper, una sola regla):
+         *   - el modo paginado de la pantalla de Ventas (`per_page`), por esta misma funcion;
+         *   - el listado de Ventas SIN `per_page` (`SaleController::index`, modulo `ventas`):
+         *     `aplicar_alcance()`;
+         *   - los contadores "(N)" de las solapas (`conteos_por_solapa`, desde `respuesta_paginada`
+         *     y `para_busqueda`): salen del conjunto ya acotado;
+         *   - el buscador general y los filtros de columna (`global-search/sale`, `search/sale`),
+         *     PERO SOLO si el pedido trae la marca `ventas_pantalla`: `para_busqueda()`;
+         *   - los cuatro Excel de ventas: 403 a quien no es dueño ni administrador (`puede_exportar()`);
+         *   - los dias que ve el empleado (`sale.index.previus_days`): `acotar_fechas()`, tanto en el
+         *     listado como en la busqueda con marca.
+         *
+         * SIGUE SIN IMPONERLO EL SERVIDOR (y no es un descuido, esta declarado en el plan de la mision):
+         *   - Deposito, Por entregar y Por estado (`from-date/deposito|por_entregar|por_estado`,
+         *     `sale/por-entregar`): son modulos con permisos propios (`deposito_para_checkear`,
+         *     `deposito_checkeadas`), no se acotan por sucursal ni por empleado;
+         *   - un pedido a `global-search/sale` o `search/sale` armado a mano SIN la marca: la ruta es
+         *     generica y la comparten esos mismos modulos, asi que sin la marca no sabe de que
+         *     pantalla viene;
+         *   - `GET sale/{id}`, `GET sale/charts/{from}/{to}`, `GET previus-day/sale/...` (la tira de
+         *     conteos por dia) y `PreviusNextController`;
+         *   - `pesos.costos` y `pesos.ganancia` viajan en el JSON a los empleados (la SPA los esconde).
+         *
+         * Con el eje FIJADO por el servidor las contenedoras de facturacion consolidada NO pasan por
+         * la excepcion de "ver consolidadas": una contenedora nunca tiene sucursal ni empleado y su
+         * total repite el de ventas de cualquiera, asi que dejarla pasar le sumaba al empleado
+         * acotado importes que no son suyos. Con el eje libre (dueño, admin, "todos") la excepcion
+         * sigue como siempre: la solapa que eligio la persona no es una restriccion.
+         */
+        $alcance = self::alcance_permitido();
+
         /* Solapa de sucursal. */
         $address_id = $request->query('address_id');
 
+        /* La contenedora entra a la solapa de sucursal solo si el eje lo eligio la persona. */
+        $consolidadas_en_sucursal = $consolidadas;
+
+        if (!is_null($alcance['address_id'])) {
+            $address_id = $alcance['address_id'];
+            $consolidadas_en_sucursal = false;
+        }
+
         if (!is_null($address_id) && $address_id !== '') {
-            $query->where(function ($q) use ($address_id, $consolidadas) {
+            $query->where(function ($q) use ($address_id, $consolidadas_en_sucursal) {
                 $q->where('sales.address_id', $address_id);
 
-                if ($consolidadas) {
+                if ($consolidadas_en_sucursal) {
                     $q->orWhere(function ($q2) {
                         $q2->where('sales.is_consolidacion_facturacion', 1)
                            ->whereNull('sales.address_id');
@@ -222,6 +330,16 @@ class ListadoVentasHelper
         $only_owner = self::bandera($request, 'only_owner');
         $employee_id = $request->query('employee_id');
 
+        /* La contenedora entra a la solapa de empleado solo si el eje lo eligio la persona. */
+        $consolidadas_en_empleado = $consolidadas;
+
+        if (!is_null($alcance['employee_id'])) {
+            /* Un empleado acotado a sus ventas no puede pedir la solapa del dueño ni la de otro. */
+            $employee_id = $alcance['employee_id'];
+            $only_owner = false;
+            $consolidadas_en_empleado = false;
+        }
+
         if ($only_owner) {
             /* `!sale.employee_id` en el front: NULL y 0 son las dos formas de "sin empleado". */
             $query->where(function ($q) {
@@ -229,10 +347,10 @@ class ListadoVentasHelper
                   ->orWhere('sales.employee_id', 0);
             });
         } else if (!is_null($employee_id) && $employee_id !== '') {
-            $query->where(function ($q) use ($employee_id, $consolidadas) {
+            $query->where(function ($q) use ($employee_id, $consolidadas_en_empleado) {
                 $q->where('sales.employee_id', $employee_id);
 
-                if ($consolidadas) {
+                if ($consolidadas_en_empleado) {
                     $q->orWhere(function ($q2) {
                         $q2->where('sales.is_consolidacion_facturacion', 1)
                            ->whereNull('sales.employee_id');
@@ -547,53 +665,72 @@ class ListadoVentasHelper
      * consecutivas se serializa como objeto JSON, y con claves 0..n como lista; la SPA no tiene por
      * que adivinar cual de las dos le llego.
      *
+     * Esta funcion cuenta lo que recibe, tal cual: el alcance del empleado NO lo aplica ella sino
+     * quien la llama (`respuesta_paginada` y `para_busqueda` le pasan la base ya pasada por
+     * `aplicar_alcance()`), para que un empleado acotado no reciba cuantas ventas tiene cada
+     * sucursal y cada compañero. La query tiene que llegar sin `orderBy` ni columnas propias.
+     *
      * @param  \Illuminate\Database\Eloquent\Builder $query_base
      * @return array  ['por_sucursal' => [...], 'por_empleado' => [...], 'sin_empleado' => int]
      */
     static function conteos_por_solapa($query_base)
     {
-        /* `sale.address_id && ...` en el front: NULL y 0 no cuentan para ninguna sucursal. */
-        $por_sucursal = (clone $query_base)->toBase()
-                            ->selectRaw('sales.address_id AS address_id, COUNT(*) AS cantidad')
-                            ->whereNotNull('sales.address_id')
-                            ->where('sales.address_id', '<>', 0)
-                            ->groupBy('sales.address_id')
-                            ->get()
-                            ->map(function ($fila) {
-                                return [
-                                    'address_id' => (int) $fila->address_id,
-                                    'cantidad'   => (int) $fila->cantidad,
-                                ];
-                            })
-                            ->values()
-                            ->all();
+        /*
+         * 🔴 UNA SOLA PASADA POR EL CONJUNTO, no tres. Las tres cuentas (por sucursal, por empleado y
+         * "sin empleado") salen de UN `GROUP BY address_id, employee_id` que se pliega en PHP. Antes
+         * eran tres consultas, y eso no importaba sobre un dia; sobre una BUSQUEDA (todas las fechas
+         * del dueño, o el historial entero tras "Limpiar") cada consulta recorre todas las ventas que
+         * matchean, y medido en una copia de un cliente real (31 mil ventas) cada pasada tarda ~0,2 s.
+         * Las dos listas y el entero son EXACTAMENTE los de siempre.
+         */
+        $filas = (clone $query_base)->toBase()
+                    ->selectRaw('sales.address_id AS address_id, sales.employee_id AS employee_id, COUNT(*) AS cantidad')
+                    ->groupBy('sales.address_id', 'sales.employee_id')
+                    ->get();
 
-        /* `sale.employee_id && ...` en el front: NULL y 0 van a la solapa del dueño (sin_empleado). */
-        $por_empleado = (clone $query_base)->toBase()
-                            ->selectRaw('sales.employee_id AS employee_id, COUNT(*) AS cantidad')
-                            ->whereNotNull('sales.employee_id')
-                            ->where('sales.employee_id', '<>', 0)
-                            ->groupBy('sales.employee_id')
-                            ->get()
-                            ->map(function ($fila) {
-                                return [
-                                    'employee_id' => (int) $fila->employee_id,
-                                    'cantidad'    => (int) $fila->cantidad,
-                                ];
-                            })
-                            ->values()
-                            ->all();
+        $por_sucursal = [];
+        $por_empleado = [];
+        $sin_empleado = 0;
 
-        $sin_empleado = (clone $query_base)->toBase()
-                            ->where(function ($q) {
-                                $q->whereNull('sales.employee_id')
-                                  ->orWhere('sales.employee_id', 0);
-                            })
-                            ->count();
+        foreach ($filas as $fila) {
+            $cantidad = (int) $fila->cantidad;
+
+            /* `sale.address_id && ...` en el front: NULL y 0 no cuentan para ninguna sucursal. */
+            $address_id = (int) $fila->address_id;
+
+            if ($address_id !== 0) {
+                $por_sucursal[$address_id] = (isset($por_sucursal[$address_id]) ? $por_sucursal[$address_id] : 0) + $cantidad;
+            }
+
+            /* `sale.employee_id && ...` en el front: NULL y 0 van a la solapa del dueño (sin_empleado). */
+            $employee_id = (int) $fila->employee_id;
+
+            if ($employee_id !== 0) {
+                $por_empleado[$employee_id] = (isset($por_empleado[$employee_id]) ? $por_empleado[$employee_id] : 0) + $cantidad;
+            } else {
+                $sin_empleado += $cantidad;
+            }
+        }
+
+        /* Orden por id: MySQL 8 no garantiza el orden de un GROUP BY, y la respuesta tiene que ser estable. */
+        ksort($por_sucursal);
+        ksort($por_empleado);
+
+        $lista_por_sucursal = [];
+
+        foreach ($por_sucursal as $address_id => $cantidad) {
+            $lista_por_sucursal[] = ['address_id' => (int) $address_id, 'cantidad' => (int) $cantidad];
+        }
+
+        $lista_por_empleado = [];
+
+        foreach ($por_empleado as $employee_id => $cantidad) {
+            $lista_por_empleado[] = ['employee_id' => (int) $employee_id, 'cantidad' => (int) $cantidad];
+        }
 
         return [
-            'por_sucursal' => $por_sucursal,
-            'por_empleado' => $por_empleado,
+            'por_sucursal' => $lista_por_sucursal,
+            'por_empleado' => $lista_por_empleado,
             'sin_empleado' => (int) $sin_empleado,
         ];
     }
@@ -625,6 +762,331 @@ class ListadoVentasHelper
         SaleArticlesEagerLoadHelper::apply_images_if_preferred($query, $user_id);
 
         return $query->forPage($page, $per_page)->get();
+    }
+
+    /**
+     * Alcance de ventas que el usuario de la sesion TIENE PERMITIDO ver, resuelto en el servidor a
+     * partir de sus permisos (y no de lo que mande el pedido).
+     *
+     * Es el espejo de lo que la SPA hace para armar las solapas de un empleado:
+     *
+     *   - Dueño (sin `owner_id`) o administrador (`admin_access`): sin restriccion. Es lo que dice
+     *     `can()` de la SPA y `Controller::is_admin()`.
+     *   - Sucursal: `addresses.all` gana sobre `addresses.only_your` ("si tiene tambien el de todas,
+     *     gana ese", dice el catalogo de permisos). Con `only_your` queda acotado a su
+     *     `users.address_id`; si no tiene sucursal asignada, o la que tiene ya no existe (se borro
+     *     y el id quedo colgado: `users.address_id` no tiene FK), NO se acota, porque la SPA
+     *     tampoco (`get_address_param` no la encuentra en el catalogo y cae a "todas") y acotar a
+     *     una sucursal inexistente le sacaria todas las ventas de golpe.
+     *   - Empleado: igual, `employees.all` gana sobre `employees.only_your`, que acota a sus propias
+     *     ventas (`sales.employee_id = users.id`).
+     *   - Sin ninguno de los permisos de un eje: sin restriccion en ese eje. Es lo que pasa hoy y
+     *     nadie pierde visibilidad por un permiso que nunca tuvo tildado (mismo criterio que
+     *     `RoadMapController::solo_sus_hojas()`).
+     *
+     * Esto NO mira `sale.index.total`: ese permiso decidia si la SPA mostraba el bloque de totales
+     * y ya no manda sobre el Total. La API nunca condiciono los totales a ese permiso.
+     *
+     * @param  \App\Models\User|null $usuario Usuario logueado (no el dueño). Null = el de la sesion.
+     * @return array ['address_id' => int|null, 'employee_id' => int|null]. Null = sin restriccion en ese eje.
+     */
+    static function alcance_permitido($usuario = null)
+    {
+        $alcance = ['address_id' => null, 'employee_id' => null];
+
+        if (is_null($usuario)) {
+            $usuario = UserHelper::user(false);
+        }
+
+        if (is_null($usuario) || self::es_dueno_o_administrador($usuario)) {
+            return $alcance;
+        }
+
+        $permisos = $usuario->permissions->pluck('slug')->all();
+
+        if (!in_array(self::PERMISO_SUCURSALES_TODAS, $permisos)
+            && in_array(self::PERMISO_SUCURSAL_PROPIA, $permisos)
+            && $usuario->address_id
+            && Address::where('id', $usuario->address_id)->where('user_id', $usuario->owner_id)->exists()) {
+            $alcance['address_id'] = (int) $usuario->address_id;
+        }
+
+        if (!in_array(self::PERMISO_EMPLEADOS_TODOS, $permisos)
+            && in_array(self::PERMISO_EMPLEADO_PROPIO, $permisos)) {
+            $alcance['employee_id'] = (int) $usuario->id;
+        }
+
+        return $alcance;
+    }
+
+    /**
+     * Indica si el usuario es el dueño de la cuenta (sin `owner_id`) o un empleado administrador
+     * (`admin_access`). Es lo que dice `can()` de la SPA y `Controller::is_admin()`, pero null-safe.
+     *
+     * Un solo lugar para esta regla: la usan `alcance_permitido()`, `solo_hoy_permitido()` y
+     * `puede_exportar()`, y no pueden discrepar sobre quien es "el que lo puede todo".
+     *
+     * @param  \App\Models\User|null $usuario Usuario logueado (no el dueño).
+     * @return bool  false si no hay usuario.
+     */
+    static function es_dueno_o_administrador($usuario)
+    {
+        if (is_null($usuario)) {
+            return false;
+        }
+
+        return is_null($usuario->owner_id) || (bool) $usuario->admin_access;
+    }
+
+    /**
+     * Aplica a la query de ventas el alcance de sucursal y de empleado que el usuario de la sesion
+     * TIENE PERMITIDO ver (`alcance_permitido()`), con `where` calificados por `sales.`.
+     *
+     * Es la forma "pelada" del alcance, para los caminos que no pasan por
+     * `aplicar_filtros_de_pantalla()`: el listado de Ventas sin `per_page`, los contadores "(N)" de
+     * las solapas y la busqueda.
+     *
+     * 🔴 SIN EXCEPCION PARA LAS CONSOLIDADAS. Una contenedora de facturacion consolidada nunca tiene
+     * sucursal ni empleado y su total repite el de ventas de cualquiera: con un eje fijado por el
+     * servidor el `where` la deja afuera sola, que es lo que se quiere (mismo criterio que
+     * `aplicar_filtros_de_pantalla()`). No le agregues el `orWhere` de "ver consolidadas".
+     *
+     * MUTA el builder que recibe (como `aplicar_base`): pasale un `clone` si lo necesitas despues.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query
+     * @param  \App\Models\User|null $usuario Usuario logueado. Null = el de la sesion.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    static function aplicar_alcance($query, $usuario = null)
+    {
+        $alcance = self::alcance_permitido($usuario);
+
+        if (!is_null($alcance['address_id'])) {
+            $query->where('sales.address_id', $alcance['address_id']);
+        }
+
+        if (!is_null($alcance['employee_id'])) {
+            $query->where('sales.employee_id', $alcance['employee_id']);
+        }
+
+        return $query;
+    }
+
+    /**
+     * Indica si el usuario esta limitado a ver SOLO las ventas de hoy: un empleado (ni dueño ni
+     * administrador) sin el permiso "Ver ventas de dias anteriores" (`sale.index.previus_days`).
+     *
+     * Hasta la mision alcance-de-ventas-caminos-faltantes ese permiso solo lo imponia la SPA, y a
+     * medias: `ControlFecha.vue` escondia la tira de dias pero el boton de calendario seguia
+     * disponible, y el servidor nunca lo miraba. Desde ahora la API lo impone.
+     *
+     * No depende de `sale.index.total` ni de ningun permiso de alcance: son ejes independientes.
+     *
+     * @param  \App\Models\User|null $usuario Usuario logueado (no el dueño). Null = el de la sesion.
+     * @return bool  false para dueño, administrador y para quien no tiene usuario.
+     */
+    static function solo_hoy_permitido($usuario = null)
+    {
+        if (is_null($usuario)) {
+            $usuario = UserHelper::user(false);
+        }
+
+        if (is_null($usuario) || self::es_dueno_o_administrador($usuario)) {
+            return false;
+        }
+
+        $permisos = $usuario->permissions->pluck('slug')->all();
+
+        return !in_array(self::PERMISO_DIAS_ANTERIORES, $permisos);
+    }
+
+    /**
+     * Rango de fechas que le corresponde a quien pide el listado de Ventas: el que pidio, o solo
+     * HOY si `solo_hoy_permitido()`.
+     *
+     * 🔴 CON "SOLO HOY" SE PISA TODO LO QUE VENGA, INCLUIDO NO VENIR NADA. Un empleado sin el
+     * permiso que manda otra fecha, un rango (`until_date`) o ninguna fecha recibe igual las ventas
+     * de hoy: no se intersecta, porque la SPA nueva ya no le deja elegir y un pedido armado a mano
+     * no tiene por que obtener otra cosa. "Hoy" es `Carbon::today()` en la zona de la app
+     * (America/Argentina/Buenos_Aires), la misma en que se guarda `created_at`.
+     *
+     * @param  string|null $from_date  Inicio pedido (null = sin fecha).
+     * @param  string|null $until_date Fin pedido (null = un solo dia).
+     * @return array  [from_date, until_date] para `Sale::scopeEnRangoDeFechas()`.
+     */
+    static function acotar_fechas($from_date, $until_date)
+    {
+        if (self::solo_hoy_permitido()) {
+            return [Carbon::today()->toDateString(), null];
+        }
+
+        return [$from_date, $until_date];
+    }
+
+    /**
+     * Indica si el usuario puede exportar las ventas a Excel: solo el dueño o un administrador.
+     *
+     * Es lo que la pantalla ya prometia (`is_admin` en `Total.vue` esconde los botones), pero el
+     * servidor no lo exigia: los cuatro endpoints de Excel respondian a cualquier sesion.
+     *
+     * Null-safe a proposito: las rutas GET viejas de `routes/web.php` entran por un middleware
+     * propio y pueden llegar sin usuario de sesion. Sin usuario no se exporta.
+     *
+     * @param  \App\Models\User|null $usuario Usuario logueado (no el dueño). Null = el de la sesion.
+     * @return bool
+     */
+    static function puede_exportar($usuario = null)
+    {
+        if (is_null($usuario)) {
+            $usuario = UserHelper::user(false);
+        }
+
+        return self::es_dueno_o_administrador($usuario);
+    }
+
+    /**
+     * Indica si el pedido de busqueda trae la marca de la pantalla de Ventas: la clave
+     * `ventas_pantalla` en el cuerpo, como objeto (array al decodificar el JSON).
+     *
+     * La presencia ES la marca: dice "este pedido lo hace la pantalla de Ventas". `global-search` y
+     * `search` son endpoints genericos que usan Deposito, Por entregar, Por estado y "Ventas del
+     * articulo", y esos modulos tienen permisos propios y no se acotan. Un valor que no es array
+     * (`null`, un numero, un string) no cuenta como marca.
+     *
+     * @param  Request $request
+     * @return bool
+     */
+    static function tiene_marca_de_pantalla(Request $request)
+    {
+        return is_array($request->input('ventas_pantalla'));
+    }
+
+    /**
+     * Arma un `Request` cuya query string son los valores de `ventas_pantalla`, para reusar SIN
+     * tocarlos `aplicar_base`, `aplicar_filtros_de_pantalla` y `total_del_metodo_de_pago`, que leen
+     * la solapa y las show options con `$request->query(...)` (los mismos nombres y valores que ya
+     * viajan en la query string del listado paginado).
+     *
+     * Solo pasan los valores escalares o null: un arreglo anidado en `address_id`, por ejemplo,
+     * terminaria dentro de un `where` y rompería la consulta, y ninguna clave de la marca es un arreglo.
+     *
+     * @param  Request $request  El pedido de busqueda original (con `ventas_pantalla` en el cuerpo).
+     * @return Request
+     */
+    static function pedido_de_pantalla(Request $request)
+    {
+        $valores = $request->input('ventas_pantalla');
+
+        $escalares = [];
+
+        if (is_array($valores)) {
+            foreach ($valores as $clave => $valor) {
+                if (is_scalar($valor) || is_null($valor)) {
+                    $escalares[$clave] = $valor;
+                }
+            }
+        }
+
+        return Request::create('/', 'GET', $escalares);
+    }
+
+    /**
+     * Aplica a una query de BUSQUEDA de ventas (la que arman `SearchController::globalSearch` y
+     * `::search` despues de los filtros de texto, extra_filters y columnas) todo lo que la pantalla
+     * de Ventas impone, y calcula los totales del mismo conjunto.
+     *
+     * Orden, el mismo que el listado paginado: DIAS (si `solo_hoy_permitido()`), BASE
+     * (`aplicar_base`: `to_check`/`checked` y contenedoras fuera salvo `mostrar_consolidadas`), y
+     * FILTROS DE PANTALLA (`aplicar_filtros_de_pantalla`: alcance de permisos, solapa y show options).
+     * Las filas, el `total`/`last_page` del paginador y `totales` salen del MISMO conjunto.
+     *
+     * Devuelve dos cosas:
+     *   - `conjunto`: el builder filtrado, CON su orden y sus columnas, para que el llamador siga con
+     *     su `orderBy` y su `paginate` (si el pedido trae `ordenar_de`, ese orden se respeta).
+     *   - `totales`: la misma forma que `totales` de `GET sale/from-date/ventas`, SALVO las tres
+     *     claves opcionales de IVA (`total_sin_iva`, `costos_sin_iva`, `ventas_con_iva_sin_medir`),
+     *     que la busqueda no calcula (ver el comentario del cuerpo). Los contadores por
+     *     solapa salen de la BASE (sin solapa ni show options, como en el listado del dia) ya acotada
+     *     por el alcance.
+     *
+     * 🔴 LOS AGREGADOS SE CALCULAN SOBRE UNA COPIA SIN `orderBy` Y SIN COLUMNAS (`para_agregados`).
+     * En la busqueda el builder trae lo que le dejaron los filtros de columna (`ordenar_de` agrega
+     * un `ORDER BY`, a veces una subquery) y `withAll()` (que agrega `sale_modifications_count` a las
+     * columnas). Un `ORDER BY` o una columna sin agrupar mezclados con `COUNT`/`SUM` revientan con
+     * ONLY_FULL_GROUP_BY. El builder que sigue hacia la paginacion conserva ambos.
+     *
+     * No agrega joins al conjunto: el builder trae `where('user_id', ...)` sin calificar.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query_buscada  Busqueda ya filtrada, sin `orderBy` ni `paginate`.
+     * @param  Request $request  El pedido ORIGINAL de busqueda (con `ventas_pantalla`).
+     * @param  int     $user_id  Dueño de las ventas.
+     * @return array   ['conjunto' => Builder, 'totales' => array]
+     */
+    static function para_busqueda($query_buscada, Request $request, $user_id)
+    {
+        $pedido = self::pedido_de_pantalla($request);
+
+        /* Dias: quien no tiene "dias anteriores" busca solo entre las ventas de hoy. */
+        $fechas = self::acotar_fechas(null, null);
+
+        $conjunto = (clone $query_buscada)->enRangoDeFechas($fechas[0], $fechas[1], $user_id);
+
+        /* Base: lo que la SPA llama `this.sales`. */
+        $base = self::aplicar_base($conjunto, $pedido, 'ventas');
+
+        /* Filtrado: lo que la SPA llama `sales_to_show`. Ya pisa sucursal / empleado / dueño por el alcance. */
+        $filtrado = self::aplicar_filtros_de_pantalla(clone $base, $pedido);
+
+        $para_totales = self::para_agregados($filtrado);
+
+        $agregados = self::agregados($para_totales);
+
+        $totales = self::totales_de_los_agregados($agregados);
+
+        /*
+         * 🔴 SIN `totales_sin_iva()` EN LA BUSQUEDA, A PROPOSITO. NO LO "COMPLETES" PARA QUE SE PAREZCA
+         * AL LISTADO DEL DIA. Esa funcion agrupa los comprobantes (`afip_tickets`) de TODAS las ventas del
+         * dueño entre la primera y la ultima fecha del conjunto, dos veces: sobre un dia es barato; sobre
+         * una busqueda de todas las fechas (o el historial entero tras "Limpiar") es lo mas caro del
+         * pedido, y se pagaria en cada clic y en cada cambio de pagina. Las tres claves (`total_sin_iva`,
+         * `costos_sin_iva`, `ventas_con_iva_sin_medir`) son OPCIONALES para la SPA: sin ellas no dibuja el
+         * renglon "sin IVA", que el modo busqueda nunca tuvo (el navegador sumaba solo `total`).
+         */
+
+        $totales['metodo_de_pago'] = self::total_del_metodo_de_pago($para_totales, $pedido);
+
+        /* Contadores: de la base, acotada por el alcance (el mismo criterio que `respuesta_paginada`). */
+        $totales = array_merge(
+            $totales,
+            self::conteos_por_solapa(self::para_agregados(self::aplicar_alcance(clone $base)))
+        );
+
+        return [
+            'conjunto' => $filtrado,
+            'totales'  => $totales,
+        ];
+    }
+
+    /**
+     * Copia de una query de busqueda lista para correrle agregados: sin `ORDER BY` y sin la lista de
+     * columnas (con sus bindings).
+     *
+     * 🔴 NO LA SALTEES: ver el docblock de `para_busqueda()`. Un `ORDER BY` o `sales.*` junto a un
+     * `COUNT`/`SUM` sin agrupar es un 500 con ONLY_FULL_GROUP_BY. Devuelve un clon; el builder
+     * original conserva su orden y sus columnas.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private static function para_agregados($query)
+    {
+        $copia = clone $query;
+
+        $copia->getQuery()->reorder();
+        $copia->getQuery()->columns = null;
+        $copia->getQuery()->setBindings([], 'select');
+
+        return $copia;
     }
 
     /**

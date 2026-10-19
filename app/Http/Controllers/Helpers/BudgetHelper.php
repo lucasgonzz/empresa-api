@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\Budget\VarianteEnPresupuestoEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCostoDeVentaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -25,6 +26,7 @@ use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use App\Models\Budget;
 use App\Models\CurrentAcount;
 use App\Models\OrderProduction;
@@ -400,6 +402,18 @@ class BudgetHelper {
 			 * original; mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), que viaja en los
 			 * cuatro `attachSale*` por su propia guarda de esquema, anidada con la de recargos.
 			 */
+			/*
+			 * 🔴 La VARIANTE del renglon pasa a la venta (mision presupuestos-con-variantes,
+			 * 8/10/2026). Hasta hoy el presupuesto no la guardaba, y la venta nacia con el articulo
+			 * padre: perdia "Talle M" y el stock salia del articulo y no de cada variante en la
+			 * sucursal. Con la variante, la venta queda igual que una de VENDER (mismas dos columnas
+			 * de `article_sale`), y el borrado, las devoluciones y la edicion ya la manejan.
+			 *
+			 * Un presupuesto viejo (o uno guardado en la ventana del deploy, sin las columnas) trae
+			 * null: la venta y el stock quedan exactamente como siempre.
+			 */
+			$variante = Self::variante_para_la_venta($article);
+
 			$sale->articles()->attach($article->id, DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
@@ -409,6 +423,8 @@ class BudgetHelper {
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 				'name'				=> $article->pivot->name,
+				'article_variant_id'	=> $variante['article_variant_id'],
+				'variant_description'	=> $variante['variant_description'],
 			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'));
 
 			Log::info('sale articles:');
@@ -417,9 +433,43 @@ class BudgetHelper {
 			// Solo descontar stock de artículos si la venta lleva discount_stock (como en flujo de SaleHelper).
 			if (!$has_extencion_check_sales && (bool) $sale->discount_stock) {
 
-            	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, null);
+            	ArticleHelper::discountStock($article->id, $article->pivot->amount, $sale, [], false, $variante['article_variant_id']);
 			}
 		}
+	}
+
+	/**
+	 * La variante con la que un renglon del presupuesto pasa a la venta (mision
+	 * presupuestos-con-variantes, 8/10/2026).
+	 *
+	 * Se lee del pivot con `isset`: sin las columnas (ventana del deploy) no vienen y el renglon va
+	 * sin variante, como siempre. Y se revalida contra la base: si la variante se borro desde que
+	 * se guardo el presupuesto (no tienen papelera), el stock no se puede descontar de una variante
+	 * que no existe y sale del articulo, como un renglon sin variante; la descripcion se conserva
+	 * para que la venta diga lo mismo que el presupuesto.
+	 *
+	 * @param  \App\Models\Article  $article  Renglon del presupuesto, con `pivot`.
+	 * @return array  ['article_variant_id' => int|null, 'variant_description' => string|null]
+	 */
+	static function variante_para_la_venta($article) {
+
+		$article_variant_id = VarianteEnPresupuestoEsquemaHelper::variante_del_pivot($article->pivot);
+		$variant_description = VarianteEnPresupuestoEsquemaHelper::descripcion_del_pivot($article->pivot);
+
+		if (
+			!is_null($article_variant_id)
+			&& !ArticleVariant::where('id', $article_variant_id)->where('article_id', $article->id)->exists()
+		) {
+
+			Log::info('attachSaleArticles: la variante '.$article_variant_id.' del presupuesto ya no existe, el renglon '.$article->id.' pasa a la venta sin variante.');
+
+			$article_variant_id = null;
+		}
+
+		return [
+			'article_variant_id'	=> $article_variant_id,
+			'variant_description'	=> $variant_description,
+		];
 	}
 
 	static function attachSalePromocionVinotecas($sale, $budget) {
@@ -837,6 +887,11 @@ class BudgetHelper {
 		 * mismo momento: ver `base_para_renglon()`.
 		 */
 		$bases_guardadas = Self::snapshot_de_bases($budget->articles);
+		/*
+		 * Y el de las variantes (mision presupuestos-con-variantes, 8/10/2026), por el mismo motivo:
+		 * ver `variante_del_renglon()`.
+		 */
+		$variantes_guardadas = Self::snapshot_de_variantes($budget->articles);
 		$budget->articles()->detach();
 		foreach ($articles as $article) {
 			$id = (int)$article['id'];
@@ -891,13 +946,39 @@ class BudgetHelper {
 				$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article['pivot']);
 			}
 			
-			if ($article['status'] == 'inactive' && $id > 0) {
+			/*
+			 * 🔴 `status` con `isset` (mision presupuestos-con-variantes, 8/10/2026): la fila de una
+			 * variante elegida POR NOMBRE en el buscador de VENDER (`VenderSearchHelper::build_row`)
+			 * no trae `status`, y el `$article['status']` pelado tumbaba el alta con un 500
+			 * ("Undefined index: status"). Y las tres claves que se copian, solo si vinieron: la SPA
+			 * no las manda en el renglon (solo `name`), y un indice ausente era el mismo 500. Una
+			 * clave que no vino no pisa lo que el articulo ya tiene.
+			 */
+			$variante = Self::variante_del_renglon($article, $id, $amount, $price, $variantes_guardadas);
+
+			if (isset($article['status']) && $article['status'] == 'inactive' && $id > 0) {
 				$art = Article::find($article['id']);
-				$art->bar_code 		= $article['bar_code'];
-				$art->provider_code = $article['provider_code'];
-				$art->name 			= $article['name'];
-				$art->save();
+
+				if (!is_null($art)) {
+
+					/*
+						El `name` NO se copia si el renglon trae variante: la fila de una variante
+						elegida en el buscador (`VenderSearchHelper::build_row`) trae como `name` el de
+						la variante ("Remera Talle M"), y eso pisaria el nombre del articulo padre.
+					*/
+					$campos = Self::renglon_trae_variante($article) ? ['bar_code', 'provider_code'] : ['bar_code', 'provider_code', 'name'];
+
+					foreach ($campos as $campo) {
+
+						if (array_key_exists($campo, $article)) {
+							$art->{$campo} = $article[$campo];
+						}
+					}
+
+					$art->save();
+				}
 			}
+
 			/**
 			 * Si el payload trae la senal name_vender_personalizado (flujo de VENDER y de
 			 * duplicar), se respeta la edicion, incluyendo limpiar el nombre. Si NO la trae
@@ -909,7 +990,11 @@ class BudgetHelper {
 			} else {
 				$pivot_name = isset($existing_names[$id]) ? $existing_names[$id] : null;
 			}
-			$budget->articles()->attach($article['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			/*
+			 * La variante entra por su guarda de esquema: sin las columnas (ventana del deploy) el
+			 * pivot queda exactamente como antes.
+			 */
+			$budget->articles()->attach($article['id'], VarianteEnPresupuestoEsquemaHelper::agregar_al_pivot(DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
 									'cost' 		=> $cost,
@@ -917,8 +1002,275 @@ class BudgetHelper {
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
 									'name' 		=> $pivot_name,
-								], $bases['recargos'], 'article_budget'), $bases['descuentos'], 'article_budget'));
+								], $bases['recargos'], 'article_budget'), $bases['descuentos'], 'article_budget'), $variante['article_variant_id'], $variante['variant_description']));
 		}
+	}
+
+	/**
+	 * Foto de las variantes guardadas de los renglones de articulo del presupuesto, ANTES del
+	 * `detach()` (mision presupuestos-con-variantes, 8/10/2026).
+	 *
+	 * `id => [ ['price' => ..., 'amount' => ..., 'article_variant_id' => ..., 'variant_description' => ..., 'usada' => false], ... ]`:
+	 * una LISTA por id, como `snapshot_de_bases()`, porque el mismo articulo esta varias veces (una
+	 * por variante, o varias filas de "varios precios"). Sin las columnas (ventana del deploy) el
+	 * pivot no las trae y cada fila queda sin variante: preservar no tiene nada que preservar.
+	 *
+	 * Las filas usadas se MARCAN (`usada`) en vez de sacarse: la decision de si una terna es ambigua
+	 * se toma mirando TODAS las filas guardadas, usadas o no (ver `variante_del_renglon()`).
+	 *
+	 * @param  \Illuminate\Support\Collection|array  $renglones  Articulos con `pivot` cargado.
+	 * @return array
+	 */
+	static function snapshot_de_variantes($renglones) {
+
+		$snapshot = [];
+
+		foreach ($renglones as $renglon) {
+
+			$snapshot[$renglon->id][] = [
+				'price'					=> $renglon->pivot->price,
+				'amount'				=> $renglon->pivot->amount,
+				'article_variant_id'	=> VarianteEnPresupuestoEsquemaHelper::variante_del_pivot($renglon->pivot),
+				'variant_description'	=> VarianteEnPresupuestoEsquemaHelper::descripcion_del_pivot($renglon->pivot),
+				'usada'					=> false,
+			];
+		}
+
+		return $snapshot;
+	}
+
+	/**
+	 * La variante (`article_variant_id` + `variant_description`) con la que se re-adjunta un renglon
+	 * de articulo del presupuesto (mision presupuestos-con-variantes, 8/10/2026).
+	 *
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *  🔴 CLAVE AUSENTE NO ES LO MISMO QUE CLAVE EN 0, IGUAL QUE EN `base_para_renglon()`
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *
+	 *  - Con la clave `article_variant_id` (en la RAIZ primero, que es donde la pone VENDER en el
+	 *    alta y en la edicion; despues en `pivot`, que es donde la trae el form generico del modulo
+	 *    Presupuestos cuando re-manda el pivot que leyo): manda lo que vino. null, 0 y '' son "sin
+	 *    variante" (`ArticleHelper::misma_variante`).
+	 *  - SIN la clave en ningun nivel (la SPA vieja, que la PWA tarda uno o dos releases en
+	 *    actualizar, o un form que no re-manda el pivot entero): se PRESERVA la variante guardada de
+	 *    ese renglon, emparejando por id + precio + cantidad, PERO SOLO SI NO HAY AMBIGUEDAD (abajo).
+	 *    Sin pareja (el renglon cambio), queda sin variante: es el modo de falla de antes de esta
+	 *    mision, no uno nuevo.
+	 *
+	 * La variante que vino se VALIDA: tiene que existir y ser de ESE articulo. Si no, el renglon va
+	 * sin id de variante (confirmarlo descontaria el stock de una variante ajena). La descripcion sale
+	 * de la variante, no del request. Si la variante que vino YA NO EXISTE pero es la que este renglon
+	 * tenia guardada (se borro despues de guardar: las variantes no tienen papelera), se conserva la
+	 * descripcion guardada — y si el presupuesto es nuevo (un duplicado), la `variant_description` que
+	 * viaja en el mismo nivel del payload. Es lo unico que se toma del payload: con la variante viva,
+	 * manda la descripcion de la variante.
+	 *
+	 * La preservada tambien se revalida: si la variante ya no existe, el renglon queda sin id de
+	 * variante pero CONSERVA la descripcion guardada, que es lo que el vendedor presupuesto y lo que
+	 * se imprime.
+	 *
+	 * @param  array   $article   El renglon tal cual llega en el payload.
+	 * @param  int     $id        Id del articulo.
+	 * @param  mixed   $amount    La cantidad con la que se va a re-adjuntar.
+	 * @param  mixed   $price     El precio con el que se va a re-adjuntar.
+	 * @param  array   $snapshot  De `snapshot_de_variantes()`, por referencia.
+	 * @return array   ['article_variant_id' => int|null, 'variant_description' => string|null]
+	 */
+	static function variante_del_renglon($article, $id, $amount, $price, &$snapshot) {
+
+		$sin_variante = ['article_variant_id' => null, 'variant_description' => null];
+
+		$niveles = [$article];
+
+		if (isset($article['pivot']) && is_array($article['pivot'])) {
+			$niveles[] = $article['pivot'];
+		}
+
+		foreach ($niveles as $nivel) {
+
+			if (!array_key_exists('article_variant_id', $nivel)) {
+				continue;
+			}
+
+			$article_variant_id = $nivel['article_variant_id'];
+
+			/*
+				Sin variante. La descripcion del mismo nivel se respeta: es la de un renglon cuya
+				variante se borro (el form generico re-manda el pivot que leyo, y el duplicado manda
+				la del origen). VENDER no la manda en el renglon, asi que ahi queda null.
+			*/
+			if (ArticleHelper::misma_variante($article_variant_id, null)) {
+				return ['article_variant_id' => null, 'variant_description' => Self::descripcion_del_nivel($nivel)];
+			}
+
+			$variante = ArticleVariant::where('id', (int) $article_variant_id)
+										->where('article_id', $id)
+										->first();
+
+			if (is_null($variante)) {
+
+				Log::info('attachArticles presupuesto: la variante '.$article_variant_id.' no es del articulo '.$id.' (o ya no existe), el renglon va sin variante.');
+
+				return [
+					'article_variant_id'	=> null,
+					'variant_description'	=> Self::descripcion_de_variante_borrada($id, (int) $article_variant_id, $nivel, $snapshot),
+				];
+			}
+
+			return [
+				'article_variant_id'	=> $variante->id,
+				'variant_description'	=> $variante->variant_description,
+			];
+		}
+
+		if (!isset($snapshot[$id])) {
+			return $sin_variante;
+		}
+
+		/*
+			🔴 LAS CANDIDATAS SE MIRAN TODAS JUNTAS, NO SE AGARRA LA PRIMERA.
+
+			Con talles al mismo precio y la misma cantidad —lo normal: Remera M x1 y Remera L x1 a
+			300— hay DOS filas guardadas con la misma terna (id, precio, cantidad), y el renglon que
+			llega no dice de cual es. Quedarse con la primera le daba a la L la variante de la M
+			(la SPA vieja borra la M y manda solo la L, o le cambia la cantidad a la M y la L queda
+			sola en la terna), y al confirmar se descontaba el stock de la variante EQUIVOCADA: peor
+			que el "sin variante" de antes de esta mision, que al menos no movia stock ajeno.
+
+			Por eso se preserva SOLO si todas las filas guardadas con esa terna tienen la MISMA
+			variante (sin variante cuenta como una variante distinta). Si hay variantes distintas
+			entre las candidatas, el renglon va sin variante: el modo de falla seguro.
+
+			Las candidatas se cuentan entre TODAS las filas guardadas, usadas o no: si se contaran
+			solo las libres, el primer renglon ambiguo consumiria una y el segundo veria una sola
+			candidata "unanime" que puede no ser la suya.
+
+			La fila se consume igual (marcada `usada`): dos renglones iguales no pueden llevarse la
+			misma variante guardada.
+		*/
+		$candidatas = [];
+
+		foreach ($snapshot[$id] as $indice => $guardado) {
+
+			/*
+				Igualdad de PLATA y de cantidad, no de texto: el form generico re-manda lo del pivot
+				("300.00", "2.00") y VENDER manda numeros. Las dos columnas tienen 2 decimales.
+			*/
+			if (
+				abs((float) $guardado['price'] - (float) $price) < 0.005
+				&& abs((float) $guardado['amount'] - (float) $amount) < 0.005
+			) {
+				$candidatas[] = $indice;
+			}
+		}
+
+		$libre = null;
+
+		foreach ($candidatas as $indice) {
+
+			if (!$snapshot[$id][$indice]['usada']) {
+				$libre = $indice;
+				break;
+			}
+		}
+
+		if (is_null($libre)) {
+			return $sin_variante;
+		}
+
+		$guardado = $snapshot[$id][$libre];
+
+		$snapshot[$id][$libre]['usada'] = true;
+
+		foreach ($candidatas as $indice) {
+
+			if (!ArticleHelper::misma_variante($snapshot[$id][$indice]['article_variant_id'], $guardado['article_variant_id'])) {
+
+				Log::info('attachArticles presupuesto: renglon '.$id.' sin la clave de variante y con candidatas de variantes distintas, va sin variante.');
+
+				return $sin_variante;
+			}
+		}
+
+		if (is_null($guardado['article_variant_id'])) {
+			return ['article_variant_id' => null, 'variant_description' => $guardado['variant_description']];
+		}
+
+		$sigue = ArticleVariant::where('id', $guardado['article_variant_id'])
+								->where('article_id', $id)
+								->exists();
+
+		return [
+			'article_variant_id'	=> $sigue ? $guardado['article_variant_id'] : null,
+			'variant_description'	=> $guardado['variant_description'],
+		];
+	}
+
+	/**
+	 * ¿El renglon del payload trae una variante (un `article_variant_id` distinto de null/0/'', en
+	 * la raiz o en `pivot`)? Se mira lo que vino, valida o no: alcanza para saber que el `name` del
+	 * renglon es el de una variante y no el del articulo.
+	 *
+	 * @param  array  $article
+	 * @return bool
+	 */
+	static function renglon_trae_variante($article) {
+
+		if (isset($article['article_variant_id']) && !ArticleHelper::misma_variante($article['article_variant_id'], null)) {
+			return true;
+		}
+
+		return isset($article['pivot'])
+			&& is_array($article['pivot'])
+			&& isset($article['pivot']['article_variant_id'])
+			&& !ArticleHelper::misma_variante($article['pivot']['article_variant_id'], null);
+	}
+
+	/**
+	 * La descripcion de una variante que vino en el payload y ya no existe (o no es del articulo).
+	 *
+	 * Primero la guardada de ESE renglon: una fila libre del snapshot del mismo articulo con ese
+	 * mismo `article_variant_id` (se consume). Si el presupuesto no la tiene guardada (un duplicado,
+	 * que nace vacio), la `variant_description` del mismo nivel del payload. Una variante de OTRO
+	 * articulo nunca esta en el snapshot de este, y VENDER no manda la descripcion: ahi queda null.
+	 *
+	 * @param  int    $id                  Id del articulo.
+	 * @param  int    $article_variant_id  La variante que vino.
+	 * @param  array  $nivel               El nivel del payload donde vino la clave.
+	 * @param  array  $snapshot            De `snapshot_de_variantes()`, por referencia.
+	 * @return string|null
+	 */
+	static function descripcion_de_variante_borrada($id, $article_variant_id, $nivel, &$snapshot) {
+
+		if (isset($snapshot[$id])) {
+
+			foreach ($snapshot[$id] as $indice => $guardado) {
+
+				if (!$guardado['usada'] && $guardado['article_variant_id'] === $article_variant_id) {
+
+					$snapshot[$id][$indice]['usada'] = true;
+
+					return $guardado['variant_description'];
+				}
+			}
+		}
+
+		return Self::descripcion_del_nivel($nivel);
+	}
+
+	/**
+	 * La `variant_description` de un nivel del payload, o null si no vino o vino vacia.
+	 *
+	 * @param  array  $nivel
+	 * @return string|null
+	 */
+	static function descripcion_del_nivel($nivel) {
+
+		if (!isset($nivel['variant_description']) || $nivel['variant_description'] === '') {
+			return null;
+		}
+
+		return (string) $nivel['variant_description'];
 	}
 
 	/**

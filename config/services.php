@@ -55,14 +55,19 @@ return [
     // - api_key: clave que admin-api envía hacia este cliente (debe coincidir con clients.api_key en admin-api).
     // - inbound_key: clave que este cliente envía hacia admin-api al reportar lecturas (debe coincidir con clients.inbound_api_key en admin-api).
     // - client_uuid: uuid propio de este cliente dentro del admin-api.
-    // - require_api_key: si es false, el middleware admin.api.key no valida X-Admin-Api-Key (solo uso temporal;
-    //   en producción debe ser true). Variable .env: ADMIN_SYNC_REQUIRE_API_KEY.
+    // - require_api_key: TRI-ESTADO (misión cerrar-admin-sync, 10/10/2026). Variable .env: ADMIN_SYNC_REQUIRE_API_KEY.
+    //   * true  => el middleware admin.api.key exige X-Admin-Api-Key.
+    //   * false => no exige (apagado a propósito; es lo único que lo deja abierto en una instancia con clave).
+    //   * null  => variable sin definir o vacía: AUTOMÁTICO. Exige la clave si la instancia tiene
+    //     ADMIN_API_INBOUND_KEY cargada; si no la tiene (demos, tests) no hay con qué comparar y no exige.
+    //   Un valor que no se entiende ('banana') cuenta como sin definir: ante la duda, el automático.
+    //   Ver App\Http\Middleware\AdminApiKey.
     'admin_api' => [
         'url'               => env('ADMIN_API_URL'),
         'api_key'           => env('ADMIN_API_INBOUND_KEY'),
         'inbound_key'       => env('ADMIN_API_OUTBOUND_KEY'),
         'client_uuid'       => env('ADMIN_API_CLIENT_UUID'),
-        'require_api_key'   => env('ADMIN_SYNC_REQUIRE_API_KEY', false),
+        'require_api_key'   => (env('ADMIN_SYNC_REQUIRE_API_KEY') === null || (is_string(env('ADMIN_SYNC_REQUIRE_API_KEY')) && trim(env('ADMIN_SYNC_REQUIRE_API_KEY')) === '')) ? null : filter_var(env('ADMIN_SYNC_REQUIRE_API_KEY'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
         /**
          * Exige X-Admin-Api-Key SOLO en admin-sync/user-setup (middleware ClaveDeAdminEnSetup).
          * Apagada por defecto a propósito: admin-api todavía no manda el header a esa ruta y
@@ -442,9 +447,18 @@ return [
         'app_id'             => env('MP_APP_ID'),
         // client_secret de la app de ComercioCity. Nunca debe loguearse ni exponerse en un response.
         'app_secret'         => env('MP_APP_SECRET'),
-        // URL de este backend a la que Mercado Pago redirige tras autorizar (debe coincidir
-        // exactamente con la registrada en la app de Mercado Pago Developers).
+        // LEGACY: URL de ESTE backend a la que Mercado Pago redirigía tras autorizar (debía
+        // coincidir exactamente con la registrada en la app de Mercado Pago Developers, o sea
+        // una por cliente). Desde la misión mp-redireccion-central-admin (17/10/2026) solo se
+        // usa como respaldo cuando `oauth_relay_url` viene vacía (desarrollo local).
         'oauth_redirect_uri' => env('MP_OAUTH_REDIRECT_URI'),
+        // URL CENTRAL del admin a la que Mercado Pago redirige tras autorizar, para TODOS los
+        // clientes: es la única que se registra en la app de Mercado Pago Developers. El admin
+        // lee el host que viaja en el `state` y reenvía el callback al backend de este cliente.
+        // Es la `redirect_uri` tanto de la autorización como del canje del code (Mercado Pago
+        // exige que sean idénticas). El default está acá a propósito, para no tener que tocar
+        // el `.env` de cada cliente; `MP_OAUTH_RELAY_URL=` vacío la apaga y vuelve a la legacy.
+        'oauth_relay_url'    => env('MP_OAUTH_RELAY_URL', 'https://api-admin.comerciocity.com/api/mercadopago/callback'),
         // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
         // con ?mp=ok o ?mp=error agregado. Configurable porque empresa-api y empresa-spa pueden
         // vivir en dominios distintos según el cliente.
@@ -472,6 +486,11 @@ return [
          * bug ya rompió DURACION_REPORTES en producción — ver el comentario de
          * 'embeddings_generacion_pausada' más arriba en este archivo, o
          * CompanyPerformanceController::check_tiempo_ultima_creada().
+         *
+         * 🔴 Esto es el RESPALDO (misión credenciales-demo-zipnova-mp, 14/10/2026): lo normal es
+         * cargar las credenciales de prueba de las demos en el admin (Configuración →
+         * Implementación), que las manda en el payload del demo-setup y le GANAN a estas
+         * variables. Sin variable nueva: los nombres no se tocan.
          */
         'demo_access_token' => env('MERCADOPAGO_DEMO_ACCESS_TOKEN'),
         'demo_public_key'   => env('MERCADOPAGO_DEMO_PUBLIC_KEY'),
@@ -554,6 +573,12 @@ return [
          *
          * demo_account_id es opcional: sin él, el conector queda sin platform_user_id (mismo
          * criterio que un conector recién creado por OAuth antes de resolver la cuenta).
+         *
+         * 🔴 Esto es el RESPALDO (misión credenciales-demo-zipnova-mp, 14/10/2026): lo normal es
+         * cargar las credenciales de prueba de las demos en el admin (Configuración →
+         * Implementación), que las manda en el payload del demo-setup; con ellas la demo se conecta
+         * por `ZipnovaConexionService::conectar()` (valida y deja el depósito de origen elegido) y
+         * gana a estas variables. Sin variable nueva: los nombres no se tocan.
          */
         'demo_api_token'   => env('ZIPNOVA_DEMO_API_TOKEN'),
         'demo_api_secret'  => env('ZIPNOVA_DEMO_API_SECRET'),
@@ -649,6 +674,19 @@ return [
      */
     'mostrador' => [
         'spa_url' => env('SPA_URL'),
+    ],
+
+    /**
+     * El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026): la página con los
+     * videos, a la que el menú "Centro de recursos" entra con un pase de un solo uso
+     * (CentroRecursosController).
+     *
+     * 🔴 El default va ESCRITO ACÁ y no es un descuido: el `.env` de los clientes no trae esta
+     * variable y nadie la va a agregar. La variable existe solo para poder apuntar a otra página en
+     * desarrollo. El `?:` cubre también el caso `CENTRO_RECURSOS_URL=` en blanco.
+     */
+    'centro_recursos' => [
+        'url' => env('CENTRO_RECURSOS_URL') ?: 'https://recursos.comerciocity.com',
     ],
 
 ];

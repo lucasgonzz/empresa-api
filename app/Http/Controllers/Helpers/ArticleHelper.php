@@ -258,8 +258,12 @@ class ArticleHelper {
      *        desglose del costo real y del precio final unico se concatenan las lineas del calculo
      *        de ESA lista (prompt 357/01), asi el front recibe un solo array que cuenta la cadena
      *        completa. Con null el desglose sale identico al historico: no toca ningun calculo.
+     * @param $moneda_id_para_descripcion int|null Solo cuenta junto con el anterior y en una cuenta
+     *        con `ventas_en_dolares`, donde cada lista tiene un precio POR MONEDA: es la moneda de
+     *        la lista cuyo desglose se pide (ArticlePriceTypeMonedaHelper::describir_lista_en_moneda()).
+     *        Con null, o en una cuenta sin dolares, no cambia nada.
      */
-    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null) {
+    static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null, $moneda_id_para_descripcion = null) {
 
         // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
 
@@ -313,6 +317,7 @@ class ArticleHelper {
                 'final_price'           => null,
                 'current_final_price'   => null,
                 'base_margen'           => null,
+                'base_margen_final'     => null,
             ];
         }
         
@@ -472,6 +477,12 @@ class ArticleHelper {
                         // este grupo; aca solo se preserva el mismo ruteo que el modo normal.
                         ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $cost, $user);
 
+                        // El "?" de la tarjeta de una lista en una cuenta con dolares: se narra lo que
+                        // el calculo de arriba acaba de dejar (no se vuelve a calcular nada).
+                        if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
+                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $cost, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                        }
+
                     } else {
                         $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types, $price_type_id_para_descripcion);
                     }
@@ -498,6 +509,7 @@ class ArticleHelper {
                 // margen del articulo que invertir, asi que no hay base que guardar. Se pone en null
                 // en vez de dejar el valor de un calculo anterior, que ya no describiria nada.
                 $article->base_margen = null;
+                $article->base_margen_final = null;
 
             } else {
 
@@ -532,6 +544,11 @@ class ArticleHelper {
                     if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
                         // Calculamos por tipo de precio y por moneda
                         ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
+
+                        // Idem la rama de arriba: desglose de la lista y moneda pedidas.
+                        if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
+                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $final_price, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                        }
                         
                     } else {
                         // El desglose de la lista pedida se concatena al $des que se viene armando,
@@ -556,8 +573,10 @@ class ArticleHelper {
                 // Sin costo no hay base: null, para que nadie divida por cero del otro lado.
                 if (!is_null($article->costo_real) && (float) $article->costo_real != 0.0) {
                     $article->base_margen = $final_price;
+                    $article->base_margen_final = Self::base_margen_en_precio_de_venta($article, $final_price, $user);
                 } else {
                     $article->base_margen = null;
+                    $article->base_margen_final = null;
                 }
 
                 if (!is_null($article->percentage_gain)) {
@@ -616,9 +635,20 @@ class ArticleHelper {
                 $res = Self::aplicar_margenes_de_proveedor_y_categoria($article, $res['price']);
 
                 $article->base_margen = $res['price'];
+                $article->base_margen_final = Self::base_margen_en_precio_de_venta($article, $res['price'], $user);
 
                 if ((float) $article->base_margen != 0.0) {
-                    $margen_implicito = ($final_price - $article->base_margen) / $article->base_margen * 100;
+
+                    /*
+                     * El precio manual es lo que paga el cliente: lleva el IVA y los impuestos sobre
+                     * ventas adentro (no se le suma nada, ver $es_precio_manual). La base, en cambio,
+                     * es neta. Se miden en la misma magnitud: al precio se le saca lo que se le debe
+                     * a ARCA y a los fiscos, igual que hace el camino de las listas con un precio
+                     * fijado a mano. Con costo 2.263,64 e IVA 21 %, un precio manual de 3.600 daba
+                     * 59 % (3.600 contra 2.263,64) y el margen real es 31,45 %.
+                     */
+                    $precio_neto = ArticlePricesHelper::quitar_iva_y_sale_taxes($article, $final_price, $user);
+                    $margen_implicito = ($precio_neto - $article->base_margen) / $article->base_margen * 100;
                     $des[] = DesglosePrecioHelper::linea(
                         DesglosePrecioHelper::MARGEN,
                         'Margen implícito',
@@ -628,11 +658,13 @@ class ArticleHelper {
                         'sobre una base de '.Numbers::price($article->base_margen, true),
                         round($margen_implicito, 2).'%',
                         'Ese precio implica un margen del '.round($margen_implicito, 2).'% sobre la base de '.Numbers::price($article->base_margen, true)
+                            .(abs($precio_neto - $final_price) > 0.005 ? ' (sin el IVA ni los impuestos que lleva el precio)' : '')
                     );
                 }
 
             } else {
                 $article->base_margen = null;
+                $article->base_margen_final = null;
             }
         }
 
@@ -899,12 +931,47 @@ class ArticleHelper {
                 // Base del margen del articulo (prompt 357/02): con esto el front deriva en vivo el
                 // margen que implica un precio cargado a mano, con una division.
                 'base_margen'           => $article->base_margen,
+                // La misma base, expresada en precio de venta (con el IVA y los impuestos que
+                // lleva un precio): contra esa el front mide el margen de un precio manual.
+                'base_margen_final'     => $article->base_margen_final,
                 // Capa 3 (Prompt 263): desglose de precio equivalente por metodo de pago (null si el
                 // flag `precio_base_incluye_tarjeta` esta apagado o no hay reglas de recargo configuradas).
                 'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($final_price, $user->id),
             ];
         }
 
+    }
+
+    /**
+     * La base del margen expresada en PRECIO DE VENTA: la base neta llevada a la magnitud en la que
+     * se carga un precio manual (con el IVA y los impuestos sobre ventas que le correspondan).
+     *
+     * Existe porque el front calcula en vivo el margen que implica un precio que se esta tipeando,
+     * y ese precio es lo que paga el cliente mientras `base_margen` es neto. Comparar los dos tal
+     * cual infla el margen en el IVA entero (3.600 sobre 2.263,64 decia ~59 % y el real es ~31 %).
+     * Con esta base la division del front no cambia: (precio - base_final) / base_final.
+     *
+     * Se obtiene con el factor del par acoplado de quitar_iva_y_sale_taxes() (que es un producto de
+     * escalares, asi que alcanza con medirlo sobre 1): si esa funcion cambia, esta cambia con ella.
+     *
+     * @param  mixed       $article
+     * @param  float|null  $base_neta
+     * @param  mixed       $user
+     * @return float|null  null si no hay base o si el factor no permite dividir.
+     */
+    static function base_margen_en_precio_de_venta($article, $base_neta, $user) {
+
+        if (is_null($base_neta)) {
+            return null;
+        }
+
+        $factor = (float) ArticlePricesHelper::quitar_iva_y_sale_taxes($article, 1, $user);
+
+        if ($factor <= 0) {
+            return null;
+        }
+
+        return (float) $base_neta / $factor;
     }
 
     static function cotizar($article, $user, $price, $des) {
@@ -995,14 +1062,24 @@ class ArticleHelper {
         if ($user->redondear_centenas_en_vender) {
 
             if ($price > 100) {
-                
-                $price = round($price, -2);
+
+                // `redondear_centenas_para_arriba` cambia el sentido del redondeo: siempre hacia la
+                // centena de arriba (ceil) en vez de la más cercana (round). Sola, sin centenas
+                // prendido, no hace nada: este `if` no se ejecuta. Apagada es exactamente lo de antes.
+                if ($user->redondear_centenas_para_arriba) {
+                    $price = ceil($price / 100) * 100;
+                    $sentido = 'por centenas, hacia arriba';
+                } else {
+                    $price = round($price, -2);
+                    $sentido = 'por centenas';
+                }
+
                 $des[] = DesglosePrecioHelper::linea(
                     DesglosePrecioHelper::REDONDEO,
                     'Redondeo',
-                    'por centenas',
+                    $sentido,
                     Numbers::price($price, true),
-                    'Redondeando por centenas = '.Numbers::price($price, true)
+                    'Redondeando '.$sentido.' = '.Numbers::price($price, true)
                 );
             }
         }
@@ -1674,28 +1751,52 @@ class ArticleHelper {
         return $variant['stock'];
     }
 
+    /**
+     * Slug único (por dueño) para el nombre de un artículo: `x`, y si está tomado `x-1`, `x-2`…
+     *
+     * El slug es la URL pública del artículo en la tienda, así que tiene que ser estable.
+     *
+     * @param string $name Nombre del artículo.
+     * @param int|null $ignore_id Id del artículo que se está editando: no cuenta como "tomado"
+     *                            (si no, el artículo choca consigo mismo y el slug alterna).
+     * @param int|null $user_id Dueño; por defecto el del usuario logueado.
+     * @return string
+     */
     static function slug($name, $ignore_id = null, $user_id = null) {
         if (is_null($user_id)) {
             $user_id = UserHelper::userId();
         }
+
+        // Base del slug: cada candidato se arma desde acá, nunca desde el candidato anterior
+        $base = Str::slug($name);
+        $slug = $base;
         $index = 1;
-        $slug = Str::slug($name);
-        $repeated_article = Article::where('user_id', $user_id)
-                                    ->where('slug', $slug);
-        if (!is_null($ignore_id)) {
-            $repeated_article = $repeated_article->where('id', '!=', $ignore_id);
-        }
-        $repeated_article = $repeated_article->first();
-        
-        while (!is_null($repeated_article)) {
-            $slug = substr($slug, 0, strlen($name));
-            $slug .= '-'.$index;
-            $repeated_article = Article::where('user_id', $user_id)
-                                        ->where('slug', $slug)
-                                        ->first();
+
+        while (self::slug_tomado($slug, $ignore_id, $user_id)) {
+            $slug = $base.'-'.$index;
             $index++;
         }
         return $slug;
+    }
+
+    /**
+     * Dice si otro artículo del dueño ya usa ese slug. Un solo lugar para la primera
+     * comprobación y para las del bucle, así todas aplican el mismo dueño y el mismo `$ignore_id`.
+     *
+     * @param string $slug
+     * @param int|null $ignore_id Artículo que no se cuenta (el que se está editando).
+     * @param int $user_id
+     * @return bool
+     */
+    private static function slug_tomado($slug, $ignore_id, $user_id) {
+        $consulta = Article::where('user_id', $user_id)
+                            ->where('slug', $slug);
+
+        if (!is_null($ignore_id)) {
+            $consulta->where('id', '!=', $ignore_id);
+        }
+
+        return !is_null($consulta->first());
     }
 
     static function setArticlesKey($articles) {

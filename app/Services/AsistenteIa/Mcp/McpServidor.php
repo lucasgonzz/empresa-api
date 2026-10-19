@@ -71,6 +71,10 @@ class McpServidor
         AiMessageAction::TIPO_UNIFICAR_BANCOS      => 'unificar los bancos de los cheques',
         AiMessageAction::TIPO_PERMISO_EMPLEADO     => 'los permisos de un empleado',
         AiMessageAction::TIPO_BORRADO_PANTALLA     => 'borrar por una acción de pantalla',
+        // Misión asistente-envios-a-clientes (16/10/2026): los tres envíos a clientes del negocio.
+        AiMessageAction::TIPO_ENVIO_COMPROBANTE    => 'mandarle un comprobante a un cliente',
+        AiMessageAction::TIPO_RECORDATORIOS_COBRO  => 'los recordatorios de cobro por WhatsApp',
+        AiMessageAction::TIPO_PROMOCION_WHATSAPP   => 'una promoción por WhatsApp a los clientes',
     ];
 
     /**

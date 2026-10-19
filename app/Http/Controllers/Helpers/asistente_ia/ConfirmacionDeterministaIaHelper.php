@@ -157,13 +157,23 @@ class ConfirmacionDeterministaIaHelper
 
         $texto = is_object($accion->resultado) && isset($accion->resultado->texto) ? (string) $accion->resultado->texto : '';
 
-        return [
+        $exito = [
             'ok'         => true,
             'tarjeta_id' => (int) $accion_id,
             'estado'     => AiMessageAction::ESTADO_CONFIRMADA,
             'resultado'  => $texto,
             'nota'       => ConfirmacionPorTextoIaHelper::NOTA_EJECUTADA,
         ];
+
+        /* El mismo `detalle` que arma traducir() para la confirmación que ganó: el aviso tiene que llegar igual. */
+        $detalle = ConfirmacionPorTextoIaHelper::detalle_del_resultado($accion->resultado, (string) $accion->tipo);
+
+        if (count($detalle)) {
+
+            $exito['detalle'] = $detalle;
+        }
+
+        return $exito;
     }
 
     /**
@@ -185,7 +195,7 @@ class ConfirmacionDeterministaIaHelper
             return '[El sistema ya confirmó la tarjeta #' . $id . ' por el sí de la persona. Resultado: '
                 . ($texto === '' ? 'quedó registrada (sin número que decir)' : $texto)
                 . '. Contale el resultado con esas palabras y seguí con lo que haya quedado pendiente del pedido; '
-                . 'no la vuelvas a confirmar.]';
+                . 'no la vuelvas a confirmar.' . self::aviso_del_resultado($resultado) . ']';
         }
 
         $error = isset($resultado['error']) ? trim((string) $resultado['error']) : '';
@@ -193,6 +203,29 @@ class ConfirmacionDeterministaIaHelper
         return '[El sistema intentó confirmar la tarjeta #' . $id . ' por el sí de la persona y NO se pudo: '
             . ($error === '' ? EjecutorAccionesIaHelper::MENSAJE_ERROR_GENERICO : $error)
             . '. Contale ese motivo tal cual y no digas que quedó cargado.]';
+    }
+
+    /**
+     * " Aviso de esta carga: …" con el `aviso` que trae el resultado de la ejecución, o "".
+     *
+     * 🔴 SIN ESTO EL «DALE» SE COMÍA EL AVISO (chequeo independiente de la misión
+     * recordatorios-whatsapp, 16/10/2026). confirmar_carga_pendiente le devuelve al modelo el
+     * `detalle` entero de traducir(), y ahí viene el `aviso` del resultado; esta nota leía solo el
+     * texto. Hoy el único resultado de ejecución que trae `aviso` es el de la Agenda (tarea nueva y
+     * cambios): es lo que dice si a esa hora le llega un recordatorio por WhatsApp o que no se lo
+     * prometa. Sin él, el «dale» que confirma «recordame el viernes a las 10» dejaba al modelo
+     * prometiendo —o negando— un aviso a ciegas.
+     *
+     * @param  array  $resultado  Lo que devolvió la confirmación.
+     * @return string
+     */
+    protected static function aviso_del_resultado(array $resultado)
+    {
+        $aviso = isset($resultado['detalle']['aviso']) && is_scalar($resultado['detalle']['aviso'])
+            ? trim((string) $resultado['detalle']['aviso'])
+            : '';
+
+        return $aviso === '' ? '' : ' Aviso de esta carga, para vos: ' . $aviso;
     }
 
     /**
@@ -288,6 +321,125 @@ class ConfirmacionDeterministaIaHelper
         }
 
         return $hubo_afirmacion;
+    }
+
+    /**
+     * El VOCABULARIO CERRADO de un sí a un ENVÍO A CLIENTES (segundo chequeo del 16/10/2026). Ver
+     * es_si_para_envio(): CADA palabra del mensaje tiene que estar acá, y al menos una tiene que ser
+     * una afirmación o un verbo de mandar.
+     */
+    const AFIRMACIONES_DE_ENVIO = [
+        'si', 'sisi', 'dale', 'confirmo', 'de una',
+    ];
+
+    /**
+     * Las afirmaciones DÉBILES (revisión de merge, 16/10/2026): valen como sí a un envío SOLO con un
+     * verbo de mandar al lado ("ok mandalo", "listo, mandá"). Solas no: un recordatorio de tarea o el
+     * aviso de un escaneo pueden salir por WhatsApp sin quedar como último mensaje del asistente, y el
+     * "listo"/"ok" del dueño a ESO no puede mandar una promo.
+     */
+    const AFIRMACIONES_DEBILES_DE_ENVIO = [
+        'ok', 'okey', 'oka', 'listo', 'va', 'joya', 'perfecto', 'claro', 'obvio', 'de acuerdo',
+    ];
+
+    /** Los verbos de mandar que valen como sí (ya normalizados: sin tildes). */
+    const VERBOS_DE_ENVIO = [
+        'mandalo', 'mandala', 'mandalos', 'mandalas', 'mandale', 'mandales', 'mandaselo', 'mandaselos',
+        'mandasela', 'mandaselas', 'manda', 'envialo', 'enviala', 'envialos', 'envialas', 'envia',
+        'enviale', 'enviales',
+    ];
+
+    /**
+     * Lo que puede acompañar al sí sin cambiarlo. 🔴 "gracias" NO está, a propósito: "listo, gracias"
+     * cierra la charla, no autoriza un envío (decisión fijada en el test 78).
+     */
+    const ACOMPANANTES_DE_ENVIO = ['nomas', 'ya', 'a todos', 'todo', 'porfa', 'por favor'];
+
+    /** Largo máximo de un sí a un envío: más que eso ya es otra cosa (una corrección, un pedido). */
+    const LARGO_MAXIMO_DE_SI_PARA_ENVIO = 60;
+
+    /**
+     * true si el mensaje del dueño es un SÍ EXPLÍCITO a un envío a clientes (misión
+     * asistente-envios-a-clientes, correcciones del 16/10/2026).
+     *
+     * 🔴 COBERTURA TOTAL CON LISTA CERRADA, como es_afirmacion(). La primera versión miraba solo cómo
+     * EMPEZABA el mensaje y aceptaba correcciones que el dueño escribía arrancando con un sí: "mandale
+     * solo a Pérez", "sí, sacá a Pérez", "si, sin el link", "sí, mañana", "dale, mandalo después de las
+     * 18", "listo, ya lo mandé yo". Un WhatsApp que salió no se desmanda, así que acá vale lo contrario:
+     * TODAS las palabras tienen que ser de AFIRMACIONES_DE_ENVIO, AFIRMACIONES_DEBILES_DE_ENVIO,
+     * VERBOS_DE_ENVIO o ACOMPANANTES_DE_ENVIO, y tiene que haber una afirmación fuerte o un verbo de
+     * mandar (las débiles solas no alcanzan). Cualquier otra palabra
+     * (un nombre, una hora, "después", "solo", "sin", "gracias") y no es un sí. Un emoji solo tampoco:
+     * normalizado queda vacío. Con un signo de pregunta, tampoco.
+     *
+     * @param  string|null  $texto
+     * @return bool
+     */
+    public static function es_si_para_envio($texto)
+    {
+        $texto = (string) $texto;
+
+        // Una pregunta no es un sí ("¿y a cuántos?", "¿dale?"). Antes de normalizar: saca los signos.
+        if (preg_match('/[?¿]/u', $texto)) {
+
+            return false;
+        }
+
+        if (mb_strlen(trim($texto)) > self::LARGO_MAXIMO_DE_SI_PARA_ENVIO) {
+
+            return false;
+        }
+
+        $normalizado = self::normalizar($texto);
+
+        if ($normalizado === '') {
+
+            return false;
+        }
+
+        $si = array_merge(self::frases(self::AFIRMACIONES_DE_ENVIO), self::frases(self::VERBOS_DE_ENVIO));
+        // Las débiles se aceptan como palabras, pero no alcanzan solas para el sí.
+        $acompanantes = array_merge(self::frases(self::ACOMPANANTES_DE_ENVIO), self::frases(self::AFIRMACIONES_DEBILES_DE_ENVIO));
+
+        $palabras = explode(' ', $normalizado);
+        $total = count($palabras);
+        $hubo_si = false;
+        $i = 0;
+
+        while ($i < $total) {
+
+            $avance = 0;
+
+            // Primero las frases de dos palabras ("de acuerdo", "a todos"), después las de una.
+            foreach ([2, 1] as $largo) {
+
+                if ($i + $largo > $total) {
+                    continue;
+                }
+
+                $frase = implode(' ', array_slice($palabras, $i, $largo));
+
+                if (in_array($frase, $si, true)) {
+                    $hubo_si = true;
+                    $avance = $largo;
+                    break;
+                }
+
+                if (in_array($frase, $acompanantes, true)) {
+                    $avance = $largo;
+                    break;
+                }
+            }
+
+            // Una palabra fuera del vocabulario: no es un sí.
+            if ($avance === 0) {
+                return false;
+            }
+
+            $i += $avance;
+        }
+
+        return $hubo_si;
     }
 
     /**

@@ -41,7 +41,12 @@ class ResumenCajaController extends Controller
 
         $turno = TurnoCaja::findOrFail($request->turno_caja_id);
 
-        if (property_exists($request, 'fecha')) {
+        /**
+         * La fecha que eligió el usuario en el formulario. Antes se preguntaba con
+         * `property_exists($request, 'fecha')`, que siempre da falso (los datos del request viven
+         * en su bag, no como propiedades), así que el resumen salía siempre con la fecha de hoy.
+         */
+        if ($request->filled('fecha')) {
             $fecha = $request->fecha;
 
         } else {

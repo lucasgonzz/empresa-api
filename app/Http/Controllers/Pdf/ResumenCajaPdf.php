@@ -90,9 +90,23 @@ class ResumenCajaPdf extends fpdf {
 
 
 		$this->SetFont('Arial', '', 10);
-		// Fecha
+		// Fecha: la del turno que se resume (columna `fecha`), no el momento en que se generó el
+		// resumen. Un resumen de ayer generado hoy tiene que decir la fecha de ayer.
 		$this->x = $this->x_incial;
-		$this->Cell($this->cell_ancho, 10, $this->resumen_caja->created_at->format('d/m/Y H:i'), 0, 1);
+		$this->Cell($this->cell_ancho, 10, $this->fecha_del_resumen(), 0, 1);
+	}
+
+	/**
+	 * La fecha del turno resumido en d/m/Y. Si la fila no la tiene (resúmenes viejos), cae al
+	 * momento de creación, que es lo que se imprimía antes.
+	 *
+	 * @return string
+	 */
+	function fecha_del_resumen() {
+		if (!empty($this->resumen_caja->fecha)) {
+			return \Carbon\Carbon::parse($this->resumen_caja->fecha)->format('d/m/Y');
+		}
+		return $this->resumen_caja->created_at->format('d/m/Y H:i');
 	}
 
 

@@ -131,6 +131,7 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#password#'                                  => 'sesión y cuenta: contraseñas',
         '#set-comercio-city-user#'                    => 'sesión y cuenta: vincula cuentas de ComercioCity entre sí, y busca usuarios sin filtrar por dueño',
         '#^POST api/user/last-activity$#'             => 'sesión y cuenta: renueva el candado de sesión',
+        '#^POST api/centro-recursos/pase$#'           => 'sesión y cuenta: emite un pase de ingreso al centro de recursos',
         // ── Credenciales ──────────────────────────────────────────────────────────────────────
         '#api/payment-method(/|$)#'                   => 'credenciales: los métodos de pago de la tienda guardan las claves de Mercado Pago',
         '#platform-connector#'                        => 'credenciales: conectores de plataforma',
@@ -187,6 +188,17 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#^POST api/category-proposal-items/(aprobar|rechazar)-varios$#'   => 'masiva por POST: aprobar o rechazar los dudosos de la categorización de un saque',
         '#^POST api/category-proposal-items/\{id\}/(aprobar|rechazar)$#'   => 'revisión de la categorización: cada dudoso se decide mirando la sugerencia en Alertas → Catálogo → Categorías',
         '#^PUT api/category-proposal-runs/\{id\}/visto$#'                  => 'marca de pantalla (la propuesta de categorías ya se vio): no tiene sentido por chat',
+        /*
+         * Revisión de las descripciones automáticas (misión alertas-descripciones, 14/10/2026). Mismo
+         * criterio que la categorización: todo lo que ESCRIBE queda afuera. Aprobar publica en la
+         * tienda un texto que la IA no pudo confirmar, quitar borra lo publicado y editar pisa lo que
+         * se ve; cada una se decide leyendo el texto y sus fuentes en Alertas → Catálogo →
+         * Descripciones, y con el dueño en "directo" correrían sin tarjeta. Las lecturas (`resumen`,
+         * `revision`) siguen entrando.
+         */
+        '#^POST api/article-description-ai/revision/(aprobar|descartar)-varios$#' => 'masiva por POST: aprobar o descartar de un saque las descripciones automáticas que la IA no pudo confirmar',
+        '#^POST api/article-description-ai/revision/\{article_id\}/(aprobar|descartar|quitar)$#' => 'revisión de las descripciones automáticas: cada una se decide leyéndola en Alertas → Catálogo → Descripciones',
+        '#^PUT api/article-description-ai/revision/\{article_id\}/publicada$#' => 'revisión de las descripciones automáticas: cada una se decide leyéndola en Alertas → Catálogo → Descripciones',
         // ── Ya tienen herramienta propia (las de recurso van por HERRAMIENTAS_PROPIAS) ────────
         '#api/pdf-column-profiles#'                   => 'tiene su herramienta: proponer_cambio_en_diseno_pdf',
         /*
@@ -201,6 +213,15 @@ class CatalogoDeAccionesDePantallaIaHelper
          * que los de Vender, se leen pero no se crean, editan ni borran por chat.
          */
         '#^(POST|PUT|DELETE) api/article-ticket-design(/|$)#'  => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
+        // ── Lo que el sistema ya no ofrece ────────────────────────────────────────────────────
+        /*
+         * Cupones de la tienda (misión tiendas-demo-y-limpieza-tienda, 14/10/2026, pedido de Lucas):
+         * la tienda dejó de ofrecerlos y el sistema sacó Tienda Online > Cupones. `cupon` salió de
+         * Escritura::ENTIDADES, y sin esta entrada sus rutas de recurso (`api/cupon`, que CuponController tenía) habrían entrado acá
+         * como acciones genéricas. El controller y la ruta se sacaron (misión sacar-cupones-y-login-google,
+         * 14/10/2026); la guarda queda como defensa por si vuelven.
+         */
+        '#^[A-Z]+ api/cupon(/|$)#'                    => 'cupones de la tienda: la tienda ya no los ofrece y el sistema sacó su pantalla (14/10/2026)',
         /*
          * ── Los endpoints genéricos de la SPA ──────────────────────────────────────────────
          * 🔴 `search/{model_name}`, `global-search/{model_name}`, `previus-next/{model_name}`,

@@ -84,5 +84,20 @@ class Kernel extends HttpKernel
         'solo_el_dueno_ia' => \App\Http\Middleware\SoloElDuenoIa::class,
         /* Solo el dueño (o un empleado con admin_access) escribe la configuración general y online. */
         'solo_administrador' => \App\Http\Middleware\SoloAdministrador::class,
+        /*
+         * Regla de acceso de los PDF y exports de routes/web.php (misión pdf-de-venta-publico,
+         * 10/10/2026): sesión del comercio dueño, token del link, o ventana de transición; si no, 404.
+         * Uso: 'descarga.comercio:sale,id' (tipo, parámetro) o 'descarga.comercio:sesion' (sin id).
+         */
+        'descarga.comercio' => \App\Http\Middleware\DescargaDelComercio::class,
+        /*
+         * La puerta de las rutas de mantenimiento, debug y administración interna (misión
+         * cerrar-rutas-web-publicas, 10/10/2026): todo `routes/mantenimiento.php` pasa por acá
+         * (lo pone RouteServiceProvider). Deja pasar si se cumple una de: suite de tests, variable
+         * explícita (RUTAS_DE_MANTENIMIENTO), demo con el parámetro `:demo`, sesión habilitada o clave
+         * maestra. Si no se cumple ninguna → 404.
+         * Uso: 'solo.mantenimiento' o 'solo.mantenimiento:demo'.
+         */
+        'solo.mantenimiento' => \App\Http\Middleware\RutaDeMantenimiento::class,
     ];
 }

@@ -398,6 +398,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::put('sale/{sale_id}/delivery-info', 'SaleController@update_delivery_info');
     Route::get('sale/{sale_id}/ticket-2-logo', 'SaleController@ticket_logo_raster');
+    // Ticket de comandera armado con un diseño de ticket (misión diseno-ticket-comandera,
+    // 9/10/2026): los bytes ESC/POS (o el texto, con formato=texto) que el Ticket 2.0 manda a la
+    // impresora. Con un perfil sin diseño responde disenado:false y el SPA imprime el de siempre.
+    Route::get('sale/{sale_id}/ticket-comandera', 'SaleController@ticket_comandera');
     Route::post('sale/{sale_id}/send-client-mail', 'SaleController@send_client_mail');
     Route::post('sale/send-client-mail-bulk', 'SaleController@send_client_mail_bulk');
     Route::put('sale/{sale_id}/etiqueta-sender', 'SaleController@update_etiqueta_sender');
@@ -687,6 +691,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('/cheque/pagar', 'ChequeController@pagar');
     Route::put('/cheque/rechazar', 'ChequeController@rechazar');
     Route::put('/cheque/endosar', 'ChequeController@endosar');
+    // El "Rechazado por proveedor" de un cheque EMITIDO, que le carga la nota de débito al proveedor
+    // (misión cheques-emitidos-rechazo-proveedor, 9/10/2026). También antes de PUT /cheque/{id}.
+    Route::put('/cheque/rechazar-por-proveedor', 'ChequeController@rechazar_por_proveedor');
     // La edición ACOTADA de un cheque (misión cheque-edicion-acotada, 8/10/2026): solo número, banco, notas,
     // fecha de emisión y fecha de pago. 🔴 Va DESPUÉS de las PUT fijas (cobrar, pagar, rechazar, endosar): si va
     // antes, {id} las captura y `PUT cheque/cobrar` terminaría en update().
@@ -762,8 +769,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
 
     Route::get('/online-price-type', 'OnlinePriceTypeController@index');
-
-    Route::resource('/cupon', 'CuponController');
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
@@ -894,6 +899,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // diseno-pdf-configurable). Va ANTES del resource por el mismo motivo que la de arriba.
     Route::get('pdf-column-profiles/page-layout-catalog', 'PdfColumnProfileController@page_layout_catalog');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
+    // Tipos de hoja de los diseños de PDF: los del sistema y los anchos de comandera propios del
+    // negocio (misión diseno-ticket-comandera, 9/10/2026, contrato §3.1).
+    Route::get('sheet-types', 'SheetTypeController@index');
+    Route::post('sheet-types', 'SheetTypeController@store');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
     Route::post('etiqueta-medidas', 'EtiquetaMedidaController@store');
@@ -959,6 +968,22 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('article-description-ai/pending-review', 'ArticleDescriptionAiController@pending_review');
     Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
     Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
+
+    /*
+        Alertas → Catálogo → Descripciones (misión alertas-descripciones, 14/10/2026): las que la IA no
+        pudo confirmar (A revisar) y las de IA ya publicadas. Contrato §1.4 del plan. Las rutas fijas
+        (resumen, revision, aprobar-varios, descartar-varios) van ANTES de las que llevan
+        {article_id}, y ese parámetro va restringido a números. Las ve cualquier sesión del comercio,
+        como Imágenes; lo de otro comercio responde 404.
+    */
+    Route::get('article-description-ai/resumen', 'ArticleDescriptionReviewController@resumen');
+    Route::get('article-description-ai/revision', 'ArticleDescriptionReviewController@revision');
+    Route::post('article-description-ai/revision/aprobar-varios', 'ArticleDescriptionReviewController@aprobar_varios');
+    Route::post('article-description-ai/revision/descartar-varios', 'ArticleDescriptionReviewController@descartar_varios');
+    Route::post('article-description-ai/revision/{article_id}/aprobar', 'ArticleDescriptionReviewController@aprobar')->where('article_id', '[0-9]+');
+    Route::post('article-description-ai/revision/{article_id}/descartar', 'ArticleDescriptionReviewController@descartar')->where('article_id', '[0-9]+');
+    Route::put('article-description-ai/revision/{article_id}/publicada', 'ArticleDescriptionReviewController@publicada')->where('article_id', '[0-9]+');
+    Route::post('article-description-ai/revision/{article_id}/quitar', 'ArticleDescriptionReviewController@quitar')->where('article_id', '[0-9]+');
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
@@ -1103,6 +1128,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // El PDF sigue saliendo por la ruta web article/tickets-pdf/{ids}, ahora con ?article_ticket_design_id=.
     Route::resource('article-ticket-design', 'ArticleTicketDesignController')->except(['create', 'edit']);
 
+    // Token del link de un PDF para compartir (misión pdf-de-venta-publico, 10/10/2026): el botón de
+    // WhatsApp de la SPA lo suma como ?t= al link de la venta o del presupuesto. Solo para recursos del
+    // dueño de la sesión y de los tipos que admiten token; si no, 404.
+    Route::get('pdf-link/{tipo}/{id}', 'PdfLinkController@show');
+
 
 });
 
@@ -1125,10 +1155,15 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::get('whatsapp-chats', 'WhatsappChatController@index');
 
     // Contrato 3 de la misión sugerencia-ia-como-borrador. Va ANTES de cualquier
-    // `whatsapp-chats/{id}` (hoy solo existe con sufijo, como `{id}/messages`, pero se declara
-    // acá para que el día que se agregue un `GET whatsapp-chats/{id}` puro, 'resumen' no caiga
-    // adentro de ese `{id}` en vez de resolver a este endpoint.
+    // `whatsapp-chats/{id}` para que 'resumen' no caiga adentro de ese `{id}` en vez de resolver
+    // a este endpoint (el `GET whatsapp-chats/{id}` puro existe desde la misión patch-chat-nuevo-en-vivo,
+    // justo debajo, y además lleva un `where` numérico por si alguien reordena las rutas).
     Route::get('whatsapp-chats/resumen', 'WhatsappChatController@resumen');
+
+    // Un chat suelto, con la misma forma que una fila del índice (misión patch-chat-nuevo-en-vivo): la SPA lo pide
+    // cuando el broadcast `WhatsappChatUpdated` trae un chat que todavía no está en su bandeja (un cliente que escribe
+    // por primera vez), en vez de recargar el índice entero.
+    Route::get('whatsapp-chats/{id}', 'WhatsappChatController@show')->where('id', '[0-9]+');
 
     Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
     Route::post('whatsapp-chats', 'WhatsappChatController@store');
@@ -1138,6 +1173,8 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
+    // Misión senal-pedidos-y-consultas-del-agente: «Ya lo atendí», apaga el pedido o la consulta que el agente dejó marcados.
+    Route::put('whatsapp-chats/{id}/resolve-follow-up', 'WhatsappChatController@resolve_follow_up');
 
     // Descarga del adjunto de un mensaje (misión whatsapp-sidebar-multimedia). Va ADENTRO de
     // este grupo y no suelta: los audios y las fotos de una conversación viven en el disco
@@ -1422,7 +1459,9 @@ Route::get('plan-feature', 'PlanFeatureController@index');
 // demo-setup sin middleware para integración directa desde admin-api sin API key.
 // user-setup lleva `admin.setup.key` (ClaveDeAdminEnSetup): hoy es una pasada libre porque la clave
 // está apagada por defecto (ADMIN_SYNC_SETUP_REQUIRE_API_KEY) hasta que admin-api mande el header;
-// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run().
+// lo que la protege mientras tanto es la guarda de datos de UserSetupHelper::run(). Pasada libre para
+// el setup normal, no para el borrado total: vaciar una base con datos exige la clave de admin
+// SIEMPRE, aunque esa variable esté apagada (misión cerrar-forzado-user-setup, 10/10/2026).
 Route::prefix('admin-sync')
     ->group(function () {
         Route::post('demo-setup', 'AdminSync\\DemoSetupController@store');
@@ -1431,6 +1470,16 @@ Route::prefix('admin-sync')
 
 // Ingreso a la demo con la sesion ya iniciada (token emitido por admin-api).
 Route::post('demo/ingreso', 'DemoIngresoController@store');
+
+// Acceso de un solo uso al configurador de extensiones, pedido por el admin (misión extensiones-desde-el-admin,
+// 15/10/2026). `admin.api.key:siempre`: exige X-Admin-Api-Key aunque la instancia no tenga clave cargada,
+// porque esta ruta EMITE un acceso (el tri-estado de `admin.api.key` a secas dejaría pasar sin clave).
+// Se canjea en GET /extensiones?acceso=<token> (RutaDeMantenimiento).
+Route::middleware('admin.api.key:siempre')
+    ->prefix('admin-sync')
+    ->group(function () {
+        Route::post('extensiones/acceso', 'ExtensionesAccesoController@store');
+    });
 
 Route::middleware('admin.api.key')
     ->prefix('admin-sync')
@@ -1504,6 +1553,19 @@ Route::middleware('admin.api.key')
         // en la próxima corrida.
         Route::get('asistente/informes-pendientes', 'AdminSync\\AsistenteController@informes_pendientes');
         Route::post('asistente/informes/{id}/avisado', 'AdminSync\\AsistenteController@informe_avisado');
+        // Los avisos de "terminó" que el admin le manda al dueño por WhatsApp (misión
+        // asistente-aviso-escaneo-factura, 16/10/2026): hoy, el escaneo de una factura que mandó por
+        // WhatsApp, con el link que abre la revisión. Mismo molde que los informes: el admin consulta
+        // cada minuto y marca DESPUÉS de que el WhatsApp salió. Misma auth que las de arriba.
+        Route::get('asistente/avisos-pendientes', 'AdminSync\\AsistenteController@avisos_pendientes');
+        Route::post('asistente/avisos/avisado', 'AdminSync\\AsistenteController@aviso_avisado');
+        // Los recordatorios de la Agenda que el admin le manda al dueño por WhatsApp a la hora de la
+        // tarea (misión recordatorios-whatsapp, 16/10/2026): «recordame el viernes a las 10 que…».
+        // Mismo molde que los avisos: el admin consulta cada 5 minutos (y la consulta deja el anuncio
+        // de que consulta, con o sin plantilla) y marca DESPUÉS de que el WhatsApp salió. El id del
+        // recordatorio va en el body porque lleva `:`. Misma auth que las de arriba.
+        Route::get('asistente/recordatorios-pendientes', 'AdminSync\\AsistenteController@recordatorios_pendientes');
+        Route::post('asistente/recordatorios/avisado', 'AdminSync\\AsistenteController@recordatorio_avisado');
         // Consumo de tokens de IA de este comercio (misión tokens-por-cliente): el admin lo
         // recolecta todas las noches, lo espeja en su propia base y ahí le pone precio. Solo
         // LEE ai_token_usages y devuelve contadores; la tabla de precios vive en el admin.
@@ -1551,7 +1613,21 @@ Route::middleware('admin.api.key')
         Route::get('catalogo/categorias/propuestas/{run_id}/pendientes', 'AdminSync\\CatalogoCategoriasController@pendientes')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/listo', 'AdminSync\\CatalogoCategoriasController@listo')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/descartar', 'AdminSync\\CatalogoCategoriasController@descartar')->where('run_id', '[0-9]+');
+
+        // El canje del pase del centro de recursos (misión centro-de-recursos-clientes, 13/10/2026,
+        // contrato C3): el admin lo llama cuando la página le manda un pase que este sistema emitió en
+        // POST centro-recursos/pase. Lo marca usado (una sola vez, vence a los 5 minutos) y devuelve el
+        // usuario. 404 `pase_invalido` si no vale; un cliente viejo sin esta ruta también da 404 y el
+        // admin lo trata igual (la página sigue sin sesión). La clave la pone el middleware del grupo.
+        Route::post('recursos/canjear-pase', 'CentroRecursosController@canjear');
     });
+
+// El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026, contrato C1): el SPA pide un
+// pase de un solo uso cuando el usuario toca "Centro de recursos" en el menú, y abre la página con él.
+// Cualquier usuario logueado, dueño o empleado. Si la página todavía no responde devuelve
+// `disponible: false` y no crea nada. La otra punta del pase es admin-sync/recursos/canjear-pase,
+// en el grupo de arriba.
+Route::middleware('auth:sanctum')->post('centro-recursos/pase', 'CentroRecursosController@pase');
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
 // asistente-por-whatsapp). PÚBLICA a propósito: el dueño lo abre desde el teléfono, en la calle,

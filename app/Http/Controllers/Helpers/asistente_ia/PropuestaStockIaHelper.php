@@ -144,8 +144,13 @@ class PropuestaStockIaHelper
 
     /**
      * Ruta de la SPA donde se ve el stock por depósito: el Listado de artículos.
+     *
+     * Es el `name` de la ruta en `router/index.js` de empresa-spa (`/listado-de-articulos`), que es
+     * 'article'. Hasta el 10/10/2026 decía 'listado', que no existe en el router: "Ver en el
+     * Listado" dejaba la pantalla en blanco (misión ver-en-del-asistente-refresca-destino). Las
+     * tarjetas ya confirmadas con 'listado' las traduce la SPA (AccionCard.vue).
      */
-    const RUTA_LISTADO = 'listado';
+    const RUTA_LISTADO = 'article';
 
     // =====================================================================================
     // (a) Mover stock entre depósitos
@@ -1599,15 +1604,14 @@ class PropuestaStockIaHelper
 
         $normalizado = ConsultasSistemaIaHelper::normalize_text($texto);
 
-        /* El `%` y el `_` que escriba la persona son literales, no comodines de LIKE. */
-        $escapado = addcslashes($texto, '%_\\');
-
+        /* El `%` y el `_` que escriba la persona son literales: los escapa BusquedaPorPalabrasIaHelper. */
         $candidatos = (clone $base)
-            ->where(function ($sub) use ($escapado) {
-                $sub->where('name', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
-            })
+            ->where(function ($sub) use ($texto) {
+                // Por palabras sueltas (misión asistente-altas-y-conversacion): ver BusquedaPorPalabrasIaHelper.
+                BusquedaPorPalabrasIaHelper::filtrar($sub, $texto, ['name', 'bar_code', 'provider_code']);
+            });
+
+        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($candidatos, $texto, ['name', 'bar_code', 'provider_code'])
             ->orderBy('name')
             ->limit(self::TOPE_CANDIDATOS + 1)
             ->get(self::COLUMNAS);
@@ -1619,7 +1623,21 @@ class PropuestaStockIaHelper
             );
         }
 
-        if (count($candidatos) === 1) {
+        /*
+         * 🔴 Lo que tiene la FRASE ENTERA manda, como antes de la búsqueda por palabras; si nada la
+         * tiene, un artículo que encajó solo por palabras se toma sin preguntar únicamente si es
+         * seguro (cada número del pedido es una medida entera de su nombre): "pintura blanca 4 litros"
+         * no puede terminar en la de 1 litro. Si no, va como opción (chequeo independiente, 16/10/2026).
+         */
+        $con_la_frase = BusquedaPorPalabrasIaHelper::por_frase($candidatos, $texto, ['name', 'bar_code', 'provider_code']);
+
+        if (count($con_la_frase)) {
+
+            $candidatos = collect($con_la_frase);
+        }
+
+        if (count($candidatos) === 1
+            && (count($con_la_frase) || BusquedaPorPalabrasIaHelper::es_seguro((string) $candidatos[0]->name, $texto))) {
 
             return $candidatos[0];
         }
@@ -1751,23 +1769,18 @@ class PropuestaStockIaHelper
      * (listado/components/table-props/address-stock/Index.vue:28-37): admin → sí; con
      * `article.edit_stock_only_sucursal` → solo su propia sucursal; si no, `article.edit_stock`.
      *
+     * Desde la misión stock-sucursal-desde-listado (14/10/2026) la regla vive en un solo lugar,
+     * `PermisoStockPorSucursalHelper`, que es la que usa también la edición de stock por sucursal
+     * del Listado (`UpdateAddressesStockHelper`) para saltear las sucursales que la persona no puede
+     * tocar. Mismo comportamiento que la copia que había acá.
+     *
      * @param  \App\Models\User|null  $persona
      * @param  int  $address_id
      * @return bool
      */
     public static function puede_en_deposito($persona, $address_id): bool
     {
-        if (PermisosIaHelper::es_admin($persona)) {
-
-            return true;
-        }
-
-        if (PermisosIaHelper::puede($persona, self::PERMISO_SOLO_SU_SUCURSAL)) {
-
-            return !is_null($persona) && (int) $persona->address_id === (int) $address_id;
-        }
-
-        return PermisosIaHelper::puede($persona, self::PERMISO);
+        return \App\Http\Controllers\Helpers\article\PermisoStockPorSucursalHelper::puede_editar($persona, $address_id);
     }
 
     /**

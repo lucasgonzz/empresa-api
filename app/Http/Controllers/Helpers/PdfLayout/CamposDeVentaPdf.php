@@ -624,8 +624,12 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
      * Los datos de envío: los MISMOS que imprime la etiqueta (`EtiquetaEnvioPdf`), con su misma
      * función, `SaleDeliveryInfoHelper::resolved_for_etiqueta_pdf()`: cada dato vacío de
      * `sale_delivery_info` cae al del cliente (y al de su localidad), y va UN documento, el DNI o si
-     * no el CUIT (la etiqueta lo rotula "DNI" sea cual sea; acá también). En hasta tres renglones,
-     * salteando lo vacío: nombre y apellido · teléfono; localidad, provincia (CP); email / DNI.
+     * no el CUIT, rotulado con lo que es ("DNI" o "CUIT", el `document_label` de la etiqueta). En
+     * hasta tres renglones, salteando lo vacío: nombre y apellido · teléfono; dirección, localidad,
+     * provincia (CP); email / documento.
+     *
+     * La dirección (misión etiqueta-envio-direccion, 9/10/2026) es la misma que imprime la etiqueta:
+     * la cargada en los datos de envío o, si no, el domicilio del cliente (`clients.address`).
      *
      * Sin datos de envío cargados no sale, aunque la etiqueta sin ellos imprima los del cliente:
      * es lo que dice el catálogo ("Solo si la venta tiene datos de envío cargados").
@@ -650,10 +654,13 @@ class CamposDeVentaPdf implements FuenteDeCamposPdf
             $lugar = is_null($lugar) ? 'CP '.$codigo_postal : $lugar.' ('.$codigo_postal.')';
         }
 
-        $documento = self::texto($envio['document']);
-        $tercero = self::unir([self::texto($envio['email']), is_null($documento) ? null : 'DNI '.$documento], ' / ');
+        /** La dirección va adelante del lugar: "Av San Martin 1234, Rosario, Santa Fe (2000)". */
+        $segundo = self::unir([self::texto($envio['address']), $lugar], ', ');
 
-        return self::lista([$primero, $lugar, $tercero]);
+        $documento = self::texto($envio['document']);
+        $tercero = self::unir([self::texto($envio['email']), is_null($documento) ? null : $envio['document_label'].' '.$documento], ' / ');
+
+        return self::lista([$primero, $segundo, $tercero]);
     }
 
     /**

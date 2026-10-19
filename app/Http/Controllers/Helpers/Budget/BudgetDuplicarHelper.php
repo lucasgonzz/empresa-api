@@ -217,6 +217,20 @@ class BudgetDuplicarHelper {
                 'provider_code' => $article->provider_code,
                 'name' => $article->name,
                 'name_vender_personalizado' => $article->pivot->name,
+                /*
+                    La variante del renglón (misión presupuestos-con-variantes, 8/10/2026), en la
+                    raíz como la manda VENDER. La clave va SIEMPRE (0 = sin variante, también sin
+                    las columnas en la ventana del deploy): con la clave ausente
+                    `BudgetHelper::variante_del_renglon()` buscaría una variante guardada del
+                    duplicado, que no tiene ninguna.
+                */
+                'article_variant_id' => (int) VarianteEnPresupuestoEsquemaHelper::variante_del_pivot($article->pivot),
+                /*
+                    Y su descripción guardada: `attachArticles` la usa SOLO si la variante ya no
+                    existe (se borró después de guardar el origen), para que la copia no pierda
+                    "Talle M". Con la variante viva manda la descripción de la variante.
+                */
+                'variant_description' => VarianteEnPresupuestoEsquemaHelper::descripcion_del_pivot($article->pivot),
                 'pivot' => [
                     'amount' => $article->pivot->amount,
                     'bonus' => $article->pivot->bonus,

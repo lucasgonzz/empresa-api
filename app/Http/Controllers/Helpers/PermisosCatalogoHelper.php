@@ -70,12 +70,23 @@ class PermisosCatalogoHelper
                 'sale.update'                                   => 'Modificar ventas ya cargadas',
                 'sale.delete'                                   => 'Eliminar ventas',
                 'sale.index.previus_days'                       => 'Ver ventas de días anteriores (sin esto solo ve las de hoy)',
-                'sale.index.total'                              => 'Ver el total vendido',
+                'sale.index.total'                              => 'Ver Cuenta corriente y cantidad de ventas arriba de la tabla (el Total lo ve todo empleado)',
                 'sale.index.addresses.all'                      => 'Ver las ventas de todas las sucursales',
                 'sale.index.addresses.only_your'                => 'Ver solo las ventas de su sucursal (si tiene también el de todas, gana ese)',
                 'sale.index.employees.all'                      => 'Ver las ventas de todos los empleados',
                 'sale.index.employees.only_your'                => 'Ver solo sus propias ventas (si tiene también el de todos, gana ese)',
                 'devolucion.store'                              => 'Hacer devoluciones',
+                /*
+                    Misión permisos-navegacion-empleados (9/10/2026). La pantalla Comprobantes (notas
+                    de crédito y pagos de clientes, con importes) no pedía ningún permiso: cualquier
+                    empleado la veía. Lucas decidió darle uno propio, en el grupo Ventas. La SPA lo
+                    consulta tal cual en `router/routes.js`, así que el slug no se toca. Para que los
+                    empleados que hoy la usan no la pierdan con el release, el seeder suelto
+                    `PermissionComprobantesIndexSeeder` se lo da a los que tienen `sale.index`,
+                    `client.index` o `devolucion.store` (en Comprobantes se reintenta facturar con ARCA
+                    una nota de crédito que quedó sin CAE).
+                */
+                'comprobantes.index'                            => 'Ver Comprobantes (notas de crédito y pagos de clientes)',
             ],
 
             'Artículos (Listado)' => [
@@ -98,11 +109,21 @@ class PermisosCatalogoHelper
                 'article.stock_min_max'                         => 'Ver y editar el stock mínimo y máximo',
                 /*
                     Movimientos de depósito (misión movimientos-deposito-auditoria, 3/10/2026). Los
-                    tres los chequea DepositMovementController (el dueño y admin_access pueden todo).
-                    `deposit_movement.update` vivía en "Sin efecto por ahora" y desde esta misión
+                    chequea DepositMovementController (el dueño y admin_access pueden todo).
+                    `deposit_movement.update` vivía en "Sin efecto por ahora" y desde esa misión
                     cuenta: deja cambiar todo lo que no son artículos. Los artículos piden
                     `update_articles`, y el botón "Mover stock", `move_stock`.
+
+                    Misión permiso-crear-movimiento-deposito (14/10/2026): `deposit_movement.store`
+                    también salió de "Sin efecto por ahora" y es el cuarto. Sin él no se puede crear
+                    un movimiento (ni desde Listado → Depósitos ni con "Crear Movimiento/s de
+                    Deposito" de las sugerencias de stock). Incluye origen, destino, estado,
+                    empleado, notas y los artículos del ALTA; cambiarlos después, ya con el
+                    movimiento creado, sigue pidiendo `update_articles`. Para que quienes hoy crean
+                    movimientos no lo pierdan con el release, el seeder suelto
+                    `PermissionCrearMovimientoDepositoSeeder` se lo da a los que tienen `article.index`.
                 */
+                'deposit_movement.store'                        => 'Crear movimientos de depósito (origen, destino y artículos)',
                 'deposit_movement.update'                       => 'Editar movimientos de depósito (estado, depósitos, empleado y notas)',
                 'deposit_movement.update_articles'              => 'Editar los artículos de un movimiento de depósito',
                 'deposit_movement.move_stock'                   => 'Mover el stock de un movimiento de depósito',
@@ -183,9 +204,8 @@ class PermisosCatalogoHelper
                 'buyer.store'                                   => 'Crear clientes de la tienda',
                 'buyer.update'                                  => 'Editar clientes de la tienda',
                 'buyer.delete'                                  => 'Eliminar clientes de la tienda',
-                // Los dos que siguen los consulta el menú (router/routes.js) pero ningún seeder los
-                // creaba: el ítem no aparecía para ningún empleado sin acceso de administrador.
-                'cupon.index'                                   => 'Ver los cupones de la tienda',
+                // El que sigue lo consulta el menú (router/routes.js) pero ningún seeder lo creaba:
+                // el ítem no aparecía para ningún empleado sin acceso de administrador.
                 'mercado_libre.orders'                          => 'Usar MercadoLibre',
             ],
 
@@ -204,6 +224,8 @@ class PermisosCatalogoHelper
                 'road_map.update'                               => 'Editar hojas de ruta',
                 'road_map.delete'                               => 'Eliminar hojas de ruta',
                 'road_map.terminadas.index'                     => 'Entrar a Rutas (ver rutas asignadas)',
+                'road_map.terminadas.only_your'                 => 'Rutas: ver solo sus hojas de ruta (si tiene también el de todas, gana ese)',
+                'road_map.terminadas.all'                       => 'Rutas: ver las hojas de ruta de todos los repartidores',
             ],
 
             'Producción' => [
@@ -239,14 +261,14 @@ class PermisosCatalogoHelper
                 'reportes'                                      => 'Ver REPORTES (el que vale es "Entrar a Reportes")',
                 'reportes.info_facturacion'                     => 'Ver información de facturación',
                 'deposit_movement.index'                        => 'Ver movimientos de depósito',
-                'deposit_movement.store'                        => 'Crear movimientos de depósito',
                 'deposit_movement.delete'                       => 'Eliminar movimientos de depósito',
-                'road_map.terminadas.only_your'                 => 'Ver solo sus hojas de ruta',
-                'road_map.terminadas.all'                       => 'Ver todas las hojas de ruta',
                 'whatsapp.see_owner_chats'                      => 'Ver los chats de WhatsApp del dueño',
                 'whatsapp.see_other_users_chats'                => 'Ver los chats de WhatsApp de otros empleados',
                 'support.see_owner_chats'                       => 'Ver los chats de soporte del dueño',
                 'support.see_other_users_chats'                 => 'Ver los chats de soporte de otros empleados',
+                // Cupones salió de la tienda y del menú el 14/10/2026 (misión tiendas-demo-y-limpieza-tienda):
+                // el permiso queda por los empleados que lo tienen tildado, sin efecto.
+                'cupon.index'                                   => 'Ver los cupones de la tienda (la tienda ya no tiene cupones)',
             ],
         ];
     }
@@ -268,6 +290,9 @@ class PermisosCatalogoHelper
         ['/\.excel\.export$/',                              'planilla xls xlsx descargar bajar'],
         ['/^sale\./',                                       'venta ventas factura comprobante'],
         ['/^devolucion\./',                                 'nota de credito cambio reclamo'],
+        // Misión permisos-navegacion-empleados (9/10/2026): lo que el dueño busca para encontrar el
+        // permiso de la pantalla Comprobantes, que muestra notas de crédito y pagos de clientes.
+        ['/^comprobantes\./',                               'nota de credito notas de credito pagos cobros recibos comprobante'],
         ['/^vender\.|^article\.vender\./',                  'punto de venta mostrador'],
         ['/^article\.vender\.change_price$|^vender\.prohibir_camibar/', 'precio lista de precios'],
         ['/discount/',                                      'descuento recargo promocion rebaja'],
@@ -280,6 +305,9 @@ class PermisosCatalogoHelper
         ['/^article\.percentage_gain$/',                    'margen ganancia rentabilidad utilidad'],
         ['/^article\.provider$/',                           'proveedor'],
         ['/stock|^deposit|^deposito/',                      'inventario existencias mercaderia deposito'],
+        // Misión permiso-crear-movimiento-deposito (14/10/2026): así llama el dueño a un movimiento
+        // de depósito cuando busca el permiso para crearlo o editarlo.
+        ['/^deposit_movement\./',                           'traslado trasladar pasar mover mercaderia entre depositos sucursales'],
         ['/^client\./',                                     'cobrar cobranza deuda saldo fiado cuenta corriente'],
         ['/^payment_plan\./',                               'tarjeta financiar cuotas credito'],
         ['/^provider/',                                     'compra compras pedido pedidos mercaderia'],

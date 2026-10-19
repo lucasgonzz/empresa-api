@@ -1,0 +1,1885 @@
+<?php
+
+namespace App\Http\Controllers\Helpers\asistente_ia;
+
+/**
+ * Reconoce un texto final del asistente que le AFIRMA a la persona algo que el turno no hizo. Son dos
+ * familias, con su detector cada una:
+ *
+ *   - LA TARJETA PROMETIDA (afirma_una_tarjeta): "Dejé la tarjeta…", "Dejo la tarjeta para agendar…",
+ *     "Tocá Confirmar" — misión asistente-tarjeta-sin-accion, 10/10/2026.
+ *   - LA CARGA DADA POR HECHA (afirma_una_carga_hecha): "Marqué la tarea como hecha", "Listo, quedó
+ *     registrado el gasto", "La marco como hecha…" — misión asistente-carga-prometida-sin-accion, el
+ *     mismo 10/10/2026. Con ella va clase_del_pedido(), que clasifica lo que escribió la persona
+ *     (agradecimiento, "sí", consulta u otra cosa): el servicio decide con las dos.
+ *
+ * 🔴 EL CASO REAL DE LA TARJETA (`demo`, 4.3.8, DeepSeek "Pensando ágil", modo "Resuelto", 10/10/2026).
+ * Grabando los videos del centro de recursos el asistente contestó, en dos tomas seguidas, "Dejé la
+ * tarjeta para confirmar el borrado de la categoría Pruebas…", y como PRIMER mensaje de una
+ * conversación nueva "Encontré la subcategoría Alquiler. Dejo la tarjeta para agendar el pago del
+ * 15/10 por 400.000…". En los tres el mensaje quedó con `acciones: []`: la persona busca la tarjeta y
+ * no hay nada que confirmar. El mismo pedido, en otras corridas, sí arma la tarjeta.
+ *
+ * 🔴 EL CASO REAL DE LA CARGA (medición real contra DeepSeek ágil, 10/10/2026, sobre la base de un
+ * slot). En el modo "directo" —el default de un negocio nuevo desde el 28/9/2026— el asistente no
+ * deja tarjetas: ejecuta. Y miente con esa forma: a "Ya lo llamé" contestó "Marqué la tarea como
+ * hecha." en UNA vuelta `end_turn`, sin herramienta y con el mensaje en `acciones: []`; a "Cambiale el
+ * teléfono a 3415559999", "El teléfono de Distribuidora Norte quedó cambiado a 3415559999.", igual; y
+ * a otro "Ya lo llamé", "La marco como hecha con fecha de hoy, sábado 10/10/2026.". Ninguno nombra una
+ * tarjeta, así que el detector de la tarjeta no los ve. Y en "resuelto" la variante es la inversa: el
+ * texto da la carga por registrada y lo único que hay en el mensaje es la tarjeta sin confirmar.
+ *
+ * AsistenteIaService cruza lo que dicen los detectores con las `ai_message_actions` del mensaje y con
+ * el pedido de la persona: si el texto afirma una tarjeta y el turno no creó ninguna, o da por hecha
+ * una carga y el turno no ejecutó ninguna, reintenta UNA vez —un solo reintento por turno para las dos
+ * familias— con la nota que corresponde. Si sigue: la tarjeta, por su texto honesto; la carga, sólo en
+ * la mentira segura (TEXTO_HONESTO_CARGA), y en todo lo demás se deja la respuesta y se le agrega un
+ * aviso verdadero (AVISO_*). El detalle está en el servicio.
+ *
+ * 🔴 UN FALSO POSITIVO LE CAMBIA A LA PERSONA UNA RESPUESTA BUENA POR UN TEXTO HONESTO. Por eso se
+ * mira por oración y cada afirmación tiene su tipo, con sus propias excepciones (chequeos adversariales
+ * del 10/10/2026, que encontraron los casos de cada una). Y en la carga es peor: un "no pude" sobre algo
+ * que SÍ se hizo invita a repetirlo, y la carga se DUPLICA.
+ *
+ * La tarjeta (afirma_una_tarjeta):
+ *
+ *   - PASADO ("Dejé la tarjeta…"): afirma aunque después venga una pregunta o un ofrecimiento ("Te
+ *     dejé la tarjeta, ¿la confirmás?"). No cuenta un subjuntivo ("para que te deje la tarjeta":
+ *     sin tildes se escriben igual) ni una negación pegada al verbo ("No te dejé la tarjeta").
+ *   - PROMESA ("Dejo la tarjeta…", "Te voy a dejar la tarjeta…"): es el caso 2 de `demo`, pero
+ *     también la forma de PEDIR UN DATO ("Si me pasás el monto, te dejo la tarjeta", "¿Cuánto fue?
+ *     Con eso te dejo la tarjeta"). No cuenta si antes del verbo hay un condicional o un pedido, ni
+ *     si la oración —o la de antes— es una pregunta.
+ *   - ESTADO ("La tarjeta queda para que la confirmes", "Quedó lista la tarjeta", "Ahí tenés la
+ *     tarjeta"). Si es la COLA de una promesa ("…y dejo la tarjeta para que la confirmes") se decide
+ *     como la promesa: ver la_coincidencia_afirma().
+ *   - BOTÓN ("Tocá Confirmar"): no cuenta "te toca confirmar" ni una explicación de cómo hacerlo
+ *     desde una pantalla ("entrá a Presupuestos, abrilo y tocá Confirmar").
+ *
+ *   Y para todos: "tarjeta" como medio de pago ("ventas con tarjeta", "el recargo de la tarjeta",
+ *   "tarjeta de crédito", "tarjetas SUBE") no es una tarjeta del asistente, y una oración que repasa
+ *   una tarjeta VIEJA ("ayer te dejé la tarjeta y la confirmaste", "la tarjeta de arriba", "quedó
+ *   confirmada") no afirma una nueva.
+ *
+ * La carga (afirma_una_carga_hecha):
+ *
+ *   - HECHO ("Marqué la tarea como hecha", "Listo, la pasé al miércoles", "Di de alta al proveedor"):
+ *     la primera persona del pretérito, buscada CON TILDES: sin tilde es un subjuntivo ("¿querés que
+ *     lo cargue?"). Los verbos que también sirven para presentar una consulta piden un objeto de
+ *     carga: "marqué" sólo "como hecha/pagada…" ("te marqué en negrita" no), "cambié/actualicé" sólo
+ *     el teléfono, el precio, la fecha… ("cambié el orden de la lista" no), "borré/creé/eliminé"
+ *     sólo una entidad ("creé un resumen" no), "pasé" sólo hacia una fecha, "armé" sólo un combo o
+ *     un presupuesto, "hice" sólo la venta o el pago, y "dejé" sólo con un participio de carga.
+ *   - QUEDÓ ("Quedó pasada al miércoles", "Ya está cargado", "Agendada la tarea…", "Gasto N° 3
+ *     registrado", y la oración que es sólo un cierre: "Listo ✅"): un participio de carga detrás de
+ *     "quedó" / "ya está", al empezar la oración, o detrás de lo que se cargó. No cuenta "queda" en
+ *     presente (la explicación de una tarjeta), algo que ya existía ("ese proveedor ya está creado",
+ *     "cargado dos veces", "desde el lunes") ni un encabezado de reporte ("Registrado por Martín el
+ *     5/10").
+ *   - PROMESA ("La marco como hecha…", "Te cargo el gasto"): la primera persona del presente, acotada
+ *     a los verbos y objetos de una carga ("te lo paso en limpio", "te anoto el CBU" no). No cuenta
+ *     con una condición antes o DESPUÉS del verbo ("Lo cargo apenas me pases la caja"), ni si la
+ *     ÚLTIMA oración del texto es una pregunta ("La marco como hecha… ¿Querés que la marque con fecha
+ *     de hoy?", medido el 10/10/2026).
+ *
+ *   Y para todos: una oración que afirma una TARJETA no es una carga ("Te creé la tarjeta del gasto",
+ *   "Quedó cargada la tarjeta para que la confirmes"); una que repasa algo VIEJO ("ayer…", "hace un
+ *   rato…", "el lunes…") no afirma nada nuevo; una negación ("No lo cargué", "Ningún gasto quedó
+ *   registrado"), un condicional o una duda ("si cargué mal…", "quizás ya quedó") tampoco, ni una
+ *   subordinada que describe ("el gasto que te cargué recién…"); y un renglón de lista no se mira
+ *   (ahí van los datos de una consulta).
+ *
+ * Un falso negativo deja pasar el defecto de hoy, que ya existía; un falso positivo es un defecto
+ * nuevo. Ante la duda, no dispara.
+ *
+ * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
+ */
+class TarjetaPrometidaIaHelper
+{
+    /**
+     * Lo que ve la persona cuando el modelo afirmó una tarjeta, no la armó y el reintento tampoco.
+     * Es la frase que propuso Lucas: dice la verdad y le deja a la persona la decisión de reintentar.
+     */
+    const TEXTO_HONESTO = 'No pude armar la tarjeta para esto. ¿Lo intento de nuevo?';
+
+    /**
+     * Lo que ve la persona en la MENTIRA SEGURA (correcciones de la tercera vuelta, 10/10/2026): el
+     * modelo dio por hecha una carga, el reintento tampoco la hizo, la persona pidió una carga, el turno
+     * entero no pidió ni una herramienta, en TODA la conversación no hay ninguna carga confirmada y no
+     * hay ninguna tarjeta esperando el botón. Ahí la frase no puede estar contando nada: el modelo no
+     * leyó nada y no hay nada hecho. Es el ÚNICO caso en que la respuesta se reemplaza. "Con este
+     * mensaje" la vuelve verdadera siempre, aunque algo se hubiera cargado por otro lado.
+     */
+    const TEXTO_HONESTO_CARGA = 'No pude hacer esa carga: con este mensaje no quedó nada registrado. ¿La intento de nuevo?';
+
+    /**
+     * 🔴 EN TODO LO DEMÁS SE DEJA EL TEXTO DEL MODELO Y SE LE AGREGA UNA DE ESTAS LÍNEAS (tercera vuelta,
+     * 10/10/2026). Los chequeos mostraron que el pedido de la persona nunca se va a clasificar exacto, y
+     * que un "No pude… ¿La intento?" o un "decímelo de nuevo" sobre algo que SÍ estaba hecho invita a
+     * repetirlo — y en "directo" se ejecuta solo y se DUPLICA. La respuesta del modelo puede traer lo
+     * que la persona pidió (una consulta, el monto corregido, el aviso de una carga parecida, el número
+     * de un registro que ya existía), así que no se borra; y la línea dice la verdad del turno en los
+     * dos escenarios: si el modelo mentía, la persona lo ve; si contaba algo hecho antes, no le dice "no
+     * pude" ni la invita a repetirlo. Va separada por una línea en blanco y nunca dos veces.
+     *
+     * Con una tarjeta `propuesta` en este mensaje: la carga está esperando el botón.
+     */
+    const AVISO_CARGA_CON_TARJETA = 'Ojo: esto todavía no quedó registrado: queda la tarjeta para que la revises y la confirmes.';
+
+    /** Con una tarjeta viva en la respuesta anterior (y la persona no la está corrigiendo). */
+    const AVISO_TARJETA_DE_ANTES = 'Ojo: la tarjeta de antes todavía no está confirmada: hasta que la confirmes no queda registrado.';
+
+    /**
+     * Sin ninguna tarjeta esperando. Verdadera en los dos escenarios: este mensaje no registró nada, y
+     * si la persona esperaba un cambio, lo mira en la pantalla antes de pedirlo otra vez — así, si ya
+     * estaba hecho, no queda repetido.
+     */
+    const AVISO_DE_VERIFICACION = 'Ojo: con este mensaje no registré ningún cambio. Si esperabas uno, fijate en la pantalla antes de pedírmelo de nuevo, así no queda repetido.';
+
+    /**
+     * La corrección que insiste (cuarta vuelta, 10/10/2026): la persona corrigió la tarjeta que sigue
+     * esperando ("no, eran 6000"), el reintento no armó una nueva y el texto igual da el cambio por
+     * hecho. La de antes sigue con el dato VIEJO: el de verificación no lo decía, y el de la tarjeta de
+     * antes la mandaría a confirmar justo lo que la persona acaba de corregir.
+     */
+    const AVISO_CORRECCION = 'Ojo: la tarjeta de antes todavía tiene el dato anterior: no la confirmes así; pedime que la corrija.';
+
+    /**
+     * Lo que AccionesIaHelper le escribe al aviso de una tarjeta cuando hace un momento se confirmó una
+     * carga parecida ("Ojo: hace un momento confirmaste una carga parecida (…)"). Con esa tarjeta en el
+     * mensaje, la guarda de la carga no dispara: la tarjeta ya muestra el aviso y el texto que lo cuenta
+     * ("ya quedó registrado un gasto igual…") es verdad.
+     */
+    const MARCA_DE_CARGA_PARECIDA = 'confirmaste una carga parecida';
+
+    /**
+     * Cualquier carácter de la misma oración. Un punto entre dígitos ("400.000", "$ 1.500") no corta:
+     * tampoco lo corta oraciones().
+     */
+    const VENTANA = '(?:[^.!?\n]|(?<=\d)\.(?=\d))';
+
+    /** El artículo pegado a "tarjeta": "te dejo EL DETALLE de las ventas con tarjeta" no lo tiene. */
+    const DETERMINANTE = '(?:la|las|una|tu|tus|esta|esa|otra|nueva)';
+
+    /**
+     * Verbos en pasado (sin tildes): "dejé", "armé", "creé"… Varios se escriben igual que su subjuntivo.
+     * Sin los genéricos ("pasé", "cargué", "puse"): "Pasé la tarjeta al cliente" o "el cargo por usar la
+     * tarjeta" no hablan de una tarjeta del asistente (tercer chequeo, 10/10/2026).
+     */
+    const PASADO = '(?:deje|dejamos|arme|prepare|genere|propuse|cree)';
+
+    /** Verbos en presente o futuro: el preámbulo de una llamada ("Dejo la tarjeta para agendar…"). */
+    const PRESENTE = '(?:dejo|armo|preparo|propongo|voy a (?:dejar|armar|preparar)(?:te|le|les)?)';
+
+    /**
+     * Una negación pegada antes de la afirmación, sobre texto normalizado: "No te dejé la tarjeta…",
+     * "Todavía no hay tarjeta…", "ninguna tarjeta", "No lo cargué", "Todavía no quedó registrado". La
+     * usan las dos familias; es el mismo patrón que la_coincidencia_afirma() tenía escrito adentro.
+     */
+    const NEGACION_PEGADA = '/(?:\b(?:no|nunca|ni|tampoco)\s+(?:(?:te|le|les|se|lo|la|me|hay|habia|tengo|tenes|existe|quedo|queda)\s+){0,3}(?:ninguna\s+|una\s+|la\s+)?|\bninguna\s+|\bsin\s+(?:la\s+|una\s+)?)$/u';
+
+    /**
+     * La carga: "nada", "ningún" o "ninguna" y hasta dos palabras antes del verbo, sobre texto
+     * normalizado: "Ningún gasto quedó registrado hoy", "Nada quedó registrado todavía".
+     */
+    const NEGACION_DE_CANTIDAD = '/\b(?:nada|ningun|ninguna|ninguno)(?:\s+\S+){0,2}\s+$/u';
+
+    /**
+     * La carga: una oración que repasa algo VIEJO, sobre texto normalizado. Parte del repaso de la
+     * tarjeta (ver oracion_afirma_una_tarjeta()), con tres cambios medidos por los chequeos del
+     * 10/10/2026:
+     *
+     *   - sin "quedó registrado": para la tarjeta es el repaso de una ya confirmada; para la carga es
+     *     justamente la afirmación ("Listo, quedó registrado el gasto", con la tarjeta sin confirmar);
+     *   - sin "antes" ni "anterior": "Cambié el precio: antes estaba a $1.000" y "Actualicé el teléfono;
+     *     el anterior era…" son la forma natural de mentir un cambio;
+     *   - con las marcas de algo YA hecho: "hace un rato", "esta mañana", "la semana pasada", "parecido"
+     *     (el aviso de una carga parecida ya registrada), y un día o una fecha con artículo ("lo registré
+     *     el lunes", "te lo cargué el 5/10") — salvo detrás de "para", "al", "hasta", "desde" o "en":
+     *     "la pasé para el miércoles" y "quedó en el miércoles" son la carga.
+     *
+     * "Recién" no está a propósito: "recién lo cargué" es también la mentira.
+     *
+     * Tercera vuelta (10/10/2026): también "en el mensaje anterior", "previamente", "ya había", "ya
+     * estaba", "como te dije", "de antes", "no ahora" y una fecha con "del" ("el Gasto N° 7 del 9/10",
+     * "del lunes"):
+     * es lo que contesta el modelo cuando la nota del reintento le pide que diga con qué número y fecha
+     * figura algo que ya estaba registrado.
+     *
+     * 🔴 ACOTADO EN LA CUARTA VUELTA (10/10/2026). Así de suelto, la fecha con "del" y el "de antes"
+     * borraban mentiras: "Registré el gasto de luz del 9/10 por $12.000.", "Cargué el gasto de flete del
+     * lunes" y "Actualicé el teléfono; el de antes era…" no repasan nada. Ahora la fecha con "del" cuenta
+     * sólo con un número de registro antes en la oración ("el Gasto N° 7 del 9/10", "N° 7 … del lunes"),
+     * y "de antes" sólo con un participio o un "ya" delante ("cargado de antes", "ya figuraba de
+     * antes"). Las respuestas a la nota del reintento siguen sin disparar.
+     */
+    const REPASO_DE_UNA_CARGA = '/\b(?:ayer|anteriormente|de arriba|el otro dia|la otra vez|confirmaste|cancelaste|ya la confirm\w*|(?:quedo|quedaron|esta|estan) (?:confirmad|cancelad|reemplazad|vencid)\w*|hace un rato|hace un momento|hace (?:unos|un par de) (?:minutos|dias)|esta ma[nñ]ana|esta tarde|hoy a la ma[nñ]ana|la semana pasada|el mes pasado|parecid\w*|en (?:el|un) mensaje anterior|previamente|ya habia|ya estaba|como te dije|(?:registrad|cargad|anotad|agendad|cread)[oa]s? de antes|ya \w+ de antes|antes, no ahora|no ahora|n[°º.]?\s*\d+\b(?:[^.!?\n]|(?<=\d)\.(?=\d)){0,30}?\bdel (?:\d{1,2}\/\d{1,2}|lunes|martes|miercoles|jueves|viernes|sabado|domingo))\b|(?<!para )(?<!al )(?<!hasta )(?<!desde )(?<!en )\bel (?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|\d{1,2}\/\d{1,2})\b/u';
+
+    /**
+     * La carga: la primera persona del pretérito que afirma una carga SIN mirar el objeto, con tildes
+     * (sin tilde es subjuntivo: "¿querés que lo cargue?"). Los que también sirven para presentar una
+     * consulta ("marqué", "cambié", "creé"…) van en patrones_de_hecho() con su objeto.
+     *
+     * "subí" no está desde la sexta vuelta (10/10/2026): ver PRETERITO_IGUAL_AL_IMPERATIVO.
+     */
+    const PRETERITO_DE_CARGA = '(?:cargué|registré|agendé|apunté|asenté|ingresé|asigné|guardé|reprogramé|programé|moví|cobré|facturé|aumenté|completé|di de alta|di de baja|di por hech[oa]s?|mandé a buscar)';
+
+    /**
+     * Lo que vuelve PRETÉRITO a un verbo de -ir que se escribe igual que su imperativo de voseo ("subí",
+     * "emití"), con tildes (sexta vuelta, 10/10/2026): un pronombre o un "ya" justo delante ("Ya subí la
+     * foto", "Te subí la foto", "Le subí el precio", "Ya la emití"), o un "listo,"/"hecho," ("Listo, subí
+     * el precio"). Sin eso es un imperativo —"Subí la foto de la factura y te armo la carga", "Para
+     * facturarla, emití la factura desde Comprobantes"— y no da nada por hecho. De los verbos del
+     * detector, son los únicos de -ir: los de -ar ("cargué"/"cargá") y "moví"/"mové" se distinguen solos.
+     */
+    const ANTES_DE_UN_PRETERITO_DE_IR = '(?<=\bte |\ble |\bles |\blo |\bla |\blos |\blas |\bme |\bse |\bya |\blisto |\blisto, |\blisto: |\bhecho |\bhecho, |\bhecho: )';
+
+    /**
+     * Lo que tiene que venir justo detrás de "cambié", "actualicé", "modifiqué" o "edité" para que sea
+     * una carga, normalizado: un dato ("el teléfono", "los precios"), un monto ("a 6000"), una fecha
+     * ("al viernes", "para el 14/10"), una entidad ("el cliente") o "de fecha". "Cambié el orden de la
+     * lista" y "Actualicé la búsqueda" presentan una consulta.
+     */
+    const OBJETO_DE_UN_CAMBIO = '(?:(?:el|la|los|las|su|sus) (?:telefono|precio|fecha|nombre|direccion|mail|email|cuit|stock|categoria|caja|monto|estado|dia|descripcion|costo|margen|foto|imagen)(?:s|es)?\b|a \$?\s?\d|(?:al|para el) (?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|\d|proxim|mes\b)|(?:el|la|al|a la|los|las) (?:cliente|proveedor|articulo|producto|tarea|gasto|pago|venta)(?:s|es)?\b|de (?:fecha|dia|caja|categoria)\b)';
+
+    /**
+     * Lo que tiene que venir justo detrás de "eliminé", "borré", "creé" o "anoté" para que sea una carga,
+     * normalizado: una entidad del negocio ("la categoría Pruebas", "una de las tareas", "las 3
+     * tareas"). "Creé un resumen" y "Eliminé los duplicados del listado" presentan una consulta.
+     */
+    const ENTIDAD_DE_CARGA = '(?:(?:una|uno|dos|tres|cuatro|cinco|\d+) de )?(?:la|el|los|las|un|una|tu|tus|al|a la|a los|a las) (?:\d+ )?(?:categoria|subcategoria|cliente|proveedor|articulo|producto|tarea|recordatorio|gasto|pago|venta|lista de precios|deposito|sucursal|usuario|empleado|marca|rubro|combo|oferta|presupuesto|cheque|banco)(?:s|es)?\b';
+
+    /**
+     * La carga: los participios, sin tildes ("cargado", "agendadas", "dado de alta"). "Cambiado" está
+     * por el caso medido del modo directo: "El teléfono de Distribuidora Norte quedó cambiado a
+     * 3415559999.", sin herramienta (10/10/2026); "cobrado", porque "cobré" es una carga. "Marcado" sólo
+     * cuenta "como hecho / pagado…", igual que "marqué": "Te dejé marcados en negrita los que vencen
+     * hoy" presenta una consulta.
+     */
+    const PARTICIPIO_DE_CARGA = '(?:(?:cargad|registrad|agendad|anotad|guardad|cread|actualizad|modificad|editad|asignad|borrad|eliminad|reprogramad|movid|pasad|cambiad|completad|cobrad)[oa]s?|marcad[oa]s? como (?:hech|pagad|cobrad|complet|entregad)\w*|dad[oa]s? de (?:alta|baja))';
+
+    /** Los mismos sin "pasado" ni "movido", para la oración que EMPIEZA con el participio: "Pasado mañana vence el alquiler". */
+    const PARTICIPIO_AL_EMPEZAR = '(?:(?:cargad|registrad|agendad|anotad|guardad|cread|actualizad|modificad|editad|asignad|borrad|eliminad|reprogramad|cambiad|completad|cobrad)[oa]s?|marcad[oa]s? como (?:hech|pagad|cobrad|complet|entregad)\w*|dad[oa]s? de (?:alta|baja))';
+
+    /** Lo que se cargó, al empezar la oración: "Gasto N° 3 registrado", "Teléfono actualizado ✅". */
+    const QUE_SE_CARGO = '(?:gasto|pago|cobro|venta|presupuesto|proveedor|cliente|tarea|combo|oferta|articulo|telefono|precio|stock|foto|imagen|permiso|categoria|subcategoria|recordatorio)(?:s|es)?';
+
+    /** Los emojis y el markdown con los que el modelo abre o cierra una oración: "✅ Gasto registrado", "**Listo**". */
+    const SIMBOLOS = '[\s*_~¡!✅✔☑👍👌🙌🎉📝\x{FE0F}]';
+
+    /** Lo que puede abrir la oración antes de lo que se cargó: "Listo, agendada.", "✅ Perfecto: gasto registrado". */
+    const APERTURA = self::SIMBOLOS . '*(?:(?:listo|perfecto|joya|hecho|ya|bien|dale|ok|okey|todo)\b(?:' . self::SIMBOLOS . '|[,.:;>-])*){0,2}';
+
+    /** Entre "quedó" y el participio, lo que lo desarma: "Quedó a medias: no está guardado el teléfono". */
+    const ENTRE_QUEDO_Y_PARTICIPIO = '/\b(?:no|sin|pendiente|falta|faltan|a medias)\b/u';
+
+    /**
+     * Una oración que habla de algo que YA existía, normalizada: "Ese pago ya está registrado desde el
+     * lunes", "ya está cargado dos veces", "ya existe". Ahí "ya está cargado" es un dato, no una carga.
+     * "Desde" sólo cuando marca un tiempo: "El proveedor quedó creado, pero no puedo mandarle un
+     * WhatsApp desde acá" sí afirma la carga.
+     */
+    const YA_EXISTIA = '/\b(?:desde (?:el|la|los|ayer|hace|hoy|antes|\d|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)|dos veces|repetid\w*|duplicad\w*|ya existe|ya existia|estaba)\b/u';
+
+    /** Un demostrativo antes del verbo, CON tildes ("esta" y no "está"): "Ese proveedor ya está creado". */
+    const DEMOSTRATIVO = '/\b(?:ese|esa|esos|esas|este|esta|estos|estas)\b/u';
+
+    /**
+     * Un verbo en presente o futuro entre el comienzo de la oración y el participio: medido en esta
+     * rama contra DeepSeek el 10/10/2026, "El gasto queda agendado como tarea con gasto asociado para el
+     * jueves 15/10 porque la fecha es futura." explica, no afirma.
+     */
+    const PRESENTE_O_FUTURO = '/\b(?:queda|quedan|quedaria|quedarian|quedara|quedaran|va a quedar|van a quedar|se va a|iria|irian|seria|serian)\b/u';
+
+    /** Lo que sigue al participio en un encabezado de reporte: "Registrado por Martín el 5/10", "Actualizado al 9/10". */
+    const ENCABEZADO_DE_REPORTE = '/^\s*(?:por (?![$\d])\S|el \d|desde\b|al \d)/u';
+
+    /** La oración que es SÓLO un cierre, normalizada: "Listo ✅", "Ya está.", "Listo, ya está.". */
+    const CIERRE = '/^' . self::SIMBOLOS . '*(?:(?:listo|hecho|ya esta|ya quedo|todo listo|ya lo hice)[\W_]*)+$/u';
+
+    /**
+     * Lo que, en otra oración del mismo texto, hace que un cierre ("Listo.") sea sólo el comienzo de un
+     * pedido de datos: "Listo. ¿De qué caja sale?", "Listo. Decime el monto". Ahí no afirma una carga.
+     *
+     * Sexta vuelta (10/10/2026): también lo que pide que la persona mande algo o avise, como en la regla
+     * de cortesía ("Mañana te mando la factura de Coca" → "Listo. Avisame cuando la tengas.").
+     */
+    const PIDE_UN_DATO = '/\b(?:decime|pasame|necesito|me falta|me faltan|falta|faltan|indicame|confirmame|avisame|avisa|mandame|esperame|espero)\b/u';
+
+    /**
+     * Lo que, DESPUÉS del verbo de una promesa y en la misma oración, la vuelve condición: "Lo cargo
+     * apenas me pases la caja", "Te lo agendo, pero necesito la fecha", "Lo registro, solo decime la caja".
+     */
+    const CONDICION_DESPUES = '/\b(?:si|cuando|apenas|en cuanto|una vez que|pero|solo decime|necesito|me falta|me pasas|me decis|decime)\b/u';
+
+    /** Una duda antes de la afirmación, normalizada: "Quizás ya quedó hecha o borrada" (medido en "resuelto"). */
+    const DUDA = '/\b(?:quizas|quiza|capaz que|tal vez|puede que|a lo mejor|probablemente|seguramente|me parece que|parece que|creo que|supongo que)\b/u';
+
+    /**
+     * Una subordinada que DESCRIBE algo, justo antes del verbo, normalizada: el artículo, hasta tres
+     * palabras, "que" y los clíticos — "el que quedó recién cargado" (medido en "directo"), "El gasto
+     * que te cargué recién…", "Sin contar el pago que registré hoy…". No "así que" ni "ya que", que
+     * cuentan lo que se hizo.
+     */
+    const RELATIVO = '/\b(?:el|la|los|las|lo)(?:\s+(?!(?:asi|ya)\s)\S+){0,3}\s+que\s+(?:(?:ya|te|le|les|lo|la|los|las|se|me)\s+)*$/u';
+
+    /** Una pregunta indirecta justo antes del verbo, normalizada: "Te muestro cómo quedó cargado el gasto". */
+    const PREGUNTA_INDIRECTA = '/\b(?:como|donde)\s+(?:(?:ya|te|le|les|lo|la|se)\s+)*$/u';
+
+    /** Lo que vuelve condicional un "quedó": la explicación de una tarjeta ("quedó registrado al confirmar"). */
+    const AL_CONFIRMAR = '/\b(?:al confirmar|cuando (?:la |lo )?confirmes|si (?:la |lo )?confirmas|apenas (?:la |lo )?confirmes|una vez que (?:la |lo )?confirmes|para que (?:la |lo )?confirmes|cuando toques)\b/u';
+
+    /**
+     * Las palabras de un agradecimiento, una conformidad o una despedida, normalizadas y con las letras
+     * repetidas colapsadas ("Graciasss", "grosso"): ver clase_del_acuse(). Las de la tercera vuelta
+     * (10/10/2026) son las de las despedidas que el chequeo encontró mal clasificadas ("Nada más,
+     * gracias", "No, eso es todo", "Gracias, buen día", "Joya, nos vemos", "Gracias, después lo
+     * reviso"). "miro" es de la cuarta vuelta: con ANTES_DE_UN_VERBO, "Gracias, lo miro después" dejaba
+     * de ser un acuse, y es el mismo "después lo reviso".
+     *
+     * @var array<int, string>
+     */
+    const PALABRAS_DE_GRACIAS = [
+        'gracias', 'muchas', 'mil', 'muchisimas', 'genial', 'perfecto', 'perfecta', 'buenisimo', 'buenisima',
+        'barbaro', 'barbara', 'joya', 'joyita', 'excelente', 'impecable', 'espectacular', 'divino', 'genio',
+        'capo', 'crack', 'idolo', 'groso', 'maquina', 'che', 'amigo', 'amiga', 'por', 'todo', 'sos', 'lo',
+        'mas', 're', 'bien', 'ahi', 'buenas', 'de', 'una', 'que', 'ah', 'muy',
+        'no', 'nada', 'eso', 'es', 'era', 'chau', 'nos', 'vemos', 'buen', 'buena', 'buenos', 'dia', 'dias',
+        'tarde', 'tardes', 'noches', 'finde', 'hasta', 'manana', 'exitos', 'despues', 'sigo', 'reviso', 'veo',
+        'vi', 'ya', 'esta', 'quedo', 'entendido', 'trabajo', 'ayuda', 'diez', 'lindo', 'favor', 'miro',
+    ];
+
+    /**
+     * Las palabras que AGRADECEN de verdad: con una de éstas, el acuse acepta UNA palabra desconocida
+     * ("Gracias Lucas", "Buenísimo, así quedó bien"). Sin ninguna, no: "Ya lo llamé" tiene "ya" y "lo"
+     * de la lista de arriba y no es un acuse.
+     *
+     * @var array<int, string>
+     */
+    const PALABRAS_QUE_AGRADECEN = [
+        'gracias', 'genial', 'perfecto', 'perfecta', 'buenisimo', 'buenisima', 'barbaro', 'barbara', 'joya',
+        'joyita', 'excelente', 'impecable', 'espectacular', 'divino', 'genio', 'capo', 'crack', 'idolo',
+        'groso', 'maquina',
+    ];
+
+    /**
+     * Las palabras de un SÍ, normalizadas y colapsadas ("Siii", "okk"); "de una" también cuenta: ver
+     * clase_del_acuse().
+     *
+     * @var array<int, string>
+     */
+    const PALABRAS_DE_SI = [
+        'si', 'sisi', 'dale', 'ok', 'oka', 'okey', 'okay', 'oki', 'okis', 'listo', 'lista', 'vale', 'bueno',
+        'buena', 'joya',
+    ];
+
+    /** Las palabras, como mucho, de un acuse. */
+    const LARGO_MAXIMO_DE_UN_ACUSE = 8;
+
+    /**
+     * Las palabras detrás de las cuales una palabra desconocida es un VERBO y no un nombre (cuarta
+     * vuelta, 10/10/2026): "Ya lo llamé, gracias", "Ya lo pagué, gracias", "Genial, ya lo llamé" y
+     * "Listo lo llamé gracias" no son acuses; "Gracias Lucas", sí.
+     *
+     * @var array<int, string>
+     */
+    const ANTES_DE_UN_VERBO = ['lo', 'la', 'le', 'les', 'los', 'las', 'ya', 'me', 'te', 'se'];
+
+    /** Las fechas a las que se pasa algo: "al miércoles", "para el 14/10", "para el próximo lunes". */
+    const FECHA = '(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|\d|proxim|mes\b|manana|hoy)';
+
+    /** Los infinitivos de carga, con sus pronombres pegados ("cargarlo", "pasarmela", "darlo de alta"). */
+    const INFINITIVO_DE_CARGA = '(?:(?:pasar|cargar|agendar|anotar|registrar|cambiar|marcar|mover|borrar|eliminar|actualizar|modificar|hacer|armar|sacar|poner|subir|mandar|cobrar|pagar|crear|asignar|reprogramar|agregar|sumar|completar|cancelar|anular|facturar|guardar|dejar|descontar|restar|generar|preparar)(?:me|te|le|les|lo|la|los|las|nos)*|dar(?:me|te|le|lo|la)?\s+de\s+(?:alta|baja))';
+
+    /**
+     * Un pedido de carga escrito como pregunta, normalizado: la segunda persona de un verbo de carga
+     * ("¿Me la pasás al miércoles?", "¿Le cambiás el teléfono?", "¿Me lo dejás para el jueves?", "¿La
+     * corrés al lunes?"), la primera del plural ("¿Lo pasamos al jueves?") y el condicional ("¿Me
+     * cargarías el gasto?"). Los de la tercera vuelta (10/10/2026) son los que el chequeo encontró
+     * clasificados como consulta. "¿Podés…?" va aparte, con su infinitivo (PODES_CON_INFINITIVO).
+     */
+    const PEDIDO_DE_CARGA_EN_PREGUNTA = '/\b(?:me haces el favor|pasas|cargas|agendas|anotas|registras|cambias|marcas|moves|borras|eliminas|actualizas|modificas|haces|armas|das de alta|sacas|pones|subis|mandas|cobras|pagas|creas|asignas|reprogramas|agregas|sumas|pasamos|cargamos|agendamos|anotamos|registramos|cambiamos|marcamos|movemos|borramos|eliminamos|hacemos|armamos|damos|recordas|avisas|dejas|das por|das de baja|guardas|cancelas|anulas|facturas|bajas|aumentas|editas|apuntas|ingresas|restas|descontas|generas|preparas|transferis|completas|imputas|pospones|corres|cargarias|harias|agregarias|cambiarias|pasarias|anotarias|registrarias|agendarias)\b/u';
+
+    /**
+     * "¿Podés…?" sólo es un pedido de carga con un infinitivo de carga a tres palabras o menos: "¿Lo
+     * podés cargar?", "¿Podés pasarla al miércoles?". "¿Podés fijarte si quedó cargado?" y "¿Me podés
+     * decir si quedó registrado el pago?" son consultas (tercera vuelta, 10/10/2026).
+     */
+    const PODES_CON_INFINITIVO = '/\b(?:podes|podrias|puedes|podras)\b(?:\s+\S+){0,3}?\s+' . self::INFINITIVO_DE_CARGA . '\b/u';
+
+    /** "¿Se puede cargar el gasto de la luz?". */
+    const SE_PUEDE = '/\bse puede\s+' . self::INFINITIVO_DE_CARGA . '\b/u';
+
+    /** Los verbos de carga en imperativo, sin el pronombre (normalizados). */
+    const IMPERATIVO = '(?:pasa|carga|agenda|anota|registra|cambia|marca|move|borra|elimina|actualiza|modifica|hace|arma|saca|pone|subi|manda|cobra|paga|crea|asigna|reprograma|agrega|suma|deja|guarda|cancela|anula)';
+
+    /**
+     * Un imperativo de carga con un pronombre pegado, normalizado: "Pasala", "Cambiale", "Cargame",
+     * "Hacelo", "Dale de alta". Sin el pronombre "carga", "agenda" o "marca" son sustantivos, y "dale"
+     * a secas es un sí. "Pasame" y "mandame" a secas se sacan antes (ver pide_una_carga()).
+     */
+    const IMPERATIVO_CON_ENCLITICO = '/\b(?:' . self::IMPERATIVO . '(?:(?:me|te|le|les|nos|se)(?:la|lo|las|los)?|la|lo|las|los)|da(?:le|lo|la|me)\s+de (?:alta|baja))\b/u';
+
+    /** El imperativo pelado detrás de "y": "mostrame las tareas y pasa la de Juan al jueves", "revisá y carga el gasto". */
+    const IMPERATIVO_TRAS_Y = '/(?:^|\s)y\s+' . self::IMPERATIVO . '\s/u';
+
+    /** El imperativo pelado al empezar el pedido, con su objeto: "carga el gasto d la luz?", "pasa la tarea al jueves?". */
+    const IMPERATIVO_AL_EMPEZAR = '/^(?:(?:che|dale|ok)\W+)?' . self::IMPERATIVO . '\s+(?:el|la|los|las|un|una)\b/u';
+
+    /** El imperativo de voseo de un verbo de carga, CON tildes: "Cargá un gasto", "Pasá la tarea", "Dá de alta". */
+    const IMPERATIVO_DE_VOSEO = '/\b(?:cargá|pasá|agendá|anotá|registrá|cambiá|marcá|mové|borrá|eliminá|actualizá|modificá|hacé|armá|sacá|poné|mandá|cobrá|pagá|creá|asigná|reprogramá|agregá|sumá|dejá|guardá|cancelá|anulá|da de alta|dá de alta)(?!\p{L})/u';
+
+    /**
+     * Un pedido de MOSTRAR algo, normalizado: "Mostrame las tareas", "Decime cuánto vendí", "Fijate si
+     * quedó", "Dame las ventas", "Pasame el resumen". "Pasame" y "mandame" cuentan sólo cuando no llevan
+     * una fecha detrás (pide_una_carga() ya separó "pasame la tarea al miércoles").
+     */
+    const PEDIDO_DE_MOSTRAR = '/\b(?:mostrame|mostra|decime|deci|listame|fijate|revisa|revisame|busca|buscame|contame|conta|quiero ver|necesito ver|quiero saber|necesito saber|me decis|me mostras|fijarte|decirme|mostrarme|revisar|chequear|chequea|dame|traeme|tirame|info de|lista|ver (?:las|los|el|la|mis)|pasame|mandame)\b/u';
+
+    /** Una consulta sin "?": arranca con un interrogativo ("cuanto vendi hoy", "que tareas tengo"). */
+    const INTERROGATIVO_AL_EMPEZAR = '/^(?:cuanto|cuantos|cuantas|que|como|cual|cuales|donde|cuando|quien)\b/u';
+
+    /**
+     * Los interrogativos que al empezar también son conjunciones ("como hablamos…", "como te dije…",
+     * "cuando lo llamé…"): con ellos la consulta sin "?" vale sólo hasta
+     * LARGO_MAXIMO_DE_UNA_CONSULTA_SIN_SIGNO palabras. Con los demás ("que tareas tengo esta semana",
+     * "Cuánto le debo a Distribuidora Norte") vale con cualquier largo (cuarta vuelta, 10/10/2026).
+     */
+    const INTERROGATIVO_QUE_TAMBIEN_ES_CONJUNCION = '/^(?:como|cuando)\b/u';
+
+    /** "Qué bueno que…", "qué suerte…": una exclamación, no una pregunta. */
+    const EXCLAMACION_AL_EMPEZAR = '/^que\s+(?:bueno|buena|bien|lindo|linda|suerte|genial|alivio|macana|garron|barbaro|groso|copado)\b/u';
+
+    /** Una consulta sin "?": la segunda persona del pretérito de una carga ("lo cargaste", "lo registraste"). */
+    const PRETERITO_DE_LA_PERSONA = '/\b(?:cargaste|registraste|agendaste|anotaste|pasaste|cambiaste|marcaste|hiciste|creaste|diste de alta|borraste|cobraste)\b/u';
+
+    /**
+     * Un pedido de un resumen o un listado con "haceme", "armame", "pasame" o "mandame", normalizado:
+     * "Haceme un resumen del mes", "Armame la lista de los que me deben", "Hacé un resumen de ventas".
+     * Es una consulta: se saca antes de buscar el pedido de carga (que vería "haceme" o "armá").
+     */
+    const PEDIDO_DE_RESUMEN = '/\b(?:haceme|hace|armame|arma|pasame|mandame)\s+(?:un|una|el|la|los|las)\s+(?:resumen|listado|lista|reporte|informe|detalle)\b/u';
+
+    /** Lo mismo con tildes, para el voseo ("Hacé un resumen de ventas", "Armá un listado"). */
+    const PEDIDO_DE_RESUMEN_CON_TILDES = '/\b(?:hac[eé]me|hac[eé]|arm[aá]me|arm[aá]|pas[aá]me|mand[aá]me)\s+(?:un|una|el|la|los|las)\s+(?:resumen|listado|lista|reporte|informe|detalle)\b/u';
+
+    /**
+     * Una consulta escrita como el nombre de lo que se quiere ver, normalizada y SIN números: "Ventas de
+     * hoy", "Las tareas de esta semana". Con un número ("Gastos de luz 30000") es un pedido de carga.
+     */
+    const CONSULTA_NOMINAL = '/^(?:(?:las|los|el|la|mis|tus)\s+)?(?:ventas|tareas|gastos|pagos|cobros|compras|clientes|proveedores|articulos|saldo|saldos|deudas|cheques|movimientos|stock|caja|cajas|presupuestos|pedidos)\s+(?:de|del|para|pendientes|vencidas|vencidos)\b/u';
+
+    /**
+     * Querer ver algo, normalizado: "Necesito el saldo de Juan", "Quiero el detalle de la venta 245",
+     * "Ver tareas". Es un pedido de mostrar explícito: vale con cualquier largo.
+     */
+    const PEDIDO_DE_VER = '/^(?:(?:necesito|quiero)\s+(?:el|la|los|las|un|una)\s+(?:saldo|detalle|resumen|listado|lista|reporte|informe|total|numero|telefono)\b|ver\b)/u';
+
+    /**
+     * El estado sin signo de pregunta, normalizado: "quedo cargado", "esta registrado el pago".
+     *
+     * Cuarta vuelta (10/10/2026): sin el "ya" de adelante. "Ya está cobrado lo de Juan", "ya esta
+     * cobrado" y "Ya quedó completada la tarea" no preguntan: cuentan un hecho, que es una carga que la
+     * persona da por pedida.
+     */
+    const ESTADO_SIN_PREGUNTA = '/^(?:quedo|esta)\s+' . self::PARTICIPIO_DE_CARGA . '\b/u';
+
+    /**
+     * Las palabras, como mucho, de un fragmento que es una consulta SIN "?" por cómo empieza
+     * (INTERROGATIVO_AL_EMPEZAR con "como" o "cuando", CONSULTA_NOMINAL —sin contar su artículo— y
+     * ESTADO_SIN_PREGUNTA). Cuarta vuelta (10/10/2026): sin tope, "Tareas de hoy ya las hice todas" y
+     * "Ya está cobrado lo de Juan" pasaban por consultas. Un pedido de mostrar explícito
+     * (PEDIDO_DE_MOSTRAR, PEDIDO_DE_VER, PEDIDO_DE_RESUMEN) y una pregunta sin signo que arranca con un
+     * interrogativo que no es conjunción ("que tareas tengo esta semana") valen con cualquier largo.
+     */
+    const LARGO_MAXIMO_DE_UNA_CONSULTA_SIN_SIGNO = 4;
+
+    /**
+     * El pretérito en PRIMERA persona de lo que la persona hizo, normalizado: "llamé", "pagué", "hice",
+     * "cobré", "vendí", "compré"… (cuarta vuelta, 10/10/2026). Un fragmento con uno de éstos cuenta un
+     * hecho —una carga que la persona da por pedida— y nunca es neutro: "como hablamos ya le pagué a
+     * coca", "Gastos del alquiler los pagué ayer", "Cuando lo llamé me dijo que paga el lunes". Salvo que
+     * lo pregunte (PRETERITO_PREGUNTADO).
+     */
+    const PRETERITO_DE_PRIMERA_PERSONA = '(?:llame|pague|hice|cobre|vendi|compre|mande|entregue|recibi|deposite|transferi|gaste|cargue|anote|agende|registre|pase|cambie|marque|borre|deje|termine|complete|envie|facture|devolvi|retire|hable|cerre|puse|traje|fui)';
+
+    /**
+     * El pretérito de primera persona que la persona PREGUNTA, normalizado: detrás de un interrogativo o
+     * de un "que" (con sus pronombres y, como mucho, una palabra en el medio): "cuanto vendi hoy",
+     * "Decime cuánto vendí hoy", "¿Qué compré ayer?", "cuantas ventas hice", "mostrame lo que cobré".
+     * "Fijate que ya le pagué" no: ahí el "que" cuenta un hecho, y el "ya" no se saltea.
+     */
+    const PRETERITO_PREGUNTADO = '/(?:\b(?:cuanto|cuanta|cuantos|cuantas|cual|cuales|quien|quienes)|(?<!fijate )(?<!mira )(?<!aviso )(?<!cuento )(?<!digo )\bque)(?:\s+(?!ya\b)(?!(?:le|les|lo|la|los|las|me|te|se|nos)\b)\p{L}+)?(?:\s+(?:le|les|lo|la|los|las|me|te|se|nos))*\s+' . self::PRETERITO_DE_PRIMERA_PERSONA . '\b/u';
+
+    /**
+     * Un pedido con "que" + subjuntivo al empezar el fragmento, normalizado (cuarta vuelta, 10/10/2026):
+     * "Que quede para el jueves", "que lo pase al jueves". No es una consulta: es lo que la persona
+     * quiere que quede cargado. Sólo en un fragmento sin "?" ("¿Qué pasé?" pregunta).
+     */
+    const QUE_CON_SUBJUNTIVO = '/^que\s+(?:(?:lo|la|le|les|los|las|me|te|se|nos|ya)\s+)*(?:quede|queden|pase|pasen|cargue|carguen|agende|agenden|anote|anoten|registre|registren|cambie|cambien|marque|marquen|mueva|muevan|borre|borren|ponga|pongan|deje|dejen|figure|figuren|haga|hagan|vaya|vayan|sea|sean)\b/u';
+
+    /**
+     * Un cierre de cortesía, normalizado (cuarta vuelta, 10/10/2026): "Si necesitás algo más, avisame.",
+     * "Cualquier cosa, acá estoy.", "Si necesitás cargar otro gasto, un pago o consultar algo, avisame."
+     * No pregunta ni ofrece nada: termina_preguntando() lo saltea y mira la oración de antes.
+     */
+    const CIERRE_DE_CORTESIA = '/(?:\bsi necesitas algo mas\b|\bcualquier cosa\b|\b(?:avisame|decime|me decis)\W*$)/u';
+
+    /**
+     * Una oración que EMPIEZA ofreciendo algo, normalizada (quinta vuelta, 10/10/2026): "Si querés que
+     * también te agende el pago, decime.", "Si querés, te agendo también el pago; avisame.", "Te puedo
+     * agendar el pago del alquiler, avisame." Aunque termine en "decime" o "avisame" no es un cierre de
+     * cortesía: ofrece, y el "dale" que la contesta es un pedido nuevo. "Si necesitás algo más, avisame."
+     * no está a propósito: ése sí es la cortesía.
+     */
+    const OFRECIMIENTO_AL_EMPEZAR = '/^(?:si queres|si te parece|puedo|te puedo|tambien te puedo)\b/u';
+
+    /** "Fijate de cargarlo", "acordate de pasarla al jueves": un pedido de carga con su infinitivo. */
+    const RECORDA_DE_CARGAR = '/\b(?:fijate|acordate|no te olvides)\s+de\s+' . self::INFINITIVO_DE_CARGA . '\b/u';
+
+    /** Un saludo suelto, que no cambia lo que se pidió: "che, ¿y el gasto?", "Hola, ¿cuánto vendí?". */
+    const SALUDO = '/^(?:hola|buenas|buen dia|che)$/u';
+
+    /**
+     * Las afirmaciones, sobre el texto normalizado (minúscula y sin tildes), cada una con su tipo.
+     *
+     * @return array<int, array{0: string, 1: string}>  [patrón, tipo]
+     */
+    protected static function patrones()
+    {
+        $v = self::VENTANA;
+        $det = self::DETERMINANTE;
+
+        return [
+            /* "Dejé la tarjeta…", "Te armé una tarjeta…", "Te creé la tarjeta del gasto…". */
+            ['/\b' . self::PASADO . '\b' . $v . '{0,50}\b' . $det . ' tarjetas?\b/u', 'pasado'],
+            /* "Dejé para confirmar el borrado…", "Te dejé el gasto listo para que lo confirmes". */
+            ['/\b' . self::PASADO . '\b' . $v . '{0,60}\bpara (?:que )?(?:la |lo |las |los )?confirm/u', 'pasado'],
+            /* "Dejo la tarjeta para agendar…", "Te voy a dejar la tarjeta…". */
+            ['/\b' . self::PRESENTE . '\b' . $v . '{0,50}\b' . $det . ' tarjetas?\b/u', 'promesa'],
+            /* "Ahí tenés la tarjeta", "Abajo te queda la tarjeta". */
+            ['/\b(?:aca|ahi|abajo) (?:te |la )?(?:tenes|va|esta|queda|quedo)\b' . $v . '{0,30}\b' . $det . ' tarjetas?\b/u', 'estado'],
+            /* "Ya tenés la tarjeta abajo", "Tenés la tarjeta para revisar". */
+            ['/\btenes\b' . $v . '{0,10}\b' . $det . ' tarjetas?\b/u', 'estado'],
+            /* "La tarjeta queda para que la confirmes", "La tarjeta está lista". */
+            ['/\btarjetas?\b' . $v . '{0,40}\b(?:queda|quedo|quedan|quedaron|esta|estan) (?:lista|listas|armada|armadas|pendiente de|esperando|para (?:que|confirm|revis|aprob))/u', 'estado'],
+            /* "Quedó lista la tarjeta", "Te quedó armada la tarjeta del alquiler". */
+            ['/\b(?:queda|quedo|quedan|quedaron|esta|estan) (?:lista|listas|armada|armadas)\b' . $v . '{0,20}\b' . $det . ' tarjetas?\b/u', 'estado'],
+            /* "Tenés la tarjeta para confirmar", "La tarjeta para que la revises". */
+            ['/\btarjetas?\b' . $v . '{0,30}\bpara (?:que (?:la |lo )?(?:confirmes|revises|apruebes)|confirmar|revisar|aprobar)\b/u', 'estado'],
+            /* "Tocá Confirmar", "Tocá en la tarjeta el botón Confirmar", "Dale a Confirmar". */
+            ['/\b(?:toca|toques|apreta|presiona|pulsa|hace clic|hace click|dale clic|dale click|dale a)\b' . $v . '{0,30}\bconfirmar\b/u', 'boton'],
+        ];
+    }
+
+    /**
+     * true si alguna oración del texto le afirma a la persona una tarjeta para confirmar.
+     *
+     * @param  string  $texto  El texto final, saneado (lo que leería la persona).
+     * @return bool
+     */
+    public static function afirma_una_tarjeta($texto)
+    {
+        $oraciones = self::oraciones($texto);
+
+        foreach ($oraciones as $indice => $oracion) {
+
+            $anterior = $indice > 0 ? self::sin_tarjetas_de_pago(self::normalizar($oraciones[$indice - 1])) : '';
+
+            if (self::oracion_afirma_una_tarjeta(self::normalizar($oracion), $anterior, mb_strtolower(trim((string) $oracion), 'UTF-8'))) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La nota que viaja como turno de la persona en el reintento. Va entre corchetes y empieza con
+     * "[El sistema", igual que la de la confirmación determinista: si el modelo la repitiera,
+     * TextoFinalIaHelper saca ese renglón.
+     *
+     * @param  array<int, string>  $herramientas_de_carga  Las de carga que el modelo pidió en el turno.
+     * @return string
+     */
+    public static function nota_para_reintentar(array $herramientas_de_carga = [])
+    {
+        $pedidas = count($herramientas_de_carga)
+            ? 'Pediste ' . implode(', ', array_values(array_unique($herramientas_de_carga))) . ' y ninguna terminó armando una tarjeta: mirá lo que te contestó. '
+            : 'No llamaste a ninguna herramienta proponer_. ';
+
+        return '[El sistema revisó tu respuesta: dice que dejaste una tarjeta para confirmar, pero en este turno NO se creó ninguna. '
+            . $pedidas
+            . 'Si lo que pidió la persona necesita una tarjeta, llamá AHORA a la herramienta proponer_ que corresponde con los datos que ya tenés; '
+            . 'si te contesta que faltan datos, pedíselos a la persona. '
+            . 'Si te referías a una tarjeta que ya estaba pendiente de antes, o no podés armarla, volvé a contestar sin decir que dejaste una tarjeta nueva. '
+            . 'No le menciones este aviso a la persona.]';
+    }
+
+    /**
+     * El tipo de la afirmación más fuerte con la que el texto da por HECHA una carga: 'hecho'
+     * ("Marqué la tarea como hecha"), 'quedo' ("Quedó registrado el gasto", "Listo ✅") o 'promesa' ("La
+     * marco como hecha…"), o '' si no da ninguna por hecha (ver los tipos en el docblock de la clase).
+     *
+     * Si una oración da 'hecho', gana 'hecho'; si no, 'quedo'; si no, 'promesa'.
+     *
+     * Este detector no sabe si la carga se hizo: sólo lee el texto. Cruzarlo con las tarjetas del
+     * mensaje y con el pedido de la persona (clase_del_pedido) es del servicio.
+     *
+     * @param  string  $texto  El texto final, saneado (lo que leería la persona).
+     * @return string  '' | 'hecho' | 'quedo' | 'promesa'
+     */
+    public static function afirma_una_carga_hecha($texto)
+    {
+        $oraciones = self::oraciones_sin_renglones_de_lista(self::sin_lo_que_va_entre_comillas($texto));
+
+        $hay_quedo   = false;
+        $hay_cierre  = false;
+        $hay_promesa = false;
+        $pide_algo   = false;
+
+        foreach ($oraciones as $indice => $oracion) {
+
+            $anterior = $indice > 0 ? self::normalizar($oraciones[$indice - 1]) : '';
+
+            $tipo = self::tipo_de_carga_de_la_oracion($oracion, $anterior);
+
+            if ($tipo === 'hecho') {
+
+                return 'hecho';
+            }
+
+            if ($tipo === 'quedo') {
+                $hay_quedo = true;
+            }
+
+            if ($tipo === 'cierre') {
+                $hay_cierre = true;
+            }
+
+            if ($tipo === 'promesa') {
+                $hay_promesa = true;
+            }
+
+            if (self::es_pregunta($oracion) || preg_match(self::PIDE_UN_DATO, self::normalizar($oracion))) {
+                $pide_algo = true;
+            }
+        }
+
+        if ($hay_quedo) {
+
+            return 'quedo';
+        }
+
+        /*
+         * La oración que es sólo un cierre ("Listo ✅", "Ya está.") es la mentira clásica cuando el turno
+         * no hizo nada — salvo que otra oración del texto pregunte o pida un dato: "Listo. ¿De qué caja
+         * sale?" es el "entendido" de un pedido incompleto, y cambiarlo por el texto honesto le borraría
+         * a la persona la pregunta (el mismo daño que el falso positivo de la tarjeta del 10/10/2026).
+         */
+        if ($hay_cierre && ! $pide_algo) {
+
+            return 'quedo';
+        }
+
+        /*
+         * La promesa no cuenta si el texto TERMINA preguntando (medido en "directo" el 10/10/2026): "La
+         * marco como hecha para el miércoles 14/10/2026. Está agendada para el miércoles, que todavía no
+         * llegó. ¿Querés que la marque hecha con fecha de hoy?" no promete nada: pregunta.
+         *
+         * Sólo la PREGUNTA, no un ofrecimiento sin signo (cuarta vuelta, 10/10/2026): "Te cargo el gasto
+         * de $15.000 en efectivo. Si querés, también te agendo el pago." promete igual.
+         */
+        if ($hay_promesa && ! self::termina_preguntando($texto, false)) {
+
+            return 'promesa';
+        }
+
+        return '';
+    }
+
+    /**
+     * Qué es lo que escribió la persona, para decidir si un texto que da por hecha una carga puede
+     * estar contando la verdad (correcciones del chequeo independiente, 10/10/2026):
+     *
+     *   - 'acuse_gracias': un agradecimiento, una conformidad o una despedida, de hasta
+     *     LARGO_MAXIMO_DE_UN_ACUSE palabras ("Gracias genio!", "Nada más, gracias", "Gracias Lucas").
+     *   - 'acuse_si': un SÍ ("Dale", "Sí", "ok", "de una"), o un acuse con un sí adentro ("dale
+     *     gracias"). Es el sí a un ofrecimiento: puede ser un pedido nuevo. También un mensaje que es
+     *     sólo emojis ("👍"): puede ser las dos cosas, y el "sí" es el que exige más para no disparar.
+     *   - 'consulta': una pregunta por un estado ("¿Ya quedó cargado?", "lo cargaste"), un pedido de
+     *     mostrar ("Mostrame las tareas", "Pasame el resumen") — y NADA MÁS: con un hecho adentro ("Ya
+     *     lo llamé, ¿qué más tengo hoy?", "Juan me pagó 5000. ¿Cuánto me debe?") es 'otro'.
+     *   - 'otro': todo lo demás — un pedido de carga ("Pasala al miércoles"), también en forma de
+     *     pregunta ("¿Me la pasás al miércoles?", "¿Lo podés cargar?"), o un hecho que implica una carga
+     *     ("Ya lo llamé", "Gasté 15000…").
+     *
+     * 🔴 Es una clasificación por listas de palabras y nunca va a ser exacta (el chequeo de la segunda
+     * vuelta encontró despedidas, consultas y pedidos en pregunta mal puestos). Por eso, desde la
+     * tercera vuelta, ya no es la última defensa: después del reintento la respuesta sólo se reemplaza
+     * en la mentira segura, y en lo demás se le agrega un aviso verdadero (ver AVISO_DE_VERIFICACION).
+     *
+     * Un mensaje SIN texto no es un acuse: es una foto sola, que casi siempre es el pedido de OTRA carga
+     * (una factura). Es 'otro'.
+     *
+     * @param  string|null  $pedido
+     * @return string  'acuse_gracias' | 'acuse_si' | 'consulta' | 'otro'
+     */
+    public static function clase_del_pedido($pedido)
+    {
+        $texto = trim((string) $pedido);
+
+        if ($texto === '') {
+
+            return 'otro';
+        }
+
+        $normalizado = self::normalizar($texto);
+
+        /* Un pedido de carga gana siempre: "Gracias, cargalo", "¿Me la pasás al miércoles?". */
+        if (self::pide_una_carga($texto, $normalizado)) {
+
+            return 'otro';
+        }
+
+        /* Una pregunta no es un acuse: "¿Quedó?" pregunta por un estado. */
+        if (! self::es_pregunta($texto)) {
+
+            $acuse = self::clase_del_acuse($normalizado);
+
+            if ($acuse !== '') {
+
+                return $acuse;
+            }
+        }
+
+        return self::es_una_consulta($texto) ? 'consulta' : 'otro';
+    }
+
+    /**
+     * true si el texto es una pregunta (tiene "?" o "¿" en cualquier lado).
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function es_pregunta($texto)
+    {
+        $texto = (string) $texto;
+
+        return mb_strpos($texto, '?') !== false || mb_strpos($texto, '¿') !== false;
+    }
+
+    /**
+     * true si la ÚLTIMA oración del texto es una pregunta o un ofrecimiento. Lo usan el detector (la
+     * promesa que termina preguntando no promete: pregunta) y el servicio con la respuesta ANTERIOR del
+     * asistente: si terminó ofreciendo algo, el "dale" que sigue es un pedido nuevo.
+     *
+     * Tercera vuelta (10/10/2026): al final no cuentan las oraciones sin letras (un emoji) ni los
+     * cierres cortos ("Avisame.", "Cualquier cosa me decís."), y un ofrecimiento sin signo de
+     * pregunta también cuenta ("Si querés, también te agendo el pago.", "Puedo también agendarte el del
+     * mes que viene.").
+     *
+     * Cuarta vuelta (10/10/2026): los cierres de cortesía no son ofrecimientos y se saltean igual que
+     * el "Avisame." ("Si necesitás algo más, avisame.", "Cualquier cosa, acá estoy.", toda oración sin
+     * "?" que termine en "avisame" o "decime", salvo que EMPIECE ofreciendo algo: ver
+     * OFRECIMIENTO_AL_EMPEZAR, de la quinta vuelta); un AVISO_* del final tampoco cuenta (el "dale" que
+     * contesta una respuesta con aviso contesta lo de antes); y el detector pide sólo la pregunta
+     * (`$con_ofrecimientos` en false), porque una promesa seguida de un ofrecimiento promete igual.
+     *
+     * @param  string  $texto
+     * @param  bool  $con_ofrecimientos  false: sólo cuenta una pregunta.
+     * @return bool
+     */
+    public static function termina_preguntando($texto, $con_ofrecimientos = true)
+    {
+        $oraciones = self::oraciones(self::sin_avisos($texto));
+
+        while (count($oraciones) > 0) {
+
+            $ultima = $oraciones[count($oraciones) - 1];
+
+            if (! preg_match('/\p{L}/u', $ultima)
+                || (! self::es_pregunta($ultima)
+                    && preg_match(self::CIERRE_DE_CORTESIA, self::normalizar($ultima))
+                    && ! preg_match(self::OFRECIMIENTO_AL_EMPEZAR, self::normalizar($ultima)))) {
+
+                array_pop($oraciones);
+                continue;
+            }
+
+            break;
+        }
+
+        if (count($oraciones) === 0) {
+
+            return false;
+        }
+
+        $ultima = $oraciones[count($oraciones) - 1];
+
+        if (self::es_pregunta($ultima)) {
+
+            return true;
+        }
+
+        return $con_ofrecimientos
+            && (bool) preg_match('/^(?:si queres|si te parece|puedo|te puedo|tambien te puedo|si necesitas)\b/u', self::normalizar($ultima));
+    }
+
+    /**
+     * true si el texto le nombra a la persona la tarjeta de este mensaje: lo que afirma_una_tarjeta()
+     * reconoce, o "confirmala", "confirmá la tarjeta", "en la tarjeta" ("Listo, cambié el monto a
+     * $6.000 en la tarjeta. Confirmala y queda registrado."). Con una tarjeta en el mensaje, ese texto
+     * ya dice la verdad.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function nombra_la_tarjeta($texto)
+    {
+        return self::afirma_una_tarjeta($texto)
+            || (bool) preg_match('/\b(?:confirmala|confirma la tarjeta|confirmes la tarjeta|en la tarjeta)\b/u', self::normalizar($texto));
+    }
+
+    /**
+     * El texto con el aviso agregado al final, separado por una línea en blanco — o tal cual, si el
+     * aviso ya está (un reintento que lo repitió): nunca dos veces.
+     *
+     * @param  string  $texto
+     * @param  string  $aviso  Uno de los AVISO_*.
+     * @return string
+     */
+    public static function con_aviso($texto, $aviso)
+    {
+        $texto = (string) $texto;
+
+        if (mb_strpos($texto, $aviso) !== false) {
+
+            return $texto;
+        }
+
+        return rtrim($texto) . "\n\n" . $aviso;
+    }
+
+    /**
+     * Los avisos que la guarda de la carga le agrega a una respuesta.
+     *
+     * @return array<int, string>
+     */
+    public static function avisos()
+    {
+        return [
+            self::AVISO_CARGA_CON_TARJETA,
+            self::AVISO_TARJETA_DE_ANTES,
+            self::AVISO_DE_VERIFICACION,
+            self::AVISO_CORRECCION,
+        ];
+    }
+
+    /**
+     * El texto sin los AVISO_* (literales, con el espacio en blanco que los separaba), o tal cual si no
+     * tiene ninguno (cuarta vuelta, 10/10/2026: C). El aviso es para la persona y dice la verdad del
+     * turno en que se agregó: en el historial que viaja al modelo, el modelo lo copia (DeepSeek ya copia
+     * líneas del historial: escribe "[Tarjeta #1765 … estado: confirmada]" él mismo), y copiado en otro
+     * turno puede decir algo falso. Lo usan el historial y el texto final del turno, antes de que la
+     * guarda decida si agrega el suyo.
+     *
+     * Si el texto era SÓLO avisos, vuelve tal cual: una respuesta vacía no se puede mandar.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    public static function sin_avisos($texto)
+    {
+        $texto  = (string) $texto;
+        $limpio = $texto;
+
+        foreach (self::avisos() as $aviso) {
+
+            if (mb_strpos($limpio, $aviso) === false) {
+                continue;
+            }
+
+            $limpio = (string) preg_replace('/\s*' . preg_quote($aviso, '/') . '/u', '', $limpio);
+        }
+
+        if ($limpio === $texto) {
+
+            return $texto;
+        }
+
+        $limpio = trim($limpio);
+
+        return $limpio === '' ? $texto : $limpio;
+    }
+
+    /**
+     * La nota del reintento cuando el texto dio por hecha una carga que el turno no ejecutó (misión
+     * asistente-carga-prometida-sin-accion). Empieza con "[El sistema revisó tu respuesta:", igual que
+     * la de la tarjeta, así TextoFinalIaHelper saca el renglón si el modelo la repitiera. Dice la
+     * verdad del turno: nada ejecutado, una tarjeta de este mensaje esperando el botón, o una de la
+     * respuesta anterior que sigue sin confirmar — o que la persona la está corrigiendo.
+     *
+     * 🔴 "DECÍ CON QUÉ NÚMERO Y FECHA FIGURA" (tercera vuelta, 10/10/2026). La nota pedía "dejá claro
+     * que eso se hizo antes", y como "antes" ya no es repaso (es la forma natural de mentir un cambio),
+     * 11 de 18 respuestas plausibles a esa nota volvían a disparar. Con el número y la fecha ("el Gasto
+     * N° 7 del 9/10") la respuesta es verificable y el repaso la reconoce.
+     *
+     * 🔴 PRIMERO LO QUE YA EXISTÍA, DESPUÉS LA CARGA (cuarta vuelta, 10/10/2026). La nota de la tercera
+     * vuelta mandaba a cargar ANTES de considerar que ya existiera, y la medición real de esa versión lo
+     * mostró: en "directo", a "Ya lo llamé", el reintento llamó a proponer_tarea antes que a
+     * consultar_tareas, creó una tarea DE MÁS y marcó las dos hechas. Ahora la nota dice, en este orden:
+     * que con este mensaje no se registró nada; que si ya figuraba registrado no lo cargue de nuevo y
+     * diga con qué número y fecha; que si es un cambio sobre algo que ya existe lo busque primero con la
+     * consulta y trabaje sobre ése; y recién al final, que si es una carga nueva llame a la proponer_. La
+     * de la corrección y la de la tarjeta de este mensaje quedan como estaban.
+     *
+     * @param  array<int, string>  $herramientas_de_carga  Las de carga que el modelo pidió en el turno.
+     * @param  bool  $hay_tarjeta_propuesta  true si ESTE mensaje tiene una tarjeta `propuesta`.
+     * @param  bool  $hay_tarjeta_pendiente_de_antes  true si la respuesta anterior dejó una tarjeta que sigue `propuesta`.
+     * @param  bool  $es_una_correccion  true si la persona está corrigiendo esa tarjeta ("no, eran 6000").
+     * @return string
+     */
+    public static function nota_para_reintentar_carga(array $herramientas_de_carga, $hay_tarjeta_propuesta, $hay_tarjeta_pendiente_de_antes = false, $es_una_correccion = false)
+    {
+        if ($hay_tarjeta_propuesta) {
+
+            return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero NO se ejecutó: quedó como tarjeta para que la persona la confirme. '
+                . 'Volvé a contestar diciendo que dejaste la tarjeta para confirmar, sin decir que ya está hecho ni registrado. '
+                . 'No le menciones este aviso a la persona.]';
+        }
+
+        $pedidas = count($herramientas_de_carga)
+            ? 'Pediste ' . implode(', ', array_values(array_unique($herramientas_de_carga))) . ' y ninguna terminó en una carga: mirá lo que te contestó. '
+            : '';
+
+        if ($hay_tarjeta_pendiente_de_antes && $es_una_correccion) {
+
+            /*
+             * En una corrección no se le ofrece "decí que la tarjeta sigue esperando": la de antes tiene
+             * el dato viejo, y mandarla a confirmar es confirmar lo que la persona acaba de corregir.
+             */
+            return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero en este turno NO se ejecutó ninguna carga y no quedó nada registrado. '
+                . $pedidas
+                . 'Si la persona pidió una carga o un cambio, llamá AHORA a la herramienta proponer_ que corresponde con los datos que ya tenés; '
+                . 'si te contesta que faltan datos, pedíselos a la persona. '
+                . 'La persona está corrigiendo la tarjeta que dejaste antes: armá una tarjeta NUEVA con el dato corregido (con reemplaza_a); no la mandes a confirmar la vieja. '
+                . 'No le menciones este aviso a la persona.]';
+        }
+
+        /* Con una tarjeta de la respuesta anterior esperando: lo primero es no darla por registrada. */
+        $de_antes = $hay_tarjeta_pendiente_de_antes
+            ? 'La tarjeta que dejaste antes sigue sin confirmar: no digas que quedó registrado; si te referías a esa tarjeta, volvé a contestar diciendo que sigue esperando que la persona la confirme. '
+            : '';
+
+        return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero con este mensaje no se registró nada. '
+            . $de_antes
+            . 'Si lo que dijiste ya figuraba registrado ANTES de este mensaje, NO lo cargues de nuevo: decí con qué número y fecha figura (por ejemplo "el Gasto N° 7 del 9/10"). '
+            . 'Si es un cambio sobre algo que ya existe (una tarea, un gasto, un cliente que se nombró antes), buscalo primero con la consulta que corresponde (consultar_tareas, consultar_proveedores…) y trabajá sobre ése: no crees uno nuevo. '
+            . 'Si es una carga nueva, llamá ahora a la herramienta proponer_ que corresponde; si te contesta que faltan datos, pedíselos a la persona. '
+            . $pedidas
+            . 'No le menciones este aviso a la persona.]';
+    }
+
+    /**
+     * Las oraciones del texto: se corta después de un punto, un signo de cierre o un salto de línea.
+     * "400.000" o "15/10" no se cortan (no hay espacio después del punto).
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    protected static function oraciones($texto)
+    {
+        $texto = trim((string) $texto);
+
+        if ($texto === '') {
+
+            return [];
+        }
+
+        $partes = preg_split('/(?<=[.!?…])\s+|\n+/u', $texto);
+
+        if (! is_array($partes)) {
+
+            return [$texto];
+        }
+
+        $oraciones = [];
+
+        foreach ($partes as $parte) {
+
+            if (trim($parte) !== '') {
+                $oraciones[] = trim($parte);
+            }
+        }
+
+        return $oraciones;
+    }
+
+    /**
+     * true si UNA oración afirma una tarjeta nueva (ver los tipos en el docblock de la clase).
+     *
+     * @param  string  $oracion   Normalizada.
+     * @param  string  $anterior  La oración de antes, normalizada ('' si es la primera).
+     * @param  string  $oracion_con_tildes  La misma oración en minúscula CON tildes ('' si no se tiene).
+     * @return bool
+     */
+    protected static function oracion_afirma_una_tarjeta($oracion, $anterior, $oracion_con_tildes = '')
+    {
+        if ($oracion === '') {
+
+            return false;
+        }
+
+        /*
+         * Repasa una tarjeta VIEJA: "ayer te dejé la tarjeta y la confirmaste", "la tarjeta de
+         * arriba", "quedó confirmada". No afirma una nueva. "antes de confirmar" sí puede ser nueva.
+         */
+        if (preg_match('/\b(?:ayer|antes(?! de)|anterior|anteriormente|de arriba|el otro dia|la otra vez|confirmaste|cancelaste|ya la confirm\w*|(?:quedo|quedaron|esta|estan) (?:confirmad|registrad|cancelad|reemplazad|vencid)\w*)\b/u', $oracion)) {
+
+            return false;
+        }
+
+        $oracion = self::sin_tarjetas_de_pago($oracion);
+
+        foreach (self::patrones() as $patron) {
+
+            if (! preg_match_all($patron[0], $oracion, $coincidencias, PREG_OFFSET_CAPTURE)) {
+                continue;
+            }
+
+            foreach ($coincidencias[0] as $coincidencia) {
+
+                if (self::la_coincidencia_afirma($patron[1], $oracion, substr($oracion, 0, $coincidencia[1]), $anterior, $oracion_con_tildes)) {
+
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Las excepciones de cada tipo, mirando lo que hay ANTES de la coincidencia en la oración.
+     *
+     * @param  string  $tipo      pasado | promesa | estado | boton
+     * @param  string  $oracion   La oración normalizada.
+     * @param  string  $antes     Lo que hay antes de la coincidencia.
+     * @param  string  $anterior  La oración de antes, normalizada.
+     * @param  string  $oracion_con_tildes  La misma oración en minúscula CON tildes ('' si no se tiene).
+     * @return bool
+     */
+    protected static function la_coincidencia_afirma($tipo, $oracion, $antes, $anterior, $oracion_con_tildes = '')
+    {
+        /* Una pregunta que arranca antes: "¿Te dejo la tarjeta…?", "¿Tenés la tarjeta…?". */
+        if (strpos($antes, '¿') !== false) {
+
+            return false;
+        }
+
+        /* Una negación pegada: "No te dejé la tarjeta…", "Todavía no hay tarjeta…", "ninguna tarjeta". */
+        if (preg_match(self::NEGACION_PEGADA, $antes)) {
+
+            return false;
+        }
+
+        if ($tipo === 'pasado') {
+
+            /*
+             * "…para que te deje la tarjeta": subjuntivo, no un hecho. Sólo las construcciones que lo
+             * piden: "así que te dejé la tarjeta" o "ya que…" SÍ afirman.
+             */
+            return ! preg_match('/\b(?:para|hasta|antes de|despues de|a menos|sin|necesitas|preferis|esperas|pedis|queres|quieras|hace falta|falta) que (?:te |le |les |se )?(?:la |lo |las |los )?$/u', $antes);
+        }
+
+        if ($tipo === 'promesa') {
+
+            /* Una pregunta (con o sin "¿"), o justo después de una: está pidiendo un dato. */
+            if (substr(rtrim($oracion), -1) === '?' || substr(rtrim($anterior), -1) === '?') {
+
+                return false;
+            }
+
+            /*
+             * Un condicional o un pedido antes del verbo: "Si me pasás el monto, te dejo la tarjeta".
+             * El "si" va seguido de una palabra: sin tildes, "Sí, te dejo la tarjeta" (con la coma) es
+             * un sí, y afirma.
+             */
+            return ! preg_match('/(?:\bsi\s+\w|\b(?:queres que|puedo|podria|podemos|cuando|apenas|en cuanto|una vez que|con eso|con ese dato|con esos datos|decime|pasame|mandame|confirmame|avisame|contame|indicame)\b)/u', $antes);
+        }
+
+        if ($tipo === 'boton') {
+
+            /* "Mañana te toca confirmar el pedido": la tercera persona, no el botón. */
+            if (preg_match('/\b(?:te|le|les|nos|me)\s+$/u', $antes)) {
+
+                return false;
+            }
+
+            /*
+             * Sin una tarjeta nombrada en la oración o en la de antes, "Tocá Confirmar" es una
+             * explicación de cómo se hace algo en una pantalla ("Para guardar, tocá Confirmar"), no
+             * una tarjeta del asistente (tercer chequeo, 10/10/2026).
+             */
+            if (! preg_match('/\btarjetas?\b/u', $oracion . ' ' . $anterior)) {
+
+                return false;
+            }
+
+            /* Una explicación de cómo se hace desde una pantalla. */
+            return ! preg_match('/\b(?:entra a|entra en|anda a|abri|abrila|abrilo|desde la pantalla|en la pantalla|de la pantalla|desde el menu|en el menu)\b/u', $oracion);
+        }
+
+        /*
+         * 🔴 EL ESTADO COMO COLA DE UNA PROMESA (misión asistente-carga-prometida-sin-accion, medido con
+         * esta rama contra DeepSeek real el 10/10/2026). "Gracias!" con el gasto esperando la caja: "Si
+         * querés que arme la carga, decime a qué caja va la plata y dejo la tarjeta para que la
+         * confirmes." hace coincidir dos patrones: la promesa ("dejo la tarjeta"), que sus excepciones
+         * desarman porque está pidiendo la caja, y el estado ("la tarjeta para que la confirmes"), que no
+         * tenía ninguna. La guarda cambiaba la respuesta por "No pude armar la tarjeta para esto. ¿Lo
+         * intento de nuevo?" y a la persona se le BORRABA la pregunta por la caja (igual con "…Decime
+         * cuál y dejo la tarjeta para confirmar."). Si lo de antes termina en el verbo de una promesa —con
+         * sus pronombres, hasta dos palabras ("te dejo lista la", "dejo acá la") y el determinante—, la
+         * coincidencia es la cola de esa promesa: ver la_cola_de_una_promesa_afirma().
+         */
+        if ($tipo === 'estado'
+            && preg_match('/\b' . self::PRESENTE . '\s+(?:(?:te|le|les|lo|la)\s+)*(?:\S+\s+){0,2}?(?:' . self::DETERMINANTE . '\s+)?$/u', $antes, $verbo, PREG_OFFSET_CAPTURE)) {
+
+            return self::la_cola_de_una_promesa_afirma(substr($antes, 0, $verbo[0][1]), $oracion_con_tildes);
+        }
+
+        return true;
+    }
+
+    /**
+     * true si el estado que es la cola de una promesa ("…y dejo la tarjeta para que la confirmes")
+     * afirma una tarjeta: sólo NO la afirma cuando lo de antes del verbo es el pedido de un dato — un
+     * condicional ("Si querés que arme la carga, … dejo la tarjeta…", "Si me pasás la caja, te dejo lista
+     * la tarjeta…") o un pedido ("Decime cuál y dejo la tarjeta…", "querés que…").
+     *
+     * 🔴 NO CON TODAS LAS REGLAS DE LA PROMESA (regresión B1 del rechequeo, tercera vuelta): con ellas,
+     * "Sí te dejo la tarjeta para confirmar." (el "sí" sin coma se leía "si" + palabra), "Encontré la
+     * tarea. ¿Era la de Juan? Te dejo la tarjeta para confirmar." (la oración de antes pregunta) y "Con
+     * eso te dejo la tarjeta para confirmar." pasaban a dar false, y en develop dan true. Por eso el
+     * condicional se mira CON tildes ("sí" no es "si"), y ni la pregunta de antes ni "con eso" cuentan.
+     *
+     * Cuarta vuelta (10/10/2026): el "si" que desarma es sólo el condicional al COMIENZO de una cláusula
+     * (al empezar, detrás de una coma, un punto y coma o dos puntos, o de "y", "pero", "entonces"), y no
+     * "si bien". Cualquier "si" rompía siete afirmaciones que develop da true: "Revisé si había otro
+     * gasto igual y no hay: te dejo la tarjeta…", "Como no sé si es efectivo o transferencia, dejo la
+     * tarjeta…", "Si bien falta la fecha…, te dejo la tarjeta…", "Revisá si…", "Fijate si…", "Mirá si…".
+     *
+     * @param  string  $antes_del_verbo     Lo que hay antes del verbo, normalizado.
+     * @param  string  $oracion_con_tildes  La oración en minúscula con tildes ('' si no se tiene).
+     * @return bool
+     */
+    protected static function la_cola_de_una_promesa_afirma($antes_del_verbo, $oracion_con_tildes)
+    {
+        $antes_con_tildes = $antes_del_verbo;
+
+        if ($oracion_con_tildes !== ''
+            && preg_match_all('/\b(?:dejo|armo|preparo|propongo|voy a (?:dejar|armar|preparar)(?:te|le|les)?)\b(?:\s+\S+){0,4}?\s+tarjetas?\b/u', $oracion_con_tildes, $verbos, PREG_OFFSET_CAPTURE)) {
+
+            $antes_con_tildes = substr($oracion_con_tildes, 0, $verbos[0][count($verbos[0]) - 1][1]);
+        }
+
+        if (preg_match('/(?:^|[,;:]\s*|\b(?:y|pero|entonces)\s+)si\s+(?!bien\b)(?:\w|$)/u', $antes_con_tildes)) {
+
+            return false;
+        }
+
+        return ! preg_match('/\b(?:queres que|decime|pasame|mandame|confirmame|avisame|contame|indicame)\b/u', $antes_del_verbo);
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // La carga dada por hecha (misión asistente-carga-prometida-sin-accion, 10/10/2026)
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * El texto sin lo que va entre comillas ("…", “…”, «…»), que son ejemplos o citas y no lo que el turno
+     * hizo (sexta vuelta, 10/10/2026): el prompt enseña a pedir con el ejemplo literal "Subí (o bajá) el
+     * precio X %", y el modelo lo repite ("Decime qué artículos y cuánto: por ejemplo, "subí el precio 10
+     * % a lo de Coca"."). Lo de entre comillas se cambia por un espacio: el nombre de una tarea citado en
+     * una afirmación ("Agendé la tarea "Llamar a Juan" para el martes.") no cambia lo que se afirma.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function sin_lo_que_va_entre_comillas($texto)
+    {
+        return (string) preg_replace('/"[^"\n]*"|“[^”\n]*”|«[^»\n]*»/u', ' ', (string) $texto);
+    }
+
+    /**
+     * Las oraciones del texto, sin los renglones de lista ("- ", "* ", "• ", "1. "): ahí van los datos
+     * de una consulta ("- Tarea cargada: llamar a Juan"), no lo que el turno hizo. Se cortan los
+     * renglones ANTES de partir en oraciones: si no, "1. Gasto registrado…" se partiría en "1." y en
+     * una oración que ya no parece de lista.
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    protected static function oraciones_sin_renglones_de_lista($texto)
+    {
+        $renglones = preg_split('/\r\n|\n/u', (string) $texto);
+
+        if (! is_array($renglones)) {
+
+            return self::oraciones($texto);
+        }
+
+        $oraciones = [];
+
+        foreach ($renglones as $renglon) {
+
+            if (trim($renglon) === '' || preg_match('/^\s*(?:[-*•·]|\d+[.)])\s/u', $renglon)) {
+                continue;
+            }
+
+            foreach (self::oraciones($renglon) as $oracion) {
+                $oraciones[] = $oracion;
+            }
+        }
+
+        return $oraciones;
+    }
+
+    /**
+     * true si el pedido de la persona trae un pedido de CARGA, aunque venga como pregunta o junto con
+     * otra cosa: "¿Me la pasás al miércoles?", "¿Lo podés cargar?", "Cambiale el teléfono, ¿ok?",
+     * "Cargá el gasto y mostrame cómo quedó", "mostrame las tareas y pasa la de Juan al jueves". Ahí lo
+     * que pidió es una carga, y un texto que la da por hecha sin que se haya hecho miente.
+     *
+     * "Pasame" y "mandame" a secas son pedidos de mostrar ("Pasame el resumen"): cuentan como carga
+     * sólo con una fecha a ocho palabras o menos ("pasame la tarea al miércoles", "Pasame la tarea de
+     * llamar a Herramientas del Interior para el jueves": con cuatro, como hasta la tercera vuelta, ésta
+     * pasaba por consulta). Y "Haceme un resumen" o "Armame la lista" piden ver algo, no cargarlo: se
+     * sacan antes de mirar.
+     *
+     * @param  string  $texto        El pedido, tal cual (para el voseo, que se distingue por la tilde).
+     * @param  string  $normalizado  El mismo, normalizado.
+     * @return bool
+     */
+    protected static function pide_una_carga($texto, $normalizado)
+    {
+        $normalizado = (string) preg_replace(self::PEDIDO_DE_RESUMEN, ' ', $normalizado);
+        $con_tildes  = (string) preg_replace(self::PEDIDO_DE_RESUMEN_CON_TILDES, ' ', mb_strtolower((string) $texto, 'UTF-8'));
+
+        $sin_pasame = (string) preg_replace('/\b(?:pasame|mandame)\b(?!(?:\s+\S+){0,8}?\s+(?:al|para el|para)\s+' . self::FECHA . ')/u', ' ', $normalizado);
+
+        return (bool) (preg_match(self::PEDIDO_DE_CARGA_EN_PREGUNTA, $sin_pasame)
+            || preg_match(self::PODES_CON_INFINITIVO, $sin_pasame)
+            || preg_match(self::SE_PUEDE, $sin_pasame)
+            || preg_match(self::IMPERATIVO_CON_ENCLITICO, $sin_pasame)
+            || preg_match(self::IMPERATIVO_TRAS_Y, $sin_pasame)
+            || preg_match(self::IMPERATIVO_AL_EMPEZAR, $sin_pasame)
+            || preg_match(self::RECORDA_DE_CARGAR, $sin_pasame)
+            || preg_match(self::IMPERATIVO_DE_VOSEO, $con_tildes));
+    }
+
+    /**
+     * 'acuse_si', 'acuse_gracias' o '' (no es un acuse). Todas las palabras tienen que ser de
+     * PALABRAS_DE_GRACIAS o de PALABRAS_DE_SI, salvo UNA desconocida cuando hay una palabra que agradece
+     * de verdad ("Gracias Lucas"); con un sí adentro es 'acuse_si', que es la clase que exige más.
+     *
+     * Cuarta vuelta (10/10/2026): esa desconocida no puede ir detrás de un pronombre o de "ya"
+     * (ANTES_DE_UN_VERBO): ahí es un verbo, no un nombre ("Ya lo llamé, gracias").
+     *
+     * @param  string  $normalizado
+     * @return string
+     */
+    protected static function clase_del_acuse($normalizado)
+    {
+        $limpio = (string) preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', strtr($normalizado, ['ñ' => 'n']));
+        $limpio = (string) preg_replace('/(\p{L})\1+/u', '$1', $limpio);
+
+        $palabras = preg_split('/\s+/u', trim($limpio), -1, PREG_SPLIT_NO_EMPTY);
+        $palabras = is_array($palabras) ? $palabras : [];
+
+        if (count($palabras) === 0) {
+
+            return 'acuse_si';
+        }
+
+        if (count($palabras) > self::LARGO_MAXIMO_DE_UN_ACUSE) {
+
+            return '';
+        }
+
+        $tiene_un_si     = strpos(' ' . implode(' ', $palabras) . ' ', ' de una ') !== false;
+        $agradece        = false;
+        $desconocidas    = 0;
+        $hay_un_verbo    = false;
+        $previa          = '';
+
+        foreach ($palabras as $palabra) {
+
+            if (in_array($palabra, self::PALABRAS_DE_SI, true)) {
+                $tiene_un_si = true;
+            } elseif (! in_array($palabra, self::PALABRAS_DE_GRACIAS, true)) {
+                $desconocidas++;
+
+                if (in_array($previa, self::ANTES_DE_UN_VERBO, true)) {
+                    $hay_un_verbo = true;
+                }
+            }
+
+            if (in_array($palabra, self::PALABRAS_QUE_AGRADECEN, true)) {
+                $agradece = true;
+            }
+
+            $previa = $palabra;
+        }
+
+        if ($hay_un_verbo || $desconocidas > 1 || ($desconocidas === 1 && ! $agradece)) {
+
+            return '';
+        }
+
+        return $tiene_un_si ? 'acuse_si' : 'acuse_gracias';
+    }
+
+    /**
+     * true si el pedido es SÓLO una consulta: partido en fragmentos (por los signos de puntuación y por
+     * " y "), todos los fragmentos son neutros — una pregunta, un pedido de mostrar, una consulta sin
+     * "?" ("cuanto vendi hoy", "lo cargaste"), un acuse o un saludo. Con un hecho adentro ("Ya lo llamé,
+     * ¿qué más tengo hoy?", "Gasté 15000, ¿de qué caja sale?") no: ese hecho es una carga que la persona
+     * da por pedida, y el texto que la da por hecha puede mentir.
+     *
+     * 🔴 Cuarta vuelta (10/10/2026), los desvíos de la tercera que abrieron agujeros: un fragmento con un
+     * pretérito de primera persona que la persona no pregunta ("como hablamos ya le pagué a coca",
+     * "Tareas de hoy ya las hice todas") o con "que" + subjuntivo al empezar ("Que quede para el
+     * jueves") NUNCA es neutro; y las consultas sin "?" por cómo empiezan valen sólo hasta
+     * LARGO_MAXIMO_DE_UNA_CONSULTA_SIN_SIGNO palabras ("Ya quedó completada la tarea de Juan" ya no
+     * pasa). Los pedidos de mostrar explícitos valen con cualquier largo.
+     *
+     * @param  string  $texto  El pedido, tal cual.
+     * @return bool
+     */
+    protected static function es_una_consulta($texto)
+    {
+        $partes = preg_split('/(¿|\?|[.,;:!\n]|\s+y\s+)/u', (string) $texto, -1, PREG_SPLIT_DELIM_CAPTURE);
+        $partes = is_array($partes) ? $partes : [(string) $texto];
+
+        /* [fragmento, es una pregunta] */
+        $fragmentos    = [];
+        $en_la_pregunta = false;
+
+        foreach ($partes as $parte) {
+
+            if ($parte === '¿') {
+                $en_la_pregunta = true;
+                continue;
+            }
+
+            if ($parte === '?') {
+                if (count($fragmentos) > 0) {
+                    $fragmentos[count($fragmentos) - 1][1] = true;
+                }
+                $en_la_pregunta = false;
+                continue;
+            }
+
+            if (preg_match('/^(?:[.,;:!\n]|\s+y\s+)$/u', $parte)) {
+                continue;
+            }
+
+            $fragmento = preg_replace('/^y\s+/u', '', self::normalizar($parte));
+
+            if (trim((string) $fragmento) === '') {
+                continue;
+            }
+
+            $fragmentos[] = [trim((string) $fragmento), $en_la_pregunta];
+        }
+
+        if (count($fragmentos) === 0) {
+
+            return false;
+        }
+
+        foreach ($fragmentos as $fragmento) {
+
+            if (self::el_fragmento_cuenta_un_hecho($fragmento[0], $fragmento[1])) {
+
+                return false;
+            }
+
+            $corto = self::cantidad_de_palabras($fragmento[0]) <= self::LARGO_MAXIMO_DE_UNA_CONSULTA_SIN_SIGNO;
+
+            $sin_articulo = (string) preg_replace('/^(?:las|los|el|la|mis|tus)\s+/u', '', $fragmento[0]);
+
+            $neutro = $fragmento[1]
+                || preg_match(self::PEDIDO_DE_MOSTRAR, $fragmento[0])
+                || preg_match(self::PEDIDO_DE_RESUMEN, $fragmento[0])
+                || preg_match(self::PEDIDO_DE_VER, $fragmento[0])
+                || ($corto && preg_match(self::ESTADO_SIN_PREGUNTA, $fragmento[0]))
+                || (preg_match(self::CONSULTA_NOMINAL, $fragmento[0])
+                    && ! preg_match('/\d/u', $fragmento[0])
+                    && self::cantidad_de_palabras($sin_articulo) <= self::LARGO_MAXIMO_DE_UNA_CONSULTA_SIN_SIGNO)
+                || (preg_match(self::INTERROGATIVO_AL_EMPEZAR, $fragmento[0])
+                    && ! preg_match(self::EXCLAMACION_AL_EMPEZAR, $fragmento[0])
+                    && ($corto || ! preg_match(self::INTERROGATIVO_QUE_TAMBIEN_ES_CONJUNCION, $fragmento[0])))
+                || preg_match(self::PRETERITO_DE_LA_PERSONA, $fragmento[0])
+                || preg_match(self::SALUDO, $fragmento[0])
+                || self::clase_del_acuse($fragmento[0]) !== '';
+
+            if (! $neutro) {
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * true si el fragmento (normalizado) cuenta un HECHO de la persona o pide que algo quede, y por eso
+     * nunca es neutro (cuarta vuelta, 10/10/2026): un pretérito de primera persona que no está
+     * preguntado ("ya le pagué a coca", "Cuando lo llamé me dijo…"; "cuanto vendi hoy" no), o "que" +
+     * subjuntivo al empezar un fragmento sin "?" ("Que quede para el jueves").
+     *
+     * Quinta vuelta (10/10/2026): tampoco cuenta el pretérito de un fragmento que es PREGUNTA sin un
+     * número ("¿Cargué bien el gasto de la luz?", "¿Ya le pagué a Coca?", "¿Cuándo pagué la luz?") ni el
+     * que va detrás de un "si" de pregunta indirecta ("Fijate si pagué la luz", "Decime si cargué…"): la
+     * persona pregunta si lo hizo. Con la v4 esas consultas eran 'otro', y en una primera respuesta un
+     * "Sí, quedó registrado el pago." terminaba cambiado por "No pude hacer esa carga…". Con un número la
+     * pregunta trae el dato de una carga ("pagué la luz 12000 ok?") y el pretérito cuenta.
+     *
+     * @param  string  $fragmento    Normalizado.
+     * @param  bool  $es_pregunta  true si el fragmento es una pregunta.
+     * @return bool
+     */
+    protected static function el_fragmento_cuenta_un_hecho($fragmento, $es_pregunta)
+    {
+        if (! $es_pregunta && preg_match(self::QUE_CON_SUBJUNTIVO, $fragmento)) {
+
+            return true;
+        }
+
+        if ($es_pregunta && ! preg_match('/\d/u', $fragmento)) {
+
+            return false;
+        }
+
+        $sin_lo_preguntado = (string) preg_replace(self::PRETERITO_PREGUNTADO, ' ', $fragmento);
+        $sin_lo_preguntado = (string) preg_replace('/\bsi\s+(?:(?:ya|le|les|lo|la|los|las|me|te|se|nos)\s+)*' . self::PRETERITO_DE_PRIMERA_PERSONA . '\b/u', ' ', $sin_lo_preguntado);
+
+        return (bool) preg_match('/\b' . self::PRETERITO_DE_PRIMERA_PERSONA . '\b/u', $sin_lo_preguntado);
+    }
+
+    /**
+     * Cuántas palabras tiene un texto.
+     *
+     * @param  string  $texto
+     * @return int
+     */
+    protected static function cantidad_de_palabras($texto)
+    {
+        $palabras = preg_split('/\s+/u', trim((string) $texto), -1, PREG_SPLIT_NO_EMPTY);
+
+        return is_array($palabras) ? count($palabras) : 0;
+    }
+
+    /**
+     * El tipo de carga que afirma UNA oración ('hecho' > 'quedo' > 'promesa' > 'cierre'), o ''.
+     * 'cierre' es la oración que es sólo "Listo ✅": afirma_una_carga_hecha() la cuenta como 'quedo'
+     * mirando el resto del texto.
+     *
+     * Cada tipo se busca sobre la versión que le corresponde de la misma oración: 'hecho' y 'promesa'
+     * en minúscula CON tildes (la tilde es lo que separa "cargué" de "cargue", y "la cambio" de "la
+     * cambió"); 'quedo', en la normalizada. Las dos versiones tienen la misma cantidad de caracteres,
+     * así que lo de antes de cada coincidencia se pasa de una a la otra contando caracteres.
+     *
+     * ⚠️ sin_tarjetas_de_pago() no se aplica a la oración: ningún patrón de la carga mira la palabra
+     * "tarjeta", y además la reescribe y correría los desplazamientos. Sí se usa para la oración de
+     * antes cuando se pregunta si ésta afirma una tarjeta, igual que en afirma_una_tarjeta().
+     *
+     * @param  string  $oracion   La oración tal cual.
+     * @param  string  $anterior  La oración de antes, normalizada ('' si es la primera).
+     * @return string
+     */
+    protected static function tipo_de_carga_de_la_oracion($oracion, $anterior)
+    {
+        $minuscula   = mb_strtolower(trim((string) $oracion), 'UTF-8');
+        $normalizada = self::normalizar($oracion);
+
+        if ($normalizada === '') {
+
+            return '';
+        }
+
+        /*
+         * Una oración que afirma una TARJETA no es una carga dada por hecha, aunque use un verbo de carga
+         * (chequeo del 10/10/2026): "Te creé la tarjeta del gasto…", "Quedó cargada la tarjeta para que
+         * la confirmes", "Cargué el gasto en la tarjeta para que lo confirmes". Ésa la mira la otra
+         * familia.
+         */
+        if (self::oracion_afirma_una_tarjeta($normalizada, self::sin_tarjetas_de_pago($anterior), $minuscula)) {
+
+            return '';
+        }
+
+        if (preg_match(self::REPASO_DE_UNA_CARGA, $normalizada)) {
+
+            return '';
+        }
+
+        if (self::oracion_afirma_un_hecho($minuscula, $normalizada)) {
+
+            return 'hecho';
+        }
+
+        if (self::oracion_afirma_que_quedo($minuscula, $normalizada)) {
+
+            return 'quedo';
+        }
+
+        if (self::oracion_promete_una_carga($minuscula, $normalizada, $anterior)) {
+
+            return 'promesa';
+        }
+
+        if (preg_match(self::CIERRE, $normalizada)) {
+
+            return 'cierre';
+        }
+
+        return '';
+    }
+
+    /**
+     * Los patrones de 'hecho', sobre la oración en minúscula CON tildes: [patrón del verbo, lo que
+     * tiene que venir detrás del verbo (sobre la normalizada) o null si no pide nada].
+     *
+     * @return array<int, array{0: string, 1: string|null}>
+     */
+    protected static function patrones_de_hecho()
+    {
+        $v = self::VENTANA;
+        $adverbio = '(?:(?:tambien|ya|recien|ahora|bien)\s+)*';
+
+        return [
+            /* "Listo, lo cargué", "Agendé la tarea", "Le cobré $20.000 a Juan", "Di de alta al proveedor". */
+            ['/\b' . self::PRETERITO_DE_CARGA . '\b/u', null],
+            /* "Marqué la tarea como hecha" — y no "Te marqué en negrita los que vencen hoy". */
+            ['/\bmarqué\b/u', '/^' . $v . '{0,40}?\bcomo (?:hech|pagad|cobrad|complet|entregad)/u'],
+            /* "Le cambié el teléfono", "Lo cambié a 6000", "La cambié al viernes" — y no "Cambié el orden de la lista". */
+            ['/\b(?:cambié|actualicé|modifiqué|edité)\b/u', '/^' . $adverbio . self::OBJETO_DE_UN_CAMBIO . '/u'],
+            /* "Borré la categoría Pruebas", "Te creé la tarea" — y no "Creé un resumen con las ventas". */
+            ['/\b(?:eliminé|borré|creé)\b/u', '/^' . $adverbio . self::ENTIDAD_DE_CARGA . '/u'],
+            /* "Anoté la tarea", "Te lo anoté para el martes" — y no "Te anoté abajo el detalle". */
+            ['/\banoté\b/u', '/^(?:' . $adverbio . self::ENTIDAD_DE_CARGA . '|' . $v . '{0,40}?\b(?:en la agenda|para el)\b)/u'],
+            /* "La pasé al miércoles", "Te pasé la tarea para el 14/10" — y no "Pasé la tarjeta al cliente". */
+            ['/\bpasé\b' . $v . '{0,40}?\b(?:al|para el)\s+(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\d|mes\b|pr[oó]xim)/u', null],
+            /*
+             * "Te la dejé para el miércoles", con la fecha PEGADA al verbo: con ventana, el texto medido en
+             * "resuelto" "…y dejé dos tarjetas para pasarlos a ambos al miércoles 14/10/2026" daba 'hecho'.
+             */
+            ['/\bdejé\s+(?:al|para el)\s+(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\d|mes\b|pr[oó]xim)/u', null],
+            /* "Te armé el combo", "Armé la oferta" — pegado: "Te armé el resumen: 3 ventas…" no. */
+            ['/\barmé\s+(?:(?:el|la|los|las|un|una|tu|su)\s+)?(?:combo|oferta|presupuesto|venta|pedido)s?\b/u', null],
+            /* "Hice la venta", "Te hice el cambio" — y no "Hice la cuenta". */
+            ['/\bhice\s+(?:la|el)\s+(?:venta|pago|cobro|cambio|carga|alta|baja|movimiento|presupuesto|transferencia)\b/u', null],
+            /* "Te dejé agendada la tarea", "Te lo dejé cargado" — "Dejé la tarjeta" es de la otra familia. */
+            ['/\bdejé\s+' . self::PARTICIPIO_DE_CARGA . '\b/u', null],
+            /*
+             * "Ya subí la foto", "Le subí el precio", "Te emití la factura", "Listo, emití la factura" —
+             * y no el imperativo de voseo, que se escribe igual: "Subí la foto y te armo la carga", "Para
+             * facturarla, emití la factura desde Comprobantes" (sexta vuelta: ver
+             * ANTES_DE_UN_PRETERITO_DE_IR).
+             */
+            ['/' . self::ANTES_DE_UN_PRETERITO_DE_IR . 'subí\b/u', null],
+            ['/' . self::ANTES_DE_UN_PRETERITO_DE_IR . 'emití\b(?:\s+(?:la|el)\s+(?:factura|comprobante|nota)|(?<=(?:lo|la|le|te|me) emití))/u', null],
+            /* "Apliqué el descuento", "Le agregué el teléfono", "Bajé el precio". */
+            ['/\bapliqué\s+(?:el|la)\s+(?:descuento|recargo|oferta)/u', null],
+            ['/\ble\s+(?:agregué|puse|sumé|saqué)\b/u', null],
+            ['/\bbajé\s+(?:el|los)\s+precios?\b/u', null],
+        ];
+    }
+
+    /**
+     * Los patrones de 'quedo', sobre la oración normalizada: [patrón, forma]. Las formas tienen sus
+     * propias excepciones (ver oracion_afirma_que_quedo()).
+     *
+     * @return array<int, array{0: string, 1: string}>
+     */
+    protected static function patrones_de_quedo()
+    {
+        $v = self::VENTANA;
+        $participio = self::PARTICIPIO_DE_CARGA;
+
+        return [
+            /* (a) "Quedó pasada al miércoles", "Ya está cargado", "Listo, la tarea quedó hecha". */
+            ['/\b(?:quedo|quedaron|ya esta|ya estan)\b(?P<entre>' . $v . '{0,25}?)\b(?:' . $participio . '|hech[oa]s?)\b/u', 'a'],
+            /* (a) "Listo, quedó para el miércoles", "Quedó para el 14/10". */
+            ['/\b(?:quedo|quedaron) (?:para|en) el\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|dia\b|\d|proxim)/u', 'a'],
+            /* (b) "Agendada la tarea…", "Listo, agendada.", "✅ Registrado". */
+            ['/^' . self::APERTURA . '(?:(?:el|la|los|las) )?' . self::PARTICIPIO_AL_EMPEZAR . '\b/u', 'b'],
+            /* (c) "Gasto N° 3 registrado", "Proveedor Distribuidora Norte creado", "Teléfono actualizado". */
+            ['/^' . self::APERTURA . '(?:(?:el|la|los|las) )?' . self::QUE_SE_CARGO . '\b(?P<entre>' . $v . '{0,40}?)\b' . $participio . '\b/u', 'c'],
+        ];
+    }
+
+    /**
+     * Los patrones de 'promesa', sobre la oración en minúscula CON tildes: "lo cambio" es una promesa y
+     * "lo cambió" (el proveedor, ayer) no; sin tildes se escriben igual.
+     *
+     * 🔴 ACOTADOS a los verbos y objetos de una carga (chequeo del 10/10/2026): con "paso", "anoto",
+     * "marco" o "cambio" sueltos, "Te lo paso en limpio", "Te los paso ordenados", "Te anoto el CBU",
+     * "Te lo marco en la lista" o "Te lo cambio a dólares" —que presentan una consulta— daban promesa.
+     *
+     * @return array<int, string>
+     */
+    protected static function patrones_de_promesa()
+    {
+        return [
+            /* "Te lo cargo", "Lo registro", "Lo doy de alta", "La borro". */
+            '/\b(?:lo|la|los|las)\s+(?:cargo|registro|agendo|doy de alta|doy de baja|borro|elimino)\b/u',
+            /* "La marco como hecha…". */
+            '/\b(?:lo|la)\s+marco\s+como\s+(?:hech|pagad|cobrad|complet)/u',
+            /* "La paso al miércoles", "Lo muevo para el 14/10". */
+            '/\b(?:lo|la|los|las)\s+(?:paso|muevo)\s+(?:al|para el)\s+(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\d|pr[oó]xim)/u',
+            /* "Te cargo el gasto", "Te agendo la tarea". */
+            '/\b(?:te|le|les)\s+(?:cargo|registro|agendo)\s+(?:el|la|un|una)\s+(?:gasto|pago|cobro|venta|tarea|recordatorio|presupuesto|compra)/u',
+            /* "Le cambio el teléfono". */
+            '/\ble\s+cambio\s+(?:el|la)\s+(?:tel[eé]fono|precio|fecha|nombre|direcci[oó]n|mail|stock|categor[ií]a)/u',
+        ];
+    }
+
+    /**
+     * true si la oración afirma un 'hecho' que no está desarmado por lo que tiene antes, y —si el verbo
+     * lo pide— con su objeto de carga detrás.
+     *
+     * @param  string  $minuscula    La oración en minúscula, con tildes.
+     * @param  string  $normalizada  La misma, normalizada (tiene la misma cantidad de caracteres).
+     * @return bool
+     */
+    protected static function oracion_afirma_un_hecho($minuscula, $normalizada)
+    {
+        foreach (self::patrones_de_hecho() as $patron) {
+
+            if (! preg_match_all($patron[0], $minuscula, $coincidencias, PREG_OFFSET_CAPTURE)) {
+                continue;
+            }
+
+            foreach ($coincidencias[0] as $coincidencia) {
+
+                $antes_con_tildes = substr($minuscula, 0, $coincidencia[1]);
+                $antes            = mb_substr($normalizada, 0, mb_strlen($antes_con_tildes, 'UTF-8'), 'UTF-8');
+
+                /*
+                 * El condicional se mira CON tildes: "Sí, lo cargué" y "Sí lo cargué" afirman; "si
+                 * cargué mal el monto, avisame" no.
+                 */
+                if (self::lo_de_antes_desarma_la_carga($antes, $antes_con_tildes)) {
+                    continue;
+                }
+
+                if (! is_null($patron[1])) {
+
+                    $hasta_el_fin = mb_strlen(substr($minuscula, 0, $coincidencia[1] + strlen($coincidencia[0])), 'UTF-8');
+                    $despues      = ltrim(mb_substr($normalizada, $hasta_el_fin, null, 'UTF-8'));
+
+                    if (! preg_match($patron[1], $despues)) {
+                        continue;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si la oración afirma un 'quedo' que no está desarmado.
+     *
+     * Para todas las formas: no con una condición de confirmar ("quedó registrado al confirmar"), no si
+     * lo de antes la desarma (con el condicional mirado CON tildes: "Listo, ahora sí quedó registrado"
+     * afirma, y es la frase típica de un reintento que vuelve a mentir), ni con una pregunta indirecta
+     * ("Te muestro cómo quedó cargado"). Además:
+     *
+     *   - (a) y (c), con algo entre lo que se cargó (o "quedó") y el participio: no con "no", "sin",
+     *     "pendiente", "falta" o "a medias" en el medio ("Quedó a medias: no está guardado", "La venta
+     *     quedó sin facturar porque no está registrado…"), ni con un "que" (una subordinada: "Los gastos
+     *     que quedaron registrados este mes…"). En (c), tampoco con dos puntos en el medio: es un renglón
+     *     de reporte ("Las ventas de hoy: 3 cobradas con tarjeta").
+     *   - (a): no si la oración habla de algo que YA existía ("desde el lunes", "dos veces", "ya
+     *     existe"), ni con un demostrativo antes ("Ese proveedor ya está creado: es el id 421").
+     *   - (b) y (c), al empezar la oración: no con un presente o un futuro antes del participio ("El
+     *     gasto queda agendado como tarea…", medido en esta rama), ni con el participio seguido de "por
+     *     Martín", "el 5/10", "desde" o "al 9/10" (un encabezado de reporte: "Registrado por Martín el
+     *     5/10").
+     *
+     * @param  string  $minuscula    La oración en minúscula, con tildes.
+     * @param  string  $normalizada  La misma, normalizada.
+     * @return bool
+     */
+    protected static function oracion_afirma_que_quedo($minuscula, $normalizada)
+    {
+        if (preg_match(self::AL_CONFIRMAR, $normalizada)) {
+
+            return false;
+        }
+
+        foreach (self::patrones_de_quedo() as $patron) {
+
+            if (! preg_match_all($patron[0], $normalizada, $coincidencias, PREG_OFFSET_CAPTURE | PREG_SET_ORDER)) {
+                continue;
+            }
+
+            foreach ($coincidencias as $coincidencia) {
+
+                $inicio           = $coincidencia[0][1];
+                $antes            = substr($normalizada, 0, $inicio);
+                $antes_con_tildes = mb_substr($minuscula, 0, mb_strlen($antes, 'UTF-8'), 'UTF-8');
+
+                if (self::lo_de_antes_desarma_la_carga($antes, $antes_con_tildes) || preg_match(self::PREGUNTA_INDIRECTA, $antes)) {
+                    continue;
+                }
+
+                /*
+                 * El hueco entre "quedó" —o lo que se cargó— y el participio: "Quedó a medias: no está
+                 * guardado", "La venta quedó sin facturar porque no está registrado el punto de venta",
+                 * "Los gastos que quedaron registrados este mes…" (una subordinada).
+                 */
+                if (isset($coincidencia['entre'])
+                    && (preg_match(self::ENTRE_QUEDO_Y_PARTICIPIO, $coincidencia['entre'][0])
+                        || preg_match('/\bque\b/u', $coincidencia['entre'][0])
+                        || ($patron[1] === 'c' && strpos($coincidencia['entre'][0], ':') !== false))) {
+                    continue;
+                }
+
+                if ($patron[1] === 'a' && (preg_match(self::YA_EXISTIA, $normalizada) || preg_match(self::DEMOSTRATIVO, $antes_con_tildes))) {
+                    continue;
+                }
+
+                if ($patron[1] === 'b' || $patron[1] === 'c') {
+
+                    if (preg_match(self::PRESENTE_O_FUTURO, $coincidencia[0][0])) {
+                        continue;
+                    }
+
+                    if (preg_match(self::ENCABEZADO_DE_REPORTE, substr($normalizada, $inicio + strlen($coincidencia[0][0])))) {
+                        continue;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si la oración promete una carga, con las MISMAS excepciones que la promesa de la tarjeta
+     * (la_coincidencia_afirma() con el tipo 'promesa': pregunta en la oración o en la de antes,
+     * condicional, "querés que", "puedo", "cuando", "apenas", "con eso", "decime", "pasame"…), y además
+     * sin una condición DESPUÉS del verbo ("Lo cargo apenas me pases la caja", "Te lo agendo, pero
+     * necesito la fecha").
+     *
+     * @param  string  $minuscula    La oración en minúscula, con tildes.
+     * @param  string  $normalizada  La misma, normalizada.
+     * @param  string  $anterior     La oración de antes, normalizada.
+     * @return bool
+     */
+    protected static function oracion_promete_una_carga($minuscula, $normalizada, $anterior)
+    {
+        foreach (self::patrones_de_promesa() as $patron) {
+
+            if (! preg_match_all($patron, $minuscula, $coincidencias, PREG_OFFSET_CAPTURE)) {
+                continue;
+            }
+
+            foreach ($coincidencias[0] as $coincidencia) {
+
+                $hasta_el_inicio = mb_strlen(substr($minuscula, 0, $coincidencia[1]), 'UTF-8');
+                $hasta_el_fin    = mb_strlen(substr($minuscula, 0, $coincidencia[1] + strlen($coincidencia[0])), 'UTF-8');
+
+                $antes   = mb_substr($normalizada, 0, $hasta_el_inicio, 'UTF-8');
+                $despues = mb_substr($normalizada, $hasta_el_fin, null, 'UTF-8');
+
+                if (preg_match(self::CONDICION_DESPUES, $despues)) {
+                    continue;
+                }
+
+                if (self::la_coincidencia_afirma('promesa', $normalizada, $antes, $anterior)) {
+
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si lo que hay ANTES de una afirmación de carga, en la misma oración, la desarma: una
+     * pregunta que arranca antes ("¿Quedó registrado?"), un condicional ("si cargué mal…"), una duda
+     * ("quizás ya quedó hecha"), una negación pegada ("No lo cargué", "Todavía no quedó registrado") o
+     * de cantidad ("Ningún gasto quedó registrado hoy"), o una subordinada que describe ("el gasto que
+     * te cargué recién…").
+     *
+     * @param  string  $antes         Lo de antes, normalizado.
+     * @param  string  $antes_del_si  Lo de antes CON tildes, donde se busca el condicional "si".
+     * @return bool
+     */
+    protected static function lo_de_antes_desarma_la_carga($antes, $antes_del_si)
+    {
+        if (strpos($antes, '¿') !== false) {
+
+            return true;
+        }
+
+        /* "si" + palabra, o "si" pegado al verbo: "Si cargué mal el monto, avisame". Con tildes, "sí" no. */
+        if (preg_match('/\bsi\s+(?:\w|$)/u', $antes_del_si)) {
+
+            return true;
+        }
+
+        return (bool) (preg_match(self::DUDA, $antes)
+            || preg_match(self::NEGACION_PEGADA, $antes)
+            || preg_match(self::NEGACION_DE_CANTIDAD, $antes)
+            || preg_match(self::RELATIVO, $antes));
+    }
+
+    /**
+     * Saca de la oración las "tarjetas" que son un medio de pago o un producto: "ventas con tarjeta",
+     * "el recargo de la tarjeta", "tarjeta de crédito", "tarjetas SUBE". Las tarjetas del asistente
+     * quedan como estaban.
+     *
+     * @param  string  $oracion  Normalizada.
+     * @return string
+     */
+    protected static function sin_tarjetas_de_pago($oracion)
+    {
+        /*
+         * "con (la) tarjeta", "por tarjeta", "de la tarjeta" (el recargo de la tarjeta) y "en tarjeta"
+         * SIN artículo (pagó en tarjeta). "en LA tarjeta" no: "tocá Confirmar en la tarjeta" es la del
+         * asistente.
+         */
+        $oracion = preg_replace('/\b(?:(?:con|por|sin|de)\s+(?:la |las |una |tu |tus |su |sus )?|en\s+)tarjetas?\b/u', ' medio_de_pago', $oracion);
+
+        return (string) preg_replace('/\btarjetas?\s+(?:de credito|de debito|credito|debito|naranja|visa|master\w*|amex|american|cabal|sube|de memoria|de regalo|de puntos|de descuentos?|de fidelidad|de socio|de presentacion|prepagas?)\b/u', 'medio_de_pago', (string) $oracion);
+    }
+
+    /**
+     * Minúscula y sin tildes, para que "Dejé", "deje" y "DEJÉ" sean lo mismo.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function normalizar($texto)
+    {
+        $minuscula = mb_strtolower(trim((string) $texto), 'UTF-8');
+
+        return strtr($minuscula, [
+            'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u',
+        ]);
+    }
+}

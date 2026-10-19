@@ -11,6 +11,33 @@ use Illuminate\Support\Facades\Log;
 class WhatsappBotSendService
 {
     /**
+     * Prefijo de los `wa_message_id` ficticios que devuelve el modo demostración (misión
+     * whatsapp-envio-simulado-demos). Es EL marcador de un mensaje que no salió a Kapso:
+     * `WhatsappChatHelper` lo mira para dejar el mensaje como `entregado` (no hay webhook que
+     * lo vaya a avanzar), y en la base se encuentran con `wa_message_id LIKE 'SIMULADO.%'`.
+     *
+     * 🔴 NO se marca con `whatsapp_chat_messages.is_simulated`. Esa columna es de otra cosa
+     * («el cliente no lo escribió ni lo recibió», simulación de entrantes) y la SPA le pone la
+     * etiqueta «Simulado» y le esconde los tildes: con ella, cada comprobante y cada recordatorio
+     * de la demo saldría marcado, que es lo contrario de lo que se pidió (que «se vean como
+     * enviados desde el módulo»).
+     *
+     * @var string
+     */
+    const PREFIJO_ID_SIMULADO = 'SIMULADO.';
+
+    /**
+     * ¿Este `wa_message_id` lo inventó el modo demostración?
+     *
+     * @param  mixed  $wa_message_id  Lo que devolvió algún `send_*` (o lo que hay en la base).
+     * @return bool
+     */
+    public static function es_id_simulado($wa_message_id): bool
+    {
+        return is_string($wa_message_id) && strpos($wa_message_id, self::PREFIJO_ID_SIMULADO) === 0;
+    }
+
+    /**
      * Envía un mensaje de texto al número destino usando la configuración del bot.
      *
      * @param string            $to     Número destino (puede incluir prefijo de país).
@@ -27,7 +54,12 @@ class WhatsappBotSendService
         // chat lo inyectó `simulate-inbound`, la ventana de 24 h está forzada y el texto libre
         // NO puede salir. Se devuelve null, que es el mismo "no se pudo enviar" que ya manejan
         // todos los callers.
-        if ($this->chat_en_simulacion($to, $config)) {
+        //
+        // En modo demostración NO se frena (misión whatsapp-envio-simulado-demos): ese freno
+        // existe para que un entrante inyectado no termine en un POST a Kapso, y con el envío
+        // simulado no hay POST que proteger. Frenar acá dejaría a la demo sin poder mandar un
+        // recordatorio a un cliente con quien el dueño probó «Simular mensaje».
+        if (! $config->esta_en_modo_demostracion() && $this->chat_en_simulacion($to, $config)) {
             return null;
         }
 
@@ -43,6 +75,13 @@ class WhatsappBotSendService
         if ($text_body === '') {
             Log::channel('daily')->warning('WhatsappBotSendService: cuerpo de mensaje vacío.');
             return null;
+        }
+
+        // Modo demostración: ver `envio_simulado()`. Va DESPUÉS de las validaciones locales
+        // (un número o un cuerpo inválido sigue dando null, igual que en producción) y ANTES del POST.
+        $id_simulado = $this->envio_simulado($config, 'texto', $to_digits);
+        if (! is_null($id_simulado)) {
+            return $id_simulado;
         }
 
         $endpoint = 'https://api.kapso.ai/meta/whatsapp/v24.0/'
@@ -117,6 +156,15 @@ class WhatsappBotSendService
                 'to' => $to,
             ]);
             return null;
+        }
+
+        // Modo demostración: ver `envio_simulado()`. Después de validar el número, antes del POST.
+        $id_simulado = $this->envio_simulado($config, 'plantilla', $to_digits, [
+            'template' => $template->meta_template_name,
+            'con_documento' => ! is_null($header_document_url) && trim($header_document_url) !== '',
+        ]);
+        if (! is_null($id_simulado)) {
+            return $id_simulado;
         }
 
         $endpoint = 'https://api.kapso.ai/meta/whatsapp/v24.0/'
@@ -199,9 +247,11 @@ class WhatsappBotSendService
     /**
      * Envía un documento (grupo 137, Prompt 05: comprobante de venta) referenciado por URL
      * pública. A diferencia de `admin-api` (que sube el archivo con `upload_media` y manda
-     * `document.id`), acá el PDF ya se sirve por una ruta pública propia
-     * (`sale/pdf/{id}`, sin auth), así que se manda directo como `document.link`: no hace
-     * falta el paso extra de subida a Kapso. Solo funciona dentro de la ventana de 24 h de
+     * `document.id`), acá el PDF ya se sirve por una ruta propia (`sale/pdf/{id}`) que Meta puede
+     * bajar sin sesión gracias al token del link (`?t=`, PdfLinkHelper, misión
+     * pdf-de-venta-publico del 10/10/2026: la ruta ya no es pública, el link lo arma
+     * `SaleWhatsappSenderService` con su token), así que se manda directo como `document.link`: no
+     * hace falta el paso extra de subida a Kapso. Solo funciona dentro de la ventana de 24 h de
      * servicio; fuera de ventana hay que usar `send_template` con header DOCUMENT.
      *
      * @param  string             $to             Número destino (puede incluir prefijo de país).
@@ -237,6 +287,12 @@ class WhatsappBotSendService
         if ($document_url === '') {
             Log::channel('daily')->warning('WhatsappBotSendService: URL de documento vacía.');
             return null;
+        }
+
+        // Modo demostración: ver `envio_simulado()`. Después de validar número y URL, antes del POST.
+        $id_simulado = $this->envio_simulado($config, 'documento', $to_digits);
+        if (! is_null($id_simulado)) {
+            return $id_simulado;
         }
 
         $endpoint = 'https://api.kapso.ai/meta/whatsapp/v24.0/'
@@ -283,6 +339,53 @@ class WhatsappBotSendService
             ]);
             return null;
         }
+    }
+
+    /**
+     * Modo demostración (misión whatsapp-envio-simulado-demos, 15/10/2026): si el negocio está
+     * en modo demostración, NO se le habla a Kapso y se devuelve un id ficticio que el caller
+     * trata como el `wa_message_id` de un envío exitoso. Si no, devuelve null y el método sigue
+     * con su camino normal.
+     *
+     * Cada `send_*` lo llama DESPUÉS de sus validaciones locales (número, cuerpo, URL, payload)
+     * y ANTES de armar el POST, así las guardas siguen respondiendo igual que en producción: un
+     * número inválido sigue dando null. Y las guardas de los CALLERS (ventana de 24 h abierta o
+     * cerrada, plantilla aprobada, «ya recibió el recordatorio hoy», permiso
+     * `alerts.recordatorio_cobro`) no se tocan: corren antes de llegar acá.
+     *
+     * 🔴 POR QUÉ ACÁ Y NO EN CADA CALLER. Los seis caminos de envío (comprobante, recordatorio
+     * uno y masivo, mensaje y plantilla del operador, archivos del composer, respuesta del
+     * agente) terminan en este service y tratan el null como «no salió». Si la simulación
+     * viviera en cada uno, el séptimo que se escriba mandaría de verdad desde una demo. Con el
+     * punto único, un camino nuevo ya viene simulado.
+     *
+     * El id lleva `PREFIJO_ID_SIMULADO` (y `media.` para las subidas) y 24 caracteres
+     * aleatorios: único por mensaje, y reconocible en la base sin ambigüedad. NO matchea ningún
+     * `wa_message_id` real, así que un evento de estado de Meta nunca cae sobre una fila simulada.
+     *
+     * @param  WhatsappBotConfig  $config    Config del negocio.
+     * @param  string             $canal     Qué se «envió», solo para el log ('texto', 'plantilla', …).
+     * @param  string             $to_digits Teléfono destino ya normalizado ('' en las subidas, que no tienen destino).
+     * @param  array              $contexto  Datos extra para el log (nunca el cuerpo del mensaje).
+     * @param  string             $subtipo   Infijo del id: '' para mensajes, 'media.' para subidas.
+     *
+     * @return string|null  El id ficticio, o null si el negocio NO está en modo demostración.
+     */
+    private function envio_simulado(WhatsappBotConfig $config, string $canal, string $to_digits, array $contexto = [], string $subtipo = ''): ?string
+    {
+        if (! $config->esta_en_modo_demostracion()) {
+            return null;
+        }
+
+        $id = self::PREFIJO_ID_SIMULADO . $subtipo . bin2hex(random_bytes(12));
+
+        Log::channel('daily')->info('WhatsappBotSendService: envío SIMULADO (modo demostración), NO salió a Kapso.', array_merge([
+            'canal' => $canal,
+            'to'    => $to_digits,
+            'id'    => $id,
+        ], $contexto));
+
+        return $id;
     }
 
     /**
@@ -411,8 +514,9 @@ class WhatsappBotSendService
      * después se lo puede enviar (misión whatsapp-sidebar-multimedia).
      *
      * 🔴 POR QUÉ SE SUBE EL ARCHIVO Y NO SE MANDA POR `link`, COMO HACE `send_document()`:
-     * el PDF del comprobante se sirve por una ruta pública propia (`sale/pdf/{id}`, sin auth),
-     * así que Meta lo baja solo. Los audios y las fotos de una conversación NO: viven en el
+     * el PDF del comprobante se sirve por una ruta propia (`sale/pdf/{id}`) que Meta puede bajar
+     * sin sesión con el token del link (`?t=`, PdfLinkHelper; desde el 10/10/2026 la ruta ya no
+     * es pública), así que Meta lo baja solo. Los audios y las fotos de una conversación NO: viven en el
      * disco `local`, fuera del docroot, justamente para que una conversación privada no quede
      * accesible por URL a cualquiera que la adivine. No hay URL que Meta pueda bajar, así que
      * el archivo tiene que viajar en el cuerpo de la request. Y en local no habría forma ni
@@ -471,6 +575,13 @@ class WhatsappBotSendService
                     'path' => $absolute_path,
                 ]);
                 return null;
+            }
+
+            // Modo demostración: la subida a Kapso no se hace; se devuelve un media_id ficticio
+            // (con el mismo prefijo) para que `send_image()`/`send_audio()` sigan su camino.
+            $id_simulado = $this->envio_simulado($config, 'subida de archivo', '', ['mime' => $mime], 'media.');
+            if (! is_null($id_simulado)) {
+                return $id_simulado;
             }
 
             $multipart_name = trim($filename);
@@ -584,8 +695,9 @@ class WhatsappBotSendService
     public function send_image(string $to, array $media, string $caption, WhatsappBotConfig $config): ?string
     {
         // Mismo freno y en el mismo lugar que en `send_text()`: lo primero de todo, para que un
-        // chat en simulación no gaste ni una llamada.
-        if ($this->chat_en_simulacion($to, $config)) {
+        // chat en simulación no gaste ni una llamada. En modo demostración no se frena (ver
+        // `send_text()`).
+        if (! $config->esta_en_modo_demostracion() && $this->chat_en_simulacion($to, $config)) {
             return null;
         }
 
@@ -617,6 +729,12 @@ class WhatsappBotSendService
 
         if (trim($caption) !== '') {
             $image_payload['caption'] = trim($caption);
+        }
+
+        // Modo demostración: ver `envio_simulado()`. Después de validar, antes del POST.
+        $id_simulado = $this->envio_simulado($config, 'imagen', $to_digits);
+        if (! is_null($id_simulado)) {
+            return $id_simulado;
         }
 
         $endpoint = 'https://api.kapso.ai/meta/whatsapp/v24.0/'
@@ -700,8 +818,9 @@ class WhatsappBotSendService
      */
     public function send_audio(string $to, string $media_id, string $mime, WhatsappBotConfig $config): ?string
     {
-        // Mismo freno y en el mismo lugar que en `send_text()`: lo primero de todo.
-        if ($this->chat_en_simulacion($to, $config)) {
+        // Mismo freno y en el mismo lugar que en `send_text()`: lo primero de todo. En modo
+        // demostración no se frena (ver `send_text()`).
+        if (! $config->esta_en_modo_demostracion() && $this->chat_en_simulacion($to, $config)) {
             return null;
         }
 
@@ -734,6 +853,12 @@ class WhatsappBotSendService
 
         if ($mime_base === 'audio/ogg') {
             $audio_payload['voice'] = true;
+        }
+
+        // Modo demostración: ver `envio_simulado()`. Después de validar, antes del POST.
+        $id_simulado = $this->envio_simulado($config, 'audio', $to_digits);
+        if (! is_null($id_simulado)) {
+            return $id_simulado;
         }
 
         $endpoint = 'https://api.kapso.ai/meta/whatsapp/v24.0/'

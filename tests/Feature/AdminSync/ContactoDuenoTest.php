@@ -17,8 +17,9 @@ use Tests\EmpresaTestCase;
  * payload —string con valor real o `null`, nunca `''`— es parte del contrato y no un detalle de
  * implementación.
  *
- * 🔴 Y PROTEGE QUE EL PAYLOAD SIGA SIENDO MÍNIMO: `contacto.email` y nada más. Esta ruta hoy
- * responde sin validar el header —el gate `ADMIN_SYNC_REQUIRE_API_KEY` está apagado en producción—
+ * 🔴 Y PROTEGE QUE EL PAYLOAD SIGA SIENDO MÍNIMO: `contacto.email` y nada más. Esta ruta valida el
+ * header (desde cerrar-admin-sync, 10/10/2026, `AdminApiKey` exige la clave sola cuando la instancia la
+ * tiene cargada; antes respondía abierta porque `ADMIN_SYNC_REQUIRE_API_KEY` no se definía en producción)
  * y el `{user_id?}` deja pedir cualquier id de la base, que en las bases compartidas viejas son 51
  * comercios distintos. Cada campo de más que se agregue acá es un padrón que se puede leer desde
  * afuera.
@@ -29,6 +30,13 @@ class ContactoDuenoTest extends EmpresaTestCase
 {
     /** Ruta del contrato con admin-api (sin user_id: resuelve el dueño de la instancia). */
     const RUTA = 'api/admin-sync/contacto-dueno';
+
+    /**
+     * La clave de admin de la instancia. Desde la misión cerrar-admin-sync (10/10/2026) `AdminApiKey` exige
+     * `X-Admin-Api-Key` sola cuando la instancia tiene clave cargada (como cualquier cliente de producción),
+     * así que el escenario por defecto es el real: la instancia tiene clave y admin-api la manda.
+     */
+    const CLAVE_DE_ADMIN = 'clave-de-admin-del-test-de-contacto-dueno';
 
     /** @var User Dueño del comercio al que pertenece esta instancia. */
     protected $dueno;
@@ -48,6 +56,10 @@ class ContactoDuenoTest extends EmpresaTestCase
         // La instancia es la de este comercio (igual que en producción, donde el .env de cada
         // carpeta trae su propio USER_ID).
         config(['app.USER_ID' => $this->dueno->id]);
+
+        // La instancia tiene su clave de admin y admin-api la manda, como en producción.
+        config(['services.admin_api.api_key' => self::CLAVE_DE_ADMIN]);
+        $this->withHeader('X-Admin-Api-Key', self::CLAVE_DE_ADMIN);
     }
 
     /**
@@ -77,6 +89,7 @@ class ContactoDuenoTest extends EmpresaTestCase
     public function test_con_el_gate_prendido_rechaza_el_pedido_sin_la_clave()
     {
         $this->exigir_clave('la-clave-del-admin');
+        $this->flushHeaders();
 
         $this->getJson(self::RUTA)
              ->assertStatus(401)
@@ -102,9 +115,9 @@ class ContactoDuenoTest extends EmpresaTestCase
     }
 
     /**
-     * El estado REAL de producción: con el flag apagado (su default) el middleware no mira el
-     * header y la ruta responde igual. Se deja escrito para que si algún día cambia el default,
-     * este test lo denuncie en vez de que se entere admin-api con un 401 en medio de un upgrade.
+     * Con el flag apagado A PROPÓSITO (`false`) el middleware no mira el header y la ruta responde
+     * igual. Desde cerrar-admin-sync ese ya no es el estado de un cliente con clave cargada (sin
+     * definir la variable exige la clave), pero `false` se respeta tal cual.
      */
     public function test_con_el_gate_apagado_responde_sin_clave()
     {

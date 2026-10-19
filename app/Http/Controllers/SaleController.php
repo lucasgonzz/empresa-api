@@ -26,6 +26,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
+use App\Http\Controllers\Helpers\sale\CambioDeCuentaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
@@ -39,6 +40,7 @@ use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\SaleTicketComanderaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTicketRasterHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
@@ -108,6 +110,17 @@ class SaleController extends Controller
              * ventas que la pantalla no muestra (5/10/2026, ver el docblock del scope).
              */
             $models = $models->delModuloVentas();
+
+            /*
+             * 🔴 DIAS ANTERIORES (`sale.index.previus_days`), IMPUESTO POR EL SERVIDOR (mision
+             * alcance-de-ventas-caminos-faltantes, 16/10/2026). Un empleado sin el permiso recibe
+             * SIEMPRE las ventas de hoy, pida la fecha, el rango o la ausencia de fecha que pida.
+             * Antes lo imponia solo la SPA (y a medias: escondia la tira de dias pero no el
+             * calendario). Solo el modulo `ventas`: Deposito, Por entregar y Por estado tienen
+             * permisos propios. Va ANTES del scope de fechas de mas abajo, que es el que consume
+             * estos valores. Dueño y administrador no se acotan nunca.
+             */
+            list($from_date, $until_date) = ListadoVentasHelper::acotar_fechas($from_date, $until_date);
         }
 
         if (!is_null($from_date)) {
@@ -148,6 +161,20 @@ class SaleController extends Controller
                 ListadoVentasHelper::respuesta_paginada($models, $request, $modulo, $this->userId()),
                 200
             );
+        }
+
+        /*
+         * 🔴 SIN `per_page` EL ALCANCE DEL EMPLEADO TAMBIEN LO IMPONE EL SERVIDOR, pero solo en el
+         * modulo `ventas` (mision alcance-de-ventas-caminos-faltantes, 16/10/2026). Antes este camino
+         * devolvia el dia entero con todas las filas e importes, sin mirar los permisos: un empleado
+         * acotado ("solo sus ventas" / "solo su sucursal") las leia pegandole al endpoint sin
+         * `per_page`. En el modo paginado el alcance se aplica adentro de
+         * `ListadoVentasHelper::aplicar_filtros_de_pantalla()`; aca va la forma pelada. Deposito, Por
+         * entregar y Por estado (otros `modulo`) pegan a este mismo camino y NO se acotan: tienen sus
+         * propios permisos.
+         */
+        if ($modulo == 'ventas') {
+            $models = ListadoVentasHelper::aplicar_alcance($models);
         }
 
         $models = $models->orderBy('created_at', 'DESC')
@@ -756,6 +783,42 @@ class SaleController extends Controller
         }
 
         /*
+         * Moneda y cotización de la venta (misión edicion-completa-ventas-presupuestos, 8/10/2026,
+         * pedido de Lucas: "que se pueda editar la cotización del dólar [...] y cambiar la moneda").
+         * Se resuelven ACÁ, antes de la transacción y sin escribir nada, igual que los otros 4xx
+         * tempranos: un 422 es una respuesta, no un fallo que haya que revertir. La asignación va
+         * adentro, antes del primer save() (ver más abajo).
+         *
+         * 🔴 La señal es `moneda_id`, NO `valor_dolar`: la SPA manda `valor_dolar` en todos los PUT
+         * (también la vieja), así que honrarlo a secas pisaría la cotización en cualquier edición
+         * común. Sin `moneda_id` en el request no se toca ni la moneda ni la cotización, idéntico a
+         * antes. La regla completa, en CotizacionDeVentaHelper::resolver_moneda_y_cotizacion_de_update().
+         */
+        $moneda_y_cotizacion = CotizacionDeVentaHelper::resolver_moneda_y_cotizacion_de_update($request, $sale_a_actualizar);
+
+        if (!is_null($moneda_y_cotizacion['error'])) {
+
+            return response()->json($moneda_y_cotizacion['error'], 422);
+        }
+
+        /*
+         * El cambio de CUENTA CORRIENTE (cliente o moneda de una venta que va a la cuenta corriente),
+         * misma misión. La mudanza del débito ya la hace updateCurrentAcountsAndCommissions() más
+         * abajo; acá se frenan, antes de escribir nada, los casos en los que esa mudanza deja la plata
+         * mal: cliente inexistente o de otro comercio, venta con nota de crédito en la cuenta corriente
+         * (la NC no viaja con el débito) o incluida en una facturación consolidada. Ver
+         * CambioDeCuentaDeVentaHelper.
+         */
+        $error_cambio_de_cuenta = CambioDeCuentaDeVentaHelper::validar($request, $sale_a_actualizar, $moneda_y_cotizacion['moneda_id']);
+
+        if (!is_null($error_cambio_de_cuenta)) {
+
+            Log::info('update sale id '.$id.': cambio de cuenta rechazado ('.$error_cambio_de_cuenta['motivo'].').');
+
+            return response()->json($error_cambio_de_cuenta, 422);
+        }
+
+        /*
          * Se lee ANTES de abrir la transacción, y no adentro, por el candado de más abajo: en
          * REPEATABLE READ la primera lectura de la transacción fija la foto de la base, y esta
          * lectura (User + extensiones) era la primera. Ver el comentario del lockForUpdate.
@@ -806,6 +869,18 @@ class SaleController extends Controller
              * bloquea en orden ascendente.
              */
             CuentaCorrienteLock::bloquear('client', [$model->client_id, $request->client_id]);
+
+            /*
+             * Si el débito de la venta se muda (cambio de cliente o de moneda, misión
+             * edicion-completa-ventas-presupuestos), el cliente que queda tiene que tener la cuenta
+             * corriente de la moneda que queda: CurrentAcountFromSaleHelper la usa sin chequear null y
+             * sin ella la edición terminaba en un 500. Va adentro de la transacción (un rechazo
+             * posterior, como el del límite de crédito, la deshace con el rollback), después del
+             * candado y ANTES de attachProperies(): una nota de crédito cargada en este mismo PUT ya
+             * encuentra la cuenta del cliente nuevo. $model todavía tiene el cliente y la moneda
+             * guardados, que es contra lo que se mide el cambio.
+             */
+            CambioDeCuentaDeVentaHelper::asegurar_cuenta_de_destino($request, $model, $moneda_y_cotizacion['moneda_id']);
 
             $previus_articles = $model->articles()->lockForUpdate()->get();
             $previus_combos = $model->combos()->lockForUpdate()->get();
@@ -1020,7 +1095,33 @@ class SaleController extends Controller
                 $model->dias_alerta_venta_no_cobrada_personalizado = $this->normalized_dias_alerta_venta_no_cobrada_personalizado($request);
             }
 
-            // $model->valor_dolar                         = $request->valor_dolar;
+            /*
+                Moneda y cotización, ya resueltas y validadas antes de la transacción (misión
+                edicion-completa-ventas-presupuestos, 8/10/2026). Hasta ese día acá había una
+                asignación de `valor_dolar` comentada y `moneda_id` no se tocaba nunca.
+
+                🔴 NO "simplificar" a `$model->valor_dolar = $request->valor_dolar`:
+                  - la CLAVE `moneda_id` AUSENTE (o en null) preserva las dos cosas. La SPA vieja manda
+                    `valor_dolar` en todos los PUT —con el campo bloqueado, y con el dólar del dueño si
+                    la venta no tenía cotización— pero nunca `moneda_id`: honrar su `valor_dolar` le
+                    pisaría la cotización a cualquier venta que se edite para cambiar una cantidad;
+                  - con `moneda_id`, una cotización null, vacía o 0 también PRESERVA la guardada (llega
+                    `valor_dolar` null del helper): un 0 es "no hay dólar cargado", no "borrá la
+                    cotización con la que se preciaron los renglones".
+
+                ⚠️ Tiene que ir ANTES del primer save() y de attachProperies(): SaleHelper::getCost()
+                cotiza el costo de cada renglón nuevo con la `moneda_id` y el `valor_dolar` de la venta
+                EN MEMORIA (mismo motivo que en BudgetController::update()), y
+                updateCurrentAcountsAndCommissions() mete el débito en la cuenta de esta moneda.
+            */
+            if ($moneda_y_cotizacion['actualizar']) {
+
+                $model->moneda_id = $moneda_y_cotizacion['moneda_id'];
+
+                if (!is_null($moneda_y_cotizacion['valor_dolar'])) {
+                    $model->valor_dolar = $moneda_y_cotizacion['valor_dolar'];
+                }
+            }
 
             /*
                 🔴 EDITAR NO CAMBIA EL EMPLEADO DE LA VENTA, salvo que el PUT mande explícitamente
@@ -1777,7 +1878,32 @@ class SaleController extends Controller
 
     }
 
+    /**
+     * Guarda de los cuatro Excel de ventas: solo el dueño o un administrador puede exportar.
+     *
+     * Devuelve el 403 listo para retornar, o null si puede seguir. Es lo que la pantalla ya
+     * prometia (`is_admin` en `Total.vue` esconde los botones) y que el servidor no exigia
+     * (mision alcance-de-ventas-caminos-faltantes, 16/10/2026). La regla vive en
+     * `ListadoVentasHelper::puede_exportar()` y es null-safe: sin usuario de sesion tambien es 403.
+     *
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    private function respuesta_si_no_puede_exportar()
+    {
+        if (ListadoVentasHelper::puede_exportar()) {
+            return null;
+        }
+
+        return response()->json(['message' => ListadoVentasHelper::MENSAJE_SIN_PERMISO_PARA_EXPORTAR], 403);
+    }
+
     function excel_export($from_date, $until_date = null) {
+
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
 
         $models = Sale::where('user_id', $this->userId())
                         /** Excluye ventas contenedoras de facturación del export Excel. */
@@ -1805,6 +1931,12 @@ class SaleController extends Controller
     }
 
     function excel_breakdown_export($from_date, $until_date = null) {
+
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
 
         $models = Sale::where('user_id', $this->userId())
                         /** Excluye ventas contenedoras de facturación del export desglosado. */
@@ -1879,7 +2011,12 @@ class SaleController extends Controller
      * Upsert de datos de envío para la etiqueta (SaleDeliveryInfo 1:1).
      * Solo ventas del usuario actual (owner).
      *
-     * @param Request $request Campos: first_name, last_name, phone, dni, cuit, locality, province, postal_code, email (opcionales).
+     * `address` (calle y número del destinatario) se guarda SOLO si el request trae la clave: un SPA
+     * anterior a la misión etiqueta-envio-direccion (PWA con caché, el otro frente) no la manda, y
+     * no puede borrar una dirección que ya se cargó. Mandarla vacía sí la limpia (la etiqueta vuelve
+     * a usar el domicilio del cliente).
+     *
+     * @param Request $request Campos: first_name, last_name, phone, dni, cuit, address, locality, province, postal_code, email (opcionales).
      * @param int|string $sale_id Id de la venta.
      * @return \Illuminate\Http\JsonResponse Venta completa con sale_delivery_info.
      */
@@ -1893,22 +2030,64 @@ class SaleController extends Controller
             return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
         }
 
+        $campos = [
+            'first_name' => $request->input('first_name'),
+            'last_name' => $request->input('last_name'),
+            'phone' => $request->input('phone'),
+            'dni' => $request->input('dni'),
+            'cuit' => $request->input('cuit'),
+            'locality' => $request->input('locality'),
+            'province' => $request->input('province'),
+            'postal_code' => $request->input('postal_code'),
+            'email' => $request->input('email'),
+        ];
+
+        /** Sin la clave no se toca la dirección guardada (compatibilidad con el SPA viejo). */
+        if ($request->exists('address')) {
+            $campos['address'] = $request->input('address');
+        }
+
         SaleDeliveryInfo::updateOrCreate(
             ['sale_id' => $sale->id],
-            [
-                'first_name' => $request->input('first_name'),
-                'last_name' => $request->input('last_name'),
-                'phone' => $request->input('phone'),
-                'dni' => $request->input('dni'),
-                'cuit' => $request->input('cuit'),
-                'locality' => $request->input('locality'),
-                'province' => $request->input('province'),
-                'postal_code' => $request->input('postal_code'),
-                'email' => $request->input('email'),
-            ]
+            $campos
         );
 
         return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
+    }
+
+    /**
+     * El ticket de comandera de la venta armado con un diseño de ticket (misión
+     * diseno-ticket-comandera, 9/10/2026, contrato §3.6): los bytes ESC/POS en base64 que el Ticket
+     * 2.0 manda a la impresora, o el texto para la vista previa del diseñador (`formato=texto`).
+     *
+     * GET api/sale/{sale_id}/ticket-comandera?pdf_column_profile_id=&afip_ticket_id=&formato=
+     *
+     * 404 si la venta no es del dueño (mismo criterio que ticket_logo_raster()); 422 si el perfil
+     * pedido no es un ticket de venta del dueño. La lógica vive en SaleTicketComanderaHelper.
+     *
+     * @param int                      $sale_id
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function ticket_comandera($sale_id, Request $request)
+    {
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
+        }
+
+        $resultado = SaleTicketComanderaHelper::responder(
+            $sale,
+            $this->userId(),
+            $request->query('pdf_column_profile_id'),
+            $request->query('afip_ticket_id'),
+            $request->query('formato')
+        );
+
+        return response()->json($resultado['body'], $resultado['status']);
     }
 
     /**
@@ -2215,12 +2394,19 @@ class SaleController extends Controller
     /**
      * Export Excel de ventas fidedigno a la pantalla (botón "Excel").
      * Recibe el estado completo del filtro por POST y reconstruye el set completo.
+     * Solo dueño o administrador: cualquier otro usuario recibe 403 (respuesta_si_no_puede_exportar).
      *
      * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
      */
     function excel_export_view(Request $request)
     {
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
+
         $models = $this->resolve_sales_for_export($request);
 
         return Excel::download(
@@ -2231,12 +2417,19 @@ class SaleController extends Controller
 
     /**
      * Export Excel desglosado por artículo, fidedigno a la pantalla (botón "Excel full").
+     * Solo dueño o administrador: cualquier otro usuario recibe 403 (respuesta_si_no_puede_exportar).
      *
      * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
      */
     function excel_breakdown_export_view(Request $request)
     {
+        $denegado = $this->respuesta_si_no_puede_exportar();
+
+        if (!is_null($denegado)) {
+            return $denegado;
+        }
+
         $models = $this->resolve_sales_for_export($request);
 
         return Excel::download(

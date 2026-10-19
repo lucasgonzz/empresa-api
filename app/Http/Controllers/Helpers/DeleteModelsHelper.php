@@ -48,6 +48,16 @@ class DeleteModelsHelper
         // 8/10/2026): RetencionImpuestoController::destroy() responde 422 y no borra nada. Sin esto la
         // masiva lo contaba como eliminado y el listado lo sacaba de pantalla aunque siguiera existiendo.
         'retencion_impuesto',
+        // Movimiento de caja que generó el sistema (venta, gasto, pago, transferencia, compensación,
+        // pago a vendedor), de una apertura ya cerrada o de otro dueño (misión
+        // movimientos-caja-manuales, 9/10/2026): MovimientoCajaController::destroy() responde 422 (o
+        // 404 si no es del dueño) y no borra nada. Sin esto la masiva lo contaba como eliminado y el
+        // listado lo sacaba de pantalla aunque seguía en la caja.
+        'movimiento_caja',
+        // Concepto de movimiento de caja del sistema, ya usado en movimientos o de otro dueño
+        // (misión destrabar-videos-centro, 16/10/2026): ConceptoMovimientoCajaController::destroy()
+        // responde 422 (o 404 si es ajeno) y no borra nada.
+        'concepto_movimiento_caja',
     ];
 
     /**
@@ -98,6 +108,10 @@ class DeleteModelsHelper
             // el aviso decía "La eliminación masiva de address finalizó correctamente".
             case 'address':
                 return 'sucursales';
+            // La eliminación masiva de movimientos de caja (misión movimientos-caja-manuales,
+            // 9/10/2026): sin este caso el aviso decía "La eliminación masiva de movimiento_caja".
+            case 'movimiento_caja':
+                return 'movimientos de caja';
         }
 
         return $model_name;

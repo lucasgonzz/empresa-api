@@ -384,7 +384,8 @@ class AccionesIaHelper {
      * Línea que se agrega al final de un mensaje del assistant en el historial que lee la IA:
      * `[Tarjeta #12 · Gasto · Subcategoría: ...; Monto: ... · estado: confirmada (Gasto N° 88 registrado)]`.
      * Así la IA sabe qué se confirmó, qué se canceló y qué quedó reemplazado, y no vuelve a proponer
-     * lo que ya está cargado.
+     * lo que ya está cargado. Una tarjeta de tarea suma ` · tarea_id: N` antes del estado (ver el 🔴
+     * de abajo).
      *
      * @param  \App\Models\AiMessageAction  $accion
      * @return string
@@ -426,6 +427,43 @@ class AccionesIaHelper {
             $estado .= ' (el último intento de confirmarla falló: '.$accion->error_mensaje.')';
         }
 
-        return '[Tarjeta #'.$accion->id.' · '.$titulo.' · '.$detalle.' · estado: '.$estado.']';
+        /*
+         * 🔴 La tarjeta de una tarea dice el id de SU TAREA (misión asistente-seguimiento-de-tarea,
+         * 10/10/2026). Una tarea no tiene número ni nombre único, así que "pasala al miércoles" o "ya la
+         * hice" necesitan su tarea_id, y en el turno siguiente el modelo solo tiene esta línea: sin el
+         * dato, el único número que veía era el #N de la tarjeta, lo mandaba como tarea_id y la tarea
+         * "no existía". Una tarjeta sin tarea (las de otro tipo, una tarea nueva todavía sin confirmar,
+         * las viejas sin el dato en el resultado) deja la línea como siempre.
+         */
+        $tarea_id = PropuestaTareaIaHelper::tarea_id_de_la_tarjeta($accion);
+
+        $de_la_tarea = is_null($tarea_id) ? '' : ' · tarea_id: '.$tarea_id;
+
+        /*
+         * 🔴 Y la de un alta o una edición confirmada dice el id del REGISTRO (misión
+         * asistente-altas-y-conversacion, 16/10/2026). En demo3 (conv 9) el asistente creó el martillo
+         * por su código de barras y, en el mensaje siguiente —"llegaron 12, ponele la categoría"—, pidió
+         * de nuevo el código: "en el catálogo hay varios martillos Tramontina parecidos". Los resultados
+         * de las herramientas no viajan entre mensajes, y esta línea decía "Artículo Martillo... creado"
+         * sin ningún dato para ubicarlo: lo buscó por nombre y no supo cuál era. Con el id lo edita
+         * directo (proponer_edicion acepta el id en `registro`). Mismo molde que el tarea_id de arriba.
+         */
+        $del_registro = '';
+
+        /*
+         * Solo un ALTA o una EDICIÓN (chequeo independiente, 16/10/2026): el resultado de una baja
+         * también trae entidad e id, y "provider_id: 55" de un proveedor recién borrado llevaría al
+         * modelo a editar algo que ya no existe.
+         */
+        if ($de_la_tarea === '' && $estado !== ''
+            && in_array((string) $accion->tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION], true)
+            && (string) $accion->estado === AiMessageAction::ESTADO_CONFIRMADA
+            && is_object($accion->resultado) && isset($accion->resultado->entidad, $accion->resultado->id)
+            && is_scalar($accion->resultado->entidad) && is_numeric($accion->resultado->id) && (int) $accion->resultado->id > 0) {
+
+            $del_registro = ' · '.$accion->resultado->entidad.'_id: '.(int) $accion->resultado->id;
+        }
+
+        return '[Tarjeta #'.$accion->id.' · '.$titulo.' · '.$detalle.$de_la_tarea.$del_registro.' · estado: '.$estado.']';
     }
 }

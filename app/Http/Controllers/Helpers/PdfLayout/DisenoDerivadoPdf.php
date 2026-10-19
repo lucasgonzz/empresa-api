@@ -48,6 +48,11 @@ class DisenoDerivadoPdf
     const CAJA_TEXTO_DE_PIE = 'caja_texto_de_pie';
     const CAJA_OBSERVACIONES = 'caja_observaciones';
 
+    /** Ids fijos de las cajas del derivado del ticket de comandera (misión diseno-ticket-comandera). */
+    const CAJA_LOGO = 'caja_logo';
+    const CAJA_NEGOCIO = 'caja_negocio';
+    const CAJA_VENTA = 'caja_venta';
+
     /** Id del texto libre que ocupa el lugar del "Pie de página" (footer_text) del perfil. */
     const ID_TEXTO_DE_PIE = 'texto_de_pie';
 
@@ -140,17 +145,24 @@ class DisenoDerivadoPdf
      * @param bool                              $es_fiscal  se imprime como factura de ARCA (solo cuenta en 'sale').
      * @param \App\Models\User|null             $owner      dueño del perfil: decide el vendedor de la cuenta
      *                                                      corriente y la extensión vendedor_en_sale_pdf.
+     * @param bool                              $es_ticket  el perfil es un ticket de comandera (misión
+     *                                                      diseno-ticket-comandera): el derivado es el
+     *                                                      equivalente al Ticket 2.0 de siempre. Solo
+     *                                                      cuenta en 'sale'.
      * @return array|null null si el modelo no se diseña con cajas (el catálogo de artículos).
      */
-    public static function para($model_name, $profile, $es_fiscal, $owner)
+    public static function para($model_name, $profile, $es_fiscal, $owner, $es_ticket = false)
     {
         if (! CatalogoDeCamposPdf::soporta($model_name)) {
             return null;
         }
 
         $es_fiscal = self::es_fiscal($model_name, $es_fiscal);
+        $es_ticket = $es_ticket && CatalogoDeCamposPdf::soporta_ticket($model_name);
 
-        if ($model_name === 'sale') {
+        if ($es_ticket) {
+            $zonas = self::ticket($es_fiscal);
+        } elseif ($model_name === 'sale') {
             $zonas = $es_fiscal ? self::venta_fiscal($profile) : self::venta_remito($profile, $owner);
         } elseif ($model_name === 'budget') {
             $zonas = self::presupuesto($profile);
@@ -164,7 +176,7 @@ class DisenoDerivadoPdf
             'pie' => $zonas['pie'],
         ]);
 
-        return DisenoDePaginaPdf::asegurar_fijos($diseno, $es_fiscal);
+        return DisenoDePaginaPdf::asegurar_fijos($diseno, $es_fiscal, $es_ticket);
     }
 
     /**
@@ -572,6 +584,82 @@ class DisenoDerivadoPdf
         }
 
         $pie[] = self::caja_de_observaciones('pedido_notas', 'NOTAS DEL PEDIDO');
+
+        return ['superior' => $superior, 'pie' => $pie];
+    }
+
+    /**
+     * Ticket de comandera (misión diseno-ticket-comandera, 9/10/2026, §5 del plan): el diseño con
+     * cajas equivalente al Ticket 2.0 de siempre, el ESC/POS que arma el navegador
+     * (empresa-spa/src/mixins/sale/print_ticket/). Es lo que el diseñador muestra para un perfil de
+     * ticket sin diseño y lo que queda si el dueño guarda sin tocar nada. No depende de los flags del
+     * perfil: el Ticket 2.0 de siempre no lee ninguno.
+     *
+     * Arriba: el logo (agregar_logo_ticket()), [factura: el emisor de ARCA (afip_information())], el
+     * nombre del negocio (info_negocio()), la venta (info_venta(): número, fecha y hora, con una línea
+     * abajo) y el cliente: en el remito, info_cliente() (nombre en alto doble y dirección, con una
+     * línea abajo); en la factura, el fijo del cliente de ARCA, que ya trae esos datos. Abajo: la
+     * cuenta (descuentos_y_recargos() y total()) y [factura: el IVA, el CAE y el QR
+     * (print_iva_pagado())].
+     *
+     * Diferencias con el de siempre, a propósito: los rótulos son los del catálogo ("Fecha: …",
+     * "Hora: …", "Dirección: …"), la dirección del cliente no sale en alto doble, y el TOTAL va en
+     * tamaño normal y negrita, a la izquierda (como "TOTAL A PAGAR: $…" del de siempre). El Sub Total
+     * va en tamaño normal: el catálogo lo trae en 12 (alto doble en la comandera).
+     *
+     * @param bool $es_fiscal
+     * @return array{superior: array, pie: array}
+     */
+    private static function ticket($es_fiscal)
+    {
+        $superior = [
+            self::caja(self::CAJA_LOGO, 12, 'ninguno', [self::campo(CatalogoDeCamposPdf::KEY_NEGOCIO_LOGO)]),
+        ];
+
+        if ($es_fiscal) {
+            $superior[] = self::fijo(CatalogoDeCamposPdf::FIJO_AFIP_EMISOR, null);
+        }
+
+        $superior[] = self::caja(self::CAJA_NEGOCIO, 12, 'ninguno', [self::campo('negocio_nombre')]);
+
+        $superior[] = self::caja(self::CAJA_VENTA, 12, 'borde', [
+            self::campo('venta_numero', 'Venta Número'),
+            self::campo('venta_fecha'),
+            self::campo('venta_hora'),
+        ]);
+
+        /**
+         * En la factura el cliente lo trae el fijo de ARCA (nombre, CUIT, condición frente al IVA,
+         * domicilio y condición de venta): la caja del cliente lo repetía (ajuste del 9/10/2026 a
+         * pedido del revisor). En el remito queda la caja, como el info_cliente() de siempre.
+         */
+        if ($es_fiscal) {
+            $superior[] = self::fijo(CatalogoDeCamposPdf::FIJO_AFIP_RECEPTOR, null);
+        } else {
+            $superior[] = self::caja(self::CAJA_CLIENTE, 12, 'borde', [
+                self::campo('cliente_nombre', null, 12),
+                self::campo('cliente_direccion'),
+            ]);
+        }
+
+        /** El total como el "TOTAL A PAGAR: $…" de siempre: negrita, tamaño normal, a la izquierda. */
+        $total = self::campo('tot_total', 'TOTAL A PAGAR', 9, true);
+        $total['alineacion'] = 'izquierda';
+
+        $pie = [
+            self::caja(self::CAJA_TOTALES, 12, 'borde', [
+                self::campo('tot_subtotal', null, 9),
+                self::campo('tot_descuentos'),
+                self::campo('tot_recargos'),
+                self::campo('tot_canje_de_puntos'),
+                self::campo('tot_ajuste_del_total'),
+                $total,
+            ]),
+        ];
+
+        if ($es_fiscal) {
+            $pie[] = self::fijo(CatalogoDeCamposPdf::FIJO_AFIP_PIE, true);
+        }
 
         return ['superior' => $superior, 'pie' => $pie];
     }

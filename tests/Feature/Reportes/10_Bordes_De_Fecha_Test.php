@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\contabilidad\ContabilidadRepository;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
+use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\Sale;
 use App\Models\SaleTax;
@@ -83,6 +84,14 @@ class Bordes_De_Fecha_Test extends EmpresaTestCase
     /** @var array<int,int> */
     protected $tickets_compra_sembrados = [];
 
+    /**
+     * La compra de la que cuelgan las facturas sembradas (ver `factura_de_compra_en()`). Una por
+     * test, creada la primera vez que hace falta.
+     *
+     * @var \App\Models\ProviderOrder|null
+     */
+    protected $compra_sembrada = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -114,6 +123,11 @@ class Bordes_De_Fecha_Test extends EmpresaTestCase
 
         if (count($this->tickets_compra_sembrados) >= 1) {
             ProviderOrderAfipTicket::whereIn('id', $this->tickets_compra_sembrados)->forceDelete();
+        }
+
+        if (!is_null($this->compra_sembrada)) {
+            ProviderOrder::where('id', $this->compra_sembrada->id)->delete();
+            $this->compra_sembrada = null;
         }
 
         parent::tearDown();
@@ -221,12 +235,29 @@ class Bordes_De_Fecha_Test extends EmpresaTestCase
     {
         $emitida = Carbon::parse($momento);
 
+        /*
+         * La factura cuelga de una compra que existe (misión factura-compra-tres-defectos,
+         * 9/10/2026). Desde esa misión la Posición Fiscal no suma una factura sin compra
+         * (`ProviderOrderAfipTicket::scopeDeCompraExistente()`): una factura con `provider_order_id`
+         * NULL es la que quedó de una compra nueva que nunca se guardó, no una factura real. Lo que
+         * este helper siembra es una factura de verdad, así que necesita su compra; lo que se mide
+         * —el borde de `issued_at`— no cambia.
+         */
+        if (is_null($this->compra_sembrada)) {
+            $this->compra_sembrada = ProviderOrder::create([
+                'num'         => 900000,
+                'user_id'     => $this->owner->id,
+                'provider_id' => $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO)->id,
+            ]);
+        }
+
         $ticket = ProviderOrderAfipTicket::create([
-            'user_id'    => $this->owner->id,
-            'issued_at'  => $emitida,
-            'total_iva'  => $total_iva,
-            'created_at' => $emitida,
-            'updated_at' => $emitida,
+            'provider_order_id' => $this->compra_sembrada->id,
+            'user_id'           => $this->owner->id,
+            'issued_at'         => $emitida,
+            'total_iva'         => $total_iva,
+            'created_at'        => $emitida,
+            'updated_at'        => $emitida,
         ]);
 
         $this->tickets_compra_sembrados[] = $ticket->id;

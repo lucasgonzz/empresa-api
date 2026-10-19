@@ -13,6 +13,8 @@ use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
+use App\Http\Controllers\Helpers\import\relaciones\RelacionesParecidasDetector;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -217,7 +219,26 @@ class ProcessRow {
      */
     protected $se_importaron_precios_de_listas = false;
 
-    protected $brand_cache = [];
+    /**
+     * Resolución de las cuatro relaciones de la fila (proveedor, categoría, subcategoría y marca)
+     * con las decisiones del usuario sobre nombres parecidos y las equivalencias recordadas del
+     * comercio (misión importacion-relaciones-parecidas, 8/10/2026). Tiene los índices en memoria
+     * de los modelos existentes: reemplaza a los viejos $brand_cache / $category_cache /
+     * $sub_category_cache, que se quedaban con la ÚLTIMA de dos con la misma clave.
+     *
+     * Las equivalencias recordadas se aplican SIEMPRE, también en los caminos que no mandan
+     * decisiones (AdminSync, import clásico): son decisiones que el comercio ya tomó.
+     *
+     * @var EquivalenciasResolver
+     */
+    protected $equivalencias;
+
+    /**
+     * Proveedores del comercio cargados en el índice de $equivalencias (una vez por lote).
+     *
+     * @var array [id => Provider]
+     */
+    protected $proveedores_por_id = null;
 
     /**
      * Proveedores ya resueltos en este chunk, por provider_id (mision 44). Solo se usa
@@ -249,9 +270,7 @@ class ProcessRow {
      */
     protected $criterio_pendiente_por_articulo = [];
 
-    protected $category_cache = [];
-    protected $sub_category_cache = []; // [category_id][name_key] => id
-    protected $iva_cache = [];   
+    protected $iva_cache = [];
     protected $article_index = [];
 
     protected $observations = [];
@@ -458,6 +477,21 @@ class ProcessRow {
         $this->set_unidad_medidas();
         $this->set_se_importaron_price_types();
 
+        /*
+         * Decisiones del paso 3 sobre nombres parecidos (misión importacion-relaciones-parecidas).
+         * Clave OPCIONAL: AdminSync y el import clásico no la mandan, y sin ella todo resuelve como
+         * antes (más las equivalencias recordadas y el arreglo de mayúsculas). El saneado —ids
+         * ajenos o borrados, tipos de otra importación— lo hace el resolver.
+         *
+         * Llega la ruta del archivo de decisiones (o el array, en un job viejo) y se lee UNA vez,
+         * acá: un ProcessRow por lote. Sin archivo, el lote sigue sin decisiones (y lo loguea).
+         */
+        $this->equivalencias = new EquivalenciasResolver(
+            $this->user->id,
+            EquivalenciasResolver::decisiones_del_lote(isset($data['equivalencias']) ? $data['equivalencias'] : []),
+            EquivalenciasResolver::TIPOS_ARTICULOS
+        );
+
         $this->set_brand_cache();
         $this->set_category_cache();
         $this->set_sub_category_cache();
@@ -602,45 +636,128 @@ class ProcessRow {
         $this->article_index = $article_index;
     }
 
+    /**
+     * Clave de cache de un nombre de relación. Es RelacionesParecidasDetector::clave_cache():
+     * mb_strtolower (no strtolower, que no baja la Ñ ni las vocales con tilde en mayúscula y
+     * duplicaba "CAÑERÍA" contra "cañería") y espacios internos colapsados.
+     *
+     * @param  mixed $value
+     * @return string
+     */
     protected function normalize_cache_key($value): string
     {
-        return strtolower(trim((string) $value));
+        return RelacionesParecidasDetector::clave_cache($value);
     }
 
+    /**
+     * Índice en memoria de las marcas del comercio, una vez por lote. Ordenadas por id: con dos
+     * marcas de la misma clave gana la más vieja (ver EquivalenciasResolver::agregar_al_indice()).
+     *
+     * @return void
+     */
     protected function set_brand_cache(): void
     {
-        $this->brand_cache = Brand::where('user_id', $this->user->id)
-            ->select('id', 'name')
-            ->get()
-            ->mapWithKeys(fn ($b) => [$this->normalize_cache_key($b->name) => (int)$b->id])
-            ->toArray();
+        $this->equivalencias->cargar_indice(
+            'marca',
+            Brand::where('user_id', $this->user->id)->select('id', 'name')->orderBy('id')->get()
+        );
     }
 
+    /**
+     * Índice en memoria de las categorías del comercio, una vez por lote.
+     *
+     * @return void
+     */
     protected function set_category_cache(): void
     {
-        $this->category_cache = Category::where('user_id', $this->user->id)
-            ->select('id', 'name')
-            ->get()
-            ->mapWithKeys(fn ($c) => [$this->normalize_cache_key($c->name) => (int)$c->id])
-            ->toArray();
+        $this->equivalencias->cargar_indice(
+            'categoria',
+            Category::where('user_id', $this->user->id)->select('id', 'name')->orderBy('id')->get()
+        );
     }
 
+    /**
+     * Índice en memoria de las subcategorías, cada una en el contexto de SU categoría: una
+     * subcategoría solo se busca dentro de la categoría que resolvió la fila.
+     *
+     * @return void
+     */
     protected function set_sub_category_cache(): void
     {
-        $this->sub_category_cache = [];
-
-        $subs = SubCategory::where('user_id', $this->user->id)
-            ->select('id', 'name', 'category_id')
-            ->get();
-
-        foreach ($subs as $s) {
-            $key = $this->normalize_cache_key($s->name);
-            $cid = (int)$s->category_id;
-            if (!isset($this->sub_category_cache[$cid])) {
-                $this->sub_category_cache[$cid] = [];
+        $this->equivalencias->cargar_indice(
+            'sub_categoria',
+            SubCategory::where('user_id', $this->user->id)->select('id', 'name', 'category_id')->orderBy('id')->get(),
+            function ($sub) {
+                return (int) $sub->category_id;
             }
-            $this->sub_category_cache[$cid][$key] = (int)$s->id;
+        );
+    }
+
+    /**
+     * Resuelve los proveedores de los nombres de la columna "proveedor" de un lote, con el mismo
+     * orden que las otras relaciones (decisión → recordada → exacto → clave, la más vieja →
+     * crear). Lo llama ArticleImport::set_providers() una vez por lote.
+     *
+     * 🔴 Reemplaza al whereIn('name') + keyBy('name') + diff() de antes, que creaba duplicados:
+     * el whereIn de MySQL encontraba "Acme" para "ACME" (la collation ignora mayúsculas), pero el
+     * diff() en PHP sí las distingue, así que "ACME" figuraba como faltante y se creaba otro
+     * proveedor "ACME" al lado del "Acme" existente.
+     *
+     * @param  array $nombres  nombres distintos del lote, ya con trim
+     * @return array [nombre => Provider] — el formato que espera get_provider_id()
+     */
+    public function resolver_proveedores(array $nombres)
+    {
+        if (is_null($this->proveedores_por_id)) {
+            $proveedores = Provider::where('user_id', $this->user->id)->select('id', 'name')->orderBy('id')->get();
+
+            $this->proveedores_por_id = [];
+
+            foreach ($proveedores as $proveedor) {
+                $this->proveedores_por_id[(int) $proveedor->id] = $proveedor;
+            }
+
+            $this->equivalencias->cargar_indice('proveedor', $proveedores);
         }
+
+        $resueltos = [];
+        $user_id = $this->user->id;
+        $creados = [];
+
+        foreach ($nombres as $nombre) {
+            $nombre = trim((string) $nombre);
+
+            if ($nombre === '') {
+                continue;
+            }
+
+            $id = $this->equivalencias->resolver('proveedor', $nombre, 0, null, function ($nuevo) use ($user_id, &$creados) {
+                /* Los mismos campos que creaba set_providers() hasta hoy. */
+                $proveedor = Provider::create([
+                    'name'    => $nuevo,
+                    'user_id' => $user_id,
+                ]);
+
+                $creados[(int) $proveedor->id] = $proveedor;
+
+                return (int) $proveedor->id;
+            });
+
+            foreach ($creados as $id_creado => $creado) {
+                $this->proveedores_por_id[$id_creado] = $creado;
+            }
+
+            if (!isset($this->proveedores_por_id[$id])) {
+                /* Un `usar` válido apunta a un proveedor vivo del comercio: está en el índice. */
+                $this->proveedores_por_id[$id] = Provider::find($id);
+            }
+
+            if (!is_null($this->proveedores_por_id[$id])) {
+                $resueltos[$nombre] = $this->proveedores_por_id[$id];
+            }
+        }
+
+        return $resueltos;
     }
 
     protected function set_iva_cache(): void
@@ -3986,21 +4103,16 @@ class ProcessRow {
             return null;
         }
 
-        $name = trim((string)$brand_excel);
-        $key = $this->normalize_cache_key($name);
+        $user_id = $this->user->id;
 
-        if (isset($this->brand_cache[$key])) {
-            return $this->brand_cache[$key];
-        }
+        return $this->equivalencias->resolver('marca', trim((string) $brand_excel), 0, null, function ($nombre) use ($user_id) {
+            $brand = Brand::create([
+                'name'    => $nombre,
+                'user_id' => $user_id,
+            ]);
 
-        $brand = Brand::create([
-            'name' => $name,
-            'user_id' => $this->user->id,
-        ]);
-
-        $this->brand_cache[$key] = (int)$brand->id;
-
-        return $brand->id;
+            return (int) $brand->id;
+        });
     }
 
     function get_unidad_medida_id($row) {
@@ -4055,53 +4167,45 @@ class ProcessRow {
         }
 
         $category_name = trim((string)$category_excel);
-        $category_key = $this->normalize_cache_key($category_name);
+
+        $ct   = $this->ct;
+        $user = $this->user;
 
         // 1) Categoria
-        if (isset($this->category_cache[$category_key])) {
-            $category_id = $this->category_cache[$category_key];
-        } else {
+        $category_id = $this->equivalencias->resolver('categoria', $category_name, 0, null, function ($nombre) use ($ct, $user) {
             $category = Category::create([
-                'num' => $this->ct->num('categories', $this->user->id, 'user_id', $this->user->id),
-                'name' => $category_name,
-                'user_id' => $this->user->id,
+                'num' => $ct->num('categories', $user->id, 'user_id', $user->id),
+                'name' => $nombre,
+                'user_id' => $user->id,
             ]);
 
-            SetPriceTypesHelper::set_price_types($category, $this->user);
-            SetPriceTypesHelper::set_rangos($category, $this->user);
+            SetPriceTypesHelper::set_price_types($category, $user);
+            SetPriceTypesHelper::set_rangos($category, $user);
 
-            $category_id = (int)$category->id;
-            $this->category_cache[$category_key] = $category_id;
-        }
+            return (int)$category->id;
+        });
 
-        // 2) Subcategoria
+        // 2) Subcategoria: se busca DENTRO de la categoría que resolvió la fila (contexto), y la
+        //    decisión del usuario se busca con la categoría tal como vino en el Excel (padre).
         $sub_category_excel = ImportHelper::getColumnValue($row, 'sub_categoria', $this->columns);
         if (ImportHelper::usa_columna($sub_category_excel)) {
 
             $sub_name = trim((string)$sub_category_excel);
-            $sub_key = $this->normalize_cache_key($sub_name);
 
-            if (isset($this->sub_category_cache[$category_id][$sub_key])) {
-                $sub_category_id = $this->sub_category_cache[$category_id][$sub_key];
-            } else {
+            $sub_category_id = $this->equivalencias->resolver('sub_categoria', $sub_name, $category_id, $category_name, function ($nombre) use ($ct, $user, $category_id) {
                 $sub = SubCategory::create([
-                    'num' => $this->ct->num('sub_categories', $this->user->id, 'user_id', $this->user->id),
-                    'name' => $sub_name,
+                    'num' => $ct->num('sub_categories', $user->id, 'user_id', $user->id),
+                    'name' => $nombre,
                     'category_id' => $category_id,
-                    'user_id' => $this->user->id,
+                    'user_id' => $user->id,
                 ]);
 
-                if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $this->user)) {
-                    SetPriceTypesHelper::set_price_types($sub, $this->user);
+                if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
+                    SetPriceTypesHelper::set_price_types($sub, $user);
                 }
 
-                if (!isset($this->sub_category_cache[$category_id])) {
-                    $this->sub_category_cache[$category_id] = [];
-                }
-                $this->sub_category_cache[$category_id][$sub_key] = (int)$sub->id;
-
-                $sub_category_id = (int)$sub->id;
-            }
+                return (int)$sub->id;
+            });
         }
 
         return [

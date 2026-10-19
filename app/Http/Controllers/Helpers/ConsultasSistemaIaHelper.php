@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\Address;
 use App\Models\Article;
@@ -71,12 +72,13 @@ class ConsultasSistemaIaHelper
             ->where('status', 'active');
 
         // Si hay una palabra clave útil, se filtra por nombre / código de barras / código de proveedor.
+        // Por palabras sueltas y no por la frase pegada (misión asistente-altas-y-conversacion, 16/10/2026):
+        // "ducha gloa" tiene que encontrar DUCHA DE MANO METAL GLOA. Ver BusquedaPorPalabrasIaHelper.
         if ($busqueda !== '') {
-            $articles_query->where(function ($sub) use ($busqueda) {
-                $sub->where('name', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $busqueda . '%');
-            });
+            BusquedaPorPalabrasIaHelper::filtrar($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
+
+            // Lo que tiene la frase entera primero: con el tope de filas no puede quedar afuera.
+            BusquedaPorPalabrasIaHelper::ordenar_por_frase($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
         }
 
         $articles = $articles_query
@@ -544,16 +546,41 @@ class ConsultasSistemaIaHelper
      * cero pesos —no entra al total y se cuenta aparte—. Y `tiene_imagen`, en una consulta para el
      * lote. `total_vendido` conserva su nombre: es el contrato del canal "sistema:" de admin-api.
      *
-     * @param  int          $owner_id  Id del dueño (articles.user_id / sales.user_id).
-     * @param  int          $dias      Ventana de días hacia atrás (si no hay desde/hasta).
-     * @param  string|null  $desde     AAAA-MM-DD inclusive; manda sobre `dias`.
-     * @param  string|null  $hasta     AAAA-MM-DD inclusive; manda sobre `dias`.
-     * @param  int          $limite    0 = MAX_RESULTS.
-     * @return array<int, array<string, mixed>>
+     * 🔴 `proveedor` (misión asistente-altas-y-conversacion, 16/10/2026). El caso real, por WhatsApp
+     * en demo3: "¿qué es lo que más vendo de Ferretera del Sur? los últimos 2 meses". El asistente lo
+     * leyó como COMPRAS a ese proveedor —todo lo que decía "proveedor" lo empujaba para ese lado— y
+     * terminó diciendo que no sabía qué artículos le trae. Lo que el dueño quiere es esto mismo, el
+     * ranking de lo que les vendió a sus clientes, acotado a los artículos cuyo proveedor (el de la
+     * ficha, `articles.provider_id`) es ese. El proveedor se resuelve por nombre en
+     * proveedor_de_mas_vendidos(): si no encaja ninguno o encaja más de uno, vuelve un `error` con las
+     * opciones y NO se adivina, igual que el filtro de método de pago del resumen de ventas.
+     *
+     * Compatible hacia atrás: sin `proveedor` la salida es EXACTAMENTE la de siempre (la lista
+     * pelada, que es lo que lee el canal "sistema:"). Con `proveedor` la lista viaja en `articulos`,
+     * envuelta en el proveedor que se usó: así el modelo puede decirle al dueño de quién habla, que
+     * es justo lo que pudo haber resuelto distinto de lo que la persona escribió.
+     *
+     * @param  int          $owner_id   Id del dueño (articles.user_id / sales.user_id).
+     * @param  int          $dias       Ventana de días hacia atrás (si no hay desde/hasta).
+     * @param  string|null  $desde      AAAA-MM-DD inclusive; manda sobre `dias`.
+     * @param  string|null  $hasta      AAAA-MM-DD inclusive; manda sobre `dias`.
+     * @param  int          $limite     0 = MAX_RESULTS.
+     * @param  string|null  $proveedor  Nombre del proveedor como lo dijo la persona. null/vacío = todos.
+     * @return array<int|string, mixed>
      */
-    public static function mas_vendidos(int $owner_id, int $dias = 30, $desde = null, $hasta = null, int $limite = 0): array
+    public static function mas_vendidos(int $owner_id, int $dias = 30, $desde = null, $hasta = null, int $limite = 0, $proveedor = null): array
     {
         $limite = self::limite_pedido($limite);
+
+        $del_proveedor = null;
+
+        if (! is_null($proveedor) && trim((string) $proveedor) !== '') {
+            $del_proveedor = self::proveedor_de_mas_vendidos($owner_id, (string) $proveedor);
+
+            if (isset($del_proveedor['error'])) {
+                return $del_proveedor;
+            }
+        }
 
         $query = DB::table('article_purchases')
             ->join('articles', 'article_purchases.article_id', '=', 'articles.id')
@@ -580,6 +607,11 @@ class ConsultasSistemaIaHelper
             }
         } else {
             $query->where('article_purchases.created_at', '>=', now()->subDays($dias));
+        }
+
+        if (! is_null($del_proveedor)) {
+            // El proveedor de la FICHA del artículo, no el de una compra: es "lo que vendo de X".
+            $query->where('articles.provider_id', $del_proveedor['id']);
         }
 
         $top = $query
@@ -614,7 +646,176 @@ class ConsultasSistemaIaHelper
             ];
         }
 
-        return $result;
+        if (is_null($del_proveedor)) {
+            return $result;
+        }
+
+        $respuesta = [
+            'proveedor'    => $del_proveedor['nombre'],
+            'proveedor_id' => $del_proveedor['id'],
+            'criterio'     => 'Los articulos cuyo proveedor (el de la ficha del articulo) es ' . $del_proveedor['nombre'] . ', ordenados por las unidades que les VENDISTE a tus clientes en el periodo. No son compras a ese proveedor: eso es consultar_compras_a_un_proveedor.',
+            // Cuántos artículos tiene ese proveedor en la ficha: separa "no vendiste nada de él" de
+            // "no tiene ningún artículo asignado", que se contestan muy distinto.
+            'articulos_con_ese_proveedor' => Article::where('user_id', $owner_id)
+                ->where('provider_id', $del_proveedor['id'])
+                ->count(),
+            'articulos'    => $result,
+        ];
+
+        if (empty($result)) {
+            $respuesta['nota'] = $respuesta['articulos_con_ese_proveedor'] > 0
+                ? 'Ninguno de los articulos de ese proveedor se vendio en el periodo.'
+                : 'Ese proveedor no tiene ningun articulo asignado en la ficha del articulo, asi que no hay ventas para mostrar por el.';
+        }
+
+        return $respuesta;
+    }
+
+    /**
+     * EL PROVEEDOR DE "LO QUE MÁS VENDO DE X", resuelto por el nombre como lo dijo la persona.
+     *
+     * Por qué no resolver_proveedor(): ese se queda con el PRIMERO cuando encajan varios, y acá un
+     * proveedor equivocado devuelve un ranking que parece bueno y es de otro. Mismo criterio que
+     * ResumenDeVentasIaHelper::filtro_de_metodo_de_pago(): uno solo, o el nombre exacto desempata, o
+     * vuelve el `error` con las opciones para que el modelo pregunte.
+     *
+     * La búsqueda es por palabras (BusquedaPorPalabrasIaHelper): "ferreteria sur" encuentra
+     * "Ferretería del Sur". ⚠️ Una letra de menos no la arregla ningún LIKE ("ferretera del sur", el
+     * caso real): cuando no encaja ninguno se devuelven los PARECIDOS (proveedores_parecidos()) para
+     * que el modelo vuelva a llamar con el nombre exacto si uno es evidente, o pregunte si no.
+     *
+     * @param  int     $owner_id
+     * @param  string  $nombre
+     * @return array{id?: int, nombre?: string, error?: string, opciones?: array, como_sigo?: string}
+     */
+    protected static function proveedor_de_mas_vendidos(int $owner_id, string $nombre): array
+    {
+        $nombre = trim($nombre);
+        $plano = self::normalize_text($nombre);
+
+        $candidatos = BusquedaPorPalabrasIaHelper::filtrar(
+            Provider::query()->where('user_id', $owner_id),
+            $nombre,
+            ['name', 'razon_social']
+        )
+            ->orderBy('name')
+            ->orderBy('id')
+            ->limit(self::MAX_RESULTS)
+            ->get(['id', 'name']);
+
+        if ($candidatos->count() > 1) {
+            // Un nombre exacto desempata: "Sur" no tiene por qué chocar con "Sur Distribuciones".
+            $exactos = $candidatos->filter(function ($fila) use ($plano) {
+                return self::normalize_text((string) $fila->name) === $plano;
+            })->values();
+
+            if ($exactos->count() === 1) {
+                $candidatos = $exactos;
+            }
+        }
+
+        if ($candidatos->count() === 1) {
+            $elegido = $candidatos->first();
+
+            return ['id' => (int) $elegido->id, 'nombre' => (string) $elegido->name];
+        }
+
+        if ($candidatos->count() > 1) {
+            $opciones = $candidatos->pluck('name')->map(function ($v) {
+                return (string) $v;
+            })->all();
+
+            return [
+                'error'     => 'Hay mas de un proveedor que encaja con "' . $nombre . '": ' . implode(', ', $opciones) . '.',
+                'opciones'  => $opciones,
+                'como_sigo' => 'Preguntale a la persona cual de esos es y volve a llamar con el nombre exacto.',
+            ];
+        }
+
+        $parecidos = self::proveedores_parecidos($owner_id, $nombre);
+
+        if (! empty($parecidos)) {
+            return [
+                'error'     => 'No hay ningun proveedor que se llame "' . $nombre . '". Los mas parecidos son: ' . implode(', ', $parecidos) . '.',
+                'opciones'  => $parecidos,
+                'como_sigo' => 'Si uno de estos es claramente el que dijo la persona (lo escribio con otra letra o abreviado), volve a llamar con ese nombre exacto y decile cual usaste. Si no es obvio, preguntale cual.',
+            ];
+        }
+
+        $todos = Provider::where('user_id', $owner_id)
+            ->orderBy('name')
+            ->limit(self::TOPE_DURO_DE_RESULTADOS)
+            ->pluck('name')
+            ->map(function ($v) {
+                return (string) $v;
+            })
+            ->all();
+
+        return [
+            'error'     => empty($todos)
+                ? 'Este negocio no tiene ningun proveedor cargado.'
+                : 'No hay ningun proveedor que se llame "' . $nombre . '" ni uno parecido. Los proveedores cargados son: ' . implode(', ', $todos) . '.',
+            'opciones'  => $todos,
+            'como_sigo' => 'Preguntale a la persona cual de los proveedores cargados es.',
+        ];
+    }
+
+    /**
+     * Los proveedores del dueño que se parecen a lo que escribió la persona, del más parecido al
+     * menos: los que comparten alguna palabra que importa, o cuyo nombre se parece en más de un 70 %
+     * (similar_text, sin mayúsculas ni tildes). Es lo que cubre "ferretera del sur" →
+     * "Ferretería del Sur", que ningún LIKE encuentra.
+     *
+     * Se compara en PHP y no en SQL porque MySQL no tiene una distancia de texto usable, y la lista
+     * de proveedores de un comercio es corta. El techo de 1000 filas es la red por si no lo es.
+     *
+     * @param  int     $owner_id
+     * @param  string  $nombre
+     * @return array<int, string>  Hasta 10 nombres.
+     */
+    protected static function proveedores_parecidos(int $owner_id, string $nombre): array
+    {
+        $plano = self::normalize_text($nombre);
+
+        $palabras = array_map(function ($palabra) {
+            return self::normalize_text($palabra);
+        }, BusquedaPorPalabrasIaHelper::palabras($nombre));
+
+        $puntajes = [];
+
+        $proveedores = Provider::where('user_id', $owner_id)->orderBy('id')->limit(1000)->get(['id', 'name']);
+
+        foreach ($proveedores as $proveedor) {
+            $suyo = self::normalize_text((string) $proveedor->name);
+
+            if ($suyo === '') {
+                continue;
+            }
+
+            $porcentaje = 0.0;
+            similar_text($plano, $suyo, $porcentaje);
+
+            $comparte = false;
+
+            foreach ($palabras as $palabra) {
+                if (mb_strlen($palabra) >= 3 && mb_strpos($suyo, $palabra) !== false) {
+                    $comparte = true;
+                    break;
+                }
+            }
+
+            if ($porcentaje >= 70 || $comparte) {
+                $puntajes[] = ['nombre' => (string) $proveedor->name, 'puntaje' => $porcentaje];
+            }
+        }
+
+        usort($puntajes, function ($a, $b) {
+            return $b['puntaje'] <=> $a['puntaje'];
+        });
+
+        return array_map(function ($fila) {
+            return $fila['nombre'];
+        }, array_slice($puntajes, 0, 10));
     }
 
     /**
@@ -677,10 +878,7 @@ class ConsultasSistemaIaHelper
             ->where('provider_price_offers.user_id', $owner_id);
 
         if ($busqueda !== '') {
-            $query->where(function ($sub) use ($busqueda) {
-                $sub->where('articles.name', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('providers.name', 'LIKE', '%' . $busqueda . '%');
-            });
+            BusquedaPorPalabrasIaHelper::filtrar($query, $busqueda, ['articles.name', 'providers.name']);
         }
 
         // Orden global por fecha (no agrupado por par primero) para que el
@@ -752,10 +950,7 @@ class ConsultasSistemaIaHelper
             ->where('client_offers.hasta', '>=', $hoy);
 
         if ($busqueda !== '') {
-            $query->where(function ($sub) use ($busqueda) {
-                $sub->where('clients.name', 'LIKE', '%' . $busqueda . '%')
-                    ->orWhere('articles.name', 'LIKE', '%' . $busqueda . '%');
-            });
+            BusquedaPorPalabrasIaHelper::filtrar($query, $busqueda, ['clients.name', 'articles.name']);
         }
 
         // Primero las que se vencen antes: es lo urgente y lo que el
@@ -1178,22 +1373,39 @@ class ConsultasSistemaIaHelper
          * CriteriosDeOfertaService::articulos_que_matchean(). Un término real como "50%" o
          * "cable_2" los trae adentro, y sin escaparlos "50%" matchea todo lo que empieza con 50.
          * Acá pesa más que en el motor de ofertas: allá un comodín trae artículos de más, acá
-         * CAMBIA SOBRE CUÁL ARTÍCULO se contesta.
+         * CAMBIA SOBRE CUÁL ARTÍCULO se contesta. Desde el 16/10/2026 los escapa
+         * BusquedaPorPalabrasIaHelper, palabra por palabra.
          */
-        $escapado = addcslashes($busqueda, '%_\\');
 
         $candidatos = Article::query()
             ->where('user_id', $owner_id)
-            ->where(function ($sub) use ($escapado) {
-                $sub->where('name', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
-            })
+            ->where(function ($sub) use ($busqueda) {
+                // Por palabras sueltas: ver BusquedaPorPalabrasIaHelper (escapa los comodines solo).
+                BusquedaPorPalabrasIaHelper::filtrar($sub, $busqueda, ['name', 'bar_code', 'provider_code']);
+            });
+
+        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($candidatos, $busqueda, ['name', 'bar_code', 'provider_code'])
             ->orderBy('name')
             ->limit(self::MAX_RESULTS)
             ->get($columnas);
 
         if ($candidatos->isEmpty()) {
+            return null;
+        }
+
+        /*
+         * 🔴 Con la frase entera manda lo de siempre. Si nada la tiene y encajó solo por palabras,
+         * se contesta sobre uno únicamente si es el único y es seguro (BusquedaPorPalabrasIaHelper::
+         * es_seguro): "el stock del cable 2" no puede terminar hablando de otro cable. Si no, null:
+         * el que llama dice que no lo encontró y el modelo busca con consultar_stock_de_articulos.
+         */
+        $con_la_frase = BusquedaPorPalabrasIaHelper::por_frase($candidatos, $busqueda, ['name', 'bar_code', 'provider_code']);
+
+        if (count($con_la_frase)) {
+            $candidatos = collect($con_la_frase);
+        } elseif (count($candidatos) === 1 && BusquedaPorPalabrasIaHelper::es_seguro((string) $candidatos[0]->name, $busqueda)) {
+            return $candidatos[0];
+        } else {
             return null;
         }
 

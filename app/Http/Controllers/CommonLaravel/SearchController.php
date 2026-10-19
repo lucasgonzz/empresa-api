@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\ExtraFiltersHelper;
 use App\Http\Controllers\Helpers\GlobalSearchMatchesHelper;
 use App\Http\Controllers\Helpers\GlobalSearchQueryHelper;
+use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
@@ -105,6 +106,29 @@ class SearchController extends Controller
         $models = $column_filters_result['models'];
         $used_filters = $column_filters_result['used_filters'];
 
+        /*
+         * 🔴 GANCHO OPT-IN DE LA PANTALLA DE VENTAS (mision alcance-de-ventas-caminos-faltantes,
+         * 16/10/2026). Solo si el modelo es `sale`, el cuerpo trae la marca `ventas_pantalla` y NO es una
+         * llamada interna (`$return_raw_models` / `$return_used_filters`: el Excel, la papelera, las
+         * masivas): aplica el recorte de dias, la base de Ventas, el alcance de permisos y los filtros de
+         * pantalla, y devuelve los totales del mismo conjunto. Para cualquier otro modelo, o sin la marca,
+         * no hace NADA: la respuesta es la de siempre, byte a byte. Esta ruta es generica y la comparten
+         * Deposito, Por entregar, Por estado y "Ventas del articulo", que tienen permisos propios y no
+         * se acotan: por eso la marca. Va despues de los filtros de columna y antes del orderBy/paginate.
+         * La regla vive en ListadoVentasHelper, no aca.
+         */
+        $totales_de_pantalla = null;
+
+        if ($model_name_param === 'sale'
+            && !$return_raw_models
+            && !$return_used_filters
+            && ListadoVentasHelper::tiene_marca_de_pantalla($request)) {
+
+            $de_pantalla = ListadoVentasHelper::para_busqueda($models, $request, $this->userId());
+            $models = $de_pantalla['conjunto'];
+            $totales_de_pantalla = $de_pantalla['totales'];
+        }
+
         if ($model_name_param == 'article') {
             $models = $models->where('status', 'active');
         }
@@ -174,15 +198,34 @@ class SearchController extends Controller
         }
 
         if (is_null($_filters)) {
-            return response()->json(['models' => $models], 200);
+
+            $respuesta = ['models' => $models];
+
+            /* `totales` SOLO con la marca de la pantalla de Ventas: para cualquier otro caso, la clave no existe. */
+            if (!is_null($totales_de_pantalla)) {
+                $respuesta['totales'] = $totales_de_pantalla;
+            }
+
+            return response()->json($respuesta, 200);
         } else {
 
             if ($return_used_filters) {
                 return [
                     'models'        => $models,
-                    'used_filters'  => $used_filters, 
+                    'used_filters'  => $used_filters,
                 ];
             }
+
+            /*
+             * Con la marca y paginado (`search/sale/null/1`, el que usa la busqueda por N° de factura)
+             * la respuesta es el MISMO JSON del paginador mas la clave `totales` al lado de
+             * `data` / `total` / `last_page`. Sin paginar (`get()`) no hay paginador al que sumarle
+             * nada y la lista se devuelve como siempre.
+             */
+            if (!is_null($totales_de_pantalla) && $models instanceof LengthAwarePaginator) {
+                return response()->json(array_merge($models->toArray(), ['totales' => $totales_de_pantalla]), 200);
+            }
+
             return $models;
         }
     }
@@ -443,7 +486,10 @@ class SearchController extends Controller
      *                   reimplementar un pedazo de esa traducción acá. Se AND'ean con el grupo de
      *                   coincidencia de texto y con `extra_filters`. Si alguno de estos filtros trae
      *                   `ordenar_de`, ese orden tiene PRIORIDAD sobre `order_by`/`order_direction`
-     *                   (ver más abajo).
+     *                   (ver más abajo). Una key de texto que el modelo declara en
+     *                   `columnas_mostradas_para_filtros()` filtra y ordena por lo que la columna
+     *                   MUESTRA y no por lo guardado (hoy: `banco` de cheque, el banco del catálogo o
+     *                   el texto; ver "COLUMNAS MOSTRADAS" en ColumnFiltersHelper).
      * - per_page        (int)    Tamaño de página (clamp 1..200, default 50). Página vía ?page=.
      * - contexto        (string|null) (Prompt 04, grupo 179) Flag opcional que declara que la
      *                   llamada viene de un módulo con lógica propia de búsqueda. Únicamente
@@ -461,6 +507,15 @@ class SearchController extends Controller
      *                   paginado con `paginate()` de Eloquent. La forma de la respuesta es SIEMPRE
      *                   la misma (`{ models: { data, last_page, total, ... } }`), tenga o no
      *                   `contexto` — nunca la forma plana de `search_nombre`.
+     * - ventas_pantalla (object|null) (mision alcance-de-ventas-caminos-faltantes, 16/10/2026) Marca
+     *                   OPT-IN de la pantalla de Ventas, solo para el modelo `sale`: su presencia dice
+     *                   "este pedido lo hace la pantalla de Ventas". Con ella el servidor aplica el
+     *                   recorte de dias (`sale.index.previus_days`), la base de Ventas, el alcance de
+     *                   permisos del empleado y los filtros de pantalla (solapa + show options:
+     *                   `address_id`, `employee_id`, `only_owner`, `ventas_cobradas_show_option`,
+     *                   `afip_ticket_show_option`, `payment_method_show_option`,
+     *                   `mostrar_consolidadas`), y agrega la clave `totales` a la respuesta. Sin la
+     *                   marca, o con otro modelo, no cambia nada. Ver `ListadoVentasHelper::para_busqueda`.
      *
      * @param Request $request
      * @param string $model_name_param Nombre del modelo en snake_case (ej: 'article').
@@ -470,6 +525,8 @@ class SearchController extends Controller
      *         propiedad aporto a cada resultado de esta página: `null` sin criterio de texto, con
      *         contexto Vender, o si no hay ninguna propiedad tildada por la que desglosar.
      *         O un JSON de error controlado (400) si el modelo/prop/relación pedida no existe.
+     *         Con la marca `ventas_pantalla` (solo `sale`) se suma la clave `totales`, con la forma de
+     *         `totales` de `GET sale/from-date/ventas`; en cualquier otro caso esa clave no existe.
      */
     function globalSearch(Request $request, $model_name_param) {
 
@@ -607,6 +664,23 @@ class SearchController extends Controller
 
         if (in_array($model_name_param, $model_names_solo_activos, true)) {
             $models = $models->where('status', 'active');
+        }
+
+        // 🔴 GANCHO OPT-IN DE LA PANTALLA DE VENTAS (mision alcance-de-ventas-caminos-faltantes,
+        // 16/10/2026). Solo si el modelo es `sale` y el cuerpo trae la marca `ventas_pantalla`:
+        // aplica el recorte de dias, la base de Ventas, el alcance de permisos y los filtros de
+        // pantalla, y calcula los totales del MISMO conjunto (filas, `models.total` y `totales`
+        // salen juntos). Va despues de los filtros de texto, extra_filters y columnas, y antes del
+        // orderBy/paginate. Sin la marca, o con otro modelo, no hace nada: la respuesta es la de
+        // siempre, byte a byte. Esta ruta la comparten Deposito, Por entregar, Por estado y "Ventas
+        // del articulo", que tienen permisos propios y no se acotan. La regla vive en
+        // ListadoVentasHelper, no aca.
+        $totales_de_pantalla = null;
+
+        if ($model_name_param === 'sale' && ListadoVentasHelper::tiene_marca_de_pantalla($request)) {
+            $de_pantalla = ListadoVentasHelper::para_busqueda($models, $request, $this->userId());
+            $models = $de_pantalla['conjunto'];
+            $totales_de_pantalla = $de_pantalla['totales'];
         }
 
         // Suma de saldos (pesos y dolares) de TODOS los registros que matchean el filtro vigente,
@@ -797,7 +871,15 @@ class SearchController extends Controller
             );
         }
 
-        return response()->json(['models' => $models, 'matches' => $matches, 'saldos' => $saldos], 200);
+        $respuesta = ['models' => $models, 'matches' => $matches, 'saldos' => $saldos];
+
+        // `totales` SOLO con la marca de la pantalla de Ventas: para cualquier otro caso la clave no
+        // existe (no se agrega un `totales => null`), asi la respuesta es identica a la de siempre.
+        if (!is_null($totales_de_pantalla)) {
+            $respuesta['totales'] = $totales_de_pantalla;
+        }
+
+        return response()->json($respuesta, 200);
     }
 
     /**

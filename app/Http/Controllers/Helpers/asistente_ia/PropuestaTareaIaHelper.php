@@ -53,6 +53,18 @@ class PropuestaTareaIaHelper {
 
     const MENSAJE_TAREA_INEXISTENTE = 'La tarea ya no existe.';
 
+    /**
+     * Cuántos días de agenda viajan en el rechazo de un tarea_id que no es de ninguna tarea (ver
+     * tarea_que_no_esta()): el máximo que acepta consultar_tareas.
+     *
+     * ⚠️ No es "toda la agenda": consultar_tareas corta cada lista (vencidas, próximas) en
+     * ConsultasDeCargaIaHelper::TOPE ocurrencias, y una tarea que se repite ocupa un lugar por vez.
+     * Con una agenda cargada, una tarea a dos o tres semanas puede no entrar. Por eso el rechazo no
+     * termina en "si no está, no existe": manda a buscarla con consultar_tareas por su texto, que
+     * filtra ANTES del tope.
+     */
+    const DIAS_DE_AGENDA_EN_EL_RECHAZO = 90;
+
     // -------------------------------------------------------------------------------------------
     // Tarea nueva
     // -------------------------------------------------------------------------------------------
@@ -99,6 +111,38 @@ class PropuestaTareaIaHelper {
             return $fecha;
         }
 
+        /*
+         * La hora va escrita adelante del detalle (misión asistente-altas-y-conversacion, 16/10/2026). En
+         * demo3, "recordame el viernes a las 10 que tengo que llamar a…" quedó el viernes a las 00:00: la
+         * herramienta no tenía dónde poner la hora y se perdía. La agenda razona por día (AgendaHelper,
+         * AgendaTareaHelper::validar fuerza las 00:00), así que la hora NO va a fecha_realizacion: va
+         * en el texto de la tarea, que es lo que la persona ve en la Agenda y lo que el asistente lee.
+         * Una hora que no se entiende no se adivina: se pregunta.
+         */
+        $hora_pedida = EntradaDeCargaIa::valor($input, 'hora');
+
+        $hora = EntradaDeCargaIa::vacio($hora_pedida) ? null : self::hora_legible($hora_pedida);
+
+        if (!EntradaDeCargaIa::vacio($hora_pedida) && is_null($hora)) {
+
+            return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
+        }
+
+        /*
+         * La clave de reemplazo se arma con el detalle SIN la hora: corregir solo la hora ("mejor a
+         * las 11") reemplaza la tarjeta en vez de dejar dos. Y una hora que ya venía adelante (el
+         * modelo reenvía el detalle de la tarjeta anterior) se saca antes de poner la nueva: nunca
+         * "11:00 · 10:00 · llamar…". La columna es de 255: se recorta (chequeo independiente, 16/10/2026).
+         */
+        $detalle_sin_hora = trim((string) preg_replace('/^\d{2}:\d{2} · /u', '', $detalle));
+
+        $clave = self::clave_de_tarea_nueva($detalle_sin_hora, $fecha);
+
+        if (!is_null($hora)) {
+
+            $detalle = mb_substr($hora.' · '.$detalle_sin_hora, 0, self::LARGO_DETALLE);
+        }
+
         $datos = self::datos_de_una_tarea_nueva($detalle, $fecha);
 
         $notas = EntradaDeCargaIa::texto($input, 'notas');
@@ -143,7 +187,7 @@ class PropuestaTareaIaHelper {
             );
         }
 
-        return self::armar_tarea_nueva($contexto, $mensaje, $datos, self::clave_de_tarea_nueva($detalle, $fecha), null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
+        return self::armar_tarea_nueva($contexto, $mensaje, $datos, $clave, null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
     }
 
     /**
@@ -210,7 +254,7 @@ class PropuestaTareaIaHelper {
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, tarea_id}
      *
      * @throws AccionIaException
      */
@@ -232,12 +276,169 @@ class PropuestaTareaIaHelper {
         $columnas['completado'] = 0;
         $columnas['user_id'] = $contexto->owner_id;
 
+        /*
+         * El recordatorio por WhatsApp (misión recordatorios-whatsapp, 16/10/2026): lo pide la tarea con
+         * hora que confirma EL DUEÑO con un admin que anunció que consulta. La hora ya viene en
+         * `hora_aviso` (validar() la deriva del prefijo).
+         */
+        $columnas['avisar_por_whatsapp'] = self::pide_el_recordatorio($contexto, $columnas) ? 1 : 0;
+
         $tarea = Pending::create($columnas);
 
         return [
-            'texto' => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
-            'ruta'  => self::ruta_de_la_agenda(),
+            'texto'    => 'Tarea agendada para el '.FormatoIaHelper::fecha_con_dia(Carbon::parse($tarea->fecha_realizacion)->startOfDay()),
+            'ruta'     => self::ruta_de_la_agenda(),
+            'tarea_id' => (int) $tarea->id,
+            'aviso'    => self::aviso_del_recordatorio($contexto, $tarea),
         ];
+    }
+
+    /** El largo de pendings.detalle (string). */
+    const LARGO_DETALLE = 255;
+
+    /**
+     * Lo que la tarea NO hace, para que el modelo no lo prometa (misión asistente-altas-y-conversacion,
+     * 16/10/2026). "Recordame el viernes a las 10" sonaba a que el viernes a las 10 le iba a llegar algo
+     * por WhatsApp, y eso no existía: la tarea quedaba en la Agenda del sistema.
+     *
+     * Desde la misión recordatorios-whatsapp (16/10/2026) el aviso existe, pero este sigue siendo el
+     * texto de todo caso en que no llega: sin hora, una tarea que no pide el aviso (la creó un
+     * empleado, o se creó sin anuncio del admin) o un admin que dejó de consultar los recordatorios
+     * (ver aviso_del_recordatorio()).
+     */
+    const AVISO_SIN_RECORDATORIO = 'Queda en la Agenda del sistema: a esa hora no le llega ningún aviso por WhatsApp. '
+        . 'Si pidió que se lo recuerdes, decíselo en una línea.';
+
+    /**
+     * El recordatorio con un admin que consulta pero SIN la plantilla de Meta: sale solo si la ventana
+     * de 24 h de WhatsApp está abierta, o sea si ese día el dueño le habló al asistente.
+     */
+    const AVISO_RECORDATORIO_SI_HABLARON = 'Queda en la Agenda. Si ese día estuvo hablando con vos por WhatsApp le llega un recordatorio a esa hora; '
+        . 'si no, no: no le prometas el aviso.';
+
+    /** Lo mismo, cuando el que habla es un empleado: el recordatorio es del dueño, no suyo. */
+    const AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON = 'Queda en la Agenda. Si ese día el dueño estuvo hablando con el asistente por WhatsApp, '
+        . 'a esa hora le llega a él un recordatorio; si no, no: no le prometas el aviso.';
+
+    /** Una tarea puntual cuya hora ya pasó: ningún recordatorio va a salir. */
+    const AVISO_HORA_PASADA = 'Queda en la Agenda, pero esa hora ya pasó: no llega ningún recordatorio por WhatsApp. No lo prometas.';
+
+    /**
+     * true si la tarea pide el recordatorio por WhatsApp: tiene hora, la confirma el dueño y el admin
+     * anunció que consulta los recordatorios.
+     *
+     * 🔴 SOLO EL DUEÑO. El recordatorio sale al teléfono de la ficha del cliente, que es el del dueño:
+     * un empleado que le pide «recordame…» al asistente desde el sistema no tiene por qué disparar un
+     * WhatsApp al celular de su jefe. La tarea igual queda en la Agenda, con su hora.
+     *
+     * 🔴 Y SOLO CON EL ANUNCIO DEL ADMIN (chequeo independiente del 16/10/2026). Con un admin viejo
+     * el asistente le dice al dueño que a esa hora no le llega nada; si la tarea pidiera el aviso igual,
+     * el día que se despliegue el admin nuevo le llegaría un WhatsApp que nadie le prometió.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $columnas  AgendaTareaHelper::validar()
+     * @return bool
+     */
+    protected static function pide_el_recordatorio(ContextoDeCargaIa $contexto, array $columnas) {
+
+        return !empty($columnas['hora_aviso'])
+            && self::confirma_el_dueno($contexto)
+            && RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id);
+    }
+
+    /**
+     * true si la persona que confirma es el dueño de la cuenta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return bool
+     */
+    protected static function confirma_el_dueno(ContextoDeCargaIa $contexto) {
+
+        return is_null($contexto->persona) || (int) $contexto->persona->id === (int) $contexto->owner_id;
+    }
+
+    /**
+     * El aviso que lee el modelo al confirmarse la tarea: qué decir del recordatorio.
+     *
+     * 🔴 SALE DEL ESTADO DE LA TAREA, NO DE QUIÉN HABLA. Lo que decide si el WhatsApp llega es
+     * `avisar_por_whatsapp` de la tarea ya guardada: un empleado que le cambia la hora a una tarea que
+     * pidió el dueño no apaga el recordatorio, y el modelo tiene que decírselo así —le llega AL DUEÑO—.
+     *
+     * 🔴 SE PROMETE SOLO LO QUE EL ADMIN ANUNCIÓ (RecordatoriosDelAsistenteHelper::anunciar()). Con la
+     * plantilla de Meta el recordatorio sale siempre; sin ella, solo con la ventana de 24 h abierta;
+     * sin anuncio (un admin viejo, o caído hace más de dos horas), nunca.
+     *
+     * 🔴 Y NO SE PROMETE UNA HORA QUE YA PASÓ (chequeo independiente del 16/10/2026): una puntual de
+     * hoy a las 10 confirmada a las 10:30 no avisa nunca (RecordatoriosDelAsistenteHelper::pendientes()
+     * pide que el momento sea posterior a la creación). En una recurrente cuya primera vez ya pasó, el
+     * recordatorio sale desde la próxima repetición, y eso es lo que se dice.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Pending  $tarea  La tarea ya guardada.
+     * @return string
+     */
+    protected static function aviso_del_recordatorio(ContextoDeCargaIa $contexto, $tarea) {
+
+        if (!$tarea->avisar_por_whatsapp || empty($tarea->hora_aviso) || !RecordatoriosDelAsistenteHelper::admin_avisa($contexto->owner_id)) {
+
+            return self::AVISO_SIN_RECORDATORIO;
+        }
+
+        $hora = substr((string) $tarea->hora_aviso, 0, 5);
+
+        $recurrente = AgendaHelper::regla_valida($tarea);
+
+        $ya_paso = AgendaHelper::fecha_base($tarea)->setTimeFromTimeString((string) $tarea->hora_aviso)->lte(Carbon::now());
+
+        if ($ya_paso && !$recurrente) {
+
+            return self::AVISO_HORA_PASADA;
+        }
+
+        $al_dueno = !self::confirma_el_dueno($contexto);
+
+        if (!RecordatoriosDelAsistenteHelper::admin_avisa_con_plantilla($contexto->owner_id)) {
+
+            return $al_dueno ? self::AVISO_RECORDATORIO_AL_DUENO_SI_HABLARON : self::AVISO_RECORDATORIO_SI_HABLARON;
+        }
+
+        $cuando = $ya_paso
+            ? 'A las '.$hora.' de cada repetición, desde la próxima,'
+            : 'A las '.$hora.' de ese día'.($recurrente ? ' y de cada repetición' : '');
+
+        return $cuando.' le llega '.($al_dueno ? 'al dueño ' : '').'un recordatorio por WhatsApp. Decíselo en una línea.';
+    }
+
+    /**
+     * "10" / "10hs" / "10:30" / "10.30" / "9 30" → "10:00" / "10:00" / "10:30" / "10:30" / "09:30". null si
+     * no es una hora del día.
+     *
+     * @param  mixed  $valor
+     * @return string|null
+     */
+    public static function hora_legible($valor) {
+
+        if (!is_scalar($valor)) {
+
+            return null;
+        }
+
+        $texto = mb_strtolower(trim((string) $valor));
+
+        if (!preg_match('/^(\d{1,2})(?:\s*[:.h ]\s*(\d{2}))?\s*(?:hs?|horas?)?$/u', $texto, $partes)) {
+
+            return null;
+        }
+
+        $horas = (int) $partes[1];
+        $minutos = isset($partes[2]) && $partes[2] !== '' ? (int) $partes[2] : 0;
+
+        if ($horas > 23 || $minutos > 59) {
+
+            return null;
+        }
+
+        return sprintf('%02d:%02d', $horas, $minutos);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -272,17 +473,30 @@ class PropuestaTareaIaHelper {
 
         if (is_null($pending)) {
 
-            return RespuestaDeCargaIa::error('No encontré esa tarea en tu agenda.');
+            return self::tarea_que_no_esta($contexto, $tarea_id);
         }
 
         $nuevos = self::datos_de_la_tarea($pending);
 
         $detalle = EntradaDeCargaIa::texto($input, 'detalle');
 
-        if ($detalle !== '') {
+        /*
+         * La hora (misión recordatorios-whatsapp, 16/10/2026): va escrita adelante del detalle, igual
+         * que en proponer_tarea, y AgendaTareaHelper::validar() deriva de ahí `hora_aviso`, así que
+         * reescribir el prefijo es mover el recordatorio. Una hora que no se entiende se pregunta.
+         */
+        $hora_pedida = EntradaDeCargaIa::valor($input, 'hora');
 
-            $nuevos['detalle'] = $detalle;
+        $quitar_hora = self::es_quitar_la_hora($hora_pedida);
+
+        $hora = $quitar_hora || EntradaDeCargaIa::vacio($hora_pedida) ? null : self::hora_legible($hora_pedida);
+
+        if (!$quitar_hora && !EntradaDeCargaIa::vacio($hora_pedida) && is_null($hora)) {
+
+            return RespuestaDeCargaIa::faltan(['a qué hora (no entendí "'.(is_scalar($hora_pedida) ? (string) $hora_pedida : '').'")']);
         }
+
+        $nuevos['detalle'] = self::detalle_con_hora($nuevos['detalle'], $detalle, $hora, $quitar_hora);
 
         $fecha_pedida = EntradaDeCargaIa::valor($input, 'fecha');
 
@@ -427,6 +641,9 @@ class PropuestaTareaIaHelper {
 
         $aviso = self::cambia_la_regla($antes, $despues) ? self::AVISO_CAMBIO_DE_REGLA : null;
 
+        $duda = self::tarea_de_la_tarjeta_con_el_mismo_numero($contexto, $pending);
+        $aviso = self::sumar_aviso($aviso, self::aviso_de_la_duda($pending, $duda));
+
         $datos = $nuevos;
         $datos['pending_id'] = (int) $pending->id;
 
@@ -451,7 +668,11 @@ class PropuestaTareaIaHelper {
             $nombres[] = mb_strtolower($etiquetas[$campo]);
         }
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, 'Cambios en la tarea '.$antes['detalle'].': '.implode(', ', $nombres));
+        return AccionesIaHelper::respuesta_de_propuesta(
+            $creada,
+            'Cambios en la tarea '.$antes['detalle'].': '.implode(', ', $nombres),
+            self::extra_de_la_duda($pending, $duda, $creada)
+        );
     }
 
     /**
@@ -460,7 +681,7 @@ class PropuestaTareaIaHelper {
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, tarea_id}
      *
      * @throws AccionIaException
      */
@@ -515,12 +736,99 @@ class PropuestaTareaIaHelper {
             $pending->{$columna} = $valor;
         }
 
+        /*
+         * Misma regla que la tarea nueva: un cambio con hora que confirma el dueño pide el
+         * recordatorio. Sin hora no se toca (el recordatorio igual no sale: no hay `hora_aviso`).
+         */
+        if (self::pide_el_recordatorio($contexto, $columnas)) {
+
+            $pending->avisar_por_whatsapp = 1;
+        }
+
         $pending->save();
 
-        return [
-            'texto' => 'Tarea actualizada',
-            'ruta'  => self::ruta_de_la_agenda(),
+        $resultado = [
+            'texto'    => 'Tarea actualizada',
+            'ruta'     => self::ruta_de_la_agenda(),
+            'tarea_id' => (int) $pending->id,
         ];
+
+        // Solo con hora: una edición del monto o de las notas no tiene nada que decir del recordatorio.
+        if (!empty($columnas['hora_aviso'])) {
+
+            $resultado['aviso'] = self::aviso_del_recordatorio($contexto, $pending);
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * El detalle de la tarjeta de cambios con la hora puesta, cambiada o sacada.
+     *
+     * - `hora` explícita: se escribe adelante del detalle (el pedido, o el actual), sacando la que
+     *   hubiera. 🔴 La hora pedida le gana a un prefijo que venga en el detalle: el modelo suele
+     *   reenviar el detalle de la tarjeta anterior con la hora vieja adelante (mismo caso que
+     *   proponer_tarea), y nunca tiene que quedar «11:00 · 10:00 · llamar…».
+     * - "sin hora": se saca.
+     * - sin `hora`: un detalle nuevo CON prefijo manda (es la hora que escribió el modelo); uno nuevo
+     *   SIN prefijo conserva la hora que la tarea tenía. Cambiar el texto de «llamar a Juan» no tiene
+     *   por qué apagar su recordatorio.
+     *
+     * @param  string  $actual  El detalle guardado.
+     * @param  string  $pedido  El `detalle` de la herramienta ('' si no vino).
+     * @param  string|null  $hora  "HH:MM" pedida, o null.
+     * @param  bool  $quitar_hora
+     * @return string
+     */
+    protected static function detalle_con_hora($actual, $pedido, $hora, $quitar_hora) {
+
+        $base = $pedido !== '' ? $pedido : (string) $actual;
+
+        if ($quitar_hora) {
+
+            return AgendaTareaHelper::detalle_sin_hora($base);
+        }
+
+        if (!is_null($hora)) {
+
+            return mb_substr($hora.' · '.AgendaTareaHelper::detalle_sin_hora($base), 0, self::LARGO_DETALLE);
+        }
+
+        $hora_actual = AgendaTareaHelper::hora_del_detalle((string) $actual);
+
+        if ($pedido !== '' && is_null(AgendaTareaHelper::hora_del_detalle($pedido)) && !is_null($hora_actual)) {
+
+            return mb_substr(substr($hora_actual, 0, 5).' · '.AgendaTareaHelper::detalle_sin_hora($pedido), 0, self::LARGO_DETALLE);
+        }
+
+        return $base;
+    }
+
+    /**
+     * true si la `hora` de proponer_cambios_en_tarea pide sacar la hora ("sin hora", "ninguna"...).
+     *
+     * 🔴 UN VACÍO NO SACA LA HORA. La IA suele mandar las claves opcionales en blanco (mismo motivo
+     * por el que unas notas vacías no borran las que había): si "" sacara la hora, cualquier cambio
+     * de fecha apagaría el recordatorio sin que nadie lo haya pedido. Para sacarla hay que decirlo.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function es_quitar_la_hora($valor) {
+
+        if ($valor === false) {
+
+            return true;
+        }
+
+        if (!is_string($valor)) {
+
+            return false;
+        }
+
+        $texto = preg_replace('/\s+/u', ' ', mb_strtolower(trim($valor)));
+
+        return in_array($texto, ['sin hora', 'sin', 'ninguna', 'no', 'quitar', 'quitar hora', 'quitar la hora', 'sacar', 'sacar hora', 'sacar la hora', 'borrar', 'borrar hora', 'borrar la hora'], true);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -553,7 +861,7 @@ class PropuestaTareaIaHelper {
 
         if (is_null($pending)) {
 
-            return RespuestaDeCargaIa::error('No encontré esa tarea en tu agenda.');
+            return self::tarea_que_no_esta($contexto, $tarea_id);
         }
 
         $fecha_pedida = EntradaDeCargaIa::valor($input, 'fecha');
@@ -621,6 +929,8 @@ class PropuestaTareaIaHelper {
         $expense = [];
         $aviso = null;
         $resumen_del_gasto = '';
+
+        $duda = self::tarea_de_la_tarjeta_con_el_mismo_numero($contexto, $pending);
 
         if ($tiene_gasto && !$sin_gasto) {
 
@@ -697,13 +1007,14 @@ class PropuestaTareaIaHelper {
             AiMessageAction::TIPO_TAREA_COMPLETAR,
             'tarea:'.$pending->id.':'.$fecha->format('Y-m-d'),
             $datos,
-            ['titulo' => 'Marcar como hecha', 'renglones' => $renglones, 'aviso' => $aviso],
+            ['titulo' => 'Marcar como hecha', 'renglones' => $renglones, 'aviso' => self::sumar_aviso($aviso, self::aviso_de_la_duda($pending, $duda))],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
         return AccionesIaHelper::respuesta_de_propuesta(
             $creada,
-            'Marcar como hecha: '.$pending->detalle.' · '.FormatoIaHelper::fecha_con_dia($fecha).$resumen_del_gasto
+            'Marcar como hecha: '.$pending->detalle.' · '.FormatoIaHelper::fecha_con_dia($fecha).$resumen_del_gasto,
+            self::extra_de_la_duda($pending, $duda, $creada)
         );
     }
 
@@ -714,7 +1025,7 @@ class PropuestaTareaIaHelper {
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
      * @param  callable  $num_expense_resolver
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, tarea_id}
      *
      * @throws AccionIaException
      */
@@ -795,8 +1106,9 @@ class PropuestaTareaIaHelper {
         }
 
         return [
-            'texto' => $texto,
-            'ruta'  => self::ruta_de_la_agenda(),
+            'texto'    => $texto,
+            'ruta'     => self::ruta_de_la_agenda(),
+            'tarea_id' => (int) $pending->id,
         ];
     }
 
@@ -958,6 +1270,196 @@ class PropuestaTareaIaHelper {
                         ->where('id', (int) $tarea_id)
                         ->with('unidad_frecuencia', 'expense_concept.expense_category')
                         ->first();
+    }
+
+    /**
+     * Rechazo de un tarea_id que no es de ninguna tarea del dueño, para proponer_cambios_en_tarea y
+     * proponer_marcar_tarea_hecha (misión asistente-seguimiento-de-tarea, 10/10/2026).
+     *
+     * 🔴 NO ES UN "NO EXISTE" FINAL. En demo (4.3.8, DeepSeek ágil) el dueño agendó "llamar a
+     * Herramientas del Interior", la confirmó y pidió "pasala al miércoles": el modelo llamó a
+     * proponer_cambios_en_tarea con un id que no era el de la tarea —en el historial el único número
+     * que había era el #N de la tarjeta— y, como el rechazo de antes ("No encontré esa tarea en tu
+     * agenda.") se cuenta tal cual, le dijo al dueño que la tarea no estaba. La tarea estaba.
+     *
+     * Por eso el rechazo dice que no se armó nada, trae la agenda en opciones.tareas (con la forma de
+     * consultar_tareas) y le pide al modelo que vuelva a llamar con el tarea_id de la que nombró la
+     * persona. Si el número es el de una tarjeta de tarea de esta conversación, lo dice y nombra el
+     * tarea_id de esa tarea. Acá no se elige ninguna tarea: decide el modelo, y la tarjeta que arme
+     * después sigue las reglas de siempre de su modo (en "directo" se ejecuta sola, salvo la colisión
+     * de tarea_de_la_tarjeta_con_el_mismo_numero()).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $tarea_id  El que mandó el modelo.
+     * @return array
+     */
+    protected static function tarea_que_no_esta(ContextoDeCargaIa $contexto, $tarea_id) {
+
+        $motivo = 'No se armó ninguna tarjeta: ninguna tarea de la agenda tiene el tarea_id '.(int) $tarea_id.'.';
+
+        $de_la_tarjeta = self::tarea_de_la_tarjeta_de_la_conversacion($contexto, $tarea_id);
+
+        if (!is_null($de_la_tarjeta)) {
+
+            $motivo .= ' Ese número es el de la tarjeta #'.(int) $tarea_id.', no el de una tarea: la tarea de esa tarjeta es "'.$de_la_tarjeta->detalle.'"'
+                      .' y su tarea_id es '.(int) $de_la_tarjeta->id.'. Si la persona habla de esa, volvé a llamar ahora con tarea_id '.(int) $de_la_tarjeta->id.'.';
+        }
+
+        /*
+         * Lo que sigue es para el modelo, no para la persona: no tiene que decirle que la tarjeta quedó
+         * armada (no quedó) ni que la tarea no existe (puede existir y no entrar en la lista, que trae
+         * las primeras de la agenda y no todas: ver DIAS_DE_AGENDA_EN_EL_RECHAZO).
+         */
+        $motivo .= ' No le digas a la persona que quedó armada ni que la tarea no existe: buscá en opciones.tareas la que pidió'
+                  .' y volvé a llamar ahora con su tarea_id. Esa lista trae las primeras de la agenda, no todas: si no está ahí,'
+                  .' buscala con consultar_tareas por su texto (dias 90), y recién si tampoco aparece, decile que esa tarea no figura en la agenda.';
+
+        return RespuestaDeCargaIa::error($motivo, [
+            'tareas' => ConsultasDeCargaIaHelper::tareas($contexto, '', self::DIAS_DE_AGENDA_EN_EL_RECHAZO),
+        ]);
+    }
+
+    /**
+     * La tarea a la que apunta una tarjeta de tarea de ESTA conversación cuyo id es $tarjeta_id, o
+     * null si ese número no es una tarjeta de tarea de la conversación o su tarea ya no está.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $tarjeta_id
+     * @return \App\Models\Pending|null
+     */
+    protected static function tarea_de_la_tarjeta_de_la_conversacion(ContextoDeCargaIa $contexto, $tarjeta_id) {
+
+        $tarjeta = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('id', (int) $tarjeta_id)
+                                    ->first();
+
+        if (is_null($tarjeta)) {
+
+            return null;
+        }
+
+        $tarea_id = self::tarea_id_de_la_tarjeta($tarjeta);
+
+        return is_null($tarea_id) ? null : self::tarea_del_dueno($contexto, $tarea_id);
+    }
+
+    /**
+     * 🔴 La colisión de números (misión asistente-seguimiento-de-tarea, 10/10/2026): el tarea_id que
+     * mandó el modelo ES una tarea del dueño, pero también es el #N de una tarjeta de tarea de esta
+     * conversación que apunta a OTRA tarea. Es el mismo error que se midió (el modelo manda el número
+     * de la tarjeta), solo que acá ese número existe y el rechazo de tarea_que_no_esta() no salta:
+     * antes la tarjeta se armaba en silencio sobre la tarea equivocada, y en "directo" —los cambios y
+     * marcar hecha son auto-confirmables— se ejecutaba sola.
+     *
+     * No se elige ninguna de las dos: la tarjeta se arma con lo que pidió el modelo, con un aviso que
+     * nombra las dos y pidiendo la confirmación de la persona aunque el modo sea "directo" (ver
+     * extra_de_la_duda()), y la respuesta le dice al modelo cuál es el tarea_id de la otra.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Pending  $pending  La tarea que encontró el tarea_id del modelo.
+     * @return \App\Models\Pending|null  La otra tarea, o null si no hay colisión.
+     */
+    protected static function tarea_de_la_tarjeta_con_el_mismo_numero(ContextoDeCargaIa $contexto, $pending) {
+
+        $otra = self::tarea_de_la_tarjeta_de_la_conversacion($contexto, $pending->id);
+
+        return !is_null($otra) && (int) $otra->id !== (int) $pending->id ? $otra : null;
+    }
+
+    /**
+     * El aviso de la tarjeta cuando hay colisión de números, o null.
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \App\Models\Pending|null  $duda  Lo que devolvió tarea_de_la_tarjeta_con_el_mismo_numero().
+     * @return string|null
+     */
+    protected static function aviso_de_la_duda($pending, $duda) {
+
+        if (is_null($duda)) {
+
+            return null;
+        }
+
+        // Lo lee la persona: sin números internos (el #N de una tarjeta no se ve en la pantalla).
+        return 'Ojo: revisá la tarea. Esta tarjeta es para "'.$pending->detalle.'", pero quizás pediste "'.$duda->detalle.'".'
+              .' Confirmá solo si es "'.$pending->detalle.'".';
+    }
+
+    /**
+     * @param  string|null  $aviso
+     * @param  string|null  $otro
+     * @return string|null
+     */
+    protected static function sumar_aviso($aviso, $otro) {
+
+        if (is_null($otro)) {
+
+            return $aviso;
+        }
+
+        return is_null($aviso) ? $otro : $aviso.' '.$otro;
+    }
+
+    /**
+     * Las claves que suma la respuesta de la propuesta cuando hay colisión de números: la tarjeta pide
+     * la confirmación de la persona también en "directo" (`requiere_confirmacion`, que respeta
+     * HerramientasDeCarga::quizas_auto_confirmar()) y `duda` le dice al modelo cómo corregirla.
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \App\Models\Pending|null  $duda
+     * @param  array  $creada  Lo que devolvió AccionesIaHelper::crear().
+     * @return array
+     */
+    protected static function extra_de_la_duda($pending, $duda, array $creada) {
+
+        if (is_null($duda)) {
+
+            return [];
+        }
+
+        return [
+            'requiere_confirmacion' => true,
+            'motivo_confirmacion'   => self::aviso_de_la_duda($pending, $duda),
+            'duda'                  => 'El tarea_id '.(int) $pending->id.' es también el número de la tarjeta #'.(int) $pending->id
+                                      .', que era de la tarea "'.$duda->detalle.'": su tarea_id es '.(int) $duda->id.'.'
+                                      .' Si la persona hablaba de esa, volvé a proponer ahora con tarea_id '.(int) $duda->id
+                                      .' y reemplaza_a '.(int) $creada['accion']->id.'; si hablaba de "'.$pending->detalle.'",'
+                                      .' decile que le dejaste la tarjeta para que la confirme.',
+        ];
+    }
+
+    /**
+     * El id de la tarea (`pendings.id`) a la que se refiere una tarjeta, o null si la tarjeta no es de
+     * tarea o todavía no tiene tarea: la de cambios y la de marcar hecha lo llevan en sus datos desde
+     * que se proponen; la de una tarea nueva, en su resultado, recién cuando se confirma.
+     *
+     * Lo usa también AccionesIaHelper::linea_de_historial(), que lo pone en la línea que lee el modelo:
+     * sin él, en el turno siguiente el único número que el modelo veía era el #N de la tarjeta.
+     *
+     * @param  \App\Models\AiMessageAction  $tarjeta
+     * @return int|null
+     */
+    static function tarea_id_de_la_tarjeta(AiMessageAction $tarjeta) {
+
+        $tipo = (string) $tarjeta->tipo;
+
+        if ($tipo === AiMessageAction::TIPO_TAREA_NUEVA) {
+
+            $resultado = $tarjeta->resultado;
+
+            return is_object($resultado) && isset($resultado->tarea_id) && (int) $resultado->tarea_id > 0
+                ? (int) $resultado->tarea_id
+                : null;
+        }
+
+        if ($tipo === AiMessageAction::TIPO_TAREA_EDITAR || $tipo === AiMessageAction::TIPO_TAREA_COMPLETAR) {
+
+            $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+            return isset($datos['pending_id']) && (int) $datos['pending_id'] > 0 ? (int) $datos['pending_id'] : null;
+        }
+
+        return null;
     }
 
     /**

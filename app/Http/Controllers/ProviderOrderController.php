@@ -6,14 +6,17 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
+use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
+use App\Http\Controllers\Helpers\providerOrder\TenenciaDeLaCompraHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
 use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoProveedorHelper;
@@ -86,10 +89,42 @@ class ProviderOrderController extends Controller
      */
     public function store(Request $request) {
 
+        // El proveedor y los artículos del cuerpo tienen que ser del dueño (misión
+        // tenencia-compra-hermanos, 17/10/2026): sin esto la compra se colgaba de la cuenta
+        // corriente de otro comercio y le movía el stock y los precios a un artículo ajeno.
+        $cuerpo_ajeno = $this->cuerpo_ajeno_o_404($request);
+
+        if (!is_null($cuerpo_ajeno)) {
+            return $cuerpo_ajeno;
+        }
+
         $model = ProviderOrderAltaHelper::crear([
             'user_id'                                   => $this->userId(),
-            'modo_facturacion'                          => $request->modo_facturacion,
-            'total_with_iva'                            => $request->total_with_iva,
+            /*
+             * 🔴 Una compra nueva arranca en 'automatico' (decisión de Lucas, misión
+             * factura-compra-tres-defectos, 9/10/2026). La SPA vieja manda `0` cuando el select
+             * quedó en "Seleccione", y hasta hoy ese `0` ya facturaba en automático —por el `0 ==
+             * 'automatico'` de PHP 7.4, ver ModoFacturacionHelper::normalizar()— pero guardaba
+             * "0" en la columna, así que al reabrir la compra no se veía en qué modo estaba. Ahora
+             * hace lo mismo y además queda guardado con su nombre. Cualquier valor que no sea uno
+             * de los tres modos (0, "0", "", null, la clave ausente) cae acá.
+             *
+             * Se resuelve en el controller y no en ProviderOrderAltaHelper a propósito: el otro
+             * llamador del helper (el asistente de WhatsApp) no manda modo y ahí el default es
+             * otro ('manual', ver el helper).
+             */
+            'modo_facturacion'                          => self::modo_facturacion_del_alta($request->modo_facturacion),
+            /*
+             * 🔴 Sin la clave (o con null), una compra nueva nace SUMANDO el IVA, como la del
+             * formulario (misión compra-asistente-iva-total, 9/10/2026). La SPA la manda siempre
+             * —en 1 en una compra nueva—, así que para la pantalla no cambia nada. Los que no la
+             * mandan son el asistente de WhatsApp y el MCP, que crean la compra por la acción de
+             * pantalla `POST api/provider-order` (CatalogoDeAccionesDePantallaIaHelper, donde la
+             * clave es opcional): hasta hoy nacía en NULL, NewProviderOrderHelper::suma_iva_al_total()
+             * no le sumaba el IVA y la deuda con el proveedor quedaba NETA. Un valor explícito (0 o
+             * 1) se respeta. Ver total_with_iva_del_alta().
+             */
+            'total_with_iva'                            => self::total_with_iva_del_alta($request->total_with_iva),
             'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
             'provider_id'                               => $request->provider_id,
             'provider_order_status_id'                  => $request->provider_order_status_id,
@@ -119,11 +154,174 @@ class ProviderOrderController extends Controller
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }
 
+    /**
+     * 🔴 La compra se resuelve por DUEÑO antes de leerla (misión tenencia-compra-show, 16/10/2026).
+     * Hasta hoy `show()` era `fullModel('ProviderOrder', $id)`, que busca por id pelado: en una base
+     * compartida (`u767360347_empresa`, 51 comercios, ids correlativos) devolvía la compra de otro
+     * comercio con su proveedor, artículos, costos y facturas. La compra ajena, la inexistente y lo
+     * que no es un id se contestan igual: 404. Ver compra_del_dueno_o_404().
+     */
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('ProviderOrder', $id)], 200);
+
+        $no_es_del_dueno = $this->compra_del_dueno_o_404($id);
+
+        if (!is_null($no_es_del_dueno)) {
+            return $no_es_del_dueno;
+        }
+
+        return response()->json(['model' => $this->fullModel('ProviderOrder', (int) $id)], 200);
+    }
+
+    /**
+     * La tenencia de la compra que llega por id en la ruta (show, update, destroy). Devuelve null si
+     * la compra es del dueño de la sesión (un empleado cuenta como su dueño: `userId()`), y si no el
+     * 404 JSON que el llamador tiene que devolver SIN tocar nada. El mismo mensaje para la compra de
+     * otro comercio, la que no existe y un id que no es un id (`12abc`, `true`, `0`): no se confirma
+     * qué hay del otro lado. Reusa la lectura estricta y la consulta por dueño de ChequeHelper, que
+     * es la regla de tenencia del proyecto.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function compra_del_dueno_o_404($id) {
+
+        $id_del_dueno = ChequeHelper::id_del_dueno(ProviderOrder::class, $id, $this->userId());
+
+        if (is_null($id_del_dueno)) {
+
+            return response()->json(['message' => 'La compra no existe o no es de tu cuenta.'], 404);
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔴 El `provider_id` y los `articles` del cuerpo de la compra (store y update) tienen que ser del
+     * dueño de la sesión (misión tenencia-compra-hermanos, 17/10/2026; el hallazgo 2 de
+     * tenencia-compra-show). Devuelve null si están bien y, si no, un 404 JSON que el llamador
+     * contesta SIN escribir nada: con un proveedor ajeno la compra entraba a la cuenta corriente de
+     * otro comercio, y con un artículo ajeno se le movían el stock y los precios.
+     *
+     * @param  Request  $request
+     * @param  int|null  $provider_id_actual  El proveedor que la compra YA tiene (update): si el
+     *                                        cuerpo no lo cambia no se vuelve a juzgar, así una compra
+     *                                        vieja con un proveedor dado de baja sigue editándose.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function cuerpo_ajeno_o_404($request, $provider_id_actual = null) {
+
+        $user_id = $this->userId();
+
+        $cambia_proveedor = is_null($provider_id_actual) || (string) $provider_id_actual !== (string) $request->provider_id;
+
+        if ($cambia_proveedor && TenenciaDeLaCompraHelper::proveedor_ajeno($request->provider_id, $user_id)) {
+
+            return TenenciaDeLaCompraHelper::no_encontrado('El proveedor');
+        }
+
+        if (TenenciaDeLaCompraHelper::algun_articulo_ajeno($request->articles, $user_id)) {
+
+            return TenenciaDeLaCompraHelper::no_encontrado('Uno de los artículos');
+        }
+
+        return null;
+    }
+
+    /**
+     * El modo de facturación con el que nace una compra cargada desde la pantalla: el que eligió
+     * el usuario si es uno de los tres válidos, y 'automatico' si no eligió ninguno (ver el
+     * comentario en store()).
+     *
+     * @param  mixed  $modo  Lo que mandó la SPA.
+     * @return string
+     */
+    protected static function modo_facturacion_del_alta($modo)
+    {
+        $modo = ModoFacturacionHelper::normalizar($modo);
+
+        return is_null($modo) ? ModoFacturacionHelper::AUTOMATICO : $modo;
+    }
+
+    /**
+     * La bandera `total_with_iva` con la que nace una compra: la que mandó el request si vino un
+     * valor, y 1 —como una compra nueva del formulario— si no vino: la clave ausente, null, vacía o
+     * algo que no se lee como booleano (ver total_with_iva_pedido() y el comentario en store()).
+     *
+     * @param  mixed  $valor  Lo que mandó la SPA o la acción de pantalla del asistente.
+     * @return int
+     */
+    protected static function total_with_iva_del_alta($valor)
+    {
+        $pedido = self::total_with_iva_pedido($valor);
+
+        return is_null($pedido) ? 1 : $pedido;
+    }
+
+    /**
+     * La bandera `total_with_iva` tal como la pidió el request: 0 o 1 si vino un valor, y null si
+     * NO VINO (misión compra-asistente-iva-total, 9/10/2026). Qué se hace con ese null lo decide
+     * cada método: el alta nace en 1 (total_with_iva_del_alta()) y la edición conserva la que la
+     * compra ya tenía (update()).
+     *
+     * 🔴 POR QUÉ SE NORMALIZA ACÁ Y NO SE CONFÍA EN EL MIDDLEWARE. Desde la SPA, un `""` llega en
+     * null por ConvertEmptyStringsToNull. Pero el asistente de WhatsApp y el MCP ejecutan la acción
+     * de pantalla con `$ruta->run()` (EjecutorAccionDePantallaIaHelper), que NO pasa por el
+     * middleware global: el `""` llega crudo, y con un `$valor ? 1 : 0` a secas la compra nacía sin
+     * IVA o la edición le apagaba la bandera. Mismo criterio que ModoFacturacionHelper::normalizar(),
+     * que trata un `""` como "no vino". Qué da cada cosa:
+     *
+     *   null, "", "  ", "null", "abc"          → null (no vino)
+     *   "1", "true", "on", "yes" (con o sin espacios) → 1
+     *   "0", "false", "off", "no"              → 0
+     *   cualquier otro tipo (int, bool)        → 1 si es verdadero, 0 si no
+     *
+     * @param  mixed  $valor
+     * @return int|null
+     */
+    protected static function total_with_iva_pedido($valor)
+    {
+        if (is_null($valor)) {
+
+            return null;
+        }
+
+        if (is_string($valor)) {
+
+            $valor = trim($valor);
+
+            if ($valor === '') {
+
+                return null;
+            }
+
+            $booleano = filter_var($valor, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+            if (is_null($booleano)) {
+
+                return null;
+            }
+
+            return $booleano ? 1 : 0;
+        }
+
+        return $valor ? 1 : 0;
     }
 
     public function update(Request $request, $id) {
+
+        // Tenencia ANTES de abrir la transacción y de pedir candados: sobre la compra de otro
+        // comercio no se escribe nada (ni la compra, ni los artículos, ni la cuenta del proveedor).
+        $no_es_del_dueno = $this->compra_del_dueno_o_404($id);
+
+        if (!is_null($no_es_del_dueno)) {
+            return $no_es_del_dueno;
+        }
+
+        $cuerpo_ajeno = $this->cuerpo_ajeno_o_404($request, ProviderOrder::where('id', $id)->value('provider_id'));
+
+        if (!is_null($cuerpo_ajeno)) {
+            return $cuerpo_ajeno;
+        }
 
         /*
          * Misma transacción que store() (tanda correctivos 2408, ítem 14): la actualización
@@ -146,8 +344,33 @@ class ProviderOrderController extends Controller
 
             $ya_se_actualizo_stock = $model->update_stock;
 
-            $model->total_with_iva                              = $request->total_with_iva;
-            $model->modo_facturacion                            = $request->modo_facturacion;
+            /*
+             * 🔴 Sin la clave (o con null) NO se pisa la bandera que la compra ya tenía (misión
+             * compra-asistente-iva-total, 9/10/2026). La SPA la manda siempre, con lo guardado, así
+             * que para la pantalla no cambia nada. El que no la manda es el asistente de WhatsApp
+             * (y el MCP) por la acción de pantalla `PUT api/provider-order/{provider_order}`, donde
+             * la clave es opcional: hasta hoy esa edición le APAGABA la bandera a una compra del
+             * formulario, y desde ahí no sumaba más el IVA. Un valor explícito (0 o 1) se respeta.
+             * Mismo criterio que el modo de facturación de abajo.
+             */
+            $total_with_iva = self::total_with_iva_pedido($request->total_with_iva);
+
+            if (!is_null($total_with_iva)) {
+                $model->total_with_iva                          = $total_with_iva;
+            }
+
+            /*
+             * Un modo que no es ninguno de los tres (el `"0"` de "Seleccione", un "" o la clave
+             * ausente) NO pisa el que la compra ya tenía (misión factura-compra-tres-defectos,
+             * 9/10/2026). Hasta hoy se guardaba tal cual y la compra quedaba sin modo; como esa
+             * basura no matcheaba ningún modo, se comportaba como 'manual' sin decirlo.
+             */
+            $modo_facturacion = ModoFacturacionHelper::normalizar($request->modo_facturacion);
+
+            if (!is_null($modo_facturacion)) {
+                $model->modo_facturacion                        = $modo_facturacion;
+            }
+
             $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
             $model->provider_id                                 = $request->provider_id;
             $model->provider_order_status_id                    = $request->provider_order_status_id;
@@ -193,7 +416,16 @@ class ProviderOrderController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderOrder::find($id);
+
+        // Tenencia antes de cualquier otra cosa: ProviderOrder es borrado duro, y borrar la compra de
+        // otro comercio devolvía su stock y rehacía la cuenta corriente de su proveedor.
+        $no_es_del_dueno = $this->compra_del_dueno_o_404($id);
+
+        if (!is_null($no_es_del_dueno)) {
+            return $no_es_del_dueno;
+        }
+
+        $model = ProviderOrder::find((int) $id);
 
         /*
          * 🔴 Una compra con notas de crédito a proveedor VIVAS no se borra (misión
@@ -224,6 +456,18 @@ class ProviderOrderController extends Controller
 
             ProviderOrderHelper::deleteCurrentAcount($model);
             ProviderOrderHelper::resetArticlesStock($model);
+
+            /*
+             * 🔴 Las facturas de la compra se van con ella, CON sus alícuotas (misión
+             * factura-compra-tres-defectos, 9/10/2026). `ProviderOrder` es borrado duro y ninguna
+             * de las dos tablas tiene clave foránea, así que hasta hoy la compra desaparecía y sus
+             * facturas quedaban vivas, con `user_id` e `issued_at`: la Posición Fiscal seguía
+             * sumando su IVA crédito y sus percepciones de una compra que ya no existía. Va adentro
+             * de la transacción y antes del delete: si algo corta, la compra y sus facturas vuelven
+             * juntas. Incluye los comprobantes aparte de los costos extra, que también cuelgan de
+             * la compra. Ver FacturaDeCompraHelper::borrar_facturas().
+             */
+            FacturaDeCompraHelper::borrar_facturas_de_la_compra($model->id);
 
             // if (!is_null($model->provider)) {
             //     $model->provider->pagos_checkeados = 0;
@@ -312,7 +556,15 @@ class ProviderOrderController extends Controller
             Log::info($request->file('models')->getError());
         }
 
-        $provider_order = ProviderOrder::find($request->provider_order_id);
+        /*
+         * 🔴 La compra se busca por DUEÑO (misión tenencia-compra-show, 16/10/2026): con el
+         * `provider_order_id` de otro comercio, el import le adjuntaba los artículos del Excel, le
+         * movía el stock y le tocaba la cuenta corriente de su proveedor. Ajena e inexistente dan el
+         * mismo 404 de siempre.
+         */
+        $provider_order_id = ChequeHelper::id_del_dueno(ProviderOrder::class, $request->provider_order_id, $this->userId());
+
+        $provider_order = is_null($provider_order_id) ? null : ProviderOrder::find($provider_order_id);
 
         if (is_null($provider_order)) {
             return response()->json(['message' => 'No se encontró la compra a importar'], 404);

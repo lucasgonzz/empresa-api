@@ -52,6 +52,7 @@ class UserProfileChangeDescriptionHelper
         // aunque ArticleHelper::redondear() la lee igual que a las otras cuatro.
         'redondear_miles_en_vender',
         'redondear_centenas_en_vender',
+        'redondear_centenas_para_arriba',
         'redondear_precios_en_decenas',
         'redondear_de_a_50',
         'redondear_precios_en_centavos',
@@ -112,6 +113,7 @@ class UserProfileChangeDescriptionHelper
         // el cambio de redondeo se describe con la etiqueta unica de mas abajo (LABEL_MODO_REDONDEO).
         'redondear_miles_en_vender' => 'Redondear de a 1000',
         'redondear_centenas_en_vender' => 'Redondear centenas al vender',
+        'redondear_centenas_para_arriba' => 'Redondear centenas hacia arriba',
         'redondear_precios_en_decenas' => 'Redondear precios en decenas',
         'redondear_de_a_50' => 'Redondear de a 50',
         'redondear_precios_en_centavos' => 'Redondear precios en centavos',
@@ -345,6 +347,7 @@ class UserProfileChangeDescriptionHelper
             // suma redondear_miles_en_vender, que faltaba.
             'redondear_miles_en_vender',
             'redondear_centenas_en_vender',
+            'redondear_centenas_para_arriba',
             'redondear_precios_en_decenas',
             'redondear_de_a_50',
             'redondear_precios_en_centavos',

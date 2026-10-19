@@ -3,9 +3,11 @@
 namespace App\Services;
 
 use App\Exceptions\RecordatorioCobroException;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\WhatsappTemplateStandardHelper;
+use App\Jobs\SendRecordatorioCobroJob;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\User;
@@ -14,6 +16,8 @@ use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Models\WhatsappTemplate;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 
 /**
  * Recordatorio de cobro por WhatsApp que sale del módulo de alertas, solapa Cobros (misión
@@ -127,6 +131,14 @@ class RecordatorioCobroSenderService
     const CODE_SIN_RESUMEN_DE_CUENTA = 'sin_resumen_de_cuenta';
 
     /**
+     * Cuánto vive el progreso de un lote en Cache. Era la constante del mismo nombre de
+     * `RecordatorioCobroController`; se mudó con `encolar_lote()` (misión asistente-envios-a-clientes).
+     *
+     * @var int
+     */
+    const MINUTOS_DE_VIDA_DEL_LOTE = 60;
+
+    /**
      * Arma la previsualización del recordatorio sin mandar nada ni crear ninguna fila.
      *
      * 🔴 NO LANZA por las condiciones del negocio, a diferencia de `enviar()`: devuelve
@@ -183,6 +195,39 @@ class RecordatorioCobroSenderService
             'puede_enviar'       => is_null($motivo),
             'motivo'             => is_null($motivo) ? null : $motivo['motivo'],
             'mensaje_motivo'     => is_null($motivo) ? null : $motivo['mensaje'],
+        ];
+    }
+
+    /**
+     * El recordatorio de este cliente por LOS DOS CAMINOS, ya armado (misión asistente-envios-a-clientes,
+     * segundo chequeo del 16/10/2026): cómo sale como mensaje de texto (ventana de 24 h abierta) y cómo
+     * como plantilla (cerrada), sin mandar nada.
+     *
+     * 🔴 POR QUÉ LOS DOS. Entre que el asistente le muestra el recordatorio al dueño y el job lo manda,
+     * la ventana de un cliente se puede abrir o cerrar, y el job manda por el camino que corresponda en
+     * ese momento. Si el dueño hubiera visto uno solo, el otro saldría sin haberse visto. Los dos usan
+     * armar_contenido(), el mismo armado que enviar().
+     *
+     * @param  int  $owner_id
+     * @param  Client  $client
+     * @param  array|\Illuminate\Support\Collection  $ventas
+     * @return array{texto_libre: string, plantilla: string|null}  plantilla null si no está aprobada.
+     */
+    public function textos_de_los_dos_caminos($owner_id, Client $client, $ventas)
+    {
+        $config = WhatsappBotConfig::getForUser((int) $owner_id);
+
+        $texto_libre = $this->armar_contenido((int) $owner_id, $client, $ventas, true, $config);
+
+        $plantilla = null;
+
+        if (! is_null($this->plantilla_aprobada((int) $owner_id))) {
+            $plantilla = $this->armar_contenido((int) $owner_id, $client, $ventas, false, $config);
+        }
+
+        return [
+            'texto_libre' => (string) $texto_libre['body'],
+            'plantilla'   => is_null($plantilla) ? null : (string) $plantilla['body'],
         ];
     }
 
@@ -257,11 +302,118 @@ class RecordatorioCobroSenderService
     }
 
     /**
+     * Evalúa cada cliente, despacha un `SendRecordatorioCobroJob` por cada uno que pueda recibir el
+     * recordatorio y devuelve el lote con los salteados.
+     *
+     * Vivía adentro de `RecordatorioCobroController::encolar()`; se mudó acá en la misión
+     * asistente-envios-a-clientes (16/10/2026) TAL CUAL, para que el asistente de IA encole los
+     * recordatorios por EL MISMO camino que la pantalla (con el sí del dueño). El controller arma
+     * con esto exactamente el mismo 202 de antes.
+     *
+     * 🔴 UN JOB POR CLIENTE, NUNCA UNO POR VENTA. Un cliente con seis ventas vencidas recibe UN
+     * mensaje con las cinco más viejas y una línea "y 1 venta más".
+     *
+     * 🔴 DOS PASADAS, Y EL LOTE SE ESCRIBE EN EL MEDIO. Primero se resuelve quién se saltea y
+     * quién se encola, después se escribe el lote en Cache, y recién en la segunda pasada se
+     * despacha. El motivo está escrito adentro del método, donde se hace.
+     *
+     * Los motivos de salteo que se evalúan acá son INFORMATIVOS y los resuelve
+     * `motivo_de_salteo()`, el MISMO que usa la previsualización: lo que el operador leyó en el
+     * modal es lo que va a salir en `salteados`. La autoridad la tiene el job, que revalida todo
+     * justo antes de enviar. Entre el POST y la corrida puede pasar un rato y otro operador pudo
+     * mandar lo mismo.
+     *
+     * @param  int       $owner_id         Dueño de la empresa.
+     * @param  array     $clientes         Modelos Client (ya del dueño: lo garantiza el que llama).
+     * @param  int       $dias             Umbral de antigüedad con el que el job recalcula las ventas.
+     * @param  int|null  $sent_by_user_id  Persona que lo dispara (el job recorta las ventas con ella).
+     * @return array  {lote_uuid, total_clientes, encolados, salteados: [{client_id, client_name, motivo, mensaje}]}
+     */
+    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null)
+    {
+        $owner_id = (int) $owner_id;
+
+        $lote_uuid = (string) Str::uuid();
+
+        // Sin configuración activa del bot no puede salir nada. No es un error: se devuelve el lote
+        // de siempre con todos los clientes salteados y el motivo escrito, para que la pantalla lo
+        // muestre igual que cualquier otro salteo en vez de dibujar un error de servidor.
+        $config = WhatsappBotConfig::getForUser($owner_id);
+
+        $salteados = [];
+        $a_encolar = [];
+
+        // ---------- PRIMERA PASADA: se decide, no se despacha ----------
+        foreach ($clientes as $client) {
+
+            $chat = self::buscar_chat($owner_id, $client);
+
+            $motivo = $this->motivo_de_salteo($owner_id, $client, $config, $chat);
+
+            if (! is_null($motivo)) {
+                $salteados[] = [
+                    'client_id'   => (int) $client->id,
+                    'client_name' => $client->name,
+                    'motivo'      => $motivo['motivo'],
+                    'mensaje'     => $motivo['mensaje'],
+                ];
+                continue;
+            }
+
+            $a_encolar[] = (int) $client->id;
+        }
+
+        // ---------- EL LOTE SE ESCRIBE ANTES DE DESPACHAR ----------
+        //
+        // 🔴 EL ORDEN DE ESTAS DOS COSAS ES EL BUG QUE ARREGLA ESTE MÉTODO, no una preferencia de
+        // estilo. `QUEUE_CONNECTION` es `sync` por default (`config/queue.php`), y en sync el job
+        // corre INLINE adentro del `dispatch()`. Con el `Cache::put` después del `foreach`, cada
+        // job hacía su `Cache::get()` en `marcar_procesado()`, no encontraba nada, se iba sin
+        // contar, y recién ahí el `put` pisaba todo con ceros: el operador mandaba 20
+        // recordatorios, los 20 salían, y el modal mostraba "0 de 20" durante cinco minutos para
+        // terminar diciendo que se seguían mandando en segundo plano.
+        Cache::put(
+            SendRecordatorioCobroJob::cache_key($owner_id, $lote_uuid),
+            [
+                'uuid'          => $lote_uuid,
+                'total'         => count($a_encolar),
+                'procesados'    => 0,
+                'enviados'      => 0,
+                'fallidos'      => 0,
+                // Los fallos que sólo el job puede detectar, agrupados por motivo. Ver el
+                // docblock de `SendRecordatorioCobroJob::marcar_procesado()`.
+                'motivos_fallo' => [],
+                'fallos'        => [],
+                // Sin nada encolado no hay job que mueva un contador: el lote ya terminó.
+                'terminado'     => count($a_encolar) === 0,
+            ],
+            now()->addMinutes(self::MINUTOS_DE_VIDA_DEL_LOTE)
+        );
+
+        // ---------- SEGUNDA PASADA: recién ahora se despacha ----------
+        foreach ($a_encolar as $client_id) {
+            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid);
+        }
+
+        return [
+            'lote_uuid'      => $lote_uuid,
+            'total_clientes' => count($clientes),
+            'encolados'      => count($a_encolar),
+            'salteados'      => $salteados,
+        ];
+    }
+
+    /**
      * ¿Hay algún PDF de cuenta corriente que se le pueda adjuntar a la plantilla?
      *
      * Es el mismo dato que resuelve `documento_principal()` pero sin necesitar las ventas, para
      * que el masivo pueda evaluarlo cliente por cliente antes de encolar nada. Los dos se apoyan
-     * en `build_current_acount_pdf_url()`, así que no pueden contestar distinto.
+     * en `cuenta_con_pdf_armable()` (que es la guarda de `build_current_acount_pdf_url()`), así que
+     * no pueden contestar distinto.
+     *
+     * Usa la guarda y no el armador a propósito: armar la URL emite el token del link
+     * (`pdf_links`), y una pregunta del masivo por cada cliente no tiene que dejar filas de links
+     * que nadie mandó.
      *
      * @param  int     $owner_id
      * @param  Client  $client
@@ -279,7 +431,7 @@ class RecordatorioCobroSenderService
         }
 
         foreach ($this->credit_accounts_ordenadas($client) as $credit_account) {
-            if (! is_null($this->build_current_acount_pdf_url($credit_account, $api_url))) {
+            if ($this->cuenta_con_pdf_armable($credit_account, $api_url)) {
                 return true;
             }
         }
@@ -895,8 +1047,12 @@ class RecordatorioCobroSenderService
     }
 
     /**
-     * URL pública del PDF de la venta (`sale/pdf/{id}` de `routes/web.php`, sin auth). Es la
-     * misma que ya usa el botón `wa.me` histórico y `ComercioCityMailHelper`.
+     * URL del PDF de la venta (`sale/pdf/{id}` de `routes/web.php`) con el token del link. Es la
+     * misma ruta que usan el botón `wa.me` de la SPA y `ComercioCityMailHelper`.
+     *
+     * 🔴 Con token porque la ruta ya no es pública (misión pdf-de-venta-publico, 10/10/2026): el
+     * cliente que recibe el recordatorio no tiene sesión en el sistema, y sin `?t=` el link deja de
+     * abrir cuando se cierra la ventana de transición del comercio.
      *
      * @param  \App\Models\Sale  $venta
      * @param  string  $api_url
@@ -908,12 +1064,33 @@ class RecordatorioCobroSenderService
             return null;
         }
 
-        return $api_url.'/sale/pdf/'.$venta->id;
+        return PdfLinkHelper::con_token($api_url.'/sale/pdf/'.$venta->id, 'sale', $venta->id, $venta->user_id);
     }
 
     /**
-     * URL pública del PDF de cuenta corriente
-     * (`/current-acount/pdf/{credit_account_id}/60/simple` de `routes/web.php`).
+     * ¿Se puede armar el PDF de cuenta corriente de esta cuenta? Es la guarda de
+     * `build_current_acount_pdf_url()`, separada para que `hay_resumen_de_cuenta()` pregunte lo
+     * mismo SIN emitir el token del link (ver ese método).
+     *
+     * @param  \App\Models\CreditAccount  $credit_account
+     * @param  string  $api_url
+     * @return bool
+     */
+    private function cuenta_con_pdf_armable($credit_account, $api_url)
+    {
+        if ($api_url === '') {
+            return false;
+        }
+
+        return CurrentAcount::where('credit_account_id', $credit_account->id)->exists();
+    }
+
+    /**
+     * URL del PDF de cuenta corriente con el token del link
+     * (`/current-acount/pdf/{credit_account_id}/60/simple?t=...` de `routes/web.php`). El token es
+     * de tipo `credit_account`: con cantidad > 0 el middleware lee el primer parámetro como cuenta.
+     * Viaja igual en el texto libre y en el header DOCUMENT de la plantilla, que Meta baja desde su
+     * servidor sin sesión.
      *
      * 🔴 El primer parámetro se llama `$current_acount_id` en la firma de
      * `CurrentAcountController@pdfFromModel`, pero con `$cantidad_movimientos > 0` se usa como
@@ -931,17 +1108,16 @@ class RecordatorioCobroSenderService
      */
     private function build_current_acount_pdf_url($credit_account, $api_url)
     {
-        if ($api_url === '') {
+        if (! $this->cuenta_con_pdf_armable($credit_account, $api_url)) {
             return null;
         }
 
-        $tiene_movimientos = CurrentAcount::where('credit_account_id', $credit_account->id)->exists();
-
-        if (! $tiene_movimientos) {
-            return null;
-        }
-
-        return $api_url.'/current-acount/pdf/'.$credit_account->id.'/'.self::CANTIDAD_MOVIMIENTOS_PDF.'/simple';
+        return PdfLinkHelper::con_token(
+            $api_url.'/current-acount/pdf/'.$credit_account->id.'/'.self::CANTIDAD_MOVIMIENTOS_PDF.'/simple',
+            'credit_account',
+            $credit_account->id,
+            $credit_account->user_id
+        );
     }
 
     /**
@@ -1036,6 +1212,10 @@ class RecordatorioCobroSenderService
      * Resuelve (o crea) el `WhatsappChat` del cliente, igual que `SaleWhatsappSenderService`.
      * Si el chat existía sin cliente vinculado, lo vincula de paso.
      *
+     * Es público desde la misión asistente-envios-a-clientes (16/10/2026): la promoción por WhatsApp
+     * del asistente crea el chat del cliente exactamente como lo crea el recordatorio, y la forma de
+     * no tener dos maneras de hacerlo es usar ésta.
+     *
      * @param  int  $owner_id
      * @param  Client  $client
      * @param  WhatsappBotConfig  $config
@@ -1043,7 +1223,7 @@ class RecordatorioCobroSenderService
      *
      * @throws RecordatorioCobroException  Código 'sin_telefono' si el cliente no tiene teléfono.
      */
-    private function resolve_chat($owner_id, Client $client, WhatsappBotConfig $config)
+    public function resolve_chat($owner_id, Client $client, WhatsappBotConfig $config)
     {
         $phone = WhatsappPhoneHelper::normalize($client->phone);
 

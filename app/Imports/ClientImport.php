@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\Address;
 use App\Models\Client;
 use App\Models\CurrentAcount;
@@ -54,6 +55,19 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     private $sucursales_no_encontradas = [];
 
     /**
+     * Filas cuyo saldo del Excel no se pudo leer como numero ("s/d", "-", una formula), como
+     * [['fila' => n° de fila del Excel, 'nombre' => cliente, 'texto' => lo que traia la celda], ...].
+     *
+     * Ese saldo no se cargo ni ajusto nada (ver LocalImportHelper::procesarSaldoImportacion()): el
+     * cliente se importo con el resto de sus datos y su cuenta quedo como estaba. Se avisan al
+     * final, en la notificacion (getInfoToShow()), para que el usuario corrija la celda y vuelva a
+     * importar (mision importacion-saldo-celdas-de-texto, 9/10/2026).
+     *
+     * @var array
+     */
+    private $saldos_ilegibles = [];
+
+    /**
      * Checkbox unico por importacion: que hacer con las celdas VACIAS de las columnas
      * que el usuario mapeo.
      *
@@ -75,6 +89,23 @@ class ClientImport implements ToCollection, WithMultipleSheets {
      * @var array
      */
     private $props_vaciadas = [];
+
+    /**
+     * Decisiones del paso 3 sobre nombres parecidos (provincia, localidad, vendedor, lista de
+     * precios), tal como vinieron del request. Entran por con_equivalencias() y no por el
+     * constructor (misión importacion-relaciones-parecidas, 8/10/2026).
+     *
+     * @var array
+     */
+    private $equivalencias_crudas = [];
+
+    /**
+     * Resolución de las relaciones con las decisiones y las equivalencias recordadas. Se arma la
+     * primera vez que una fila la necesita (ver resolver_relacion()).
+     *
+     * @var \App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver|null
+     */
+    private $equivalencias = null;
 
     /**
      * @param array       $columns
@@ -106,6 +137,55 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         $this->vaciar_valores_en_blanco = filter_var($vaciar_valores_en_blanco, FILTER_VALIDATE_BOOLEAN);
 
         $this->setProps();
+    }
+
+    /**
+     * Las decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Encadenable.
+     *
+     * 🔴 Es un setter y no un parámetro más del constructor A PROPÓSITO: la firma está congelada
+     * (ValoresEnBlancoClientesProveedoresTest exige que el último parámetro sea
+     * vaciar_valores_en_blanco) porque AdminSync\AiExcelImportController construye esta clase con
+     * la firma corta contra clientes reales. AdminSync no llama a esto y sigue igual (solo le
+     * llegan las equivalencias ya recordadas del comercio).
+     *
+     * @param  array $equivalencias
+     * @return $this
+     */
+    public function con_equivalencias(array $equivalencias) {
+        $this->equivalencias_crudas = $equivalencias;
+        $this->equivalencias = null;
+
+        return $this;
+    }
+
+    /**
+     * Resuelve una relación de la fila: decisión del usuario → equivalencia recordada → nombre
+     * exacto → el camino de siempre ($camino_de_hoy, LocalImportHelper sin cambios).
+     *
+     * "Sin especificar" va derecho al camino de siempre, que lo ignora a propósito.
+     *
+     * @param  string      $tipo           provincia | localidad | vendedor | tipo_de_precio
+     * @param  string      $valor
+     * @param  int         $contexto       provincia_id para localidad con provincia, 0 el resto
+     * @param  string|null $padre          provincia tal como vino en el Excel
+     * @param  callable    $camino_de_hoy  fn(string): int|null
+     * @param  int|null    $provincia_id   para crear una localidad con provincia
+     * @return int|null
+     */
+    private function resolver_relacion($tipo, $valor, $contexto, $padre, $camino_de_hoy, $provincia_id = null) {
+        if ($valor === 'Sin especificar') {
+            return call_user_func($camino_de_hoy, $valor);
+        }
+
+        if (is_null($this->equivalencias)) {
+            $this->equivalencias = new EquivalenciasResolver($this->ct->userId(), $this->equivalencias_crudas, EquivalenciasResolver::TIPOS_CLIENTES);
+        }
+
+        $ct = $this->ct;
+
+        return $this->equivalencias->resolver_con_camino_de_hoy($tipo, $valor, $contexto, $padre, $camino_de_hoy, function ($nombre) use ($tipo, $ct, $provincia_id) {
+            return LocalImportHelper::crearRelacionDeImportacion($tipo, $nombre, $ct, $provincia_id);
+        });
     }
 
     /**
@@ -210,9 +290,16 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     /**
      * Bloques informativos que se muestran al terminar la importacion.
      *
-     * Hoy el unico bloque es el de sucursales que no existen: si el Excel traia
-     * nombres de sucursal que no matchearon con ninguna, el usuario tiene que
-     * enterarse, porque esos clientes quedaron sin sucursal asignada.
+     * Dos bloques posibles, en este orden:
+     *   1. Sucursales que no existen: si el Excel traia nombres de sucursal que no matchearon
+     *      con ninguna, el usuario tiene que enterarse, porque esos clientes quedaron sin
+     *      sucursal asignada.
+     *   2. Saldos que no se pudieron leer: filas cuyo saldo no es un numero. El bloque lo arma
+     *      LocalImportHelper::bloque_de_saldos_ilegibles(), el mismo que usa ProviderImport.
+     *
+     * Los dos pasan por LocalImportHelper::avisos_dentro_del_presupuesto(), como en
+     * ProviderImport: el de sucursales va FIJO (no tiene tope y queda como estaba) y el de saldos
+     * ilegibles nombra 20 filas, o menos si los avisos no entran en el presupuesto de Pusher.
      *
      * Si no hay nada que informar se devuelve un array vacio: un bloque que diga
      * "0 sucursales no encontradas" es solo ruido.
@@ -220,7 +307,7 @@ class ClientImport implements ToCollection, WithMultipleSheets {
      * @return array
      */
     function getInfoToShow() {
-        $info_to_show = [];
+        $bloques_fijos = [];
 
         if (count($this->sucursales_no_encontradas) > 0) {
             $parrafos = array_values($this->sucursales_no_encontradas);
@@ -228,13 +315,23 @@ class ClientImport implements ToCollection, WithMultipleSheets {
             $parrafos[] = 'Los clientes de esas filas quedaron sin sucursal asignada. '
                 . 'Podes crear las sucursales y volver a importar el archivo.';
 
-            $info_to_show[] = [
+            $bloques_fijos[] = [
                 'title'    => 'Sucursales que no existen en el sistema',
                 'parrafos' => $parrafos,
             ];
         }
 
-        return $info_to_show;
+        $ilegibles = $this->saldos_ilegibles;
+
+        return LocalImportHelper::avisos_dentro_del_presupuesto($bloques_fijos, [
+            'ilegibles' => [
+                'tope'  => LocalImportHelper::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES,
+                'total' => count($ilegibles),
+                'armar' => function ($tope) use ($ilegibles) {
+                    return LocalImportHelper::bloque_de_saldos_ilegibles($ilegibles, $tope);
+                },
+            ],
+        ]);
     }
 
     function saveModel($row, $client) {
@@ -284,8 +381,17 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         $localidad_name = ImportHelper::getColumnValue($row, 'localidad', $this->columns);
         $provincia_id = null;
 
+        /*
+         * Las cuatro relaciones pasan por resolver_relacion() (misión
+         * importacion-relaciones-parecidas): sin decisiones ni equivalencias recordadas, terminan
+         * en el mismo LocalImportHelper de siempre.
+         */
+        $ct = $this->ct;
+
         if (!is_null($provincia_name)) {
-            $provincia_id = LocalImportHelper::saveProvincia($provincia_name, $this->ct);
+            $provincia_id = $this->resolver_relacion('provincia', $provincia_name, 0, null, function ($valor) use ($ct) {
+                return LocalImportHelper::saveProvincia($valor, $ct);
+            });
             $data['provincia_id'] = $provincia_id;
         } else if ($this->debeVaciar('provincia', 'provincia_id', $existing_client)) {
             $this->marcarVaciada($data, 'provincia_id');
@@ -293,24 +399,33 @@ class ClientImport implements ToCollection, WithMultipleSheets {
 
         if (!is_null($localidad_name)) {
             if (!is_null($provincia_id)) {
-                $data['location_id'] = LocalImportHelper::saveLocationWithProvincia($localidad_name, $provincia_id, $this->ct);
+                /* Con provincia: la localidad se compara DENTRO de la provincia que resolvió la fila. */
+                $data['location_id'] = $this->resolver_relacion('localidad', $localidad_name, $provincia_id, $provincia_name, function ($valor) use ($ct, $provincia_id) {
+                    return LocalImportHelper::saveLocationWithProvincia($valor, $provincia_id, $ct);
+                }, $provincia_id);
             } else {
-                LocalImportHelper::saveLocation($localidad_name, $this->ct);
-                $data['location_id'] = $this->ct->getModelBy('locations', 'name', $localidad_name, true, 'id');
+                $data['location_id'] = $this->resolver_relacion('localidad', $localidad_name, 0, null, function ($valor) use ($ct) {
+                    LocalImportHelper::saveLocation($valor, $ct);
+                    return $ct->getModelBy('locations', 'name', $valor, true, 'id');
+                });
             }
         } else if ($this->debeVaciar('localidad', 'location_id', $existing_client)) {
             $this->marcarVaciada($data, 'location_id');
         }
         if (!is_null(ImportHelper::getColumnValue($row, 'vendedor', $this->columns))) {
-            LocalImportHelper::saveSeller(ImportHelper::getColumnValue($row, 'vendedor', $this->columns), $this->ct);
-            $data['seller_id'] = $this->ct->getModelBy('sellers', 'name', ImportHelper::getColumnValue($row, 'vendedor', $this->columns), true, 'id');
+            $data['seller_id'] = $this->resolver_relacion('vendedor', ImportHelper::getColumnValue($row, 'vendedor', $this->columns), 0, null, function ($valor) use ($ct) {
+                LocalImportHelper::saveSeller($valor, $ct);
+                return $ct->getModelBy('sellers', 'name', $valor, true, 'id');
+            });
         } else if ($this->debeVaciar('vendedor', 'seller_id', $existing_client)) {
             $this->marcarVaciada($data, 'seller_id');
         }
         if (!is_null(ImportHelper::getColumnValueByAliases($row, ['tipo_de_precio', 'tipo de precio'], $this->columns))) {
             $tipo_de_precio = ImportHelper::getColumnValueByAliases($row, ['tipo_de_precio', 'tipo de precio'], $this->columns);
-            LocalImportHelper::savePriceType($tipo_de_precio, $this->ct);
-            $data['price_type_id'] = $this->ct->getModelBy('price_types', 'name', $tipo_de_precio, true, 'id');
+            $data['price_type_id'] = $this->resolver_relacion('tipo_de_precio', $tipo_de_precio, 0, null, function ($valor) use ($ct) {
+                LocalImportHelper::savePriceType($valor, $ct);
+                return $ct->getModelBy('price_types', 'name', $valor, true, 'id');
+            });
         } else if ($this->debeVaciarPorAliases(['tipo_de_precio', 'tipo de precio'], 'price_type_id', $existing_client)) {
             $this->marcarVaciada($data, 'price_type_id');
         }
@@ -366,7 +481,22 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         }
 
         if (!is_null($client)) {
-            LocalImportHelper::procesarSaldoImportacion($row, $this->columns, 'client', $client, $existing_client);
+            $texto_ilegible = null;
+
+            $estado_saldo = LocalImportHelper::procesarSaldoImportacion($row, $this->columns, 'client', $client, $existing_client, $texto_ilegible);
+
+            /*
+             * Un saldo que no es un numero no se cargo ni ajusto nada: se anota la fila para el
+             * aviso de fin. num_row es el numero de fila del Excel: collection() cuenta desde la
+             * fila 1 de la hoja (la cabecera incluida).
+             */
+            if ($estado_saldo == 'ilegible') {
+                $this->saldos_ilegibles[] = [
+                    'fila'   => $this->num_row,
+                    'nombre' => $client->name,
+                    'texto'  => $texto_ilegible,
+                ];
+            }
         }
     }
 

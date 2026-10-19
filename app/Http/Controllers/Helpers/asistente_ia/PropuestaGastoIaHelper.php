@@ -18,6 +18,16 @@ use Carbon\Carbon;
 class PropuestaGastoIaHelper {
 
     /**
+     * Qué hacer si la subcategoría que nombró la persona no está (misión asistente-altas-y-conversacion,
+     * 16/10/2026). En demo3 el dueño pidió "creala vos, ponele servicios" y el asistente contestó "no
+     * puedo crear categorías nuevas de gasto: eso se carga desde la pantalla de Gastos". Sí puede: es
+     * una entidad más del ABM genérico. Esta respuesta no lo decía y el modelo inventó la negativa.
+     */
+    const SI_NO_ESTA = 'Si la subcategoría que nombró la persona no está en la lista, creala vos con proponer_alta '
+        . '(entidad expense_concept, con su nombre y su categoría de gasto; si la categoría tampoco existe, primero '
+        . 'proponer_alta de expense_category) y volvé a llamar a proponer_gasto con la nueva. No la mandes a la pantalla de Gastos.';
+
+    /**
      * Herramienta proponer_gasto.
      *
      * @param  ContextoDeCargaIa  $contexto
@@ -50,7 +60,7 @@ class PropuestaGastoIaHelper {
         if (count($faltan)) {
 
             $opciones = $subcategoria_id <= 0
-                ? ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, '')]
+                ? ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, ''), 'si_no_esta' => self::SI_NO_ESTA]
                 : [];
 
             return RespuestaDeCargaIa::faltan($faltan, $opciones);
@@ -65,7 +75,7 @@ class PropuestaGastoIaHelper {
 
             return RespuestaDeCargaIa::error(
                 'Esa subcategoría de gasto no existe entre las tuyas.',
-                ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, '')]
+                ['subcategorias' => OpcionesDeCargaIaHelper::subcategorias_de_gasto($contexto->owner_id, ''), 'si_no_esta' => self::SI_NO_ESTA]
             );
         }
 
@@ -248,12 +258,20 @@ class PropuestaGastoIaHelper {
             'payment_methods'    => $payment_methods,
         ], $contexto->owner_id, $num_expense_resolver);
 
+        /*
+         * `fecha` (Y-m-d) es el día que tiene que mostrar Gastos para que se vea el gasto: el
+         * listado es por día (from-date) y un gasto con fecha anterior queda en ESE día, no en hoy.
+         * La lee la SPA al tocar "Ver en Gastos" (ai_chat/refrescarPantallaDeLaAccion); es una
+         * clave nueva y opcional: una SPA vieja la ignora, y una SPA nueva con una tarjeta vieja
+         * (sin `fecha`) abre hoy (misión ver-en-del-asistente-refresca-destino, 10/10/2026).
+         */
         return [
             'texto' => 'Gasto N° '.$gasto->num.' registrado',
             'ruta'  => [
                 'name'   => 'expense',
                 'params' => new \stdClass(),
                 'texto'  => 'Ver en Gastos',
+                'fecha'  => substr($created_at, 0, 10),
             ],
         ];
     }

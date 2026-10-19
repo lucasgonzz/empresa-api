@@ -44,4 +44,23 @@ class PaymentMethod extends Model
     function credential() {
         return $this->hasOne('App\Models\Credential');
     }
+
+    /**
+     * Método de pago de CUENTA CORRIENTE con el que se vincula este método de la tienda (misión
+     * tienda-cuotas-mercado-pago, 15/10/2026).
+     *
+     * Solo tiene sentido en un método de tipo Mercado Pago: las filas de `cuotas` cargadas para ese
+     * método de cuenta corriente son las cuotas con recargo que la tienda le ofrece al comprador.
+     * `null` = sin vínculo = la tienda se comporta como siempre. `tienda-api` lo resuelve por su
+     * cuenta con el id plano; esta relación es para el ERP.
+     *
+     * 🔴 La columna puede no existir todavía (un deploy sube los archivos antes de migrar): no usar
+     * esta relación en un `with()`/`whereHas()` sin preguntar antes
+     * `CuotasTiendaEsquemaHelper::hay_columna()`. Leer el atributo suelto es seguro (da null).
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    function current_acount_payment_method() {
+        return $this->belongsTo('App\Models\CurrentAcountPaymentMethod', 'current_acount_payment_method_id');
+    }
 }

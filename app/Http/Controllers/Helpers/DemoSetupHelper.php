@@ -6,8 +6,10 @@ use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
+use App\Http\Controllers\Helpers\EsquemaDemoSnapshotHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
+use App\Http\Controllers\ZipnovaIntegracionController;
 use App\Models\Address;
 use App\Models\AfipInformation;
 use App\Models\Article;
@@ -27,6 +29,9 @@ use App\Services\DemoEventoEmitter;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
 use App\Services\Zipnova\ZipnovaClient;
+use App\Services\Zipnova\ZipnovaConexionException;
+use App\Services\Zipnova\ZipnovaConexionService;
+use App\Services\Zipnova\ZipnovaException;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -44,7 +49,8 @@ use Symfony\Component\Console\Output\BufferedOutput;
  *
  * Nota: este helper ejecuta `migrate:fresh`, por lo tanto vacía toda la base
  * del sistema destino. Solo debe correrse en sistemas recién instalados o
- * dedicados a demos.
+ * dedicados a demos — y desde el 10/10/2026 eso deja de ser una recomendación: fuera de una
+ * instancia de demo se niega a vaciar una base con datos (ver `es_instancia_de_demo()`).
  */
 class DemoSetupHelper
 {
@@ -62,6 +68,54 @@ class DemoSetupHelper
     private const GOOGLE_API_KEY_FALLBACK = 'AIzaSyCgzE6haVi8uZnenfAvYJO5hn7m7Cl09Gw';
 
     /**
+     * Si esta instalación es una instancia de demo (o un entorno de desarrollo), o sea una base que
+     * se puede vaciar y volver a sembrar sin preguntar.
+     *
+     * El marcador es `FOR_USER=demo` en el `.env`, el mismo que ya exigen `semilla:datos`
+     * (`SembrarDatosDePrueba::handle()`) y `DatabaseSeeder::local_y_demo()` para sembrar datos de
+     * ejemplo: una demo de producción tiene `APP_ENV=production` (lo escribe `EnvTemplateSeeder`
+     * de admin-api), así que sin ese marcador ya no recibiría su año de operaciones.
+     *
+     * `local` y `testing` cuentan como demo por la misma razón que en la semilla: son bases de
+     * desarrollo. Se lee `config()` y NUNCA `env()`: con `config:cache` activo, `env()` fuera de
+     * `config/` devuelve null.
+     *
+     * @return bool
+     */
+    public static function es_instancia_de_demo()
+    {
+        // La instancia de demo de producción se marca en su .env.
+        if (config('app.FOR_USER') === 'demo') {
+            return true;
+        }
+
+        // Bases de desarrollo: la máquina de Lucas y la suite.
+        return in_array(config('app.env'), ['local', 'testing'], true);
+    }
+
+    /**
+     * Si la etapa `migrate_fresh` puede usar el volcado del esquema (`EsquemaDemoSnapshotHelper`):
+     * en una instancia de demo y en local, y NUNCA en la suite.
+     *
+     * 🔴 Por qué no alcanza con `es_instancia_de_demo()`, que acepta `testing` (15/10/2026): los
+     * tests del setup protegen la base del slot MOCKEANDO `Artisan::call('migrate:fresh')`, y la
+     * restauración no pasa por Artisan. Con un volcado válido en `storage/demo` -- que aparece solo
+     * en cuanto alguien corre un demo setup en local en ese worktree -- la suite le vaciaba el
+     * fixture a la base de testing. Medido: 82 rojos en `tests/Feature/Semilla` con el mensaje
+     * «El marcador desapareció».
+     *
+     * @return bool
+     */
+    private static function usar_volcado_del_esquema()
+    {
+        if (config('app.env') === 'testing') {
+            return false;
+        }
+
+        return config('app.FOR_USER') === 'demo' || config('app.env') === 'local';
+    }
+
+    /**
      * Ejecuta el setup completo de una demo para los datos recibidos.
      *
      * @param array<string, mixed> $data Claves esperadas (las opcionales se asumen falsy):
@@ -74,12 +128,55 @@ class DemoSetupHelper
      *                                   address_1..3, price_type_1..3,
      *                                   demo_eventos_token, demo_eventos_url, demo_plan,
      *                                   demo_media_urls (mision 50, las cuatro opcionales),
-     *                                   serper_api_key (opcional, misión serper-en-user-setup)
+     *                                   serper_api_key (opcional, misión serper-en-user-setup),
+     *                                   zipnova_api_token + zipnova_api_secret (+ zipnova_account_id
+     *                                   opcional) y mercadopago_access_token + mercadopago_public_key
+     *                                   (opcionales, misión credenciales-demo-zipnova-mp, 14/10/2026:
+     *                                   las credenciales de prueba de las demos, cargadas en el admin;
+     *                                   cada par se usa solo si viaja COMPLETO y gana a la conexión
+     *                                   restaurada y al .env — ver `conectar_zipnova_desde_payload()`
+     *                                   y `conectar_mercado_pago_desde_payload()`)
      *
      * @return User Usuario creado
+     *
+     * @throws \App\Exceptions\BaseConDatosException Fuera de una instancia de demo, si la base ya
+     *                                                tiene datos de negocio. Sale ANTES del
+     *                                                `migrate:fresh`.
      */
     public static function run(array $data)
     {
+        /**
+         * 🔴 GUARDA DE INSTANCIA — PRIMERA SENTENCIA, ANTES DE CUALQUIER `Artisan::call`
+         * (misión guarda-demo-setup, 10/10/2026).
+         *
+         * Las dos puertas a este método (`POST /api/admin-sync/demo-setup` y `POST /demo-setup`)
+         * no piden clave ni sesión, y lo primero que hace el método es `migrate:fresh`. Hasta esta
+         * fecha, un POST con `{"business_type":"x"}` a la API de CUALQUIER cliente le vaciaba la
+         * base de producción — en `u767360347_empresa`, a 51 comercios de una vez. Es el mismo
+         * incidente de Panchito (5/10/2026) por la puerta de al lado: el blindaje de ese día cubrió
+         * `user-setup` y dejó esta anotada como pendiente.
+         *
+         * En una instancia de demo nada cambia: rearmarla sobre los datos de la demo anterior es
+         * justamente su trabajo. Fuera de una demo se aplica la guarda de `user-setup`: con la base
+         * vacía (una instalación de cero) sigue como siempre; con datos de negocio se niega con
+         * `BaseConDatosException` sin haber tocado nada.
+         *
+         * 🔴 Se le pasa un payload VACÍO a propósito, no `$data`: `user-setup` acepta un borrado
+         * autorizado (`forzar_borrado_total` + `confirmar_base_de_datos` con el nombre de la base),
+         * pero acá las dos puertas son públicas y sin clave, y el nombre de la base se deduce del
+         * subdominio: aceptarlo sería dejar el agujero abierto con un paso más. Nadie fuerza un
+         * demo-setup sobre un cliente a propósito; una base que hay que rearmar como demo se marca
+         * con `FOR_USER=demo`. (Hallazgo del chequeo independiente de la misión.)
+         *
+         * Va acá y no en los controladores por el mismo motivo que en `UserSetupHelper::run()`:
+         * este método es el único punto por el que pasan las dos puertas, y una puerta nueva no
+         * puede quedar afuera sin que se note. Hay un test que exige que esta línea esté antes del
+         * primer `Artisan::call`.
+         */
+        if (! self::es_instancia_de_demo()) {
+            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
+        }
+
         /**
          * POR QUE ESTAS DOS LINEAS, ANTES DE QUE ALGUIEN LAS "LIMPIE":
          *
@@ -155,10 +252,73 @@ class DemoSetupHelper
         // igual que le pasaba a Mercado Pago hasta el 5/9.
         $foto_zipnova = self::foto_de_zipnova(config('app.USER_ID'));
 
-        // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
-        Artisan::call('migrate:fresh', ['--force' => true]);
+        /**
+         * La base se resetea acá, y es obligatorio dejarla limpia antes de los seeders.
+         *
+         * Hay dos caminos para el MISMO resultado, y el rápido se intenta primero (misión M9 del
+         * programa «embudo comercial», 13/10/2026):
+         *
+         * 1. **Restaurar el volcado del esquema** de esta versión (`EsquemaDemoSnapshotHelper`):
+         *    las tablas migradas, la tabla `migrations` con las mismas filas que dejaría
+         *    `migrate:fresh` y las pocas filas de catálogo que insertan las propias migraciones
+         *    (plataformas, estados de Mercado Libre, plantilla online). Es un puñado de
+         *    `CREATE TABLE` en vez de ~880 transformaciones encadenadas.
+         * 2. **`migrate:fresh`**, el camino de siempre, cuando no hay volcado para esta versión o
+         *    cuando la restauración no pasa su propia verificación.
+         *
+         * El respaldo NO es decorativo y no se puede sacar: `restaurar()` devuelve `false` ante
+         * cualquier duda (no hay archivo, cabecera inválida, cuenta de migraciones distinta, SQL que
+         * falla, `migrations` que no quedó idéntica) y puede dejar la base a medio restaurar. Lo
+         * único que repara eso es el `migrate:fresh` de abajo, que arranca tirando todas las tablas.
+         * O sea: el camino lento es también la reparación del rápido.
+         *
+         * Y después del `migrate:fresh` se deja el volcado escrito para la próxima corrida: así el
+         * mecanismo se ceba solo y no depende de que el pipeline de release empaquete un archivo.
+         * Esa escritura va en try/catch porque es una OPTIMIZACIÓN de la próxima corrida, no un paso
+         * de ésta -- un `storage/` sin permiso de escritura no puede hacer fallar el setup del lead
+         * que está esperando.
+         *
+         * La etapa se sigue llamando `migrate_fresh` en el cronómetro, con ese nombre: es lo que
+         * viaja al admin en el evento `demo.setup.completado` desde el 9/9/2026, y renombrarla
+         * dejaría una etapa vacía del otro lado. Qué camino se usó se informa aparte, en
+         * `esquema_restaurado` al lado de `etapas` y NO adentro: `etapas` es un mapa de
+         * `nombre => segundos` y meterle un booleano rompe a cualquiera que lo sume o lo grafique.
+         * `DemoEventosController` del admin guarda `datos` entero sin leer clave por clave y lo
+         * valida con `nullable|array|max:50` elementos (hoy serían cuatro), así que una clave más es
+         * compatible en las dos direcciones.
+         *
+         * 🔴 Y TODO ESTO SOLO EN UNA INSTANCIA DE DEMO (o en local; nunca en la suite, ver
+         * `usar_volcado_del_esquema()`). Este método corre
+         * TAMBIÉN cuando se instala el sistema de un cliente real, sobre su base recién creada: ahí
+         * el camino sigue siendo `migrate:fresh` pelado, como siempre. No es que el volcado no
+         * funcionaría -- es que no hay ninguna razón para dejarle a un negocio un archivo de 380 KB
+         * con su esquema en `storage/`, ni para meter una pieza nueva en el camino que instala los
+         * 40 clientes a cambio de ahorrar medio minuto UNA vez en la vida de esa instalación. Las
+         * demos se rearman por cada lead; un cliente se instala una sola vez.
+         */
+        $restauracion = ['ok' => false, 'motivo' => 'no es una instancia de demo'];
+
+        if (self::usar_volcado_del_esquema()) {
+            $restauracion = EsquemaDemoSnapshotHelper::restaurar();
+        }
+
+        if (! $restauracion['ok']) {
+            Artisan::call('migrate:fresh', ['--force' => true]);
+
+            if (self::usar_volcado_del_esquema()) {
+                try {
+                    EsquemaDemoSnapshotHelper::generar();
+                } catch (\Throwable $e) {
+                    Log::warning(
+                        'DemoSetupHelper: no se pudo dejar el volcado del esquema para la próxima '
+                            . 'corrida: ' . $e->getMessage()
+                    );
+                }
+            }
+        }
 
         $etapas['migrate_fresh'] = self::cronometrar($t_etapa);
+        $esquema_restaurado = $restauracion['ok'];
 
         // Crear el usuario "dueño" del sistema con datos mayormente de demo
         $user = self::create_demo_user($data);
@@ -427,7 +587,41 @@ class DemoSetupHelper
             self::conectar_zipnova_desde_env($user);
         }
 
+        /**
+         * Credenciales de prueba que manda el admin en el payload (misión
+         * credenciales-demo-zipnova-mp, 14/10/2026). PRECEDENCIA: payload completo > conexión
+         * restaurada (la foto) > .env. Por eso van DESPUÉS de las dos ramas de arriba y pisan lo
+         * que hayan dejado: la foto puede ser una conexión vieja o rota, y el .env es solo el
+         * respaldo de cuando el admin no las tiene cargadas.
+         *
+         * Sin los campos en el payload (un admin sin desplegar, o credenciales sin cargar) las dos
+         * llamadas devuelven false sin tocar nada, y la demo queda EXACTAMENTE como antes de esta
+         * misión. Un fallo (Zipnova rechaza las credenciales, no responde, error de base) nunca
+         * frena el setup: se loguea sin valores y queda lo que dejó la cadena de siempre.
+         */
+        self::conectar_mercado_pago_desde_payload($user, $data);
+        self::conectar_zipnova_desde_payload($user, $data);
+
         $etapas['tienda'] = self::cronometrar($t_etapa);
+
+        /**
+         * WhatsApp en modo de ENVÍO SIMULADO (misión whatsapp-envio-simulado-demos, 15/10/2026).
+         *
+         * Hasta esta misión el demo setup dejaba el módulo de WhatsApp sin configuración (el
+         * menú aparecía, pero ningún envío podía salir): el comprobante por WhatsApp y los
+         * recordatorios de cobro no se podían mostrar ni filmar. Ahora la demo queda con la
+         * conexión activa en modo simulado (nada sale a Kapso: ver
+         * `WhatsappBotConfig::esta_en_modo_demostracion()`), las 6 plantillas estándar
+         * aprobadas y cinco chats de ejemplo.
+         *
+         * 🔴 VA DESPUÉS DE `semilla:datos` (necesita los clientes y las ventas sin cobrar para
+         * armar los chats) y NO LEE NADA DEL PAYLOAD: a diferencia de Zipnova y Mercado Pago, no
+         * hay una credencial que viaje desde el admin. Una demo armada con un admin sin
+         * desplegar queda igual de simulada.
+         */
+        self::preparar_whatsapp_de_la_demo($user);
+
+        $etapas['whatsapp'] = self::cronometrar($t_etapa);
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
@@ -537,18 +731,52 @@ class DemoSetupHelper
          * semilla:datos (~110 s), y lo que el lead percibia como 8-15 minutos era la cola del
          * admin mas un worker cortado a los 5 minutos.
          */
-        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', ['etapas' => $etapas]);
+        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', [
+            'etapas'             => $etapas,
+            'esquema_restaurado' => $esquema_restaurado,
+        ]);
 
         if (!is_null($canal)) {
             DemoEventoEmitter::emitir(
                 'demo.setup.completado',
                 null,
-                ['user_id' => $user->id, 'duracion_seg' => $duracion_seg, 'etapas' => $etapas],
+                [
+                    'user_id'            => $user->id,
+                    'duracion_seg'       => $duracion_seg,
+                    'etapas'             => $etapas,
+                    'esquema_restaurado' => $esquema_restaurado,
+                ],
                 (string) $canal->eventos_token
             );
         }
 
         return $user;
+    }
+
+    /**
+     * Deja el módulo de WhatsApp de la demo en modo de envío simulado, con plantillas aprobadas y
+     * chats de ejemplo (ver `WhatsappDemoHelper`).
+     *
+     * 🔴 No frena nunca el setup: a esta altura la instancia ya está armada, y un error de base
+     * en los chats de ejemplo no justifica dar la demo por fallida. Se loguea y sigue. Y solo corre
+     * en una instancia de demo: en la instalación de un cliente real este mismo helper no tiene que
+     * dejar una configuración de WhatsApp con clave ficticia ni plantillas «aprobadas» que Meta
+     * nunca aprobó.
+     *
+     * @param User $user Dueño de la instancia.
+     * @return void
+     */
+    private static function preparar_whatsapp_de_la_demo(User $user)
+    {
+        if (! self::es_instancia_de_demo()) {
+            return;
+        }
+
+        try {
+            WhatsappDemoHelper::preparar($user);
+        } catch (\Throwable $e) {
+            Log::error('DemoSetupHelper: no se pudo dejar WhatsApp en modo envío simulado; la demo queda sin WhatsApp configurado: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -620,10 +848,14 @@ class DemoSetupHelper
      * Crea el registro User principal de la demo con defaults tomados del
      * formulario original. Aísla la carga de campos del setup principal.
      *
-     * `doc_number`, `email` y `online` llevan `?? null`: hasta el 25/8/2026 se leían derecho
-     * y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con el
-     * `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
+     * `doc_number`, `email` y `online` se leen sin suponer que vienen: hasta el 25/8/2026 se
+     * leían derecho y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con
+     * el `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
      * admin-sync pasa `$request->all()` tal cual, así que las claves las decide quien llame.
+     *
+     * `online` no cae a null sino a `online_por_defecto()` (14/10/2026): una demo sin URL de
+     * tienda no muestra «Página web → Selección especial» en el Listado. Fuera de las tres demos
+     * sigue dando null, como antes.
      *
      * 🔴 `doc_number` NO lleva un valor por default, y es a propósito. Es el nombre de usuario
      * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y también la
@@ -660,7 +892,10 @@ class DemoSetupHelper
             'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
-            'online'                        => $data['online'] ?? null,
+            // Nunca vacío en una demo: sin él no hay «Página web → Selección especial» (ver online_por_defecto()).
+            'online'                        => (isset($data['online']) && trim((string) $data['online']) !== '')
+                ? $data['online']
+                : self::online_por_defecto(),
             'payment_expired_at'            => Carbon::now()->addMonths(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
@@ -670,6 +905,7 @@ class DemoSetupHelper
             'iva_included'                  => !empty($data['iva_included']) ? 1 : 0,
             'ask_amount_in_vender'          => 1,
             'redondear_centenas_en_vender'  => 0,
+            'redondear_centenas_para_arriba' => 0,
             'siempre_omitir_en_cuenta_corriente' => 0,
             'base_de_datos'                 => 'empresa_prueba_1',
             // API key de Google Custom Search: la manda admin-api (RunDemoSetupService, configurable
@@ -732,6 +968,60 @@ class DemoSetupHelper
             'condicion_iva_precios'         => User::CONDICION_RRII,
             'usar_condicion_fiscal_en_costeo' => 1,
         ]);
+    }
+
+    /**
+     * La URL de la tienda online que va a `users.online` cuando el payload del demo setup no la
+     * trae (o la trae vacía).
+     *
+     * 🔴 POR QUÉ UNA DEMO NO PUEDE QUEDAR CON `users.online` VACÍO (pedido de Lucas, 14/10/2026,
+     * misión tiendas-demo-y-limpieza-tienda): sin esa URL el Listado no muestra «Página web →
+     * Selección especial», y la selección especial no tiene a qué tienda apuntar. admin-api manda
+     * `online` desde `ecommerce_spa_url` de la demo (RunDemoSetupService), pero ese dato puede
+     * faltar, y la demo arrancaba sin la acción que justamente se muestra en los videos.
+     *
+     * De dónde sale, en orden:
+     *
+     *   1. `config('app.DEMO_TIENDA_URL')` (env `DEMO_TIENDA_URL`), para una instancia que no siga la
+     *      convención de nombres o para cambiar de tienda sin tocar código.
+     *   2. El host de `config('app.url')`: las tres demos de producción tienen cada una su tienda
+     *      fija en comerciocity.store (`demo` o `api-demo` → `tienda`, `demo2` → `tienda2`,
+     *      `demo3` → `tienda3`).
+     *   3. Cualquier otro host (un cliente real, local, la suite): null, como antes de este cambio.
+     *
+     * Se lee `config()` y NUNCA `env()`: con `config:cache` activo, `env()` fuera de `config/`
+     * devuelve null. Es pública para poder probarla sola (tests/Feature/Semilla/DemoSetupUrlDeLaTiendaTest.php).
+     *
+     * @return string|null
+     */
+    public static function online_por_defecto()
+    {
+        $configurada = trim((string) config('app.DEMO_TIENDA_URL'));
+
+        if ($configurada !== '') {
+            return $configurada;
+        }
+
+        $url = trim((string) config('app.url'));
+        $host = parse_url($url, PHP_URL_HOST);
+
+        // Un APP_URL sin esquema ("api-demo.comerciocity.com") parse_url lo toma como path.
+        if (empty($host) && $url !== '') {
+            $host = parse_url('https://' . $url, PHP_URL_HOST);
+        }
+
+        $tiendas_por_host = [
+            'demo.comerciocity.com'      => 'https://tienda.comerciocity.store',
+            'api-demo.comerciocity.com'  => 'https://tienda.comerciocity.store',
+            'demo2.comerciocity.com'     => 'https://tienda2.comerciocity.store',
+            'api-demo2.comerciocity.com' => 'https://tienda2.comerciocity.store',
+            'demo3.comerciocity.com'     => 'https://tienda3.comerciocity.store',
+            'api-demo3.comerciocity.com' => 'https://tienda3.comerciocity.store',
+        ];
+
+        $host = strtolower((string) $host);
+
+        return isset($tiendas_por_host[$host]) ? $tiendas_por_host[$host] : null;
     }
 
     /**
@@ -1011,6 +1301,11 @@ class DemoSetupHelper
                 common_seeders() de DatabaseSeeder.
             */
             'PdfColumnProfileDocumentosSeeder',
+            /*
+                "Ticket remito" y "Ticket factura" de comandera (mision diseno-ticket-comandera,
+                9/10/2026): itera los duenios, igual que el de documentos de arriba.
+            */
+            'PdfTicketComanderaSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 
@@ -1491,13 +1786,86 @@ class DemoSetupHelper
             return;
         }
 
+        self::conectar_mercado_pago_con($user, $access_token, $public_key, self::ORIGEN_CONFIG);
+    }
+
+    /**
+     * Origen de las credenciales de demo: el `.env` (vía `config()`), el respaldo de siempre.
+     * Solo cambia el texto del log de `conectar_mercado_pago_con()`.
+     */
+    const ORIGEN_CONFIG = 'config';
+
+    /** Origen de las credenciales de demo: el payload que manda el admin (misión credenciales-demo-zipnova-mp). */
+    const ORIGEN_PAYLOAD = 'payload';
+
+    /**
+     * Conecta Mercado Pago con las credenciales de demo del payload del admin, si vinieron
+     * COMPLETAS — misión credenciales-demo-zipnova-mp, 14/10/2026.
+     *
+     * Las dos van juntas (`mercadopago_access_token` y `mercadopago_public_key`): con una sola no
+     * hay con qué cobrar ni con qué armar el checkout, así que un payload a medias se ignora (se
+     * loguea CUÁL falta, nunca un valor) y sigue lo que haya dejado la restauración o el `.env`.
+     *
+     * Escribe lo mismo, en los mismos dos lugares, que `conectar_mercado_pago_desde_env()` (es el
+     * mismo cuerpo: `conectar_mercado_pago_con()`), y también pisa la conexión que haya restaurado
+     * `restaurar_mercado_pago()`. No llama a Mercado Pago: el admin ya las probó contra
+     * `GET /users/me` cuando Lucas las cargó.
+     *
+     * 🔴 Recibe `$data` solo para sacar estas dos claves: el payload entero NUNCA se loguea ni se
+     * persiste (lleva otras credenciales: serper, token de ingreso). Un test lo fija.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed> $data Payload del demo-setup.
+     * @return bool true si quedó conectada con las credenciales del payload.
+     */
+    private static function conectar_mercado_pago_desde_payload(User $user, array $data)
+    {
+        $access_token = self::credencial_del_payload($data, 'mercadopago_access_token');
+        $public_key   = self::credencial_del_payload($data, 'mercadopago_public_key');
+
+        if (is_null($access_token) || is_null($public_key)) {
+            // Se avisa solo si vino ALGUNA de las dos: un payload sin ninguna es el caso normal
+            // (admin sin desplegar o sin credenciales cargadas) y no merece una línea de log.
+            if (!is_null($access_token) || !is_null($public_key)) {
+                Log::warning('DemoSetupHelper: el payload trae credenciales de Mercado Pago incompletas (falta '
+                    . (is_null($access_token) ? 'mercadopago_access_token' : 'mercadopago_public_key')
+                    . '); se ignoran.');
+            }
+
+            return false;
+        }
+
+        return self::conectar_mercado_pago_con($user, $access_token, $public_key, self::ORIGEN_PAYLOAD);
+    }
+
+    /**
+     * Cuerpo compartido de las dos formas de conectar Mercado Pago con credenciales "fijas" de
+     * demo (el `.env` y el payload del admin): escribe el conector y lo espeja en
+     * `payment_methods`, con el mismo método que usa el callback del OAuth. Es el cuerpo que antes
+     * vivía entero en `conectar_mercado_pago_desde_env()`; se movió acá SIN cambiar lo que escribe
+     * (misión credenciales-demo-zipnova-mp, 14/10/2026).
+     *
+     * Nunca lanza: un error se loguea sin valores (de una `QueryException` solo la clase y el
+     * SQLSTATE, porque su mensaje trae el SQL con los bindings, o sea el token) y devuelve false.
+     *
+     * @param User $user Dueño recién creado de la demo (o del sistema local).
+     * @param string $access_token Access Token de Mercado Pago.
+     * @param string $public_key Public Key de Mercado Pago.
+     * @param string $origen `self::ORIGEN_CONFIG` o `self::ORIGEN_PAYLOAD`: solo para el texto del log.
+     * @return bool true si quedó conectada.
+     */
+    private static function conectar_mercado_pago_con(User $user, $access_token, $public_key, $origen)
+    {
+        // Texto del log según de dónde salieron las credenciales (el de la config es el de siempre).
+        $de_donde = $origen === self::ORIGEN_PAYLOAD ? 'del admin' : 'de la config';
+
         try {
             $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
 
             if (!$connector) {
-                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo de la config.');
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo ' . $de_donde . '.');
 
-                return;
+                return false;
             }
 
             $connector->access_token     = $access_token;
@@ -1512,16 +1880,40 @@ class DemoSetupHelper
             $service = new MercadoPagoOAuthService();
             $service->espejar_en_payment_methods((int) $user->id, $access_token, $public_key);
 
-            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo de la config.', [
+            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo ' . $de_donde . '.', [
                 'user_id' => $user->id,
             ]);
+
+            return true;
         } catch (\Throwable $e) {
             $detalle = ($e instanceof \Illuminate\Database\QueryException)
                 ? 'QueryException (SQLSTATE '.$e->getCode().')'
                 : $e->getMessage();
 
-            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo de la config: '.$detalle);
+            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo ' . $de_donde . ': '.$detalle);
+
+            return false;
         }
+    }
+
+    /**
+     * Una credencial del payload, limpia, o null si no vino utilizable (ausente, no es texto o está
+     * vacía después de `trim`). Un número o un array no son una credencial: el admin las manda como
+     * texto, y aceptar otra cosa sería adivinar.
+     *
+     * @param array<string, mixed> $data Payload del demo-setup.
+     * @param string $clave Nombre del campo.
+     * @return string|null
+     */
+    private static function credencial_del_payload(array $data, $clave)
+    {
+        if (!isset($data[$clave]) || !is_string($data[$clave])) {
+            return null;
+        }
+
+        $valor = trim($data[$clave]);
+
+        return $valor === '' ? null : $valor;
     }
 
     /**
@@ -1700,6 +2092,122 @@ class DemoSetupHelper
 
             Log::error('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo de la config: '.$detalle);
         }
+    }
+
+    /**
+     * Conecta Zipnova con las credenciales de demo del payload del admin, si vinieron COMPLETAS
+     * (`zipnova_api_token` y `zipnova_api_secret`; `zipnova_account_id` es opcional) — misión
+     * credenciales-demo-zipnova-mp, 14/10/2026.
+     *
+     * A diferencia de `conectar_zipnova_desde_env()` —que escribe el conector crudo y no llama a
+     * Zipnova—, acá se usa el MISMO servicio que la tarjeta del ABM,
+     * `ZipnovaConexionService::conectar()`, por tres motivos:
+     *  1. VALIDA las credenciales contra `GET /accounts` ANTES de guardar: un token mal cargado en
+     *     el admin no deja una conexión "Conectada" que después no cotiza.
+     *  2. Trae los depósitos y deja el de origen ya elegido: sin eso la demo quedaba conectada pero
+     *     sin poder cotizar hasta que alguien tocaba «Actualizar depósitos» a mano.
+     *  3. Registra el webhook de estados apuntando a ESTA instancia, como cualquier comercio real.
+     *     Si ya había una conexión restaurada con un webhook, `conectar()` lo da de baja y registra
+     *     el nuevo (por eso esto corre DESPUÉS de `restaurar_zipnova()`).
+     *
+     * 🔴 No frena el setup nunca. Si Zipnova rechaza las credenciales (401/403), no responde, o
+     * hay un error de base, se loguea el motivo SIN secretos y devuelve false: no se guardó nada
+     * (el servicio persiste recién después de validar) y queda lo que dejó la cadena de siempre
+     * (conexión restaurada o `.env`).
+     *
+     * Si viaja `zipnova_account_id` y no coincide con la cuenta que devuelve Zipnova, gana lo que
+     * dice Zipnova y se loguea el desacuerdo (sin valores).
+     *
+     * 🔴 Logs sin valores: ni el token, ni el secret, ni el cuerpo de la respuesta de Zipnova ni el
+     * mensaje de la excepción. De una `ZipnovaException` solo se loguea el código HTTP.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed> $data Payload del demo-setup (solo se leen las tres claves de Zipnova).
+     * @return bool true si quedó conectada con las credenciales del payload.
+     */
+    private static function conectar_zipnova_desde_payload(User $user, array $data)
+    {
+        $api_token  = self::credencial_del_payload($data, 'zipnova_api_token');
+        $api_secret = self::credencial_del_payload($data, 'zipnova_api_secret');
+
+        if (is_null($api_token) || is_null($api_secret)) {
+            // Solo se avisa si vino ALGUNA: sin ninguna es el caso normal (ver el equivalente de MP).
+            if (!is_null($api_token) || !is_null($api_secret)) {
+                Log::warning('DemoSetupHelper: el payload trae credenciales de Zipnova incompletas (falta '
+                    . (is_null($api_token) ? 'zipnova_api_token' : 'zipnova_api_secret')
+                    . '); se ignoran.');
+            }
+
+            return false;
+        }
+
+        // Cuenta que dice el admin (opcional): se compara con la que devuelva Zipnova.
+        $account_id_esperado = self::credencial_del_payload($data, 'zipnova_account_id');
+
+        try {
+            $connector = (new ZipnovaConexionService())->conectar(
+                (int) $user->id,
+                $api_token,
+                $api_secret,
+                self::url_del_webhook_de_zipnova()
+            );
+
+            if (!is_null($account_id_esperado) && (string) $connector->platform_user_id !== $account_id_esperado) {
+                Log::warning('DemoSetupHelper: el zipnova_account_id del payload no coincide con la cuenta que devolvió Zipnova; se usó la de Zipnova.', [
+                    'user_id' => $user->id,
+                ]);
+            }
+
+            $config = ZipnovaCredentialsHelper::config_desde_conector($connector);
+
+            Log::info('DemoSetupHelper: Zipnova conectado con las credenciales de demo del admin.', [
+                'user_id'        => $user->id,
+                'origen_elegido' => !empty($config['origin_id']),
+                'webhook_alta'   => !empty($config['webhook_id']),
+            ]);
+
+            return true;
+        } catch (ZipnovaException $e) {
+            // Solo el código HTTP: el mensaje y el body de Zipnova no se loguean (ver el docblock).
+            Log::warning('DemoSetupHelper: Zipnova no aceptó las credenciales de demo del admin (HTTP ' . $e->getStatus() . '); no se conectó y el setup sigue.');
+        } catch (ZipnovaConexionException $e) {
+            // Los mensajes de esta excepción son frases fijas del servicio, sin datos del payload.
+            Log::warning('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo del admin: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            // Una QueryException trae el SQL con los bindings (el token va en el INSERT del conector):
+            // de esa solo la clase y el SQLSTATE. De cualquier otra, solo la clase.
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE ' . $e->getCode() . ')'
+                : get_class($e);
+
+            Log::error('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo del admin: ' . $detalle);
+        }
+
+        return false;
+    }
+
+    /**
+     * URL pública del webhook de Zipnova de ESTA instancia: `<root de la API>/api/zipnova/webhook`.
+     *
+     * Mismo criterio que la tarjeta del ABM (`ZipnovaIntegracionController::conectar()`): sale del
+     * `root()` del request y no de `APP_URL`, porque en el shared hosting la API se sirve bajo
+     * `/public` y los `.env` de los clientes no siempre tienen `APP_URL` al día.
+     *
+     * Fuera de un request HTTP real (artisan, cola, tests) el "request" es el de consola, cuyo root
+     * es `http://localhost`: ahí se usa `config('app.url')`, que es lo único que sabe cuál es esta
+     * instancia. El demo-setup del admin siempre entra por HTTP, así que ese es el camino real.
+     *
+     * @return string
+     */
+    private static function url_del_webhook_de_zipnova()
+    {
+        $root = app()->runningInConsole() ? '' : (string) request()->root();
+
+        if (trim($root) === '') {
+            $root = (string) config('app.url');
+        }
+
+        return rtrim($root, '/') . ZipnovaIntegracionController::RUTA_WEBHOOK;
     }
 
     /**

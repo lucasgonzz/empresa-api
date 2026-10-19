@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\DesglosePrecioHelper;
+use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
+use App\Models\Moneda;
 use App\Models\PriceType;
 use Illuminate\Support\Facades\Log;
 
@@ -220,6 +223,285 @@ class ArticlePriceTypeMonedaHelper {
     }
 
     /**
+     * Lleva el costo base a la moneda de una entrada: es la cuenta de `$get_cost_for_moneda` de
+     * calcular_precios_por_price_type_y_moneda(), sacada a un metodo para que la explicacion del
+     * precio (describir_lista_en_moneda()) use exactamente la misma formula que el calculo.
+     *
+     * - costo cargado en dolares y entrada en pesos: se multiplica por el dolar de la cuenta;
+     * - costo cargado en pesos y entrada en dolares: se divide por el dolar de la cuenta (si es > 0);
+     * - cualquier otro caso (misma moneda, u otra moneda distinta de pesos/dolares): sin cambio.
+     *
+     * @param mixed $article   Articulo (se mira `cost_in_dollars`).
+     * @param mixed $cost_base Costo base segun la condicion fiscal de la cuenta.
+     * @param int   $moneda_id Moneda de la entrada (1 pesos, 2 dolares).
+     * @param float $rate      Dolar de la cuenta (`users.dollar`).
+     *
+     * @return float
+     */
+    public static function costo_en_moneda($article, $cost_base, $moneda_id, $rate)
+    {
+        $ars_id = 1;
+        $usd_id = 2;
+
+        $cost = (float) $cost_base;
+
+        if ($article->cost_in_dollars && $moneda_id == $ars_id) {
+            $cost *= $rate;
+
+        } else if ((int)$article->cost_in_dollars === 0 && $moneda_id == $usd_id) {
+
+            if ($rate > 0) {
+                $cost /= $rate;
+            }
+        }
+
+        return $cost;
+    }
+
+    /**
+     * Desglose paso a paso del precio de UNA lista en UNA moneda, para el boton "?" de la tarjeta
+     * del modal del articulo en una cuenta con `ventas_en_dolares`.
+     *
+     * En esas cuentas ArticleHelper::setFinalPrice() no pasa por
+     * ArticlePricesHelper::aplicar_precios_segun_listas_de_precios() (que es el que describe la
+     * lista en las cuentas sin dolares), asi que sin este metodo el "?" abria el calculo del precio
+     * final unico y nada de la lista.
+     *
+     * 🔴 SOLO LEE. Se llama despues de aplicar_precios_por_price_type_y_moneda(), cuando las
+     * entradas de `price_type_monedas` ya tienen el porcentaje y el precio finales, y narra de donde
+     * salieron. No calcula ni guarda nada: el precio que muestra es el que quedo guardado, y los
+     * pasos intermedios usan las mismas cuentas que calc_normal() (costo_en_moneda() y
+     * ArticlePricesHelper::aplicar_iva()). Si algun dia se cambia calc_normal(), esto se cambia con el.
+     *
+     * Las ramas espejan las del calculo:
+     *   - la moneda se cotiza desde la otra (y la otra no): precio de la otra x/÷ el dolar de la cuenta;
+     *   - precio fijado a mano (`setear_precio_final`): se informa y se deriva el margen resultante;
+     *   - normal: costo en esa moneda + margen (+ IVA si corresponde);
+     *   - sin costo base: solo se puede explicar la cotizacion cruzada de un precio fijado a mano.
+     *
+     * @param mixed $article       Articulo con `price_type_monedas` cargada (la misma que el calculo).
+     * @param mixed $_cost         Costo base, el mismo que recibio aplicar_precios_por_price_type_y_moneda().
+     * @param mixed $user          Dueño de la cuenta.
+     * @param int   $price_type_id Lista pedida.
+     * @param int   $moneda_id     Moneda pedida.
+     *
+     * @return array Lineas de DesglosePrecioHelper; vacio si la lista, la moneda o la entrada no existen.
+     */
+    public static function describir_lista_en_moneda($article, $_cost, $user, $price_type_id, $moneda_id)
+    {
+        $price_type_id = (int) $price_type_id;
+        $moneda_id     = (int) $moneda_id;
+
+        $grupo   = $article->price_type_monedas->where('price_type_id', $price_type_id);
+        $entrada = $grupo->firstWhere('moneda_id', $moneda_id);
+
+        // La lista se acota a la cuenta: el id viene de la URL.
+        $price_type = PriceType::where('id', $price_type_id)->where('user_id', $user->id)->first();
+        $moneda     = Moneda::find($moneda_id);
+
+        if (is_null($entrada) || is_null($price_type) || is_null($moneda)) {
+            return [];
+        }
+
+        $rate      = (float) $user->dollar;
+        $base_cost = (!is_null($_cost) && (float) $_cost > 0) ? (float) $_cost : null;
+
+        $des = [];
+
+        $des[] = DesglosePrecioHelper::seccion(
+            DesglosePrecioHelper::CLAVE_LISTA,
+            'Precio de la lista '.$price_type->name.' en '.$moneda->name,
+            'CALCULO DEL PRECIO DE LA LISTA '.mb_strtoupper($price_type->name, 'UTF-8').' EN '.mb_strtoupper($moneda->name, 'UTF-8')
+        );
+
+        // La otra moneda del par pesos/dolares, que es con la que se cotiza.
+        $otra = $grupo->first(function ($e) use ($moneda_id) {
+            return (int) $e->moneda_id !== $moneda_id && in_array((int) $e->moneda_id, [1, 2]);
+        });
+
+        $cotiza      = (int) $entrada->cotizar_desde_otra_moneda === 1;
+        $otra_cotiza = !is_null($otra) && (int) $otra->cotizar_desde_otra_moneda === 1;
+
+        // Sin costo base el calculo SOLO cotiza de una moneda a la otra si hay dolar y la otra tiene
+        // un precio fijado a mano mayor a cero ("MODO SIN COSTO" de calcular_precios_por_...). Si
+        // no, no toca la entrada, y la explicacion no puede afirmar una cotizacion que no ocurrio.
+        $cotiza_sin_costo = !is_null($otra)
+                            && $rate > 0
+                            && (int) $otra->setear_precio_final === 1
+                            && (float) $otra->final_price > 0;
+
+        if (
+            $cotiza && !is_null($otra) && !$otra_cotiza && in_array($moneda_id, [1, 2])
+            && (!is_null($base_cost) || $cotiza_sin_costo)
+        ) {
+
+            // Moneda derivada: el precio sale del de la otra moneda, cotizado con el dolar de la cuenta.
+            $nombre_otra = Moneda::find($otra->moneda_id);
+            $nombre_otra = is_null($nombre_otra) ? 'la otra moneda' : $nombre_otra->name;
+
+            if (!is_null($base_cost)) {
+
+                $des = array_merge($des, self::lineas_de_calculo_normal($article, $user, $otra, $nombre_otra, $base_cost, $rate));
+
+            } else {
+
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::PRECIO_MANUAL,
+                    'Precio en '.$nombre_otra,
+                    'fijado a mano',
+                    Numbers::price($otra->final_price, true),
+                    'El precio en '.$nombre_otra.' fijado a mano = '.Numbers::price($otra->final_price, true)
+                );
+            }
+
+            $operacion = $moneda_id === 1 ? 'multiplicado por' : 'dividido por';
+
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::COTIZACION,
+                'Cotizado desde '.$nombre_otra,
+                $operacion.' el dólar de la cuenta ('.Numbers::price($rate, true).')',
+                Numbers::price($entrada->final_price, true),
+                'Cotizado desde '.$nombre_otra.', '.$operacion.' el dolar de la cuenta ('.Numbers::price($rate, true).') = '.Numbers::price($entrada->final_price, true)
+            );
+
+            if (!is_null($base_cost)) {
+
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::MARGEN,
+                    'Margen resultante',
+                    'sale de ese precio contra el costo en '.$moneda->name,
+                    round((float) $entrada->percentage, 2).'%',
+                    'El margen de '.round((float) $entrada->percentage, 2).'% es el que resulta de ese precio contra el costo'
+                );
+            }
+
+        } else if (!is_null($base_cost)) {
+
+            $des = array_merge($des, self::lineas_de_calculo_normal($article, $user, $entrada, $moneda->name, $base_cost, $rate));
+
+        } else {
+
+            // Sin costo no hay cuenta que mostrar: el calculo no toca esta entrada.
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::NOTA,
+                'Sin costo para calcular',
+                'el precio de esta moneda queda como está cargado',
+                null,
+                'Sin costo para calcular: el precio de esta moneda queda como esta cargado'
+            );
+        }
+
+        $des[] = DesglosePrecioHelper::linea(
+            DesglosePrecioHelper::TOTAL,
+            'Precio final de la lista',
+            'en '.$moneda->name,
+            Numbers::price($entrada->final_price, true),
+            'Precio final de la lista en '.$moneda->name.' = '.Numbers::price($entrada->final_price, true)
+        );
+
+        return $des;
+    }
+
+    /**
+     * Renglones de una entrada que se calcula "normal": costo en su moneda y despues, segun venga,
+     * el precio fijado a mano o el margen mas el IVA. Espeja calc_normal() de
+     * calcular_precios_por_price_type_y_moneda(); ver describir_lista_en_moneda().
+     *
+     * @param mixed  $article       Articulo.
+     * @param mixed  $user          Dueño de la cuenta.
+     * @param mixed  $entrada       Entrada de `price_type_monedas` ya calculada.
+     * @param string $nombre_moneda Nombre de la moneda de la entrada, para los textos.
+     * @param float  $base_cost     Costo base (> 0).
+     * @param float  $rate          Dolar de la cuenta.
+     *
+     * @return array Lineas de DesglosePrecioHelper (sin el total: lo agrega quien llama).
+     */
+    private static function lineas_de_calculo_normal($article, $user, $entrada, $nombre_moneda, $base_cost, $rate)
+    {
+        $des = [];
+
+        $costo = self::costo_en_moneda($article, $base_cost, (int) $entrada->moneda_id, $rate);
+
+        // Si la cuenta de arriba cambio la moneda del costo, se dice: es lo que explica por que el
+        // numero no coincide con el costo real del articulo.
+        $detalle_costo = 'el costo real ya calculado arriba';
+
+        if (abs($costo - $base_cost) > 0.0000001) {
+            $detalle_costo .= ', llevado a '.$nombre_moneda.' con el dólar de la cuenta ('.Numbers::price($rate, true).')';
+        }
+
+        $des[] = DesglosePrecioHelper::linea(
+            DesglosePrecioHelper::COSTO,
+            'Costo de partida',
+            $detalle_costo,
+            Numbers::price($costo, true),
+            'Costo de partida en '.$nombre_moneda.' = '.Numbers::price($costo, true)
+        );
+
+        if ((int) $entrada->setear_precio_final === 1) {
+
+            // Precio cargado a mano: el IVA que corresponda ya esta adentro, el margen se deriva.
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::PRECIO_MANUAL,
+                'Precio fijado a mano',
+                'lo fijaste vos para esta lista en '.$nombre_moneda,
+                Numbers::price($entrada->final_price, true),
+                'El precio de esta lista en '.$nombre_moneda.' lo fijaste vos a mano = '.Numbers::price($entrada->final_price, true)
+            );
+
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::PRECIO_MANUAL,
+                'Margen resultante',
+                'sale de ese precio contra el costo, no al revés',
+                round((float) $entrada->percentage, 2).'%',
+                'El margen de '.round((float) $entrada->percentage, 2).'% es el que resulta de ese precio contra el costo, no al reves'
+            );
+
+            return $des;
+        }
+
+        $porcentaje = (float) $entrada->percentage;
+
+        $des[] = DesglosePrecioHelper::linea(
+            DesglosePrecioHelper::MARGEN,
+            'Margen',
+            'cargado en esta lista para '.$nombre_moneda,
+            $porcentaje.'%',
+            'Margen cargado en esta lista para '.$nombre_moneda.': '.$porcentaje.'%'
+        );
+
+        $precio = $costo + ($costo * $porcentaje / 100);
+
+        $des[] = DesglosePrecioHelper::linea(
+            DesglosePrecioHelper::MARGEN,
+            'Precio con el margen aplicado',
+            null,
+            Numbers::price($precio, true),
+            'Precio con el margen aplicado = '.Numbers::price($precio, true)
+        );
+
+        if (!ArticlePricesHelper::iva_va_al_costo($user)) {
+
+            // Mismo criterio que calc_normal(): el IVA se suma DESPUES del margen y solo si no viene
+            // ya adentro del costo real. aplicar_iva() emite sus propios renglones.
+            $res = ArticlePricesHelper::aplicar_iva($article, $precio, $user, []);
+            $des = array_merge($des, $res['des']);
+
+        } else {
+
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::NOTA,
+                'Acá no se suma IVA',
+                'esta cuenta tiene prendida la configuración vieja "aplicar IVA al costo", así que el IVA ya viene incluido dentro del costo real',
+                null,
+                'No se suma IVA aca: esta cuenta tiene la configuracion vieja "aplicar IVA al costo" prendida, asi que el IVA ya viene incluido dentro del costo real'
+            );
+        }
+
+        return $des;
+    }
+
+    /**
      * Guarda una entrada de `price_type_monedas` recién calculada.
      *
      * Fuera del modo lote es el `save()` de siempre. En modo lote (PreciosEnLote: la importación y
@@ -279,21 +561,11 @@ class ArticlePriceTypeMonedaHelper {
             $base_cost = (float) $_cost;
         }
 
-        $get_cost_for_moneda = function ($cost_base, $moneda_id) use ($article, $rate, $ars_id, $usd_id) {
+        // La cuenta vive en `costo_en_moneda()`, que tambien usa describir_lista_en_moneda(): una sola
+        // formula para el calculo y para su explicacion, que no pueden divergir.
+        $get_cost_for_moneda = function ($cost_base, $moneda_id) use ($article, $rate) {
 
-            $cost = (float) $cost_base;
-
-            if ($article->cost_in_dollars && $moneda_id == $ars_id) {
-                $cost *= $rate;
-
-            } else if ((int)$article->cost_in_dollars === 0 && $moneda_id == $usd_id) {
-
-                if ($rate > 0) {
-                    $cost /= $rate;
-                }
-            }
-
-            return $cost;
+            return self::costo_en_moneda($article, $cost_base, $moneda_id, $rate);
         };
 
         $calc_normal = function ($entry, $cost_base) use ($get_cost_for_moneda, $article, $user) {

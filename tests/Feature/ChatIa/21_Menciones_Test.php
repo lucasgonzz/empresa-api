@@ -633,4 +633,541 @@ class Menciones_Test extends TestCase
         $this->assertEquals('error', $assistant->estado);
         $this->assertSame([], $assistant->menciones);
     }
+
+    /**
+     * 🔴 UN NOMBRE CON ESPACIO AL FINAL, POR EL CAMINO SIN ID (misión menciones-asistente-collation,
+     * 12/10/2026). `depurar()` recorta el literal, MySQL da `'Bomba X' = 'Bomba X '` (collation PAD
+     * SPACE) y la fila vuelve del `whereIn`; pero si el resultado se indexa por el nombre CRUDO de la
+     * base, el literal recortado no lo encuentra y el artículo no se marca NUNCA. No es un caso de
+     * laboratorio: en una copia local de golonorte eran 11 de 237 artículos.
+     *
+     * La fila tiene la forma real de `consultar_articulos_mas_vendidos`: el nombre tal como está en
+     * la base, sin id.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_articulo_con_espacio_al_final_se_marca_por_nombre()
+    {
+        $articulo = Article::create(['name' => 'Bomba Centrífuga Sanitaria ', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = (string) $articulo->fresh()->name;
+
+        $this->assertSame(
+            'Bomba Centrífuga Sanitaria ',
+            $en_la_base,
+            'Precondición: la base tiene que guardar el espacio del final, si no este test no prueba nada.'
+        );
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 12.0],
+        ]);
+
+        $menciones = MencionesIaHelper::cruzar(
+            $candidatos,
+            'Lo que más vendiste este mes es Bomba Centrífuga Sanitaria, con 12 unidades.',
+            $this->comercio->id
+        );
+
+        $this->assertEquals(
+            [['tipo' => 'articulo', 'id' => $articulo->id, 'texto' => 'Bomba Centrífuga Sanitaria']],
+            $menciones,
+            'El literal recortado tiene que resolver al artículo cuyo nombre en la base termina en espacio.'
+        );
+    }
+
+    /**
+     * 🔴 EL MISMO ESPACIO AL FINAL, POR EL CAMINO DEL ID. La tool trae el id y el nombre crudo; el
+     * literal ya viene recortado por `depurar()`, y si el nombre de la base se compara sin el mismo
+     * recorte, el cliente se pierde. Es el camino de `consultar_clientes`, `consultar_stock_de_articulos`
+     * y `consultar_datos`, que son las tools más usadas.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_cliente_con_espacio_al_final_se_marca_por_id()
+    {
+        $cliente = Client::create(['name' => 'Ferretería Tucumana ', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = (string) $cliente->fresh()->name;
+
+        $this->assertSame(
+            'Ferretería Tucumana ',
+            $en_la_base,
+            'Precondición: la base tiene que guardar el espacio del final, si no este test no prueba nada.'
+        );
+
+        // La forma exacta de una fila de consultar_clientes (ConsultasSistemaIaHelper::clientes()).
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_clientes', [
+            [
+                'id'       => $cliente->id,
+                'cliente'  => $en_la_base,
+                'telefono' => '',
+                'email'    => '',
+                'saldo'    => 687610.88,
+            ],
+        ]);
+
+        $menciones = MencionesIaHelper::cruzar(
+            $candidatos,
+            'El cliente que más te debe es Ferretería Tucumana, con un saldo de $687.610,88.',
+            $this->comercio->id
+        );
+
+        $this->assertEquals(
+            [['tipo' => 'cliente', 'id' => $cliente->id, 'texto' => 'Ferretería Tucumana']],
+            $menciones,
+            'El id es del dueño y su nombre, recortado igual que el literal, es el mismo: se marca.'
+        );
+    }
+
+    /**
+     * 🔴 UN LITERAL CON OTRA MAYÚSCULA O SIN LA TILDE NO SE MARCA, aunque la base lo dé por igual al
+     * nombre de un único cliente del dueño (misión menciones-asistente-collation, decisión 8 del
+     * plan, 12/10/2026).
+     *
+     * ⚠️ Esta expectativa cambió A PROPÓSITO. El pedido original —y la primera versión de este test—
+     * esperaba que "ferreteria tucumana" resolviera a "Ferretería Tucumana" por la collation. Pero:
+     * - ninguna tool produce ese literal: las que dan el nombre sin id emiten el `name` crudo de la
+     *   base, así que el literal es siempre la copia (recortada) del nombre del registro del que
+     *   habló la tool; y
+     * - un literal que la base da por igual a un vigente pero que NO es su nombre exacto solo aparece
+     *   cuando vino de OTRO registro —un borrado en otra mayúscula o con bordes, una fila de otro
+     *   comercio—. Resolverlo por la collation es exactamente lo que abría el link a la ficha o a la
+     *   cuenta corriente equivocada (ver los tests de borrados de abajo).
+     * La identidad es el nombre exacto tras el mismo trim(); la collation solo decide la ambigüedad.
+     * Precisión antes que cobertura: un nombre sin marcar no molesta a nadie.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_literal_con_otra_mayuscula_o_sin_tilde_no_se_marca()
+    {
+        Client::create(['name' => 'Ferretería Tucumana', 'user_id' => $this->comercio->id]);
+
+        $menciones = MencionesIaHelper::cruzar(
+            [['tipo' => 'cliente', 'id' => 0, 'texto' => 'ferreteria tucumana']],
+            'Le vendiste a ferreteria tucumana la semana pasada.',
+            $this->comercio->id
+        );
+
+        $this->assertSame(
+            [],
+            $menciones,
+            'El literal no es el nombre exacto de ningún cliente del dueño: no se marca, aunque la base lo dé por igual.'
+        );
+    }
+
+    /**
+     * 🔴 DOS REGISTROS QUE LA BASE DA POR IGUALES NO SE MARCAN. "Kiosco Sur" y "Kiosco Sur " son,
+     * para MySQL, el mismo nombre; si una tool devuelve el SEGUNDO por nombre, el literal recortado
+     * no puede terminar en un link al PRIMERO —que es lo que pasaba indexando por el nombre crudo:
+     * una mención a la cuenta corriente de otro cliente—. Lo mismo con "Acme" y "ACME": no hay dato
+     * en el texto que permita desempatar, así que no se marca ninguno.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function dos_registros_que_la_base_da_por_iguales_no_se_marcan()
+    {
+        Client::create(['name' => 'Kiosco Sur', 'user_id' => $this->comercio->id]);
+        $segundo = Client::create(['name' => 'Kiosco Sur ', 'user_id' => $this->comercio->id]);
+
+        // La forma real de consultar_interesados_en_un_articulo: el cliente viene por nombre, sin id.
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_interesados_en_un_articulo', [
+            'articulo'                  => 'Termotanque Solar 200',
+            'ventana_dias'              => 30,
+            'interesados_encontrados'   => 1,
+            'interesados_en_esta_lista' => 1,
+            'interesados'               => [
+                [
+                    'cliente'    => (string) $segundo->fresh()->name,
+                    'telefono'   => '',
+                    'vistas'     => 4,
+                    'minutos'    => 3,
+                    'al_carrito' => 1,
+                    'ultima_vez' => '10/10/2026',
+                    'lo_compro_antes_y_lo_volvio_a_mirar' => null,
+                ],
+            ],
+            'visitantes_anonimos'       => 0,
+            'eventos_de_anonimos'       => 0,
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'Kiosco Sur lo miró 4 veces y lo puso en el carrito.',
+            $this->comercio->id
+        ), 'Dos clientes que la base da por iguales: marcar uno es mandar al dueño a la cuenta corriente de otro.');
+
+        Client::create(['name' => 'Acme', 'user_id' => $this->comercio->id]);
+        Client::create(['name' => 'ACME', 'user_id' => $this->comercio->id]);
+
+        // La forma real de consultar_ofertas_activas: cliente y artículo por nombre, sin id.
+        $de_ofertas = MencionesIaHelper::candidatos_de_tool('consultar_ofertas_activas', [
+            [
+                'cliente'        => 'Acme',
+                'articulo'       => 'Termotanque Solar 200',
+                'tipo_descuento' => 'porcentaje',
+                'porcentaje'     => 10.0,
+                'desde'          => '2026-10-01',
+                'hasta'          => '2026-10-16',
+                'notificada'     => false,
+            ],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $de_ofertas,
+            'Acme tiene una oferta del 10% que vence el viernes.',
+            $this->comercio->id
+        ), '"Acme" y "ACME" son el mismo nombre para la base: ninguno de los dos se marca.');
+    }
+
+    /**
+     * 🔴 LO QUE LA BASE DISTINGUE NO SE CONFUNDE. Para la collation, "Codo 90° PVC" y "Codo 90 PVC"
+     * son nombres distintos; para `Str::ascii` son el mismo (borra el `°`). Si alguien "simplifica"
+     * la comparación normalizando en PHP, el literal del artículo borrado termina en un link al
+     * vigente. Acá tiene que marcarse solo el vigente, con su propio literal.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function lo_que_la_base_distingue_no_se_confunde()
+    {
+        $vigente = Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $borrado = Article::create(['name' => 'Codo 90° PVC', 'user_id' => $this->comercio->id]);
+        $borrado->delete();
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => 'Codo 90 PVC', 'total_vendido' => 30.0],
+            ['nombre' => 'Codo 90° PVC', 'total_vendido' => 8.0],
+        ]);
+
+        $menciones = MencionesIaHelper::cruzar(
+            $candidatos,
+            'Lo más vendido fue Codo 90 PVC (30) y después Codo 90° PVC (8).',
+            $this->comercio->id
+        );
+
+        $this->assertEquals(
+            [['tipo' => 'articulo', 'id' => $vigente->id, 'texto' => 'Codo 90 PVC']],
+            $menciones,
+            'El artículo borrado no se menciona, y su literal no puede resolver al que se llama parecido.'
+        );
+    }
+
+    /**
+     * 🔴 EL NOMBRE EXACTO DE UN BORRADO NO LINKEA AL VIGENTE QUE SE LE PARECE. Las tools que dan el
+     * nombre sin id —`consultar_articulos_mas_vendidos` entre ellas— leen `articles` sin filtrar
+     * borrados, así que el literal puede ser la copia exacta del nombre de un artículo BORRADO. Si la
+     * base iguala ese nombre con el de un vigente que solo difiere en mayúsculas, marcarlo es mandar
+     * al dueño a la ficha de OTRO artículo: el que vendió el año pasado ya no existe.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_nombre_exacto_de_un_articulo_borrado_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $borrado = Article::create(['name' => 'CODO 90 PVC', 'user_id' => $this->comercio->id]);
+        $borrado->delete();
+
+        // La forma real de consultar_articulos_mas_vendidos: el nombre del artículo vendido, sin id.
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => 'CODO 90 PVC', 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del artículo borrado: su literal no puede terminar en la ficha del vigente.');
+    }
+
+    /**
+     * 🔴 Lo mismo con un CLIENTE, que es peor: la cuenta corriente de otra persona. Los interesados
+     * de `consultar_interesados_en_un_articulo` salen de `clients` sin filtrar borrados
+     * (ActividadDeClientesService::datos_de_clientes()), y "José Pérez" borrado no es "Jose Perez".
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_nombre_exacto_de_un_cliente_borrado_no_linkea_al_vigente_parecido()
+    {
+        Client::create(['name' => 'Jose Perez', 'user_id' => $this->comercio->id]);
+
+        $borrado = Client::create(['name' => 'José Pérez', 'user_id' => $this->comercio->id]);
+        $borrado->delete();
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_interesados_en_un_articulo', [
+            'articulo'                  => 'Termotanque Solar 200',
+            'ventana_dias'              => 30,
+            'interesados_encontrados'   => 1,
+            'interesados_en_esta_lista' => 1,
+            'interesados'               => [
+                [
+                    'cliente'    => 'José Pérez',
+                    'telefono'   => '',
+                    'vistas'     => 3,
+                    'minutos'    => 2,
+                    'al_carrito' => 0,
+                    'ultima_vez' => '01/10/2026',
+                    'lo_compro_antes_y_lo_volvio_a_mirar' => null,
+                ],
+            ],
+            'visitantes_anonimos'       => 0,
+            'eventos_de_anonimos'       => 0,
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'José Pérez lo miró 3 veces en el último mes.',
+            $this->comercio->id
+        ), 'El literal es el nombre exacto de un cliente borrado: no puede abrir la cuenta de otra persona.');
+    }
+
+    /**
+     * 🔴 En la MISMA respuesta, el vigente se marca y el borrado no. "Acme" vigente y "ACME" borrado
+     * son el mismo nombre para la base; si los dos literales resolvieran al vigente, el texto que
+     * habla del borrado también llevaría a la cuenta de "Acme".
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function en_el_mismo_lote_el_vigente_se_marca_y_el_borrado_parecido_no()
+    {
+        $acme = Client::create(['name' => 'Acme', 'user_id' => $this->comercio->id]);
+
+        $borrado = Client::create(['name' => 'ACME', 'user_id' => $this->comercio->id]);
+        $borrado->delete();
+
+        // La forma real de consultar_ofertas_activas: cliente y artículo por nombre, sin id.
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_ofertas_activas', [
+            [
+                'cliente'        => 'Acme',
+                'articulo'       => 'Termotanque Solar 200',
+                'tipo_descuento' => 'porcentaje',
+                'porcentaje'     => 10.0,
+                'desde'          => '2026-10-01',
+                'hasta'          => '2026-10-16',
+                'notificada'     => false,
+            ],
+            [
+                'cliente'        => 'ACME',
+                'articulo'       => 'Termotanque Solar 200',
+                'tipo_descuento' => 'porcentaje',
+                'porcentaje'     => 15.0,
+                'desde'          => '2026-10-01',
+                'hasta'          => '2026-10-16',
+                'notificada'     => false,
+            ],
+        ]);
+
+        $this->assertEquals(
+            [['tipo' => 'cliente', 'id' => $acme->id, 'texto' => 'Acme']],
+            MencionesIaHelper::cruzar(
+                $candidatos,
+                'Acme tiene una oferta del 10% y ACME tenía otra del 15%.',
+                $this->comercio->id
+            ),
+            'Solo el literal del vigente se marca; el del borrado queda como texto.'
+        );
+    }
+
+    /**
+     * Un borrado con el MISMO nombre que el vigente no le quita la mención: es el artículo recreado
+     * o reimportado, y el nombre exacto también es el del vigente. Es lo que ya hacía develop y no
+     * se puede perder por mirar los borrados.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_el_mismo_nombre_no_le_quita_la_mencion_al_vigente()
+    {
+        $vigente = Article::create(['name' => 'Fernet Branca 750', 'user_id' => $this->comercio->id]);
+
+        $borrado = Article::create(['name' => 'Fernet Branca 750', 'user_id' => $this->comercio->id]);
+        $borrado->delete();
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => 'Fernet Branca 750', 'total_vendido' => 41.0],
+        ]);
+
+        $this->assertEquals(
+            [['tipo' => 'articulo', 'id' => $vigente->id, 'texto' => 'Fernet Branca 750']],
+            MencionesIaHelper::cruzar(
+                $candidatos,
+                'Lo que más vendiste este mes es Fernet Branca 750, con 41 unidades.',
+                $this->comercio->id
+            )
+        );
+    }
+
+    /**
+     * Y "el mismo nombre" es el mismo tras el `trim()` que recibe el literal: un borrado "Bomba
+     * Periférica 1/2 HP" y el vigente "Bomba Periférica 1/2 HP " (con espacio al final) siguen siendo
+     * el producto recreado, y la mención va al vigente.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_igual_salvo_el_espacio_final_no_le_quita_la_mencion_al_vigente()
+    {
+        $vigente = Article::create(['name' => 'Bomba Periférica 1/2 HP ', 'user_id' => $this->comercio->id]);
+
+        $borrado = Article::create(['name' => 'Bomba Periférica 1/2 HP', 'user_id' => $this->comercio->id]);
+        $borrado->delete();
+
+        $en_la_base = (string) $vigente->fresh()->name;
+
+        $this->assertSame(
+            'Bomba Periférica 1/2 HP ',
+            $en_la_base,
+            'Precondición: la base tiene que guardar el espacio del final, si no este test no prueba nada.'
+        );
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 9.0],
+        ]);
+
+        $this->assertEquals(
+            [['tipo' => 'articulo', 'id' => $vigente->id, 'texto' => 'Bomba Periférica 1/2 HP']],
+            MencionesIaHelper::cruzar(
+                $candidatos,
+                'Lo que más vendiste es Bomba Periférica 1/2 HP, con 9 unidades.',
+                $this->comercio->id
+            )
+        );
+    }
+
+    /**
+     * Crea un artículo del comercio con ese nombre, lo borra y devuelve el nombre tal como quedó en
+     * la base —que es lo que emiten las tools que leen `articles` sin filtrar borrados—.
+     *
+     * Con la precondición de que la base guarde los bordes del nombre: si los recortara, el test que
+     * lo usa no probaría nada.
+     *
+     * @param  string  $nombre
+     * @return string
+     */
+    protected function articulo_borrado_con_bordes($nombre)
+    {
+        $borrado = Article::create(['name' => $nombre, 'user_id' => $this->comercio->id]);
+
+        $en_la_base = (string) $borrado->fresh()->name;
+
+        $this->assertSame(
+            $nombre,
+            $en_la_base,
+            'Precondición: la base tiene que guardar el nombre con sus bordes, si no este test no prueba nada.'
+        );
+
+        $borrado->delete();
+
+        return $en_la_base;
+    }
+
+    /**
+     * 🔴 UN BORRADO CON UN BORDE QUE trim() SACA Y LA COLLATION NO IGNORA. " CODO 90 PVC" (con espacio
+     * ADELANTE) borrado: la tool lo devuelve tal cual, depurar() lo recorta a "CODO 90 PVC", y para la
+     * base ese literal ya no es igual al borrado —el espacio de adelante sí cuenta— pero sí al vigente
+     * "Codo 90 PVC". Mirar a los borrados no lo atrapa, porque el borrado ni siquiera coincide: lo
+     * atrapa que el vigente no se llama exactamente como el literal.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_espacio_adelante_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = $this->articulo_borrado_con_bordes(' CODO 90 PVC');
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del borrado " CODO 90 PVC": su literal no puede terminar en la ficha de "Codo 90 PVC".');
+    }
+
+    /**
+     * 🔴 Lo mismo con una TABULACIÓN al final ("CODO 90 PVC\t"): trim() la saca, pero la collation
+     * PAD SPACE solo ignora espacios, no tabulaciones, así que el borrado tampoco coincide y el
+     * vigente parecido quedaba solo.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_tabulacion_al_final_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = $this->articulo_borrado_con_bordes("CODO 90 PVC\t");
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del borrado con tabulación: su literal no puede terminar en la ficha de "Codo 90 PVC".');
+    }
+
+    /**
+     * Y con un ESPACIO al final ("CODO 90 PVC "), que la collation sí ignora: el borrado coincide,
+     * pero tampoco es el vigente. Ningún test de las tandas anteriores tenía este borde.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_borrado_con_espacio_al_final_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $en_la_base = $this->articulo_borrado_con_bordes('CODO 90 PVC ');
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => $en_la_base, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'El año pasado lo que más vendiste fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'La tool habló del borrado "CODO 90 PVC ": su literal no puede terminar en la ficha de "Codo 90 PVC".');
+    }
+
+    /**
+     * 🔴 UN LITERAL QUE VINO DE UNA FILA DE OTRO COMERCIO. Si una tool llegara a filtrar mal por
+     * dueño, el literal es el nombre de un artículo AJENO; no puede terminar en la ficha del artículo
+     * del dueño que la base da por igual. Ver al ajeno es imposible (la consulta está scopeada por
+     * dueño, y así tiene que seguir): lo atrapa, otra vez, que el del dueño no se llama exactamente así.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_literal_que_vino_de_otro_comercio_no_linkea_al_vigente_parecido()
+    {
+        Article::create(['name' => 'Codo 90 PVC', 'user_id' => $this->comercio->id]);
+
+        $ajeno = Article::create(['name' => 'CODO 90 PVC', 'user_id' => $this->otro_comercio->id]);
+
+        $candidatos = MencionesIaHelper::candidatos_de_tool('consultar_articulos_mas_vendidos', [
+            ['nombre' => (string) $ajeno->fresh()->name, 'total_vendido' => 15.0],
+        ]);
+
+        $this->assertSame([], MencionesIaHelper::cruzar(
+            $candidatos,
+            'Lo que más se vendió fue CODO 90 PVC, con 15 unidades.',
+            $this->comercio->id
+        ), 'El literal es el nombre de un artículo de otro comercio: no puede abrir la ficha del parecido del dueño.');
+    }
 }

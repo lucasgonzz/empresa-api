@@ -353,6 +353,11 @@ class ArticleController extends Controller
         $model->calipers                        = $request->calipers;
         $model->juego                           = $request->juego;
 
+        // Propiedades de distribuidora (extensión articulos_con_propiedades_de_distribuidora).
+        // `contenido` se asigna arriba, en el bloque de autopartes, porque lo comparten las dos.
+        $model->unidades_por_bulto              = $request->unidades_por_bulto;
+        $model->tipo_envase_id                  = $request->tipo_envase_id;
+
 
         $model->unidades_individuales              = $request->unidades_individuales;
         $model->unidad_medida_id                   = $request->unidad_medida_id;
@@ -573,6 +578,11 @@ class ArticleController extends Controller
         $model->calipers                        = $request->calipers;
         $model->juego                           = $request->juego;
 
+        // Propiedades de distribuidora (extensión articulos_con_propiedades_de_distribuidora).
+        // `contenido` se asigna arriba, en el bloque de autopartes, porque lo comparten las dos.
+        $model->unidades_por_bulto              = $request->unidades_por_bulto;
+        $model->tipo_envase_id                  = $request->tipo_envase_id;
+
 
 
 
@@ -598,7 +608,20 @@ class ArticleController extends Controller
 
         
         $model->name = ucfirst($request->name);
-        $model->slug = ArticleHelper::slug($request->name);
+
+        /**
+         * El slug es la URL pública del artículo en la tienda (`/articulos/<slug>/<commerce_id>`):
+         * un link compartido se rompe si cambia. Por eso solo se recalcula si cambió el nombre o
+         * si el artículo no tiene slug todavía.
+         *
+         * Antes se recalculaba en CADA guardado y sin excluir al propio artículo: slug() lo
+         * encontraba a sí mismo con ese slug y le agregaba `-1`, y en el guardado siguiente, con
+         * el slug base ya libre, volvía al original. El slug alternaba `nombre` <-> `nombre-1`.
+         * Cuando sí se recalcula, se pasa `$model->id` para que no choque consigo mismo.
+         */
+        if ($model->isDirty('name') || is_null($model->slug) || $model->slug === '') {
+            $model->slug = ArticleHelper::slug($request->name, $model->id);
+        }
         $model->save();
         
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
@@ -1180,9 +1203,30 @@ class ArticleController extends Controller
         return response(null, 200);
     }
 
+    /**
+     * Edición de stock por sucursal del Listado (y del asistente IA, que llega acá con un Request
+     * armado y la persona en el user resolver).
+     *
+     * Misión stock-sucursal-desde-listado (14/10/2026): si alguna sucursal que el usuario cambió
+     * tiene hoy en la base un stock distinto del que él tenía en pantalla (`pivot.amount_original`),
+     * contesta 409 con el motivo, los conflictos y el artículo actualizado, SIN aplicar ningún
+     * renglón. Sin `errors` en la respuesta: así la SPA muestra el `message` tal cual.
+     */
     function update_addresses_stock(Request $request) {
 
-        $helper = new UpdateAddressesStockHelper($request->article_id, $request->addresses);
+        $helper = new UpdateAddressesStockHelper($request->article_id, $request->addresses, $request->user());
+
+        $conflictos = $helper->conflictos();
+
+        if (count($conflictos) > 0) {
+
+            return response()->json([
+                'message'    => UpdateAddressesStockHelper::mensaje_de_conflictos($conflictos),
+                'conflictos' => $conflictos,
+                'model'      => $this->fullModel('Article', $request->article_id),
+            ], 409);
+        }
+
         $helper->update_addresses();
         $helper->set_stock_min_max();
 
@@ -1330,7 +1374,13 @@ class ArticleController extends Controller
             return response()->json(['message' => 'No se encontro el articulo'], 404);
         }
 
-        $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
+        // `moneda_id` (opcional): en una cuenta con `ventas_en_dolares` cada lista tiene un precio por
+        // moneda, y el "?" de cada bloque pide el de la suya. Sin el parametro -o en una cuenta sin
+        // dolares- el endpoint contesta exactamente lo de siempre, asi que un front viejo no nota nada.
+        $moneda_id = request()->query('moneda_id');
+        $moneda_id = is_numeric($moneda_id) ? (int) $moneda_id : null;
+
+        $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id, $moneda_id);
 
         // Mismo guard que el endpoint hermano de arriba, por el mismo motivo.
         if (!is_array($detalle)) {

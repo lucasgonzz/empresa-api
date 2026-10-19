@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AltaDeArticuloConFotoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
@@ -15,6 +16,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaEnvioComprobanteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
@@ -25,6 +27,8 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPermisoEmpleadoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaPromocionWhatsappIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
@@ -216,6 +220,14 @@ class HerramientasDeCarga
      * tabla como para decir si el modelo usa SoftDeletes o qué queda colgado. Lo que no se puede
      * deshacer lo confirma siempre la persona.
      *
+     * 🔴 LOS TRES ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, 16/10/2026):
+     * `envio_de_comprobante`, `recordatorios_de_cobro` y `promocion_por_whatsapp`. Le escriben a
+     * terceros —los clientes del negocio— por el WhatsApp del negocio o por mail, y un mensaje que
+     * salió no se desmanda: no es reversible ni con otra carga ni "si alguien se entera". La
+     * promoción, además, puede llegarle a cientos de personas y bajarle la calificación al número de
+     * WhatsApp Business. Decisión de Lucas: siempre con confirmación explícita, después de que el dueño
+     * vio a quiénes, cuántos y el texto exacto, NUNCA en modo directo.
+     *
      * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
      * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
      * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda. Las
@@ -230,6 +242,23 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_UNIFICAR_BANCOS,
         AiMessageAction::TIPO_PERMISO_EMPLEADO,
         AiMessageAction::TIPO_BORRADO_PANTALLA,
+        AiMessageAction::TIPO_ENVIO_COMPROBANTE,
+        AiMessageAction::TIPO_RECORDATORIOS_COBRO,
+        AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+    ];
+
+    /**
+     * Los tres ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, 16/10/2026), juntos para las
+     * guardas que valen solo para ellos: el sí explícito y el corte de MCP en
+     * ConfirmacionPorTextoIaHelper::rechazo(), y el bloque que AsistenteIaService agrega al mensaje.
+     * Los tres están además en NUNCA_AUTO_CONFIRMABLES.
+     *
+     * @var array<int, string>
+     */
+    const TIPOS_DE_ENVIO = [
+        AiMessageAction::TIPO_ENVIO_COMPROBANTE,
+        AiMessageAction::TIPO_RECORDATORIOS_COBRO,
+        AiMessageAction::TIPO_PROMOCION_WHATSAPP,
     ];
 
     /**
@@ -415,6 +444,10 @@ class HerramientasDeCarga
                             'type'        => 'string',
                             'description' => 'AAAA-MM-DD. Si se repite, es la primera fecha.',
                         ],
+                        'hora'            => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. No prometas un aviso por WhatsApp a esa hora: el resultado de la tarea confirmada (su "aviso") dice si le llega un recordatorio y cómo decírselo.',
+                        ],
                         'repetir'         => self::esquema_de_repeticion(),
                         'subcategoria_id' => [
                             'type'        => 'integer',
@@ -434,13 +467,13 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_cambios_en_tarea',
-                'description'  => 'Arma la tarjeta con cambios en una tarea de la agenda (detalle, fecha, repetición, gasto asociado o notas), para que la persona la confirme: NO la modifica. Mandá solo lo que cambia. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta con cambios en una tarea de la agenda (detalle, fecha, hora, repetición, gasto asociado o notas), para que la persona la confirme: NO la modifica. Mandá solo lo que cambia. Si la respuesta trae "faltan", preguntá eso. Si trae "error" con opciones.tareas, ese tarea_id no era de ninguna tarea y no se armó nada: no se lo cuentes a la persona; elegí de esa lista la que pidió (o buscala con consultar_tareas por su texto) y volvé a llamar ahora con su tarea_id. Si trae "duda", el número también era el de una tarjeta: hacé lo que dice. Con otro "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'tarea_id'              => [
                             'type'        => 'integer',
-                            'description' => 'Id de consultar_tareas.',
+                            'description' => 'Id de la tarea: el de consultar_tareas, o el "tarea_id" que trae la línea [Tarjeta …] de esa tarea en el historial. El #N de una tarjeta NO es el id de la tarea.',
                         ],
                         'detalle'               => [
                             'type' => 'string',
@@ -448,6 +481,10 @@ class HerramientasDeCarga
                         'fecha'                 => [
                             'type'        => 'string',
                             'description' => 'AAAA-MM-DD. En una tarea que se repite es la primera fecha de la regla.',
+                        ],
+                        'hora'                  => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM para poner o cambiar la hora de la tarea ("a las 11" es "11:00"), o "sin hora" para sacarla. Va escrita adelante del detalle: no la pongas también en "detalle". Sin esta clave la tarea conserva la hora que tenía.',
                         ],
                         'repetir'               => self::esquema_de_repeticion(),
                         'quitar_repeticion'     => [
@@ -472,13 +509,13 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_marcar_tarea_hecha',
-                'description'  => 'Arma la tarjeta para marcar como hecha una tarea de la agenda, para que la persona la confirme: NO la marca. Si la tarea tiene gasto asociado hay que decir cómo se pagó (o sin_gasto si no se registra el gasto); sin monto se usa el estimado de la tarea. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para marcar como hecha una tarea de la agenda, para que la persona la confirme: NO la marca. Si la tarea tiene gasto asociado hay que decir cómo se pagó (o sin_gasto si no se registra el gasto); sin monto se usa el estimado de la tarea. Si la respuesta trae "faltan", preguntá eso. Si trae "error" con opciones.tareas, ese tarea_id no era de ninguna tarea y no se armó nada: no se lo cuentes a la persona; elegí de esa lista la que pidió (o buscala con consultar_tareas por su texto) y volvé a llamar ahora con su tarea_id. Si trae "duda", el número también era el de una tarjeta: hacé lo que dice. Con otro "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'tarea_id'    => [
                             'type'        => 'integer',
-                            'description' => 'Id de consultar_tareas.',
+                            'description' => 'Id de la tarea: el de consultar_tareas, o el "tarea_id" que trae la línea [Tarjeta …] de esa tarea en el historial. El #N de una tarjeta NO es el id de la tarea.',
                         ],
                         'fecha'       => [
                             'type'        => 'string',
@@ -552,7 +589,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_oferta',
-                'description'  => 'Arma la tarjeta de una oferta para UN cliente sobre UN artículo, para que la persona la confirme: NO la activa. El descuento puede ser plano (porcentaje) o por tramos de cantidad comprada (tramos: cuanto más lleva, más descuento). Conseguí los ids con consultar_clientes y consultar_stock_de_articulos. La oferta se le muestra a ese cliente en la tienda online; desde acá NO se le manda ningún mail ni WhatsApp. Cada artículo tiene un descuento máximo según su costo y su precio de hoy: si te pasás, la herramienta te dice cuál es y NO se recorta solo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una oferta para UN cliente sobre UN artículo, para que la persona la confirme: NO la activa. El descuento puede ser plano (porcentaje) o por tramos de cantidad comprada (tramos: cuanto más lleva, más descuento). Conseguí los ids con consultar_clientes y consultar_stock_de_articulos. La oferta se le muestra a ese cliente en la tienda online; desde acá NO se le manda ningún mail ni WhatsApp de la oferta (una promoción por WhatsApp a los clientes sí: proponer_promocion_por_whatsapp). Cada artículo tiene un descuento máximo según su costo y su precio de hoy: si te pasás, la herramienta te dice cuál es y NO se recorta solo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -701,7 +738,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_actualizacion_masiva',
-                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos de precio manual sube ese precio, donde el margen no mueve el precio —listas de precio, proveedor con costo de lista + IVA— sube el costo, y en el resto ajusta el margen) y va solo, en una tarjeta aparte de cualquier otro cambio. precio_manual es solo cuando la persona habla del precio cargado a mano (si ninguno de los alcanzados lo usa, subir o bajar se convierte solo en precio_final). Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -715,7 +752,7 @@ class HerramientasDeCarga
                                     'campo'     => [
                                         'type'        => 'string',
                                         'enum'        => [
-                                            'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
+                                            'precio_final', 'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
                                             'proveedor', 'categoria', 'sub_categoria', 'marca',
                                             'iva', 'unidad_de_medida',
                                             'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
@@ -724,7 +761,7 @@ class HerramientasDeCarga
                                     'operacion' => [
                                         'type'        => 'string',
                                         'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
-                                        'description' => 'Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
+                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
                                     ],
                                     'valor'     => [
                                         'type'        => ['number', 'string'],
@@ -732,7 +769,7 @@ class HerramientasDeCarga
                                     ],
                                     'redondear' => [
                                         'type'        => 'boolean',
-                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero.',
+                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero (en precio_final, solo los artículos de precio manual).',
                                     ],
                                 ],
                                 'required'   => ['campo', 'operacion'],
@@ -875,7 +912,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'que_puedo_cargar',
-                'description'  => 'Devuelve qué entidades del sistema podés crear, editar o borrar con proponer_alta, proponer_edicion y proponer_baja (las de ABM, Clientes, Proveedores y Artículos: categorías, subcategorías, marcas, listas de precio, descuentos, sucursales, vendedores, clientes, proveedores, artículos y más), y con una entidad, sus campos: nombre, tipo, si es obligatorio, en qué operaciones se acepta y cómo se ubica un registro. Llamala ANTES de proponer, y usá sus claves tal cual: un campo que no está acá no existe, no lo inventes. NO es para gastos, pagos, tareas, combos, ofertas, compras con factura ni ventas nuevas: esas tienen su propia herramienta.',
+                'description'  => 'Devuelve qué entidades del sistema podés crear, editar o borrar con proponer_alta, proponer_edicion y proponer_baja (las de ABM, Clientes, Proveedores y Artículos: categorías, subcategorías, marcas, listas de precio, descuentos, sucursales, vendedores, clientes, proveedores, artículos y más), y con una entidad, sus campos: nombre, tipo, si es obligatorio, en qué operaciones se acepta y cómo se ubica un registro. Llamala ANTES de proponer, y usá sus claves tal cual: un campo que no está acá no existe, no lo inventes. NO es para cargar un gasto, un pago, una tarea, un combo, una oferta, una compra con factura ni una venta nueva: esas tienen su propia herramienta. Las SUBCATEGORÍAS y CATEGORÍAS DE GASTO sí se crean acá (expense_concept y expense_category): si la que nombró la persona para un gasto no existe, la creás vos.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -889,7 +926,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_alta',
-                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; pero DÓNDE va el margen depende del negocio (que_puedo_cargar de article te lo dice): si trabaja con listas de precio, va POR LISTA en margenes_por_lista y se rechazan percentage_gain, price (precio manual) y apply_provider_percentage_gain —si la persona no dijo para qué lista, preguntale (podés ofrecer "todas")—; si no trabaja con listas, va en percentage_gain. El stock inicial va en stock_inicial (y deposito, solo si el negocio tiene depósitos). 🔴 Lo que le digas a la persona que se carga tiene que estar en los renglones de la tarjeta: si pidió algo que la tarjeta no muestra, decile que eso NO se carga. "Con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
+                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme (con la confianza en "directo" se crea en el acto y te devuelve el resultado). 🔴 Un ARTÍCULO va SIEMPRE con category_id y sub_category_id elegidos por vos del árbol del negocio (categorias_del_negocio) aunque la persona no los haya dicho; si te devuelve un error que empieza con "No se armó ninguna tarjeta", es para vos: elegí y volvé a llamar en el mismo mensaje con exactamente los mismos datos y extras. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos, incluidas las subcategorías y categorías de gasto (expense_concept, expense_category). Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; pero DÓNDE va el margen depende del negocio (que_puedo_cargar de article te lo dice): si trabaja con listas de precio, va POR LISTA en margenes_por_lista y se rechazan percentage_gain, price (precio manual) y apply_provider_percentage_gain —si la persona no dijo para qué lista, preguntale (podés ofrecer "todas")—; si no trabaja con listas, va en percentage_gain. El stock inicial va en stock_inicial (y deposito, solo si el negocio tiene depósitos). 🔴 Lo que le digas a la persona que se carga tiene que estar en los renglones de la tarjeta: si pidió algo que la tarjeta no muestra, decile que eso NO se carga. "Con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -943,7 +980,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_edicion',
-                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme: NO cambia nada. Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme (con la confianza en "directo" se cambia en el acto y te devuelve el resultado). Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1056,7 +1093,7 @@ class HerramientasDeCarga
                         ],
                         'sucursal'             => [
                             'type'        => 'string',
-                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una. Si la persona ya la dijo en esta conversación, mandala; si no la dijo, no la mandes: la herramienta usa la de la persona o la de la última venta o presupuesto de la charla, y recién si no hay ninguna te la pide.',
                         ],
                         'fecha_entrega'        => [
                             'type'        => 'string',
@@ -1220,7 +1257,7 @@ class HerramientasDeCarga
                         ],
                         'sucursal'             => [
                             'type'        => 'string',
-                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una. Si la persona ya la dijo en esta conversación, mandala; si no la dijo, no la mandes: la herramienta usa la de la persona o la de la última venta o presupuesto de la charla, y recién si no hay ninguna te la pide.',
                         ],
                         'reemplaza_a'          => self::esquema_de_reemplazo(),
                     ],
@@ -1364,6 +1401,106 @@ class HerramientasDeCarga
                     'required'   => ['ruta', 'descripcion'],
                 ],
             ],
+            /*
+             * Misión asistente-envios-a-clientes (16/10/2026), al FINAL de lo que había por la regla
+             * del prefijo del caché: los ENVÍOS A CLIENTES del negocio. Las tres SIEMPRE esperan el sí
+             * de la persona, en los tres modos (NUNCA_AUTO_CONFIRMABLES), y sus `case` no pasan por la
+             * auto-confirmación. Viven en los dos canales: en el sistema dejan tarjeta con el botón
+             * Mandar; por WhatsApp, el sí del dueño.
+             */
+            [
+                'name'         => 'proponer_envio_de_comprobante',
+                'description'  => 'Prepara el ENVÍO de un comprobante (una venta, un presupuesto o un recibo de pago) al CLIENTE de ese comprobante, por el WhatsApp del negocio y/o por mail. Usala cuando te piden "mandáselo", "pasáselo por WhatsApp", "mandale el presupuesto por mail": no le des el link a la persona en su lugar. El comprobante va por el número que ve la persona (el N° de la venta, del presupuesto o del pago). Por WhatsApp sale como mensaje con el PDF si el cliente escribió en las últimas 24 horas, y si no como plantilla (la venta con el PDF; el presupuesto y el recibo con el link al PDF en el texto); por mail, con el detalle y el link al PDF. Si no dicen por dónde, va por todos los que se pueda y la respuesta dice por qué no por los otros. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo y aunque te pidan que lo hagas sin preguntar: un mensaje que salió no se desmanda. A quién, por dónde y el texto exacto los muestra el sistema solo (la tarjeta, o un bloque al final de tu mensaje por WhatsApp): vos decí en una frase qué vas a mandar. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tipo'        => [
+                            'type' => 'string',
+                            'enum' => ['venta', 'presupuesto', 'recibo'],
+                            'description' => 'Qué comprobante. "recibo" es el comprobante de un PAGO que hizo el cliente a su cuenta corriente.',
+                        ],
+                        'numero'      => [
+                            'type'        => 'integer',
+                            'description' => 'El número del comprobante como lo ve la persona (N° de venta, de presupuesto o de pago).',
+                        ],
+                        'id'          => [
+                            'type'        => 'integer',
+                            'description' => 'Solo si otra herramienta te devolvió el id y no tenés el número.',
+                        ],
+                        'canales'     => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'string', 'enum' => ['whatsapp', 'mail']],
+                            'description' => 'Por dónde, si la persona lo dijo. Si no lo dijo, no lo mandes: va por todos los que se pueda.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['tipo'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_recordatorios_de_cobro',
+                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'monto_minimo' => [
+                            'type'        => 'number',
+                            'description' => 'Deuda TOTAL mínima del cliente, en pesos ("más de 50 mil" = 50000). Sin esto, cualquier deuda.',
+                        ],
+                        'dias'         => [
+                            'type'        => 'integer',
+                            'description' => 'Que tenga alguna venta impaga de esta cantidad de días o más ("hace más de un mes" = 30). Sin esto, cualquier antigüedad.',
+                        ],
+                        'client_ids'   => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Solo si la persona nombró clientes puntuales: sus ids (de consultar_clientes o consultar_ventas_sin_cobrar).',
+                        ],
+                        'reemplaza_a'  => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_promocion_por_whatsapp',
+                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda, o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` es lo que sale, redactado con la persona: qué se ofrece y a qué precio, sin saludo (el saludo con el nombre lo pongo yo). Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'texto'       => [
+                            'type'        => 'string',
+                            'description' => 'El texto de la promo, tal cual va a salir (sin saludo ni link): "Llevá el combo Asado Completo a $25.000".',
+                        ],
+                        'article_id'  => [
+                            'type'        => 'integer',
+                            'description' => 'Si la promo es de un artículo y tenés su id.',
+                        ],
+                        'articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Si la promo es de un artículo y no tenés su id: su nombre o código.',
+                        ],
+                        'combo_id'    => [
+                            'type'        => 'integer',
+                            'description' => 'Si la promo es de un combo y tenés su id.',
+                        ],
+                        'combo'       => [
+                            'type'        => 'string',
+                            'description' => 'Si la promo es de un combo: su nombre, como quedó creado.',
+                        ],
+                        'vigencia'    => [
+                            'type'        => 'string',
+                            'description' => 'Hasta cuándo vale, si la persona lo dijo, para completar "Válida hasta el ...": "domingo 20/10", "fin de mes". Si no lo dijo, no lo mandes.',
+                        ],
+                        'client_ids'  => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Solo si la persona pidió mandarla a clientes puntuales: sus ids. Sin esto, a todos los clientes con teléfono.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['texto'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1396,7 +1533,7 @@ class HerramientasDeCarga
         return [
             [
                 'name'         => 'proponer_compra_con_factura',
-                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. 🔴 El proveedor es EL QUE DIJO LA PERSONA, nunca el emisor que leés en la factura: si la factura dice otra razón social, no lo cuestiones ni lo preguntes. Recién si la persona no nombró ningún proveedor, usá el emisor de la factura. Llamala en la misma vuelta, sin preguntar nada antes: no transcribas montos, fechas ni renglones de la factura (los lee el escaneo) y no preguntes la sucursal (si no la dijo, uso la suya). Las fotos las saco solas de las que te mandó y todavía no se usaron: no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga (no uses proponer_alta antes); si no lo nombró la persona, queda una tarjeta para que lo confirme. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Los artículos no se cargan acá: el escaneo corre en segundo plano y cuando termina el aviso le aparece a la persona EN EL SISTEMA (no por WhatsApp); los revisa desde Compras. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. 🔴 El proveedor es EL QUE DIJO LA PERSONA, nunca el emisor que leés en la factura: si la factura dice otra razón social, no lo cuestiones ni lo preguntes. Recién si la persona no nombró ningún proveedor, usá el emisor de la factura. Llamala en la misma vuelta, sin preguntar nada antes: no transcribas montos, fechas ni renglones de la factura (los lee el escaneo) y no preguntes la sucursal (si no la dijo, uso la suya). Las fotos las saco solas de las que te mandó y todavía no se usaron: no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga (no uses proponer_alta antes); si no lo nombró la persona, queda una tarjeta para que lo confirme. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Si la persona te dice a qué compra YA CARGADA va la factura ("adjuntala a la compra 12", "es de la compra 12"), pasá su número en compra_num: la factura va a esa compra aunque ya tenga artículos y con el proveedor de esa compra; sin compra_num, la uso si hay una vacía reciente del proveedor o armo una nueva. Los artículos no se cargan acá: el escaneo corre en segundo plano y los revisa la persona desde Compras. Cuando termina, el aviso llega como dice el `resultado` (por WhatsApp con el link para revisarla, o en la pantalla del sistema): contalo con esas palabras y no prometas el otro camino. Si después te pregunta qué trajo la factura, usá consultar_escaneo_de_factura. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1417,6 +1554,15 @@ class HerramientasDeCarga
                         'cuit'        => [
                             'type'        => 'string',
                             'description' => 'Opcional: el CUIT del proveedor, si la persona lo dijo o si no nombró ningún proveedor y lo leés en la factura. Sólo los dígitos.',
+                        ],
+                        /*
+                         * Misión asistente-aviso-escaneo-factura (16/10/2026), también al FINAL por
+                         * la regla del prefijo del caché: la compra ya cargada que nombró el dueño
+                         * (PropuestaCompraConFacturaIaHelper::proponer_sobre_compra_indicada).
+                         */
+                        'compra_num'  => [
+                            'type'        => 'integer',
+                            'description' => 'Opcional: el N° de una compra YA CARGADA a la que la persona pidió adjuntar la factura ("adjuntala a la compra 12"). Sólo si lo dijo; nunca lo inventes ni lo deduzcas.',
                         ],
                     ],
                     'required'   => ['proveedor'],
@@ -1492,6 +1638,75 @@ class HerramientasDeCarga
      * @return array  ['content' => string, 'is_error' => bool]
      */
     public static function ejecutar($tool_name, array $input, AiConversation $conversation, $assistant_message): array
+    {
+        $respuesta = self::despachar($tool_name, $input, $conversation, $assistant_message);
+
+        if ($assistant_message instanceof AiMessage && $assistant_message->confirma_por_texto()) {
+
+            return self::con_la_nota_del_canal($respuesta);
+        }
+
+        return $respuesta;
+    }
+
+    /**
+     * En un canal SIN botones (WhatsApp, MCP), la nota de una propuesta que quedó esperando no habla de
+     * tarjeta (misión asistente-altas-y-conversacion, 16/10/2026).
+     *
+     * 🔴 EL CASO REAL. En demo3, por WhatsApp y en "directo", la actualización masiva —que deja tarjeta
+     * siempre— se contestó con "Dejé la tarjeta para confirmar… Confirmala y corre en segundo plano".
+     * En WhatsApp no hay ninguna tarjeta: el dueño tiene que contestar "sí". El prompt de WhatsApp ya lo
+     * decía, pero la nota fresca del tool_result (AccionesIaHelper::NOTA_PROPUESTA, "La tarjeta queda
+     * para que la persona la confirme") le ganaba. Se cambia la nota y nada más: el resto de la
+     * respuesta, igual.
+     *
+     * @param  array  $respuesta  ['content' => json, 'is_error' => bool]
+     * @return array
+     */
+    protected static function con_la_nota_del_canal(array $respuesta): array
+    {
+        if (!empty($respuesta['is_error']) || !isset($respuesta['content']) || !is_string($respuesta['content'])) {
+
+            return $respuesta;
+        }
+
+        $datos = json_decode($respuesta['content'], true);
+
+        $por_texto = [
+            AccionesIaHelper::NOTA_PROPUESTA       => self::NOTA_PROPUESTA_POR_TEXTO,
+            self::NOTA_AUTO_EJECUCION_FALLIDA      => self::NOTA_AUTO_EJECUCION_FALLIDA_POR_TEXTO,
+        ];
+
+        if (!is_array($datos) || !isset($datos['nota']) || !is_string($datos['nota']) || !isset($por_texto[$datos['nota']])) {
+
+            return $respuesta;
+        }
+
+        $datos['nota'] = $por_texto[$datos['nota']];
+
+        return self::resultado($datos);
+    }
+
+    /** La de NOTA_AUTO_EJECUCION_FALLIDA en un canal sin botones: queda esperando el sí, no "como tarjeta". */
+    const NOTA_AUTO_EJECUCION_FALLIDA_POR_TEXTO = 'No se pudo hacer en el acto por una falla del sistema, así que '
+        . 'quedó esperando el sí de la persona. Decile eso y preguntale si lo intentás de nuevo (con su sí, '
+        . 'confirmar_carga_pendiente con este tarjeta_id). No digas "tarjeta", no digas que ya está cargado ni inventes otro motivo.';
+
+    /** La nota de una propuesta que espera el sí de la persona en un canal sin botones. */
+    const NOTA_PROPUESTA_POR_TEXTO = 'Todavía NO está hecho: quedó esperando el sí de la persona. Acá no hay '
+        . 'tarjeta ni botón, así que no digas "tarjeta" ni "confirmala": decí en una línea qué vas a hacer, '
+        . 'con los datos exactos, y preguntá si lo hacés. Con su sí, confirmar_carga_pendiente con este tarjeta_id.';
+
+    /**
+     * El despacho de cada herramienta de carga. Ver ejecutar().
+     *
+     * @param  string  $tool_name
+     * @param  array  $input
+     * @param  AiConversation  $conversation
+     * @param  mixed  $assistant_message
+     * @return array
+     */
+    protected static function despachar($tool_name, array $input, AiConversation $conversation, $assistant_message): array
     {
         $tool_name = (string) $tool_name;
 
@@ -1850,6 +2065,24 @@ class HerramientasDeCarga
                     EntradaDeCargaIa::texto($input, 'descripcion'),
                     EntradaDeCargaIa::valor($input, 'reemplaza_a')
                 ));
+
+            /*
+             * Misión asistente-envios-a-clientes (16/10/2026): los envíos a clientes.
+             * 🔴 SIN pasar por la puerta de la auto-confirmación, a propósito: los tres SIEMPRE esperan
+             * el sí de la persona, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES): un mensaje que
+             * salió no se desmanda. (Estos comentarios no nombran la función de la puerta: los tests
+             * 36, 51 y 55 leen cada `case` como texto y buscan ese nombre.)
+             */
+            case 'proponer_envio_de_comprobante':
+                return self::resultado(PropuestaEnvioComprobanteIaHelper::proponer($contexto, $assistant_message, $input));
+
+            // 🔴 SIN la auto-confirmación, a propósito (ver NUNCA_AUTO_CONFIRMABLES).
+            case 'proponer_recordatorios_de_cobro':
+                return self::resultado(PropuestaRecordatoriosCobroIaHelper::proponer($contexto, $assistant_message, $input));
+
+            // 🔴 SIN la auto-confirmación, a propósito (ver NUNCA_AUTO_CONFIRMABLES).
+            case 'proponer_promocion_por_whatsapp':
+                return self::resultado(PropuestaPromocionWhatsappIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));

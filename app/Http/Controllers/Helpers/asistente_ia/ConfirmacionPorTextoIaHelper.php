@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
+use App\Services\AsistenteIa\HerramientasDeCarga;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -47,6 +49,28 @@ class ConfirmacionPorTextoIaHelper
     const MENSAJE_OTRO_CANAL = 'Esa carga la propusiste en el sistema, así que se confirma desde ahí con el botón.';
 
     /**
+     * Lo que se le contesta al modelo cuando quiere confirmar un ENVÍO A CLIENTES sin un sí explícito
+     * del dueño (ver ConfirmacionDeterministaIaHelper::es_si_para_envio()).
+     */
+    const MENSAJE_ENVIO_SIN_SI = 'El dueño no dijo que sí a este envío: no lo mandé. Preguntale si lo mandás '
+        . 'y esperá a que te conteste que sí en un mensaje suyo. Si te pidió un cambio, armá la propuesta de nuevo.';
+
+    /**
+     * Lo que se le contesta al modelo cuando no se puede asegurar que el "sí" contesta a ESTE envío tal
+     * como el dueño lo vio (B1 del segundo chequeo): ver envio_no_visto().
+     */
+    const MENSAJE_ENVIO_NO_VISTO = 'No lo mandé: no puedo asegurar que el dueño vio exactamente esto justo antes de '
+        . 'decir que sí. Volvé a mostrarle lo que se va a mandar (armá la propuesta de nuevo) y pedile el sí.';
+
+    /** Lo que se le contesta al modelo cuando el último mensaje tiene más de un envío esperando el sí. */
+    const MENSAJE_VARIOS_ENVIOS = 'No mandé nada: había más de un envío esperando el sí en el mismo mensaje, y un solo '
+        . '"sí" no alcanza para saber a cuál contesta. Proponé un envío por vez y pedile el sí a cada uno.';
+
+    /** Lo que se le contesta a un envío a clientes propuesto por MCP (no se confirma por ahí). */
+    const MENSAJE_ENVIO_POR_MCP = 'Un envío a clientes no se confirma por MCP: lo tiene que mandar una persona desde '
+        . 'el sistema o por WhatsApp, después de ver a quiénes y el texto.';
+
+    /**
      * La nota que acompaña a toda carga ya ejecutada.
      *
      * 🔴 LE DICE AL MODELO DE DÓNDE SACA EL NÚMERO, Y ES POR UN CASO REAL. El 22/9/2026 en demo3 el
@@ -57,8 +81,11 @@ class ConfirmacionPorTextoIaHelper
      * contestó SaleController::store()). Si `resultado` viene vacío, no hay número que decir.
      */
     const NOTA_EJECUTADA = 'Ahora sí quedó registrado. Contale a la persona lo que dice `resultado`, '
-        . 'en una línea. 🔴 El número, el nombre y el total salen DE AHÍ, palabra por palabra: no los '
-        . 'saques de tu memoria ni de la conversación, y si `resultado` no trae número, no digas ninguno.';
+        . 'en una línea, y si viene `detalle`, sumá lo que importa de ahí: el total de una venta o un '
+        . 'presupuesto, el precio de venta de un artículo, qué campo quedó con qué valor (con su nombre '
+        . 'tal cual: una razón social no es un domicilio) y lo que no quedó. 🔴 El número, el nombre y el '
+        . 'total salen DE AHÍ (`resultado` y `detalle`), palabra por palabra: no los saques de tu memoria '
+        . 'ni de la conversación, y si no vienen, no digas ninguno.';
 
     /**
      * Confirma una carga propuesta en un turno anterior y devuelve el resultado para el tool_result.
@@ -226,7 +253,12 @@ class ConfirmacionPorTextoIaHelper
      */
     public static function cancelar(AiConversation $conversation, AiMessage $assistant_message, $accion_id)
     {
-        $rechazo = self::rechazo($conversation, $assistant_message, $accion_id);
+        /*
+         * Cancelar es siempre seguro: no le exige a un envío a clientes el sí explícito ni que sea lo
+         * recién visto (revisión de merge, 16/10/2026). Con esas guardas, un "no, dejalo" no podía
+         * cancelar la promo que justamente estaba rechazando.
+         */
+        $rechazo = self::rechazo($conversation, $assistant_message, $accion_id, false);
 
         if (!is_null($rechazo)) {
 
@@ -242,9 +274,11 @@ class ConfirmacionPorTextoIaHelper
      * @param  \App\Models\AiConversation  $conversation
      * @param  \App\Models\AiMessage  $assistant_message
      * @param  mixed  $accion_id
+     * @param  bool  $para_confirmar  false al CANCELAR: las guardas de los envíos (el sí explícito y lo
+     *                                recién visto) solo valen para mandar.
      * @return array|null
      */
-    protected static function rechazo(AiConversation $conversation, AiMessage $assistant_message, $accion_id)
+    protected static function rechazo(AiConversation $conversation, AiMessage $assistant_message, $accion_id, $para_confirmar = true)
     {
         $accion = AiMessageAction::where('id', (int) $accion_id)
                                     ->where('ai_conversation_id', $conversation->id)
@@ -316,6 +350,114 @@ class ConfirmacionPorTextoIaHelper
             return RespuestaDeCargaIa::error(self::MENSAJE_MISMO_TURNO);
         }
 
+        /*
+         * 🔴 LOS ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, correcciones 2 y 3 del chequeo):
+         * el sí lo verifica el CÓDIGO, no la lectura del modelo, y por MCP no se confirman nunca (un
+         * agente externo podría proponer y confirmar 250 WhatsApps sin que una persona lea la tarjeta;
+         * las herramientas ni se exponen por ahí, esto es el cinturón).
+         */
+        if ($para_confirmar && in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
+
+            if ((string) $propuso->canal === AiMessage::CANAL_MCP) {
+
+                return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_POR_MCP);
+            }
+
+            /*
+             * Un mensaje con foto no es un sí a un envío (B4 de la revisión de merge), igual que en
+             * la confirmación determinista: la foto puede ser el pedido de otra cosa.
+             */
+            if (AiMessageImagen::where('ai_message_id', $pedido->id)->exists()
+                || !ConfirmacionDeterministaIaHelper::es_si_para_envio($pedido->contenido)) {
+
+                return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_SIN_SI);
+            }
+
+            $no_visto = self::envio_no_visto($conversation, $accion, $propuso, $pedido);
+
+            if (!is_null($no_visto)) {
+
+                return RespuestaDeCargaIa::error($no_visto);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔴 EL SÍ ATADO A LO QUE EL DUEÑO VIO (B1 del segundo chequeo, 16/10/2026). Para un envío a
+     * clientes no alcanza con que la tarjeta sea de otro turno: el "sí" tiene que estar contestando
+     * ESE bloque, recién leído. El motivo del rechazo, o null si se puede confirmar:
+     *
+     *   1. la tarjeta es del ÚLTIMO mensaje del asistente anterior al "sí" (un "sí" a otra pregunta no
+     *      confirma una tarjeta de hace tres mensajes, ni una vieja que una corrección no llegó a pisar);
+     *   2. se propuso hace menos de ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS (una tarjeta de
+     *      ayer no se confirma con un "sí" de hoy);
+     *   3. su bloque está ADENTRO del mensaje que leyó el dueño (si ese mensaje salió sin el bloque —por
+     *      ejemplo por un texto de respaldo—, el dueño no vio a quiénes ni qué texto);
+     *   4. no hay ningún mensaje del dueño DESPUÉS del "sí" (un "sí" seguido de "esperá");
+     *   5. ese mensaje no tiene MÁS de un envío esperando (un "sí" no dice a cuál contesta). Al proponer
+     *      ya se reemplazan los otros (DestinatariosIaHelper::reemplazar_otros_envios()): esto es el
+     *      cinturón.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  \App\Models\AiMessage  $propuso  El mensaje del asistente que la propuso.
+     * @param  \App\Models\AiMessage  $pedido  El "sí" del dueño.
+     * @return string|null
+     */
+    protected static function envio_no_visto(AiConversation $conversation, AiMessageAction $accion, AiMessage $propuso, AiMessage $pedido)
+    {
+        // 1. El último mensaje del asistente antes del "sí".
+        $ultimo = AiMessage::where('ai_conversation_id', $conversation->id)
+                           ->where('rol', 'assistant')
+                           ->where('id', '<', $pedido->id)
+                           ->orderBy('id', 'DESC')
+                           ->first();
+
+        if (is_null($ultimo) || (int) $ultimo->id !== (int) $propuso->id) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 2. Reciente.
+        if (is_null($accion->created_at)
+            || $accion->created_at->lt(now()->subMinutes(ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS))) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 3. El bloque, adentro de lo que el dueño leyó.
+        $datos = is_array($accion->datos) ? $accion->datos : [];
+        $bloque = isset($datos['bloque']) ? trim((string) $datos['bloque']) : '';
+
+        if ($bloque === '' || mb_strpos((string) $propuso->contenido, $bloque) === false) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 4. Nada del dueño después del "sí".
+        $despues = AiMessage::where('ai_conversation_id', $conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '>', $pedido->id)
+                            ->exists();
+
+        if ($despues) {
+
+            return self::MENSAJE_ENVIO_NO_VISTO;
+        }
+
+        // 5. Un solo envío esperando en ese mensaje.
+        $envios = AiMessageAction::where('ai_message_id', $propuso->id)
+                                 ->whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
+                                 ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                 ->count();
+
+        if ($envios > 1) {
+
+            return self::MENSAJE_VARIOS_ENVIOS;
+        }
+
         return null;
     }
 
@@ -362,19 +504,125 @@ class ConfirmacionPorTextoIaHelper
                 $texto = (string) $model->resultado->texto;
             }
 
-            return [
+            $respuesta = [
                 'ok'         => true,
                 'tarjeta_id' => (int) $accion_id,
                 'estado'     => is_null($model) ? null : (string) $model->estado,
                 'resultado'  => $texto,
                 'nota'       => self::NOTA_EJECUTADA,
             ];
+
+            $detalle = is_null($model) ? [] : self::detalle_del_resultado($model->resultado, (string) $model->tipo);
+
+            if (count($detalle)) {
+
+                $respuesta['detalle'] = $detalle;
+            }
+
+            return $respuesta;
         }
 
         $mensaje = isset($body['message']) ? (string) $body['message'] : EjecutorAccionesIaHelper::MENSAJE_ERROR_GENERICO;
 
         return RespuestaDeCargaIa::error($mensaje);
     }
+
+    /**
+     * Las claves del resultado que el modelo puede repetir además del texto, ya listas para leer
+     * (misión asistente-altas-y-conversacion, 16/10/2026).
+     *
+     * 🔴 POR QUÉ. Hasta acá traducir() le pasaba al modelo SOLO `resultado.texto` ("Presupuesto N° 900004
+     * creado") y NOTA_EJECUTADA le prohíbe dar un número que no venga ahí: en demo3 el asistente creó
+     * el presupuesto y la venta sin decir el total (el `total` estaba en el resultado y no llegaba), y
+     * del alta de un cliente contestó "con domicilio en Ferreteria El Clavo" —que era la razón social—
+     * porque no tenía de dónde saber qué campo quedó con qué valor y lo redactó leyendo el pedido.
+     *
+     * Es una LISTA CERRADA a propósito: el resultado de cada carga trae también rutas, ids y
+     * parámetros para la pantalla, y nada de eso tiene que llegarle al modelo ni a la persona. El
+     * `texto` no cambia (hay tests que lo comparan tal cual).
+     *
+     * @param  mixed  $resultado  El `resultado` de la tarjeta (objeto, como lo castea AiMessageAction).
+     * @return array<string, mixed>
+     */
+    public static function detalle_del_resultado($resultado, $tipo = '')
+    {
+        if (!is_object($resultado) && !is_array($resultado)) {
+
+            return [];
+        }
+
+        $resultado = json_decode(json_encode($resultado), true);
+
+        if (!is_array($resultado)) {
+
+            return [];
+        }
+
+        $detalle = [];
+
+        if (isset($resultado['numero']) && is_numeric($resultado['numero']) && (int) $resultado['numero'] > 0) {
+
+            $detalle['numero'] = (int) $resultado['numero'];
+        }
+
+        if (isset($resultado['total']) && is_numeric($resultado['total'])) {
+
+            $detalle['total'] = FormatoIaHelper::monto((float) $resultado['total']);
+        }
+
+        /*
+         * El registro que se acaba de CREAR o EDITAR, para usarlo en la misma vuelta (crear la
+         * subcategoría de gasto y cargar el gasto con ella, o cargarle stock al artículo recién creado)
+         * sin volver a buscarlo. Nunca el de una baja: ver AccionesIaHelper::linea_de_historial().
+         */
+        if (in_array((string) $tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION], true)
+            && isset($resultado['entidad'], $resultado['id']) && is_string($resultado['entidad'])
+            && is_numeric($resultado['id']) && (int) $resultado['id'] > 0) {
+
+            $detalle['registro'] = ['entidad' => $resultado['entidad'], 'id' => (int) $resultado['id']];
+        }
+
+        foreach (self::CLAVES_DEL_DETALLE as $clave) {
+
+            if (!array_key_exists($clave, $resultado)) {
+
+                continue;
+            }
+
+            $valor = $resultado[$clave];
+
+            if (is_null($valor) || $valor === '' || (is_array($valor) && !count($valor))) {
+
+                continue;
+            }
+
+            $detalle[$clave] = $valor;
+        }
+
+        return $detalle;
+    }
+
+    /**
+     * Las claves del resultado, además de `numero` y `total`, que viajan en `detalle` tal cual.
+     * Las agrega quien arma cada resultado (EjecutorGenericoIaHelper para las altas y ediciones,
+     * PropuestaActualizacionMasivaIaHelper para la masiva).
+     */
+    const CLAVES_DEL_DETALLE = [
+        'precio_de_venta_texto',
+        'campos_guardados',
+        'campos_que_no_quedaron',
+        'cambios_aplicados',
+        'ejemplos_de_precio',
+        'aviso',
+        /*
+         * Los envíos a clientes (misión asistente-envios-a-clientes, 16/10/2026): qué salió por cada
+         * canal, cuántos quedaron encolados y a quiénes NO les llegó y por qué. Sin esto el modelo
+         * solo tendría el `texto` y no podría contarle al dueño que por mail no salió.
+         */
+        'enviados',
+        'encolados',
+        'no_salieron',
+    ];
 
     /**
      * Corre la carga con la persona autenticada y deja la autenticación como estaba.

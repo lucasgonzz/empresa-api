@@ -184,6 +184,32 @@ class AiMessageAction extends Model
      */
     const TIPO_BORRADO_PANTALLA = 'borrado_pantalla';
 
+    /*
+     * Los ENVÍOS A CLIENTES del negocio (misión asistente-envios-a-clientes, 16/10/2026): lo primero
+     * que el asistente le manda a alguien que no es el dueño. Van al FINAL, como siempre. 🔴 Los tres
+     * están en HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES: un mensaje que salió no se desmanda, así
+     * que esperan el sí de la persona en los TRES modos, después de que vio a quiénes, cuántos y el
+     * texto exacto. Los tres caben en el `string(30)` de la columna `tipo`.
+     */
+
+    /**
+     * Mandarle a su cliente un comprobante (venta, presupuesto o recibo) por WhatsApp y/o por mail.
+     * Lo arma y lo ejecuta PropuestaEnvioComprobanteIaHelper.
+     */
+    const TIPO_ENVIO_COMPROBANTE = 'envio_de_comprobante';
+
+    /**
+     * Mandarles el recordatorio de cobro por WhatsApp a los clientes que deben (el mismo del módulo
+     * de alertas, un job por cliente). Lo arma y lo ejecuta PropuestaRecordatoriosCobroIaHelper.
+     */
+    const TIPO_RECORDATORIOS_COBRO = 'recordatorios_de_cobro';
+
+    /**
+     * Mandarles una promoción por WhatsApp a los clientes, con el link a la tienda, con topes por
+     * día y por cliente. Lo arma y lo ejecuta PropuestaPromocionWhatsappIaHelper.
+     */
+    const TIPO_PROMOCION_WHATSAPP = 'promocion_por_whatsapp';
+
     protected $guarded = [];
 
     /**
