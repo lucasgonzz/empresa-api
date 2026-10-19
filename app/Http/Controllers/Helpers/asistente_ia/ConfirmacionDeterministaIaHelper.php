@@ -443,6 +443,101 @@ class ConfirmacionDeterministaIaHelper
     }
 
     /**
+     * true si el mensaje del dueño es un «CASI SÍ» a un envío a clientes: una afirmación corta que NO
+     * alcanza como sí para mandar (es_si_para_envio() la rechaza) — «ok», «listo», «perfecto», «va»,
+     * «joya», «de acuerdo», «hacelo», «listo, gracias», «sí, gracias»… (misión
+     * asistente-arreglos-segunda-prueba, N2, 19/10/2026).
+     *
+     * 🔴 NO MANDA NADA, Y POR ESO PUEDE SER MÁS ANCHO QUE EL SÍ. Lo usa PedidoDelSiParaEnvioIaHelper para
+     * que el SISTEMA le pida el «sí» al dueño (con el bloque otra vez a la vista) en vez de dejárselo al
+     * modelo. El caso real es el A8 de la segunda prueba contra demo3 (19/10): «ok» a los recordatorios
+     * de cobro → el modelo contestó «necesito un sí» en un mensaje nuevo, sin el bloque → el «sí, mandalo»
+     * siguiente rebotó con MENSAJE_ENVIO_NO_VISTO → tres «sí» y unos cinco minutos para mandar. Que un
+     * «ok» no mande sigue siendo la decisión de B1 (test 78): esto solo cambia QUIÉN pide el sí.
+     *
+     * Cobertura total, como las otras dos: CADA palabra tiene que ser una afirmación (las de las cargas,
+     * las fuertes y las débiles de envío, los verbos de mandar) o un acompañante (los de las cargas y los
+     * de envío), con al menos una afirmación. Con signo de pregunta no ("¿ok?" pregunta), ni con una
+     * palabra de más ("ok pero sacá a Pérez" es una corrección: decide el modelo), ni más largo que
+     * LARGO_MAXIMO ya normalizado. Un "gracias" o un "bueno" solos no son nada.
+     *
+     * @param  string|null  $texto
+     * @return bool  false también si ES un sí para envío (ése lo resuelve la confirmación, no esto).
+     */
+    public static function es_casi_si_para_envio($texto)
+    {
+        $texto = (string) $texto;
+
+        // Una pregunta no es un sí, ni un casi sí. Antes de normalizar: normalizar saca los signos.
+        if (preg_match('/[?¿]/u', $texto)) {
+
+            return false;
+        }
+
+        // El sí de verdad no es un "casi": ése va por confirmar_carga_pendiente.
+        if (self::es_si_para_envio($texto)) {
+
+            return false;
+        }
+
+        $normalizado = self::normalizar($texto);
+
+        if ($normalizado === '' || mb_strlen($normalizado) > self::LARGO_MAXIMO) {
+
+            return false;
+        }
+
+        $afirmaciones = self::frases(array_merge(
+            self::AFIRMACIONES,
+            self::AFIRMACIONES_DE_ENVIO,
+            self::AFIRMACIONES_DEBILES_DE_ENVIO,
+            self::VERBOS_DE_ENVIO
+        ));
+
+        $acompanantes = self::frases(array_merge(self::ACOMPANANTES, self::ACOMPANANTES_DE_ENVIO));
+
+        $palabras = explode(' ', $normalizado);
+        $total = count($palabras);
+        $hubo_afirmacion = false;
+        $i = 0;
+
+        while ($i < $total) {
+
+            $avance = 0;
+
+            // Primero las frases de dos palabras ("de acuerdo", "por favor"), después las de una.
+            foreach ([2, 1] as $largo) {
+
+                if ($i + $largo > $total) {
+                    continue;
+                }
+
+                $frase = implode(' ', array_slice($palabras, $i, $largo));
+
+                if (in_array($frase, $afirmaciones, true)) {
+                    $hubo_afirmacion = true;
+                    $avance = $largo;
+                    break;
+                }
+
+                if (in_array($frase, $acompanantes, true)) {
+                    $avance = $largo;
+                    break;
+                }
+            }
+
+            // Una palabra fuera del vocabulario: ya no es un casi sí, es otra cosa (decide el modelo).
+            if ($avance === 0) {
+                return false;
+            }
+
+            $i += $avance;
+        }
+
+        return $hubo_afirmacion;
+    }
+
+    /**
      * true si el último mensaje del asistente dejó una tarjeta que sigue pendiente (de menos de
      * MINUTOS_MAXIMOS) y el mensaje de la persona NO la confirmó: es el turno en el que la persona
      * CORRIGE la carga ("sí, pero cambiale el nombre", "ponele otro precio").

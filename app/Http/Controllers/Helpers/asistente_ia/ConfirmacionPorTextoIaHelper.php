@@ -370,18 +370,49 @@ class ConfirmacionPorTextoIaHelper
             if (AiMessageImagen::where('ai_message_id', $pedido->id)->exists()
                 || !ConfirmacionDeterministaIaHelper::es_si_para_envio($pedido->contenido)) {
 
-                return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_SIN_SI);
+                return self::rechazo_de_envio($conversation, $assistant_message, $accion, self::MENSAJE_ENVIO_SIN_SI);
             }
 
             $no_visto = self::envio_no_visto($conversation, $accion, $propuso, $pedido);
 
             if (!is_null($no_visto)) {
 
-                return RespuestaDeCargaIa::error($no_visto);
+                return self::rechazo_de_envio($conversation, $assistant_message, $accion, $no_visto);
             }
         }
 
         return null;
+    }
+
+    /**
+     * El rechazo de un sí a un envío a clientes, con la nota de que el sistema se lo vuelve a mostrar al
+     * dueño cuando corresponde (misión asistente-arreglos-segunda-prueba, N2, 19/10/2026).
+     *
+     * 🔴 EL MOTIVO NO CAMBIA: sigue siendo MENSAJE_ENVIO_SIN_SI o MENSAJE_ENVIO_NO_VISTO tal cual (lo fijan
+     * los tests de B1, 78 y 79), y el envío NO sale. Lo único que se suma es `nota`, y solo si la función
+     * que decide «hay que volver a mostrarlo» (PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar(),
+     * la MISMA que usa el pegado de AsistenteIaService::con_los_bloques_de_envio()) elige ESTE envío. Así
+     * el modelo no contesta «armá la propuesta de nuevo» —que fue lo que armó el círculo de tres «sí» del
+     * 19/10 en demo3— y se limita a pedir el sí mientras el sistema pega el bloque y lo registra.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $assistant_message  El assistant que se está generando.
+     * @param  \App\Models\AiMessageAction  $accion  El envío que el modelo quiso confirmar.
+     * @param  string  $motivo  El mensaje de rechazo de siempre.
+     * @return array
+     */
+    protected static function rechazo_de_envio(AiConversation $conversation, AiMessage $assistant_message, AiMessageAction $accion, $motivo)
+    {
+        $respuesta = RespuestaDeCargaIa::error($motivo);
+
+        $a_mostrar = PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant_message);
+
+        if (!is_null($a_mostrar) && (int) $a_mostrar->id === (int) $accion->id) {
+
+            $respuesta['nota'] = PedidoDelSiParaEnvioIaHelper::NOTA_SE_VUELVE_A_MOSTRAR;
+        }
+
+        return $respuesta;
     }
 
     /**
@@ -391,14 +422,25 @@ class ConfirmacionPorTextoIaHelper
      *
      *   1. la tarjeta es del ÚLTIMO mensaje del asistente anterior al "sí" (un "sí" a otra pregunta no
      *      confirma una tarjeta de hace tres mensajes, ni una vieja que una corrección no llegó a pisar);
+     *      o ese último mensaje es uno en el que EL SISTEMA le volvió a mostrar el bloque al dueño
+     *      (`datos.mostrado_en`, misión asistente-arreglos-segunda-prueba, N2, 19/10/2026: el «ok» que
+     *      el sistema contesta con el bloque, o el sí que llegó con el bloque fuera de la vista), y en ese
+     *      caso el mensaje tiene que estar 'listo';
      *   2. se propuso hace menos de ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS (una tarjeta de
-     *      ayer no se confirma con un "sí" de hoy);
-     *   3. su bloque está ADENTRO del mensaje que leyó el dueño (si ese mensaje salió sin el bloque —por
-     *      ejemplo por un texto de respaldo—, el dueño no vio a quiénes ni qué texto);
+     *      ayer no se confirma con un "sí" de hoy) — contado desde la PROPUESTA, aunque se haya vuelto a
+     *      mostrar después;
+     *   3. su bloque está ADENTRO del mensaje que leyó el dueño —el de la regla 1, el que propuso o el de
+     *      `mostrado_en`— (si ese mensaje salió sin el bloque —por ejemplo por un texto de respaldo—, el
+     *      dueño no vio a quiénes ni qué texto);
      *   4. no hay ningún mensaje del dueño DESPUÉS del "sí" (un "sí" seguido de "esperá");
      *   5. ese mensaje no tiene MÁS de un envío esperando (un "sí" no dice a cuál contesta). Al proponer
      *      ya se reemplazan los otros (DestinatariosIaHelper::reemplazar_otros_envios()): esto es el
-     *      cinturón.
+     *      cinturón. Si el sí contesta un mensaje de `mostrado_en` (que no propuso nada), se cuentan los
+     *      envíos esperando de TODA la conversación: tiene que haber uno solo.
+     *
+     * Las reglas 1 y 3 viven juntas en PedidoDelSiParaEnvioIaHelper::mensaje_que_lo_muestra(), que es la
+     * misma que usa el «casi sí» para saber si el bloque está a la vista: una sola definición de «el dueño
+     * lo tiene delante».
      *
      * @param  \App\Models\AiConversation  $conversation
      * @param  \App\Models\AiMessageAction  $accion
@@ -408,14 +450,14 @@ class ConfirmacionPorTextoIaHelper
      */
     protected static function envio_no_visto(AiConversation $conversation, AiMessageAction $accion, AiMessage $propuso, AiMessage $pedido)
     {
-        // 1. El último mensaje del asistente antes del "sí".
-        $ultimo = AiMessage::where('ai_conversation_id', $conversation->id)
-                           ->where('rol', 'assistant')
-                           ->where('id', '<', $pedido->id)
-                           ->orderBy('id', 'DESC')
-                           ->first();
+        /*
+         * 1 y 3. El último mensaje del asistente antes del "sí" es el que propuso o uno de `mostrado_en`,
+         * está 'listo' y tiene el bloque adentro. Un mensaje del modelo que copió el bloque por su cuenta
+         * NO vale: `mostrado_en` lo escribe solo el sistema, al pegarlo él.
+         */
+        $a_la_vista = PedidoDelSiParaEnvioIaHelper::mensaje_que_lo_muestra($conversation, $accion, $pedido);
 
-        if (is_null($ultimo) || (int) $ultimo->id !== (int) $propuso->id) {
+        if (is_null($a_la_vista)) {
 
             return self::MENSAJE_ENVIO_NO_VISTO;
         }
@@ -423,15 +465,6 @@ class ConfirmacionPorTextoIaHelper
         // 2. Reciente.
         if (is_null($accion->created_at)
             || $accion->created_at->lt(now()->subMinutes(ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS))) {
-
-            return self::MENSAJE_ENVIO_NO_VISTO;
-        }
-
-        // 3. El bloque, adentro de lo que el dueño leyó.
-        $datos = is_array($accion->datos) ? $accion->datos : [];
-        $bloque = isset($datos['bloque']) ? trim((string) $datos['bloque']) : '';
-
-        if ($bloque === '' || mb_strpos((string) $propuso->contenido, $bloque) === false) {
 
             return self::MENSAJE_ENVIO_NO_VISTO;
         }
@@ -447,13 +480,23 @@ class ConfirmacionPorTextoIaHelper
             return self::MENSAJE_ENVIO_NO_VISTO;
         }
 
-        // 5. Un solo envío esperando en ese mensaje.
-        $envios = AiMessageAction::where('ai_message_id', $propuso->id)
-                                 ->whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
-                                 ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
-                                 ->count();
+        /*
+         * 5. Un solo envío esperando: en el mensaje que lo propuso, como siempre; y si el sí contesta un
+         * mensaje de `mostrado_en` (que no propuso nada), en toda la conversación.
+         */
+        $envios = AiMessageAction::whereIn('tipo', HerramientasDeCarga::TIPOS_DE_ENVIO)
+                                 ->where('estado', AiMessageAction::ESTADO_PROPUESTA);
 
-        if ($envios > 1) {
+        if ((int) $a_la_vista->id === (int) $propuso->id) {
+
+            $envios->where('ai_message_id', $propuso->id);
+
+        } else {
+
+            $envios->where('ai_conversation_id', $conversation->id);
+        }
+
+        if ($envios->count() > 1) {
 
             return self::MENSAJE_VARIOS_ENVIOS;
         }
