@@ -69,6 +69,12 @@ class DeleteModelsHelper
         'payment_method_installment',
         'buyer',
         'order',
+        // Pedido de Tienda Nube, pedido de Mercado Libre y marca de otro comercio (misión
+        // tenencia-tiendanube-meli-direcciones-marcas, 19/10/2026): sus destroy() responden 404 y no
+        // borran nada, igual que los de arriba. (`address` ya estaba.)
+        'tienda_nube_order',
+        'meli_order',
+        'brand',
     ];
 
     /**
