@@ -441,6 +441,9 @@ class PropuestaCompraConFacturaIaHelper
      *     el dueño elige qué renglones sumar, así que nada se duplica sin que él lo vea.
      *   - CON UN ESCANEO EN CURSO, el mismo corte que en el resto del sistema: dos escaneos sobre una
      *     compra se pisarían.
+     *   - 🔴 CON OTRA FACTURA (escaneada o cargada a mano) Y SIN QUE EL DUEÑO HAYA ESCRITO EL NÚMERO
+     *     AHORA, queda tarjeta en todos los modos (revisión independiente de la misión
+     *     asistente-arreglos-segunda-prueba, 19/10/2026; ver la_nombro_el_dueno()).
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
@@ -528,6 +531,31 @@ class PropuestaCompraConFacturaIaHelper
                 . ': contale que la adjuntás igual porque la nombró, como un escaneo más.';
         }
 
+        /*
+         * 🔴 Y SI ESA COMPRA YA TIENE OTRA FACTURA Y EL DUEÑO NO ESCRIBIÓ SU NÚMERO AHORA, NO SE EJECUTA
+         * SOLA (revisión independiente de la misión asistente-arreglos-segunda-prueba, 19/10/2026). El
+         * revisor midió que con un «cargala» sin número el modelo puede sacar `compra_num` del historial
+         * (un «Creé la Compra N° 13» anterior, o el `opciones.compra_vacia` de la pregunta) y en
+         * "resuelto" la factura quedaba pegada a la 13, que ya tenía otra: el mismo resultado que el
+         * caso real del 19/10 por otro camino, y no se pudo saber en demo3 por cuál entró. Así que, con
+         * otra factura adentro (escaneada o a mano) y sin el número escrito por el dueño en lo que
+         * mandó desde la última respuesta del asistente (o en el mensaje de la foto), la tarjeta sale
+         * con `requiere_confirmacion` —la misma bandera que el proveedor no dicho: queda tarjeta aunque
+         * el modo sea "resuelto" o "directo"— y el texto lo dice. Si el dueño SÍ lo escribió («es de la
+         * compra 13»), manda él, como antes.
+         */
+        $sin_nombrar = (!is_null($otra_factura) || self::tiene_factura_cargada($compra))
+            && !self::la_nombro_el_dueno($contexto, $mensaje, (int) $compra->num, $fotos['consideradas']);
+
+        if ($sin_nombrar) {
+
+            $avisos[] = 'La compra N° ' . $compra->num . ' ya tiene otra factura y no me la nombraste en este mensaje: '
+                . 'confirmá que esta factura va ahí antes de que la cargue.';
+
+            $nota[] = 'La compra N° ' . $compra->num . ' ya tiene otra factura y la persona no la nombró en lo que te escribió ahora: '
+                . 'quedó una tarjeta. Preguntale si la sumás a esa compra o armás una nueva (compra_nueva) y no digas que quedó cargada.';
+        }
+
         $que_pasa = 'Se adjunta la factura a la compra N° ' . $compra->num
             . ($articulos > 0 ? ', que ya tiene ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos') : '');
 
@@ -568,11 +596,85 @@ class PropuestaCompraConFacturaIaHelper
 
         $extra = count($nota) ? ['nota' => implode(' ', $nota)] : [];
 
+        if ($sin_nombrar) {
+
+            $extra['requiere_confirmacion'] = true;
+        }
+
         return AccionesIaHelper::respuesta_de_propuesta(
             $creada,
             'Compra N° ' . $compra->num . ' de ' . $proveedor->name . ' · ' . $cuantas . ' · ' . $que_pasa,
             $extra
         );
+    }
+
+    /**
+     * true si el dueño escribió el número de la compra en lo que mandó AHORA: sus mensajes desde la
+     * última respuesta del asistente (lo que el modelo está contestando) o el mensaje que trajo la
+     * foto de la factura. Ver el 🔴 de proponer_sobre_compra_indicada().
+     *
+     * Lo de antes de la última respuesta no cuenta a propósito: «mirá la compra 13» de hace un rato
+     * no es «esta factura va a la 13». Y lo que escribió el ASISTENTE nunca cuenta («Creé la Compra
+     * N° 13», o la pregunta que nombra la compra vacía): es de donde el modelo saca un número que el
+     * dueño no dijo.
+     *
+     * El número se busca entero, sin dígitos pegados (el 13 no aparece en "00012345" ni en "130"). Un
+     * "13" que es otra cosa ("el 13/10") cuenta igual: es el lado seguro, porque en el peor caso se
+     * ejecuta lo que antes de esta revisión se ejecutaba siempre.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
+     * @param  int  $num  El N° de la compra (`provider_orders.num`).
+     * @param  array<int, \App\Models\AiMessageImagen>  $fotos  Las fotos de la factura (de qué mensajes vinieron).
+     * @return bool
+     */
+    protected static function la_nombro_el_dueno(ContextoDeCargaIa $contexto, AiMessage $mensaje, $num, array $fotos)
+    {
+        $conversation_id = (int) $contexto->conversation->id;
+
+        $ultima_respuesta = AiMessage::where('ai_conversation_id', $conversation_id)
+                                        ->where('rol', 'assistant')
+                                        ->where('id', '<', (int) $mensaje->id)
+                                        ->max('id');
+
+        $consulta = AiMessage::where('ai_conversation_id', $conversation_id)
+                                ->where('rol', 'user')
+                                ->where('id', '<', (int) $mensaje->id);
+
+        if (!is_null($ultima_respuesta)) {
+
+            $consulta->where('id', '>', (int) $ultima_respuesta);
+        }
+
+        $ids = $consulta->pluck('id')->all();
+
+        foreach ($fotos as $foto) {
+
+            $ids[] = (int) $foto->ai_message_id;
+        }
+
+        if (!count($ids)) {
+
+            return false;
+        }
+
+        $textos = AiMessage::where('ai_conversation_id', $conversation_id)
+                            ->where('rol', 'user')
+                            ->whereIn('id', array_values(array_unique(array_map('intval', $ids))))
+                            ->pluck('contenido')
+                            ->all();
+
+        $patron = '/(?<!\d)' . (int) $num . '(?!\d)/u';
+
+        foreach ($textos as $texto) {
+
+            if (preg_match($patron, (string) $texto)) {
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

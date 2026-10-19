@@ -728,6 +728,135 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
     }
 
     // =====================================================================
+    // 6. Lo que encontró el revisor independiente (19/10/2026)
+    // =====================================================================
+
+    /**
+     * La herramienta por el despacho real, con la confianza del dueño en el modo pedido: es lo que
+     * decide si la tarjeta se ejecuta sola ("resuelto"/"directo") o espera el sí.
+     *
+     * @param  string  $modo
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  array  $input
+     * @return array
+     */
+    protected function herramienta_en($modo, $conversation, $mensaje, array $input = [])
+    {
+        User::where('id', $this->comercio->id)->update(['agente_confianza' => $modo]);
+
+        $resultado = HerramientasDeCarga::ejecutar(
+            'proponer_compra_con_factura',
+            array_merge(['proveedor' => 'Ferretera del Sur'], $input),
+            $conversation,
+            $mensaje
+        );
+
+        $this->assertFalse($resultado['is_error'], $resultado['content']);
+
+        return json_decode($resultado['content'], true);
+    }
+
+    /**
+     * 🔴 `compra_num` QUE EL DUEÑO NO DIJO, SOBRE UNA COMPRA QUE YA TIENE OTRA FACTURA. El dueño escribe
+     * «cargala» sin nombrar compra y el modelo deduce la 13 del historial (de un «Creé la Compra N° 13»
+     * anterior, o de una charla vieja). En "resuelto" eso se ejecutaba solo y la 13 quedaba con dos
+     * escaneos. Ahora queda tarjeta (`requiere_confirmacion`), la tarjeta dice que ya tiene otra
+     * factura, y no se escanea nada. Lo que el dueño dijo ANTES de la última respuesta del asistente
+     * no cuenta como "la nombró ahora".
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_num_no_dicho_sobre_una_compra_con_escaneo_queda_tarjeta_en_resuelto()
+    {
+        $compra_13 = $this->compra(13, 3);
+
+        $this->escaneo($compra_13, 'listo', '00012345');
+
+        $conversation = $this->conversacion_whatsapp();
+
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'mirá la compra 13 de la semana pasada']);
+        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'La Compra N° 13 de Ferretera del Sur ya tiene la factura escaneada.']);
+
+        $del_dueno = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'cargala']);
+        $this->guardar_foto($del_dueno);
+
+        $generandose = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        $respuesta = $this->herramienta_en('resuelto', $conversation, $generandose, ['compra_num' => 13]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue(!empty($respuesta['requiere_confirmacion']), 'Queda tarjeta aunque el modo sea resuelto: ' . json_encode($respuesta));
+
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->estado_guardado());
+        $this->assertStringContainsString('ya tiene otra factura', (string) $tarjeta->presentacion['aviso']);
+        $this->assertStringContainsString('ya tiene otra factura', (string) $respuesta['nota']);
+        $this->assertSame(1, ProviderOrderScan::where('provider_order_id', $compra_13->id)->count(), 'No se escaneó nada todavía.');
+    }
+
+    /**
+     * Lo mismo con "directo" y una factura cargada A MANO (sin escaneo): también es "otra factura".
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_num_no_dicho_sobre_una_compra_con_factura_a_mano_queda_tarjeta_en_directo()
+    {
+        $compra_13 = $this->compra(13, 3);
+
+        ProviderOrderAfipTicket::create([
+            'provider_order_id' => $compra_13->id,
+            'user_id'           => $this->comercio->id,
+            'code'              => '0003-00012345',
+            'issued_at'         => Carbon::now()->subDays(3),
+            'total'             => 1000,
+        ]);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $respuesta = $this->herramienta_en('directo', $conversation, $generandose, ['compra_num' => 13]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue(!empty($respuesta['requiere_confirmacion']), json_encode($respuesta));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+        $this->assertSame(0, ProviderOrderScan::where('provider_order_id', $compra_13->id)->count());
+    }
+
+    /**
+     * Si el dueño SÍ nombró la compra en lo que escribió desde la última respuesta del asistente
+     * («es de la compra 13»), la factura va ahí en el acto, como siempre: la nombró él.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_num_dicho_por_el_dueno_se_ejecuta_en_resuelto_aunque_tenga_otra_factura()
+    {
+        $compra_13 = $this->compra(13, 3);
+
+        $this->escaneo($compra_13, 'listo', '00012345');
+
+        $conversation = $this->conversacion_whatsapp();
+
+        $del_dueno = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'te paso otra factura']);
+        $this->guardar_foto($del_dueno);
+
+        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => '¿A qué compra va?']);
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'es de la compra 13']);
+
+        $generandose = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        $respuesta = $this->herramienta_en('resuelto', $conversation, $generandose, ['compra_num' => 13]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue(empty($respuesta['requiere_confirmacion']), json_encode($respuesta));
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+        $this->assertSame(2, ProviderOrderScan::where('provider_order_id', $compra_13->id)->count());
+    }
+
+    // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================
 
