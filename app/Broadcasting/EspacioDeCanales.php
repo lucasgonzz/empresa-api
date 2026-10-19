@@ -247,15 +247,28 @@ class EspacioDeCanales
     /**
      * ¿Está prendido el modo de transición de los canales de tienda?
      *
-     * `!== false` y no un cast: si la clave falta en la config (un `config:cache` hecho antes de este
-     * release) el valor es null, y lo seguro ahí es la transición, que es exactamente el comportamiento
-     * de hoy para los canales que cruzan con la tienda.
+     * Misma función que en tienda-api, para que las dos mitades lean igual el mismo valor: solo un
+     * falso EXPLÍCITO es estricto (un bool false, o el texto 'false'/'0'/'off'/'no'). Si la clave
+     * falta en la config (un `config:cache` hecho antes de este release) el valor es null, y lo
+     * seguro ahí es la transición, que es exactamente el comportamiento de hoy para los canales que
+     * cruzan con la tienda; lo mismo con un vacío o un valor mal tipeado.
      *
      * @return bool true = transición (con y sin espacio), false = estricto (solo con espacio).
      */
     public static function canales_viejos_de_tienda()
     {
-        return config('broadcasting.canales_viejos_de_tienda', true) !== false;
+        /** Valor crudo de la config: normalmente un bool (lo normaliza config/broadcasting.php). */
+        $valor = config('broadcasting.canales_viejos_de_tienda', true);
+
+        if (is_bool($valor)) {
+            return $valor;
+        }
+
+        if ($valor === null || $valor === '') {
+            return true;
+        }
+
+        return filter_var($valor, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== false;
     }
 
     /**
