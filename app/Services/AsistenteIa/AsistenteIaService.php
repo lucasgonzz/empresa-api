@@ -1389,7 +1389,9 @@ AUTO_RESUELTO;
          * Y N6: la descripción del alta de un artículo deja de ser opcional («y descripcion si la
          * hay»). La lámpara Philips de la prueba (artículo 49) quedó sin descripción porque solo la
          * búsqueda por código de barras la trae hecha; ahora el modelo la escribe siempre, con lo que
-         * dijo la persona y lo que se ve en la foto, sin inventar datos técnicos.
+         * dijo la persona y lo que se ve en la foto, sin inventar datos técnicos. Salvo en una
+         * corrección con reemplaza_a (revisión independiente): ahí se hereda, y mandarla de nuevo
+         * pisaría la que trajo la búsqueda por código de barras con una escrita de memoria.
          */
         return <<<CARGA
 {$titulo_de_carga}
@@ -1508,7 +1510,8 @@ AUTO_RESUELTO;
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
   la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
-  dijo la persona ni en la foto.
+  dijo la persona ni en la foto. La excepción: en una corrección con reemplaza_a no la mandes: se hereda
+  de la tarjeta anterior (salvo que la persona pida cambiarla).
 - 🔴 La FOTO de la factura de un proveedor no la transcribís vos: la lee el escaneo del sistema, con su
   propia IA; el RESULTADO de ese escaneo sí lo podés leer con consultar_escaneo_de_factura. Aunque
   la foto viaje en el mensaje, NO transcribas ni adelantes montos, renglones, artículos ni datos de la

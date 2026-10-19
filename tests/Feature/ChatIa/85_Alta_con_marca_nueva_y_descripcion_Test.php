@@ -618,6 +618,22 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
     // =====================================================================
 
     /**
+     * La regla de «todo alta lleva descripcion» exceptúa la CORRECCIÓN con reemplaza_a (revisión
+     * independiente, 19/10/2026): ahí la descripción se hereda de la tarjeta anterior, y mandarla
+     * de nuevo pisaría la que trajo la búsqueda por código de barras con una escrita de memoria.
+     *
+     * @test
+     */
+    public function la_regla_de_la_descripcion_exceptua_la_correccion_con_reemplaza_a()
+    {
+        list($conversation) = $this->conversacion_con_foto();
+
+        $prompt = (new AsistenteIaService())->build_system_prompt($conversation, $this->dueno->fresh(), true, true);
+
+        $this->assertStringContainsString('en una corrección con reemplaza_a no la mandes: se hereda', $prompt);
+    }
+
+    /**
      * Las dos reglas del prompt: la descripción SIEMPRE en el alta de un artículo (sin inventar datos
      * técnicos) y la marca nombrada o legible en brand_id, creándola si no existe. Y la herramienta
      * dice lo mismo de la descripción.
