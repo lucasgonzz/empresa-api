@@ -17,12 +17,23 @@ class Order extends Model
      * generar el envío en Zipnova y para mostrarlos en el modal del pedido. `envio_precio` y
      * `envio_proveedor` son columnas planas y no necesitan cast.
      *
+     * `envio_direccion` (misión formas-envio-direcciones-maps, 19/10/2026): la copia de la
+     * dirección de entrega que eligió el comprador, con sus coordenadas, clavada en el pedido para
+     * que no cambie si el comprador después edita o borra la dirección guardada
+     * (`buyer_addresses`). Se llena cuando `deliver == 1`, sea cual sea la forma de envío. Claves,
+     * todas opcionales: `buyer_address_id`, `formatted_address`, `street`, `street_number`,
+     * `apartment`, `city`, `province`, `zip_code`, `reference`, `lat`, `lng`, `place_id`. La
+     * escribe `tienda-api`; el ERP la lee para la dirección clickeable y el mapa del modal de
+     * envío. Viaja en `withAll` por ser columna; un pedido de una tienda vieja la trae en null y
+     * el ERP cae a `envio_destino` o a `address` (texto).
+     *
      * @var array<string, string>
      */
     protected $casts = [
         'envio_cotizacion' => 'array',
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
+        'envio_direccion'  => 'array',
     ];
 
     /**
