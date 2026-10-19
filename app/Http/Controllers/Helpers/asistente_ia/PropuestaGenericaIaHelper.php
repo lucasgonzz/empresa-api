@@ -1899,6 +1899,20 @@ class PropuestaGenericaIaHelper
             );
         }
 
+        /*
+         * 🔴 LA MARCA YA PROPUESTA EN UNA TARJETA SE MIRA ANTES QUE LAS PARECIDAS (segunda revisión
+         * independiente, 19/10/2026). En "cauteloso", con «ZZPhilips» cargada y el dueño pidiendo
+         * «ZZPhilips LED»: parecida → el dueño dice que no → el modelo propone la marca nueva (queda
+         * tarjeta) → reenvía el alta → acá volvía a salir «hay una parecida» con si_no_es_ninguna, y el
+         * modelo proponía la marca otra vez: un loop hasta el tope de herramientas. Si lo pedido ya
+         * está en una tarjeta de alta de marca sin confirmar, va el mismo error que en
+         * marca_que_no_esta(): que la persona la confirme primero.
+         */
+        if (self::alta_de_marca_pendiente($contexto, $texto)) {
+
+            return self::error_de_marca_pendiente($texto);
+        }
+
         if (count($parecidas)) {
 
             return RespuestaDeCargaIa::faltan(
@@ -1988,11 +2002,7 @@ class PropuestaGenericaIaHelper
     {
         if (self::alta_de_marca_pendiente($contexto, $texto)) {
 
-            return RespuestaDeCargaIa::error(
-                'La marca "'.$texto.'" todavía no existe: quedó en una tarjeta para que la persona la confirme. '
-                .'No la vuelvas a proponer ni vuelvas a llamar en este mensaje: decile que confirme la marca y, cuando la confirme, '
-                .'armá esta carga con todo lo que pidió (la foto, la descripción, la categoría, el precio y el stock).'
-            );
+            return self::error_de_marca_pendiente($texto);
         }
 
         $opciones['si_no_esta'] = self::SI_NO_ESTA_LA_MARCA;
@@ -2000,6 +2010,24 @@ class PropuestaGenericaIaHelper
         return RespuestaDeCargaIa::faltan(
             ['qué '.$etiqueta.' es: no encontré ninguna que se llame como "'.$texto.'"'],
             $opciones
+        );
+    }
+
+    /**
+     * El error para una marca que todavía no existe porque quedó en una tarjeta sin confirmar: un
+     * solo texto para los dos lugares que lo devuelven (resolver_marca(), antes de ofrecer parecidas,
+     * y marca_que_no_esta()). Sin `si_no_esta` ni `si_no_es_ninguna`: lo que corta el loop es que no
+     * haya nada que invite a proponer la marca de nuevo.
+     *
+     * @param  string  $texto  El nombre que llegó.
+     * @return array
+     */
+    protected static function error_de_marca_pendiente($texto)
+    {
+        return RespuestaDeCargaIa::error(
+            'La marca "'.$texto.'" todavía no existe: quedó en una tarjeta para que la persona la confirme. '
+            .'No la vuelvas a proponer ni vuelvas a llamar en este mensaje: decile que confirme la marca y, cuando la confirme, '
+            .'armá esta carga con todo lo que pidió (la foto, la descripción, la categoría, el precio y el stock).'
         );
     }
 

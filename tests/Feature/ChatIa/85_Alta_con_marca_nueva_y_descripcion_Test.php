@@ -613,6 +613,42 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
         $this->assertTrue(!empty($marca['ok']), 'La del otro dueño no impide crear la propia: ' . json_encode($marca));
     }
 
+    /**
+     * 🔴 EL LOOP DE LA SEGUNDA REVISIÓN. En "cauteloso", con «ZZPhilips» cargada y el dueño pidiendo
+     * «ZZPhilips LED»: hay una parecida → el dueño dice que no es ésa → el modelo propone la marca
+     * nueva (queda tarjeta) → reenvía el alta → la respuesta volvía a decir «hay una parecida» con
+     * `si_no_es_ninguna`, y el modelo proponía la marca otra vez. Con la marca nueva ya en una tarjeta
+     * sin confirmar, la respuesta tiene que ser el error de «quedó en una tarjeta, que la confirme».
+     *
+     * @test
+     */
+    public function con_una_parecida_y_la_marca_nueva_en_una_tarjeta_no_vuelve_a_ofrecer_la_parecida()
+    {
+        Brand::create(['name' => 'ZZPhilips', 'user_id' => $this->dueno->id, 'num' => 985]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZPhilips LED'));
+
+        $this->assertFalse($primera['ok'], json_encode($primera));
+        $this->assertTrue(isset($primera['opciones']['si_no_es_ninguna']), 'Primero se ofrece la parecida.');
+
+        // El dueño dijo que no es ésa: el modelo propone la marca nueva (en cauteloso, tarjeta).
+        $marca = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'brand',
+            'datos'   => ['name' => 'ZZPhilips LED'],
+        ]);
+
+        $this->assertTrue(!empty($marca['ok']), json_encode($marca));
+
+        $reenvio = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZPhilips LED'));
+
+        $this->assertFalse($reenvio['ok'], json_encode($reenvio));
+        $this->assertStringContainsString('confirme', (string) $reenvio['error'], json_encode($reenvio));
+        $this->assertFalse(isset($reenvio['opciones']['si_no_es_ninguna']), 'No vuelve a ofrecer la parecida.');
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'Solo la tarjeta de la marca.');
+    }
+
     // =====================================================================
     // 2. El prompt y la herramienta
     // =====================================================================
