@@ -469,6 +469,151 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
     }
 
     // =====================================================================
+    // 1.b Marcas: exacta, parcial, al revés y repetida (revisión independiente, 19/10/2026)
+    // =====================================================================
+
+    /**
+     * La marca que llegó, en la llamada del alta de la lámpara (sin stock, para poder confirmarla).
+     *
+     * @param  string  $marca
+     * @return array
+     */
+    protected function alta_con_la_marca($marca)
+    {
+        $pedido = $this->alta_de_la_lampara();
+
+        unset($pedido['stock_inicial']);
+
+        $pedido['datos']['brand_id'] = $marca;
+
+        return $pedido;
+    }
+
+    /**
+     * Coincidencia EXACTA sin importar mayúsculas, tildes ni espacios de más → se asigna sola.
+     *
+     * @test
+     */
+    public function una_marca_igual_salvo_mayusculas_tildes_y_espacios_se_asigna()
+    {
+        $atlas = Brand::create(['name' => 'ZZAtlas Copco', 'user_id' => $this->dueno->id, 'num' => 985]);
+        $arbol = Brand::create(['name' => 'ZZÁrbol', 'user_id' => $this->dueno->id, 'num' => 986]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('  zzatlas   COPCO '));
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertSame((int) $atlas->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['payload']['brand_id']);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $sin_tilde = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('zzarbol'));
+
+        $this->assertTrue(!empty($sin_tilde['ok']), json_encode($sin_tilde));
+        $this->assertSame((int) $arbol->id, (int) AiMessageAction::find($sin_tilde['tarjeta_id'])->datos['payload']['brand_id']);
+    }
+
+    /**
+     * 🔴 Una coincidencia PARCIAL no se asigna sola: el revisor midió que «ZZAtlas» se asignaba a
+     * «ZZAtlas Copco». Ahora es `faltan` ofreciéndola (sin `si_no_esta`), y no queda tarjeta.
+     *
+     * @test
+     */
+    public function una_marca_parcial_no_se_asigna_sola_y_se_ofrece()
+    {
+        $atlas = Brand::create(['name' => 'ZZAtlas Copco', 'user_id' => $this->dueno->id, 'num' => 985]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZAtlas'));
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertNotEmpty($respuesta['faltan']);
+        $this->assertStringContainsString('cuál marca es', $respuesta['faltan'][0]);
+        $this->assertSame([['id' => (int) $atlas->id, 'nombre' => 'ZZAtlas Copco']], $respuesta['opciones']['brand_id']);
+        $this->assertFalse(isset($respuesta['opciones']['si_no_esta']), 'Hay una parecida: se ofrece, no se manda a crear otra.');
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * Al revés: el nombre pedido CONTIENE una marca que existe («ZZPhilips LED» con «ZZPhilips»
+     * cargada). Se ofrece la existente en vez de mandar a crear otra.
+     *
+     * @test
+     */
+    public function un_nombre_que_contiene_una_marca_existente_la_ofrece_en_vez_de_crear_otra()
+    {
+        $philips = Brand::create(['name' => 'ZZPhilips', 'user_id' => $this->dueno->id, 'num' => 985]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZPhilips LED'));
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertNotEmpty($respuesta['faltan']);
+        $this->assertSame([['id' => (int) $philips->id, 'nombre' => 'ZZPhilips']], $respuesta['opciones']['brand_id']);
+        $this->assertFalse(isset($respuesta['opciones']['si_no_esta']));
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * El alta de una marca cuyo nombre normalizado ya existe en el negocio no crea otra: error para el
+     * modelo con el id de la existente. En "directo" tampoco se crea.
+     *
+     * @test
+     */
+    public function el_alta_de_una_marca_que_ya_existe_no_la_duplica()
+    {
+        $philips = Brand::create(['name' => 'ZZPhilips', 'user_id' => $this->dueno->id, 'num' => 985]);
+
+        $this->dueno_con(['agente_confianza' => 'directo']);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'brand',
+            'datos'   => ['name' => ' zzphilips '],
+        ]);
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $respuesta['error']);
+        $this->assertStringContainsString('brand_id ' . $philips->id, (string) $respuesta['error']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+        $this->assertSame(1, Brand::where('user_id', $this->dueno->id)->whereRaw('LOWER(TRIM(name)) = ?', ['zzphilips'])->count(), 'No se creó otra.');
+    }
+
+    /**
+     * 🔴 Base compartida: la marca de OTRO dueño no se ofrece, no se asigna y no impide crear la propia.
+     *
+     * @test
+     */
+    public function la_marca_de_otro_dueno_no_cuenta()
+    {
+        $otro = User::create([
+            'name'     => 'Otro dueño P85',
+            'email'    => 'p85-' . uniqid() . '@test.local',
+            'password' => bcrypt('secret'),
+        ]);
+
+        Brand::create(['name' => 'ZZAjena P85', 'user_id' => $otro->id, 'num' => 985]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZAjena P85'));
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame(PropuestaGenericaIaHelper::SI_NO_ESTA_LA_MARCA, $respuesta['opciones']['si_no_esta'], 'Para este dueño no existe.');
+
+        $marca = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'brand',
+            'datos'   => ['name' => 'ZZAjena P85'],
+        ]);
+
+        $this->assertTrue(!empty($marca['ok']), 'La del otro dueño no impide crear la propia: ' . json_encode($marca));
+    }
+
+    // =====================================================================
     // 2. El prompt y la herramienta
     // =====================================================================
 

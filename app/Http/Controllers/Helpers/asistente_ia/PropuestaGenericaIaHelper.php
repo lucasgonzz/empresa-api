@@ -74,6 +74,21 @@ class PropuestaGenericaIaHelper
         . 'confirme, armá la carga con todo lo que pidió. Si la marca no la dijo la persona ni se lee en la foto o en el nombre, no la '
         . 'inventes: volvé a llamar sin brand_id.';
 
+    /**
+     * Qué hacer si la marca que llegó se PARECE a una o más del negocio pero ninguna se llama igual
+     * (revisión independiente, 19/10/2026; ver resolver_marca()): primero se pregunta si es una de
+     * ésas, y recién si la persona dice que no, se crea la que dijo.
+     */
+    const SI_NO_ES_NINGUNA_LA_MARCA = 'Ofrecele estas marcas por su nombre y preguntale si es una de ellas. Si te dice que no es ninguna, '
+        . 'creala con proponer_alta (entidad brand, con el nombre que dijo) y volvé a llamar con ese nombre en brand_id.';
+
+    /**
+     * Cuántas marcas del dueño se traen para comparar normalizado (resolver_marca(),
+     * marca_con_el_mismo_nombre()). Un negocio tiene decenas o cientos; el techo es para que una base
+     * rara no traiga cien mil filas en una herramienta.
+     */
+    const TOPE_DE_MARCAS = 5000;
+
     // -------------------------------------------------------------------------------------------
     // Alta
     // -------------------------------------------------------------------------------------------
@@ -242,6 +257,27 @@ class PropuestaGenericaIaHelper
         $payload = self::payload_de_alta($declaracion, $validado['payload']);
 
         $nombre = self::nombre_pedido($declaracion, $validado['payload']);
+
+        /*
+         * 🔴 UNA MARCA QUE YA EXISTE NO SE CREA DE NUEVO (revisión independiente de la misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). Con SI_NO_ESTA_LA_MARCA el modelo crea marcas
+         * solo; si el nombre que manda ya está en el negocio (comparado sin mayúsculas, tildes ni
+         * espacios de más), crearla dejaría dos «Philips» y los artículos repartidos entre las dos. Es
+         * un error para el modelo (prefijo NO_SE_ARMO) con el id de la existente, para que la use.
+         * Para las demás entidades sigue el aviso de "ya hay uno con ese nombre" de abajo.
+         */
+        if ($declaracion['entidad'] === 'brand' && !is_null($nombre)) {
+
+            $existente = self::marca_con_el_mismo_nombre($contexto, $nombre);
+
+            if (!is_null($existente)) {
+
+                return RespuestaDeCargaIa::error(
+                    CategoriasDelNegocioIaHelper::NO_SE_ARMO.'ya existe la marca "'.$existente->name.'" (brand_id '.(int) $existente->id.'). '
+                    .'No la crees de nuevo: en la carga que la necesitaba usá brand_id '.(int) $existente->id.'.'
+                );
+            }
+        }
 
         $aviso = null;
 
@@ -1734,6 +1770,17 @@ class PropuestaGenericaIaHelper
 
         $texto = (string) $texto;
 
+        /*
+         * 🔴 LAS MARCAS SE RESUELVEN APARTE (misión asistente-arreglos-segunda-prueba, 19/10/2026, N6 y
+         * la revisión independiente): ver resolver_marca(). Solo `brands`: las demás relaciones (un
+         * proveedor, una localidad, un vendedor) siguen con el LIKE y la pregunta de siempre, porque
+         * crear uno de esos por un nombre mal escrito deja un registro que nadie pidió.
+         */
+        if ($relacion['tabla'] === 'brands') {
+
+            return self::resolver_marca($contexto, $campo, $etiqueta, $texto, $consulta_base);
+        }
+
         $candidatas = $consulta_base()
                         ->where($relacion['campo'], 'LIKE', '%'.self::escapar_like($texto).'%')
                         ->orderBy($relacion['campo'])
@@ -1743,17 +1790,6 @@ class PropuestaGenericaIaHelper
         if (!count($candidatas)) {
 
             $opciones = [$campo['columna'] => self::opciones_de_relacion($consulta_base()->orderBy($relacion['campo'])->limit(self::MAX_OPCIONES)->get(), $relacion['campo'])];
-
-            /*
-             * 🔴 UNA MARCA QUE NO EXISTE SE CREA (misión asistente-arreglos-segunda-prueba, 19/10/2026,
-             * N6): ver SI_NO_ESTA_LA_MARCA. Solo para `brands`: las demás relaciones (un proveedor,
-             * una localidad, un vendedor) siguen preguntándose como siempre, porque crear uno de esos
-             * por un nombre mal escrito deja un registro que nadie pidió.
-             */
-            if ($relacion['tabla'] === 'brands') {
-
-                return self::marca_que_no_esta($contexto, $etiqueta, $texto, $opciones);
-            }
 
             return RespuestaDeCargaIa::faltan(
                 ['qué '.$etiqueta.' es: no encontré ninguna que se llame como "'.$texto.'"'],
@@ -1785,6 +1821,147 @@ class PropuestaGenericaIaHelper
             ['cuál '.$etiqueta.' es (hay '.count($candidatas).' que encajan con "'.$texto.'")'],
             [$campo['columna'] => self::opciones_de_relacion($candidatas, $relacion['campo'])]
         );
+    }
+
+    /**
+     * La marca de una carga, resuelta por nombre CONTRA LAS MARCAS DEL DUEÑO (revisión independiente
+     * de la misión asistente-arreglos-segunda-prueba, 19/10/2026). Hasta la revisión iba por el LIKE
+     * genérico, que con UNA sola coincidencia parcial la asignaba sola: «ZZAtlas» terminaba en
+     * «ZZAtlas Copco». Y como desde N6 una marca que no está se manda a crear, había que distinguir
+     * bien "no está" de "se parece a una que está". El orden:
+     *
+     *   1. IGUAL sin importar mayúsculas, tildes ni espacios de más (normalizar_nombre()): una sola →
+     *      se asigna; varias (el negocio tiene «3M» y «3m») → `faltan` con esas.
+     *   2. PARECIDAS: marcas que contienen lo pedido («ZZAtlas» → «ZZAtlas Copco») o que lo pedido
+     *      contiene como palabras enteras («ZZPhilips LED» → «ZZPhilips»). → `faltan` ofreciéndolas,
+     *      SIN `si_no_esta`: primero se pregunta si es una de ésas; `si_no_es_ninguna` dice qué hacer
+     *      si la persona contesta que no.
+     *   3. Ninguna → marca_que_no_esta() (crearla, o esperar la tarjeta que ya la propuso).
+     *
+     * 🔴 Siempre por `$consulta_base`, que filtra por el dueño: la base puede ser compartida entre
+     * varios negocios y la marca de otro no existe para éste. Se traen todas (hasta TOPE_DE_MARCAS)
+     * para comparar normalizado en PHP: el LIKE no ve los espacios de más ni el "al revés".
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $campo  La declaración del campo (`brand_id`).
+     * @param  string  $etiqueta  "marca".
+     * @param  string  $texto  El nombre que llegó.
+     * @param  callable  $consulta_base  La consulta de `brands` del dueño (resolver_relacion()).
+     * @return array  ['valor' => id, 'nombre' => ...] o la respuesta negativa.
+     */
+    protected static function resolver_marca(ContextoDeCargaIa $contexto, array $campo, $etiqueta, $texto, callable $consulta_base)
+    {
+        $columna_nombre = $campo['relacion']['campo'];
+
+        $buscado = self::normalizar_nombre($texto);
+
+        $marcas = $consulta_base()->orderBy($columna_nombre)->limit(self::TOPE_DE_MARCAS)->get(['id', $columna_nombre])->all();
+
+        $exactas = [];
+        $parecidas = [];
+
+        foreach ($marcas as $marca) {
+
+            $nombre = self::normalizar_nombre((string) $marca->{$columna_nombre});
+
+            if ($nombre === '' || $buscado === '') {
+
+                continue;
+            }
+
+            if ($nombre === $buscado) {
+
+                $exactas[] = $marca;
+
+                continue;
+            }
+
+            $la_contiene = mb_strpos($nombre, $buscado) !== false;
+
+            $esta_adentro = preg_match('/(^| )'.preg_quote($nombre, '/').'( |$)/u', $buscado) === 1;
+
+            if ($la_contiene || $esta_adentro) {
+
+                $parecidas[] = $marca;
+            }
+        }
+
+        if (count($exactas) === 1) {
+
+            return ['valor' => (int) $exactas[0]->id, 'nombre' => (string) $exactas[0]->{$columna_nombre}];
+        }
+
+        if (count($exactas) > 1) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál '.$etiqueta.' es (hay '.count($exactas).' que se llaman "'.$texto.'")'],
+                [$campo['columna'] => self::opciones_de_relacion($exactas, $columna_nombre)]
+            );
+        }
+
+        if (count($parecidas)) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál '.$etiqueta.' es: ninguna se llama "'.$texto.'", pero hay '.(count($parecidas) === 1 ? 'una parecida' : count($parecidas).' parecidas')],
+                [
+                    $campo['columna']   => self::opciones_de_relacion($parecidas, $columna_nombre),
+                    'si_no_es_ninguna'  => self::SI_NO_ES_NINGUNA_LA_MARCA,
+                ]
+            );
+        }
+
+        $opciones = [$campo['columna'] => self::opciones_de_relacion(array_slice($marcas, 0, self::MAX_OPCIONES), $columna_nombre)];
+
+        return self::marca_que_no_esta($contexto, $etiqueta, $texto, $opciones);
+    }
+
+    /**
+     * La marca del dueño que se llama igual que `$nombre` (sin mayúsculas, tildes ni espacios de
+     * más), o null. La usa proponer_alta() para no crear una marca que ya existe. Filtra por el dueño:
+     * la base puede ser compartida.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombre
+     * @return object|null  La fila de `brands` (id, name).
+     */
+    protected static function marca_con_el_mismo_nombre(ContextoDeCargaIa $contexto, $nombre)
+    {
+        $buscado = self::normalizar_nombre($nombre);
+
+        if ($buscado === '') {
+
+            return null;
+        }
+
+        $marcas = DB::table('brands')
+                    ->where('user_id', $contexto->owner_id)
+                    ->orderBy('id')
+                    ->limit(self::TOPE_DE_MARCAS)
+                    ->get(['id', 'name']);
+
+        foreach ($marcas as $marca) {
+
+            if (self::normalizar_nombre((string) $marca->name) === $buscado) {
+
+                return $marca;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Un nombre para comparar: sin tildes (Str::ascii), en minúsculas y con los espacios colapsados.
+     * «  ZZÁrbol   Copco » y «zzarbol copco» son el mismo.
+     *
+     * @param  string  $nombre
+     * @return string
+     */
+    protected static function normalizar_nombre($nombre)
+    {
+        $limpio = Str::lower(Str::ascii(trim((string) $nombre)));
+
+        return trim((string) preg_replace('/\s+/u', ' ', $limpio));
     }
 
     /**
