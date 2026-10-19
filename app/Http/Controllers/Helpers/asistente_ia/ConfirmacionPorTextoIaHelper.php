@@ -58,9 +58,21 @@ class ConfirmacionPorTextoIaHelper
     /**
      * Lo que se le contesta al modelo cuando no se puede asegurar que el "sí" contesta a ESTE envío tal
      * como el dueño lo vio (B1 del segundo chequeo): ver envio_no_visto().
+     *
+     * 🔴 EL TEXTO LE PIDE VOLVER A PROPONER EN ESTE MISMO TURNO (misión asistente-arreglos-segunda-prueba,
+     * N2, decisión de la raíz tras la segunda revisión independiente del 19/10). El de antes decía «volvé
+     * a mostrarle lo que se va a mandar (armá la propuesta de nuevo)», y el 19/10 en demo3 el modelo lo
+     * leyó como «copiale el bloque»: escribía el bloque él mismo, sin volver a llamar a la herramienta, y
+     * el sí siguiente rebotaba otra vez (tres «sí» y unos cinco minutos). El sistema ya no vuelve a pegar
+     * el bloque viejo —traía de vuelta envíos que el dueño había corregido—, así que la única salida del
+     * círculo es que el modelo vuelva a PROPONER, con los datos frescos y lo que el dueño haya corregido:
+     * esa propuesta trae su bloque (lo pega AsistenteIaService::con_los_bloques_de_envio()) y el sí
+     * siguiente contesta ESE. El nombre de la constante no cambia: los tests de B1 la usan por nombre.
      */
-    const MENSAJE_ENVIO_NO_VISTO = 'No lo mandé: no puedo asegurar que el dueño vio exactamente esto justo antes de '
-        . 'decir que sí. Volvé a mostrarle lo que se va a mandar (armá la propuesta de nuevo) y pedile el sí.';
+    const MENSAJE_ENVIO_NO_VISTO = 'No lo mandé: el dueño no tenía este envío a la vista justo antes de decir que sí. '
+        . 'En ESTE mismo turno volvé a llamar a la herramienta que lo propuso, con los mismos datos más lo que el '
+        . 'dueño haya corregido, para que el sistema le muestre el bloque nuevo, y pedile el sí. Un bloque escrito '
+        . 'por vos no vale como visto: no lo copies.';
 
     /** Lo que se le contesta al modelo cuando el último mensaje tiene más de un envío esperando el sí. */
     const MENSAJE_VARIOS_ENVIOS = 'No mandé nada: había más de un envío esperando el sí en el mismo mensaje, y un solo '

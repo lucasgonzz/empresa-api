@@ -823,6 +823,60 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 QUE EL REBOTE NO TERMINE EN CÍRCULO (pedido de la raíz tras la segunda revisión, 19/10). Sin el
+     * re-pegado, lo que corta el círculo es que el modelo vuelva a PROPONER en el mismo turno: el texto
+     * de MENSAJE_ENVIO_NO_VISTO se lo pide (con los mismos datos más lo corregido) y le avisa que un
+     * bloque escrito por él no vale. Por el job real: «¿cuánto vendí hoy?» en el medio → «sí» → rebota →
+     * el modelo vuelve a proponer → el mensaje trae el bloque nuevo → «sí» → sale.
+     *
+     * @test
+     */
+    public function el_rebote_le_pide_al_modelo_volver_a_proponer_en_el_mismo_turno_y_el_si_siguiente_manda()
+    {
+        list($conversation, $propuso, $vieja) = $this->promo_a_la_vista();
+
+        $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000. ¿Querés el detalle?');
+
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $vieja]),
+            $this->tool_use('proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']),
+            $this->end_turn('Te la dejo de nuevo para que la veas antes de mandarla.')
+        );
+
+        list($conversation, $repropuso) = $this->turno($conversation, 'sí');
+
+        $rechazos = array_values(array_filter($this->resultados_que_vio_el_modelo(), function ($resultado) {
+            return is_array($resultado) && isset($resultado['error']) && $resultado['error'] === ConfirmacionPorTextoIaHelper::MENSAJE_ENVIO_NO_VISTO;
+        }));
+
+        $this->assertNotEmpty($rechazos);
+        $this->assertStringContainsString('el dueño no tenía este envío a la vista justo antes de decir que sí', $rechazos[0]['error']);
+        $this->assertStringContainsString('En ESTE mismo turno volvé a llamar a la herramienta que lo propuso', $rechazos[0]['error']);
+        $this->assertStringContainsString('Un bloque escrito por vos no vale como visto', $rechazos[0]['error']);
+
+        // La propuesta nueva reemplazó a la vieja y su bloque vino en el mensaje del turno.
+        $nueva = AiMessageAction::where('ai_message_id', $repropuso->id)
+            ->where('tipo', AiMessageAction::TIPO_PROMOCION_WHATSAPP)
+            ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+            ->firstOrFail();
+
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::find($vieja)->estado_guardado());
+        $this->assertStringContainsString($this->bloque_de($nueva->id), $repropuso->contenido);
+        $this->assertCount(0, $this->promociones_enviadas());
+
+        // El «sí» siguiente contesta el bloque nuevo: sale.
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $nueva->id]),
+            $this->end_turn('Listo, salió la promo.')
+        );
+
+        $this->turno($conversation, 'sí');
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, $nueva->fresh()->estado_guardado());
+        $this->assertCount(1, $this->promociones_enviadas());
+    }
+
+    /**
      * Un mensaje del MODELO con el bloque copiado no cuenta como «a la vista» (`mostrado_en` lo escribe
      * solo el sistema): el «sí» a ese mensaje no manda.
      *
