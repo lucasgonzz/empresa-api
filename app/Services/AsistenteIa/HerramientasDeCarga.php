@@ -1578,7 +1578,7 @@ class HerramientasDeCarga
                          */
                         'compra_nueva' => [
                             'type'        => 'boolean',
-                            'description' => 'Opcional: true solo si la persona pidió una compra NUEVA para esta factura (por ejemplo, cuando le preguntaste si la sumabas a la compra vacía de opciones.compra_vacia y te dijo que no, que es otra). Con true no te vuelvo a preguntar y no la sumo a ninguna compra existente. Si no lo dijo, no lo mandes.',
+                            'description' => 'Opcional: true solo si la persona pidió una compra NUEVA para esta factura (por ejemplo, cuando le preguntaste si la sumabas a la compra vacía de opciones.compra_vacia y te dijo que no, que es otra). Con true no te vuelvo a preguntar y no la sumo a ninguna compra existente. Nunca junto con compra_num: mandá uno solo. Si no lo dijo, no lo mandes.',
                         ],
                     ],
                     'required'   => ['proveedor'],

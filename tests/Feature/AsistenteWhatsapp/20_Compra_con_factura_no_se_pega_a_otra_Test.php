@@ -856,6 +856,34 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertSame(2, ProviderOrderScan::where('provider_order_id', $compra_13->id)->count());
     }
 
+    /**
+     * `compra_num` y `compra_nueva` juntos se contradicen: el revisor midió que ganaba compra_num y
+     * la factura iba a la compra vacía de otro día aunque el dueño había dicho «nueva». Ahora es un
+     * error para el modelo (empieza con "No se armó ninguna tarjeta"), sin tarjeta ni compra.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_num_y_compra_nueva_juntos_es_un_error_para_el_modelo()
+    {
+        $this->compra(12, 3);
+
+        list($conversation, $generandose, $foto) = $this->escena();
+
+        $respuesta = $this->proponer($conversation, $generandose, ['compra_num' => 12, 'compra_nueva' => true]);
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $respuesta['error']);
+        $this->assertStringContainsString('mandá uno solo', (string) $respuesta['error']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+        $this->assertNull(AiMessageImagen::find($foto->id)->gestionada_at);
+
+        // compra_nueva en falso no cuenta como "los dos": es como si no viniera.
+        $sola = $this->proponer($conversation, $generandose, ['compra_num' => 12, 'compra_nueva' => false]);
+
+        $this->assertTrue($sola['ok'], json_encode($sola));
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================

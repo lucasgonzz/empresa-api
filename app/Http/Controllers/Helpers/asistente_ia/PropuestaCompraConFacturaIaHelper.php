@@ -162,11 +162,25 @@ class PropuestaCompraConFacturaIaHelper
          * compra 12» se cumple aunque esa compra ya tenga artículos — el dueño eligió la compra, y en
          * la revisión del escaneo elige qué renglones sumar. La regla automática de abajo
          * (es_reusable_sin_nombrarla(): desde el 19/10/2026, solo una compra de HOY, vacía, sin
-         * escaneo y sin factura) es la que corre cuando nadie nombró ninguna compra. `compra_num`
-         * gana sobre `compra_nueva` si vinieran los dos: un número de compra es más concreto que
-         * "armá una nueva", y es lo que el dueño contesta a la pregunta por la compra vacía.
+         * escaneo y sin factura) es la que corre cuando nadie nombró ninguna compra.
          */
         $compra_num = self::numero_de_compra(EntradaDeCargaIa::valor($input, 'compra_num'));
+
+        /*
+         * 🔴 `compra_num` Y `compra_nueva` JUNTOS SE CONTRADICEN (revisión independiente de la misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). Hasta la revisión ganaba compra_num, y el
+         * revisor midió que con el dueño diciendo «nueva» la factura iba igual a la compra vacía de
+         * otro día por la que se le había preguntado. No se adivina cuál de los dos quiso: es un error
+         * para el modelo (con el prefijo NO_SE_ARMO, que el prompt dice que es para él), sin tarjeta ni
+         * fotos selladas. compra_nueva en falso cuenta como que no vino (pidio_compra_nueva).
+         */
+        if (!is_null($compra_num) && self::pidio_compra_nueva(EntradaDeCargaIa::valor($input, 'compra_nueva'))) {
+
+            return RespuestaDeCargaIa::error(
+                CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'mandaste compra_num y compra_nueva a la vez. Volvé a llamar y mandá uno solo: '
+                . 'compra_num si el dueño nombró una compra, compra_nueva si dijo que es una compra nueva.'
+            );
+        }
 
         if (!is_null($compra_num)) {
 
