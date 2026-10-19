@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
 use App\Models\Sale;
+use App\Services\Zipnova\EnvioNoGenerableException;
 use App\Services\Zipnova\ZipnovaEnvioService;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -40,7 +41,9 @@ use Tests\EmpresaTestCase;
  * 7. 🔴 La puerta de la confirmación (misión formas-envio-direcciones-maps, 19/10/2026, pedido
  *    de Lucas): `POST envio/generar` sobre un pedido "Sin confirmar" o "Cancelado" es 422 y no
  *    sale a Zipnova ni escribe fila; un pedido con forma de envío propia o de otro proveedor no
- *    sale a Zipnova ni al confirmarlo ni desde el botón. Por esa puerta, los tests que llaman a
+ *    sale a Zipnova ni al confirmarlo ni desde el botón. Un estado que no se puede resolver
+ *    falla cerrado, y el servicio relee el estado con el pedido bloqueado antes de reservar la
+ *    fila (la carrera con una cancelación). Por esa puerta, los tests que llaman a
  *    generar (puntos 1 a 3 y el 5j) corren desde esa misión sobre un pedido ya confirmado
  *    (`pedido_confirmado_con_envio()`): cambió el escenario, no lo que afirman.
  *
@@ -1645,5 +1648,129 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
         $this->assertTrue((new Order(['envio_opcion' => $opcion, 'envio_proveedor' => 'Zipnova']))->envio_va_por_zipnova());
         $this->assertFalse((new Order(['envio_opcion' => null, 'envio_proveedor' => 'zipnova']))->envio_va_por_zipnova());
         $this->assertFalse((new Order(['envio_opcion' => [], 'envio_proveedor' => 'zipnova']))->envio_va_por_zipnova());
+    }
+
+    /**
+     * 7f. 🔴 Falla CERRADO: un pedido cuyo estado no se puede resolver (`order_status_id`
+     *     apuntando a una fila que no existe; la columna es NOT NULL, así que null solo se ve
+     *     por la regla) da 422 y no sale a Zipnova. Generar cuesta plata: si no se sabe si el
+     *     pedido se confirmó, no se genera.
+     *
+     * @return void
+     */
+    public function test_generar_sobre_un_pedido_sin_estado_valido_da_422_y_no_llama_a_zipnova()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+
+        $pedido = $this->pedido_con_envio();
+
+        $inexistente = (int) DB::table('order_statuses')->max('id') + 1000;
+        DB::table('orders')->where('id', $pedido->id)->update(['order_status_id' => $inexistente]);
+
+        $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('El pedido no tiene un estado válido: confirmalo antes de generar el envío.', $respuesta->json('message'));
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count(), 'Generar sobre un pedido sin estado válido escribió una fila en envios.');
+
+        Http::assertNothingSent();
+
+        // La regla, en los bordes: sin estado no se genera; un estado de avance, sí.
+        $mensaje = ZipnovaEnvioService::MENSAJE_PEDIDO_SIN_ESTADO;
+
+        $this->assertSame($mensaje, ZipnovaEnvioService::motivo_por_estado(null));
+        $this->assertSame($mensaje, ZipnovaEnvioService::motivo_por_estado(0));
+        $this->assertSame($mensaje, ZipnovaEnvioService::motivo_por_estado($inexistente));
+        $this->assertSame(ZipnovaEnvioService::MENSAJE_PEDIDO_SIN_CONFIRMAR, ZipnovaEnvioService::motivo_por_estado($this->estado('Sin confirmar')->id));
+        $this->assertSame(ZipnovaEnvioService::MENSAJE_PEDIDO_CANCELADO, ZipnovaEnvioService::motivo_por_estado($this->estado('Cancelado')->id));
+        $this->assertNull(ZipnovaEnvioService::motivo_por_estado($this->estado('Confirmado')->id));
+        $this->assertNull(ZipnovaEnvioService::motivo_por_estado($this->estado('Entregado')->id));
+    }
+
+    /**
+     * 7g. 🔴 Carrera generar vs cancelar, por el endpoint: el request de generar carga el pedido
+     *     CONFIRMADO (pasa la puerta del controller) y, antes de que reserve la fila, el comercio
+     *     lo cancela. Se simula cancelándolo en la base apenas el controller termina de cargarlo
+     *     (evento `retrieved` del primer `Order` del request). `reservar_fila()` relee el estado
+     *     con la fila bloqueada, ve "Cancelado" y corta: 422, sin fila y sin nada enviado.
+     *
+     * @return void
+     */
+    public function test_si_cancelan_el_pedido_mientras_se_genera_no_sale_a_zipnova()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+
+        $pedido = $this->pedido_confirmado_con_envio();
+        $cancelado_id = $this->estado('Cancelado')->id;
+
+        $cargas = 0;
+
+        Order::retrieved(function ($order) use (&$cargas, $pedido, $cancelado_id) {
+            if ((int) $order->id !== (int) $pedido->id) {
+                return;
+            }
+
+            $cargas++;
+
+            // La primera carga es la del controller (ya con el estado "Confirmado" en memoria):
+            // recién ahí el comercio cancela. `DB::table` no dispara otro `retrieved`.
+            if ($cargas === 1) {
+                DB::table('orders')->where('id', $pedido->id)->update(['order_status_id' => $cancelado_id]);
+            }
+        });
+
+        $respuesta = $this->postJson('api/envio/generar/' . $pedido->id);
+
+        $this->assertGreaterThanOrEqual(2, $cargas, 'El escenario no se armó: el servicio no volvió a leer el pedido.');
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('No se puede generar el envío de un pedido cancelado.', $respuesta->json('message'));
+        $this->assertSame(0, Envio::where('order_id', $pedido->id)->count(), 'La generación concurrente con la cancelación dejó una fila en envios.');
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * 7h. La misma relectura, desde el servicio (el camino que también usa la confirmación
+     *     automática): un `Order` cargado cuando estaba confirmado, cuyo estado en la base ya
+     *     cambió, no reserva fila ni sale a Zipnova. Vale para "Cancelado", para "Sin confirmar"
+     *     y para un estado que no se puede resolver.
+     *
+     * @return void
+     */
+    public function test_el_servicio_relee_el_estado_con_el_pedido_bloqueado()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+
+        $inexistente = (int) DB::table('order_statuses')->max('id') + 1000;
+
+        $casos = [
+            'Cancelado'     => [$this->estado('Cancelado')->id, ZipnovaEnvioService::MENSAJE_PEDIDO_CANCELADO],
+            'Sin confirmar' => [$this->estado('Sin confirmar')->id, ZipnovaEnvioService::MENSAJE_PEDIDO_SIN_CONFIRMAR],
+            'sin estado'    => [$inexistente, ZipnovaEnvioService::MENSAJE_PEDIDO_SIN_ESTADO],
+        ];
+
+        foreach ($casos as $caso => $datos) {
+
+            // El modelo en memoria queda confirmado; la base cambia por detrás.
+            $viejo = $this->pedido_confirmado_con_envio();
+            DB::table('orders')->where('id', $viejo->id)->update(['order_status_id' => $datos[0]]);
+
+            $mensaje = null;
+
+            try {
+                (new ZipnovaEnvioService())->crear_desde_pedido($viejo);
+            } catch (EnvioNoGenerableException $e) {
+                $mensaje = $e->getMessage();
+            }
+
+            $this->assertSame($datos[1], $mensaje, 'Caso "' . $caso . '": el servicio no releyó el estado del pedido bloqueado.');
+            $this->assertSame(0, Envio::where('order_id', $viejo->id)->count(), 'Caso "' . $caso . '": quedó una fila en envios.');
+        }
+
+        Http::assertNothingSent();
     }
 }

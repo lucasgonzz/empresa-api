@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Models\Envio;
 use App\Models\Order;
 use App\Services\Zipnova\EnvioNoGenerableException;
@@ -32,16 +31,6 @@ use App\Services\Zipnova\ZipnovaException;
 class EnvioController extends Controller
 {
     /**
-     * Mensaje del 422 cuando se pide generar el envío de un pedido que todavía no se confirmó.
-     */
-    const MENSAJE_SIN_CONFIRMAR = 'El envío se genera cuando confirmás el pedido.';
-
-    /**
-     * Mensaje del 422 cuando se pide generar el envío de un pedido cancelado.
-     */
-    const MENSAJE_CANCELADO = 'No se puede generar el envío de un pedido cancelado.';
-
-    /**
      * Mensaje del 422 cuando el pedido no salió por Zipnova (retiro en el local, forma de envío
      * propia, otro proveedor). Es el mismo texto que usa `ZipnovaEnvioService` para un pedido sin
      * `envio_opcion`, para que el operador lea lo mismo venga por donde venga.
@@ -63,14 +52,15 @@ class EnvioController extends Controller
      *     una forma de envío propia o de otro proveedor no se manda a Zipnova. Va antes que el
      *     estado porque para ese pedido "confirmalo primero" sería mentira: confirmarlo tampoco
      *     va a generar nada.
-     *  3. El pedido no está "Sin confirmar" ni "Cancelado". Los estados se comparan por NOMBRE
-     *     (`OrderStatusHelper`), nunca por id: los ids de `order_statuses` cambian entre
-     *     instalaciones. Un pedido con un estado que no se puede resolver (fila borrada) no se
-     *     frena acá, mismo criterio que `OrderStatusHelper::puede_pasar()`: no es este endpoint el
-     *     que tiene que reportar un pedido con datos rotos.
+     *  3. El estado del pedido permite generar (`ZipnovaEnvioService::motivo_por_estado()`): no
+     *     "Sin confirmar", no "Cancelado" (por NOMBRE, los ids de `order_statuses` cambian entre
+     *     instalaciones), y 🔴 tampoco un estado que no se puede resolver (sin estado, o la fila
+     *     borrada): falla CERRADO, porque generar cuesta plata.
      *
-     * Las precondiciones propias del envío (conector, destino completo, algo que enviar) las
-     * sigue chequeando `ZipnovaEnvioService::crear_desde_pedido()`.
+     * El servicio vuelve a mirar el estado con el pedido bloqueado, justo antes de reservar la
+     * fila (`reservar_fila()`): entre esta puerta y ese momento el comercio pudo cancelar el
+     * pedido. Las precondiciones propias del envío (conector, destino completo, algo que enviar)
+     * también las chequea `ZipnovaEnvioService::crear_desde_pedido()`.
      *
      * @param int $order_id
      * @return \Illuminate\Http\JsonResponse
@@ -87,14 +77,10 @@ class EnvioController extends Controller
             return response()->json(['message' => self::MENSAJE_SIN_ZIPNOVA], 422);
         }
 
-        $nombre_estado = !is_null($order->order_status) ? $order->order_status->name : null;
+        $motivo = ZipnovaEnvioService::motivo_por_estado($order->order_status_id);
 
-        if ($nombre_estado == OrderStatusHelper::SIN_CONFIRMAR) {
-            return response()->json(['message' => self::MENSAJE_SIN_CONFIRMAR], 422);
-        }
-
-        if ($nombre_estado == OrderStatusHelper::CANCELADO) {
-            return response()->json(['message' => self::MENSAJE_CANCELADO], 422);
+        if (!is_null($motivo)) {
+            return response()->json(['message' => $motivo], 422);
         }
 
         try {
