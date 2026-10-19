@@ -564,16 +564,36 @@ class PropuestaCompraConFacturaIaHelper
          * con `requiere_confirmacion` —la misma bandera que el proveedor no dicho: queda tarjeta aunque
          * el modo sea "resuelto" o "directo"— y el texto lo dice. Si el dueño SÍ lo escribió («es de la
          * compra 13»), manda él, como antes.
+         *
+         * Desde la segunda revisión independiente (19/10/2026) la guarda también cubre una compra CON
+         * ARTÍCULOS aunque no tenga factura: «cargala» + compra_num 16 deducido, con la 16 cargada a mano
+         * con 2 artículos, se ejecutaba solo, y al revisar el escaneo se duplican stock y deuda.
          */
-        $sin_nombrar = (!is_null($otra_factura) || self::tiene_factura_cargada($compra))
+        $tiene_otra_factura = !is_null($otra_factura) || self::tiene_factura_cargada($compra);
+
+        $sin_nombrar = ($tiene_otra_factura || $articulos > 0)
             && !self::la_nombro_el_dueno($contexto, $mensaje, (int) $compra->num, $fotos['consideradas']);
 
         if ($sin_nombrar) {
 
-            $avisos[] = 'La compra N° ' . $compra->num . ' ya tiene otra factura y no me la nombraste en este mensaje: '
+            $que_tiene = [];
+
+            if ($tiene_otra_factura) {
+
+                $que_tiene[] = 'otra factura';
+            }
+
+            if ($articulos > 0) {
+
+                $que_tiene[] = $articulos === 1 ? '1 artículo' : $articulos . ' artículos';
+            }
+
+            $que_tiene = implode(' y ', $que_tiene);
+
+            $avisos[] = 'La compra N° ' . $compra->num . ' ya tiene ' . $que_tiene . ' y no me la nombraste en este mensaje: '
                 . 'confirmá que esta factura va ahí antes de que la cargue.';
 
-            $nota[] = 'La compra N° ' . $compra->num . ' ya tiene otra factura y la persona no la nombró en lo que te escribió ahora: '
+            $nota[] = 'La compra N° ' . $compra->num . ' ya tiene ' . $que_tiene . ' y la persona no la nombró en lo que te escribió ahora: '
                 . 'quedó una tarjeta. Preguntale si la sumás a esa compra o armás una nueva (compra_nueva) y no digas que quedó cargada.';
         }
 

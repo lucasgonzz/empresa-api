@@ -1047,6 +1047,39 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         }
     }
 
+    /**
+     * La guarda de compra_num también cubre una compra CON ARTÍCULOS y sin factura (segunda revisión
+     * independiente): «cargala» + compra_num 16 deducido, con la 16 cargada a mano con 2 artículos, se
+     * ejecutaba solo en "resuelto", y al revisar el escaneo se duplican stock y deuda. Ahora queda
+     * tarjeta y el texto dice que ya tiene artículos. Si el dueño la nombró («es de la compra 17»), va.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_num_no_dicho_sobre_una_compra_con_articulos_queda_tarjeta()
+    {
+        $compra_16 = $this->compra(16, 3, 2);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $respuesta = $this->herramienta_en('resuelto', $conversation, $generandose, ['compra_num' => 16]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue(!empty($respuesta['requiere_confirmacion']), json_encode($respuesta));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+        $this->assertStringContainsString('ya tiene 2 artículos', (string) AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['aviso']);
+        $this->assertStringContainsString('no me la nombraste', (string) AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['aviso']);
+        $this->assertSame(0, ProviderOrderScan::where('provider_order_id', $compra_16->id)->count());
+
+        $this->compra(17, 3, 2);
+
+        list($conversation, $generandose) = $this->con_el_mensaje('es de la compra 17, cargala');
+
+        $nombrada = $this->herramienta_en('resuelto', $conversation, $generandose, ['compra_num' => 17]);
+
+        $this->assertTrue(empty($nombrada['requiere_confirmacion']), json_encode($nombrada));
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================
