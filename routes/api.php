@@ -11,6 +11,10 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum'])->group(function() {
 
+    Route::post('article-enrichments', 'ProductEnrichmentController@store')->middleware('throttle:20,1');
+    Route::get('article-enrichments/{uuid}', 'ProductEnrichmentController@show');
+    Route::delete('article-enrichments/{uuid}', 'ProductEnrichmentController@destroy');
+
     /*
         Todos los catalogos del arranque en UNA sola respuesta (mision 41, 12/8/2026). Reemplaza a
         ~70 requests que la SPA dispara una detras de otra al iniciar sesion.

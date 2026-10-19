@@ -210,6 +210,15 @@ class ArticleImageAssignmentEngine
         $this->validador  = is_null($validador) ? new ArticleImageValidationService() : $validador;
         $this->procesador = is_null($procesador) ? new CandidateImageProcessor($this->validador) : $procesador;
         $this->proveedor  = is_null($proveedor) ? ImageSearchProviderFactory::para($this->owner, $run->proveedor) : $proveedor;
+        if ($this->proveedor instanceof \App\Services\ImageSearch\SerperImageSearchProvider) {
+            $person = $run->auth_user_id ? User::find($run->auth_user_id) : null;
+            $this->proveedor->usageContext([
+                'user_id' => $this->user_id,
+                'auth_user_id' => $person ? $person->id : null,
+                'auth_user_name' => $person ? $person->name : null,
+                'process' => 'imagenes_' . $run->origen,
+            ]);
+        }
 
         $this->techo_de_ia = max(
             (int) config('services.article_image_validation.max_calls_batch'),
