@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Broadcasting\EspacioDeCanales;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -61,9 +62,15 @@ class User extends Authenticatable
      * prendidos, sin que lo hayan pedido. La fuente de verdad del calculo sigue siendo
      * `ArticleHelper::redondear()`, que lee las cinco columnas y no se toco.
      *
+     * `canales_en_vivo` (misión pusher-canales-por-sistema, 19/10/2026): el espacio de nombres de los
+     * canales de Pusher de ESTE sistema. Va en `$appends` y no en una respuesta puntual porque el SPA
+     * lo necesita antes de su primera suscripción y el usuario viaja en el login, en GET api/user y en
+     * cualquier otra serialización: así llega siempre, sin depender de qué endpoint lo trajo. Ver
+     * `getCanalesEnVivoAttribute()`.
+     *
      * @var array<int, string>
      */
-    protected $appends = ['modo_redondeo'];
+    protected $appends = ['modo_redondeo', 'canales_en_vivo'];
 
     /**
      * Columnas de redondeo, en el orden en que las aplica `ArticleHelper::redondear()`, con el
@@ -139,6 +146,27 @@ class User extends Authenticatable
         }
 
         return $prendidas[0];
+    }
+
+    /**
+     * Con qué nombres escucha el SPA los canales en vivo de este sistema (misión
+     * pusher-canales-por-sistema, 19/10/2026).
+     *
+     * Toda la flota emite a una sola app de Pusher; desde esta misión cada canal sale con el sufijo
+     * `@{espacio}` (lo pega `App\Broadcasting\PusherBroadcasterConEspacio`). El SPA tiene que escuchar
+     * el MISMO nombre físico, y el espacio sale de la base y el secret de la API, que el navegador no
+     * conoce: por eso viaja acá.
+     *
+     * Es contrato con empresa-spa (`src/utils/canales_en_vivo.js` lo guarda en `setUser`) y tiene la
+     * misma forma que `Buyer::$appends` de tienda-api: `espacio` y `canales_viejos_de_tienda`, con esos
+     * nombres exactos. Un SPA nuevo contra una API vieja no recibe esta clave y escucha como antes.
+     *
+     * No sale de una columna ni hace una query: el espacio se calcula una vez por proceso.
+     *
+     * @return array{espacio: string, canales_viejos_de_tienda: bool}
+     */
+    public function getCanalesEnVivoAttribute() {
+        return EspacioDeCanales::para_el_spa();
     }
 
     function scopeWithAll($query) {
