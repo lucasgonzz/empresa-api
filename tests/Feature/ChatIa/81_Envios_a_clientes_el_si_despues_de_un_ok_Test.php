@@ -31,10 +31,10 @@ use Tests\EmpresaTestCase;
  *    sin llamar al modelo, con el bloque otra vez, y ese mensaje queda en `datos.mostrado_en`: el «sí»
  *    siguiente manda (de punta a punta, por el job real, como el registro del 19/10);
  *  - con otra tarjeta esperando, o con una tarjeta de 40 minutos, el «ok» lo sigue decidiendo el modelo;
- *  - el «sí» que llega con el bloque fuera de la vista (hubo una pregunta en el medio) no manda, pero el
- *    sistema le vuelve a pegar el bloque al final del mensaje y le deja una nota al modelo; el «sí»
- *    siguiente manda. Lo decide el código: también si el modelo no intentó confirmar, y sin duplicar el
- *    bloque si el modelo lo copió;
+ *  - el «sí» que llega con el bloque fuera de la vista (hubo una pregunta, una corrección o un «no» en
+ *    el medio) va por el camino de develop: no manda, NO se vuelve a pegar el bloque (las dos revisiones
+ *    independientes del 19/10 mostraron que eso traía de vuelta bloques viejos) y el «sí» siguiente sin
+ *    una propuesta nueva tampoco manda; los escenarios de esas revisiones, uno por uno;
  *  - las garantías de B1 siguen: un «sí» a otra pregunta no manda, un bloque que copió el modelo no
  *    cuenta, nada del dueño después del sí, una tarjeta de más de 30 minutos no, un mensaje registrado
  *    que no está 'listo' o no tiene el bloque no, dos envíos esperando no; por MCP y en el panel nada
@@ -490,77 +490,64 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
         ]);
 
         $this->assertNull(PedidoDelSiParaEnvioIaHelper::respuesta_al_casi_si($conversation, $assistant));
-        $this->assertNull(PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant));
         $this->assertSame([], $this->mostrado_en($tarjeta_id));
     }
 
     // ---------------------------------------------------------------------
-    // El sí con el bloque fuera de la vista
+    // El sí con el bloque fuera de la vista: el camino de develop
     // ---------------------------------------------------------------------
 
     /**
-     * 🔴 Un «sí» que llega después de una pregunta del medio NO manda (B1), pero el sistema le vuelve a
-     * pegar el bloque al final del mensaje, lo registra y le deja la nota al modelo. El «sí» siguiente
-     * contesta ESE bloque y manda.
+     * 🔴 Decisión de la raíz tras la segunda revisión (19/10): un «sí» que llega después de una pregunta
+     * del medio NO manda y el sistema NO vuelve a pegar el bloque (eso fue lo que trajo de vuelta bloques
+     * viejos). El rechazo es el de B1, sin nota; el mensaje es el del modelo tal cual; `mostrado_en` no
+     * cambia; y el «sí» siguiente, sin una propuesta nueva en el medio, tampoco manda.
      *
      * @test
      */
-    public function el_si_despues_de_una_pregunta_en_el_medio_no_manda_pero_vuelve_a_mostrar_el_bloque_y_el_si_siguiente_manda()
+    public function el_si_despues_de_una_pregunta_en_el_medio_rebota_no_se_repega_y_sin_propuesta_nueva_no_manda()
     {
         list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
         $bloque = $this->bloque_de($tarjeta_id);
 
         $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000. ¿Querés el detalle por artículo?');
 
-        // El «sí» del medio: el modelo intenta confirmar, rebota, y pide el sí en una línea.
         $this->el_modelo_contesta(
             $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
-            $this->end_turn('Para mandarlo necesito que me contestes «sí».')
+            $this->end_turn('Para mandarla primero te la tengo que mostrar de nuevo.')
         );
 
         list($conversation, $primero) = $this->turno($conversation, 'sí');
 
-        $rechazo = null;
+        $rechazos = array_values(array_filter($this->resultados_que_vio_el_modelo(), function ($resultado) {
+            return is_array($resultado) && isset($resultado['error']) && $resultado['error'] === ConfirmacionPorTextoIaHelper::MENSAJE_ENVIO_NO_VISTO;
+        }));
 
-        foreach ($this->resultados_que_vio_el_modelo() as $resultado) {
-            if (is_array($resultado) && isset($resultado['error']) && $resultado['error'] === ConfirmacionPorTextoIaHelper::MENSAJE_ENVIO_NO_VISTO) {
-                $rechazo = $resultado;
-            }
-        }
+        $this->assertNotEmpty($rechazos, 'El sí del medio rebota con el mensaje de B1.');
+        $this->assertArrayNotHasKey('nota', $rechazos[0]);
+        $this->assertSame('Para mandarla primero te la tengo que mostrar de nuevo.', $primero->contenido, 'Nada se le pega al texto del modelo.');
+        $this->assertStringNotContainsString($bloque, $primero->contenido);
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
 
-        $this->assertNotNull($rechazo, 'El sí del medio rebota con el mensaje de siempre.');
-        $this->assertSame(PedidoDelSiParaEnvioIaHelper::NOTA_SE_VUELVE_A_MOSTRAR, $rechazo['nota']);
-
-        $this->assertCount(0, $this->promociones_enviadas(), 'Un «sí» a otra pregunta no manda.');
-        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
-
-        $this->assertStringStartsWith('Para mandarlo necesito que me contestes «sí».', $primero->contenido);
-        $this->assertStringContainsString(PedidoDelSiParaEnvioIaHelper::ENCABEZADO_DEL_REMOSTRADO . "\n\n" . $bloque, $primero->contenido);
-        $this->assertStringEndsWith($bloque, $primero->contenido, 'El mensaje termina con el bloque y su pregunta.');
-        $this->assertSame(1, substr_count($primero->contenido, DestinatariosIaHelper::PREGUNTA));
-        $this->assertSame([(int) $primero->id], $this->mostrado_en($tarjeta_id));
-
-        // El «sí» siguiente contesta el bloque que el sistema volvió a mostrar: manda.
+        // El «sí» siguiente, sin propuesta nueva: tampoco manda.
         $this->el_modelo_contesta(
             $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
-            $this->end_turn('Listo, salió la promo.')
+            $this->end_turn('Te la armo de nuevo.')
         );
 
         $this->turno($conversation, 'sí');
 
-        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::find($tarjeta_id)->estado_guardado());
-        $this->assertCount(1, $this->promociones_enviadas());
-        $this->assertStringContainsString('20% en todo el local', $this->promociones_enviadas()->first()->body);
+        $this->assertCount(0, $this->promociones_enviadas());
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
     }
 
     /**
-     * Lo decide el código, no el modelo: aunque el modelo no intente confirmar —y copie el bloque por su
-     * cuenta, como el 19/10—, el bloque vuelve una sola vez, al final, registrado; y el «dale» siguiente
-     * manda.
+     * Un bloque que el modelo copia por su cuenta no se toca (no se saca ni se re-pega: el mensaje sale
+     * como lo escribió) y no cuenta como visto: el «dale» siguiente no manda.
      *
      * @test
      */
-    public function aunque_el_modelo_no_intente_confirmar_el_bloque_vuelve_una_sola_vez_y_el_si_siguiente_manda()
+    public function un_bloque_copiado_por_el_modelo_no_se_toca_y_el_dale_siguiente_no_manda()
     {
         list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
         $bloque = $this->bloque_de($tarjeta_id);
@@ -571,10 +558,8 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         list($conversation, $primero) = $this->turno($conversation, 'sí');
 
-        $this->assertSame(1, substr_count($primero->contenido, $bloque), 'La copia del modelo se va: queda la del sistema.');
-        $this->assertStringEndsWith($bloque, $primero->contenido);
-        $this->assertSame([(int) $primero->id], $this->mostrado_en($tarjeta_id));
-        $this->assertCount(0, $this->promociones_enviadas());
+        $this->assertSame("Acá te lo dejo de nuevo:\n\n" . $bloque, $primero->contenido);
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
 
         $this->el_modelo_contesta(
             $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
@@ -583,72 +568,35 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         $this->turno($conversation, 'dale');
 
-        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::find($tarjeta_id)->estado_guardado());
-        $this->assertCount(1, $this->promociones_enviadas());
+        $this->assertCount(0, $this->promociones_enviadas());
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
     }
 
     /**
-     * Un «ok» que llega con el bloque fuera de la vista no es el caso fijo (el bloque no está delante):
-     * contesta el modelo, pero el sistema igual le vuelve a pegar el bloque y lo registra.
+     * Un «ok» con el bloque fuera de la vista no es el caso fijo: contesta el modelo y no se pega nada.
      *
      * @test
      */
-    public function un_ok_con_el_bloque_fuera_de_la_vista_lo_contesta_el_modelo_y_el_bloque_vuelve()
+    public function un_ok_con_el_bloque_fuera_de_la_vista_lo_contesta_el_modelo_sin_repegar()
     {
         list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
-        $bloque = $this->bloque_de($tarjeta_id);
 
         $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000.');
 
-        $this->el_modelo_contesta($this->end_turn('Para mandarla necesito que me contestes «sí».'));
+        $this->el_modelo_contesta($this->end_turn('Si querés mandarla, te la muestro de nuevo.'));
 
         list($conversation, $respuesta) = $this->turno($conversation, 'ok');
 
         $this->assertSame(1, $this->pedidos_al_modelo());
-        $this->assertStringStartsWith('Para mandarla necesito que me contestes «sí».', $respuesta->contenido);
-        $this->assertStringEndsWith($bloque, $respuesta->contenido);
-        $this->assertSame([(int) $respuesta->id], $this->mostrado_en($tarjeta_id));
+        $this->assertSame('Si querés mandarla, te la muestro de nuevo.', $respuesta->contenido);
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
         $this->assertCount(0, $this->promociones_enviadas());
     }
 
     /**
-     * Si el turno del sí deja OTRA tarjeta esperando (el modelo propuso una tarea), el envío viejo no se
-     * le pega al lado: el dueño quedaría con dos cosas a las que decir que sí en el mismo mensaje.
-     *
-     * @test
-     */
-    public function si_el_turno_deja_otra_tarjeta_esperando_el_envio_viejo_no_se_vuelve_a_mostrar()
-    {
-        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
-
-        $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000. ¿Te agendo llamar a Marcos?');
-
-        list($conversation, $assistant) = $this->vuelta('sí', $conversation);
-
-        $this->assertSame($tarjeta_id, (int) PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant)->id, 'Sin otra tarjeta, se vuelve a mostrar.');
-
-        AiMessageAction::create([
-            'ai_conversation_id' => $conversation->id,
-            'ai_message_id'      => $assistant->id,
-            'user_id'            => $this->dueno->id,
-            'auth_user_id'       => $this->dueno->id,
-            'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
-            'clave'              => 'tarea_nueva',
-            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
-            'datos'              => ['detalle' => 'Llamar a Marcos P81'],
-            'presentacion'       => ['titulo' => 'Tarea en la agenda', 'renglones' => [], 'aviso' => null],
-        ]);
-
-        $this->assertNull(PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant));
-    }
-
-    /**
-     * 🔴 Revisión independiente de la misión (19/10): UNA CORRECCIÓN QUE EL MODELO NO APLICÓ NO PUEDE TRAER
-     * DE VUELTA EL BLOQUE VIEJO. Promo a Ana y a Juan → «sacale a Juan Perez» → el modelo dice «Listo,
-     * saqué a Juan Perez de la promo.» SIN volver a proponer → «dale». Si el sistema re-pegara el bloque
-     * (con Juan) y lo registrara, el «sí» siguiente lo mandaría a los dos. Con algo que no es una pregunta
-     * ni un sí después del último bloque visto, no se re-muestra ni hay nota: vuelve B1 tal cual («armá
-     * la propuesta de nuevo»).
+     * 🔴 Primera revisión independiente (19/10), que sigue valiendo en el camino de develop: promo a Ana y
+     * a Juan → «sacale a Juan Perez» → el modelo dice «Listo, saqué a Juan Perez de la promo.» SIN volver
+     * a proponer → «dale» → rebota sin nota y no se re-pega nada → «sí» → no sale a Juan.
      *
      * @test
      */
@@ -664,7 +612,6 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         $this->turno($conversation, 'sacale a Juan Perez');
 
-        // El «dale»: el modelo intenta confirmar y rebota, sin la nota del re-mostrado.
         $this->el_modelo_contesta(
             $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
             $this->end_turn('Te la armo de nuevo sin Juan.')
@@ -677,11 +624,10 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
         }));
 
         $this->assertNotEmpty($rechazos);
-        $this->assertArrayNotHasKey('nota', $rechazos[0], 'Después de una corrección no se le dice al modelo que no vuelva a proponer.');
+        $this->assertArrayNotHasKey('nota', $rechazos[0]);
         $this->assertSame('Te la armo de nuevo sin Juan.', $al_dale->contenido, 'El bloque viejo no se vuelve a pegar.');
         $this->assertSame([], $this->mostrado_en($tarjeta_id));
 
-        // Y el «sí» siguiente tampoco manda el bloque viejo.
         $this->el_modelo_contesta(
             $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
             $this->end_turn('Necesito armarla de nuevo.')
@@ -694,12 +640,8 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     }
 
     /**
-     * 🟡 Revisión independiente (19/10): EL BLOQUE NO SE PEGA DEBAJO DE UNA RESPUESTA QUE TERMINA CON OTRA
-     * PREGUNTA. Promo → «¿cuánto vendí hoy?» → «Vendiste $ 120.000. ¿Querés el detalle?» → «sí» (para el
-     * detalle) → el modelo da el detalle y pregunta «¿Querés que te lo mande también por mail?». Si el
-     * sistema pegara el bloque y lo registrara, el «dale» a lo del mail confirmaría la promo. Antes del
-     * loop el modelo recibe la nota de que el sistema le va a volver a mostrar el envío si no pregunta
-     * nada; si igual pregunta, no se pega ni se registra y decide B1.
+     * Primera revisión independiente: un «sí» a una respuesta que termina con OTRA pregunta no lleva el
+     * bloque, y el «dale» a esa otra pregunta no manda la promo.
      *
      * @test
      */
@@ -714,22 +656,10 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         list($conversation, $al_detalle) = $this->turno($conversation, 'sí');
 
-        // El modelo supo, antes de contestar, que el envío vuelve al final si no pregunta nada.
-        $ultimo_pedido = Http::recorded(function ($request) {
-            return strpos($request->url(), 'api.anthropic.com') !== false;
-        })->last()[0]->data();
-
-        $this->assertStringContainsString(
-            PedidoDelSiParaEnvioIaHelper::NOTA_PARA_EL_TURNO,
-            json_encode(end($ultimo_pedido['messages']), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-        );
-
-        // Igual preguntó: no se pega ni se registra.
         $this->assertSame('Vendiste 3 cajas de tornillos y 2 martillos. ¿Querés que te lo mande también por mail?', $al_detalle->contenido);
         $this->assertStringNotContainsString($bloque, $al_detalle->contenido);
         $this->assertSame([], $this->mostrado_en($tarjeta_id));
 
-        // El «dale» (a lo del mail): aunque el modelo intente confirmar la promo, no sale.
         $this->el_modelo_contesta(
             $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
             $this->end_turn('Listo, te lo mando por mail.')
@@ -742,8 +672,8 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     }
 
     /**
-     * Variante del revisor: un «no, dejalo» que el modelo no canceló, seguido de un «sí» a otra pregunta,
-     * no hace reaparecer el envío que el dueño rechazó.
+     * Variante de la primera revisión: un «no, dejalo» que el modelo no canceló, seguido de un «sí» a otra
+     * pregunta, no hace reaparecer el envío que el dueño rechazó.
      *
      * @test
      */
@@ -763,13 +693,8 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         $this->assertSame('Vendiste 3 cajas de tornillos y 2 martillos.', $respuesta->contenido);
         $this->assertSame([], $this->mostrado_en($tarjeta_id));
-        $this->assertNull(PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $respuesta));
         $this->assertCount(0, $this->promociones_enviadas());
     }
-
-    // ---------------------------------------------------------------------
-    // Las garantías de B1 siguen
-    // ---------------------------------------------------------------------
 
     /**
      * Un mensaje del MODELO con el bloque copiado no cuenta como «a la vista» (`mostrado_en` lo escribe
@@ -781,7 +706,6 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     {
         list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
 
-        // Una PREGUNTA en el medio: con un pedido («mostramela de nuevo») la regla del revisor apaga el re-mostrado y no habría nota.
         $this->otra_charla($conversation, '¿me la mostrás de nuevo?', "Acá está:\n\n" . $this->bloque_de($tarjeta_id));
 
         list($conversation, $siguiente) = $this->vuelta('sí', $conversation);
@@ -790,7 +714,7 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         $this->assertTrue(empty($intento['ok']));
         $this->assertSame(ConfirmacionPorTextoIaHelper::MENSAJE_ENVIO_NO_VISTO, $intento['error']);
-        $this->assertSame(PedidoDelSiParaEnvioIaHelper::NOTA_SE_VUELVE_A_MOSTRAR, $intento['nota'], 'El sistema se lo va a volver a mostrar.');
+        $this->assertArrayNotHasKey('nota', $intento, 'El rechazo es el de B1, sin nota.');
         $this->assertCount(0, $this->promociones_enviadas());
     }
 

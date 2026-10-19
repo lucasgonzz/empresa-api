@@ -370,49 +370,18 @@ class ConfirmacionPorTextoIaHelper
             if (AiMessageImagen::where('ai_message_id', $pedido->id)->exists()
                 || !ConfirmacionDeterministaIaHelper::es_si_para_envio($pedido->contenido)) {
 
-                return self::rechazo_de_envio($conversation, $assistant_message, $accion, self::MENSAJE_ENVIO_SIN_SI);
+                return RespuestaDeCargaIa::error(self::MENSAJE_ENVIO_SIN_SI);
             }
 
             $no_visto = self::envio_no_visto($conversation, $accion, $propuso, $pedido);
 
             if (!is_null($no_visto)) {
 
-                return self::rechazo_de_envio($conversation, $assistant_message, $accion, $no_visto);
+                return RespuestaDeCargaIa::error($no_visto);
             }
         }
 
         return null;
-    }
-
-    /**
-     * El rechazo de un sí a un envío a clientes, con la nota de que el sistema se lo vuelve a mostrar al
-     * dueño cuando corresponde (misión asistente-arreglos-segunda-prueba, N2, 19/10/2026).
-     *
-     * 🔴 EL MOTIVO NO CAMBIA: sigue siendo MENSAJE_ENVIO_SIN_SI o MENSAJE_ENVIO_NO_VISTO tal cual (lo fijan
-     * los tests de B1, 78 y 79), y el envío NO sale. Lo único que se suma es `nota`, y solo si la función
-     * que decide «hay que volver a mostrarlo» (PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar(),
-     * la MISMA que usa el pegado de AsistenteIaService::con_los_bloques_de_envio()) elige ESTE envío. Así
-     * el modelo no contesta «armá la propuesta de nuevo» —que fue lo que armó el círculo de tres «sí» del
-     * 19/10 en demo3— y se limita a pedir el sí mientras el sistema pega el bloque y lo registra.
-     *
-     * @param  \App\Models\AiConversation  $conversation
-     * @param  \App\Models\AiMessage  $assistant_message  El assistant que se está generando.
-     * @param  \App\Models\AiMessageAction  $accion  El envío que el modelo quiso confirmar.
-     * @param  string  $motivo  El mensaje de rechazo de siempre.
-     * @return array
-     */
-    protected static function rechazo_de_envio(AiConversation $conversation, AiMessage $assistant_message, AiMessageAction $accion, $motivo)
-    {
-        $respuesta = RespuestaDeCargaIa::error($motivo);
-
-        $a_mostrar = PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant_message);
-
-        if (!is_null($a_mostrar) && (int) $a_mostrar->id === (int) $accion->id) {
-
-            $respuesta['nota'] = PedidoDelSiParaEnvioIaHelper::NOTA_SE_VUELVE_A_MOSTRAR;
-        }
-
-        return $respuesta;
     }
 
     /**
@@ -423,9 +392,9 @@ class ConfirmacionPorTextoIaHelper
      *   1. la tarjeta es del ÚLTIMO mensaje del asistente anterior al "sí" (un "sí" a otra pregunta no
      *      confirma una tarjeta de hace tres mensajes, ni una vieja que una corrección no llegó a pisar);
      *      o ese último mensaje es uno en el que EL SISTEMA le volvió a mostrar el bloque al dueño
-     *      (`datos.mostrado_en`, misión asistente-arreglos-segunda-prueba, N2, 19/10/2026: el «ok» que
-     *      el sistema contesta con el bloque, o el sí que llegó con el bloque fuera de la vista), y en ese
-     *      caso el mensaje tiene que estar 'listo';
+     *      (`datos.mostrado_en`, misión asistente-arreglos-segunda-prueba, N2, 19/10/2026: solo lo escribe
+     *      la respuesta fija que el sistema le da a un «ok», con el bloque), y en ese caso el mensaje tiene
+     *      que estar 'listo';
      *   2. se propuso hace menos de ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS (una tarjeta de
      *      ayer no se confirma con un "sí" de hoy) — contado desde la PROPUESTA, aunque se haya vuelto a
      *      mostrar después;
@@ -453,7 +422,7 @@ class ConfirmacionPorTextoIaHelper
         /*
          * 1 y 3. El último mensaje del asistente antes del "sí" es el que propuso o uno de `mostrado_en`,
          * está 'listo' y tiene el bloque adentro. Un mensaje del modelo que copió el bloque por su cuenta
-         * NO vale: `mostrado_en` lo escribe solo el sistema, al pegarlo él.
+         * NO vale: `mostrado_en` lo escribe solo el sistema, en la respuesta fija al «casi sí».
          */
         $a_la_vista = PedidoDelSiParaEnvioIaHelper::mensaje_que_lo_muestra($conversation, $accion, $pedido);
 
