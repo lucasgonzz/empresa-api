@@ -397,9 +397,17 @@ class EnviosFallidosDelAsistenteHelper
      * Un lote (recordatorios, promo): los fallos de la misma tarjeta y canal que todavía no se avisaron
      * se juntan en UNA fila. La fila se bloquea para que dos jobs seguidos sumen y no se pisen.
      *
+     * 🔴 SOLO SE SUMA A UNA FILA QUE TODAVÍA NO ESTÁ CALMA (corrección de la revisión del 19/10/2026). Una
+     * fila calma (sin fallos nuevos hace MINUTOS_DE_CALMA_DEL_LOTE) ya es ofrecible: el admin puede
+     * haberla traído con avisos-pendientes y estar mandando "2 no salieron: Ana y Juan". Si el fallo de
+     * Pedro que llega en ese medio minuto se sumara ahí, el sello de avisos/avisado se llevaba a Pedro
+     * sin que nadie se lo dijera al dueño. Con esto, un fallo que llega después de la calma abre una fila
+     * nueva (y su propio aviso). La condición es la MISMA que usa pendientes_de_aviso() para ofrecerla.
+     *
      * ⚠️ Con dos workers que fallan EXACTAMENTE a la vez y todavía no hay fila, pueden nacer dos (dos
      * avisos en vez de uno). Hoy corre un worker por cliente; es el mismo límite que dice el progreso del
-     * lote de `SendRecordatorioCobroJob`.
+     * lote de `SendRecordatorioCobroJob`. Y un fallo que llega después de la calma de una fila que el
+     * admin todavía no consultó también abre otra: dos avisos en vez de uno, nunca uno perdido.
      *
      * @param  \App\Models\AiMessageAction  $accion
      * @param  string  $tipo
@@ -417,6 +425,8 @@ class EnviosFallidosDelAsistenteHelper
                                     ->where('canal', $canal)
                                     ->whereNull('avisado_por_whatsapp_at')
                                     ->whereNull('dicho_en_el_turno_at')
+                                    // Todavía no calma: no se pudo haber ofrecido (ver el 🔴 de arriba).
+                                    ->where('updated_at', '>', Carbon::now()->subMinutes(self::MINUTOS_DE_CALMA_DEL_LOTE))
                                     ->lockForUpdate()
                                     ->first();
 

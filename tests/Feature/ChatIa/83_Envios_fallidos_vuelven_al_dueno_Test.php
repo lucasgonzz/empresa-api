@@ -663,6 +663,119 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
     }
 
     // ---------------------------------------------------------------------
+    // Revisión del 19/10/2026: lo que llega entre el GET y el POST del admin
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 El admin trae "2 no salieron: Ana y Juan" y, mientras lo manda, falla Pedro. Pedro NO se suma a
+     * la fila que ya se ofreció (el sello se lo llevaría sin que nadie se lo diga al dueño): abre otra,
+     * con su propio aviso. Y la conversación queda con el texto que se ofreció (2), no con 3.
+     *
+     * @test
+     */
+    public function un_fallo_que_llega_despues_de_ofrecido_el_lote_abre_otro_aviso()
+    {
+        $this->el_admin_avisa();
+
+        $this->cliente('Ana Gomez', '5493444101010');
+        $this->cliente('Juan Perez', '5493444202020');
+        $this->cliente('Pedro Diaz', '5493444303030');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo a todos');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+
+        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
+
+        $tarjeta = (int) $propuesta['tarjeta_id'];
+
+        EnviosFallidosDelAsistenteHelper::registrar($tarjeta, AiEnvioFallido::CANAL_WHATSAPP, '5493444101010', 'Ana Gomez', 'WhatsApp no confirmó el envío');
+        EnviosFallidosDelAsistenteHelper::registrar($tarjeta, AiEnvioFallido::CANAL_WHATSAPP, '5493444202020', 'Juan Perez', 'WhatsApp no confirmó el envío');
+
+        $ahora = Carbon::now();
+
+        try {
+
+            // El lote se calmó: el admin lo trae.
+            Carbon::setTestNow($ahora->copy()->addMinutes(EnviosFallidosDelAsistenteHelper::MINUTOS_DE_CALMA_DEL_LOTE + 1));
+
+            $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+            $this->assertCount(1, $avisos);
+
+            $ofrecido = $avisos[0];
+
+            $this->assertStringContainsString('2 no salieron por WhatsApp: Ana Gomez y Juan Perez', $ofrecido['texto']);
+
+            // Entre el GET y el POST falla Pedro.
+            EnviosFallidosDelAsistenteHelper::registrar($tarjeta, AiEnvioFallido::CANAL_WHATSAPP, '5493444303030', 'Pedro Diaz', 'WhatsApp no confirmó el envío');
+
+            $this->assertSame(2, AiEnvioFallido::where('ai_message_action_id', $tarjeta)->count(), 'Pedro tiene que abrir otra fila: la primera ya se ofreció.');
+
+            $this->assertTrue(AvisosDelAsistenteHelper::marcar_avisado($this->dueno, $ofrecido['id'], null, 'wamid.LOTE1'));
+
+            $primera = AiEnvioFallido::where('ai_message_action_id', $tarjeta)->orderBy('id')->first();
+
+            $this->assertSame(2, $primera->cantidad);
+            $this->assertNotNull($primera->avisado_por_whatsapp_at);
+            $this->assertSame(1, AiMessage::where('ai_conversation_id', $conversation->id)->where('contenido', $ofrecido['texto'])->count(), 'La conversación queda con lo que se le mandó al dueño.');
+
+            // Cuando el de Pedro se calma, sale su propio aviso.
+            Carbon::setTestNow($ahora->copy()->addMinutes(2 * (EnviosFallidosDelAsistenteHelper::MINUTOS_DE_CALMA_DEL_LOTE + 1)));
+
+            $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+            $this->assertCount(1, $avisos);
+            $this->assertStringStartsWith('No le salió la promoción a Pedro Diaz por WhatsApp (5493444303030): WhatsApp no confirmó el envío.', $avisos[0]['texto']);
+
+        } finally {
+
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * El texto que queda en la conversación al sellar es el que se le OFRECIÓ al admin: si entre el GET y
+     * el POST falla también el WhatsApp del mismo comprobante, el mensaje del mail no se rearma (el dueño
+     * recibió el que decía que por WhatsApp sí salió; el del WhatsApp tiene su propio aviso).
+     *
+     * @test
+     */
+    public function el_texto_que_queda_en_la_conversacion_es_el_que_se_ofrecio()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list($conversation, $propuesta) = $this->mandar_el_presupuesto();
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertCount(1, $avisos);
+
+        $ofrecido = $avisos[0];
+
+        $this->assertStringContainsString('Por WhatsApp sí salió.', $ofrecido['texto']);
+
+        // Entre el GET y el POST, Meta rechaza el WhatsApp del mismo presupuesto.
+        EnviosFallidosDelAsistenteHelper::registrar($propuesta['tarjeta_id'], AiEnvioFallido::CANAL_WHATSAPP, '5493444001122', 'Marcos Perez', 'WhatsApp no lo entregó');
+
+        $this->assertTrue(AvisosDelAsistenteHelper::marcar_avisado($this->dueno, $ofrecido['id']));
+
+        $this->assertSame(1, AiMessage::where('ai_conversation_id', $conversation->id)->where('contenido', $ofrecido['texto'])->count());
+
+        // El del WhatsApp sale aparte.
+        $siguen = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertCount(1, $siguen);
+        $this->assertStringContainsString('por WhatsApp (5493444001122)', $siguen[0]['texto']);
+    }
+
+    // ---------------------------------------------------------------------
     // Ayudas
     // ---------------------------------------------------------------------
 

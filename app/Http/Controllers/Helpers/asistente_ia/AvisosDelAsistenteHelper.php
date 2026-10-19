@@ -76,6 +76,9 @@ class AvisosDelAsistenteHelper
     const CLAVE_ADMIN_AVISA = 'asistente_ia:admin_avisa:';
     const CLAVE_SPA_URL     = 'asistente_ia:spa_url:';
 
+    /** El texto que se le ofreció al admin para un aviso de envío fallido, por uuid (ver pendientes()). */
+    const CLAVE_TEXTO_OFRECIDO = 'asistente_ia:envio_fallido_ofrecido:';
+
     /**
      * Guarda lo que el admin anunció en el POST de mensajes: si consulta los avisos y la URL del SPA
      * de este cliente que conoce él (`client_apis.spa_url`).
@@ -249,11 +252,23 @@ class AvisosDelAsistenteHelper
 
             foreach (EnviosFallidosDelAsistenteHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
 
+                $texto = EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila);
+
+                /*
+                 * 🔴 SE GUARDA LO QUE SE OFRECIÓ (revisión del 19/10/2026). El admin manda ESTE texto y
+                 * recién después llama a avisos/avisado; si entre las dos cosas llega otro fallo de la
+                 * misma tarjeta (el WhatsApp del mismo comprobante, por ejemplo), rearmar el texto al
+                 * sellar dejaría en la conversación algo distinto de lo que el dueño recibió.
+                 * marcar_envio_fallido_avisado() usa éste. Se pisa en cada consulta: vale el último
+                 * ofrecido, que es el que manda la corrida del admin que lo trajo.
+                 */
+                Cache::put(self::CLAVE_TEXTO_OFRECIDO . (string) $fila->uuid, $texto, Carbon::now()->addHours(self::HORAS_DEL_AVISO * 2));
+
                 $avisos[] = [
                     'id'                 => self::TIPO_ENVIO_FALLIDO . ':' . (string) $fila->uuid,
                     'tipo'               => self::TIPO_ENVIO_FALLIDO,
                     'ai_conversation_id' => empty($fila->ai_conversation_id) ? null : (int) $fila->ai_conversation_id,
-                    'texto'              => EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila),
+                    'texto'              => $texto,
                     'ruta'               => '',
                     'url'                => null,
                 ];
@@ -407,7 +422,20 @@ class AvisosDelAsistenteHelper
             $fila->avisado_por_whatsapp_at = Carbon::now();
             $fila->save();
 
-            self::dejar_en_la_conversacion($dueno, $fila->ai_conversation_id, EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila), $url, $whatsapp_message_id);
+            /*
+             * El texto que queda en la conversación es el que SE OFRECIÓ (y el admin mandó), no uno
+             * rearmado con lo que pasó después del GET. Sin el ofrecido en el caché (venció, o el admin
+             * marcó sin haber consultado), se arma de nuevo, que es lo mejor que se sabe.
+             */
+            $clave = self::CLAVE_TEXTO_OFRECIDO . (string) $fila->uuid;
+
+            $ofrecido = Cache::get($clave);
+
+            $texto = is_string($ofrecido) && trim($ofrecido) !== '' ? $ofrecido : EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila);
+
+            self::dejar_en_la_conversacion($dueno, $fila->ai_conversation_id, $texto, $url, $whatsapp_message_id);
+
+            Cache::forget($clave);
 
             return true;
         });
