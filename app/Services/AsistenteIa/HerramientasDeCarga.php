@@ -1463,13 +1463,13 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_promocion_por_whatsapp',
-                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda, o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` es lo que sale, redactado con la persona: qué se ofrece y a qué precio, sin saludo (el saludo con el nombre lo pongo yo). Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda (de varios, hasta 5 en article_ids: cada uno sale con su link), o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` lo redactás VOS, sin pedírselo a la persona: qué se ofrece y a qué precio (el de cada artículo como lo devolvió consultar_stock_de_articulos), sin saludo (el saludo con el nombre lo pongo yo) y sin links (los pongo yo). La persona lo ve tal cual sale y lo corrige antes del sí. Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'texto'       => [
                             'type'        => 'string',
-                            'description' => 'El texto de la promo, tal cual va a salir (sin saludo ni link): "Llevá el combo Asado Completo a $25.000".',
+                            'description' => 'El texto de la promo, tal cual va a salir, REDACTADO POR VOS (no se lo pidas a la persona): qué se ofrece y a qué precio, sin saludo y sin links. "Llevá el combo Asado Completo a $25.000". Con varios artículos, nombrá cada uno con su precio.',
                         ],
                         'article_id'  => [
                             'type'        => 'integer',
@@ -1497,6 +1497,16 @@ class HerramientasDeCarga
                             'description' => 'Solo si la persona pidió mandarla a clientes puntuales: sus ids. Sin esto, a todos los clientes con teléfono.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión asistente-arreglos-segunda-prueba (19/10/2026, N5): AL FINAL de las
+                         * propiedades por la regla del prefijo del caché. article_id y articulo siguen
+                         * (uno solo, como siempre).
+                         */
+                        'article_ids' => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Si la promo es de VARIOS artículos: sus ids (hasta 5, de consultar_stock_de_articulos). Cada uno tiene que estar publicado en la tienda y sale con su link. No va junto con un combo.',
+                        ],
                     ],
                     'required'   => ['texto'],
                 ],

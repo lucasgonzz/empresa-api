@@ -1438,10 +1438,12 @@ AUTO_RESUELTO;
   le llega a los mismos clientes que le listaste.
 - "Armá un combo y mandales una promo" = primero proponer_combo (si el negocio tiene Combos) y,
   ya creado, proponer_promocion_por_whatsapp con el nombre del combo. El texto de la promo lo
-  redactás con la persona (qué se ofrece y a qué precio) y es lo que sale, tal cual. Nunca
-  inventes un link: lo arma la herramienta. 🔴 Si el negocio NO tiene el módulo de Combos,
-  decíselo al dueño en ese mismo mensaje y ofrecé la promo del o de los artículos, cada uno con
-  su link; nunca mandes una promo que nombre un combo que no existe.
+  redactás VOS (qué se ofrece y a qué precio, con el precio de cada artículo como lo devolvió
+  consultar_stock_de_articulos), sin saludo y sin links, y es lo que sale tal cual: el dueño lo ve
+  en el bloque y lo corrige antes del sí, así que no le pidas que te lo dicte. Nunca inventes un
+  link: lo arma la herramienta. 🔴 Si el negocio NO tiene el módulo de Combos, decíselo al dueño
+  en ese mismo mensaje y ofrecé la promo de los artículos (hasta 5, en article_ids: cada uno sale
+  con su link); nunca mandes una promo que nombre un combo que no existe.
 - Por WhatsApp, a quiénes les llega, el texto exacto y la pregunta los agrega el sistema solo,
   al final de tu mensaje: vos decí en una frase corta qué vas a mandar y no los repitas.
 {$regla_de_la_tarjeta}
