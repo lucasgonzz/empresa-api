@@ -195,7 +195,8 @@ class PedidoDelSiParaEnvioIaHelper
      *   - el dueño mandó un casi sí (ConfirmacionDeterministaIaHelper::es_casi_si_para_envio(): sin «?»,
      *     sin palabras de más) y sin foto (con foto puede ser el pedido de otra cosa);
      *   - en la conversación hay UNA sola tarjeta esperando, y es un envío a clientes (con otra tarjeta
-     *     pendiente no se sabe a cuál contesta el «ok»: decide el modelo);
+     *     pendiente no se sabe a cuál contesta el «ok»: decide el modelo). Cuentan solo las de menos de
+     *     MINUTOS_MAXIMOS (pendientes_de_antes()): una olvidada de la mañana no apaga esto;
      *   - el envío es de menos de ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS (un «ok» de dentro de
      *     una hora puede estar contestando otra cosa: decide el modelo, y la regla 2 del sí tampoco lo
      *     dejaría mandar);
@@ -298,7 +299,8 @@ class PedidoDelSiParaEnvioIaHelper
      *   - en la conversación hay UN solo envío esperando, de un mensaje ANTERIOR (el de un envío que este
      *     mismo turno propone ya lo pega el camino de siempre), propuesto por WhatsApp y con su mensaje
      *     'listo' (si sigue 'pendiente', su bloque todavía está por salir), de menos de MINUTOS_MAXIMOS, y
-     *     ninguna otra tarjeta esperando (con otra pendiente, el sí puede ser para ésa);
+     *     ninguna otra tarjeta esperando de menos de MINUTOS_MAXIMOS (con otra pendiente reciente, el sí
+     *     puede ser para ésa; una olvidada de hace horas no cuenta: ver pendientes_de_antes());
      *   - 🔴 TODO lo que el dueño escribió desde la última vez que vio el bloque (incluido el sí de ahora)
      *     es una pregunta, un sí o un casi sí (nada_cambio_desde_que_lo_vio()). Una corrección («sacale a
      *     Juan Perez»), un «no, dejalo», un «esperá» o un pedido cualquiera apagan el re-mostrado: el
@@ -638,9 +640,16 @@ class PedidoDelSiParaEnvioIaHelper
 
     /**
      * Las tarjetas que siguen esperando en la conversación, de mensajes ANTERIORES al que se está
-     * generando (las que este turno propone no cuentan: las muestra el camino de siempre), sin las
-     * vencidas (más de AiMessageAction::HORAS_VENCIMIENTO: ya no se pueden confirmar). Mismo criterio
-     * de «pendiente» que ConfirmacionDeterministaIaHelper::tarjeta_a_confirmar().
+     * generando (las que este turno propone no cuentan: las muestra el camino de siempre), propuestas
+     * hace menos de ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS.
+     *
+     * 🔴 SOLO LAS RECIENTES (revisión independiente, 19/10). Hasta esa revisión contaba toda tarjeta
+     * `propuesta` sin vencer (24 h), y una tarjeta olvidada de la mañana en el mismo chat —probable en
+     * WhatsApp, donde nadie toca un botón para cerrarla— alcanzaba para que el casi sí y el re-mostrado
+     * se apagaran y volviera el círculo de A8. Una tarjeta de más de MINUTOS_MAXIMOS ya no la confirma
+     * un «sí» suelto (ConfirmacionDeterministaIaHelper::tarjeta_a_confirmar() y la regla 2 del sí usan el
+     * mismo tope), así que no es «otra tarjeta esperando» a la que el «ok» pueda estar contestando. El
+     * envío mismo también tiene que ser reciente: un envío viejo directamente no aparece acá.
      *
      * @param  \App\Models\AiConversation  $conversation
      * @param  \App\Models\AiMessage  $assistant_message
@@ -654,7 +663,7 @@ class PedidoDelSiParaEnvioIaHelper
                               ->orderBy('id')
                               ->get()
                               ->filter(function ($accion) {
-                                  return !$accion->vencio();
+                                  return !$accion->vencio() && self::es_reciente($accion);
                               })
                               ->values()
                               ->all();

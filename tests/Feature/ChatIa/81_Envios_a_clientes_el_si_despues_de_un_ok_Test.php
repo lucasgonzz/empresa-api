@@ -209,13 +209,14 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
      * con el bloque adentro, como lo deja AsistenteIaService.
      *
      * @param  string|null  $canal
+     * @param  AiConversation|null  $conversation  Para proponerla en una conversación que ya tiene historia.
      * @return array{0: AiConversation, 1: AiMessage, 2: int}  La conversación, el mensaje que propuso y el tarjeta_id.
      */
-    protected function promo_a_la_vista($canal = AiMessage::CANAL_WHATSAPP)
+    protected function promo_a_la_vista($canal = AiMessage::CANAL_WHATSAPP, $conversation = null)
     {
         $this->cliente('Ana Gomez ' . uniqid(), '5493444' . rand(100000, 999999));
 
-        list($conversation, $propuso) = $this->vuelta('mandales una promo del 20%', null, $canal);
+        list($conversation, $propuso) = $this->vuelta('mandales una promo del 20%', $conversation, $canal);
 
         $respuesta = $this->herramienta($conversation, $propuso, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
 
@@ -404,6 +405,44 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
         $this->assertSame('¿Cuál de las dos querés que haga?', $respuesta->contenido);
         $this->assertSame(1, $this->pedidos_al_modelo());
         $this->assertSame([], $this->mostrado_en($tarjeta_id));
+    }
+
+    /**
+     * 🟡 Revisión independiente (19/10): UNA TARJETA OLVIDADA NO APAGA EL ARREGLO. En WhatsApp es probable
+     * que quede una tarjeta de la mañana sin contestar en el mismo chat; si contara como «otra tarjeta
+     * esperando», el «ok» volvía al modelo y al círculo de A8. Solo cuentan las de menos de
+     * ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS.
+     *
+     * @test
+     */
+    public function una_tarjeta_olvidada_de_hace_tres_horas_no_apaga_el_casi_si()
+    {
+        $conversation = AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]);
+
+        $de_la_manana = $this->otra_charla($conversation, 'agendame llamar a Marcos', 'Te dejo la tarea para llamar a Marcos. ¿La agendo?');
+
+        $olvidada = AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $de_la_manana->id,
+            'user_id'            => $this->dueno->id,
+            'auth_user_id'       => $this->dueno->id,
+            'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+            'clave'              => 'tarea_nueva',
+            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['detalle' => 'Llamar a Marcos P81'],
+            'presentacion'       => ['titulo' => 'Tarea en la agenda', 'renglones' => [], 'aviso' => null],
+        ]);
+
+        AiMessageAction::where('id', $olvidada->id)->update(['created_at' => Carbon::now()->subHours(3)]);
+
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista(AiMessage::CANAL_WHATSAPP, $conversation);
+
+        list($conversation, $al_ok) = $this->turno($conversation, 'ok');
+
+        $this->assertSame(PedidoDelSiParaEnvioIaHelper::RESPUESTA_AL_CASI_SI . "\n\n" . $this->bloque_de($tarjeta_id), $al_ok->contenido);
+        $this->assertSame(0, $this->pedidos_al_modelo());
+        $this->assertSame([(int) $al_ok->id], $this->mostrado_en($tarjeta_id));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $olvidada->fresh()->estado_guardado(), 'La olvidada sigue como estaba.');
     }
 
     /**
