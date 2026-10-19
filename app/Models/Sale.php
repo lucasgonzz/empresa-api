@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
@@ -226,21 +227,27 @@ class Sale extends Model
         y se caeria abrir cualquier venta, el listado, los PDF, la factura y la cuenta corriente —no
         solo el alta—. `RecargosEnPreciosEsquemaHelper::columnas_pivot()` la agrega solo si la
         tabla ya la tiene. Ver el encabezado de ese helper.
+
+        🔴 LO MISMO VALE PARA `price_sin_descuentos_de_venta` (mision
+        descuentos-aplicar-al-precio-del-articulo, 8/10/2026): entra por
+        `DescuentosEnPreciosEsquemaHelper::columnas_pivot()`, anidado con el de recargos, y nunca
+        pelada en el `withPivot()`. Son DOS columnas con DOS memos: si una se escribe a mano, en la
+        ventana del deploy se cae la lectura de toda venta.
     */
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'name', 'article_variant_id', 'price_type_personalizado_id', 'ganancia', 'fecha_agregado', 'iva_percentage', 'price_sin_iva'], 'article_sale'))->withTrashed();
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'name', 'article_variant_id', 'price_type_personalizado_id', 'ganancia', 'fecha_agregado', 'iva_percentage', 'price_sin_iva'], 'article_sale'), 'article_sale'))->withTrashed();
     }
 
     public function combos() {
-        return $this->belongsToMany('App\Models\Combo')->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price', 'cost'], 'combo_sale'))->withTrashed();
+        return $this->belongsToMany('App\Models\Combo')->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price', 'cost'], 'combo_sale'), 'combo_sale'))->withTrashed();
     }
 
     public function promocion_vinotecas() {
-        return $this->belongsToMany(PromocionVinoteca::class)->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price'], 'promocion_vinoteca_sale'))->withTrashed();
+        return $this->belongsToMany(PromocionVinoteca::class)->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'price'], 'promocion_vinoteca_sale'), 'promocion_vinoteca_sale'))->withTrashed();
     }
 
     public function services() {
-        return $this->belongsToMany('App\Models\Service')->withPivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['discount', 'amount', 'price', 'returned_amount'], 'sale_service'));
+        return $this->belongsToMany('App\Models\Service')->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['discount', 'amount', 'price', 'returned_amount'], 'sale_service'), 'sale_service'));
     }
 
     public function client() {

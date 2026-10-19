@@ -234,17 +234,31 @@ class AfipItemCalculator
         }
 
         // if (!$this->afip_helper->from_nota_credito) {
-            foreach ($discounts as $discount) {
-                if (
-                    $this->afip_helper->article->is_article
-                    || (
-                        $this->afip_helper->article->is_service
-                        && $this->afip_helper->sale->discounts_in_services
-                    )
-                ) {
-                    Log::info('restando descuento de venta de ' . $discount->pivot->percentage . ' a ' . $price);
-                    $price -= $price * $discount->pivot->percentage / 100;
-                    Log::info('quedo en ' . $price);
+            /*
+             * 🔴 LA GUARDA DE LOS DESCUENTOS (mision descuentos-aplicar-al-precio-del-articulo,
+             * 8/10/2026), gemela de la de recargos de mas abajo. Con `aplicar_descuentos_directo_a_items`
+             * el `price` del renglon YA TRAE el descuento adentro: volver a restarlo aca facturaria de
+             * MENOS que lo que se cobro, y la factura dejaria de coincidir con el total de la venta.
+             * Este metodo arma el neto de la factura y el bruto del que salen el canje de puntos y el
+             * total forzado, asi que un renglon mal descontado aca descuadra todo eso junto.
+             *
+             * Vale tambien para la nota de credito: la guarda mira el flag de la VENTA, y la NC
+             * devuelve renglones de esa misma venta (con el descuento adentro), aunque la lista de
+             * descuentos salga de `nota_credito_model`.
+             */
+            if (!$this->afip_helper->sale->aplicar_descuentos_directo_a_items) {
+                foreach ($discounts as $discount) {
+                    if (
+                        $this->afip_helper->article->is_article
+                        || (
+                            $this->afip_helper->article->is_service
+                            && $this->afip_helper->sale->discounts_in_services
+                        )
+                    ) {
+                        Log::info('restando descuento de venta de ' . $discount->pivot->percentage . ' a ' . $price);
+                        $price -= $price * $discount->pivot->percentage / 100;
+                        Log::info('quedo en ' . $price);
+                    }
                 }
             }
 

@@ -416,7 +416,7 @@ class SaleAfipTicketPdf extends fpdf {
 	 */
 	function printDiscounts() {
 		if (
-			count($this->sale->discounts) >= 1
+			$this->saleHasDiscounts()
 			|| $this->sale->descuento > 0
 			|| SaleHelper::get_forzar_total_monto($this->sale) != 0
 		) {
@@ -437,9 +437,15 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 9);
 			$this->Cell(30, 7, 'Descuentos', 1, 0, 'L');
-			foreach ($this->sale->discounts as $discount) {
-				// $this->x += 20;
-				$this->Cell(70, 7, $discount->name.' '.$discount->pivot->percentage.'%', 1, 1, 'L');
+			/*
+				Con `aplicar_descuentos_directo_a_items` la venta tiene descuentos pero NO se listan
+				(`saleHasDiscounts()` da false): ya estan adentro del precio de cada renglon.
+			*/
+			if ($this->saleHasDiscounts()) {
+				foreach ($this->sale->discounts as $discount) {
+					// $this->x += 20;
+					$this->Cell(70, 7, $discount->name.' '.$discount->pivot->percentage.'%', 1, 1, 'L');
+				}
 			}
 
 			if ($this->sale->descuento > 0) {
@@ -657,8 +663,18 @@ class SaleAfipTicketPdf extends fpdf {
 		return count(Auth()->user()->sale_types) >= 1;
 	}
 
+	/*
+		¿Hay descuentos de venta para LISTAR en este comprobante? Con `aplicar_descuentos_directo_a_items`
+		el descuento YA ESTA adentro del precio de cada renglon (mision
+		descuentos-aplicar-al-precio-del-articulo, 8/10/2026) y no se lista: es lo que pide la opcion
+		(que no aparezca discriminado). Los que llaman a esta funcion (el bloque "Descuentos", la linea
+		de precio con descuento, el espaciado de comisiones) heredan la misma regla sin tocar nada mas.
+	*/
 	function saleHasDiscounts() {
-		if (count($this->sale->discounts) >= 1) {
+		if (
+			count($this->sale->discounts) >= 1
+			&& !$this->sale->aplicar_descuentos_directo_a_items
+		) {
 			return true;
 		}
 		return false;
