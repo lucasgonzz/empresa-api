@@ -293,7 +293,8 @@ class PropuestaCompraConFacturaIaHelper
          *     «sumala a la 12»). Lo fija 20_Compra_con_factura_no_se_pega_a_otra_Test.
          * Con un proveedor que todavía no existe no hay compras suyas: ni reuso ni pregunta.
          */
-        $pidio_nueva = self::pidio_compra_nueva(EntradaDeCargaIa::valor($input, 'compra_nueva'));
+        $pidio_nueva = self::pidio_compra_nueva(EntradaDeCargaIa::valor($input, 'compra_nueva'))
+            || self::la_corregida_pidio_nueva($contexto, EntradaDeCargaIa::valor($input, 'reemplaza_a'));
 
         $a_reusar = (is_null($proveedor_nuevo) && !$pidio_nueva) ? self::compra_reusable($contexto, $proveedor) : null;
 
@@ -355,6 +356,12 @@ class PropuestaCompraConFacturaIaHelper
              * a una compra nueva aunque tenga artículos.
              */
             'compra_indicada'       => false,
+            /*
+             * true si la persona pidió una compra nueva (compra_nueva, o heredado de la tarjeta que esta
+             * corrige): lo lee la_corregida_pidio_nueva() para que una corrección de esta tarjeta no
+             * vuelva a preguntar por la compra vacía (revisión independiente, 19/10/2026).
+             */
+            'compra_nueva'          => (bool) $pidio_nueva,
             /*
              * Espejo de `prefill_prop_on_select` del formulario de la SPA (src/models/provider_order.js):
              * al elegir el proveedor, la compra hereda su default de costos brutos. Si acá se
@@ -1686,6 +1693,39 @@ class PropuestaCompraConFacturaIaHelper
                     . 'La foto de la factura la sigo teniendo: no se la pidas de nuevo.',
             ]
         );
+    }
+
+    /**
+     * true si la tarjeta que esta llamada CORRIGE (`reemplaza_a`) ya era una compra nueva pedida por
+     * la persona (`datos.compra_nueva`). Revisión independiente de la misión
+     * asistente-arreglos-segunda-prueba (19/10/2026): el dueño dijo «nueva», quedó la tarjeta, corrigió
+     * la sucursal, y el modelo —que en la corrección manda solo lo que cambia— no volvía a mandar
+     * compra_nueva: la herramienta volvía a preguntar por la compra vacía de otro día.
+     *
+     * Solo una compra con factura de ESTA conversación que todavía se está corrigiendo (propuesta, o
+     * reemplazada en una cadena de correcciones), con el mismo criterio que la herencia del alta
+     * genérica (PropuestaGenericaIaHelper::con_los_campos_de_la_tarjeta_reemplazada).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $reemplaza_a
+     * @return bool
+     */
+    protected static function la_corregida_pidio_nueva(ContextoDeCargaIa $contexto, $reemplaza_a)
+    {
+        $reemplaza_a = is_numeric($reemplaza_a) ? (int) $reemplaza_a : 0;
+
+        if ($reemplaza_a <= 0) {
+
+            return false;
+        }
+
+        $anterior = AiMessageAction::where('id', $reemplaza_a)
+                                    ->where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('tipo', AiMessageAction::TIPO_COMPRA_CON_FACTURA)
+                                    ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
+                                    ->first();
+
+        return !is_null($anterior) && is_array($anterior->datos) && !empty($anterior->datos['compra_nueva']);
     }
 
     /**

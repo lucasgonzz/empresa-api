@@ -915,6 +915,33 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertSame('Se usa la compra N° 47, que está vacía', $this->que_se_hace($vacio['tarjeta_id']));
     }
 
+    /**
+     * `compra_nueva` se hereda en una corrección con reemplaza_a: el dueño dijo «nueva», quedó la
+     * tarjeta, y después corrige otra cosa («en la sucursal 2»). Sin heredarlo, la corrección volvía
+     * a preguntar por la compra vacía de otro día.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_nueva_se_hereda_en_una_correccion_con_reemplaza_a()
+    {
+        $this->compra(12, 3);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $primera = $this->proponer($conversation, $generandose, ['compra_nueva' => true]);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+        $this->assertTrue((bool) AiMessageAction::find($primera['tarjeta_id'])->datos['compra_nueva']);
+
+        $otro_turno = $this->siguiente_turno($conversation, $generandose, 'Te armo una compra nueva con la factura, ¿la registro?', 'ah, y que entre en la sucursal 2');
+
+        $correccion = $this->proponer($conversation, $otro_turno, ['reemplaza_a' => $primera['tarjeta_id'], 'sucursal' => 'sucursal 2']);
+
+        $this->assertTrue($correccion['ok'], 'La corrección no vuelve a preguntar: ' . json_encode($correccion));
+        $this->assertSame('Se crea una compra nueva', $this->que_se_hace($correccion['tarjeta_id']));
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================
