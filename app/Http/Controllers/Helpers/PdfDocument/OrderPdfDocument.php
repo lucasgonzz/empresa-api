@@ -361,18 +361,33 @@ class OrderPdfDocument implements PdfDocumentSource
 
     /**
      * Valor del envío, sin el rótulo ("$500"), o null si no tiene costo. El envío por correo
-     * (`envio_precio`, lo que cobró el servidor de la tienda) o, si no hay, el de la zona de entrega
-     * propia del comercio.
+     * (`envio_precio`, lo que cobró el servidor de la tienda) o, si no hay, el de la forma de envío
+     * propia del comercio (`delivery_zone`).
+     *
+     * Una forma propia con el costo A CONVENIR (`costo_a_convenir`, misión
+     * formas-envio-direcciones-maps, 19/10/2026; por ejemplo "Acordar con el vendedor") devuelve
+     * "<nombre> - A convenir" en vez de null: el pedido tiene envío aunque la tienda no lo haya
+     * cobrado, y quien lo prepara tiene que verlo. Su `price` no se lee (el ERP lo guarda en 0, y
+     * un dato viejo no tiene que imprimirse como cobrado). Al no ser null, cuenta como extra y la
+     * línea de importe se rotula "Subtotal": lo que termina pagando el comprador todavía no está
+     * cerrado. Va con guion y no con raya: FPDF pasa el texto a Latin-1 y la raya saldría "?".
      *
      * @return string|null
      */
     public function texto_envio()
     {
+        $zona = $this->order->delivery_zone;
+
         $envio = null;
         if (! empty($this->order->envio_opcion) && is_numeric($this->order->envio_precio)) {
             $envio = (float) $this->order->envio_precio;
-        } elseif (! is_null($this->order->delivery_zone)) {
-            $envio = (float) $this->order->delivery_zone->price;
+        } elseif (! is_null($zona)) {
+            if (! empty($zona->costo_a_convenir)) {
+                $nombre = trim((string) $zona->name);
+
+                return ($nombre !== '' ? $nombre.' - ' : '').'A convenir';
+            }
+            $envio = (float) $zona->price;
         }
 
         if (is_null($envio) || $envio <= 0) {
