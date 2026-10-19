@@ -1293,11 +1293,40 @@ class BusquedaPorCodigoDeBarrasService
     }
 
     /**
+     * 🔴 LA REGLA DEL NOMBRE, LA MISMA EN LOS TRES PROMPTS QUE LO ARMAN (la búsqueda web, la redacción
+     * desde una base abierta y la ficha compartida de ProductFactsResearchService). Misión
+     * asistente-arreglos-segunda-prueba, N7 (19/10/2026).
+     *
+     * El caso real: en la segunda prueba contra demo3 (19/10, A7) el dueño mandó el código de barras de una
+     * cinta métrica Tramontina (EAN 7891114080247) y el artículo 50 quedó como «Trena Tramontina Master 5 m
+     * x 19 mm». El prompt pedía «el nombre comercial CON EL QUE SE VENDE, en español», y para un producto
+     * que se vende en Brasil el modelo entendió que el nombre con el que se vende es el portugués: tradujo
+     * la descripción (que sí decía «traducila») y dejó el tipo de producto en portugués. Un comercio de
+     * Argentina no busca «trena» en su lista de precios.
+     *
+     * Por eso el nombre se pide como lo NOMBRARÍA un comercio de Argentina, con el tipo de producto
+     * traducido y ejemplos de las herramientas que más llegan de Brasil; y la marca y el modelo, que son
+     * nombres propios, NO se traducen («Tramontina Master», «Stanley», «Bosch GSB 13 RE» van tal cual).
+     *
+     * ⚠️ Esto corrige las búsquedas que se hagan desde ahora: una ficha compartida que el admin ya tiene
+     * cacheada con el nombre en portugués sigue saliendo así hasta que venza (hallazgo de la misión, no se
+     * toca acá).
+     */
+    const NOMBRE_COMO_EN_ARGENTINA = 'el nombre como lo nombraría un comercio de Argentina: el TIPO de producto en español de Argentina, '
+        . 'traducido si las fuentes están en otro idioma (trena → cinta métrica, chave → llave, alicate → pinza, '
+        . 'furadeira → taladro, parafusadeira → atornillador, fita → cinta, lixa → lija, martelo → martillo), seguido de '
+        . 'la marca, la línea o el modelo, la variante y las medidas o el contenido neto. La marca y el modelo NO se '
+        . 'traducen: van tal cual vienen.';
+
+    /**
      * System prompt de la búsqueda web.
      *
      * 🔴 El párrafo de "nombre null" es el núcleo: un EAN mal leído o poco conocido devuelve
      * resultados de OTRO producto, y un modelo complaciente lo daría por bueno. Un alta con el
      * producto equivocado es peor que preguntarle el nombre a la persona.
+     *
+     * El bullet del nombre lleva NOMBRE_COMO_EN_ARGENTINA (N7, 19/10/2026): antes decía «el nombre
+     * comercial con el que se vende, en español» y un producto brasileño salía como «Trena».
      *
      * @return string
      */
@@ -1310,7 +1339,7 @@ class BusquedaPorCodigoDeBarrasService
             'Al terminar, respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después y sin backticks:',
             '{"nombre": "...", "marca": "...", "descripcion": "...", "fuentes": ["https://..."]}',
             '',
-            '- "nombre": el nombre comercial con el que se vende, en español: tipo de producto + marca + variante + contenido neto (ejemplo: "Cera Modeladora Efecto Mate Nic Modeleitor 90 g"). Sin el código de barras y sin precio.',
+            '- "nombre": ' . self::NOMBRE_COMO_EN_ARGENTINA . ' Ejemplos: "Cera Modeladora Efecto Mate Nic Modeleitor 90 g"; una "Trena Tramontina Master 5 m" de una tienda de Brasil va como "Cinta Métrica Tramontina Master 5 m". Sin el código de barras y sin precio.',
             '- "marca": la marca, o null si no la sabés.',
             '- "descripcion": SIEMPRE EN ESPAÑOL, aunque las fuentes estén en otro idioma (traducila). De 2 a 4 oraciones para la ficha de una tienda online: qué es, para qué sirve y sus características. Solo con datos que viste en las fuentes: no inventes beneficios, ingredientes ni medidas. Sin precios, sin nombres de tiendas y sin links.',
             '- "fuentes": las URLs de las páginas de producto donde viste ESE código o ese producto (las mejores primero, hasta 5).',
@@ -1322,6 +1351,10 @@ class BusquedaPorCodigoDeBarrasService
     /**
      * System prompt de la redacción a partir de la ficha de una base abierta.
      *
+     * El bullet del nombre lleva NOMBRE_COMO_EN_ARGENTINA (N7, 19/10/2026): la ficha de una base
+     * abierta puede venir en cualquier idioma, y el tipo de producto se traduce igual que en la búsqueda
+     * web.
+     *
      * @return string
      */
     protected function prompt_de_redaccion()
@@ -1332,7 +1365,7 @@ class BusquedaPorCodigoDeBarrasService
             'Respondé ÚNICAMENTE con un objeto JSON, sin texto antes ni después y sin backticks:',
             '{"nombre": "...", "marca": "...", "descripcion": "..."}',
             '',
-            '- "nombre": el nombre comercial en español: tipo de producto + marca + variante + contenido neto (ejemplo: "Aceite de Girasol Cocinero 1,5 L").',
+            '- "nombre": ' . self::NOMBRE_COMO_EN_ARGENTINA . ' Ejemplo: "Aceite de Girasol Cocinero 1,5 L".',
             '- "marca": la marca, o null.',
             '- "descripcion": SIEMPRE EN ESPAÑOL, de 1 a 3 oraciones para la ficha de una tienda online, solo con lo que dice la ficha (no inventes). null si la ficha no alcanza para decir nada.',
         ]);
