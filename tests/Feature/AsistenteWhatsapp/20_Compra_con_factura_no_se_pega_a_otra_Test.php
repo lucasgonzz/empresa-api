@@ -975,6 +975,78 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertStringContainsString('Adjunté la factura a la Compra N° 48', $resultado['resultado']);
     }
 
+    /**
+     * Una conversación con UN mensaje del dueño (con la foto de la factura) y el assistant que propone.
+     *
+     * @param  string  $texto
+     * @return array{0: \App\Models\AiConversation, 1: \App\Models\AiMessage}
+     */
+    protected function con_el_mensaje($texto)
+    {
+        $conversation = $this->conversacion_whatsapp();
+
+        $del_dueno = $this->mensaje($conversation, 'user', 'listo', ['contenido' => $texto]);
+
+        $this->guardar_foto($del_dueno);
+
+        $generandose = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        return [$conversation, $generandose];
+    }
+
+    /**
+     * 🔴 LO QUE ENGAÑABA A la_nombro_el_dueno() (segunda revisión independiente, medido en resuelto):
+     * el número buscado suelto se encontraba en una fecha («del 13/10»), en un monto («$14.500») y en
+     * una negación («no es de la 15»), y la factura se pegaba sola a esa compra. Ahora el número
+     * cuenta solo con contexto de compra («la compra 13», «N° 13», «nro 13», «#13», «número 13») o si
+     * es el mensaje entero, nunca seguido de /.,: y dígito ni precedido de $, y con una negación cerca
+     * no cuenta. «es de la compra 13» y «13» solos sí la nombran.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_numero_cuenta_solo_con_contexto_de_compra_y_sin_negacion()
+    {
+        foreach ([13 => '00012345', 14 => '00012346', 15 => '00012347', 21 => '00012351', 22 => '00012352', 23 => '00012353', 24 => '00012354'] as $num => $factura) {
+            $this->escaneo($this->compra($num, 3), 'listo', $factura);
+        }
+
+        $no_la_nombran = [
+            [13, 'te paso la factura del 13/10 de ferretera del sur, cargala'],
+            [14, 'son $14.500, cargala'],
+            [15, 'no es de la 15, cargala aparte'],
+            [15, 'no es de la compra 15, cargala aparte'],
+            [13, 'llegaron 13 cajas, cargala'],
+        ];
+
+        foreach ($no_la_nombran as $caso) {
+
+            list($conversation, $generandose) = $this->con_el_mensaje($caso[1]);
+
+            $respuesta = $this->herramienta_en('resuelto', $conversation, $generandose, ['compra_num' => $caso[0]]);
+
+            $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+            $this->assertTrue(!empty($respuesta['requiere_confirmacion']), '«' . $caso[1] . '» no nombra la compra ' . $caso[0] . ': ' . json_encode($respuesta));
+        }
+
+        $la_nombran = [
+            [21, 'es de la compra 21'],
+            [22, '22'],
+            [23, 'va en la N° 23'],
+            [24, 'nro 24, cargala'],
+        ];
+
+        foreach ($la_nombran as $caso) {
+
+            list($conversation, $generandose) = $this->con_el_mensaje($caso[1]);
+
+            $respuesta = $this->herramienta_en('resuelto', $conversation, $generandose, ['compra_num' => $caso[0]]);
+
+            $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+            $this->assertTrue(empty($respuesta['requiere_confirmacion']), '«' . $caso[1] . '» sí nombra la compra ' . $caso[0] . ': ' . json_encode($respuesta));
+        }
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================

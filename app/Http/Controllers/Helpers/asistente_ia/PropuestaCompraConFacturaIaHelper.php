@@ -639,9 +639,9 @@ class PropuestaCompraConFacturaIaHelper
      * N° 13», o la pregunta que nombra la compra vacía): es de donde el modelo saca un número que el
      * dueño no dijo.
      *
-     * El número se busca entero, sin dígitos pegados (el 13 no aparece en "00012345" ni en "130"). Un
-     * "13" que es otra cosa ("el 13/10") cuenta igual: es el lado seguro, porque en el peor caso se
-     * ejecuta lo que antes de esta revisión se ejecutaba siempre.
+     * Cómo se reconoce el número en cada texto: ver nombra_la_compra(). Hasta la segunda revisión
+     * independiente (19/10/2026) se buscaba el número suelto, y una fecha, un monto o una negación lo
+     * contaban como "la nombró".
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
@@ -685,14 +685,79 @@ class PropuestaCompraConFacturaIaHelper
                             ->pluck('contenido')
                             ->all();
 
-        $patron = '/(?<!\d)' . (int) $num . '(?!\d)/u';
-
         foreach ($textos as $texto) {
 
-            if (preg_match($patron, (string) $texto)) {
+            if (self::nombra_la_compra((string) $texto, (int) $num)) {
 
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si ESTE texto del dueño nombra la compra `$num` (segunda revisión independiente de la misión
+     * asistente-arreglos-segunda-prueba, 19/10/2026). Medido en "resuelto" con el número suelto:
+     * «te paso la factura del 13/10, cargala» pegó la factura a la 13, «son $14.500, cargala» a la 14 y
+     * «no es de la 15, cargala aparte» a la 15. Ahora cuenta solo:
+     *
+     *   - si el mensaje ENTERO es el número («13», «la 13», «N° 13», «compra 13»), o
+     *   - con contexto de compra justo antes: «compra», «la compra», «N°»/«Nº», «nro», «#» o «número»
+     *     («es de la compra 13», «va en la N° 14», «nro 15, cargala»);
+     *   - y nunca si el número sigue con «/», «.», «,» o «:» y un dígito (una fecha o un monto: «13/10»,
+     *     «14.500») ni si va después de «$» (un monto);
+     *   - y nunca con una negación en los 25 caracteres de antes («no es de la compra 15», «no va a la
+     *     compra 13», «no la compra 13»).
+     *
+     * Del lado seguro: si no cuenta, la tarjeta espera el sí (requiere_confirmacion); nunca al revés.
+     *
+     * @param  string  $texto
+     * @param  int  $num
+     * @return bool
+     */
+    protected static function nombra_la_compra($texto, $num)
+    {
+        $texto = mb_strtolower(trim((string) $texto));
+
+        $n = (string) (int) $num;
+
+        if ($texto === '' || (int) $num <= 0) {
+
+            return false;
+        }
+
+        /* El mensaje entero es el número (con «la», «compra» o «N°» opcionales adelante). */
+        $prefijo = '(?:(?:a\s+)?la\s+)?(?:compra\s+)?(?:n[°º]\s*|nro\.?\s*|#\s*|n[uú]mero\s*)?';
+
+        if (preg_match('/^' . $prefijo . $n . '\s*[.!]?$/u', $texto) === 1) {
+
+            return true;
+        }
+
+        /*
+         * Con contexto de compra justo antes, el número entero (sin dígito pegado) y que no sea el
+         * comienzo de una fecha o de un monto. «$13» no entra: entre la palabra de contexto y el
+         * número solo se admiten espacios y dos puntos.
+         */
+        $patron = '/(?:compra|n[°º]|nro\.?|#|n[uú]mero)\s*(?:n[°º]|nro\.?|#|n[uú]mero)?\s*:?\s*' . $n . '(?!\d)(?![\/.,:]\d)/u';
+
+        if (!preg_match_all($patron, $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
+
+            return false;
+        }
+
+        foreach ($encontrados[0] as $encontrado) {
+
+            /* Lo de antes de la coincidencia (offset en bytes: se corta en un borde de carácter). */
+            $antes = mb_substr(substr($texto, 0, (int) $encontrado[1]), -25);
+
+            if (preg_match('/\bno\s+(?:es|va|la)\b/u', $antes) === 1) {
+
+                continue;
+            }
+
+            return true;
         }
 
         return false;
