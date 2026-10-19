@@ -3637,7 +3637,7 @@ CONFIRMACION;
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Con dias cuentan esos días tal cual, aunque la venta tenga su propio umbral de alerta cargado. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
                         ],
                         'monto_minimo' => [
                             'type' => 'number',
