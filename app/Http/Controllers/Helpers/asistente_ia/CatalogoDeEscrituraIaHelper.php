@@ -1031,12 +1031,24 @@ class CatalogoDeEscrituraIaHelper
      *   - article.cost: ArticleController::store() y update() no asignan `cost` directo; lo hace
      *     set_costo_desde_request($model, $request), que lee `$request->cost` (y `cost_incluye_iva`,
      *     que no es columna) para descomponer el IVA según la condición fiscal.
+     *   - article.brand_id, SOLO EN EL ALTA (misión asistente-arreglos-segunda-prueba, 19/10/2026):
+     *     desde el commit b48c81f0 (fichas compartidas por código de barras) ArticleController::store()
+     *     asigna la marca con `ApplyProductFacts::brand($request, $this->userId())` en vez de
+     *     `$request->brand_id`, y la regex de claves_que_lee() dejó de verla. Resultado: el catálogo
+     *     ofrecía la marca solo para editar y el asistente rechazaba TODA marca en el alta de un
+     *     artículo («El campo "marca" no se carga al crear un artículo»), así que ni la marca que ya
+     *     existía se podía poner al crearlo. Leído ApplyProductFacts::brand(): con `brand_id` en el
+     *     request devuelve ese mismo id tal cual (no crea otra marca ni pisa nada); solo crea una con
+     *     firstOrCreate cuando NO viene brand_id y viene `product_facts_apply.brand_name`, que manda la
+     *     pantalla con la ficha compartida y el asistente nunca. Y validate() solo corre con
+     *     `product_facts_apply`. update() sigue leyendo `$request->brand_id` directo: la edición no
+     *     necesita la entrada.
      *
      * @var array<string, array<string, array<int, string>>>
      */
     const LEIDOS_POR_HELPER = [
         'article' => [
-            self::OP_ALTA    => ['cost'],
+            self::OP_ALTA    => ['cost', 'brand_id'],
             self::OP_EDICION => ['cost'],
         ],
     ];

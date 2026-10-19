@@ -43,6 +43,10 @@ use Tests\EmpresaTestCase;
  *   - Reenviar eso con la marca nueva crea el artículo con todo (en "directo", en el mismo mensaje).
  *   - Con la marca propuesta en una tarjeta que todavía no se confirmó, el alta no vuelve a pedir
  *     crearla: dice que se confirme primero (sin esto el modelo daba vueltas proponiendo la marca).
+ *   - La marca, nueva o existente, queda GUARDADA en `articles.brand_id` y no se duplica. Desde
+ *     b48c81f0 (develop, 19/10/2026) el catálogo no ofrecía brand_id al crear un artículo y el alta
+ *     rechazaba toda marca; lo arregla LEIDOS_POR_HELPER['article'][OP_ALTA] en
+ *     CatalogoDeEscrituraIaHelper (autorizado por la raíz de la misión).
  *   - Las demás relaciones sin coincidencia siguen como antes (sin `si_no_esta`).
  *   - El prompt lleva las dos reglas: descripción siempre en el alta de un artículo (sin inventar
  *     datos técnicos) y la marca nombrada o legible en brand_id, creándola si no existe.
@@ -248,32 +252,6 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
         return json_decode($resultado['content'], true);
     }
 
-    /**
-     * ⚠️ PRECONDICIÓN DE LOS TESTS DEL ALTA CON MARCA: que el catálogo ofrezca `brand_id` al CREAR un
-     * artículo. Desde el commit b48c81f0 de develop (19/10/2026, fichas compartidas por código de
-     * barras) ArticleController::store() lee la marca por ApplyProductFacts::brand($request, ...) y la
-     * regex de CatalogoDeEscrituraIaHelper::claves_que_lee() ya no la ve: el alta rechaza la marca con
-     * «El campo "marca" no se carga al crear un artículo» antes de llegar a resolver_relacion(). Es el
-     * mismo rojo que 34_Catalogo_de_escritura_Test::los_campos_calculados_de_article_… El arreglo
-     * (sumar 'brand_id' a LEIDOS_POR_HELPER['article'][OP_ALTA]) está FUERA del alcance de esta misión
-     * (CatalogoDeEscrituraIaHelper no es de este constructor): hasta que entre, estos tests quedan
-     * incompletos —no en verde ni en rojo— con el motivo, y se prenden solos cuando entre.
-     *
-     * @return void
-     */
-    protected function exigir_marca_en_el_alta()
-    {
-        $campos = Catalogo::declaracion('article')['campos'];
-
-        if (!isset($campos['brand_id']) || !in_array(Catalogo::OP_ALTA, $campos['brand_id']['operaciones'], true)) {
-
-            $this->markTestIncomplete(
-                'El catálogo no ofrece brand_id en el alta de un artículo (ApplyProductFacts::brand oculta $request->brand_id '
-                . 'a claves_que_lee desde b48c81f0): falta sumar brand_id a LEIDOS_POR_HELPER[article][alta].'
-            );
-        }
-    }
-
     // =====================================================================
     // 1. La marca que no existe
     // =====================================================================
@@ -286,8 +264,6 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
      */
     public function una_marca_que_no_existe_trae_si_no_esta_y_el_reenvio_con_todo()
     {
-        $this->exigir_marca_en_el_alta();
-
         list($conversation, $assistant, $foto) = $this->conversacion_con_foto();
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_de_la_lampara());
@@ -327,8 +303,6 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
      */
     public function en_directo_se_crea_la_marca_y_el_reenvio_crea_el_articulo_con_todo()
     {
-        $this->exigir_marca_en_el_alta();
-
         $this->dueno_con(['agente_confianza' => 'directo']);
 
         list($conversation, $assistant, $foto) = $this->conversacion_con_foto();
@@ -365,7 +339,14 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
             $this->archivos_a_limpiar[] = basename((string) $image->hosting_url);
         }
 
-        $this->assertSame((int) Brand::where('user_id', $this->dueno->id)->where('name', 'Philips P85')->value('id'), (int) $articulo->brand_id);
+        // 🔴 La marca queda GUARDADA en la fila (ArticleController::store → ApplyProductFacts::brand
+        // devuelve el brand_id del request tal cual) y no se crea una segunda marca con el mismo nombre.
+        $this->assertSame(1, Brand::where('user_id', $this->dueno->id)->where('name', 'Philips P85')->count(), 'Una sola marca Philips P85.');
+        $this->assertSame(
+            (int) Brand::where('user_id', $this->dueno->id)->where('name', 'Philips P85')->value('id'),
+            (int) DB::table('articles')->where('id', $articulo->id)->value('brand_id'),
+            'El artículo creado tiene la marca nueva en articles.brand_id.'
+        );
         $this->assertSame((int) $this->electricidad->id, (int) $articulo->category_id);
         $this->assertSame((int) $this->iluminacion->id, (int) $articulo->sub_category_id);
         $this->assertEquals(4200, (float) $articulo->price);
@@ -383,8 +364,6 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
      */
     public function con_la_marca_en_una_tarjeta_sin_confirmar_no_vuelve_a_pedir_crearla()
     {
-        $this->exigir_marca_en_el_alta();
-
         list($conversation, $assistant) = $this->conversacion_con_foto();
 
         $marca = $this->herramienta($conversation, $assistant, 'proponer_alta', [
@@ -405,22 +384,44 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
     }
 
     /**
-     * Con la marca que existe, todo como antes: se resuelve por nombre y no hay `si_no_esta`.
+     * Con la marca que existe, se resuelve por nombre (sin `si_no_esta`) y, al confirmar la tarjeta en
+     * "cauteloso" por el endpoint de la pantalla, el artículo queda en la base con ESA marca y no se
+     * crea otra. Es lo que estaba roto en develop desde b48c81f0: el catálogo no ofrecía brand_id al
+     * crear un artículo y el alta rechazaba hasta la marca que ya existía.
      *
      * @test
      */
-    public function una_marca_que_existe_se_resuelve_como_antes()
+    public function una_marca_que_existe_se_resuelve_y_queda_guardada_en_el_articulo()
     {
-        $this->exigir_marca_en_el_alta();
-
         $philips = Brand::create(['name' => 'Philips P85', 'user_id' => $this->dueno->id, 'num' => 985]);
 
         list($conversation, $assistant) = $this->conversacion_con_foto();
 
-        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_de_la_lampara());
+        $pedido = $this->alta_de_la_lampara();
+        unset($pedido['stock_inicial']);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $pedido);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertFalse(isset($respuesta['opciones']['si_no_esta']));
         $this->assertSame((int) $philips->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['payload']['brand_id']);
+
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar')->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Lámpara filamento LED Philips 4W E27 P85')->first();
+
+        $this->assertNotNull($articulo);
+
+        foreach (Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->get() as $image) {
+            $this->archivos_a_limpiar[] = basename((string) $image->hosting_url);
+        }
+
+        $this->assertSame((int) $philips->id, (int) DB::table('articles')->where('id', $articulo->id)->value('brand_id'), 'articles.brand_id es la marca que ya existía.');
+        $this->assertSame(1, Brand::where('user_id', $this->dueno->id)->where('name', 'Philips P85')->count(), 'No se creó otra marca.');
     }
 
     /**
