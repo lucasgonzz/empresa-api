@@ -8,6 +8,7 @@ use App\Models\AiMessageAction;
 use App\Models\Client;
 use App\Models\WhatsappBotConfig;
 use App\Services\RecordatorioCobroSenderService;
+use Carbon\Carbon;
 
 /**
  * "MANDALES UN RECORDATORIO A LOS QUE ME DEBEN MÁS DE X HACE MÁS DE N DÍAS" (misión
@@ -317,13 +318,18 @@ class PropuestaRecordatoriosCobroIaHelper
             $no_salieron[] = ['cliente' => $salteado['nombre'], 'motivo' => $salteado['mensaje']];
         }
 
+        // Para ver, después de encolar, qué falló ADENTRO de este turno (con la cola sync los jobs corren acá).
+        $desde = Carbon::now()->subSecond();
+
         $lote = (new RecordatorioCobroSenderService())->encolar_lote(
             $contexto->owner_id,
             $clientes,
             $evaluacion['dias'],
             is_null($contexto->persona) ? null : (int) $contexto->persona->id,
             // El job recalcula las ventas con el MISMO criterio que la tarjeta (N1).
-            $respetar
+            $respetar,
+            // Y si alguno no sale, el fallo vuelve al dueño atado a esta tarjeta (N3).
+            (int) $accion->id
         );
 
         foreach ($lote['salteados'] as $salteado) {
@@ -340,12 +346,57 @@ class PropuestaRecordatoriosCobroIaHelper
         $texto = 'Recordatorio de cobro en camino a ' . $encolados . ' ' . ($encolados === 1 ? 'cliente' : 'clientes')
             . ': sale por WhatsApp en segundo plano, uno por cliente.';
 
+        $texto .= self::lo_que_ya_fallo_en_el_turno((int) $accion->id, $desde, $no_salieron);
+
         return [
             'texto'       => $texto,
             'encolados'   => $encolados,
             'no_salieron' => $no_salieron,
             'lote_uuid'   => (string) $lote['lote_uuid'],
+            /*
+             * Para el modelo (`detalle.aviso`, N3 del 19/10/2026): salen en segundo plano, así que no se
+             * dan por recibidos; y el "te aviso" se promete solo si el aviso va a salir.
+             */
+            'aviso'       => 'No digas que les llegó: salen en segundo plano.'
+                . (EnviosFallidosDelAsistenteHelper::avisa_por_whatsapp($accion) ? ' Si alguno no sale, le aviso por acá.' : ''),
         ];
+    }
+
+    /**
+     * Lo que ya falló adentro del turno de la confirmación (cola sync: los jobs corren adentro del
+     * dispatch), dicho en el resultado y sellado para que el admin no lo vuelva a avisar por WhatsApp.
+     * Con la cola de verdad todavía no hay nada y devuelve ''.
+     *
+     * @param  int  $accion_id
+     * @param  \Carbon\Carbon  $desde
+     * @param  array  $no_salieron  Se le suman los que fallaron (por referencia).
+     * @return string  " De esos, a 2 no les salió (…): Ana y Juan." o ''.
+     */
+    protected static function lo_que_ya_fallo_en_el_turno($accion_id, Carbon $desde, array &$no_salieron)
+    {
+        $fallidas = EnviosFallidosDelAsistenteHelper::de_la_tarjeta_desde($accion_id, null, $desde);
+
+        if (!count($fallidas)) {
+            return '';
+        }
+
+        EnviosFallidosDelAsistenteHelper::sellar_dichas_en_el_turno($fallidas);
+
+        $cantidad = 0;
+        $nombres = [];
+
+        foreach ($fallidas as $fila) {
+
+            $cantidad += (int) $fila->cantidad;
+
+            foreach ($fila->lista_de_nombres() as $nombre) {
+                $nombres[] = $nombre;
+                $no_salieron[] = ['cliente' => (string) $nombre, 'motivo' => (string) $fila->motivo];
+            }
+        }
+
+        return ' De esos, a ' . $cantidad . ' no ' . ($cantidad === 1 ? 'le' : 'les') . ' salió ('
+            . trim((string) $fallidas->first()->motivo) . '): ' . DestinatariosIaHelper::lista_de_nombres($nombres) . '.';
     }
 
     /**

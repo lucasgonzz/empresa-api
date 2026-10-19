@@ -161,7 +161,8 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
 
         $this->assertTrue(!empty($confirmada['ok']), json_encode($confirmada));
         $this->assertSame('confirmada', $confirmada['estado']);
-        $this->assertSame(ConfirmacionPorTextoIaHelper::NOTA_EJECUTADA, $confirmada['nota']);
+        // Misión asistente-arreglos-segunda-prueba (19/10/2026, N3): un envío ejecutado lleva su propia nota (no "Ahora sí quedó registrado").
+        $this->assertSame(ConfirmacionPorTextoIaHelper::NOTA_ENVIO_EJECUTADO, $confirmada['nota']);
         $this->assertStringContainsString('El presupuesto N° 900004 mandado a Marcos Perez', $confirmada['resultado']);
         $this->assertCount(2, $confirmada['detalle']['enviados'], json_encode($confirmada));
 

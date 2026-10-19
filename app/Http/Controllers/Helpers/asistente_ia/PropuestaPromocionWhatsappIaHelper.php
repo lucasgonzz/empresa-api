@@ -453,6 +453,9 @@ class PropuestaPromocionWhatsappIaHelper
         $accion->datos = $datos;
         $accion->save();
 
+        // Para ver, después de despachar, qué falló ADENTRO de este turno (cola sync).
+        $desde = Carbon::now()->subSecond();
+
         foreach ($evaluacion['reciben'] as $fila) {
 
             SendPromocionWhatsappJob::dispatch(
@@ -472,11 +475,57 @@ class PropuestaPromocionWhatsappIaHelper
             . ': sale por WhatsApp en segundo plano, uno por cliente.'
             . (!empty($destino['publicar_combo']) ? ' El combo "' . $destino['nombre'] . '" quedó publicado en la tienda.' : '');
 
+        $texto_resultado .= self::lo_que_ya_fallo_en_el_turno((int) $accion->id, $desde, $no_salieron);
+
         return [
             'texto'       => $texto_resultado,
             'encolados'   => $encolados,
             'no_salieron' => $no_salieron,
+            /*
+             * Para el modelo (`detalle.aviso`, N3 de la misión asistente-arreglos-segunda-prueba,
+             * 19/10/2026): sale en segundo plano, así que no se da por recibida; y el "te aviso" se
+             * promete solo si el aviso va a salir.
+             */
+            'aviso'       => 'No digas que les llegó: sale en segundo plano.'
+                . (EnviosFallidosDelAsistenteHelper::avisa_por_whatsapp($accion) ? ' Si alguna no sale, le aviso por acá.' : ''),
         ];
+    }
+
+    /**
+     * Lo que ya falló adentro del turno de la confirmación (cola sync: los jobs corren adentro del
+     * dispatch), dicho en el resultado y sellado para que el admin no lo vuelva a avisar. Con la cola de
+     * verdad todavía no hay nada y devuelve ''. Mismo criterio que el recordatorio de cobro.
+     *
+     * @param  int  $accion_id
+     * @param  \Carbon\Carbon  $desde
+     * @param  array  $no_salieron  Se le suman los que fallaron (por referencia).
+     * @return string
+     */
+    protected static function lo_que_ya_fallo_en_el_turno($accion_id, Carbon $desde, array &$no_salieron)
+    {
+        $fallidas = EnviosFallidosDelAsistenteHelper::de_la_tarjeta_desde($accion_id, null, $desde);
+
+        if (!count($fallidas)) {
+            return '';
+        }
+
+        EnviosFallidosDelAsistenteHelper::sellar_dichas_en_el_turno($fallidas);
+
+        $cantidad = 0;
+        $nombres = [];
+
+        foreach ($fallidas as $fila) {
+
+            $cantidad += (int) $fila->cantidad;
+
+            foreach ($fila->lista_de_nombres() as $nombre) {
+                $nombres[] = $nombre;
+                $no_salieron[] = ['cliente' => (string) $nombre, 'motivo' => (string) $fila->motivo];
+            }
+        }
+
+        return ' De esos, a ' . $cantidad . ' no ' . ($cantidad === 1 ? 'le' : 'les') . ' salió ('
+            . trim((string) $fallidas->first()->motivo) . '): ' . DestinatariosIaHelper::lista_de_nombres($nombres) . '.';
     }
 
     /**
@@ -574,6 +623,8 @@ class PropuestaPromocionWhatsappIaHelper
 
             $guardado = WhatsappChatHelper::store_outbound_promocion_message($chat, $body, $wa_message_id, $sent_by_user_id);
 
+            self::anotar_la_tarjeta($guardado, $accion_id);
+
             return ['ok' => true, 'motivo' => null, 'mensaje_id' => (int) $guardado->id];
         }
 
@@ -595,7 +646,34 @@ class PropuestaPromocionWhatsappIaHelper
 
         $guardado = WhatsappChatHelper::store_outbound_promocion_message($chat, $template->render_body($variables), $wa_message_id, $sent_by_user_id, $template->meta_template_name);
 
+        self::anotar_la_tarjeta($guardado, $accion_id);
+
         return ['ok' => true, 'motivo' => null, 'mensaje_id' => (int) $guardado->id];
+    }
+
+    /**
+     * Anota la tarjeta en la fila de la promo que salió (N3 de la misión asistente-arreglos-segunda-prueba,
+     * 19/10/2026): si Meta la rechaza después (webhook `failed`), WhatsappChatHelper la encuentra y el
+     * fallo vuelve al dueño. Por query y sin poder lanzar: la promo ya está en el teléfono del cliente, y
+     * una excepción acá la dejaría sin contar para los topes.
+     *
+     * @param  \App\Models\WhatsappChatMessage  $guardado
+     * @param  int|null  $accion_id
+     * @return void
+     */
+    protected static function anotar_la_tarjeta($guardado, $accion_id)
+    {
+        if (empty($accion_id) || !is_object($guardado) || empty($guardado->id)) {
+            return;
+        }
+
+        try {
+
+            WhatsappChatMessage::where('id', (int) $guardado->id)->update(['ai_message_action_id' => (int) $accion_id]);
+
+        } catch (\Throwable $e) {
+            // Sin la marca, un rechazo posterior de Meta no vuelve al dueño; la promo salió igual.
+        }
     }
 
     /**
