@@ -288,6 +288,40 @@ class Recordatorios_con_los_dias_del_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Revisión del 19/10/2026: "¿qué me debe Sanitarios?" no puede contradecir al recordatorio. La
+     * venta de 23 días con umbral propio 30 entra en "los que me deben hace más de 20 días", así que la
+     * consulta de las ventas impagas de ESE cliente la tiene que traer: toda la deuda viva, con la forma
+     * de respuesta de siempre.
+     *
+     * @test
+     */
+    public function que_me_debe_un_cliente_trae_toda_la_deuda_viva_aunque_tenga_umbral_propio()
+    {
+        $sanitarios = $this->cliente('Sanitarios del Sur', '5493444505050');
+        $this->venta_con_umbral($sanitarios, 23, 100000, 30, 7101);
+        // Una de hoy, sin umbral propio, también es deuda.
+        $this->venta_impaga($sanitarios, 0, 20000, 7102);
+
+        $deudores = VentasSinCobrarIaHelper::clientes_deudores($this->dueno->id, 20, $this->dueno);
+
+        $this->assertSame([(int) $sanitarios->id], array_column($deudores['clientes'], 'cliente_id'), 'El recordatorio lo trae.');
+
+        $respuesta = \App\Http\Controllers\Helpers\ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente($this->dueno->id, $sanitarios->id);
+
+        $this->assertSame(2, $respuesta['ventas_impagas_encontradas'], json_encode($respuesta));
+        $this->assertCount(2, $respuesta['ventas']);
+        $this->assertEquals(120000, $respuesta['total_pendiente_en_pesos_en_esta_lista']);
+        $this->assertSame(7101, $respuesta['venta_impaga_mas_vieja']['numero']);
+
+        // La forma de la respuesta no cambia.
+        $this->assertSame([
+            'cliente', 'cliente_id', 'orden', 'ventas_impagas_encontradas', 'ventas_en_esta_lista',
+            'total_pendiente_en_pesos_en_esta_lista', 'ventas_en_otra_moneda_en_esta_lista',
+            'saldo_en_cuenta_corriente_en_pesos', 'venta_impaga_mas_vieja', 'ventas',
+        ], array_keys($respuesta));
+    }
+
+    /**
      * Saca una propiedad protegida de un objeto serializado (lo que tiene en la cola un job encolado por
      * la versión anterior de la clase).
      *

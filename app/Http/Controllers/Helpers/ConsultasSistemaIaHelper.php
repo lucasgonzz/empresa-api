@@ -1564,11 +1564,17 @@ class ConsultasSistemaIaHelper
      * por WhatsApp. Una segunda definición de "venta impaga" es el camino más corto a que la
      * pantalla y el chat le den dos respuestas distintas al mismo comerciante.
      *
-     * ⚠️ Qué implica reusarla, dicho con todas las letras: la query pide que la venta tenga
-     * `COALESCE(dias_alerta_venta_no_cobrada_personalizado, $dias)` días de antigüedad. Con el
-     * $dias = 0 por defecto eso es "todas", salvo para una venta que tenga SU PROPIO umbral
-     * cargado, que recién aparece cuando ese umbral se cumple. Es el criterio del sistema, no uno
-     * inventado acá.
+     * 🔴 "¿QUÉ ME DEBE?" ES TODA LA DEUDA VIVA, SIN NINGÚN UMBRAL (revisión de la misión
+     * asistente-arreglos-segunda-prueba, 19/10/2026). Hasta acá se llamaba con el `COALESCE` de la
+     * pantalla y `$dias = 0`, así que una venta con SU PROPIO umbral de alerta cargado recién aparecía
+     * cuando ese umbral se cumplía. En demo3 eso contradecía al recordatorio: "mandales un recordatorio a
+     * los que me deben hace más de 20 días" ya trae la venta de 23 días con umbral propio 30 (los días que
+     * dice el dueño cuentan tal cual), y "¿qué me debe Sanitarios?" contestaba `ventas: []` sobre esa
+     * misma venta. El umbral propio es la ALERTA de la venta, no si se debe: con `$dias = 0` (lo que manda
+     * la herramienta, en el chat, por WhatsApp, por el canal del admin y por MCP) se usa
+     * `query_de_ventas(..., false)`, toda la deuda viva, con la misma condición de deuda de siempre. Con
+     * `$dias > 0` (nadie lo manda hoy) cuentan esos días tal cual, sin el umbral propio. La forma de la
+     * respuesta no cambia.
      *
      * 🔴 El orden por defecto es de la MÁS VIEJA a la más nueva, y no es un detalle de gusto: la
      * pregunta que hay que poder contestar en una sola vuelta es "la más vieja". Y por si el modelo
@@ -1579,7 +1585,7 @@ class ConsultasSistemaIaHelper
      * @param  int     $client_id  Id del cliente, tal como lo devolvió consultar_clientes.
      * @param  string  $orden      'mas_viejas' (por defecto) o 'mas_nuevas'.
      * @param  int     $limite     0 = MAX_RESULTS.
-     * @param  int     $dias       Umbral general de antigüedad; 0 = sin umbral general.
+     * @param  int     $dias       0 (el default) = toda la deuda viva, sin ningún umbral; > 0 = esos días tal cual.
      * @return array<string, mixed>  Vacío si el cliente no es del dueño o no existe
      */
     public static function ventas_impagas_de_un_cliente(int $owner_id, int $client_id, string $orden = 'mas_viejas', int $limite = 0, int $dias = 0): array
@@ -1607,7 +1613,8 @@ class ConsultasSistemaIaHelper
             $dias = 0;
         }
 
-        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, null, $dias)
+        // Toda la deuda viva (sin umbral) o los días pedidos tal cual: nunca el umbral propio (ver el docblock).
+        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, null, $dias, $dias > 0, false)
             ->where('sales.client_id', (int) $cliente->id);
 
         $encontradas = (clone $base)->count();
