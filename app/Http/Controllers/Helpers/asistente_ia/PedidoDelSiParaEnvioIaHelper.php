@@ -218,6 +218,16 @@ class PedidoDelSiParaEnvioIaHelper
                 return null;
             }
 
+            /*
+             * La misma guarda que el re-mostrado (ver nada_cambio_desde_que_lo_vio()). Con el bloque en
+             * el último mensaje del asistente, lo único posterior es el «ok», así que acá casi nunca corta:
+             * está para que las dos piezas sigan la misma regla si algún día eso deja de ser cierto.
+             */
+            if (!self::nada_cambio_desde_que_lo_vio($conversation, $accion, $assistant_message)) {
+
+                return null;
+            }
+
             $bloque = self::bloque($accion);
 
             if ($bloque === '' || !self::registrar_mostrado_en($accion->id, $assistant_message)) {
@@ -264,6 +274,12 @@ class PedidoDelSiParaEnvioIaHelper
      *     mismo turno propone ya lo pega el camino de siempre), propuesto por WhatsApp y con su mensaje
      *     'listo' (si sigue 'pendiente', su bloque todavía está por salir), de menos de MINUTOS_MAXIMOS, y
      *     ninguna otra tarjeta esperando (con otra pendiente, el sí puede ser para ésa);
+     *   - 🔴 TODO lo que el dueño escribió desde la última vez que vio el bloque (incluido el sí de ahora)
+     *     es una pregunta, un sí o un casi sí (nada_cambio_desde_que_lo_vio()). Una corrección («sacale a
+     *     Juan Perez»), un «no, dejalo», un «esperá» o un pedido cualquiera apagan el re-mostrado: el
+     *     modelo pudo decir «listo, lo saqué» sin volver a proponer, y re-pegar el bloque de la tarjeta
+     *     vieja haría salir lo que el dueño corrigió (revisión independiente de la misión, 19/10). Ahí
+     *     vuelve el camino de B1 tal cual, con su «armá la propuesta de nuevo»;
      *   - el mensaje que se está generando no dejó ninguna tarjeta esperando: si este turno propuso otra
      *     carga (un gasto, una tarea), pegarle además el envío viejo dejaría al dueño con dos cosas a las
      *     que decirles que sí en el mismo mensaje, y su sí siguiente no diría a cuál contesta;
@@ -326,6 +342,15 @@ class PedidoDelSiParaEnvioIaHelper
             $propuso = AiMessage::find($accion->ai_message_id);
 
             if (is_null($propuso) || !$propuso->es_de_whatsapp() || $propuso->estado !== 'listo') {
+
+                return null;
+            }
+
+            /*
+             * 🔴 Una corrección, un «no» o un pedido después del último bloque visto apagan el re-mostrado
+             * (revisión independiente de la misión, 19/10): ver nada_cambio_desde_que_lo_vio().
+             */
+            if (!self::nada_cambio_desde_que_lo_vio($conversation, $accion, $assistant_message)) {
 
                 return null;
             }
@@ -473,6 +498,100 @@ class PedidoDelSiParaEnvioIaHelper
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
         return isset($datos['bloque']) ? trim((string) $datos['bloque']) : '';
+    }
+
+    /**
+     * true si TODO lo que el dueño escribió desde la última vez que vio el bloque de este envío hasta el
+     * mensaje que se está contestando (incluido) es una pregunta (con «?» o «¿»), un sí
+     * (ConfirmacionDeterministaIaHelper::es_si_para_envio()) o un casi sí (es_casi_si_para_envio()), estos
+     * dos últimos sin foto.
+     *
+     * 🔴 EL CASO DEL REVISOR (19/10, probado con el job real sobre esta rama): promo a Ana y a Juan →
+     * «sacale a Juan Perez» → el modelo contesta «Listo, saqué a Juan Perez de la promo.» SIN volver a
+     * proponer → «dale». Sin esta guarda, el «dale» rebotaba con la nota de «NO armes la propuesta de
+     * nuevo», el sistema re-pegaba el bloque VIEJO (con Juan), lo registraba, y el «sí» siguiente lo
+     * mandaba a los dos. En develop ese «dale» volvía a «armá la propuesta de nuevo» y el modelo aplicaba
+     * la corrección. La variante: un «no, dejalo» que el modelo no canceló, seguido de un «sí» a otra
+     * pregunta, hacía reaparecer el envío rechazado.
+     *
+     * Por eso solo se re-muestra cuando lo que pasó en el medio no pudo cambiar el envío: preguntas sobre
+     * otra cosa («¿cuánto vendí hoy?») y afirmaciones. Cualquier otra cosa decide B1 como siempre.
+     * ⚠️ Una corrección escrita como pregunta («¿le sacás a Juan?») pasa esta guarda; ahí lo que protege
+     * es que el bloque re-mostrado es el de la tarjeta, entero, con a quiénes y el texto, y el sí
+     * siguiente contesta ESO.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  \App\Models\AiMessage  $assistant_message  El assistant que se está generando.
+     * @return bool
+     */
+    protected static function nada_cambio_desde_que_lo_vio(AiConversation $conversation, AiMessageAction $accion, AiMessage $assistant_message)
+    {
+        $desde = self::ultima_vez_que_lo_vio($accion, $assistant_message);
+
+        $mensajes = AiMessage::where('ai_conversation_id', $conversation->id)
+                             ->where('rol', 'user')
+                             ->where('id', '>', $desde)
+                             ->where('id', '<', $assistant_message->id)
+                             ->orderBy('id')
+                             ->get();
+
+        foreach ($mensajes as $mensaje) {
+
+            $texto = (string) $mensaje->contenido;
+
+            // Una pregunta sobre otra cosa no cambia lo que se va a mandar.
+            if (preg_match('/[?¿]/u', $texto)) {
+                continue;
+            }
+
+            $es_afirmacion = ConfirmacionDeterministaIaHelper::es_si_para_envio($texto)
+                || ConfirmacionDeterministaIaHelper::es_casi_si_para_envio($texto);
+
+            // Un sí con foto puede ser el pedido de otra cosa, igual que en la regla del sí.
+            if ($es_afirmacion && !AiMessageImagen::where('ai_message_id', $mensaje->id)->exists()) {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * El id del último mensaje del asistente en el que el dueño vio el bloque de este envío: el más nuevo
+     * de `mostrado_en` que sea anterior al mensaje que se está generando, esté 'listo' y tenga el bloque
+     * adentro; si no hay ninguno, el que propuso la tarjeta.
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  \App\Models\AiMessage  $assistant_message
+     * @return int
+     */
+    protected static function ultima_vez_que_lo_vio(AiMessageAction $accion, AiMessage $assistant_message)
+    {
+        $ids = self::mostrado_en($accion);
+
+        rsort($ids);
+
+        $bloque = self::bloque($accion);
+
+        foreach ($ids as $id) {
+
+            if ($id >= (int) $assistant_message->id || $id <= (int) $accion->ai_message_id) {
+                continue;
+            }
+
+            $mensaje = AiMessage::find($id);
+
+            if (!is_null($mensaje) && $mensaje->estado === 'listo' && $bloque !== ''
+                && mb_strpos((string) $mensaje->contenido, $bloque) !== false) {
+
+                return (int) $id;
+            }
+        }
+
+        return (int) $accion->ai_message_id;
     }
 
     /**

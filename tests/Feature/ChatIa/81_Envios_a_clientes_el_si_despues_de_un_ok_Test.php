@@ -601,6 +601,83 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
         $this->assertNull(PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $assistant));
     }
 
+    /**
+     * 🔴 Revisión independiente de la misión (19/10): UNA CORRECCIÓN QUE EL MODELO NO APLICÓ NO PUEDE TRAER
+     * DE VUELTA EL BLOQUE VIEJO. Promo a Ana y a Juan → «sacale a Juan Perez» → el modelo dice «Listo,
+     * saqué a Juan Perez de la promo.» SIN volver a proponer → «dale». Si el sistema re-pegara el bloque
+     * (con Juan) y lo registrara, el «sí» siguiente lo mandaría a los dos. Con algo que no es una pregunta
+     * ni un sí después del último bloque visto, no se re-muestra ni hay nota: vuelve B1 tal cual («armá
+     * la propuesta de nuevo»).
+     *
+     * @test
+     */
+    public function una_correccion_que_el_modelo_no_aplico_no_trae_de_vuelta_el_bloque_viejo()
+    {
+        $this->cliente('Juan Perez', '5493444777777');
+
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+
+        $this->assertStringContainsString('Juan Perez', $this->bloque_de($tarjeta_id));
+
+        $this->el_modelo_contesta($this->end_turn('Listo, saqué a Juan Perez de la promo.'));
+
+        $this->turno($conversation, 'sacale a Juan Perez');
+
+        // El «dale»: el modelo intenta confirmar y rebota, sin la nota del re-mostrado.
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
+            $this->end_turn('Te la armo de nuevo sin Juan.')
+        );
+
+        list($conversation, $al_dale) = $this->turno($conversation, 'dale');
+
+        $rechazos = array_values(array_filter($this->resultados_que_vio_el_modelo(), function ($resultado) {
+            return is_array($resultado) && isset($resultado['error']) && $resultado['error'] === ConfirmacionPorTextoIaHelper::MENSAJE_ENVIO_NO_VISTO;
+        }));
+
+        $this->assertNotEmpty($rechazos);
+        $this->assertArrayNotHasKey('nota', $rechazos[0], 'Después de una corrección no se le dice al modelo que no vuelva a proponer.');
+        $this->assertSame('Te la armo de nuevo sin Juan.', $al_dale->contenido, 'El bloque viejo no se vuelve a pegar.');
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
+
+        // Y el «sí» siguiente tampoco manda el bloque viejo.
+        $this->el_modelo_contesta(
+            $this->tool_use('confirmar_carga_pendiente', ['tarjeta_id' => $tarjeta_id]),
+            $this->end_turn('Necesito armarla de nuevo.')
+        );
+
+        $this->turno($conversation, 'sí');
+
+        $this->assertCount(0, $this->promociones_enviadas(), 'No sale a Juan, que el dueño sacó.');
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
+     * Variante del revisor: un «no, dejalo» que el modelo no canceló, seguido de un «sí» a otra pregunta,
+     * no hace reaparecer el envío que el dueño rechazó.
+     *
+     * @test
+     */
+    public function un_no_dejalo_que_el_modelo_no_cancelo_no_hace_reaparecer_el_envio()
+    {
+        list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
+
+        $this->el_modelo_contesta($this->end_turn('Dale, no la mando.'));
+
+        $this->turno($conversation, 'no, dejalo');
+
+        $this->otra_charla($conversation, '¿cuánto vendí hoy?', 'Vendiste $ 120.000. ¿Querés el detalle?');
+
+        $this->el_modelo_contesta($this->end_turn('Vendiste 3 cajas de tornillos y 2 martillos.'));
+
+        list($conversation, $respuesta) = $this->turno($conversation, 'sí');
+
+        $this->assertSame('Vendiste 3 cajas de tornillos y 2 martillos.', $respuesta->contenido);
+        $this->assertSame([], $this->mostrado_en($tarjeta_id));
+        $this->assertNull(PedidoDelSiParaEnvioIaHelper::envio_a_volver_a_mostrar($conversation, $respuesta));
+        $this->assertCount(0, $this->promociones_enviadas());
+    }
+
     // ---------------------------------------------------------------------
     // Las garantías de B1 siguen
     // ---------------------------------------------------------------------
@@ -615,7 +692,8 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     {
         list($conversation, $propuso, $tarjeta_id) = $this->promo_a_la_vista();
 
-        $this->otra_charla($conversation, 'mostramela de nuevo', "Acá está:\n\n" . $this->bloque_de($tarjeta_id));
+        // Una PREGUNTA en el medio: con un pedido («mostramela de nuevo») la regla del revisor apaga el re-mostrado y no habría nota.
+        $this->otra_charla($conversation, '¿me la mostrás de nuevo?', "Acá está:\n\n" . $this->bloque_de($tarjeta_id));
 
         list($conversation, $siguiente) = $this->vuelta('sí', $conversation);
 
