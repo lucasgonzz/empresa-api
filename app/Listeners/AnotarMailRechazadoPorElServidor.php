@@ -2,7 +2,9 @@
 
 namespace App\Listeners;
 
+use App\Http\Controllers\Helpers\asistente_ia\EnviosFallidosDelAsistenteHelper;
 use App\Mail\Helpers\RechazosDeCorreoHelper;
+use App\Models\AiEnvioFallido;
 use Illuminate\Mail\Events\MessageSent;
 use Illuminate\Support\Facades\Log;
 
@@ -66,6 +68,9 @@ class AnotarMailRechazadoPorElServidor
                 return;
             }
 
+            // Si el mail lo mandó el asistente, el rechazo vuelve al dueño (antes que el log: si el log falla, el registro igual queda).
+            self::registrar_si_lo_mando_el_asistente($evento, $rechazadas);
+
             // Las casillas van en el contexto del log (es un registro de operación de este servidor) y no en el texto, igual que en la excepción.
             Log::warning('Mail rechazado por el servidor de correo: el mail NO salió.', [
                 'asunto'     => (string) $evento->message->getSubject(),
@@ -73,6 +78,57 @@ class AnotarMailRechazadoPorElServidor
             ]);
         } catch (\Throwable $excepcion) {
             // Anotar es lo único que hace este listener: si falla, el envío que lo disparó sigue como si nada.
+        }
+    }
+
+    /**
+     * El 550 de un mail del ASISTENTE: además del log, el envío fallido atado a su tarjeta, para que vuelva
+     * al dueño por WhatsApp (misión asistente-arreglos-segunda-prueba, 19/10/2026).
+     *
+     * 🔴 POR QUÉ ACÁ Y NO EN EL `failed()` DEL MAIL. Con un 550 en el RCPT TO SwiftMailer NO tira: el job del
+     * mail encolado termina "bien" y su `failed()` no corre nunca. Este listener es el único lugar que ve
+     * ese rechazo. La tarjeta llega en `MessageSent::$data['ai_message_action_id']`: es una propiedad
+     * pública de ComercioCityMail, y Laravel pone las propiedades públicas de un Mailable en los datos del
+     * envío. Un mail sin tarjeta (la pantalla, una notificación) no registra nada.
+     *
+     * Nunca lanza (EnviosFallidosDelAsistenteHelper::registrar() tampoco): esto corre adentro de
+     * `Mailer::send()`.
+     *
+     * @param MessageSent $evento
+     * @param array<int, string> $rechazadas Las casillas que el servidor rechazó.
+     *
+     * @return void
+     */
+    private static function registrar_si_lo_mando_el_asistente(MessageSent $evento, array $rechazadas): void
+    {
+        try {
+            $datos = is_array($evento->data) ? $evento->data : [];
+
+            if (empty($datos['ai_message_action_id'])) {
+                return;
+            }
+
+            $cliente = null;
+
+            // El nombre del cliente sale del renglón "Cliente" del mail, el mismo que leyó el dueño en la tarjeta.
+            if (isset($datos['payload']) && is_object($datos['payload']) && isset($datos['payload']->detail_lines)) {
+                foreach ((array) $datos['payload']->detail_lines as $renglon) {
+                    if (isset($renglon['label'], $renglon['value']) && $renglon['label'] === 'Cliente') {
+                        $cliente = (string) $renglon['value'];
+                        break;
+                    }
+                }
+            }
+
+            EnviosFallidosDelAsistenteHelper::registrar(
+                $datos['ai_message_action_id'],
+                AiEnvioFallido::CANAL_MAIL,
+                implode(', ', $rechazadas),
+                $cliente,
+                EnviosFallidosDelAsistenteHelper::MOTIVO_MAIL_RECHAZADO
+            );
+        } catch (\Throwable $excepcion) {
+            // El registro es un extra del log: si falla, el envío sigue como si nada.
         }
     }
 }

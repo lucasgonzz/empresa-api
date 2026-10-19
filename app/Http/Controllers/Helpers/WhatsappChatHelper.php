@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Events\WhatsappChatUpdated;
+use App\Http\Controllers\Helpers\asistente_ia\EnviosFallidosDelAsistenteHelper;
 use App\Models\Client;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
@@ -57,17 +58,24 @@ class WhatsappChatHelper
     /**
      * Orden de "avance" de los estados de entrega: un estado nunca retrocede
      * (ej: si ya está `leido`, un evento `delivered` tardío no lo vuelve a `entregado`).
-     * `fallido` queda al mismo nivel que `enviado` para no pisar un `entregado`/`leido`
-     * ya confirmado si llegara un `failed` fuera de orden.
+     *
+     * 🔴 `fallido` LE GANA A `enviado` Y PIERDE CONTRA `entregado`/`leido` (corrección de la misión
+     * asistente-arreglos-segunda-prueba, 19/10/2026). Hasta acá valían lo mismo, y como el webhook
+     * descarta todo evento que no avance, un `failed` que llegaba DESPUÉS del `sent` —el orden normal
+     * cuando Meta acepta el mensaje y lo rechaza al intentar entregarlo (número sin WhatsApp, plantilla
+     * pausada)— se tiraba: la burbuja quedaba "enviado" para siempre sobre un mensaje que nunca llegó, y
+     * el asistente no tenía cómo enterarse para avisarle al dueño. Con `fallido` en el medio, el `failed`
+     * después de un `sent` se guarda, y un `failed` fuera de orden sigue sin pisar un `entregado` o un
+     * `leido` ya confirmados.
      *
      * @var array<string, int>
      */
     private static $status_rank = [
         'pendiente' => 0,
         'enviado'   => 1,
-        'fallido'   => 1,
-        'entregado' => 2,
-        'leido'     => 3,
+        'fallido'   => 2,
+        'entregado' => 3,
+        'leido'     => 4,
     ];
 
     /**
@@ -1159,6 +1167,17 @@ class WhatsappChatHelper
             $message->send_error = self::extract_failure_reason($payload);
         }
         $message->save();
+
+        /*
+         * 🔴 UN WHATSAPP DEL ASISTENTE QUE META RECHAZÓ DESPUÉS DEL SÍ DEL DUEÑO (misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). La fila trae la tarjeta que lo mandó
+         * (`ai_message_action_id`, la escriben el comprobante, el recordatorio y la promo): se registra el
+         * envío fallido para que el aviso vuelva al dueño. Solo cuando la fila PASA a fallido (el rango
+         * de arriba ya descartó un `failed` repetido), y sin poder romper el webhook: el helper nunca lanza.
+         */
+        if ($new_status === 'fallido' && ! empty($message->ai_message_action_id)) {
+            EnviosFallidosDelAsistenteHelper::registrar_whatsapp_rechazado($message);
+        }
 
         $chat = WhatsappChat::find($message->whatsapp_chat_id);
         if (! is_null($chat)) {

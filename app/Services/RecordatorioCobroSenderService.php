@@ -334,9 +334,12 @@ class RecordatorioCobroSenderService
      *                                     asistente-arreglos-segunda-prueba, 19/10/2026: en demo3 una venta
      *                                     de 23 días con umbral propio de 30 quedaba afuera de "hace más
      *                                     de 20 días"). Va al final y con default: ningún llamador cambia.
+     * @param  int|null  $ai_message_action_id  La tarjeta del asistente que encola el lote (N3 de la
+     *                                     misma misión): viaja a cada job para que un recordatorio que no
+     *                                     sale vuelva al dueño. null = la pantalla, que no cambia.
      * @return array  {lote_uuid, total_clientes, encolados, salteados: [{client_id, client_name, motivo, mensaje}]}
      */
-    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null, $respetar_umbral_propio = true)
+    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null, $respetar_umbral_propio = true, $ai_message_action_id = null)
     {
         $owner_id = (int) $owner_id;
 
@@ -399,7 +402,7 @@ class RecordatorioCobroSenderService
 
         // ---------- SEGUNDA PASADA: recién ahora se despacha ----------
         foreach ($a_encolar as $client_id) {
-            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid, (bool) $respetar_umbral_propio);
+            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid, (bool) $respetar_umbral_propio, $ai_message_action_id);
         }
 
         return [
