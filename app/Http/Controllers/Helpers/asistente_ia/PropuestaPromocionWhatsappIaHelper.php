@@ -871,8 +871,19 @@ class PropuestaPromocionWhatsappIaHelper
     }
 
     /**
-     * true si el texto de la promo trae un link escrito (N5): "http" o "/articulos/" (la ruta de un
-     * artículo de la tienda). Los links los arma el sistema; uno escrito por el modelo es inventado.
+     * true si el texto de la promo trae un link escrito (N5): los links los arma el sistema, y uno que
+     * escribió el modelo es inventado.
+     *
+     * Qué se considera link:
+     *   - "http" (con o sin s) y "/articulos/" (la ruta de un artículo de la tienda);
+     *   - 🔴 desde la revisión del 19/10/2026, lo que pasaba sin http: "www.", "wa.me/" y un DOMINIO
+     *     escrito suelto ("mitienda.com/ofertas", "ferreteria-falsa.com.ar", "tienda.online"): una
+     *     palabra pegada a un punto y a una terminación de dominio conocida, con o sin ruta.
+     *
+     * 🔴 Y LO QUE NO TIENE QUE FRENAR: los números con punto ("1.5 L", "$ 3.000", "20.10") no son dominio
+     * porque la terminación tiene que ser una de la lista (letras); una abreviatura con espacio después
+     * ("20 L. Oferta") tampoco. Un MAIL ("ventas@ferreteria.com") no es un link y pasa: lo que sigue a una
+     * arroba no arranca un dominio.
      *
      * @param  string  $texto
      * @return bool
@@ -881,7 +892,17 @@ class PropuestaPromocionWhatsappIaHelper
     {
         $texto = mb_strtolower((string) $texto);
 
-        return mb_strpos($texto, 'http') !== false || mb_strpos($texto, '/articulos/') !== false;
+        foreach (['http', '/articulos/', 'www.', 'wa.me/'] as $marca) {
+
+            if (mb_strpos($texto, $marca) !== false) {
+                return true;
+            }
+        }
+
+        return preg_match(
+            '/(?<![a-z0-9@\-])[a-z0-9][a-z0-9\-]*\.(?:com|ar|net|org|store|shop|online|site|info|io)(?![a-z0-9])/u',
+            $texto
+        ) === 1;
     }
 
     /**

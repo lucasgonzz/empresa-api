@@ -314,6 +314,54 @@ class Promocion_de_varios_articulos_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Revisión del 19/10/2026: los links inventados que pasaban sin "http" (www., wa.me/, un dominio
+     * suelto) también son un error. Y el texto normal de una promo (litros, precios, fechas, un mail) no
+     * se frena.
+     *
+     * @test
+     */
+    public function un_link_sin_http_tambien_es_un_error_y_el_texto_normal_pasa()
+    {
+        $taladro = $this->articulo_de_la_tienda('ZZE Taladro 750W', 'zze-taladro-750w');
+        $this->cliente('Ana Gomez', '5493444101010');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo del taladro');
+
+        $inventados = [
+            'Visitá www.ferreteria-falsa.com.ar y llevalo',
+            'Entrá a mitienda.com/ofertas',
+            'Escribinos a wa.me/5493444',
+            'Mirá todo en ferreteria.com.ar',
+            'Todo en tienda.online',
+            'El catálogo en ferretería.shop/promo',
+            'Más en MITIENDA.COM',
+        ];
+
+        foreach ($inventados as $texto) {
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => $texto, 'article_ids' => [$taladro->id]]);
+
+            $this->assertTrue(empty($respuesta['ok']), 'Tenía que frenar: ' . $texto);
+            $this->assertSame(PropuestaPromocionWhatsappIaHelper::MENSAJE_TEXTO_CON_LINK, $respuesta['error'], $texto);
+        }
+
+        $normales = [
+            'Llevá 2 x 1.5 L a $ 3.000',
+            'Taladro 750W a $ 22.000 hasta el 20.10',
+            'Pintura Alba 20 L. Oferta imperdible',
+            'Precio final $ 1.234,56 (IVA incl.), solo hoy',
+            'Consultas a ventas@ferreteria.com',
+        ];
+
+        foreach ($normales as $texto) {
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => $texto, 'article_ids' => [$taladro->id]]);
+
+            $this->assertTrue(!empty($respuesta['ok']), 'No tenía que frenar: ' . $texto . ' → ' . json_encode($respuesta));
+        }
+    }
+
+    /**
      * La herramienta: article_ids va al final de las propiedades (prefijo del caché), es opcional, y la
      * descripción y la del texto dicen que el texto lo redacta el modelo, sin links.
      *
