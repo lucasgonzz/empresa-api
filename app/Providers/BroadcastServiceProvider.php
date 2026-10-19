@@ -2,8 +2,8 @@
 
 namespace App\Providers;
 
+use App\Broadcasting\PusherBroadcasterConEspacio;
 use GuzzleHttp\Client;
-use Illuminate\Broadcasting\Broadcasters\PusherBroadcaster;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\ServiceProvider;
 use Psr\Log\LoggerInterface;
@@ -45,10 +45,20 @@ class BroadcastServiceProvider extends ServiceProvider
     public function boot()
     {
         /**
-         * Registra un broadcaster Pusher con cliente Guzzle explícito.
+         * Registra un broadcaster Pusher con cliente Guzzle explícito y con el espacio de nombres del
+         * sistema.
          *
-         * Motivo: pusher-php-server 7.x ignora curl_options; sin CA bundle en PHP (típico en WAMP/Windows)
-         * aparece "cURL error 60: SSL certificate problem". Ver config/broadcasting.php (guzzle_verify / guzzle_ca_bundle).
+         * Cliente Guzzle explícito — motivo: pusher-php-server 7.x ignora curl_options; sin CA bundle en
+         * PHP (típico en WAMP/Windows) aparece "cURL error 60: SSL certificate problem". Ver
+         * config/broadcasting.php (guzzle_verify / guzzle_ca_bundle).
+         *
+         * Espacio de nombres — desde el 19/10/2026 (misión pusher-canales-por-sistema) devuelve
+         * `PusherBroadcasterConEspacio` en lugar del `PusherBroadcaster` de vendor. Toda la flota emite a
+         * UNA app de Pusher y los canales llevaban solo un id, así que dos sistemas con el mismo id de
+         * dueño se escuchaban entre sí (demo3 y Ferretotal, los dos con el 2600). El broadcaster nuevo le
+         * pega `@{espacio}` a cada canal antes del `trigger` y saca ese sufijo al autorizar un privado.
+         * Es el único punto central del lado de la API: ningún `broadcastOn()` ni ningún patrón de
+         * `routes/channels.php` cambia. El porqué del espacio está en `App\Broadcasting\EspacioDeCanales`.
          *
          * @param \Illuminate\Contracts\Foundation\Application $app Contenedor de Laravel.
          * @param array<string, mixed> $config Entrada broadcasting.connections.pusher.
@@ -101,7 +111,11 @@ class BroadcastServiceProvider extends ServiceProvider
                 $pusher->setLogger($app->make(LoggerInterface::class));
             }
 
-            return new PusherBroadcaster($pusher);
+            /**
+             * El broadcaster con espacio (ver el docblock de arriba). Hereda todo lo demás del de vendor:
+             * el `broadcast()`, la firma de la autorización y el manejo de errores de Pusher.
+             */
+            return new PusherBroadcasterConEspacio($pusher);
         });
 
         Broadcast::routes();
