@@ -92,6 +92,18 @@ class SendPromocionWhatsappJob implements ShouldQueue
     protected $accion_id;
 
     /**
+     * Con una promo de VARIOS artículos (N5 de la misión asistente-arreglos-segunda-prueba, 19/10/2026): los
+     * artículos con el link que el dueño vio, [{article_id, nombre, link}], un renglón por artículo en el
+     * texto libre (la plantilla sigue con `$link`, la portada).
+     *
+     * 🔴 EL DEFAULT VA EN LA DECLARACIÓN: un job encolado antes de este cambio se deserializa sin pasar
+     * por el constructor y sin esta propiedad; con `[]` sale exactamente como salía, con `$link`.
+     *
+     * @var array
+     */
+    protected $links = [];
+
+    /**
      * @param  int  $owner_id
      * @param  int  $client_id
      * @param  string  $texto  El texto de la promo, tal cual lo vio el dueño en la tarjeta.
@@ -99,9 +111,11 @@ class SendPromocionWhatsappJob implements ShouldQueue
      * @param  string  $vigencia
      * @param  int|null  $sent_by_user_id  La persona que la pidió al asistente.
      * @param  int|null  $accion_id  La tarjeta que lo encoló.
+     * @param  array  $links  Ver la propiedad. Al final y con default.
      */
-    public function __construct($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null, $accion_id = null)
+    public function __construct($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null, $accion_id = null, $links = [])
     {
+        $this->links = is_array($links) ? array_values($links) : [];
         $this->accion_id = is_null($accion_id) ? null : (int) $accion_id;
         $this->owner_id = (int) $owner_id;
         $this->client_id = (int) $client_id;
@@ -127,7 +141,8 @@ class SendPromocionWhatsappJob implements ShouldQueue
                 $this->link,
                 $this->vigencia,
                 $this->sent_by_user_id,
-                $this->accion_id
+                $this->accion_id,
+                is_array($this->links) ? $this->links : []
             );
 
             if ($salida['ok']) {
