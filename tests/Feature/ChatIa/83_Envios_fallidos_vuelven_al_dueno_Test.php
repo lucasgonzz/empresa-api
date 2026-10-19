@@ -775,6 +775,59 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
         $this->assertStringContainsString('por WhatsApp (5493444001122)', $siguen[0]['texto']);
     }
 
+    /**
+     * 🔴 Revisión del 19/10/2026: los envíos van en dos etapas y sin transacción, así que si en la primera
+     * confirmación no salió nada la tarjeta vuelve a "propuesta" y su fila queda. Al reconfirmar, el 550
+     * del mismo turno tiene que volver a contarse como "NO salió", no como "queda saliendo".
+     *
+     * @test
+     */
+    public function al_reconfirmar_la_misma_tarjeta_un_550_en_el_turno_sigue_contandose_como_que_no_salio()
+    {
+        $this->el_admin_avisa();
+        $this->usar_un_transporte_de_mail(new class extends Transport {
+            public function send(Swift_Mime_SimpleMessage $message, &$failedRecipients = null)
+            {
+                $failedRecipients = array_keys((array) $message->getTo());
+
+                return 0;
+            }
+        });
+
+        $marcos = $this->cliente('Marcos Perez', null, 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list($conversation, $assistant) = $this->vuelta('mandale el presupuesto 900005 a Marcos');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', ['tipo' => 'presupuesto', 'numero' => 900005]);
+
+        $this->cerrar_la_vuelta($assistant);
+
+        $primera = ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, $propuesta['tarjeta_id']);
+
+        $this->assertTrue(empty($primera['ok']), json_encode($primera));
+        $this->assertStringContainsString('el servidor de correo rechazó la casilla', $primera['error']);
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($propuesta['tarjeta_id'])->estado_guardado(), 'No salió nada: se puede volver a confirmar.');
+
+        $ahora = Carbon::now();
+
+        try {
+
+            Carbon::setTestNow($ahora->copy()->addMinutes(5));
+
+            $segunda = ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, $propuesta['tarjeta_id']);
+
+            $this->assertTrue(empty($segunda['ok']), 'El 550 de la segunda vez no puede salir como "queda saliendo": ' . json_encode($segunda));
+            $this->assertStringContainsString('el servidor de correo rechazó la casilla', $segunda['error']);
+
+            $this->assertSame(1, AiEnvioFallido::where('ai_message_action_id', $propuesta['tarjeta_id'])->count());
+
+        } finally {
+
+            Carbon::setTestNow();
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Revisión del 19/10/2026: un failed que después Meta desmiente
     // ---------------------------------------------------------------------

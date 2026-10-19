@@ -469,6 +469,20 @@ class EnviosFallidosDelAsistenteHelper
 
         if (!is_null($ya)) {
 
+            /*
+             * 🔴 SE TOCA, Y NO ES UN DETALLE (revisión del 19/10/2026). Los envíos se ejecutan en dos
+             * etapas, sin transacción: si en la primera confirmación no salió nada, la tarjeta vuelve a
+             * "propuesta" y ESTA fila queda. Al reconfirmar, el mail vuelve a fallar adentro del turno
+             * (cola sync) y la confirmación busca lo que falló "desde que encoló" por `updated_at`
+             * (de_la_tarjeta_desde()): sin el touch() la fila vieja no aparecía y el resultado decía
+             * "queda saliendo" sobre un mail rechazado. El motivo se actualiza al de este fallo.
+             */
+            if (!is_null($motivo)) {
+                $ya->motivo = $motivo;
+            }
+
+            $ya->touch();
+
             return $ya;
         }
 
