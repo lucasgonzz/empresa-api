@@ -36,6 +36,16 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
+        $schedule->command('serper:sincronizar-consumo')->everyMinute()->withoutOverlapping(5)->runInBackground()
+            ->when(function () {
+                try {
+                    return \Illuminate\Support\Facades\Schema::hasTable('serper_usage_events')
+                        && \App\Models\SerperUsageEvent::where('user_id', (int) config('app.USER_ID'))->whereNull('synced_at')->exists();
+                } catch (\Throwable $e) {
+                    return false;
+                }
+            });
+
         // Procesa la cola de jobs hasta vaciarla (reemplaza cron directo de queue:work.
         // Nota: no usar ['--stop-when-empty' => true]; Laravel lo serializa como --stop-when-empty="1"
         // y Symfony rechaza ese flag (no acepta valor), el worker falla sin procesar jobs.

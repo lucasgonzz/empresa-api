@@ -3,6 +3,7 @@
 namespace App\Services\ImageSearch;
 
 use App\Services\ImageAssignment\ImageServiceCallLogger;
+use App\Services\ProductFacts\SerperUsageService;
 use App\Services\Traits\GoogleSearchHelpers;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -41,6 +42,13 @@ class SerperImageSearchProvider implements ImageSearchProvider
      *             llamador, la de config.
      */
     protected $api_key;
+    protected $usage_context = [];
+
+    public function usageContext(array $context)
+    {
+        $this->usage_context = $context;
+        return $this;
+    }
 
     /**
      * @param string|null $api_key  La clave a usar ('' = no hay ninguna). Null = la de
@@ -79,6 +87,7 @@ class SerperImageSearchProvider implements ImageSearchProvider
 
         // Para el registro de consultas (image_service_calls): cuánto tardó Serper en responder.
         $inicio = microtime(true);
+        $respuesta = null;
 
         try {
             $respuesta = $this->google_http()
@@ -113,6 +122,8 @@ class SerperImageSearchProvider implements ImageSearchProvider
                 : 'No se pudo conectar con el buscador.';
 
             return $this->fallo($legible, null, $this->milisegundos_desde($inicio), $detalle);
+        } finally {
+            SerperUsageService::record($this->usage_context, 'images', $consulta, $respuesta, $inicio);
         }
 
         $duracion_ms = $this->milisegundos_desde($inicio);

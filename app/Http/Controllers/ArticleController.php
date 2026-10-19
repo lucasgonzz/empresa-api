@@ -291,6 +291,7 @@ class ArticleController extends Controller
     }
 
     function store(Request $request) {
+        \App\Services\ProductFacts\ApplyProductFacts::validate($request, $this->userId());
         $model = new Article();
         // $model->num                               = $this->num('articles');
         $model->bar_code                          = $request->bar_code;
@@ -299,7 +300,7 @@ class ArticleController extends Controller
         $model->provider_id                       = $request->provider_id;
         $model->category_id                       = $request->category_id;
         $model->sub_category_id                   = $request->sub_category_id;
-        $model->brand_id                          = $request->brand_id;
+        $model->brand_id                          = \App\Services\ProductFacts\ApplyProductFacts::brand($request, $this->userId());
         $model->name                              = ucfirst($request->name);
         $model->slug                              = ArticleHelper::slug($request->name);
         // `cost` NO se asigna acá: lo resuelve set_costo_desde_request() más abajo, después de
@@ -412,6 +413,8 @@ class ArticleController extends Controller
         ArticleHelper::setDeposits($model, $request);
 
         $this->updateRelationsCreated('article', $model->id, $request->childrens);
+
+        \App\Services\ProductFacts\ApplyProductFacts::description($request, $model);
 
         GeneralHelper::attachModels($model, 'tags', $request->tags);
 
