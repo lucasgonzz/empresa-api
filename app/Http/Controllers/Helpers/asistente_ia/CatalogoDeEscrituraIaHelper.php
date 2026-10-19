@@ -652,7 +652,7 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'zonas de envío',
             'singular'           => 'zona de envío',
             'genero'             => 'f',
-            'descripcion'        => 'Las zonas de envío de la tienda online, con su precio (ABM > Tienda online).',
+            'descripcion'        => 'Las formas de envío propias de la tienda (ABM > Tienda online): con precio fijo o con el costo a coordinar con el comprador (costo_a_convenir).',
             'operaciones'        => null,
             'solo_lectura'       => [],
             'claves_de_pantalla' => [],
@@ -660,7 +660,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => null,
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'DeliveryZoneController: name, description, price.',
+            'revisado'           => 'DeliveryZoneController: name, description, price y costo_a_convenir (con costo_a_convenir guarda price = 0). La ruta sigue siendo zonas-de-envio a propósito.',
         ],
         'delivery_day' => [
             'etiqueta'           => 'días de entrega',
