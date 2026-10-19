@@ -132,6 +132,15 @@ class Tenencia_de_la_tienda_online_Test extends EmpresaTestCase
         ]);
     }
 
+    protected function cuota_de_metodo($user_id)
+    {
+        return PaymentMethodInstallment::create([
+            'payment_method_id' => $this->metodo_de_pago($user_id)->id,
+            'name'              => 'Cuota ' . $user_id,
+            'installments'      => 3,
+        ]);
+    }
+
     protected function comprador($user_id)
     {
         return Buyer::create([
@@ -465,6 +474,7 @@ class Tenencia_de_la_tienda_online_Test extends EmpresaTestCase
             'delivery_day'   => 'dia_de_entrega',
             'title'          => 'banner',
             'payment_method' => 'metodo_de_pago',
+            'payment_method_installment' => 'cuota_de_metodo',
             'buyer'          => 'comprador',
             'order'          => 'pedido',
         ];
