@@ -276,7 +276,7 @@ class PropuestaCompraConFacturaIaHelper
          *     así que preguntar después ya sería tarde. La foto no se sella, y en el turno siguiente la
          *     vuelve a encontrar imagenes_sin_gestionar(): la última tanda de
          *     FotosDeLaConversacionIaHelper saltea los mensajes del dueño sin fotos del final («nueva»,
-         *     «sumala a la 12»). Lo fija 19_Compra_con_factura_no_se_pega_a_otra_Test.
+         *     «sumala a la 12»). Lo fija 20_Compra_con_factura_no_se_pega_a_otra_Test.
          * Con un proveedor que todavía no existe no hay compras suyas: ni reuso ni pregunta.
          */
         $pidio_nueva = self::pidio_compra_nueva(EntradaDeCargaIa::valor($input, 'compra_nueva'));
