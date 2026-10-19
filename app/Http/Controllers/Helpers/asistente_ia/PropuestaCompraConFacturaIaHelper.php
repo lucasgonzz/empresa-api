@@ -13,6 +13,7 @@ use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
+use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderScan;
 use App\Models\ProviderOrderStatus;
 use Carbon\Carbon;
@@ -33,10 +34,22 @@ use Carbon\Carbon;
  *
  * 🔴 CUÁNDO SE REUSA UNA COMPRA Y CUÁNDO SE CREA UNA NUEVA. Lucas pidió "dar de alta una compra
  * para ese proveedor en caso de que aún no haya ninguna". El criterio es conservador a propósito,
- * porque agregarle una factura a una compra ya cargada duplica stock y deuda: se reusa SOLO una
- * compra de ese proveedor SIN NINGÚN ARTÍCULO cargado, del mismo dueño, de los últimos
- * DIAS_DE_REUSO días y sin un escaneo en curso. En cualquier otro caso se crea una nueva, y la
- * tarjeta dice cuál de las dos cosas va a pasar antes de que el dueño confirme.
+ * porque agregarle una factura a una compra ya cargada duplica stock y deuda. Desde la misión
+ * asistente-arreglos-segunda-prueba (19/10/2026) la regla vive en UN solo método,
+ * es_reusable_sin_nombrarla(), que usan la propuesta (compra_reusable()) y la confirmación
+ * (orden_para_la_factura()): se reusa en silencio SOLO una compra del mismo dueño y del mismo
+ * proveedor, CREADA HOY, sin artículos, sin NINGÚN escaneo (en cualquier estado, revisado o no) y
+ * sin factura cargada a mano. Es la compra que el dueño acaba de armar en la pantalla y a la que le
+ * manda la factura. Una compra igual de limpia pero de 1 a DIAS_DE_REUSO días atrás no se reusa ni
+ * se ignora: se le pregunta al dueño ANTES de crear nada (pregunta_por_la_compra_vacia()). En
+ * cualquier otro caso se crea una nueva, y la tarjeta dice cuál de las dos cosas va a pasar antes de
+ * que el dueño confirme.
+ *
+ *   El caso real que lo cambió (segunda prueba contra demo3, 19/10/2026, B1): la Factura A
+ *   0003-00012398 de ese día quedó adjuntada a la Compra 13 del 16/10, que ya tenía escaneada la
+ *   0003-00012345. La 13 no tenía artículos porque su escaneo estaba `listo` sin revisar, y la regla
+ *   de entonces —sin artículos, de los últimos DIAS_DE_REUSO días y sin un escaneo EN CURSO— la daba
+ *   por "la compra de esta factura". Dos facturas en una compra, y el dueño sin enterarse.
  *
  * 🔴 DECISIONES DE LUCAS DEL 24/9/2026 (misión asistente-fotos-barras-y-compras), que dan vuelta tres
  * cosas de la versión original. En demo3 (conv 12) la compra tardó TRES mensajes: el asistente
@@ -60,7 +73,9 @@ use Carbon\Carbon;
  *   4. «ADJUNTALA A LA COMPRA 12» SE CUMPLE. Con `compra_num` la factura va a la compra que nombró el
  *      dueño aunque ya tenga artículos (la tarjeta lo avisa y en la revisión elige qué renglones
  *      sumar); el proveedor de esa compra manda sobre el que nombró. Sin `compra_num` sigue la regla
- *      conservadora de arriba.
+ *      conservadora de arriba. Desde el 19/10/2026 (misión asistente-arreglos-segunda-prueba), si la
+ *      compra nombrada ya tenía escaneada OTRA factura se adjunta igual —la nombró él— y la tarjeta y
+ *      el resultado lo dicen, para que no pase en silencio lo de la Compra 13 de demo3.
  *   5. EL AVISO DE "TERMINÓ EL ESCANEO" PUEDE LLEGAR POR WHATSAPP, con el link a la revisión, si el
  *      admin del cliente anunció que lo manda (AvisosDelAsistenteHelper). El escaneo nace con su
  *      conversación y con `avisar_por_whatsapp`, y el texto del resultado dice por dónde llega.
@@ -68,9 +83,15 @@ use Carbon\Carbon;
 class PropuestaCompraConFacturaIaHelper
 {
     /**
-     * Días hacia atrás en los que una compra vacía del mismo proveedor se considera "la de esta
+     * Días hacia atrás en los que una compra vacía y limpia del mismo proveedor puede ser "la de esta
      * factura". Más allá de eso es una compra que quedó abierta de otra cosa, y colgarle la factura
      * de hoy sería mezclar dos compras distintas.
+     *
+     * ⚠️ DESDE EL 19/10/2026 ES LA VENTANA DE LA PREGUNTA, NO LA DEL REUSO (misión
+     * asistente-arreglos-segunda-prueba): en silencio se reusa solo una compra de HOY
+     * (es_reusable_sin_nombrarla()); una de 1 a DIAS_DE_REUSO días atrás se le pregunta al dueño
+     * (compra_vacia_de_dias_atras()). Se conserva el nombre y el valor porque la frontera de "más de
+     * una semana" la fija 6_Compra_con_factura_Test::no_reusa_una_compra_vacia_de_hace_mas_de_una_semana.
      */
     const DIAS_DE_REUSO = 7;
 
@@ -115,7 +136,9 @@ class PropuestaCompraConFacturaIaHelper
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
      * @param  array  $input  proveedor*, sucursal, cuit, reemplaza_a, compra_num (el N° de una compra
-     *                        ya cargada a la que se adjunta la factura; ver proponer_sobre_compra_indicada)
+     *                        ya cargada a la que se adjunta la factura; ver proponer_sobre_compra_indicada),
+     *                        compra_nueva (true = la persona pidió una compra nueva: no se pregunta por
+     *                        la compra vacía de otro día ni se reusa la de hoy; ver pidio_compra_nueva)
      * @return array  Respuesta de la herramienta (propuesta creada o respuesta de negocio).
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)
@@ -137,9 +160,11 @@ class PropuestaCompraConFacturaIaHelper
          * 🔴 LA COMPRA QUE INDICÓ EL DUEÑO VA POR SU PROPIO CAMINO (misión
          * asistente-aviso-escaneo-factura, decisión 3 de Lucas del 16/10/2026): «adjuntala a la
          * compra 12» se cumple aunque esa compra ya tenga artículos — el dueño eligió la compra, y en
-         * la revisión del escaneo elige qué renglones sumar. La regla automática de abajo (reusar
-         * solo una compra VACÍA de los últimos DIAS_DE_REUSO días) no cambia: es la que corre cuando
-         * nadie nombró ninguna compra.
+         * la revisión del escaneo elige qué renglones sumar. La regla automática de abajo
+         * (es_reusable_sin_nombrarla(): desde el 19/10/2026, solo una compra de HOY, vacía, sin
+         * escaneo y sin factura) es la que corre cuando nadie nombró ninguna compra. `compra_num`
+         * gana sobre `compra_nueva` si vinieran los dos: un número de compra es más concreto que
+         * "armá una nueva", y es lo que el dueño contesta a la pregunta por la compra vacía.
          */
         $compra_num = self::numero_de_compra(EntradaDeCargaIa::valor($input, 'compra_num'));
 
@@ -456,6 +481,27 @@ class PropuestaCompraConFacturaIaHelper
             $nota[] = 'La compra ya tiene ' . $cuantos . ' cargados: contale que al revisar el escaneo elige qué renglones sumar.';
         }
 
+        /*
+         * 🔴 SI YA TENÍA ESCANEADA OTRA FACTURA, SE ADJUNTA IGUAL Y SE DICE (misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). La nombró el dueño, así que manda él; pero
+         * el caso real de ese día —la 0003-00012398 terminó en la Compra 13, que ya tenía la
+         * 0003-00012345— pasó sin que nadie lo dijera. Con el aviso, el dueño ve en la tarjeta (y el
+         * modelo se lo cuenta) que la compra va a quedar con dos facturas escaneadas antes del sí. Un
+         * escaneo EN CURSO ya cortó más arriba: acá solo llegan los terminados, con error o abandonados.
+         */
+        $otra_factura = self::otra_factura_escaneada($compra);
+
+        if (!is_null($otra_factura)) {
+
+            $cual = is_null($otra_factura['comprobante']) ? '' : ' (' . $otra_factura['comprobante'] . ')';
+
+            $avisos[] = 'La compra N° ' . $compra->num . ' ya tenía escaneada otra factura' . $cual
+                . ': esta se suma como un escaneo más, y al revisarla elegís qué renglones sumar.';
+
+            $nota[] = 'La compra N° ' . $compra->num . ' ya tenía escaneada otra factura' . $cual
+                . ': contale que la adjuntás igual porque la nombró, como un escaneo más.';
+        }
+
         $que_pasa = 'Se adjunta la factura a la compra N° ' . $compra->num
             . ($articulos > 0 ? ', que ya tiene ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos') : '');
 
@@ -721,6 +767,14 @@ class PropuestaCompraConFacturaIaHelper
 
         $orden = $destino['orden'];
 
+        /*
+         * Si la factura va a una compra que ya existía y que YA TENÍA otro escaneo (solo puede pasar
+         * con la compra que nombró el dueño: la regla automática exige que no tenga ninguno), se mira
+         * ANTES de crear el escaneo de esta factura, porque después ya habría dos y no se sabría cuál
+         * era "el otro". El resultado lo dice (misión asistente-arreglos-segunda-prueba, 19/10/2026).
+         */
+        $otra_factura = $destino['adjuntada'] ? self::otra_factura_escaneada($orden) : null;
+
         $paginas = [];
 
         foreach ($imagenes as $imagen) {
@@ -808,15 +862,16 @@ class PropuestaCompraConFacturaIaHelper
                 . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.';
 
         return [
-            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado) . $cierre,
+            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado, $otra_factura, $destino['descartada_num']) . $cierre,
             /*
              * Compras es la solapa 'compras' de la ruta 'provider' de la SPA (/proveedores/compras).
              * Hasta el 10/10/2026 iba name 'proveedores', que no existe en router/index.js y dejaba
              * la pantalla en blanco (misión ver-en-del-asistente-refresca-destino).
              *
              * `fecha` es el día de la compra: Compras lista por día y la factura puede haber caído en
-             * una compra vacía de hasta DIAS_DE_REUSO días atrás (orden_para_la_factura), que no está
-             * en el día de hoy. Clave opcional, como la del gasto.
+             * la compra que nombró el dueño (`compra_num`, de cualquier día; también la vacía de otro
+             * día por la que preguntó la herramienta), que no está en el día de hoy. Clave opcional,
+             * como la del gasto.
              */
             'ruta'              => [
                 'name'   => 'provider',
@@ -839,11 +894,22 @@ class PropuestaCompraConFacturaIaHelper
      * con el mismo proveedor y que no tenga un escaneo en curso. Si algo de eso cambió entre la
      * propuesta y el sí, se corta con el motivo en vez de mandar la factura a otro lado.
      *
+     * 🔴 SIN `compra_indicada`, LA COMPRA PROMETIDA SE REVALIDA CON EL MISMO MÉTODO QUE LA ELIGIÓ
+     * (es_reusable_sin_nombrarla(), misión asistente-arreglos-segunda-prueba, 19/10/2026). Entre la
+     * tarjeta y el sí pueden pasar horas: si la compra ganó artículos, un escaneo (en cualquier
+     * estado: otra factura cargada desde la pantalla u otra tarjeta del asistente) o una factura a
+     * mano, o si ya no es de hoy, la factura va a una compra NUEVA. Hasta esta misión solo se miraba si
+     * había ganado artículos, y un escaneo en curso cortaba con un 422 que, después de esperar, volvía
+     * a caer en la misma compra: el hueco por el que la factura de hoy terminó en la Compra 13.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\Provider  $proveedor
      * @param  array  $datos
-     * @return array  ['orden' => \App\Models\ProviderOrder, 'adjuntada' => bool] — `adjuntada` es
-     *                true si la factura fue a una compra que ya existía (indicada o vacía reusada).
+     * @return array  ['orden' => \App\Models\ProviderOrder, 'adjuntada' => bool, 'descartada_num' => int|null]
+     *                — `adjuntada` es true si la factura fue a una compra que ya existía (indicada o
+     *                vacía reusada); `descartada_num` es el N° de la compra que la tarjeta prometió
+     *                reusar y que al confirmar ya no servía (null si no hubo tal cosa), para que el
+     *                resultado diga por qué la factura fue a otra.
      *
      * @throws AccionIaException
      */
@@ -880,8 +946,10 @@ class PropuestaCompraConFacturaIaHelper
                 $indicada->save();
             }
 
-            return ['orden' => $indicada, 'adjuntada' => true];
+            return ['orden' => $indicada, 'adjuntada' => true, 'descartada_num' => null];
         }
+
+        $descartada_num = null;
 
         if ($a_reusar > 0) {
 
@@ -891,18 +959,15 @@ class PropuestaCompraConFacturaIaHelper
                                     ->first();
 
             /*
-             * Si entre la propuesta y el sí alguien le cargó artículos, ya no es "la compra vacía
-             * de esta factura": se crea una nueva en vez de mezclarlas. La tarjeta decía otra cosa,
-             * pero el resultado se lo cuenta al dueño con el número real.
+             * Si entre la propuesta y el sí dejó de ser reusable (ver el 🔴 del docblock), ya no es
+             * "la compra de esta factura": se crea una nueva en vez de mezclarlas. La tarjeta decía
+             * otra cosa, pero el resultado se lo cuenta al dueño con el número real y el motivo.
              */
-            if (!is_null($orden) && !self::esta_vacia($orden) ) {
+            if (!is_null($orden) && !self::es_reusable_sin_nombrarla($orden, $proveedor)) {
+
+                $descartada_num = (int) $orden->num;
 
                 $orden = null;
-            }
-
-            if (!is_null($orden) && self::tiene_escaneo_en_curso($orden)) {
-
-                throw new AccionIaException(422, 'Esa compra ya tiene un escaneo en curso. Esperá a que termine.');
             }
 
             if (!is_null($orden)) {
@@ -915,9 +980,9 @@ class PropuestaCompraConFacturaIaHelper
                  * cuelga ahora no sumaría su IVA al total ni a la deuda con el proveedor. Volver a
                  * guardarla desde el formulario NO la arregla: ver el 🔴 del alta de abajo.
                  *
-                 * Se prende solo si está apagada (NULL o 0). esta_vacia() de arriba garantiza
-                 * únicamente que no tiene ARTÍCULOS (puede tener costos extra o una factura cargada
-                 * a mano), y prender la bandera no recalcula nada en el momento: ProviderOrder no
+                 * Se prende solo si está apagada (NULL o 0). es_reusable_sin_nombrarla() de arriba
+                 * garantiza que no tiene artículos, escaneos ni factura cargada a mano (puede tener
+                 * costos extra), y prender la bandera no recalcula nada en el momento: ProviderOrder no
                  * tiene observers. El próximo recálculo —la confirmación del escaneo de esta
                  * factura— le aplica la misma regla que a una compra del formulario. Monotributista
                  * y `precios_incluyen_iva` siguen sin sumar: eso lo resuelve
@@ -929,7 +994,7 @@ class PropuestaCompraConFacturaIaHelper
                     $orden->save();
                 }
 
-                return ['orden' => $orden, 'adjuntada' => true];
+                return ['orden' => $orden, 'adjuntada' => true, 'descartada_num' => null];
             }
         }
 
@@ -969,32 +1034,58 @@ class PropuestaCompraConFacturaIaHelper
             'articles'                 => [],
         ]);
 
-        return ['orden' => $model, 'adjuntada' => false];
+        return ['orden' => $model, 'adjuntada' => false, 'descartada_num' => $descartada_num];
     }
 
     /**
      * La primera frase del resultado: qué se hizo con la compra.
      *
+     * Misión asistente-arreglos-segunda-prueba (19/10/2026), dos agregados para que el dueño no se
+     * entere tarde de adónde fue la factura:
+     *   - si la tarjeta prometía una compra vacía y al confirmar ya no servía, la frase dice que la
+     *     factura NO fue a esa y por qué (`$descartada_num`);
+     *   - si la compra a la que se adjuntó ya tenía escaneada otra factura, lo dice (`$otra_factura`).
+     *
      * @param  \App\Models\ProviderOrder  $orden
      * @param  \App\Models\Provider  $proveedor
      * @param  bool  $adjuntada  La factura fue a una compra que ya existía.
      * @param  bool  $proveedor_creado  El proveedor se dio de alta en esta misma carga.
+     * @param  array|null  $otra_factura  otra_factura_escaneada() de la compra ANTES de este escaneo, o null.
+     * @param  int|null  $descartada_num  N° de la compra que la tarjeta prometió y ya no servía, o null.
      * @return string
      */
-    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado)
+    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado, $otra_factura = null, $descartada_num = null)
     {
         if (!$adjuntada) {
 
-            return 'Creé la Compra N° ' . $orden->num . ' de ' . $proveedor->name
+            $frase = 'Creé la Compra N° ' . $orden->num . ' de ' . $proveedor->name
                 . ($proveedor_creado ? ' (proveedor nuevo, lo di de alta)' : '') . '.';
+
+            if (!is_null($descartada_num)) {
+
+                $frase .= ' No la sumé a la Compra N° ' . (int) $descartada_num . ' que te había propuesto: entre la propuesta y tu sí '
+                    . 'le cargaron artículos o una factura, o ya no es de hoy.';
+            }
+
+            return $frase;
         }
 
         $articulos = $orden->articles()->count();
 
         $como_estaba = $articulos > 0
             ? 'ya estaba cargada, con ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos')
-                . ': al revisar el escaneo elegís qué renglones sumar'
             : 'ya estaba creada y sin artículos';
+
+        if (is_array($otra_factura)) {
+
+            $como_estaba .= ($articulos > 0 ? ', y' : ', pero') . ' ya tenía escaneada otra factura'
+                . (empty($otra_factura['comprobante']) ? '' : ' (' . $otra_factura['comprobante'] . ')');
+        }
+
+        if ($articulos > 0 || is_array($otra_factura)) {
+
+            $como_estaba .= ': al revisar el escaneo elegís qué renglones sumar';
+        }
 
         return 'Adjunté la factura a la Compra N° ' . $orden->num . ' de ' . $proveedor->name . ' (' . $como_estaba . ').';
     }
@@ -1353,8 +1444,10 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
-     * La compra vacía y reciente de ese proveedor que se puede reusar, o null. Ver el 🔴 del
-     * docblock de la clase.
+     * La compra de ese proveedor que se reusa en silencio para la factura, o null. Ver el 🔴 del
+     * docblock de la clase: desde el 19/10/2026 la decide es_reusable_sin_nombrarla() —el mismo
+     * método que revalida la confirmación—, y la consulta ya se acota a las compras de HOY para no
+     * traer candidatas que el método va a descartar.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\Provider  $proveedor
@@ -1362,31 +1455,150 @@ class PropuestaCompraConFacturaIaHelper
      */
     protected static function compra_reusable(ContextoDeCargaIa $contexto, Provider $proveedor)
     {
-        $desde = Carbon::now()->subDays(self::DIAS_DE_REUSO);
-
         $candidatas = ProviderOrder::where('user_id', $contexto->owner_id)
                                     ->where('provider_id', $proveedor->id)
-                                    ->where('created_at', '>=', $desde)
+                                    ->where('created_at', '>=', Carbon::today())
                                     ->orderBy('id', 'DESC')
                                     ->limit(self::TOPE_CANDIDATOS)
                                     ->get();
 
         foreach ($candidatas as $candidata) {
 
-            if (!self::esta_vacia($candidata)) {
+            if (self::es_reusable_sin_nombrarla($candidata, $proveedor)) {
 
-                continue;
+                return $candidata;
             }
-
-            if (self::tiene_escaneo_en_curso($candidata)) {
-
-                continue;
-            }
-
-            return $candidata;
         }
 
         return null;
+    }
+
+    /**
+     * true si la factura se puede colgar de esta compra SIN QUE EL DUEÑO LA HAYA NOMBRADO. Es la regla
+     * única de la propuesta (compra_reusable()) y de la confirmación (orden_para_la_factura()), para
+     * que lo que la tarjeta promete y lo que el sí ejecuta no se separen nunca (misión
+     * asistente-arreglos-segunda-prueba, 19/10/2026).
+     *
+     * Las cinco condiciones, y el porqué de cada una:
+     *   1. MISMO PROVEEDOR: mezclar dos proveedores en una compra desarma la cuenta corriente de los dos.
+     *   2. SIN ARTÍCULOS: colgarle una factura a una compra ya cargada duplica stock y deuda.
+     *   3. SIN NINGÚN ESCANEO, en cualquier estado: un escaneo `listo` sin revisar deja la compra sin
+     *      artículos pero CON una factura. Es exactamente la Compra 13 de demo3, que ya tenía la
+     *      0003-00012345 y recibió la 0003-00012398 del 19/10. Hasta ese día solo se miraba el escaneo
+     *      EN CURSO.
+     *   4. SIN FACTURA CARGADA A MANO: una fila en `provider_order_afip_tickets` o la fecha del
+     *      comprobante cargada en la pantalla de la compra son otra factura, aunque nadie la escaneó.
+     *   5. CREADA HOY (huso de la app, Carbon::today()): la compra que el dueño acaba de armar en la
+     *      pantalla para esta factura. Una de otro día no se toma en silencio: se le pregunta
+     *      (compra_vacia_de_dias_atras()).
+     *
+     * El dueño (`user_id`) no se mira acá: las dos consultas que traen la compra ya filtran por él.
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @param  \App\Models\Provider  $proveedor  El proveedor de la factura.
+     * @return bool
+     */
+    protected static function es_reusable_sin_nombrarla(ProviderOrder $orden, Provider $proveedor)
+    {
+        if ((int) $orden->provider_id !== (int) $proveedor->id) {
+
+            return false;
+        }
+
+        return self::es_de_hoy($orden) && self::esta_limpia($orden);
+    }
+
+    /**
+     * true si la compra no tiene artículos, ni escaneos, ni factura cargada a mano: las condiciones
+     * 2 a 4 de es_reusable_sin_nombrarla(), que comparte con la pregunta por la compra vacía de otro
+     * día (compra_vacia_de_dias_atras()). Van de la más barata a la más cara de consultar.
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @return bool
+     */
+    protected static function esta_limpia(ProviderOrder $orden)
+    {
+        return !self::tiene_factura_cargada($orden)
+            && self::esta_vacia($orden)
+            && !self::tiene_algun_escaneo($orden);
+    }
+
+    /**
+     * true si la compra se creó hoy, en el huso de la app (config app.timezone, el mismo con el que
+     * se guardó `created_at`). Una compra sin fecha no cuenta como de hoy: no hay cómo saber que es
+     * la de esta factura.
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @return bool
+     */
+    protected static function es_de_hoy(ProviderOrder $orden)
+    {
+        if (is_null($orden->created_at)) {
+
+            return false;
+        }
+
+        return Carbon::parse($orden->created_at)->gte(Carbon::today());
+    }
+
+    /**
+     * true si la compra tuvo alguna vez un escaneo de factura, en cualquier estado (pendiente,
+     * procesando, listo sin revisar, revisado, con error o abandonado). Ver la condición 3 de
+     * es_reusable_sin_nombrarla(): no alcanza con mirar el escaneo en curso.
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @return bool
+     */
+    protected static function tiene_algun_escaneo(ProviderOrder $orden)
+    {
+        return ProviderOrderScan::where('provider_order_id', $orden->id)->exists();
+    }
+
+    /**
+     * true si la compra tiene una factura cargada a mano desde su pantalla: una fila en
+     * `provider_order_afip_tickets` o la fecha del comprobante (`fecha_emision_comprobante`). Ver la
+     * condición 4 de es_reusable_sin_nombrarla().
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @return bool
+     */
+    protected static function tiene_factura_cargada(ProviderOrder $orden)
+    {
+        if (!is_null($orden->fecha_emision_comprobante)) {
+
+            return true;
+        }
+
+        return ProviderOrderAfipTicket::where('provider_order_id', $orden->id)->exists();
+    }
+
+    /**
+     * La otra factura que la compra ya tenía escaneada, para decirla en la tarjeta y en el resultado
+     * cuando el dueño nombró esa compra (`compra_num`), o null si no tiene ningún escaneo.
+     *
+     * Se toma el escaneo más nuevo. El comprobante («Factura A 0003-00012345») sale de lo que leyó
+     * el escaneo, con el mismo formato que usa consultar_escaneo_de_factura; si el escaneo no
+     * terminó bien o no leyó el número, va null y el texto dice solo "otra factura".
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @return array|null  ['comprobante' => string|null] o null.
+     */
+    protected static function otra_factura_escaneada(ProviderOrder $orden)
+    {
+        $scan = ProviderOrderScan::where('provider_order_id', $orden->id)
+                                    ->orderBy('id', 'DESC')
+                                    ->first();
+
+        if (is_null($scan)) {
+
+            return null;
+        }
+
+        $resultado = is_array($scan->resultado) ? $scan->resultado : [];
+
+        $factura = isset($resultado['factura']) && is_array($resultado['factura']) ? $resultado['factura'] : [];
+
+        return ['comprobante' => count($factura) ? EscaneoDeFacturaIaHelper::comprobante($factura) : null];
     }
 
     /**
