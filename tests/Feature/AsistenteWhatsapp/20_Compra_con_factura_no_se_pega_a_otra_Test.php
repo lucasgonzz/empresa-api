@@ -633,7 +633,8 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertSame(2, $this->compras_del_proveedor());
         $this->assertSame(1, ProviderOrderScan::where('provider_order_id', $prometida->id)->count(), 'A la prometida no se le suma el segundo escaneo.');
         $this->assertStringContainsString('Creé la Compra N°', $resultado['resultado']);
-        $this->assertStringContainsString('Compra N° 44 que te había propuesto', $resultado['resultado']);
+        $this->assertStringContainsString('Compra N° 44 que había elegido', $resultado['resultado']);
+        $this->assertStringNotContainsString('tu sí', $resultado['resultado'], 'En resuelto o directo no hubo sí: el texto no lo nombra.');
     }
 
     /**
@@ -725,6 +726,8 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertSame(2, ProviderOrderScan::where('provider_order_id', $compra_13->id)->count());
         $this->assertStringContainsString('Adjunté la factura a la Compra N° 13', $resultado['resultado']);
         $this->assertStringContainsString('ya tenía escaneada otra factura', $resultado['resultado']);
+        $this->assertStringContainsString('otra factura, la Factura A 0003-00012345', $resultado['resultado']);
+        $this->assertStringNotContainsString('factura (Factura', $resultado['resultado'], 'Sin paréntesis adentro del paréntesis.');
     }
 
     // =====================================================================

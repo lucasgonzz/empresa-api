@@ -1223,10 +1223,14 @@ class PropuestaCompraConFacturaIaHelper
             $frase = 'Creé la Compra N° ' . $orden->num . ' de ' . $proveedor->name
                 . ($proveedor_creado ? ' (proveedor nuevo, lo di de alta)' : '') . '.';
 
+            /*
+             * Sin "entre la propuesta y tu sí" (revisión independiente, 19/10/2026): en "resuelto" y
+             * "directo" no hubo ningún sí, y la frase sonaba a algo que el dueño hizo.
+             */
             if (!is_null($descartada_num)) {
 
-                $frase .= ' No la sumé a la Compra N° ' . (int) $descartada_num . ' que te había propuesto: entre la propuesta y tu sí '
-                    . 'le cargaron artículos o una factura, o ya no es de hoy.';
+                $frase .= ' No la sumé a la Compra N° ' . (int) $descartada_num . ' que había elegido: cuando la fui a cargar '
+                    . 'ya tenía artículos o una factura, o era de otro día.';
             }
 
             return $frase;
@@ -1238,10 +1242,14 @@ class PropuestaCompraConFacturaIaHelper
             ? 'ya estaba cargada, con ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos')
             : 'ya estaba creada y sin artículos';
 
+        /*
+         * El comprobante va después de una coma y no entre paréntesis: la frase entera ya está adentro
+         * de un paréntesis y quedaban dos anidados (revisión independiente, 19/10/2026).
+         */
         if (is_array($otra_factura)) {
 
             $como_estaba .= ($articulos > 0 ? ', y' : ', pero') . ' ya tenía escaneada otra factura'
-                . (empty($otra_factura['comprobante']) ? '' : ' (' . $otra_factura['comprobante'] . ')');
+                . (empty($otra_factura['comprobante']) ? '' : ', la ' . $otra_factura['comprobante']);
         }
 
         if ($articulos > 0 || is_array($otra_factura)) {
