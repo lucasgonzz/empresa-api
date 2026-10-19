@@ -327,9 +327,16 @@ class RecordatorioCobroSenderService
      * @param  array     $clientes         Modelos Client (ya del dueño: lo garantiza el que llama).
      * @param  int       $dias             Umbral de antigüedad con el que el job recalcula las ventas.
      * @param  int|null  $sent_by_user_id  Persona que lo dispara (el job recorta las ventas con ella).
+     * @param  bool      $respetar_umbral_propio  true (el default: la pantalla no cambia) = el job
+     *                                     recalcula con el COALESCE del umbral propio de cada venta;
+     *                                     false = con los `$dias` tal cual. Lo manda en false el asistente
+     *                                     cuando el dueño dijo los días (misión
+     *                                     asistente-arreglos-segunda-prueba, 19/10/2026: en demo3 una venta
+     *                                     de 23 días con umbral propio de 30 quedaba afuera de "hace más
+     *                                     de 20 días"). Va al final y con default: ningún llamador cambia.
      * @return array  {lote_uuid, total_clientes, encolados, salteados: [{client_id, client_name, motivo, mensaje}]}
      */
-    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null)
+    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null, $respetar_umbral_propio = true)
     {
         $owner_id = (int) $owner_id;
 
@@ -392,7 +399,7 @@ class RecordatorioCobroSenderService
 
         // ---------- SEGUNDA PASADA: recién ahora se despacha ----------
         foreach ($a_encolar as $client_id) {
-            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid);
+            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid, (bool) $respetar_umbral_propio);
         }
 
         return [

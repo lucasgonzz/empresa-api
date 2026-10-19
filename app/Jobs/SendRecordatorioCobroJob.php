@@ -86,6 +86,22 @@ class SendRecordatorioCobroJob implements ShouldQueue
     protected $lote_uuid;
 
     /**
+     * Si las ventas se recalculan con el umbral propio de cada venta (el COALESCE de la pantalla) o con
+     * los `$dias` tal cual (misión asistente-arreglos-segunda-prueba, 19/10/2026: el asistente, cuando el
+     * dueño dijo los días, manda false; ver VentasSinCobrarHelper::query_de_ventas()).
+     *
+     * 🔴 EL DEFAULT VA EN LA DECLARACIÓN Y NO SOLO EN EL CONSTRUCTOR, Y NO ES UN DETALLE. Un job que ya
+     * estaba en la cola (`QUEUE_CONNECTION=database`) cuando se desplegó este cambio se deserializa SIN
+     * pasar por el constructor y sin esta propiedad en su payload: PHP le deja el valor de la
+     * declaración. Con `true` acá, ese job manda exactamente lo que mandaba antes (el COALESCE con el que
+     * se armó la pantalla o la tarjeta que lo encoló). Sin default sería null, y un null en esta
+     * bandera cambiaría en silencio qué ventas se le reclaman al cliente.
+     *
+     * @var bool
+     */
+    protected $respetar_umbral_propio = true;
+
+    /**
      * 🔴 Ids, no modelos. Serializar un `Client` o una lista de `Sale` metería en la cola un
      * estado congelado en el momento del POST, que es justo lo que este job NO tiene que usar.
      *
@@ -94,14 +110,17 @@ class SendRecordatorioCobroJob implements ShouldQueue
      * @param  int       $dias
      * @param  int|null  $sent_by_user_id
      * @param  string|null  $lote_uuid
+     * @param  bool      $respetar_umbral_propio  Ver la propiedad. Al final y con default: el
+     *                                            controller de la pantalla no lo manda y no cambia.
      */
-    public function __construct($owner_id, $client_id, $dias, $sent_by_user_id = null, $lote_uuid = null)
+    public function __construct($owner_id, $client_id, $dias, $sent_by_user_id = null, $lote_uuid = null, $respetar_umbral_propio = true)
     {
         $this->owner_id = (int) $owner_id;
         $this->client_id = (int) $client_id;
         $this->dias = (int) $dias;
         $this->sent_by_user_id = is_null($sent_by_user_id) ? null : (int) $sent_by_user_id;
         $this->lote_uuid = $lote_uuid;
+        $this->respetar_umbral_propio = (bool) $respetar_umbral_propio;
     }
 
     /**
@@ -151,7 +170,8 @@ class SendRecordatorioCobroJob implements ShouldQueue
 
             $client_name = $client->name;
 
-            $ventas = VentasSinCobrarHelper::query_de_ventas($this->owner_id, $this->employee_id_del_recorte(), $this->dias)
+            // Con el MISMO criterio de días que la tarjeta o la pantalla que lo encoló (ver la propiedad).
+            $ventas = VentasSinCobrarHelper::query_de_ventas($this->owner_id, $this->employee_id_del_recorte(), $this->dias, true, $this->respetar_umbral_propio !== false)
                 ->where('client_id', $this->client_id)
                 ->with('current_acount')
                 ->orderBy('created_at', 'ASC')
