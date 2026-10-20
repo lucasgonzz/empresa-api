@@ -275,6 +275,52 @@ class Promocion_de_varios_articulos_Test extends EmpresaTestCase
     }
 
     /**
+     * Segunda revisión del 19/10/2026: un mail argentino ("…@ferreteria.com.ar") no es un link y pasa; los
+     * acortadores y los links de perfiles ("bit.ly/…", "t.me/…", "linktr.ee/…", "goo.gl/…") y cualquier
+     * dominio con ruta frenan. El texto normal sigue pasando.
+     *
+     * @test
+     */
+    public function los_mails_pasan_y_los_acortadores_frenan()
+    {
+        $taladro = $this->articulo_de_la_tienda('ZZE Taladro 750W', 'zze-taladro-750w');
+        $this->cliente('Ana Gomez', '5493444101010');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo del taladro');
+
+        $frenan = [
+            'Escribinos por bit.ly/promo-ferre',
+            'Unite en t.me/ferreteria',
+            'Todo en linktr.ee/ferreteria',
+            'El catálogo en goo.gl/abc123',
+            'La promo en ofertas.xyz/semana',
+        ];
+
+        foreach ($frenan as $texto) {
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => $texto, 'article_ids' => [$taladro->id]]);
+
+            $this->assertTrue(empty($respuesta['ok']), 'Tenía que frenar: ' . $texto);
+            $this->assertSame(PropuestaPromocionWhatsappIaHelper::MENSAJE_TEXTO_CON_LINK, $respuesta['error'], $texto);
+        }
+
+        $pasan = [
+            'Consultas a ventas@ferreteria.com.ar',
+            'Escribí a info@hipermax.net.ar por el taladro',
+            'Llevá 2 x 1.5 L a $ 3.000',
+            'Taladro 750W a $ 22.000 hasta el 20.10',
+            'Precio final $ 1.234,56 (IVA incl.), 3/6 cuotas',
+        ];
+
+        foreach ($pasan as $texto) {
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => $texto, 'article_ids' => [$taladro->id]]);
+
+            $this->assertTrue(!empty($respuesta['ok']), 'No tenía que frenar: ' . $texto . ' → ' . json_encode($respuesta));
+        }
+    }
+
+    /**
      * Revisión del 19/10/2026: el renglón que sale es "<nombre>: <link>", así que un artículo renombrado
      * entre la tarjeta y el sí tampoco sale (mismo link, otro renglón).
      *
