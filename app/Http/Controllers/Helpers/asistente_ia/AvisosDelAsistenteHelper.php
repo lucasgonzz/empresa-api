@@ -252,17 +252,25 @@ class AvisosDelAsistenteHelper
 
             foreach (EnviosFallidosDelAsistenteHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
 
-                $texto = EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila);
-
                 /*
                  * 🔴 SE GUARDA LO QUE SE OFRECIÓ (revisión del 19/10/2026). El admin manda ESTE texto y
                  * recién después llama a avisos/avisado; si entre las dos cosas llega otro fallo de la
                  * misma tarjeta (el WhatsApp del mismo comprobante, por ejemplo), rearmar el texto al
                  * sellar dejaría en la conversación algo distinto de lo que el dueño recibió.
-                 * marcar_envio_fallido_avisado() usa éste. Se pisa en cada consulta: vale el último
-                 * ofrecido, que es el que manda la corrida del admin que lo trajo.
+                 * marcar_envio_fallido_avisado() usa éste.
+                 *
+                 * 🔴 VALE LO PRIMERO QUE SE OFRECIÓ (segunda revisión): `Cache::add`, que no pisa, y las
+                 * consultas siguientes ofrecen ese mismo texto. Con `put` cada consulta lo pisaba, y dos
+                 * corridas del admin que se superponen podían dejar guardado un texto distinto del que
+                 * mandó la que llegó a mandar. Así lo que se manda y lo que queda es siempre lo mismo.
                  */
-                Cache::put(self::CLAVE_TEXTO_OFRECIDO . (string) $fila->uuid, $texto, Carbon::now()->addHours(self::HORAS_DEL_AVISO * 2));
+                $clave_del_texto = self::CLAVE_TEXTO_OFRECIDO . (string) $fila->uuid;
+
+                Cache::add($clave_del_texto, EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila), Carbon::now()->addHours(self::HORAS_DEL_AVISO * 2));
+
+                $ofrecido = Cache::get($clave_del_texto);
+
+                $texto = is_string($ofrecido) && trim($ofrecido) !== '' ? $ofrecido : EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila);
 
                 $avisos[] = [
                     'id'                 => self::TIPO_ENVIO_FALLIDO . ':' . (string) $fila->uuid,

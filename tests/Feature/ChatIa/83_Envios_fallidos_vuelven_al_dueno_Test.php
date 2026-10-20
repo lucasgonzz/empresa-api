@@ -777,6 +777,50 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * Segunda revisión del 19/10/2026: vale lo PRIMERO que se ofreció. Si entre dos consultas del admin
+     * cambia lo que diría el aviso (el WhatsApp del mismo comprobante falla), la segunda ofrece el mismo
+     * texto que la primera y eso es lo que queda en la conversación.
+     *
+     * @test
+     */
+    public function vale_el_primer_texto_que_se_ofrecio()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list($conversation, $propuesta) = $this->mandar_el_presupuesto();
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $primera = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertStringContainsString('Por WhatsApp sí salió.', $primera[0]['texto']);
+
+        // Entre las dos consultas falla el WhatsApp del mismo presupuesto: rearmado, el aviso del mail cambiaría.
+        EnviosFallidosDelAsistenteHelper::registrar($propuesta['tarjeta_id'], AiEnvioFallido::CANAL_WHATSAPP, '5493444001122', 'Marcos Perez', 'WhatsApp no lo entregó');
+
+        $segunda = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $del_mail = null;
+
+        foreach ($segunda as $aviso) {
+            if ($aviso['id'] === $primera[0]['id']) {
+                $del_mail = $aviso;
+            }
+        }
+
+        $this->assertNotNull($del_mail);
+        $this->assertSame($primera[0]['texto'], $del_mail['texto'], 'La segunda consulta ofrece el mismo texto que la primera.');
+
+        $this->assertTrue(AvisosDelAsistenteHelper::marcar_avisado($this->dueno, $primera[0]['id']));
+
+        $this->assertSame(1, AiMessage::where('ai_conversation_id', $conversation->id)->where('contenido', $primera[0]['texto'])->count());
+    }
+
+    /**
      * 🔴 Revisión del 19/10/2026: los envíos van en dos etapas y sin transacción, así que si en la primera
      * confirmación no salió nada la tarjeta vuelve a "propuesta" y su fila queda. Al reconfirmar, el 550
      * del mismo turno tiene que volver a contarse como "NO salió", no como "queda saliendo".
