@@ -8,6 +8,8 @@ use App\Http\Controllers\Helpers\TwilioHelper;
 use App\Mail\Helpers\RechazosDeCorreoHelper;
 use App\Mail\PasswordReset;
 use App\Models\User;
+use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
@@ -25,16 +27,27 @@ use Illuminate\Support\Facades\Mail;
  *
  * Cómo funciona ahora (compatible con la SPA de hoy, que en el paso 3 ya manda `email` +
  * `verification_code` + `password`, en `Step3.vue`, con todo `register_user`):
- *   - `send-verification-code` genera un código de 6 dígitos con `random_int` y lo guarda en CACHÉ, como
- *     sha256 y con un contador de intentos, por 30 minutos. Cada pedido nuevo reemplaza al anterior.
+ *   - `send-verification-code` genera un código con `random_int` y lo guarda en CACHÉ, como sha256 y con
+ *     un contador de intentos, por 30 minutos. Cada pedido nuevo reemplaza al anterior. El largo del código
+ *     es OPT-IN del cliente: si el pedido trae `longitud_del_codigo = 4` el código es de 4 dígitos
+ *     (1000–9999); sin ese campo (la SPA vieja) sigue siendo de 6 dígitos como siempre.
+ *   - SOLO EL DUEÑO (`owner_id` null) puede recuperar su contraseña por acá (misión
+ *     recuperar-clave-codigo-4-digitos, 20/10/2026): la de un empleado la cambia el dueño desde el módulo
+ *     de empleados. Un correo de empleado en `send-verification-code` responde `email_send: false` +
+ *     `es_empleado: true` + `message`, sin emitir código ni mandar mail; en `check-verification-code` y
+ *     `update-password` un empleado es un usuario inexistente (las mismas respuestas genéricas).
  *   - `check-verification-code` lo compara SIN consumirlo (la SPA lo vuelve a mandar en el paso 3).
  *   - `update-password` exige el código: sin uno válido, 422 con forma de validación y no toca nada; con
  *     uno válido cambia la contraseña, BORRA el código (no se reusa) y loguea como siempre.
  *   - Cada código equivocado (en check o en update) suma un intento; al 5.º el código muere y hay que
- *     pedir otro. Con códigos de 6 dígitos (`random_int(100000, 999999)`: 900.000 combinaciones), sin
- *     esto se probaban todas sin límite.
+ *     pedir otro. Con códigos de 6 dígitos (900.000 combinaciones) y, más todavía, con los de 4 (9.000),
+ *     sin esto se probaban todas sin límite.
  *   - Y pedir otro tiene tope: CODIGOS_POR_HORA_MAXIMOS por usuario en una ventana fija de 60 minutos
- *     (ver puede_emitir_otro_codigo()). Sin ese tope, el de intentos no sirve de nada.
+ *     (ver puede_emitir_otro_codigo()). Sin ese tope, el de intentos no sirve de nada. Con 4 dígitos son
+ *     5 códigos × 5 intentos = 25 intentos por hora contra 9.000 combinaciones: estos dos topes son lo
+ *     ÚNICO que protege la cuenta, y NO se aflojan.
+ *   - Los dos topes se leen y se escriben bajo un CANDADO por usuario (con_candado_del_usuario()): sin él,
+ *     pedidos en paralelo leen el mismo contador y se prueban muchos más de 5 códigos por emisión.
  *
  * POR QUÉ EN CACHÉ Y NO EN `users.verification_code`: esa columna NO EXISTE en una instalación nueva (está
  * comentada en `2014_10_12_000000_create_users_table.php` desde 2023; solo `buyers` la tiene), así que en
@@ -62,22 +75,62 @@ class PasswordResetController extends Controller
     /** Ventana FIJA (desde el primer pedido, no se corre con cada uno) del tope de códigos emitidos. */
     const VENTANA_DE_PEDIDOS_EN_MINUTOS = 60;
 
+    /** Largo del código que se genera si el cliente NO lo pide (la SPA vieja, que nunca manda el campo). */
+    const LONGITUD_DEL_CODIGO_POR_DEFECTO = 6;
+
+    /** Único largo alternativo que el cliente puede pedir con `longitud_del_codigo` (la SPA nueva). */
+    const LONGITUD_DEL_CODIGO_CORTO = 4;
+
+    /** Segundos que vive el candado por usuario que serializa los pedidos y los intentos. */
+    const SEGUNDOS_DEL_CANDADO = 10;
+
+    /** Segundos que espera un pedido para conseguir el candado antes de rendirse. */
+    const SEGUNDOS_DE_ESPERA_DEL_CANDADO = 5;
+
     /** Largo mínimo de la contraseña nueva (la SPA exige más de 6: lo que manda siempre pasa). */
     const MINIMO_DE_LA_CONTRASENA = 6;
 
     function sendVerificationCode(Request $request) {
         $user = $this->usuario_del_pedido($request);
         if (is_null($user)) {
+            /*
+             * Si el correo es de un EMPLEADO no hay código ni mail: la recuperación es solo del dueño. 200 con
+             * `email_send: false` (la forma de siempre para "no se mandó nada": la SPA vieja muestra su toast
+             * fijo y no avanza) + `es_empleado` + `message` (la SPA nueva muestra el motivo verdadero).
+             */
+            if ($this->el_correo_es_de_un_empleado($request)) {
+                return response()->json([
+                    'email_send'  => false,
+                    'es_empleado' => true,
+                    'message'     => 'Este correo es de un empleado. Solo el dueño de la cuenta puede recuperar la contraseña desde acá: pedile al dueño que te la cambie desde el módulo de empleados.',
+                ], 200);
+            }
+
             return response()->json(['email_send' => false], 200);
         }
 
         /*
-         * Tope de códigos por hora (ver CODIGOS_POR_HORA_MAXIMOS). Pasado el tope NO se genera código, NO se
-         * manda mail y NO se toca el código pendiente (el último que se mandó sigue sirviendo). 422 con FORMA
-         * DE VALIDACIÓN (`message` + `errors`): el interceptor global de axios de la SPA
-         * (`show_laravel_validation_toast`) lo muestra como toast con el motivo, igual que el mail rechazado.
+         * Tope de códigos por hora (ver CODIGOS_POR_HORA_MAXIMOS) y emisión del código, TODO bajo el candado
+         * del usuario: leer el contador, decidir y escribirlo no puede intercalarse con otro pedido. Pasado el
+         * tope NO se genera código, NO se manda mail y NO se toca el código pendiente (el último que se mandó
+         * sigue sirviendo). 422 con FORMA DE VALIDACIÓN (`message` + `errors`): el interceptor global de axios
+         * de la SPA (`show_laravel_validation_toast`) lo muestra como toast con el motivo, igual que el mail
+         * rechazado.
          */
-        if (!$this->puede_emitir_otro_codigo($user)) {
+        $code = $this->con_candado_del_usuario($user, function () use ($user, $request) {
+            if (!$this->puede_emitir_otro_codigo($user)) {
+                return null;
+            }
+
+            // random_int y no rand(): es un secreto, tiene que salir de un generador criptográfico.
+            $nuevo_codigo = $this->generar_codigo($this->longitud_pedida($request));
+            $this->guardar_codigo($user, $nuevo_codigo);
+            $this->contar_codigo_emitido($user);
+
+            return $nuevo_codigo;
+        }, null);
+
+        if (is_null($code)) {
             return response()->json([
                 'email_send' => false,
                 'message'    => 'Demasiados pedidos de código',
@@ -86,11 +139,6 @@ class PasswordResetController extends Controller
                 ],
             ], 422);
         }
-
-        // random_int y no rand(): es un secreto, tiene que salir de un generador criptográfico.
-        $code = random_int(100000, 999999);
-        $this->guardar_codigo($user, $code);
-        $this->contar_codigo_emitido($user);
 
         try {
             Mail::to($user)->send(new PasswordReset($code));
@@ -177,21 +225,28 @@ class PasswordResetController extends Controller
         $user->password = bcrypt($request->password);
         $user->save();
 
-        if (Auth::attempt(['email' => $request->email, 'password' => $request->password], false)) {
-            return response()->json(['password_updated' => true], 200);
-        }
+        /*
+         * Loguea al dueño con la contraseña recién guardada (la SPA, al terminar, pide `auth/me` y entra al
+         * sistema). `owner_id => null` para que, si otro usuario (un empleado) compartiera el correo, el que
+         * se loguea sea el dueño al que se le cambió la contraseña. La contraseña YA está guardada: si por lo
+         * que fuera el login no prospera, igual se responde que se actualizó (antes la respuesta quedaba
+         * vacía) y la persona entra por el login con su clave nueva.
+         */
+        Auth::attempt(['email' => $user->email, 'password' => $request->password, 'owner_id' => null], false);
+
+        return response()->json(['password_updated' => true], 200);
     }
 
     /**
-     * El usuario del email del pedido, o null.
+     * El email del pedido como texto, o null si no vino o está vacío.
      *
      * Solo con un email de texto no vacío: con `email` ausente, `where('email', null)` se convierte en
      * `whereNull('email')` y devolvería cualquier usuario sin email (un empleado, por ejemplo).
      *
      * @param  \Illuminate\Http\Request  $request
-     * @return \App\Models\User|null
+     * @return string|null
      */
-    protected function usuario_del_pedido(Request $request)
+    protected function email_del_pedido(Request $request)
     {
         $email = $request->input('email');
 
@@ -199,7 +254,109 @@ class PasswordResetController extends Controller
             return null;
         }
 
-        return User::where('email', $email)->first();
+        return $email;
+    }
+
+    /**
+     * El DUEÑO del email del pedido, o null.
+     *
+     * Solo dueños (`owner_id` null): la contraseña de un empleado la cambia el dueño desde el módulo de
+     * empleados, nunca se recupera por mail. Un empleado es, para todo el flujo, un usuario que no existe.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \App\Models\User|null
+     */
+    protected function usuario_del_pedido(Request $request)
+    {
+        $email = $this->email_del_pedido($request);
+
+        if (is_null($email)) {
+            return null;
+        }
+
+        return User::where('email', $email)->whereNull('owner_id')->first();
+    }
+
+    /**
+     * ¿El email del pedido es de un empleado (y de ningún dueño)? Solo lo usa `send-verification-code`
+     * para decirle a la persona POR QUÉ no se le mandó nada; no se llama si el correo es de un dueño.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return bool
+     */
+    protected function el_correo_es_de_un_empleado(Request $request)
+    {
+        $email = $this->email_del_pedido($request);
+
+        if (is_null($email)) {
+            return false;
+        }
+
+        return User::where('email', $email)->whereNotNull('owner_id')->exists();
+    }
+
+    /**
+     * Cuántos dígitos tiene que tener el código de este pedido.
+     *
+     * OPT-IN: solo si el cliente manda `longitud_del_codigo` = 4 (la SPA nueva) el código es de 4 dígitos.
+     * Sin el campo, o con cualquier otro valor, es de LONGITUD_DEL_CODIGO_POR_DEFECTO (6): la SPA vieja
+     * sigue andando como siempre. Se compara como texto para que `4`, `"4"` y `"4 "` valgan lo mismo y
+     * `"4abc"` o un arreglo no.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int
+     */
+    protected function longitud_pedida(Request $request)
+    {
+        $pedida = $request->input('longitud_del_codigo');
+
+        if (is_scalar($pedida) && trim((string) $pedida) === (string) self::LONGITUD_DEL_CODIGO_CORTO) {
+            return self::LONGITUD_DEL_CODIGO_CORTO;
+        }
+
+        return self::LONGITUD_DEL_CODIGO_POR_DEFECTO;
+    }
+
+    /**
+     * Genera un código numérico de `$longitud` dígitos que NO empieza en 0 (4 dígitos: 1000–9999; 6
+     * dígitos: 100000–999999), con un generador criptográfico.
+     *
+     * @param  int  $longitud
+     * @return string
+     */
+    protected function generar_codigo($longitud)
+    {
+        return (string) random_int(10 ** ($longitud - 1), (10 ** $longitud) - 1);
+    }
+
+    /**
+     * Corre `$accion` con un candado de caché exclusivo de este usuario y devuelve lo que ella devuelva.
+     *
+     * 🔴 POR QUÉ: los topes (5 intentos por código, 5 códigos por hora) se leen, se deciden y se
+     * reescriben en la caché. Sin candado, pedidos en paralelo leen el mismo contador y todos lo ven en 0:
+     * se probarían cientos de códigos por emisión, y con 4 dígitos (9.000 combinaciones) eso es adivinar la
+     * clave. Con el candado cada pedido ve el contador que dejó el anterior.
+     *
+     * Si no consigue el candado en SEGUNDOS_DE_ESPERA_DEL_CANDADO devuelve `$si_no_hay_candado` (falla
+     * cerrado: el pedido no se da por bueno). Si la caché del entorno no sabe de candados, corre sin él.
+     *
+     * @param  \App\Models\User  $user
+     * @param  callable  $accion
+     * @param  mixed  $si_no_hay_candado
+     * @return mixed
+     */
+    protected function con_candado_del_usuario(User $user, callable $accion, $si_no_hay_candado)
+    {
+        if (!(Cache::getStore() instanceof LockProvider)) {
+            return $accion();
+        }
+
+        try {
+            return Cache::lock('password_reset_candado:' . $user->id, self::SEGUNDOS_DEL_CANDADO)
+                ->block(self::SEGUNDOS_DE_ESPERA_DEL_CANDADO, $accion);
+        } catch (LockTimeoutException $e) {
+            return $si_no_hay_candado;
+        }
     }
 
     /**
@@ -332,6 +489,21 @@ class PasswordResetController extends Controller
      * @return bool
      */
     protected function codigo_valido(User $user, $codigo)
+    {
+        return $this->con_candado_del_usuario($user, function () use ($user, $codigo) {
+            return $this->comparar_codigo_pendiente($user, $codigo);
+        }, false);
+    }
+
+    /**
+     * El cuerpo de codigo_valido(), que corre bajo el candado del usuario (ver con_candado_del_usuario()):
+     * lee el código pendiente, lo compara y, si no coincide, suma el intento o lo borra.
+     *
+     * @param  \App\Models\User  $user
+     * @param  mixed  $codigo
+     * @return bool
+     */
+    protected function comparar_codigo_pendiente(User $user, $codigo)
     {
         $clave = $this->clave_de_cache($user);
         $pendiente = Cache::get($clave);
