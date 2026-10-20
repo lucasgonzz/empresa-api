@@ -84,7 +84,8 @@ class VentasSinCobrarHelper {
 	 * Es la query que vivia dentro de `SaleController::ventas_sin_cobrar()`: mismo `whereHas` sobre
 	 * `current_acount` y mismo `whereRaw` con el
 	 * `COALESCE(sales.dias_alerta_venta_no_cobrada_personalizado, ?)`, que hace que el umbral
-	 * propio de una venta le gane siempre al umbral general.
+	 * propio de una venta le gane siempre al umbral general. (Salvo que el que llama pida
+	 * `$respetar_umbral_propio = false`: lo hace el asistente cuando la persona dijo los dias, ver abajo.)
 	 *
 	 * Devuelve el Builder sin ejecutar, para que cada caller le agregue lo suyo (el `with()`, el
 	 * `orderBy()`, un `where('client_id', ...)` encima) sin que el recorte se reescriba dos veces.
@@ -125,9 +126,31 @@ class VentasSinCobrarHelper {
 	 *                              todo lo que el cliente debe, y una venta con su propio umbral de
 	 *                              alerta todavia sin cumplir sigue siendo plata que debe. Por defecto
 	 *                              true: los demas llamadores no cambian.
+	 * @param bool     $respetar_umbral_propio  Solo cuenta con `$con_umbral = true`. true (el default, y lo
+	 *                              que usan la pantalla y la alerta automatica) = el `COALESCE` de
+	 *                              siempre: el umbral propio de la venta le gana al general. false = SOLO
+	 *                              el `$dias` que vino, sin mirar el umbral propio de ninguna venta:
+	 *                              `DATE(sales.created_at) <= DATE_SUB(CURDATE(), INTERVAL ? DAY)`.
+	 *
+	 *                              🔴 POR QUE EXISTE (mision asistente-arreglos-segunda-prueba, 19/10/2026).
+	 *                              En la segunda prueba por WhatsApp contra demo3 el dueno pidio "los que
+	 *                              me deben hace mas de 20 dias" y el asistente dejo afuera una venta de 23
+	 *                              dias: toda venta a cuenta corriente sembrada en demo3 tiene
+	 *                              `dias_alerta_venta_no_cobrada_personalizado = 30` (SemillaHelper), y el
+	 *                              COALESCE la media contra 30 y no contra los 20 que dijo el dueno. Los
+	 *                              dias que pide una persona en el chat son SU pregunta, no la alerta: por
+	 *                              eso el asistente, cuando la persona dijo dias, llama con false. La
+	 *                              pantalla "Ventas sin cobrar" y la alerta automatica no cambian (las
+	 *                              cuida Alertas/1_Ventas_sin_cobrar_dias_Test).
+	 *
+	 *                              Y con false y `$dias = 0` (la persona no dijo dias) NO hay ningun umbral:
+	 *                              toda la deuda viva, igual que con `$con_umbral = false` (revision del
+	 *                              19/10/2026: "cuanto me deben?" no puede dar menos que la suma de "que me
+	 *                              debe X?" de cada cliente). Asi el asistente usa la MISMA llamada en la
+	 *                              consulta, en la tarjeta del recordatorio y en el job que la recalcula.
 	 * @return \Illuminate\Database\Eloquent\Builder
 	 */
-	static function query_de_ventas($owner_id, $employee_id, $dias, $con_umbral = true) {
+	static function query_de_ventas($owner_id, $employee_id, $dias, $con_umbral = true, $respetar_umbral_propio = true) {
 
 		$sales = Sale::where('user_id', $owner_id)
 						->soloVentasReales()
@@ -142,10 +165,17 @@ class VentasSinCobrarHelper {
 						// })
 						;
 
-		if ($con_umbral) {
+		if ($con_umbral && $respetar_umbral_propio) {
 			$sales = $sales->whereRaw(
 				'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
 				[$dias]
+			);
+		} elseif ($con_umbral && (int) $dias > 0) {
+			// Los dias que pidio la persona, tal cual: el umbral propio de la venta no entra (ver el docblock).
+			// Con 0 dias y sin el umbral propio no queda ningun umbral: toda la deuda viva (sin whereRaw).
+			$sales = $sales->whereRaw(
+				'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL ? DAY)',
+				[(int) $dias]
 			);
 		}
 

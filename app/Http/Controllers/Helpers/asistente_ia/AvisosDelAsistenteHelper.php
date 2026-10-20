@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\ProviderOrderScanController;
 use App\Models\AiConversation;
+use App\Models\AiEnvioFallido;
 use App\Models\AiMessage;
 use App\Models\ProviderOrderScan;
 use App\Models\User;
@@ -35,15 +36,28 @@ use Illuminate\Support\Facades\DB;
  *
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/avisos-pendientes?spa_url=   → 200 {avisos:[{id, tipo, ai_conversation_id, texto, ruta, url|null}]}
- *        (`id` = "escaneo_factura:{uuid}")
+ *        (`id` = "escaneo_factura:{uuid}" o "envio_fallido:{uuid}")
  *   POST admin-sync/asistente/avisos/avisado {id, url?, whatsapp_message_id?} → 200 {ok:true} · 404
+ *
+ * 🔴 SEGUNDO TIPO DESDE EL 19/10/2026: `envio_fallido` (misión asistente-arreglos-segunda-prueba, N3).
+ * Un envío a clientes del asistente (comprobante, recordatorios, promo) que falló DESPUÉS del sí del
+ * dueño —el mail que murió en el worker, el 550, el WhatsApp que Meta rechazó, el recordatorio que Kapso
+ * no confirmó— vuelve al dueño por este mismo canal (EnviosFallidosDelAsistenteHelper). La forma del
+ * contrato NO cambia: mismo GET, mismo POST, y el aviso nuevo viaja con `ruta: ""` y `url: null` (no hay
+ * pantalla que abrir). El admin manda `texto` tal cual sin mirar el tipo y, sin `url` ni `ruta`, sale sin
+ * link (verificado en admin-api `AsistenteAvisosService::link_del_aviso()` y `traer_avisos()` de master);
+ * su `marcar_avisado()` da por cerrado un 404 y un 200. Un admin viejo recibe el tipo nuevo igual: no lo
+ * mira. Un empresa viejo no tiene filas nuevas.
  *
  * PHP 7.4: sin match, sin nullsafe, sin str_contains.
  */
 class AvisosDelAsistenteHelper
 {
-    /** El único tipo de aviso que existe hoy. El `id` del contrato es "{tipo}:{id de la fila}". */
+    /** El aviso del escaneo de una factura. El `id` del contrato es "{tipo}:{uuid}". */
     const TIPO_ESCANEO_FACTURA = 'escaneo_factura';
+
+    /** El aviso de un envío a clientes que falló después del sí (`ai_envios_fallidos`, N3 del 19/10/2026). */
+    const TIPO_ENVIO_FALLIDO = 'envio_fallido';
 
     /** Cuánto dura el anuncio del admin ("yo consulto los avisos" y su spa_url): 30 días. */
     const DIAS_DEL_ANUNCIO = 30;
@@ -61,6 +75,9 @@ class AvisosDelAsistenteHelper
     /** Claves del caché del anuncio del admin, por dueño. */
     const CLAVE_ADMIN_AVISA = 'asistente_ia:admin_avisa:';
     const CLAVE_SPA_URL     = 'asistente_ia:spa_url:';
+
+    /** El texto que se le ofreció al admin para un aviso de envío fallido, por uuid (ver pendientes()). */
+    const CLAVE_TEXTO_OFRECIDO = 'asistente_ia:envio_fallido_ofrecido:';
 
     /**
      * Guarda lo que el admin anunció en el POST de mensajes: si consulta los avisos y la URL del SPA
@@ -195,7 +212,13 @@ class AvisosDelAsistenteHelper
                                     ->limit(self::TOPE_AVISOS)
                                     ->get();
 
+        /*
+         * Los avisos de los dos tipos van en UNA lista, del más viejo al más nuevo y con el mismo tope.
+         * `$orden` lleva, en paralelo, con qué se ordena cada uno (cuándo nació la fila, el tipo y su id):
+         * el aviso en sí no cambia de forma (el admin lo lee con las mismas seis claves de siempre).
+         */
         $avisos = [];
+        $orden = [];
 
         foreach ($scans as $scan) {
 
@@ -216,9 +239,89 @@ class AvisosDelAsistenteHelper
                 'ruta'               => $ruta,
                 'url'                => is_null($base) ? null : $base . $ruta,
             ];
+
+            $orden[] = [self::momento($scan->created_at), 0, (int) $scan->id];
         }
 
-        return $avisos;
+        /*
+         * 🔴 LOS ENVÍOS A CLIENTES QUE FALLARON DESPUÉS DEL SÍ (N3, 19/10/2026). Sin link (`ruta` vacía y
+         * `url` null: no hay pantalla que abrir, el aviso es el texto). Por uuid, por lo mismo que el
+         * escaneo. Si la tabla todavía no existe (un upgrade a medio correr), no rompe los escaneos.
+         */
+        try {
+
+            foreach (EnviosFallidosDelAsistenteHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
+
+                /*
+                 * 🔴 SE GUARDA LO QUE SE OFRECIÓ (revisión del 19/10/2026). El admin manda ESTE texto y
+                 * recién después llama a avisos/avisado; si entre las dos cosas llega otro fallo de la
+                 * misma tarjeta (el WhatsApp del mismo comprobante, por ejemplo), rearmar el texto al
+                 * sellar dejaría en la conversación algo distinto de lo que el dueño recibió.
+                 * marcar_envio_fallido_avisado() usa éste.
+                 *
+                 * 🔴 VALE LO PRIMERO QUE SE OFRECIÓ (segunda revisión): `Cache::add`, que no pisa, y las
+                 * consultas siguientes ofrecen ese mismo texto. Con `put` cada consulta lo pisaba, y dos
+                 * corridas del admin que se superponen podían dejar guardado un texto distinto del que
+                 * mandó la que llegó a mandar. Así lo que se manda y lo que queda es siempre lo mismo.
+                 */
+                $clave_del_texto = self::CLAVE_TEXTO_OFRECIDO . (string) $fila->uuid;
+
+                Cache::add($clave_del_texto, EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila), Carbon::now()->addHours(self::HORAS_DEL_AVISO * 2));
+
+                $ofrecido = Cache::get($clave_del_texto);
+
+                $texto = is_string($ofrecido) && trim($ofrecido) !== '' ? $ofrecido : EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila);
+
+                $avisos[] = [
+                    'id'                 => self::TIPO_ENVIO_FALLIDO . ':' . (string) $fila->uuid,
+                    'tipo'               => self::TIPO_ENVIO_FALLIDO,
+                    'ai_conversation_id' => empty($fila->ai_conversation_id) ? null : (int) $fila->ai_conversation_id,
+                    'texto'              => $texto,
+                    'ruta'               => '',
+                    'url'                => null,
+                ];
+
+                $orden[] = [self::momento($fila->created_at), 1, (int) $fila->id];
+            }
+
+        } catch (\Throwable $e) {
+            // Sin la tabla de envíos fallidos, siguen saliendo los avisos de los escaneos.
+        }
+
+        if (count($orden) > 1) {
+
+            $posiciones = array_keys($avisos);
+
+            usort($posiciones, function ($a, $b) use ($orden) {
+                return $orden[$a] <=> $orden[$b];
+            });
+
+            $ordenados = [];
+
+            foreach ($posiciones as $posicion) {
+                $ordenados[] = $avisos[$posicion];
+            }
+
+            $avisos = $ordenados;
+        }
+
+        return array_slice($avisos, 0, self::TOPE_AVISOS);
+    }
+
+    /**
+     * El momento de una fila en segundos, para ordenar avisos de tablas distintas.
+     *
+     * @param  mixed  $fecha
+     * @return int
+     */
+    protected static function momento($fecha)
+    {
+        if (empty($fecha)) {
+
+            return 0;
+        }
+
+        return Carbon::parse($fecha)->getTimestamp();
     }
 
     /**
@@ -230,14 +333,26 @@ class AvisosDelAsistenteHelper
      * escaneo se bloquea y el sello se mira adentro de la transacción, así que dos llamadas casi
      * juntas (un reintento del admin) no dejan dos mensajes.
      *
+     * 🔴 DESPACHA POR TIPO (desde el 19/10/2026, N3): el prefijo del `id` dice de qué tabla es el aviso.
+     * Hasta acá todo lo que no fuera `escaneo_factura:` daba 404; un `envio_fallido:{uuid}` ahora sella
+     * su fila de `ai_envios_fallidos` y deja el aviso en su conversación, con las mismas garantías (dentro
+     * del dueño, una sola vez, idempotente).
+     *
      * @param  \App\Models\User  $dueno
-     * @param  mixed  $id  El `id` del contrato ("escaneo_factura:{uuid}").
+     * @param  mixed  $id  El `id` del contrato ("escaneo_factura:{uuid}" o "envio_fallido:{uuid}").
      * @param  mixed  $url  El link que salió en el WhatsApp, o null.
      * @param  mixed  $whatsapp_message_id  El wamid del WhatsApp que salió, o null.
      * @return bool  false si el aviso no existe o no es de este dueño (el 404 del contrato).
      */
     public static function marcar_avisado(User $dueno, $id, $url = null, $whatsapp_message_id = null): bool
     {
+        $uuid_de_envio = self::uuid_del_tipo($id, self::TIPO_ENVIO_FALLIDO);
+
+        if (!is_null($uuid_de_envio)) {
+
+            return self::marcar_envio_fallido_avisado($dueno, $uuid_de_envio, self::url_segura($url), $whatsapp_message_id);
+        }
+
         $uuid = self::uuid_de_escaneo($id);
 
         if (is_null($uuid)) {
@@ -274,7 +389,61 @@ class AvisosDelAsistenteHelper
             $scan->avisado_por_whatsapp_at = Carbon::now();
             $scan->save();
 
-            self::dejar_en_la_conversacion($dueno, $scan, $url, $whatsapp_message_id);
+            self::dejar_en_la_conversacion($dueno, $scan->ai_conversation_id, self::texto_del_aviso($scan), $url, $whatsapp_message_id);
+
+            return true;
+        });
+    }
+
+    /**
+     * Sella el aviso de un envío que falló y lo deja en su conversación como un mensaje del asistente
+     * (para que «¿y a quién no le llegó?» tenga contexto). Mismas garantías que el del escaneo: dentro
+     * del dueño, la fila bloqueada y el sello mirado adentro de la transacción (un reintento del admin no
+     * deja dos mensajes), idempotente.
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  string  $uuid
+     * @param  string|null  $url  Este aviso no lleva link; si el admin mandara uno, pasa por url_segura().
+     * @param  mixed  $whatsapp_message_id
+     * @return bool  false si no existe, no es de este dueño o no pidió aviso (el 404 del contrato).
+     */
+    protected static function marcar_envio_fallido_avisado(User $dueno, $uuid, $url, $whatsapp_message_id): bool
+    {
+        return DB::transaction(function () use ($dueno, $uuid, $url, $whatsapp_message_id) {
+
+            $fila = AiEnvioFallido::where('owner_id', (int) $dueno->id)
+                                    ->where('uuid', $uuid)
+                                    ->where('avisar_por_whatsapp', 1)
+                                    ->lockForUpdate()
+                                    ->first();
+
+            if (is_null($fila)) {
+
+                return false;
+            }
+
+            if (!is_null($fila->avisado_por_whatsapp_at)) {
+
+                return true;
+            }
+
+            $fila->avisado_por_whatsapp_at = Carbon::now();
+            $fila->save();
+
+            /*
+             * El texto que queda en la conversación es el que SE OFRECIÓ (y el admin mandó), no uno
+             * rearmado con lo que pasó después del GET. Sin el ofrecido en el caché (venció, o el admin
+             * marcó sin haber consultado), se arma de nuevo, que es lo mejor que se sabe.
+             */
+            $clave = self::CLAVE_TEXTO_OFRECIDO . (string) $fila->uuid;
+
+            $ofrecido = Cache::get($clave);
+
+            $texto = is_string($ofrecido) && trim($ofrecido) !== '' ? $ofrecido : EnviosFallidosDelAsistenteHelper::texto_del_aviso($fila);
+
+            self::dejar_en_la_conversacion($dueno, $fila->ai_conversation_id, $texto, $url, $whatsapp_message_id);
+
+            Cache::forget($clave);
 
             return true;
         });
@@ -463,20 +632,24 @@ class AvisosDelAsistenteHelper
      * de WhatsApp, para que una respuesta SIN cita también caiga ahí (AsistenteCanalHelper corta por
      * `last_message_at`). Sin conversación (borrada desde el sistema) el sello igual queda.
      *
+     * Generalizado el 19/10/2026 (N3): recibe la conversación y el texto, así sirve para el aviso del
+     * escaneo y para el de un envío que falló.
+     *
      * @param  \App\Models\User  $dueno
-     * @param  \App\Models\ProviderOrderScan  $scan
+     * @param  int|null  $ai_conversation_id
+     * @param  string  $contenido  El texto del aviso, sin el link.
      * @param  mixed  $url
      * @param  mixed  $whatsapp_message_id
      * @return void
      */
-    protected static function dejar_en_la_conversacion(User $dueno, ProviderOrderScan $scan, $url, $whatsapp_message_id)
+    protected static function dejar_en_la_conversacion(User $dueno, $ai_conversation_id, $contenido, $url, $whatsapp_message_id)
     {
-        if (is_null($scan->ai_conversation_id)) {
+        if (empty($ai_conversation_id)) {
 
             return;
         }
 
-        $conversacion = AiConversation::where('id', (int) $scan->ai_conversation_id)
+        $conversacion = AiConversation::where('id', (int) $ai_conversation_id)
                                         ->where('user_id', (int) $dueno->id)
                                         ->first();
 
@@ -485,7 +658,7 @@ class AvisosDelAsistenteHelper
             return;
         }
 
-        $contenido = self::texto_del_aviso($scan);
+        $contenido = (string) $contenido;
 
         $url = trim((string) $url);
 
@@ -519,9 +692,23 @@ class AvisosDelAsistenteHelper
      */
     protected static function uuid_de_escaneo($id)
     {
+        return self::uuid_del_tipo($id, self::TIPO_ESCANEO_FACTURA);
+    }
+
+    /**
+     * El uuid de un aviso de un tipo a partir del `id` del contrato ("{tipo}:{uuid}"), o null si el id
+     * no es de ese tipo o no tiene forma de uuid. Es la regla de uuid_de_escaneo() para cualquier tipo
+     * (19/10/2026, N3: el segundo es `envio_fallido`).
+     *
+     * @param  mixed  $id
+     * @param  string  $tipo
+     * @return string|null
+     */
+    protected static function uuid_del_tipo($id, $tipo)
+    {
         $id = trim((string) $id);
 
-        $prefijo = self::TIPO_ESCANEO_FACTURA . ':';
+        $prefijo = $tipo . ':';
 
         if (strpos($id, $prefijo) !== 0) {
 
@@ -530,7 +717,7 @@ class AvisosDelAsistenteHelper
 
         $uuid = substr($id, strlen($prefijo));
 
-        /* Los uuid de ProviderOrderScanAltaHelper (Str::uuid): hex y guiones, 64 como mucho (la columna). */
+        /* Los uuid de Str::uuid(): hex y guiones, 64 como mucho (la columna más larga de las dos). */
         if (!is_string($uuid) || !preg_match('/^[A-Za-z0-9\-]{1,64}$/', $uuid)) {
 
             return null;

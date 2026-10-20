@@ -327,9 +327,19 @@ class RecordatorioCobroSenderService
      * @param  array     $clientes         Modelos Client (ya del dueño: lo garantiza el que llama).
      * @param  int       $dias             Umbral de antigüedad con el que el job recalcula las ventas.
      * @param  int|null  $sent_by_user_id  Persona que lo dispara (el job recorta las ventas con ella).
+     * @param  bool      $respetar_umbral_propio  true (el default: la pantalla no cambia) = el job
+     *                                     recalcula con el COALESCE del umbral propio de cada venta;
+     *                                     false = con los `$dias` tal cual. Lo manda en false el asistente
+     *                                     cuando el dueño dijo los días (misión
+     *                                     asistente-arreglos-segunda-prueba, 19/10/2026: en demo3 una venta
+     *                                     de 23 días con umbral propio de 30 quedaba afuera de "hace más
+     *                                     de 20 días"). Va al final y con default: ningún llamador cambia.
+     * @param  int|null  $ai_message_action_id  La tarjeta del asistente que encola el lote (N3 de la
+     *                                     misma misión): viaja a cada job para que un recordatorio que no
+     *                                     sale vuelva al dueño. null = la pantalla, que no cambia.
      * @return array  {lote_uuid, total_clientes, encolados, salteados: [{client_id, client_name, motivo, mensaje}]}
      */
-    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null)
+    public function encolar_lote($owner_id, array $clientes, $dias, $sent_by_user_id = null, $respetar_umbral_propio = true, $ai_message_action_id = null)
     {
         $owner_id = (int) $owner_id;
 
@@ -392,7 +402,7 @@ class RecordatorioCobroSenderService
 
         // ---------- SEGUNDA PASADA: recién ahora se despacha ----------
         foreach ($a_encolar as $client_id) {
-            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid);
+            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid, (bool) $respetar_umbral_propio, $ai_message_action_id);
         }
 
         return [
@@ -670,11 +680,13 @@ class RecordatorioCobroSenderService
         // Mismo orden que declara `WhatsappTemplateStandardHelper` para `cc_cli_recordatorio_cobro`:
         // [Nombre, Negocio, Cantidad de ventas, Montos pendientes].
         //
-        // 🔴 LA VARIABLE {{3}} LLEVA EL SUSTANTIVO ADENTRO ("1 venta" / "7 ventas") y el body dice
-        // "Tenés {{3}} pendientes de pago". El singular no se puede resolver desde el body de una
-        // plantilla de Meta —es texto fijo—, así que si {{3}} fuera sólo el número, un cliente con
-        // una sola venta leería "Tenés 1 ventas pendientes de pago". El camino de texto libre ya
-        // conjuga bien (`body_texto_libre()`); esto lo empareja.
+        // 🔴 LA VARIABLE {{3}} LLEVA EL SUSTANTIVO ADENTRO ("7 ventas") y el body APROBADO EN META
+        // dice "Tenés {{3}} pendientes de pago": el "pendientes" es texto fijo y está en plural. El
+        // singular no se puede resolver desde el body (no se toca: cambiarlo obliga a otra revisión
+        // de Meta), así que con UNA sola venta {{3}} es una frase cuyo sustantivo es plural:
+        // "1 venta con saldos" → "Tenés 1 venta con saldos pendientes de pago". Ver
+        // `cantidad_de_ventas_en_palabras()`. El camino de texto libre ya conjuga bien
+        // (`body_texto_libre()`); esto lo empareja.
         $variables = [$nombre_cliente, $nombre_negocio, $this->cantidad_de_ventas_en_palabras($total_ventas), $etiqueta_totales];
 
         $template = $this->plantilla_aprobada($owner_id);
@@ -1272,15 +1284,21 @@ class RecordatorioCobroSenderService
     }
 
     /**
-     * "1 venta" / "7 ventas", para que la variable `{{3}}` de la plantilla lleve el sustantivo
-     * conjugado y el body de Meta pueda ser texto fijo.
+     * La variable `{{3}}` de la plantilla, que tiene que concordar con el "pendientes" FIJO del body
+     * aprobado en Meta ("Tenés {{3}} pendientes de pago por un total de {{4}}").
+     *
+     * 🔴 EL CASO REAL (segunda prueba por WhatsApp contra demo3, 19/10/2026): un cliente con una sola
+     * venta recibió "Tenés 1 venta pendientes de pago". Con "1 venta" el plural del body queda colgado;
+     * el body no se puede tocar (está aprobado en Meta y cambiarlo es otra revisión), así que el
+     * singular se arregla acá: "1 venta con saldos" → "Tenés 1 venta con saldos pendientes de pago".
+     * Con dos o más, "7 ventas" → "Tenés 7 ventas pendientes de pago", igual que siempre.
      *
      * @param  int  $total_ventas
      * @return string
      */
     private function cantidad_de_ventas_en_palabras($total_ventas)
     {
-        return ((int) $total_ventas === 1) ? '1 venta' : (int) $total_ventas.' ventas';
+        return ((int) $total_ventas === 1) ? '1 venta con saldos' : (int) $total_ventas.' ventas';
     }
 
     /**

@@ -19,11 +19,20 @@ use Illuminate\Support\Facades\DB;
  * `ResumenDeVentasIaHelper`, y se tapa igual: una consulta que devuelve el total del negocio y el
  * ranking, no una página de filas para que el modelo sume a mano.
  *
- * 🔴 EL CONJUNTO ES EL DE LA PANTALLA "VENTAS SIN COBRAR", y sale de
- * `VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias)` — la MISMA query que usan
- * el listado de la pantalla y el recordatorio de cobro por WhatsApp. No se reescribe acá: una segunda
- * definición de "venta impaga" es el camino más corto a que la pantalla y el chat le den dos
- * números distintos al mismo comerciante.
+ * 🔴 LA DEUDA ES LA DE LA PANTALLA "VENTAS SIN COBRAR", y sale de
+ * `VentasSinCobrarHelper::query_de_ventas()` — la MISMA query (la misma condición de deuda, el mismo
+ * scope de ventas reales) que usan el listado de la pantalla y el recordatorio de cobro por WhatsApp.
+ * No se reescribe acá: una segunda definición de "venta impaga" es el camino más corto a que la
+ * pantalla y el chat le den dos números distintos al mismo comerciante.
+ *
+ * 🔴 LO ÚNICO QUE NO SE ESPEJA, A PROPÓSITO: EL UMBRAL PROPIO DE CADA VENTA (misión
+ * asistente-arreglos-segunda-prueba, 19/10/2026). La pantalla aplica
+ * `COALESCE(dias_alerta_venta_no_cobrada_personalizado, dias)`, que es la ALERTA de la venta ("avisame a
+ * los 30 días"), no si se debe. En el asistente la pregunta es de la persona: con días dichos cuentan
+ * esos días tal cual, y sin días ("¿cuánto me deben?") es TODA la deuda viva. Con el COALESCE, en demo3
+ * una venta de 23 días con umbral propio 30 quedaba afuera de "hace más de 20 días" y de "¿cuánto me
+ * deben?" mientras "¿qué me debe X?" (consultar_ventas_impagas_de_un_cliente) sí la traía: el asistente
+ * se contradecía en la misma conversación. Ver respetar_umbral_propio().
  *
  * 🔴 DE QUÉ UNIVERSO HABLA, PORQUE NO ES OBVIO Y EL MODELO LO IBA A INVENTAR. Acá adentro solo hay
  * ventas que generaron CUENTA CORRIENTE y todavía tienen deuda. Una venta de mostrador en efectivo
@@ -32,10 +41,10 @@ use Illuminate\Support\Facades\DB;
  * cobradas": el complemento de este conjunto son "las que no deben nada", que es otra cosa. La
  * descripción de la tool lo dice con todas las letras.
  *
- * ⚠️ El `dias` es el umbral de antigüedad de la query compartida, y `COALESCE` con el umbral propio
- * de cada venta (`sales.dias_alerta_venta_no_cobrada_personalizado`) hace que el de la venta gane
- * siempre. Con `dias = 0` es "todas", salvo las que tengan su propio umbral cargado y todavía no lo
- * cumplan. Si el modelo no manda ninguno, es 0: todas (ver el porqué en `umbral_de_dias()`).
+ * ⚠️ El `dias` es el umbral de antigüedad de la query compartida, siempre sin el umbral propio de cada
+ * venta (`sales.dias_alerta_venta_no_cobrada_personalizado`, ver arriba): con `dias > 0` esos días tal
+ * cual; con `dias = 0` TODAS, incluida la de hoy. Si el modelo no manda ninguno, es 0: todas (ver el
+ * porqué en `umbral_de_dias()`).
  *
  * 🔴 Y ESPEJAR LA PANTALLA ES TAMBIÉN ESPEJAR A QUIÉN LE MUESTRA QUÉ. La pantalla calcula
  * `$ver_solo_las_ventas_suyas = true` por defecto y solo lo apaga para el dueño o para quien tenga
@@ -76,7 +85,8 @@ class VentasSinCobrarIaHelper
 
         $dias = self::umbral_de_dias($dias, $persona, $owner);
 
-        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias);
+        // Los días que dijo la persona son su pregunta: el umbral propio de la venta no entra (N1, 19/10/2026).
+        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias, true, self::respetar_umbral_propio($dias));
 
         $filas = self::deuda_agrupada_por_cliente($base);
 
@@ -146,7 +156,7 @@ class VentasSinCobrarIaHelper
         }
 
         $respuesta = [
-            'criterio' => 'Las ventas que todavia tienen deuda en la cuenta corriente del cliente: el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema. Una venta de mostrador en efectivo no esta aca porque no genero deuda, no porque exista un dato que diga que se cobro.',
+            'criterio' => 'Las ventas que todavia tienen deuda en la cuenta corriente del cliente: la misma deuda que la pantalla "Ventas sin cobrar" del sistema, sin el aviso de alerta propio de cada venta (con dias, esos dias tal cual; sin dias, todas). Una venta de mostrador en efectivo no esta aca porque no genero deuda, no porque exista un dato que diga que se cobro.',
             // Que el modelo sepa si esta mirando todo el negocio o solo lo de quien le escribe: sin
             // esto presentaria el numero recortado como el total, que es mentirle al que pregunta.
             'alcance'                                => is_null($employee_id)
@@ -206,11 +216,16 @@ class VentasSinCobrarIaHelper
      * @param  int|null  $dias  Ver ventas_sin_cobrar(): null = 0 = todas.
      * @param  \App\Models\User|null  $persona  Quien le escribe al asistente (el recorte sale de ella).
      * @param  float|null  $monto_minimo  Deuda TOTAL mínima.
+     * @param  bool|null  $respetar_umbral_propio  null (el default) = lo que decide
+     *                    `respetar_umbral_propio($dias)`: con días dichos, los días tal cual. Un bool lo
+     *                    fuerza: lo usa la confirmación de una tarjeta de recordatorios, que manda lo que
+     *                    la tarjeta guardó (una tarjeta de antes de este cambio no lo guardó y confirma
+     *                    con true, el `COALESCE` con el que se armó lo que el dueño vio).
      * @return array{dias: int, clientes: array<int, array<string, mixed>>}  Los clientes, de mayor a
      *         menor deuda total, con `cliente_id`, `cliente` (nombre), `deuda_total_en_pesos`,
      *         `deuda_atrasada_en_pesos` y `dias_de_la_venta_mas_vieja`; y el `dias` que se aplicó.
      */
-    public static function clientes_deudores(int $owner_id, $dias = null, $persona = null, $monto_minimo = null): array
+    public static function clientes_deudores(int $owner_id, $dias = null, $persona = null, $monto_minimo = null, $respetar_umbral_propio = null): array
     {
         $owner = User::find($owner_id);
 
@@ -222,7 +237,9 @@ class VentasSinCobrarIaHelper
 
         $dias = self::umbral_de_dias($dias, $persona, $owner);
 
-        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias);
+        $respetar = is_null($respetar_umbral_propio) ? self::respetar_umbral_propio($dias) : (bool) $respetar_umbral_propio;
+
+        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, $dias, true, $respetar);
 
         $por_cliente = [];
         $ids = [];
@@ -360,9 +377,8 @@ class VentasSinCobrarIaHelper
      * entre los veinte que más deben.
      *
      * Orden: deuda total de mayor a menor, que es lo que el dueño mira primero; a igual deuda total,
-     * más deuda del conjunto pedido primero, y después más ventas. Sin `dias` la deuda total es la de
-     * siempre (salvo una venta con su propio umbral de alerta todavía sin cumplir), así que el orden
-     * de antes no cambia.
+     * más deuda del conjunto pedido primero, y después más ventas. Sin `dias` el conjunto pedido ya es
+     * toda la deuda viva (ver respetar_umbral_propio()), así que coincide con la deuda total.
      *
      * @param  array<int, array<string, mixed>>  $por_cliente
      * @param  float|null  $monto_minimo
@@ -555,6 +571,35 @@ class VentasSinCobrarIaHelper
         }
 
         return $dias;
+    }
+
+    /**
+     * Si el umbral propio de cada venta (`sales.dias_alerta_venta_no_cobrada_personalizado`) entra en
+     * la cuenta del asistente: NUNCA (revisión de la misión asistente-arreglos-segunda-prueba, 19/10/2026).
+     *
+     * 🔴 EL CASO REAL (segunda prueba por WhatsApp contra demo3). El dueño pidió "mandales un
+     * recordatorio a los que me deben hace más de 20 días" y una venta de 23 días quedó afuera: todas las
+     * ventas a cuenta corriente sembradas en demo3 tienen el umbral propio en 30 (SemillaHelper), y el
+     * `COALESCE` de la pantalla la medía contra 30 y no contra los 20 que dijo él. El umbral propio es la
+     * ALERTA de esa venta ("avisame a los 30 días"), no si se debe.
+     *
+     * 🔴 Y SIN DÍAS TAMPOCO. La primera versión de este arreglo dejaba el `COALESCE` cuando la persona no
+     * decía días, y el asistente se contradecía: "¿qué me debe X?" (consultar_ventas_impagas_de_un_cliente,
+     * toda la deuda viva) traía la venta de 23 días y "¿cuánto me deben?" (consultar_ventas_sin_cobrar)
+     * daba 0. La descripción de la herramienta ya dice "Si no lo mandás son TODAS las ventas sin cobrar,
+     * incluida la de hoy": ahora es verdad. Con false y `dias = 0`, query_de_ventas() no pone ningún
+     * umbral; con `dias > 0`, esos días tal cual. La pantalla y la alerta automática no cambian (no pasan
+     * por acá).
+     *
+     * Se deja como método (y no un false suelto) porque es la regla que comparten la consulta, la tarjeta
+     * del recordatorio y su job: tiene que haber un solo lugar que la diga.
+     *
+     * @param  int  $dias  El umbral ya resuelto por umbral_de_dias() (no cambia la respuesta).
+     * @return bool  Siempre false: los días tal cual, o toda la deuda viva.
+     */
+    public static function respetar_umbral_propio($dias)
+    {
+        return false;
     }
 
     /**

@@ -50,6 +50,45 @@ class PropuestaGenericaIaHelper
     /** Cuántos renglones de identificación lleva la tarjeta de una baja. */
     const MAX_RENGLONES_DE_BAJA = 5;
 
+    /**
+     * Qué hacer si la MARCA que llegó no existe (misión asistente-arreglos-segunda-prueba,
+     * 19/10/2026, N6). En la segunda prueba contra demo3 el dueño pidió el alta de una «lampara de
+     * filamento led philips»: la marca Philips no existía y resolver_relacion() devolvía un `faltan`
+     * pelado, sin decir que se podía crear, así que el artículo 49 quedó sin marca (con la 3M del
+     * 16/10 el modelo sí la había creado). Mismo molde que PropuestaGastoIaHelper::SI_NO_ESTA: la
+     * respuesta dice cómo seguir, y la segunda llamada trae `opciones.reenvia_igual` para no perder
+     * la foto, la descripción, la categoría, el precio ni el stock.
+     *
+     * Las dos ramas (en el acto / tarjeta) existen porque proponer_alta de una marca se ejecuta en el
+     * acto solo con la confianza en "directo"; en los otros modos queda una tarjeta y la marca todavía
+     * no existe cuando el modelo vuelve a llamar (ver alta_de_marca_pendiente()).
+     *
+     * ⚠️ Vale para el alta y para la edición: en la edición no hay extras que perder y el modelo vuelve
+     * a mandar los mismos cambios; en el alta de un artículo, lo de `opciones.reenvia_igual`.
+     */
+    const SI_NO_ESTA_LA_MARCA = 'Si la marca que nombró la persona, o que se lee en la foto o en el nombre del producto, no está en la lista, '
+        . 'creala vos con proponer_alta (entidad brand, con su nombre), sin preguntarle si la creás. Si se crea en el acto (la respuesta '
+        . 'trae el resultado), volvé a llamar en este mismo mensaje con esa marca en brand_id y EXACTAMENTE lo mismo que habías mandado '
+        . '(en el alta de un artículo, los datos y extras de opciones.reenvia_igual: la foto, la descripción, la categoría, el precio y el '
+        . 'stock, todo). Si quedó una tarjeta para confirmar, no vuelvas a llamar todavía: decile que confirme la marca y, cuando la '
+        . 'confirme, armá la carga con todo lo que pidió. Si la marca no la dijo la persona ni se lee en la foto o en el nombre, no la '
+        . 'inventes: volvé a llamar sin brand_id.';
+
+    /**
+     * Qué hacer si la marca que llegó se PARECE a una o más del negocio pero ninguna se llama igual
+     * (revisión independiente, 19/10/2026; ver resolver_marca()): primero se pregunta si es una de
+     * ésas, y recién si la persona dice que no, se crea la que dijo.
+     */
+    const SI_NO_ES_NINGUNA_LA_MARCA = 'Ofrecele estas marcas por su nombre y preguntale si es una de ellas. Si te dice que no es ninguna, '
+        . 'creala con proponer_alta (entidad brand, con el nombre que dijo) y volvé a llamar con ese nombre en brand_id.';
+
+    /**
+     * Cuántas marcas del dueño se traen para comparar normalizado (resolver_marca(),
+     * marca_con_el_mismo_nombre()). Un negocio tiene decenas o cientos; el techo es para que una base
+     * rara no traiga cien mil filas en una herramienta.
+     */
+    const TOPE_DE_MARCAS = 5000;
+
     // -------------------------------------------------------------------------------------------
     // Alta
     // -------------------------------------------------------------------------------------------
@@ -114,6 +153,24 @@ class PropuestaGenericaIaHelper
         $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $datos);
 
         if (RespuestaDeCargaIa::es_negativa($validado)) {
+
+            /*
+             * 🔴 LA MARCA QUE NO EXISTE, EN EL ALTA DE UN ARTÍCULO, VUELVE CON EL REENVÍO (misión
+             * asistente-arreglos-segunda-prueba, 19/10/2026, N6). resolver_relacion() ya le dice al
+             * modelo que la cree (SI_NO_ESTA_LA_MARCA), pero no tiene los extras: si el modelo vuelve
+             * a llamar armando la llamada de memoria, se le cae la foto, la descripción o el stock y
+             * el alta sale sin ellos sin que nadie lo note (lo mismo que fijó el test 72 con la
+             * categoría). Por eso acá, que sí tiene la llamada entera, se suma `opciones.reenvia_igual`
+             * sin la marca (es lo único que cambia) y con la categoría y la subcategoría tal como
+             * vinieron.
+             */
+            if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD && self::es_la_marca_que_no_esta($validado)) {
+
+                return self::con_reenvio(
+                    $validado,
+                    self::llamada_para_reenviar($declaracion, $datos_recibidos, $extras, $reemplaza_a, ['brand_id'])
+                );
+            }
 
             return $validado;
         }
@@ -200,6 +257,27 @@ class PropuestaGenericaIaHelper
         $payload = self::payload_de_alta($declaracion, $validado['payload']);
 
         $nombre = self::nombre_pedido($declaracion, $validado['payload']);
+
+        /*
+         * 🔴 UNA MARCA QUE YA EXISTE NO SE CREA DE NUEVO (revisión independiente de la misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). Con SI_NO_ESTA_LA_MARCA el modelo crea marcas
+         * solo; si el nombre que manda ya está en el negocio (comparado sin mayúsculas, tildes ni
+         * espacios de más), crearla dejaría dos «Philips» y los artículos repartidos entre las dos. Es
+         * un error para el modelo (prefijo NO_SE_ARMO) con el id de la existente, para que la use.
+         * Para las demás entidades sigue el aviso de "ya hay uno con ese nombre" de abajo.
+         */
+        if ($declaracion['entidad'] === 'brand' && !is_null($nombre)) {
+
+            $existente = self::marca_con_el_mismo_nombre($contexto, $nombre);
+
+            if (!is_null($existente)) {
+
+                return RespuestaDeCargaIa::error(
+                    CategoriasDelNegocioIaHelper::NO_SE_ARMO.'ya existe la marca "'.$existente->name.'" (brand_id '.(int) $existente->id.'). '
+                    .'No la crees de nuevo: en la carga que la necesitaba usá brand_id '.(int) $existente->id.'.'
+                );
+            }
+        }
 
         $aviso = null;
 
@@ -605,13 +683,20 @@ class PropuestaGenericaIaHelper
      * subcategoría, los extras con sus claves de herramienta (sin las marcas internas de "quitar") y
      * `reemplaza_a` si vino.
      *
+     * Desde el 19/10/2026 (misión asistente-arreglos-segunda-prueba, N6) también la usa la marca que
+     * no existe: ahí lo que el modelo tiene que volver a mandar es la MARCA, así que se sacan solo las
+     * columnas de `$columnas_que_faltan` (['brand_id']) y la categoría y la subcategoría viajan como
+     * vinieron. Por nombre de columna, no de clave: la marca puede haber llegado como "marca".
+     *
      * @param  array  $declaracion
      * @param  array  $datos  Los `datos` como llegaron (antes de separar la subcategoría).
      * @param  array  $extras  Los extras ya separados (y heredados, si es una corrección).
      * @param  mixed  $reemplaza_a
+     * @param  array  $columnas_que_faltan  Las columnas que el modelo tiene que volver a elegir y por
+     *                                      eso no se reenvían (por defecto, la categoría y la subcategoría).
      * @return array
      */
-    protected static function llamada_para_reenviar(array $declaracion, array $datos, array $extras, $reemplaza_a): array
+    protected static function llamada_para_reenviar(array $declaracion, array $datos, array $extras, $reemplaza_a, array $columnas_que_faltan = ['category_id', 'sub_category_id']): array
     {
         $alias = self::alias_de_campos($declaracion);
 
@@ -621,7 +706,7 @@ class PropuestaGenericaIaHelper
 
             $columna = isset($alias[$clave_normalizada]) ? $alias[$clave_normalizada] : null;
 
-            if ($columna === 'category_id' || $columna === 'sub_category_id') {
+            if (!is_null($columna) && in_array($columna, $columnas_que_faltan, true)) {
 
                 unset($datos[$clave]);
             }
@@ -1685,6 +1770,17 @@ class PropuestaGenericaIaHelper
 
         $texto = (string) $texto;
 
+        /*
+         * 🔴 LAS MARCAS SE RESUELVEN APARTE (misión asistente-arreglos-segunda-prueba, 19/10/2026, N6 y
+         * la revisión independiente): ver resolver_marca(). Solo `brands`: las demás relaciones (un
+         * proveedor, una localidad, un vendedor) siguen con el LIKE y la pregunta de siempre, porque
+         * crear uno de esos por un nombre mal escrito deja un registro que nadie pidió.
+         */
+        if ($relacion['tabla'] === 'brands') {
+
+            return self::resolver_marca($contexto, $campo, $etiqueta, $texto, $consulta_base);
+        }
+
         $candidatas = $consulta_base()
                         ->where($relacion['campo'], 'LIKE', '%'.self::escapar_like($texto).'%')
                         ->orderBy($relacion['campo'])
@@ -1693,9 +1789,11 @@ class PropuestaGenericaIaHelper
 
         if (!count($candidatas)) {
 
+            $opciones = [$campo['columna'] => self::opciones_de_relacion($consulta_base()->orderBy($relacion['campo'])->limit(self::MAX_OPCIONES)->get(), $relacion['campo'])];
+
             return RespuestaDeCargaIa::faltan(
                 ['qué '.$etiqueta.' es: no encontré ninguna que se llame como "'.$texto.'"'],
-                [$campo['columna'] => self::opciones_de_relacion($consulta_base()->orderBy($relacion['campo'])->limit(self::MAX_OPCIONES)->get(), $relacion['campo'])]
+                $opciones
             );
         }
 
@@ -1723,6 +1821,326 @@ class PropuestaGenericaIaHelper
             ['cuál '.$etiqueta.' es (hay '.count($candidatas).' que encajan con "'.$texto.'")'],
             [$campo['columna'] => self::opciones_de_relacion($candidatas, $relacion['campo'])]
         );
+    }
+
+    /**
+     * La marca de una carga, resuelta por nombre CONTRA LAS MARCAS DEL DUEÑO (revisión independiente
+     * de la misión asistente-arreglos-segunda-prueba, 19/10/2026). Hasta la revisión iba por el LIKE
+     * genérico, que con UNA sola coincidencia parcial la asignaba sola: «ZZAtlas» terminaba en
+     * «ZZAtlas Copco». Y como desde N6 una marca que no está se manda a crear, había que distinguir
+     * bien "no está" de "se parece a una que está". El orden:
+     *
+     *   1. IGUAL sin importar mayúsculas, tildes ni espacios de más (normalizar_nombre()): una sola →
+     *      se asigna; varias (el negocio tiene «3M» y «3m») → `faltan` con esas.
+     *   2. PARECIDAS: marcas que contienen lo pedido («ZZAtlas» → «ZZAtlas Copco») o que lo pedido
+     *      contiene como palabras enteras («ZZPhilips LED» → «ZZPhilips»). → `faltan` ofreciéndolas,
+     *      SIN `si_no_esta`: primero se pregunta si es una de ésas; `si_no_es_ninguna` dice qué hacer
+     *      si la persona contesta que no.
+     *   3. Ninguna → marca_que_no_esta() (crearla, o esperar la tarjeta que ya la propuso).
+     *
+     * 🔴 Siempre por `$consulta_base`, que filtra por el dueño: la base puede ser compartida entre
+     * varios negocios y la marca de otro no existe para éste. Se traen todas (hasta TOPE_DE_MARCAS)
+     * para comparar normalizado en PHP: el LIKE no ve los espacios de más ni el "al revés".
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $campo  La declaración del campo (`brand_id`).
+     * @param  string  $etiqueta  "marca".
+     * @param  string  $texto  El nombre que llegó.
+     * @param  callable  $consulta_base  La consulta de `brands` del dueño (resolver_relacion()).
+     * @return array  ['valor' => id, 'nombre' => ...] o la respuesta negativa.
+     */
+    protected static function resolver_marca(ContextoDeCargaIa $contexto, array $campo, $etiqueta, $texto, callable $consulta_base)
+    {
+        $columna_nombre = $campo['relacion']['campo'];
+
+        $buscado = self::normalizar_nombre($texto);
+
+        /* Para la comparación EXACTA: sin signos ni espacios (ver clave_de_marca()). */
+        $clave_buscada = self::clave_de_marca($texto);
+
+        $marcas = $consulta_base()->orderBy($columna_nombre)->limit(self::TOPE_DE_MARCAS)->get(['id', $columna_nombre])->all();
+
+        $exactas = [];
+        $parecidas = [];
+
+        foreach ($marcas as $marca) {
+
+            $nombre = self::normalizar_nombre((string) $marca->{$columna_nombre});
+
+            if ($nombre === '' || $buscado === '') {
+
+                continue;
+            }
+
+            if ($clave_buscada !== '' && self::clave_de_marca((string) $marca->{$columna_nombre}) === $clave_buscada) {
+
+                $exactas[] = $marca;
+
+                continue;
+            }
+
+            /*
+             * Las dos direcciones, por PALABRA completa (segunda revisión independiente): con un pedazo
+             * de palabra «lg» se parecía a «BelgicaP85».
+             */
+            $la_contiene = preg_match('/(^| )'.preg_quote($buscado, '/').'( |$)/u', $nombre) === 1;
+
+            $esta_adentro = preg_match('/(^| )'.preg_quote($nombre, '/').'( |$)/u', $buscado) === 1;
+
+            if ($la_contiene || $esta_adentro) {
+
+                $parecidas[] = $marca;
+            }
+        }
+
+        if (count($exactas) === 1) {
+
+            return ['valor' => (int) $exactas[0]->id, 'nombre' => (string) $exactas[0]->{$columna_nombre}];
+        }
+
+        if (count($exactas) > 1) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál '.$etiqueta.' es (hay '.count($exactas).' que se llaman "'.$texto.'")'],
+                [$campo['columna'] => self::opciones_de_relacion($exactas, $columna_nombre)]
+            );
+        }
+
+        /*
+         * 🔴 LA MARCA YA PROPUESTA EN UNA TARJETA SE MIRA ANTES QUE LAS PARECIDAS (segunda revisión
+         * independiente, 19/10/2026). En "cauteloso", con «ZZPhilips» cargada y el dueño pidiendo
+         * «ZZPhilips LED»: parecida → el dueño dice que no → el modelo propone la marca nueva (queda
+         * tarjeta) → reenvía el alta → acá volvía a salir «hay una parecida» con si_no_es_ninguna, y el
+         * modelo proponía la marca otra vez: un loop hasta el tope de herramientas. Si lo pedido ya
+         * está en una tarjeta de alta de marca sin confirmar, va el mismo error que en
+         * marca_que_no_esta(): que la persona la confirme primero.
+         */
+        if (self::alta_de_marca_pendiente($contexto, $texto)) {
+
+            return self::error_de_marca_pendiente($texto);
+        }
+
+        $opciones = [$campo['columna'] => self::opciones_de_relacion(array_slice($marcas, 0, self::MAX_OPCIONES), $columna_nombre)];
+
+        /*
+         * Un NÚMERO que no resolvió como id del dueño (resolver_relacion() ya lo buscó) ni como nombre
+         * exacto: es el id de una marca de otro negocio de la base compartida, o uno inventado. Mandar a
+         * crear la marca «305» sería peor que preguntar (segunda revisión independiente): se pide el
+         * nombre, sin si_no_esta.
+         */
+        if (preg_match('/^\d+$/', trim((string) $texto)) === 1) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['qué '.$etiqueta.' es, por su nombre: la '.$etiqueta.' N° '.trim((string) $texto).' no existe en este negocio'],
+                $opciones
+            );
+        }
+
+        if (count($parecidas)) {
+
+            /* Con tope (segunda revisión independiente): se ofrecen las primeras MAX_OPCIONES y el texto lo dice. */
+            $cuantas = count($parecidas);
+
+            $parecidas = array_slice($parecidas, 0, self::MAX_OPCIONES);
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál '.$etiqueta.' es: ninguna se llama "'.$texto.'", pero hay '
+                    .($cuantas === 1 ? 'una parecida' : $cuantas.' parecidas')
+                    .($cuantas > self::MAX_OPCIONES ? ' (te paso las primeras '.self::MAX_OPCIONES.')' : '')],
+                [
+                    $campo['columna']   => self::opciones_de_relacion($parecidas, $columna_nombre),
+                    'si_no_es_ninguna'  => self::SI_NO_ES_NINGUNA_LA_MARCA,
+                ]
+            );
+        }
+
+        return self::marca_que_no_esta($contexto, $etiqueta, $texto, $opciones);
+    }
+
+    /**
+     * La marca del dueño que se llama igual que `$nombre` (sin mayúsculas, tildes ni espacios de
+     * más), o null. La usa proponer_alta() para no crear una marca que ya existe. Filtra por el dueño:
+     * la base puede ser compartida.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombre
+     * @return object|null  La fila de `brands` (id, name).
+     */
+    protected static function marca_con_el_mismo_nombre(ContextoDeCargaIa $contexto, $nombre)
+    {
+        $buscado = self::clave_de_marca($nombre);
+
+        if ($buscado === '') {
+
+            return null;
+        }
+
+        $marcas = DB::table('brands')
+                    ->where('user_id', $contexto->owner_id)
+                    ->orderBy('id')
+                    ->limit(self::TOPE_DE_MARCAS)
+                    ->get(['id', 'name']);
+
+        foreach ($marcas as $marca) {
+
+            if (self::clave_de_marca((string) $marca->name) === $buscado) {
+
+                return $marca;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Un nombre para comparar: sin tildes (Str::ascii), en minúsculas y con los espacios colapsados.
+     * «  ZZÁrbol   Copco » y «zzarbol copco» son el mismo. Es la forma POR PALABRAS, para las
+     * parecidas; la igualdad se mide con clave_de_marca().
+     *
+     * @param  string  $nombre
+     * @return string
+     */
+    protected static function normalizar_nombre($nombre)
+    {
+        $limpio = Str::lower(Str::ascii(trim((string) $nombre)));
+
+        /*
+         * Los signos cuentan como separadores de palabra («ZZAtlas-Copco» tiene las palabras zzatlas y
+         * copco): las parecidas se miden por palabra completa (segunda revisión independiente).
+         */
+        return trim((string) preg_replace('/[^a-z0-9]+/', ' ', $limpio));
+    }
+
+    /**
+     * La clave con la que dos marcas son LA MISMA: sin tildes, en minúsculas y sin ningún signo ni
+     * espacio (solo letras y dígitos). Segunda revisión independiente (19/10/2026): en "directo" se
+     * crearon «ZZPhilips.», «zz 3m» y «ZZ-3M» con «ZZPhilips» y «ZZ3M» cargadas, porque la igualdad
+     * todavía miraba la puntuación y los espacios internos. La usan la coincidencia exacta de
+     * resolver_marca(), marca_con_el_mismo_nombre() y alta_de_marca_pendiente().
+     *
+     * @param  string  $nombre
+     * @return string  Vacío si el nombre no tiene ni una letra ni un dígito.
+     */
+    protected static function clave_de_marca($nombre)
+    {
+        return (string) preg_replace('/[^a-z0-9]/', '', Str::lower(Str::ascii(trim((string) $nombre))));
+    }
+
+    /**
+     * La respuesta para una marca que no existe (ver SI_NO_ESTA_LA_MARCA y el 🔴 de
+     * resolver_relacion()):
+     *
+     *  - Lo normal: el mismo `faltan` de siempre (con las marcas que hay en `opciones.brand_id`) más
+     *    `opciones.si_no_esta`, que le dice al modelo que la cree con proponer_alta de brand y vuelva
+     *    a llamar. El reenvío con la foto y los demás extras lo suma proponer_alta(), que es quien
+     *    tiene la llamada entera.
+     *  - 🔴 Si esa marca YA ESTÁ PROPUESTA en una tarjeta de esta conversación que todavía no se
+     *    confirmó: un error que dice que la persona la confirme primero, SIN `si_no_esta`. Con la
+     *    confianza en "cauteloso" o "resuelto" el alta de la marca queda como tarjeta, así que en el
+     *    mismo mensaje la marca sigue sin existir; si la respuesta volviera a decir "creala", el
+     *    modelo propondría la marca otra vez y daría vueltas hasta el tope de herramientas.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $etiqueta  "marca".
+     * @param  string  $texto  El nombre que llegó.
+     * @param  array  $opciones  [columna => marcas que hay], como el `faltan` genérico.
+     * @return array
+     */
+    protected static function marca_que_no_esta(ContextoDeCargaIa $contexto, $etiqueta, $texto, array $opciones)
+    {
+        if (self::alta_de_marca_pendiente($contexto, $texto)) {
+
+            return self::error_de_marca_pendiente($texto);
+        }
+
+        $opciones['si_no_esta'] = self::SI_NO_ESTA_LA_MARCA;
+
+        return RespuestaDeCargaIa::faltan(
+            ['qué '.$etiqueta.' es: no encontré ninguna que se llame como "'.$texto.'"'],
+            $opciones
+        );
+    }
+
+    /**
+     * El error para una marca que todavía no existe porque quedó en una tarjeta sin confirmar: un
+     * solo texto para los dos lugares que lo devuelven (resolver_marca(), antes de ofrecer parecidas,
+     * y marca_que_no_esta()). Sin `si_no_esta` ni `si_no_es_ninguna`: lo que corta el loop es que no
+     * haya nada que invite a proponer la marca de nuevo.
+     *
+     * @param  string  $texto  El nombre que llegó.
+     * @return array
+     */
+    protected static function error_de_marca_pendiente($texto)
+    {
+        return RespuestaDeCargaIa::error(
+            'La marca "'.$texto.'" todavía no existe: quedó en una tarjeta para que la persona la confirme. '
+            .'No la vuelvas a proponer ni vuelvas a llamar en este mensaje: decile que confirme la marca y, cuando la confirme, '
+            .'armá esta carga con todo lo que pidió (la foto, la descripción, la categoría, el precio y el stock).'
+        );
+    }
+
+    /**
+     * true si en esta conversación hay una tarjeta de alta de MARCA con ese nombre todavía propuesta
+     * (sin confirmar, sin cancelar y sin vencer). Se compara con clave_de_marca() —sin mayúsculas,
+     * tildes, signos ni espacios— contra lo que va a crear la tarjeta (`datos.payload.name`), la misma
+     * igualdad que el resto de las marcas. Ver marca_que_no_esta().
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombre
+     * @return bool
+     */
+    protected static function alta_de_marca_pendiente(ContextoDeCargaIa $contexto, $nombre)
+    {
+        if (is_null($contexto->conversation)) {
+
+            return false;
+        }
+
+        $buscado = self::clave_de_marca($nombre);
+
+        if ($buscado === '') {
+
+            return false;
+        }
+
+        $propuestas = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                                        ->where('tipo', AiMessageAction::TIPO_ALTA)
+                                        ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                        ->where('created_at', '>=', now()->subHours(AiMessageAction::HORAS_VENCIMIENTO))
+                                        ->orderBy('id', 'DESC')
+                                        ->limit(self::MAX_OPCIONES)
+                                        ->get();
+
+        foreach ($propuestas as $propuesta) {
+
+            $datos = is_array($propuesta->datos) ? $propuesta->datos : [];
+
+            if (!isset($datos['entidad']) || $datos['entidad'] !== 'brand' || !isset($datos['payload']['name'])) {
+
+                continue;
+            }
+
+            if (self::clave_de_marca((string) $datos['payload']['name']) === $buscado) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si la respuesta negativa es la de una marca que no existe (la que trae SI_NO_ESTA_LA_MARCA
+     * en `opciones.si_no_esta`). La usa proponer_alta() para sumarle el reenvío.
+     *
+     * @param  array  $respuesta
+     * @return bool
+     */
+    protected static function es_la_marca_que_no_esta(array $respuesta)
+    {
+        $opciones = isset($respuesta['opciones']) && is_array($respuesta['opciones']) ? $respuesta['opciones'] : [];
+
+        return isset($opciones['si_no_esta']) && $opciones['si_no_esta'] === self::SI_NO_ESTA_LA_MARCA;
     }
 
     /**

@@ -3,9 +3,12 @@
 namespace App\Jobs;
 
 use App\Exceptions\RecordatorioCobroException;
+use App\Http\Controllers\Helpers\asistente_ia\EnviosFallidosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
+use App\Models\AiEnvioFallido;
 use App\Models\Client;
 use App\Models\User;
+use App\Models\WhatsappChatMessage;
 use App\Services\RecordatorioCobroSenderService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -86,6 +89,56 @@ class SendRecordatorioCobroJob implements ShouldQueue
     protected $lote_uuid;
 
     /**
+     * Si las ventas se recalculan con el umbral propio de cada venta (el COALESCE de la pantalla) o con
+     * los `$dias` tal cual (misión asistente-arreglos-segunda-prueba, 19/10/2026: el asistente, cuando el
+     * dueño dijo los días, manda false; ver VentasSinCobrarHelper::query_de_ventas()).
+     *
+     * 🔴 EL DEFAULT VA EN LA DECLARACIÓN Y NO SOLO EN EL CONSTRUCTOR, Y NO ES UN DETALLE. Un job que ya
+     * estaba en la cola (`QUEUE_CONNECTION=database`) cuando se desplegó este cambio se deserializa SIN
+     * pasar por el constructor y sin esta propiedad en su payload: PHP le deja el valor de la
+     * declaración. Con `true` acá, ese job manda exactamente lo que mandaba antes (el COALESCE con el que
+     * se armó la pantalla o la tarjeta que lo encoló). Sin default sería null, y un null en esta
+     * bandera cambiaría en silencio qué ventas se le reclaman al cliente.
+     *
+     * @var bool
+     */
+    protected $respetar_umbral_propio = true;
+
+    /**
+     * La tarjeta del asistente que encoló este recordatorio, o null si lo encoló la pantalla (misión
+     * asistente-arreglos-segunda-prueba, 19/10/2026, N3). Con tarjeta, un recordatorio que no sale
+     * (Kapso no confirmó, la plantilla dejó de estar aprobada, una falla) queda en `ai_envios_fallidos`
+     * y vuelve al dueño que dijo que sí; y el WhatsApp que sí sale queda anotado con ella, por si Meta
+     * lo rechaza después.
+     *
+     * 🔴 Default null EN LA DECLARACIÓN, por lo mismo que `$respetar_umbral_propio`: un job ya encolado
+     * se deserializa sin pasar por el constructor.
+     *
+     * @var int|null
+     */
+    protected $ai_message_action_id = null;
+
+    /**
+     * Los motivos de un recordatorio que no salió que SÍ se le avisan al dueño: los que dicen "tenía que
+     * salir y no salió" (infraestructura o una condición que cambió sin que él la tocara).
+     *
+     * 🔴 Los esperables NO: `sin_ventas` (pagó mientras el job esperaba: buena noticia), `ya_recibio_hoy`
+     * (otro recordatorio le llegó igual), `cliente_no_encontrado` y `sin_telefono` (se borró el cliente o
+     * su teléfono, cosas que hizo alguien del negocio). Avisarlos sería ruido sobre algo que no hay que
+     * arreglar.
+     *
+     * @var array<int, string>
+     */
+    const MOTIVOS_QUE_VUELVEN_AL_DUENO = [
+        RecordatorioCobroSenderService::CODE_ENVIO_NO_CONFIRMADO,
+        RecordatorioCobroSenderService::CODE_PLANTILLA_NO_APROBADA,
+        RecordatorioCobroSenderService::CODE_SIN_CONFIGURACION,
+        RecordatorioCobroSenderService::CODE_SIN_RESUMEN_DE_CUENTA,
+        'error_inesperado',
+        'fallo_definitivo',
+    ];
+
+    /**
      * 🔴 Ids, no modelos. Serializar un `Client` o una lista de `Sale` metería en la cola un
      * estado congelado en el momento del POST, que es justo lo que este job NO tiene que usar.
      *
@@ -94,14 +147,19 @@ class SendRecordatorioCobroJob implements ShouldQueue
      * @param  int       $dias
      * @param  int|null  $sent_by_user_id
      * @param  string|null  $lote_uuid
+     * @param  bool      $respetar_umbral_propio  Ver la propiedad. Al final y con default: el
+     *                                            controller de la pantalla no lo manda y no cambia.
+     * @param  int|null  $ai_message_action_id    Ver la propiedad. Al final y con default.
      */
-    public function __construct($owner_id, $client_id, $dias, $sent_by_user_id = null, $lote_uuid = null)
+    public function __construct($owner_id, $client_id, $dias, $sent_by_user_id = null, $lote_uuid = null, $respetar_umbral_propio = true, $ai_message_action_id = null)
     {
         $this->owner_id = (int) $owner_id;
         $this->client_id = (int) $client_id;
         $this->dias = (int) $dias;
         $this->sent_by_user_id = is_null($sent_by_user_id) ? null : (int) $sent_by_user_id;
         $this->lote_uuid = $lote_uuid;
+        $this->respetar_umbral_propio = (bool) $respetar_umbral_propio;
+        $this->ai_message_action_id = is_null($ai_message_action_id) ? null : (int) $ai_message_action_id;
     }
 
     /**
@@ -131,6 +189,7 @@ class SendRecordatorioCobroJob implements ShouldQueue
         $enviado = false;
         $motivo = null;
         $client_name = null;
+        $client = null;
 
         try {
 
@@ -151,7 +210,8 @@ class SendRecordatorioCobroJob implements ShouldQueue
 
             $client_name = $client->name;
 
-            $ventas = VentasSinCobrarHelper::query_de_ventas($this->owner_id, $this->employee_id_del_recorte(), $this->dias)
+            // Con el MISMO criterio de días que la tarjeta o la pantalla que lo encoló (ver la propiedad).
+            $ventas = VentasSinCobrarHelper::query_de_ventas($this->owner_id, $this->employee_id_del_recorte(), $this->dias, true, $this->respetar_umbral_propio !== false)
                 ->where('client_id', $this->client_id)
                 ->with('current_acount')
                 ->orderBy('created_at', 'ASC')
@@ -172,9 +232,12 @@ class SendRecordatorioCobroJob implements ShouldQueue
 
             // El freno de 24 h se revalida adentro de `enviar()`: entre el POST y esta línea
             // otro operador pudo haberle mandado el mismo recordatorio.
-            $service->enviar($this->owner_id, $client, $ventas, $this->sent_by_user_id);
+            $mensaje = $service->enviar($this->owner_id, $client, $ventas, $this->sent_by_user_id);
 
             $enviado = true;
+
+            // Salió: la fila queda con su tarjeta por si Meta lo rechaza después (N3, 19/10/2026).
+            $this->anotar_la_tarjeta_en_el_mensaje($mensaje);
 
             // 🔴 Esta línea sólo se alcanza si `enviar()` NO lanzó, y `enviar()` lanza cuando
             // Kapso no confirmó el envío. Si algún día alguien hace que el service devuelva "ok"
@@ -225,12 +288,18 @@ class SendRecordatorioCobroJob implements ShouldQueue
             ]);
         }
 
+        // Si lo encoló el asistente y no salió por un motivo que el dueño tiene que saber, vuelve a él.
+        if (! $enviado) {
+            $this->registrar_si_vuelve_al_dueno($motivo, $client);
+        }
+
         $this->marcar_procesado($enviado, $motivo, $client_name);
     }
 
     /**
-     * Se ejecuta si el job agota los reintentos sin éxito. Sólo loguea y cierra el renglón del
-     * lote, para que la barra de progreso no se quede colgada esperando un job que ya murió.
+     * Se ejecuta si el job agota los reintentos sin éxito. Loguea, cierra el renglón del lote para que
+     * la barra de progreso no se quede colgada esperando un job que ya murió y, si lo encoló el
+     * asistente, deja el envío fallido para el dueño (N3, 19/10/2026).
      *
      * @param  \Throwable  $e
      * @return void
@@ -242,7 +311,92 @@ class SendRecordatorioCobroJob implements ShouldQueue
             'error'     => $e->getMessage(),
         ]);
 
+        $this->registrar_si_vuelve_al_dueno('fallo_definitivo', null);
+
         $this->marcar_procesado(false, 'fallo_definitivo', null);
+    }
+
+    /**
+     * Un recordatorio que el asistente encoló y no salió: si el motivo es de los que el dueño tiene que
+     * saber (MOTIVOS_QUE_VUELVEN_AL_DUENO), queda en `ai_envios_fallidos`, junto con los demás fallos de
+     * la misma tarjeta (un aviso por lote, no uno por cliente).
+     *
+     * 🔴 EL CASO (N3 de la misión asistente-arreglos-segunda-prueba, 19/10/2026): el dueño confirmaba el
+     * recordatorio por WhatsApp, el asistente le decía "en camino a 12 clientes" y los que no salían
+     * morían en un `Log::error` de este job. Nunca lanza: el registro no puede tumbar el job.
+     *
+     * @param  string|null  $motivo
+     * @param  \App\Models\Client|null  $client  El cliente ya leído, si se llegó a leer.
+     * @return void
+     */
+    private function registrar_si_vuelve_al_dueno($motivo, $client)
+    {
+        if (empty($this->ai_message_action_id) || ! in_array((string) $motivo, self::MOTIVOS_QUE_VUELVEN_AL_DUENO, true)) {
+            return;
+        }
+
+        try {
+
+            if (is_null($client)) {
+                $client = Client::where('id', $this->client_id)->where('user_id', $this->owner_id)->first();
+            }
+
+            EnviosFallidosDelAsistenteHelper::registrar(
+                $this->ai_message_action_id,
+                AiEnvioFallido::CANAL_WHATSAPP,
+                is_null($client) ? null : (string) $client->phone,
+                is_null($client) ? null : (string) $client->name,
+                self::motivo_para_el_dueno((string) $motivo)
+            );
+
+        } catch (\Throwable $e) {
+            // El registro es un extra: el job termina igual.
+        }
+    }
+
+    /**
+     * El motivo de un recordatorio que no salió, en palabras del dueño (el código queda en el log).
+     *
+     * @param  string  $motivo
+     * @return string
+     */
+    private static function motivo_para_el_dueno($motivo)
+    {
+        $motivos = [
+            RecordatorioCobroSenderService::CODE_ENVIO_NO_CONFIRMADO   => 'WhatsApp no confirmó el envío',
+            RecordatorioCobroSenderService::CODE_PLANTILLA_NO_APROBADA => 'la plantilla del recordatorio dejó de estar aprobada en Meta',
+            RecordatorioCobroSenderService::CODE_SIN_CONFIGURACION     => 'el WhatsApp del negocio no está conectado',
+            RecordatorioCobroSenderService::CODE_SIN_RESUMEN_DE_CUENTA => 'no había resumen de cuenta para adjuntar a la plantilla',
+        ];
+
+        return isset($motivos[$motivo]) ? $motivos[$motivo] : 'una falla del sistema';
+    }
+
+    /**
+     * Anota la tarjeta del asistente en la fila del WhatsApp que salió, para que un rechazo posterior de
+     * Meta (webhook `failed`) vuelva al dueño. Por query (sin eventos del modelo) y sin poder lanzar: el
+     * recordatorio ya está en el teléfono del cliente.
+     *
+     * @param  mixed  $mensaje  El WhatsappChatMessage que devolvió enviar().
+     * @return void
+     */
+    private function anotar_la_tarjeta_en_el_mensaje($mensaje)
+    {
+        if (empty($this->ai_message_action_id) || ! is_object($mensaje) || empty($mensaje->id)) {
+            return;
+        }
+
+        try {
+
+            WhatsappChatMessage::where('id', (int) $mensaje->id)->update(['ai_message_action_id' => $this->ai_message_action_id]);
+
+        } catch (\Throwable $e) {
+
+            Log::info('SendRecordatorioCobroJob: no se pudo anotar la tarjeta en el mensaje.', [
+                'client_id' => $this->client_id,
+                'error'     => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

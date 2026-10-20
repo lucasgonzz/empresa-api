@@ -8,6 +8,7 @@ use App\Models\AiMessageAction;
 use App\Models\Client;
 use App\Models\WhatsappBotConfig;
 use App\Services\RecordatorioCobroSenderService;
+use Carbon\Carbon;
 
 /**
  * "MANDALES UN RECORDATORIO A LOS QUE ME DEBEN MÁS DE X HACE MÁS DE N DÍAS" (misión
@@ -82,7 +83,18 @@ class PropuestaRecordatoriosCobroIaHelper
             return RespuestaDeCargaIa::error('Son demasiados clientes para nombrarlos de a uno: usá el filtro de deuda (monto_minimo y dias).');
         }
 
-        $evaluacion = self::evaluar($contexto, $monto_minimo, $dias_pedidos, $client_ids);
+        /*
+         * 🔴 LOS DÍAS QUE DIJO EL DUEÑO, TAL CUAL (N1 de la misión asistente-arreglos-segunda-prueba,
+         * 19/10/2026). En demo3 "los que me deben hace más de 20 días" dejó afuera la venta de 23 días
+         * porque su umbral propio de alerta era 30. El umbral propio no entra (con días dichos, esos días
+         * tal cual; sin días, toda la deuda viva: VentasSinCobrarIaHelper::respetar_umbral_propio()) en los
+         * TRES lugares del camino: quiénes reciben (evaluar), el texto del primero (ventas_del_cliente) y
+         * lo que recalcula el job (viaja en `datos` y en encolar_lote()). Si uno solo de los tres usara el
+         * COALESCE, la tarjeta y el WhatsApp listarían ventas distintas.
+         */
+        $respetar = VentasSinCobrarIaHelper::respetar_umbral_propio(is_null($dias_pedidos) ? 0 : $dias_pedidos);
+
+        $evaluacion = self::evaluar($contexto, $monto_minimo, $dias_pedidos, $client_ids, $respetar);
 
         $service = new RecordatorioCobroSenderService();
 
@@ -129,7 +141,7 @@ class PropuestaRecordatoriosCobroIaHelper
          */
         $primero = $reciben[0]['client'];
 
-        $ventas_del_primero = self::ventas_del_cliente($contexto, $primero->id, $evaluacion['dias']);
+        $ventas_del_primero = self::ventas_del_cliente($contexto, $primero->id, $evaluacion['dias'], $respetar);
 
         /*
          * 🔴 LOS DOS CAMINOS, SIEMPRE QUE LA PLANTILLA ESTÉ APROBADA (I2 del segundo chequeo). Entre el
@@ -207,6 +219,14 @@ class PropuestaRecordatoriosCobroIaHelper
                 // 🔴 Los clientes que el dueño VIO: al confirmar se manda a estos y a nadie más.
                 'client_ids'   => $ids_que_reciben,
                 'dias'         => (int) $evaluacion['dias'],
+                /*
+                 * Si las ventas se midieron con el umbral propio de cada una (true, el COALESCE de la
+                 * pantalla) o sin él (false: los días que dijo el dueño tal cual, o toda la deuda viva si no
+                 * dijo días). El asistente hoy siempre guarda false (VentasSinCobrarIaHelper::
+                 * respetar_umbral_propio()). La confirmación y el job lo leen de acá: lo que sale es lo que
+                 * se mostró. Una tarjeta de antes de este cambio no lo tiene y confirma con true.
+                 */
+                'respetar_umbral_propio' => $respetar,
                 'monto_minimo' => $monto_minimo,
                 'nombrados'    => count($client_ids) > 0,
                 // Cómo salía cada uno al proponer (el bloque muestra los dos caminos: ver arriba).
@@ -276,11 +296,18 @@ class PropuestaRecordatoriosCobroIaHelper
         $monto_minimo = isset($datos['monto_minimo']) ? self::numero_positivo($datos['monto_minimo']) : null;
 
         /*
+         * Cómo se midieron las ventas que el dueño vio (ver proponer()). 🔴 Sin la clave —una tarjeta
+         * propuesta antes de este cambio— es true: con el COALESCE se armó lo que el dueño leyó, y con
+         * eso se manda.
+         */
+        $respetar = array_key_exists('respetar_umbral_propio', $datos) ? (bool) $datos['respetar_umbral_propio'] : true;
+
+        /*
          * 🔴 SE REVALIDA EL FILTRO CON LOS DATOS DE HOY. Entre la tarjeta y el sí pueden pasar horas, y
          * el que pagó en el medio no puede recibir un reclamo. Se vuelven a evaluar SOLO los ids de la
          * tarjeta (nunca se suma a nadie que el dueño no vio), con el mismo filtro de deuda.
          */
-        $evaluacion = self::evaluar($contexto, $monto_minimo, $dias > 0 ? $dias : null, $ids);
+        $evaluacion = self::evaluar($contexto, $monto_minimo, $dias > 0 ? $dias : null, $ids, $respetar);
 
         $clientes = [];
 
@@ -294,11 +321,18 @@ class PropuestaRecordatoriosCobroIaHelper
             $no_salieron[] = ['cliente' => $salteado['nombre'], 'motivo' => $salteado['mensaje']];
         }
 
+        // Para ver, después de encolar, qué falló ADENTRO de este turno (con la cola sync los jobs corren acá).
+        $desde = Carbon::now()->subSecond();
+
         $lote = (new RecordatorioCobroSenderService())->encolar_lote(
             $contexto->owner_id,
             $clientes,
             $evaluacion['dias'],
-            is_null($contexto->persona) ? null : (int) $contexto->persona->id
+            is_null($contexto->persona) ? null : (int) $contexto->persona->id,
+            // El job recalcula las ventas con el MISMO criterio que la tarjeta (N1).
+            $respetar,
+            // Y si alguno no sale, el fallo vuelve al dueño atado a esta tarjeta (N3).
+            (int) $accion->id
         );
 
         foreach ($lote['salteados'] as $salteado) {
@@ -315,12 +349,57 @@ class PropuestaRecordatoriosCobroIaHelper
         $texto = 'Recordatorio de cobro en camino a ' . $encolados . ' ' . ($encolados === 1 ? 'cliente' : 'clientes')
             . ': sale por WhatsApp en segundo plano, uno por cliente.';
 
+        $texto .= self::lo_que_ya_fallo_en_el_turno((int) $accion->id, $desde, $no_salieron);
+
         return [
             'texto'       => $texto,
             'encolados'   => $encolados,
             'no_salieron' => $no_salieron,
             'lote_uuid'   => (string) $lote['lote_uuid'],
+            /*
+             * Para el modelo (`detalle.aviso`, N3 del 19/10/2026): salen en segundo plano, así que no se
+             * dan por recibidos; y el "te aviso" se promete solo si el aviso va a salir.
+             */
+            'aviso'       => 'No digas que les llegó: salen en segundo plano.'
+                . (EnviosFallidosDelAsistenteHelper::avisa_por_whatsapp($accion) ? ' Si alguno no sale, le aviso por acá.' : ''),
         ];
+    }
+
+    /**
+     * Lo que ya falló adentro del turno de la confirmación (cola sync: los jobs corren adentro del
+     * dispatch), dicho en el resultado y sellado para que el admin no lo vuelva a avisar por WhatsApp.
+     * Con la cola de verdad todavía no hay nada y devuelve ''.
+     *
+     * @param  int  $accion_id
+     * @param  \Carbon\Carbon  $desde
+     * @param  array  $no_salieron  Se le suman los que fallaron (por referencia).
+     * @return string  " De esos, a 2 no les salió (…): Ana y Juan." o ''.
+     */
+    protected static function lo_que_ya_fallo_en_el_turno($accion_id, Carbon $desde, array &$no_salieron)
+    {
+        $fallidas = EnviosFallidosDelAsistenteHelper::de_la_tarjeta_desde($accion_id, null, $desde);
+
+        if (!count($fallidas)) {
+            return '';
+        }
+
+        EnviosFallidosDelAsistenteHelper::sellar_dichas_en_el_turno($fallidas);
+
+        $cantidad = 0;
+        $nombres = [];
+
+        foreach ($fallidas as $fila) {
+
+            $cantidad += (int) $fila->cantidad;
+
+            foreach ($fila->lista_de_nombres() as $nombre) {
+                $nombres[] = $nombre;
+                $no_salieron[] = ['cliente' => (string) $nombre, 'motivo' => (string) $fila->motivo];
+            }
+        }
+
+        return ' De esos, a ' . $cantidad . ' no ' . ($cantidad === 1 ? 'le' : 'les') . ' salió ('
+            . trim((string) $fallidas->first()->motivo) . '): ' . DestinatariosIaHelper::lista_de_nombres($nombres) . '.';
     }
 
     /**
@@ -367,11 +446,13 @@ class PropuestaRecordatoriosCobroIaHelper
      * @param  float|null  $monto_minimo
      * @param  int|null  $dias
      * @param  array<int, int>  $solo_estos  Vacío = todos los del filtro.
+     * @param  bool  $respetar_umbral_propio  true = el COALESCE de la pantalla; false = los días dichos
+     *                                        tal cual (ver proponer() y el caso de demo3 del 19/10/2026).
      * @return array{dias: int, clientes: array<int, array{client: Client, deuda: float}>, salteados: array}
      */
-    protected static function evaluar(ContextoDeCargaIa $contexto, $monto_minimo, $dias, array $solo_estos)
+    protected static function evaluar(ContextoDeCargaIa $contexto, $monto_minimo, $dias, array $solo_estos, $respetar_umbral_propio = true)
     {
-        $deudores = VentasSinCobrarIaHelper::clientes_deudores($contexto->owner_id, $dias, $contexto->persona, $monto_minimo);
+        $deudores = VentasSinCobrarIaHelper::clientes_deudores($contexto->owner_id, $dias, $contexto->persona, $monto_minimo, (bool) $respetar_umbral_propio);
 
         $por_id = [];
 
@@ -440,14 +521,15 @@ class PropuestaRecordatoriosCobroIaHelper
      * @param  ContextoDeCargaIa  $contexto
      * @param  int  $client_id
      * @param  int  $dias
+     * @param  bool  $respetar_umbral_propio  El mismo criterio que el filtro y que el job (N1).
      * @return \Illuminate\Database\Eloquent\Collection
      */
-    protected static function ventas_del_cliente(ContextoDeCargaIa $contexto, $client_id, $dias)
+    protected static function ventas_del_cliente(ContextoDeCargaIa $contexto, $client_id, $dias, $respetar_umbral_propio = true)
     {
         // El mismo recorte que usa el filtro (y que el job aplica con la misma persona).
         $recorte = VentasSinCobrarIaHelper::employee_id_del_recorte($contexto->persona, $contexto->owner_id);
 
-        return VentasSinCobrarHelper::query_de_ventas($contexto->owner_id, $recorte, (int) $dias)
+        return VentasSinCobrarHelper::query_de_ventas($contexto->owner_id, $recorte, (int) $dias, true, (bool) $respetar_umbral_propio)
             ->where('client_id', (int) $client_id)
             ->with('current_acount')
             ->orderBy('created_at', 'ASC')

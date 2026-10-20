@@ -45,6 +45,12 @@ use Illuminate\Support\Facades\Cache;
  *      link es la portada y, si estaba despublicado, se publica al confirmar (la tarjeta lo dice). Sin
  *      tienda cargada (`users.online` vacío) no se manda una promo de un artículo o un combo: el link
  *      estaría roto.
+ *   5. VARIOS ARTÍCULOS, CADA UNO CON SU LINK (N5 de la misión asistente-arreglos-segunda-prueba,
+ *      19/10/2026): hasta MAXIMO_DE_ARTICULOS en `article_ids`, cada uno con las guardas de arriba. El
+ *      texto libre lleva un renglón "<nombre>: <link>" por artículo; la plantilla, que tiene un solo
+ *      lugar para el link, lleva la portada de la tienda (la tarjeta y el bloque lo dicen). Al confirmar
+ *      se revalida CADA link. Y el texto lo REDACTA EL MODELO (sin `texto` es un error para él, no un
+ *      "faltan" para el dueño), sin links adentro: los pone el sistema.
  *
  * Por cliente: con la ventana de 24 h abierta sale como texto libre ("Hola {nombre}! {texto}" y el
  * link); cerrada, con la plantilla de marketing `cc_cli_promocion` [Nombre, Negocio, Detalle de la
@@ -116,11 +122,32 @@ class PropuestaPromocionWhatsappIaHelper
     const MOTIVO_SIN_CONFIGURACION = 'sin_configuracion';
 
     /**
+     * Cuántos artículos puede llevar una promo (N5 de la misión asistente-arreglos-segunda-prueba,
+     * 19/10/2026). Cada uno suma un renglón con su link al mensaje: con más de cinco el WhatsApp deja de
+     * ser una promo y pasa a ser un catálogo, que es otra cosa.
+     */
+    const MAXIMO_DE_ARTICULOS = 5;
+
+    /**
+     * Lo que se le contesta AL MODELO cuando no mandó el texto (N5): que lo redacte él. Hasta el 19/10/2026
+     * era un `faltan` y el modelo le pedía al dueño que le dictara la promo; el dueño la ve tal cual sale
+     * en el bloque y la corrige antes del sí, así que no hace falta que la escriba él.
+     */
+    const MENSAJE_SIN_TEXTO = 'Falta el texto de la promo. Redactalo vos con los artículos y el precio de cada uno como lo '
+        . 'devolvió consultar_stock_de_articulos (sin saludo y sin links: los pone el sistema) y volvé a llamar; el dueño '
+        . 'lo ve en el bloque y lo corrige antes del sí. No le pidas que te lo dicte.';
+
+    /** Lo que se le contesta al modelo cuando el texto trae un link escrito (N5). */
+    const MENSAJE_TEXTO_CON_LINK = 'El texto de la promo no puede traer links: los arma el sistema (uno por artículo, o el de '
+        . 'la tienda) con la dirección real, y nunca se inventan. Sacá el link del texto y volvé a llamar.';
+
+    /**
      * Herramienta proponer_promocion_por_whatsapp.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
-     * @param  array  $input  texto*, article_id, articulo, combo_id, combo, vigencia, client_ids, reemplaza_a
+     * @param  array  $input  texto*, article_id, articulo, combo_id, combo, vigencia, client_ids, reemplaza_a,
+     *                        article_ids (hasta MAXIMO_DE_ARTICULOS, N5)
      * @return array
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input): array
@@ -134,9 +161,25 @@ class PropuestaPromocionWhatsappIaHelper
 
         $texto = self::texto_limpio(EntradaDeCargaIa::texto($input, 'texto'));
 
+        /*
+         * 🔴 EL TEXTO LO REDACTA EL MODELO, NO SE LO PIDE AL DUEÑO (N5 de la misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). Hasta acá, sin `texto` esto devolvía `faltan` y
+         * el modelo le pedía al dueño que le dictara la promo palabra por palabra. Ahora es un error PARA
+         * EL MODELO: que la redacte él con los artículos y sus precios; el dueño la ve tal cual sale en el
+         * bloque y la corrige antes del sí.
+         */
         if ($texto === '') {
 
-            return RespuestaDeCargaIa::faltan(['el texto de la promoción (qué se ofrece, a qué precio)']);
+            return RespuestaDeCargaIa::error(self::MENSAJE_SIN_TEXTO);
+        }
+
+        /*
+         * 🔴 Y SIN LINKS ADENTRO: los pone el sistema (uno por artículo, o la portada), armados con el slug
+         * real. Un link que el modelo escribió en el texto es un link inventado, y el cliente lo abre.
+         */
+        if (self::trae_un_link($texto)) {
+
+            return RespuestaDeCargaIa::error(self::MENSAJE_TEXTO_CON_LINK);
         }
 
         if (mb_strlen($texto) > self::LARGO_MAXIMO_DEL_TEXTO) {
@@ -156,7 +199,9 @@ class PropuestaPromocionWhatsappIaHelper
          * sin que existiera ningún combo. Si el texto habla de un combo y no vino cuál, no se arma: una
          * promo que nombra un combo que no existe manda al cliente a buscar algo que no está en la tienda.
          */
-        $vino_un_articulo = !EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'article_id')) || !EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'articulo'));
+        $vino_un_articulo = !EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'article_id'))
+            || !EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'articulo'))
+            || count(self::ids(EntradaDeCargaIa::valor($input, 'article_ids'))) > 0;
 
         // I5: con un artículo no aplica ("Combo desayuno" puede ser el nombre de un artículo).
         if (!$vino_un_articulo && self::habla_de_un_combo($texto) && EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'combo')) && EntradaDeCargaIa::vacio(EntradaDeCargaIa::valor($input, 'combo_id'))) {
@@ -164,7 +209,7 @@ class PropuestaPromocionWhatsappIaHelper
             return RespuestaDeCargaIa::error(
                 'El texto de la promo habla de un combo pero no me dijiste cuál (combo o combo_id). Si el combo existe, '
                 . 'pasámelo; si el negocio no tiene Combos o no lo armaste, decíselo al dueño y ofrecé la promo del o de '
-                . 'los artículos con su link, sin nombrar un combo que no existe.'
+                . 'los artículos (en article_ids, hasta ' . self::MAXIMO_DE_ARTICULOS . ': cada uno sale con su link), sin nombrar un combo que no existe.'
             );
         }
 
@@ -235,7 +280,13 @@ class PropuestaPromocionWhatsappIaHelper
          * que corresponda en ese momento. Sin plantilla aprobada, los que no escribieron en 24 horas ya
          * quedaron salteados y sale solo el mensaje.
          */
-        $como_mensaje = self::armar_mensaje($primero, $texto, $vigencia_dicha, $destino['link']);
+        /*
+         * Con VARIOS artículos (N5, 19/10/2026) el mensaje lleva un renglón "<nombre>: <link>" por artículo;
+         * la plantilla tiene un solo lugar para el link y va con la portada de la tienda ($destino['link']).
+         */
+        $links = self::links_de_los_articulos($destino);
+
+        $como_mensaje = self::armar_mensaje($primero, $texto, $vigencia_dicha, $destino['link'], $links);
 
         $como_plantilla = is_null($plantilla)
             ? null
@@ -269,8 +320,27 @@ class PropuestaPromocionWhatsappIaHelper
         $renglones = [
             ['etiqueta' => 'Le llega a ' . count($nombres), 'valor' => DestinatariosIaHelper::lista_de_nombres($nombres)],
             ['etiqueta' => 'Cómo sale', 'valor' => self::descripcion_de_canales($evaluacion['por_canal'])],
-            ['etiqueta' => 'Link', 'valor' => $link],
         ];
+
+        // Las líneas de "a dónde lleva" del bloque: un link, o uno por artículo y la portada para la plantilla.
+        $lineas_de_links = [];
+
+        if (count($links)) {
+
+            $renglones[] = ['etiqueta' => 'Links (uno por artículo)', 'valor' => self::links_en_una_linea($links)];
+            $lineas_de_links[] = 'Links (uno por artículo): ' . self::links_en_una_linea($links);
+
+            if (!is_null($plantilla)) {
+                // La plantilla tiene UN solo lugar para el link: va la portada, y el dueño lo tiene que saber.
+                $renglones[] = ['etiqueta' => 'Por plantilla', 'valor' => 'va el link de la tienda: ' . $link];
+                $lineas_de_links[] = 'Por plantilla va el link de la tienda: ' . $link;
+            }
+
+        } else {
+
+            $renglones[] = ['etiqueta' => 'Link', 'valor' => $link];
+            $lineas_de_links[] = 'Link: ' . $link;
+        }
 
         foreach (DestinatariosIaHelper::renglones_de_salteados($grupos) as $renglon) {
             $renglones[] = $renglon;
@@ -293,10 +363,10 @@ class PropuestaPromocionWhatsappIaHelper
         $bloque = DestinatariosIaHelper::bloque_que_entra(
             'Promoción por WhatsApp',
             $nombres,
-            [
-                'Cómo sale: ' . self::descripcion_de_canales($evaluacion['por_canal']),
-                'Link: ' . $link,
-            ],
+            array_merge(
+                ['Cómo sale: ' . self::descripcion_de_canales($evaluacion['por_canal'])],
+                $lineas_de_links
+            ),
             $evaluacion['salteados'],
             'El texto que sale',
             $texto_que_sale,
@@ -312,7 +382,7 @@ class PropuestaPromocionWhatsappIaHelper
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_PROMOCION_WHATSAPP,
-            self::clave($texto, $ids_que_reciben),
+            self::clave($texto, $ids_que_reciben, isset($destino['article_ids']) ? $destino['article_ids'] : []),
             [
                 // 🔴 Los clientes que el dueño VIO: al confirmar se manda a estos y a nadie más.
                 'client_ids'        => $ids_que_reciben,
@@ -320,6 +390,11 @@ class PropuestaPromocionWhatsappIaHelper
                 'vigencia'          => $vigencia_dicha,
                 'link'              => $destino['link'],
                 'article_id'        => isset($destino['article_id']) ? $destino['article_id'] : null,
+                /*
+                 * Con varios artículos (N5): cada uno con el link que el dueño VIO. La confirmación revalida
+                 * CADA link (no solo `link`, que acá es la portada de la plantilla) y el job los recibe.
+                 */
+                'articulos'         => isset($destino['articulos']) ? $destino['articulos'] : [],
                 'combo_id'          => isset($destino['combo_id']) ? $destino['combo_id'] : null,
                 // Cómo salía cada uno al proponer (el bloque muestra los dos caminos: ver arriba).
                 'caminos'           => $caminos,
@@ -381,10 +456,22 @@ class PropuestaPromocionWhatsappIaHelper
             throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar. Pedímela de nuevo.');
         }
 
+        // Los artículos que el dueño vio con su link (varios, N5); una tarjeta de antes no los tiene.
+        $articulos_mostrados = isset($datos['articulos']) && is_array($datos['articulos']) ? array_values($datos['articulos']) : [];
+
+        $ids_mostrados = [];
+
+        foreach ($articulos_mostrados as $articulo) {
+            if (isset($articulo['article_id'])) {
+                $ids_mostrados[] = (int) $articulo['article_id'];
+            }
+        }
+
         // El destino, revalidado: el artículo pudo despublicarse y el combo borrarse en el medio.
         $destino = self::resolver_destino($contexto, [
-            'article_id' => isset($datos['article_id']) ? $datos['article_id'] : null,
-            'combo_id'   => isset($datos['combo_id']) ? $datos['combo_id'] : null,
+            'article_id'  => isset($datos['article_id']) ? $datos['article_id'] : null,
+            'article_ids' => $ids_mostrados,
+            'combo_id'    => isset($datos['combo_id']) ? $datos['combo_id'] : null,
         ]);
 
         if (RespuestaDeCargaIa::es_negativa($destino)) {
@@ -402,6 +489,56 @@ class PropuestaPromocionWhatsappIaHelper
 
             throw new AccionIaException(422, 'No mandé nada: cambió el link de la promo desde que se la mostré al dueño '
                 . '(ahora sería ' . (is_null($destino['link']) ? 'sin link' : $destino['link']) . '). Volvé a mostrársela y pedile el sí de nuevo.');
+        }
+
+        /*
+         * 🔴 Y CON VARIOS ARTÍCULOS, CADA LINK (N5, 19/10/2026): `link` es la portada que lleva la plantilla;
+         * el texto libre lleva uno por artículo, y cualquiera que haya cambiado (el slug, la tienda) sería
+         * un link que el dueño no vio.
+         */
+        $links = self::links_de_los_articulos($destino);
+
+        if (count($articulos_mostrados) || count($links)) {
+
+            $antes = [];
+
+            foreach ($articulos_mostrados as $articulo) {
+                $antes[] = isset($articulo['link']) ? (string) $articulo['link'] : '';
+            }
+
+            $ahora = [];
+
+            foreach ($links as $articulo) {
+                $ahora[] = (string) $articulo['link'];
+            }
+
+            if ($antes !== $ahora) {
+
+                throw new AccionIaException(422, 'No mandé nada: cambió el link de alguno de los artículos de la promo desde que se la mostré al '
+                    . 'dueño (ahora serían ' . implode(', ', $ahora) . '). Volvé a mostrársela y pedile el sí de nuevo.');
+            }
+
+            /*
+             * Y EL NOMBRE (revisión del 19/10/2026): el renglón que sale es "<nombre>: <link>", así que un
+             * artículo renombrado entre la tarjeta y el sí saldría con un renglón que el dueño no leyó.
+             */
+            $nombres_antes = [];
+
+            foreach ($articulos_mostrados as $articulo) {
+                $nombres_antes[] = isset($articulo['nombre']) ? (string) $articulo['nombre'] : '';
+            }
+
+            $nombres_ahora = [];
+
+            foreach ($links as $articulo) {
+                $nombres_ahora[] = (string) $articulo['nombre'];
+            }
+
+            if ($nombres_antes !== $nombres_ahora) {
+
+                throw new AccionIaException(422, 'No mandé nada: cambió el nombre de alguno de los artículos de la promo desde que se la mostré al '
+                    . 'dueño (ahora serían ' . implode(', ', $nombres_ahora) . '). Volvé a mostrársela y pedile el sí de nuevo.');
+            }
         }
 
         if (WhatsappBotConfig::getForUser($contexto->owner_id) === null) {
@@ -453,6 +590,9 @@ class PropuestaPromocionWhatsappIaHelper
         $accion->datos = $datos;
         $accion->save();
 
+        // Para ver, después de despachar, qué falló ADENTRO de este turno (cola sync).
+        $desde = Carbon::now()->subSecond();
+
         foreach ($evaluacion['reciben'] as $fila) {
 
             SendPromocionWhatsappJob::dispatch(
@@ -462,7 +602,9 @@ class PropuestaPromocionWhatsappIaHelper
                 $destino['link'],
                 $vigencia,
                 $persona_id,
-                (int) $accion->id
+                (int) $accion->id,
+                // Con varios artículos, un renglón por artículo en el texto libre (N5).
+                $links
             );
         }
 
@@ -472,11 +614,57 @@ class PropuestaPromocionWhatsappIaHelper
             . ': sale por WhatsApp en segundo plano, uno por cliente.'
             . (!empty($destino['publicar_combo']) ? ' El combo "' . $destino['nombre'] . '" quedó publicado en la tienda.' : '');
 
+        $texto_resultado .= self::lo_que_ya_fallo_en_el_turno((int) $accion->id, $desde, $no_salieron);
+
         return [
             'texto'       => $texto_resultado,
             'encolados'   => $encolados,
             'no_salieron' => $no_salieron,
+            /*
+             * Para el modelo (`detalle.aviso`, N3 de la misión asistente-arreglos-segunda-prueba,
+             * 19/10/2026): sale en segundo plano, así que no se da por recibida; y el "te aviso" se
+             * promete solo si el aviso va a salir.
+             */
+            'aviso'       => 'No digas que les llegó: sale en segundo plano.'
+                . (EnviosFallidosDelAsistenteHelper::avisa_por_whatsapp($accion) ? ' Si alguna no sale, le aviso por acá.' : ''),
         ];
+    }
+
+    /**
+     * Lo que ya falló adentro del turno de la confirmación (cola sync: los jobs corren adentro del
+     * dispatch), dicho en el resultado y sellado para que el admin no lo vuelva a avisar. Con la cola de
+     * verdad todavía no hay nada y devuelve ''. Mismo criterio que el recordatorio de cobro.
+     *
+     * @param  int  $accion_id
+     * @param  \Carbon\Carbon  $desde
+     * @param  array  $no_salieron  Se le suman los que fallaron (por referencia).
+     * @return string
+     */
+    protected static function lo_que_ya_fallo_en_el_turno($accion_id, Carbon $desde, array &$no_salieron)
+    {
+        $fallidas = EnviosFallidosDelAsistenteHelper::de_la_tarjeta_desde($accion_id, null, $desde);
+
+        if (!count($fallidas)) {
+            return '';
+        }
+
+        EnviosFallidosDelAsistenteHelper::sellar_dichas_en_el_turno($fallidas);
+
+        $cantidad = 0;
+        $nombres = [];
+
+        foreach ($fallidas as $fila) {
+
+            $cantidad += (int) $fila->cantidad;
+
+            foreach ($fila->lista_de_nombres() as $nombre) {
+                $nombres[] = $nombre;
+                $no_salieron[] = ['cliente' => (string) $nombre, 'motivo' => (string) $fila->motivo];
+            }
+        }
+
+        return ' De esos, a ' . $cantidad . ' no ' . ($cantidad === 1 ? 'le' : 'les') . ' salió ('
+            . trim((string) $fallidas->first()->motivo) . '): ' . DestinatariosIaHelper::lista_de_nombres($nombres) . '.';
     }
 
     /**
@@ -494,9 +682,12 @@ class PropuestaPromocionWhatsappIaHelper
      * @param  string  $vigencia  La que dijo el dueño ('' = no dijo).
      * @param  int|null  $sent_by_user_id
      * @param  int|null  $accion_id  La tarjeta que lo encoló: no cuenta como reserva de sí misma.
+     * @param  array  $links  Con varios artículos (N5, 19/10/2026): [{article_id, nombre, link}], un renglón
+     *                        por artículo en el texto libre. Al final y con default: un job encolado
+     *                        antes de este cambio llega sin él y sale como siempre, con `$link`.
      * @return array{ok: bool, motivo: string|null, mensaje_id: int|null}
      */
-    public static function enviar_a_cliente($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null, $accion_id = null)
+    public static function enviar_a_cliente($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id = null, $accion_id = null, $links = [])
     {
         $owner_id = (int) $owner_id;
 
@@ -510,8 +701,8 @@ class PropuestaPromocionWhatsappIaHelper
 
             return Cache::lock('promocion_whatsapp:' . $owner_id, self::VIDA_DEL_CANDADO)->block(
                 self::ESPERA_DEL_CANDADO,
-                function () use ($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id) {
-                    return self::enviar_con_el_candado_tomado($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id);
+                function () use ($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id, $links) {
+                    return self::enviar_con_el_candado_tomado($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id, $links);
                 }
             );
 
@@ -531,9 +722,10 @@ class PropuestaPromocionWhatsappIaHelper
      * @param  string  $vigencia
      * @param  int|null  $sent_by_user_id
      * @param  int|null  $accion_id
+     * @param  array  $links  Ver enviar_a_cliente().
      * @return array{ok: bool, motivo: string|null, mensaje_id: int|null}
      */
-    protected static function enviar_con_el_candado_tomado($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id)
+    protected static function enviar_con_el_candado_tomado($owner_id, $client_id, $texto, $link, $vigencia, $sent_by_user_id, $accion_id, $links = [])
     {
         $client = Client::where('id', (int) $client_id)->where('user_id', $owner_id)->first();
 
@@ -564,7 +756,7 @@ class PropuestaPromocionWhatsappIaHelper
 
         if ($canal === 'texto') {
 
-            $body = self::armar_mensaje($nombre, (string) $texto, (string) $vigencia, $link);
+            $body = self::armar_mensaje($nombre, (string) $texto, (string) $vigencia, $link, is_array($links) ? $links : []);
 
             $wa_message_id = $send_service->send_text($chat->phone, $body, $config);
 
@@ -573,6 +765,8 @@ class PropuestaPromocionWhatsappIaHelper
             }
 
             $guardado = WhatsappChatHelper::store_outbound_promocion_message($chat, $body, $wa_message_id, $sent_by_user_id);
+
+            self::anotar_la_tarjeta($guardado, $accion_id);
 
             return ['ok' => true, 'motivo' => null, 'mensaje_id' => (int) $guardado->id];
         }
@@ -595,20 +789,52 @@ class PropuestaPromocionWhatsappIaHelper
 
         $guardado = WhatsappChatHelper::store_outbound_promocion_message($chat, $template->render_body($variables), $wa_message_id, $sent_by_user_id, $template->meta_template_name);
 
+        self::anotar_la_tarjeta($guardado, $accion_id);
+
         return ['ok' => true, 'motivo' => null, 'mensaje_id' => (int) $guardado->id];
+    }
+
+    /**
+     * Anota la tarjeta en la fila de la promo que salió (N3 de la misión asistente-arreglos-segunda-prueba,
+     * 19/10/2026): si Meta la rechaza después (webhook `failed`), WhatsappChatHelper la encuentra y el
+     * fallo vuelve al dueño. Por query y sin poder lanzar: la promo ya está en el teléfono del cliente, y
+     * una excepción acá la dejaría sin contar para los topes.
+     *
+     * @param  \App\Models\WhatsappChatMessage  $guardado
+     * @param  int|null  $accion_id
+     * @return void
+     */
+    protected static function anotar_la_tarjeta($guardado, $accion_id)
+    {
+        if (empty($accion_id) || !is_object($guardado) || empty($guardado->id)) {
+            return;
+        }
+
+        try {
+
+            WhatsappChatMessage::where('id', (int) $guardado->id)->update(['ai_message_action_id' => (int) $accion_id]);
+
+        } catch (\Throwable $e) {
+            // Sin la marca, un rechazo posterior de Meta no vuelve al dueño; la promo salió igual.
+        }
     }
 
     /**
      * El mensaje de texto libre (ventana abierta): "Hola {nombre}! {texto}", la vigencia si el dueño
      * la dijo, y el link.
      *
+     * Con VARIOS artículos (N5 de la misión asistente-arreglos-segunda-prueba, 19/10/2026), en vez del link
+     * suelto va un renglón "<nombre>: <link>" por artículo: el prompt y el error del combo prometían
+     * "cada uno con su link" y la herramienta solo aceptaba uno.
+     *
      * @param  string  $nombre
      * @param  string  $texto
      * @param  string  $vigencia  '' = no la dijo (en el texto libre no se inventa una).
      * @param  string|null  $link
+     * @param  array  $links  [{article_id, nombre, link}] con 2+ artículos; vacío = el link de siempre.
      * @return string
      */
-    public static function armar_mensaje($nombre, $texto, $vigencia, $link)
+    public static function armar_mensaje($nombre, $texto, $vigencia, $link, $links = [])
     {
         $mensaje = 'Hola ' . $nombre . '! ' . $texto;
 
@@ -616,11 +842,103 @@ class PropuestaPromocionWhatsappIaHelper
             $mensaje .= "\nVálida hasta el " . trim((string) $vigencia) . '.';
         }
 
-        if (!is_null($link) && $link !== '') {
+        $renglones = [];
+
+        foreach ((array) $links as $articulo) {
+            if (is_array($articulo) && isset($articulo['link']) && trim((string) $articulo['link']) !== '') {
+                $renglones[] = (isset($articulo['nombre']) && trim((string) $articulo['nombre']) !== '' ? trim((string) $articulo['nombre']) . ': ' : '')
+                    . (string) $articulo['link'];
+            }
+        }
+
+        if (count($renglones)) {
+
+            $mensaje .= "\n" . implode("\n", $renglones);
+
+        } elseif (!is_null($link) && $link !== '') {
+
             $mensaje .= "\n" . $link;
         }
 
         return $mensaje;
+    }
+
+    /**
+     * Los artículos de una promo de VARIOS, con su link, tal como los resolvió resolver_destino(); vacío si
+     * la promo es de uno, de un combo o general.
+     *
+     * @param  array  $destino
+     * @return array<int, array{article_id: int, nombre: string, link: string}>
+     */
+    protected static function links_de_los_articulos(array $destino)
+    {
+        return isset($destino['articulos']) && is_array($destino['articulos']) ? array_values($destino['articulos']) : [];
+    }
+
+    /**
+     * "Taladro: https://…; Amoladora: https://…", para la tarjeta y el bloque.
+     *
+     * @param  array  $links
+     * @return string
+     */
+    protected static function links_en_una_linea(array $links)
+    {
+        $partes = [];
+
+        foreach ($links as $articulo) {
+            $partes[] = (string) $articulo['nombre'] . ': ' . (string) $articulo['link'];
+        }
+
+        return implode('; ', $partes);
+    }
+
+    /**
+     * true si el texto de la promo trae un link escrito (N5): los links los arma el sistema, y uno que
+     * escribió el modelo es inventado.
+     *
+     * Qué se considera link:
+     *   - "http" (con o sin s) y "/articulos/" (la ruta de un artículo de la tienda);
+     *   - 🔴 desde la revisión del 19/10/2026, lo que pasaba sin http: "www.", "wa.me/" y un DOMINIO
+     *     escrito suelto ("mitienda.com/ofertas", "ferreteria-falsa.com.ar", "tienda.online"): una
+     *     palabra pegada a un punto y a una terminación de dominio conocida, con o sin ruta.
+     *
+     * 🔴 Segunda revisión (19/10/2026): también los acortadores y los links de perfiles ("bit.ly/…",
+     * "t.me/…", "linktr.ee/…", "goo.gl/…"): las terminaciones ly, me, ee, co y gl, y cualquier dominio
+     * seguido de una ruta ("algo.xyz/promo").
+     *
+     * 🔴 Y LO QUE NO TIENE QUE FRENAR: los números con punto ("1.5 L", "$ 3.000", "20.10") no son dominio
+     * porque la terminación tiene que ser de letras; una abreviatura con espacio después ("20 L. Oferta")
+     * tampoco. Un MAIL ("ventas@ferreteria.com.ar", "info@hipermax.net.ar") no es un link: las
+     * direcciones de mail se sacan enteras ANTES de buscar dominios (si no, la parte de después de la
+     * arroba, ".com.ar", se leía como dominio).
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    protected static function trae_un_link($texto)
+    {
+        $texto = mb_strtolower((string) $texto);
+
+        foreach (['http', '/articulos/', 'www.', 'wa.me/'] as $marca) {
+
+            if (mb_strpos($texto, $marca) !== false) {
+                return true;
+            }
+        }
+
+        // Los mails, afuera enteros: no son links y su dominio no tiene que frenar la promo.
+        $texto = (string) preg_replace('/[^\s@]+@[^\s@]+/u', ' ', $texto);
+
+        // Un dominio suelto con una terminación conocida, con o sin ruta.
+        if (preg_match(
+            '/(?<![a-z0-9\-])[a-z0-9][a-z0-9\-]*\.(?:com|ar|net|org|store|shop|online|site|info|io|ly|me|ee|co|gl)(?![a-z0-9])/u',
+            $texto
+        ) === 1) {
+            return true;
+        }
+
+        // Cualquier dominio seguido de una ruta ("algo.xyz/promo"): eso es una dirección, no un texto.
+        return preg_match('/(?<![a-z0-9\-])[a-z0-9][a-z0-9\-]*\.[a-z]{2,}\/[^\s]/u', $texto) === 1;
     }
 
     /**
@@ -649,15 +967,23 @@ class PropuestaPromocionWhatsappIaHelper
     }
 
     /**
-     * Identidad de la promo para el reemplazo: el mismo texto a los mismos clientes.
+     * Identidad de la promo para el reemplazo: el mismo texto a los mismos clientes (y, con varios
+     * artículos, de los mismos artículos: N5). Sin artículos la clave es la de siempre.
      *
      * @param  string  $texto
      * @param  array<int, int>  $ids
+     * @param  array<int, int>  $article_ids
      * @return string
      */
-    public static function clave($texto, array $ids): string
+    public static function clave($texto, array $ids, array $article_ids = []): string
     {
-        return 'promocion_whatsapp:' . md5((string) $texto . '|' . implode(',', $ids));
+        $base = (string) $texto . '|' . implode(',', $ids);
+
+        if (count($article_ids)) {
+            $base .= '|articulos:' . implode(',', $article_ids);
+        }
+
+        return 'promocion_whatsapp:' . md5($base);
     }
 
     /**
@@ -789,9 +1115,14 @@ class PropuestaPromocionWhatsappIaHelper
     /**
      * Qué se promociona y con qué link: un artículo, un combo, o nada (la portada de la tienda si hay).
      *
+     * Con VARIOS artículos (`article_ids`, N5 de la misión asistente-arreglos-segunda-prueba, 19/10/2026):
+     * cada uno pasa por las MISMAS guardas que uno solo (del negocio, publicado en la tienda, con slug) y
+     * lleva su link; `link` es la portada de la tienda, que es lo que lleva la plantilla (tiene un solo
+     * lugar para el link). Uno que no pasa corta la promo nombrándolo. Con un solo id, todo como siempre.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $input
-     * @return array  {link, article_id?, combo_id?, nombre?, publicar_combo?} o la respuesta negativa.
+     * @return array  {link, article_id?, article_ids?, articulos?, combo_id?, nombre?, publicar_combo?} o la respuesta negativa.
      */
     protected static function resolver_destino(ContextoDeCargaIa $contexto, array $input)
     {
@@ -802,8 +1133,21 @@ class PropuestaPromocionWhatsappIaHelper
         $combo_id = EntradaDeCargaIa::valor($input, 'combo_id');
         $combo = EntradaDeCargaIa::texto($input, 'combo');
 
-        $quiere_articulo = (is_numeric($article_id) && (int) $article_id > 0) || $articulo !== '';
+        // Los ids de artículos: los de `article_ids` y, si vino, el `article_id` suelto adelante (sin repetir).
+        $article_ids = self::ids(EntradaDeCargaIa::valor($input, 'article_ids'));
+
+        if (is_numeric($article_id) && (int) $article_id > 0 && !in_array((int) $article_id, $article_ids, true)) {
+            array_unshift($article_ids, (int) $article_id);
+        }
+
+        $quiere_articulo = count($article_ids) > 0 || $articulo !== '';
         $quiere_combo = (is_numeric($combo_id) && (int) $combo_id > 0) || $combo !== '';
+
+        if (count($article_ids) > self::MAXIMO_DE_ARTICULOS) {
+
+            return RespuestaDeCargaIa::error('Una promo lleva hasta ' . self::MAXIMO_DE_ARTICULOS . ' artículos (cada uno sale con su link) y '
+                . 'me pasaste ' . count($article_ids) . '. Proponé los ' . self::MAXIMO_DE_ARTICULOS . ' que más le importan al dueño, o armá dos promos.');
+        }
 
         if ($quiere_articulo && $quiere_combo) {
 
@@ -821,9 +1165,14 @@ class PropuestaPromocionWhatsappIaHelper
             return RespuestaDeCargaIa::error('El negocio no tiene tienda online cargada, así que no hay link al que mandar a los clientes. No mando una promo con un link roto: si querés, la mando sin artículo ni combo, sin link.');
         }
 
+        if ($quiere_articulo && count($article_ids) > 1) {
+
+            return self::resolver_varios_articulos($contexto, $tienda, $article_ids);
+        }
+
         if ($quiere_articulo) {
 
-            $modelo = self::resolver_articulo($contexto->owner_id, $article_id, $articulo);
+            $modelo = self::resolver_articulo($contexto->owner_id, count($article_ids) ? $article_ids[0] : null, $articulo);
 
             if (RespuestaDeCargaIa::es_negativa($modelo)) {
                 return $modelo;
@@ -861,6 +1210,56 @@ class PropuestaPromocionWhatsappIaHelper
             'combo_id'       => (int) $modelo->id,
             'nombre'         => (string) $modelo->name,
             'publicar_combo' => $publicar,
+        ];
+    }
+
+    /**
+     * Una promo de VARIOS artículos (N5, 19/10/2026): cada uno con las mismas guardas que uno solo y su
+     * link a la tienda. 🔴 Uno que no pasa (de otro negocio, despublicado, sin slug) corta la promo entera
+     * nombrándolo: mandar la promo sin él cambiaría lo que el modelo le propuso al dueño, y mandarla con
+     * un link que no abre es mandar un link roto.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $tienda  La URL de la tienda (ya validada: no es null).
+     * @param  array<int, int>  $article_ids  De 2 a MAXIMO_DE_ARTICULOS.
+     * @return array  {link (la portada), article_ids, articulos: [{article_id, nombre, link}]} o la respuesta negativa.
+     */
+    protected static function resolver_varios_articulos(ContextoDeCargaIa $contexto, $tienda, array $article_ids)
+    {
+        $articulos = [];
+
+        foreach ($article_ids as $id) {
+
+            $modelo = self::resolver_articulo($contexto->owner_id, $id, '');
+
+            if (RespuestaDeCargaIa::es_negativa($modelo)) {
+
+                return RespuestaDeCargaIa::error('No encontré el artículo ' . (int) $id . ' en este negocio: sacalo de article_ids o buscá el id correcto con consultar_stock_de_articulos.');
+            }
+
+            if (!(int) $modelo->online || trim((string) $modelo->slug) === '') {
+
+                return RespuestaDeCargaIa::error('El artículo "' . $modelo->name . '" no está publicado en la tienda, así que su link no le abriría a nadie. Publicalo en la tienda primero, o sacalo de la promo.');
+            }
+
+            $articulos[] = [
+                'article_id' => (int) $modelo->id,
+                'nombre'     => (string) $modelo->name,
+                'link'       => rtrim($tienda, '/') . '/articulos/' . rawurlencode((string) $modelo->slug) . '/' . (int) $contexto->owner_id,
+            ];
+        }
+
+        $ids = [];
+
+        foreach ($articulos as $articulo) {
+            $ids[] = $articulo['article_id'];
+        }
+
+        return [
+            // La plantilla tiene un solo lugar para el link: la portada de la tienda.
+            'link'        => $tienda,
+            'article_ids' => $ids,
+            'articulos'   => $articulos,
         ];
     }
 
