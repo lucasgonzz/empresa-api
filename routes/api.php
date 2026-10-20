@@ -51,6 +51,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('demo/chat/mensajes', 'DemoChatController@mensaje')->middleware('throttle:30,1');
     Route::post('demo/chat/videos/progreso', 'DemoChatController@progreso')->middleware('throttle:120,1');
     Route::post('demo/chat/videos/omitir', 'DemoChatController@omitir')->middleware('throttle:30,1');
+    Route::post('demo/chat/videos/seleccionar', 'DemoChatController@seleccionar')->middleware('throttle:30,1');
 
     /*
         Heartbeat de la demo (mision `demo-sesion-magic-link-no-expira`, 4/9/2026). El SPA le

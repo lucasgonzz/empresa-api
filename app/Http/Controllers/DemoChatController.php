@@ -44,6 +44,19 @@ class DemoChatController extends Controller
         return $proxy->solicitar('POST', '/videos/progreso', $datos);
     }
 
+    public function seleccionar(Request $request, DemoChatProxy $proxy)
+    {
+        if (!$this->en_demo($request)) {
+            return response(null, 204);
+        }
+        // La selección identifica un video; la sesión y el canal del servidor deciden el lead.
+        $datos = $request->validate([
+            'clave' => ['required', 'string', 'max:50', 'regex:/^(demo|recurso):[a-zA-Z0-9._-]+$/'],
+            'cliente_uuid' => 'required|uuid',
+        ]);
+        return $proxy->solicitar('POST', '/videos/seleccionar', $datos);
+    }
+
     public function omitir(Request $request, DemoChatProxy $proxy)
     {
         if (!$this->en_demo($request)) {

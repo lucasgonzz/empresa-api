@@ -53,6 +53,7 @@ class ChatDeLaDemoTest extends TestCase
         $this->getJson('/api/demo/chat')->assertStatus(204);
         $this->postJson('/api/demo/chat/iniciar')->assertStatus(204);
         $this->postJson('/api/demo/chat/mensajes', [])->assertStatus(204);
+        $this->postJson('/api/demo/chat/videos/seleccionar', [])->assertStatus(204);
         Http::assertNothingSent();
     }
 
@@ -80,6 +81,32 @@ class ChatDeLaDemoTest extends TestCase
     {
         Http::fake(['admin.test/*' => Http::response([], 404)]);
         $this->demo()->getJson('/api/demo/chat')->assertOk()->assertExactJson(['disponible' => false]);
+    }
+
+    public function test_seleccionar_reenvia_solo_clave_y_uuid_con_la_sesion_del_servidor()
+    {
+        $snapshot = $this->snapshot();
+        $snapshot['catalogo'] = [['clave' => 'demo:1.4', 'seccion' => 'Listado', 'posicion' => 2, 'cantidad' => 5]];
+        Http::fake(['admin.test/*' => Http::response($snapshot, 200)]);
+        $uuid = 'e1bbc0ec-a624-4357-b30a-95186697001a';
+        $this->demo()->postJson('/api/demo/chat/videos/seleccionar', [
+            'clave' => 'demo:1.4', 'cliente_uuid' => $uuid, 'lead_id' => 999, 'token' => 'otro', 'url' => 'https://otro.test/video.mp4',
+        ])->assertOk()->assertExactJson($snapshot);
+        Http::assertSent(function ($request) use ($uuid) {
+            return $request->method() === 'POST'
+                && $request->url() === 'https://admin.test/api/demo-chat/videos/seleccionar'
+                && $request->hasHeader('X-Demo-Eventos-Key', 'clave-interna-de-prueba')
+                && $request->data() === ['clave' => 'demo:1.4', 'cliente_uuid' => $uuid];
+        });
+    }
+
+    public function test_seleccion_invalida_no_sale_del_servidor_y_conserva_el_422_del_catalogo()
+    {
+        Http::fake(['admin.test/*' => Http::response(['message' => 'Video no disponible'], 422)]);
+        $this->demo()->postJson('/api/demo/chat/videos/seleccionar', ['clave' => '../otro', 'cliente_uuid' => 'e1bbc0ec-a624-4357-b30a-95186697001a'])->assertStatus(422);
+        $this->postJson('/api/demo/chat/videos/seleccionar', ['clave' => 'demo:1.1', 'cliente_uuid' => 'invalido'])->assertStatus(422);
+        Http::assertNothingSent();
+        $this->postJson('/api/demo/chat/videos/seleccionar', ['clave' => 'demo:1.1', 'cliente_uuid' => 'e1bbc0ec-a624-4357-b30a-95186697001a'])->assertStatus(422);
     }
 
     public function test_error_del_admin_no_expone_credenciales_ni_contenido_interno()
