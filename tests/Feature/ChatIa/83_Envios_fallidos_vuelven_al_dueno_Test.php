@@ -964,6 +964,41 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * Segunda revisión del 19/10/2026: un WhatsApp que falló y después se entregó queda neutralizado, y el
+     * aviso del mail del mismo comprobante vuelve a decir "Por WhatsApp sí salió.".
+     *
+     * @test
+     */
+    public function el_aviso_del_mail_ignora_el_whatsapp_que_fallo_y_despues_se_entrego()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list(, $propuesta, $confirmada) = $this->mandar_el_presupuesto();
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        $mensaje = WhatsappChatMessage::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['wa_message_id' => 'wamid.N3IDAYVUELTA', 'delivery_status' => 'enviado']);
+
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.failed', ['message' => ['id' => 'wamid.N3IDAYVUELTA']]);
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.delivered', ['message' => ['id' => 'wamid.N3IDAYVUELTA']]);
+
+        $this->assertSame(0, AiEnvioFallido::where('ai_message_action_id', $propuesta['tarjeta_id'])->where('canal', AiEnvioFallido::CANAL_WHATSAPP)->value('cantidad'), 'Neutralizada.');
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertCount(1, $avisos);
+        $this->assertStringEndsWith('el servidor de correo no lo aceptó. Por WhatsApp sí salió.', $avisos[0]['texto']);
+    }
+
+    /**
      * En un lote se resta solo ese cliente: de "Ana y Juan no la recibieron", si a Ana después le llega,
      * el aviso habla solo de Juan.
      *

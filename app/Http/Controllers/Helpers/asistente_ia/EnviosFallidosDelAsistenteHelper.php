@@ -202,10 +202,14 @@ class EnviosFallidosDelAsistenteHelper
             // Recortado igual que al registrarlo, para que el nombre coincida.
             $cliente = self::recortar($cliente, 191);
 
+            /*
+             * Las filas sin avisar, pidan o no el aviso: una tarjeta del panel no pide aviso, pero su fila
+             * igual dice "por WhatsApp falló" para el aviso del otro canal (el_otro_canal_salio()).
+             */
             $filas = AiEnvioFallido::where('ai_message_action_id', (int) $mensaje->ai_message_action_id)
                                     ->where('canal', AiEnvioFallido::CANAL_WHATSAPP)
                                     ->whereNull('avisado_por_whatsapp_at')
-                                    ->where('avisar_por_whatsapp', 1)
+                                    ->where('cantidad', '>', 0)
                                     ->orderBy('id', 'DESC')
                                     ->get();
 
@@ -213,6 +217,13 @@ class EnviosFallidosDelAsistenteHelper
 
                 if ($fila->tipo_envio === AiEnvioFallido::TIPO_COMPROBANTE) {
 
+                    /*
+                     * 🔴 NEUTRALIZADA = `cantidad` en 0 (segunda revisión del 19/10/2026): "cero no
+                     * salieron", igual que un lote que se vació. Es lo que miran el aviso del otro canal
+                     * (que vuelve a decir "Por WhatsApp sí salió.") y el ofrecimiento de mandarlo por
+                     * WhatsApp. Y deja de pedir aviso.
+                     */
+                    $fila->cantidad = 0;
                     $fila->avisar_por_whatsapp = false;
                     $fila->motivo = self::sumar_motivo($fila->motivo, 'después WhatsApp lo entregó');
                     $fila->timestamps = false;
@@ -495,6 +506,9 @@ class EnviosFallidosDelAsistenteHelper
                 $ya->motivo = $motivo;
             }
 
+            // Un fallo nuevo sobre una fila neutralizada (cantidad 0, ver deshacer_whatsapp_rechazado()) vuelve a contar.
+            $ya->cantidad = max(1, (int) $ya->cantidad);
+
             $ya->touch();
 
             return $ya;
@@ -634,7 +648,8 @@ class EnviosFallidosDelAsistenteHelper
             }
         }
 
-        if (AiEnvioFallido::where('ai_message_action_id', (int) $accion->id)->where('canal', $otro)->exists()) {
+        // Una fila del otro canal que se neutralizó (falló y después se entregó: cantidad 0) no cuenta.
+        if (AiEnvioFallido::where('ai_message_action_id', (int) $accion->id)->where('canal', $otro)->where('cantidad', '>', 0)->exists()) {
 
             return null;
         }
