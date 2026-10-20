@@ -1031,12 +1031,17 @@ class CatalogoDeEscrituraIaHelper
      *   - article.cost: ArticleController::store() y update() no asignan `cost` directo; lo hace
      *     set_costo_desde_request($model, $request), que lee `$request->cost` (y `cost_incluye_iva`,
      *     que no es columna) para descomponer el IVA según la condición fiscal.
+     *   - article.brand_id (solo alta, desde la ficha compartida por código de barras, 19/10/2026):
+     *     ArticleController::store() no asigna `$request->brand_id` directo; lo hace
+     *     ApplyProductFacts::brand($request, …), que devuelve `$request->brand_id` cuando viene y, si
+     *     no, crea o reusa la marca de la ficha. Sin esta entrada el alta del asistente dejaba de
+     *     ofrecer la marca (lo agarró el gate de la 4.3.15). La edición la sigue leyendo directo.
      *
      * @var array<string, array<string, array<int, string>>>
      */
     const LEIDOS_POR_HELPER = [
         'article' => [
-            self::OP_ALTA    => ['cost'],
+            self::OP_ALTA    => ['cost', 'brand_id'],
             self::OP_EDICION => ['cost'],
         ],
     ];
