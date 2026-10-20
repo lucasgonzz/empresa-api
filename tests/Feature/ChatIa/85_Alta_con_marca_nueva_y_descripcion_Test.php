@@ -689,6 +689,65 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
         $this->assertSame((int) $tres_m->id, (int) AiMessageAction::find($alta['tarjeta_id'])->datos['payload']['brand_id']);
     }
 
+    /**
+     * «Parecida» es por PALABRA completa, no por pedazo de palabra (segunda revisión): «lg» no se
+     * parece a «BelgicaP85». Y la lista de parecidas tiene tope: con 12 que encajan se ofrecen las
+     * primeras 10 y el texto lo dice.
+     *
+     * @test
+     */
+    public function parecida_es_por_palabra_completa_y_con_tope()
+    {
+        Brand::create(['name' => 'BelgicaP85', 'user_id' => $this->dueno->id, 'num' => 985]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $lg = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('lg'));
+
+        $this->assertFalse($lg['ok'], json_encode($lg));
+        $this->assertFalse(isset($lg['opciones']['si_no_es_ninguna']), '«lg» no se parece a «BelgicaP85»: ' . json_encode($lg));
+        $this->assertSame(PropuestaGenericaIaHelper::SI_NO_ESTA_LA_MARCA, $lg['opciones']['si_no_esta']);
+
+        for ($i = 1; $i <= 12; $i++) {
+            Brand::create(['name' => 'ZZTope ' . $i, 'user_id' => $this->dueno->id, 'num' => 990 + $i]);
+        }
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $tope = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZTope'));
+
+        $this->assertFalse($tope['ok'], json_encode($tope));
+        $this->assertCount(10, $tope['opciones']['brand_id']);
+        $this->assertStringContainsString('primeras 10', $tope['faltan'][0]);
+    }
+
+    /**
+     * Un brand_id NUMÉRICO que no es del dueño (otro negocio de la base compartida, o un id inventado)
+     * no termina en un si_no_esta que mande a crear la marca «305»: dice que esa marca no es de este
+     * negocio y pide el nombre.
+     *
+     * @test
+     */
+    public function un_brand_id_numerico_ajeno_pide_el_nombre_y_no_manda_a_crear_la_marca()
+    {
+        $otro = User::create([
+            'name'     => 'Otro dueño P85 id',
+            'email'    => 'p85-id-' . uniqid() . '@test.local',
+            'password' => bcrypt('secret'),
+        ]);
+
+        $ajena = Brand::create(['name' => 'ZZAjena id P85', 'user_id' => $otro->id, 'num' => 985]);
+
+        list($conversation, $assistant) = $this->conversacion_con_foto();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca((int) $ajena->id));
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertFalse(isset($respuesta['opciones']['si_no_esta']), 'No manda a crear la marca «' . $ajena->id . '»: ' . json_encode($respuesta));
+        $this->assertStringContainsString('por su nombre', $respuesta['faltan'][0]);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
     // =====================================================================
     // 2. El prompt y la herramienta
     // =====================================================================

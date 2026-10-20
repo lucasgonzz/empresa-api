@@ -1879,7 +1879,11 @@ class PropuestaGenericaIaHelper
                 continue;
             }
 
-            $la_contiene = mb_strpos($nombre, $buscado) !== false;
+            /*
+             * Las dos direcciones, por PALABRA completa (segunda revisión independiente): con un pedazo
+             * de palabra «lg» se parecía a «BelgicaP85».
+             */
+            $la_contiene = preg_match('/(^| )'.preg_quote($buscado, '/').'( |$)/u', $nombre) === 1;
 
             $esta_adentro = preg_match('/(^| )'.preg_quote($nombre, '/').'( |$)/u', $buscado) === 1;
 
@@ -1916,18 +1920,39 @@ class PropuestaGenericaIaHelper
             return self::error_de_marca_pendiente($texto);
         }
 
-        if (count($parecidas)) {
+        $opciones = [$campo['columna'] => self::opciones_de_relacion(array_slice($marcas, 0, self::MAX_OPCIONES), $columna_nombre)];
+
+        /*
+         * Un NÚMERO que no resolvió como id del dueño (resolver_relacion() ya lo buscó) ni como nombre
+         * exacto: es el id de una marca de otro negocio de la base compartida, o uno inventado. Mandar a
+         * crear la marca «305» sería peor que preguntar (segunda revisión independiente): se pide el
+         * nombre, sin si_no_esta.
+         */
+        if (preg_match('/^\d+$/', trim((string) $texto)) === 1) {
 
             return RespuestaDeCargaIa::faltan(
-                ['cuál '.$etiqueta.' es: ninguna se llama "'.$texto.'", pero hay '.(count($parecidas) === 1 ? 'una parecida' : count($parecidas).' parecidas')],
+                ['qué '.$etiqueta.' es, por su nombre: la '.$etiqueta.' N° '.trim((string) $texto).' no existe en este negocio'],
+                $opciones
+            );
+        }
+
+        if (count($parecidas)) {
+
+            /* Con tope (segunda revisión independiente): se ofrecen las primeras MAX_OPCIONES y el texto lo dice. */
+            $cuantas = count($parecidas);
+
+            $parecidas = array_slice($parecidas, 0, self::MAX_OPCIONES);
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál '.$etiqueta.' es: ninguna se llama "'.$texto.'", pero hay '
+                    .($cuantas === 1 ? 'una parecida' : $cuantas.' parecidas')
+                    .($cuantas > self::MAX_OPCIONES ? ' (te paso las primeras '.self::MAX_OPCIONES.')' : '')],
                 [
                     $campo['columna']   => self::opciones_de_relacion($parecidas, $columna_nombre),
                     'si_no_es_ninguna'  => self::SI_NO_ES_NINGUNA_LA_MARCA,
                 ]
             );
         }
-
-        $opciones = [$campo['columna'] => self::opciones_de_relacion(array_slice($marcas, 0, self::MAX_OPCIONES), $columna_nombre)];
 
         return self::marca_que_no_esta($contexto, $etiqueta, $texto, $opciones);
     }
@@ -1979,7 +2004,11 @@ class PropuestaGenericaIaHelper
     {
         $limpio = Str::lower(Str::ascii(trim((string) $nombre)));
 
-        return trim((string) preg_replace('/\s+/u', ' ', $limpio));
+        /*
+         * Los signos cuentan como separadores de palabra («ZZAtlas-Copco» tiene las palabras zzatlas y
+         * copco): las parecidas se miden por palabra completa (segunda revisión independiente).
+         */
+        return trim((string) preg_replace('/[^a-z0-9]+/', ' ', $limpio));
     }
 
     /**

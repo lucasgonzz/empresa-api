@@ -1808,9 +1808,10 @@ class PropuestaCompraConFacturaIaHelper
      * la sucursal, y el modelo —que en la corrección manda solo lo que cambia— no volvía a mandar
      * compra_nueva: la herramienta volvía a preguntar por la compra vacía de otro día.
      *
-     * Solo una compra con factura de ESTA conversación que todavía se está corrigiendo (propuesta, o
-     * reemplazada en una cadena de correcciones), con el mismo criterio que la herencia del alta
-     * genérica (PropuestaGenericaIaHelper::con_los_campos_de_la_tarjeta_reemplazada).
+     * Solo una compra con factura de ESTA conversación que sigue VIVA (propuesta y sin vencer): la
+     * última de la cadena de correcciones. Hasta la segunda revisión independiente también se heredaba
+     * de una ya `reemplazada`, y un eslabón viejo («nueva», después corregido a «sumala a la 12») podía
+     * devolver la carga a "compra nueva" si el modelo apuntaba reemplaza_a a ese eslabón.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  mixed  $reemplaza_a
@@ -1828,10 +1829,15 @@ class PropuestaCompraConFacturaIaHelper
         $anterior = AiMessageAction::where('id', $reemplaza_a)
                                     ->where('ai_conversation_id', $contexto->conversation->id)
                                     ->where('tipo', AiMessageAction::TIPO_COMPRA_CON_FACTURA)
-                                    ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
+                                    ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
                                     ->first();
 
-        return !is_null($anterior) && is_array($anterior->datos) && !empty($anterior->datos['compra_nueva']);
+        if (is_null($anterior) || $anterior->vencio()) {
+
+            return false;
+        }
+
+        return is_array($anterior->datos) && !empty($anterior->datos['compra_nueva']);
     }
 
     /**

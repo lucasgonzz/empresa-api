@@ -1080,6 +1080,40 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
         $this->assertTrue(empty($nombrada['requiere_confirmacion']), json_encode($nombrada));
     }
 
+    /**
+     * La herencia de compra_nueva mira la tarjeta a la que apunta reemplaza_a solo si sigue VIVA
+     * (propuesta). Un eslabón viejo de la cadena, ya reemplazado, no se hereda: el dueño dijo «nueva»
+     * (T1), después «no, sumala a la 12» (T2 reemplaza a T1), y una corrección que apunta a T1 no
+     * puede volver a "compra nueva" por herencia.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function compra_nueva_no_se_hereda_de_un_eslabon_reemplazado()
+    {
+        $this->compra(12, 3);
+
+        list($conversation, $generandose) = $this->escena();
+
+        $t1 = $this->proponer($conversation, $generandose, ['compra_nueva' => true]);
+
+        $this->assertTrue($t1['ok'], json_encode($t1));
+
+        $segundo = $this->siguiente_turno($conversation, $generandose, 'Te armo una compra nueva, ¿la registro?', 'no, sumala a la compra 12');
+
+        $t2 = $this->proponer($conversation, $segundo, ['compra_num' => 12, 'reemplaza_a' => $t1['tarjeta_id']]);
+
+        $this->assertTrue($t2['ok'], json_encode($t2));
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::find($t1['tarjeta_id'])->estado_guardado(), 'Precondición: T1 quedó reemplazada.');
+
+        $tercero = $this->siguiente_turno($conversation, $segundo, 'Te la sumo a la Compra N° 12, ¿la registro?', 'ah, y que entre en la sucursal 2');
+
+        $t3 = $this->proponer($conversation, $tercero, ['reemplaza_a' => $t1['tarjeta_id'], 'sucursal' => 'sucursal 2']);
+
+        $this->assertFalse($t3['ok'], 'De T1 (reemplazada) no se hereda compra_nueva: vuelve a la regla de siempre. ' . json_encode($t3));
+        $this->assertNotEmpty($t3['faltan']);
+    }
+
     // =====================================================================
     // 5. La herramienta y el prompt
     // =====================================================================
