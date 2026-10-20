@@ -91,6 +91,9 @@ class DemoIndustriaArticlesSeeder extends Seeder
             $articulo = $helper->crear_article($helper->add_price_types($payload));
             $articulo->brand_id = $marca->id;
             $articulo->save();
+            // create() no trae los defaults de la base (por ejemplo aplicar_iva).
+            // El precio inicial debe usar los mismos datos que cualquier recálculo posterior.
+            $articulo->refresh();
             ArticleHelper::setFinalPrice($articulo, $userId);
             Description::create([
                 'article_id' => $articulo->id,
