@@ -999,6 +999,50 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * Segunda revisión del 19/10/2026: en un lote con más fallos que nombres guardados (la lista tiene tope),
+     * el que después se entregó puede no estar nombrado; igual se le resta a la cantidad.
+     *
+     * @test
+     */
+    public function en_un_lote_de_mas_de_veinte_el_que_se_entrega_sin_nombre_guardado_igual_se_resta()
+    {
+        $this->el_admin_avisa();
+
+        $this->cliente('Ana Gomez', '5493444101010');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo a todos');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+
+        $tarjeta = (int) $propuesta['tarjeta_id'];
+
+        $total = EnviosFallidosDelAsistenteHelper::MAXIMO_DE_NOMBRES + 2;
+
+        for ($i = 1; $i <= $total; $i++) {
+            EnviosFallidosDelAsistenteHelper::registrar($tarjeta, AiEnvioFallido::CANAL_WHATSAPP, '54934440' . str_pad((string) $i, 5, '0', STR_PAD_LEFT), 'Cliente ' . $i, 'WhatsApp no lo entregó');
+        }
+
+        $fila = AiEnvioFallido::where('ai_message_action_id', $tarjeta)->first();
+
+        $this->assertSame($total, $fila->cantidad);
+        $this->assertCount(EnviosFallidosDelAsistenteHelper::MAXIMO_DE_NOMBRES, $fila->lista_de_nombres(), 'La lista tiene tope.');
+
+        // El último (sin nombre guardado) estaba como fallido y Meta lo entrega.
+        $ultimo = $this->cliente('Cliente ' . $total, '5493444099999');
+        $chat = $this->chat_abierto($ultimo);
+        $mensaje = WhatsappChatHelper::store_outbound_manual_message($chat, 'Promo', 'wamid.N3SINNOMBRE', $this->dueno->id);
+
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['ai_message_action_id' => $tarjeta, 'delivery_status' => 'fallido']);
+
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.delivered', ['message' => ['id' => 'wamid.N3SINNOMBRE']]);
+
+        $fila = $fila->fresh();
+
+        $this->assertSame($total - 1, $fila->cantidad, 'Se resta aunque no esté entre los nombres guardados.');
+        $this->assertCount(EnviosFallidosDelAsistenteHelper::MAXIMO_DE_NOMBRES, $fila->lista_de_nombres());
+    }
+
+    /**
      * En un lote se resta solo ese cliente: de "Ana y Juan no la recibieron", si a Ana después le llega,
      * el aviso habla solo de Juan.
      *

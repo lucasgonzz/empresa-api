@@ -242,31 +242,61 @@ class EnviosFallidosDelAsistenteHelper
 
                 array_splice($nombres, $posicion, 1);
 
-                $fila->cantidad = max(0, (int) $fila->cantidad - 1);
-                $fila->nombres = self::nombres_en_json($nombres);
-
-                if ((int) $fila->cantidad === 0) {
-                    $fila->avisar_por_whatsapp = false;
-                }
-
-                /*
-                 * El primer nombre del lote (y su teléfono) es el que se usa con un solo fallo: si el que
-                 * salió es ése, pasa el siguiente, sin teléfono (el de la fila era el del que sí recibió).
-                 */
-                if ($fila->cliente === $cliente) {
-                    $fila->cliente = count($nombres) ? (string) $nombres[0] : $fila->cliente;
-                    $fila->destino = null;
-                }
-
-                $fila->timestamps = false;
-                $fila->save();
+                self::restar_uno_del_lote($fila, $nombres, $cliente);
 
                 return;
+            }
+
+            /*
+             * 🔴 UN LOTE CON MÁS FALLOS QUE NOMBRES GUARDADOS (segunda revisión del 19/10/2026): la lista
+             * tiene tope (MAXIMO_DE_NOMBRES) y `cantidad` sigue sumando, así que el cliente que después se
+             * entregó puede ser uno de los que no tienen nombre guardado. Si ninguna fila lo nombra, se le
+             * resta a la primera que tiene fallos sin nombre: el aviso no puede contar uno de más.
+             */
+            foreach ($filas as $fila) {
+
+                if ($fila->tipo_envio !== AiEnvioFallido::TIPO_COMPROBANTE && (int) $fila->cantidad > count($fila->lista_de_nombres())) {
+
+                    self::restar_uno_del_lote($fila, $fila->lista_de_nombres(), $cliente);
+
+                    return;
+                }
             }
 
         } catch (\Throwable $e) {
             // Sin esto, lo peor que pasa es un aviso de más.
         }
+    }
+
+    /**
+     * Le resta UN fallo a una fila de lote (el cliente que después se entregó) y la guarda sin mover el
+     * `updated_at` (es el reloj de la calma). Si queda en cero, deja de pedir aviso.
+     *
+     * @param  \App\Models\AiEnvioFallido  $fila
+     * @param  array<int, string>  $nombres  La lista ya sin ese cliente (o la misma, si no estaba nombrado).
+     * @param  string|null  $cliente  El que se entregó.
+     * @return void
+     */
+    protected static function restar_uno_del_lote(AiEnvioFallido $fila, array $nombres, $cliente)
+    {
+        $fila->cantidad = max(0, (int) $fila->cantidad - 1);
+        $fila->nombres = self::nombres_en_json($nombres);
+
+        if ((int) $fila->cantidad === 0) {
+            $fila->avisar_por_whatsapp = false;
+        }
+
+        /*
+         * El primer nombre del lote (y su teléfono) es el que se usa con un solo fallo: si el que salió es
+         * ése, pasa el siguiente, sin teléfono (el de la fila era el del que sí recibió).
+         */
+        if (!is_null($cliente) && $fila->cliente === $cliente) {
+            $fila->cliente = count($nombres) ? (string) $nombres[0] : $fila->cliente;
+            $fila->destino = null;
+        }
+
+        $fila->timestamps = false;
+        $fila->save();
     }
 
     /**
