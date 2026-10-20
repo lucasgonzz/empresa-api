@@ -56,9 +56,16 @@ use Illuminate\Support\Facades\Mail;
  *     soporte. El último código emitido sigue sirviendo hasta que venza o se gasten sus 5 intentos.
  *   - Los topes se leen y se escriben bajo un CANDADO por usuario (con_candado_del_usuario()): sin él,
  *     pedidos en paralelo leen el mismo contador y se prueban muchos más de 5 códigos por emisión.
- *   - Las dos ventanas se cuentan JUNTAS al emitir y se devuelven JUNTAS si el mail no sale (un rechazo del
- *     SMTP no gasta pedidos; ver devolver_codigo_emitido()). Se chequea primero el día y después la hora:
- *     con los dos llenos el mensaje es el del día, que es el más verdadero.
+ *   - Las dos ventanas se cuentan JUNTAS al emitir. Si el mail NO sale (rechazo del SMTP, o un error al
+ *     mandarlo) se devuelve SOLO el pedido de la HORA; el del DÍA NUNCA se devuelve (ver
+ *     devolver_codigo_emitido()). POR QUÉ: el código se guarda (bajo el candado) ANTES de mandar el mail y el
+ *     envío corre FUERA del candado, así que durante el envío hay un código vivo con 5 intentos. Si el pedido
+ *     fallido no gastara el cupo del día, con el mail de una cuenta fallando de forma sostenida (casilla muerta,
+ *     550) cada pedido abriría una mini-ventana de 5 intentos sobre un código vivo sin gastar nada, y el tope
+ *     deja de acotar los intentos. Con el día sin devolver, 10 × 5 = 50 intentos por día valen AUN con el mail
+ *     fallando. El costo: un mail caído puede gastarle a la cuenta los 10 pedidos del día (se prefiere eso a
+ *     reabrir el riesgo que este tope existe para cerrar). Se chequea primero el día y después la hora: con los
+ *     dos llenos el mensaje es el del día, que es el más verdadero.
  *
  * POR QUÉ EN CACHÉ Y NO EN `users.verification_code`: esa columna NO EXISTE en una instalación nueva (está
  * comentada en `2014_10_12_000000_create_users_table.php` desde 2023; solo `buyers` la tiene), así que en
@@ -195,8 +202,8 @@ class PasswordResetController extends Controller
             // esperando un mail que no va a llegar. No se reemplaza por method_exists(Mail::getFacadeRoot(), 'failures'): da siempre false.
             RechazosDeCorreoHelper::fallar_si_hubo_rechazos();
         } catch (MailRechazadoPorElServidorException $e) {
-            // Un código que no llegó a nadie no gasta pedidos de la hora ni del día y no puede quedar pendiente
-            // (ver devolver_codigo_emitido()).
+            // Un código que no llegó a nadie no gasta el pedido de la HORA (el del DÍA sí queda gastado) y no puede
+            // quedar pendiente (ver devolver_codigo_emitido()).
             $this->devolver_codigo_emitido($user, $code);
 
             // 🔴 422 CON FORMA DE VALIDACIÓN DE LARAVEL (`message` + `errors`), y no un 200 `email_send: false` como el del "correo que no corresponde a un usuario".
@@ -217,8 +224,8 @@ class PasswordResetController extends Controller
                 ],
             ], 422);
         } catch (\Throwable $e) {
-            // Cualquier otro error al armar o mandar el mail (una vista rota, el transporte caído) tampoco le
-            // gasta a la cuenta pedidos del día ni de la hora: se devuelven y el error sigue su camino.
+            // Cualquier otro error al armar o mandar el mail (una vista rota, el transporte caído) se trata igual
+            // que el rechazo: se devuelve el pedido de la hora (el del día no) y el error sigue su camino.
             $this->devolver_codigo_emitido($user, $code);
 
             throw $e;
@@ -593,13 +600,19 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Deshace una emisión cuyo mail NO salió (el servidor de correo rechazó la casilla, o falló el envío): un
-     * problema del correo no tiene que gastarle a la cuenta sus códigos de la hora ni del día. Devuelve el
-     * pedido a las DOS ventanas, juntas, y descarta el código pendiente si es el que acaba de emitirse.
+     * Deshace una emisión cuyo mail NO salió (el servidor de correo rechazó la casilla, o falló el envío):
+     * devuelve el pedido de la HORA y descarta el código pendiente si es el que acaba de emitirse.
      *
-     * 🔴 Descartar el pendiente es lo que hace seguro devolver el pedido: un código que no llegó a nadie y
-     * quedara vivo se podría adivinar (5 intentos por cada pedido "gratis") sin ningún tope. Solo se borra si
-     * sigue siendo el MISMO código (por su sha256): si entre medio otro pedido emitió uno nuevo, ese no se toca.
+     * 🔴 El pedido del DÍA NUNCA se devuelve, a propósito. El código se guarda (bajo el candado) antes de
+     * mandar el mail y el envío corre fuera del candado: mientras dura hay un código vivo con 5 intentos que
+     * cualquiera puede probar. Si el pedido fallido no gastara cupo del día, con el mail de la cuenta fallando de
+     * forma sostenida (casilla muerta, 550) cada pedido abriría otra mini-ventana de 5 intentos gratis y el
+     * tope dejaría de acotar los intentos. Sin devolver el día, el máximo es 10 emisiones × 5 intentos = 50 por
+     * día aunque el SMTP esté caído. La hora sí se devuelve: el día ya la acota.
+     *
+     * 🔴 Descartar el pendiente evita que un código que no llegó a nadie siga vivo hasta que venza. Solo se borra
+     * si sigue siendo el MISMO código (por su sha256, con hash_equals): si entre medio otro pedido emitió uno
+     * nuevo, ese no se toca.
      *
      * Corre bajo el candado del usuario. Si no lo consigue no devuelve nada (falla cerrado: el pedido queda
      * contado y el código pendiente intacto).
@@ -611,8 +624,8 @@ class PasswordResetController extends Controller
     protected function devolver_codigo_emitido(User $user, $codigo)
     {
         $this->con_candado_del_usuario($user, function () use ($user, $codigo) {
+            // Solo la hora. El día NO se devuelve nunca (ver el docblock).
             $this->mover_contador_de_una_ventana($this->clave_de_pedidos($user), self::VENTANA_DE_PEDIDOS_EN_MINUTOS, -1);
-            $this->mover_contador_de_una_ventana($this->clave_de_pedidos_del_dia($user), self::VENTANA_DIARIA_EN_MINUTOS, -1);
 
             $pendiente = Cache::get($this->clave_de_cache($user));
 

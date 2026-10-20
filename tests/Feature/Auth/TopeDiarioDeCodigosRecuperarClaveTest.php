@@ -28,7 +28,10 @@ use Tests\Fakes\ServidorSmtpFake;
  *   (b) 10 códigos repartidos en muchas horas (respetando el tope por hora) y el 11.º rechazado;
  *   (c) pasadas 24 h desde el primer pedido vuelve a andar y el contador arranca de cero;
  *   (d) la ventana es FIJA: los pedidos siguientes no la estiran;
- *   (e) un mail que no sale (rechazo del SMTP real, o un error al mandarlo) no gasta ni la hora ni el día;
+ *   (e) un mail que no sale (rechazo del SMTP real, o un error al mandarlo) devuelve el pedido de la HORA pero SÍ
+ *       gasta el del DÍA (el día nunca se devuelve: ver el comentario de cabecera de PasswordResetController);
+ *   (i2) con el mail fallando siempre, como máximo 10 pedidos por día; (m) el descarte del código que no salió no
+ *       borra un código más nuevo;
  *   (f) el tope es por cuenta;
  *   (g) con la hora y el día llenos, el mensaje es el del día;
  *   (h) el código pendiente sigue sirviendo con el tope diario lleno;
@@ -428,43 +431,143 @@ class TopeDiarioDeCodigosRecuperarClaveTest extends MailsRechazadosTestCase
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (e) Un mail que no sale no gasta pedidos
+    // (e) Un mail que no sale: devuelve el pedido de la HORA pero SÍ gasta el del DÍA
+    //
+    // 🔴 El código se guarda ANTES de mandar el mail y el envío corre fuera del candado: durante el envío hay un
+    // código vivo con 5 intentos. Si el pedido fallido no gastara el cupo del día, con la casilla muerta cada
+    // pedido abriría una mini-ventana de 5 intentos gratis y el tope diario no acotaría nada. Por eso el día no
+    // se devuelve nunca, y la hora sí (el día ya la acota).
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * 🔴 Contra un SMTP de verdad que contesta 550, el rechazo no gasta ni un pedido de la hora ni uno del día:
-     * 12 rechazos seguidos (más que el tope de la hora, 5, y que el del día, 10) siguen siendo todos «mail
-     * rechazado» y nunca un tope. Los contadores quedan vacíos y no queda un código pendiente que nadie recibió.
+     * Un mail cuyo `send()` falla con un error cualquiera. Si se da `$al_mandar`, corre justo antes de fallar
+     * (para simular lo que pasa en la caché mientras el mail se está mandando).
      *
-     * @test
+     * @param  callable|null  $al_mandar
+     * @return MailFake
      */
-    public function un_mail_rechazado_por_el_smtp_no_consume_ni_la_hora_ni_el_dia()
+    protected function mail_que_falla(callable $al_mandar = null)
     {
-        $this->levantar_un_smtp_por_defecto(ServidorSmtpFake::MODO_RECHAZA);
+        $falso = new class extends MailFake {
+            /** @var callable|null Lo que pasa justo antes de que el envío falle. */
+            public $al_mandar;
 
-        for ($i = 1; $i <= 12; $i++) {
-            $respuesta = $this->pedir();
+            /** Simula un error al mandar (una vista rota, el transporte caído...). */
+            public function send($view, array $data = [], $callback = null)
+            {
+                if ($this->al_mandar) {
+                    call_user_func($this->al_mandar);
+                }
 
-            $respuesta->assertStatus(422);
-            $this->assertTrue($respuesta->json('mail_rechazado'), "Pedido $i: tenía que ser el rechazo del servidor de correo, no un tope.");
-            $this->assertSame('No se pudo enviar el código de recuperación', $respuesta->json('message'), "Pedido $i");
-            $this->assertStringNotContainsString('máximo de códigos', $respuesta->getContent(), "Pedido $i");
-            $this->assertStringNotContainsString('demasiados códigos', $respuesta->getContent(), "Pedido $i");
-        }
+                throw new \RuntimeException('No se pudo mandar el mail de prueba');
+            }
+        };
+        $falso->al_mandar = $al_mandar;
 
-        $this->assertSame(0, $this->cantidad_de_la_hora(), 'Los rechazos no gastan pedidos de la hora.');
-        $this->assertSame(0, $this->cantidad_del_dia(), 'Los rechazos no gastan pedidos del día.');
-        $this->assertNull(Cache::get('password_reset_pedidos_dia:' . $this->dueno->id));
-        $this->assertNull(Cache::get('password_reset_pedidos:' . $this->dueno->id));
-        $this->assertNull($this->pendiente_de(), 'El código que no llegó a nadie no puede quedar pendiente (se podría adivinar sin límite).');
+        Mail::swap($falso);
+
+        return $falso;
     }
 
     /**
-     * Los rechazos devuelven solo SU pedido: los que sí salieron antes siguen contados.
+     * El pedido que el SMTP rechaza con 550: la respuesta es «mail rechazado», no un tope.
+     *
+     * @param  \Illuminate\Testing\TestResponse  $respuesta
+     * @param  string  $cuando  Para el mensaje de la aserción.
+     * @return void
+     */
+    protected function assert_mail_rechazado($respuesta, $cuando = '')
+    {
+        $respuesta->assertStatus(422);
+        $this->assertTrue($respuesta->json('mail_rechazado'), "$cuando: tenía que ser el rechazo del servidor de correo, no un tope.");
+        $this->assertSame('No se pudo enviar el código de recuperación', $respuesta->json('message'), $cuando);
+        $this->assertStringNotContainsString('máximo de códigos', $respuesta->getContent(), $cuando);
+        $this->assertStringNotContainsString('demasiados códigos', $respuesta->getContent(), $cuando);
+    }
+
+    /**
+     * 🔴 Contra un SMTP de verdad que contesta 550: cada pedido rechazado DEVUELVE su pedido de la hora (el
+     * contador de la hora queda en 0) pero GASTA uno del día (el del día sube de a uno), y no queda un código
+     * pendiente que nadie recibió.
      *
      * @test
      */
-    public function el_rechazo_devuelve_solo_su_propio_pedido()
+    public function un_mail_rechazado_por_el_smtp_devuelve_el_pedido_de_la_hora_pero_gasta_el_del_dia()
+    {
+        $this->levantar_un_smtp_por_defecto(ServidorSmtpFake::MODO_RECHAZA);
+
+        for ($i = 1; $i <= 3; $i++) {
+            $this->assert_mail_rechazado($this->pedir(), "Pedido $i");
+
+            $this->assertSame(0, $this->cantidad_de_la_hora(), "Pedido $i: el rechazo devuelve el pedido de la hora.");
+            $this->assertSame($i, $this->cantidad_del_dia(), "Pedido $i: el rechazo NO devuelve el pedido del día.");
+        }
+
+        $this->assertNull(Cache::get('password_reset_pedidos:' . $this->dueno->id));
+        $this->assertNull($this->pendiente_de(), 'El código que no llegó a nadie no puede quedar pendiente.');
+    }
+
+    /**
+     * 🔴 (i2) Con el mail fallando SIEMPRE (casilla muerta, SMTP 550) se pueden hacer como máximo 10 pedidos en
+     * el día aunque pasen horas entre uno y otro: cada uno gasta 1 del día y el 11.º da el 422 del día. Es lo que
+     * mantiene firme el 10 × 5 = 50 intentos por día aun sin que el mail salga.
+     *
+     * @test
+     */
+    public function con_el_smtp_rechazando_siempre_se_pueden_hacer_como_maximo_10_pedidos_en_el_dia()
+    {
+        $this->levantar_un_smtp_por_defecto(ServidorSmtpFake::MODO_RECHAZA);
+
+        // Uno cada 2 horas: la hora nunca estorba.
+        for ($i = 1; $i <= 10; $i++) {
+            $this->ir_al_minuto(($i - 1) * 120);
+            $this->assert_mail_rechazado($this->pedir(), "Pedido $i");
+        }
+
+        $this->assertSame(10, $this->cantidad_del_dia());
+
+        // El 11.º (a las 20 h, dentro de las 24 h del primero) y el último minuto de la ventana: tope del día.
+        $this->ir_al_minuto(20 * 60);
+        $this->assert_tope_del_dia($this->pedir());
+        $this->ir_al_minuto(24 * 60 - 1);
+        $this->assert_tope_del_dia($this->pedir());
+        $this->assertSame(10, $this->cantidad_del_dia(), 'Un pedido cortado por el tope no suma.');
+
+        // Pasadas las 24 h del primero, la ventana nueva vuelve a admitir pedidos (y a gastarlos).
+        $this->ir_al_minuto(24 * 60);
+        $this->assert_mail_rechazado($this->pedir(), 'Ventana nueva');
+        $this->assertSame(1, $this->cantidad_del_dia());
+    }
+
+    /**
+     * (i2, ráfaga) Doce pedidos seguidos con el SMTP rechazando: los 10 primeros son «mail rechazado» (la hora
+     * se devuelve, así que nunca llega a su tope de 5) y el 11.º y el 12.º ya son el tope del día.
+     *
+     * @test
+     */
+    public function una_rafaga_de_pedidos_con_el_smtp_rechazando_se_corta_en_el_decimo_por_el_dia()
+    {
+        $this->levantar_un_smtp_por_defecto(ServidorSmtpFake::MODO_RECHAZA);
+
+        for ($i = 1; $i <= 10; $i++) {
+            $this->assert_mail_rechazado($this->pedir(), "Pedido $i");
+        }
+
+        $this->assert_tope_del_dia($this->pedir());
+        $this->assert_tope_del_dia($this->pedir());
+
+        $this->assertSame(0, $this->cantidad_de_la_hora(), 'La hora se devolvió en cada rechazo.');
+        $this->assertSame(10, $this->cantidad_del_dia());
+        $this->assertNull($this->pendiente_de());
+    }
+
+    /**
+     * El rechazo devuelve solo SU pedido de la hora: los que sí salieron antes siguen contados, y el del día
+     * queda gastado (se suma uno más).
+     *
+     * @test
+     */
+    public function el_rechazo_devuelve_solo_su_propio_pedido_de_la_hora()
     {
         // Dos pedidos que salen (SMTP que acepta)...
         $this->levantar_un_smtp_por_defecto(ServidorSmtpFake::MODO_ACEPTA);
@@ -480,41 +583,67 @@ class TopeDiarioDeCodigosRecuperarClaveTest extends MailsRechazadosTestCase
         $this->app->make('mail.manager')->forgetMailers();
 
         $this->ir_al_minuto(40);
-        $this->pedir()->assertStatus(422)->assertJson(['mail_rechazado' => true]);
+        $this->assert_mail_rechazado($this->pedir());
 
-        $this->assertSame(2, $this->cantidad_del_dia(), 'El rechazo devuelve su pedido y nada más.');
-        $this->assertSame(2, $this->cantidad_de_la_hora());
+        $this->assertSame(2, $this->cantidad_de_la_hora(), 'La hora: el rechazo devuelve su pedido y nada más.');
+        $this->assertSame(3, $this->cantidad_del_dia(), 'El día: el pedido rechazado quedó gastado.');
     }
 
     /**
-     * Un error al armar o mandar el mail (distinto del rechazo del SMTP) tampoco gasta pedidos: 12 errores
-     * seguidos y el primer pedido que sale cuenta como el primero.
+     * Un error al armar o mandar el mail (distinto del rechazo del SMTP) se trata igual: devuelve la hora,
+     * gasta el día. 12 errores seguidos: los 10 primeros fallan con 500 y el 11.º y 12.º ya son el tope del día.
      *
      * @test
      */
-    public function un_error_al_mandar_el_mail_tampoco_consume_la_hora_ni_el_dia()
+    public function un_error_al_mandar_el_mail_devuelve_la_hora_pero_gasta_el_dia()
     {
-        Mail::swap(new class extends MailFake {
-            /** Simula un error al mandar (una vista rota, el transporte caído...). */
-            public function send($view, array $data = [], $callback = null)
-            {
-                throw new \RuntimeException('No se pudo mandar el mail de prueba');
-            }
-        });
+        $this->mail_que_falla();
 
-        for ($i = 1; $i <= 12; $i++) {
+        for ($i = 1; $i <= 10; $i++) {
             $this->pedir()->assertStatus(500);
+
+            $this->assertSame(0, $this->cantidad_de_la_hora(), "Error $i: la hora se devuelve.");
+            $this->assertSame($i, $this->cantidad_del_dia(), "Error $i: el día queda gastado.");
         }
 
-        $this->assertSame(0, $this->cantidad_de_la_hora());
-        $this->assertSame(0, $this->cantidad_del_dia());
+        $this->assert_tope_del_dia($this->pedir());
+        $this->assert_tope_del_dia($this->pedir());
         $this->assertNull($this->pendiente_de(), 'Un código que no salió no puede quedar pendiente.');
 
-        // Con el mail andando, el primer pedido es el primero de las dos ventanas.
+        // Pasadas las 24 h y con el mail andando, el primer pedido es el primero de las dos ventanas.
+        $this->ir_al_minuto(24 * 60);
         Mail::fake();
         $this->pedir_codigo();
         $this->assertSame(1, $this->cantidad_de_la_hora());
         $this->assertSame(1, $this->cantidad_del_dia());
+    }
+
+    /**
+     * (m) El descarte del código que no salió NO borra un código más nuevo: si mientras se mandaba el mail otro
+     * pedido emitió uno distinto, el descarte lo respeta (su sha256 no coincide). Sin carrera real: el mail de
+     * prueba guarda a mano un código distinto en la caché justo antes de fallar, que es lo que dejaría el otro
+     * pedido. Control: el pedido fallido sí devuelve su hora y gasta su día.
+     *
+     * @test
+     */
+    public function el_descarte_del_codigo_que_no_salio_no_borra_un_codigo_mas_nuevo()
+    {
+        $otro_codigo = [
+            'codigo_sha256' => hash('sha256', '7777'),
+            'intentos'      => 2,
+            'vence'         => now()->getTimestamp() + 1800,
+        ];
+
+        $this->mail_que_falla(function () use ($otro_codigo) {
+            Cache::put('password_reset:' . $this->dueno->id, $otro_codigo, 1800);
+        });
+
+        $this->pedir()->assertStatus(500);
+
+        $this->assertSame($otro_codigo, $this->pendiente_de(), 'El código más nuevo no se toca.');
+        $this->assertSame(0, $this->cantidad_de_la_hora());
+        $this->assertSame(1, $this->cantidad_del_dia());
+        $this->assertTrue($this->verificar($this->dueno->email, '7777'), 'El código más nuevo sigue sirviendo.');
     }
 
     // ---------------------------------------------------------------------------------------------
