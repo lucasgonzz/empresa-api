@@ -107,4 +107,13 @@ class ExtencionesDeSetupSinEmbeddingsTest extends TestCase
         $this->assertContains('online', $this->extencions_de_la_demo());
         $this->assertContains('online', $this->extencions_del_user_setup());
     }
+
+    /** @test */
+    public function la_demo_permite_probar_el_asistente_las_facturas_y_el_codigo_de_barras()
+    {
+        $extenciones = $this->extencions_de_la_demo();
+        foreach (['asistente_ia', 'escaneo_factura_compra', 'bar_code_scanner', 'whatsapp'] as $slug) {
+            $this->assertContains($slug, $extenciones, 'La demo debe permitir el recorrido anunciado de '.$slug.'.');
+        }
+    }
 }
