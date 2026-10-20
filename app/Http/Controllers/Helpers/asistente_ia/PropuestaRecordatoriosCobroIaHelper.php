@@ -220,9 +220,11 @@ class PropuestaRecordatoriosCobroIaHelper
                 'client_ids'   => $ids_que_reciben,
                 'dias'         => (int) $evaluacion['dias'],
                 /*
-                 * Si las ventas se midieron con el umbral propio de cada una (true, sin días dichos) o
-                 * con los días tal cual (false). La confirmación y el job lo leen de acá: lo que sale es
-                 * lo que se mostró. Una tarjeta de antes de este cambio no lo tiene y confirma con true.
+                 * Si las ventas se midieron con el umbral propio de cada una (true, el COALESCE de la
+                 * pantalla) o sin él (false: los días que dijo el dueño tal cual, o toda la deuda viva si no
+                 * dijo días). El asistente hoy siempre guarda false (VentasSinCobrarIaHelper::
+                 * respetar_umbral_propio()). La confirmación y el job lo leen de acá: lo que sale es lo que
+                 * se mostró. Una tarjeta de antes de este cambio no lo tiene y confirma con true.
                  */
                 'respetar_umbral_propio' => $respetar,
                 'monto_minimo' => $monto_minimo,
