@@ -1115,7 +1115,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'proponer_foto_articulo',
-                'description'  => 'Arma la tarjeta para ponerle a un ARTÍCULO QUE YA EXISTE la última foto que la persona te mandó y todavía no se usó (la saco sola de esta conversación, no me la pases). Para un artículo NUEVO no va esta: proponer_alta de article con con_foto_de_la_conversacion lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para ponerle una foto a un ARTÍCULO QUE YA EXISTE. Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1126,6 +1126,10 @@ class HerramientasDeCarga
                         'articulo_id' => [
                             'type'        => 'integer',
                             'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                        ],
+                        'imagen_id' => [
+                            'type' => 'integer',
+                            'description' => 'Id exacto de la foto elegida en el hallazgo de búsqueda. Si falta, se usa la última foto enviada por la persona; no lo omitas para una foto de internet.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
                     ],

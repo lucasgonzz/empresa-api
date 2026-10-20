@@ -557,4 +557,68 @@ class Foto_de_articulo_Test extends TestCase
         $this->assertSame(0, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count());
         $this->assertNull($foto->fresh()->gestionada_at);
     }
+
+    /** @test */
+    public function imagen_profesional_explicita_se_publica_sin_tomar_la_etiqueta_del_usuario()
+    {
+        $articulo = $this->articulo('zz-b44 Taco Fischer');
+        list($conversacion, $assistant, $etiqueta) = $this->conversacion_con_foto();
+        $foto = \App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper::guardar_binario(
+            $assistant, (string) (new ImageManager())->canvas(18, 14, '#ff1100')->encode('png'), $this->comercio->id
+        );
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversacion);
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant, ['articulo_id' => $articulo->id, 'imagen_id' => $foto->id]);
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $accion = AiMessageAction::findOrFail($respuesta['tarjeta_id']);
+        $this->assertSame($foto->id, $accion->datos['imagen_id']);
+        $this->assertStringContainsString('internet', json_encode($accion->presentacion));
+        $this->assertSame($assistant->id, $accion->presentacion['imagen_mensaje']['ai_message_id']);
+        $this->confirmar($conversacion, $accion->id);
+        $publicada = Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->firstOrFail();
+        $archivo = $this->nombre_de_archivo($publicada);
+        $dimensiones = getimagesize(storage_path('app/public/' . $archivo));
+        $this->assertSame(18, $dimensiones[0]);
+        $this->assertSame(14, $dimensiones[1]);
+        $this->assertNotNull($foto->fresh()->gestionada_at);
+        $this->assertNull($etiqueta->fresh()->gestionada_at);
+    }
+
+    /** @test */
+    public function imagen_explicita_ajena_usada_o_invalida_no_cae_en_la_ultima_del_usuario()
+    {
+        $articulo = $this->articulo('zz-b44 Taco aislado');
+        list($conversacion, $assistant, $etiqueta) = $this->conversacion_con_foto();
+        list($otro_hilo, $otro_assistant, $foto_otra) = $this->conversacion_con_foto();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversacion);
+        $dueno_ajeno = User::create(['name' => 'Otro dueño foto explícita', 'email' => 'foto-ajena-' . uniqid() . '@test.local', 'password' => Hash::make('secret')]);
+        $hilo_ajeno = AiConversation::create(['user_id' => $dueno_ajeno->id, 'auth_user_id' => $dueno_ajeno->id]);
+        $mensaje_ajeno = AiMessage::create(['ai_conversation_id' => $hilo_ajeno->id, 'rol' => 'assistant', 'estado' => 'listo']);
+        $foto_ajena = AiMessageImagen::create(['ai_message_id' => $mensaje_ajeno->id, 'user_id' => $dueno_ajeno->id, 'orden' => 1, 'path' => 'no-se-debe-leer.png', 'mime' => 'image/png', 'bytes' => 1]);
+        foreach ([$foto_otra->id, $foto_ajena->id, 999999999, '1.5', '999999999999999999999999', false, null, []] as $id) {
+            $respuesta = PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant, ['articulo_id' => $articulo->id, 'imagen_id' => $id]);
+            $this->assertFalse($respuesta['ok'], 'Una foto explícita inválida no puede reemplazarse silenciosamente.');
+        }
+        $etiqueta->gestionada_at = now();
+        $etiqueta->save();
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant, ['articulo_id' => $articulo->id, 'imagen_id' => $etiqueta->id]);
+        $this->assertFalse($respuesta['ok']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversacion->id)->count());
+    }
+
+    /** @test */
+    public function imagen_explicita_se_vuelve_a_validar_contra_la_conversacion_al_confirmar()
+    {
+        $articulo = $this->articulo('zz-b44 Foto en otra conversación');
+        list($conversacion, $assistant, $foto) = $this->conversacion_con_foto();
+        list($otro_hilo, $otro_assistant) = $this->conversacion_con_foto(null, false);
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversacion);
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant, ['articulo_id' => $articulo->id, 'imagen_id' => $foto->id]);
+        $this->assertTrue($respuesta['ok']);
+        $foto->ai_message_id = $otro_assistant->id;
+        $foto->save();
+        $resultado = $this->confirmar($conversacion, $respuesta['tarjeta_id']);
+        $this->assertSame(422, $resultado['status']);
+        $this->assertSame(0, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count());
+        $this->assertNull($foto->fresh()->gestionada_at);
+    }
 }

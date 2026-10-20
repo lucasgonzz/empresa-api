@@ -51,11 +51,9 @@ use Intervention\Image\ImageManager;
  * quien mira el modo. Ahí el dueño ya pidió a conciencia, una vez y desde la configuración, que sus
  * cargas se hagan sin tarjeta.
  *
- * 🔴 LA FOTO NO SALE DEL PROMPT: SALE DE LAS IMÁGENES SIN GESTIONAR DE LA CONVERSACIÓN, igual que
- * la de sucursal y que la compra con factura. En la práctica esas fotos solo existen en el canal
- * WhatsApp (`ai_message_imagenes` las escribe solo AdminSync\AsistenteController): desde la pantalla
- * la herramienta contesta que no tiene ninguna foto. Se declara con las de carga igual, por el mismo
- * motivo que la de sucursal.
+ * La foto se resuelve entre las imágenes sin gestionar de la conversación. Sin imagen_id conserva
+ * la última enviada por el dueño; con imagen_id permite la foto profesional de una búsqueda previa.
+ * Un id explícito inválido jamás cae en otra foto: eso publicaría un contenido distinto del elegido.
  */
 class PropuestaFotoArticuloIaHelper
 {
@@ -88,7 +86,7 @@ class PropuestaFotoArticuloIaHelper
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
-     * @param  array  $input  articulo (texto), articulo_id, reemplaza_a
+     * @param  array  $input  articulo (texto), articulo_id, imagen_id opcional, reemplaza_a
      * @return array  Respuesta de la herramienta (propuesta creada o respuesta de negocio).
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)
@@ -105,7 +103,20 @@ class PropuestaFotoArticuloIaHelper
             return $articulo;
         }
 
-        $foto = self::ultima_foto_sin_gestionar($contexto, $mensaje);
+        $explicita = array_key_exists('imagen_id', $input);
+        $foto = null;
+        if ($explicita) {
+            $id = $input['imagen_id'];
+            if ((is_int($id) || is_string($id)) && preg_match('/^[1-9][0-9]*$/D', (string) $id)
+                && filter_var($id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false) {
+                $foto = FotosDeLaConversacionIaHelper::por_id($contexto, $id);
+            }
+            if (is_null($foto)) {
+                return RespuestaDeCargaIa::error('Esa imagen_id no está disponible en esta conversación o ya se usó. Usá el id del hallazgo elegido; no se reemplazó por otra foto.');
+            }
+        } else {
+            $foto = self::ultima_foto_sin_gestionar($contexto, $mensaje);
+        }
 
         if (is_null($foto)) {
 
@@ -134,7 +145,11 @@ class PropuestaFotoArticuloIaHelper
          */
         $cuando = FotosDeLaConversacionIaHelper::cuando_llego($foto);
 
-        if ($cuando !== '') {
+        if (!FotosDeLaConversacionIaHelper::la_mando_el_dueno($foto)) {
+
+            $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'Foto encontrada en internet'];
+
+        } elseif ($cuando !== '') {
 
             $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'La que mandaste ' . $cuando];
         }
@@ -153,6 +168,8 @@ class PropuestaFotoArticuloIaHelper
                  * saber, antes de tocar Confirmar, que esta foto sale publicada.
                  */
                 'aviso'     => 'La foto también se publica en la tienda online del negocio.',
+                'imagen_url' => FotosDelMensajeIaHelper::url($foto->ai_message_id, $foto->orden),
+                'imagen_mensaje' => ['ai_message_id' => (int) $foto->ai_message_id, 'orden' => (int) $foto->orden],
             ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
@@ -464,6 +481,9 @@ class PropuestaFotoArticuloIaHelper
 
         return AiMessageImagen::where('user_id', $contexto->owner_id)
                                 ->where('id', $imagen_id)
+                                ->whereHas('message', function ($query) use ($contexto) {
+                                    $query->where('ai_conversation_id', $contexto->conversation->id);
+                                })
                                 ->sinGestionar()
                                 ->lockForUpdate()
                                 ->first();
