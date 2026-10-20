@@ -234,18 +234,25 @@ class PdfColumnProfileController extends Controller
              */
             'page_layout' => $page_layout,
             /**
-             * Columnas de la tabla cuyo valor va en negrita (ids de pdf_column_options del
-             * model_name del perfil; los ajenos se descartan). Null = ninguna.
-             */
-            'bold_columns' => PdfNegritaHelper::normalize_bold_columns(
-                $request->input('bold_columns'),
-                $request->model_name
-            ),
-            /**
              * Alto de la hoja en mm (solo lo lee el PDF con page_layout). Null = A4 (297).
              */
             'paper_height_mm' => $this->normalize_paper_height_mm($request->input('paper_height_mm')),
         ]);
+
+        /**
+         * Columnas de la tabla cuyo valor va en negrita (ids de pdf_column_options del model_name
+         * del perfil; los ajenos se descartan). Null = ninguna. Se escribe aparte y SOLO si hay
+         * alguna: así un alta sin negrita no toca la columna y no falla en los minutos entre que
+         * se sube el código y corre la migración del despliegue.
+         */
+        $bold_columns = PdfNegritaHelper::normalize_bold_columns(
+            $request->input('bold_columns'),
+            $request->model_name
+        );
+        if (! is_null($bold_columns)) {
+            $model->bold_columns = $bold_columns;
+            $model->save();
+        }
 
         GeneralHelper::attachModels(
             $model,
@@ -483,6 +490,15 @@ class PdfColumnProfileController extends Controller
          */
         if (array_key_exists('bold_columns', $fillable)) {
             $fillable['bold_columns'] = PdfNegritaHelper::normalize_bold_columns($fillable['bold_columns'], $new_model_name);
+
+            /**
+             * Sin negrita guardada y sin negrita nueva no hay nada que escribir: no se toca la
+             * columna (la SPA nueva manda `bold_columns: null` en cada PUT; así un guardado en los
+             * minutos entre subir el código y migrar no falla por la columna inexistente).
+             */
+            if (is_null($fillable['bold_columns']) && is_null($model->bold_columns)) {
+                unset($fillable['bold_columns']);
+            }
         }
 
         /** Ya normalizado arriba (antes de cualquier escritura). */

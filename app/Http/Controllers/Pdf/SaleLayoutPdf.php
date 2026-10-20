@@ -19,8 +19,9 @@ use fpdf;
 /*
 	| 🔴 EL ORDEN EN QUE SE CARGA FPDF NO ES UN DETALLE.
 	|
-	| `NewSalePdf.php` (el remito y la factura de siempre, que esta misión no toca) carga fpdf.php con
-	| un `require` pelado. Si FPDF ya está declarada cuando PHP lee ese archivo, el proceso muere con
+	| `NewSalePdf.php` (el remito y la factura de siempre) carga fpdf.php con `require_once` (antes, un
+	| `require` pelado; misión pdf-negrita-perfil). Si FPDF ya estuviera declarada por otro camino,
+	| el proceso moriría con
 	| 'Cannot declare class FPDF'. `SaleController::pdf()` pregunta por el diseño ANTES de decidir qué
 	| PDF dibujar, así que este archivo se carga primero también cuando la venta sale con el PDF de
 	| siempre (perfil sin diseño, o un diseño que falló y cae al de siempre). Si este archivo
