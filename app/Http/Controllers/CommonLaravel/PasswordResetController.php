@@ -42,12 +42,30 @@ use Illuminate\Support\Facades\Mail;
  *   - Cada código equivocado (en check o en update) suma un intento; al 5.º el código muere y hay que
  *     pedir otro. Con códigos de 6 dígitos (900.000 combinaciones) y, más todavía, con los de 4 (9.000),
  *     sin esto se probaban todas sin límite.
- *   - Y pedir otro tiene tope: CODIGOS_POR_HORA_MAXIMOS por usuario en una ventana fija de 60 minutos
- *     (ver puede_emitir_otro_codigo()). Sin ese tope, el de intentos no sirve de nada. Con 4 dígitos son
- *     5 códigos × 5 intentos = 25 intentos por hora contra 9.000 combinaciones: estos dos topes son lo
- *     ÚNICO que protege la cuenta, y NO se aflojan.
- *   - Los dos topes se leen y se escriben bajo un CANDADO por usuario (con_candado_del_usuario()): sin él,
+ *   - Y pedir otro tiene tope, DOS: CODIGOS_POR_HORA_MAXIMOS por usuario en una ventana fija de 60 minutos
+ *     (ver puede_emitir_otro_codigo()) y CODIGOS_POR_DIA_MAXIMOS en una ventana fija de 24 horas (ver
+ *     puede_emitir_otro_codigo_en_el_dia(); misión tope-diario-de-codigos-recuperar-clave, 20/10/2026).
+ *     Sin esos topes, el de intentos no sirve de nada.
+ *   - LA CUENTA: con 4 dígitos hay 9.000 combinaciones. Solo con el tope por hora son 5 códigos × 5 intentos
+ *     = 25 intentos por hora, ≈600 por día, ≈6,5 % de adivinar el código en un día de ataque sostenido. Con
+ *     10 códigos por día son 10 × 5 = 50 intentos por día, ≈0,55 % (≈12 veces menos). Estos topes (el de
+ *     intentos, el de la hora y el del día) son lo ÚNICO que protege la cuenta, y NO se aflojan.
+ *   - EL COSTO, aceptado por Lucas: quien conozca el correo de un dueño puede pedir los 10 códigos del día y
+ *     dejarlo sin poder recuperar su clave hasta que venza la ventana, hasta 24 horas (con el tope por hora
+ *     solo eran 60 minutos). El mensaje le dice qué hacer: probar de nuevo en 24 horas o pedirle ayuda a
+ *     soporte. El último código emitido sigue sirviendo hasta que venza o se gasten sus 5 intentos.
+ *   - Los topes se leen y se escriben bajo un CANDADO por usuario (con_candado_del_usuario()): sin él,
  *     pedidos en paralelo leen el mismo contador y se prueban muchos más de 5 códigos por emisión.
+ *   - Las dos ventanas se cuentan JUNTAS al emitir. Si el mail NO sale (rechazo del SMTP, o un error al
+ *     mandarlo) se devuelve SOLO el pedido de la HORA; el del DÍA NUNCA se devuelve (ver
+ *     devolver_codigo_emitido()). POR QUÉ: el código se guarda (bajo el candado) ANTES de mandar el mail y el
+ *     envío corre FUERA del candado, así que durante el envío hay un código vivo con 5 intentos. Si el pedido
+ *     fallido no gastara el cupo del día, con el mail de una cuenta fallando de forma sostenida (casilla muerta,
+ *     550) cada pedido abriría una mini-ventana de 5 intentos sobre un código vivo sin gastar nada, y el tope
+ *     deja de acotar los intentos. Con el día sin devolver, 10 × 5 = 50 intentos por día valen AUN con el mail
+ *     fallando. El costo: un mail caído puede gastarle a la cuenta los 10 pedidos del día (se prefiere eso a
+ *     reabrir el riesgo que este tope existe para cerrar). Se chequea primero el día y después la hora: con los
+ *     dos llenos el mensaje es el del día, que es el más verdadero.
  *
  * POR QUÉ EN CACHÉ Y NO EN `users.verification_code`: esa columna NO EXISTE en una instalación nueva (está
  * comentada en `2014_10_12_000000_create_users_table.php` desde 2023; solo `buyers` la tiene), así que en
@@ -74,6 +92,21 @@ class PasswordResetController extends Controller
 
     /** Ventana FIJA (desde el primer pedido, no se corre con cada uno) del tope de códigos emitidos. */
     const VENTANA_DE_PEDIDOS_EN_MINUTOS = 60;
+
+    /**
+     * Códigos que se le pueden emitir a un usuario por ventana de VENTANA_DIARIA_EN_MINUTOS.
+     *
+     * 🔴 Es lo que baja el riesgo de adivinar un código de 4 dígitos: con solo el tope por hora son ≈600 intentos
+     * por día contra 9.000 combinaciones (≈6,5 %); con 10 códigos por día son 10 × 5 = 50 intentos (≈0,55 %).
+     * NO se afloja. Cuenta códigos EMITIDOS, con o sin `longitud_del_codigo` (también los de 6 dígitos).
+     */
+    const CODIGOS_POR_DIA_MAXIMOS = 10;
+
+    /** Ventana FIJA (desde el primer pedido, no se corre con cada uno) del tope diario: 24 horas. */
+    const VENTANA_DIARIA_EN_MINUTOS = 1440;
+
+    /** Lo que lee el usuario al llegar al tope del día: qué pasó y qué hacer (va en `message` y en `errors.email[0]`). */
+    const MENSAJE_TOPE_POR_DIA = 'Llegaste al máximo de códigos de recuperación por día. Probá de nuevo en 24 horas o pedile ayuda a soporte.';
 
     /** Largo del código que se genera si el cliente NO lo pide (la SPA vieja, que nunca manda el campo). */
     const LONGITUD_DEL_CODIGO_POR_DEFECTO = 6;
@@ -110,16 +143,25 @@ class PasswordResetController extends Controller
         }
 
         /*
-         * Tope de códigos por hora (ver CODIGOS_POR_HORA_MAXIMOS) y emisión del código, TODO bajo el candado
-         * del usuario: leer el contador, decidir y escribirlo no puede intercalarse con otro pedido. Pasado el
-         * tope NO se genera código, NO se manda mail y NO se toca el código pendiente (el último que se mandó
-         * sigue sirviendo). 422 con FORMA DE VALIDACIÓN (`message` + `errors`): el interceptor global de axios
-         * de la SPA (`show_laravel_validation_toast`) lo muestra como toast con el motivo, igual que el mail
-         * rechazado.
+         * Topes de códigos por día y por hora (ver CODIGOS_POR_DIA_MAXIMOS y CODIGOS_POR_HORA_MAXIMOS) y emisión
+         * del código, TODO bajo el candado del usuario: leer los contadores, decidir y escribirlos no puede
+         * intercalarse con otro pedido. Se chequea PRIMERO el día y DESPUÉS la hora: con los dos llenos el
+         * mensaje es el del día (esperar una hora no serviría de nada). Pasado cualquiera de los dos topes NO se
+         * genera código, NO se manda mail y NO se toca el código pendiente (el último que se mandó sigue
+         * sirviendo). 422 con FORMA DE VALIDACIÓN (`message` + `errors`): el interceptor global de axios de la
+         * SPA (`show_laravel_validation_toast`) lo muestra como toast con el motivo, igual que el mail rechazado;
+         * el del día tiene la MISMA forma que el de la hora (la SPA vieja lo muestra sin cambios).
+         *
+         * Devuelve [código emitido o null, tope que cortó: 'dia' | 'hora' | null]. Si no consigue el candado
+         * responde como el tope de la hora (falla cerrado: no se emite nada), como siempre.
          */
-        $code = $this->con_candado_del_usuario($user, function () use ($user, $request) {
+        $emision = $this->con_candado_del_usuario($user, function () use ($user, $request) {
+            if (!$this->puede_emitir_otro_codigo_en_el_dia($user)) {
+                return ['codigo' => null, 'tope' => 'dia'];
+            }
+
             if (!$this->puede_emitir_otro_codigo($user)) {
-                return null;
+                return ['codigo' => null, 'tope' => 'hora'];
             }
 
             // random_int y no rand(): es un secreto, tiene que salir de un generador criptográfico.
@@ -127,10 +169,22 @@ class PasswordResetController extends Controller
             $this->guardar_codigo($user, $nuevo_codigo);
             $this->contar_codigo_emitido($user);
 
-            return $nuevo_codigo;
-        }, null);
+            return ['codigo' => $nuevo_codigo, 'tope' => null];
+        }, ['codigo' => null, 'tope' => 'hora']);
+
+        $code = $emision['codigo'];
 
         if (is_null($code)) {
+            if ($emision['tope'] === 'dia') {
+                return response()->json([
+                    'email_send' => false,
+                    'message'    => self::MENSAJE_TOPE_POR_DIA,
+                    'errors'     => [
+                        'email' => [self::MENSAJE_TOPE_POR_DIA],
+                    ],
+                ], 422);
+            }
+
             return response()->json([
                 'email_send' => false,
                 'message'    => 'Demasiados pedidos de código',
@@ -148,6 +202,10 @@ class PasswordResetController extends Controller
             // esperando un mail que no va a llegar. No se reemplaza por method_exists(Mail::getFacadeRoot(), 'failures'): da siempre false.
             RechazosDeCorreoHelper::fallar_si_hubo_rechazos();
         } catch (MailRechazadoPorElServidorException $e) {
+            // Un código que no llegó a nadie no gasta el pedido de la HORA (el del DÍA sí queda gastado) y no puede
+            // quedar pendiente (ver devolver_codigo_emitido()).
+            $this->devolver_codigo_emitido($user, $code);
+
             // 🔴 422 CON FORMA DE VALIDACIÓN DE LARAVEL (`message` + `errors`), y no un 200 `email_send: false` como el del "correo que no corresponde a un usuario".
             // Medido en `empresa-spa`: el `.catch` de `Step1.vue` solo hace console.log, pero el interceptor global de axios (`main.js`:
             // `global_api_error_interceptor` → `show_laravel_validation_toast`, presente desde la v1.1.1 del 26/3/2026) convierte un 422 con un mapa `errors` en
@@ -165,6 +223,12 @@ class PasswordResetController extends Controller
                     'email' => [ucfirst($e->getMessage()).'. Probá de nuevo más tarde o pedile a un administrador que revise tu correo.'],
                 ],
             ], 422);
+        } catch (\Throwable $e) {
+            // Cualquier otro error al armar o mandar el mail (una vista rota, el transporte caído) se trata igual
+            // que el rechazo: se devuelve el pedido de la hora (el del día no) y el error sigue su camino.
+            $this->devolver_codigo_emitido($user, $code);
+
+            throw $e;
         }
 
         return response()->json(['email_send' => true], 200);
@@ -388,8 +452,8 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Clave de caché del contador de códigos emitidos de un usuario. Es APARTE del código pendiente a
-     * propósito: emitir un código nuevo pisa el pendiente, pero este contador no se reinicia.
+     * Clave de caché del contador de códigos emitidos de un usuario en la HORA. Es APARTE del código pendiente
+     * a propósito: emitir un código nuevo pisa el pendiente, pero este contador no se reinicia.
      *
      * @param  \App\Models\User  $user
      * @return string
@@ -400,22 +464,35 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Los pedidos de la ventana vigente del usuario: `desde` (timestamp del primero) y `cantidad`. Una
-     * ventana vencida, o nada guardado, cuenta como ventana nueva (null).
+     * Clave de caché del contador de códigos emitidos de un usuario en el DÍA (ventana de 24 horas). Propia,
+     * aparte de la de la hora: tienen ventanas distintas y se vencen por separado.
      *
      * @param  \App\Models\User  $user
+     * @return string
+     */
+    protected function clave_de_pedidos_del_dia(User $user)
+    {
+        return 'password_reset_pedidos_dia:' . $user->id;
+    }
+
+    /**
+     * Los pedidos de la ventana vigente guardada en `$clave`: `desde` (timestamp del primero) y `cantidad`.
+     * Una ventana vencida, o nada guardado, cuenta como ventana nueva (null).
+     *
+     * @param  string  $clave  Clave de caché del contador.
+     * @param  int  $minutos  Largo de la ventana.
      * @return array|null
      */
-    protected function pedidos_de_la_ventana(User $user)
+    protected function pedidos_de_una_ventana($clave, $minutos)
     {
-        $pedidos = Cache::get($this->clave_de_pedidos($user));
+        $pedidos = Cache::get($clave);
 
         if (!is_array($pedidos) || !isset($pedidos['desde'], $pedidos['cantidad'])) {
             return null;
         }
 
         // now() y no time(): el reloj de Carbon es el que mueven los tests.
-        if ((int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 <= now()->getTimestamp()) {
+        if ((int) $pedidos['desde'] + $minutos * 60 <= now()->getTimestamp()) {
             return null;
         }
 
@@ -423,7 +500,68 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * ¿Se le puede emitir otro código a este usuario en la ventana vigente?
+     * Suma (`$cambio` = 1) o devuelve (`$cambio` = -1) un código emitido en la ventana de `$clave`.
+     *
+     * La ventana es FIJA: arranca con el primer pedido y no se corre con los siguientes (si se corriera, pedir
+     * uno cada 59 minutos —o cada 23 horas— la estiraría para siempre); la caché vive hasta que la ventana
+     * vence. Al devolver, una ventana vencida no se toca y una que queda en cero se borra (como si el pedido
+     * devuelto no hubiera existido: la próxima ventana arranca con el próximo pedido).
+     *
+     * @param  string  $clave
+     * @param  int  $minutos
+     * @param  int  $cambio  1 o -1.
+     * @return void
+     */
+    protected function mover_contador_de_una_ventana($clave, $minutos, $cambio)
+    {
+        $pedidos = $this->pedidos_de_una_ventana($clave, $minutos);
+
+        if (is_null($pedidos)) {
+            // Nada que devolver: la ventana ya venció o nunca existió.
+            if ($cambio < 0) {
+                return;
+            }
+
+            $pedidos = ['desde' => now()->getTimestamp(), 'cantidad' => 0];
+        }
+
+        $pedidos['cantidad'] = max(0, (int) $pedidos['cantidad'] + $cambio);
+
+        if ($pedidos['cantidad'] === 0) {
+            Cache::forget($clave);
+
+            return;
+        }
+
+        $segundos_que_le_quedan = (int) $pedidos['desde'] + $minutos * 60 - now()->getTimestamp();
+
+        Cache::put($clave, $pedidos, max(1, $segundos_que_le_quedan));
+    }
+
+    /**
+     * Los pedidos de la ventana de la HORA vigente del usuario (null si no hay ventana vigente).
+     *
+     * @param  \App\Models\User  $user
+     * @return array|null
+     */
+    protected function pedidos_de_la_ventana(User $user)
+    {
+        return $this->pedidos_de_una_ventana($this->clave_de_pedidos($user), self::VENTANA_DE_PEDIDOS_EN_MINUTOS);
+    }
+
+    /**
+     * Los pedidos de la ventana del DÍA vigente del usuario (null si no hay ventana vigente).
+     *
+     * @param  \App\Models\User  $user
+     * @return array|null
+     */
+    protected function pedidos_de_la_ventana_del_dia(User $user)
+    {
+        return $this->pedidos_de_una_ventana($this->clave_de_pedidos_del_dia($user), self::VENTANA_DIARIA_EN_MINUTOS);
+    }
+
+    /**
+     * ¿Se le puede emitir otro código a este usuario en la ventana de la hora vigente?
      *
      * @param  \App\Models\User  $user
      * @return bool
@@ -436,26 +574,66 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Suma un código emitido. La ventana es FIJA: arranca con el primer pedido y no se corre con los
-     * siguientes (si se corriera, pedir uno cada 59 minutos la estiraría para siempre); la caché vive
-     * hasta que la ventana vence.
+     * ¿Se le puede emitir otro código a este usuario en la ventana del día vigente?
+     *
+     * @param  \App\Models\User  $user
+     * @return bool
+     */
+    protected function puede_emitir_otro_codigo_en_el_dia(User $user)
+    {
+        $pedidos = $this->pedidos_de_la_ventana_del_dia($user);
+
+        return is_null($pedidos) || (int) $pedidos['cantidad'] < self::CODIGOS_POR_DIA_MAXIMOS;
+    }
+
+    /**
+     * Suma un código emitido a las DOS ventanas (la de la hora y la del día), que se cuentan siempre juntas.
+     * Las ventanas son FIJAS (ver mover_contador_de_una_ventana()).
      *
      * @param  \App\Models\User  $user
      * @return void
      */
     protected function contar_codigo_emitido(User $user)
     {
-        $pedidos = $this->pedidos_de_la_ventana($user);
+        $this->mover_contador_de_una_ventana($this->clave_de_pedidos($user), self::VENTANA_DE_PEDIDOS_EN_MINUTOS, 1);
+        $this->mover_contador_de_una_ventana($this->clave_de_pedidos_del_dia($user), self::VENTANA_DIARIA_EN_MINUTOS, 1);
+    }
 
-        if (is_null($pedidos)) {
-            $pedidos = ['desde' => now()->getTimestamp(), 'cantidad' => 0];
-        }
+    /**
+     * Deshace una emisión cuyo mail NO salió (el servidor de correo rechazó la casilla, o falló el envío):
+     * devuelve el pedido de la HORA y descarta el código pendiente si es el que acaba de emitirse.
+     *
+     * 🔴 El pedido del DÍA NUNCA se devuelve, a propósito. El código se guarda (bajo el candado) antes de
+     * mandar el mail y el envío corre fuera del candado: mientras dura hay un código vivo con 5 intentos que
+     * cualquiera puede probar. Si el pedido fallido no gastara cupo del día, con el mail de la cuenta fallando de
+     * forma sostenida (casilla muerta, 550) cada pedido abriría otra mini-ventana de 5 intentos gratis y el
+     * tope dejaría de acotar los intentos. Sin devolver el día, el máximo es 10 emisiones × 5 intentos = 50 por
+     * día aunque el SMTP esté caído. La hora sí se devuelve: el día ya la acota.
+     *
+     * 🔴 Descartar el pendiente evita que un código que no llegó a nadie siga vivo hasta que venza. Solo se borra
+     * si sigue siendo el MISMO código (por su sha256, con hash_equals): si entre medio otro pedido emitió uno
+     * nuevo, ese no se toca.
+     *
+     * Corre bajo el candado del usuario. Si no lo consigue no devuelve nada (falla cerrado: el pedido queda
+     * contado y el código pendiente intacto).
+     *
+     * @param  \App\Models\User  $user
+     * @param  string  $codigo  El código que se emitió y no salió.
+     * @return void
+     */
+    protected function devolver_codigo_emitido(User $user, $codigo)
+    {
+        $this->con_candado_del_usuario($user, function () use ($user, $codigo) {
+            // Solo la hora. El día NO se devuelve nunca (ver el docblock).
+            $this->mover_contador_de_una_ventana($this->clave_de_pedidos($user), self::VENTANA_DE_PEDIDOS_EN_MINUTOS, -1);
 
-        $pedidos['cantidad'] = (int) $pedidos['cantidad'] + 1;
+            $pendiente = Cache::get($this->clave_de_cache($user));
 
-        $segundos_que_le_quedan = (int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 - now()->getTimestamp();
-
-        Cache::put($this->clave_de_pedidos($user), $pedidos, max(1, $segundos_que_le_quedan));
+            if (is_array($pendiente) && isset($pendiente['codigo_sha256'])
+                && hash_equals((string) $pendiente['codigo_sha256'], hash('sha256', (string) $codigo))) {
+                Cache::forget($this->clave_de_cache($user));
+            }
+        }, null);
     }
 
     /**
