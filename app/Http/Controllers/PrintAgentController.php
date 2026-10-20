@@ -60,9 +60,18 @@ class PrintAgentController extends Controller
          * Formato del codigo pegable: CC1.<base64url del json>. El prefijo esta para que el agente
          * pueda decir "esto no es un codigo de ComercioCity" en vez de fallar con un error de
          * parseo cuando alguien pega cualquier otra cosa.
+         *
+         * 🔴 `u` es la base de la API tal como la ve el cliente HTTP, y se arma con `root()` y no
+         * con `getSchemeAndHttpHost()`: el agente le pega `u + /api/print-agent/vincular`, y en el
+         * shared hosting la API se sirve bajo `/public`. Con el host pelado el agente pegaba a
+         * `https://api-x.comerciocity.com/api/...`, que en el shared es la pagina 404 HTML del
+         * hosting y no llega a Laravel (SanBlas, 20/10/2026). `root()` incluye el `/public` donde
+         * existe y no agrega nada en el VPS, donde la API vive en la raiz. No se hardcodea ni se
+         * deriva de `APP_URL`, que en los `.env` de los clientes no siempre esta al dia (mismo
+         * criterio que el webhook de Zipnova).
          */
         $payload = json_encode([
-            'u' => $request->getSchemeAndHttpHost(),
+            'u' => rtrim($request->root(), '/'),
             'c' => $codigo,
         ]);
 
