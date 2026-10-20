@@ -5,6 +5,7 @@ namespace Tests\Feature\Seguridad\RutasPublicas;
 use App\Mail\PasswordReset;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 
@@ -465,6 +466,10 @@ class Reset_de_contrasena_Test extends RutasPublicasTestCase
      */
     public function un_email_inexistente_no_cuenta_para_el_tope()
     {
+        // 7 pedidos desde la misma IP: se apaga el throttle por IP (5 por minuto en este paso) para seguir
+        // probando la capa POR CUENTA. La capa por IP se prueba en ThrottlePorIpEnRecuperarClaveTest.
+        $this->withoutMiddleware(ThrottleRequests::class);
+
         $email = 'nadie-' . uniqid() . '@ejemplo.test';
 
         for ($i = 0; $i < 7; $i++) {
@@ -519,6 +524,11 @@ class Reset_de_contrasena_Test extends RutasPublicasTestCase
      */
     public function una_contrasena_nueva_invalida_da_422_sin_consumir_el_codigo_ni_sumar_intentos()
     {
+        // 13 pedidos a update-password desde la misma IP: se apaga el throttle por IP (10 por minuto en este
+        // paso) para seguir probando la capa POR CUENTA. La capa por IP se prueba en
+        // ThrottlePorIpEnRecuperarClaveTest.
+        $this->withoutMiddleware(ThrottleRequests::class);
+
         $codigo = $this->pedir_codigo($this->usuario->email);
 
         foreach (['', null, '12345', '      ', ['una-lista'], 'abc', 'x'] as $contrasena) {

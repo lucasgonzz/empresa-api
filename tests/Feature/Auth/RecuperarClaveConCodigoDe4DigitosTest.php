@@ -8,6 +8,7 @@ use App\Mail\PasswordReset;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
@@ -403,6 +404,10 @@ class RecuperarClaveConCodigoDe4DigitosTest extends TestCase
      */
     public function con_cuatro_digitos_no_se_pueden_probar_mas_de_25_codigos_por_hora()
     {
+        // Este test hace 35 pedidos desde la misma IP: se apaga el throttle por IP para seguir probando la
+        // capa POR CUENTA. La capa por IP se prueba en ThrottlePorIpEnRecuperarClaveTest.
+        $this->withoutMiddleware(ThrottleRequests::class);
+
         $intentos_probados = 0;
 
         for ($emision = 1; $emision <= 5; $emision++) {
