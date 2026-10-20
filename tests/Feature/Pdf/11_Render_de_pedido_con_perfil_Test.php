@@ -246,6 +246,33 @@ class Render_de_pedido_con_perfil_Test extends EmpresaTestCase
     }
 
     /**
+     * Una forma de envío propia con el costo A CONVENIR (misión formas-envio-direcciones-maps,
+     * 19/10/2026): el renglón del envío dice "Envío: <nombre> - A convenir" en vez de desaparecer,
+     * nunca un importe (aunque la zona arrastre un precio viejo), y como lo que paga el comprador
+     * todavía no está cerrado la línea se rotula "Subtotal".
+     *
+     * @test
+     */
+    public function una_forma_de_envio_propia_a_convenir_se_imprime_a_convenir()
+    {
+        $zona = DeliveryZone::create([
+            'name'             => 'Acordar con el vendedor',
+            'price'            => 300,
+            'costo_a_convenir' => 1,
+            'user_id'          => $this->dueno->id,
+        ]);
+
+        $pedido = $this->crear_pedido_online(['delivery_zone_id' => $zona->id, 'deliver' => 1], false, false);
+
+        $pdf = $this->pdf_del_pedido($pedido);
+
+        $this->assertPdfContiene('('.$this->en_el_pdf('Envío: Acordar con el vendedor - A convenir').')', $pdf, 'Falta el renglón del envío a convenir.');
+        $this->assertPdfContiene('(Subtotal: $350)', $pdf);
+        $this->assertPdfNoContiene('(Total: $', $pdf, 'Con el envío a convenir no se sabe todavía lo que paga el comprador.');
+        $this->assertPdfNoContiene('$300', $pdf, 'El precio guardado de una forma a convenir no se imprime.');
+    }
+
+    /**
      * Un envío gratis (o un cupón que no existe más, o nada) no cambia lo que paga el comprador: el
      * pedido sigue siendo "Total".
      *

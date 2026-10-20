@@ -14,12 +14,17 @@ class Cart extends Model
      * `tienda-api` durante el checkout y los copia al pedido al confirmar la compra; el ERP no los
      * toca, pero los declara para leer el carrito con la misma forma en los dos proyectos.
      *
+     * `envio_direccion` (misión formas-envio-direcciones-maps, 19/10/2026) sigue el mismo camino:
+     * la dirección de entrega elegida en el checkout (copia, con las claves del contrato; ver el
+     * cast de `Order`), que `tienda-api` pasa del carrito al pedido.
+     *
      * @var array<string, string>
      */
     protected $casts = [
         'envio_cotizacion' => 'array',
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
+        'envio_direccion'  => 'array',
     ];
 
     function articles() {

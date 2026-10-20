@@ -278,10 +278,14 @@ class BusquedaPorCodigoDeBarrasIaHelper
      */
     public static function busquedas_web_de_hoy($owner_id)
     {
-        return (int) AiTokenUsage::where('user_id', (int) $owner_id)
+        $assistant = (int) AiTokenUsage::where('user_id', (int) $owner_id)
             ->where('proceso', self::PROCESO_WEB)
             ->whereBetween('created_at', [Carbon::now()->startOfDay(), Carbon::now()->endOfDay()])
             ->count();
+        $listado = \Illuminate\Support\Facades\Schema::hasTable('product_enrichments')
+            ? (int) \App\Models\ProductEnrichment::where('user_id', (int) $owner_id)
+                ->whereBetween('search_started_at', [Carbon::now()->startOfDay(), Carbon::now()->endOfDay()])->sum('search_attempts') : 0;
+        return $assistant + $listado;
     }
 
     /**

@@ -138,7 +138,16 @@ class AfipTicketPdf extends fpdf {
 	}
 
 	function printDiscounts() {
-		if (count($this->sale->discounts) >= 1) {
+		/*
+			Con `aplicar_descuentos_directo_a_items` el descuento YA ESTA adentro del precio de cada
+			renglon devuelto (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026): el cartel
+			"se estan aplicando los descuentos de la venta" y el listado sobrarian y contradirian el
+			neto de las columnas, que `AfipItemCalculator` ya no descuenta.
+		*/
+		if (
+			count($this->sale->discounts) >= 1
+			&& !$this->sale->aplicar_descuentos_directo_a_items
+		) {
 			$this->setX(5);
 			$this->y += 3;
 			$aclaracion = 'En la columna subtotal de cada articulo, se estan aplicando los descuentos de la venta';

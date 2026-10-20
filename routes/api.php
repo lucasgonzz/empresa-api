@@ -11,6 +11,10 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum'])->group(function() {
 
+    Route::post('article-enrichments', 'ProductEnrichmentController@store')->middleware('throttle:20,1');
+    Route::get('article-enrichments/{uuid}', 'ProductEnrichmentController@show');
+    Route::delete('article-enrichments/{uuid}', 'ProductEnrichmentController@destroy');
+
     /*
         Todos los catalogos del arranque en UNA sola respuesta (mision 41, 12/8/2026). Reemplaza a
         ~70 requests que la SPA dispara una detras de otra al iniciar sesion.
@@ -41,6 +45,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
         endpoint de arriba: 204 mudo fuera de una sesion de demo, sin tocar la base.
     */
     Route::get('demo/plan', 'DemoPlanController@index');
+
+    Route::get('demo/chat', 'DemoChatController@index');
+    Route::post('demo/chat/iniciar', 'DemoChatController@iniciar')->middleware('throttle:30,1');
+    Route::post('demo/chat/mensajes', 'DemoChatController@mensaje')->middleware('throttle:30,1');
+    Route::post('demo/chat/videos/progreso', 'DemoChatController@progreso')->middleware('throttle:120,1');
+    Route::post('demo/chat/videos/omitir', 'DemoChatController@omitir')->middleware('throttle:30,1');
 
     /*
         Heartbeat de la demo (mision `demo-sesion-magic-link-no-expira`, 4/9/2026). El SPA le

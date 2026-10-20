@@ -652,7 +652,7 @@ class CatalogoDeEscrituraIaHelper
             'etiqueta'           => 'zonas de envío',
             'singular'           => 'zona de envío',
             'genero'             => 'f',
-            'descripcion'        => 'Las zonas de envío de la tienda online, con su precio (ABM > Tienda online).',
+            'descripcion'        => 'Las formas de envío propias de la tienda (ABM > Tienda online): con precio fijo o con el costo a coordinar con el comprador (costo_a_convenir).',
             'operaciones'        => null,
             'solo_lectura'       => [],
             'claves_de_pantalla' => [],
@@ -660,7 +660,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => null,
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'DeliveryZoneController: name, description, price.',
+            'revisado'           => 'DeliveryZoneController: name, description, price y costo_a_convenir (con costo_a_convenir guarda price = 0). La ruta sigue siendo zonas-de-envio a propósito.',
         ],
         'delivery_day' => [
             'etiqueta'           => 'días de entrega',
@@ -1031,12 +1031,17 @@ class CatalogoDeEscrituraIaHelper
      *   - article.cost: ArticleController::store() y update() no asignan `cost` directo; lo hace
      *     set_costo_desde_request($model, $request), que lee `$request->cost` (y `cost_incluye_iva`,
      *     que no es columna) para descomponer el IVA según la condición fiscal.
+     *   - article.brand_id (solo alta, desde la ficha compartida por código de barras, 19/10/2026):
+     *     ArticleController::store() no asigna `$request->brand_id` directo; lo hace
+     *     ApplyProductFacts::brand($request, …), que devuelve `$request->brand_id` cuando viene y, si
+     *     no, crea o reusa la marca de la ficha. Sin esta entrada el alta del asistente dejaba de
+     *     ofrecer la marca (lo agarró el gate de la 4.3.15). La edición la sigue leyendo directo.
      *
      * @var array<string, array<string, array<int, string>>>
      */
     const LEIDOS_POR_HELPER = [
         'article' => [
-            self::OP_ALTA    => ['cost'],
+            self::OP_ALTA    => ['cost', 'brand_id'],
             self::OP_EDICION => ['cost'],
         ],
     ];

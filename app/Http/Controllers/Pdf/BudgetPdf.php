@@ -397,7 +397,13 @@ class BudgetPdf extends fpdf {
 				$height += 12;
 			}
 
-			$height += count($this->budget->discounts) * 7;
+			/*
+				Misma condicion que la fila de cada descuento en `discountsSurchages()`: con
+				`aplicar_descuentos_directo_a_items` no se imprimen, asi que tampoco ocupan alto.
+			*/
+			if (!$this->budget->aplicar_descuentos_directo_a_items) {
+				$height += count($this->budget->discounts) * 7;
+			}
 
 			if (!$this->budget->aplicar_recargos_directo_a_items) {
 				$height += count($this->budget->surchages) * 7;
@@ -561,10 +567,21 @@ class BudgetPdf extends fpdf {
 
 		    $this->SetFont('Arial', '', 10);
 
-		    foreach ($this->budget->discounts as $discount) {
-				
-		    	$this->x = 5;
-				$this->Cell(200, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'R');
+		    /*
+				Con `aplicar_descuentos_directo_a_items` el descuento YA ESTA adentro del precio de cada
+				renglon (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), asi que listarlo
+				tambien en el pie hace leer que se resta dos veces: el cliente ve "- 10% Descuento"
+				abajo de un total que no lo vuelve a restar. Por eso no se imprime. Mismo criterio que
+				el de los recargos, justo debajo, y que `NewSalePdf::count_discount_rows()` para el PDF
+				de la venta. `footerHeight()` sigue esta misma condicion fila por fila.
+		    */
+		    if (!$this->budget->aplicar_descuentos_directo_a_items) {
+
+			    foreach ($this->budget->discounts as $discount) {
+
+					$this->x = 5;
+					$this->Cell(200, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'R');
+			    }
 		    }
 		    /*
 		    	Con `aplicar_recargos_directo_a_items` el recargo YA ESTA adentro del precio de cada
@@ -572,8 +589,10 @@ class BudgetPdf extends fpdf {
 		    	cliente ve "+10% Recargo" abajo de un total que no lo vuelve a sumar. Por eso no se
 		    	imprime (pedido de Lucas).
 
-		    	Los descuentos de arriba SI se siguen listando, y el renglon "Sub Total sin
-		    	descuentos" tampoco se toca: nada de eso viaja adentro del precio.
+				Los descuentos de arriba se siguen listando, salvo que la opcion hermana
+				`aplicar_descuentos_directo_a_items` los haya metido adentro del precio (en ese caso
+				tampoco se listan: ver el bloque de descuentos de mas arriba). El renglon "Sub Total
+				sin descuentos" no se toca: es el sub total de los renglones.
 
 		    	Mismo criterio que `NewSalePdf::count_surchage_rows()` para el PDF de la venta.
 		    */

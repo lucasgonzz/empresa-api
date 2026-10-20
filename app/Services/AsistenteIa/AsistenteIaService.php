@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
+use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
@@ -2902,6 +2903,7 @@ CONFIRMACION;
          * dicen la verdad del turno en que se agregaron; si el modelo los lee, los copia en otro turno.
          */
         $contenido = TarjetaPrometidaIaHelper::sin_avisos($contenido);
+        $contenido .= ContextoDeBusquedaDeProductoIaHelper::para_historial($message);
 
         if (! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
             return $contenido;
@@ -3950,6 +3952,12 @@ CONFIRMACION;
                     // El assistant en curso va cuarto (misión asistente-fotos-barras-y-compras): la
                     // búsqueda por código de barras cuelga de él la foto que encuentra.
                     $datos = call_user_func($handler, $tool_input, $owner_id, $conversation, $assistant_message);
+
+                    // Incluye búsquedas sin coincidencia: el turno siguiente no debe reutilizar
+                    // la foto de un hallazgo anterior como si perteneciera al último código.
+                    if ($tool_name === 'buscar_producto_por_codigo_de_barras' && is_array($datos)) {
+                        ContextoDeBusquedaDeProductoIaHelper::guardar($owner_id, $conversation, $assistant_message, $datos);
+                    }
 
                     /*
                      * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del

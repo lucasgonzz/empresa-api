@@ -552,8 +552,19 @@ class NewSalePdf extends fpdf
 
 
 
+    /*
+     * 🔴 Con `aplicar_descuentos_directo_a_items` el descuento YA ESTA adentro del precio de cada
+     * renglon (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026): no se lista ni se
+     * descuenta de los acumuladores, igual que `surchages()` con su opcion hermana. Las TRES
+     * funciones de descuentos de este archivo (`discounts()`, `count_discount_rows()` y
+     * `build_discount_rows()`) tienen que seguir esta misma condicion: si una se separa de las otras,
+     * la caja de totales mide una altura distinta de lo que imprime.
+     */
     function discounts() {
-        if (count($this->sale->discounts) >= 1) {
+        if (
+            count($this->sale->discounts) >= 1
+            && !$this->sale->aplicar_descuentos_directo_a_items
+        ) {
 
             $this->y += 5;
 
@@ -735,7 +746,7 @@ class NewSalePdf extends fpdf
      */
     private function count_discount_rows(): int
     {
-        if (count($this->sale->discounts) < 1) {
+        if (count($this->sale->discounts) < 1 || $this->sale->aplicar_descuentos_directo_a_items) {
             return 0;
         }
 
@@ -784,7 +795,10 @@ class NewSalePdf extends fpdf
     {
         $rows = [];
 
-        if (count($this->sale->discounts) >= 1) {
+        if (
+            count($this->sale->discounts) >= 1
+            && !$this->sale->aplicar_descuentos_directo_a_items
+        ) {
 
             foreach ($this->sale->discounts as $discount) {
 

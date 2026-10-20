@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
@@ -55,12 +56,22 @@ class OrderController extends Controller
     }
 
     public function show($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = $this->fullModel('Order', $id);
         $model = OrderHelper::setArticlesVariant([$model])[0];
         return response()->json(['model' => $model], 200);
     }
 
     public function update(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         /**
          * Pedido a actualizar.
          * Se usa como base para evaluar transición de estado y creación de venta.
@@ -385,10 +396,14 @@ class OrderController extends Controller
     /**
      * Genera el envío en Zipnova al confirmar el pedido y lo cancela al cancelarlo.
      *
-     * Solo actúa sobre un pedido que la tienda dejó con `envio_opcion` (el comprador eligió un
-     * correo de Zipnova). Un pedido con retiro en el local, con una zona de entrega propia, o
-     * que llegó desde una `tienda-api` vieja que todavía no escribe esas columnas, no toca
-     * Zipnova en ningún momento: es la compatibilidad hacia atrás del 14/8/2026.
+     * Solo actúa sobre un pedido cuyo envío sale por Zipnova (`Order::envio_va_por_zipnova()`:
+     * la tienda lo dejó con `envio_opcion` y el proveedor es Zipnova o no está escrito). Un pedido
+     * con retiro en el local, con una forma de envío propia (una `delivery_zone`, por ejemplo
+     * "Acordar con el vendedor"), con otro proveedor, o que llegó desde una `tienda-api` vieja que
+     * todavía no escribe esas columnas, no toca Zipnova en ningún momento: es la compatibilidad
+     * hacia atrás del 14/8/2026. La misma pregunta la hace `EnvioController@generar`, para que el
+     * botón del modal y la confirmación no puedan decidir distinto (misión
+     * formas-envio-direcciones-maps, 19/10/2026).
      *
      * 🔴 Nunca lanza. Todo lo que pase acá adentro va al log y a la fila de `envios` (en
      * `error`, con el motivo), que es donde el operador lo ve. Un `Throwable` que subiera desde
@@ -407,7 +422,7 @@ class OrderController extends Controller
      */
     private function gestionar_envio_zipnova($model, $nombre_desde, $nombre_hacia) {
 
-        if (!is_array($model->envio_opcion) || count($model->envio_opcion) === 0) {
+        if (!$model->envio_va_por_zipnova()) {
             return;
         }
 
@@ -498,6 +513,11 @@ class OrderController extends Controller
     }
 
     public function destroy($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = Order::find($id);
         $model->delete();
         ImageController::deleteModelImages($model);
@@ -646,5 +666,18 @@ class OrderController extends Controller
         }
 
         new OrderPdf($model);
+    }
+
+    /**
+     * El pedido de la tienda tiene que ser del comercio de la sesión.
+     *
+     * Devuelve null si el registro es del dueño de la sesión y, si no, el 404 que el método contesta
+     * tal cual (ajeno, inexistente y no-id dan lo mismo). Ver `TenenciaDeLaTiendaHelper`.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+        return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(Order::class, $id, $this->userId(), 'El pedido no existe o no es de tu cuenta.');
     }
 }

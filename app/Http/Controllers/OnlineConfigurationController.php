@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Exceptions\MailRechazadoPorElServidorException;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ClientMailConfigHelper;
@@ -10,6 +11,7 @@ use App\Models\OnlineConfiguration;
 use App\Services\LogoPaletteAiService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 
 class OnlineConfigurationController extends Controller
@@ -24,6 +26,11 @@ class OnlineConfigurationController extends Controller
     }
 
     public function update(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         $model = OnlineConfiguration::find($id);
         $model->pausar_tienda_online            = $request->pausar_tienda_online;    
         $model->register_to_buy                 = $request->register_to_buy;    
@@ -104,6 +111,8 @@ class OnlineConfigurationController extends Controller
         $model->meta_description = $meta_description;
 
         $model->has_delivery                    = $request->has_delivery;
+
+        $this->guardar_ofrecer_envio_zipnova($model, $request);
 
         // Boton "Comprar ahora" en la ficha del articulo de la tienda: si esta activo, el boton
         // agrega el articulo al carrito y lleva directo a terminar la compra; si esta apagado,
@@ -194,6 +203,41 @@ class OnlineConfigurationController extends Controller
     }
 
     /**
+     * "Ofrecer envío por correo con Zipnova" en la tienda (misión formas-envio-direcciones-maps,
+     * 19/10/2026): con 0 la tienda ofrece solo las formas de envío propias (`delivery_zones`)
+     * aunque el conector de Zipnova esté conectado; con 1, o null, Zipnova se ofrece como hasta
+     * ahora. Lo lee `tienda-api`; el ERP solo lo guarda.
+     *
+     * Se toca SOLO cuando hace falta, y si no se deja lo guardado:
+     *  - Si el PUT no trae la clave: una pantalla de empresa-spa abierta desde antes del deploy no
+     *    la conoce, y no tiene que apagar (ni prender) Zipnova por omisión. Mismo criterio que
+     *    `mostrar_comprar_ahora` y los demás booleanos de arriba.
+     *  - Si la trae en null: `$request->boolean()` la leería como false y apagaría Zipnova sin que
+     *    nadie lo pidiera (un modelo cargado en la SPA antes de que existiera la columna la manda
+     *    así).
+     *  - Si la columna no existe: un deploy sube el código antes de correr las migraciones, y en
+     *    esa ventana asignarla haría caer el guardado de TODA la configuración online.
+     *
+     * Se guarda como 0/1, igual que `has_delivery` (el modelo no la castea).
+     *
+     * @param  \App\Models\OnlineConfiguration  $model
+     * @param  \Illuminate\Http\Request  $request
+     * @return void
+     */
+    protected function guardar_ofrecer_envio_zipnova($model, Request $request) {
+
+        if (!$request->has('ofrecer_envio_zipnova') || is_null($request->input('ofrecer_envio_zipnova'))) {
+            return;
+        }
+
+        if (!Schema::hasColumn('online_configurations', 'ofrecer_envio_zipnova')) {
+            return;
+        }
+
+        $model->ofrecer_envio_zipnova = $request->boolean('ofrecer_envio_zipnova') ? 1 : 0;
+    }
+
+    /**
      * Envia un mail de prueba usando la configuracion SMTP propia del cliente (si esta activa y
      * completa), para que el dueño del comercio pueda validar sus credenciales sin depender de
      * que un comprador reciba (o no) un aviso real.
@@ -273,5 +317,18 @@ class OnlineConfigurationController extends Controller
             'logo_source'        => $result['logo_source'],
             'logo_is_monochrome' => $result['logo_is_monochrome'],
         ], 200);
+    }
+
+    /**
+     * La configuración online tiene que ser la del comercio de la sesión.
+     *
+     * Devuelve null si el registro es del dueño de la sesión y, si no, el 404 que el método contesta
+     * tal cual (ajeno, inexistente y no-id dan lo mismo). Ver `TenenciaDeLaTiendaHelper`.
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+        return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(OnlineConfiguration::class, $id, $this->userId(), 'La configuración de la tienda no existe o no es de tu cuenta.');
     }
 }

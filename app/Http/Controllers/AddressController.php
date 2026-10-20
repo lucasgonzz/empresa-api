@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\address\AjusteDePreciosDeSucursalHelper;
 use App\Http\Controllers\Helpers\address\EliminarSucursalHelper;
 use App\Models\Address;
@@ -76,10 +77,20 @@ class AddressController extends Controller
     }  
 
     public function show($id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
         return response()->json(['model' => $this->fullModel('Address', $id)], 200);
     }
 
     public function update(Request $request, $id) {
+
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
 
         /*
          * Ajuste de precios de la sucursal. Igual que en store, se valida antes de tocar el modelo.
@@ -198,5 +209,31 @@ class AddressController extends Controller
         }
 
         return response()->json($resultado['body'], $resultado['status']);
+    }
+
+    /**
+     * La sucursal tiene que ser del comercio de la sesión (misión tenencia-tiendanube-meli-direcciones-marcas,
+     * 19/10/2026).
+     *
+     * Mismo predicado que `destroy`: `EliminarSucursalHelper::direccion_del_dueno()`, que además de las
+     * sucursales del dueño acepta la dirección de un COMPRADOR suyo (`buyer_id`). Un `user_id` a secas
+     * dejaría afuera esas direcciones, que el vendedor sí abre desde un pedido.
+     *
+     * Devuelve null si es del dueño y, si no, el 404 que el método contesta tal cual (ajena, inexistente
+     * y no-id dan lo mismo, con el mensaje que la SPA reconoce por la palabra «sucursal»).
+     *
+     * @param  mixed  $id  Lo que llegó en la ruta.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function registro_ajeno_o_404($id) {
+
+        // Solo un id entero positivo (texto o número): `direccion_del_dueno` acepta todo lo que pase
+        // `is_numeric` (`1.9`, `1e0`) y el `find($id)` de después no encontraría nada (un 500 en el update).
+        if (ChequeHelper::id_del_pedido($id) === 0
+            || is_null(EliminarSucursalHelper::direccion_del_dueno($id, $this->userId()))) {
+            return response()->json(['message' => Self::MENSAJE_SUCURSAL_INEXISTENTE], 404);
+        }
+
+        return null;
     }
 }

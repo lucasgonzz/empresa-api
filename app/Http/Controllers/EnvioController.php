@@ -18,9 +18,10 @@ use App\Services\Zipnova\ZipnovaException;
  * instalaciones viejas).
  *
  * Códigos:
- *  - 422 `{message}`: una precondición no se cumple (`EnvioNoGenerableException`) o Zipnova
- *    rechazó la operación (`ZipnovaException`). El mensaje ya viene escrito para el operador y
- *    el modal lo muestra tal cual.
+ *  - 422 `{message}`: una precondición no se cumple (el pedido no está confirmado o no sale por
+ *    Zipnova, ver `generar`; o `EnvioNoGenerableException`) o Zipnova rechazó la operación
+ *    (`ZipnovaException`). El mensaje ya viene escrito para el operador y el modal lo muestra
+ *    tal cual.
  *  - 404: el pedido o el envío no es del comercio.
  *
  * `generar` responde el PEDIDO completo (`fullModel('Order')`, que ya trae `envio` por
@@ -30,7 +31,36 @@ use App\Services\Zipnova\ZipnovaException;
 class EnvioController extends Controller
 {
     /**
+     * Mensaje del 422 cuando el pedido no salió por Zipnova (retiro en el local, forma de envío
+     * propia, otro proveedor). Es el mismo texto que usa `ZipnovaEnvioService` para un pedido sin
+     * `envio_opcion`, para que el operador lea lo mismo venga por donde venga.
+     */
+    const MENSAJE_SIN_ZIPNOVA = 'El pedido no tiene una forma de envío de Zipnova elegida.';
+
+    /**
      * POST envio/generar/{order_id}: genera el envío del pedido en Zipnova.
+     *
+     * 🔴 Crear el envío en Zipnova es lo que le COBRA el envío al comercio. Por eso, desde la
+     * misión formas-envio-direcciones-maps (19/10/2026, pedido de Lucas), se genera solo sobre
+     * un pedido que el comercio ya confirmó: nunca porque el comprador mandó la compra. Hasta
+     * esa misión este endpoint no miraba el estado y el botón "Generar envío" del modal generaba
+     * (y cobraba) un envío sobre un pedido "Sin confirmar" o "Cancelado".
+     *
+     * Las puertas, en este orden, y ninguna llama a Zipnova ni escribe una fila en `envios`:
+     *  1. El pedido es del comercio (si no, 404).
+     *  2. El envío del pedido sale por Zipnova (`Order::envio_va_por_zipnova()`): un pedido con
+     *     una forma de envío propia o de otro proveedor no se manda a Zipnova. Va antes que el
+     *     estado porque para ese pedido "confirmalo primero" sería mentira: confirmarlo tampoco
+     *     va a generar nada.
+     *  3. El estado del pedido permite generar (`ZipnovaEnvioService::motivo_por_estado()`): no
+     *     "Sin confirmar", no "Cancelado" (por NOMBRE, los ids de `order_statuses` cambian entre
+     *     instalaciones), y 🔴 tampoco un estado que no se puede resolver (sin estado, o la fila
+     *     borrada): falla CERRADO, porque generar cuesta plata.
+     *
+     * El servicio vuelve a mirar el estado con el pedido bloqueado, justo antes de reservar la
+     * fila (`reservar_fila()`): entre esta puerta y ese momento el comercio pudo cancelar el
+     * pedido. Las precondiciones propias del envío (conector, destino completo, algo que enviar)
+     * también las chequea `ZipnovaEnvioService::crear_desde_pedido()`.
      *
      * @param int $order_id
      * @return \Illuminate\Http\JsonResponse
@@ -41,6 +71,16 @@ class EnvioController extends Controller
 
         if (is_null($order)) {
             return response()->json(['message' => 'El pedido no existe.'], 404);
+        }
+
+        if (!$order->envio_va_por_zipnova()) {
+            return response()->json(['message' => self::MENSAJE_SIN_ZIPNOVA], 422);
+        }
+
+        $motivo = ZipnovaEnvioService::motivo_por_estado($order->order_status_id);
+
+        if (!is_null($motivo)) {
+            return response()->json(['message' => $motivo], 422);
         }
 
         try {

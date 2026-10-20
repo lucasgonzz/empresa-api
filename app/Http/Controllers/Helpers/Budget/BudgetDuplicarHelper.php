@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\Budget;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\BudgetHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
@@ -47,7 +48,7 @@ class BudgetDuplicarHelper {
         $ajuste_del_origen = BudgetCobroHelper::ajuste_por_metodos_de_pago($source);
 
         /** Campos escalares copiados del origen según BudgetController::store. */
-        $model = Budget::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
+        $model = Budget::create(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
             'num'                       => $controller->num('budgets'),
             'client_id'                 => $source->client_id,
             'start_at'                  => $source->start_at,
@@ -88,6 +89,14 @@ class BudgetDuplicarHelper {
             */
             'aplicar_recargos_directo_a_items' => $source->aplicar_recargos_directo_a_items,
             /*
+                Y la de descuentos, por el MISMO motivo (mision descuentos-aplicar-al-precio-del-
+                articulo, 8/10/2026): los renglones del duplicado se adjuntan con el precio del origen,
+                que ya trae el descuento adentro. Sin esta linea el duplicado queda con el flag apagado,
+                `BudgetHelper::getTotal()` vuelve a restar el descuento y `BudgetController::duplicate()`
+                muere con el mismo 500 del alta. Entra por la guarda de esquema que envuelve el array.
+            */
+            'aplicar_descuentos_directo_a_items' => $source->aplicar_descuentos_directo_a_items,
+            /*
                 El monto del total forzado (mision forzar-total-por-monto, 17/9/2026). TERCER caso
                 del mismo olvido que ya documentan los dos comentarios de arriba y de abajo
                 —`aplicar_recargos_directo_a_items` y los combos—, y se rompe exactamente igual: el
@@ -120,7 +129,7 @@ class BudgetDuplicarHelper {
             'omitir_en_cuenta_corriente' => 0,
             'employee_id'               => $controller->userId(false),
             'user_id'                   => $controller->userId(),
-        ], $source->forzar_total_monto, 'budgets'), 'budgets'));
+        ], $source->forzar_total_monto, 'budgets'), 'budgets'), 'budgets'));
 
         /** Payloads en el formato que esperan GeneralHelper::attachModels y BudgetHelper::attach*. */
         $discounts_payload = self::discounts_to_payload($source);
@@ -238,6 +247,8 @@ class BudgetDuplicarHelper {
                         servicios, promociones y combos, mas abajo.
                     */
                     RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot),
+                    // Y la de descuentos (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), por lo mismo y tambien SIEMPRE.
+                    DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST => DescuentosEnPreciosEsquemaHelper::base_del_pivot($article->pivot),
                 ],
             ];
         }
@@ -260,6 +271,7 @@ class BudgetDuplicarHelper {
                     'amount' => $service->pivot->amount,
                     'price' => $service->pivot->price,
                     RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($service->pivot),
+                    DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST => DescuentosEnPreciosEsquemaHelper::base_del_pivot($service->pivot),
                 ],
             ];
         }
@@ -282,6 +294,7 @@ class BudgetDuplicarHelper {
                     'amount' => $promo->pivot->amount,
                     'price' => $promo->pivot->price,
                     RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot),
+                    DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST => DescuentosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot),
                 ],
             ];
         }
@@ -314,6 +327,7 @@ class BudgetDuplicarHelper {
                     'amount' => $combo->pivot->amount,
                     'price' => $combo->pivot->price,
                     RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot),
+                    DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST => DescuentosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot),
                 ],
             ];
         }

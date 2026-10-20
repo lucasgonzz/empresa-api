@@ -61,6 +61,21 @@ class Buyer extends Model
         return $this->hasMany('App\Models\Address');
     }
 
+    /**
+     * Las direcciones de entrega que el comprador guardó en la tienda (misión
+     * formas-envio-direcciones-maps, 19/10/2026), tabla `buyer_addresses`. No confundir con
+     * `addresses()`, que apunta a la tabla de sucursales del ERP por un flujo viejo.
+     *
+     * 🔴 No va en `scopeWithAll()`: el listado de compradores (los chats) no las muestra, y el
+     * pedido lleva su propia copia de la dirección en `orders.envio_direccion`. Sumarla ahí sería
+     * una consulta más en cada listado para nada.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    function buyer_addresses() {
+        return $this->hasMany(BuyerAddress::class);
+    }
+
     function user() {
         return $this->belongsTo('App\Models\User');
     }

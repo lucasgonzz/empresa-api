@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\CambioDeCuentaDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
@@ -442,7 +443,8 @@ class SaleController extends Controller
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
             // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
-            $model = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // Y la de aplicar_descuentos_directo_a_items envuelve a esa: mismo motivo, otra columna (ver la clave, más abajo).
+            $model = Sale::create(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
                 /*
                  * La fecha de creación elegida por el usuario, ya resuelta arriba (día elegido +
@@ -510,6 +512,18 @@ class SaleController extends Controller
                 'valor_dolar'                       => CotizacionDeVentaHelper::valor_dolar_para_guardar($request->valor_dolar),
                 'incoterms'                         => $request->incoterms,
                 'aplicar_recargos_directo_a_items'  => $request->aplicar_recargos_directo_a_items,
+                /*
+                 * 🔴 La opción hermana para DESCUENTOS (misión descuentos-aplicar-al-precio-del-articulo,
+                 * 8/10/2026): prendida, el descuento viaja ADENTRO del `price` de cada renglón y
+                 * `getTotalSale()`, la factura, los puntos y los PDF no lo vuelven a restar al pie.
+                 * Se guarda tal cual vino (null = SPA anterior = apagada).
+                 *
+                 * ⚠️ Esta clave NO va pelada: `Sale` declara `$guarded = []`, el INSERT la manda aunque
+                 * valga null, y entre que el deploy sube los archivos y corre las migraciones la columna
+                 * no existe. La guarda que envuelve todo este array la saca en esa ventana. Ver
+                 * `DescuentosEnPreciosEsquemaHelper`.
+                 */
+                'aplicar_descuentos_directo_a_items' => $request->aplicar_descuentos_directo_a_items,
                 'sale_status_id'                    => $request->sale_status_id,
                 // Si no se envía el campo, se asume true (comportamiento por defecto: descontar stock)
                 'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
@@ -550,7 +564,7 @@ class SaleController extends Controller
              *
              * El cero se normaliza a null en `SaleHelper::normalized_forzar_total_monto()`.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'), 'sales'));
 
             // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
@@ -668,6 +682,34 @@ class SaleController extends Controller
             Log::info('update sale id '.$id.': rechazado. '.$motivo);
 
             return response()->json(['message' => $motivo], 409);
+        }
+
+        /*
+         * 🔴 UNA SPA ANTERIOR A LA OPCIÓN DE DESCUENTOS NO PUEDE EDITAR UNA VENTA CON LOS DESCUENTOS
+         * ADENTRO DE LOS PRECIOS (misión descuentos-aplicar-al-precio-del-articulo, 8/10/2026).
+         *
+         * El caso real es la caja con la pestaña vieja: la venta se guardó en una caja con la
+         * versión nueva (`aplicar_descuentos_directo_a_items` = 1, renglones ya descontados) y en
+         * otra caja del mismo comercio quedó abierta la versión anterior. Esa SPA no conoce el flag:
+         * su pie vuelve a restar el descuento y su PUT manda un `total` doble-descontado, que este
+         * método guarda tal cual (más abajo, `$model->total = $request->total`, sin validarlo contra
+         * los renglones) mientras el flag se preserva. La venta quedaría para siempre con el total
+         * mal. No hay forma de corregirlo desde acá, así que se corta con 409 ANTES de abrir la
+         * transacción y de tocar nada, igual que el corte de arriba, y el vendedor recarga la página.
+         *
+         * Se reconoce a la SPA nueva porque manda la clave SIEMPRE (incluido el 0). Este método
+         * solo se alcanza con los `items` de VENDER, así que no hay otra edición legítima sin la
+         * clave. Los presupuestos no necesitan esto: `BudgetHelper::getTotal()` ya rebota a la SPA
+         * vieja por la diferencia del total. Ver `DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva()`.
+         */
+        if (DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva($sale_a_actualizar, $request)) {
+
+            Log::info('update sale id '.$id.': rechazado. La venta tiene los descuentos adentro de los precios y la SPA que edita no manda la clave aplicar_descuentos_directo_a_items.');
+
+            return response()->json([
+                'message'            => DescuentosEnPreciosEsquemaHelper::mensaje_spa_nueva(),
+                'requiere_spa_nueva' => true,
+            ], 409);
         }
 
         /*
@@ -976,6 +1018,17 @@ class SaleController extends Controller
             $model->aplicar_recargos_directo_a_items    = !is_null($request->aplicar_recargos_directo_a_items)
                                                             ? $request->aplicar_recargos_directo_a_items
                                                             : $model->aplicar_recargos_directo_a_items;
+
+            /*
+                La hermana para descuentos (misión descuentos-aplicar-al-precio-del-articulo,
+                8/10/2026), con la MISMA regla de preservación y por el mismo motivo que la de
+                arriba: una SPA anterior a esta misión no manda la clave, y asignarla pelada dejaría
+                el flag en null con los precios del pivot todavía descontados, o sea que el
+                descuento se restaría DOS veces (al confirmar una venta chequeada, al puntuar, al
+                facturar). Pasa por la guarda de esquema: en la ventana del deploy la columna no
+                existe y la asignación tumbaría la actualización de cualquier venta.
+            */
+            DescuentosEnPreciosEsquemaHelper::asignar_flag_en_update($model, $request->aplicar_descuentos_directo_a_items, 'sales');
             $model->sale_status_id                      = $request->sale_status_id;
 
             /*
@@ -1477,6 +1530,26 @@ class SaleController extends Controller
             Log::info('updatePrices sale id '.$id.': rechazado. '.$motivo);
 
             return response()->json(['message' => $motivo], 409);
+        }
+
+        /*
+         * 🔴 EL MODAL "ACTUALIZAR PRECIOS" DE UNA SPA ANTERIOR NO PUEDE TOCAR UNA VENTA CON LOS
+         * DESCUENTOS ADENTRO DE LOS PRECIOS (misión descuentos-aplicar-al-precio-del-articulo,
+         * 8/10/2026). Misma clase de daño que el 409 de `update()`, por otro endpoint: esa SPA manda
+         * los items sin `price_vender_sin_descuentos`, `updateItemsPrices()` escribe el precio de
+         * lista sin descuento y deja la base en NULL con el flag todavía en 1. El descuento se pierde
+         * para siempre y la factura sale por más que el total. La SPA nueva manda la clave en CADA
+         * item (en null o con número); si falta en alguno se corta ANTES de escribir nada. Ver
+         * `DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva_en_update_prices()`.
+         */
+        if (DescuentosEnPreciosEsquemaHelper::requiere_spa_nueva_en_update_prices($model, $request->items)) {
+
+            Log::info('updatePrices sale id '.$id.': rechazado. La venta tiene los descuentos adentro de los precios y la SPA que actualiza no manda la clave price_vender_sin_descuentos en todos los items.');
+
+            return response()->json([
+                'message'            => DescuentosEnPreciosEsquemaHelper::mensaje_spa_nueva(),
+                'requiere_spa_nueva' => true,
+            ], 409);
         }
 
         /*

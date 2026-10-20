@@ -2,9 +2,11 @@
 
 namespace App\Services\Zipnova;
 
+use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Envio;
 use App\Models\Order;
+use App\Models\OrderStatus;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -60,6 +62,55 @@ class ZipnovaEnvioService
 
     /** Mensaje cuando el comercio no tiene conector de Zipnova. */
     const MENSAJE_SIN_CONECTOR = 'El comercio no tiene Zipnova conectado. Conectalo desde ABM → Integraciones → Tienda online.';
+
+    /** Mensaje cuando se quiere generar el envío de un pedido que todavía no se confirmó. */
+    const MENSAJE_PEDIDO_SIN_CONFIRMAR = 'El envío se genera cuando confirmás el pedido.';
+
+    /** Mensaje cuando se quiere generar el envío de un pedido cancelado. */
+    const MENSAJE_PEDIDO_CANCELADO = 'No se puede generar el envío de un pedido cancelado.';
+
+    /** Mensaje cuando el estado del pedido no se puede resolver (sin estado, o la fila no existe). */
+    const MENSAJE_PEDIDO_SIN_ESTADO = 'El pedido no tiene un estado válido: confirmalo antes de generar el envío.';
+
+    /**
+     * Por qué el ESTADO del pedido no permite generar su envío, o null si lo permite (misión
+     * formas-envio-direcciones-maps, 19/10/2026, pedido de Lucas: el envío se le confirma a
+     * Zipnova —y se le cobra al comercio— recién cuando el comercio confirma el pedido).
+     *
+     * Permite cualquier estado de avance posterior a "Sin confirmar" ("Confirmado", "Terminado",
+     * "Entregado"). Niega:
+     *  - "Sin confirmar" y "Cancelado", comparados por NOMBRE (`OrderStatusHelper`): los ids de
+     *    `order_statuses` cambian entre instalaciones.
+     *  - 🔴 Un estado que no se puede resolver (`order_status_id` vacío o apuntando a una fila
+     *    que no existe). Falla CERRADO: generar cuesta plata, y un pedido del que no se sabe si
+     *    se confirmó no se manda a Zipnova.
+     *
+     * Es la única regla de estado: la usan `EnvioController@generar` (antes de tocar nada) y
+     * `reservar_fila()` (con el pedido bloqueado, contra una cancelación concurrente).
+     *
+     * @param int|null $order_status_id
+     * @return string|null
+     */
+    public static function motivo_por_estado($order_status_id)
+    {
+        $nombre = empty($order_status_id)
+            ? null
+            : OrderStatus::where('id', $order_status_id)->value('name');
+
+        if (is_null($nombre) || trim((string) $nombre) === '') {
+            return self::MENSAJE_PEDIDO_SIN_ESTADO;
+        }
+
+        if ($nombre == OrderStatusHelper::SIN_CONFIRMAR) {
+            return self::MENSAJE_PEDIDO_SIN_CONFIRMAR;
+        }
+
+        if ($nombre == OrderStatusHelper::CANCELADO) {
+            return self::MENSAJE_PEDIDO_CANCELADO;
+        }
+
+        return null;
+    }
 
     /**
      * El envío vivo de un pedido, si hay: existe en Zipnova y no está en un estado
@@ -545,19 +596,32 @@ class ZipnovaEnvioService
      *
      * Adentro de la transacción: `SELECT ... FOR UPDATE` sobre la fila del pedido —serializa
      * los requests concurrentes del mismo pedido: el segundo espera acá hasta el commit del
-     * primero—, re-chequeo de envío vivo (ahora sí ve la fila `generando` que el otro dejó),
-     * número de intento para el `external_id`, y el `save()`. Afuera queda la llamada a Zipnova,
-     * que puede tardar segundos y no tiene por qué sostener un lock sobre el pedido.
+     * primero—, re-chequeo del estado del pedido, re-chequeo de envío vivo (ahora sí ve la fila
+     * `generando` que el otro dejó), número de intento para el `external_id`, y el `save()`.
+     * Afuera queda la llamada a Zipnova, que puede tardar segundos y no tiene por qué sostener un
+     * lock sobre el pedido.
+     *
+     * 🔴 El estado se RELEE de la fila bloqueada (misión formas-envio-direcciones-maps,
+     * 19/10/2026), no del `$order` que llegó: ese se cargó antes, y entre esa carga y este lock
+     * el comercio pudo cancelar el pedido desde el formulario (`OrderController@update` toma el
+     * mismo candado sobre la fila, así que acá se ve su cambio ya commiteado). Sin esto, un "Generar envío" que arrancó sobre un pedido
+     * confirmado creaba —y cobraba— el envío de un pedido que ya estaba cancelado.
      *
      * @param Order $order
      * @param array $atributos Todo lo que ya se sabe del envío (menos `external_id`).
      * @return Envio
-     * @throws EnvioNoGenerableException Si otro request ya generó (o está generando) el envío.
+     * @throws EnvioNoGenerableException Si el pedido ya no está confirmado (ver
+     *         `motivo_por_estado()`), o si otro request ya generó (o está generando) el envío.
      */
     protected function reservar_fila(Order $order, array $atributos)
     {
         return DB::transaction(function () use ($order, $atributos) {
-            Order::where('id', $order->id)->lockForUpdate()->first();
+            $bloqueado = Order::where('id', $order->id)->lockForUpdate()->first();
+
+            $motivo = self::motivo_por_estado(is_null($bloqueado) ? null : $bloqueado->order_status_id);
+            if (!is_null($motivo)) {
+                throw new EnvioNoGenerableException($motivo);
+            }
 
             $vivo = self::envio_vivo($order);
             if (!is_null($vivo)) {

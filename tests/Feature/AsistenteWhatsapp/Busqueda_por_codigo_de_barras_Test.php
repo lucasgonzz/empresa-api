@@ -772,6 +772,115 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
         $this->assertCount(2, $visiones);
     }
 
+    /** @test */
+    public function conserva_la_busqueda_con_su_codigo_y_foto_despues_de_dos_intentos_y_una_repregunta()
+    {
+        $conversacion = $this->conversacion_whatsapp();
+        $hallazgos = [];
+        foreach (['4048962449396' => 'Taco Fischer SX 6', '4048962055467' => 'Taco Fischer SXR 6x60'] as $codigo => $nombre) {
+            $this->mensaje($conversacion, 'user', 'listo', ['contenido' => 'Buscá el código de esta foto.']);
+            $assistant = $this->mensaje($conversacion, 'assistant', 'pendiente');
+            $web = $this->respuesta_web_final();
+            $web['content'][3]['text'] = json_encode(['nombre' => $nombre, 'marca' => 'Fischer', 'descripcion' => 'Taco para fijaciones.', 'fuentes' => ['https://tienda.example/taco']]);
+            $this->fake_de_la_red([
+                'web' => [$web],
+                'pagina' => '<meta property="og:image" content="https://cdn.example/taco.png">',
+                'imagen' => $this->png(600, 600),
+                'vision' => ['es_el_producto' => true, 'tipo' => 'producto_solo', 'confianza' => 'high', 'motivo' => 'Es el taco.'],
+            ]);
+            $resultado = (new AsistenteIaService())->execute_tool_calls([[
+                'type' => 'tool_use', 'id' => 'busqueda_' . $codigo,
+                'name' => 'buscar_producto_por_codigo_de_barras', 'input' => ['codigo' => (string) $codigo],
+            ]], $conversacion, $assistant);
+            $datos = json_decode($resultado[0]['content'], true);
+            $this->assertNotNull($datos['imagen_id']);
+            $hallazgos[] = $datos;
+            $assistant->contenido = 'Encontré ' . $nombre . ', con su foto de referencia.';
+            $assistant->estado = 'listo';
+            $assistant->save();
+        }
+        $this->mensaje($conversacion, 'user', 'listo', ['contenido' => 'Cargá el último, con la foto que encontraste.']);
+        $this->mensaje($conversacion, 'assistant', 'listo', ['contenido' => '¿En qué depósito cargo el stock?']);
+        $this->mensaje($conversacion, 'user', 'listo', ['contenido' => 'En Principal.']);
+        $payload = (new AsistenteIaService())->build_messages_payload($conversacion);
+        $texto = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        foreach ($hallazgos as $hallazgo) {
+            $this->assertStringContainsString($hallazgo['codigo'], $texto, 'El turno siguiente necesita el código exacto de cada hallazgo.');
+            $this->assertStringContainsString('imagen_id', $texto);
+            $this->assertStringContainsString((string) $hallazgo['imagen_id'], $texto);
+        }
+        $this->assertLessThan(strpos($texto, '4048962055467'), strpos($texto, '4048962449396'), 'Se conserva el orden de los dos intentos.');
+        $this->assertStringNotContainsString('4048962055467', json_encode((new AsistenteIaService())->build_messages_payload($this->conversacion_whatsapp())));
+        $this->assertArrayNotHasKey('busquedas_de_productos', $assistant->fresh()->toArray(), 'Es contexto privado del agente, no un campo del chat público.');
+    }
+
+    /** @test */
+    public function el_error_de_una_busqueda_posterior_se_conserva_sin_reutilizar_la_foto_anterior()
+    {
+        $conversacion = $this->conversacion_whatsapp();
+        $this->mensaje($conversacion, 'user', 'listo', ['contenido' => 'Buscá esta primera foto.']);
+        $anterior = $this->mensaje($conversacion, 'assistant', 'pendiente');
+        $this->fake_de_la_red([
+            'web' => [$this->respuesta_web_final()],
+            'pagina' => '<meta property="og:image" content="https://cdn.example/primero.png">',
+            'imagen' => $this->png(600, 600),
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+        $primero = (new AsistenteIaService())->execute_tool_calls([[
+            'type' => 'tool_use', 'id' => 'busqueda_previa',
+            'name' => 'buscar_producto_por_codigo_de_barras', 'input' => ['codigo' => self::EAN_WEB],
+        ]], $conversacion, $anterior);
+        $foto_anterior = json_decode($primero[0]['content'], true)['imagen_id'];
+        $this->assertNotNull($foto_anterior);
+        $anterior->estado = 'listo';
+        $anterior->contenido = 'Encontré el primero con su foto.';
+        $anterior->save();
+        $this->mensaje($conversacion, 'user', 'listo', ['contenido' => 'Buscá el nuevo código.']);
+        $assistant = $this->mensaje($conversacion, 'assistant', 'pendiente');
+        $web = $this->respuesta_web_final();
+        $web['content'][3]['text'] = '{"nombre":null,"marca":null,"descripcion":null,"fuentes":[]}';
+        $this->fake_de_la_red(['web' => [$web]]);
+        (new AsistenteIaService())->execute_tool_calls([[
+            'type' => 'tool_use', 'id' => 'busqueda_sin_coincidencia',
+            'name' => 'buscar_producto_por_codigo_de_barras', 'input' => ['codigo' => '4048962055467'],
+        ]], $conversacion, $assistant);
+        $assistant->contenido = 'No pude identificarlo.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+        $this->mensaje($conversacion, 'user', 'listo', ['contenido' => '¿Y la foto?']);
+        $guardado = $assistant->fresh()->busquedas_de_productos;
+        $this->assertSame('4048962055467', $guardado[0]['codigo']);
+        $this->assertFalse($guardado[0]['encontrado']);
+        $this->assertNull($guardado[0]['imagen_id']);
+        $this->assertSame($foto_anterior, $anterior->fresh()->busquedas_de_productos[0]['imagen_id']);
+        $historial = json_encode((new AsistenteIaService())->build_messages_payload($conversacion));
+        $this->assertStringContainsString('4048962055467', $historial);
+        $this->assertStringContainsString('encontrado', $historial);
+    }
+
+    /** @test */
+    public function el_contexto_de_busquedas_tiene_tope_y_no_se_guarda_en_otro_hilo()
+    {
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant = $this->mensaje($conversacion, 'assistant', 'pendiente');
+        for ($i = 1; $i <= 5; $i++) {
+            \App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper::guardar($this->comercio->id, $conversacion, $assistant, [
+                'codigo' => '200000000000' . $i, 'nombre' => str_repeat('Producto ', 100),
+                'descripcion' => str_repeat('Descripción ', 300), 'imagen_id' => null,
+            ]);
+        }
+        $guardado = $assistant->fresh()->busquedas_de_productos;
+        $this->assertCount(3, $guardado);
+        $this->assertSame('2000000000003', $guardado[0]['codigo']);
+        $this->assertLessThanOrEqual(150, mb_strlen($guardado[0]['nombre']));
+        $this->assertLessThanOrEqual(1200, mb_strlen($guardado[0]['descripcion']));
+        $ajena = $this->conversacion_whatsapp(null, $this->otro_dueno());
+        $mensaje_ajeno = $this->mensaje($ajena, 'assistant', 'pendiente');
+        \App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper::guardar($this->comercio->id, $conversacion, $mensaje_ajeno, $guardado[0]);
+        $this->assertNull($mensaje_ajeno->fresh()->busquedas_de_productos);
+        $this->assertArrayNotHasKey('busquedas_de_productos', $assistant->fresh()->toArray());
+    }
+
     // ------------------------------------------------------------------ fakes
 
     /**

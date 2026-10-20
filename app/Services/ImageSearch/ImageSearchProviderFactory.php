@@ -135,7 +135,14 @@ class ImageSearchProviderFactory
         $nombre = is_null($nombre) ? self::nombre_para($owner) : (string) $nombre;
 
         if ($nombre === 'serper') {
-            return new SerperImageSearchProvider(self::clave_serper_para($owner));
+            $dueno = self::dueno_de($owner);
+            $persona = \App\Http\Controllers\Helpers\UserHelper::user(false);
+            return (new SerperImageSearchProvider(self::clave_serper_para($owner)))->usageContext([
+                'user_id' => $dueno ? $dueno->id : null,
+                'auth_user_id' => $persona && $dueno && (int) ($persona->owner_id ?: $persona->id) === (int) $dueno->id ? $persona->id : null,
+                'auth_user_name' => $persona && $dueno && (int) ($persona->owner_id ?: $persona->id) === (int) $dueno->id ? $persona->name : null,
+                'process' => 'imagenes',
+            ]);
         }
 
         return new GoogleCustomSearchImageProvider($owner);

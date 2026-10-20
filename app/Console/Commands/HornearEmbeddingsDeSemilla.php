@@ -4,6 +4,8 @@ namespace App\Console\Commands;
 
 use App\Models\Article;
 use App\Services\ArticleEmbeddingService;
+use App\Services\DemoIndustriaService;
+use App\Services\DemoIndustriaEmbeddings;
 use Carbon\Carbon;
 use Database\Seeders\FerreteriaArticlesSeeder;
 use Illuminate\Console\Command;
@@ -41,7 +43,10 @@ class HornearEmbeddingsDeSemilla extends Command
      * @var string
      */
     protected $signature = 'semilla:embeddings
+                            {--industria= : Rubro de demo; vacío conserva el catálogo histórico}
                             {--forzar : Rehornea todos, incluso los que no cambiaron}';
+
+    protected $industria = null;
 
     /**
      * @var string
@@ -72,8 +77,11 @@ class HornearEmbeddingsDeSemilla extends Command
      *
      * @return string
      */
-    public static function ruta_del_archivo()
+    public static function ruta_del_archivo($industria = null)
     {
+        if ($industria) {
+            return DemoIndustriaEmbeddings::ruta($industria);
+        }
         return database_path('seeders/data/ferreteria_embeddings.json');
     }
 
@@ -82,6 +90,12 @@ class HornearEmbeddingsDeSemilla extends Command
      */
     public function handle()
     {
+        $this->industria = trim((string) $this->option('industria')) ?: null;
+        $perfil = $this->industria ? DemoIndustriaService::resolver($this->industria) : null;
+        if ($this->industria && !$perfil) {
+            $this->error('El rubro no existe en el catálogo de demos.');
+            return 1;
+        }
         if (trim((string) config('services.openai.api_key')) === '') {
             $this->error('semilla:embeddings: no hay OPENAI_API_KEY configurada. Sin clave no hay nada que hornear.');
             return 1;
@@ -106,7 +120,7 @@ class HornearEmbeddingsDeSemilla extends Command
         $service = app(ArticleEmbeddingService::class);
 
         /** Catálogo de la semilla, que es la lista de nombres a hornear. */
-        $catalogo = (new FerreteriaArticlesSeeder())->get_catalog();
+        $catalogo = $perfil ? $perfil['productos'] : (new FerreteriaArticlesSeeder())->get_catalog();
 
         $user_id = config('app.USER_ID');
 
@@ -190,10 +204,10 @@ class HornearEmbeddingsDeSemilla extends Command
 
         $this->escribir_archivo($resultado);
 
-        $peso_kb = round(filesize(self::ruta_del_archivo()) / 1024);
+        $peso_kb = round(filesize(self::ruta_del_archivo($this->industria)) / 1024);
 
         $this->info('semilla:embeddings: listo. Horneados: '.$horneados.'. Salteados (sin cambios): '.$salteados.'.');
-        $this->info('Archivo: '.self::ruta_del_archivo().' ('.$peso_kb.' KB)');
+        $this->info('Archivo: '.self::ruta_del_archivo($this->industria).' ('.$peso_kb.' KB)');
 
         return 0;
     }
@@ -224,7 +238,7 @@ class HornearEmbeddingsDeSemilla extends Command
      */
     protected function leer_archivo_previo()
     {
-        $ruta = self::ruta_del_archivo();
+        $ruta = self::ruta_del_archivo($this->industria);
 
         if (!is_file($ruta)) {
             return [];
@@ -255,7 +269,7 @@ class HornearEmbeddingsDeSemilla extends Command
      */
     protected function escribir_archivo(array $articulos)
     {
-        $ruta      = self::ruta_del_archivo();
+        $ruta      = self::ruta_del_archivo($this->industria);
         $directorio = dirname($ruta);
 
         if (!is_dir($directorio)) {

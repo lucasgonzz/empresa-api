@@ -26,6 +26,7 @@ use App\Models\PriceType;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
+use App\Services\DemoIndustriaService;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
 use App\Services\Zipnova\ZipnovaClient;
@@ -176,6 +177,15 @@ class DemoSetupHelper
         if (! self::es_instancia_de_demo()) {
             BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
         }
+
+        // Se valida ANTES de vaciar nada. Un admin anterior omite el campo y conserva su catálogo.
+        $industria = trim((string) ($data['demo_industria'] ?? ''));
+        if ($industria !== '' && !DemoIndustriaService::resolver($industria)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'demo_industria' => ['Elegí uno de los rubros disponibles para la demo.'],
+            ]);
+        }
+        config(['demo_industria_actual' => $industria !== '' ? $industria : null]);
 
         /**
          * POR QUE ESTAS DOS LINEAS, ANTES DE QUE ALGUIEN LAS "LIMPIE":
@@ -377,6 +387,11 @@ class DemoSetupHelper
         */
         Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
 
+        if ($industria !== '') {
+            Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappIaSeeder', '--force' => true]);
+            $extencions[] = 'whatsapp_ia';
+        }
+
         /*
             Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
             'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
@@ -567,6 +582,10 @@ class DemoSetupHelper
         // recibió datos de demostración" (0) de "esta es la instalación de un cliente real" (1),
         // y de eso depende con qué criterio de precios arranca la tienda. Ver `tienda()`.
         self::tienda($semilla_sembro);
+
+        if ($industria !== '') {
+            DemoIndustriaService::preparar($user, $industria);
+        }
 
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
         self::restaurar_mercado_pago($user, $foto_mercado_pago);
@@ -1395,7 +1414,7 @@ class DemoSetupHelper
         // }
 
         // Seeder transversal de presupuestos, se encadena al final del bloque de tipo
-        $seeders[] = 'FerreteriaArticlesSeeder';
+        $seeders[] = config('demo_industria_actual') ? 'DemoIndustriaArticlesSeeder' : 'FerreteriaArticlesSeeder';
         $seeders[] = 'BudgetSeeder';
 
         /*
