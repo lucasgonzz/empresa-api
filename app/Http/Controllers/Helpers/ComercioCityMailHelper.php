@@ -26,9 +26,13 @@ class ComercioCityMailHelper
      * @param Sale $sale Venta con relaciones cargables (client, moneda, user para links).
      * @param bool $updated Si true, asunto y textos de "venta actualizada".
      * @param bool $force_send Si true, envía aunque send_mail sea false (reenvío / envío manual desde listado).
+     * @param int|null $ai_message_action_id La tarjeta del asistente que lo manda (misión
+     *                 asistente-arreglos-segunda-prueba, 19/10/2026): viaja en el mail para que, si muere en
+     *                 el worker o el servidor lo rechaza, el fallo vuelva al dueño. Al final y con default:
+     *                 los llamadores de la pantalla no cambian.
      * @return void
      */
-    public static function new_sale(Sale $sale, $updated = false, $force_send = false)
+    public static function new_sale(Sale $sale, $updated = false, $force_send = false, $ai_message_action_id = null)
     {
         if (!$force_send && !$sale->send_mail) {
             return;
@@ -61,8 +65,15 @@ class ComercioCityMailHelper
          * Límite dicho, el mismo que el de `notificada_email_at` de las ofertas (ver abajo): `SaleController::send_client_mail()` y `send_client_mail_bulk()` (el botón
          * "Enviar correo al cliente" del listado de ventas) llegan acá con `$force_send`, contestan 200 y escriben `sales.send_mail = true` apenas ENCOLAN: un rechazo en
          * el worker no lo revierte. (`send_mail` es a la vez la casilla "enviar mail" del formulario de venta, o sea una preferencia: no es un defecto de este helper.)
+         *
+         * Desde el 19/10/2026 (misión asistente-arreglos-segunda-prueba) el mail que manda el ASISTENTE lleva su tarjeta (`ai_message_action_id`): si muere en el
+         * worker (ComercioCityMail::failed()) o el servidor lo rechaza (el listener), el fallo queda en `ai_envios_fallidos` y vuelve al dueño por WhatsApp. Sigue
+         * sin tirar y sin volverse sincrónico.
          */
-        Mail::to($email)->queue(new ComercioCityMail($payload));
+        $mail = new ComercioCityMail($payload);
+        $mail->ai_message_action_id = is_null($ai_message_action_id) ? null : (int) $ai_message_action_id;
+
+        Mail::to($email)->queue($mail);
 
         Log::info('Se mando mail a '.$email);
     }
@@ -286,9 +297,10 @@ class ComercioCityMailHelper
      *
      * @param \App\Models\Budget $budget  Presupuesto del negocio, con su cliente.
      * @param string             $pdf_url URL del PDF del presupuesto, YA con su token.
+     * @param int|null           $ai_message_action_id La tarjeta del asistente que lo manda (ver new_sale()).
      * @return string|null El mail al que se encoló, o null si el cliente no tiene uno válido.
      */
-    public static function nuevo_presupuesto(Budget $budget, $pdf_url)
+    public static function nuevo_presupuesto(Budget $budget, $pdf_url, $ai_message_action_id = null)
     {
         $budget->loadMissing('client');
 
@@ -300,7 +312,7 @@ class ComercioCityMailHelper
             return null;
         }
 
-        self::encolar_al_cliente($email, self::payload_de_presupuesto($budget, $pdf_url));
+        self::encolar_al_cliente($email, self::payload_de_presupuesto($budget, $pdf_url), $ai_message_action_id);
 
         return $email;
     }
@@ -350,9 +362,10 @@ class ComercioCityMailHelper
      *
      * @param \App\Models\CurrentAcount $recibo  Movimiento `pago_from_client` de un cliente.
      * @param string                    $pdf_url URL del PDF del recibo, YA con su token.
+     * @param int|null                  $ai_message_action_id La tarjeta del asistente que lo manda (ver new_sale()).
      * @return string|null El mail al que se encoló, o null si el cliente no tiene uno válido.
      */
-    public static function nuevo_recibo(CurrentAcount $recibo, $pdf_url)
+    public static function nuevo_recibo(CurrentAcount $recibo, $pdf_url, $ai_message_action_id = null)
     {
         $recibo->loadMissing('client');
 
@@ -364,7 +377,7 @@ class ComercioCityMailHelper
             return null;
         }
 
-        self::encolar_al_cliente($email, self::payload_de_recibo($recibo, $pdf_url));
+        self::encolar_al_cliente($email, self::payload_de_recibo($recibo, $pdf_url), $ai_message_action_id);
 
         return $email;
     }
@@ -417,13 +430,20 @@ class ComercioCityMailHelper
      * TodoEnvioDeMailMiraLosRechazosTest::ENCOLADOS. Y por eso el asistente dice "encolado", no
      * "entregado".
      *
+     * Desde el 19/10/2026 el mail lleva la tarjeta del asistente (`ai_message_action_id`): si muere en el
+     * worker o el servidor lo rechaza, el fallo vuelve al dueño (ver new_sale()).
+     *
      * @param string                  $email
      * @param ComercioCityMailPayload $payload
+     * @param int|null                $ai_message_action_id
      * @return void
      */
-    private static function encolar_al_cliente($email, ComercioCityMailPayload $payload)
+    private static function encolar_al_cliente($email, ComercioCityMailPayload $payload, $ai_message_action_id = null)
     {
-        Mail::to($email)->queue(new ComercioCityMail($payload));
+        $mail = new ComercioCityMail($payload);
+        $mail->ai_message_action_id = is_null($ai_message_action_id) ? null : (int) $ai_message_action_id;
+
+        Mail::to($email)->queue($mail);
 
         Log::info('Se encoló mail de comprobante a '.$email);
     }

@@ -100,6 +100,23 @@ class ConfirmacionPorTextoIaHelper
         . 'ni de la conversación, y si no vienen, no digas ninguno.';
 
     /**
+     * La nota que acompaña a un ENVÍO A CLIENTES ya ejecutado (comprobante, recordatorios de cobro,
+     * promoción), en lugar de NOTA_EJECUTADA.
+     *
+     * 🔴 EL CASO REAL (segunda prueba por WhatsApp contra demo3, 19/10/2026, N3 de la misión
+     * asistente-arreglos-segunda-prueba). Con NOTA_EJECUTADA («Ahora sí quedó registrado») el modelo
+     * contestó «le mandé el presupuesto a Marcos» sobre un mail que estaba encolado y que después murió en
+     * el worker. Un envío no es una carga: parte sale en el acto (el WhatsApp que Kapso aceptó) y parte
+     * sale en segundo plano (el mail, los recordatorios y la promo, un job por cliente). El `resultado` ya
+     * dice cuál es cuál; esta nota le pide contarlo así, sin dar nada por recibido.
+     */
+    const NOTA_ENVIO_EJECUTADO = 'Ya quedó en marcha. Contale a la persona lo que dice `resultado`, en una línea y tal cual: '
+        . 'lo que salió en el acto como salido, y lo que queda saliendo en segundo plano como que queda saliendo. '
+        . '🔴 No digas que le llegó, que lo recibió ni que lo leyó: eso no lo sabe nadie todavía. Si viene '
+        . '`detalle.no_salieron`, decí a quién no le salió y por qué; si viene `detalle.aviso`, seguilo. Los nombres, '
+        . 'números y canales salen de `resultado` y `detalle`, palabra por palabra.';
+
+    /**
      * Confirma una carga propuesta en un turno anterior y devuelve el resultado para el tool_result.
      *
      * @param  \App\Models\AiConversation  $conversation
@@ -535,6 +552,14 @@ class ConfirmacionPorTextoIaHelper
                 'resultado'  => $texto,
                 'nota'       => self::NOTA_EJECUTADA,
             ];
+
+            // Un envío a clientes que salió (no uno cancelado) se cuenta como envío, no como carga (N3).
+            if (!is_null($model)
+                && in_array((string) $model->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)
+                && (string) $model->estado === AiMessageAction::ESTADO_CONFIRMADA) {
+
+                $respuesta['nota'] = self::NOTA_ENVIO_EJECUTADO;
+            }
 
             $detalle = is_null($model) ? [] : self::detalle_del_resultado($model->resultado, (string) $model->tipo);
 

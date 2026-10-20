@@ -6,6 +6,7 @@ use App\Exceptions\SaleWhatsappSendException;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\OfertaComunicacionHelper;
 use App\Http\Controllers\Helpers\PdfLinkHelper;
+use App\Models\AiEnvioFallido;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Budget;
@@ -16,6 +17,7 @@ use App\Models\User;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Services\SaleWhatsappSenderService;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -38,6 +40,11 @@ use Illuminate\Support\Facades\Log;
  * 🔴 SIEMPRE ESPERA EL SÍ, EN LOS TRES MODOS (HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES): un
  * comprobante que salió no se desmanda. La tarjeta dice a quién, a qué número y a qué mail, si por
  * WhatsApp sale como mensaje o como plantilla, el link del PDF y el texto exacto.
+ *
+ * 🔴 LO QUE SALE EN SEGUNDO PLANO NO SE DA POR ENTREGADO (misión asistente-arreglos-segunda-prueba,
+ * 19/10/2026). El WhatsApp que Kapso aceptó se dice como mandado; el mail encolado, como que "queda
+ * saliendo", y si falla después (en el worker, por un 550, o el WhatsApp rechazado por Meta) el fallo
+ * queda atado a la tarjeta (EnviosFallidosDelAsistenteHelper) y vuelve al dueño por el canal de avisos.
  *
  * 🔴 EL AISLAMIENTO ES POR DUEÑO, ANTES DE MIRAR NADA. El comprobante se busca SIEMPRE dentro del
  * negocio de esta conversación y por el número que ve el dueño: un número de otro comercio (en una
@@ -278,6 +285,12 @@ class PropuestaEnvioComprobanteIaHelper
                 ],
                 // Lo que el sistema le agrega al mensaje por WhatsApp (ver DestinatariosIaHelper::bloque()).
                 'bloque'    => $bloque,
+                /*
+                 * Cómo lo nombró la tarjeta ("el presupuesto N° 900004"): lo usa el aviso de un envío que
+                 * falla después del sí (EnviosFallidosDelAsistenteHelper, N3 del 19/10/2026), que corre en
+                 * un worker o en un webhook, lejos del modelo del comprobante.
+                 */
+                'nombre'    => $nombre,
             ],
             [
                 'titulo'          => 'Mandar ' . $nombre . ' a ' . $client->name,
@@ -597,15 +610,19 @@ class PropuestaEnvioComprobanteIaHelper
         $enviados = [];
         $no_salieron = [];
 
+        // Lo que salió EN EL ACTO (el WhatsApp que Kapso aceptó) y lo que QUEDA SALIENDO (el mail encolado).
+        $en_el_acto = [];
+        $saliendo = [];
+
         foreach ($canales as $canal) {
 
             if ($canal === self::CANAL_WHATSAPP) {
 
-                $salida = self::mandar_por_whatsapp($contexto, $tipo, $modelo, $client, $pdf_url);
+                $salida = self::mandar_por_whatsapp($contexto, $tipo, $modelo, $client, $pdf_url, (int) $accion->id);
 
             } elseif ($canal === self::CANAL_MAIL) {
 
-                $salida = self::mandar_por_mail($contexto, $tipo, $modelo, $client, $pdf_url);
+                $salida = self::mandar_por_mail($contexto, $tipo, $modelo, $client, $pdf_url, (int) $accion->id);
 
             } else {
 
@@ -614,6 +631,12 @@ class PropuestaEnvioComprobanteIaHelper
 
             if ($salida['ok']) {
                 $enviados[] = $salida['texto'];
+
+                if (!empty($salida['en_segundo_plano'])) {
+                    $saliendo[] = $salida['texto'];
+                } else {
+                    $en_el_acto[] = $salida['texto'];
+                }
             } else {
                 $no_salieron[] = ['canal' => self::nombre_de_canal($canal), 'motivo' => $salida['texto']];
             }
@@ -632,7 +655,25 @@ class PropuestaEnvioComprobanteIaHelper
             throw new AccionIaException(422, 'No salió ' . $nombre . ' ' . implode('; ', $motivos) . '.');
         }
 
-        $texto = ucfirst($nombre) . ' mandado a ' . $client->name . ': ' . implode('; ', $enviados) . '.';
+        /*
+         * 🔴 EL TEXTO NO PROMETE LO QUE SALE EN SEGUNDO PLANO (N3 de la misión
+         * asistente-arreglos-segunda-prueba, 19/10/2026). Decía «… mandado a Marcos Perez: … por mail a X
+         * (sale en unos minutos)» y el modelo le contestó al dueño «le mandé el presupuesto»; el mail murió
+         * en el worker. Lo que Kapso ya aceptó (el WhatsApp) se dice como mandado; el mail, como que QUEDA
+         * SALIENDO. Con solo el mail, "mandado" no aparece.
+         */
+        if (count($en_el_acto)) {
+
+            $texto = ucfirst($nombre) . ' mandado a ' . $client->name . ': ' . implode('; ', $en_el_acto) . '.';
+
+            if (count($saliendo)) {
+                $texto .= ' ' . ucfirst(implode('; ', $saliendo)) . '.';
+            }
+
+        } else {
+
+            $texto = ucfirst($nombre) . ' para ' . $client->name . ': ' . implode('; ', $saliendo) . '.';
+        }
 
         if (count($no_salieron)) {
 
@@ -645,11 +686,24 @@ class PropuestaEnvioComprobanteIaHelper
             $texto .= ' Ojo: ' . implode('; ', $partes) . '.';
         }
 
-        return [
+        $resultado = [
             'texto'       => $texto,
             'enviados'    => $enviados,
             'no_salieron' => $no_salieron,
         ];
+
+        if (count($saliendo)) {
+
+            /*
+             * Para el modelo (viaja en `detalle.aviso`): que no dé el mail por llegado, y que prometa el
+             * aviso SOLO si va a salir (la tarjeta vino por WhatsApp y el admin de este dueño consulta los
+             * avisos). Prometer un aviso que nadie va a mandar es la misma mentira que "le llegó".
+             */
+            $resultado['aviso'] = 'No digas que el mail llegó: queda saliendo.'
+                . (EnviosFallidosDelAsistenteHelper::avisa_por_whatsapp($accion) ? ' Si rebota, le aviso por acá.' : '');
+        }
+
+        return $resultado;
     }
 
     /**
@@ -673,9 +727,11 @@ class PropuestaEnvioComprobanteIaHelper
      * @param  mixed  $modelo
      * @param  Client  $client
      * @param  string  $pdf_url
+     * @param  int|null  $accion_id  La tarjeta: queda anotada en la fila del mensaje para que un rechazo
+     *                               posterior de Meta vuelva al dueño (N3, 19/10/2026).
      * @return array{ok: bool, texto: string}
      */
-    protected static function mandar_por_whatsapp(ContextoDeCargaIa $contexto, $tipo, $modelo, Client $client, $pdf_url)
+    protected static function mandar_por_whatsapp(ContextoDeCargaIa $contexto, $tipo, $modelo, Client $client, $pdf_url, $accion_id = null)
     {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION_WHATSAPP)) {
 
@@ -742,6 +798,23 @@ class PropuestaEnvioComprobanteIaHelper
             Log::warning('PropuestaEnvioComprobanteIaHelper: el WhatsApp salió pero no se pudo leer su chat', ['error' => $e->getMessage()]);
         }
 
+        /*
+         * La tarjeta queda anotada en la fila del mensaje (N3, 19/10/2026): si Meta lo rechaza después
+         * (webhook `failed`), WhatsappChatHelper::handle_delivery_status_event() la encuentra y el fallo
+         * vuelve al dueño. Por query y adentro de su try: nada de esto puede lanzar (ver arriba).
+         */
+        if (!empty($accion_id)) {
+
+            try {
+
+                WhatsappChatMessage::where('id', (int) $mensaje->id)->update(['ai_message_action_id' => (int) $accion_id]);
+
+            } catch (\Throwable $e) {
+
+                Log::warning('PropuestaEnvioComprobanteIaHelper: no se pudo anotar la tarjeta en el WhatsApp que salió', ['error' => $e->getMessage()]);
+            }
+        }
+
         if ((string) $mensaje->source !== 'plantilla') {
             $como = ' (como mensaje, con el PDF)';
         } elseif ($tipo === self::TIPO_VENTA) {
@@ -764,9 +837,11 @@ class PropuestaEnvioComprobanteIaHelper
      * @param  mixed  $modelo
      * @param  Client  $client
      * @param  string  $pdf_url
-     * @return array{ok: bool, texto: string}
+     * @param  int|null  $accion_id  La tarjeta: viaja en el mail para que un fallo en el worker o un
+     *                               rechazo del servidor vuelvan al dueño (N3, 19/10/2026).
+     * @return array{ok: bool, texto: string, en_segundo_plano?: bool}
      */
-    protected static function mandar_por_mail(ContextoDeCargaIa $contexto, $tipo, $modelo, Client $client, $pdf_url)
+    protected static function mandar_por_mail(ContextoDeCargaIa $contexto, $tipo, $modelo, Client $client, $pdf_url, $accion_id = null)
     {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION_MAIL)) {
 
@@ -780,24 +855,29 @@ class PropuestaEnvioComprobanteIaHelper
             return ['ok' => false, 'texto' => 'el cliente no tiene un mail válido cargado'];
         }
 
+        // Para ver, después del encolado, si el mail ya falló ADENTRO de este turno (cola sync).
+        $desde = Carbon::now()->subSecond();
+
+        $tiro = false;
+
         try {
 
             if ($tipo === self::TIPO_VENTA) {
 
                 // 🔴 El de la venta, TAL CUAL, y con la misma marca que deja el botón "Enviar correo al
                 // cliente" (SaleController::try_queue_sale_client_mail), para que el listado diga lo mismo.
-                ComercioCityMailHelper::new_sale($modelo, false, true);
+                ComercioCityMailHelper::new_sale($modelo, false, true, $accion_id);
 
                 $modelo->send_mail = true;
                 $modelo->save();
 
             } elseif ($tipo === self::TIPO_PRESUPUESTO) {
 
-                $email = ComercioCityMailHelper::nuevo_presupuesto($modelo, $pdf_url);
+                $email = ComercioCityMailHelper::nuevo_presupuesto($modelo, $pdf_url, $accion_id);
 
             } else {
 
-                $email = ComercioCityMailHelper::nuevo_recibo($modelo, $pdf_url);
+                $email = ComercioCityMailHelper::nuevo_recibo($modelo, $pdf_url, $accion_id);
             }
 
         } catch (\Throwable $e) {
@@ -808,6 +888,32 @@ class PropuestaEnvioComprobanteIaHelper
                 'error'     => $e->getMessage(),
             ]);
 
+            $tiro = true;
+        }
+
+        /*
+         * 🔴 CON LA COLA SYNC EL MAIL SALE ADENTRO DEL ->queue(), y si falla (el `failed()` del mail con un
+         * transporte que tira, o el 550 que anota el listener sin tirar) la fila de `ai_envios_fallidos`
+         * ya existe cuando se vuelve acá. Entonces el fallo se le cuenta al dueño EN ESTE resultado y la
+         * fila se sella como dicha: si no, el admin le mandaría además un aviso por WhatsApp de algo que
+         * ya leyó. Con la cola de verdad (database) la fila todavía no existe y el mail queda saliendo.
+         */
+        if (!empty($accion_id)) {
+
+            $fallidas = EnviosFallidosDelAsistenteHelper::de_la_tarjeta_desde((int) $accion_id, AiEnvioFallido::CANAL_MAIL, $desde);
+
+            if (count($fallidas)) {
+
+                EnviosFallidosDelAsistenteHelper::sellar_dichas_en_el_turno($fallidas);
+
+                $motivo = trim((string) $fallidas->first()->motivo);
+
+                return ['ok' => false, 'texto' => $motivo === '' ? 'una falla del sistema' : $motivo];
+            }
+        }
+
+        if ($tiro) {
+
             return ['ok' => false, 'texto' => 'una falla del sistema'];
         }
 
@@ -816,8 +922,11 @@ class PropuestaEnvioComprobanteIaHelper
             return ['ok' => false, 'texto' => 'el cliente no tiene un mail válido cargado'];
         }
 
-        // "Encolado": el mail sale en segundo plano y el rechazo del servidor (si lo hay) pasa después.
-        return ['ok' => true, 'texto' => 'por mail a ' . $email . ' (sale en unos minutos)'];
+        /*
+         * "Encolado": el mail sale en segundo plano y el rechazo del servidor (si lo hay) pasa después.
+         * 🔴 Por eso dice "queda saliendo" y no "mandado" (N3, 19/10/2026): ver ejecutar().
+         */
+        return ['ok' => true, 'texto' => 'por mail queda saliendo a ' . $email . ' (se manda en segundo plano)', 'en_segundo_plano' => true];
     }
 
     /**
