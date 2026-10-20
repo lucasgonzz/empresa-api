@@ -13,7 +13,8 @@ use App\Services\PdfColumnService;
 use fpdf;
 use Illuminate\Support\Facades\Log;
 
-require __DIR__.'/../CommonLaravel/fpdf/fpdf.php';
+/** require_once y no require: con un require pelado, cargar este archivo en un proceso donde FPDF ya está declarada (los tests) muere con 'Cannot declare class FPDF'. */
+require_once __DIR__.'/../CommonLaravel/fpdf/fpdf.php';
 
 /**
  * PDF tabular de artículos con diseño tipo catálogo moderno.
@@ -74,8 +75,14 @@ class ArticleTablePdf extends fpdf
      *
      * @param \App\Models\PdfColumnProfile              $pdf_column_profile  Plantilla de columnas activa.
      * @param \Illuminate\Support\Collection|array      $articles            Artículos a listar.
+     * @param bool                                       $emitir              true (siempre, en producción) manda
+     *                                                                        el PDF al navegador y termina el
+     *                                                                        script (`Output(); exit;`). false deja
+     *                                                                        el documento armado y vuelve, para que
+     *                                                                        un test pueda leer el binario con
+     *                                                                        Output('S'): solo existe para eso.
      */
-    public function __construct(PdfColumnProfile $pdf_column_profile, $articles)
+    public function __construct(PdfColumnProfile $pdf_column_profile, $articles, $emitir = true)
     {
         /** Perfil de columnas activo que determina qué campos se muestran y en qué orden. */
         $this->pdf_column_profile = $pdf_column_profile;
@@ -192,6 +199,11 @@ class ArticleTablePdf extends fpdf
         $this->AddPage();
         $this->print_items();
         $this->log_discarded_images();
+
+        if (! $emitir) {
+            return;
+        }
+
         $this->Output();
         exit;
     }
