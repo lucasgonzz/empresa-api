@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\GeneralHelper as AppGeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfNegritaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PdfColumnProfile;
 use App\Services\PdfColumnService;
@@ -203,13 +204,16 @@ class ArticleTablePdf extends fpdf
      * Lee la relación pdf_column_options si no está cargada en memoria
      * y filtra las que tienen visible=false en el pivot.
      *
-     * @return array  Array de maps con keys: label, value_resolver, order, width, wrap_content.
+     * @return array  Array de maps con keys: label, value_resolver, order, width, wrap_content, font_size, text_align, bold.
      */
     private function get_profile_columns()
     {
         if (! $this->pdf_column_profile->relationLoaded('pdf_column_options')) {
             $this->pdf_column_profile->load('pdf_column_options');
         }
+
+        /** Ids de las columnas cuyo valor va en negrita (perfil.bold_columns); null = ninguna. */
+        $bold_ids = PdfNegritaHelper::bold_option_ids($this->pdf_column_profile);
 
         /** Acumula las columnas habilitadas antes de ordenarlas. */
         $rows = [];
@@ -229,6 +233,8 @@ class ArticleTablePdf extends fpdf
                 'wrap_content'   => isset($option->pivot->wrap_content) ? (bool) $option->pivot->wrap_content : false,
                 'font_size'      => isset($option->pivot->font_size) ? (int) $option->pivot->font_size : null,
                 'text_align'     => isset($option->pivot->text_align) ? (string) $option->pivot->text_align : null,
+                /** Negrita del valor de esta columna (el encabezado de la tabla ya es negrita). */
+                'bold'           => in_array((int) $option->id, $bold_ids, true),
             ];
         }
 
@@ -417,9 +423,10 @@ class ArticleTablePdf extends fpdf
      * @param  string  $text_align  L|C|R
      * @param  int     $font_size
      * @param  bool    $wrap_content
+     * @param  bool    $bold         true = el valor va en negrita (columna marcada en el perfil).
      * @return void
      */
-    private function print_vertically_centered_text_cell($x, $start_y, $width, $row_height, $text, $text_align, $font_size, $wrap_content)
+    private function print_vertically_centered_text_cell($x, $start_y, $width, $row_height, $text, $text_align, $font_size, $wrap_content, $bold = false)
     {
         if ($width <= 0) {
             return;
@@ -427,7 +434,8 @@ class ArticleTablePdf extends fpdf
 
         /** Altura de cada línea según el tamaño de fuente activo. */
         $cell_line_height = $this->get_column_line_height($font_size);
-        $this->SetFont('Arial', '', $font_size);
+        /** La fuente con la que se mide el recorte y el salto de línea es la misma con la que se imprime. */
+        $this->SetFont('Arial', $bold ? 'B' : '', $font_size);
 
         if ($wrap_content) {
             $lines = $this->NbLines($width, $text);
@@ -435,6 +443,10 @@ class ArticleTablePdf extends fpdf
             $cell_y = $start_y + ($row_height - $content_height) / 2;
             $this->SetXY($x, $cell_y);
             $this->print_multi_cell($width, $cell_line_height, $text, $text_align);
+            if ($bold) {
+                /** La negrita es solo del valor de esta columna: la fuente vuelve a la de siempre. */
+                $this->SetFont('Arial', '', $font_size);
+            }
             return;
         }
 
@@ -442,6 +454,10 @@ class ArticleTablePdf extends fpdf
         $cell_y = $start_y + ($row_height - $cell_line_height) / 2;
         $this->SetXY($x, $cell_y);
         $this->Cell($width, $cell_line_height, $short_text, 0, 0, $text_align, false);
+        if ($bold) {
+            /** La negrita es solo del valor de esta columna: la fuente vuelve a la de siempre. */
+            $this->SetFont('Arial', '', $font_size);
+        }
     }
 
     // ── Cabecera de página ────────────────────────────────────────────────────
@@ -992,7 +1008,8 @@ class ArticleTablePdf extends fpdf
                 $text,
                 $text_align,
                 $font_size,
-                $wrap_content
+                $wrap_content,
+                ! empty($column['bold'])
             );
 
             $this->x = $current_x + $width;
@@ -1043,8 +1060,13 @@ class ArticleTablePdf extends fpdf
             /** Las celdas con wrap_content expanden la altura según las líneas necesarias. */
             $wrap_content = ! empty($column['wrap_content']);
             if ($wrap_content && $width > 0) {
-                $this->SetFont('Arial', '', $font_size);
+                /** Se mide con la misma fuente con la que se imprime: la negrita ensancha las letras. */
+                $this->SetFont('Arial', ! empty($column['bold']) ? 'B' : '', $font_size);
                 $lines = $this->NbLines($width, $value);
+                if (! empty($column['bold'])) {
+                    /** La negrita es solo del valor de esta columna: la fuente vuelve a la de siempre. */
+                    $this->SetFont('Arial', '', $font_size);
+                }
                 $estimated = max(1, $lines) * $cell_line_height;
                 if ($estimated > $row_height) {
                     $row_height = $estimated;

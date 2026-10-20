@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfNegritaHelper;
 use App\Http\Controllers\Helpers\PdfLayout\CamposDeVentaPdf;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
@@ -782,9 +783,14 @@ class SaleLayoutPdf extends fpdf
             $valores[$i] = (string) $this->valor_de_columna($columna, $index, $item);
 
             if (! empty($columna['wrap_content'])) {
+                /** Se mide con la misma fuente con la que se imprime (la negrita ensancha las letras). */
+                $this->fuente_del_valor($columna);
                 $alto = max($alto, max(1, $this->NbLines($columna['width'], $valores[$i])) * $this->line_height);
             }
         }
+
+        /** Deja la fuente como estaba antes de medir. */
+        $this->SetFont('Arial', '', 8);
 
         return ['valores' => $valores, 'alto' => $alto];
     }
@@ -835,6 +841,9 @@ class SaleLayoutPdf extends fpdf
             $this->x = $x;
             $this->y = $y;
 
+            /** Fuente del valor de esta columna (normal o negrita); la misma con la que se midió. */
+            $this->fuente_del_valor($columna);
+
             if (! empty($columna['wrap_content'])) {
                 $this->MultiCell($columna['width'], $this->line_height, $valores[$i], $this->b, 'L', false);
             } else {
@@ -843,6 +852,9 @@ class SaleLayoutPdf extends fpdf
 
             $x += $columna['width'];
         }
+
+        /** La negrita es solo del valor de la columna: la fuente de los renglones vuelve a la de siempre. */
+        $this->SetFont('Arial', '', 8);
 
         $this->x = $this->pdf_x0;
         $this->y = $y + $alto;
@@ -884,6 +896,9 @@ class SaleLayoutPdf extends fpdf
             $perfil->load('pdf_column_options');
         }
 
+        /** Ids de las columnas cuyo valor va en negrita (perfil.bold_columns); null = ninguna. */
+        $bold_ids = PdfNegritaHelper::bold_option_ids($perfil);
+
         $columnas = [];
         foreach ($perfil->pdf_column_options as $option) {
             $visible = isset($option->pivot->visible) ? (bool) $option->pivot->visible : true;
@@ -899,6 +914,8 @@ class SaleLayoutPdf extends fpdf
                 'order' => isset($option->pivot->order) ? (int) $option->pivot->order : 0,
                 'width' => $ancho,
                 'wrap_content' => isset($option->pivot->wrap_content) ? (bool) $option->pivot->wrap_content : false,
+                /** Negrita del valor de esta columna (el encabezado de la tabla ya es negrita). */
+                'bold' => in_array((int) $option->id, $bold_ids, true),
             ];
         }
 
@@ -907,6 +924,18 @@ class SaleLayoutPdf extends fpdf
         });
 
         return $columnas;
+    }
+
+    /**
+     * Fuente con la que se mide e imprime el valor de una columna: Arial 8, en negrita si el perfil
+     * marcó la columna (misión pdf-negrita-perfil). Sin negrita es la fuente de siempre.
+     *
+     * @param array $columna Columna armada por columnas_del_perfil().
+     * @return void
+     */
+    private function fuente_del_valor($columna)
+    {
+        $this->SetFont('Arial', ! empty($columna['bold']) ? 'B' : '', 8);
     }
 
     /**
