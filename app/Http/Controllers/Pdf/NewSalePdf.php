@@ -16,14 +16,24 @@ use App\Models\PdfColumnProfile;
 use App\Models\User;
 use App\Services\PdfColumnService;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/** require_once y no require: con un require pelado, cargar este archivo en un proceso donde FPDF ya está declarada (los tests) muere con 'Cannot declare class FPDF'. */
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class NewSalePdf extends fpdf
 {
     /**
      * Constructor principal del PDF nuevo con perfil de columnas.
+     *
+     * @param mixed       $sale                  Venta a imprimir.
+     * @param mixed       $pdf_column_profile_id Perfil pedido (null = el predeterminado).
+     * @param mixed       $afip_ticket_id        Factura a imprimir (null = remito).
+     * @param string|null $origin                'tienda' prioriza el perfil predeterminado de la tienda.
+     * @param bool        $emitir                true (siempre, en producción) manda el PDF al navegador y
+     *                                           termina el script (`Output(); exit;`). false deja el
+     *                                           documento armado y vuelve, para que un test pueda leer
+     *                                           el binario con Output('S'): solo existe para eso.
      */
-    public function __construct($sale, $pdf_column_profile_id, $afip_ticket_id, $origin = null)
+    public function __construct($sale, $pdf_column_profile_id, $afip_ticket_id, $origin = null, $emitir = true)
     {
 
         $user = User::find($sale->user_id);
@@ -182,6 +192,10 @@ class NewSalePdf extends fpdf
          * (solo en la última), según el flag show_totals_on_each_page del perfil.
          */
         $this->print_totals_only_on_last_page_when_needed();
+
+        if (! $emitir) {
+            return;
+        }
 
         // if ($save_doc_as) {
         //     $this->Output('F', storage_path().'/app/public/oscar-pdf/'.$save_doc_as, true);
@@ -1236,7 +1250,7 @@ class NewSalePdf extends fpdf
         }
 
         /** Deja la fuente de los renglones como estaba (la negrita es solo del valor de la columna). */
-        $this->SetFont('Arial', '', 8);
+        $this->reset_item_font();
 
         $this->x = $start_x;
         $this->y = $start_y + $row_height;
@@ -1244,16 +1258,48 @@ class NewSalePdf extends fpdf
     }
 
     /**
-     * Fuente con la que se mide e imprime el valor de una columna de la tabla: Arial 8, en
-     * negrita si el perfil marcó la columna (misión pdf-negrita-perfil). Sin negrita es la fuente de
-     * siempre, así que el PDF de un perfil sin bold_columns sale igual.
+     * ¿La fuente de los renglones está hoy en negrita por una columna marcada? Solo la prende
+     * set_item_font() y la apaga reset_item_font(): sirve para NO llamar a SetFont() cuando nada
+     * cambia. Este FPDF vuelve a escribir la fuente en el PDF cada vez que se la pide con 'Arial'
+     * (la guarda como 'helvetica' y no la reconoce), así que una llamada de más ya cambia los bytes
+     * del PDF: un perfil sin bold_columns no puede hacer ninguna.
+     *
+     * @var bool
+     */
+    private $item_font_is_bold = false;
+
+    /**
+     * Fuente con la que se mide e imprime el valor de una columna de la tabla: Arial 8 (la que dejó
+     * printItemFromProfile() al empezar el renglón), en negrita si el perfil marcó la columna
+     * (misión pdf-negrita-perfil). Solo toca la fuente si la columna pide un estilo distinto del que
+     * hay: sin bold_columns no hace nada y el PDF sale como siempre.
      *
      * @param array<string, mixed> $column Columna armada por get_profile_columns().
      * @return void
      */
     private function set_item_font($column)
     {
-        $this->SetFont('Arial', !empty($column['bold']) ? 'B' : '', 8);
+        $bold = ! empty($column['bold']);
+
+        if ($bold === $this->item_font_is_bold) {
+            return;
+        }
+
+        $this->SetFont('Arial', $bold ? 'B' : '', 8);
+        $this->item_font_is_bold = $bold;
+    }
+
+    /**
+     * Vuelve a la fuente normal de los renglones si una columna en negrita la había cambiado.
+     *
+     * @return void
+     */
+    private function reset_item_font()
+    {
+        if ($this->item_font_is_bold) {
+            $this->SetFont('Arial', '', 8);
+            $this->item_font_is_bold = false;
+        }
     }
 
     function sumar_totales($item) {

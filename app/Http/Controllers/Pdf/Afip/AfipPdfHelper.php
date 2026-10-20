@@ -1118,7 +1118,12 @@ class AfipPdfHelper
 
         $pdf->SetFont('Arial', $style_a, self::$header_row_font_size);
         $value_a_width = $pdf->GetStringWidth((string) $value_a);
-        $pdf->SetFont('Arial', $style_b, self::$header_row_font_size);
+
+        /** Solo se vuelve a elegir la fuente si el segundo valor tiene otro estilo (sin negrita: una sola vez, como siempre). */
+        if ($style_b !== $style_a) {
+            $pdf->SetFont('Arial', $style_b, self::$header_row_font_size);
+        }
+
         $value_b_width = $pdf->GetStringWidth((string) $value_b);
 
         return ($label_a_width + $value_a_width) <= ($width / 2)

@@ -502,15 +502,48 @@ class ProfileDocumentPdf extends fpdf
     }
 
     /**
-     * Fuente con la que se mide e imprime el valor de una columna: Arial 8, en negrita si el perfil
-     * marcó la columna (misión pdf-negrita-perfil). Sin negrita es la fuente de siempre.
+     * ¿La fuente de los renglones está hoy en negrita por una columna marcada? Solo la prende
+     * set_item_font() y la apaga reset_item_font(): sirve para NO llamar a SetFont() cuando nada
+     * cambia. Este FPDF vuelve a escribir la fuente en el PDF cada vez que se la pide con 'Arial'
+     * (la guarda como 'helvetica' y no la reconoce), así que una llamada de más ya cambia los bytes
+     * del PDF: un perfil sin bold_columns no puede hacer ninguna.
+     *
+     * @var bool
+     */
+    private $item_font_is_bold = false;
+
+    /**
+     * Fuente con la que se mide e imprime el valor de una columna: Arial 8 (la que dejan los
+     * renglones al empezar), en negrita si el perfil marcó la columna (misión pdf-negrita-perfil).
+     * Solo toca la fuente si la columna pide un estilo distinto del que hay: sin bold_columns no
+     * hace nada y el PDF sale como siempre.
      *
      * @param array<string, mixed> $column Columna armada por get_profile_columns().
      * @return void
      */
     private function set_item_font($column)
     {
-        $this->SetFont('Arial', ! empty($column['bold']) ? 'B' : '', 8);
+        $bold = ! empty($column['bold']);
+
+        if ($bold === $this->item_font_is_bold) {
+            return;
+        }
+
+        $this->SetFont('Arial', $bold ? 'B' : '', 8);
+        $this->item_font_is_bold = $bold;
+    }
+
+    /**
+     * Vuelve a la fuente normal de los renglones si una columna en negrita la había cambiado.
+     *
+     * @return void
+     */
+    private function reset_item_font()
+    {
+        if ($this->item_font_is_bold) {
+            $this->SetFont('Arial', '', 8);
+            $this->item_font_is_bold = false;
+        }
     }
 
     /**
@@ -888,7 +921,7 @@ class ProfileDocumentPdf extends fpdf
         }
 
         /** La negrita es solo del valor de la columna: la fuente de los renglones vuelve a la de siempre. */
-        $this->SetFont('Arial', '', 8);
+        $this->reset_item_font();
 
         $this->x = $this->start_x;
         $this->y = $start_y + $row_height;
@@ -952,7 +985,7 @@ class ProfileDocumentPdf extends fpdf
         }
 
         /** Deja la fuente como estaba antes de medir. */
-        $this->SetFont('Arial', '', 8);
+        $this->reset_item_font();
 
         return [
             'row_height' => $row_height,
