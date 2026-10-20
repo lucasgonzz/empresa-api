@@ -111,6 +111,70 @@ class Agente_De_Impresion_Test extends TestCase
     }
 
     /**
+     * Pide el codigo de vinculacion como lo recibe el servidor segun donde viva la API, y devuelve
+     * la `u` que trae adentro.
+     *
+     * @param string $url_del_pedido URL completa a la que "llega" el pedido.
+     * @param string $script_name    Lo que el servidor web informa como SCRIPT_NAME.
+     * @return string
+     */
+    protected function url_del_codigo_segun_el_servidor($url_del_pedido, $script_name)
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+
+        $response = $this->call('POST', $url_del_pedido, [], [], [], [
+            'SCRIPT_NAME'     => $script_name,
+            'SCRIPT_FILENAME' => '/home/u1/domains/comerciocity.com/public_html/api-x' . $script_name,
+            'PHP_SELF'        => $script_name,
+            'HTTP_ACCEPT'     => 'application/json',
+        ]);
+
+        $response->assertStatus(200);
+
+        $datos = $this->abrir_codigo($response->json('codigo'));
+
+        return $datos['u'];
+    }
+
+    /**
+     * En el shared hosting la API vive bajo `/public`: el agente arma `u + /api/print-agent/vincular`,
+     * asi que sin `/public` en `u` pega contra la pagina 404 HTML del hosting (SanBlas, 20/10/2026).
+     *
+     * @group impresion
+     * @test
+     */
+    public function en_el_shared_hosting_la_url_del_codigo_incluye_el_public()
+    {
+        $u = $this->url_del_codigo_segun_el_servidor(
+            'https://api-sanblas.comerciocity.com/public/api/print-agents/codigo',
+            '/public/index.php'
+        );
+
+        $this->assertSame('https://api-sanblas.comerciocity.com/public', $u);
+    }
+
+    /**
+     * En el VPS la API vive en la raiz del dominio: `u` queda como siempre, sin ningun path ni
+     * barra final, para no romper a los clientes que ya vinculan bien.
+     *
+     * @group impresion
+     * @test
+     */
+    public function en_el_vps_la_url_del_codigo_es_el_host_pelado()
+    {
+        $u = $this->url_del_codigo_segun_el_servidor(
+            'https://api-cliente.comerciocity.com/api/print-agents/codigo',
+            '/index.php'
+        );
+
+        $this->assertSame('https://api-cliente.comerciocity.com', $u);
+    }
+
+    /**
      * @group impresion
      * @test
      */

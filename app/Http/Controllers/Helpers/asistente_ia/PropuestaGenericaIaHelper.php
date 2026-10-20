@@ -66,12 +66,12 @@ class PropuestaGenericaIaHelper
      * ⚠️ Vale para el alta y para la edición: en la edición no hay extras que perder y el modelo vuelve
      * a mandar los mismos cambios; en el alta de un artículo, lo de `opciones.reenvia_igual`.
      */
-    const SI_NO_ESTA_LA_MARCA = 'Si la marca que nombró la persona, o que se lee en la foto o en el nombre del producto, no está en la lista, '
+    const SI_NO_ESTA_LA_MARCA = 'Si la marca viene de lo que nombró la persona, del nombre del producto que escribió o de lo que devolvió buscar_producto_por_codigo_de_barras, y no está en la lista, '
         . 'creala vos con proponer_alta (entidad brand, con su nombre), sin preguntarle si la creás. Si se crea en el acto (la respuesta '
         . 'trae el resultado), volvé a llamar en este mismo mensaje con esa marca en brand_id y EXACTAMENTE lo mismo que habías mandado '
         . '(en el alta de un artículo, los datos y extras de opciones.reenvia_igual: la foto, la descripción, la categoría, el precio y el '
         . 'stock, todo). Si quedó una tarjeta para confirmar, no vuelvas a llamar todavía: decile que confirme la marca y, cuando la '
-        . 'confirme, armá la carga con todo lo que pidió. Si la marca no la dijo la persona ni se lee en la foto o en el nombre, no la '
+        . 'confirme, armá la carga con todo lo que pidió. Si la marca no la dijo la persona, ni está en el nombre que escribió, ni la devolvió la búsqueda por código de barras, no la '
         . 'inventes: volvé a llamar sin brand_id.';
 
     /**
@@ -429,7 +429,23 @@ class PropuestaGenericaIaHelper
         // El aviso viaja también al modelo cuando habla de listas, de algo que se descartó o de la subcategoría que se sacó.
         $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $avisa_al_modelo ? ['aviso' => $aviso] : []);
+        $extra_de_la_respuesta = $avisa_al_modelo ? ['aviso' => $aviso] : [];
+
+        /*
+         * 🔴 UNA MARCA QUE SALE SOLO DE LA FOTO ESPERA EL SÍ, también en "directo" (misión
+         * asistente-marca-de-foto-y-envio-sin-bloque, 20/10/2026; demo3, KNIPEX leído como KWB). La
+         * tarjeta se crea igual —la persona la confirma con un «sí»— pero `requiere_confirmacion` la
+         * saca de la auto-confirmación (HerramientasDeCarga::quizas_auto_confirmar) y el aviso le dice
+         * al modelo qué preguntar. Si la dijo la persona, la trajo el código de barras o contestó que
+         * sí a la pregunta, sigue como siempre.
+         */
+        if ($declaracion['entidad'] === 'brand' && !is_null($nombre) && !MarcaDeLaFotoIaHelper::autorizada($contexto, $nombre, $mensaje)) {
+
+            $extra_de_la_respuesta['requiere_confirmacion'] = true;
+            $extra_de_la_respuesta['aviso'] = MarcaDeLaFotoIaHelper::aviso_de_la_tarjeta($nombre);
+        }
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra_de_la_respuesta);
     }
 
     /**
@@ -2053,7 +2069,14 @@ class PropuestaGenericaIaHelper
             return self::error_de_marca_pendiente($texto);
         }
 
-        $opciones['si_no_esta'] = self::SI_NO_ESTA_LA_MARCA;
+        /*
+         * 🔴 UNA MARCA QUE SALE SOLO DE LA FOTO SE PREGUNTA (misión asistente-marca-de-foto-y-envio-sin-bloque,
+         * 20/10/2026): si la persona no la escribió, el modelo no recibe «creala sin preguntar» sino
+         * «preguntale o dejá el artículo sin marca». Ver MarcaDeLaFotoIaHelper.
+         */
+        $opciones['si_no_esta'] = MarcaDeLaFotoIaHelper::autorizada($contexto, $texto)
+            ? self::SI_NO_ESTA_LA_MARCA
+            : MarcaDeLaFotoIaHelper::instruccion_de_preguntar($texto);
 
         return RespuestaDeCargaIa::faltan(
             ['qué '.$etiqueta.' es: no encontré ninguna que se llame como "'.$texto.'"'],
@@ -2140,7 +2163,8 @@ class PropuestaGenericaIaHelper
     {
         $opciones = isset($respuesta['opciones']) && is_array($respuesta['opciones']) ? $respuesta['opciones'] : [];
 
-        return isset($opciones['si_no_esta']) && $opciones['si_no_esta'] === self::SI_NO_ESTA_LA_MARCA;
+        return isset($opciones['si_no_esta'])
+            && ($opciones['si_no_esta'] === self::SI_NO_ESTA_LA_MARCA || MarcaDeLaFotoIaHelper::es_la_instruccion_de_preguntar($opciones['si_no_esta']));
     }
 
     /**
