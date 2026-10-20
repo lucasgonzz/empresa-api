@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EnvioSinPropuestaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
@@ -566,6 +567,22 @@ class AsistenteIaService
          */
         $reintento_de_la_carga = false;
 
+        /*
+         * Misión asistente-marca-de-foto-y-envio-sin-bloque (20/10/2026): true si el único reintento del
+         * turno lo pidió la guarda del ENVÍO sin propuesta («¿Confirmás el envío?» sin haber llamado a la
+         * herramienta). Solo para el log de un reintento que falla.
+         */
+        $reintento_del_envio = false;
+
+        /*
+         * La guarda del envío corre en los canales que confirman por texto (WhatsApp y MCP): en el panel
+         * el bloque es la tarjeta y la cubre la guarda de la tarjeta de arriba. Y nunca después de una
+         * confirmación determinista (ahí el turno cuenta lo que ya se hizo).
+         */
+        $guarda_de_envio = $con_acciones
+            && $assistant_message->confirma_por_texto()
+            && is_null($confirmacion_determinista);
+
         while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
@@ -578,7 +595,7 @@ class AsistenteIaService
                         'ai_conversation_id' => $conversation->id,
                         'ai_message_id'      => $assistant_message->id,
                         'iterations'         => $iterations,
-                        'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
+                        'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
                     ]);
 
                     $final_text = $texto_antes_del_reintento;
@@ -651,7 +668,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
+                    'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
                     'excepcion'          => get_class($e),
                     'error'              => $e->getMessage(),
                 ]);
@@ -664,7 +681,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_de_la_carga ? 'carga' : 'tarjeta',
+                    'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
                     'http'               => $response->status(),
                 ]);
 
@@ -874,6 +891,49 @@ class AsistenteIaService
                 }
             }
 
+            /*
+             * 🔴 MISIÓN asistente-marca-de-foto-y-envio-sin-bloque (20/10/2026): EL TEXTO QUE PIDE
+             * CONFIRMAR UN ENVÍO TIENE QUE TENER SU PROPUESTA. Demo3, mensaje 150: «Lo mando por WhatsApp y
+             * por mail a Marcos Perez con el PDF del presupuesto 900006. ¿Confirmás el envío?» en 3 s y sin
+             * llamar a proponer_envio_de_comprobante: ni bloque ni acción, y el dueño contestaba una pregunta
+             * vacía. Si el texto termina pidiendo confirmar un envío y este mensaje no dejó ninguna propuesta
+             * esperando, va el mismo y único reintento del turno (si ya lo usó otra guarda, no hay otro: la
+             * de después del bucle cambia el texto), con la nota que le pide llamar a la herramienta ahora.
+             */
+            if ($guarda_de_envio
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && $this->pide_confirmar_un_envio_sin_propuesta($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas)) {
+
+                Log::warning('AsistenteIaService: el texto pide confirmar un envío que no se propuso; se reintenta una vez.', [
+                    'ai_conversation_id'   => $conversation->id,
+                    'ai_message_id'        => $assistant_message->id,
+                    'iterations'           => $iterations,
+                    'herramientas_pedidas' => $herramientas_pedidas,
+                    'modelo'               => $model,
+                    'texto'                => mb_substr($final_text, 0, 300),
+                ]);
+
+                $texto_antes_del_reintento = $final_text;
+                $reintento_del_envio       = true;
+
+                $messages[] = [
+                    'role'    => 'assistant',
+                    'content' => $final_text,
+                ];
+
+                $messages[] = [
+                    'role'    => 'user',
+                    'content' => EnvioSinPropuestaIaHelper::nota_para_reintentar(),
+                ];
+
+                $toco_una_carga = true;
+                $final_text = '';
+
+                continue;
+            }
+
             break;
         }
 
@@ -1061,6 +1121,28 @@ class AsistenteIaService
                     Log::warning('AsistenteIaService: el texto da por hecha una carga que no se ejecutó; se deja y se le agrega un aviso.', $rastro);
                 }
             }
+        }
+
+        /*
+         * Misión asistente-marca-de-foto-y-envio-sin-bloque (20/10/2026), después del reintento (o sin él,
+         * si no quedaba vuelta ni tiempo): si el texto TODAVÍA pide confirmar un envío que no se propuso,
+         * no le llega a la persona. Una pregunta de confirmación sin propuesta no tiene nada que un «sí»
+         * pueda mandar: va el texto honesto, que le dice la verdad y le deja «dale» para que se arme.
+         */
+        if ($guarda_de_envio
+            && ! $la_tarjeta_cambio_el_texto
+            && $this->pide_confirmar_un_envio_sin_propuesta($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas)) {
+
+            Log::warning('AsistenteIaService: el texto pide confirmar un envío que no se propuso; se reemplaza por el texto honesto.', [
+                'ai_conversation_id'   => $conversation->id,
+                'ai_message_id'        => $assistant_message->id,
+                'iterations'           => $iterations,
+                'herramientas_pedidas' => $herramientas_pedidas,
+                'hubo_reintento'       => ! is_null($texto_antes_del_reintento),
+                'texto'                => mb_substr($final_text, 0, 300),
+            ]);
+
+            $final_text = EnvioSinPropuestaIaHelper::texto_honesto($final_text);
         }
 
         /*
@@ -1486,6 +1568,10 @@ AUTO_RESUELTO;
   con su link); nunca mandes una promo que nombre un combo que no existe.
 - Por WhatsApp, a quiénes les llega, el texto exacto y la pregunta los agrega el sistema solo,
   al final de tu mensaje: vos decí en una frase corta qué vas a mandar y no los repitas.
+  🔴 Y esa pregunta («¿Confirmás el envío?») sale SOLO si llamaste a la herramienta de envío en
+  este mismo turno: si el dueño te pidió mandar algo, llamá a proponer_envio_de_comprobante (o la
+  que corresponda) ANTES de contestar. Nunca escribas vos «¿Confirmás el envío?» ni «¿Lo mando?»
+  sin haber llamado a la herramienta: no hay nada armado que confirmar.
 {$regla_de_la_tarjeta}
 - Antes de proponer, juntá todos los datos. Si falta algo (cuánto, a quién, cómo se pagó, a
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
@@ -1712,8 +1798,9 @@ VENTA_CONFIRMA;
          * artículo, al lado del de la categoría. En la segunda prueba contra demo3 la lámpara Philips
          * (artículo 49) quedó sin marca porque la marca no existía y nadie la creó; desde ese día
          * resolver_relacion() devuelve opciones.si_no_esta y el reenvío, y este renglón le dice al
-         * modelo que mande la marca que se nombra o se lee y que la cree si no está (como con la 3M
-         * del 16/10), sin preguntar.
+         * modelo que mande la marca que se nombra y que la cree si no está (como con la 3M del 16/10),
+         * sin preguntar; desde el 20/10/2026 una marca que sale solo de la lectura de una foto se pregunta
+         * (MarcaDeLaFotoIaHelper).
          */
         return <<<BYC
 - Todo lo demás que se carga desde ABM, Clientes, Proveedores, Artículos y Gastos lo hacés
@@ -1741,11 +1828,17 @@ VENTA_CONFIRMA;
   ninguna encaja). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
   Si un error trae opciones.reenvia_igual, volvé a llamar con ese objeto TAL CUAL (con la foto, la
   descripción y el código), agregándole solo lo que pide.
-- 🔴 La MARCA de un artículo: si la persona la nombra, se lee en la foto o está en el nombre del
-  producto (Philips, 3M, Tramontina), mandala en brand_id por su nombre. Si no existe, la respuesta
-  trae opciones.si_no_esta: creala con proponer_alta de brand y seguí como dice ahí (con
-  opciones.reenvia_igual TAL CUAL más la marca), sin preguntarle si la creás ni dejar el artículo
-  sin marca.
+- 🔴 La MARCA de un artículo: si la persona la nombra, está en el nombre del producto que
+  escribió o la devolvió buscar_producto_por_codigo_de_barras (Philips, 3M, Tramontina), mandala en brand_id por su nombre. Si no existe, la
+  respuesta trae opciones.si_no_esta: seguí como dice ahí (crearla con proponer_alta de brand y
+  volver a llamar con opciones.reenvia_igual TAL CUAL más la marca, sin preguntarle).
+  🔴 Si la marca la LEÍSTE en la foto y la persona no la escribió, ya no se crea sola: leer una
+  marca de una foto se equivoca (una pinza «KNIPEX» se leyó «KWB»). Si no está en el negocio,
+  preguntale en una línea («En la foto leo la marca KWB y no la tenés cargada: ¿la creo?») o
+  armá el artículo sin marca y avisale; la respuesta te lo dice en opciones.si_no_esta. Si ya
+  existe una marca parecida, usala. Mientras la persona no la confirme, no pongas esa marca ni en el
+  nombre ni en la descripción del artículo. Si en la transcripción de la foto la marca figura como
+  [dudosa] o [no legible], no propongas ninguna: preguntale cuál es.
 - Después de un alta o una edición de un artículo decí el precio de venta tal como viene en
   detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
   digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
@@ -2432,6 +2525,70 @@ CONFIRMACION;
         }
 
         return ! AiMessageAction::where('ai_message_id', $assistant_message->id)->exists();
+    }
+
+    /**
+     * true si el texto pide confirmar un ENVÍO A CLIENTES y no hay propuesta de envío que confirmar:
+     * ni en este mensaje ni viva en la respuesta anterior (el texto puede estar hablando de ésa).
+     * Ver EnvioSinPropuestaIaHelper.
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function pide_confirmar_un_envio_sin_propuesta($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message, array $herramientas_pedidas = []): bool
+    {
+        try {
+
+            $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+            if (! EnvioSinPropuestaIaHelper::pide_confirmar_un_envio($saneado)) {
+                return false;
+            }
+
+            /*
+             * Solo si el turno no armó ni resolvió nada (ni una propuesta —aunque haya fallado: el texto
+             * cuenta por qué—, ni un confirmar o cancelar) y no dejó ninguna tarjeta esperando: ahí el
+             * «¿confirmás?» puede ser de otra cosa, o una oferta nueva después de un envío ejecutado.
+             */
+            if (EnvioSinPropuestaIaHelper::el_turno_ya_armo_o_resolvio_algo($herramientas_pedidas)
+                || EnvioSinPropuestaIaHelper::hay_alguna_tarjeta_esperando($assistant_message)) {
+                return false;
+            }
+
+            /*
+             * Y solo si el dueño pidió mandar algo (o contestó «sí» a una oferta de mandar): sin eso,
+             * «¿te lo mando?» es una oferta de información o un «envío» de otra cosa (un flete).
+             */
+            $anterior_del_asistente = AiMessage::where('ai_conversation_id', $conversation->id)
+                                               ->where('rol', 'assistant')
+                                               ->where('id', '<', $assistant_message->id)
+                                               ->orderBy('id', 'DESC')
+                                               ->value('contenido');
+
+            if (! EnvioSinPropuestaIaHelper::el_dueno_pidio_mandar($this->pedido_de_la_persona($conversation, $assistant_message), (string) $anterior_del_asistente)) {
+                return false;
+            }
+
+            $anterior = AiMessage::where('ai_conversation_id', $conversation->id)
+                                 ->where('rol', 'assistant')
+                                 ->where('id', '<', $assistant_message->id)
+                                 ->orderBy('id', 'DESC')
+                                 ->first();
+
+            return is_null($anterior) || ! EnvioSinPropuestaIaHelper::hay_propuesta_de_envio($anterior);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AsistenteIaService: no se pudo revisar si el texto pide confirmar un envío sin propuesta.', [
+                'ai_message_id' => (int) $assistant_message->id,
+                'error'         => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**
@@ -3777,7 +3934,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'buscar_producto_por_codigo_de_barras',
-                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion, imagen_id y, si vuelve categorias_del_negocio, category_id y sub_category_id: elegí vos del árbol la categoría que corresponde al producto y una subcategoría DE ESA categoría (por nombre), sin preguntarle a la persona; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si el nombre que vuelve trae el tipo de producto en otro idioma (por ejemplo "Trena" en vez de "Cinta métrica"), traducilo al español de Argentina antes de proponer el alta, sin traducir la marca ni el modelo. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
+                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion, imagen_id, la marca que devuelve (brand_id) y, si vuelve categorias_del_negocio, category_id y sub_category_id: elegí vos del árbol la categoría que corresponde al producto y una subcategoría DE ESA categoría (por nombre), sin preguntarle a la persona; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si el nombre que vuelve trae el tipo de producto en otro idioma (por ejemplo "Trena" en vez de "Cinta métrica"), traducilo al español de Argentina antes de proponer el alta, sin traducir la marca ni el modelo. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

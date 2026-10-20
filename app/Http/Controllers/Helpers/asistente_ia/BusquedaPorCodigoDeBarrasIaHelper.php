@@ -210,6 +210,12 @@ class BusquedaPorCodigoDeBarrasIaHelper
         $datos['marca']       = self::texto_limpio($datos['marca'], self::MAX_MARCA);
         $datos['descripcion'] = self::texto_limpio($datos['descripcion'], self::MAX_DESCRIPCION);
 
+        /*
+         * La marca que devolvió la búsqueda viene de una base abierta o de la web, no de una lectura de
+         * la foto: se anota para que el alta de esa marca no pregunte (MarcaDeLaFotoIaHelper).
+         */
+        MarcaDeLaFotoIaHelper::anotar_de_internet($conversation, $datos['marca']);
+
         /* 5. La foto, solo si hay un mensaje de donde colgarla (en el MCP no lo hay). */
         $imagen = self::foto($servicio, $datos, $ean, (int) $owner_id, $assistant_message);
 

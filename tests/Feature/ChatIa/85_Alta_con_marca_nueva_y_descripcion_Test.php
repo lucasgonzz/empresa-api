@@ -176,9 +176,11 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
     /**
      * La conversación del caso A6: el dueño manda la foto con el pedido y el assistant está pendiente.
      *
+     * @param  string  $ademas  Lo que el dueño escribió de más (por ejemplo la marca que dictó): desde la misión
+     *         asistente-marca-de-foto-y-envio-sin-bloque una marca que no existe y NO escribió el dueño espera su sí.
      * @return array{0: AiConversation, 1: AiMessage, 2: AiMessageImagen}
      */
-    protected function conversacion_con_foto()
+    protected function conversacion_con_foto($ademas = '')
     {
         $conversation = AiConversation::create([
             'user_id'      => $this->dueno->id,
@@ -188,7 +190,7 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
         $del_dueno = AiMessage::create([
             'ai_conversation_id' => $conversation->id,
             'rol'                => 'user',
-            'contenido'          => 'dame de alta esta lampara de filamento led philips 4w e27, la vendo a 4200. ponele esta foto',
+            'contenido'          => 'dame de alta esta lampara de filamento led philips 4w e27, la vendo a 4200. ponele esta foto' . ($ademas === '' ? '' : ' ' . $ademas),
             'estado'             => 'listo',
         ]);
 
@@ -598,7 +600,7 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
 
         Brand::create(['name' => 'ZZAjena P85', 'user_id' => $otro->id, 'num' => 985]);
 
-        list($conversation, $assistant) = $this->conversacion_con_foto();
+        list($conversation, $assistant) = $this->conversacion_con_foto('marca ZZAjena P85');
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('ZZAjena P85'));
 
@@ -700,7 +702,7 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
     {
         Brand::create(['name' => 'BelgicaP85', 'user_id' => $this->dueno->id, 'num' => 985]);
 
-        list($conversation, $assistant) = $this->conversacion_con_foto();
+        list($conversation, $assistant) = $this->conversacion_con_foto('marca lg');
 
         $lg = $this->herramienta($conversation, $assistant, 'proponer_alta', $this->alta_con_la_marca('lg'));
 
