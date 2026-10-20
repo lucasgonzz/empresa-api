@@ -921,6 +921,44 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
         $this->assertStringEndsWith('Si querés, pedime que se lo mande de nuevo.', $avisos[0]['texto']);
     }
 
+    /**
+     * Segunda revisión del 19/10/2026: si el WhatsApp de ese mismo comprobante falló, el aviso del mail no
+     * ofrece "se lo mando por WhatsApp" (sería ofrecer lo que acaba de fallar).
+     *
+     * @test
+     */
+    public function el_aviso_del_mail_no_ofrece_whatsapp_si_el_whatsapp_del_mismo_comprobante_fallo()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list(, $propuesta, $confirmada) = $this->mandar_el_presupuesto();
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        // Meta rechaza el WhatsApp después del sent, y el mail muere en el worker.
+        $mensaje = WhatsappChatMessage::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['wa_message_id' => 'wamid.N3LOSDOS', 'delivery_status' => 'enviado']);
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.failed', ['message' => ['id' => 'wamid.N3LOSDOS']]);
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $del_mail = null;
+
+        foreach (AvisosDelAsistenteHelper::pendientes($this->dueno) as $aviso) {
+            if (strpos($aviso['texto'], 'por mail') !== false) {
+                $del_mail = $aviso;
+            }
+        }
+
+        $this->assertNotNull($del_mail);
+        $this->assertStringNotContainsString('se lo mando por WhatsApp', $del_mail['texto']);
+        $this->assertStringEndsWith('Si querés, pedime que se lo mande de nuevo.', $del_mail['texto']);
+    }
+
     // ---------------------------------------------------------------------
     // Revisión del 19/10/2026: un failed que después Meta desmiente
     // ---------------------------------------------------------------------

@@ -710,6 +710,20 @@ class EnviosFallidosDelAsistenteHelper
 
             $datos = is_array($accion->datos) ? $accion->datos : [];
 
+            /*
+             * 🔴 NI SI EL WHATSAPP DE ESTE MISMO COMPROBANTE FALLÓ (segunda revisión del 19/10/2026).
+             * Si la tarjeta ya iba por WhatsApp y el aviso del mail llegó hasta acá, es porque el WhatsApp
+             * no salió (si hubiera salido, el_otro_canal_salio() lo decía antes): ofrecerlo de nuevo es
+             * ofrecer lo que acaba de fallar.
+             */
+            $canales = isset($datos['canales']) && is_array($datos['canales']) ? $datos['canales'] : [];
+
+            if (in_array(AiEnvioFallido::CANAL_WHATSAPP, $canales, true)
+                || AiEnvioFallido::where('ai_message_action_id', (int) $accion->id)->where('canal', AiEnvioFallido::CANAL_WHATSAPP)->where('cantidad', '>', 0)->exists()) {
+
+                return false;
+            }
+
             $client = isset($datos['client_id']) ? Client::where('id', (int) $datos['client_id'])->where('user_id', (int) $fila->owner_id)->first() : null;
 
             return !is_null($client) && WhatsappPhoneHelper::normalize($client->phone) !== '';
