@@ -46,6 +46,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     */
     Route::get('demo/plan', 'DemoPlanController@index');
 
+    Route::get('demo/chat', 'DemoChatController@index');
+    Route::post('demo/chat/iniciar', 'DemoChatController@iniciar')->middleware('throttle:30,1');
+    Route::post('demo/chat/mensajes', 'DemoChatController@mensaje')->middleware('throttle:30,1');
+    Route::post('demo/chat/videos/progreso', 'DemoChatController@progreso')->middleware('throttle:120,1');
+    Route::post('demo/chat/videos/omitir', 'DemoChatController@omitir')->middleware('throttle:30,1');
+
     /*
         Heartbeat de la demo (mision `demo-sesion-magic-link-no-expira`, 4/9/2026). El SPA le
         pega cada 5 minutos mientras el panel esta montado, solo para que el request pase por

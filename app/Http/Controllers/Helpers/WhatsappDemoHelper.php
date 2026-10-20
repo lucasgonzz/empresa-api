@@ -9,6 +9,7 @@ use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappBotSendService;
+use App\Services\DemoIndustriaService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -207,6 +208,22 @@ class WhatsappDemoHelper
         // haya decidido después.
         if (! $ya_era_de_demo) {
             $config->chat_simulation_enabled = true;
+            $config->agent_personality_template = 'amigable';
+            $owner = User::find($owner_id);
+            $nombre = $owner ? ($owner->company_name ?: 'nuestro negocio demo') : 'nuestro negocio demo';
+            $config->agent_personality = 'Sos el asistente de ' . $nombre . '. Hablás de vos, con calidez y de forma breve y práctica. Primero entendés la consulta y respondés con datos reales del catálogo. Hacés una sola pregunta a la vez. No inventás precios, stock ni condiciones comerciales.';
+            $perfil = DemoIndustriaService::resolver(config('demo_industria_actual'));
+            $rubro = $perfil ? $perfil['label'] : 'ferretería';
+            $config->agent_skills = 'Conocés el rubro ' . $rubro . '. Ayudás a elegir el producto y su presentación, medida o compatibilidad. Si falta un dato, preguntás lo mínimo necesario. Recomendás solo productos presentes en el catálogo del negocio.';
+            $config->agent_objective = WhatsappBotConfig::OBJETIVO_COMPRAR_ONLINE;
+            $config->agent_objective_detail = 'Ayudá a resolver la consulta y, cuando el cliente quiera comprar, pasale el enlace real del producto para que compre en nuestra tienda online.';
+            $config->ai_reply_delay_seconds = 10;
+            if ($owner) {
+                $owner->agente_proveedor = 'deepseek';
+                $owner->agente_pensamiento = 'agil';
+                $owner->ia_modelo_whatsapp = 'deepseek_flash';
+                $owner->save();
+            }
         }
 
         // Si la fila ya era de este helper se conserva su secreto (así dos corridas dejan lo

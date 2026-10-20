@@ -242,6 +242,7 @@ class WhatsappBotController extends Controller
             'webhook_secret'           => 'sometimes|required|string|max:191',
             'is_active'                => 'sometimes|boolean',
             'agent_personality'        => 'sometimes|nullable|string|max:5000',
+            'agent_personality_template' => 'sometimes|nullable|string|in:amigable,profesional,cordial',
             'ai_enabled_default'       => 'sometimes|boolean',
             'auto_send_sale_pdf'       => 'sometimes|boolean',
             // Techos elegidos: 10 min para la espera de respuesta y 1 h para la de
@@ -282,6 +283,9 @@ class WhatsappBotController extends Controller
         // Personalidad del agente IA (texto libre definido por el dueño).
         if ($request->has('agent_personality')) {
             $data['agent_personality'] = $request->agent_personality;
+        }
+        if ($request->has('agent_personality_template')) {
+            $data['agent_personality_template'] = $request->agent_personality_template ?: null;
         }
 
         // Si los chats nuevos nacen con la respuesta automática de IA prendida.

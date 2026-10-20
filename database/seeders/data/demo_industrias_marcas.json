@@ -1,0 +1,296 @@
+[
+  {
+    "slug": "ferreteria",
+    "kind": "desktop",
+    "prompt": "Brief de generación inicial: marca Punto Fierro para demo, composición por rubro, texto legible y sin marcas reales.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/ferreteria/banner-desktop.webp"
+  },
+  {
+    "slug": "ferreteria",
+    "kind": "mobile",
+    "prompt": "Brief de generación inicial: marca Punto Fierro para demo, composición por rubro, texto legible y sin marcas reales.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/ferreteria/banner-mobile.webp"
+  },
+  {
+    "slug": "ferreteria",
+    "kind": "logo",
+    "prompt": "Brief de generación inicial: marca Punto Fierro para demo, composición por rubro, texto legible y sin marcas reales.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/ferreteria/logo.webp"
+  },
+  {
+    "slug": "indumentaria",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final apaisado panorámico 2:1 para indumentaria argentina ficticia llamada \"Distrito Moda\". Fotografía de productos premium, estilo marfil y rosa empolvado, editorial elegante, iluminación suave de estudio. Productos en mitad derecha: camisa de lino beige sobre percha, remera blanca doblada, jean azul y zapatillas urbanas blancas. Mitad izquierda con espacio limpio y texto grande legible exactamente \"Tu estilo, todos los días\". Debajo texto más pequeño \"Prendas que combinan con vos\". Sello superior pequeño \"DISTRITO MODA · DEMO\". Diseño editorial contemporáneo, muy buena jerarquía y márgenes amplios. Sin marcas reales, sin botones dibujados, sin precios ni descuentos, sin marcas de agua. Tipografía impecable. DEMO claramente legible.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/indumentaria/banner-desktop.webp"
+  },
+  {
+    "slug": "indumentaria",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final vertical 4:5 para teléfono de marca ficticia \"Distrito Moda\", rubro Indumentaria. Estética premium, fotografía realista, paleta marfil y rosa empolvado, editorial elegante. Mitad inferior con camisa de lino beige sobre percha, remera blanca doblada, jean azul y zapatillas urbanas blancas; parte superior aireada con título grande exactamente \"Tu estilo, todos los días\", subtítulo \"Prendas que combinan con vos\" y sello pequeño \"DISTRITO MODA · DEMO\". Composición cuidadosamente diseñada para móvil, no recorte de desktop. Márgenes amplios, texto muy legible. Sin marcas reales, sin botones, sin precios ni descuentos, sin marcas de agua. La palabra DEMO visible.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/indumentaria/banner-mobile.webp"
+  },
+  {
+    "slug": "indumentaria",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo profesional original para comercio ficticio argentino \"Distrito Moda\" de indumentaria. Símbolo compacto elegante que representa indumentaria con un monograma DM y una percha sutil, geométrico, simple. Paleta marfil y rosa empolvado, editorial elegante. A la derecha nombre exacto \"DISTRITO MODA\" en sans premium nítida, abajo pequeño \"INDUMENTARIA · DEMO\". Fondo blanco puro, formato horizontal3:2, marca ocupa80% del lienzo. Sin mockup, sin texturas, sin sombras, sin 3D, sin marcas reales. Bordes limpios y tipografía legible a tamaño reducido. DEMO debe leerse.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/indumentaria/logo.webp"
+  },
+  {
+    "slug": "autopartes",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final apaisado 2:1 para \"Ruta Repuestos\", comercio ficticio argentino de Autopartes. Fotografía de producto de lujo sobrio, paleta grafito, gris acero y rojo intenso, luz de estudio con reflejos controlados. Mitad derecha: disco de freno y pastillas, filtro de aire rectangular, amortiguador y bujía. Mitad izquierda título grande exacto \"Volvé a poner todo en marcha\" y debajo \"Repuestos y accesorios para tu vehículo\". Arriba sello \"RUTA REPUESTOS · DEMO\". Jerarquía impecable, márgenes amplios. Piezas físicamente correctas, sin vehículos, sin marcas reales, sin precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/autopartes/banner-desktop.webp"
+  },
+  {
+    "slug": "autopartes",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 para \"Ruta Repuestos\", negocio ficticio de Autopartes. Fotografía premium: disco de freno y pastillas, filtro de aire rectangular, amortiguador y bujía en parte inferior. Paleta grafito, gris acero y rojo intenso. Parte superior despejada, texto grande exacto \"Volvé a poner todo en marcha\", subtítulo \"Repuestos y accesorios para tu vehículo\", sello \"RUTA REPUESTOS · DEMO\". Texto legible y márgenes8%, composición móvil diferenciada. Sin marcas reales, precios, botones ni marcas de agua. Piezas mecánicas realistas.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/autopartes/banner-mobile.webp"
+  },
+  {
+    "slug": "autopartes",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo profesional original de \"Ruta Repuestos\", comercio argentino ficticio de autopartes. Símbolo compacto con ruta que se integra en un engranaje, diseño geométrico simple color rojo #D13B35 y grafito oscuro #252A32. Nombre exacto \"RUTA REPUESTOS\" en sans bold, abajo \"AUTOPARTES · DEMO\". Fondo blanco puro, horizontal3:2, márgenes10%, ocupa80% lienzo. Alto contraste fuerte, flat sin efectos, no mockup, no textura ni sombras, sin marcas reales.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/autopartes/logo.webp"
+  },
+  {
+    "slug": "jugueteria",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para juguetería ficticia argentina \"Mundo Juego\". Fotografía de producto premium lúdica, paleta crema, turquesa, amarillo soleado, estudio cálido. Mitad derecha composición linda de bloques de construcción de colores sin marcas, oso de peluche, autito de madera y pelota. Mitad izquierda título grande exacto \"Un mundo para imaginar\", debajo \"Encontrá su próxima aventura\". Sello superior \"MUNDO JUEGO · DEMO\". Formas coloridas discretas de fondo, tipografía moderna redondeada legible, amplio espacio negativo. No marcas ni personajes comerciales, no bebés, sin precios, descuentos, botones ni marcas de agua. Juguetes se ven seguros y reales.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/jugueteria/banner-desktop.webp"
+  },
+  {
+    "slug": "jugueteria",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner móvil vertical4:5 para juguetería ficticia \"Mundo Juego\". Parte superior con título exacto \"Un mundo para imaginar\", subtítulo \"Encontrá su próxima aventura\", sello \"MUNDO JUEGO · DEMO\". Parte inferior bloques de construcción de colores sin marcas, oso de peluche, autito de madera y pelota, fotografía realista de producto, paleta crema, turquesa, amarillo soleado, fondo limpio alegre. Diseño premium adaptado al teléfono, texto grande muy legible, márgenes amplios. Sin personajes comerciales ni marcas reales. Sin precios ni botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/jugueteria/banner-mobile.webp"
+  },
+  {
+    "slug": "jugueteria",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para juguetería argentina ficticia \"MUNDO JUEGO\". Símbolo simple de cubo de juguete y estrella integrados, alegre y compacto en turquesa #168C91 y amarillo, nombre \"MUNDO JUEGO\" en sans redondeada bold grafito oscuro, debajo \"JUGUETERÍA · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, sin degradados ni texturas ni sombras, sin personajes comerciales. Márgenes10%, ocupa80% lienzo. DEMO legible.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/jugueteria/logo.webp"
+  },
+  {
+    "slug": "construccion",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para negocio argentino ficticio \"Base Norte\". Fotografía realista premium de producto, paleta arena, hormigón y naranja, iluminación de estudio cálida. Mitad derecha composición de ladrillos cerámicos prolijos, bolsa kraft de cemento sin marca, llana de albañil, casco amarillo y nivel. Mitad izquierda título grande exacto \"Dale forma a tus proyectos\", debajo \"Materiales y herramientas para construir\". Sello superior \"BASE NORTE · DEMO\". Diseño arquitectónico limpio, tipografía sans moderna muy legible, amplio espacio negativo y márgenes. Sin marcas reales, precios, porcentajes, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/construccion/banner-desktop.webp"
+  },
+  {
+    "slug": "construccion",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 para negocio argentino ficticio \"Base Norte\". Parte superior título grande exacto \"Dale forma a tus proyectos\", subtítulo \"Materiales y herramientas para construir\", sello \"BASE NORTE · DEMO\". Parte inferior composición realista premium de ladrillos cerámicos prolijos, bolsa kraft de cemento sin marca, llana de albañil, casco amarillo y nivel. Paleta arena, hormigón y naranja, luz de estudio suave, formas arquitectónicas sutiles. Diseño específico para teléfono, texto grande legible, márgenes amplios. Sin marcas reales, precios, porcentajes, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/construccion/banner-mobile.webp"
+  },
+  {
+    "slug": "construccion",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para negocio de construcción ficticio \"BASE NORTE\". Símbolo geométrico simple de estructura de edificio y flecha norte integrado, naranja #D57520 y grafito. Texto \"BASE NORTE\" sans bold grafito oscuro, debajo \"CONSTRUCCIÓN · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, sin degradados, textura, sombras ni maqueta3D. Márgenes10%, ocupa80% lienzo. DEMO legible.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/construccion/logo.webp"
+  },
+  {
+    "slug": "bebidas",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 de vinoteca argentina ficticia \"La Cava del Barrio\". Fotografía realista premium de botella de vino tinto con etiqueta minimalista sin marca real, copas vacías, agua con gas y botella de cerveza artesanal, composición a la derecha sobre mesa madera oscura, fondo paleta borgoña, crema y madera oscura. A izquierda título grande exacto \"El sabor de cada encuentro\", debajo \"Bebidas para compartir buenos momentos\", arriba \"LA CAVA DEL BARRIO · DEMO\". Elegante cálido editorial, luz lateral suave, amplio espacio negativo. Sin personas ni consumo, sin marcas reales, precios, porcentajes, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/bebidas/banner-desktop.webp"
+  },
+  {
+    "slug": "bebidas",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de vinoteca argentina ficticia \"La Cava del Barrio\". Arriba título grande exacto \"El sabor de cada encuentro\", subtítulo \"Bebidas para compartir buenos momentos\", sello \"LA CAVA DEL BARRIO · DEMO\". Abajo botella de vino tinto con etiqueta minimalista sin marca real, copas vacías, agua con gas y botella de cerveza artesanal, composición realista premium con mesa de madera oscura. Paleta borgoña, crema y madera oscura, luz cálida, diseño específico teléfono, márgenes amplios y texto legible. Sin personas ni marcas reales, precios, porcentajes, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/bebidas/banner-mobile.webp"
+  },
+  {
+    "slug": "bebidas",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional de vinoteca ficticia \"LA CAVA DEL BARRIO\". Símbolo simple de arco de cava y botella, borgoña #74334A. Nombre \"LA CAVA DEL BARRIO\" sans elegante bold grafito, debajo \"VINOTECA · DEMO\". Composición horizontal3:2, blanco puro, contraste alto, márgenes10%, ocupa80% lienzo, DEMO legible. Sin textura, degradados, sombras, maqueta3D ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/bebidas/logo.webp"
+  },
+  {
+    "slug": "mascotas",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para tienda argentina ficticia de mascotas \"Huella Amiga\". Fotografía realista premium cálida con perro pequeño amigable junto a comedero, bolsa kraft de alimento sin marca, pelota para perro y cama mullida en mitad derecha; paleta verde salvia, crema, fotografía cálida. Mitad izquierda título exacto grande \"Todo para su mundo\", debajo \"Cuidado y compañía todos los días\", arriba \"HUELLA AMIGA · DEMO\". Diseño limpio contemporáneo, tipografía redondeada legible y amplio espacio negativo. El perro parece sano feliz natural. Sin marcas reales, precios, porcentajes, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/mascotas/banner-desktop.webp"
+  },
+  {
+    "slug": "mascotas",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de tienda ficticia de mascotas \"Huella Amiga\". Arriba título exacto grande \"Todo para su mundo\", subtítulo \"Cuidado y compañía todos los días\", sello \"HUELLA AMIGA · DEMO\". Abajo composición fotográfica realista cálida perro pequeño amigable junto a comedero, bolsa kraft de alimento sin marca, pelota para perro y cama mullida, paleta verde salvia, crema, fotografía cálida. Márgenes amplios, texto muy legible y diseño exclusivo para teléfono. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/mascotas/banner-mobile.webp"
+  },
+  {
+    "slug": "mascotas",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para tienda de mascotas ficticia \"HUELLA AMIGA\". Símbolo simple de huella y corazón integrados, verde salvia oscuro #3D867B. Nombre \"HUELLA AMIGA\" sans redondeada bold grafito, debajo \"MASCOTAS · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/mascotas/logo.webp"
+  },
+  {
+    "slug": "limpieza",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para negocio argentino ficticio \"Casa Clara\". Fotografía realista premium limpia de botella transparente de limpiador azul sin marca, paños de microfibra doblados, escoba, balde blanco y guantes amarillos en mitad derecha; paleta blanco, celeste y azul limpio, luz natural brillante, sin parecer foto de stock genérica. Mitad izquierda título exacto grande \"Cada espacio, impecable\", debajo \"Soluciones para cuidar tu casa y tu negocio\", arriba \"CASA CLARA · DEMO\". Tipografía sans moderna, amplio espacio negativo y márgenes. Sin marcas reales, claims sanitarios, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/limpieza/banner-desktop.webp"
+  },
+  {
+    "slug": "limpieza",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de tienda ficticia de limpieza \"Casa Clara\". Arriba título exacto grande \"Cada espacio, impecable\", subtítulo \"Soluciones para cuidar tu casa y tu negocio\", sello \"CASA CLARA · DEMO\". Abajo composición fotográfica realista premium de botella transparente de limpiador azul sin marca, paños de microfibra doblados, escoba, balde blanco y guantes amarillos, paleta blanco, celeste y azul limpio. Fondo limpio luminoso, diseño propio para teléfono, texto grande legible y márgenes amplios. Sin marcas reales, claims sanitarios, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/limpieza/banner-mobile.webp"
+  },
+  {
+    "slug": "limpieza",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional de tienda de limpieza ficticia \"CASA CLARA\". Símbolo simple de casa y destello integrados, azul #147D95. Nombre \"CASA CLARA\" sans bold grafito oscuro, debajo \"LIMPIEZA · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/limpieza/logo.webp"
+  },
+  {
+    "slug": "belleza",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para tienda argentina ficticia \"Aura Belleza\". Fotografía realista premium editorial de frascos genéricos de shampoo y acondicionador, cepillo de pelo, crema facial y secador elegante en mitad derecha, paleta rosa empolvado, nude y champagne, luces suaves sobre podios sencillos. Mitad izquierda título exacto grande \"Tu momento de brillar\", debajo \"Belleza y cuidado en cada detalle\", arriba \"AURA BELLEZA · DEMO\". Tipografía elegante de alta legibilidad, mucho aire y márgenes. Sin personas ni marcas reales, promesas médicas, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/belleza/banner-desktop.webp"
+  },
+  {
+    "slug": "belleza",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de tienda ficticia \"Aura Belleza\". Arriba título exacto grande \"Tu momento de brillar\", subtítulo \"Belleza y cuidado en cada detalle\", sello \"AURA BELLEZA · DEMO\". Abajo composición editorial fotográfica realista de frascos genéricos de shampoo y acondicionador, cepillo de pelo, crema facial y secador elegante, paleta rosa empolvado, nude y champagne. Diseño propio para teléfono, limpio sofisticado, texto grande legible y márgenes amplios. Sin personas ni marcas reales, claims médicos, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/belleza/banner-mobile.webp"
+  },
+  {
+    "slug": "belleza",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para tienda de belleza ficticia \"AURA BELLEZA\". Símbolo simple de flor estilizada y destello integrados, rosa oscuro #AD4970. Nombre \"AURA BELLEZA\" sans elegante bold grafito oscuro, debajo \"BELLEZA · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/belleza/logo.webp"
+  },
+  {
+    "slug": "almacen",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para almacén argentino ficticio \"Buen Almacén\". Fotografía realista premium cálida de paquete kraft de arroz, aceite de oliva genérico, fideos secos, café y frasco de granola en mitad derecha sobre madera clara, paleta crema, verde oliva y madera clara. Mitad izquierda título exacto grande \"Lo bueno de todos los días\", debajo \"Tu compra cotidiana, a un clic\", arriba \"BUEN ALMACÉN · DEMO\". Tipografía amigable moderna y muy legible, espacio negativo y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/almacen/banner-desktop.webp"
+  },
+  {
+    "slug": "almacen",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de almacén ficticio \"Buen Almacén\". Arriba título exacto grande \"Lo bueno de todos los días\", subtítulo \"Tu compra cotidiana, a un clic\", sello \"BUEN ALMACÉN · DEMO\". Abajo composición fotográfica realista premium de paquete kraft de arroz, aceite de oliva genérico, fideos secos, café y frasco de granola, paleta crema, verde oliva y madera clara. Luz natural cálida, diseño específico para teléfono, texto grande legible y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/almacen/banner-mobile.webp"
+  },
+  {
+    "slug": "almacen",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para almacén ficticio \"BUEN ALMACÉN\". Símbolo simple de bolsa de compras y espiga integrados, verde oliva #528346. Nombre \"BUEN ALMACÉN\" sans bold grafito oscuro, debajo \"ALIMENTOS · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/almacen/logo.webp"
+  },
+  {
+    "slug": "pesca",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para negocio argentino ficticio \"Costa Libre\". Fotografía realista premium cálida de reel de pesca con caña corta en cuadro, caja de señuelos, termo de acero, linterna de camping en mitad derecha, paleta azul petróleo, arena y verde bosque, iluminación natural suave, fondo limpio evocando aire libre junto al lago sin personas. Mitad izquierda título exacto grande \"Tu próxima salida empieza acá\", debajo \"Pesca y aire libre para disfrutar\", arriba \"COSTA LIBRE · DEMO\". Tipografía moderna muy legible, espacio negativo y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/pesca/banner-desktop.webp"
+  },
+  {
+    "slug": "pesca",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 para negocio ficticio \"Costa Libre\". Arriba título exacto grande \"Tu próxima salida empieza acá\", subtítulo \"Pesca y aire libre para disfrutar\", sello \"COSTA LIBRE · DEMO\". Abajo composición fotográfica realista premium de reel de pesca con caña corta en cuadro, caja de señuelos, termo de acero, linterna de camping, paleta azul petróleo, arena y verde bosque. Luz natural suave y diseño específico para teléfono, limpio, elegante, texto grande legible y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/pesca/banner-mobile.webp"
+  },
+  {
+    "slug": "pesca",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para negocio ficticio \"COSTA LIBRE\". Símbolo simple de pez y ola integrados, color #236C83. Nombre \"COSTA LIBRE\" sans bold grafito oscuro, debajo \"PESCA Y CAMPING · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/pesca/logo.webp"
+  },
+  {
+    "slug": "hogar",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para negocio argentino ficticio \"Nido Hogar\". Fotografía realista premium cálida de vajilla cerámica color arena, tabla de madera, cacerola acero, almohadón beige y jarrón en mitad derecha, paleta beige, terracota suave y madera natural, iluminación natural suave, fondo limpio evocando un hogar acogedor contemporáneo. Mitad izquierda título exacto grande \"Detalles que hacen hogar\", debajo \"Encontrá eso que va con tu casa\", arriba \"NIDO HOGAR · DEMO\". Tipografía moderna muy legible, espacio negativo y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/hogar/banner-desktop.webp"
+  },
+  {
+    "slug": "hogar",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 para negocio ficticio \"Nido Hogar\". Arriba título exacto grande \"Detalles que hacen hogar\", subtítulo \"Encontrá eso que va con tu casa\", sello \"NIDO HOGAR · DEMO\". Abajo composición fotográfica realista premium de vajilla cerámica color arena, tabla de madera, cacerola acero, almohadón beige y jarrón, paleta beige, terracota suave y madera natural. Luz natural suave y diseño específico para teléfono, limpio, elegante, texto grande legible y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/hogar/banner-mobile.webp"
+  },
+  {
+    "slug": "hogar",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional para negocio ficticio \"NIDO HOGAR\". Símbolo simple de casa y hoja integradas, color #9B775F. Nombre \"NIDO HOGAR\" sans bold grafito oscuro, debajo \"HOGAR Y BAZAR · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/hogar/logo.webp"
+  },
+  {
+    "slug": "tecnologia",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para negocio argentino ficticio \"Nexo Tecnología\". Fotografía realista premium editorial de teclado compacto blanco, mouse inalámbrico, auriculares sobre oreja, cargador USB y bobina de filamento de impresión 3D en mitad derecha, paleta azul violeta, blanco y gris perla, iluminación de estudio moderna con reflejo violeta muy sutil. Mitad izquierda título exacto grande \"Conectá con lo que viene\", debajo \"Tecnología para tu día a día\", arriba \"NEXO TECNOLOGÍA · DEMO\". Diseño limpio, tipografía sans fuerte muy legible, espacio negativo y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/tecnologia/banner-desktop.webp"
+  },
+  {
+    "slug": "tecnologia",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de tienda ficticia \"Nexo Tecnología\". Arriba título exacto grande \"Conectá con lo que viene\", subtítulo \"Tecnología para tu día a día\", sello \"NEXO TECNOLOGÍA · DEMO\". Abajo composición fotográfica realista premium de teclado compacto blanco, mouse inalámbrico, auriculares sobre oreja, cargador USB y bobina de filamento de impresión 3D, paleta azul violeta, blanco y gris perla. Diseño específico para teléfono, moderno limpio, texto grande legible y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/tecnologia/banner-mobile.webp"
+  },
+  {
+    "slug": "tecnologia",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional de tienda de tecnología ficticia \"NEXO TECNOLOGÍA\". Símbolo simple de letra N geométrica conectada como circuito, azul violeta #4766D8. Nombre \"NEXO TECNOLOGÍA\" sans bold grafito oscuro, debajo \"TECNOLOGÍA · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/tecnologia/logo.webp"
+  },
+  {
+    "slug": "distribuidora",
+    "kind": "desktop",
+    "prompt": "Use case: ads-marketing. Banner ecommerce final panorámico2:1 para distribuidora argentina ficticia \"Punto Mayorista\". Fotografía realista premium de cajas kraft, vasos de papel, cuadernos lisos, rollo cinta de embalaje, bolsas de papel en mitad derecha, paleta azul profundo, blanco y kraft, iluminación natural brillante, composición prolija de un comercio organizado. Mitad izquierda título exacto grande \"Todo lo que tu negocio necesita\", debajo \"Variedad para seguir creciendo\", arriba \"PUNTO MAYORISTA · DEMO\". Diseño moderno profesional, sans bold legible, amplio espacio negativo y márgenes. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/distribuidora/banner-desktop.webp"
+  },
+  {
+    "slug": "distribuidora",
+    "kind": "mobile",
+    "prompt": "Use case: ads-marketing. Banner ecommerce móvil vertical4:5 de distribuidora ficticia \"Punto Mayorista\". Arriba título exacto grande \"Todo lo que tu negocio necesita\", subtítulo \"Variedad para seguir creciendo\", sello \"PUNTO MAYORISTA · DEMO\". Abajo composición fotográfica realista premium de cajas kraft, vasos de papel, cuadernos lisos, rollo cinta de embalaje, bolsas de papel, paleta azul profundo, blanco y kraft. Diseño exclusivo para teléfono, moderno profesional limpio, texto grande legible y márgenes amplios. Sin marcas reales, precios, descuentos, botones ni marcas de agua.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/distribuidora/banner-mobile.webp"
+  },
+  {
+    "slug": "distribuidora",
+    "kind": "logo",
+    "prompt": "Use case: logo-brand. Logo original profesional de distribuidora ficticia \"PUNTO MAYORISTA\". Símbolo simple de cajas apiladas y punto integrado, azul profundo #2B6290. Nombre \"PUNTO MAYORISTA\" sans bold grafito oscuro, debajo \"DISTRIBUIDORA · DEMO\". Composición horizontal3:2 sobre blanco puro, alto contraste, márgenes10%, ocupa80% lienzo. DEMO legible. Sin degradados, textura, sombras ni mockup.",
+    "revisada": true,
+    "archivo": "public/demo-industrias/distribuidora/logo.webp"
+  }
+]
