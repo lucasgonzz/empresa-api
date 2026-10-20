@@ -1402,6 +1402,21 @@ AUTO_DIRECTO
   proponer lo mismo esperando que la insistencia lo habilite.
 AUTO_RESUELTO;
 
+        /*
+         * Misión asistente-arreglos-segunda-prueba (19/10/2026), N4: el renglón de la compra con
+         * factura suma la pregunta por la compra vacía de otro día. Desde ese día la herramienta solo
+         * suma la factura sola a una compra de HOY vacía y sin factura (la Factura 0003-00012398 de
+         * la prueba terminó en la Compra 13 del 16/10, que ya tenía escaneada la 0003-00012345); con
+         * una vacía de otro día devuelve "faltan", y el modelo tiene que preguntar sin pedir la foto
+         * otra vez y volver con compra_num o compra_nueva.
+         *
+         * Y N6: la descripción del alta de un artículo deja de ser opcional («y descripcion si la
+         * hay»). La lámpara Philips de la prueba (artículo 49) quedó sin descripción porque solo la
+         * búsqueda por código de barras la trae hecha; ahora el modelo la escribe siempre, con lo que
+         * dijo la persona y lo que se ve en la foto, sin inventar datos técnicos. Salvo en una
+         * corrección con reemplaza_a (revisión independiente): ahí se hereda, y mandarla de nuevo
+         * pisaría la que trajo la búsqueda por código de barras con una escrita de memoria.
+         */
         return <<<CARGA
 {$titulo_de_carga}
 - Gastos, pagos de clientes, pagos a proveedores (con efectivo, transferencia o CHEQUE),
@@ -1516,8 +1531,13 @@ AUTO_RESUELTO;
   foto), aunque se haya charlado en el medio. Nunca le pidas que la reenvíe, salvo que la herramienta
   te diga que no hay ninguna.
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
-  proponer_alta de article con con_foto_de_la_conversacion (y descripcion si la hay), nunca un alta y
+  proponer_alta de article con con_foto_de_la_conversacion y descripcion, nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+- 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
+  barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
+  la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
+  dijo la persona ni en la foto. La excepción: en una corrección con reemplaza_a no la mandes: se hereda
+  de la tarjeta anterior (salvo que la persona pida cambiarla).
 - 🔴 La FOTO de la factura de un proveedor no la transcribís vos: la lee el escaneo del sistema, con su
   propia IA; el RESULTADO de ese escaneo sí lo podés leer con consultar_escaneo_de_factura. Aunque
   la foto viaje en el mensaje, NO transcribas ni adelantes montos, renglones, artículos ni datos de la
@@ -1531,7 +1551,10 @@ AUTO_RESUELTO;
   por dónde le llega el aviso cuando termina TAL COMO LO DICE EL RESULTADO de la herramienta (por
   WhatsApp con el link para revisarla, o en la pantalla del sistema): no prometas el otro camino.
   Si la persona te dice a qué compra ya cargada va la factura ("adjuntala a la compra 12"), pasá su
-  número en compra_num.
+  número en compra_num. Sin compra_num, la herramienta suma la factura sola solo a una compra de hoy
+  vacía y sin factura; si te devuelve "faltan" con una compra vacía de otro día (opciones.compra_vacia),
+  preguntale en una línea si la sumás a esa compra o armás una nueva, sin pedirle la foto de nuevo, y
+  con lo que conteste volvé a llamar con compra_num (esa compra) o con compra_nueva: true.
 - 🔴 Lo que SÍ podés contar es lo que leyó el escaneo, con consultar_escaneo_de_factura: cuando te
   pregunten qué trae la factura, si ya la leyó o cuánto dio, consultala y contá el resultado (total,
   renglones reconocidos y sin match, datos dudosos) como "lo que leyó el escaneo", que se confirma al
@@ -1683,6 +1706,14 @@ VENTA_DIRECTO
   confirme, contá el número de venta y el total que te devolvió la confirmación, en una línea.
 VENTA_CONFIRMA;
 
+        /*
+         * Misión asistente-arreglos-segunda-prueba (19/10/2026), N6: el renglón de la MARCA de un
+         * artículo, al lado del de la categoría. En la segunda prueba contra demo3 la lámpara Philips
+         * (artículo 49) quedó sin marca porque la marca no existía y nadie la creó; desde ese día
+         * resolver_relacion() devuelve opciones.si_no_esta y el reenvío, y este renglón le dice al
+         * modelo que mande la marca que se nombra o se lee y que la cree si no está (como con la 3M
+         * del 16/10), sin preguntar.
+         */
         return <<<BYC
 - Todo lo demás que se carga desde ABM, Clientes, Proveedores, Artículos y Gastos lo hacés
   con el ABM genérico: que_puedo_cargar te dice qué entidades podés crear, editar o borrar
@@ -1709,6 +1740,11 @@ VENTA_CONFIRMA;
   ninguna encaja). Si la persona pidió que quede sin categoría, mandá category_id vacío ("").
   Si un error trae opciones.reenvia_igual, volvé a llamar con ese objeto TAL CUAL (con la foto, la
   descripción y el código), agregándole solo lo que pide.
+- 🔴 La MARCA de un artículo: si la persona la nombra, se lee en la foto o está en el nombre del
+  producto (Philips, 3M, Tramontina), mandala en brand_id por su nombre. Si no existe, la respuesta
+  trae opciones.si_no_esta: creala con proponer_alta de brand y seguí como dice ahí (con
+  opciones.reenvia_igual TAL CUAL más la marca), sin preguntarle si la creás ni dejar el artículo
+  sin marca.
 - Después de un alta o una edición de un artículo decí el precio de venta tal como viene en
   detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
   digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
