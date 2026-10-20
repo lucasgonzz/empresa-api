@@ -207,7 +207,7 @@ class CatalogHeaderLayoutHelper
      * - logo.show y company_name.show: bool, default true. logo.pages y rows_pages: solo 'all' o
      *   'first', cualquier otra cosa => 'all'. logo.size_mm: entero acotado a [10, 60], default 25.
      * - Renglones: title y value a string, sin espacios de borde, recortados a 60 / 200; source solo
-     *   si está en SOURCE_LABELS, si no null. Un renglón sin source y con título y valor vacíos se
+     *   si está en SOURCE_LABELS, si no null; bold (bool) solo si es true. Un renglón sin source y con título y valor vacíos se
      *   descarta. Máximo 15 por columna. Sin uid ni ninguna clave extra.
      *
      * @param  mixed  $value
@@ -310,7 +310,12 @@ class CatalogHeaderLayoutHelper
     }
 
     /**
-     * Renglones de una columna con el esquema exacto (title, value, source) y nada más.
+     * Renglones de una columna con el esquema exacto (title, value, source, y bold si es true) y
+     * nada más.
+     *
+     * `bold` (misión pdf-negrita-perfil): el VALOR del renglón se imprime en negrita (el título ya
+     * lo es). Se conserva como bool y SOLO cuando es true: un renglón sin negrita se guarda con las
+     * tres claves de siempre, así el layout de un catálogo que nunca la usó no cambia ni en un byte.
      *
      * @param  mixed  $rows
      * @return array
@@ -337,11 +342,18 @@ class CatalogHeaderLayoutHelper
                 continue;
             }
 
-            $normalized[] = [
+            $normalized_row = [
                 'title'  => $title,
                 'value'  => $value,
                 'source' => $source,
             ];
+
+            /** Negrita del valor: tolerante como el resto de los bool (true, 1, "true"); ausente = false. */
+            if (self::to_bool($row['bold'] ?? null, false)) {
+                $normalized_row['bold'] = true;
+            }
+
+            $normalized[] = $normalized_row;
 
             if (count($normalized) >= self::MAX_ROWS_PER_COLUMN) {
                 break;
@@ -381,7 +393,7 @@ class CatalogHeaderLayoutHelper
      * @param  array                 $rows     Renglones normalizados de una columna.
      * @param  \App\Models\User|null $user     Dueño del negocio; se ignora si viene $sources.
      * @param  array|null            $sources  Salida de sources_for_user(), para no resolverla por columna.
-     * @return array  [ ['title' => ..., 'value' => ..., 'source' => ...], ... ]
+     * @return array  [ ['title' => ..., 'value' => ..., 'source' => ..., 'bold' => true (solo si la tiene)], ... ]
      */
     public static function resolve_rows(array $rows, $user, ?array $sources = null): array
     {
@@ -417,11 +429,18 @@ class CatalogHeaderLayoutHelper
                 continue;
             }
 
-            $resolved[] = [
+            $resolved_row = [
                 'title'  => $title,
                 'value'  => $value,
                 'source' => $source,
             ];
+
+            /** Negrita del valor (misión pdf-negrita-perfil): solo se devuelve cuando es true. */
+            if (self::to_bool($row['bold'] ?? null, false)) {
+                $resolved_row['bold'] = true;
+            }
+
+            $resolved[] = $resolved_row;
         }
 
         return $resolved;

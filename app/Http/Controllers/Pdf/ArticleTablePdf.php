@@ -645,7 +645,8 @@ class ArticleTablePdf extends fpdf
      * @param  float   $x      Borde izquierdo de la columna.
      * @param  float   $y      Y donde arranca el renglón.
      * @param  float   $width  Ancho de la columna en mm.
-     * @param  array   $row    Renglón ya resuelto (title, value).
+     * @param  array   $row    Renglón ya resuelto (title, value y, si el usuario la pidió, bold: el
+     *                         valor va en negrita; el título ya lo es siempre).
      * @param  string  $align  'L' o 'R'.
      * @return float           Y donde termina el renglón.
      */
@@ -666,6 +667,9 @@ class ArticleTablePdf extends fpdf
         /** Sin valor, el título se imprime solo y sin los dos puntos. */
         $label = ($title !== '' && $value !== '') ? $title.': ' : $title;
 
+        /** Estilo del VALOR: negrita si el renglón la pidió (misión pdf-negrita-perfil). Se mide y se imprime con el mismo. */
+        $value_style = ! empty($row['bold']) ? 'B' : '';
+
         /** Anchos de texto medidos con cada fuente (GetStringWidth no decodifica: se mide sobre pdf_text). */
         $label_text_width = 0;
         if ($label !== '') {
@@ -674,14 +678,14 @@ class ArticleTablePdf extends fpdf
         }
         $value_text_width = 0;
         if ($value !== '') {
-            $this->SetFont('Arial', '', 8);
+            $this->SetFont('Arial', $value_style, 8);
             $value_text_width = $this->GetStringWidth($this->pdf_text($value));
         }
 
         if ($align === 'R') {
             if ($label !== '' && $value !== '' && ($label_text_width + $value_text_width + 3 * $this->cMargin) <= $width) {
                 // Una sola línea: el valor pegado al borde derecho y el título justo a su izquierda.
-                $this->SetFont('Arial', '', 8);
+                $this->SetFont('Arial', $value_style, 8);
                 $this->SetXY($x, $y);
                 $this->Cell($width, $line_height, $value, 0, 0, 'R');
 
@@ -699,7 +703,7 @@ class ArticleTablePdf extends fpdf
                 $y = $this->y;
             }
             if ($value !== '') {
-                $this->SetFont('Arial', '', 8);
+                $this->SetFont('Arial', $value_style, 8);
                 $this->SetXY($x, $y);
                 $this->print_multi_cell($width, $line_height, $value, 'R');
                 $y = $this->y;
@@ -731,7 +735,7 @@ class ArticleTablePdf extends fpdf
         }
 
         if ($value !== '') {
-            $this->SetFont('Arial', '', 8);
+            $this->SetFont('Arial', $value_style, 8);
             $this->SetXY($value_x, $y);
             $this->print_multi_cell($value_width, $line_height, $value, 'L');
             $y = $this->y;
