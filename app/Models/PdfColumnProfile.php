@@ -146,6 +146,16 @@ class PdfColumnProfile extends Model
          */
         'page_layout' => 'array',
         /**
+         * Negrita en el VALOR de las columnas de la tabla (misión pdf-negrita-perfil, 20/10/2026):
+         * lista de ids de `pdf_column_options` cuyo valor se imprime en negrita, p. ej. [3, 7]. El
+         * encabezado de la tabla ya es negrita siempre. NULL (o columna sin migrar todavía) = ninguna
+         * en negrita: el PDF sale como siempre. Normaliza PdfNegritaHelper::normalize_bold_columns().
+         *
+         * Va en el perfil y no en el pivot a propósito: los pivots se leen con withPivot() explícito,
+         * y una columna nueva ahí rompería los PDF con tabla entre la subida del código y el migrate.
+         */
+        'bold_columns' => 'array',
+        /**
          * Alto de la hoja en mm. Solo lo usa el PDF con page_layout; null = 297 (A4).
          */
         'paper_height_mm' => 'integer',

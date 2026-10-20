@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileTicketHelper;
+use App\Http\Controllers\Helpers\PdfNegritaHelper;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDerivadoPdf;
@@ -233,6 +234,14 @@ class PdfColumnProfileController extends Controller
              */
             'page_layout' => $page_layout,
             /**
+             * Columnas de la tabla cuyo valor va en negrita (ids de pdf_column_options del
+             * model_name del perfil; los ajenos se descartan). Null = ninguna.
+             */
+            'bold_columns' => PdfNegritaHelper::normalize_bold_columns(
+                $request->input('bold_columns'),
+                $request->model_name
+            ),
+            /**
              * Alto de la hoja en mm (solo lo lee el PDF con page_layout). Null = A4 (297).
              */
             'paper_height_mm' => $this->normalize_paper_height_mm($request->input('paper_height_mm')),
@@ -427,6 +436,7 @@ class PdfColumnProfileController extends Controller
             'table_header_font_size',
             'header_layout',
             'catalog_header_layout',
+            'bold_columns',
         ]);
 
         /**
@@ -464,6 +474,15 @@ class PdfColumnProfileController extends Controller
          */
         if (array_key_exists('catalog_header_layout', $fillable)) {
             $fillable['catalog_header_layout'] = CatalogHeaderLayoutHelper::normalize($fillable['catalog_header_layout']);
+        }
+
+        /**
+         * bold_columns: solo se toca si el PUT lo menciona (un update que cambia el nombre o una
+         * columna no pisa la negrita guardada); null o [] la borra. Se normaliza contra el catálogo
+         * del model_name que QUEDA en el perfil.
+         */
+        if (array_key_exists('bold_columns', $fillable)) {
+            $fillable['bold_columns'] = PdfNegritaHelper::normalize_bold_columns($fillable['bold_columns'], $new_model_name);
         }
 
         /** Ya normalizado arriba (antes de cualquier escritura). */
@@ -1213,12 +1232,30 @@ class PdfColumnProfileController extends Controller
         }
 
         if (is_string($value)) {
-            $decoded = json_decode($value, true);
-
-            return is_array($decoded) ? $decoded : null;
+            $value = json_decode($value, true);
         }
 
-        return is_array($value) ? $value : null;
+        if (! is_array($value)) {
+            return null;
+        }
+
+        /**
+         * Negrita del encabezado (misión pdf-negrita-perfil): `bold` es una lista de keys de chips
+         * del catálogo, únicas; se limpia lo que no lo sea y, si queda vacía, la clave se omite (el
+         * layout vuelve a ser idéntico al de antes de existir la negrita). El resto del layout se
+         * conserva tal cual llegó, como siempre.
+         */
+        if (array_key_exists('bold', $value)) {
+            $bold = PdfNegritaHelper::normalize_header_bold($value['bold']);
+
+            if (is_null($bold)) {
+                unset($value['bold']);
+            } else {
+                $value['bold'] = $bold;
+            }
+        }
+
+        return $value;
     }
 
     /**
