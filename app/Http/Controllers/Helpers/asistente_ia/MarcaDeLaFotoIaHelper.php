@@ -384,12 +384,12 @@ class MarcaDeLaFotoIaHelper
             return false;
         }
 
-        if (array_intersect($palabras, ['no', 'pero', 'ni', 'nunca', 'jamas', 'tampoco', 'sin']) !== []) {
+        if (array_intersect($palabras, ['no', 'pero', 'ni', 'nunca', 'jamas', 'tampoco', 'sin', 'ninguna', 'ninguno', 'nada', 'otra', 'otro', 'mejor']) !== []) {
 
             return false;
         }
 
-        return in_array($palabras[0], ['si', 'dale', 'ok', 'okey', 'listo', 'claro', 'obvio', 'creala', 'crea', 'crealo', 'de', 'joya', 'perfecto', 'va'], true);
+        return in_array($palabras[0], ['si', 'dale', 'ok', 'okey', 'listo', 'claro', 'obvio', 'creala', 'crea', 'crealo', 'joya', 'perfecto', 'va'], true);
     }
 
     /**

@@ -66,7 +66,7 @@ class PropuestaGenericaIaHelper
      * ⚠️ Vale para el alta y para la edición: en la edición no hay extras que perder y el modelo vuelve
      * a mandar los mismos cambios; en el alta de un artículo, lo de `opciones.reenvia_igual`.
      */
-    const SI_NO_ESTA_LA_MARCA = 'Si la marca que nombró la persona, que está en el nombre del producto que escribió o que devolvió buscar_producto_por_codigo_de_barras no está en la lista, '
+    const SI_NO_ESTA_LA_MARCA = 'Si la marca viene de lo que nombró la persona, del nombre del producto que escribió o de lo que devolvió buscar_producto_por_codigo_de_barras, y no está en la lista, '
         . 'creala vos con proponer_alta (entidad brand, con su nombre), sin preguntarle si la creás. Si se crea en el acto (la respuesta '
         . 'trae el resultado), volvé a llamar en este mismo mensaje con esa marca en brand_id y EXACTAMENTE lo mismo que habías mandado '
         . '(en el alta de un artículo, los datos y extras de opciones.reenvia_igual: la foto, la descripción, la categoría, el precio y el '

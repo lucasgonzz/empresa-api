@@ -254,6 +254,12 @@ class EnvioSinPropuestaIaHelper
             return false;
         }
 
+        /* «¿Le mando el presupuesto a Marcos o a la SA?»: elige un destinatario o un alcance, tampoco es una confirmación. */
+        if ($es_pregunta && preg_match('/o\s+(?:a|al|a la|a los|a las|solo|solamente|nada mas)/', $normalizada) === 1) {
+
+            return false;
+        }
+
         /* Un ofrecimiento de mandarle algo AL DUEÑO («¿querés que te lo mande también por mail?») no es un envío a clientes. */
         if (preg_match('/\bte (?:lo|la|los|las)\b/', $normalizada) === 1) {
 

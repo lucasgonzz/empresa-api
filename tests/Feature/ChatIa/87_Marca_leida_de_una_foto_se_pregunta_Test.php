@@ -516,6 +516,6 @@ class Marca_leida_de_una_foto_se_pregunta_Test extends EmpresaTestCase
         $prompt = (new AsistenteIaService())->build_system_prompt($conversation, $this->dueno, true, false);
 
         $this->assertStringContainsString('ya no se crea sola', $prompt);
-        $this->assertStringContainsString('En la foto leo la marca KWB y no la tenés cargada: ¿la creo?', $prompt);
+        $this->assertStringContainsString('En la foto leo la marca ACMEX y no la tenés cargada: ¿la creo?', $prompt);
     }
 }

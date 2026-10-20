@@ -1833,8 +1833,8 @@ VENTA_CONFIRMA;
   respuesta trae opciones.si_no_esta: seguí como dice ahí (crearla con proponer_alta de brand y
   volver a llamar con opciones.reenvia_igual TAL CUAL más la marca, sin preguntarle).
   🔴 Si la marca la LEÍSTE en la foto y la persona no la escribió, ya no se crea sola: leer una
-  marca de una foto se equivoca (una pinza «KNIPEX» se leyó «KWB»). Si no está en el negocio,
-  preguntale en una línea («En la foto leo la marca KWB y no la tenés cargada: ¿la creo?») o
+  marca de una foto se equivoca (una pinza «ACMEX» se puede leer «ACNEX»). Si no está en el negocio,
+  preguntale en una línea («En la foto leo la marca ACMEX y no la tenés cargada: ¿la creo?») o
   armá el artículo sin marca y avisale; la respuesta te lo dice en opciones.si_no_esta. Si ya
   existe una marca parecida, usala. Mientras la persona no la confirme, no pongas esa marca ni en el
   nombre ni en la descripción del artículo. Si en la transcripción de la foto la marca figura como
