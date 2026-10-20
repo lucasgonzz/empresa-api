@@ -86,7 +86,8 @@ class PropuestaRecordatoriosCobroIaHelper
         /*
          * 🔴 LOS DÍAS QUE DIJO EL DUEÑO, TAL CUAL (N1 de la misión asistente-arreglos-segunda-prueba,
          * 19/10/2026). En demo3 "los que me deben hace más de 20 días" dejó afuera la venta de 23 días
-         * porque su umbral propio de alerta era 30. Con días dichos, el umbral propio no entra en los
+         * porque su umbral propio de alerta era 30. El umbral propio no entra (con días dichos, esos días
+         * tal cual; sin días, toda la deuda viva: VentasSinCobrarIaHelper::respetar_umbral_propio()) en los
          * TRES lugares del camino: quiénes reciben (evaluar), el texto del primero (ventas_del_cliente) y
          * lo que recalcula el job (viaja en `datos` y en encolar_lote()). Si uno solo de los tres usara el
          * COALESCE, la tarjeta y el WhatsApp listarían ventas distintas.

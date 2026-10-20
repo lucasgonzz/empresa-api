@@ -777,6 +777,50 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * Segunda revisión del 19/10/2026: vale lo PRIMERO que se ofreció. Si entre dos consultas del admin
+     * cambia lo que diría el aviso (el WhatsApp del mismo comprobante falla), la segunda ofrece el mismo
+     * texto que la primera y eso es lo que queda en la conversación.
+     *
+     * @test
+     */
+    public function vale_el_primer_texto_que_se_ofrecio()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list($conversation, $propuesta) = $this->mandar_el_presupuesto();
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $primera = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertStringContainsString('Por WhatsApp sí salió.', $primera[0]['texto']);
+
+        // Entre las dos consultas falla el WhatsApp del mismo presupuesto: rearmado, el aviso del mail cambiaría.
+        EnviosFallidosDelAsistenteHelper::registrar($propuesta['tarjeta_id'], AiEnvioFallido::CANAL_WHATSAPP, '5493444001122', 'Marcos Perez', 'WhatsApp no lo entregó');
+
+        $segunda = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $del_mail = null;
+
+        foreach ($segunda as $aviso) {
+            if ($aviso['id'] === $primera[0]['id']) {
+                $del_mail = $aviso;
+            }
+        }
+
+        $this->assertNotNull($del_mail);
+        $this->assertSame($primera[0]['texto'], $del_mail['texto'], 'La segunda consulta ofrece el mismo texto que la primera.');
+
+        $this->assertTrue(AvisosDelAsistenteHelper::marcar_avisado($this->dueno, $primera[0]['id']));
+
+        $this->assertSame(1, AiMessage::where('ai_conversation_id', $conversation->id)->where('contenido', $primera[0]['texto'])->count());
+    }
+
+    /**
      * 🔴 Revisión del 19/10/2026: los envíos van en dos etapas y sin transacción, así que si en la primera
      * confirmación no salió nada la tarjeta vuelve a "propuesta" y su fila queda. Al reconfirmar, el 550
      * del mismo turno tiene que volver a contarse como "NO salió", no como "queda saliendo".
@@ -877,6 +921,44 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
         $this->assertStringEndsWith('Si querés, pedime que se lo mande de nuevo.', $avisos[0]['texto']);
     }
 
+    /**
+     * Segunda revisión del 19/10/2026: si el WhatsApp de ese mismo comprobante falló, el aviso del mail no
+     * ofrece "se lo mando por WhatsApp" (sería ofrecer lo que acaba de fallar).
+     *
+     * @test
+     */
+    public function el_aviso_del_mail_no_ofrece_whatsapp_si_el_whatsapp_del_mismo_comprobante_fallo()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list(, $propuesta, $confirmada) = $this->mandar_el_presupuesto();
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        // Meta rechaza el WhatsApp después del sent, y el mail muere en el worker.
+        $mensaje = WhatsappChatMessage::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['wa_message_id' => 'wamid.N3LOSDOS', 'delivery_status' => 'enviado']);
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.failed', ['message' => ['id' => 'wamid.N3LOSDOS']]);
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $del_mail = null;
+
+        foreach (AvisosDelAsistenteHelper::pendientes($this->dueno) as $aviso) {
+            if (strpos($aviso['texto'], 'por mail') !== false) {
+                $del_mail = $aviso;
+            }
+        }
+
+        $this->assertNotNull($del_mail);
+        $this->assertStringNotContainsString('se lo mando por WhatsApp', $del_mail['texto']);
+        $this->assertStringEndsWith('Si querés, pedime que se lo mande de nuevo.', $del_mail['texto']);
+    }
+
     // ---------------------------------------------------------------------
     // Revisión del 19/10/2026: un failed que después Meta desmiente
     // ---------------------------------------------------------------------
@@ -917,6 +999,85 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
 
         $this->assertFalse($fila->avisar_por_whatsapp, 'Le llegó: no hay nada que avisar.');
         $this->assertSame([], AvisosDelAsistenteHelper::pendientes($this->dueno));
+    }
+
+    /**
+     * Segunda revisión del 19/10/2026: un WhatsApp que falló y después se entregó queda neutralizado, y el
+     * aviso del mail del mismo comprobante vuelve a decir "Por WhatsApp sí salió.".
+     *
+     * @test
+     */
+    public function el_aviso_del_mail_ignora_el_whatsapp_que_fallo_y_despues_se_entrego()
+    {
+        Mail::fake();
+        $this->el_admin_avisa();
+
+        $marcos = $this->cliente('Marcos Perez', '5493444001122', 'marcos@test.local');
+        $this->presupuesto($marcos);
+
+        list(, $propuesta, $confirmada) = $this->mandar_el_presupuesto();
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        $mensaje = WhatsappChatMessage::where('ai_message_action_id', $propuesta['tarjeta_id'])->first();
+
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['wa_message_id' => 'wamid.N3IDAYVUELTA', 'delivery_status' => 'enviado']);
+
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.failed', ['message' => ['id' => 'wamid.N3IDAYVUELTA']]);
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.delivered', ['message' => ['id' => 'wamid.N3IDAYVUELTA']]);
+
+        $this->assertSame(0, AiEnvioFallido::where('ai_message_action_id', $propuesta['tarjeta_id'])->where('canal', AiEnvioFallido::CANAL_WHATSAPP)->value('cantidad'), 'Neutralizada.');
+
+        (new SendQueuedMailable(Mail::queued(ComercioCityMail::class)->first()))->failed(new \RuntimeException('401'));
+
+        $avisos = AvisosDelAsistenteHelper::pendientes($this->dueno);
+
+        $this->assertCount(1, $avisos);
+        $this->assertStringEndsWith('el servidor de correo no lo aceptó. Por WhatsApp sí salió.', $avisos[0]['texto']);
+    }
+
+    /**
+     * Segunda revisión del 19/10/2026: en un lote con más fallos que nombres guardados (la lista tiene tope),
+     * el que después se entregó puede no estar nombrado; igual se le resta a la cantidad.
+     *
+     * @test
+     */
+    public function en_un_lote_de_mas_de_veinte_el_que_se_entrega_sin_nombre_guardado_igual_se_resta()
+    {
+        $this->el_admin_avisa();
+
+        $this->cliente('Ana Gomez', '5493444101010');
+
+        list($conversation, $assistant) = $this->vuelta('mandales una promo a todos');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']);
+
+        $tarjeta = (int) $propuesta['tarjeta_id'];
+
+        $total = EnviosFallidosDelAsistenteHelper::MAXIMO_DE_NOMBRES + 2;
+
+        for ($i = 1; $i <= $total; $i++) {
+            EnviosFallidosDelAsistenteHelper::registrar($tarjeta, AiEnvioFallido::CANAL_WHATSAPP, '54934440' . str_pad((string) $i, 5, '0', STR_PAD_LEFT), 'Cliente ' . $i, 'WhatsApp no lo entregó');
+        }
+
+        $fila = AiEnvioFallido::where('ai_message_action_id', $tarjeta)->first();
+
+        $this->assertSame($total, $fila->cantidad);
+        $this->assertCount(EnviosFallidosDelAsistenteHelper::MAXIMO_DE_NOMBRES, $fila->lista_de_nombres(), 'La lista tiene tope.');
+
+        // El último (sin nombre guardado) estaba como fallido y Meta lo entrega.
+        $ultimo = $this->cliente('Cliente ' . $total, '5493444099999');
+        $chat = $this->chat_abierto($ultimo);
+        $mensaje = WhatsappChatHelper::store_outbound_manual_message($chat, 'Promo', 'wamid.N3SINNOMBRE', $this->dueno->id);
+
+        WhatsappChatMessage::where('id', $mensaje->id)->update(['ai_message_action_id' => $tarjeta, 'delivery_status' => 'fallido']);
+
+        WhatsappChatHelper::handle_delivery_status_event('whatsapp.message.delivered', ['message' => ['id' => 'wamid.N3SINNOMBRE']]);
+
+        $fila = $fila->fresh();
+
+        $this->assertSame($total - 1, $fila->cantidad, 'Se resta aunque no esté entre los nombres guardados.');
+        $this->assertCount(EnviosFallidosDelAsistenteHelper::MAXIMO_DE_NOMBRES, $fila->lista_de_nombres());
     }
 
     /**

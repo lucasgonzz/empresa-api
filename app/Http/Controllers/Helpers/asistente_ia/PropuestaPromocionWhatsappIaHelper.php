@@ -902,10 +902,15 @@ class PropuestaPromocionWhatsappIaHelper
      *     escrito suelto ("mitienda.com/ofertas", "ferreteria-falsa.com.ar", "tienda.online"): una
      *     palabra pegada a un punto y a una terminación de dominio conocida, con o sin ruta.
      *
+     * 🔴 Segunda revisión (19/10/2026): también los acortadores y los links de perfiles ("bit.ly/…",
+     * "t.me/…", "linktr.ee/…", "goo.gl/…"): las terminaciones ly, me, ee, co y gl, y cualquier dominio
+     * seguido de una ruta ("algo.xyz/promo").
+     *
      * 🔴 Y LO QUE NO TIENE QUE FRENAR: los números con punto ("1.5 L", "$ 3.000", "20.10") no son dominio
-     * porque la terminación tiene que ser una de la lista (letras); una abreviatura con espacio después
-     * ("20 L. Oferta") tampoco. Un MAIL ("ventas@ferreteria.com") no es un link y pasa: lo que sigue a una
-     * arroba no arranca un dominio.
+     * porque la terminación tiene que ser de letras; una abreviatura con espacio después ("20 L. Oferta")
+     * tampoco. Un MAIL ("ventas@ferreteria.com.ar", "info@hipermax.net.ar") no es un link: las
+     * direcciones de mail se sacan enteras ANTES de buscar dominios (si no, la parte de después de la
+     * arroba, ".com.ar", se leía como dominio).
      *
      * @param  string  $texto
      * @return bool
@@ -921,10 +926,19 @@ class PropuestaPromocionWhatsappIaHelper
             }
         }
 
-        return preg_match(
-            '/(?<![a-z0-9@\-])[a-z0-9][a-z0-9\-]*\.(?:com|ar|net|org|store|shop|online|site|info|io)(?![a-z0-9])/u',
+        // Los mails, afuera enteros: no son links y su dominio no tiene que frenar la promo.
+        $texto = (string) preg_replace('/[^\s@]+@[^\s@]+/u', ' ', $texto);
+
+        // Un dominio suelto con una terminación conocida, con o sin ruta.
+        if (preg_match(
+            '/(?<![a-z0-9\-])[a-z0-9][a-z0-9\-]*\.(?:com|ar|net|org|store|shop|online|site|info|io|ly|me|ee|co|gl)(?![a-z0-9])/u',
             $texto
-        ) === 1;
+        ) === 1) {
+            return true;
+        }
+
+        // Cualquier dominio seguido de una ruta ("algo.xyz/promo"): eso es una dirección, no un texto.
+        return preg_match('/(?<![a-z0-9\-])[a-z0-9][a-z0-9\-]*\.[a-z]{2,}\/[^\s]/u', $texto) === 1;
     }
 
     /**

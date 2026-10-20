@@ -202,10 +202,14 @@ class EnviosFallidosDelAsistenteHelper
             // Recortado igual que al registrarlo, para que el nombre coincida.
             $cliente = self::recortar($cliente, 191);
 
+            /*
+             * Las filas sin avisar, pidan o no el aviso: una tarjeta del panel no pide aviso, pero su fila
+             * igual dice "por WhatsApp falló" para el aviso del otro canal (el_otro_canal_salio()).
+             */
             $filas = AiEnvioFallido::where('ai_message_action_id', (int) $mensaje->ai_message_action_id)
                                     ->where('canal', AiEnvioFallido::CANAL_WHATSAPP)
                                     ->whereNull('avisado_por_whatsapp_at')
-                                    ->where('avisar_por_whatsapp', 1)
+                                    ->where('cantidad', '>', 0)
                                     ->orderBy('id', 'DESC')
                                     ->get();
 
@@ -213,6 +217,13 @@ class EnviosFallidosDelAsistenteHelper
 
                 if ($fila->tipo_envio === AiEnvioFallido::TIPO_COMPROBANTE) {
 
+                    /*
+                     * 🔴 NEUTRALIZADA = `cantidad` en 0 (segunda revisión del 19/10/2026): "cero no
+                     * salieron", igual que un lote que se vació. Es lo que miran el aviso del otro canal
+                     * (que vuelve a decir "Por WhatsApp sí salió.") y el ofrecimiento de mandarlo por
+                     * WhatsApp. Y deja de pedir aviso.
+                     */
+                    $fila->cantidad = 0;
                     $fila->avisar_por_whatsapp = false;
                     $fila->motivo = self::sumar_motivo($fila->motivo, 'después WhatsApp lo entregó');
                     $fila->timestamps = false;
@@ -231,31 +242,61 @@ class EnviosFallidosDelAsistenteHelper
 
                 array_splice($nombres, $posicion, 1);
 
-                $fila->cantidad = max(0, (int) $fila->cantidad - 1);
-                $fila->nombres = self::nombres_en_json($nombres);
-
-                if ((int) $fila->cantidad === 0) {
-                    $fila->avisar_por_whatsapp = false;
-                }
-
-                /*
-                 * El primer nombre del lote (y su teléfono) es el que se usa con un solo fallo: si el que
-                 * salió es ése, pasa el siguiente, sin teléfono (el de la fila era el del que sí recibió).
-                 */
-                if ($fila->cliente === $cliente) {
-                    $fila->cliente = count($nombres) ? (string) $nombres[0] : $fila->cliente;
-                    $fila->destino = null;
-                }
-
-                $fila->timestamps = false;
-                $fila->save();
+                self::restar_uno_del_lote($fila, $nombres, $cliente);
 
                 return;
+            }
+
+            /*
+             * 🔴 UN LOTE CON MÁS FALLOS QUE NOMBRES GUARDADOS (segunda revisión del 19/10/2026): la lista
+             * tiene tope (MAXIMO_DE_NOMBRES) y `cantidad` sigue sumando, así que el cliente que después se
+             * entregó puede ser uno de los que no tienen nombre guardado. Si ninguna fila lo nombra, se le
+             * resta a la primera que tiene fallos sin nombre: el aviso no puede contar uno de más.
+             */
+            foreach ($filas as $fila) {
+
+                if ($fila->tipo_envio !== AiEnvioFallido::TIPO_COMPROBANTE && (int) $fila->cantidad > count($fila->lista_de_nombres())) {
+
+                    self::restar_uno_del_lote($fila, $fila->lista_de_nombres(), $cliente);
+
+                    return;
+                }
             }
 
         } catch (\Throwable $e) {
             // Sin esto, lo peor que pasa es un aviso de más.
         }
+    }
+
+    /**
+     * Le resta UN fallo a una fila de lote (el cliente que después se entregó) y la guarda sin mover el
+     * `updated_at` (es el reloj de la calma). Si queda en cero, deja de pedir aviso.
+     *
+     * @param  \App\Models\AiEnvioFallido  $fila
+     * @param  array<int, string>  $nombres  La lista ya sin ese cliente (o la misma, si no estaba nombrado).
+     * @param  string|null  $cliente  El que se entregó.
+     * @return void
+     */
+    protected static function restar_uno_del_lote(AiEnvioFallido $fila, array $nombres, $cliente)
+    {
+        $fila->cantidad = max(0, (int) $fila->cantidad - 1);
+        $fila->nombres = self::nombres_en_json($nombres);
+
+        if ((int) $fila->cantidad === 0) {
+            $fila->avisar_por_whatsapp = false;
+        }
+
+        /*
+         * El primer nombre del lote (y su teléfono) es el que se usa con un solo fallo: si el que salió es
+         * ése, pasa el siguiente, sin teléfono (el de la fila era el del que sí recibió).
+         */
+        if (!is_null($cliente) && $fila->cliente === $cliente) {
+            $fila->cliente = count($nombres) ? (string) $nombres[0] : $fila->cliente;
+            $fila->destino = null;
+        }
+
+        $fila->timestamps = false;
+        $fila->save();
     }
 
     /**
@@ -495,6 +536,9 @@ class EnviosFallidosDelAsistenteHelper
                 $ya->motivo = $motivo;
             }
 
+            // Un fallo nuevo sobre una fila neutralizada (cantidad 0, ver deshacer_whatsapp_rechazado()) vuelve a contar.
+            $ya->cantidad = max(1, (int) $ya->cantidad);
+
             $ya->touch();
 
             return $ya;
@@ -634,7 +678,8 @@ class EnviosFallidosDelAsistenteHelper
             }
         }
 
-        if (AiEnvioFallido::where('ai_message_action_id', (int) $accion->id)->where('canal', $otro)->exists()) {
+        // Una fila del otro canal que se neutralizó (falló y después se entregó: cantidad 0) no cuenta.
+        if (AiEnvioFallido::where('ai_message_action_id', (int) $accion->id)->where('canal', $otro)->where('cantidad', '>', 0)->exists()) {
 
             return null;
         }
@@ -664,6 +709,20 @@ class EnviosFallidosDelAsistenteHelper
             }
 
             $datos = is_array($accion->datos) ? $accion->datos : [];
+
+            /*
+             * 🔴 NI SI EL WHATSAPP DE ESTE MISMO COMPROBANTE FALLÓ (segunda revisión del 19/10/2026).
+             * Si la tarjeta ya iba por WhatsApp y el aviso del mail llegó hasta acá, es porque el WhatsApp
+             * no salió (si hubiera salido, el_otro_canal_salio() lo decía antes): ofrecerlo de nuevo es
+             * ofrecer lo que acaba de fallar.
+             */
+            $canales = isset($datos['canales']) && is_array($datos['canales']) ? $datos['canales'] : [];
+
+            if (in_array(AiEnvioFallido::CANAL_WHATSAPP, $canales, true)
+                || AiEnvioFallido::where('ai_message_action_id', (int) $accion->id)->where('canal', AiEnvioFallido::CANAL_WHATSAPP)->where('cantidad', '>', 0)->exists()) {
+
+                return false;
+            }
 
             $client = isset($datos['client_id']) ? Client::where('id', (int) $datos['client_id'])->where('user_id', (int) $fila->owner_id)->first() : null;
 
