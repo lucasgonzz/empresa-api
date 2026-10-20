@@ -322,6 +322,51 @@ class Recordatorios_con_los_dias_del_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Segunda revisión del 19/10/2026: "¿cuánto me deben?" (sin días) no puede contradecir a "¿qué me
+     * debe X?". Con la venta de 23 días y umbral propio 30, las dos consultas dan lo mismo (toda la deuda
+     * viva), y el recordatorio sin días también la trae, en la tarjeta y en el WhatsApp. La pantalla no
+     * cambia: con su COALESCE sigue sin mostrarla.
+     *
+     * @test
+     */
+    public function cuanto_me_deben_sin_dias_trae_toda_la_deuda_viva_como_que_me_debe_x()
+    {
+        $sanitarios = $this->cliente('Sanitarios del Sur', '5493444505050');
+        $this->venta_con_umbral($sanitarios, 23, 100000, 30, 7201);
+        $this->chat_abierto($sanitarios);
+
+        $todo = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, null, $this->dueno);
+
+        $this->assertSame(1, $todo['ventas_sin_cobrar'], json_encode($todo));
+        $this->assertEquals(100000, $todo['total_pendiente_en_pesos']);
+
+        $del_cliente = \App\Http\Controllers\Helpers\ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente($this->dueno->id, $sanitarios->id);
+
+        $this->assertEquals($todo['total_pendiente_en_pesos'], $del_cliente['total_pendiente_en_pesos_en_esta_lista'], 'Las dos preguntas dan la misma deuda.');
+
+        // La pantalla no cambia: su COALESCE la sigue midiendo contra el umbral de 30.
+        $this->assertSame(0, VentasSinCobrarHelper::query_de_ventas($this->dueno->id, null, 0)->where('client_id', $sanitarios->id)->count());
+
+        // El recordatorio sin días, igual: la tarjeta y el WhatsApp la traen.
+        list($conversation, $assistant) = $this->vuelta('mandales un recordatorio a los que me deben');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_recordatorios_de_cobro', []);
+
+        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
+        $this->assertStringContainsString('Venta N° 7201', $this->para_mostrar($propuesta)['texto_que_sale']);
+        $this->assertFalse(AiMessageAction::find($propuesta['tarjeta_id'])->datos['respetar_umbral_propio']);
+
+        $confirmada = $this->confirmar_en_la_vuelta_siguiente($conversation, $assistant, $propuesta['tarjeta_id']);
+
+        $this->assertSame('confirmada', $confirmada['estado'], json_encode($confirmada));
+
+        $salieron = $this->recordatorios_de($sanitarios);
+
+        $this->assertCount(1, $salieron);
+        $this->assertStringContainsString('Venta N° 7201', $salieron->first()->body);
+    }
+
+    /**
      * Saca una propiedad protegida de un objeto serializado (lo que tiene en la cola un job encolado por
      * la versión anterior de la clase).
      *

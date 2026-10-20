@@ -142,6 +142,12 @@ class VentasSinCobrarHelper {
 	 *                              eso el asistente, cuando la persona dijo dias, llama con false. La
 	 *                              pantalla "Ventas sin cobrar" y la alerta automatica no cambian (las
 	 *                              cuida Alertas/1_Ventas_sin_cobrar_dias_Test).
+	 *
+	 *                              Y con false y `$dias = 0` (la persona no dijo dias) NO hay ningun umbral:
+	 *                              toda la deuda viva, igual que con `$con_umbral = false` (revision del
+	 *                              19/10/2026: "cuanto me deben?" no puede dar menos que la suma de "que me
+	 *                              debe X?" de cada cliente). Asi el asistente usa la MISMA llamada en la
+	 *                              consulta, en la tarjeta del recordatorio y en el job que la recalcula.
 	 * @return \Illuminate\Database\Eloquent\Builder
 	 */
 	static function query_de_ventas($owner_id, $employee_id, $dias, $con_umbral = true, $respetar_umbral_propio = true) {
@@ -164,8 +170,9 @@ class VentasSinCobrarHelper {
 				'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
 				[$dias]
 			);
-		} elseif ($con_umbral) {
+		} elseif ($con_umbral && (int) $dias > 0) {
 			// Los dias que pidio la persona, tal cual: el umbral propio de la venta no entra (ver el docblock).
+			// Con 0 dias y sin el umbral propio no queda ningun umbral: toda la deuda viva (sin whereRaw).
 			$sales = $sales->whereRaw(
 				'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL ? DAY)',
 				[(int) $dias]
