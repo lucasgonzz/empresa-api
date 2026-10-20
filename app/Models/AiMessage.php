@@ -87,11 +87,15 @@ class AiMessage extends Model
 
     protected $guarded = [];
 
+    // Contexto estructurado del agente; no forma parte de las burbujas ni del contrato público.
+    protected $hidden = ['busquedas_de_productos'];
+
     /**
      * @var array<string,string>
      */
     protected $casts = [
         'acciones_habilitadas' => 'boolean',
+        'busquedas_de_productos' => 'array',
     ];
 
     /**
