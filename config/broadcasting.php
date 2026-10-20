@@ -20,6 +20,59 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Espacio de nombres de los canales (misión pusher-canales-por-sistema, 19/10/2026)
+    |--------------------------------------------------------------------------
+    |
+    | Toda la flota —demos incluidas— emite a UNA sola app de Pusher, y los canales llevaban solo un
+    | id (`global_notification.2600`). Dos sistemas con el mismo id de dueño se escuchaban entre sí: el
+    | 19/10/2026 el aviso del escaneo de una factura de demo3 le apareció a Ferretotal, y un login en
+    | demo3 podía expulsar al dueño de Ferretotal por el canal del candado de sesión.
+    |
+    | Desde esta misión cada canal sale con el sufijo `@{espacio}`. El espacio se CALCULA solo
+    | (hmac de la base, el APP_ENV y el secret de Pusher: ver App\Broadcasting\EspacioDeCanales), así
+    | que no hay nada que cargar en ningún `.env`.
+    |
+    | `espacio` es un override manual: si no está vacío, se usa ese valor (saneado a minúsculas y
+    | dígitos, hasta 32). Sirve para los tests y para alinear a mano empresa-api y tienda-api de un
+    | mismo cliente si algún día no dieran lo mismo (`php artisan canales:espacio` muestra el de cada
+    | lado). 🔴 Si se carga en un lado, se carga EL MISMO en el otro: si no, el ERP y la tienda de ese
+    | cliente dejan de oírse en los canales que cruzan.
+    |
+    */
+
+    'espacio' => env('BROADCAST_ESPACIO', ''),
+
+    /*
+    | Modo de los canales que cruzan ERP ↔ tienda (`tienda-respuestas.`, `message.from_commerce.`,
+    | `tienda-mensajes.`).
+    |
+    | Dentro del ERP no hay ventana: empresa-api y empresa-spa salen juntos. Pero la tienda se
+    | actualiza aparte, así que una punta nueva tiene que seguir andando con la otra vieja, y al revés
+    | (regla de Lucas del 14/8: compatibilidad hacia atrás entre proyectos).
+    |
+    | - true (TRANSICIÓN, el default): esos canales se emiten con Y sin espacio en el mismo `trigger`,
+    |   y se autoriza también `private-tienda-mensajes.{owner}` sin sufijo. Viejo↔viejo, viejo↔nuevo y
+    |   nuevo↔nuevo andan, y nadie recibe dos veces.
+    | - false (ESTRICTO): solo con espacio. Se prende en las DOS mitades de un sistema a la vez (el
+    |   `.env` de empresa-api y el de tienda-api del mismo cliente), cuando las dos ya están en la
+    |   versión nueva. Con un solo lado en estricto, ese cliente deja de oír al otro.
+    |
+    | 🔴 Solo un falso EXPLÍCITO (`false`, `0`, `off`, `no`) pasa a estricto. Una línea vacía
+    | (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`), un `null`/`(null)` escrito o un valor mal tipeado
+    | quedan en transición: `env()` devuelve '' para la línea vacía y null para `null`, y
+    | `filter_var()` da false para los dos, o sea que sin este cuidado un `.env` a medio editar
+    | cortaba en silencio la comunicación con una tienda vieja. Es la misma trampa que documenta
+    | `PUSHER_TIMEOUT` más abajo. Equivocarse para el lado de la transición es lo seguro: es
+    | exactamente el comportamiento de antes de esta misión para esos canales. tienda-api usa la MISMA
+    | expresión: las dos mitades de un sistema leen igual el mismo valor.
+    |
+    */
+
+    'canales_viejos_de_tienda' => in_array(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA'), [null, ''], true)
+        || filter_var(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== false,
+
+    /*
+    |--------------------------------------------------------------------------
     | Broadcast Connections
     |--------------------------------------------------------------------------
     |

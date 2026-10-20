@@ -22,10 +22,20 @@ use Tests\TestCase;
  *
  * El POST a broadcasting/auth firma localmente (HMAC con las credenciales de
  * Pusher de config): no sale a la red.
+ *
+ * Desde la misión pusher-canales-por-sistema (19/10/2026) corre contra el
+ * broadcaster de producción (`PusherDePrueba`) y con el nombre FÍSICO del
+ * canal (`private-chat.user.{id}@{espacio}`), que es el que pide el SPA. Antes
+ * corría con el driver `log` de testing, cuyo `auth()` contesta 200 a todo:
+ * los dos casos de 403 de abajo estaban en rojo y no probaban la frontera.
  */
 class Canal_privado_Test extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Feature\Broadcast\PusherDePrueba;
+
+    /** @var string Espacio de nombres de este sistema (base de testing + secret de prueba). */
+    protected $espacio;
 
     /** @var User Dueño de la cuenta (la persona Y del plan). */
     protected $comercio;
@@ -39,6 +49,11 @@ class Canal_privado_Test extends TestCase
 
         // 🔴 Nunca la clave real del .env.testing: los tests jamás salen a la red.
         config(['services.anthropic.api_key' => null]);
+
+        // El broadcaster de producción, con SDK que no sale a la red y channels.php registrado en él.
+        config(['broadcasting.espacio' => '']);
+        $this->usar_pusher_de_prueba();
+        $this->espacio = \App\Broadcasting\EspacioDeCanales::espacio();
 
         $this->comercio = User::create([
             'name'         => 'Comercio chat-ia P5',
@@ -66,7 +81,8 @@ class Canal_privado_Test extends TestCase
     {
         return $this->postJson('broadcasting/auth', [
             'socket_id'    => '1234.5678',
-            'channel_name' => $channel_name,
+            // El SPA pide el nombre físico: el lógico más el sufijo del espacio de este sistema.
+            'channel_name' => $channel_name . '@' . $this->espacio,
         ]);
     }
 
