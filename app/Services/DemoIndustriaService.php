@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\OnlineConfiguration;
+use App\Models\Article;
 use App\Models\OnlineTemplate;
 use App\Models\Provider;
 use App\Models\Title;
@@ -89,6 +90,16 @@ class DemoIndustriaService
                 'image_url' => self::url($banner['desktop_url']),
                 'crop_image_url' => self::url($banner['mobile_url']),
             ]);
+        }
+
+        // El histórico se siembra después del catálogo y mueve precios/stock.
+        // Verificar el texto final y sellar sus vectores ya horneados evita que una demo
+        // recién preparada muestre pendientes hasta el próximo ciclo del scheduler.
+        $codigos = array_column($perfil['productos'], 'bar_code');
+        foreach (Article::where('user_id', $user->id)->whereIn('bar_code', $codigos)->get() as $articulo) {
+            if (!DemoIndustriaEmbeddings::aplicar($articulo, $slug)) {
+                throw new \RuntimeException('El catálogo final de '.$slug.' necesita un vector vigente para '.$articulo->name.'.');
+            }
         }
 
         return true;
