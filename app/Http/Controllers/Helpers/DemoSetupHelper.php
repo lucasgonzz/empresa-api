@@ -27,6 +27,7 @@ use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use App\Services\DemoIndustriaService;
+use App\Services\DemoIndustriaAssets;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
 use App\Services\Zipnova\ZipnovaClient;
@@ -184,6 +185,11 @@ class DemoSetupHelper
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'demo_industria' => ['Elegí uno de los rubros disponibles para la demo.'],
             ]);
+        }
+        // El ZIP histórico excluía public/. Frenar acá preserva la demo anterior si faltan
+        // fotos, logo o portadas; después de migrate:fresh ya sería demasiado tarde.
+        if ($industria !== '') {
+            DemoIndustriaAssets::exigir($industria);
         }
         config(['demo_industria_actual' => $industria !== '' ? $industria : null]);
 

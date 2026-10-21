@@ -78,16 +78,20 @@ jobs:
       - name: Empaquetar la API con vendor adentro
         # Mismas exclusiones que el pipeline actual del admin (step_upload_api), MENOS vendor/,
         # que es el punto de todo esto. Se suman .git/* (el zip viejo lo arrastraba y por eso
-        # pesaba 759 MB), .env.* y node_modules/*. storage/ y public/ quedan afuera porque en
-        # el hosting son del cliente (archivos subidos, .htaccess, certificados).
+        # pesaba 759 MB), .env.* y node_modules/*. storage/ y el resto de public/ quedan afuera
+        # porque pertenecen al cliente. Sólo public/demo-industrias/ es parte del código:
+        # sin esa excepción el setup terminaba bien pero sembraba fotos, logos y portadas 404.
         run: |
+          php scripts/verificar-assets-demo.php
           ZIP="empresa-api-v${{ steps.version.outputs.VERSION }}.zip"
           zip -qr "$ZIP" . \
             -x '.git/*' '.env' '.env.*' 'storage/*' 'public/*' 'tests/*' '*.zip' \
                'node_modules/*' 'database/super-budgets/*' 'database/seeders/articles/*' \
                'database/seeders/truvari/*' 'database/seeders/subcategories/*' \
                'database/seeders/sales/*'
+          zip -qr "$ZIP" public/demo-industrias
           unzip -tq "$ZIP"
+          php scripts/verificar-assets-demo.php --zip="$ZIP"
           # Lo que el admin verifica al bajarlo: artisan en la raíz y el autoload de composer.
           unzip -l "$ZIP" | grep -qE ' artisan$'                || { echo 'FALTA artisan en la raiz del zip'; exit 1; }
           unzip -l "$ZIP" | grep -qE ' vendor/autoload\.php$'    || { echo 'FALTA vendor/autoload.php en el zip'; exit 1; }

@@ -12,6 +12,7 @@ use App\Models\SubCategory;
 use App\Observers\ArticleObserver;
 use App\Services\DemoIndustriaEmbeddings;
 use App\Services\DemoIndustriaService;
+use App\Services\DemoIndustriaAssets;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -25,6 +26,8 @@ class DemoIndustriaArticlesSeeder extends Seeder
         if (!$perfil) {
             throw new InvalidArgumentException('La industria de la demo no tiene un catálogo preparado.');
         }
+        // El seeder también se invoca directo: no guardar URLs de imágenes ausentes.
+        DemoIndustriaAssets::exigir($slug);
 
         // Cada artículo recibe su vector horneado después de tener marca y descripción.
         // Los observers no deben disparar varias generaciones pagas durante la siembra.
