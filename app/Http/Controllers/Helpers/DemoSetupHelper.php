@@ -1568,8 +1568,10 @@ class DemoSetupHelper
             // Pedido de Lucas (26/8/2026): en la demo este checkbox queda apagado por defecto.
             'show_articles_without_images' => 0,
             'user_id'                   => config('app.USER_ID'),
-            'facebook'                  => 'htts://facebook.com',
-            'instagram'                 => 'htts://instagram.com',
+            'facebook'                  => $es_instancia_de_demostracion
+                ? 'https://www.facebook.com/p/ComercioCity-61550702650795/' : 'htts://facebook.com',
+            'instagram'                 => $es_instancia_de_demostracion
+                ? 'https://www.instagram.com/comerciocity_com/' : 'htts://instagram.com',
             'mensaje_contacto'          => 'Comunicate con nosotros',
 
 

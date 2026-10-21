@@ -85,6 +85,9 @@ class DemoSetupTiendaOnlineTest extends EmpresaTestCase
             'La tienda de la demo no arranca en "all", así que sus productos siguen sin mostrar precios '.
             'a quien entra sin sesión.'
         );
+
+        $this->assertSame('https://www.facebook.com/p/ComercioCity-61550702650795/', $configuracion->facebook);
+        $this->assertSame('https://www.instagram.com/comerciocity_com/', $configuracion->instagram);
     }
 
     /**
@@ -103,6 +106,9 @@ class DemoSetupTiendaOnlineTest extends EmpresaTestCase
             $tipo->slug,
             'Se le cambió de costado el criterio de precios a la tienda de un cliente real.'
         );
+
+        $this->assertNotSame('https://www.facebook.com/p/ComercioCity-61550702650795/', $configuracion->facebook);
+        $this->assertNotSame('https://www.instagram.com/comerciocity_com/', $configuracion->instagram);
     }
 
     /**
