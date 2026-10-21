@@ -611,7 +611,7 @@ class SearchController extends Controller
         // dibuja la pantalla. Se califica la columna con la tabla para que no choque con ninguna
         // relación que se una más abajo.
         if ($es_nota_credito) {
-            $models = $models->where($model_instance->getTable().'.status', 'nota_credito')
+            $models = $models->where($table.'.status', 'nota_credito')
                              ->conRelacionesDeNotaCredito();
         }
 
