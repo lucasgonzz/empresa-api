@@ -150,4 +150,31 @@ class CurrentAcount extends Model
     public function nota_credito_descriptions() {
         return $this->hasMany(NotaCreditoDescription::class);
     }
+
+    /**
+     * Relaciones que necesita la pantalla "Notas de crédito" de Comprobantes para dibujar cada fila.
+     *
+     * Las comparten `NotaCreditoController@index` (el listado "Por fecha") y el buscador general
+     * cuando se lo llama con el nombre `nota_credito` (el modo "Historico" y la paginación), para
+     * que las dos formas de ver la pantalla devuelvan filas con la misma forma. Va como scope y no
+     * como `withAll()` a propósito: `withAll()` es el nombre que usa el buscador general para
+     * "cargá todo lo del modelo", y las cuentas corrientes comunes no lo definen.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeConRelacionesDeNotaCredito($query) {
+        return $query->with(
+            'afip_ticket.afip_errors',
+            'afip_ticket.afip_observations',
+            'sale',
+            'articles',
+            'discounts',
+            'surchages',
+            'nota_credito_descriptions',
+            'client',
+            'provider',
+            'sale.afip_tickets'
+        );
+    }
 }
