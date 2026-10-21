@@ -177,4 +177,24 @@ class CurrentAcount extends Model
             'sale.afip_tickets'
         );
     }
+
+    /**
+     * Pagos de clientes: los movimientos `pago_from_client` que son de un cliente (no de un
+     * proveedor), con las relaciones que dibuja la pantalla "Pagos de clientes" de Comprobantes.
+     *
+     * Lo comparten `PagoDeClienteController@index` (el listado "Por fecha") y el buscador general
+     * cuando se lo llama con el nombre `pago_de_cliente` (Historico, buscador y paginado), igual
+     * que `scopeConRelacionesDeNotaCredito` con las notas de crédito.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopePagosDeClientes($query) {
+        return $query->where($this->getTable().'.status', 'pago_from_client')
+                     ->whereNotNull($this->getTable().'.client_id')
+                     ->whereNull($this->getTable().'.provider_id')
+                     // 'client' agregado (grupo 332, 4/8/2026): el front lee la relacion embebida en
+                     // vez de buscar en el store, que no descarga el catalogo completo de clientes.
+                     ->with('current_acount_payment_methods', 'client');
+    }
 }

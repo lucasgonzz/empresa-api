@@ -547,7 +547,12 @@ class SearchController extends Controller
         // reconocen los dos. getModelName() ya hace la misma equivalencia para los modelos reales.
         $es_nota_credito = in_array($model_name_param, ['nota_credito', 'nota-credito'], true);
 
-        if ($es_nota_credito) {
+        // Lo mismo le pasa a la otra solapa de Comprobantes, "Pagos de clientes" (`pago_de_cliente`):
+        // tampoco es un modelo, son cuentas corrientes con status 'pago_from_client' de un cliente.
+        // Su buscador general daba el mismo 400 (detectado por el chequeo independiente, 21/10/2026).
+        $es_pago_de_cliente = in_array($model_name_param, ['pago_de_cliente', 'pago-de-cliente'], true);
+
+        if ($es_nota_credito || $es_pago_de_cliente) {
             $model_name = CurrentAcount::class;
         }
 
@@ -613,6 +618,12 @@ class SearchController extends Controller
         if ($es_nota_credito) {
             $models = $models->where($table.'.status', 'nota_credito')
                              ->conRelacionesDeNotaCredito();
+        }
+
+        // Alias `pago_de_cliente`: solo los pagos de clientes, con lo que dibuja la pantalla
+        // (mismo criterio que PagoDeClienteController@index, vía el scope compartido).
+        if ($es_pago_de_cliente) {
+            $models = $models->pagosDeClientes();
         }
 
         // Mismo gate que arriba, para scopeSinEmbedding (misión busqueda-lenta-y-pausa-embeddings).

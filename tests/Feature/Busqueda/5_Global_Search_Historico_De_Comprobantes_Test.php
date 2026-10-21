@@ -230,4 +230,56 @@ class Global_Search_Historico_De_Comprobantes_Test extends BusquedaTestCase
             $this->assertArrayHasKey('total', $response->json('models'), $modelo.': falta total');
         }
     }
+
+    /**
+     * Test 6 - la otra solapa de Comprobantes, "Pagos de clientes", también le pide al buscador
+     * general con un nombre que no es un modelo (`pago-de-cliente`) y daba el mismo 400: solo tiene
+     * que traer pagos de clientes (no pagos a proveedores, ni notas de crédito).
+     *
+     * @group busqueda
+     * @test
+     */
+    public function el_buscador_de_pagos_de_clientes_responde_y_solo_trae_pagos_de_clientes()
+    {
+        $user_id = $this->user_id_de_testing();
+
+        $pago_de_cliente = CurrentAcount::create([
+            'detalle' => 'zz pago de cliente', 'haber' => 10, 'status' => 'pago_from_client',
+            'client_id' => 1, 'user_id' => $user_id,
+        ]);
+        CurrentAcount::create([
+            'detalle' => 'zz pago a proveedor', 'haber' => 10, 'status' => 'pago_from_client',
+            'provider_id' => 1, 'user_id' => $user_id,
+        ]);
+        CurrentAcount::create([
+            'detalle' => 'zz nota de credito', 'haber' => 10, 'status' => 'nota_credito',
+            'client_id' => 1, 'user_id' => $user_id,
+        ]);
+
+        $response = $this->postJson('api/global-search/pago-de-cliente?page=1', $this->payload_global_search([
+            'query_value' => 'zz',
+            'props'       => ['detalle'],
+            'per_page'    => 50,
+        ]));
+
+        $response->assertStatus(200);
+
+        $this->assertSame(
+            [$pago_de_cliente->id],
+            array_column($response->json('models.data'), 'id'),
+            'solo el pago de cliente tiene que aparecer'
+        );
+        $this->assertArrayHasKey('client', $response->json('models.data.0'));
+        $this->assertArrayHasKey('current_acount_payment_methods', $response->json('models.data.0'));
+
+        // El "Por fecha" de la misma pantalla sigue trayendo lo mismo (el criterio pasó a un scope).
+        $por_fecha = $this->getJson('api/pago-de-cliente/from-date/'.date('Y-m-d'));
+        $por_fecha->assertStatus(200);
+        $this->assertContains($pago_de_cliente->id, array_column($por_fecha->json('models'), 'id'));
+        foreach ($por_fecha->json('models') as $fila) {
+            $this->assertSame('pago_from_client', $fila['status']);
+            $this->assertNotNull($fila['client_id']);
+            $this->assertNull($fila['provider_id']);
+        }
+    }
 }
