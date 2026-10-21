@@ -78,13 +78,21 @@ class Global_Search_Historico_De_Comprobantes_Test extends BusquedaTestCase
     {
         $ids = $this->sembrar_notas_de_credito();
 
-        $response = $this->postJson('api/global-search/nota_credito?page=1', $this->payload_global_search([
+        // La SPA llama con guion (`routeString()` convierte `nota_credito` en `nota-credito`); se
+        // prueban las dos formas del nombre y tienen que devolver lo mismo.
+        $con_guion_bajo = $this->postJson('api/global-search/nota_credito?page=1', $this->payload_global_search([
+            'per_page' => 50, 'order_by' => 'id', 'order_direction' => 'DESC',
+        ]));
+
+        $response = $this->postJson('api/global-search/nota-credito?page=1', $this->payload_global_search([
             'per_page'        => 50,
             'order_by'        => 'id',
             'order_direction' => 'DESC',
         ]));
 
+        $con_guion_bajo->assertStatus(200);
         $response->assertStatus(200);
+        $this->assertSame($con_guion_bajo->json('models.total'), $response->json('models.total'));
 
         $filas = $response->json('models.data');
 
@@ -121,10 +129,10 @@ class Global_Search_Historico_De_Comprobantes_Test extends BusquedaTestCase
 
         $total = CurrentAcount::where('user_id', $this->user_id_de_testing())->where('status', 'nota_credito')->count();
 
-        $pagina_1 = $this->postJson('api/global-search/nota_credito?page=1', $this->payload_global_search([
+        $pagina_1 = $this->postJson('api/global-search/nota-credito?page=1', $this->payload_global_search([
             'per_page' => 5, 'order_by' => 'id', 'order_direction' => 'DESC',
         ]));
-        $pagina_2 = $this->postJson('api/global-search/nota_credito?page=2', $this->payload_global_search([
+        $pagina_2 = $this->postJson('api/global-search/nota-credito?page=2', $this->payload_global_search([
             'per_page' => 5, 'order_by' => 'id', 'order_direction' => 'DESC',
         ]));
 
@@ -153,7 +161,7 @@ class Global_Search_Historico_De_Comprobantes_Test extends BusquedaTestCase
     {
         $this->sembrar_notas_de_credito();
 
-        $por_texto = $this->postJson('api/global-search/nota_credito?page=1', $this->payload_global_search([
+        $por_texto = $this->postJson('api/global-search/nota-credito?page=1', $this->payload_global_search([
             'query_value' => 'NC de prueba 3',
             'props'       => ['detalle'],
             'per_page'    => 50,
@@ -164,7 +172,7 @@ class Global_Search_Historico_De_Comprobantes_Test extends BusquedaTestCase
         $this->assertSame('NC de prueba 3', $por_texto->json('models.data.0.detalle'));
 
         // Una búsqueda que solo coincide con un pago (que no es NC) no puede devolver nada.
-        $solo_pago = $this->postJson('api/global-search/nota_credito?page=1', $this->payload_global_search([
+        $solo_pago = $this->postJson('api/global-search/nota-credito?page=1', $this->payload_global_search([
             'query_value' => 'Pago que no es NC',
             'props'       => ['detalle'],
             'per_page'    => 50,
@@ -211,7 +219,7 @@ class Global_Search_Historico_De_Comprobantes_Test extends BusquedaTestCase
      */
     public function el_historico_de_movimientos_de_deposito_y_de_produccion_responde_paginado()
     {
-        foreach (['deposit_movement', 'production_movement'] as $modelo) {
+        foreach (['deposit-movement', 'production-movement'] as $modelo) {
             $response = $this->postJson('api/global-search/'.$modelo.'?page=1', $this->payload_global_search([
                 'per_page' => 5, 'order_by' => 'id', 'order_direction' => 'DESC',
             ]));

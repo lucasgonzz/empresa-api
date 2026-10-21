@@ -541,7 +541,11 @@ class SearchController extends Controller
         // este alias la respuesta era 400 "Modelo inexistente" (el cartel "Hubo un error y no
         // pudimos leer el detalle" del 21/10/2026). Se resuelve como CurrentAcount acotado a NC;
         // el resto del método (texto, filtros de columna, orden y paginado) es el de siempre.
-        $es_nota_credito = $model_name_param === 'nota_credito';
+        //
+        // 🔴 El nombre llega CON GUION de la SPA (`routeString()` pasa los `_` a `-`: la ruta real
+        // es `global-search/nota-credito`) y con guion bajo desde cualquier otro consumidor; se
+        // reconocen los dos. getModelName() ya hace la misma equivalencia para los modelos reales.
+        $es_nota_credito = in_array($model_name_param, ['nota_credito', 'nota-credito'], true);
 
         if ($es_nota_credito) {
             $model_name = CurrentAcount::class;
