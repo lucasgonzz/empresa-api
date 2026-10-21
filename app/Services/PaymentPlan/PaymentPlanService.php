@@ -34,6 +34,9 @@ class PaymentPlanService
     /** Tope de cuotas de un plan: cubre de sobra 10 años mensuales y frena un tipeo con ceros de más. */
     const MAXIMO_DE_CUOTAS = 120;
 
+    /** Tope del importe a financiar: lo que entra en `payment_plans.total_amount` (decimal 12,2). */
+    const MAXIMO_IMPORTE = 9999999999.99;
+
     /**
      * Cuánto se pagó y cuánto falta de una venta, en la moneda de la venta.
      *
@@ -59,6 +62,7 @@ class PaymentPlanService
 
         /** Débito de la venta en su cuenta corriente, si lo tiene. */
         $debito = CurrentAcount::where('sale_id', $sale->id)
+                                ->where('user_id', $sale->user_id)
                                 ->whereNull('haber')
                                 ->whereNotNull('debe')
                                 ->orderBy('id')
@@ -67,6 +71,12 @@ class PaymentPlanService
         if (is_null($debito)) {
             $pagado = 0;
             $saldo_pendiente = $total;
+        } elseif ($debito->status === 'pagado') {
+            // Saldada. El camino viejo CurrentAcountHelper::saldarCurrentAcount() la marca
+            // 'pagado' sin completar `pagandose`: con la resta sola, una venta ya pagada
+            // proponía financiar su total.
+            $pagado = round((float) $debito->debe, 2);
+            $saldo_pendiente = 0;
         } else {
             $pagado = round((float) $debito->pagandose, 2);
             $saldo_pendiente = round((float) $debito->debe - $pagado, 2);
@@ -78,6 +88,7 @@ class PaymentPlanService
 
         /** Planes previos de la venta que todavía tienen cuotas sin pagar: el modal avisa. */
         $planes_con_cuotas_pendientes = PaymentPlanCuota::where('sale_id', $sale->id)
+                                                        ->where('user_id', $sale->user_id)
                                                         ->where('estado', 'pendiente')
                                                         ->distinct()
                                                         ->count('payment_plan_id');
@@ -110,6 +121,11 @@ class PaymentPlanService
      */
     public function crear_plan_y_cuotas($request, $sale): PaymentPlan
     {
+        // Un plan sin cliente no tiene cuenta corriente donde se paguen las cuotas.
+        if (empty($sale->client_id)) {
+            throw new InvalidArgumentException('La venta no tiene cliente: el plan de pago se arma sobre la cuenta de un cliente.');
+        }
+
         /** Cantidad de cuotas, ya validada como entero. */
         $cantidad_cuotas = $this->validar_cantidad_de_cuotas($request->cantidad_cuotas);
 
@@ -119,16 +135,35 @@ class PaymentPlanService
         }
 
         $interval_in_days = $request->interval_in_days ?? null;
-        if ($frequency === 'custom_days' && (empty($interval_in_days) || (int) $interval_in_days < 1)) {
-            throw new InvalidArgumentException('Indicá cada cuántos días vence una cuota.');
+        if ($frequency === 'custom_days') {
+            if (!is_numeric($interval_in_days) || (int) $interval_in_days != $interval_in_days || (int) $interval_in_days < 1) {
+                throw new InvalidArgumentException('Indicá cada cuántos días vence una cuota (un número entero).');
+            }
+            $interval_in_days = (int) $interval_in_days;
         }
 
         if (empty($request->start_date)) {
             throw new InvalidArgumentException('Indicá la fecha de la primera cuota.');
         }
 
+        // Carbon tira su propia excepción (en inglés) con una fecha que no entiende.
+        try {
+            $start_date = Carbon::parse($request->start_date)->startOfDay();
+        } catch (\Exception $e) {
+            throw new InvalidArgumentException('La fecha de la primera cuota no es válida.');
+        }
+
         /** Importe a financiar: el que eligió el usuario o, por defecto, lo que falta saldar. */
         $total_amount = $this->importe_a_financiar($request, $sale);
+
+        // Cada cuota tiene que llevar al menos un centavo: con menos, el reparto deja cuotas en $0.
+        if ((int) round($total_amount * 100) < $cantidad_cuotas) {
+            throw new InvalidArgumentException('El importe a financiar no alcanza para '.$cantidad_cuotas.' cuotas.');
+        }
+
+        if (!empty($request->amount_per_installment) && (!is_numeric($request->amount_per_installment) || (float) $request->amount_per_installment <= 0)) {
+            throw new InvalidArgumentException('El importe por cuota tiene que ser mayor a cero.');
+        }
 
         /** Moneda del plan y de sus cuotas: la de la venta. */
         $moneda_id = $this->moneda_de_la_venta($sale);
@@ -137,7 +172,7 @@ class PaymentPlanService
         $notas_por_cuota = $this->notas_por_cuota($request->cuotas);
 
         // Transacción: el plan sin sus cuotas (o con la mitad) no debe quedar nunca guardado.
-        return DB::transaction(function () use ($request, $sale, $cantidad_cuotas, $frequency, $interval_in_days, $total_amount, $moneda_id, $notas_por_cuota) {
+        return DB::transaction(function () use ($request, $sale, $cantidad_cuotas, $frequency, $interval_in_days, $start_date, $total_amount, $moneda_id, $notas_por_cuota) {
 
             $plan = PaymentPlan::create([
                 'sale_id'          => $sale->id,
@@ -147,7 +182,7 @@ class PaymentPlanService
                 'moneda_id'        => $moneda_id,
                 'frequency'        => $frequency,
                 'interval_in_days' => $interval_in_days,
-                'start_date'       => Carbon::parse($request->start_date)->startOfDay(),
+                'start_date'       => $start_date,
                 'interest_percent' => $request->interest_percent ?? 0,
                 'notes'            => $request->notes ?? null,
                 'user_id'          => $sale->user_id,
@@ -306,11 +341,21 @@ class PaymentPlanService
     {
         if (isset($request->total_amount) && $request->total_amount !== '') {
 
-            if (!is_numeric($request->total_amount) || (float) $request->total_amount <= 0) {
-                throw new InvalidArgumentException('El importe a financiar tiene que ser mayor a cero.');
+            if (!is_numeric($request->total_amount)) {
+                throw new InvalidArgumentException('El importe a financiar tiene que ser un número.');
             }
 
-            return round((float) $request->total_amount, 2);
+            // Se valida DESPUÉS de redondear a centavos: 0,004 pasaba el "> 0" y armaba un plan en $0.
+            $importe = round((float) $request->total_amount, 2);
+
+            if ($importe <= 0) {
+                throw new InvalidArgumentException('El importe a financiar tiene que ser mayor a cero.');
+            }
+            if ($importe > self::MAXIMO_IMPORTE) {
+                throw new InvalidArgumentException('El importe a financiar es demasiado grande.');
+            }
+
+            return $importe;
         }
 
         /** Lo que falta saldar de la venta. */
@@ -343,8 +388,8 @@ class PaymentPlanService
                 continue;
             }
 
-            /** Nota de la cuota sin espacios de los costados. */
-            $nota = isset($cuota['notes']) ? trim((string) $cuota['notes']) : '';
+            /** Nota de la cuota sin espacios de los costados (lo que no es texto se ignora). */
+            $nota = isset($cuota['notes']) && is_scalar($cuota['notes']) ? trim((string) $cuota['notes']) : '';
 
             if ($nota !== '') {
                 $notas[(int) $cuota['numero_cuota']] = $nota;

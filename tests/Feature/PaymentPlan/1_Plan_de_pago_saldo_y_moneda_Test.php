@@ -307,6 +307,74 @@ class Plan_de_pago_saldo_y_moneda_Test extends TestCase
     }
 
     /**
+     * Hallazgos del chequeo independiente: lo que dejaba cuotas en $0 o planes rotos ahora es 422,
+     * con mensaje en castellano.
+     *
+     * @group payment-plan
+     * @test
+     */
+    public function los_importes_que_dejarian_cuotas_en_cero_y_los_datos_mal_tipados_son_422()
+    {
+        $this->loguear();
+        $sale = $this->venta(1000);
+        $base = ['sale_id' => $sale->id, 'cantidad_cuotas' => 3, 'start_date' => '2026-11-10'];
+
+        // 2 centavos no alcanzan para 3 cuotas.
+        $this->postJson('api/payment-plan', array_merge($base, ['total_amount' => 0.02]))->assertStatus(422);
+        // 0,004 redondea a 0: se valida después de redondear.
+        $this->postJson('api/payment-plan', array_merge($base, ['total_amount' => '0.004']))->assertStatus(422);
+        // Más de lo que entra en decimal(12,2).
+        $this->postJson('api/payment-plan', array_merge($base, ['total_amount' => 99999999999]))->assertStatus(422);
+        // Fecha que Carbon no entiende: mensaje propio, no el de Carbon en inglés.
+        $this->postJson('api/payment-plan', array_merge($base, ['start_date' => 'hola']))
+            ->assertStatus(422)
+            ->assertJson(['message' => 'La fecha de la primera cuota no es válida.']);
+        // Intervalo de días no entero.
+        $this->postJson('api/payment-plan', array_merge($base, ['frequency' => 'custom_days', 'interval_in_days' => '3.7']))->assertStatus(422);
+        // Importe por cuota negativo.
+        $this->postJson('api/payment-plan', array_merge($base, ['amount_per_installment' => -10]))->assertStatus(422);
+
+        $this->assertEquals(0, PaymentPlan::where('sale_id', $sale->id)->count());
+
+        // Una nota que no es texto se ignora en lugar de romper el alta.
+        $this->postJson('api/payment-plan', array_merge($base, ['cuotas' => [['numero_cuota' => 1, 'notes' => ['x']]]]))
+            ->assertStatus(201);
+    }
+
+    /**
+     * Una venta sin cliente no admite plan: no hay cuenta corriente donde pagar las cuotas.
+     *
+     * @group payment-plan
+     * @test
+     */
+    public function la_venta_sin_cliente_no_admite_plan()
+    {
+        $this->loguear();
+        $sale = Sale::create(['user_id' => 500, 'total' => 1000, 'terminada' => 1]);
+
+        $this->postJson('api/payment-plan', ['sale_id' => $sale->id, 'cantidad_cuotas' => 2, 'start_date' => '2026-11-10'])
+            ->assertStatus(422);
+        $this->assertEquals(0, PaymentPlan::where('sale_id', $sale->id)->count());
+    }
+
+    /**
+     * Un débito marcado 'pagado' por el camino viejo (sin completar `pagandose`) es una venta saldada.
+     *
+     * @group payment-plan
+     * @test
+     */
+    public function el_debito_marcado_pagado_sin_pagandose_tiene_saldo_cero()
+    {
+        $this->loguear();
+        $sale = $this->venta(1000);
+        CurrentAcount::where('sale_id', $sale->id)->update(['status' => 'pagado', 'pagandose' => null]);
+
+        $this->getJson('api/payment-plan/saldo-de-venta/'.$sale->id)
+            ->assertStatus(200)
+            ->assertJson(['pagado' => 1000, 'saldo_pendiente' => 0]);
+    }
+
+    /**
      * Un segundo plan sobre la misma venta se avisa en el saldo.
      *
      * @group payment-plan

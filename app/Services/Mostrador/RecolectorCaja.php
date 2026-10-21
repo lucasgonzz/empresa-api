@@ -166,7 +166,9 @@ class RecolectorCaja extends RecolectorBase
             return true;
         }
 
-        if (DB::table('payment_plan_cuotas')->where('user_id', $owner->id)->where('estado', 'pendiente')->exists()) {
+        // Con el mismo criterio de moneda que el bloque de cuotas: un dueño con solo cuotas en
+        // dólares no tiene nada que mostrar ahí.
+        if ($this->solo_cuotas_en_pesos(DB::table('payment_plan_cuotas')->where('user_id', $owner->id)->where('estado', 'pendiente'))->exists()) {
             return true;
         }
 
@@ -774,11 +776,21 @@ class RecolectorCaja extends RecolectorBase
             ->havingRaw('SUM(saldo) > 0')
             ->select('model_id');
 
-        $consulta = DB::table('payment_plan_cuotas')
+        return $this->solo_cuotas_en_pesos(DB::table('payment_plan_cuotas')
             ->where('payment_plan_cuotas.user_id', $owner->id)
             ->where('payment_plan_cuotas.estado', 'pendiente')
-            ->whereIn('payment_plan_cuotas.client_id', $clientes_con_deuda);
+            ->whereIn('payment_plan_cuotas.client_id', $clientes_con_deuda));
+    }
 
+    /**
+     * Deja solo las cuotas en pesos (NULL o distinta de 2). Sin la columna todavía (ventana del
+     * despliegue), todas lo son.
+     *
+     * @param \Illuminate\Database\Query\Builder $consulta Sobre `payment_plan_cuotas`.
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function solo_cuotas_en_pesos($consulta)
+    {
         if (Schema::hasColumn('payment_plan_cuotas', 'moneda_id')) {
             $consulta->where(function ($q) {
                 $q->whereNull('payment_plan_cuotas.moneda_id')
