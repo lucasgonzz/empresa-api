@@ -21,15 +21,17 @@ class NotaCreditoController extends Controller
      */
     public function index($from_date = null, $until_date = null)
     {
+        // Las relaciones viven en CurrentAcount::scopeConRelacionesDeNotaCredito, porque las usa
+        // también el buscador general (modo Historico). Historia de lo que carga:
+        // - 'client' (grupo 332, 4/8/2026): el front lee la relacion embebida en vez de buscar en
+        //   el store, que no descarga el catalogo completo de clientes.
+        // - 'provider' (misión devoluciones-compras-y-rediseno, 1/10/2026): una NC a proveedor
+        //   (devolución de compra) no tiene cliente, y el listado tiene que poder mostrar a quién se
+        //   le hizo. Aditivo: el front que no lo lee no se entera.
+        // - 'sale.afip_tickets': las facturas de la venta; la pantalla las ofrece para facturar una
+        //   NC guardada sin facturar.
         $models = $this->notas_credito_query($from_date, $until_date)
-            // 'client' agregado (grupo 332, 4/8/2026): el front lee la relacion embebida en vez
-            // de buscar en el store, que no descarga el catalogo completo de clientes.
-            // 'provider' agregado (misión devoluciones-compras-y-rediseno, 1/10/2026): una NC a
-            // proveedor (devolución de compra) no tiene cliente, y el listado tiene que poder
-            // mostrar a quién se le hizo. Aditivo: el front que no lo lee no se entera.
-            ->with('afip_ticket.afip_errors', 'afip_ticket.afip_observations', 'sale', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions', 'client', 'provider')
-            // Las facturas de la venta: la pantalla las ofrece para facturar una NC guardada sin facturar.
-            ->with('sale.afip_tickets')
+            ->conRelacionesDeNotaCredito()
             ->get();
 
         return response()->json(['models' => $models], 200);
