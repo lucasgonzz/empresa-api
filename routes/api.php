@@ -998,6 +998,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
+    // Total, pagado y saldo de una venta para el modal «Nuevo plan de pago» (misión planes-de-pago-saldo-y-dolares).
+    Route::get('payment-plan/saldo-de-venta/{sale_id}', 'PaymentPlanController@saldo_de_venta')->where('sale_id', '[0-9]+');
 
     Route::resource('payment-plan-cuota', 'PaymentPlanCuotaController');
     Route::get('payment-plan-cuota/{estado}/from-date/{from_date?}/{until_date?}', 'PaymentPlanCuotaController@index');

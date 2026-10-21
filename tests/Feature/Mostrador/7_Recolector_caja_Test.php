@@ -606,6 +606,26 @@ class Recolector_caja_Test extends MostradorTestCase
     }
 
     /**
+     * Una cuota en dólares no entra a los totales en pesos del bloque (misión
+     * planes-de-pago-saldo-y-dolares, 21/10/2026): con ella sumada, el total vencido diría 50.900
+     * pesos cuando son 50.000 pesos y 900 dólares.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function una_cuota_en_dolares_no_suma_a_las_cuotas_en_pesos()
+    {
+        $this->sembrar_la_caja();
+
+        $this->cuota($this->s['perez'], -8, 900, ['numero_cuota' => 5, 'moneda_id' => 2]);
+
+        $cuotas = $this->recolectar()['a_cobrar']['cuotas'];
+
+        $this->assertSame([$this->s['cuota_vencida']], array_column($cuotas['vencidas'], 'cuota_id'));
+        $this->assertSame(50000.0, $cuotas['total_vencidas']);
+    }
+
+    /**
      * @group mostrador
      * @test
      */

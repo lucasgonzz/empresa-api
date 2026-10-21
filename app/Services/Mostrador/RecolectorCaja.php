@@ -14,6 +14,7 @@ use App\Models\WhatsappBotConfig;
 use App\Services\RecordatorioCobroSenderService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Hechos del informe "Caja y vencimientos" (tipo 'caja', misión mostrador-caja-vencimientos):
@@ -758,6 +759,11 @@ class RecolectorCaja extends RecolectorBase
      * vencidas. Con el filtro igual puede colarse una cuota ya pagada de un cliente que debe por
      * otra cosa: la skill no la afirma como deuda cierta.
      *
+     * 🔴 Y SOLO cuotas en pesos (misión planes-de-pago-saldo-y-dolares, 21/10/2026): desde que los
+     * planes llevan la moneda de su venta, una cuota en dólares se sumaría como pesos al total del
+     * bloque. NULL y 1 son pesos (la columna nace con default 1). La guarda de `hasColumn` cubre la
+     * ventana del despliegue en la que el código ya llegó y la migración todavía no corrió.
+     *
      * @param User $owner
      * @return \Illuminate\Database\Query\Builder
      */
@@ -768,10 +774,19 @@ class RecolectorCaja extends RecolectorBase
             ->havingRaw('SUM(saldo) > 0')
             ->select('model_id');
 
-        return DB::table('payment_plan_cuotas')
+        $consulta = DB::table('payment_plan_cuotas')
             ->where('payment_plan_cuotas.user_id', $owner->id)
             ->where('payment_plan_cuotas.estado', 'pendiente')
             ->whereIn('payment_plan_cuotas.client_id', $clientes_con_deuda);
+
+        if (Schema::hasColumn('payment_plan_cuotas', 'moneda_id')) {
+            $consulta->where(function ($q) {
+                $q->whereNull('payment_plan_cuotas.moneda_id')
+                    ->orWhere('payment_plan_cuotas.moneda_id', '<>', 2);
+            });
+        }
+
+        return $consulta;
     }
 
     /**
