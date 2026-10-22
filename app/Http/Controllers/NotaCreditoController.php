@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Exports\NotasCreditoFullExport;
 use App\Http\Controllers\Helpers\Devoluciones\FacturarNotaCreditoExistenteHelper;
 use App\Http\Controllers\Helpers\Devoluciones\NotaCreditoNoFacturableException;
+use App\Http\Controllers\Helpers\ListadoPorFechaPaginadoHelper;
 use App\Models\CurrentAcount;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
@@ -15,11 +16,16 @@ class NotaCreditoController extends Controller
     /**
      * Lista notas de crédito del usuario con filtros opcionales por rango de fechas de creación.
      *
+     * Con `per_page` en la query string (modo opt-in, ver `ListadoPorFechaPaginadoHelper`) responde UNA
+     * página del día o del rango, con `models` como paginador de Laravel. Sin `per_page` responde el
+     * array entero de siempre. El Excel (`notas_credito_query`) no pasa por acá y sigue trayendo todo.
+     *
+     * @param \Illuminate\Http\Request $request
      * @param string|null $from_date Fecha desde (Y-m-d); null sin filtrar por fecha.
      * @param string|null $until_date Fecha hasta (Y-m-d); null filtra solo el día from_date cuando from_date viene informado.
      * @return \Illuminate\Http\JsonResponse
      */
-    public function index($from_date = null, $until_date = null)
+    public function index(Request $request, $from_date = null, $until_date = null)
     {
         // Las relaciones viven en CurrentAcount::scopeConRelacionesDeNotaCredito, porque las usa
         // también el buscador general (modo Historico). Historia de lo que carga:
@@ -31,8 +37,13 @@ class NotaCreditoController extends Controller
         // - 'sale.afip_tickets': las facturas de la venta; la pantalla las ofrece para facturar una
         //   NC guardada sin facturar.
         $models = $this->notas_credito_query($from_date, $until_date)
-            ->conRelacionesDeNotaCredito()
-            ->get();
+            ->conRelacionesDeNotaCredito();
+
+        if (ListadoPorFechaPaginadoHelper::pide_paginado($request)) {
+            return response()->json(ListadoPorFechaPaginadoHelper::respuesta($models, $request), 200);
+        }
+
+        $models = $models->get();
 
         return response()->json(['models' => $models], 200);
     }

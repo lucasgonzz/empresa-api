@@ -84,7 +84,8 @@ class Plan_de_pago_saldo_y_moneda_Test extends TestCase
                 'client_id'         => $client->id,
                 'sale_id'           => $sale->id,
                 'credit_account_id' => $credit_account->id,
-                'user_id'           => 500,
+                // Sin `user_id`, como lo crea CurrentAcountFromSaleHelper: con 500 acá el test tapó el
+                // 21/10 un filtro por dueño que no encontraba el débito de ninguna venta real.
             ]);
         }
 
@@ -256,12 +257,50 @@ class Plan_de_pago_saldo_y_moneda_Test extends TestCase
     }
 
     /**
-     * Una venta que no va a la cuenta corriente ofrece su total, y lo avisa.
+     * Camino real de punta a punta: la venta entra por POST api/sale (que crea su débito como lo crea
+     * el sistema, sin user_id) y el plan se arma sobre ella. Cubre el defecto del 21/10, en el que el
+     * saldo no encontraba el débito de ninguna venta real.
      *
      * @group payment-plan
      * @test
      */
-    public function la_venta_sin_cuenta_corriente_ofrece_el_total()
+    public function una_venta_hecha_por_la_api_esta_en_la_cuenta_corriente_y_admite_plan()
+    {
+        $this->loguear();
+
+        $client = Client::create(['name' => 'zz Cliente plan api '.uniqid(), 'user_id' => 500]);
+        \App\Http\Controllers\Helpers\CreditAccountHelper::crear_credit_accounts('client', $client->id, 500);
+
+        /** Débito de una venta real, armado por el mismo helper que usa SaleController. */
+        $sale = Sale::create([
+            'user_id'             => 500,
+            'client_id'           => $client->id,
+            'moneda_id'           => 1,
+            'total'               => 8000,
+            'terminada'           => 1,
+            'save_current_acount' => 1,
+        ]);
+        \App\Http\Controllers\Helpers\SaleHelper::create_current_acount($sale);
+
+        $this->assertNull(CurrentAcount::where('sale_id', $sale->id)->value('user_id'), 'Precondición: el débito real nace sin user_id.');
+
+        $this->getJson('api/payment-plan/saldo-de-venta/'.$sale->id)
+            ->assertStatus(200)
+            ->assertJson(['en_cuenta_corriente' => true, 'saldo_pendiente' => 8000]);
+
+        $this->postJson('api/payment-plan', ['sale_id' => $sale->id, 'cantidad_cuotas' => 2, 'start_date' => '2026-11-10'])
+            ->assertStatus(201);
+    }
+
+    /**
+     * Regla de Lucas (22/10/2026): el plan de pago se arma solo sobre una venta que fue a la cuenta
+     * corriente. El saldo lo informa (`en_cuenta_corriente = false`) y el alta la rechaza, con o sin
+     * importe explícito.
+     *
+     * @group payment-plan
+     * @test
+     */
+    public function la_venta_sin_cuenta_corriente_no_admite_plan()
     {
         $this->loguear();
         $sale = $this->venta(5000, 0, 1, false);
@@ -269,6 +308,12 @@ class Plan_de_pago_saldo_y_moneda_Test extends TestCase
         $this->getJson('api/payment-plan/saldo-de-venta/'.$sale->id)
             ->assertStatus(200)
             ->assertJson(['total' => 5000, 'pagado' => 0, 'saldo_pendiente' => 5000, 'en_cuenta_corriente' => false]);
+
+        $base = ['sale_id' => $sale->id, 'cantidad_cuotas' => 2, 'start_date' => '2026-11-10'];
+        $this->postJson('api/payment-plan', $base)->assertStatus(422);
+        $this->postJson('api/payment-plan', array_merge($base, ['total_amount' => 5000]))->assertStatus(422);
+
+        $this->assertEquals(0, PaymentPlan::where('sale_id', $sale->id)->count());
     }
 
     /**

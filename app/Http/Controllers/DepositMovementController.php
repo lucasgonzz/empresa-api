@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\DepositMovementHelper;
+use App\Http\Controllers\Helpers\ListadoPorFechaPaginadoHelper;
 use App\Http\Controllers\Pdf\DepositMovementPdf;
 use App\Models\DepositMovement;
 use Illuminate\Http\Request;
@@ -33,7 +34,20 @@ use Illuminate\Support\Facades\DB;
 class DepositMovementController extends Controller
 {
 
-    public function index($from_date = null, $until_date = null) {
+    /**
+     * Listado "Por fecha" de movimientos de depósito.
+     *
+     * Con `per_page` en la query string (modo opt-in, ver `ListadoPorFechaPaginadoHelper`) responde UNA
+     * página del día o del rango, con `models` como paginador de Laravel: así un rango largo del
+     * calendario no trae todos los movimientos, con sus artículos, variantes y direcciones, de golpe.
+     * Sin `per_page` responde el array entero de siempre.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  string|null $from_date  Fecha desde (Y-m-d); null no filtra por fecha.
+     * @param  string|null $until_date Fecha hasta (Y-m-d); null filtra solo el día de `from_date`.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function index(Request $request, $from_date = null, $until_date = null) {
         $models = DepositMovement::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
@@ -44,6 +58,10 @@ class DepositMovementController extends Controller
             } else {
                 $models = $models->whereDate('created_at', $from_date);
             }
+        }
+
+        if (ListadoPorFechaPaginadoHelper::pide_paginado($request)) {
+            return response()->json(ListadoPorFechaPaginadoHelper::respuesta($models, $request), 200);
         }
 
         $models = $models->get();
