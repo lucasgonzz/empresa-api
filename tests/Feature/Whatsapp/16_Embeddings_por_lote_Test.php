@@ -68,7 +68,7 @@ class Embeddings_por_lote_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita la vectorización del catálogo. */
-    const SLUG = 'whatsapp_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;
@@ -76,6 +76,9 @@ class Embeddings_por_lote_Test extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // La base de los tests arranca con los embeddings pausados (ver tests/TestCase.php); acá se miden, así que se prenden.
+        config(['services.openai.embeddings_generacion_pausada' => false]);
 
         // 🔴 Nunca las claves reales del .env.testing: ningún test de esta suite sale a la red.
         config(['services.anthropic.api_key' => null]);

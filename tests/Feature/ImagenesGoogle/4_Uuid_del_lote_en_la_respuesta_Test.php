@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Queue;
 use ReflectionProperty;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -34,6 +35,7 @@ use Tests\TestCase;
 class Uuid_del_lote_en_la_respuesta_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /**
      * Usuario autenticado de los tests de esta rama (mismo fixture que el test de cuota).
@@ -42,7 +44,14 @@ class Uuid_del_lote_en_la_respuesta_Test extends TestCase
      */
     protected function usuario_de_testing()
     {
-        return User::find(500);
+        $usuario = User::find(500);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): la asignación automática de imágenes es de `agentes_ia`.
+        if ($usuario) {
+            $this->otorgar_agentes_ia($usuario);
+        }
+
+        return $usuario;
     }
 
     /**

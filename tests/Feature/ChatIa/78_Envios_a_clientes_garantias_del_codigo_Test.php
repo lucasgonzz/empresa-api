@@ -44,7 +44,7 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
             'agente_pensamiento' => 'agil',
         ]);
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         // 🔴 Nunca las claves reales: este archivo no sale a la red (todo pasa por Http::fake).
         config([

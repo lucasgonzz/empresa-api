@@ -74,7 +74,7 @@ trait EnviosAClientesFixtures
             'envio_simulado'     => true,
         ]);
 
-        foreach (['whatsapp', 'enviar_mail_a_clientes'] as $slug) {
+        foreach (['agentes_ia', 'enviar_mail_a_clientes'] as $slug) {
             $this->dar_extension($slug);
         }
 

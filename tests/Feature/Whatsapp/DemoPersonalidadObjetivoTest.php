@@ -8,15 +8,19 @@ use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Artisan;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 class DemoPersonalidadObjetivoTest extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     public function test_personalidad_base_sigue_seleccionada_despues_de_personalizar_y_el_put_parcial_la_respeta()
     {
         $dueno = User::create(['name' => 'Configuración demo', 'email' => uniqid('config-demo-') . '@test.local', 'password' => bcrypt('local')]);
+        // Misión agentes-ia-extension-unica (22/10/2026): la configuración del bot es de `agentes_ia`.
+        $this->otorgar_agentes_ia($dueno);
         $this->actingAs($dueno, 'web');
         $this->putJson('/api/whatsapp-bot/config', ['agent_personality' => 'Soy el asistente de Costa Demo.', 'agent_personality_template' => 'amigable', 'agent_objective' => 'buy_online'])->assertOk();
         $this->putJson('/api/whatsapp-bot/config', ['agent_personality' => 'Soy el asistente de Costa Demo. Respondo corto.'])->assertOk();

@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -25,6 +26,7 @@ use Tests\TestCase;
 class Config_conexion_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** @var User */
     protected $comercio;
@@ -48,6 +50,9 @@ class Config_conexion_Test extends TestCase
             'email'        => 'whatsapp-f8-2-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): la configuración del bot de WhatsApp es de `agentes_ia`.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->empleado = User::create([
             'name'     => 'Empleado whatsapp F8-2',

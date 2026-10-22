@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -43,6 +44,7 @@ use Tests\TestCase;
 class Imagenes_categorias_por_asistente_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** @var User */
     protected $comercio;
@@ -72,6 +74,9 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
             'agente_confianza' => 'cauteloso',
             'google_cuota'     => 10,
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): lo que se prueba acá es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->empleado = User::create([
             'name'     => 'Empleado imagenes P28',

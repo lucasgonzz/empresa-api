@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
 use ReflectionProperty;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -55,6 +56,7 @@ use Tests\TestCase;
 class Imagenes_articulos_por_asistente_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** @var User */
     protected $comercio;
@@ -81,6 +83,9 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
             'password'         => Hash::make('secret'),
             'agente_confianza' => 'resuelto',
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): lo que se prueba acá es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->bulonera = Provider::create(['name' => 'Bulonera P27', 'user_id' => $this->comercio->id]);
 

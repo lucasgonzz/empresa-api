@@ -35,7 +35,7 @@ class Conexion_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el módulo IA. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /**
      * El formato de `creada_at` / `ultimo_uso_at` del contrato 2: ISO 8601 con la zona explícita

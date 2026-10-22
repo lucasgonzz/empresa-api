@@ -28,7 +28,7 @@ class Config_de_proveedor_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el módulo. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

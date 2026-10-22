@@ -323,17 +323,17 @@ class Recordatorio_de_cobro_Test extends EmpresaTestCase
     /**
      * Le da al owner del test la extension `whatsapp`, creando la fila del catalogo si la base
      * del slot todavia no la tiene sembrada. Las cuatro rutas del recordatorio viven adentro del
-     * grupo `check_extencion_empresa:whatsapp`.
+     * grupo `check_extencion_empresa:agentes_ia`.
      *
      * @return void
      */
     protected function dar_extension()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'whatsapp')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
             $extencion = ExtencionEmpresa::forceCreate([
-                'slug' => 'whatsapp',
+                'slug' => 'agentes_ia',
                 'name' => 'WhatsApp',
             ]);
         }

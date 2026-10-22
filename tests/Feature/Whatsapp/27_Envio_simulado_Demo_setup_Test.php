@@ -177,10 +177,10 @@ class Envio_simulado_Demo_setup_Test extends TestCase
      */
     protected function entrar_como_dueno()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'whatsapp')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'whatsapp', 'name' => 'WhatsApp']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'WhatsApp']);
         }
 
         $this->owner->extencions()->attach($extencion->id);

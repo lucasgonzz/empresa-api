@@ -45,7 +45,7 @@ use Tests\EmpresaTestCase;
 class Endpoints_y_confirmacion_Test extends EmpresaTestCase
 {
     /** Slug de la extensión que gatea todos los endpoints del escaneo. */
-    const SLUG = 'escaneo_factura_compra';
+    const SLUG = 'agentes_ia';
 
     /**
      * Carpetas de storage creadas por los tests, para borrarlas en el tearDown: los archivos de

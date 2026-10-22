@@ -70,14 +70,21 @@ class ExtencionesDeSetupSinEmbeddingsTest extends TestCase
     }
 
     /**
-     * Guarda contra arreglar esto sacando también 'whatsapp': esa es la que gatea el ítem de menú
-     * del chat y tiene que seguir yendo de base en las dos.
+     * Cambio de contrato (misión agentes-ia-extension-unica, 22/10/2026): el módulo de WhatsApp dejó de ser
+     * la extensión `whatsapp` y es parte de `agentes_ia`. Toda demo nueva nace con `agentes_ia` (una demo
+     * existe para mostrar la IA) y ya no con ninguna de las seis extensiones de IA que reemplaza.
      *
      * @test
      */
-    public function una_demo_nueva_sigue_naciendo_con_whatsapp()
+    public function una_demo_nueva_sigue_naciendo_con_el_modulo_de_whatsapp_ahora_dentro_de_agentes_ia()
     {
-        $this->assertContains('whatsapp', $this->extencions_de_la_demo());
+        $extenciones = $this->extencions_de_la_demo();
+
+        $this->assertContains('agentes_ia', $extenciones);
+
+        foreach (['whatsapp', 'whatsapp_ia', 'asistente_ia', 'escaneo_factura_compra', 'sugerencias_inteligentes', 'sugerencias_compras'] as $reemplazada) {
+            $this->assertNotContains($reemplazada, $extenciones, 'La demo no debe otorgar la extensión vieja ' . $reemplazada . '.');
+        }
     }
 
     /** @test */
@@ -90,10 +97,20 @@ class ExtencionesDeSetupSinEmbeddingsTest extends TestCase
         );
     }
 
-    /** @test */
-    public function un_cliente_real_nuevo_sigue_naciendo_con_whatsapp()
+    /**
+     * Cambio de contrato (misión agentes-ia-extension-unica, 22/10/2026, decisión de Lucas «nadie hereda»):
+     * un sistema real nuevo ya NO trae ninguna extensión de IA de base —ni `agentes_ia` ni las seis que
+     * reemplaza—. Se activa por cliente, desde el admin o el configurador. Antes este test exigía `whatsapp`.
+     *
+     * @test
+     */
+    public function un_cliente_real_nuevo_no_nace_con_agentes_ia_ni_con_las_extensiones_de_ia_viejas()
     {
-        $this->assertContains('whatsapp', $this->extencions_del_user_setup());
+        $extenciones = $this->extencions_del_user_setup();
+
+        foreach (['agentes_ia', 'whatsapp', 'whatsapp_ia', 'asistente_ia', 'escaneo_factura_compra', 'sugerencias_inteligentes', 'sugerencias_compras'] as $slug) {
+            $this->assertNotContains($slug, $extenciones, 'UserSetupHelper::base_extencions() otorga ' . $slug . ': las altas nuevas de producción no traen IA por defecto.');
+        }
     }
 
     /**
@@ -112,7 +129,8 @@ class ExtencionesDeSetupSinEmbeddingsTest extends TestCase
     public function la_demo_permite_probar_el_asistente_las_facturas_y_el_codigo_de_barras()
     {
         $extenciones = $this->extencions_de_la_demo();
-        foreach (['asistente_ia', 'escaneo_factura_compra', 'bar_code_scanner', 'whatsapp'] as $slug) {
+        /* Asistente, escaneo de facturas y WhatsApp son hoy la extensión única `agentes_ia`. */
+        foreach (['agentes_ia', 'bar_code_scanner'] as $slug) {
             $this->assertContains($slug, $extenciones, 'La demo debe permitir el recorrido anunciado de '.$slug.'.');
         }
     }

@@ -87,7 +87,7 @@ class Alta_con_margen_por_lista_y_stock_Test extends EmpresaTestCase
             'agente_confianza' => $this->dueno->agente_confianza,
         ];
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         // En "cauteloso" el alta deja tarjeta y se confirma por el endpoint de la pantalla.
         $this->dueno_con(['agente_confianza' => 'cauteloso']);

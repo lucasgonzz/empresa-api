@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Tests\EmpresaTestCase;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 
 /**
  * Misión escaneo-factura-compra — Bloque B: el motor del escaneo en segundo plano.
@@ -40,6 +41,8 @@ use Tests\EmpresaTestCase;
  */
 class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
 {
+    use OtorgaAgentesIa;
+
     /**
      * Dueño de los datos (la empresa del fixture).
      *
@@ -75,6 +78,9 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
         Notification::fake();
 
         $this->owner = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+
+        // Misión agentes-ia-extension-unica (22/10/2026): el job del escaneo revalida `agentes_ia` con el dueño al arrancar.
+        $this->otorgar_agentes_ia($this->owner);
 
         $proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_BSAS);
 

@@ -261,7 +261,7 @@ class Pipeline_y_prioridad_Test extends TestCase
      */
     public function con_credenciales_no_avisa_el_lote_y_el_aviso_sale_del_job_del_resumen()
     {
-        $this->dar_extension('asistente_ia', 'Asistente IA');
+        $this->dar_extension('agentes_ia', 'Asistente IA');
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
         Queue::fake();
         $this->escenario();
@@ -310,7 +310,7 @@ class Pipeline_y_prioridad_Test extends TestCase
      */
     public function sin_la_extension_del_asistente_no_se_crea_conversacion_y_el_aviso_sale_igual()
     {
-        if (UserHelper::hasExtencion('asistente_ia', $this->comercio)) {
+        if (UserHelper::hasExtencion('agentes_ia', $this->comercio)) {
             $this->markTestSkipped('El comercio 500 ya tiene la extensión asistente_ia sembrada.');
         }
         config(['services.anthropic.api_key' => 'clave-de-prueba']);

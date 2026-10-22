@@ -51,7 +51,7 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
 {
     use DatabaseTransactions;
 
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     const CATEGORIA = 'Adhesivos P66';
 

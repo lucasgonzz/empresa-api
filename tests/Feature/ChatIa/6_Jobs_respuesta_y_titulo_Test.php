@@ -34,7 +34,7 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita el chat. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

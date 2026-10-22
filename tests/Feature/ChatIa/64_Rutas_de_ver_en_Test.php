@@ -81,10 +81,10 @@ class Rutas_de_ver_en_Test extends EmpresaTestCase
         $this->dueno->save();
 
         // El gate de las rutas del chat pide la extensión; el rollback de la transacción la saca.
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);

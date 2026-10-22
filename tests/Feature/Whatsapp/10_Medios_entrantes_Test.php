@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -45,6 +46,7 @@ use Tests\TestCase;
 class Medios_entrantes_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Teléfono del cliente final usado en todos los casos. */
     const PHONE = '5493416010101';
@@ -87,6 +89,9 @@ class Medios_entrantes_Test extends TestCase
             'email'        => 'whatsapp-u14-10-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): el módulo de WhatsApp y el bot son de `agentes_ia`.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->config = WhatsappBotConfig::create([
             'user_id'         => $this->comercio->id,

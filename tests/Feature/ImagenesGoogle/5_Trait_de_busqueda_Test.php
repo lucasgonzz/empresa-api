@@ -15,6 +15,7 @@ use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use ReflectionMethod;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -35,13 +36,21 @@ use Tests\TestCase;
 class Trait_de_busqueda_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /**
      * @return \App\Models\User|null
      */
     protected function usuario_de_testing()
     {
-        return User::find(500);
+        $usuario = User::find(500);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): la búsqueda masiva de imágenes es de `agentes_ia`.
+        if ($usuario) {
+            $this->otorgar_agentes_ia($usuario);
+        }
+
+        return $usuario;
     }
 
     /**

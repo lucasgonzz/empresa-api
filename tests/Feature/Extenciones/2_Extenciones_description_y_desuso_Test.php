@@ -113,14 +113,19 @@ class Extenciones_description_y_desuso_Test extends TestCase
      * oferta-por-cantidad-en-el-renglon (4/10/2026, decisión de Lucas), cuando la oferta por
      * cantidad dejó de pedir la extensión.
      *
+     * Cambio de contrato (misión agentes-ia-extension-unica, 22/10/2026): el padrón suma `agentes_ia`
+     * (96 en total) y pasan a en desuso las seis extensiones de IA que reemplaza (`asistente_ia`,
+     * `escaneo_factura_compra`, `sugerencias_inteligentes`, `sugerencias_compras`, y las dos que ya estaban
+     * en el padrón: `whatsapp` y `whatsapp_ia`): 12 + 6 = 18.
+     *
      * @test
      * @return void
      */
-    public function el_padron_tiene_las_91_extensiones_y_las_12_en_desuso_las_11_de_la_mision_53_mas_article_price_range()
+    public function el_padron_tiene_las_96_extensiones_y_las_18_en_desuso_las_12_anteriores_mas_las_6_que_reemplaza_agentes_ia()
     {
         $padron = ExtencionEmpresaDescriptionSeeder::padron();
 
-        $this->assertCount(91, $padron, 'El padrón no tiene las 91 extensiones que describió la misión 53.');
+        $this->assertCount(96, $padron, 'El padrón no tiene las 91 de la misión 53 más agentes_ia y las 4 de IA que faltaban.');
 
         $slugs = [];
         $en_desuso = 0;
@@ -136,8 +141,8 @@ class Extenciones_description_y_desuso_Test extends TestCase
             }
         }
 
-        $this->assertCount(91, array_unique($slugs), 'Hay slugs repetidos en el padrón.');
-        $this->assertEquals(12, $en_desuso, 'Las marcadas en desuso no son 12: las 11 que la misión 53 dejó como sin_uso más article_price_range (misión oferta-por-cantidad-en-el-renglon, 4/10/2026).');
+        $this->assertCount(96, array_unique($slugs), 'Hay slugs repetidos en el padrón.');
+        $this->assertEquals(18, $en_desuso, 'Las marcadas en desuso no son 18: las 12 anteriores (11 de la misión 53 más article_price_range) más las 6 que reemplaza agentes_ia.');
     }
 
     /**

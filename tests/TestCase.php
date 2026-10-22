@@ -44,6 +44,18 @@ abstract class TestCase extends BaseTestCase
 
         $this->cerrar_la_salida_a_internet();
 
+        /*
+         * 🔴 Misión agentes-ia-extension-unica (22/10/2026): la generación de embeddings del catálogo arranca
+         * PAUSADA en todo test. Hasta ahora esa vectorización colgaba de la extensión `whatsapp_ia`, que casi
+         * ningún fixture daba. Con la extensión única `agentes_ia` la tienen TODOS los fixtures de IA (asistente,
+         * escaneo, sugerencias...), así que crear un artículo en cualquiera de esos tests despacharía
+         * `GenerateArticleEmbeddingJob` (cola sync) y saldría a `api.openai.com` con la clave real del
+         * `.env.testing`: el freno de internet lo corta, pero el test falla por algo que no mide. Los tests que
+         * SÍ miden embeddings (`Whatsapp/6`, `16`, `17`, `18`, `EmbeddingsSinApiKeyTest`,
+         * `EmbeddingsPausaGlobalTest`) apagan la pausa explícitamente en su `setUp()`.
+         */
+        config(['services.openai.embeddings_generacion_pausada' => true]);
+
         $this->guardBaseDeTesting();
     }
 

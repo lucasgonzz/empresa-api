@@ -95,7 +95,7 @@ class Envios_a_clientes_en_el_prompt_y_el_canal_Test extends EmpresaTestCase
      */
     public function los_modulos_apagados_nombran_whatsapp_y_los_mails()
     {
-        $this->sacar_extension('whatsapp');
+        $this->sacar_extension('agentes_ia');
         $this->sacar_extension('enviar_mail_a_clientes');
 
         $prompt = $this->prompt(ConfianzaDelAgenteIaHelper::DIRECTO);
@@ -103,7 +103,7 @@ class Envios_a_clientes_en_el_prompt_y_el_canal_Test extends EmpresaTestCase
         $this->assertStringContainsString('WhatsApp (no podés mandar recordatorios de cobro, promociones ni comprobantes por WhatsApp)', $prompt);
         $this->assertStringContainsString('Mails a clientes (no podés mandar comprobantes por mail)', $prompt);
 
-        $this->dar_extension('whatsapp');
+        $this->dar_extension('agentes_ia');
         $this->dar_extension('enviar_mail_a_clientes');
 
         $con = $this->prompt(ConfianzaDelAgenteIaHelper::DIRECTO);

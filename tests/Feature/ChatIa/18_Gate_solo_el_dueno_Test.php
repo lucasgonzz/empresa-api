@@ -34,7 +34,7 @@ class Gate_solo_el_dueno_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el módulo. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** El 403 del gate, palabra por palabra: la SPA lo muestra tal cual. */
     const MENSAJE = 'Solo el dueño puede usar el asistente de IA.';

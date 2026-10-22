@@ -28,7 +28,7 @@ use Tests\EmpresaTestCase;
 class Historial_Test extends EmpresaTestCase
 {
     /** Slug de la extensión que gatea los endpoints del escaneo. */
-    const SLUG = 'escaneo_factura_compra';
+    const SLUG = 'agentes_ia';
 
     /**
      * @return void

@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -38,9 +39,10 @@ use Tests\TestCase;
 class Objetivo_del_agente_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Zona horaria del horario sembrado. */
     const TZ = 'America/Argentina/Buenos_Aires';
@@ -90,6 +92,9 @@ class Objetivo_del_agente_Test extends TestCase
             'email'        => 'whatsapp-objetivo-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): la configuración del bot de WhatsApp es de `agentes_ia`.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->config = WhatsappBotConfig::create([
             'user_id'            => $this->comercio->id,
@@ -234,7 +239,7 @@ class Objetivo_del_agente_Test extends TestCase
             $extencion = ExtencionEmpresa::forceCreate(['slug' => self::SLUG, 'name' => 'WhatsApp']);
         }
 
-        $this->comercio->extencions()->attach($extencion->id);
+        $this->comercio->extencions()->syncWithoutDetaching([$extencion->id]);
         $this->comercio->load('extencions');
     }
 

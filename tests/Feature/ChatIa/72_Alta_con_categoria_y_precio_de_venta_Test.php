@@ -110,7 +110,7 @@ class Alta_con_categoria_y_precio_de_venta_Test extends EmpresaTestCase
             'percentage_gain'  => $this->dueno->percentage_gain,
         ];
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         $this->dueno_con(['agente_confianza' => 'cauteloso', 'listas_de_precio' => 0]);
 

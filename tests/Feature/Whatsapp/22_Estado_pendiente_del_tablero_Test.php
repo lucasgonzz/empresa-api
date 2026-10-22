@@ -40,7 +40,7 @@ class Estado_pendiente_del_tablero_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

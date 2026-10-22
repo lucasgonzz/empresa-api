@@ -134,7 +134,7 @@ class Envios_fallidos_vuelven_al_dueno_Test extends EmpresaTestCase
      */
     protected function preparar_el_canal_del_admin()
     {
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         config(['services.admin_api.api_key' => self::CLAVE]);
         config(['services.admin_api.require_api_key' => false]);

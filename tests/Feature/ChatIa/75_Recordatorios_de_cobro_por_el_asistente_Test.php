@@ -287,7 +287,7 @@ class Recordatorios_de_cobro_por_el_asistente_Test extends EmpresaTestCase
         $conversation->auth_user_id = $this->dueno->id;
         $conversation->save();
 
-        $this->sacar_extension('whatsapp');
+        $this->sacar_extension('agentes_ia');
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_recordatorios_de_cobro', []);
 

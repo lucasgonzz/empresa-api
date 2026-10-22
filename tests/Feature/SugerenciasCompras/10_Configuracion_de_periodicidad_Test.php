@@ -41,7 +41,7 @@ class Configuracion_de_periodicidad_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea la generación automática. */
-    const SLUG = 'sugerencias_compras';
+    const SLUG = 'agentes_ia';
 
     protected function setUp(): void
     {

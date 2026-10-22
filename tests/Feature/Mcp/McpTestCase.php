@@ -32,7 +32,7 @@ abstract class McpTestCase extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el módulo IA. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** Nombre del cliente que declaran los initialize de la suite. */
     const CLIENTE = 'Cliente MCP de prueba';

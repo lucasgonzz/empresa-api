@@ -137,7 +137,7 @@ class Recursos_Test extends McpTestCase
 
             $this->assertEquals($this->dueno->company_name, $negocio['nombre']);
             $this->assertEquals('ARS', $negocio['moneda_principal']);
-            $this->assertContains('asistente_ia', $negocio['extensiones']);
+            $this->assertContains('agentes_ia', $negocio['extensiones']);
             $this->assertEquals(ConfianzaDelAgenteIaHelper::POR_DEFECTO, $negocio['confianza_del_asistente']);
             $this->assertEquals(ProveedorIaHelper::PROVEEDOR_POR_DEFECTO, $negocio['proveedor_de_ia']);
             $this->assertEquals('25/09/2026', $negocio['hoy']);

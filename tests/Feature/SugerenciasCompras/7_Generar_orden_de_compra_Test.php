@@ -55,11 +55,11 @@ class Generar_orden_de_compra_Test extends TestCase
      */
     protected function dar_extension()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'sugerencias_compras')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (!$extencion) {
             $extencion = ExtencionEmpresa::forceCreate([
-                'slug' => 'sugerencias_compras',
+                'slug' => 'agentes_ia',
                 'name' => 'Sugerencias de compra a proveedores',
             ]);
         }

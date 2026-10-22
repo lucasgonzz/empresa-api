@@ -35,7 +35,7 @@ class Simular_entrante_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Ruta del endpoint de simulación. */
     const RUTA = 'api/whatsapp-bot/simulate-inbound';

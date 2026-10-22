@@ -70,7 +70,7 @@ class Acciones_oferta_Test extends EmpresaTestCase
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
         }
 
-        $this->extencion('asistente_ia', 'Asistente IA');
+        $this->extencion('agentes_ia', 'Asistente IA');
         $this->extencion('motor_de_ofertas', 'Motor de ofertas');
 
         $this->dueno->load('extencions');

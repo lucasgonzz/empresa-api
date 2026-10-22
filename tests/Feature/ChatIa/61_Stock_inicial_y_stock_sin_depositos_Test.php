@@ -75,7 +75,7 @@ class Stock_inicial_y_stock_sin_depositos_Test extends EmpresaTestCase
 
         $this->confianza_original = $this->dueno->agente_confianza;
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         // En "cauteloso" todo deja tarjeta y se confirma por el endpoint de la pantalla.
         User::where('id', $this->dueno->id)->update(['agente_confianza' => 'cauteloso']);

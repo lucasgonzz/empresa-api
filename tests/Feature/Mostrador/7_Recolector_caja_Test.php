@@ -541,7 +541,7 @@ class Recolector_caja_Test extends MostradorTestCase
      */
     public function un_cliente_borrado_con_saldo_no_tiene_recordatorio_posible()
     {
-        $this->dar_extension(null, 'whatsapp');
+        $this->dar_extension(null, 'agentes_ia');
         $this->config_del_bot(true);
 
         $perez = $this->cliente_con_telefono('Pérez');
@@ -635,7 +635,7 @@ class Recolector_caja_Test extends MostradorTestCase
 
         $h = $this->recolectar();
 
-        // Sin la extensión whatsapp, el recordatorio no está para nadie (ni para el que no tiene
+        // Sin la extensión agentes_ia, el recordatorio no está para nadie (ni para el que no tiene
         // ventas: ese corte va primero).
         $sin_modulo = ['disponible' => false, 'motivo' => 'sin_modulo_whatsapp', 'canal' => null];
 
@@ -685,7 +685,7 @@ class Recolector_caja_Test extends MostradorTestCase
         $this->deuda('client', $perez->id, 300000);
         $this->deuda('client', $norte->id, 200000);
 
-        // 1. Sin la extensión whatsapp no hay botón que ofrecer.
+        // 1. Sin la extensión agentes_ia no hay botón que ofrecer.
         $this->assertSame([
             'Pérez'            => ['disponible' => false, 'motivo' => 'sin_modulo_whatsapp', 'canal' => null],
             'Ferretería Norte' => ['disponible' => false, 'motivo' => 'sin_modulo_whatsapp', 'canal' => null],
@@ -693,7 +693,7 @@ class Recolector_caja_Test extends MostradorTestCase
 
         // 2. Con la extensión y sin configuración ACTIVA del bot: sin_configuracion. El que no tiene
         //    ventas sin cobrar corta antes (el preview del modal le responde 422 sin_ventas).
-        $this->dar_extension(null, 'whatsapp');
+        $this->dar_extension(null, 'agentes_ia');
         $this->config_del_bot(false);
 
         $this->assertSame([
@@ -743,7 +743,7 @@ class Recolector_caja_Test extends MostradorTestCase
         $this->deuda('client', $perez->id, 5000);
         $this->deuda('client', $nuevo->id, 3000);
 
-        $this->dar_extension(null, 'whatsapp');
+        $this->dar_extension(null, 'agentes_ia');
 
         $filas = $this->recolectar()['a_cobrar']['clientes_para_cobrar'];
 
@@ -917,7 +917,7 @@ class Recolector_caja_Test extends MostradorTestCase
     {
         $this->sembrar_la_caja();
 
-        $this->dar_extension(null, 'whatsapp');
+        $this->dar_extension(null, 'agentes_ia');
         $this->config_del_bot(true);
         $this->chat_abierto($this->s['perez']);
 

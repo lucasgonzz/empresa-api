@@ -528,9 +528,9 @@ class Acciones_service_y_job_Test extends TestCase
      */
     public function el_job_que_termina_en_error_descarta_las_tarjetas_que_alcanzo_a_proponer()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
         if (!$extencion) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
         $this->comercio->extencions()->attach($extencion->id);
 
@@ -572,9 +572,9 @@ class Acciones_service_y_job_Test extends TestCase
      */
     public function el_job_que_falla_devuelve_a_propuesta_lo_que_su_tanda_habia_reemplazado()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
         if (!$extencion) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
         $this->comercio->extencions()->attach($extencion->id);
 

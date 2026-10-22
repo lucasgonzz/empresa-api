@@ -60,10 +60,10 @@ class Modal_del_asistente_migrado_Test extends TestCase
         $this->comercio->agente_confianza   = 'resuelto';
         $this->comercio->save();
 
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (! $extencion) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $this->comercio->extencions()->attach($extencion->id);

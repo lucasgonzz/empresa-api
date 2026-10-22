@@ -21,7 +21,7 @@ use Tests\TestCase;
  * pública, sin auth y con `->where('path', '.*')`: una foto de una conversación privada quedaría
  * abierta para siempre a cualquiera que tenga o adivine la URL. Viven en el disco `local`, fuera
  * del docroot, y salen SOLO por esta ruta, que suma `auth:sanctum`,
- * `check_extencion_empresa:whatsapp` y el chequeo de pertenencia del chat.
+ * `check_extencion_empresa:agentes_ia` y el chequeo de pertenencia del chat.
  *
  * Los casos:
  *  - sin sesión: 401 (la etiqueta `<img>` de la SPA manda la cookie de Sanctum, no un Bearer);
@@ -40,7 +40,7 @@ class Descarga_de_medios_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Teléfono del cliente final. */
     const PHONE = '5493416012222';

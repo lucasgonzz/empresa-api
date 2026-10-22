@@ -46,7 +46,7 @@ class EmbeddingsPausaGlobalTest extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita la vectorización del catálogo. */
-    const SLUG = 'whatsapp_ia';
+    const SLUG = 'agentes_ia';
 
     /** Variable de la pausa global. */
     const VARIABLE_PAUSA = 'EMBEDDINGS_GENERACION_PAUSADA';

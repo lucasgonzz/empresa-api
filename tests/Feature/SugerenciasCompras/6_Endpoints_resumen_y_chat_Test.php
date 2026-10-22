@@ -169,7 +169,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function el_per_page_respeta_el_pedido_el_techo_y_el_default()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
 
         for ($i = 0; $i < 12; $i++) {
@@ -200,7 +200,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function filtra_por_provider_id()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
 
         $provider_a = Provider::create(['name' => 'Proveedor A P6', 'user_id' => $this->comercio->id]);
@@ -229,7 +229,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function ordena_por_prioridad_cantidad_o_ahorro_segun_el_parametro()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
 
         $linea1 = $this->crear_linea($suggestion, ['prioridad' => 2, 'cantidad_sugerida' => 5, 'ahorro_estimado' => 100]);
@@ -260,7 +260,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function cada_linea_trae_el_nombre_del_articulo_en_la_clave_name()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
         $this->crear_linea($suggestion, ['article_name' => 'Martillo con nombre P6']);
 
@@ -283,7 +283,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function un_comercio_no_puede_operar_la_sugerencia_de_otro_los_cinco_metodos_dan_404()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
 
         $otro_comercio = User::create([
             'name'     => 'Otro comercio P6',
@@ -325,7 +325,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function post_resumen_sobre_una_sugerencia_no_terminada_devuelve_422()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         $suggestion = $this->crear_suggestion(['status' => 'pendiente']);
 
         $response = $this->postJson('api/purchase-suggestion/' . $suggestion->id . '/resumen');
@@ -339,7 +339,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function post_resumen_sin_credenciales_devuelve_422()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
         // config ya quedó con api_key null desde el setUp: no hay credenciales.
 
@@ -357,7 +357,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function post_resumen_con_credenciales_despacha_el_job_sin_la_posta()
     {
-        $this->dar_extension('sugerencias_compras', 'Sugerencias de compra a proveedores');
+        $this->dar_extension('agentes_ia', 'Sugerencias de compra a proveedores');
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
         Queue::fake();
 
@@ -384,7 +384,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function con_la_extension_el_job_deja_una_conversacion_del_dueno_con_el_resumen()
     {
-        $this->dar_extension('asistente_ia', 'Asistente IA');
+        $this->dar_extension('agentes_ia', 'Asistente IA');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
         $this->crear_linea($suggestion, ['prioridad' => 1]);
 
@@ -426,7 +426,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function el_contexto_guarda_exactamente_armar_datos_y_no_la_instruccion_de_redactar()
     {
-        $this->dar_extension('asistente_ia', 'Asistente IA');
+        $this->dar_extension('agentes_ia', 'Asistente IA');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
         $this->crear_linea($suggestion, ['article_name' => 'Bulon contexto P6', 'prioridad' => 1]);
 
@@ -454,7 +454,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function correr_el_job_dos_veces_actualiza_la_conversacion_en_vez_de_duplicarla()
     {
-        $this->dar_extension('asistente_ia', 'Asistente IA');
+        $this->dar_extension('agentes_ia', 'Asistente IA');
         $suggestion = $this->crear_suggestion(['status' => 'terminado']);
         $this->crear_linea($suggestion, ['prioridad' => 1]);
 
@@ -485,7 +485,7 @@ class Endpoints_resumen_y_chat_Test extends TestCase
      */
     public function con_credenciales_el_chunk_job_no_notifica_y_el_aviso_sale_del_job_del_resumen()
     {
-        $this->dar_extension('asistente_ia', 'Asistente IA');
+        $this->dar_extension('agentes_ia', 'Asistente IA');
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
         Queue::fake();
 

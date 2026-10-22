@@ -23,9 +23,12 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\EmpresaTestCase;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 
 class ProductEnrichmentTest extends EmpresaTestCase
 {
+    use OtorgaAgentesIa;
+
     const CODE = '7791234567898';
     protected $owner;
     protected $category;
@@ -35,6 +38,8 @@ class ProductEnrichmentTest extends EmpresaTestCase
     {
         parent::setUp();
         $this->owner = User::create(['name' => 'Dueño fichas', 'company_name' => 'Comercio fichas', 'email' => uniqid() . '@fichas.test', 'password' => 'sin-acceso']);
+        // Misión agentes-ia-extension-unica (22/10/2026): la ficha por código de barras es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->owner);
         $this->asPerson($this->owner);
         config(['app.USER_ID' => $this->owner->id, 'services.admin_api.url' => 'https://admin.test',
             'services.admin_api.inbound_key' => 'CLAVE-ADMIN-FALSA', 'services.serper.api_key' => 'CLAVE-SERPER-FALSA',
@@ -135,6 +140,8 @@ class ProductEnrichmentTest extends EmpresaTestCase
     {
         $task = $this->task();
         $other = User::create(['name' => 'Otro comercio', 'email' => uniqid() . '@fichas.test', 'password' => 'sin-acceso']);
+        // El otro comercio también la paga: lo que se prueba es que NO vea la tarea del primero (404), no el gate de la extensión.
+        $this->otorgar_agentes_ia($other);
         $this->asPerson($other);
         config(['app.USER_ID' => $other->id]);
         $this->getJson('/api/article-enrichments/' . $task->uuid)->assertNotFound();

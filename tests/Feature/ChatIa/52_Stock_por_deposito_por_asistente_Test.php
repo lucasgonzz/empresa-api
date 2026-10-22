@@ -69,7 +69,7 @@ class Stock_por_deposito_por_asistente_Test extends EmpresaTestCase
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         $this->actingAs($this->dueno, 'web');
     }
