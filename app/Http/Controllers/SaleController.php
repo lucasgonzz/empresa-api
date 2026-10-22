@@ -627,7 +627,8 @@ class SaleController extends Controller
              * Envío automático opcional del comprobante por WhatsApp (grupo 137, Prompt 05).
              * Se despacha DESPUÉS del commit, nunca dentro de la transacción de guardado: si
              * el envío falla, la venta ya guardada no se ve afectada. El job revalida config
-             * activa, opt-in (auto_send_sale_pdf) y cliente con teléfono por su cuenta.
+             * activa, opt-in (auto_send_sale_pdf) y cliente con teléfono por su cuenta,
+             * y desde agentes-ia-extension-unica (22/10/2026) también la extensión `agentes_ia` del dueño.
              */
             SendSaleWhatsappJob::dispatch($model->id);
 
@@ -1279,7 +1280,8 @@ class SaleController extends Controller
              * Envío automático opcional del comprobante por WhatsApp (grupo 137, Prompt 05).
              * Mismo punto que el mail de arriba: después del commit, nunca dentro de la
              * transacción. El job revalida config activa, opt-in (auto_send_sale_pdf) y
-             * cliente con teléfono por su cuenta.
+             * cliente con teléfono por su cuenta, y la extensión `agentes_ia` del dueño
+             * (agentes-ia-extension-unica, 22/10/2026).
              */
             SendSaleWhatsappJob::dispatch($model->id);
 
