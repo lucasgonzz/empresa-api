@@ -233,7 +233,7 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
         /*
          * Misión chat-ia-y-modulo-ia (D21): si la sugerencia dejó su
          * conversación en el chat del asistente (la crea
-         * GenerarResumenSugerenciaJob solo con la extensión asistente_ia
+         * GenerarResumenSugerenciaJob solo con la extensión agentes_ia
          * activa), la notificación suma el botón "Charlar con la IA" y los
          * dos ids que lee abrir_conversacion_de_sugerencia() en la SPA. Sin
          * conversación —sin la extensión, o el resumen falló— la notificación

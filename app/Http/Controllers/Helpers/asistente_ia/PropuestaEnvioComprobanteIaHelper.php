@@ -81,7 +81,7 @@ class PropuestaEnvioComprobanteIaHelper
     const CANAL_MAIL = 'mail';
 
     /** La extensión del módulo de WhatsApp. */
-    const EXTENSION_WHATSAPP = 'whatsapp';
+    const EXTENSION_WHATSAPP = 'agentes_ia';
 
     /** La extensión de los mails a clientes (la misma que exige el botón de la venta). */
     const EXTENSION_MAIL = 'enviar_mail_a_clientes';

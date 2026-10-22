@@ -13,7 +13,7 @@ use Illuminate\Http\Request;
  * La configuración del asistente de IA del negocio y el consumo de su plan (misión
  * foto-sucursal-y-asistente-configurable, 17/9/2026).
  *
- * Las tres rutas van con el gate del chat (auth:sanctum + check_extencion_empresa:asistente_ia +
+ * Las tres rutas van con el gate del chat (auth:sanctum + check_extencion_empresa:agentes_ia +
  * solo_el_dueno_ia): es la misma decisión de Lucas de que solo el dueño (o admin_access / acceso
  * maestro) toca el módulo IA.
  *

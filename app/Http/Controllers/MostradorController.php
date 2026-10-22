@@ -13,7 +13,7 @@ use Illuminate\Http\JsonResponse;
  * El mostrador del módulo IA para el dueño (misión modulo-ia-mostrador): el
  * escritorio con los informes listos, un informe abierto y la conversación sobre él.
  *
- * Rutas en grupo gateado por Sanctum + `check_extencion_empresa:asistente_ia` (ver
+ * Rutas en grupo gateado por Sanctum + `check_extencion_empresa:agentes_ia` (ver
  * routes/api.php). Encima de ese gate, SOLO EL DUEÑO (o alguien con admin_access) ve
  * el mostrador: los informes traen cobranzas, deudas y compras, y un empleado no
  * tiene por qué leerlos. La conversación de cada informe es una AiConversation con

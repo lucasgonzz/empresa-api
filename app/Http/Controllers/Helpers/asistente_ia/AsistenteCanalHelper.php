@@ -48,7 +48,7 @@ class AsistenteCanalHelper
     const HORAS_CORTE = 6;
 
     /** Slug de la extensión que gatea el módulo IA, igual que el resto del asistente. */
-    const EXTENSION = 'asistente_ia';
+    const EXTENSION = 'agentes_ia';
 
     /**
      * Orígenes de conversación que este canal puede CONTINUAR cuando el admin manda un

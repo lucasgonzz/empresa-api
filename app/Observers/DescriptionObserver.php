@@ -44,7 +44,7 @@ use App\Models\Description;
  * correcta es que `articles:generate-embeddings` mire también `descriptions.updated_at`, en
  * vez de ensuciar el reloj del artículo, que lo lee medio sistema.
  *
- * El criterio para disparar (extensión whatsapp_ia, y nada mientras haya una importación
+ * El criterio para disparar (extensión agentes_ia, y nada mientras haya una importación
  * en curso) NO se reimplementa acá: se reusa ArticleObserver::debe_generar_embedding(),
  * que además comparte el memo por proceso.
  */

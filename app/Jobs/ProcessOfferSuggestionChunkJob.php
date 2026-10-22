@@ -291,7 +291,7 @@ class ProcessOfferSuggestionChunkJob implements ShouldQueue
 
         /*
          * Si la corrida dejó su conversación en el chat del asistente (la crea
-         * GenerarResumenSugerenciaOfertaJob, y SOLO con la extensión asistente_ia activa), la
+         * GenerarResumenSugerenciaOfertaJob, y SOLO con la extensión agentes_ia activa), la
          * notificación suma el botón "Charlar con la IA" y los dos ids que lee
          * abrir_conversacion_de_oferta() en la SPA. Sin conversación —sin la extensión, o el
          * resumen falló— queda con dos botones y ninguna clave nueva.

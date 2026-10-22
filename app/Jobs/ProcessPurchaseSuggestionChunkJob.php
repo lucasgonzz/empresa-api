@@ -279,7 +279,7 @@ class ProcessPurchaseSuggestionChunkJob implements ShouldQueue
         /*
          * Si la sugerencia dejó su conversación en el chat del asistente (la
          * crea GenerarResumenSugerenciaCompraJob, solo con la extensión
-         * asistente_ia activa), la notificación suma el botón "Charlar con
+         * agentes_ia activa), la notificación suma el botón "Charlar con
          * la IA" y los dos ids que lee abrir_conversacion_de_sugerencia_compra()
          * en la SPA. Sin conversación —sin la extensión, o el resumen
          * falló— la notificación queda EXACTAMENTE como era: dos botones y

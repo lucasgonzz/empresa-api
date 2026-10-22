@@ -157,7 +157,7 @@ class GenerarResumenSugerenciaCompraJob implements ShouldQueue
 
     /**
      * Entrega del resumen por el chat: si el dueño tiene la extensión
-     * asistente_ia, la sugerencia terminada deja una conversación con origen
+     * agentes_ia, la sugerencia terminada deja una conversación con origen
      * 'sugerencia_compra', el bloque de DATOS ya calculados como contexto de
      * fondo (armar_datos(), no el prompt de redacción) y el resumen como
      * primer mensaje del assistant.
@@ -191,7 +191,7 @@ class GenerarResumenSugerenciaCompraJob implements ShouldQueue
 
             // Sin la extensión no se crea conversación: quien no la tiene ve
             // exactamente el flujo de hoy (resumen + notificación).
-            if (!$owner || !UserHelper::hasExtencion('asistente_ia', $owner)) {
+            if (!$owner || !UserHelper::hasExtencion('agentes_ia', $owner)) {
                 return;
             }
 

@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Log;
  * mensaje o un batch por request, sesión por header Mcp-Session-Id.
  *
  * Las tres rutas van adentro del gate del asistente (auth:sanctum + check_extencion_empresa:
- * asistente_ia + solo_el_dueno_ia): un cliente MCP es la misma persona que abre el chat, con un
+ * agentes_ia + solo_el_dueno_ia): un cliente MCP es la misma persona que abre el chat, con un
  * token personal de Sanctum en vez de la cookie. Encima de eso, este controller exige que el token
  * tenga la habilidad `mcp` (la que da McpConexionController), así un token de otro uso no entra;
  * la sesión por cookie del SPA pasa (Sanctum le pone un TransientToken, que puede todo).

@@ -189,13 +189,13 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
     }
 
     /**
-     * Entrega del resumen por el chat: si el dueño tiene la extensión asistente_ia, la corrida deja
+     * Entrega del resumen por el chat: si el dueño tiene la extensión agentes_ia, la corrida deja
      * una conversación con origen 'sugerencia_oferta', el bloque de DATOS ya calculados como contexto
      * de fondo (armar_datos(), no el prompt de redacción) y el resumen como primer mensaje assistant.
      *
      * 🔴 SIN LA EXTENSIÓN NO SE CREA NINGUNA CONVERSACIÓN, y eso apaga el botón "Charlar con la IA" de
      * la notificación: es exactamente lo que pasó en la misión anterior y por eso va declarado en el
-     * despliegue. Quien no tiene asistente_ia ve el flujo completo igual (tabla + resumen + aviso),
+     * despliegue. Quien no tiene agentes_ia ve el flujo completo igual (tabla + resumen + aviso),
      * solo que sin el puente al chat.
      *
      * La conversación es del DUEÑO (auth_user_id = user_id): offer_suggestions no sabe de personas y
@@ -215,7 +215,7 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
         try {
             $owner = User::find($suggestion->user_id);
 
-            if (!$owner || !UserHelper::hasExtencion('asistente_ia', $owner)) {
+            if (!$owner || !UserHelper::hasExtencion('agentes_ia', $owner)) {
                 return;
             }
 

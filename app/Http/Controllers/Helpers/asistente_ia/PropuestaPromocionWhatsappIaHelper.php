@@ -66,7 +66,7 @@ use Illuminate\Support\Facades\Cache;
 class PropuestaPromocionWhatsappIaHelper
 {
     /** La extensión del módulo de WhatsApp. */
-    const EXTENSION = 'whatsapp';
+    const EXTENSION = 'agentes_ia';
 
     /** El `source` de la fila del mensaje: los dos topes se cuentan con él. */
     const SOURCE = 'promocion';

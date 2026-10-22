@@ -42,7 +42,7 @@ use Carbon\Carbon;
 class PropuestaRecordatoriosCobroIaHelper
 {
     /** La extensión del módulo de WhatsApp: el grupo de rutas del recordatorio la exige. */
-    const EXTENSION = 'whatsapp';
+    const EXTENSION = 'agentes_ia';
 
     /** El permiso del recordatorio de cobro (el mismo que `RecordatorioCobroController::check_permiso()`). */
     const PERMISO = 'alerts.recordatorio_cobro';

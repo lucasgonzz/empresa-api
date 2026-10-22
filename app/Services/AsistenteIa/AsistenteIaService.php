@@ -1715,11 +1715,12 @@ CARGA;
             PermisosIaHelper::EXTENCION_OFERTAS => 'Ofertas por cliente (no podés armar ofertas)',
             'budgets'                           => 'Presupuestos (no podés armar presupuestos)',
             /*
-             * Misión asistente-envios-a-clientes (16/10/2026): sin WhatsApp no hay recordatorios, ni
-             * promociones, ni comprobantes por WhatsApp; sin los mails a clientes, no hay comprobantes
+             * Misión asistente-envios-a-clientes (16/10/2026): sin los mails a clientes, no hay comprobantes
              * por mail. Las herramientas lo chequean igual; esto es para que no lo prometa antes.
+             * (Misión agentes-ia-extension-unica, 22/10/2026: el módulo de WhatsApp ya no es una extensión
+             * aparte — es parte de `agentes_ia`, que el asistente exige para existir — así que acá no hay
+             * entrada para él.)
              */
-            'whatsapp'                          => 'WhatsApp (no podés mandar recordatorios de cobro, promociones ni comprobantes por WhatsApp)',
             'enviar_mail_a_clientes'            => 'Mails a clientes (no podés mandar comprobantes por mail)',
         ];
 

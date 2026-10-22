@@ -80,7 +80,7 @@ class RecolectorCaja extends RecolectorBase
     const MONEDA_DOLARES = 2;
 
     /** Extensión que habilita el recordatorio de cobro: el mismo gate que el botón de Cobros.vue. */
-    const EXTENSION_WHATSAPP = 'whatsapp';
+    const EXTENSION_WHATSAPP = 'agentes_ia';
 
     /** Motivo de `aplica: false`. */
     const MOTIVO_NO_APLICA = 'Sin cajas, deudas, cheques ni tareas en la agenda';

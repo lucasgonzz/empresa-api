@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Log;
 /**
  * Endpoints REST del chat con el asistente de IA (misión chat-ia-y-modulo-ia).
  *
- * Rutas en grupo gateado por `check_extencion_empresa:asistente_ia` (ver
+ * Rutas en grupo gateado por `check_extencion_empresa:agentes_ia` (ver
  * routes/api.php). El POST del mensaje guarda y contesta rápido: la respuesta
  * la genera ResponderMensajeChatIaJob en cola, que avisa por el canal privado
  * de la persona; show_message existe para que la SPA busque el texto por REST
@@ -381,7 +381,7 @@ class AiConversationController extends Controller
      * 🔴 NUNCA UNA RUTA PÚBLICA NI UN LINK FIRMADO ETERNO. El binario vive en el disco `local`
      * (privado) y son fotos del negocio: facturas de proveedores con CUIT, razón social y precios
      * de compra. Esta ruta está adentro del mismo grupo que el resto del chat (Sanctum + extensión
-     * `asistente_ia` + solo el dueño) y encima pasa por la MISMA tenencia doble que todo lo demás:
+     * `agentes_ia` + solo el dueño) y encima pasa por la MISMA tenencia doble que todo lo demás:
      * el mensaje tiene que ser de una conversación de esta persona (`auth_user_id`) y de esta
      * cuenta (`user_id`). Lo que la sostiene del lado del navegador es la sesión de Sanctum, que es
      * una cookie: por eso un `<img src>` derecho alcanza, exactamente como ya lo hace el modal de

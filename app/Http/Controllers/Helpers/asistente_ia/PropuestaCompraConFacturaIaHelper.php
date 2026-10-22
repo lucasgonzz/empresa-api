@@ -96,7 +96,7 @@ class PropuestaCompraConFacturaIaHelper
     const DIAS_DE_REUSO = 7;
 
     /** Slug de la extensión que gatea el escaneo de facturas de compra. */
-    const EXTENSION_ESCANEO = 'escaneo_factura_compra';
+    const EXTENSION_ESCANEO = 'agentes_ia';
 
     /** Cuántos proveedores se ofrecen como candidatos cuando el nombre no resuelve. */
     const TOPE_CANDIDATOS = 10;

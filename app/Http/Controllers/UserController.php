@@ -252,7 +252,7 @@ class UserController extends Controller
          * Configuración de sugerencias de stock (v2): periodicidad de la
          * generación automática y valores por defecto de cada sugerencia.
          * Con guard has() (mismo criterio que usar_condicion_fiscal_en_costeo):
-         * el form sin la extensión sugerencias_inteligentes no manda estas
+         * el form sin la extensión agentes_ia no manda estas
          * claves, y un request viejo no puede pisar la configuración con null
          * (la periodicidad en null apagaría la generación en silencio).
          *
@@ -291,7 +291,7 @@ class UserController extends Controller
          * Configuración de sugerencias de compra a proveedores: periodicidad
          * de la generación automática (comando compras:generar). Mismo
          * criterio que el bloque de sugerencias de stock de arriba: guard
-         * has() para que un form sin la extensión sugerencias_compras no
+         * has() para que un form sin la extensión agentes_ia no
          * mande esta clave, y descarte explícito del null para que ese "no
          * mandó nada" nunca apague la generación en silencio (la
          * periodicidad en null se comporta como 'nunca' en compras:generar).
