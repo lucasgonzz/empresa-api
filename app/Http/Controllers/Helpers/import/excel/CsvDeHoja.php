@@ -238,9 +238,10 @@ class CsvDeHoja
             throw new \RuntimeException('No se pudo escribir el volcado de la hoja al lado del archivo Excel.');
         }
 
-        $writer = OpenSpoutCompatible::createCSVWriter();
+        $writer = null;
 
         try {
+            $writer = OpenSpoutCompatible::createCSVWriter();
             $writer->openToFile($tmp_csv);
 
             /* Número de fila actual en el Excel (1-based) y última fila con al menos una celda con datos. */
@@ -316,11 +317,41 @@ class CsvDeHoja
                 throw new \RuntimeException('No se pudo dejar el volcado de la hoja al lado del archivo Excel.');
             }
         } catch (\Throwable $e) {
+            /*
+             * Un error al iterar puede dejar ambos archivos abiertos. En 4 no hay
+             * destructor del writer que los libere: cerrar antes de borrar, sin
+             * reemplazar el error original por otro durante la limpieza.
+             */
+            $errores_cierre = [];
+            if ($writer !== null) {
+                try {
+                    $writer->close();
+                } catch (\Throwable $error_cierre) {
+                    $errores_cierre[] = $error_cierre->getMessage();
+                }
+            }
+            if (is_resource($handle_tipos)) {
+                try {
+                    fclose($handle_tipos);
+                } catch (\Throwable $error_cierre) {
+                    $errores_cierre[] = $error_cierre->getMessage();
+                }
+            }
+
             @unlink($tmp_csv);
             @unlink($tmp_tipos);
             @unlink($tmp_meta);
 
-            throw $e;
+            try {
+                if (count($errores_cierre) > 0) {
+                    Log::warning('CsvDeHoja: falló el cierre después de un error de conversión', [
+                        'error_original' => $e->getMessage(),
+                        'errores_cierre' => $errores_cierre,
+                    ]);
+                }
+            } finally {
+                throw $e;
+            }
         }
 
         Log::info('CsvDeHoja: hoja volcada a CSV', [

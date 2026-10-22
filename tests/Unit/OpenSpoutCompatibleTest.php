@@ -11,6 +11,44 @@ use PHPUnit\Framework\TestCase;
 
 class OpenSpoutCompatibleTest extends TestCase
 {
+    public function test_volcado_fallido_cierra_handles_y_limpia_temporales_sin_ocultar_el_error()
+    {
+        $ruta = tempnam(sys_get_temp_dir(), 'csv_error_');
+        $error = new \RuntimeException('Falla de lectura simulada después de una fila');
+        $lectura = new class($error) extends LecturaDeHoja {
+            private $error;
+            public function __construct($error) { $this->error = $error; }
+            public function nombre() { return 'Datos'; }
+            public function filas() {
+                yield 1 => OpenSpoutCompatible::createRowFromArray(['Primera']);
+                throw $this->error;
+            }
+        };
+        $log_anterior = \Illuminate\Support\Facades\Log::getFacadeRoot();
+        \Illuminate\Support\Facades\Log::swap(new \Psr\Log\NullLogger());
+        try {
+            try {
+                CsvDeHoja::volcar($ruta, 0, $lectura);
+                $this->fail('El volcado debe conservar el error de lectura.');
+            } catch (\RuntimeException $capturado) {
+                $this->assertSame($error, $capturado);
+            }
+            $this->assertSame([], glob($ruta . '.hoja0.*'));
+            foreach (get_resources('stream') as $handle) {
+                $meta = stream_get_meta_data($handle);
+                $this->assertFalse(isset($meta['uri']) && strpos($meta['uri'], $ruta . '.hoja0.') === 0, 'Quedó abierto un archivo del volcado fallido.');
+            }
+        } finally {
+            if ($log_anterior === null) {
+                \Illuminate\Support\Facades\Log::clearResolvedInstance('log');
+            } else {
+                \Illuminate\Support\Facades\Log::swap($log_anterior);
+            }
+            foreach (glob($ruta . '.hoja0.*') as $archivo) { @unlink($archivo); }
+            unlink($ruta);
+        }
+    }
+
     public function test_chartsheet_vacia_conserva_su_indice_antes_de_la_hoja_de_datos()
     {
         $ruta = tempnam(sys_get_temp_dir(), 'chartsheet_');
