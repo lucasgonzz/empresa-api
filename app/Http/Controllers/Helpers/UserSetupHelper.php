@@ -131,21 +131,15 @@ class UserSetupHelper
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
         /*
-            'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder standalone
-            (pensado justamente para correr aparte en bases existentes). Sin esta linea, el
-            whereIn('slug', $extencions) de mas abajo no encuentra la fila y el sync() la
-            omite en silencio, aunque 'whatsapp' este en base_extencions(). Mismo fix que ya
-            tiene DemoSetupHelper.
+            Misión agentes-ia-extension-unica (22/10/2026): 'agentes_ia' NO esta en ExtencionSeeder --
+            vive solo en su seeder (idempotente), que ademas marca en desuso las seis extensiones de
+            IA que reemplaza. Se corre para que la fila exista en el catalogo de todo sistema real,
+            pero 🔴 NO se otorga: 'agentes_ia' no esta en base_extencions(), un sistema nuevo de
+            produccion NO la trae y se activa por cliente (desde el admin o el configurador de
+            extensiones). Reemplaza a las llamadas a ExtencionEmpresaWhatsappSeeder y
+            ExtencionEscaneoFacturaCompraSeeder que habia aca.
         */
-        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
-
-        /*
-            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
-            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
-            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
-            la omitiria en silencio.
-        */
-        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
+        Artisan::call('db:seed', ['--class' => 'ExtencionAgentesIaSeeder', '--force' => true]);
 
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
@@ -361,37 +355,21 @@ class UserSetupHelper
             'enviar_mail_a_clientes',
 
             /*
-                Sin estas 4 extensiones encendidas, los modulos de sugerencias de stock,
-                sugerencias de compra, motor de ofertas y tracking de compradores quedan con
-                las rutas en 403. Mismo fix que ya tiene DemoSetupHelper.
+                Sin estas 2 extensiones encendidas, los modulos de motor de ofertas y tracking de
+                compradores quedan con las rutas en 403. Mismo fix que ya tiene DemoSetupHelper.
             */
-            'sugerencias_inteligentes',
-            'sugerencias_compras',
             'motor_de_ofertas',
             'tracking_buyers',
 
             /*
-                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
-                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
-                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
-                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
+                🔴 Misión agentes-ia-extension-unica (22/10/2026): ACÁ YA NO VA NINGUNA DE IA, y no es un
+                olvido. Hasta hoy iban de base asistente_ia, escaneo_factura_compra, whatsapp,
+                sugerencias_inteligentes y sugerencias_compras. Ahora toda la IA es UNA extension,
+                'agentes_ia', y un sistema real nuevo NO la trae: se activa por cliente (decision de
+                Lucas del 22/10/2026: "nadie hereda", las altas nuevas de produccion no la traen por
+                defecto). DemoSetupHelper::base_extencions() si la otorga, porque una demo existe para
+                mostrarla.
             */
-            'asistente_ia',
-            'escaneo_factura_compra',
-
-            /*
-                El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js):
-                sigue yendo de base para que el modulo de chat aparezca en el menu de todo cliente
-                real. 'whatsapp_ia' es otra cosa -- gatilla el embedding vectorial del catalogo
-                para que el agente de WhatsApp con IA responda consultas semanticas
-                (ArticleObserver, DescriptionObserver, articles:generate-embeddings) -- y DEJA de
-                sembrarse aca: se activa aparte, por cliente, cuando contrata esa busqueda
-                semantica (ver ExtencionEmpresaWhatsappIaSeeder, ya pensado para correrse
-                standalone). Medido en produccion el 10/9/2026: de 117 duenos con la extension en
-                esta lista base, solo 5 la tenian realmente en uso -- se corta la sembrada de
-                origen.
-            */
-            'whatsapp',
         ];
     }
 

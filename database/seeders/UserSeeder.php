@@ -308,8 +308,8 @@ class UserSeeder extends Seeder
                 El sentido de la corrida local es ser el control de calidad de la demo, y eso
                 solo se cumple si Lucas ve encendidos los MISMOS módulos que ve un lead. Hasta
                 esta misión no era así: local otorgaba 16 extensiones y una demo 18, y las listas
-                no se pisaban. Local NO tenía 'acopios', 'enviar_mail_a_clientes', 'asistente_ia',
-                'escaneo_factura_compra', 'whatsapp' ni 'whatsapp_ia' -- o sea que el chat de
+                no se pisaban. Local NO tenía 'acopios', 'enviar_mail_a_clientes' ni las extensiones de IA
+                (hoy unificadas en 'agentes_ia') -- o sea que el chat de
                 WhatsApp, el asistente de IA y el escaneo de facturas de compra, que todo lead ve,
                 en local no aparecían en el menú. Y al revés, local encendía 'forzar_total',
                 'ventas_con_fecha_de_entrega', 'road_map_detalle_por_articulos_y_no_por_venta' y
@@ -323,8 +323,7 @@ class UserSeeder extends Seeder
                 'costo_en_dolares' NO va en esta lista y no falta: el foreach de más abajo se lo
                 agrega a mano a cualquier usuario que declare extensiones.
 
-                Las cuatro extensiones de IA ('sugerencias_inteligentes', 'sugerencias_compras',
-                'motor_de_ofertas', 'tracking_buyers') tampoco van acá: las engancha
+                Tres extensiones ('agentes_ia', 'motor_de_ofertas', 'tracking_buyers') tampoco van acá: las engancha
                 `ExtencionesIaUserSeeder`, que `DatabaseSeeder` llama justo después de este
                 seeder y `DemoSetupHelper` al final de su lista. Repetirlas duplicaría la fila
                 del pivot, porque acá se usa attach() y no syncWithoutDetaching().
@@ -339,10 +338,6 @@ class UserSeeder extends Seeder
                 'acopios',
                 'bar_code_scanner',
                 'enviar_mail_a_clientes',
-                'asistente_ia',
-                'escaneo_factura_compra',
-                'whatsapp',
-                'whatsapp_ia',
 
                 /* Las dos que `DemoSetupHelper::apply_flag_rules()` otorga sin condición. */
                 'cajas',

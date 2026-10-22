@@ -8,7 +8,7 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Engancha al usuario dueño (config('app.USER_ID')) las cuatro extensiones de IA que la
+ * Engancha al usuario dueño (config('app.USER_ID')) las tres extensiones de IA que la
  * semilla de datos de prueba necesita activas para poder mostrarse.
  *
  * UserHelper::hasExtencion() mira la relacion user->extencions, y los comandos
@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Log;
  * seeder los datos que siembra el resto de la semilla no se pueden ni mirar.
  *
  * Este seeder NO crea las filas de extencion_empresas (eso ya lo hacen
- * ExtencionSugerenciasInteligentesSeeder, ExtencionSugerenciasComprasSeeder,
+ * ExtencionAgentesIaSeeder,
  * ExtencionMotorDeOfertasSeeder y ExtencionTrackingBuyersSeeder, llamados desde
  * common_seeders() antes que UserSeeder). Solo arma el enganche user <-> extension.
  */
@@ -26,14 +26,13 @@ class ExtencionesIaUserSeeder extends Seeder
 {
     /**
      * Slugs de extencion_empresas que la semilla de datos de prueba necesita activas
-     * para el usuario dueño. No incluye 'asistente_ia' ni 'whatsapp_ia': son de otra
-     * mision, no de la de datos de demo.
+     * para el usuario dueño. Desde agentes-ia-extension-unica (22/10/2026) las sugerencias
+     * de stock y de compra son parte de 'agentes_ia'.
      *
      * @var array<int,string>
      */
     const SLUGS = [
-        'sugerencias_inteligentes',
-        'sugerencias_compras',
+        'agentes_ia',
         'motor_de_ofertas',
         'tracking_buyers',
     ];
@@ -74,7 +73,7 @@ class ExtencionesIaUserSeeder extends Seeder
                     . $slug . '", asi que no se le engancha al usuario. El modulo que depende de '
                     . 'esa extension va a responder 403 y los datos que siembra la semilla para el '
                     . 'no se van a poder mirar. Falto correr el seeder que la registra '
-                    . '(ExtencionSugerenciasInteligentesSeeder, ExtencionSugerenciasComprasSeeder, '
+                    . '(ExtencionAgentesIaSeeder, '
                     . 'ExtencionMotorDeOfertasSeeder o ExtencionTrackingBuyersSeeder).',
                     ['slug' => $slug, 'user_id' => $user->id]
                 );

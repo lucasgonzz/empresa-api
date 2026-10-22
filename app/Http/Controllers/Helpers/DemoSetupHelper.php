@@ -386,25 +386,15 @@ class DemoSetupHelper
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
         /*
-            D2 (18/8/2026): 'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder
-            standalone (pensado justamente para correr aparte en bases existentes). Sin esta
-            linea, el whereIn('slug', $extencions) de mas abajo no encuentra la fila y el
-            sync() la omite en silencio, aunque 'whatsapp' este en base_extencions().
+            Misión agentes-ia-extension-unica (22/10/2026): 'agentes_ia' NO esta en ExtencionSeeder --
+            vive solo en su seeder (idempotente), que ademas marca en desuso las seis extensiones de
+            IA que reemplaza (asistente_ia, escaneo_factura_compra, whatsapp_ia, sugerencias_* y
+            whatsapp). Sin esta linea, el whereIn('slug', $extencions) de mas abajo no encuentra la
+            fila y el sync() la omite en silencio, aunque 'agentes_ia' este en base_extencions().
+            Reemplaza a las llamadas a ExtencionEmpresaWhatsappSeeder, ExtencionEmpresaWhatsappIaSeeder
+            y ExtencionEscaneoFacturaCompraSeeder que habia aca.
         */
-        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
-
-        if ($industria !== '') {
-            Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappIaSeeder', '--force' => true]);
-            $extencions[] = 'whatsapp_ia';
-        }
-
-        /*
-            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
-            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
-            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
-            la omitiria en silencio.
-        */
-        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
+        Artisan::call('db:seed', ['--class' => 'ExtencionAgentesIaSeeder', '--force' => true]);
 
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
@@ -1108,39 +1098,27 @@ class DemoSetupHelper
 
             /*
                 D1: la demo ahora siembra con semilla:datos, que deja actividad de tienda,
-                stock por sucursal y ventas facturadas. Sin estas 4 extensiones encendidas,
-                los módulos que muestran esos datos (sugerencias de stock, sugerencias de
-                compra, motor de ofertas, tracking de compradores) quedan con las rutas en
-                403 y esa data sembrada no se puede ni mirar.
+                stock por sucursal y ventas facturadas. Sin estas 2 extensiones encendidas,
+                los módulos que muestran esos datos (motor de ofertas, tracking de compradores)
+                quedan con las rutas en 403 y esa data sembrada no se puede ni mirar.
             */
-            'sugerencias_inteligentes',
-            'sugerencias_compras',
             'motor_de_ofertas',
             'tracking_buyers',
 
             /*
-                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
-                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
-                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
-                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
-            */
-            'asistente_ia',
-            'escaneo_factura_compra',
+                Misión agentes-ia-extension-unica (22/10/2026): TODA demo recibe 'agentes_ia', la
+                extensión única que absorbe la IA del sistema (agente personal, escaneo de facturas,
+                módulo de WhatsApp y bot, imágenes y descripciones automáticas, sugerencias,
+                categorías con IA). Una demo existe para mostrar esto. Reemplaza a asistente_ia,
+                escaneo_factura_compra, whatsapp, whatsapp_ia, sugerencias_inteligentes y
+                sugerencias_compras, que ya no se otorgan ni se leen.
 
-            /*
-                D2 (18/8/2026): el ítem de menú de WhatsApp lo gatea 'whatsapp'
-                (empresa-spa/src/router/routes.js). Sigue yendo de base para que el módulo de
-                chat aparezca en el menú de toda demo.
-
-                🔴 Misión agente-ia-default-deepseek-directo (28/9/2026): 'whatsapp_ia' DEJA de
-                sembrarse acá. Es otra cosa -- gatilla el embedding vectorial del catálogo
-                (ArticleObserver, DescriptionObserver, articles:generate-embeddings) para que el
-                agente de WhatsApp con IA responda consultas semánticas -- y se activa aparte, por
-                cliente, cuando Lucas la prende a mano (mismo fix que ya tenía
-                UserSetupHelper::base_extencions() desde el 10/9/2026; acá había quedado sin
-                replicar y toda demo nueva seguía naciendo con embeddings encendidos).
+                Ojo: 'whatsapp_ia' (ahora parte de 'agentes_ia') es la que gatilla el embedding
+                vectorial del catálogo (ArticleObserver, DescriptionObserver,
+                articles:generate-embeddings). Las instancias de demo que no quieran generar
+                embeddings tienen EMBEDDINGS_OMITIR_IMPORTACION.
             */
-            'whatsapp',
+            'agentes_ia',
         ];
     }
 
@@ -1163,7 +1141,8 @@ class DemoSetupHelper
             /*
                 D3 (misión 63): los dos permisos de los chats de WhatsApp no están en
                 `PermissionSeeder` -- viven solo en este seeder suelto. Toda demo recibe de base
-                la extensión 'whatsapp' (ver base_extencions()), así que sin esta línea el módulo
+                la extensión 'agentes_ia' (ver base_extencions()), que incluye el módulo de
+                WhatsApp, así que sin esta línea el módulo
                 aparece en el menú y la pantalla de empleados no tiene con qué darle permiso a
                 nadie. Es `firstOrCreate`, no duplica.
             */

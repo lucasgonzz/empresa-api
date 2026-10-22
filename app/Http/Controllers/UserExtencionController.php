@@ -28,6 +28,8 @@ class UserExtencionController extends Controller
         'Importacion',
         'Produccion y depositos',
         'Tienda e integraciones',
+        /* Misión agentes-ia-extension-unica (22/10/2026): el grupo de la extensión única de IA. */
+        'Agentes de IA',
         'General',
     ];
 
