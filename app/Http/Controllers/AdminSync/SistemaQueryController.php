@@ -3,9 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
-use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -65,18 +63,6 @@ class SistemaQueryController extends Controller
             ], 200);
         }
 
-        /*
-         * Misión agentes-ia-extension-unica (22/10/2026): el canal "sistema:" de WhatsApp lee los datos del
-         * negocio por IA, así que es de `agentes_ia`. El gate se aplica sobre el dueño cuyos datos se van a
-         * servir (no hay sesión: admin-sync no pasa por auth:sanctum) y contesta 403 —jamás 404, que el admin
-         * lee como «versión vieja»—.
-         */
-        if (! AgentesIaHelper::tiene_el_comercio_de($owner->id)) {
-            return response()->json([
-                'message' => 'No tenés acceso a esta funcionalidad. Extensión requerida: ' . AgentesIaHelper::SLUG,
-            ], 403);
-        }
-
         // Tipo de consulta inferido por palabras clave en el texto.
         $query_type = $this->detect_query_type($query);
 
@@ -126,9 +112,7 @@ class SistemaQueryController extends Controller
     /**
      * Resuelve el owner cuyos datos se consultarán.
      *
-     * Prioridad: user_id explícito del request (si es un empleado, se resuelve a su dueño: las extensiones y los
-     * datos son de la EMPRESA) → el dueño de esta instancia (`AsistenteCanalHelper::dueno()`, que respeta
-     * `config('app.USER_ID')`) → primer owner del sistema (owner_id null) si la instancia no se puede resolver.
+     * Prioridad: user_id explícito del request → primer owner del sistema (owner_id null).
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \App\Models\User|null
@@ -140,24 +124,11 @@ class SistemaQueryController extends Controller
         if ($explicit_user_id !== null && is_numeric($explicit_user_id) && (int) $explicit_user_id > 0) {
             $owner = User::find((int) $explicit_user_id);
             if ($owner !== null) {
-                // Un empleado no es el comercio: se sube a su dueño (si el dueño no existe, se sigue de largo).
-                if (!empty($owner->owner_id)) {
-                    $owner = User::find((int) $owner->owner_id);
-                }
-
-                if ($owner !== null) {
-                    return $owner;
-                }
+                return $owner;
             }
         }
 
-        // Por defecto: el dueño de la instancia (USER_ID), y solo si no se puede decidir, el primer owner del sistema.
-        $dueno = AsistenteCanalHelper::dueno();
-
-        if ($dueno !== null) {
-            return $dueno;
-        }
-
+        // Por defecto: primer owner del sistema (cuenta principal de la instalación).
         return User::whereNull('owner_id')->orderBy('id')->first();
     }
 

@@ -4,12 +4,14 @@ namespace Tests\Feature\AgentesIa;
 
 /**
  * Misión agentes-ia-extension-unica (22/10/2026) — `POST admin-sync/sistema-query` (el canal «sistema:» de
- * WhatsApp de soporte lee datos del negocio por IA).
+ * WhatsApp de soporte).
  *
- * No pasa por `auth:sanctum`, así que el gate se hace a mano sobre el dueño cuyos datos se sirven:
+ * 🔴 Decisión: este canal NO es parte de «Agentes de IA». Está prometido por escrito como incluido en TODOS los
+ * planes (`precios.md`, regla 11 del agente de leads), así que queda abierto aunque el comercio no tenga la
+ * extensión. Estos tests lo fijan para que nadie lo gatee por error al seguir unificando la IA:
  *
- *  - Sin la extensión → **403** (jamás 404, que el admin lee como «versión vieja»).
- *  - Con la extensión → 200 con los datos.
+ *  - Sin la extensión → 200 con los datos (no 403 ni 404).
+ *  - Con la extensión → 200 con los datos, igual.
  *  - Sin la clave de admin (instancia con clave cargada) → 401, como el resto del grupo.
  */
 class Sistema_query_de_admin_sync_Test extends AgentesIaTestCase
@@ -18,16 +20,15 @@ class Sistema_query_de_admin_sync_Test extends AgentesIaTestCase
      * @test
      * @return void
      */
-    public function sin_la_extension_contesta_403_y_con_ella_devuelve_datos()
+    public function el_canal_sistema_sigue_abierto_sin_la_extension()
     {
         $cuerpo = ['query' => 'cuánto stock tengo de martillos', 'user_id' => $this->comercio()->id];
 
         $this->quitar_extension();
 
-        $sin = $this->postJson('api/admin-sync/sistema-query', $cuerpo, $this->cabeceras_de_admin());
-
-        $sin->assertStatus(403);
-        $this->assertStringContainsString('agentes_ia', (string) $sin->json('message'));
+        $this->postJson('api/admin-sync/sistema-query', $cuerpo, $this->cabeceras_de_admin())
+             ->assertStatus(200)
+             ->assertJsonStructure(['data', 'query_type']);
 
         $this->dar_extension();
 
@@ -40,9 +41,9 @@ class Sistema_query_de_admin_sync_Test extends AgentesIaTestCase
      * @test
      * @return void
      */
-    public function sin_la_clave_de_admin_es_401_antes_de_mirar_la_extension()
+    public function sin_la_clave_de_admin_es_401()
     {
-        $this->dar_extension();
+        $this->quitar_extension();
 
         $this->postJson('api/admin-sync/sistema-query', ['query' => 'stock de clavos', 'user_id' => $this->comercio()->id])
              ->assertStatus(401);
