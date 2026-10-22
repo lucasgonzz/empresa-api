@@ -40,8 +40,12 @@ class ExcelSheetInspector
     public static function formulas_por_fila($excel_path, $indice, $al_abrir = null)
     {
         $rutas = self::rutas_de_hojas($excel_path);
-        if ($rutas === null || !isset($rutas[$indice])) {
+        if ($rutas === null || !array_key_exists($indice, $rutas)) {
             throw new \RuntimeException(ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE);
+        }
+        if ($rutas[$indice] === null) {
+            /* Una chartsheet conserva su índice, pero no contiene celdas ni fórmulas. */
+            return;
         }
 
         $lector = self::abrir_hoja($excel_path, $rutas[$indice]);

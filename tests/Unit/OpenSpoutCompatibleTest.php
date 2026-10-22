@@ -11,6 +11,45 @@ use PHPUnit\Framework\TestCase;
 
 class OpenSpoutCompatibleTest extends TestCase
 {
+    public function test_chartsheet_vacia_conserva_su_indice_antes_de_la_hoja_de_datos()
+    {
+        $ruta = tempnam(sys_get_temp_dir(), 'chartsheet_');
+        $writer = OpenSpoutCompatible::createXLSXWriter();
+        $writer->openToFile($ruta);
+        $writer->addRow(OpenSpoutCompatible::createRowFromArray(['Reemplazar']));
+        $writer->addNewSheetAndMakeItCurrent();
+        $writer->addRow(OpenSpoutCompatible::createRowFromArray(['Datos']));
+        $writer->close();
+        $zip = new \ZipArchive();
+        $zip->open($ruta);
+        $rels = $zip->getFromName('xl/_rels/workbook.xml.rels');
+        $rels = preg_replace('~/relationships/worksheet(?=")~', '/relationships/chartsheet', $rels, 1);
+        $zip->addFromString('xl/_rels/workbook.xml.rels', $rels);
+        $zip->addFromString('xl/worksheets/sheet1.xml', '<?xml version="1.0"?><chartsheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>');
+        $zip->close();
+        try {
+            $this->assertSame([], iterator_to_array(\App\Http\Controllers\Helpers\import\excel\ExcelSheetInspector::formulas_por_fila($ruta, 0)));
+            foreach ([1] as $indice) {
+                $reader = OpenSpoutCompatible::createXLSXReader();
+                $reader->open($ruta);
+                foreach ($reader->getSheetIterator() as $sheet) {
+                    if ($sheet->getIndex() !== $indice) { continue; }
+                    $lectura = new LecturaDeHoja($reader, $sheet, $ruta);
+                    try {
+                        $filas = iterator_to_array($lectura->filas());
+                        $this->assertSame($indice, $sheet->getIndex());
+                        $this->assertSame('Datos', $filas[1]->toArray()[0]);
+                    } finally {
+                        $lectura->cerrar();
+                    }
+                    break;
+                }
+            }
+        } finally {
+            unlink($ruta);
+        }
+    }
+
     public function test_cerrar_libera_la_hoja_aunque_falle_el_cierre_del_libro()
     {
         $ruta = tempnam(sys_get_temp_dir(), 'cierre_error_');
