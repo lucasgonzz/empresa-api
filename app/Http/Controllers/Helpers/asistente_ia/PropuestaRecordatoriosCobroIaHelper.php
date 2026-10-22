@@ -427,7 +427,7 @@ class PropuestaRecordatoriosCobroIaHelper
     {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION)) {
 
-            return PermisosIaHelper::mensaje_sin_extencion('Agentes de IA') . ' Sin él no se pueden mandar recordatorios de cobro.';
+            return PermisosIaHelper::mensaje_sin_extencion('WhatsApp (incluido en Agentes de IA)') . ' Sin él no se pueden mandar recordatorios de cobro.';
         }
 
         if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
