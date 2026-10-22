@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
@@ -142,6 +143,16 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         if (is_null($run) || !$run->esta_activa()) {
             return;
         }
+
+        /*
+         * Misión agentes-ia-extension-unica (22/10/2026): se revalida con el DUEÑO (no con Auth, que en la cola no
+         * existe) que el comercio siga teniendo `agentes_ia`. Entre que se encoló y corre pudieron sacársela:
+         * si no la tiene, se sale en silencio, sin gastar búsquedas ni llamadas a la IA.
+         */
+        if (! AgentesIaHelper::tiene_el_comercio_de($run->user_id)) {
+            return;
+        }
+
 
         $owner = User::find($run->user_id);
 

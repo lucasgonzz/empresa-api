@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -61,6 +62,18 @@ class SistemaQueryController extends Controller
                 'query_type' => 'desconocido',
                 'note'       => 'No se encontró un owner en el sistema para resolver la consulta.',
             ], 200);
+        }
+
+        /*
+         * Misión agentes-ia-extension-unica (22/10/2026): el canal "sistema:" de WhatsApp lee los datos del
+         * negocio por IA, así que es de `agentes_ia`. El gate se aplica sobre el dueño cuyos datos se van a
+         * servir (no hay sesión: admin-sync no pasa por auth:sanctum) y contesta 403 —jamás 404, que el admin
+         * lee como «versión vieja»—.
+         */
+        if (! AgentesIaHelper::tiene($owner)) {
+            return response()->json([
+                'message' => 'No tenés acceso a esta funcionalidad. Extensión requerida: ' . AgentesIaHelper::SLUG,
+            ], 403);
         }
 
         // Tipo de consulta inferido por palabras clave en el texto.

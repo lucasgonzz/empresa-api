@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Models\Article;
 use App\Models\WhatsappBotConfig;
@@ -89,6 +90,12 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                     'chat_id' => $this->chat_id,
                 ]);
 
+                return;
+            }
+
+            // Misión agentes-ia-extension-unica (22/10/2026): el bot de WhatsApp es de `agentes_ia`. Se revalida
+            // con el dueño del chat (no con Auth) y se sale en silencio si ya no la tiene.
+            if (! AgentesIaHelper::tiene_el_comercio_de($chat->user_id)) {
                 return;
             }
 

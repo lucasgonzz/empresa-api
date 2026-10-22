@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Jobs\GenerateWhatsappAiReplyJob;
 use App\Models\WhatsappBotConfig;
@@ -50,6 +51,13 @@ class WhatsappAgentScheduler
      */
     public function schedule_after_inbound(WhatsappChat $chat, WhatsappBotConfig $config): void
     {
+        // Misión agentes-ia-extension-unica (22/10/2026): el agente de WhatsApp es de `agentes_ia`. Sin la
+        // extensión del dueño del chat no se agenda nada (el webhook ya corta antes; esto cubre el
+        // endpoint de simulación y cualquier otro llamador).
+        if (! AgentesIaHelper::tiene_el_comercio_de($chat->user_id)) {
+            return;
+        }
+
         // Misma condición que hasta esta misión corría inline en WhatsappBotController:
         // la IA solo responde si el bot está activo a nivel empresa Y el chat puntual no la
         // tiene apagada. Si no, no se encola nada.

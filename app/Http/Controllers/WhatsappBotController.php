@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\User;
@@ -38,6 +39,12 @@ class WhatsappBotController extends Controller
      *
      * Siempre devuelve 200 a Kapso (salvo firma inválida) para que no reintente indefinidamente;
      * cualquier error de procesamiento interno se loguea pero no cambia la respuesta HTTP.
+     *
+     * 🔴 Misión agentes-ia-extension-unica (22/10/2026): el bot de WhatsApp es de la extensión `agentes_ia`.
+     * Acá NO hay sesión, así que el dueño se resuelve por la instancia (`AgentesIaHelper::instancia_tiene()`,
+     * que usa `config('app.USER_ID')`). Sin la extensión se responde **200 sin procesar y sin encolar nada**
+     * (Kapso reintenta ante cualquier otro código; un 403 o un 404 lo dejaría reintentando para siempre). La
+     * firma inválida sigue contestando 401 como siempre: la extensión se mira DESPUÉS de autenticar a Kapso.
      */
     public function receive(Request $request): JsonResponse
     {
@@ -51,6 +58,12 @@ class WhatsappBotController extends Controller
                 'ip' => $request->ip(),
             ]);
             return response()->json(['message' => 'Invalid signature.'], 401);
+        }
+
+        // Sin `agentes_ia` el comercio no tiene el módulo de WhatsApp ni el bot: se descarta el evento (mensajes
+        // entrantes y estados de entrega) sin persistir nada, sin agendar al agente y sin encolar jobs.
+        if (! AgentesIaHelper::instancia_tiene()) {
+            return response()->json(['ok' => true], 200);
         }
 
         $raw_body = $request->getContent();
