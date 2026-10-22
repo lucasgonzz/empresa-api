@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Helpers\import\excel;
 
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 
 /**
  * Puerta unica de entrada a un libro de Excel para todo el import (articulos,
@@ -236,7 +235,7 @@ class ExcelWorkbookReader
                  * anteriores con el foreach NO lee sus filas (solo las cierra), verificado
                  * en vendor/openspout/.../SheetIterator.php.
                  */
-                return new LecturaDeHoja($reader, $sheet);
+                return new LecturaDeHoja($reader, $sheet, $excel_path, $preservar_filas_vacias);
             }
         }
 
@@ -278,8 +277,10 @@ class ExcelWorkbookReader
      */
     protected static function abrir_reader($excel_path, $preservar_filas_vacias)
     {
-        $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows((bool) $preservar_filas_vacias);
+        /* En 4 se filtran después de recuperar los resultados cacheados de las fórmulas. */
+        $reader = OpenSpoutCompatible::createXLSXReader(
+            OpenSpoutCompatible::es_version_cuatro() ? true : $preservar_filas_vacias
+        );
 
         try {
             $reader->open($excel_path);

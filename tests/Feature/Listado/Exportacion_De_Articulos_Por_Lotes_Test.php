@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Maatwebsite\Excel\Facades\Excel;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as ReaderEntityFactory;
 use Tests\EmpresaTestCase;
 
 /**
@@ -110,7 +110,7 @@ class Exportacion_De_Articulos_Por_Lotes_Test extends EmpresaTestCase
     private function leer($ruta)
     {
         $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(true);
+
         $reader->open($ruta);
 
         $filas = [];

@@ -10,7 +10,7 @@ use App\Models\StockMovement;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 
 /**
  * Tests de REIMPORTACION de Excel sobre una MISMA compra a proveedor (misión

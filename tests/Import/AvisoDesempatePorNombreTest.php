@@ -329,10 +329,10 @@ class AvisoDesempatePorNombreTest extends TestCase
     {
         $ruta = sys_get_temp_dir() . '/' . uniqid('desempate_') . '.xlsx';
 
-        $writer = \OpenSpout\Writer\Common\Creator\WriterEntityFactory::createXLSXWriter();
+        $writer = \App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createXLSXWriter();
         $writer->openToFile($ruta);
 
-        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+        $writer->addRow(\App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createRowFromArray([
             'codigo_de_barras',
             'sku',
             'codigo_de_proveedor',
@@ -340,7 +340,7 @@ class AvisoDesempatePorNombreTest extends TestCase
         ]));
 
         foreach ($filas as $fila) {
-            $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray($fila));
+            $writer->addRow(\App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createRowFromArray($fila));
         }
 
         $writer->close();

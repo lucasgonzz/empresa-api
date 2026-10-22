@@ -27,7 +27,7 @@
 
 require __DIR__ . '/../../../vendor/autoload.php';
 
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 
 /** Cabecera comun a los cinco archivos. */
 $cabecera = [
