@@ -10,7 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as ReaderEntityFactory;
 use Tests\EmpresaTestCase;
 
 /**
@@ -81,7 +81,7 @@ class Exportacion_De_Articulos_Filtrados_Test extends EmpresaTestCase
     private function leer($ruta)
     {
         $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(true);
+
         $reader->open($ruta);
 
         $filas = [];

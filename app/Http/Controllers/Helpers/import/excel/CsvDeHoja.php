@@ -3,9 +3,7 @@
 namespace App\Http\Controllers\Helpers\import\excel;
 
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
 
 /**
  * El "sidecar" CSV de una hoja de un libro de Excel (misión
@@ -240,7 +238,7 @@ class CsvDeHoja
             throw new \RuntimeException('No se pudo escribir el volcado de la hoja al lado del archivo Excel.');
         }
 
-        $writer = WriterEntityFactory::createCSVWriter();
+        $writer = OpenSpoutCompatible::createCSVWriter();
 
         try {
             $writer->openToFile($tmp_csv);
@@ -259,7 +257,7 @@ class CsvDeHoja
 
                     $codigos .= self::tipo_de($value);
 
-                    if ($value instanceof \DateTime) {
+                    if ($value instanceof \DateTimeInterface) {
                         $value = $value->format(self::FORMATO_FECHA);
                     }
 
@@ -272,7 +270,7 @@ class CsvDeHoja
                         $fila_tiene_contenido = true;
                     }
 
-                    $cells[] = new Cell((string) $value);
+                    $cells[] = OpenSpoutCompatible::celda_literal((string) $value);
                 }
 
                 /*
@@ -281,7 +279,7 @@ class CsvDeHoja
                  * devolver una fila sin celdas, igual que OpenSpout, y no una con una celda ''.
                  */
                 if (count($cells) === 0) {
-                    $cells[] = new Cell('');
+                    $cells[] = OpenSpoutCompatible::celda_literal('');
                 }
 
                 if ($fila_tiene_contenido) {
@@ -360,7 +358,7 @@ class CsvDeHoja
             return self::TIPO_FLOTANTE;
         }
 
-        if ($value instanceof \DateTime) {
+        if ($value instanceof \DateTimeInterface) {
             return self::TIPO_FECHA;
         }
 
@@ -399,7 +397,7 @@ class CsvDeHoja
                  */
                 $fecha = \DateTime::createFromFormat('!' . self::FORMATO_FECHA, $texto);
 
-                if ($fecha instanceof \DateTime) {
+                if ($fecha instanceof \DateTimeInterface) {
                     return $fecha;
                 }
 

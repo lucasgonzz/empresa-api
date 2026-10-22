@@ -5,7 +5,7 @@ namespace Tests\Import;
 use App\Models\Article;
 use App\Models\ImportHistory;
 use Illuminate\Http\UploadedFile;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 
 /**
  * La importación genera el slug de los artículos (decisión de Lucas, 24/9/2026, misión
