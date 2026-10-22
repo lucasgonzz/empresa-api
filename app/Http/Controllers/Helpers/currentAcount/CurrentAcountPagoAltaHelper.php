@@ -34,7 +34,8 @@ use Illuminate\Support\Facades\Log;
 class CurrentAcountPagoAltaHelper {
 
     /**
-     * Las 12 claves que pago() le leía al request. Toda clave que no vino vale null, igual que
+     * Las 13 claves que pago() le leía al request (las 12 de siempre más `to_pay_ids`, misión
+     * pago-cc-multiples-movimientos, 22/10/2026). Toda clave que no vino vale null, igual que
      * `$request->clave`.
      *
      * @var array<int,string>
@@ -51,6 +52,7 @@ class CurrentAcountPagoAltaHelper {
         'current_date',
         'created_at',
         'to_pay',
+        'to_pay_ids',
         'payment_plan_cuota',
     ];
 
@@ -69,7 +71,7 @@ class CurrentAcountPagoAltaHelper {
          * 🔴 Los helpers viejos que reciben el pedido (CurrentAcountHelper::getCreatedAt(),
          * CurrentAcountCuotaHelper::get_to_pay_id() y pagar_cuota()) lo leen como objeto
          * (`$request->current_date`, `isset($request->payment_plan_cuota)`). Por eso se les pasa un
-         * objeto con las 12 claves SIEMPRE presentes: con una clave ausente, un `->clave` suelto
+         * objeto con las 13 claves SIEMPRE presentes: con una clave ausente, un `->clave` suelto
          * sería un "Undefined property" donde antes el Request devolvía null.
          */
         $pedido = self::pedido($datos);
@@ -100,6 +102,15 @@ class CurrentAcountPagoAltaHelper {
              * comprobante más viejo). Ver CurrentAcountCuotaHelper::get_to_pay_id().
              */
             'to_pay_id'                         => CurrentAcountCuotaHelper::get_to_pay_id($pedido),
+            /*
+             * Pago a VARIOS movimientos (misión pago-cc-multiples-movimientos, 22/10/2026): la lista
+             * se persiste porque la imputación se REHACE leyendo el pago (check_saldos_y_pagos,
+             * "Chequear saldos", un pago con fecha pasada) y sin ella el primer recálculo lo
+             * convertiría en FIFO. Con menos de 2 ids distintos queda null y el pago es el de
+             * siempre, dirigido por `to_pay_id`. `to_pay_id` sigue guardando el primero (o el
+             * `to_pay` explícito) para los consumidores que solo lo conocen a él.
+             */
+            'to_pay_ids'                        => self::to_pay_ids_normalizados($pedido->to_pay_ids),
             'client_id'                         => $pedido->model_name == 'client' ? $pedido->model_id : null,
             'provider_id'                       => $pedido->model_name == 'provider' ? $pedido->model_id : null,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($pedido),
@@ -218,7 +229,39 @@ class CurrentAcountPagoAltaHelper {
     }
 
     /**
-     * Objeto con las 12 claves siempre presentes (null las que no vinieron), que es la forma en que
+     * La lista de débitos dirigidos de un pago a varios movimientos, normalizada: enteros positivos,
+     * sin repetidos y en el orden en que vinieron. Con menos de 2 ids distintos devuelve null: un
+     * solo movimiento es el `to_pay` de siempre y la lista no se usa ni se guarda.
+     *
+     * 🔴 Es la ÚNICA definición de "este pago es a varios movimientos": la validación de la cuenta,
+     * el alta, la imputación y el borrado la llaman, así que ninguno puede tomar una lista que otro
+     * descarta.
+     *
+     * @param  mixed  $ids  Lo que vino en `to_pay_ids` (array, o cualquier otra cosa si el cliente se equivocó).
+     * @return array<int,int>|null
+     */
+    static function to_pay_ids_normalizados($ids) {
+
+        if (!is_array($ids)) {
+
+            return null;
+        }
+
+        $normalizados = [];
+
+        foreach ($ids as $id) {
+
+            if (is_numeric($id) && (int) $id > 0 && !in_array((int) $id, $normalizados, true)) {
+
+                $normalizados[] = (int) $id;
+            }
+        }
+
+        return count($normalizados) >= 2 ? $normalizados : null;
+    }
+
+    /**
+     * Objeto con las 13 claves siempre presentes (null las que no vinieron), que es la forma en que
      * los helpers viejos leen el pedido.
      *
      * @param  array  $datos

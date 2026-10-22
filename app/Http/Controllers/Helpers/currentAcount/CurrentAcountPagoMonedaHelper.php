@@ -77,7 +77,9 @@ class CurrentAcountPagoMonedaHelper {
      *    la tolerancia);
      *  - una fila con caja cuya moneda no es la de la fila (una fila en dólares apuntando a una caja
      *    en pesos dejaría "100" pesos en la caja);
-     *  - un `to_pay` que apunta a un débito de OTRA cuenta corriente (otra moneda).
+     *  - un `to_pay` que apunta a un débito de OTRA cuenta corriente (otra moneda);
+     *  - lo mismo con cualquiera de los ids de `to_pay_ids` (pago a varios movimientos, misión
+     *    pago-cc-multiples-movimientos, 22/10/2026), con el mismo mensaje.
      *
      * Qué normaliza (en la copia que devuelve, no en la original):
      *  - fila cruzada sin `amount_cotizado` (vacío, 0): se calcula con la cotización. Es lo que manda
@@ -96,10 +98,11 @@ class CurrentAcountPagoMonedaHelper {
      * @param  int|string|null  $credit_account_id  La cuenta corriente que se paga.
      * @param  array|null  $filas  Array crudo `current_acount_payment_methods` del request.
      * @param  array|null  $to_pay  El `to_pay` del request (`['id' => <débito>]`) o null.
+     * @param  array|null  $to_pay_ids  Los ids de los débitos elegidos cuando el pago es a varios movimientos, o null.
      * @return array  `[mensaje_de_error|null, filas_normalizadas]`. Con error, las filas son las
      *                originales; sin error, las normalizadas (o lo que vino, si no era un array).
      */
-    static function validar_y_normalizar($credit_account_id, $filas, $to_pay = null) {
+    static function validar_y_normalizar($credit_account_id, $filas, $to_pay = null, $to_pay_ids = null) {
 
         $moneda_de_la_cuenta = self::moneda_de_la_cuenta($credit_account_id);
 
@@ -221,6 +224,27 @@ class CurrentAcountPagoMonedaHelper {
         if (!is_null($error_de_to_pay)) {
 
             return [$error_de_to_pay, $filas];
+        }
+
+        /*
+         * Pago a varios movimientos: cada id elegido tiene que ser de la cuenta que se paga, por el
+         * mismo motivo y con el mismo mensaje que el `to_pay` único. Se mira la lista NORMALIZADA
+         * (la misma que va a guardar el alta): con menos de 2 ids no hay lista y no se valida nada
+         * acá, porque ese caso es el `to_pay` de siempre. Un id que no existe no se rechaza.
+         */
+        $ids_dirigidos = CurrentAcountPagoAltaHelper::to_pay_ids_normalizados($to_pay_ids);
+
+        if (!is_null($ids_dirigidos)) {
+
+            foreach ($ids_dirigidos as $id_dirigido) {
+
+                $error_de_to_pay = self::error_de_to_pay($credit_account_id, ['id' => $id_dirigido]);
+
+                if (!is_null($error_de_to_pay)) {
+
+                    return [$error_de_to_pay, $filas];
+                }
+            }
         }
 
         return [null, $normalizadas];

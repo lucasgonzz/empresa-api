@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
 use App\Models\CurrentAcount;
 use Illuminate\Support\Facades\Log;
 
@@ -15,8 +16,28 @@ class CurrentAcountDeletePagoHelper {
 	}
 
 	function deletePago() {
+
+		/*
+		 * Los débitos dirigidos del pago: el `to_pay_id` de siempre y, si el pago fue a varios
+		 * movimientos (misión pago-cc-multiples-movimientos, 22/10/2026), todos los de `to_pay_ids`
+		 * (el primero de la lista es el mismo `to_pay_id`, por eso no se repite). Sin lista queda
+		 * exactamente el único débito de antes.
+		 */
+		$to_pay_ids = [];
 		if (!is_null($this->pago->to_pay_id)) {
-			$current_acount = CurrentAcount::find($this->pago->to_pay_id);
+			$to_pay_ids[] = (int) $this->pago->to_pay_id;
+		}
+		$lista = CurrentAcountPagoAltaHelper::to_pay_ids_normalizados($this->pago->to_pay_ids);
+		if (!is_null($lista)) {
+			foreach ($lista as $id) {
+				if (!in_array($id, $to_pay_ids, true)) {
+					$to_pay_ids[] = $id;
+				}
+			}
+		}
+
+		foreach ($to_pay_ids as $to_pay_id) {
+			$current_acount = CurrentAcount::find($to_pay_id);
 			if (!is_null($current_acount)) {
 				if ($current_acount->status == 'pagandose') {
 					$this->haber -= $current_acount->pagandose;
@@ -29,7 +50,7 @@ class CurrentAcountDeletePagoHelper {
 					$current_acount->save();
 				}
 			}
-		} 
+		}
 		$this->resetPagandose();
 
 		$this->resetPagado();

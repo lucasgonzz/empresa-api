@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Models\Check;
 use App\Models\CreditAccount;
@@ -39,6 +40,15 @@ class CurrentAcountPagoHelper {
      * @var \Illuminate\Support\Collection
      */
     public $debitos_pendientes;
+
+    /**
+     * true cuando el pago está dirigido a VARIOS movimientos (`to_pay_ids` con 2 o más ids
+     * distintos; misión pago-cc-multiples-movimientos, 22/10/2026). En ese caso los dirigidos
+     * pendientes ya están al frente de `debitos_pendientes` y `setSinPagar()` no usa `to_pay_id`.
+     *
+     * @var bool
+     */
+    public $dirigido_a_varios = false;
 
     /**
      * Constructor del helper de imputación de pagos.
@@ -81,19 +91,53 @@ class CurrentAcountPagoHelper {
 
         $this->debitos_pendientes = $debitos_pendientes->get();
 
+        /*
+         * Pago a varios movimientos: los débitos elegidos que SIGAN pendientes se ponen al frente de
+         * la cola (del más viejo al más nuevo, que es el orden en que ya vienen) y el resto queda
+         * detrás en FIFO, así que lo que sobra de saldarlos cae en las demás deudas como con un solo
+         * `to_pay`. Un id elegido que no está pendiente (ya pagado, borrado, de otra cuenta) no está
+         * en esta lista y simplemente se ignora. Sin lista (o con menos de 2 ids) no se toca nada: es
+         * el camino de siempre, dirigido por `to_pay_id`.
+         *
+         * 🔴 Va ACÁ, en el constructor, porque es el único punto por el que pasa tanto el alta del
+         * pago como la re-imputación de la cuenta entera (check_saldos_y_pagos arma un helper por
+         * pago leyendo el pago de la base): si la lista se leyera solo en el alta, el primer
+         * recálculo la perdería.
+         */
+        $ids_dirigidos = CurrentAcountPagoAltaHelper::to_pay_ids_normalizados($pago->to_pay_ids);
+
+        if (!is_null($ids_dirigidos)) {
+
+            $this->dirigido_a_varios = true;
+
+            $dirigidos = $this->debitos_pendientes
+                                ->filter(function ($d) use ($ids_dirigidos) { return in_array((int) $d->id, $ids_dirigidos, true); })
+                                ->values();
+
+            $resto = $this->debitos_pendientes
+                                ->reject(function ($d) use ($ids_dirigidos) { return in_array((int) $d->id, $ids_dirigidos, true); })
+                                ->values();
+
+            $this->debitos_pendientes = $dirigidos->concat($resto)->values();
+
+            Log::info('con to_pay_ids '.implode(',', $ids_dirigidos));
+        }
+
         $this->setSinPagar();
     }
 
     /**
      * Determina el próximo débito a procesar.
      * Si el pago tiene to_pay_id y es la primera llamada, usa ese débito específico.
+     * Si el pago es a varios movimientos (`dirigido_a_varios`) los dirigidos ya están al frente de la
+     * cola y se consume como FIFO.
      * En los demás casos consume el primer débito pendiente de la colección en memoria.
      */
     function setSinPagar() {
 
         $this->sin_pagar_index++;
 
-        if (!is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
+        if (!$this->dirigido_a_varios && !is_null($this->pago->to_pay_id) && is_null($this->sin_pagar)) {
 
             // Buscar el débito dirigido dentro de la colección en memoria
             $found = $this->debitos_pendientes->firstWhere('id', $this->pago->to_pay_id);

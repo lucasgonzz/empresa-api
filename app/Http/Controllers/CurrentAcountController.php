@@ -153,7 +153,8 @@ class CurrentAcountController extends Controller
         list($error_de_monedas, $filas_normalizadas) = CurrentAcountPagoMonedaHelper::validar_y_normalizar(
             $request->credit_account_id,
             $request->current_acount_payment_methods,
-            $request->to_pay
+            $request->to_pay,
+            $request->to_pay_ids
         );
 
         if (!is_null($error_de_monedas)) {
@@ -197,7 +198,7 @@ class CurrentAcountController extends Controller
          * imputación contra los débitos y la cuota) vive en CurrentAcountPagoAltaHelper::registrar()
          * desde la misión asistente-ia-acciones (15/9/2026), junto con get_haber(): el asistente de
          * IA registra pagos por el MISMO camino, adentro de su propia transacción. Acá queda lo que
-         * es del HTTP: la prevalidación de cajas de arriba, armar las 12 claves que el alta le leía
+         * es del HTTP: la prevalidación de cajas de arriba, armar las claves que el alta le leía
          * al request, la notificación y la respuesta. El payload y las respuestas de
          * `POST api/current-acount/pago` no cambiaron.
          */
