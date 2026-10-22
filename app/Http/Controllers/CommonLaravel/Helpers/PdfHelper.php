@@ -86,7 +86,7 @@ class PdfHelper {
 		$instance->y += 2;
 	}
 
-	function simpleHeader($instance, $data) {
+	static function simpleHeader($instance, $data) {
         $user = UserHelper::getFullModel();
 
         $alto_imagen = 55;
