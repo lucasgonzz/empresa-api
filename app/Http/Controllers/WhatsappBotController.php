@@ -41,8 +41,10 @@ class WhatsappBotController extends Controller
      * cualquier error de procesamiento interno se loguea pero no cambia la respuesta HTTP.
      *
      * 🔴 Misión agentes-ia-extension-unica (22/10/2026): el bot de WhatsApp es de la extensión `agentes_ia`.
-     * Acá NO hay sesión, así que el dueño se resuelve por la instancia (`AgentesIaHelper::instancia_tiene()`,
-     * que usa `config('app.USER_ID')`). Sin la extensión se responde **200 sin procesar y sin encolar nada**
+     * Acá NO hay sesión, así que el dueño se resuelve sin `Auth`: es el dueño de la configuración activa del
+     * bot (`$config->user_id`, el mismo comercio para el que `process_inbound()` persiste el chat). En una
+     * instancia normal es idéntico a `config('app.USER_ID')`; si la base fuera compartida, es el comercio
+     * correcto y no el primero que aparezca. Sin la extensión se responde **200 sin procesar y sin encolar nada**
      * (Kapso reintenta ante cualquier otro código; un 403 o un 404 lo dejaría reintentando para siempre). La
      * firma inválida sigue contestando 401 como siempre: la extensión se mira DESPUÉS de autenticar a Kapso.
      */
@@ -62,7 +64,7 @@ class WhatsappBotController extends Controller
 
         // Sin `agentes_ia` el comercio no tiene el módulo de WhatsApp ni el bot: se descarta el evento (mensajes
         // entrantes y estados de entrega) sin persistir nada, sin agendar al agente y sin encolar jobs.
-        if (! AgentesIaHelper::instancia_tiene()) {
+        if (! AgentesIaHelper::tiene_el_comercio_de($config->user_id)) {
             return response()->json(['ok' => true], 200);
         }
 

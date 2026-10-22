@@ -1101,7 +1101,7 @@ class PropuestaPromocionWhatsappIaHelper
     {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION)) {
 
-            return PermisosIaHelper::mensaje_sin_extencion('WhatsApp') . ' Sin él no se pueden mandar promociones.';
+            return PermisosIaHelper::mensaje_sin_extencion('Agentes de IA') . ' Sin él no se pueden mandar promociones.';
         }
 
         if (!PermisosIaHelper::es_admin($contexto->persona)) {

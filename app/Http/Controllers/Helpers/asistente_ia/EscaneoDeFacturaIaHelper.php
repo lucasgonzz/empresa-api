@@ -85,7 +85,7 @@ class EscaneoDeFacturaIaHelper
 
         if (is_null($owner) || !UserHelper::hasExtencion(self::EXTENSION_ESCANEO, $owner)) {
 
-            return self::no_se_puede('Esta cuenta no tiene contratada la lectura de facturas de compra, así que no hay escaneos para mirar.');
+            return self::no_se_puede('Esta cuenta no tiene contratado Agentes de IA (que incluye la lectura de facturas de compra), así que no hay escaneos para mirar.');
         }
 
         $numero = self::numero_o_null($compra_num);

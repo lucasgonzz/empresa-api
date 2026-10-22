@@ -934,7 +934,7 @@ class RecolectorCaja extends RecolectorBase
      * MISMA regla que el modal y el envío masivo: no se reimplementa nada.
      *
      * Los cortes van en el orden del RecordatorioCobroController:
-     *   1. sin la extensión whatsapp no hay botón (y no se consulta nada más);
+     *   1. sin la extensión agentes_ia no hay botón (y no se consulta nada más);
      *   2. un cliente borrado o de otro negocio no se encuentra (el preview responde 404);
      *   3. sin ventas sin cobrar el preview responde 422 (`sin_ventas`);
      *   4. el resto lo decide RecordatorioCobroSenderService::motivo_de_salteo(), que es solo

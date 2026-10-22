@@ -151,7 +151,7 @@ class PropuestaCompraConFacturaIaHelper
         if (!UserHelper::hasExtencion(self::EXTENSION_ESCANEO, $contexto->owner)) {
 
             return RespuestaDeCargaIa::error(
-                'Esta cuenta no tiene contratada la lectura de facturas de compra, así que no puedo procesar la foto. '
+                'Esta cuenta no tiene contratado Agentes de IA (que incluye la lectura de facturas de compra), así que no puedo procesar la foto. '
                 . 'La compra la podés cargar a mano desde Compras.'
             );
         }
@@ -945,7 +945,7 @@ class PropuestaCompraConFacturaIaHelper
 
         if (!UserHelper::hasExtencion(self::EXTENSION_ESCANEO, $contexto->owner)) {
 
-            throw new AccionIaException(422, 'Esta cuenta ya no tiene contratada la lectura de facturas de compra.');
+            throw new AccionIaException(422, 'Esta cuenta ya no tiene contratado Agentes de IA (que incluye la lectura de facturas de compra).');
         }
 
         $datos = is_array($accion->datos) ? $accion->datos : [];
