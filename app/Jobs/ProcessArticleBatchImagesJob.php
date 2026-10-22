@@ -121,9 +121,12 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         /*
          * Misión agentes-ia-extension-unica (22/10/2026): se revalida con el DUEÑO (no con Auth, que en la cola no
          * existe) que el comercio siga teniendo `agentes_ia`. Entre que se encoló y corre pudieron sacársela:
-         * si no la tiene, se sale en silencio, sin gastar búsquedas ni llamadas a la IA.
+         * si no la tiene, se corta sin gastar búsquedas ni llamadas a la IA.
          */
         if (! AgentesIaHelper::tiene_el_comercio_de($this->user_id)) {
+            // Se cierra el registro visible de la corrida (la píldora de procesos) como fallido.
+            BackgroundProcessHelper::fallar($this->proceso_visible_abierto(), 'Agentes de IA no está activo para este comercio: la corrida no se procesó. Activá la extensión y volvé a lanzarla.');
+
             return;
         }
 

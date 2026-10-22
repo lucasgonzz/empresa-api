@@ -20,7 +20,8 @@ use Illuminate\Http\Request;
  * (lo contesta el middleware, antes de llegar acá). Acá no se vuelve a validar nada.
  *
  * El dueño sale de `AsistenteCanalHelper::dueno()` (`config('app.USER_ID')`): sin dueño resoluble → 409, que
- * el admin muestra como «sin frente». Toda la lógica de prender/apagar vive en `AgentesIaHelper`.
+ * el admin mapea a `sin_conexion` con un mensaje que pide cargar USER_ID. Toda la lógica de prender/apagar
+ * vive en `AgentesIaHelper`.
  *
  * Los gates devuelven siempre 403 y nunca 404 (el admin interpreta un 404 como «versión vieja»): un cliente
  * que todavía no actualizó no tiene esta ruta y responde 404/405 por sí solo, y eso es lo que el admin espera.
