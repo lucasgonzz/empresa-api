@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -27,6 +28,7 @@ use Tests\TestCase;
 class Resumen_ia_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** @var User */
     protected $comercio;
@@ -48,6 +50,9 @@ class Resumen_ia_Test extends TestCase
             'email'    => 'sugerencias-p7-' . uniqid() . '@test.local',
             'password' => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->origen = Address::create([
             'street'  => 'Deposito central P7',

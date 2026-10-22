@@ -21,6 +21,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 use ReflectionMethod;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -36,6 +37,7 @@ use Tests\TestCase;
 class Recorte_de_la_ia_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** ivas.id de la alícuota del 21%. */
     const IVA_21 = 2;
@@ -54,6 +56,8 @@ class Recorte_de_la_ia_Test extends TestCase
         if (is_null($this->comercio)) {
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
         }
+        // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->comercio);
         config(['app.USER_ID' => $this->comercio->id]);
     }
 
