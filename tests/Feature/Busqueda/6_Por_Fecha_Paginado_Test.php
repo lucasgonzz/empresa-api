@@ -267,4 +267,53 @@ class Por_Fecha_Paginado_Test extends BusquedaTestCase
         rsort($ordenados);
         $this->assertSame($ordenados, $ids, 'con el mismo created_at el orden tiene que ser por id descendente, sin saltos entre paginas');
     }
+
+    /**
+     * Test 7 - movimientos de producción: sin `per_page` el día entero como siempre; con `per_page` pagina
+     * el día, respeta el rango, no repite filas y no trae los de otro dueño.
+     *
+     * @group busqueda
+     * @test
+     */
+    public function produccion_pagina_el_dia_con_per_page_y_sin_per_page_responde_como_siempre()
+    {
+        $user_id = $this->user_id_de_testing();
+        $dia     = [];
+        $otro    = [];
+
+        for ($i = 1; $i <= self::FILAS_DEL_DIA + 3; $i++) {
+            $esta_en_el_dia = $i <= self::FILAS_DEL_DIA;
+            $id = DB::table('production_movements')->insertGetId([
+                'num' => 6000 + $i, 'article_id' => 1, 'order_production_status_id' => 1, 'amount' => $i,
+                'notes' => 'PF produccion '.$i, 'user_id' => $user_id, 'created_at' => ($esta_en_el_dia ? self::DIA : self::DIA_AJENO).' 10:00:00',
+            ]);
+            if ($esta_en_el_dia) {
+                $dia[] = $id;
+            }
+        }
+
+        $ajeno = DB::table('production_movements')->insertGetId([
+            'num' => 6999, 'article_id' => 1, 'order_production_status_id' => 1, 'amount' => 1,
+            'notes' => 'PF produccion otro dueno', 'user_id' => $user_id + 100000, 'created_at' => self::DIA.' 10:00:00',
+        ]);
+
+        $sin = $this->getJson('api/production-movement/from-date/'.self::DIA);
+        $sin->assertStatus(200);
+        $this->assertCount(self::FILAS_DEL_DIA, $sin->json('models'));
+        $this->assertNull($sin->json('models.current_page'));
+        $this->assertEqualsCanonicalizing($dia, array_column($sin->json('models'), 'id'));
+
+        $vistos = [];
+        foreach ([1 => 5, 2 => 5, 3 => 2] as $pagina => $esperadas) {
+            $response = $this->getJson('api/production-movement/from-date/'.self::DIA.'?per_page=5&page='.$pagina);
+            $response->assertStatus(200);
+            $this->assertSame(self::FILAS_DEL_DIA, $response->json('models.total'));
+            $this->assertCount($esperadas, $response->json('models.data'));
+            $vistos = array_merge($vistos, array_column($response->json('models.data'), 'id'));
+        }
+
+        $this->assertCount(self::FILAS_DEL_DIA, array_unique($vistos), 'una fila se repitio entre paginas');
+        $this->assertEqualsCanonicalizing($dia, $vistos);
+        $this->assertNotContains($ajeno, $vistos, 'un movimiento de otro dueno se colo en el listado');
+    }
 }
