@@ -12,6 +12,17 @@ class CurrentAcount extends Model
     // protected $appends = ['moneda_id'];
 
     /**
+     * `to_pay_ids`: ids de los débitos a los que se dirigió un pago a VARIOS movimientos (misión
+     * pago-cc-multiples-movimientos, 22/10/2026). Se guarda como JSON en una columna text; null si el
+     * pago no fue a varios movimientos.
+     *
+     * @var array
+     */
+    protected $casts = [
+        'to_pay_ids' => 'array',
+    ];
+
+    /**
      * Baja en cascada de los certificados de retención del cobro (misión
      * compras-factura-manual-alicuotas, 17/9/2026, parte C).
      *
