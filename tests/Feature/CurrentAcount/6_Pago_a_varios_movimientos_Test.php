@@ -336,6 +336,48 @@ class Pago_a_varios_movimientos_Test extends TestCase
     }
 
     /**
+     * Un cliente de la API que manda solo `to_pay_ids` (sin `to_pay`) deja `to_pay_id` con el primero
+     * de la lista, para que liberar_pago_con_to_pay_id y los comandos de chequeo lo vean dirigido.
+     *
+     * @group current-acount
+     * @test
+     */
+    public function sin_to_pay_el_to_pay_id_queda_con_el_primero_de_la_lista()
+    {
+        $this->entrar();
+        $e = $this->escenario('zz Cliente Varios Solo Lista');
+
+        $this->postJson('api/current-acount/pago', $this->payload_pago($e, 1000, [
+            'to_pay_ids' => [$e['c']->id, $e['d']->id],
+        ]))->assertStatus(201);
+
+        $pago = $this->ultimo_pago($e);
+
+        $this->assertNotNull($pago);
+        $this->assertEquals($e['c']->id, $pago->to_pay_id);
+        $this->assertSame([(int) $e['c']->id, (int) $e['d']->id], $pago->to_pay_ids);
+    }
+
+    /**
+     * Un cobro común (sin lista) no escribe la columna nueva: `to_pay_ids` queda null.
+     *
+     * @group current-acount
+     * @test
+     */
+    public function un_cobro_comun_deja_to_pay_ids_en_null()
+    {
+        $this->entrar();
+        $e = $this->escenario('zz Cliente Varios Comun');
+
+        $this->postJson('api/current-acount/pago', $this->payload_pago($e, 300, []))->assertStatus(201);
+
+        $pago = $this->ultimo_pago($e);
+
+        $this->assertNotNull($pago);
+        $this->assertNull($pago->to_pay_ids);
+    }
+
+    /**
      * Un id de la lista que ya no está pendiente (un débito ya pagado) se ignora y el pago sigue
      * con los demás.
      *

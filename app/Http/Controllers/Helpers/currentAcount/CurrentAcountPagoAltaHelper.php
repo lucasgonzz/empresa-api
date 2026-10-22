@@ -102,15 +102,6 @@ class CurrentAcountPagoAltaHelper {
              * comprobante más viejo). Ver CurrentAcountCuotaHelper::get_to_pay_id().
              */
             'to_pay_id'                         => CurrentAcountCuotaHelper::get_to_pay_id($pedido),
-            /*
-             * Pago a VARIOS movimientos (misión pago-cc-multiples-movimientos, 22/10/2026): la lista
-             * se persiste porque la imputación se REHACE leyendo el pago (check_saldos_y_pagos,
-             * "Chequear saldos", un pago con fecha pasada) y sin ella el primer recálculo lo
-             * convertiría en FIFO. Con menos de 2 ids distintos queda null y el pago es el de
-             * siempre, dirigido por `to_pay_id`. `to_pay_id` sigue guardando el primero (o el
-             * `to_pay` explícito) para los consumidores que solo lo conocen a él.
-             */
-            'to_pay_ids'                        => self::to_pay_ids_normalizados($pedido->to_pay_ids),
             'client_id'                         => $pedido->model_name == 'client' ? $pedido->model_id : null,
             'provider_id'                       => $pedido->model_name == 'provider' ? $pedido->model_id : null,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($pedido),
@@ -118,6 +109,35 @@ class CurrentAcountPagoAltaHelper {
         ]);
 
         $pago->detalle = 'Pago N°'.$pago->num_receipt;
+
+        /*
+         * Pago a VARIOS movimientos (misión pago-cc-multiples-movimientos, 22/10/2026): la lista
+         * se persiste porque la imputación se REHACE leyendo el pago (check_saldos_y_pagos,
+         * "Chequear saldos", un pago con fecha pasada) y sin ella el primer recálculo lo
+         * convertiría en FIFO. Con menos de 2 ids distintos queda null y el pago es el de
+         * siempre, dirigido por `to_pay_id`.
+         *
+         * 🔴 Se escribe DESPUÉS del create y solo cuando hay lista, no como una clave más del
+         * create: así el cobro de todos los días (y el endoso de cheques y el asistente de IA, que
+         * pasan por acá) nunca toca la columna nueva, y no se caen con "Unknown column" si el
+         * código llega a una base donde la migración todavía no corrió.
+         *
+         * `to_pay_id` sigue guardando el `to_pay` explícito o, si no vino, el primero de la lista,
+         * para los consumidores que solo lo conocen a él (liberar_pago_con_to_pay_id, los comandos
+         * de chequeo). La imputación con lista no lo usa: manda la lista.
+         */
+        $to_pay_ids = self::to_pay_ids_normalizados($pedido->to_pay_ids);
+
+        if (!is_null($to_pay_ids)) {
+
+            $pago->to_pay_ids = $to_pay_ids;
+
+            if (is_null($pago->to_pay_id)) {
+
+                $pago->to_pay_id = $to_pay_ids[0];
+            }
+        }
+
         $pago->save();
 
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $pedido->current_acount_payment_methods, $pedido->model_name);

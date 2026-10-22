@@ -84,6 +84,29 @@ class NewPagoPdf extends fpdf {
         // distintas del mismo comprobante.
         $detalle = ComprobanteImputadoHelper::get_detalle($this->current_acount->to_pay);
 
+        // Pago a VARIOS movimientos (misión pago-cc-multiples-movimientos, 22/10/2026): el concepto
+        // nombra a todos, no solo al primero que guarda `to_pay_id`. Los ids que ya no existen en
+        // la cuenta (una venta borrada después) se saltean.
+        $ids = $this->current_acount->to_pay_ids;
+
+        if (is_array($ids) && count($ids) > 1) {
+
+            $detalles = [];
+
+            foreach (\App\Models\CurrentAcount::whereIn('id', $ids)->orderBy('created_at')->orderBy('id')->get() as $debito) {
+
+                $texto = ComprobanteImputadoHelper::get_detalle($debito);
+
+                if ($texto !== '') {
+                    $detalles[] = $texto;
+                }
+            }
+
+            if (count($detalles)) {
+                $detalle = implode(', ', $detalles);
+            }
+        }
+
         if ($detalle !== '') {
             $concepto = 'COBRO EN CONCEPTO DE '.$detalle;
         } else {
