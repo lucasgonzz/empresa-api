@@ -1513,6 +1513,13 @@ Route::middleware('admin.api.key:siempre')
     ->prefix('admin-sync')
     ->group(function () {
         Route::post('extensiones/acceso', 'ExtensionesAccesoController@store');
+        // Agentes de IA (misión agentes-ia-extension-unica, 22/10/2026): el admin lee y prende/apaga la extensión
+        // única de IA de este cliente (ficha del cliente y activación automática al asignarle un plan de IA).
+        // `siempre` por el mismo motivo que la de arriba: el PUT ESCRIBE un permiso del comercio, y «no hay clave
+        // cargada» no puede significar «pasá». Idempotente. 409 si no hay dueño resoluble. Un cliente viejo sin
+        // esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
+        Route::get('agentes-ia', 'AdminSync\\AgentesIaController@show');
+        Route::put('agentes-ia', 'AdminSync\\AgentesIaController@update');
     });
 
 Route::middleware('admin.api.key')

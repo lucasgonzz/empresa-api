@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
+use Database\Seeders\ExtencionAgentesIaSeeder;
 
 /**
  * La extensión única «Agentes de IA» (slug `agentes_ia`) — misión agentes-ia-extension-unica (22/10/2026).
@@ -36,7 +36,7 @@ class AgentesIaHelper
      *
      * @var string[]
      */
-    const SLUGS_REEMPLAZADOS = [
+    const SLUGS_REEMPLAZADAS = [
         'asistente_ia',
         'escaneo_factura_compra',
         'whatsapp_ia',
@@ -57,23 +57,9 @@ class AgentesIaHelper
     }
 
     /**
-     * true si el comercio de ESTA instancia tiene la extensión. El dueño se resuelve con
-     * `AsistenteCanalHelper::dueno()` (`config('app.USER_ID')`, o el único dueño de la base). Si no se puede
-     * resolver, devuelve false: ante la duda, no se procesa.
-     *
-     * Es lo que usa el webhook de Kapso, que no tiene sesión.
-     *
-     * @return bool
-     */
-    public static function instancia_tiene()
-    {
-        return self::tiene(AsistenteCanalHelper::dueno());
-    }
-
-    /**
      * true si el comercio al que pertenece ese usuario (el dueño, o el dueño de ese empleado) tiene la
-     * extensión. Es lo que revalidan los jobs largos al arrancar: el usuario que viaja en el job se resuelve
-     * a su dueño, sin mirar `Auth`.
+     * extensión. Es lo que revalidan los jobs largos y el webhook de Kapso: el usuario (o la configuración del
+     * bot) que viaja con el trabajo se resuelve a su dueño, sin mirar `Auth`.
      *
      * @param  int|string|null  $user_id  Id de un usuario (dueño o empleado) del comercio.
      * @return bool
@@ -118,11 +104,22 @@ class AgentesIaHelper
      *
      * @param  \App\Models\User  $dueno
      * @param  bool  $activa
-     * @return bool|null  El estado en que queda, o null si la fila del catálogo no existe.
+     * @return bool|null  El estado en que queda, o null si la fila del catálogo no existe (solo al apagar).
      */
     public static function fijar($dueno, $activa)
     {
         $extension = self::extension();
+
+        /*
+         * Una instancia a la que le llegó el código pero no el seeder del despliegue no tiene la fila en el
+         * catálogo. Prenderla no puede fallar por eso: se siembra (idempotente) y se sigue. Apagar sin fila
+         * no tiene nada que apagar.
+         */
+        if (is_null($extension) && $activa) {
+
+            (new ExtencionAgentesIaSeeder())->run();
+            $extension = self::extension();
+        }
 
         if (is_null($extension)) {
 
