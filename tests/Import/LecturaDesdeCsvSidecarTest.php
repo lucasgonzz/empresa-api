@@ -433,12 +433,12 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
         $nombre  = uniqid('sidecar_una_fila_') . '.xlsx';
         $destino = $carpeta . '/' . $nombre;
 
-        $writer = \OpenSpout\Writer\Common\Creator\WriterEntityFactory::createXLSXWriter();
+        $writer = \App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createXLSXWriter();
         $writer->openToFile($destino);
-        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+        $writer->addRow(\App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createRowFromArray([
             'codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock', 'iva',
         ]));
-        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+        $writer->addRow(\App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createRowFromArray([
             null, null, 'PC-UNA-FILA', 'Articulo de una sola fila', 100.0, 200.0, 3.0, '21',
         ]));
         $writer->close();
@@ -672,16 +672,16 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
      */
     protected function escribir_xlsx_con_barras_invertidas($destino)
     {
-        $writer = \OpenSpout\Writer\Common\Creator\WriterEntityFactory::createXLSXWriter();
+        $writer = \App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createXLSXWriter();
         $writer->openToFile($destino);
-        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+        $writer->addRow(\App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createRowFromArray([
             'codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock', 'iva',
         ]));
 
         $costo = 100;
 
         foreach ($this->filas_con_barras_invertidas() as $codigo => $nombre) {
-            $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+            $writer->addRow(\App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createRowFromArray([
                 null, null, $codigo, $nombre, (float) $costo, (float) ($costo * 2), 1.0, '21',
             ]));
             $costo += 10;

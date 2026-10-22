@@ -26,13 +26,97 @@ namespace App\Http\Controllers\Helpers\import\excel;
  * materializar la hoja, y el conteo de filas sale de <dimension>, que es O(1).
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * ESTE HELPER NUNCA LANZA. Ante un zip ilegible (archivo corrupto, .xls BIFF viejo,
- * permisos) devuelve null y el llamador degrada: 'filas' => 0, o "sin fusiones". El
- * unico que lanza en todo el namespace es ExcelWorkbookReader::abrir(), que es el que
- * de verdad no puede seguir.
+ * Las inspecciones de filas y fusiones degradan a null ante un ZIP ilegible. La
+ * lectura auxiliar de fórmulas sí exige abrir la hoja: sin ella no se puede mantener
+ * el contrato de valores del importador y falla con el mismo mensaje limpio.
  */
 class ExcelSheetInspector
 {
+    /**
+     * Coordenadas de fórmulas reales, por fila física y en streaming.
+     * OpenSpout 4 representa también el texto literal '=...' como FormulaCell:
+     * el XML permite distinguirlo de una fórmula cuyo resultado cacheado es un error.
+     */
+    public static function formulas_por_fila($excel_path, $indice, $al_abrir = null)
+    {
+        $rutas = self::rutas_de_hojas($excel_path);
+        if ($rutas === null || !array_key_exists($indice, $rutas)) {
+            throw new \RuntimeException(ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE);
+        }
+        if ($rutas[$indice] === null) {
+            /* Una chartsheet conserva su índice, pero no contiene celdas ni fórmulas. */
+            return;
+        }
+
+        $lector = self::abrir_hoja($excel_path, $rutas[$indice]);
+        if ($lector === null) {
+            throw new \RuntimeException(ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE);
+        }
+        if ($al_abrir !== null) {
+            $al_abrir($lector);
+        }
+
+        $fila = 0;
+        $columna = -1;
+        $formulas = [];
+        $es_formula = false;
+        $valor_cache = '';
+        try {
+            while (@$lector->read()) {
+                if ($lector->nodeType === \XMLReader::ELEMENT && $lector->localName === 'row') {
+                    $fila = (int) ($lector->getAttribute('r') ?: $fila + 1);
+                    $columna = -1;
+                    $formulas = [];
+                    if ($lector->isEmptyElement) {
+                        yield $fila => $formulas;
+                    }
+                } elseif ($lector->nodeType === \XMLReader::ELEMENT && $lector->localName === 'c') {
+                    $posicion = self::parsear_celda((string) $lector->getAttribute('r'));
+                    $columna = $posicion === null ? $columna + 1 : $posicion['col'];
+                    $es_formula = false;
+                    $valor_cache = '';
+                } elseif ($lector->nodeType === \XMLReader::ELEMENT && $lector->localName === 'f') {
+                    $es_formula = true;
+                } elseif ($lector->nodeType === \XMLReader::ELEMENT && $lector->localName === 'v') {
+                    $valor_cache = $lector->readString();
+                } elseif ($lector->nodeType === \XMLReader::END_ELEMENT && $lector->localName === 'c' && $es_formula) {
+                    /* En 3, la falta de <v> o un <v> vacío devuelve '', también para números. */
+                    $formulas[$columna] = $valor_cache === '' ? '' : true;
+                } elseif ($lector->nodeType === \XMLReader::END_ELEMENT && $lector->localName === 'row') {
+                    yield $fila => $formulas;
+                }
+            }
+        } finally {
+            $lector->close();
+        }
+    }
+
+    public static function base_de_fechas($excel_path)
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($excel_path) !== true) {
+            return '1899-12-30';
+        }
+        $xml = $zip->getFromName('xl/workbook.xml');
+        $zip->close();
+        $lector = new \XMLReader();
+        if ($xml === false || !@$lector->XML($xml, null, LIBXML_NONET)) {
+            return '1899-12-30';
+        }
+        try {
+            while (@$lector->read()) {
+                if ($lector->nodeType === \XMLReader::ELEMENT && $lector->localName === 'workbookPr') {
+                    return filter_var($lector->getAttribute('date1904'), FILTER_VALIDATE_BOOLEAN)
+                        ? '1904-01-01' : '1899-12-30';
+                }
+            }
+        } finally {
+            $lector->close();
+        }
+
+        return '1899-12-30';
+    }
+
     /** Tipo de relacion OOXML de una hoja de datos (las chartsheets tienen otro). */
     const TIPO_RELACION_WORKSHEET = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
 
