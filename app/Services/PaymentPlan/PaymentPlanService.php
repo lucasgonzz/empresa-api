@@ -49,8 +49,8 @@ class PaymentPlanService
      * dirigida también guarda `sale_id`, y el `first()` del hasOne podría devolverla a ella.
      *
      * Una venta que no va a la cuenta corriente (cobrada en el momento, o sin cliente) no tiene
-     * débito: ahí no hay de dónde leer lo pagado y se ofrece el total, que era el comportamiento de
-     * siempre.
+     * débito: se informa con `en_cuenta_corriente = false` y, desde el 22/10/2026, no admite plan
+     * (crear_plan_y_cuotas() la rechaza). El total se devuelve igual para que el modal lo muestre.
      *
      * @param \App\Models\Sale $sale
      * @return array{sale_id: int, total: float, pagado: float, saldo_pendiente: float, moneda_id: int, en_cuenta_corriente: bool, planes_con_cuotas_pendientes: int}
@@ -60,9 +60,16 @@ class PaymentPlanService
         /** Total de la venta, en su moneda. */
         $total = round((float) $sale->total, 2);
 
-        /** Débito de la venta en su cuenta corriente, si lo tiene. */
+        /*
+            Débito de la venta en su cuenta corriente, si lo tiene.
+
+            🔴 SIN filtro por `user_id`: CurrentAcountFromSaleHelper::crear_current_acount() crea el
+            débito sin esa columna (solo client_id / credit_account_id / employee_id), así que un
+            `where('user_id', ...)` no encuentra NUNCA el débito de una venta real. Se agregó el 21/10
+            como "defensa extra" y dejaba toda venta como fuera de la cuenta corriente (corregido el
+            22/10). No hace falta: la venta ya viene validada como del negocio y `sale_id` es único.
+        */
         $debito = CurrentAcount::where('sale_id', $sale->id)
-                                ->where('user_id', $sale->user_id)
                                 ->whereNull('haber')
                                 ->whereNotNull('debe')
                                 ->orderBy('id')
@@ -124,6 +131,17 @@ class PaymentPlanService
         // Un plan sin cliente no tiene cuenta corriente donde se paguen las cuotas.
         if (empty($sale->client_id)) {
             throw new InvalidArgumentException('La venta no tiene cliente: el plan de pago se arma sobre la cuenta de un cliente.');
+        }
+
+        /*
+            Regla de Lucas (22/10/2026): un plan de pago financia la DEUDA de una venta, y esa deuda
+            existe solo si la venta tiene su débito en la cuenta corriente. Sin débito (venta cobrada
+            en el momento, que todavía no entró por esperar la factura, o con la cuenta omitida) no hay
+            saldo que financiar y pagar una cuota no tiene contra qué imputarse: PagarBtn abre el pago
+            sobre `sale.current_acount.credit_account`. Hasta el 21/10 se permitía y se proponía el total.
+        */
+        if (!$this->saldo_de_venta($sale)['en_cuenta_corriente']) {
+            throw new InvalidArgumentException('La venta no está en la cuenta corriente del cliente: el plan de pago se arma sobre una venta que fue a la cuenta corriente.');
         }
 
         /** Cantidad de cuotas, ya validada como entero. */
