@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Models\AiConversation;
 use App\Models\OfferSuggestion;
 use App\Models\OfferSuggestionLine;
@@ -172,7 +173,11 @@ class ProcessOfferSuggestionChunkJob implements ShouldQueue
         // parciales) y SOLO si hay clave: sin ANTHROPIC_API_KEY el estado queda null, que la vista
         // muestra como "sin resumen", no como error.
         $resumen_service = new ResumenIaOfertasService();
-        $pedir_resumen   = $resumen_service->hay_credenciales();
+        // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA es de `agentes_ia`; la corrida de
+        // ofertas sin IA sigue andando para quien tiene solo `motor_de_ofertas`. Aplica igual si la corrida la
+        // arranca el cron `ofertas:generar`: se mira al dueño de la corrida, no a Auth.
+        $pedir_resumen   = $resumen_service->hay_credenciales()
+            && AgentesIaHelper::tiene_el_comercio_de($this->suggestion->user_id);
 
         if ($pedir_resumen) {
             // 'pendiente' desde antes del dispatch: la vista muestra "lo estamos escribiendo" sin

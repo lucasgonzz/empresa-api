@@ -1420,7 +1420,10 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:motor_de_ofertas'])-
     Route::get('offer-suggestion/{id}', 'OfferSuggestionController@show');
     Route::delete('offer-suggestion/{id}', 'OfferSuggestionController@destroy');
     Route::get('offer-suggestion/{id}/lines', 'OfferSuggestionController@lines');
-    Route::post('offer-suggestion/{id}/resumen', 'OfferSuggestionController@resumen');
+    // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA exige además `agentes_ia` (403);
+    // el motor de ofertas en sí (corridas, líneas, ofertas) sigue siendo solo de `motor_de_ofertas`.
+    Route::post('offer-suggestion/{id}/resumen', 'OfferSuggestionController@resumen')
+        ->middleware('check_extencion_empresa:agentes_ia');
     Route::get('client-offer', 'ClientOfferController@index');
     Route::post('client-offer', 'ClientOfferController@store');
     Route::delete('client-offer/{id}', 'ClientOfferController@destroy');
@@ -1437,7 +1440,11 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->
     // La lectura en criollo. SINCRÓNICA a propósito, no un job: el modal no puede quedar
     // esperando a un worker. Molde: WhatsappChatController@summary (llama a Anthropic desde el
     // request y devuelve el texto sin persistir nada).
-    Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen');
+    // Misión agentes-ia-extension-unica (22/10/2026): el resumen llama a la IA, así que además de
+    // `tracking_buyers` exige `agentes_ia` (403 «Extensión requerida: agentes_ia»). La lectura de la
+    // actividad en sí (la ruta de arriba) sigue siendo solo de `tracking_buyers`.
+    Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen')
+        ->middleware('check_extencion_empresa:agentes_ia');
 });
 
 // Cotización del dólar al iniciar sesión. Gateado por Sanctum + la extensión

@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -88,7 +89,9 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
         // Salida 2 de 5: el job quedó encolado y la clave se quitó después. El estado vuelve a null
         // ('pendiente' sería un spinner eterno y no tener IA contratada no es un error) y, si este job
         // lleva la posta, la corrida se anuncia igual, con los dos botones de siempre.
-        if (!$service->hay_credenciales()) {
+        // Misión agentes-ia-extension-unica (22/10/2026): sin `agentes_ia` el resumen no se pide (no gasta
+        // tokens); se trata como «sin credenciales».
+        if (!$service->hay_credenciales() || !AgentesIaHelper::tiene_el_comercio_de($suggestion->user_id)) {
             if ($suggestion->resumen_ia_estado === 'pendiente') {
                 $suggestion->resumen_ia_estado = null;
                 $suggestion->save();
