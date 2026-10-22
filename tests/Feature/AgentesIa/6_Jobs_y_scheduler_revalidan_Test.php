@@ -61,7 +61,8 @@ class Jobs_y_scheduler_revalidan_Test extends AgentesIaTestCase
 
         (new ProcessProductEnrichmentJob($tarea->id))->handle(app(ProductEnrichmentService::class));
 
-        $this->assertSame('queued', $tarea->fresh()->status, 'El job buscó la ficha sin la extensión.');
+        /* Se cierra como fallida (la SPA no queda esperando) y no se busca nada: ver también 8_Resumenes_envios_y_cierres. */
+        $this->assertSame('failed', $tarea->fresh()->status, 'El job buscó la ficha sin la extensión.');
         Http::assertNothingSent();
     }
 
@@ -82,7 +83,8 @@ class Jobs_y_scheduler_revalidan_Test extends AgentesIaTestCase
 
         $escaneo = $escaneo->fresh();
 
-        $this->assertSame('pendiente', $escaneo->estado, 'El job abrió el escaneo sin la extensión.');
+        /* No lo procesa (progreso 0) y lo deja en error con el motivo, no «pendiente» para siempre. */
+        $this->assertSame('error', $escaneo->estado, 'El job abrió el escaneo sin la extensión.');
         $this->assertSame(0, (int) $escaneo->progreso);
         Http::assertNothingSent();
     }
@@ -107,7 +109,8 @@ class Jobs_y_scheduler_revalidan_Test extends AgentesIaTestCase
 
         $corrida = $corrida->fresh();
 
-        $this->assertSame('pendiente', $corrida->status, 'El tramo corrió (o cerró la corrida) sin la extensión.');
+        /* No corre ningún tramo (procesados 0) y la corrida queda fallida, no colgada. */
+        $this->assertSame('fallida', $corrida->status, 'El tramo corrió sin la extensión.');
         $this->assertSame(0, (int) $corrida->procesados);
         Http::assertNothingSent();
     }
