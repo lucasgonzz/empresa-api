@@ -45,7 +45,15 @@ class Auditoria_devoluciones_y_stock_global_Test extends AuditoriaStockTestCase
 
         $this->assertEquals(20.0, $this->stock($articulo), 'Borrar la venta tenía que devolver el stock global a 20.');
 
-        $this->assertEquals(0, $this->cantidad_de_depositos($articulo), 'El borrado no puede abrirle un depósito a un artículo que lleva stock global.');
+        /*
+         * Misión sucursal-siempre (23/10/2026, D4): la venta CON sucursal sobre un artículo que lleva
+         * stock global primero pasa el global entero a la sucursal principal, así que el artículo ya
+         * reparte (una fila, la principal, con TODO el stock). Lo que este test cuida —el bug
+         * 20 → 19 → 1, el global pisado por una fila con solo lo devuelto— sigue cubierto: la única
+         * fila tiene el stock completo.
+         */
+        $this->assertEquals(1, $this->cantidad_de_depositos($articulo), 'D4: el global pasó entero a la principal.');
+        $this->assertEquals(20.0, $this->stock_en_deposito($articulo, $this->sucursal()->id), 'La fila tiene TODO el stock, no solo lo devuelto.');
 
         $devolucion = $this->movimientos($articulo, 'Se elimino la venta')->last();
 
@@ -56,13 +64,18 @@ class Auditoria_devoluciones_y_stock_global_Test extends AuditoriaStockTestCase
     }
 
     /**
-     * Un ingreso que elige depósito sobre un artículo que lleva stock global va al global. Solo
-     * "Creacion de deposito" (el reparto explícito) abre el primer depósito.
+     * Un ingreso que elige depósito sobre un artículo que lleva stock global NO pisa el global.
+     *
+     * Hasta el 23/10/2026 el ingreso iba al global y solo "Creacion de deposito" abría el primer
+     * depósito. Desde la misión sucursal-siempre (D4) el motor primero pasa el global ENTERO a la
+     * sucursal principal y después aplica el ingreso: la fila queda con 20 + 5 y el global en 25. La
+     * parte del reparto explícito ("Creacion de deposito" en porciones, sin duplicar) la prueba
+     * SucursalSiempre/3_Materializar_global_Test.
      *
      * @group stock
      * @test
      */
-    public function un_ingreso_con_deposito_sobre_stock_global_va_al_global_y_solo_el_reparto_abre_el_deposito()
+    public function un_ingreso_con_deposito_sobre_stock_global_no_pisa_el_global()
     {
         $articulo = $this->crear_articulo('zz Auditoria ingreso a deposito', ['stock' => 20]);
         $sucursal = $this->sucursal();
@@ -73,19 +86,8 @@ class Auditoria_devoluciones_y_stock_global_Test extends AuditoriaStockTestCase
             'to_address_id' => $sucursal->id,
         ])->assertStatus(201);
 
-        $this->assertEquals(25.0, $this->stock($articulo), 'El ingreso tenía que sumar al stock global.');
-        $this->assertEquals(0, $this->cantidad_de_depositos($articulo), 'Un ingreso manual no abre depósitos en un artículo con stock global.');
-
-        /* El reparto explícito (modal de crear depósitos) SÍ abre el depósito con lo repartido. */
-        $this->postJson('api/stock-movement', [
-            'model_id'                     => $articulo->id,
-            'amount'                       => 25,
-            'to_address_id'                => $sucursal->id,
-            'concepto_stock_movement_name' => 'Creacion de deposito',
-        ])->assertStatus(201);
-
-        $this->assertEquals(25.0, $this->stock_en_deposito($articulo, $sucursal->id), 'El reparto tenía que abrir el depósito con 25.');
-        $this->assertEquals(25.0, $this->stock($articulo), 'Con el depósito abierto, el stock global es la suma de depósitos.');
+        $this->assertEquals(25.0, $this->stock($articulo), 'El ingreso tenía que sumar al stock, sin perder el global.');
+        $this->assertEquals(25.0, $this->stock_en_deposito($articulo, $sucursal->id), 'D4: el global (20) más el ingreso (5), en la sucursal.');
 
         /* Y desde ahí el artículo reparte: una venta sale del depósito y el borrado vuelve a él. */
         $venta = $this->crear_venta([
@@ -144,7 +146,9 @@ class Auditoria_devoluciones_y_stock_global_Test extends AuditoriaStockTestCase
         $this->assertEquals(2.0, (float) $nc->amount, 'La cantidad devuelta no se multiplica por unidades_individuales.');
         $this->assertEquals($venta->id, (int) $nc->sale_id, 'El movimiento de la NC tiene que quedar atado a la venta.');
         $this->assertNotNull($nc->nota_credito_id, 'El movimiento de la NC tiene que quedar atado a la nota de crédito.');
-        $this->assertEquals(0, $this->cantidad_de_depositos($articulo), 'La NC no abre depósitos en un artículo con stock global.');
+        // Sucursal-siempre (D4): la venta con sucursal ya pasó el global a la principal; la NC vuelve a ESA fila.
+        $this->assertEquals(17.0, $this->stock_en_deposito($articulo, $this->sucursal()->id), 'La NC vuelve a la fila de la principal, sin abrir otra.');
+        $this->assertEquals(1, $this->cantidad_de_depositos($articulo));
 
         $this->assertEquals(0, $this->movimientos($articulo, 'Ingreso manual')->count(), 'No tiene que haber ningún "Ingreso manual" espurio.');
 

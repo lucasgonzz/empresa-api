@@ -177,6 +177,10 @@ class Variantes_stock_global_sin_depositos_Test extends AuditoriaStockTestCase
      * Si la variante ya reparte por depositos, un `stock` global se ignora: el stock de una
      * variante con depositos es la suma de ellos.
      *
+     * Desde la misión sucursal-siempre (23/10/2026, D15) esto vale con DOS o más sucursales: con una
+     * sola (la del fixture) el total que manda la SPA es el de esa sucursal y se escribe ahí (lo prueba
+     * SucursalSiempre/4_Una_sola_sucursal_stock_global_Test). Por eso el test crea una segunda.
+     *
      * @group stock
      * @test
      */
@@ -185,6 +189,8 @@ class Variantes_stock_global_sin_depositos_Test extends AuditoriaStockTestCase
         list($articulo, $variante) = $this->articulo_con_variante();
 
         $sucursal = $this->sucursal();
+
+        \App\Models\Address::create(['street' => 'zz Segunda sucursal variantes', 'user_id' => $articulo->user_id]);
 
         $this->putJson('api/article-update-varians-stock', [
             'article_id'         => $articulo->id,
