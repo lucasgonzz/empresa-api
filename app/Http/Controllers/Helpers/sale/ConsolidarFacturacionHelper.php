@@ -114,6 +114,44 @@ class ConsolidarFacturacionHelper extends Controller
     }
 
     /**
+     * Por qué una venta NO se puede facturar suelta, o null si se puede.
+     *
+     * Una venta ORIGINAL incluida en una consolidación no tiene factura propia: su comprobante es
+     * el de la venta contenedora. Si además se emitiera una factura suelta, la misma venta quedaría
+     * facturada dos veces (la suya y la de la consolidación). `POST api/afip-ticket` no lo miraba
+     * (misión cc-afip-ticket-rechaza-consolidada, 23/10/2026), y `validar()` solo cubre el orden
+     * inverso: facturar suelta y DESPUÉS consolidar.
+     *
+     * Reglas, a propósito iguales a las de `validar()`:
+     *  - Solo cuenta si la contenedora sigue viva. Una contenedora borrada ya no sostiene a nadie
+     *    (no se puede borrar con un comprobante, ver DeleteSaleHelper) y sus ventas originales
+     *    vuelven a poder facturarse.
+     *  - La propia contenedora SÍ se factura por este camino: es lo que se hace para reintentar el
+     *    comprobante de una consolidación que quedó sin CAE.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return string|null  El mensaje para el usuario, o null si se puede facturar.
+     */
+    public static function motivo_por_el_que_no_se_puede_facturar_suelta($sale)
+    {
+        if (is_null($sale->consolidacion_facturacion_id)) {
+            return null;
+        }
+
+        $contenedora = Sale::find($sale->consolidacion_facturacion_id);
+
+        if (is_null($contenedora)) {
+            return null;
+        }
+
+        $num_venta       = !is_null($sale->num) ? $sale->num : $sale->id;
+        $num_contenedora = !is_null($contenedora->num) ? $contenedora->num : $contenedora->id;
+
+        return 'La venta N° '.$num_venta.' está incluida en la consolidación N° '.$num_contenedora.': su factura es la de esa consolidación y no se factura por separado. '
+            .'Si esa factura tiene un problema, resolvelo desde la venta consolidada (en Ventas, "Ver consolidadas").';
+    }
+
+    /**
      * Crea la venta consolidada y opcionalmente emite el comprobante AFIP.
      *
      * @param array $sale_ids                   IDs de ventas originales a consolidar.
