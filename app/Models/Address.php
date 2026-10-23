@@ -126,6 +126,17 @@ class Address extends Model
                 return;
             }
 
+            /*
+             * Solo cuando ESTE guardado marcó la principal (alta o cambio de la columna). Sin esto, el
+             * hook del depósito madre de arriba —que guarda por modelo la sucursal que deja de ser
+             * madre— disparaba este hook en esa otra sucursal (que seguía marcada como principal) y
+             * desmarcaba a la que se acababa de marcar: pasaba al eliminar una sucursal con las tres
+             * marcas y pasarlas al reemplazo (D9 de eliminar-sucursal-con-stock).
+             */
+            if (!$address->wasRecentlyCreated && !$address->wasChanged('default_address')) {
+                return;
+            }
+
             $otras = static::where('user_id', $address->user_id)
                 ->whereNull('buyer_id')
                 ->where('id', '!=', $address->id)
