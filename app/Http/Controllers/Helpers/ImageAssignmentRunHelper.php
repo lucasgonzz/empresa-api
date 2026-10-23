@@ -263,6 +263,61 @@ class ImageAssignmentRunHelper
     }
 
     /**
+     * Separa una selección en los artículos SIN imagen (los que vale la pena buscar) y cuántos ya
+     * tienen al menos una (pedido de Lucas, 23/10/2026: desde el listado "que no le vuelva a buscar
+     * imágenes a los artículos que ya tienen", para no gastar Serper/Google en ellos).
+     *
+     * Mismo criterio que base_del_catalogo(): "tiene imagen" es tener ≥1 fila en `images`. Los ids
+     * ajenos o inexistentes no cuentan en ninguno de los dos lados (crear() los descartaría igual).
+     *
+     * @param  int   $owner_id
+     * @param  array $article_ids
+     * @return array  ['sin_imagen' => int[] (en el orden recibido, sin repetidos, solo del dueño),
+     *                 'con_imagen' => int (cuántos del dueño tienen ≥1 imagen)]
+     */
+    public static function separar_con_imagen($owner_id, array $article_ids)
+    {
+        // Ids enteros, sin repetidos, en el orden recibido (mismo criterio que crear()).
+        $ids    = [];
+        $vistos = [];
+
+        foreach ($article_ids as $article_id) {
+            $id = (int) $article_id;
+
+            if ($id > 0 && !isset($vistos[$id])) {
+                $vistos[$id] = true;
+                $ids[]       = $id;
+            }
+        }
+
+        $del_dueno  = [];
+        $con_imagen = [];
+
+        foreach (array_chunk($ids, 1000) as $lote) {
+            foreach (Article::where('user_id', (int) $owner_id)->whereIn('id', $lote)->pluck('id') as $id) {
+                $del_dueno[(int) $id] = true;
+            }
+
+            foreach (Article::where('user_id', (int) $owner_id)->whereIn('id', $lote)->whereHas('images')->pluck('id') as $id) {
+                $con_imagen[(int) $id] = true;
+            }
+        }
+
+        $sin_imagen = [];
+
+        foreach ($ids as $id) {
+            if (isset($del_dueno[$id]) && !isset($con_imagen[$id])) {
+                $sin_imagen[] = $id;
+            }
+        }
+
+        return [
+            'sin_imagen' => $sin_imagen,
+            'con_imagen' => count($con_imagen),
+        ];
+    }
+
+    /**
      * Lo que se purga al crear una asignación, del dueño que la crea. Nunca lanza.
      *
      * @param  int $owner_id

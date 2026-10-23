@@ -405,8 +405,15 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
     /**
      * Plan §12.1, extra 1: en "todo el catálogo", un artículo que mientras esperaba su turno ya
      * consiguió imagen (se la cargaron a mano, o se la asignó otra asignación) no se busca: 0
-     * búsquedas, no asignada con `ya_tenia_imagen`, y queda con su única imagen. En una de selección
-     * el mismo artículo se busca igual: ahí lo eligió una persona.
+     * búsquedas, no asignada con `ya_tenia_imagen`, y queda con su única imagen.
+     *
+     * 🔁 CAMBIO DE REQUISITO (misión imagenes-listado-saltear-con-foto, 23/10/2026): hasta esa fecha
+     * este test afirmaba que en una de SELECCIÓN el mismo artículo se buscaba igual ("ahí lo eligió
+     * una persona"). Lucas cambió esa regla: «cuando buscan imágenes inteligentes desde el listado,
+     * que no le vuelva a buscar imágenes a los artículos que ya tienen imágenes». Ahora la selección
+     * también lo saltea, y la que SÍ lo busca es la del ASISTENTE (ahí `solo_sin_imagen=false` es el
+     * pedido explícito del dueño de buscar igual, y la corrida no guarda la bandera). No es una
+     * aserción ajustada para que pase: cambió lo que se pide.
      *
      * @group imagenes-inteligentes
      * @test
@@ -418,6 +425,7 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
 
         $catalogo  = $this->asignacion([$articulo], ['origen' => ImageAssignmentRun::ORIGEN_CATALOGO]);
         $seleccion = $this->asignacion([$articulo], ['origen' => ImageAssignmentRun::ORIGEN_SELECCION]);
+        $asistente = $this->asignacion([$articulo], ['origen' => ImageAssignmentRun::ORIGEN_ASISTENTE]);
 
         // Mientras esperaba su turno, alguien le cargó una imagen a mano.
         Image::create([
@@ -444,10 +452,17 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
         $this->assertSame(1, (int) $catalogo->fresh()->procesados);
         $this->assertSame(0, (int) $catalogo->fresh()->busquedas);
 
-        // La de selección sí lo busca: la persona lo eligió sabiendo lo que tenía.
+        // La de selección (el listado) también lo saltea desde el 23/10/2026.
         $item_de_la_seleccion = $this->procesar($seleccion, $articulo);
 
-        $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, $item_de_la_seleccion->status);
+        $this->assertSame(ImageAssignmentItem::STATUS_NO_ASIGNADA, $item_de_la_seleccion->status);
+        $this->assertSame('ya_tenia_imagen', $item_de_la_seleccion->motivo);
+        $this->assertCount(0, $this->consultas_serper, 'La selección tampoco gasta búsquedas en un artículo con imagen.');
+
+        // La del asistente sí lo busca: ahí el filtro lo decide `solo_sin_imagen` al ejecutar.
+        $item_del_asistente = $this->procesar($asistente, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, $item_del_asistente->status);
         $this->assertCount(1, $this->consultas_serper);
     }
 

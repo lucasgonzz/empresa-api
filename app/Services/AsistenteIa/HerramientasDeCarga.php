@@ -727,7 +727,7 @@ class HerramientasDeCarga
                         'filtros'         => self::esquema_de_filtros(),
                         'solo_sin_imagen' => [
                             'type'        => 'boolean',
-                            'description' => 'true (default) saltea los artículos que ya tienen imagen. false los incluye, y a esos se les AGREGA una imagen más (no se reemplaza la que tienen), igual que el botón del listado.',
+                            'description' => 'true (default) saltea los artículos que ya tienen imagen. false los incluye, y a esos se les AGREGA una imagen más (no se reemplaza la que tienen). Es la única forma de buscarle a un artículo que ya tiene imagen: el botón del listado los saltea.',
                         ],
                         'orden'           => self::esquema_de_orden(),
                         'limite'          => self::esquema_de_limite(),
