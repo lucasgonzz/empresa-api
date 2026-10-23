@@ -21,7 +21,8 @@ use Illuminate\Support\Facades\DB;
  *    reconstruye y el global es la suma de las variantes (el defecto viejo: el recálculo deshacía el
  *    descuento del artículo).
  *  - PAPELERA (D7): se resuelve por SQL, sin renglón en el libro.
- *  - ÚLTIMA SUCURSAL (D6): el global queda intacto y no hay movimientos.
+ *  - ÚLTIMA SUCURSAL: desde la misión sucursal-siempre (D7, 23/10/2026) no se puede borrar (422) y
+ *    no se toca nada; antes (D6) se borraba conservando el global.
  *  - Filas repetidas del mismo par: se juntan antes de mover (sin índice único en el pivot).
  *  - IDEMPOTENCIA: cortado a la mitad, volver a eliminar termina bien y no mueve dos veces.
  *  - En TODOS los casos, ninguna fila de pivot queda nombrando a la sucursal eliminada.
@@ -319,12 +320,15 @@ class Eliminar_sucursal_stock_Test extends SucursalesTestCase
     }
 
     /**
-     * Test 6 — la última sucursal (D6): el global queda intacto y no hay movimientos, aunque no se
-     * mande ninguna decisión (no hay nada que decidir).
+     * Test 6 — la última sucursal. Hasta el 23/10/2026 (D6 de eliminar-sucursal-con-stock) se borraba
+     * y los artículos volvían a "sin depósitos" conservando el global. La misión sucursal-siempre (D7)
+     * lo REEMPLAZA: todo negocio trabaja con al menos una sucursal, así que borrar la última responde
+     * 422 con el bloqueo `ultima_sucursal` y no toca nada (la sucursal, el stock y el libro quedan
+     * como estaban). Lo que este test cuidaba —que el stock total no se pierda— se sigue cumpliendo.
      *
      * @test
      */
-    public function la_ultima_sucursal_conserva_el_stock_total_sin_movimientos()
+    public function la_ultima_sucursal_no_se_puede_borrar_y_no_toca_nada()
     {
         $borrar = $this->nueva_sucursal('zz Ultima sucursal');
 
@@ -340,25 +344,29 @@ class Eliminar_sucursal_stock_Test extends SucursalesTestCase
         $movimientos_a = $this->movimientos_de($a)->count();
         $movimientos_d = $this->movimientos_de($d)->count();
 
-        $this->eliminar_sucursal($borrar->id)->assertStatus(200);
+        $this->eliminar_sucursal($borrar->id)
+             ->assertStatus(422)
+             ->assertJsonPath('requiere_decision', false)
+             ->assertJsonPath('bloqueos.0.codigo', 'ultima_sucursal');
 
-        $this->assert_eliminada_sin_rastro($borrar->id);
+        $this->assertNotNull(\App\Models\Address::find($borrar->id), 'D7: la última sucursal sigue existiendo.');
 
-        $this->assertEquals(10.0, $this->stock_global($a), 'D6: el artículo conserva su stock total.');
+        $this->assertEquals(10.0, $this->stock_global($a));
+        $this->assertEquals(10.0, $this->stock_en($a, $borrar->id), 'La fila sigue donde estaba.');
         $this->assertEquals(2.0, $this->stock_de_variante($v1));
         $this->assertEquals(2.0, $this->stock_global($d));
-        $this->assertSame($movimientos_a, $this->movimientos_de($a)->count(), 'D6: sin movimientos.');
+        $this->assertSame($movimientos_a, $this->movimientos_de($a)->count(), 'Sin movimientos.');
         $this->assertSame($movimientos_d, $this->movimientos_de($d)->count());
     }
 
     /**
-     * Test 6 bis — la última sucursal con `stock_accion=descartar` (lo que puede mandar la SPA): se
-     * acepta y se trata igual que sin decisión (D6): el global queda intacto y no hay movimientos.
-     * "Descartar" en la última sucursal no puede dejar todo el catálogo en 0.
+     * Test 6 bis — la última sucursal con `stock_accion=descartar` (lo que puede mandar la SPA). Antes
+     * (D6) se aceptaba y conservaba el global; desde la D7 de sucursal-siempre es el mismo 422: no hay
+     * decisión que habilite borrar la última, y "descartar" no puede dejar el catálogo en 0.
      *
      * @test
      */
-    public function la_ultima_sucursal_con_descartar_tambien_conserva_el_stock_total()
+    public function la_ultima_sucursal_con_descartar_tampoco_se_borra()
     {
         $borrar = $this->nueva_sucursal('zz Ultima sucursal descartar');
 
@@ -370,15 +378,12 @@ class Eliminar_sucursal_stock_Test extends SucursalesTestCase
         $movimientos = $this->movimientos_de($a)->count();
 
         $this->eliminar_sucursal($borrar->id, ['stock_accion' => 'descartar'])
-             ->assertStatus(200)
-             ->assertJsonPath('eliminada', true)
-             ->assertJsonPath('resumen.es_la_ultima', true)
-             ->assertJsonPath('resumen.movimientos', 0);
+             ->assertStatus(422)
+             ->assertJsonPath('bloqueos.0.codigo', 'ultima_sucursal');
 
-        $this->assert_eliminada_sin_rastro($borrar->id);
-
-        $this->assertEquals(10.0, $this->stock_global($a), 'D6: en la última sucursal "descartar" conserva el stock total.');
-        $this->assertSame($movimientos, $this->movimientos_de($a)->count(), 'D6: sin movimientos.');
+        $this->assertNotNull(\App\Models\Address::find($borrar->id));
+        $this->assertEquals(10.0, $this->stock_global($a));
+        $this->assertSame($movimientos, $this->movimientos_de($a)->count(), 'Sin movimientos.');
     }
 
     /**
