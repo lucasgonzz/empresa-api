@@ -459,6 +459,43 @@ class Listado_De_Ventas_Paginado_Test extends TestCase
     }
 
     /**
+     * Caso San Cayetano (23/10/2026): el total vendido y lo cobrado por cada medio son
+     * importes distintos. El subtotal tiene que incluir todas las páginas, no solo la visible.
+     *
+     * @group sales
+     * @test
+     */
+    public function los_pagos_divididos_separan_el_total_vendido_del_importe_por_medio_en_todas_las_paginas()
+    {
+        $mixta = $this->crear_venta(['total' => 488520])->id;
+        $simple = $this->crear_venta(['total' => 3200])->id;
+        $this->pagar_con($mixta, $this->efectivo_id, 300000);
+        $this->pagar_con($mixta, $this->transferencia_id, 188520);
+        $this->pagar_con($simple, $this->efectivo_id, 3200);
+
+        foreach ([1, 2] as $pagina) {
+            $response = $this->paginado([
+                'payment_method_show_option' => $this->efectivo_id,
+                'per_page' => 1,
+                'page' => $pagina,
+            ]);
+            $this->assertCount(1, $response->json('models.data'));
+            $response->assertJsonPath('totales.cantidad', 2);
+            $this->assertEquals(491720, $response->json('totales.pesos.total'));
+            $this->assertEquals(303200, $response->json('totales.metodo_de_pago.total'));
+        }
+
+        $response = $this->paginado(['payment_method_show_option' => $this->transferencia_id]);
+        $this->assertSame([$mixta], $this->ids($response));
+        $this->assertEquals(488520, $response->json('totales.pesos.total'));
+        $this->assertEquals(188520, $response->json('totales.metodo_de_pago.total'));
+
+        $response = $this->paginado(['payment_method_show_option' => 'todos']);
+        $this->assertEquals(491720, $response->json('totales.pesos.total'));
+        $this->assertNull($response->json('totales.metodo_de_pago'));
+    }
+
+    /**
      * Consolidadas: la contenedora de facturacion no aparece por defecto y si con
      * `mostrar_consolidadas=1`; en ese caso pasa la solapa de sucursal aunque no tenga `address_id`
      * y pasa el filtro de metodo de pago aunque no tenga pagos (espejo de

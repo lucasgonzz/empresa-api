@@ -3,7 +3,10 @@
 namespace App\Services\ImageSearch;
 
 use App\Services\ImageAssignment\ImageServiceCallLogger;
+use App\Services\ProductFacts\ProductFactsException;
 use App\Services\ProductFacts\SerperUsageService;
+use App\Services\ProductFacts\TopeSerperDemo;
+use App\Services\ProductFacts\TopeSerperDemoAgotado;
 use App\Services\Traits\GoogleSearchHelpers;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -87,22 +90,58 @@ class SerperImageSearchProvider implements ImageSearchProvider
 
         // Para el registro de consultas (image_service_calls): cuánto tardó Serper en responder.
         $inicio = microtime(true);
-        $respuesta = null;
 
+        /*
+         * Misión tope-serper-demos (23/10/2026): la llamada y su registro (SerperUsageService::record)
+         * van adentro de TopeSerperDemo::ejecutar(). En una demo eso toma el candado del dueño y no
+         * llama si ya usó sus 25 búsquedas; fuera de una demo llama directo, como siempre. Es la
+         * guarda de último recurso: cubre todo camino que use este proveedor (asignaciones de
+         * selección, del asistente y de todo el catálogo).
+         *
+         * La excepción de la llamada vuelve como dato y no se tira: la tiene que atender el mismo
+         * manejo de siempre (texto legible y detalle al log), que está más abajo.
+         */
         try {
-            $respuesta = $this->google_http()
-                ->timeout(self::TIMEOUT_SEGUNDOS)
-                ->withHeaders([
-                    'X-API-KEY'    => $this->api_key,
-                    'Content-Type' => 'application/json',
-                ])
-                ->post(self::URL, [
-                    'q'   => $consulta,
-                    'gl'  => (string) config('services.serper.gl', 'ar'),
-                    'hl'  => (string) config('services.serper.hl', 'es'),
-                    'num' => self::RESULTADOS_POR_BUSQUEDA,
-                ]);
-        } catch (\Exception $e) {
+            $llamada = TopeSerperDemo::ejecutar(
+                isset($this->usage_context['user_id']) ? $this->usage_context['user_id'] : null,
+                function () use ($consulta, $inicio) {
+                    $respuesta = null;
+
+                    try {
+                        $respuesta = $this->google_http()
+                            ->timeout(self::TIMEOUT_SEGUNDOS)
+                            ->withHeaders([
+                                'X-API-KEY'    => $this->api_key,
+                                'Content-Type' => 'application/json',
+                            ])
+                            ->post(self::URL, [
+                                'q'   => $consulta,
+                                'gl'  => (string) config('services.serper.gl', 'ar'),
+                                'hl'  => (string) config('services.serper.hl', 'es'),
+                                'num' => self::RESULTADOS_POR_BUSQUEDA,
+                            ]);
+
+                        return ['respuesta' => $respuesta, 'excepcion' => null];
+                    } catch (\Exception $e) {
+                        return ['respuesta' => null, 'excepcion' => $e];
+                    } finally {
+                        SerperUsageService::record($this->usage_context, 'images', $consulta, $respuesta, $inicio);
+                    }
+                }
+            );
+        } catch (TopeSerperDemoAgotado $e) {
+            // Sin red: el motor lo trata como cupo agotado (corta la corrida, no cuenta como error).
+            return $this->fallo_por_tope_demo();
+        } catch (ProductFactsException $e) {
+            // La demo tenía el candado tomado por otra búsqueda más de 20 s: no se llamó.
+            return $this->fallo($e->getMessage());
+        }
+
+        $respuesta = $llamada['respuesta'];
+
+        if (!is_null($llamada['excepcion'])) {
+            $e = $llamada['excepcion'];
+
             /*
              * Plan §13, S2 (sexta pasada): el mensaje crudo de Guzzle ("cURL error 28: Operation
              * timed out after 15001 milliseconds…") llegaba al diagnóstico del artículo, a su
@@ -122,8 +161,6 @@ class SerperImageSearchProvider implements ImageSearchProvider
                 : 'No se pudo conectar con el buscador.';
 
             return $this->fallo($legible, null, $this->milisegundos_desde($inicio), $detalle);
-        } finally {
-            SerperUsageService::record($this->usage_context, 'images', $consulta, $respuesta, $inicio);
         }
 
         $duracion_ms = $this->milisegundos_desde($inicio);
@@ -214,6 +251,21 @@ class SerperImageSearchProvider implements ImageSearchProvider
             'http_status' => is_null($http_status) ? null : (int) $http_status,
             'duracion_ms' => is_null($duracion_ms) ? null : (int) $duracion_ms,
         ];
+    }
+
+    /**
+     * El fallo de una búsqueda que no se hizo porque la demo llegó a su tope de búsquedas de Serper
+     * (misión tope-serper-demos). Es fallo() con `tope_demo => true`: con esa marca el motor no lo
+     * cuenta como error del proveedor sino como cupo agotado (ArticleImageAssignmentEngine).
+     *
+     * @return array
+     */
+    protected function fallo_por_tope_demo()
+    {
+        $fallo = $this->fallo(TopeSerperDemo::MENSAJE);
+        $fallo['tope_demo'] = true;
+
+        return $fallo;
     }
 
     /**

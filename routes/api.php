@@ -951,6 +951,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
         */
         Route::get('image-assignment-runs', 'ImageAssignmentRunController@index');
         Route::get('image-assignment-runs/resumen', 'ImageAssignmentRunController@resumen');
+        // Misión tope-serper-demos (23/10/2026): búsquedas de la demo que le quedan al comercio.
+        Route::get('image-assignment-runs/tope-demo', 'ImageAssignmentRunController@tope_demo');
         Route::get('image-assignment-runs/catalogo/previa', 'ImageAssignmentRunController@previa_catalogo');
         Route::post('image-assignment-runs/catalogo', 'ImageAssignmentRunController@crear_catalogo');
         Route::get('image-assignment-runs/por-uuid/{uuid}', 'ImageAssignmentRunController@por_uuid');

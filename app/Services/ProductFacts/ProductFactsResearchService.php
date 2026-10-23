@@ -27,18 +27,24 @@ class ProductFactsResearchService extends BusquedaPorCodigoDeBarrasService
         }
         $equivalents = array_values(Gtin::equivalents($gtin));
         $query = '"' . $equivalents[count($equivalents) - 1] . '"';
-        $started = microtime(true);
-        $response = null;
-        try {
-            $response = $this->google_http()->withOptions(['connect_timeout' => 3])->timeout(15)
-                ->withHeaders(['X-API-KEY' => $key])->post('https://google.serper.dev/search', [
-                    'q' => $query, 'gl' => config('services.serper.gl', 'ar'), 'hl' => 'es', 'num' => 6,
-                ]);
-        } catch (\Throwable $e) {
-            throw new ProductFactsException('El buscador no respondió. Podés continuar manualmente.');
-        } finally {
-            SerperUsageService::record($this->context('ficha_producto_busqueda'), 'search', $query, $response, $started);
-        }
+        // Misión tope-serper-demos (23/10/2026): en una demo, llamada y registro bajo el candado del
+        // dueño y con su tope de 25. Al tope tira TopeSerperDemoAgotado (es una ProductFactsException:
+        // su mensaje llega tal cual a la tarea `failed`) sin salir a la red. Fuera de una demo, directo.
+        $response = TopeSerperDemo::ejecutar($this->user_id, function () use ($key, $query) {
+            $started = microtime(true);
+            $response = null;
+            try {
+                $response = $this->google_http()->withOptions(['connect_timeout' => 3])->timeout(15)
+                    ->withHeaders(['X-API-KEY' => $key])->post('https://google.serper.dev/search', [
+                        'q' => $query, 'gl' => config('services.serper.gl', 'ar'), 'hl' => 'es', 'num' => 6,
+                    ]);
+            } catch (\Throwable $e) {
+                throw new ProductFactsException('El buscador no respondió. Podés continuar manualmente.');
+            } finally {
+                SerperUsageService::record($this->context('ficha_producto_busqueda'), 'search', $query, $response, $started);
+            }
+            return $response;
+        });
         $body = $response->json();
         if (!$response->successful() || !is_array($body) || !isset($body['organic']) || !is_array($body['organic'])) {
             throw new ProductFactsException('El buscador devolvió una respuesta incompleta. Podés continuar manualmente.');

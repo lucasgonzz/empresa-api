@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\ImageAssignment\ArticleImageAssignmentEngine;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
+use App\Services\ProductFacts\TopeSerperDemo;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -245,6 +246,19 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 return;
             }
 
+            /*
+             * Misión tope-serper-demos (23/10/2026): en una demo, con las búsquedas de la demo
+             * agotadas se corta TODA corrida (también la de todo el catálogo, que no aplica tope
+             * diario), con el motivo de la demo. Va antes del cupo diario: en una demo el cupo diario
+             * ya está acotado por el tope (ImagenesAutomaticasHelper::cuota_de) y el motivo que
+             * corresponde es este. Fuera de una demo agotado() da false sin consultar nada.
+             */
+            if (TopeSerperDemo::agotado($run->user_id)) {
+                $this->cortar_por_tope_demo($run);
+
+                return;
+            }
+
             // El cupo se mira DESPUÉS de saber que queda algo por hacer: si el último artículo gastó
             // la última búsqueda del día, la asignación terminó bien y no por falta de cupo.
             if ($run->aplica_tope_diario && (int) ImagenesAutomaticasHelper::cuota_de($owner)['disponibles'] <= 0) {
@@ -294,7 +308,13 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             $this->registrar_avance($run);
 
             if ($resultado['cupo_agotado']) {
-                $this->cortar_por_cupo($run);
+                // El motor se quedó sin las búsquedas de la demo a mitad del artículo: se corta igual,
+                // con el motivo de la demo (sin reintentar ni dejar nada en proceso).
+                if (!empty($resultado['tope_demo'])) {
+                    $this->cortar_por_tope_demo($run);
+                } else {
+                    $this->cortar_por_cupo($run);
+                }
 
                 return;
             }
@@ -655,6 +675,42 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         $motivo = $sin_procesar > 0
             ? 'Se agotó el cupo diario de búsquedas: '.($sin_procesar === 1 ? '1 artículo quedó' : $sin_procesar.' artículos quedaron').' sin procesar. Se pueden volver a mandar mañana.'
             : 'Se agotó el cupo diario de búsquedas con el último artículo: no se llegó a completar su búsqueda.';
+
+        ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, $motivo, true);
+    }
+
+    /**
+     * La demo llegó a su tope de búsquedas de Serper (misión tope-serper-demos, 23/10/2026): lo
+     * pendiente queda `sin_procesar` / `sin_cupo` (el motivo que la SPA ya conoce) con el detalle de la
+     * demo, y la asignación termina diciéndolo. Es cortar_por_cupo() con otros textos: el de los
+     * clientes no cambia.
+     *
+     * @param  \App\Models\ImageAssignmentRun $run
+     * @return void
+     */
+    protected function cortar_por_tope_demo(ImageAssignmentRun $run)
+    {
+        $ahora = Carbon::now();
+
+        DB::table('image_assignment_items')
+            ->where('run_id', $run->id)
+            ->where('status', ImageAssignmentItem::STATUS_PENDIENTE)
+            ->update([
+                'status'         => ImageAssignmentItem::STATUS_SIN_PROCESAR,
+                'motivo'         => 'sin_cupo',
+                'motivo_detalle' => TopeSerperDemo::DETALLE_SIN_BUSCAR,
+                'updated_at'     => $ahora,
+            ]);
+
+        $sin_procesar = ImageAssignmentItem::where('run_id', $run->id)
+            ->where('status', ImageAssignmentItem::STATUS_SIN_PROCESAR)
+            ->count();
+
+        $limite = 'Llegaste al límite de búsquedas de la demo ('.TopeSerperDemo::TOPE.')';
+
+        $motivo = $sin_procesar > 0
+            ? $limite.': '.($sin_procesar === 1 ? '1 artículo quedó' : $sin_procesar.' artículos quedaron').' sin procesar. Podés cargar las fotos a mano.'
+            : $limite.' con el último artículo. Podés cargar las fotos a mano.';
 
         ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, $motivo, true);
     }

@@ -407,7 +407,8 @@ class PropuestaImagenesCategoriasIaHelper
             return ['cuota' => 0, 'usadas_hoy' => 0, 'disponibles' => 0];
         }
 
-        return ImagenesAutomaticasHelper::cuota_de($owner);
+        // Solo Google Custom Search: el tope de Serper de las demos no la frena (misión tope-serper-demos).
+        return ImagenesAutomaticasHelper::cuota_de($owner, false);
     }
 
     /**

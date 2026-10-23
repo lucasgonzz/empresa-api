@@ -531,7 +531,8 @@ class BusquedaPorCodigoDeBarrasService
                 break;
             }
 
-            if (ImagenesAutomaticasHelper::cuota_de($this->owner)['disponibles'] <= 0) {
+            // Solo Google Custom Search: el tope de Serper de las demos no la frena (misión tope-serper-demos).
+            if (ImagenesAutomaticasHelper::cuota_de($this->owner, false)['disponibles'] <= 0) {
                 break;
             }
 

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
+use App\Services\ProductFacts\TopeSerperDemo;
 use Illuminate\Http\Request;
 
 /**
@@ -198,6 +199,18 @@ class ImageAssignmentRunController extends Controller
         $resultado = ImageAssignmentRunHelper::en_lote('rechazar', $this->userId(), $ids, $this->userId(false));
 
         return response()->json(['rechazados' => $resultado['hechos'], 'fallidos' => $resultado['fallidos']], 200);
+    }
+
+    /**
+     * GET image-assignment-runs/tope-demo — cuántas búsquedas de Serper le quedan al comercio en una
+     * demo (misión tope-serper-demos, 23/10/2026). Lo pide la SPA antes de lanzar una asignación por
+     * selección. Cualquiera del comercio: es del dueño, no del acceso maestro.
+     *
+     * @return \Illuminate\Http\JsonResponse  {aplica: bool, tope: int|null, usadas: int|null, restantes: int|null}
+     */
+    public function tope_demo()
+    {
+        return response()->json(TopeSerperDemo::estado((int) $this->userId()), 200);
     }
 
     /**

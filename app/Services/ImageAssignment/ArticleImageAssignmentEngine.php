@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\ArticleImageValidationService;
 use App\Services\ImageSearch\ImageSearchProvider;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
+use App\Services\ProductFacts\TopeSerperDemo;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use App\Services\Traits\BusquedaDeImagenesEnGoogle;
 use App\Services\Traits\GoogleSearchHelpers;
@@ -27,9 +28,10 @@ use Illuminate\Support\Str;
  * imagenes-catalogo-completo, 27/9/2026). Busca la MEJOR imagen, no la primera aceptable.
  *
  * Por artículo, en orden (plan §6.6):
- *   1. Si el artículo ya no existe → no_asignada / articulo_borrado. En "todo el catálogo", si
- *      mientras esperaba su turno ya consiguió imagen → no_asignada / ya_tenia_imagen (plan §12.1),
- *      y si tiene una imagen esperando revisión en OTRA asignación → no_asignada /
+ *   1. Si el artículo ya no existe → no_asignada / articulo_borrado. En "todo el catálogo" y en la
+ *      selección del listado, si mientras esperaba su turno ya consiguió imagen → no_asignada /
+ *      ya_tenia_imagen (plan §12.1; la selección desde el 23/10/2026). En "todo el catálogo", si
+ *      tiene una imagen esperando revisión en OTRA asignación → no_asignada /
  *      en_otra_asignacion (plan §13). Las dos sin buscar.
  *   2. Si su código de barras es REAL (CodigoDeBarrasRealHelper) → búsqueda por código →
  *      candidatas (CandidateImageProcessor: descartes gratis, descarga, tamaño y fondo medidos) →
@@ -274,6 +276,8 @@ class ArticleImageAssignmentEngine
      * @return array {
      *     status:             string, el estado final del item.
      *     cupo_agotado:       bool,   se quedó sin cupo diario (el job corta la asignación).
+     *     tope_demo:          bool,   el cupo que se agotó es el de búsquedas de la demo
+     *                                 (TopeSerperDemo): el job corta con el motivo de la demo.
      *     error_de_proveedor: bool,   todas las búsquedas de este artículo fallaron por el proveedor.
      *     busquedas_intentadas: int,  búsquedas que se intentaron (0 = el artículo no buscó nada:
      *                                 no le dice nada al contador del proveedor).
@@ -304,10 +308,18 @@ class ArticleImageAssignmentEngine
         /*
          * Todo el catálogo (plan §12.1, extra 1): la corrida puede durar horas, y mientras el
          * artículo esperaba su turno le pudieron cargar una imagen a mano o asignársela otra
-         * asignación. Buscarle otra lo dejaría con dos: no se busca nada (0 búsquedas). En las de
-         * selección no se mira: ahí la persona eligió el artículo sabiendo lo que tenía.
+         * asignación. Buscarle otra lo dejaría con dos: no se busca nada (0 búsquedas).
+         *
+         * Selección del listado (pedido de Lucas, 23/10/2026: "que no le vuelva a buscar imágenes a
+         * los artículos que ya tienen"): los que ya tenían imagen se descartan ANTES de crear la
+         * corrida (ImagenesAutomaticasHelper::encolar()); acá queda el caso de la foto cargada entre
+         * la creación y el turno. Las del ASISTENTE no se miran: ahí el filtro lo decide
+         * `solo_sin_imagen` al ejecutar, y con `solo_sin_imagen=false` el dueño pidió buscar igual
+         * (la corrida no guarda la bandera: saltearlas acá rompería ese pedido).
          */
-        if ($this->run->origen === ImageAssignmentRun::ORIGEN_CATALOGO && $article->images()->exists()) {
+        $saltea_con_imagen = in_array($this->run->origen, [ImageAssignmentRun::ORIGEN_CATALOGO, ImageAssignmentRun::ORIGEN_SELECCION], true);
+
+        if ($saltea_con_imagen && $article->images()->exists()) {
             return $this->cerrar($item, $contexto, [
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'ya_tenia_imagen',
@@ -360,7 +372,7 @@ class ArticleImageAssignmentEngine
         } elseif ($consulta_nombre === '') {
             $contexto['diagnostico'][self::CRITERIO_NOMBRE] = $this->criterio_no_usado(self::CRITERIO_NOMBRE, '', 'El artículo no tiene nombre.');
         } elseif ($contexto['cupo_agotado']) {
-            $contexto['diagnostico'][self::CRITERIO_NOMBRE] = $this->criterio_no_usado(self::CRITERIO_NOMBRE, $consulta_nombre, 'No se buscó: se agotó el cupo diario de búsquedas.');
+            $contexto['diagnostico'][self::CRITERIO_NOMBRE] = $this->criterio_no_usado(self::CRITERIO_NOMBRE, $consulta_nombre, $contexto['tope_demo'] ? TopeSerperDemo::CRITERIO_NO_BUSCADO : 'No se buscó: se agotó el cupo diario de búsquedas.');
         } elseif (!is_null($ganadora) && $this->validaciones_de_la_corrida >= $this->techo_de_ia) {
             /*
              * Techo de IA alcanzado (sexta pasada, B6) y por código ya hay una para revisar: lo que
@@ -381,19 +393,23 @@ class ArticleImageAssignmentEngine
 
         // Sin ganadora y sin cupo: si ni siquiera se llegó a buscar, el artículo queda sin procesar
         // (se puede volver a mandar mañana); si alcanzó a gastar una búsqueda, es una no asignada.
+        // En una demo el cupo que se agotó puede ser el de sus búsquedas de Serper (misión
+        // tope-serper-demos): mismo `sin_cupo` que la SPA ya conoce, con el detalle de la demo.
         if ($contexto['cupo_agotado']) {
             if ($contexto['busquedas'] === 0) {
                 return $this->cerrar($item, $contexto, [
                     'status'         => ImageAssignmentItem::STATUS_SIN_PROCESAR,
                     'motivo'         => 'sin_cupo',
-                    'motivo_detalle' => 'No se llegó a buscar: se agotó el cupo diario de búsquedas.',
+                    'motivo_detalle' => $contexto['tope_demo'] ? TopeSerperDemo::DETALLE_SIN_BUSCAR : 'No se llegó a buscar: se agotó el cupo diario de búsquedas.',
                 ], false);
             }
 
             return $this->cerrar($item, $contexto, [
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'sin_cupo',
-                'motivo_detalle' => $this->detalle_de_no_asignada($contexto).' Se agotó el cupo diario de búsquedas antes de terminar.',
+                'motivo_detalle' => $this->detalle_de_no_asignada($contexto).($contexto['tope_demo']
+                    ? ' Se llegó al límite de búsquedas de la demo ('.TopeSerperDemo::TOPE.') antes de terminar.'
+                    : ' Se agotó el cupo diario de búsquedas antes de terminar.'),
             ]);
         }
 
@@ -432,6 +448,19 @@ class ArticleImageAssignmentEngine
             'candidatas'      => [],
         ];
 
+        /*
+         * Misión tope-serper-demos (23/10/2026): en una demo, con las búsquedas de la demo agotadas no
+         * se busca, con CUALQUIER proveedor y en cualquier asignación (también la de todo el catálogo,
+         * que no aplica tope diario): no se cae a Google como sustituto. Fuera de una demo
+         * TopeSerperDemo::agotado() da false sin consultar nada. El proveedor de Serper tiene además
+         * su propia guarda, bajo candado, para la carrera entre dos procesos (ver más abajo).
+         */
+        if (TopeSerperDemo::agotado($this->user_id)) {
+            $this->marcar_tope_demo($criterio, $consulta, $contexto);
+
+            return;
+        }
+
         if ($this->run->aplica_tope_diario && !$this->queda_cupo()) {
             $contexto['cupo_agotado'] = true;
             $contexto['diagnostico'][$criterio] = $this->criterio_no_usado($criterio, $consulta, 'No se buscó: se agotó el cupo diario de búsquedas.');
@@ -440,6 +469,17 @@ class ArticleImageAssignmentEngine
         }
 
         $respuesta = $this->proveedor->buscar($consulta);
+
+        /*
+         * El proveedor no llamó porque la demo llegó a su tope en el medio (otro proceso gastó la
+         * última). Es cupo agotado, no un error del proveedor: no se registra como consulta (no salió
+         * a la red), no cuenta como búsqueda intentada ni fallida y no descuenta cuota diaria.
+         */
+        if (empty($respuesta['ok']) && !empty($respuesta['tope_demo'])) {
+            $this->marcar_tope_demo($criterio, $consulta, $contexto);
+
+            return;
+        }
 
         // Registro de consultas (plan §12.1): cada búsqueda, haya salido bien o mal.
         $this->registrar_busqueda($criterio, $consulta, $respuesta, $contexto);
@@ -1169,6 +1209,7 @@ class ArticleImageAssignmentEngine
         return [
             'status'             => (string) $item->status,
             'cupo_agotado'       => (bool) $contexto['cupo_agotado'],
+            'tope_demo'          => (bool) $contexto['tope_demo'],
             'error_de_proveedor' => $contexto['busquedas_intentadas'] > 0
                 && $contexto['errores_de_proveedor'] === $contexto['busquedas_intentadas'],
             'busquedas_intentadas' => (int) $contexto['busquedas_intentadas'],
@@ -1622,6 +1663,23 @@ class ArticleImageAssignmentEngine
     }
 
     /**
+     * Deja el criterio como no buscado porque la demo llegó a su tope de búsquedas de Serper, y el
+     * artículo con el cupo agotado (misión tope-serper-demos): el job corta la asignación con el
+     * motivo de la demo.
+     *
+     * @param  string $criterio
+     * @param  string $consulta
+     * @param  array  $contexto  (por referencia)
+     * @return void
+     */
+    protected function marcar_tope_demo($criterio, $consulta, array &$contexto)
+    {
+        $contexto['cupo_agotado'] = true;
+        $contexto['tope_demo']    = true;
+        $contexto['diagnostico'][$criterio] = $this->criterio_no_usado($criterio, $consulta, TopeSerperDemo::CRITERIO_NO_BUSCADO);
+    }
+
+    /**
      * ¿Queda cupo diario? Lo decide ImagenesAutomaticasHelper::cuota_de(), el mismo que usan la
      * pantalla y el asistente.
      *
@@ -1668,6 +1726,8 @@ class ArticleImageAssignmentEngine
             'busquedas_intentadas' => 0,
             'errores_de_proveedor' => 0,
             'cupo_agotado'         => false,
+            // El cupo que se agotó es el de búsquedas de la demo (misión tope-serper-demos).
+            'tope_demo'            => false,
             'diagnostico'          => [],
             'pozo'                 => [],
             'urls_vistas'          => [],
