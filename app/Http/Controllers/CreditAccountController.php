@@ -19,6 +19,10 @@ class CreditAccountController extends Controller
             'pagado_por',
             'cheques',
             'sale.afip_tickets',
+            // Misión cc-consolidar-desde-cuenta-corriente (23/10/2026): la venta contenedora de
+            // la consolidación (con su factura), para que la fila de una venta consolidada diga en
+            // qué factura quedó. Es una clave nueva dentro de `sale`: la SPA que no la conoce la ignora.
+            'sale.consolidacion_facturacion.afip_tickets',
             'afip_ticket',
             'provider_order.provider_order_afip_tickets',
         ];
@@ -56,7 +60,7 @@ class CreditAccountController extends Controller
                             ->with('current_acount_payment_methods')
                             ->with('pagado_por')
                             ->with('cheques')
-                            ->with('sale.afip_tickets', 'afip_ticket')
+                            ->with('sale.afip_tickets', 'sale.consolidacion_facturacion.afip_tickets', 'afip_ticket')
                             ->with('provider_order.provider_order_afip_tickets')
                             // ->get();
                             ->get();
