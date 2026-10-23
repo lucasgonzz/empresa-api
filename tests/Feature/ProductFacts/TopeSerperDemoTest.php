@@ -260,6 +260,13 @@ class TopeSerperDemoTest extends ImagenesInteligentesTestCase
         $this->assertSame(3, $cuota['disponibles']);
         $this->assertSame(ImagenesAutomaticasHelper::CUOTA_POR_DEFECTO, $cuota['cuota']);
         $this->assertSame(['aplica' => true, 'tope' => 25, 'usadas' => 22, 'restantes' => 3], $cuota['tope_demo']);
+
+        // Lo que va SOLO por Google (categorías, foto por código de barras) no se frena por Serper.
+        $this->eventos(10);
+        $solo_google = ImagenesAutomaticasHelper::cuota_de($this->owner, false);
+        $this->assertSame(ImagenesAutomaticasHelper::CUOTA_POR_DEFECTO, $solo_google['disponibles']);
+        $this->assertArrayNotHasKey('tope_demo', $solo_google);
+        $this->assertSame(0, ImagenesAutomaticasHelper::cuota_de($this->owner)['disponibles']);
     }
 
     /**
@@ -308,6 +315,9 @@ class TopeSerperDemoTest extends ImagenesInteligentesTestCase
             return strpos($request->url(), 'serper') !== false;
         });
         $this->assertSame(25, SerperUsageEvent::where('user_id', $this->owner->id)->count());
+        // Se cortó antes de reservar el intento diario de la ficha: no se gastó ninguno.
+        $this->assertSame(0, (int) $task->search_attempts);
+        $this->assertNull($task->search_started_at);
     }
 
     /**

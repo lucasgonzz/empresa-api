@@ -82,10 +82,14 @@ class ImagenesAutomaticasHelper
      * SOLO en una demo: fuera de una demo el array queda exactamente como antes (hay tests y
      * llamadores que lo comparan entero) y no se consulta nada de más.
      *
+     * Las búsquedas que van SOLO por Google Custom Search (imágenes de categorías, foto por código de
+     * barras) piden `$con_tope_demo = false`: no gastan Serper y no se frenan por su tope.
+     *
      * @param  \App\Models\User  $owner
+     * @param  bool  $con_tope_demo
      * @return array  ['cuota' => int, 'usadas_hoy' => int, 'disponibles' => int] (+ 'tope_demo' solo en una demo)
      */
-    public static function cuota_de(User $owner)
+    public static function cuota_de(User $owner, $con_tope_demo = true)
     {
         $cuota = self::credenciales($owner)['cuota'];
 
@@ -100,6 +104,10 @@ class ImagenesAutomaticasHelper
             'usadas_hoy'  => $usadas_hoy,
             'disponibles' => max(0, $cuota - $usadas_hoy),
         ];
+
+        if (!$con_tope_demo) {
+            return $resultado;
+        }
 
         $tope_demo = TopeSerperDemo::estado($owner);
 
