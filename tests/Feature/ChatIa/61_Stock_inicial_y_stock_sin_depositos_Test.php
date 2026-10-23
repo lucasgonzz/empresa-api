@@ -707,7 +707,14 @@ class Stock_inicial_y_stock_sin_depositos_Test extends EmpresaTestCase
 
         list($conversation, $assistant) = $this->conversacion('Cargale 10');
 
-        // Con depósitos y sin nombrarlo: faltan, como hasta hoy.
+        /*
+         * Con depósitos y sin nombrarlo: faltan, como hasta hoy. Desde la misión sucursal-siempre
+         * (23/10/2026, D12) eso vale con DOS o más sucursales: con una sola (la del fixture) el
+         * asistente ya no pregunta "¿a qué depósito?" y propone el stock total, que va a esa sucursal.
+         * Por eso se agrega una segunda: lo que este renglón cuida —que con varias se pregunte— sigue.
+         */
+        $this->sucursal('zz-p61 Segunda sucursal');
+
         $falta = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
             'articulo' => 'zz-p61 Remera variantes',
             'cantidad' => 10,
