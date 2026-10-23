@@ -1389,6 +1389,19 @@ class SaleController extends Controller
 
         if (!is_null($sale)) {
 
+            /**
+             * Una venta incluida en una consolidacion no se factura suelta: su comprobante es el de la
+             * contenedora, y emitir otro la dejaria facturada dos veces. Va PRIMERO, antes de cualquier
+             * otra validacion y de instanciar MakeAfipTicket, asi que un rechazo no toca ARCA. La
+             * propia contenedora si pasa (es como se reintenta su comprobante).
+             */
+            $motivo_consolidada = ConsolidarFacturacionHelper::motivo_por_el_que_no_se_puede_facturar_suelta($sale);
+
+            if (!is_null($motivo_consolidada)) {
+
+                return response()->json(['message' => $motivo_consolidada], 422);
+            }
+
             /** @var mixed $monto Importe personalizado que pidio el usuario, en pesos. */
             $monto = $request->monto_a_facturar;
 
