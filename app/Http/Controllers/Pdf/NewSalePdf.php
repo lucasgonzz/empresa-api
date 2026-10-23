@@ -1811,9 +1811,12 @@ class NewSalePdf extends fpdf
         if ($this->user->all_addresses_in_sale_pdf) {
             $addresses_models = Address::where('user_id', $this->user->id)->get();
             foreach ($addresses_models as $address_model) {
-                $addresses[] = "{$address_model->street} {$address_model->street_number}, {$address_model->city}, {$address_model->province}";
+                // Misión sucursal-siempre (§9): la sucursal cuyo domicilio es el de la empresa no se repite.
+                if (!Address::repite_la_direccion_de_la_empresa($address_model, $this->user->address_company)) {
+                    $addresses[] = "{$address_model->street} {$address_model->street_number}, {$address_model->city}, {$address_model->province}";
+                }
             }
-        } else if (!is_null($address)) {
+        } else if (!is_null($address) && !Address::repite_la_direccion_de_la_empresa($address, $this->user->address_company)) {
             $addresses[] = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
         }
         return $addresses;
