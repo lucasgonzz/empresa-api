@@ -10,7 +10,9 @@ use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\NewSalePdf;
 use App\Models\Address;
 use App\Models\PdfColumnProfile;
+use App\Models\AfipInformation;
 use App\Models\Sale;
+use App\Models\SheetType;
 use App\Models\User;
 use Tests\Concerns\DocumentosParaPdf;
 use Tests\EmpresaTestCase;
@@ -321,6 +323,49 @@ class Direccion_de_las_sucursales_en_el_pdf_Test extends EmpresaTestCase
         $this->assertRenglon('Domicilio Comercial: ', 'Calle Falsa 123', $pdf);
     }
 
+    /**
+     * No repetir el domicilio: una sucursal con el mismo domicilio que el Domicilio Comercial (la
+     * Principal que la misión sucursal-siempre precarga con el de ARCA) no sale otra vez.
+     *
+     * @test
+     */
+    public function una_sucursal_con_el_mismo_domicilio_que_el_comercial_no_se_repite()
+    {
+        list($venta, $sucursal) = $this->venta_con_su_sucursal();
+        AfipInformation::where('user_id', $this->dueno->id)->update(['domicilio_comercial' => 'Belgrano 450']);
+
+        /** El Domicilio igual con otras mayúsculas, tildes, espacios y un punto o coma al final: no sale. */
+        foreach (['BELGRANO 450', 'Belgráno  450.', 'belgrano 450,'] as $domicilio) {
+            $sucursal->update(['street_number' => $domicilio, 'city' => 'Rosario']);
+            $pdf = $this->pdf_de_siempre($venta, $this->perfil_de_venta(['header_layout' => null]));
+
+            $this->assertRenglon('Domicilio Comercial: ', 'Belgrano 450', $pdf);
+            $this->assertNoDibujaTexto($domicilio.', Rosario', $pdf, 'Mismo domicilio: '.$domicilio);
+        }
+
+        /** El valor completo (Domicilio + ciudad) igual al comercial también cuenta. */
+        AfipInformation::where('user_id', $this->dueno->id)->update(['domicilio_comercial' => 'Belgrano 450, Rosario']);
+        $sucursal->update(['street_number' => 'Belgrano 450', 'city' => 'Rosario']);
+        $this->assertSame(1, $this->veces_que_se_dibuja('Belgrano 450, Rosario', $this->pdf_de_siempre($venta, $this->perfil_de_venta(['header_layout' => null]))), 'Solo el Domicilio Comercial.');
+
+        /** Con otro domicilio sí sale. */
+        $sucursal->update(['street_number' => 'Belgrano 451']);
+        $this->assertRenglon('Dirección: ', 'Belgrano 451, Rosario', $this->pdf_de_siempre($venta, $this->perfil_de_venta(['header_layout' => null])));
+
+        /** Con todas las sucursales se saltea solo la que coincide. */
+        $sucursal->update(['street_number' => 'Belgrano 450']);
+        Address::create(['street' => 'Centro', 'street_number' => 'San Martin 100', 'city' => 'Rosario', 'user_id' => $this->dueno->id]);
+        $todas = $this->pdf_de_siempre($venta, $this->perfil_de_venta(['header_layout' => $this->layout_con(['todas_las_sucursales'])]));
+        $this->assertSame(1, $this->veces_que_se_dibuja('Belgrano 450, Rosario', $todas), 'Solo el Domicilio Comercial.');
+        $this->assertRenglon('Sucursal Centro: ', 'San Martin 100, Rosario', $todas);
+
+        /** Si el encabezado NO imprime el Domicilio Comercial, la sucursal sí sale. */
+        $sin_domicilio = $this->layout_con(['sucursal_comprobante']);
+        $sin_domicilio['emisor']['izquierda'] = array_values(array_diff($sin_domicilio['emisor']['izquierda'], ['domicilio_comercial']));
+        $pdf = $this->pdf_de_siempre($venta, $this->perfil_de_venta(['header_layout' => $sin_domicilio]));
+        $this->assertRenglon('Sucursal Belgrano: ', 'Belgrano 450, Rosario', $pdf);
+    }
+
     // ── Venta: con cajas y factura ───────────────────────────────────────────────────────────
 
     /**
@@ -519,6 +564,26 @@ class Direccion_de_las_sucursales_en_el_pdf_Test extends EmpresaTestCase
             ['razon_social', 'domicilio_comercial', 'todas_las_sucursales', 'condicion_iva'],
             $perfil->fresh()->header_layout['emisor']['izquierda']
         );
+    }
+
+    /**
+     * D9: el ticket de comandera no se toca. Mismo criterio que PdfColumnProfile::es_ticket():
+     * tipo de hoja sin alto.
+     *
+     * @test
+     */
+    public function el_comando_no_toca_los_perfiles_de_ticket()
+    {
+        $rollo = SheetType::create(['name' => 'zz Rollo '.uniqid(), 'width' => 80, 'height' => null, 'user_id' => $this->dueno->id]);
+        $ticket = $this->perfil_de_venta(['header_layout' => $this->layout_de_antes(), 'sheet_type_id' => $rollo->id]);
+        $this->assertTrue($ticket->es_ticket());
+
+        $hoja = $this->perfil_de_venta(['header_layout' => $this->layout_de_antes()]);
+
+        $this->artisan('pdf:sumar-sucursal-al-encabezado', ['--aplicar' => true])->assertExitCode(0);
+
+        $this->assertEquals($this->layout_de_antes(), $ticket->fresh()->header_layout, 'El ticket queda como estaba.');
+        $this->assertContains('sucursal_comprobante', $hoja->fresh()->header_layout['emisor']['izquierda']);
     }
 
     /**

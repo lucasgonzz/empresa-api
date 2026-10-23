@@ -17,7 +17,9 @@ use Illuminate\Support\Facades\Schema;
  * `header_layout` guardado usa el default por código, que ya trae `sucursal_comprobante`: no
  * necesita este comando. Uno CON `header_layout` guardado no lo tiene, y es lo que hace este comando:
  *
- *  - Recorre `pdf_column_profiles` con `model_name` sale / budget / order y `header_layout` guardado.
+ *  - Recorre `pdf_column_profiles` con `model_name` sale / budget / order y `header_layout` guardado,
+ *    SIN los perfiles de ticket de comandera (D9: el ticket no se toca; `scopeDeHoja()`, el mismo
+ *    criterio que `PdfColumnProfile::es_ticket()`: tipo de hoja sin alto).
  *  - Si el emisor no tiene ningún chip de sucursal (ni a la izquierda ni a la derecha), inserta uno
  *    justo después de `domicilio_comercial` (D3: se SUMA al Domicilio Comercial, no lo reemplaza),
  *    en el cuadrante donde esté; si no está en ninguno, al final de `emisor.izquierda`.
@@ -77,6 +79,7 @@ class SumarSucursalAlEncabezadoPdf extends Command
         $salteados = 0;
 
         PdfColumnProfile::whereIn('model_name', self::MODELOS)
+            ->deHoja()
             ->whereNotNull('header_layout')
             ->orderBy('id')
             ->chunkById(200, function ($perfiles) use ($aplicar, $con_todas, &$cambiados, &$con_chip, &$salteados) {
