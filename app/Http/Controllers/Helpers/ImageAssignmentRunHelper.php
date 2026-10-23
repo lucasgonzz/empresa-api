@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Services\ImageAssignment\CandidateImageProcessor;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
+use App\Services\ProductFacts\TopeSerperDemo;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -429,7 +430,7 @@ class ImageAssignmentRunHelper
 
         $activa = self::corrida_de_catalogo_activa((int) $owner->id);
 
-        return [
+        $previa = [
             'sin_imagen'                       => $conteos['sin_imagen'],
             'excluidos_pendientes_de_revision' => $conteos['excluidos_pendientes_de_revision'],
             'excluidos_ya_buscados'            => $conteos['excluidos_ya_buscados'],
@@ -451,6 +452,17 @@ class ImageAssignmentRunHelper
             ],
             'corrida_activa'                   => is_null($activa) ? null : self::payload_de_asignacion($activa),
         ];
+
+        // Aditivo y OPCIONAL (misión tope-serper-demos): solo en una demo, cuántas búsquedas de Serper
+        // le quedan al dueño (con 0 el POST da 422). Fuera de una demo la previa queda exactamente como
+        // antes, sin el campo; la SPA toma su ausencia como "sin tope".
+        $tope_demo = TopeSerperDemo::estado($owner);
+
+        if ($tope_demo['aplica']) {
+            $previa['tope_demo'] = $tope_demo;
+        }
+
+        return $previa;
     }
 
     /**
@@ -466,6 +478,15 @@ class ImageAssignmentRunHelper
      */
     public static function crear_del_catalogo(User $owner, $auth_user_id = null)
     {
+        // Misión tope-serper-demos: una demo sin búsquedas no lanza nada (ni con Serper ni con Google).
+        if (TopeSerperDemo::agotado($owner)) {
+            return [
+                'status'  => 422,
+                'message' => TopeSerperDemo::MENSAJE,
+                'run'     => null,
+            ];
+        }
+
         // La clave del comercio o la del servidor (misión serper-en-user-setup): el mensaje nombra las
         // dos. Lo ve solo el acceso maestro, que es quien sabe dónde se carga cada una.
         if (!ImageSearchProviderFactory::serper_configurado($owner)) {
@@ -1752,6 +1773,11 @@ class ImageAssignmentRunHelper
      */
     public static function reanudar(ImageAssignmentRun $run)
     {
+        // Misión tope-serper-demos: en una demo sin búsquedas, reanudar solo volvería a cortarse.
+        if (TopeSerperDemo::agotado((int) $run->user_id)) {
+            return ['status' => 422, 'message' => TopeSerperDemo::MENSAJE];
+        }
+
         return DB::transaction(function () use ($run) {
             /*
              * 🔴 La decisión se toma sobre la fila BLOQUEADA, no sobre la copia que llegó: si un
@@ -1960,6 +1986,9 @@ class ImageAssignmentRunHelper
 
         if ($run->status === ImageAssignmentRun::STATUS_DETENIDA) {
             $etapa = 'Detenida';
+        } elseif ($cupo_agotado && TopeSerperDemo::agotado((int) $run->user_id)) {
+            // Misión tope-serper-demos: el cupo que se agotó es el de la demo, no el diario.
+            $etapa = 'Llegaste al límite de búsquedas de la demo';
         } elseif ($cupo_agotado) {
             $etapa = 'Se agotó el cupo diario de búsquedas';
         } else {

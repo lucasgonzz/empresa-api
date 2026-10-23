@@ -6,6 +6,7 @@ use App\Models\BackgroundProcess;
 use App\Models\GeocoderCounter;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
+use App\Services\ProductFacts\TopeSerperDemo;
 use Carbon\Carbon;
 
 /**
@@ -74,8 +75,15 @@ class ImagenesAutomaticasHelper
      * (GeocoderCounter, el mismo que incrementa el job en cada búsqueda) sin crearlo: consultar no
      * es buscar.
      *
+     * En una DEMO (misión tope-serper-demos, 23/10/2026) `disponibles` nunca pasa de las búsquedas de
+     * Serper que le quedan al dueño en la demo (TopeSerperDemo, 25 por lead): así el asistente y las
+     * asignaciones por selección, que ya miran este número, respetan el tope sin cambiar nada más.
+     * `tope_demo` (el objeto del contrato con la SPA: {aplica, tope, usadas, restantes}) se agrega
+     * SOLO en una demo: fuera de una demo el array queda exactamente como antes (hay tests y
+     * llamadores que lo comparan entero) y no se consulta nada de más.
+     *
      * @param  \App\Models\User  $owner
-     * @return array  ['cuota' => int, 'usadas_hoy' => int, 'disponibles' => int]
+     * @return array  ['cuota' => int, 'usadas_hoy' => int, 'disponibles' => int] (+ 'tope_demo' solo en una demo)
      */
     public static function cuota_de(User $owner)
     {
@@ -87,11 +95,20 @@ class ImagenesAutomaticasHelper
 
         $usadas_hoy = is_null($contador) ? 0 : (int) $contador->counter;
 
-        return [
+        $resultado = [
             'cuota'       => $cuota,
             'usadas_hoy'  => $usadas_hoy,
             'disponibles' => max(0, $cuota - $usadas_hoy),
         ];
+
+        $tope_demo = TopeSerperDemo::estado($owner);
+
+        if ($tope_demo['aplica']) {
+            $resultado['disponibles'] = min($resultado['disponibles'], (int) $tope_demo['restantes']);
+            $resultado['tope_demo']   = $tope_demo;
+        }
+
+        return $resultado;
     }
 
     /**

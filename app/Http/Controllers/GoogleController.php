@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
 use App\Models\GeocoderCounter;
 use App\Models\User;
+use App\Services\ProductFacts\TopeSerperDemo;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -37,6 +38,12 @@ class GoogleController extends Controller
         // Sin dueño resuelto no hay con qué buscar (ni key, ni cuota): antes del helper tipado.
         if (is_null($owner)) {
             return response()->json(['message' => 'No se pudo identificar la cuenta.'], 422);
+        }
+
+        // Misión tope-serper-demos (23/10/2026): una demo sin búsquedas no encola nada. Mismo 422
+        // {message} que ya muestra la SPA para este botón.
+        if (TopeSerperDemo::agotado($owner)) {
+            return response()->json(['message' => TopeSerperDemo::MENSAJE], 422);
         }
 
         $encolado = ImagenesAutomaticasHelper::encolar($owner, $request->article_ids, $this->userId(false));
