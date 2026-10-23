@@ -143,10 +143,7 @@ class Auditoria_devoluciones_y_stock_global_Test extends AuditoriaStockTestCase
         $this->assertEquals(2.0, (float) $nc->amount, 'La cantidad devuelta no se multiplica por unidades_individuales.');
         $this->assertEquals($venta->id, (int) $nc->sale_id, 'El movimiento de la NC tiene que quedar atado a la venta.');
         $this->assertNotNull($nc->nota_credito_id, 'El movimiento de la NC tiene que quedar atado a la nota de crédito.');
-        // Sucursal-siempre (D4): la venta (resta) no materializa; la NC SUMA a la sucursal, así que primero
-        // pasa el global (15) entero a la principal y después devuelve 2 ahí: una sola fila, con todo.
-        $this->assertEquals(17.0, $this->stock_en_deposito($articulo, $this->sucursal()->id), 'La NC deja TODO el stock en la principal, sin perder el global.');
-        $this->assertEquals(1, $this->cantidad_de_depositos($articulo));
+        $this->assertEquals(0, $this->cantidad_de_depositos($articulo), 'La NC no abre depósitos en un artículo con stock global.');
 
         $this->assertEquals(0, $this->movimientos($articulo, 'Ingreso manual')->count(), 'No tiene que haber ningún "Ingreso manual" espurio.');
 
