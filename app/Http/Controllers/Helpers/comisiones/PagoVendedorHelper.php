@@ -190,6 +190,8 @@ class PagoVendedorHelper {
      */
     static function crear_movimientos_caja($seller, $payment_methods) {
 
+        MovimientoCajaHelper::validar_cajas_para_operacion($payment_methods->pluck('pivot.caja_id')->all());
+
         $concepto = ConceptoMovimientoCaja::where('name', 'Pago a Vendedor')->first();
 
         if (is_null($concepto)) {

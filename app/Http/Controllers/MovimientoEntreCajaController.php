@@ -28,20 +28,23 @@ class MovimientoEntreCajaController extends Controller
     }
 
     public function store(Request $request) {
-        $model = MovimientoEntreCaja::create([
-            'num'                   => $this->num('movimiento_entre_cajas'),
-            'from_caja_id'          => $request->from_caja_id,
-            'to_caja_id'            => $request->to_caja_id,
-            'amount'                => $request->amount,
-            'employee_id'           => $this->userId(false),
-            'user_id'               => $this->userId(),
-        ]);
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($request) {
+            \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion([$request->from_caja_id, $request->to_caja_id]);
+            $model = MovimientoEntreCaja::create([
+                'num'                   => $this->num('movimiento_entre_cajas'),
+                'from_caja_id'          => $request->from_caja_id,
+                'to_caja_id'            => $request->to_caja_id,
+                'amount'                => $request->amount,
+                'employee_id'           => $this->userId(false),
+                'user_id'               => $this->userId(),
+            ]);
 
-        $helper = new MovimientoEntreCajaHelper();
-        $helper->mover($model);
+            $helper = new MovimientoEntreCajaHelper();
+            $helper->mover($model);
 
-        // $this->sendAddModelNotification('MovimientoEntreCaja', $model->id);
-        return response()->json(['model' => $this->fullModel('MovimientoEntreCaja', $model->id)], 201);
+            // $this->sendAddModelNotification('MovimientoEntreCaja', $model->id);
+            return response()->json(['model' => $this->fullModel('MovimientoEntreCaja', $model->id)], 201);
+        });
     }  
 
     public function show($id) {

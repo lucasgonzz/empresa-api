@@ -22,8 +22,8 @@ use Illuminate\Support\Facades\Log;
  * 🔴 ES UNA MUDANZA, NO UN ARREGLO. El cuerpo de registrar() es el de pago() desde el
  * `CurrentAcount::create` hasta `pagar_cuota`, en el MISMO orden y con las MISMAS escrituras. No hace
  * lo que el controller hace alrededor, y cada cosa tiene su porqué:
- *   - No prevalida las cajas sin apertura: cada llamador lo hace ANTES, para poder responder 422 sin
- *     haber escrito nada (ver CurrentAcountCajaHelper::cajas_sin_apertura_en_payload()).
+ *   - Desde el arreglo de Ananda (23/10/2026), valida y bloquea las cajas con apertura vigente
+ *     antes del alta, además del prechequeo que pueda hacer cada llamador.
  *   - No abre transacción: cada llamador decide. El asistente llama a registrar() adentro de la
  *     suya, y desde la misión cheques-endoso-y-bancos (21/9/2026) la pantalla y el botón Endosar
  *     del módulo de cheques también (cerró el hallazgo 5 del informe del 21/8/2026: un endoso que
@@ -85,6 +85,10 @@ class CurrentAcountPagoAltaHelper {
          * que ésta es la primera lectura del alta. Ver CuentaCorrienteLock.
          */
         CuentaCorrienteLock::bloquear($pedido->model_name, $pedido->model_id);
+
+        \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion(
+            \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::cajas_del_payload($pedido->current_acount_payment_methods)
+        );
 
         $pago = CurrentAcount::create([
             'haber'                             => self::get_haber($pedido),

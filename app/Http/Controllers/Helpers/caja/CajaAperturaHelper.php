@@ -19,12 +19,15 @@ class CajaAperturaHelper {
 	}
 
 	function abrir_caja() {
+		return \Illuminate\Support\Facades\DB::transaction(function () {
+			$this->caja = Caja::where('id', $this->caja->id)->lockForUpdate()->first();
 
-		Log::info('se abrio caja');
+			Log::info('se abrio caja');
 
-		$this->crear_apertura();
+			$this->crear_apertura();
 
-		$this->marcar_abierta();
+			$this->marcar_abierta();
+		});
 
 	}
 

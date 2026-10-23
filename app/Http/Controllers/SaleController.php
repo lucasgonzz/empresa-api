@@ -707,6 +707,12 @@ class SaleController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException) {
+                $errores = $e->errors();
+                $primero = reset($errores);
+                return response()->json(['message' => $primero[0], 'errors' => $errores], 422);
+            }
+
             /*
              * Última red de la idempotencia (misión ingreso-sin-internet, 23/10/2026): si el alta
              * murió porque el índice único `(user_id, offline_uuid)` rechazó el uuid —dos requests

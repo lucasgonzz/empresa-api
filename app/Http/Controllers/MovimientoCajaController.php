@@ -105,8 +105,7 @@ class MovimientoCajaController extends Controller
      * hacía reventar con 500 cualquier corrección o baja posterior, porque recalcular_saldos() no
      * le encuentra importe), y un alta `{ingreso: 0, egreso: 500}` contaba +0.
      *
-     * No se agregó la regla de "turno cerrado" al alta: no se pidió (sin apertura vigente, el
-     * helper sigue usando la última apertura de la caja, como siempre).
+     * El alta exige el turno vigente abierto y lo bloquea durante la escritura.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse  201 `{model}`; 422 si la caja o la apertura no son del
@@ -156,8 +155,14 @@ class MovimientoCajaController extends Controller
             'manual'                        => true,
         ];
 
-        $helper = new MovimientoCajaHelper();
-        $movimiento_caja = $helper->crear_movimiento($data);
+        $movimiento_caja = \Illuminate\Support\Facades\DB::transaction(function () use ($data) {
+            MovimientoCajaHelper::validar_cajas_para_operacion([$data['caja_id']]);
+            $caja = Caja::where('id', $data['caja_id'])->lockForUpdate()->first();
+            if ($data['apertura_caja_id'] && (int) $data['apertura_caja_id'] !== (int) $caja->current_apertura_caja_id) {
+                MovimientoCajaHelper::rechazar_operacion('La apertura elegida no es la vigente de la caja.', 'apertura_caja_id');
+            }
+            return (new MovimientoCajaHelper())->crear_movimiento($data);
+        });
 
         return response()->json(['model' => $this->con_editabilidad($movimiento_caja)], 201);
     }

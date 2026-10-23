@@ -47,9 +47,8 @@ class ExpenseHelper {
      * una transacción. Devuelve el Expense recién creado (sin relaciones extra cargadas: el
      * llamador decide qué necesita, ej. `fullModel('Expense', $id)`).
      *
-     * 🔴 La prevalidación de cajas sin apertura (CurrentAcountCajaHelper::cajas_sin_apertura_en_payload)
-     * NO vive acá: la hace cada llamador ANTES, para poder responder 422 sin haber escrito nada.
-     * Acá se asume que el payload ya pasó por ella.
+     * El llamador puede prevalidar las cajas sin apertura; acá se exige además un turno vigente
+     * abierto, bloqueado hasta el commit, antes de crear el gasto y su desglose.
      *
      * @param  array  $data  Claves: `expense_concept_id`, `amount`, `moneda_id` (ya normalizada con
      *                       normalizar_moneda_id()), `importe_iva`, `observations`, `created_at`,
@@ -90,6 +89,10 @@ class ExpenseHelper {
          * una parte de los movimientos de caja hechos.
          */
         return DB::transaction(function () use ($valor, $user_id, $num, $payment_methods) {
+
+            \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion(
+                \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::cajas_del_payload($payment_methods)
+            );
 
             $model = Expense::create([
                 'num'                                   => is_callable($num) ? $num() : $num,

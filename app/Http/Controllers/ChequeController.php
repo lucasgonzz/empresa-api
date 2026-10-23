@@ -182,7 +182,7 @@ class ChequeController extends Controller
                 $agrupados[$cheque->tipo]['vencidos'][] = $cheque;
             }
         }
-                            
+
         return response()->json(['models' => $agrupados], 200);
     }
 
@@ -234,7 +234,9 @@ class ChequeController extends Controller
         $user_id = $this->userId();
         $empleado_id = $this->userId(false);
 
-        $marcado = DB::transaction(function () use ($cheque, $user_id, $empleado_id) {
+        $marcado = DB::transaction(function () use ($cheque, $user_id, $empleado_id, $caja_id) {
+
+            \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion([$caja_id]);
 
             $libre = Cheque::where('id', $cheque->id)
                             ->where('user_id', $user_id)
@@ -252,6 +254,10 @@ class ChequeController extends Controller
             $cheque->cobrado_por_id = $empleado_id;
             $cheque->save();
 
+            if ($caja_id > 0) {
+                CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
+            }
+
             return true;
         });
 
@@ -262,10 +268,6 @@ class ChequeController extends Controller
             $motivo = is_null($actual) ? null : ChequeHelper::motivo_para_no_pagar($actual);
 
             return response()->json(['message' => is_null($motivo) ? self::MENSAJE_CHEQUE_AJENO : $motivo], 422);
-        }
-
-        if ($caja_id > 0) {
-            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'provider', $cheque->current_acount, 'Pago cheque N° '.$cheque->numero);
         }
 
         return response()->json(['model' => $cheque], 200);
@@ -296,16 +298,20 @@ class ChequeController extends Controller
             return response()->json(['message' => self::MENSAJE_CAJA_AJENA], 422);
         }
 
-        $cheque->estado_manual = 'cobrado';
-        $cheque->cobrado_en = Carbon::now();
-        $cheque->cobrado_por_id = $this->userId(false);
-        $cheque->save();
+        return DB::transaction(function () use ($cheque, $caja_id) {
+            \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion([$caja_id]);
+            $cheque = Cheque::where('id', $cheque->id)->lockForUpdate()->first();
+            $cheque->estado_manual = 'cobrado';
+            $cheque->cobrado_en = Carbon::now();
+            $cheque->cobrado_por_id = $this->userId(false);
+            $cheque->save();
 
-        if ($caja_id > 0) {
-            CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'client', $cheque->current_acount, 'Cobro cheque N° '.$cheque->numero);
-        }
+            if ($caja_id > 0) {
+                CurrentAcountCajaHelper::guardar_pago($cheque->amount, $caja_id, 'client', $cheque->current_acount, 'Cobro cheque N° '.$cheque->numero);
+            }
 
-        return response()->json(['model' => $cheque], 200);
+            return response()->json(['model' => $cheque], 200);
+        });
     }
 
     /**
@@ -808,4 +814,4 @@ class ChequeController extends Controller
         return ChequeHelper::id_del_dueno(Provider::class, $provider_id, $this->userId());
     }
 }
- 
+

@@ -11,33 +11,9 @@ use Illuminate\Support\Facades\Log;
 class CurrentAcountCajaHelper {
 
 	/**
-	 * Nombres de las cajas destino que NUNCA se abrieron, entre los metodos de pago que vienen en el
-	 * request, para poder frenar el pago ANTES de crear nada.
-	 *
-	 * 🔴 El criterio es "no tiene ninguna AperturaCaja", NO "esta cerrada". Son cosas distintas y
-	 * confundirlas rompe un caso legitimo:
-	 *
-	 *   - Caja cerrada PERO con aperturas previas (el comercio que abre a la manana y cierra a la
-	 *     noche): el movimiento se cuelga de la ultima apertura y el pago entra sin problema. Es el
-	 *     comportamiento de hoy en todos los flujos -ventas incluidas- y no se toca.
-	 *   - Caja sin NINGUNA apertura: `MovimientoCajaHelper::get_current_aperutra_caja()` no tiene de
-	 *     donde colgar el movimiento y revienta. Ese es el unico caso que hay que frenar.
-	 *
-	 * Se midio el 21/8/2026 en el slot s1: con una caja `abierta = 0` que ya habia tenido apertura,
-	 * el pago devuelve 201 y crea el movimiento. Validar por `abierta` habria rechazado ese pago con
-	 * un 422 y roto a todo comercio que cobra despues del cierre.
-	 *
-	 * Existe aparte de `DeleteCajaCompensacionHelper::verificar_cajas_abiertas()` por dos motivos:
-	 * aquel recorre la relacion ya attachada (objetos con `->pivot`) y este el array crudo del
-	 * request, que es lo unico que hay antes de guardar; y aquel valida apertura vigente porque va a
-	 * MOVER plata en el momento, mientras que este solo necesita que exista donde registrarla.
-	 *
-	 * Una fila sin monto se saltea, igual que hace `PaymentMethodHelper::attach_payment_methods()`:
-	 * nunca se adjunta ni genera movimiento, asi que no puede frenar el pago (el caso real es el
-	 * usuario que agrega un metodo de pago de mas y lo deja vacio).
-	 *
-	 * @param array|null $payment_methods Array crudo `current_acount_payment_methods` del request.
-	 * @return array Nombres de las cajas sin apertura, sin repetir.
+	 * Prechequeo histórico de cajas nunca abiertas, conservado para sus consumidores.
+	 * El alta valida también el turno vigente bajo lock dentro de su transacción.
+	 * Desde el arreglo de Ananda (23/10/2026), una caja cerrada tampoco admite cobros nuevos.
 	 */
 	static function cajas_sin_apertura_en_payload($payment_methods) {
 

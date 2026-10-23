@@ -223,6 +223,10 @@ class DeleteSaleHelper {
 			*/
 			CuentaCorrienteLock::bloquear('client', $viva->client_id);
 
+			if ($compensar_caja && !is_null($payment_methods)) {
+				\App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion($payment_methods->pluck('pivot.caja_id')->all());
+			}
+
 			Self::ejecutar_baja($model, $instance, $compensar_caja, $payment_methods, $helper_caja);
 
 			return true;

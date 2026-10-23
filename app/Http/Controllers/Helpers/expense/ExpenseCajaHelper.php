@@ -182,6 +182,7 @@ class ExpenseCajaHelper {
 
                 // No había movimiento para esta caja: se crea igual que en el alta del
                 // gasto. crear_movimiento() ya recalcula saldos y totales de la apertura.
+                MovimientoCajaHelper::validar_cajas_para_operacion([$caja_id]);
                 Self::guardar_movimiento_caja($expense, [
                     'amount'  => $payment_method->pivot->amount,
                     'caja_id' => $caja_id,

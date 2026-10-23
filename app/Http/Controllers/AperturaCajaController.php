@@ -72,18 +72,21 @@ class AperturaCajaController extends Controller
 
     function reabrir($apertura_caja_id) {
         $apertura_caja = AperturaCaja::find($apertura_caja_id);
-        $apertura_caja->cerrada_at = null; 
-        $apertura_caja->cierre_employee_id = null; 
-        $apertura_caja->saldo_cierre = null; 
-        $apertura_caja->save();
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($apertura_caja) {
+            $caja = Caja::where('id', $apertura_caja->caja_id)->lockForUpdate()->first();
+            $apertura_caja = AperturaCaja::where('id', $apertura_caja->id)->lockForUpdate()->first();
+            $apertura_caja->cerrada_at = null;
+            $apertura_caja->cierre_employee_id = null;
+            $apertura_caja->saldo_cierre = null;
+            $apertura_caja->save();
 
-        $caja = Caja::find($apertura_caja->caja_id);
-        $caja->abierta = 1;
-        $caja->cerrada_at = null;
-        $caja->current_apertura_caja_id = $apertura_caja->id;
-        $caja->save();
+            $caja->abierta = 1;
+            $caja->cerrada_at = null;
+            $caja->current_apertura_caja_id = $apertura_caja->id;
+            $caja->save();
 
-        return response(null, 200);
+            return response(null, 200);
+        });
     }
 
     public function destroy($id) {

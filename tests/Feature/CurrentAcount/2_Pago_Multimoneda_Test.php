@@ -300,21 +300,15 @@ class Pago_Multimoneda_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 Una caja CERRADA pero que ya tuvo aperturas tiene que seguir aceptando el cobro.
-     *
-     * Es el caso del comercio que abre la caja a la manana y la cierra a la noche: el movimiento se
-     * cuelga de la ultima apertura y el pago entra sin problema. Asi funciona hoy en todos los
-     * flujos (las ventas ni siquiera validan esto), y medido el 21/8/2026 devuelve 201.
-     *
-     * Este test existe porque la primera version de la validacion miraba `cajas.abierta` en vez de
-     * la existencia de aperturas, y le habria devuelto un 422 a todo el que cobra despues del
-     * cierre. Si alguien vuelve a confundir "cerrada" con "sin apertura", este test se pone rojo.
+     * Ananda (23/10/2026) cambia la regla previa: un cobro exige el turno abierto aunque haya
+     * historial. Este caso antes esperaba 201 y protegía el fallo que Lucas pidió corregir.
      *
      * @group current-acount
      * @test
      */
-    public function una_caja_cerrada_con_apertura_previa_sigue_aceptando_el_cobro()
+    public function una_caja_cerrada_con_apertura_previa_rechaza_el_cobro()
     {
+        $cantidad_pagos = CurrentAcount::count();
         $cliente = $this->resolver_cliente_por_nombre(TestingFerreteriaSeeder::CLIENTE_CC);
         $metodo_efectivo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
         $credit_account = $this->credit_account_en_dolares($cliente);
@@ -339,22 +333,10 @@ class Pago_Multimoneda_Test extends EmpresaTestCase
 
         $response = $this->postJson('api/current-acount/pago', $payload);
 
-        $response->assertStatus(201);
-
-        $pago_id = $this->extraer_id_de_respuesta(
-            $response,
-            'api/current-acount/pago',
-            null,
-            ['current_acount', 'model']
-        );
-
-        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
-        $this->registrar_movimientos_caja_nuevos($antes);
-
-        $this->assertNotNull(
-            MovimientoCaja::where('caja_id', $caja->id)->where('id', '>', $antes)->first(),
-            'Una caja cerrada con apertura previa dejo de registrar el movimiento.'
-        );
+        $response->assertStatus(422);
+        $this->assertStringContainsString($caja->name, $response->json('message'));
+        $this->assertNull(MovimientoCaja::where('caja_id', $caja->id)->where('id', '>', $antes)->first());
+        $this->assertEquals($cantidad_pagos, CurrentAcount::count());
     }
 
     /**
