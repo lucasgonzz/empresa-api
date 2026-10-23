@@ -164,4 +164,33 @@ class Reversiones_de_comprobantes_viejos_Test extends SucursalSiempreTestCase
         $this->assertEquals(10.0, $this->stock_en_deposito($articulo, $principal->id));
         $this->assertEquals(10.0, $this->stock($articulo));
     }
+
+    /**
+     * Artículo dado de alta antes del libro: su PRIMER movimiento es la venta S (−2) y no tiene
+     * `stock_anterior` ni ningún movimiento anterior. Sin cómo saber el stock de antes, se toma como que
+     * SÍ movió (tercera ronda del chequeo): el cliente se migra (principal 8) y al borrar S vuelve a 10.
+     *
+     * @test
+     */
+    public function sin_stock_anterior_ni_movimiento_previo_se_toma_como_que_movio()
+    {
+        $principal = $this->principal();
+
+        $articulo = $this->crear_articulo('zz Reversion sin stock anterior', ['stock' => 10]);
+
+        $venta = $this->crear_venta([['article' => $articulo, 'amount' => 2, 'price' => 100]], ['address_id' => null]);
+
+        $this->assertSame(1, DB::table('stock_movements')->where('article_id', $articulo->id)->count(), 'La venta es el primer movimiento del artículo.');
+
+        // Un movimiento de antes de que existiera stock_anterior (29/9/2026).
+        DB::table('stock_movements')->where('sale_id', $venta->id)->where('article_id', $articulo->id)->update(['stock_anterior' => null]);
+
+        // La migración: el global (8) a la principal.
+        $this->con_fila($articulo, $principal->id, 8);
+
+        $this->deleteJson('api/sale/'.$venta->id)->assertStatus(200);
+
+        $this->assertEquals(10.0, $this->stock_en_deposito($articulo, $principal->id));
+        $this->assertEquals(10.0, $this->stock($articulo));
+    }
 }

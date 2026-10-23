@@ -568,6 +568,14 @@ class SucursalVigenteHelper {
      * Se mira "alguno movió" y no "la suma ≠ 0": una venta que descontó 2 y una NC que devolvió 2
      * suman 0 pero movieron stock de verdad.
      *
+     * LIMITACIÓN CONOCIDA (a propósito, no se arregla acá): EDITAR un comprobante viejo cuyo original se
+     * había perdido sigue sin mover stock, igual que en develop. El ajuste de la edición también es
+     * "una reversión de algo que nunca se movió", y moverlo ahora inventaría stock.
+     *
+     * Las consultas usan los índices de 2026_10_23_130000_add_indexes_stock_movements_comprobantes
+     * (`provider_order_id`, `nota_credito_id`, `order_id` y `article_id`, que con la PK al final del
+     * índice resuelve el "movimiento anterior" sin ordenar); `sale_id` ya estaba indexado.
+     *
      * @param  array  $data
      * @return bool
      */
@@ -622,8 +630,16 @@ class SucursalVigenteHelper {
                     ->value('stock_resultante');
             }
 
+            /*
+             * Sin cómo saber el stock de antes (el original no tiene `stock_anterior` y el artículo no
+             * tiene ningún movimiento anterior), se toma como que SÍ movió (tercera ronda del chequeo,
+             * 23/10/2026). Para que un movimiento se perdiera el artículo ya tenía que tener filas, y
+             * casi siempre las abre un movimiento anterior; el que no tiene ninguno es, típicamente, un
+             * artículo dado de alta antes del libro cuya primera venta descontó del global: en un
+             * cliente migrado, borrarla tiene que devolver a la principal.
+             */
             if (is_null($anterior) || is_null($original->stock_resultante)) {
-                continue;
+                return true;
             }
 
             if (abs((float) $original->stock_resultante - (float) $anterior) > 0.0001) {
