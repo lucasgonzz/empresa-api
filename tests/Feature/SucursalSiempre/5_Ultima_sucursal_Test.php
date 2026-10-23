@@ -125,4 +125,23 @@ class Ultima_sucursal_Test extends SucursalSiempreTestCase
 
         $this->assertNull(Address::find($b->id));
     }
+
+    /**
+     * La carrera de dos borrados simultáneos de las dos últimas sucursales: los dos pasaron la
+     * validación cuando había dos, y cuando llega la fase final del segundo ya queda una sola. La fase
+     * final bloquea las sucursales del dueño, vuelve a contar y no borra.
+     *
+     * @test
+     */
+    public function la_fase_final_vuelve_a_contar_bajo_candado()
+    {
+        $unica = $this->otra_sucursal('zz Carrera');
+        $this->dejar_solo($unica);
+
+        // Como si la validación hubiera visto otra sucursal viva (es_la_ultima = false).
+        $resultado = EliminarSucursalHelper::fase_final($unica, $this->usuario()->id, EliminarSucursalHelper::normalizar_decision([]), false);
+
+        $this->assertSame(EliminarSucursalHelper::MENSAJE_ULTIMA_SUCURSAL, $resultado['error']);
+        $this->assertNotNull(Address::find($unica->id), 'No se borró.');
+    }
 }

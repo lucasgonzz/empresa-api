@@ -1786,6 +1786,27 @@ class EliminarSucursalHelper {
         $resultado = DB::transaction(function () use ($address, $owner_id, $es_la_ultima, $reemplazo_id, $usuarios_destino_id) {
 
             /*
+             * 🔴 D7 de sucursal-siempre, con candado por DUEÑO: se bloquean todas las sucursales del
+             * comercio y recién ahí se vuelve a contar si queda alguna otra. Sin esto, dos borrados
+             * simultáneos de las dos últimas sucursales pasaban los dos la validación (cada uno veía
+             * "hay otra") y el comercio quedaba sin ninguna. Con el candado, el segundo espera al
+             * primero, relee, ve que la suya es la última y no borra nada.
+             */
+            $vivas = DB::table('addresses')
+                        ->where('user_id', $owner_id)
+                        ->whereNull('buyer_id')
+                        ->orderBy('id')
+                        ->lockForUpdate()
+                        ->pluck('id')
+                        ->all();
+
+            $otras_vivas = array_values(array_diff(array_map('intval', $vivas), [(int) $address->id]));
+
+            if (count($otras_vivas) === 0) {
+                return ['error' => Self::MENSAJE_ULTIMA_SUCURSAL];
+            }
+
+            /*
              * 🔴 PRIMERO se bloquean TODAS las filas de la sucursal, también las que están en 0 (tercera
              * ronda de revisión, 5/10/2026). El conteo de más abajo filtra por `amount != 0` y, con el
              * aislamiento READ COMMITTED que usa este sistema (config/database.php), InnoDB SUELTA el
