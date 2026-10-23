@@ -301,4 +301,58 @@ class Comando_migrar_a_principal_Test extends SucursalSiempreTestCase
 
         $this->assertEquals(2.0, (float) DB::table('address_article')->where('article_id', $sano->id)->value('amount'), 'El sano se migró.');
     }
+
+    /**
+     * Un artículo cuya única fila es la de un domicilio de COMPRADOR cuenta como sin fila: el informe lo
+     * dice, y la principal recibe el stock MENOS esa fila (el global queda idéntico).
+     *
+     * @test
+     */
+    public function la_fila_de_un_comprador_no_cuenta_como_sucursal()
+    {
+        $dueno = $this->dueno_nuevo('comprador');
+        Address::create(['street' => 'zz Unica comprador', 'user_id' => $dueno->id]);
+
+        $comprador = Address::create(['street' => 'zz Domicilio de envio', 'user_id' => null, 'buyer_id' => 555]);
+
+        $articulo = $this->articulo_propio($dueno, 'con fila de comprador', 0);
+        $articulo->addresses()->attach($comprador->id, ['amount' => -2]);
+        DB::table('articles')->where('id', $articulo->id)->update(['stock' => 7]);
+
+        $this->assertSame(0, $this->correr($dueno));
+        $this->assertStringContainsString('con fila solo en un domicilio de comprador (cuentan como sin fila; la principal recibe el stock menos esa fila): 1', $this->texto);
+
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        $principal = Address::principal_de($dueno->id);
+
+        $this->assertEquals(9.0, (float) DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $principal->id)->value('amount'), 'La principal recibe 7 − (−2).');
+        $this->assertEquals(-2.0, (float) DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $comprador->id)->value('amount'));
+        $this->assertEquals(7.0, (float) $this->stock_crudo($articulo), 'El global queda idéntico.');
+    }
+
+    /**
+     * La migración no pisa `articles.stock_updated_at` (el stock no cambia), y el valor queda en la
+     * reversión.
+     *
+     * @test
+     */
+    public function no_pisa_stock_updated_at_y_lo_guarda_en_la_reversion()
+    {
+        $dueno = $this->dueno_nuevo('fecha');
+
+        $articulo = $this->articulo_propio($dueno, 'con fecha', 12);
+        DB::table('articles')->where('id', $articulo->id)->update(['stock_updated_at' => '2021-03-04 05:06:07']);
+
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        $this->assertSame(1, StockMovement::where('article_id', $articulo->id)->count(), 'Hubo movimiento por el motor.');
+        $this->assertSame('2021-03-04 05:06:07', (string) DB::table('articles')->where('id', $articulo->id)->value('stock_updated_at'));
+
+        $carpetas = glob($this->salida.DIRECTORY_SEPARATOR.'*', GLOB_ONLYDIR);
+        $sql = file_get_contents($carpetas[0].DIRECTORY_SEPARATOR.'reversion.sql');
+        $this->assertStringContainsString("stock_updated_at = '2021-03-04 05:06:07' WHERE id = ".$articulo->id, $sql);
+        $this->assertStringContainsString('INMEDIATAMENTE después de migrar', $sql);
+        $this->assertStringContainsString('FUERA del horario del negocio', $this->texto);
+    }
 }

@@ -49,6 +49,10 @@ use Illuminate\Support\Facades\DB;
  *       la papelera (`Article::find`), mismo criterio que la D7 de eliminar-sucursal-con-stock;
  *     - con variantes: lo mismo por cada variante que no reparte (con `article_variant_id`), así el
  *       recálculo desde las variantes (`setArticleStockFromAddresses`) no pisa nada.
+ *     Una fila en el domicilio de un COMPRADOR (`buyer_id`, pedidos viejos de la tienda) no es una
+ *     sucursal: el artículo cuenta como sin fila, y a la principal va el stock MENOS lo que ya suman sus
+ *     filas, para que el global quede idéntico. Los movimientos no tocan `stock_updated_at`
+ *     (`sin_stock_updated_at`): el stock no cambia. Ese valor igual queda en el respaldo y en la reversión.
  *  e. Verifica artículo por artículo que `articles.stock` y el de cada variante quedaron IDÉNTICOS a
  *     los de antes (null cuenta como 0). Si alguno difiere, lo informa y revierte ESE artículo: cada
  *     artículo va en su transacción.
@@ -92,6 +96,9 @@ class MigrarASucursalPrincipal extends Command
 
     /** Carpeta base del respaldo, dentro de storage/app. */
     const CARPETA = 'respaldos/sucursal-principal';
+
+    /** Se imprime en --ver y al terminar --aplicar. */
+    const AVISO_HORARIO = 'Correr --aplicar FUERA del horario del negocio: la reversión solo vale inmediatamente después de migrar (si hubo ventas en el medio, las pisa).';
 
     /** Tamaño de las tandas de lectura de artículos. */
     const TANDA = 500;
@@ -228,9 +235,14 @@ class MigrarASucursalPrincipal extends Command
             'papelera'         => 0,
             'con_variantes'    => 0,
             'variantes'        => 0,
+            'solo_comprador'   => 0,
         ];
 
         foreach ($articulos as $a) {
+            if (!empty($a['solo_comprador'])) {
+                $casos['solo_comprador']++;
+            }
+
             if ($a['papelera']) {
                 $casos['papelera']++;
             }
@@ -293,14 +305,27 @@ class MigrarASucursalPrincipal extends Command
                 $ultimo_id = (int) $fila->id;
             }
 
+            // Una fila en el domicilio de un COMPRADOR (buyer_id) no es una sucursal: un artículo cuya
+            // única fila es de un comprador cuenta como sin fila (y el informe lo dice aparte).
             $con_fila = DB::table('address_article as aa')
                 ->join('addresses as ad', 'ad.id', '=', 'aa.address_id')
+                ->whereNull('ad.buyer_id')
                 ->whereIn('aa.article_id', $ids)
                 ->distinct()
                 ->pluck('aa.article_id')
                 ->all();
 
             $con_fila = array_flip(array_map('intval', $con_fila));
+
+            $con_fila_de_comprador = DB::table('address_article as aa')
+                ->join('addresses as ad', 'ad.id', '=', 'aa.address_id')
+                ->whereNotNull('ad.buyer_id')
+                ->whereIn('aa.article_id', $ids)
+                ->distinct()
+                ->pluck('aa.article_id')
+                ->all();
+
+            $con_fila_de_comprador = array_flip(array_map('intval', $con_fila_de_comprador));
 
             $variantes = DB::table('article_variants')
                 ->whereIn('article_id', $ids)
@@ -320,6 +345,7 @@ class MigrarASucursalPrincipal extends Command
             if (count($ids_variantes) > 0) {
                 $variantes_con_fila = DB::table('address_article_variant as aav')
                     ->join('addresses as ad', 'ad.id', '=', 'aav.address_id')
+                    ->whereNull('ad.buyer_id')
                     ->whereIn('aav.article_variant_id', $ids_variantes)
                     ->distinct()
                     ->pluck('aav.article_variant_id')
@@ -356,6 +382,7 @@ class MigrarASucursalPrincipal extends Command
                         'stock_crudo' => $fila->stock,
                         'papelera'    => !is_null($fila->deleted_at),
                         'variantes'   => $pendientes,
+                        'solo_comprador' => false,
                     ];
 
                     continue;
@@ -371,6 +398,7 @@ class MigrarASucursalPrincipal extends Command
                     'stock_crudo' => $fila->stock,
                     'papelera'    => !is_null($fila->deleted_at),
                     'variantes'   => [],
+                    'solo_comprador' => isset($con_fila_de_comprador[$id]),
                 ];
             }
         }
@@ -458,7 +486,10 @@ class MigrarASucursalPrincipal extends Command
             .' · con stock (movimiento a la principal): '.$c['con_stock']
             .' · en 0 o sin stock (fila en 0, sin movimiento): '.$c['en_cero_o_null']
             .' · en la papelera (fila directa, sin movimiento): '.$c['papelera']
-            .' · con variantes: '.$c['con_variantes'].' ('.$c['variantes'].' variantes sin fila).');
+            .' · con variantes: '.$c['con_variantes'].' ('.$c['variantes'].' variantes sin fila)'
+            .' · con fila solo en un domicilio de comprador (cuentan como sin fila; la principal recibe el stock menos esa fila): '.$c['solo_comprador'].'.');
+
+        $this->warn(self::AVISO_HORARIO);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════
@@ -523,6 +554,7 @@ class MigrarASucursalPrincipal extends Command
         $this->line('');
         $this->info('Listo: '.$ok.' artículo(s) migrados'.(count($revertidos) ? ', '.count($revertidos).' revertidos (ids: '.implode(', ', array_slice($revertidos, 0, 50)).')' : '').'.');
         $this->line('Respaldo y reversión en: '.$this->carpeta);
+        $this->warn(self::AVISO_HORARIO);
 
         return count($revertidos) ? 1 : 0;
     }
@@ -595,11 +627,16 @@ class MigrarASucursalPrincipal extends Command
         $id = (int) $a['id'];
 
         // Estado previo, leído con candado, y el respaldo ANTES de tocar nada.
-        $articulo_antes = DB::table('articles')->where('id', $id)->lockForUpdate()->first(['id', 'stock']);
+        $articulo_antes = DB::table('articles')->where('id', $id)->lockForUpdate()->first(['id', 'stock', 'stock_updated_at']);
 
-        $ids_variantes = array_map(function ($v) { return $v['id']; }, $a['variantes']);
+        // Las variantes también con candado: el stock que se usa abajo es ESTE, no el de medir().
+        $todas_las_variantes = DB::table('article_variants')->where('article_id', $id)->orderBy('id')->lockForUpdate()->get(['id', 'stock'])->all();
 
-        $todas_las_variantes = DB::table('article_variants')->where('article_id', $id)->orderBy('id')->get(['id', 'stock'])->all();
+        $variante_bajo_candado = [];
+
+        foreach ($todas_las_variantes as $v) {
+            $variante_bajo_candado[(int) $v->id] = $v;
+        }
 
         $max_movimiento = (int) DB::table('stock_movements')->max('id');
 
@@ -613,6 +650,7 @@ class MigrarASucursalPrincipal extends Command
             'tipo'           => 'articulo',
             'article_id'     => $id,
             'stock'          => $articulo_antes->stock,
+            'stock_updated_at' => $articulo_antes->stock_updated_at,
             'variantes'      => $todas_las_variantes,
             'address_article'         => DB::table('address_article')->where('article_id', $id)->get()->all(),
             'address_article_variant' => count($filas_variante_antes) ? DB::table('address_article_variant')->whereIn('id', $filas_variante_antes)->get()->all() : [],
@@ -624,13 +662,20 @@ class MigrarASucursalPrincipal extends Command
 
         if (count($a['variantes']) === 0) {
 
-            if ($a['papelera'] || $stock_antes == 0.0) {
+            /*
+             * Lo que va a la principal: el stock MENOS lo que ya suman las filas que tiene (las de un
+             * domicilio de comprador, que no cuentan como sucursal pero sí suman en articles.stock). Sin
+             * filas, es el stock entero.
+             */
+            $a_la_principal = round($stock_antes - (float) DB::table('address_article')->where('article_id', $id)->sum('amount'), 2);
+
+            if ($a['papelera'] || $a_la_principal == 0.0) {
 
                 // Sin movimiento: la fila directa (con su stock en la papelera, en 0 si no) y el null → 0.
                 DB::table('address_article')->insert([
                     'article_id' => $id,
                     'address_id' => $principal->id,
-                    'amount'     => $stock_antes,
+                    'amount'     => $a_la_principal,
                 ]);
 
                 if (is_null($articulo_antes->stock)) {
@@ -639,7 +684,7 @@ class MigrarASucursalPrincipal extends Command
 
             } else {
 
-                $this->movimiento($id, null, $stock_antes, $principal, $owner);
+                $this->movimiento($id, null, $a_la_principal, $principal, $owner);
             }
 
         } else {
@@ -648,7 +693,17 @@ class MigrarASucursalPrincipal extends Command
 
             foreach ($a['variantes'] as $v) {
 
-                $stock_variante = (float) $v['stock'];
+                // El stock releído bajo candado, no el de medir(): pudo moverse en el medio.
+                $bajo_candado = isset($variante_bajo_candado[(int) $v['id']]) ? $variante_bajo_candado[(int) $v['id']] : null;
+
+                if (is_null($bajo_candado)) {
+                    continue;
+                }
+
+                $stock_crudo_variante = $bajo_candado->stock;
+
+                $stock_variante = round((is_null($stock_crudo_variante) ? 0.0 : (float) $stock_crudo_variante)
+                    - (float) DB::table('address_article_variant')->where('article_variant_id', (int) $v['id'])->sum('amount'), 2);
 
                 if ($a['papelera'] || $stock_variante == 0.0) {
 
@@ -660,7 +715,7 @@ class MigrarASucursalPrincipal extends Command
                         'updated_at'         => $ahora,
                     ]);
 
-                    if (is_null($v['stock_crudo'])) {
+                    if (is_null($stock_crudo_variante)) {
                         DB::table('article_variants')->where('id', $v['id'])->update(['stock' => 0]);
                     }
 
@@ -714,7 +769,7 @@ class MigrarASucursalPrincipal extends Command
             }
         }
 
-        $sql .= 'UPDATE articles SET stock = '.$this->literal($articulo_antes->stock).' WHERE id = '.$id.";\nCOMMIT;\n\n";
+        $sql .= 'UPDATE articles SET stock = '.$this->literal($articulo_antes->stock).', stock_updated_at = '.$this->literal($articulo_antes->stock_updated_at).' WHERE id = '.$id.";\nCOMMIT;\n\n";
 
         $this->escribir_sql($sql);
     }
@@ -743,6 +798,8 @@ class MigrarASucursalPrincipal extends Command
             'sin_unidades_individuales'     => true,
             'sin_materializar'              => true,
             'sin_sincronizar'               => true,
+            // El stock no cambia: la fecha de "stock actualizado" del artículo no se pisa.
+            'sin_stock_updated_at'          => true,
         ], false, $owner, $owner->id);
     }
 
@@ -794,8 +851,12 @@ class MigrarASucursalPrincipal extends Command
         $this->escribir_sql(implode("\n", [
             '-- Reversión de sucursales:migrar-a-principal',
             '-- Base: '.DB::connection()->getDatabaseName().' · dueño '.$user_id.' · '.Carbon::now()->toDateTimeString(),
-            '-- Primero la marca o la sucursal creada (con los usuarios), después un bloque por artículo.',
-            '-- Correr en orden INVERSO (los artículos antes que la sucursal): cada bloque de artículo es completo por sí solo.',
+            '-- Orden del archivo: primero el bloque de la sucursal (la marca de principal, o la sucursal creada con los',
+            '-- usuarios), después un bloque por artículo, en el orden en que se migraron.',
+            '-- Para revertir: correr los bloques de artículo y RECIÉN DESPUÉS el de la sucursal (borrar la sucursal antes',
+            '-- dejaría filas apuntando a un id que no existe). Cada bloque de artículo es completo por sí solo.',
+            '-- OJO: vale solo INMEDIATAMENTE después de migrar. Los UPDATE dejan el stock como estaba ANTES de la',
+            '-- migración, así que si hubo ventas, compras o ajustes en el medio, los pisa. Por eso se corre fuera del horario.',
             '-- ESCRIBE: correr con criterio.',
             '',
             '',
