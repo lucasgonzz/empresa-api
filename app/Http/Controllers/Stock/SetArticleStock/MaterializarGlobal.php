@@ -77,7 +77,8 @@ use Illuminate\Support\Facades\Log;
  *  🔴 CONCURRENCIA. La venta del mostrador y el pedido de Tienda Nube del mismo artículo pueden llegar
  *  a la vez: los dos leían "no tiene filas" y los dos materializaban (el global entraba dos veces a la
  *  principal). Por eso la decisión y la materialización van en UNA transacción con `lockForUpdate`
- *  sobre la fila de `articles` (y la de `article_variants` si es una variante), y las filas y el stock
+ *  sobre la fila de `article_variants` si es una variante y después la de `articles` (el orden del
+ *  motor), y las filas y el stock
  *  se vuelven a leer DESPUÉS de tomar el candado: el segundo espera al primero, relee, ve la fila ya
  *  abierta y no materializa.
  *
@@ -178,12 +179,17 @@ class MaterializarGlobal {
 
         return DB::transaction(function () use ($article, $variant_id, $destino_id, $owner_id, $employee_id, $set_updated_at) {
 
-            // El candado, y DESPUÉS la relectura (ver "concurrencia" en el docblock de la clase).
-            DB::table('articles')->where('id', (int) $article->id)->lockForUpdate()->value('id');
-
+            /*
+             * El candado, y DESPUÉS la relectura (ver "concurrencia" en el docblock de la clase). Primero
+             * la variante y después el artículo: el mismo orden en que escribe el motor (CheckVariants
+             * antes que `articles`), así una venta de esa misma variante en paralelo no se cruza en
+             * deadlock con esta transacción.
+             */
             if (!is_null($variant_id)) {
                 DB::table('article_variants')->where('id', $variant_id)->lockForUpdate()->value('id');
             }
+
+            DB::table('articles')->where('id', (int) $article->id)->lockForUpdate()->value('id');
 
             $stock = Self::stock_a_materializar($article, $variant_id);
 
