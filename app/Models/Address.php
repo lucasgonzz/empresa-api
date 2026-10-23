@@ -84,6 +84,12 @@ class Address extends Model
             if (!is_null($address->buyer_id) && (int) $address->es_deposito_madre === 1) {
                 $address->es_deposito_madre = 0;
             }
+
+            // Un domicilio de comprador tampoco es nunca la sucursal principal (D2, misión
+            // sucursal-siempre): misma regla y mismo motivo que el depósito madre.
+            if (!is_null($address->buyer_id) && (int) $address->default_address === 1) {
+                $address->default_address = 0;
+            }
         });
 
         static::saved(function ($address) {
@@ -101,6 +107,200 @@ class Address extends Model
                 $otra->save();
             }
         });
+
+        /*
+         * Unicidad de la sucursal PRINCIPAL (misión sucursal-siempre, 23/10/2026, D2): la columna
+         * `default_address` ("Depósito por defecto" en el ABM) pasa a ser LA sucursal principal del
+         * comercio, y es una sola. Marcar una desmarca las otras del mismo dueño, igual que el depósito
+         * madre de arriba y por los mismos motivos (por modelo, para que quede en la auditoría; no
+         * recursiona porque el hook de la otra corre con el valor en 0).
+         *
+         * Lo que NO hace, a propósito: marcar sola una sucursal nueva cuando el dueño no tiene ninguna
+         * marcada. `principal_de()` ya resuelve ese caso (madre o la de menor id) y marcarla acá
+         * convertiría la primera sucursal de cualquier alta en "con marcas", que en la eliminación de
+         * sucursales pide elegir reemplazo (D9 de eliminar-sucursal-con-stock). La marca explícita la
+         * ponen el user setup, la migración de datos y el comando `sucursales:migrar-a-principal`.
+         */
+        static::saved(function ($address) {
+            if ((int) $address->default_address !== 1 || is_null($address->user_id) || !is_null($address->buyer_id)) {
+                return;
+            }
+
+            $otras = static::where('user_id', $address->user_id)
+                ->whereNull('buyer_id')
+                ->where('id', '!=', $address->id)
+                ->where('default_address', 1)
+                ->get();
+
+            foreach ($otras as $otra) {
+                $otra->default_address = 0;
+                $otra->save();
+            }
+        });
+    }
+
+    /**
+     * Las sucursales de verdad de un comercio: del dueño (`user_id`) y nunca un domicilio de comprador
+     * de la tienda (`buyer_id` nulo: la tabla es compartida con tienda-api). Ordenadas por id.
+     *
+     * @param int $user_id Dueño del comercio
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public static function sucursales_de($user_id)
+    {
+        return static::where('user_id', (int) $user_id)
+            ->whereNull('buyer_id')
+            ->orderBy('id');
+    }
+
+    /**
+     * La sucursal PRINCIPAL de un comercio (misión sucursal-siempre, D2), o null si no tiene ninguna
+     * sucursal.
+     *
+     * Es la sucursal que usa cualquier operación que no dice cuál: el motor de stock con un movimiento
+     * sin sucursal sobre un artículo que reparte (D3), la materialización del stock global (D4), los
+     * caminos que escriben "el stock global" cuando el negocio tiene una sola sucursal (D15).
+     *
+     * Orden, siempre determinístico:
+     *  1. La marcada como principal (`default_address = 1`). Si por un dato viejo hubiera más de una,
+     *     la de menor id (el hook de `booted()` impide que vuelva a pasar con el próximo guardado).
+     *  2. El depósito madre (`deposito_madre_de()`, con su guarda de esquema).
+     *  3. La de menor id: la más vieja del comercio.
+     *
+     * @param int|null $user_id Dueño del comercio
+     * @return Address|null
+     */
+    public static function principal_de($user_id)
+    {
+        if (is_null($user_id)) {
+            return null;
+        }
+
+        $marcada = static::sucursales_de($user_id)
+            ->where('default_address', 1)
+            ->first();
+
+        if (!is_null($marcada)) {
+            return $marcada;
+        }
+
+        $madre = static::deposito_madre_de($user_id);
+
+        if (!is_null($madre)) {
+            return $madre;
+        }
+
+        return static::sucursales_de($user_id)->first();
+    }
+
+    /**
+     * La ÚNICA sucursal del comercio, o null si tiene cero o más de una (misión sucursal-siempre, D15).
+     *
+     * Con una sola sucursal la interfaz se comporta como "sin sucursales" (D1): la SPA manda el stock
+     * global como siempre y la API lo escribe en esta sucursal. Con dos o más, los caminos del stock
+     * global se quedan como estaban.
+     *
+     * @param int|null $user_id
+     * @return Address|null
+     */
+    public static function unica_sucursal_de($user_id)
+    {
+        if (is_null($user_id)) {
+            return null;
+        }
+
+        $sucursales = static::sucursales_de($user_id)->limit(2)->get();
+
+        return count($sucursales) === 1 ? $sucursales[0] : null;
+    }
+
+    /**
+     * Lo que hay hoy en la fila de un artículo (o de una variante) en una sucursal, leído de la base
+     * (suma de las filas del par, que la tabla no tiene único). 0 si no tiene fila.
+     *
+     * @param int      $article_id
+     * @param int      $address_id
+     * @param int|null $article_variant_id  Con valor, lee `address_article_variant`.
+     * @return float
+     */
+    public static function stock_en_fila($article_id, $address_id, $article_variant_id = null)
+    {
+        if (!is_null($article_variant_id)) {
+            return (float) \Illuminate\Support\Facades\DB::table('address_article_variant')
+                ->where('article_variant_id', (int) $article_variant_id)
+                ->where('address_id', (int) $address_id)
+                ->sum('amount');
+        }
+
+        return (float) \Illuminate\Support\Facades\DB::table('address_article')
+            ->where('article_id', (int) $article_id)
+            ->where('address_id', (int) $address_id)
+            ->sum('amount');
+    }
+
+    /**
+     * ¿La línea de esta sucursal en el encabezado de un PDF de venta repetiría la dirección de la
+     * empresa? (misión sucursal-siempre, 23/10/2026, §9 del plan). Al crear la sucursal principal se
+     * le precarga el domicilio (`street_number`) con `users.address_company` (D8), así que SalePdf y
+     * NewSalePdf imprimían la misma dirección dos veces. Si el domicilio de la sucursal es textualmente
+     * el de la empresa (sin los espacios de los bordes y sin distinguir mayúsculas), la línea de la
+     * sucursal no se imprime. Cualquier otra diferencia se imprime como siempre: no se toca otra
+     * lógica del encabezado.
+     *
+     * Vive acá y no en SalePdf porque cargar SalePdf desde NewSalePdf vuelve a incluir fpdf.php y
+     * redefine sus constantes.
+     *
+     * @param  Address      $address
+     * @param  string|null  $address_company
+     * @return bool
+     */
+    public static function repite_la_direccion_de_la_empresa($address, $address_company)
+    {
+        $empresa = mb_strtolower(trim((string) $address_company));
+
+        if ($empresa === '' || is_null($address)) {
+            return false;
+        }
+
+        return mb_strtolower(trim((string) $address->street_number)) === $empresa;
+    }
+
+    /**
+     * Deja marcada UNA sola principal para el comercio, si tiene sucursales (D2). Si no hay ninguna
+     * marcada marca la que devuelve `principal_de()` (madre o menor id); si hay más de una, deja la de
+     * menor id. Idempotente. No crea sucursales.
+     *
+     * La usan el user setup, el setup de la demo y el comando `sucursales:migrar-a-principal`.
+     *
+     * @param int|null $user_id
+     * @return Address|null La principal, o null si el comercio no tiene sucursales.
+     */
+    public static function asegurar_principal($user_id)
+    {
+        $principal = static::principal_de($user_id);
+
+        if (is_null($principal)) {
+            return null;
+        }
+
+        if ((int) $principal->default_address !== 1) {
+            $principal->default_address = 1;
+            // El hook desmarca cualquier otra que hubiera quedado prendida.
+            $principal->save();
+        } else {
+            // Ya marcada: igual se apagan las otras de un dato viejo (el hook solo corre al guardar).
+            $otras = static::sucursales_de($user_id)
+                ->where('id', '!=', $principal->id)
+                ->where('default_address', 1)
+                ->get();
+
+            foreach ($otras as $otra) {
+                $otra->default_address = 0;
+                $otra->save();
+            }
+        }
+
+        return $principal->fresh();
     }
 
     /**
