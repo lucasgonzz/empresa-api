@@ -26,6 +26,7 @@ use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
+use App\Http\Controllers\Helpers\article\SincronizacionOfflineArticulosHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
@@ -80,6 +81,14 @@ class ArticleController extends Controller
             $per_page = 1000;
         }
 
+        /*
+         * La marca de esta sincronización (misión ingreso-sin-internet, 23/10/2026), tomada ANTES
+         * de la consulta y devuelta como `sincronizado_hasta`: la SPA la usa como `updated_after`
+         * de la próxima vuelta en lugar del reloj del equipo al terminar la descarga, que perdía
+         * artículos. Ver SincronizacionOfflineArticulosHelper::marca_de_sincronizacion().
+         */
+        $sincronizado_hasta = SincronizacionOfflineArticulosHelper::marca_de_sincronizacion();
+
         $models = Article::where('user_id', $this->userId())
                             // ->where('id', 0)
                             ->where('status', 'active')
@@ -107,7 +116,8 @@ class ArticleController extends Controller
                             ->withAll()
                             ->paginate($per_page);
 
-        return response()->json(['models' => $models], 200);
+        // `models` queda idéntico; `sincronizado_hasta` es una clave nueva que la SPA vieja ignora.
+        return response()->json(['models' => $models, 'sincronizado_hasta' => $sincronizado_hasta], 200);
     }
 
     /**
@@ -156,17 +166,37 @@ class ArticleController extends Controller
         $updated_after = $request->input('updated_after');
 
         $models = Article::where('user_id', $this->userId())
-                            ->withTrashed()
-                            ->whereNotNull('deleted_at');
+                            ->withTrashed();
 
         if ($updated_after) {
 
             Log::info('index_deleted updated_after: '.$updated_after);
 
-            $models = $models->where('deleted_at', '>=', $updated_after);
+            /*
+             * Con marca, además de los borrados vienen los artículos VIVOS que dejaron de ser
+             * vendibles (pasados a inactivo o a insumo) después de la marca (misión
+             * ingreso-sin-internet, 23/10/2026). La SPA saca del caché offline todo lo que llega
+             * acá, y esos no venían ni acá (no están borrados) ni en index() (ya no son
+             * vendibles): quedaban en el caché para siempre y se podían vender sin conexión. El
+             * criterio es exactamente el complemento del de index(); ver
+             * SincronizacionOfflineArticulosHelper::aplicar_criterio_de_no_vendibles().
+             *
+             * 🔴 Y el orden pasa a ser por `id`: los vivos tienen `deleted_at` NULL, y ordenar por
+             * una columna con valores repetidos no es estable entre páginas (la misma fila puede
+             * caer en dos páginas y otra en ninguna). Por `id` es único y estable. La SPA no
+             * depende del orden: borra por id.
+             */
+            $models = SincronizacionOfflineArticulosHelper::aplicar_criterio_de_no_vendibles($models, $updated_after)
+                            ->orderBy('id', 'ASC');
+
+        } else {
+
+            // Sin marca (primera sincronización, caché vacío): solo los borrados, como siempre.
+            $models = $models->whereNotNull('deleted_at')
+                            ->orderBy('deleted_at', 'DESC');
         }
         
-        $models = $models->orderBy('deleted_at', 'DESC')
+        $models = $models
                             // Sin el vector de embeddings: mismo criterio que index() (misión
                             // busqueda-lenta-y-pausa-embeddings, sobre lo que dejó optimizacion-vps-fase1
                             // / 4.0.24). Esta consulta no usa withAll(), así que el scope no tiene que

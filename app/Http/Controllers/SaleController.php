@@ -30,6 +30,8 @@ use App\Http\Controllers\Helpers\sale\CambioDeCuentaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\IvaEnArticulosSinIvaEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\OfflineUuidEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\VentaOfflineHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
@@ -382,6 +384,18 @@ class SaleController extends Controller
         }
 
         /*
+         * 🔴 Identificador de la venta para la idempotencia (misión ingreso-sin-internet,
+         * 23/10/2026). Lo manda la SPA en el POST online de VENDER y en la subida de una venta
+         * guardada en el equipo. Si viene válido y la columna ya está migrada, más abajo —adentro del
+         * candado y de la transacción— se busca primero una venta con este uuid y, si la hay, se
+         * devuelve esa en vez de crear otra. Null (no vino, no sirve, o la columna todavía no está)
+         * = el camino de siempre, sin una sola diferencia. Se resuelve acá, antes del candado,
+         * porque mirar si la columna existe es una consulta al esquema que no tiene por qué hacer
+         * esperar a la otra caja. Toda la regla: `VentaOfflineHelper`.
+         */
+        $offline_uuid = VentaOfflineHelper::offline_uuid_utilizable($request->input('offline_uuid'));
+
+        /*
          * 🔴 Candado por comercio mientras se crea la venta (auditoría de stock, 5/9/2026).
          *
          * venta_ya_cread() mira si hay una venta igual de los últimos 5 segundos, pero dos requests
@@ -431,9 +445,45 @@ class SaleController extends Controller
              * dice. Sin la clave en el request, esto es `Carbon::now()`: el comportamiento de
              * siempre. Ver `SaleHelper::resolver_created_at()`.
              */
-            $created_at = SaleHelper::resolver_created_at($request->created_at);
+            /*
+             * En la SUBIDA de una venta guardada en el equipo (misión ingreso-sin-internet,
+             * 23/10/2026) la hora sale del instante en que se guardó ahí (`capturada_at`), no del
+             * momento en que volvió la red. Null = no es esa subida o la captura no sirve, y se
+             * sigue con lo de siempre. Ver `SaleHelper::resolver_created_at_de_venta_offline()`.
+             */
+            $created_at = SaleHelper::resolver_created_at_de_venta_offline($request->created_at, $request);
 
-            if ($this->venta_ya_cread($request, $created_at)) {
+            if (is_null($created_at)) {
+                $created_at = SaleHelper::resolver_created_at($request->created_at);
+            }
+
+            /*
+             * 🔴 Idempotencia por `offline_uuid` (misión ingreso-sin-internet, 23/10/2026). Va
+             * ACÁ, adentro del candado y de la transacción, por el mismo motivo que la guarda de 5
+             * segundos de abajo: el candado serializa los dos requests y la foto de la transacción
+             * ya ve la venta que commiteó el primero. Si ya hay una venta de este comercio con el
+             * uuid (borradas incluidas: una venta subida y borrada a mano no se recrea), se devuelve
+             * ESA, con la misma forma y el mismo 201 que el alta de abajo: para la SPA es "la venta
+             * quedó guardada", que es la verdad. Sin uuid utilizable, la búsqueda no corre.
+             */
+            $venta_ya_subida = VentaOfflineHelper::buscar_venta_ya_subida($this->userId(), $offline_uuid);
+
+            if (!is_null($venta_ya_subida)) {
+                VentaOfflineHelper::log_venta_ya_subida($venta_ya_subida, $offline_uuid, 'busqueda previa');
+                DB::rollBack();
+                return response()->json(['model' => $this->fullModel('Sale', $venta_ya_subida->id)], 201);
+            }
+
+            /*
+             * La guarda anti doble clic de 5 segundos se SALTEA solo en la subida de una venta
+             * offline con uuid (`venta_offline` verdadero): ahí el uuid ya frenó los reintentos, y
+             * esta guarda es la que descartaba la segunda de dos ventas iguales subidas seguidas
+             * (venta perdida). En el POST online sigue corriendo aunque venga uuid: un doble clic
+             * manda dos uuid distintos para la misma venta. Ver
+             * `VentaOfflineHelper::saltear_guarda_de_cinco_segundos()`.
+             */
+            if (!VentaOfflineHelper::saltear_guarda_de_cinco_segundos($request, $offline_uuid)
+                && $this->venta_ya_cread($request, $created_at)) {
                 Log::info('No se volvio a crear la venta');
                 DB::rollBack();
                 return response(null, 200);
@@ -444,8 +494,17 @@ class SaleController extends Controller
 
             // La guarda de iva_en_articulos_sin_iva envuelve todo: saca la clave si la columna no está (ventana del deploy).
             // Y la de aplicar_descuentos_directo_a_items envuelve a esa: mismo motivo, otra columna (ver la clave, más abajo).
-            $model = Sale::create(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
+            // Y la de offline_uuid envuelve a todas: mismo motivo, otra columna (ver OfflineUuidEsquemaHelper).
+            $model = Sale::create(OfflineUuidEsquemaHelper::quitar_si_no_hay_columna(DescuentosEnPreciosEsquemaHelper::quitar_flag_si_no_hay_columna(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
+                /*
+                 * El identificador de la venta para la idempotencia (misión ingreso-sin-internet,
+                 * 23/10/2026): el que mandó la SPA, ya validado, o null (venta sin uuid, o columna
+                 * todavía sin migrar: en ese caso la guarda de afuera saca la clave). El índice
+                 * único `(user_id, offline_uuid)` es la última red contra dos altas con el mismo
+                 * uuid; el catch de abajo reconoce ese rechazo.
+                 */
+                'offline_uuid'                      => $offline_uuid,
                 /*
                  * La fecha de creación elegida por el usuario, ya resuelta arriba (día elegido +
                  * hora actual). `Sale` tiene `$guarded = []`, así que la clave entra sola. Nunca
@@ -564,7 +623,7 @@ class SaleController extends Controller
              *
              * El cero se normaliza a null en `SaleHelper::normalized_forzar_total_monto()`.
              */
-            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'), 'sales'));
+            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'), 'sales')));
 
             // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
@@ -647,6 +706,20 @@ class SaleController extends Controller
         } catch(\Throwable $e) {
 
             DB::rollBack();
+
+            /*
+             * Última red de la idempotencia (misión ingreso-sin-internet, 23/10/2026): si el alta
+             * murió porque el índice único `(user_id, offline_uuid)` rechazó el uuid —dos requests
+             * con el mismo uuid que el candado no llegó a serializar—, la venta ya existe: se
+             * devuelve esa con el mismo 201 del alta, sin report() porque no es un error. Cualquier
+             * otra excepción sigue al 500 de siempre. Va después del rollBack(): la búsqueda tiene
+             * que ver lo que commiteó el otro request, no la foto de esta transacción.
+             */
+            $venta_ya_subida = VentaOfflineHelper::venta_ya_subida_si_choco_el_indice($e, $this->userId(), $offline_uuid);
+
+            if (!is_null($venta_ya_subida)) {
+                return response()->json(['model' => $this->fullModel('Sale', $venta_ya_subida->id)], 201);
+            }
 
             // El reporter de errores esta enganchado al handler global (Handler::register ->
             // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la

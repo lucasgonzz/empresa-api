@@ -468,10 +468,18 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
 
         $uuid_prometido = (string) $response->json('batch_uuid');
 
+        /*
+         * 🔁 CAMBIO DE REQUISITO (imagenes-listado-saltear-con-foto, 23/10/2026): por_alta[3] es
+         * `con_imagen` (ver setUp) y desde el listado ya no se busca a un artículo que tiene
+         * imagen. La asignación lleva los otros dos, en el orden pedido, y la respuesta lo dice.
+         */
+        $this->assertSame(2, $response->json('articulos'));
+        $this->assertSame(1, $response->json('saltados_con_imagen'));
+
         // El uuid prometido es el de la asignación, y la asignación lleva esos ids en ese orden.
         $asignacion = ImageAssignmentRun::where('user_id', $this->comercio->id)->where('uuid', $uuid_prometido)->first();
         $this->assertNotNull($asignacion, 'El uuid de la respuesta tiene que ser el de la asignación creada.');
-        $this->assertSame($ids, $this->ids_de_la_asignacion($asignacion));
+        $this->assertSame([(int) $this->por_alta[1]->id, (int) $this->por_alta[2]->id], $this->ids_de_la_asignacion($asignacion));
 
         $self = $this;
 
@@ -483,8 +491,8 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
         $this->assertNotNull($proceso, 'El registro visible tiene que nacer al encolar, no cuando el worker levanta el job.');
         $this->assertSame('pendiente', $proceso->status);
         $this->assertSame('En espera del procesador', $proceso->etapa);
-        $this->assertSame(3, (int) $proceso->total);
-        $this->assertSame('3 artículos', $proceso->detalle);
+        $this->assertSame(2, (int) $proceso->total);
+        $this->assertSame('2 artículos', $proceso->detalle);
         $this->assertSame((int) $this->comercio->id, (int) $proceso->auth_user_id);
         $this->assertSame('Imágenes automáticas', $proceso->titulo);
 

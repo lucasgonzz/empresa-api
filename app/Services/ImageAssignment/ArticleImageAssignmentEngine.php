@@ -27,9 +27,10 @@ use Illuminate\Support\Str;
  * imagenes-catalogo-completo, 27/9/2026). Busca la MEJOR imagen, no la primera aceptable.
  *
  * Por artículo, en orden (plan §6.6):
- *   1. Si el artículo ya no existe → no_asignada / articulo_borrado. En "todo el catálogo", si
- *      mientras esperaba su turno ya consiguió imagen → no_asignada / ya_tenia_imagen (plan §12.1),
- *      y si tiene una imagen esperando revisión en OTRA asignación → no_asignada /
+ *   1. Si el artículo ya no existe → no_asignada / articulo_borrado. En "todo el catálogo" y en la
+ *      selección del listado, si mientras esperaba su turno ya consiguió imagen → no_asignada /
+ *      ya_tenia_imagen (plan §12.1; la selección desde el 23/10/2026). En "todo el catálogo", si
+ *      tiene una imagen esperando revisión en OTRA asignación → no_asignada /
  *      en_otra_asignacion (plan §13). Las dos sin buscar.
  *   2. Si su código de barras es REAL (CodigoDeBarrasRealHelper) → búsqueda por código →
  *      candidatas (CandidateImageProcessor: descartes gratis, descarga, tamaño y fondo medidos) →
@@ -304,10 +305,18 @@ class ArticleImageAssignmentEngine
         /*
          * Todo el catálogo (plan §12.1, extra 1): la corrida puede durar horas, y mientras el
          * artículo esperaba su turno le pudieron cargar una imagen a mano o asignársela otra
-         * asignación. Buscarle otra lo dejaría con dos: no se busca nada (0 búsquedas). En las de
-         * selección no se mira: ahí la persona eligió el artículo sabiendo lo que tenía.
+         * asignación. Buscarle otra lo dejaría con dos: no se busca nada (0 búsquedas).
+         *
+         * Selección del listado (pedido de Lucas, 23/10/2026: "que no le vuelva a buscar imágenes a
+         * los artículos que ya tienen"): los que ya tenían imagen se descartan ANTES de crear la
+         * corrida (ImagenesAutomaticasHelper::encolar()); acá queda el caso de la foto cargada entre
+         * la creación y el turno. Las del ASISTENTE no se miran: ahí el filtro lo decide
+         * `solo_sin_imagen` al ejecutar, y con `solo_sin_imagen=false` el dueño pidió buscar igual
+         * (la corrida no guarda la bandera: saltearlas acá rompería ese pedido).
          */
-        if ($this->run->origen === ImageAssignmentRun::ORIGEN_CATALOGO && $article->images()->exists()) {
+        $saltea_con_imagen = in_array($this->run->origen, [ImageAssignmentRun::ORIGEN_CATALOGO, ImageAssignmentRun::ORIGEN_SELECCION], true);
+
+        if ($saltea_con_imagen && $article->images()->exists()) {
             return $this->cerrar($item, $contexto, [
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'ya_tenia_imagen',
