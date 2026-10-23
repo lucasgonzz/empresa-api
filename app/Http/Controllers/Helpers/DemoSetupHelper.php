@@ -425,6 +425,13 @@ class DemoSetupHelper
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
 
+        /*
+         * Misión sucursal-siempre (23/10/2026, D2): la demo siempre tiene sucursales (las del
+         * formulario con use_deposits, o las cuatro de AddressSeeder), y tiene que quedar con UNA sola
+         * principal, como cualquier comercio.
+         */
+        \App\Models\Address::asegurar_principal($user->id);
+
         self::assign_pdf_whatsapp_defaults_for_owner($user->id);
 
         self::set_default_sale_factura_print_option($user);

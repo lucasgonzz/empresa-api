@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
+use App\Models\Address;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\OnlineTemplate;
@@ -150,10 +151,15 @@ class UserSetupHelper
             $user->save();
         }
 
-        // Sucursales y listas de precios dependen de inputs del formulario
-        if (!empty($data['use_deposits'])) {
-            self::crear_depositos($data);
-        }
+        /*
+            Sucursales (misión sucursal-siempre, 23/10/2026, D10): el sistema nace SIEMPRE con al menos
+            una. Con `use_deposits`, las de address_1..3 como siempre (la primera, principal); sin
+            `use_deposits`, una "Principal". Ver crear_sucursales(). La extensión de movimientos entre
+            depósitos (`deposit_movements`) se sigue dando solo con `use_deposits` (D11, en
+            apply_flag_rules): con una sola sucursal no hay entre qué mover.
+        */
+        self::crear_sucursales($data, $user);
+
         if (!empty($data['use_price_lists'])) {
             self::crear_price_types($data);
         }
@@ -161,6 +167,9 @@ class UserSetupHelper
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
+
+        // Si algún seeder tocó las sucursales, que quede igual UNA sola principal (D2).
+        Address::asegurar_principal($user->id);
 
         // Descuentos/recargos por metodo de pago (dependen de que CurrentAcountPaymentMethodSeeder ya haya corrido).
         self::crear_current_acount_payment_method_discounts($data, $user->id);
@@ -624,24 +633,92 @@ class UserSetupHelper
     }
 
     /**
+     * Nombre de la sucursal que se crea sola cuando el formulario no trae sucursales (D9 de la misión
+     * sucursal-siempre, elegido por Lucas el 23/10/2026: es lo que va a leer el dueño el día que cree
+     * la segunda, "Principal" y "Centro").
+     */
+    const NOMBRE_SUCURSAL_PRINCIPAL = 'Principal';
+
+    /**
+     * Las sucursales del sistema nuevo (misión sucursal-siempre, 23/10/2026, D10 y D8).
+     *
+     *  - Con `use_deposits`: las de `address_1..3`, como siempre (crear_depositos()).
+     *  - Sin `use_deposits`, o con `use_deposits` y ningún nombre cargado: una sola, "Principal".
+     *  - La primera queda marcada como PRINCIPAL (`default_address = 1`, D2).
+     *  - A la principal se le precarga el domicilio (`street_number`, "Domicilio" en el ABM) con
+     *    `address_company` del payload, si viene no vacío (D8: se copia UNA vez; después la dirección
+     *    de la empresa y la de la sucursal viven cada una su vida).
+     *  - `users.address_company` del dueño se guarda desde el payload (hasta acá se descartaba aunque
+     *    el admin lo manda). El camino de leads del admin no lo manda: se tolera que falte.
+     *  - `users.address_id` del dueño apunta a la principal (Vender la toma sin preguntar).
+     *
+     * El contrato admin → empresa no cambia: son claves que el admin ya manda.
+     *
+     * @param array<string, mixed> $data
+     * @param User $user Dueño recién creado.
+     * @return void
+     */
+    private static function crear_sucursales(array $data, $user)
+    {
+        $address_company = isset($data['address_company']) && is_scalar($data['address_company'])
+            ? trim((string) $data['address_company'])
+            : '';
+
+        $creadas = [];
+
+        if (!empty($data['use_deposits'])) {
+            $creadas = self::crear_depositos($data);
+        }
+
+        if (count($creadas) === 0) {
+            Log::info('UserSetupHelper: el sistema nace con una sola sucursal, '.self::NOMBRE_SUCURSAL_PRINCIPAL);
+
+            $creadas[] = Address::create([
+                'street'  => self::NOMBRE_SUCURSAL_PRINCIPAL,
+                'user_id' => $user->id,
+            ]);
+        }
+
+        $principal = $creadas[0];
+
+        $principal->default_address = 1;
+
+        if ($address_company !== '') {
+            $principal->street_number = $address_company;
+        }
+
+        $principal->save();
+
+        if ($address_company !== '') {
+            $user->address_company = $address_company;
+        }
+
+        $user->address_id = $principal->id;
+        $user->save();
+    }
+
+    /**
      * Persiste hasta 3 direcciones de sucursal a partir de los campos address_1..3.
      *
      * @param array<string, mixed> $data
+     * @return Address[] Las creadas, en orden.
      */
     private static function crear_depositos(array $data)
     {
-        // Importamos Address aquí para no cargarla en el namespace global si no se usa
-        $addressClass = '\App\Models\Address';
+        $creadas = [];
+
         for ($i = 1; $i <= 3; $i++) {
             $address = $data['address_'.$i] ?? null;
             if (!empty($address)) {
                 Log::info('UserSetupHelper: creando address '.$address);
-                $addressClass::create([
+                $creadas[] = Address::create([
                     'street'  => $address,
                     'user_id' => config('app.USER_ID'),
                 ]);
             }
         }
+
+        return $creadas;
     }
 
     /**
