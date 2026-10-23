@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\PdfLayout\SucursalesDelEncabezadoPdf;
 use App\Models\PdfColumnOption;
 
 /**
@@ -145,8 +146,9 @@ class PdfNegritaHelper
 
     /**
      * Normaliza la clave `bold` de un `header_layout`: lista de strings únicas, solo keys del
-     * catálogo de chips (CLAVES_DE_ENCABEZADO), en el orden en que vinieron. Vacía o sin forma de
-     * lista → null (el que llama omite la clave).
+     * catálogo de chips (CLAVES_DE_ENCABEZADO, más los chips de sucursal del emisor: misión
+     * pdf-direccion-sucursales), en el orden en que vinieron. Vacía o sin forma de lista → null (el
+     * que llama omite la clave).
      *
      * @param  mixed $value
      * @return array<int, string>|null
@@ -160,7 +162,10 @@ class PdfNegritaHelper
         $keys = [];
 
         foreach ($value as $item) {
-            if (is_string($item) && in_array($item, self::CLAVES_DE_ENCABEZADO, true) && ! in_array($item, $keys, true)) {
+            $es_clave = is_string($item)
+                && (in_array($item, self::CLAVES_DE_ENCABEZADO, true) || SucursalesDelEncabezadoPdf::es_chip($item));
+
+            if ($es_clave && ! in_array($item, $keys, true)) {
                 $keys[] = $item;
             }
         }

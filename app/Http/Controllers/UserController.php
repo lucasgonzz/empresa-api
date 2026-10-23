@@ -189,8 +189,17 @@ class UserController extends Controller
         $model->clave_eliminar_article          = $request->clave_eliminar_article;
         $model->img_auto_timeout                = $request->img_auto_timeout;
 
-        $model->address_company                 = $request->address_company;
-        $model->all_addresses_in_sale_pdf       = $request->all_addresses_in_sale_pdf;
+        /**
+         * Con guard desde la mision pdf-direccion-sucursales (23/10/2026): la SPA ya no muestra estos
+         * dos campos en el perfil (la direccion del PDF sale de las sucursales). Un request que no los
+         * traiga no los pisa: address_company se usa para precargar el domicilio de la sucursal principal.
+         */
+        if ($request->has('address_company')) {
+            $model->address_company             = $request->address_company;
+        }
+        if ($request->has('all_addresses_in_sale_pdf')) {
+            $model->all_addresses_in_sale_pdf   = $request->all_addresses_in_sale_pdf;
+        }
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
