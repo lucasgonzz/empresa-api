@@ -97,7 +97,13 @@ class MaterializarGlobal {
 
         $concepto = is_null($concepto_id) ? null : ConceptoStockMovement::find($concepto_id);
 
-        if (!is_null($concepto) && in_array($concepto->name, CheckToAddress::CONCEPTOS_QUE_REPARTEN)) {
+        /*
+         * Sin concepto resuelto (la base del cliente no tiene ese nombre en `concepto_stock_movements`)
+         * no se sabe si el movimiento reparte: no se materializa, y el motor sigue con su regla de
+         * siempre (CheckToAddress no abre el depósito y el movimiento va al global). Materializar ahí
+         * podría duplicar el reparto de un "Creacion de deposito" o una importación sin concepto.
+         */
+        if (is_null($concepto) || in_array($concepto->name, CheckToAddress::CONCEPTOS_QUE_REPARTEN)) {
             return false;
         }
 
