@@ -27,6 +27,10 @@ use Illuminate\Database\Eloquent\Model;
  *    `street`, así lo carga la SPA), o "Sucursal: " si no tiene nombre.
  *  - Si dos chips resuelven a la misma sucursal se imprime una sola vez: la primera que aparece
  *    (izquierda antes que derecha, en el orden del layout).
+ *  - No se repite el domicilio: si el encabezado imprime el Domicilio Comercial (ARCA) y una
+ *    sucursal tiene ese mismo domicilio (su `street_number` o su valor completo, comparados con
+ *    normalizar_domicilio()), esa sucursal no se imprime; las demás sí. Pasa con la sucursal
+ *    Principal, que la misión sucursal-siempre precarga con el domicilio de ARCA.
  *
  * Sucursales del dueño = `addresses` con `user_id` del dueño del comprobante y `buyer_id` NULL: en la
  * misma tabla hay domicilios de compradores de la tienda vieja, que no son sucursales. La tabla no
@@ -73,6 +77,13 @@ class SucursalesDelEncabezadoPdf
      * @var array<int, bool>
      */
     protected $impresas = [];
+
+    /**
+     * Domicilio Comercial que ya imprime este encabezado, normalizado, o null si no lo imprime.
+     *
+     * @var string|null
+     */
+    protected $domicilio_ya_impreso = null;
 
     /**
      * @param mixed    $documento El comprobante del encabezado.
@@ -130,6 +141,55 @@ class SucursalesDelEncabezadoPdf
     }
 
     /**
+     * Avisa que el encabezado imprime el Domicilio Comercial: una sucursal con ese mismo domicilio
+     * no se vuelve a imprimir. Solo lo llama quien sabe que `domicilio_comercial` está en el layout.
+     *
+     * @param mixed $domicilio_comercial El valor ya resuelto.
+     * @return void
+     */
+    public function no_repetir_domicilio($domicilio_comercial)
+    {
+        $normalizado = self::normalizar_domicilio($domicilio_comercial);
+
+        $this->domicilio_ya_impreso = $normalizado === '' ? null : $normalizado;
+    }
+
+    /**
+     * Un domicilio para compararlo: minúsculas, sin tildes, espacios colapsados y sin puntos ni
+     * comas al final.
+     *
+     * @param mixed $texto
+     * @return string
+     */
+    public static function normalizar_domicilio($texto)
+    {
+        $texto = mb_strtolower(trim((string) $texto), 'UTF-8');
+        $texto = strtr($texto, [
+            'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u',
+            'à' => 'a', 'è' => 'e', 'ì' => 'i', 'ò' => 'o', 'ù' => 'u', 'ñ' => 'n',
+        ]);
+        $texto = preg_replace('/\s+/u', ' ', $texto);
+
+        return trim(rtrim($texto, " .,"));
+    }
+
+    /**
+     * ¿La sucursal tiene el domicilio que el encabezado ya imprime como Domicilio Comercial?
+     *
+     * @param mixed $sucursal
+     * @return bool
+     */
+    protected function repite_el_domicilio($sucursal)
+    {
+        if (is_null($this->domicilio_ya_impreso)) {
+            return false;
+        }
+
+        return self::normalizar_domicilio($sucursal->street_number) === $this->domicilio_ya_impreso
+            || self::normalizar_domicilio(self::valor($sucursal)) === $this->domicilio_ya_impreso;
+    }
+
+    /**
      * Los renglones que imprime un chip de sucursal, sin las sucursales que ya imprimió otro chip de
      * este encabezado. Las que devuelve quedan marcadas como impresas.
      *
@@ -149,8 +209,8 @@ class SucursalesDelEncabezadoPdf
 
             $valor = self::valor($sucursal);
 
-            /** Sin Domicilio ni ciudad no hay nada que imprimir. */
-            if ($valor === '') {
+            /** Sin Domicilio ni ciudad no hay nada que imprimir; con el del Domicilio Comercial, ya está. */
+            if ($valor === '' || $this->repite_el_domicilio($sucursal)) {
                 continue;
             }
 

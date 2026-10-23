@@ -1174,6 +1174,16 @@ class AfipPdfHelper
         $bold_keys = isset($descriptor['bold_keys']) ? $descriptor['bold_keys'] : [];
 
         /**
+         * No repetir el domicilio (misión pdf-direccion-sucursales): si este encabezado imprime el
+         * Domicilio Comercial, una sucursal con ese mismo domicilio no sale otra vez.
+         */
+        $imprime_domicilio = (is_array($layout_izquierda) && in_array('domicilio_comercial', $layout_izquierda, true))
+            || (is_array($layout_derecha) && in_array('domicilio_comercial', $layout_derecha, true));
+        if ($imprime_domicilio && isset($field_values['__sucursales']) && array_key_exists('domicilio_comercial', $field_values)) {
+            $field_values['__sucursales']->no_repetir_domicilio($field_values['domicilio_comercial']);
+        }
+
+        /**
          * Ancho del cuadro central calculado a partir de la letra (y código si aplica),
          * y layout general armado a partir de ese ancho y el tamaño de logo del descriptor.
          */
