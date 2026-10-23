@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Stock\SetStockPorDeposito;
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Models\Address;
 use App\Models\Advise;
 use App\Models\Article;
 use App\Models\ConceptoStockMovement;
@@ -328,6 +329,18 @@ class StockEnLote
         $this->leer_nombres_de_depositos($pedidos);
 
         /*
+         * D15 (misión sucursal-siempre, 23/10/2026): con UNA sola sucursal, la columna de stock global
+         * de un artículo que ya reparte se escribe en esa sucursal (ver el bucle). Se resuelve una vez
+         * por lote, y su nombre se carga ya para la foto de `stock_por_deposito`.
+         */
+        $unica    = Address::unica_sucursal_de($user_id);
+        $unica_id = is_null($unica) ? null : (int) $unica->id;
+
+        if (!is_null($unica_id)) {
+            $this->leer_nombres_de_depositos([['tipo' => 'deposito', 'address_id' => $unica_id]]);
+        }
+
+        /*
          * Acumuladores de lo que se va a escribir. Todos se llenan en la simulación de abajo y se
          * ejecutan después, en el mismo orden en que crear() dejaba cada efecto.
          */
@@ -360,6 +373,42 @@ class StockEnLote
             }
 
             $st = &$estado[$article_id];
+
+            /*
+             * D15 (misión sucursal-siempre): pedido GLOBAL sobre un artículo que ya reparte, en un negocio
+             * con UNA sola sucursal. Hoy (y con dos o más sucursales, sin cambios) el movimiento queda en
+             * el libro sin mover nada, porque el stock de un artículo con depósitos es la suma de sus
+             * depósitos. Con una sola sucursal el número del Excel ES el stock de esa sucursal (la
+             * interfaz no muestra sucursales, D1): se convierte en un pedido por depósito hacia ella,
+             * con la misma semántica que traía:
+             *   - con objetivo (artículo actualizado): la diferencia contra la FILA de la sucursal, en
+             *     el estado corrido del lote (como UpdateAddressesStockHelper con su stock final);
+             *   - sin objetivo (delta): el delta tal cual.
+             * Y sigue por la rama de depósitos de abajo, como cualquier columna por sucursal.
+             */
+            if ($pedido['tipo'] === 'global' && !is_null($unica_id) && $st['tiene_depositos']) {
+
+                $amount_unica = $pedido['amount'];
+
+                if (!is_null($pedido['target'])) {
+                    $fila_unica   = isset($st['depositos'][$unica_id]) ? (float) $st['depositos'][$unica_id]['suma'] : 0.0;
+                    $amount_unica = round($pedido['target'] - $fila_unica, 2);
+                }
+
+                if ((float) $amount_unica == 0.0) {
+                    unset($st);
+                    continue;
+                }
+
+                $pedido = [
+                    'tipo'       => 'deposito',
+                    'article'    => $article,
+                    'address_id' => $unica_id,
+                    'amount'     => (float) $amount_unica,
+                    'stock_min'  => null,
+                    'stock_max'  => null,
+                ];
+            }
 
             if ($pedido['tipo'] === 'global') {
 
