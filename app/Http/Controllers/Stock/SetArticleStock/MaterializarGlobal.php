@@ -31,7 +31,9 @@ use Illuminate\Support\Facades\Log;
  * ─────────────────────────────────────────────────────────────────────────────
  *
  *  Antes de aplicar el movimiento, si:
- *   - trae sucursal (`from` o `to`) y esa sucursal es una sucursal DE VERDAD del comercio
+ *   - SUMA a una sucursal (`to` con monto > 0: ingreso manual, compra, devolución, nota de crédito a
+ *     cliente, producción del terminado) o es un TRASLADO entre depósitos (ver más abajo),
+ *   - esa sucursal es una sucursal DE VERDAD del comercio
  *     (`SucursalVigenteHelper::existe()`, estricto: un domicilio de comprador de un pedido de la tienda
  *     no dispara nada y conserva su comportamiento histórico),
  *   - el concepto NO es de los que definen el reparto inicial (`CONCEPTOS_QUE_NO_MATERIALIZAN`:
@@ -63,6 +65,24 @@ use Illuminate\Support\Facades\Log;
  *   - global 100 sin filas, traslado B → C de 5: principal 100, B −5, C 5, global 100. El origen queda
  *     en negativo y la principal con todo, que es lo correcto: el sistema no sabe dónde estaba
  *     físicamente el stock global, y el negativo le muestra al usuario de dónde salió.
+ *
+ *  🔴 LO QUE RESTA DESDE UNA SUCURSAL NO MATERIALIZA (`from` con monto < 0: ventas, consumo de
+ *  insumos, nota de crédito a proveedor; corrección del verificador del contrato, 23/10/2026). Una
+ *  venta desde la sucursal B sobre un artículo con global 100 sin filas dejaba principal 100, B −1 y
+ *  global 99: con `check_article_stock_en_vender` (empresa-spa, check_stock.js) las ventas siguientes
+ *  desde B se frenaban con "No hay stock en B", cuando en develop esa venta descuenta del global y
+ *  anda. Así que siguen como siempre: CheckFromAddress no actúa (el artículo no reparte) y se
+ *  descuenta del global. El artículo empieza a repartir con el primer movimiento que SUMA.
+ *
+ *  🔴 CONCURRENCIA. La venta del mostrador y el pedido de Tienda Nube del mismo artículo pueden llegar
+ *  a la vez: los dos leían "no tiene filas" y los dos materializaban (el global entraba dos veces a la
+ *  principal). Por eso la decisión y la materialización van en UNA transacción con `lockForUpdate`
+ *  sobre la fila de `articles` (y la de `article_variants` si es una variante), y las filas y el stock
+ *  se vuelven a leer DESPUÉS de tomar el candado: el segundo espera al primero, relee, ve la fila ya
+ *  abierta y no materializa.
+ *
+ *  El movimiento de materialización no toca `articles.stock_updated_at` (`sin_stock_updated_at`): el
+ *  stock no cambia, y esa fecha la usan los reportes de "stock actualizado".
  *
  *  Un artículo con variantes sin variante en el movimiento no se materializa: su stock es la suma de
  *  sus variantes y el movimiento del artículo entero no lo toca nadie (comportamiento de siempre).
@@ -109,7 +129,22 @@ class MaterializarGlobal {
             return false;
         }
 
-        $address_id = Self::sucursal_del_movimiento($data);
+        $concepto = is_null($concepto_id) ? null : ConceptoStockMovement::find($concepto_id);
+
+        $es_traslado = !is_null($concepto) && Self::es_traslado($concepto->name);
+
+        /*
+         * Solo lo que SUMA a una sucursal (o un traslado) materializa: ver "lo que resta desde una
+         * sucursal no materializa" en el docblock de la clase.
+         */
+        if ($es_traslado) {
+            $address_id = Self::sucursal_del_movimiento($data);
+        } else {
+            $address_id = (isset($data['to_address_id']) && !SucursalVigenteHelper::es_vacio($data['to_address_id'])
+                            && isset($data['amount']) && (float) $data['amount'] > 0)
+                ? (int) $data['to_address_id']
+                : null;
+        }
 
         if (is_null($address_id)) {
             return false;
@@ -119,8 +154,6 @@ class MaterializarGlobal {
         if (!SucursalVigenteHelper::existe($address_id, $owner_id)) {
             return false;
         }
-
-        $concepto = is_null($concepto_id) ? null : ConceptoStockMovement::find($concepto_id);
 
         /*
          * Sin concepto resuelto (la base del cliente no tiene ese nombre en `concepto_stock_movements`)
@@ -134,9 +167,8 @@ class MaterializarGlobal {
 
         $variant_id = !empty($data['article_variant_id']) ? (int) $data['article_variant_id'] : null;
 
-        $stock = Self::stock_a_materializar($article, $variant_id);
-
-        if (is_null($stock)) {
+        // Barato antes del candado: si ya reparte (lo normal), no se bloquea nada.
+        if (is_null(Self::stock_a_materializar($article, $variant_id))) {
             return false;
         }
 
@@ -144,25 +176,55 @@ class MaterializarGlobal {
 
         $destino_id = is_null($principal) ? (int) $address_id : (int) $principal->id;
 
-        Log::info('MaterializarGlobal: el artículo '.$article->id.(is_null($variant_id) ? '' : ' (variante '.$variant_id.')').' no repartía y tenía '.$stock.' de stock global; antes del movimiento por sucursal se pasa entero a la sucursal '.$destino_id.'.');
+        return DB::transaction(function () use ($article, $variant_id, $destino_id, $owner_id, $employee_id, $set_updated_at) {
 
-        $owner = User::find((int) $owner_id);
+            // El candado, y DESPUÉS la relectura (ver "concurrencia" en el docblock de la clase).
+            DB::table('articles')->where('id', (int) $article->id)->lockForUpdate()->value('id');
 
-        $ct = new \App\Http\Controllers\Stock\StockMovementController();
+            if (!is_null($variant_id)) {
+                DB::table('article_variants')->where('id', $variant_id)->lockForUpdate()->value('id');
+            }
 
-        $ct->crear([
-            'model_id'                      => (int) $article->id,
-            'amount'                        => $stock,
-            'to_address_id'                 => $destino_id,
-            'article_variant_id'            => $variant_id,
-            'concepto_stock_movement_name'  => Self::CONCEPTO,
-            'observations'                  => Self::OBSERVACION,
-            'sin_unidades_individuales'     => true,
-            'sin_materializar'              => true,
-            'sin_sincronizar'               => true,
-        ], $set_updated_at, $owner, $employee_id);
+            $stock = Self::stock_a_materializar($article, $variant_id);
 
-        return true;
+            if (is_null($stock)) {
+                return false;
+            }
+
+            Log::info('MaterializarGlobal: el artículo '.$article->id.(is_null($variant_id) ? '' : ' (variante '.$variant_id.')').' no repartía y tenía '.$stock.' de stock global; antes del movimiento por sucursal se pasa entero a la sucursal '.$destino_id.'.');
+
+            $owner = User::find((int) $owner_id);
+
+            $ct = new \App\Http\Controllers\Stock\StockMovementController();
+
+            $ct->crear([
+                'model_id'                      => (int) $article->id,
+                'amount'                        => $stock,
+                'to_address_id'                 => $destino_id,
+                'article_variant_id'            => $variant_id,
+                'concepto_stock_movement_name'  => Self::CONCEPTO,
+                'observations'                  => Self::OBSERVACION,
+                'sin_unidades_individuales'     => true,
+                'sin_materializar'              => true,
+                'sin_sincronizar'               => true,
+                'sin_stock_updated_at'          => true,
+            ], $set_updated_at, $owner, $employee_id);
+
+            return true;
+        });
+    }
+
+    /**
+     * ¿Es un traslado entre depósitos? Los traslados materializan aunque resten del origen.
+     *
+     * @param  string  $nombre
+     * @return bool
+     */
+    static function es_traslado($nombre) {
+
+        $nombre = mb_strtolower((string) $nombre);
+
+        return $nombre === mb_strtolower('Mov entre depositos') || $nombre === mb_strtolower('Mov manual entre depositos');
     }
 
     /**

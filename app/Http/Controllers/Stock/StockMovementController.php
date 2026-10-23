@@ -231,7 +231,14 @@ class StockMovementController extends Controller
 
         SetProvider::set_provider($stock_movement, $article, $data);
 
-        SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
+        /*
+         * `sin_stock_updated_at` (misión sucursal-siempre): la materialización del global en la principal
+         * y la migración a sucursal principal no cambian el stock, así que no pisan la fecha de "stock
+         * actualizado" del artículo.
+         */
+        if (empty($data['sin_stock_updated_at'])) {
+            SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
+        }
 
         /*
          * `sin_sincronizar` (misión sucursal-siempre): para los movimientos que NO cambian el stock
