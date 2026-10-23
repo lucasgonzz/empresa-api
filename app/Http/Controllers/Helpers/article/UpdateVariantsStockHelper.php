@@ -146,7 +146,9 @@ class UpdateVariantsStockHelper {
              */
             $unica = Address::unica_sucursal_de($this->article->user_id);
 
-            if (!is_null($unica)) {
+            // "Reparte" sin contar filas de domicilios de comprador: con una sola sucursal, la fila de
+            // la variante que cuenta es la de esa sucursal.
+            if (!is_null($unica) && $article_variant->addresses->contains('id', $unica->id)) {
 
                 $this->address = ['id' => $unica->id];
 

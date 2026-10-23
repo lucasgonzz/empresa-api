@@ -386,7 +386,8 @@ class StockEnLote
              *   - sin objetivo (delta): el delta tal cual.
              * Y sigue por la rama de depósitos de abajo, como cualquier columna por sucursal.
              */
-            if ($pedido['tipo'] === 'global' && !is_null($unica_id) && $st['tiene_depositos']) {
+            // "Reparte" = tiene fila en la única sucursal: las filas de domicilios de comprador no cuentan.
+            if ($pedido['tipo'] === 'global' && !is_null($unica_id) && isset($st['depositos'][$unica_id])) {
 
                 $amount_unica = $pedido['amount'];
 

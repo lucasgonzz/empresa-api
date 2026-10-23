@@ -818,7 +818,8 @@ class MasiveUpdateHelper
         $old_value = DB::table('articles')->where('id', $model->id)->value('stock');
         $old_value = is_null($old_value) ? null : (float) $old_value;
 
-        if (count($model->addresses) >= 1 && count($model->article_variants) == 0) {
+        // "Reparte" sin contar las filas de domicilios de comprador (buyer_id): no son sucursales.
+        if ($model->addresses()->whereNull('addresses.buyer_id')->count() >= 1 && count($model->article_variants) == 0) {
 
             /*
              * Misión sucursal-siempre (23/10/2026, D15): con UNA sola sucursal el negocio ve el stock
