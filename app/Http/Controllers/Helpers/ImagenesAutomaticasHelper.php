@@ -135,18 +135,55 @@ class ImagenesAutomaticasHelper
      * desde el asistente la cadena es EjecutorAccionesIaHelper → DB::transaction →
      * PropuestaImagenesArticulosIaHelper::ejecutar → acá, y en redis `after_commit` está en false.
      *
+     * Selección del listado (pedido de Lucas, 23/10/2026: "que no le vuelva a buscar imágenes a los
+     * artículos que ya tienen"): los que ya tienen ≥1 imagen se descartan ANTES de crear la corrida
+     * (no tienen item, no se encolan, no gastan búsquedas). Si TODOS los elegidos ya tienen imagen
+     * no se crea nada y vuelve `batch_uuid` null: el controller lo convierte en un 422. El motor los
+     * vuelve a mirar cuando les llega el turno (la foto se pudo cargar en el medio).
+     *
+     * Las del ASISTENTE no se filtran acá: PropuestaImagenesArticulosIaHelper ya resuelve los ids con
+     * `solo_sin_imagen` (default true) al ejecutar, y con `solo_sin_imagen=false` el dueño pidió
+     * explícitamente buscarles también a los que ya tienen.
+     *
      * @param  \App\Models\User  $owner
      * @param  array  $article_ids
      * @param  int|null  $auth_user_id  Quién lo pidió (para el registro visible).
      * @param  string  $origen  'seleccion' (el botón del listado, por defecto) o 'asistente'. Va último
      *                          y con default para no romper a ningún llamador.
-     * @return array  ['batch_uuid' => string, 'proceso' => \App\Models\BackgroundProcess|null]
+     * @return array  ['batch_uuid' => string|null, 'proceso' => \App\Models\BackgroundProcess|null,
+     *                 'articulos' => int (los que se mandaron a buscar),
+     *                 'saltados_con_imagen' => int (los de la selección que ya tenían imagen)]
      */
     public static function encolar(User $owner, array $article_ids, $auth_user_id = null, $origen = ImageAssignmentRun::ORIGEN_SELECCION)
     {
         $origen = $origen === ImageAssignmentRun::ORIGEN_ASISTENTE
             ? ImageAssignmentRun::ORIGEN_ASISTENTE
             : ImageAssignmentRun::ORIGEN_SELECCION;
+
+        $saltados_con_imagen = 0;
+
+        if ($origen === ImageAssignmentRun::ORIGEN_SELECCION) {
+            $separados           = ImageAssignmentRunHelper::separar_con_imagen((int) $owner->id, $article_ids);
+            $saltados_con_imagen = (int) $separados['con_imagen'];
+
+            // Todos los elegidos ya tienen imagen: no hay nada que buscar ni que pagar.
+            if (empty($separados['sin_imagen']) && $saltados_con_imagen > 0) {
+                return [
+                    'batch_uuid'          => null,
+                    'proceso'             => null,
+                    'articulos'           => 0,
+                    'saltados_con_imagen' => $saltados_con_imagen,
+                ];
+            }
+
+            /*
+             * Caso borde sin cambio: si ningún id es del dueño (y ninguno tiene imagen) la lista va
+             * tal cual, como antes, y crear() descarta los que no son del dueño.
+             */
+            if (!empty($separados['sin_imagen'])) {
+                $article_ids = $separados['sin_imagen'];
+            }
+        }
 
         $run = ImageAssignmentRunHelper::crear($owner, $article_ids, $origen, $auth_user_id, [
             'aplica_tope_diario' => true,
@@ -155,8 +192,10 @@ class ImagenesAutomaticasHelper
         $proceso = is_null($run->background_process_id) ? null : BackgroundProcess::find($run->background_process_id);
 
         return [
-            'batch_uuid' => (string) $run->uuid,
-            'proceso'    => $proceso,
+            'batch_uuid'          => (string) $run->uuid,
+            'proceso'             => $proceso,
+            'articulos'           => (int) $run->total_articulos,
+            'saltados_con_imagen' => $saltados_con_imagen,
         ];
     }
 }

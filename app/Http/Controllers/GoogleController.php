@@ -9,6 +9,7 @@ use App\Services\ProductFacts\TopeSerperDemo;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class GoogleController extends Controller
 {
@@ -22,6 +23,9 @@ class GoogleController extends Controller
      * con el asistente; acá queda la validación del request y la respuesta, que es exactamente la
      * de siempre (`{status, batch_uuid}`). Lo único nuevo es que el registro visible del proceso
      * nace `pendiente` al encolar, en vez de recién cuando el worker levanta el job.
+     *
+     * Desde el 23/10/2026 (pedido de Lucas) los artículos elegidos que ya tienen imagen no se buscan:
+     * la respuesta suma `articulos` y `saltados_con_imagen`, y si todos tenían imagen responde 422.
      *
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -49,12 +53,30 @@ class GoogleController extends Controller
         $encolado = ImagenesAutomaticasHelper::encolar($owner, $request->article_ids, $this->userId(false));
 
         /*
-         * El campo `batch_uuid` se AGREGA a la respuesta y no reemplaza nada: un frontend viejo lo
-         * ignora y sigue funcionando igual que antes. Ver el porqué del uuid en el helper.
+         * 23/10/2026: los que ya tienen imagen no se buscan. Si eran TODOS, no se creó ninguna
+         * corrida y se avisa con un 422 con forma de validación de Laravel (`errors.article_ids`):
+         * la SPA nueva lo muestra como aviso y la vieja como toast de su interceptor global.
+         */
+        if (is_null($encolado['batch_uuid'])) {
+            $con_imagen = (int) $encolado['saltados_con_imagen'];
+
+            throw ValidationException::withMessages([
+                'article_ids' => $con_imagen === 1
+                    ? 'El artículo elegido ya tiene imagen: no se buscó nada.'
+                    : 'Los '.$con_imagen.' artículos elegidos ya tienen imagen: no se buscó nada.',
+            ]);
+        }
+
+        /*
+         * Los campos `batch_uuid`, `articulos` y `saltados_con_imagen` se AGREGAN a la respuesta y no
+         * reemplazan nada: un frontend viejo los ignora y sigue funcionando igual que antes. Ver el
+         * porqué del uuid en el helper.
          */
         return response()->json([
-            'status'     => 'processing',
-            'batch_uuid' => $encolado['batch_uuid'],
+            'status'              => 'processing',
+            'batch_uuid'          => $encolado['batch_uuid'],
+            'articulos'           => (int) $encolado['articulos'],
+            'saltados_con_imagen' => (int) $encolado['saltados_con_imagen'],
         ], 200);
     }
 
