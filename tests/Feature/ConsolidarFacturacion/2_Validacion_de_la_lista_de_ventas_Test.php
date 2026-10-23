@@ -9,7 +9,6 @@ use App\Models\Client;
 use App\Models\Sale;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
 
@@ -26,14 +25,16 @@ use Tests\EmpresaTestCase;
  *    - una venta que ya esta dentro de otra consolidacion,
  *    - una venta con factura autorizada (CAE),
  *    - una venta de otro cliente o de otro comercio,
- *    - una venta inexistente (se consolidaban las que si estaban y se ignoraba el resto).
+ *    - una venta inexistente (se consolidaban las que si estaban y se ignoraba el resto),
+ *    - una venta de mostrador, si el POST no traia `client_id`.
  *  Un doble envio o un POST armado a mano consolidaba dos veces la misma venta y emitia dos
  *  facturas. La unica barrera era la SPA, y el menu "Seleccion" de Ventas tenia las suyas
  *  comentadas.
  *
- *  Los rechazos se prueban por el ENDPOINT real (la validacion corre antes de cualquier llamada a
- *  ARCA, asi que un rechazo no emite nada). Los casos que SI consolidan se prueban llamando al
- *  helper con `emitir_afip = false`: el endpoint siempre emite y emitir pegaria contra ARCA.
+ *  🔴 TODO SE PRUEBA LLAMANDO AL HELPER CON `emitir_afip = false`. El endpoint siempre emite, y si la
+ *  validacion se rompiera algun dia un test de rechazo por el endpoint saldria a ARCA de verdad.
+ *  El endpoint solo se prueba con las dos entradas que no pueden llegar a emitir ni siquiera con la
+ *  validacion rota (ver el test 12).
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promocion de constructor, readonly, enum ni #[...].
@@ -53,15 +54,8 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
         $ya_consolidada = $this->venta(['consolidacion_facturacion_id' => $contenedora->id]);
         $libre = $this->venta();
 
-        $contenedoras_antes = Sale::where('is_consolidacion_facturacion', 1)->count();
+        $this->assertRechaza([$libre->id, $ya_consolidada->id], 'ya fue incluida en la consolidación N° '.$contenedora->id);
 
-        $respuesta = $this->consolidar_por_endpoint([$libre->id, $ya_consolidada->id]);
-
-        $respuesta->assertStatus(422);
-        $this->assertTextoContiene('ya fue incluida en la consolidación', $respuesta->json('message'));
-        $this->assertTextoContiene((string) $contenedora->id, $respuesta->json('message'));
-
-        $this->assertEquals($contenedoras_antes, Sale::where('is_consolidacion_facturacion', 1)->count(), 'No se crea ninguna contenedora.');
         $this->assertNull(Sale::find($libre->id)->consolidacion_facturacion_id, 'La venta libre de la lista tampoco queda marcada.');
         $this->assertEquals($contenedora->id, Sale::find($ya_consolidada->id)->consolidacion_facturacion_id);
     }
@@ -76,10 +70,8 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
         $facturada = $this->venta();
         AfipTicket::create(['sale_id' => $facturada->id, 'cae' => '71234567890123', 'cbte_numero' => 12, 'resultado' => 'A']);
 
-        $respuesta = $this->consolidar_por_endpoint([$facturada->id]);
+        $this->assertRechaza([$facturada->id], 'ya tiene un comprobante AFIP autorizado');
 
-        $respuesta->assertStatus(422);
-        $this->assertTextoContiene('ya tiene un comprobante AFIP autorizado', $respuesta->json('message'));
         $this->assertNull(Sale::find($facturada->id)->consolidacion_facturacion_id);
     }
 
@@ -96,10 +88,8 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
         $de_otro = $this->venta(['client_id' => $otro_cliente->id]);
         $del_cliente = $this->venta();
 
-        $respuesta = $this->consolidar_por_endpoint([$del_cliente->id, $de_otro->id]);
+        $this->assertRechaza([$del_cliente->id, $de_otro->id], 'no corresponde al cliente indicado');
 
-        $respuesta->assertStatus(422);
-        $this->assertTextoContiene('no corresponde al cliente indicado', $respuesta->json('message'));
         $this->assertNull(Sale::find($del_cliente->id)->consolidacion_facturacion_id);
     }
 
@@ -118,53 +108,62 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
 
         $ajena = $this->venta(['user_id' => $otro_comercio->id]);
 
-        $respuesta = $this->consolidar_por_endpoint([$ajena->id]);
+        $this->assertRechaza([$ajena->id], 'no pertenece al usuario actual');
 
-        $respuesta->assertStatus(422);
-        $this->assertTextoContiene('no pertenece al usuario actual', $respuesta->json('message'));
         $this->assertNull(Sale::find($ajena->id)->consolidacion_facturacion_id);
     }
 
     /**
-     * Test 5 — Un id que no existe (o una venta borrada) rechaza TODA la lista: antes se
-     * consolidaban las que si estaban y se ignoraba la otra, y la factura salia incompleta.
+     * Test 5 — Un id borrado rechaza TODA la lista: antes se consolidaban las que si estaban y se
+     * ignoraba la otra, y la factura salia incompleta.
      *
      * @test
      */
-    public function un_id_inexistente_o_borrado_rechaza_toda_la_lista()
+    public function un_id_borrado_rechaza_toda_la_lista()
     {
         $existente = $this->venta();
         $borrada = $this->venta();
         $borrada->delete();
 
-        $respuesta = $this->consolidar_por_endpoint([$existente->id, $borrada->id]);
+        $this->assertRechaza([$existente->id, $borrada->id], 'no existen');
 
-        $respuesta->assertStatus(422);
-        $this->assertTextoContiene('no existen', $respuesta->json('message'));
         $this->assertNull(Sale::find($existente->id)->consolidacion_facturacion_id);
     }
 
     /**
-     * Test 6 — Una contenedora no se puede volver a consolidar, y una lista vacia se rechaza.
+     * Test 6 — Una contenedora no se puede volver a consolidar.
      *
      * @test
      */
-    public function una_contenedora_o_una_lista_vacia_se_rechazan()
+    public function una_contenedora_no_se_vuelve_a_consolidar()
     {
         $contenedora = $this->contenedora();
 
-        $this->consolidar_por_endpoint([$contenedora->id])
-            ->assertStatus(422)
-            ->assertJsonFragment(['error' => true]);
-
-        $respuesta = $this->consolidar_por_endpoint([]);
-
-        $respuesta->assertStatus(422);
-        $this->assertTextoContiene('al menos una venta', $respuesta->json('message'));
+        $this->assertRechaza([$contenedora->id], 'es una consolidación y no puede volver a consolidarse');
     }
 
     /**
-     * Test 7 — Lo que Ventas hace todos los dias sigue andando: ventas terminadas y sin factura del
+     * Test 7 — Sin cliente no hay consolidacion. Un POST sin `client_id` llega a la API como 0 (el
+     * controlador castea a int) y una venta de mostrador tiene `client_id` NULL: con una
+     * comparacion floja (`null != 0` es false en PHP) pasaba, se creaba una contenedora sin cliente
+     * y ni siquiera se tomaba el candado de la cuenta.
+     *
+     * @test
+     */
+    public function sin_cliente_no_se_consolida_ni_una_venta_de_mostrador()
+    {
+        $de_mostrador = $this->venta(['client_id' => null]);
+
+        $this->assertRechaza([$de_mostrador->id], 'Las ventas de mostrador (sin cliente) no se pueden consolidar', 0);
+
+        // Y con un cliente indicado, la venta de mostrador tampoco es de ese cliente.
+        $this->assertRechaza([$de_mostrador->id], 'no corresponde al cliente indicado');
+
+        $this->assertNull(Sale::find($de_mostrador->id)->consolidacion_facturacion_id);
+    }
+
+    /**
+     * Test 8 — Lo que Ventas hace todos los dias sigue andando: ventas terminadas y sin factura del
      * mismo cliente se consolidan, y quedan marcadas con su contenedora. Una venta con un
      * comprobante SIN CAE (un intento rechazado por ARCA) tambien se puede consolidar.
      *
@@ -184,7 +183,7 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 8 — La misma venta elegida dos veces no es una venta inexistente: se consolida una vez.
+     * Test 9 — La misma venta elegida dos veces no es una venta inexistente: se consolida una vez.
      *
      * @test
      */
@@ -199,8 +198,8 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 9 — Si la contenedora se borro, sus ventas originales vuelven a poder consolidarse (es lo
-     * que Ventas permitia antes de la validacion). Con la contenedora viva, no.
+     * Test 10 — Si la contenedora se borro, sus ventas originales vuelven a poder consolidarse (es
+     * lo que Ventas permitia antes de la validacion). Con la contenedora viva, no.
      *
      * @test
      */
@@ -209,7 +208,7 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
         $contenedora = $this->contenedora();
         $venta = $this->venta(['consolidacion_facturacion_id' => $contenedora->id]);
 
-        $this->consolidar_por_endpoint([$venta->id])->assertStatus(422);
+        $this->assertRechaza([$venta->id], 'ya fue incluida en la consolidación');
 
         $contenedora->delete();
 
@@ -220,7 +219,7 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 10 — El segundo envio de la misma seleccion (doble clic) se rechaza: la primera
+     * Test 11 — El segundo envio de la misma seleccion (doble clic) se rechaza: la primera
      * consolidacion ya marco las ventas, y la validacion corre adentro del candado del cliente.
      *
      * @test
@@ -232,14 +231,34 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
 
         $primera = $this->consolidar_sin_emitir([$a->id, $b->id]);
 
-        $contenedoras_antes = Sale::where('is_consolidacion_facturacion', 1)->count();
+        $this->assertRechaza([$a->id, $b->id], 'ya fue incluida en la consolidación N° '.$primera->num);
 
-        $respuesta = $this->consolidar_por_endpoint([$a->id, $b->id]);
+        $this->assertEquals($primera->id, Sale::find($a->id)->consolidacion_facturacion_id);
+    }
+
+    /**
+     * Test 12 — El endpoint traduce el rechazo a un 422 con el mensaje (lo que muestra el modal de
+     * la SPA). Solo con entradas que NO pueden llegar a emitir ni siquiera si la validacion se
+     * rompiera: una lista vacia o con un id ya borrado no tiene ventas que copiar, asi que
+     * `consolidar()` falla antes de crear nada. Cualquier otra entrada, si algun dia pasara la
+     * validacion, emitiria una factura contra ARCA de verdad.
+     *
+     * @test
+     */
+    public function el_endpoint_responde_422_con_el_mensaje_del_rechazo()
+    {
+        $borrada = $this->venta();
+        $borrada->delete();
+
+        $respuesta = $this->consolidar_por_endpoint([$borrada->id]);
+
+        $respuesta->assertStatus(422)->assertJsonFragment(['error' => true]);
+        $this->assertTextoContiene('no existen', $respuesta->json('message'));
+
+        $respuesta = $this->consolidar_por_endpoint([]);
 
         $respuesta->assertStatus(422);
-        $this->assertTextoContiene('ya fue incluida en la consolidación N° '.$primera->num, $respuesta->json('message'));
-        $this->assertEquals($contenedoras_antes, Sale::where('is_consolidacion_facturacion', 1)->count(), 'No se creo una segunda contenedora.');
-        $this->assertEquals($primera->id, Sale::find($a->id)->consolidacion_facturacion_id);
+        $this->assertTextoContiene('al menos una venta', $respuesta->json('message'));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -256,6 +275,31 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
     protected function assertTextoContiene($aguja, $texto)
     {
         $this->assertStringContainsString($aguja, (string) $texto);
+    }
+
+    /**
+     * Consolida llamando al helper SIN emitir y exige que lo rechace con ese mensaje, sin crear
+     * ninguna contenedora. Los rechazos se prueban por el helper y no por el endpoint a proposito:
+     * el endpoint siempre emite, y si la validacion se rompiera un test de rechazo saldria a ARCA.
+     *
+     * @param  array     $sale_ids
+     * @param  string    $texto      Parte del mensaje esperado.
+     * @param  int|null  $client_id  null = el cliente del fixture.
+     * @return void
+     */
+    protected function assertRechaza($sale_ids, $texto, $client_id = null)
+    {
+        $contenedoras_antes = Sale::where('is_consolidacion_facturacion', 1)->count();
+
+        try {
+            $this->consolidar_sin_emitir($sale_ids, $client_id);
+        } catch (\Exception $e) {
+            $this->assertTextoContiene($texto, $e->getMessage());
+            $this->assertEquals($contenedoras_antes, Sale::where('is_consolidacion_facturacion', 1)->count(), 'Un rechazo no crea ninguna contenedora.');
+            return;
+        }
+
+        $this->fail('Se esperaba que se rechazara con: '.$texto);
     }
 
     /**
@@ -316,8 +360,8 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
     }
 
     /**
-     * Le pega al endpoint real. Solo se usa en los casos que se RECHAZAN: un caso que consolida
-     * emitiria contra ARCA.
+     * Le pega al endpoint real. Solo se usa con las entradas del test 12, que no pueden llegar a
+     * emitir: cualquier otra emitiria contra ARCA.
      *
      * @param  array  $sale_ids
      * @return \Illuminate\Testing\TestResponse
@@ -340,10 +384,11 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
     /**
      * Consolida llamando al helper SIN emitir (emitir pegaria contra ARCA de verdad).
      *
-     * @param  array  $sale_ids
+     * @param  array     $sale_ids
+     * @param  int|null  $client_id  null = el cliente del fixture.
      * @return \App\Models\Sale La contenedora.
      */
-    protected function consolidar_sin_emitir($sale_ids)
+    protected function consolidar_sin_emitir($sale_ids, $client_id = null)
     {
         $afip_information = AfipInformation::where('user_id', $this->comercio()->id)->first();
 
@@ -351,7 +396,7 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
 
         return ConsolidarFacturacionHelper::consolidar(
             $sale_ids,
-            $this->cliente()->id,
+            is_null($client_id) ? $this->cliente()->id : $client_id,
             $this->comercio()->id,
             $afip_information->id,
             1,

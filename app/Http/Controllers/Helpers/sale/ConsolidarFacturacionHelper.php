@@ -49,6 +49,15 @@ class ConsolidarFacturacionHelper extends Controller
             throw new Exception('Debe seleccionar al menos una venta para consolidar.');
         }
 
+        /**
+         * Sin cliente no hay consolidación: las ventas de mostrador no se consolidan. Además, con
+         * `client_id = 0` (el cast de un campo ausente) la comparación de abajo daría igual para
+         * una venta sin cliente y `CuentaCorrienteLock` no tomaría ningún candado.
+         */
+        if ($client_id <= 0) {
+            throw new Exception('Las ventas de mostrador (sin cliente) no se pueden consolidar.');
+        }
+
         /** Carga las ventas a validar con relaciones mínimas necesarias. */
         $sales = Sale::whereIn('id', $sale_ids)
                      ->with('afip_tickets')
@@ -60,14 +69,17 @@ class ConsolidarFacturacionHelper extends Controller
 
         foreach ($sales as $sale) {
 
+            /** Cómo se nombra la venta en los mensajes: su número, o su id si todavía no tiene. */
+            $etiqueta = !is_null($sale->num) ? $sale->num : $sale->id;
+
             /** Todas las ventas deben pertenecer al usuario autenticado. */
             if ($sale->user_id != $user_id) {
-                throw new Exception("La venta #{$sale->num} no pertenece al usuario actual.");
+                throw new Exception("La venta #{$etiqueta} no pertenece al usuario actual.");
             }
 
             /** Todas las ventas deben ser del mismo cliente. */
-            if ($sale->client_id != $client_id) {
-                throw new Exception("La venta #{$sale->num} no corresponde al cliente indicado.");
+            if ((int) $sale->client_id !== $client_id) {
+                throw new Exception("La venta #{$etiqueta} no corresponde al cliente indicado.");
             }
 
             /**
@@ -82,13 +94,13 @@ class ConsolidarFacturacionHelper extends Controller
 
                 if (!is_null($contenedora)) {
                     $num_contenedora = !is_null($contenedora->num) ? $contenedora->num : $contenedora->id;
-                    throw new Exception("La venta #{$sale->num} ya fue incluida en la consolidación N° {$num_contenedora}.");
+                    throw new Exception("La venta #{$etiqueta} ya fue incluida en la consolidación N° {$num_contenedora}.");
                 }
             }
 
             /** No se puede consolidar una venta que ya es ella misma una contenedora de facturación. */
             if ($sale->is_consolidacion_facturacion) {
-                throw new Exception("La venta #{$sale->num} es una consolidación y no puede volver a consolidarse.");
+                throw new Exception("La venta #{$etiqueta} es una consolidación y no puede volver a consolidarse.");
             }
 
             /** No se consolidan ventas que ya tienen un comprobante AFIP autorizado (con CAE). */
@@ -96,7 +108,7 @@ class ConsolidarFacturacionHelper extends Controller
                 return !empty($t->cae);
             });
             if ($tiene_cae) {
-                throw new Exception("La venta #{$sale->num} ya tiene un comprobante AFIP autorizado.");
+                throw new Exception("La venta #{$etiqueta} ya tiene un comprobante AFIP autorizado.");
             }
         }
     }
