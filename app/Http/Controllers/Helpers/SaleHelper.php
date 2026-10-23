@@ -34,6 +34,7 @@ use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
+use App\Http\Controllers\Helpers\sale\VentaOfflineHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
@@ -202,6 +203,44 @@ class SaleHelper extends Controller {
     }
 
     /**
+     * El `created_at` del alta de una venta que se SUBE desde el equipo, con la hora en que se
+     * guardó ahí y no la de la subida (misión ingreso-sin-internet, 23/10/2026).
+     *
+     * `resolver_created_at()` arma día elegido + hora ACTUAL, que en una venta offline es la hora
+     * en que volvió la red (puede ser horas después): la venta caía en otro turno de caja y en
+     * otro orden de la cuenta corriente. Acá la HORA (h:m:s) sale del instante de captura que
+     * mandó el equipo, y el DÍA sale del `created_at` elegido si pasa la misma lista blanca
+     * (`YYYY-MM-DD`, ver `dia_pedido()`); si no vino o no sirve, del día de la propia captura.
+     *
+     * Devuelve null cuando no hay captura válida (`VentaOfflineHelper::capturada_at_valida()`:
+     * no es una subida offline, el valor es basura o está más de un día en el futuro), y el
+     * llamador sigue con `resolver_created_at()`: lo de siempre.
+     *
+     * La captura llega ya convertida a `config('app.timezone')`, y `Carbon::create()` sin zona usa
+     * la misma (Laravel fija la zona por defecto de PHP con esa clave), igual que
+     * `resolver_created_at()`. Los milisegundos se descartan: la columna guarda segundos.
+     *
+     * @param  mixed                          $valor      Lo que mandó el front en la clave `created_at`.
+     * @param  \Illuminate\Http\Request|null  $request    El request del alta (lee `capturada_at`).
+     * @return \Carbon\Carbon|null
+     */
+    static function resolver_created_at_de_venta_offline($valor, $request) {
+        $capturada = VentaOfflineHelper::capturada_at_valida($request);
+
+        if (is_null($capturada)) {
+            return null;
+        }
+
+        $dia = Self::dia_pedido($valor);
+
+        if (is_null($dia)) {
+            $dia = [$capturada->year, $capturada->month, $capturada->day];
+        }
+
+        return Carbon::create($dia[0], $dia[1], $dia[2], $capturada->hour, $capturada->minute, $capturada->second);
+    }
+
+    /**
      * El `created_at` que hay que guardar en un UPDATE, o null si no hay nada que tocar.
      *
      * En el update "la hora actual" no significa nada: el registro ya tiene su hora, que es cuando
@@ -325,9 +364,36 @@ class SaleHelper extends Controller {
         return 1;
     }
 
+    /**
+     * El empleado de la venta: el `employee_id` elegido en el request, o si no vino (0), el usuario
+     * logueado cuando es un empleado, o null cuando es el dueño.
+     *
+     * 🔴 SUBIDA DE UNA VENTA OFFLINE QUE CARGÓ EL DUEÑO (misión ingreso-sin-internet, 23/10/2026).
+     * La rama del 0 lee al usuario logueado del momento del POST, y una venta guardada en el equipo
+     * se sube cuando vuelve la red, con quien esté logueado AHORA: una venta que cargó el dueño y
+     * subió un empleado quedaba a nombre del empleado (empleado de la venta, vendedor y comisión).
+     * Si el request es esa subida (`offline_uuid` válido + `venta_offline`) y trae
+     * `cargada_por_duenio` verdadero, la venta es del dueño: null, aunque el que sube sea un
+     * empleado. La regla vive en `VentaOfflineHelper::la_cargo_el_duenio()`.
+     *
+     * Va DESPUÉS del `employee_id` explícito a propósito: si en el equipo se eligió un empleado,
+     * esa elección es de la venta y no del que la sube, y se respeta igual que online. Sin la
+     * subida offline (online, presupuestos, pedidos, el asistente) esto no cambia nada.
+     *
+     * Todos los lugares de `SaleController::store()` que hablan del empleado de la venta pasan por
+     * acá con el mismo `$request` (el `employee_id` del INSERT, la guarda de 5 segundos y el
+     * vendedor de `get_seller_id()`), así que leen lo mismo.
+     *
+     * @param  \Illuminate\Http\Request|null  $request
+     * @return int|null
+     */
     static function getEmployeeId($request = null) {
         if (!is_null($request) && $request->employee_id != 0) {
             return $request->employee_id;
+        }
+
+        if (VentaOfflineHelper::la_cargo_el_duenio($request)) {
+            return null;
         }
 
         $user = Auth()->user();
