@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfLayout\SucursalesDelEncabezadoPdf;
 use App\Http\Controllers\Helpers\PdfNegritaHelper;
 use Carbon\Carbon;
 
@@ -1568,6 +1569,14 @@ class AfipPdfHelper
         $values['telefono'] = (string) ($user->phone ?: '');
         $values['email'] = (string) ($user->email ?: '');
 
+        /**
+         * Chips de sucursal (sucursal_comprobante, todas_las_sucursales, sucursal_<id>; misión
+         * pdf-direccion-sucursales): no son un valor sino un resolvedor, que consulta las sucursales
+         * del dueño recién si el layout pide un chip y no repite una sucursal entre los dos
+         * cuadrantes. Prefijo '__' como '__owner_name': no es una clave de layout.
+         */
+        $values['__sucursales'] = new SucursalesDelEncabezadoPdf($sale, $user ? $user->id : null);
+
         return $values;
     }
 
@@ -1675,6 +1684,31 @@ class AfipPdfHelper
                 continue;
             }
 
+            /**
+             * Chips de sucursal (misión pdf-direccion-sucursales): cero, uno o varios renglones
+             * "rótulo + valor" (todas_las_sucursales imprime uno por sucursal). Con wrap, como el
+             * Domicilio Comercial: un domicilio con ciudad y provincia puede no entrar en un renglón.
+             * Sin sucursales con domicilio no se imprime nada (vacío = se saltea).
+             */
+            if (SucursalesDelEncabezadoPdf::es_chip($key)) {
+                $renglones = isset($field_values['__sucursales']) ? $field_values['__sucursales']->renglones($key) : [];
+
+                foreach ($renglones as $renglon) {
+                    self::print_label_value_multiline(
+                        $pdf,
+                        $renglon['rotulo'],
+                        $renglon['valor'],
+                        $x,
+                        $width,
+                        self::$header_row_font_size,
+                        self::$header_row_line_height,
+                        $value_style
+                    );
+                }
+
+                continue;
+            }
+
             if (!array_key_exists($key, $field_values)) {
                 continue;
             }
@@ -1743,6 +1777,14 @@ class AfipPdfHelper
      * (los que faltan se agregan al final de cada cuadrante). Solo debe aplicarse a
      * perfiles fiscales (is_afip_ticket): en perfiles no fiscales el layout se usa tal cual.
      *
+     * Chips de sucursal (misión pdf-direccion-sucursales, D1): la factura conserva el Domicilio
+     * Comercial de ARCA y ADEMÁS admite los chips de sucursal. No son obligatorios (no entran en el
+     * orden canónico aunque el default traiga 'sucursal_comprobante') y, a diferencia de
+     * web/telefono/email, conservan su lugar: van pegados al campo obligatorio que tenían antes en
+     * el mismo cuadrante (el default los pone después de 'domicilio_comercial'). Sin un obligatorio
+     * antes, van con los extras al final. Un layout sin chips de sucursal sale exactamente igual
+     * que antes de existir.
+     *
      * @param array<string, mixed> $layout header_layout guardado en el perfil o el default por código.
      * @return array<string, mixed> Layout con los campos obligatorios garantizados.
      */
@@ -1754,10 +1796,11 @@ class AfipPdfHelper
          * default_header_layout nunca se desincronicen, y que enforce sea IDEMPOTENTE
          * sobre el default (mismo emisor.izquierda/derecha de salida que de entrada) ->
          * la salida fiscal del caso sin header_layout custom queda byte-idéntica.
+         * Los chips de sucursal del default no son obligatorios: se sacan del canónico.
          */
         $default = \App\Models\PdfColumnProfile::default_header_layout(true);
-        $canonical_izquierda = $default['emisor']['izquierda'];
-        $canonical_derecha = $default['emisor']['derecha'];
+        $canonical_izquierda = self::sin_chips_de_sucursal($default['emisor']['izquierda']);
+        $canonical_derecha = self::sin_chips_de_sucursal($default['emisor']['derecha']);
 
         $current_izquierda = (isset($layout['emisor']['izquierda']) && is_array($layout['emisor']['izquierda']))
             ? $layout['emisor']['izquierda']
@@ -1767,32 +1810,75 @@ class AfipPdfHelper
             : array();
 
         /**
-         * Extras del usuario = campos NO obligatorios (los únicos admitidos en fiscal son
-         * web/telefono/email), preservando el orden relativo en que vengan. Van DESPUÉS del
-         * bloque obligatorio: nunca pueden empujar ni reordenar los campos legales.
+         * Obligatorios SIEMPRE primero y en orden canónico (con los chips de sucursal pegados al
+         * obligatorio que los precede); extras opcionales al final. Solo se sobrescribe el bloque
+         * emisor; el resto de $layout (receptor, etc.) queda intacto.
          */
-        $extras_izquierda = array();
-        foreach ($current_izquierda as $field) {
-            if (!in_array($field, $canonical_izquierda, true)) {
-                $extras_izquierda[] = $field;
-            }
-        }
-
-        $extras_derecha = array();
-        foreach ($current_derecha as $field) {
-            if (!in_array($field, $canonical_derecha, true)) {
-                $extras_derecha[] = $field;
-            }
-        }
-
-        /**
-         * Obligatorios SIEMPRE primero y en orden canónico; extras opcionales al final.
-         * Solo se sobrescribe el bloque emisor; el resto de $layout (receptor, etc.) queda intacto.
-         */
-        $layout['emisor']['izquierda'] = array_merge($canonical_izquierda, $extras_izquierda);
-        $layout['emisor']['derecha'] = array_merge($canonical_derecha, $extras_derecha);
+        $layout['emisor']['izquierda'] = self::fiscal_ordenado($canonical_izquierda, $current_izquierda);
+        $layout['emisor']['derecha'] = self::fiscal_ordenado($canonical_derecha, $current_derecha);
 
         return $layout;
+    }
+
+    /**
+     * Un cuadrante del emisor fiscal: los obligatorios en orden canónico, cada chip de sucursal
+     * detrás del obligatorio que lo precedía en el cuadrante, y los extras (web/telefono/email, y
+     * los chips de sucursal sin un obligatorio antes) al final, en el orden en que venían.
+     *
+     * @param array<int, string> $canonical Obligatorios del cuadrante, en orden.
+     * @param array<int, string> $current   El cuadrante tal como vino.
+     * @return array<int, string>
+     */
+    protected static function fiscal_ordenado($canonical, $current)
+    {
+        /**
+         * Extras del usuario = campos NO obligatorios (los únicos admitidos en fiscal son
+         * web/telefono/email y los chips de sucursal), preservando el orden relativo en que vengan.
+         * Van DESPUÉS del bloque obligatorio: nunca pueden empujar ni reordenar los campos legales.
+         */
+        $extras = array();
+        $despues_de = array();
+        $ultimo_obligatorio = null;
+
+        foreach ($current as $field) {
+            if (in_array($field, $canonical, true)) {
+                $ultimo_obligatorio = $field;
+                continue;
+            }
+
+            if (SucursalesDelEncabezadoPdf::es_chip($field) && !is_null($ultimo_obligatorio)) {
+                $despues_de[$ultimo_obligatorio][] = $field;
+                continue;
+            }
+
+            $extras[] = $field;
+        }
+
+        $ordenado = array();
+        foreach ($canonical as $field) {
+            $ordenado[] = $field;
+
+            if (isset($despues_de[$field])) {
+                foreach ($despues_de[$field] as $chip) {
+                    $ordenado[] = $chip;
+                }
+            }
+        }
+
+        return array_merge($ordenado, $extras);
+    }
+
+    /**
+     * Una lista de claves del emisor sin los chips de sucursal.
+     *
+     * @param array<int, string> $keys
+     * @return array<int, string>
+     */
+    protected static function sin_chips_de_sucursal($keys)
+    {
+        return array_values(array_filter($keys, function ($key) {
+            return !SucursalesDelEncabezadoPdf::es_chip($key);
+        }));
     }
 
     /**

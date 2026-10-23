@@ -107,6 +107,12 @@ class OrderPdfDocument implements PdfDocumentSource
         $document->created_at = $this->order->created_at;
         /** Sin sucursal: el logo y los datos fiscales salen del dueño. */
         $document->address = null;
+        /**
+         * Sucursal del pedido (`orders.address_id`, el depósito) para el chip "Sucursal del
+         * comprobante" del encabezado (SucursalesDelEncabezadoPdf). Va aparte de `address` para no
+         * cambiar el logo ni los datos fiscales, que siguen saliendo del dueño.
+         */
+        $document->sucursal_id = $this->order->address_id ? (int) $this->order->address_id : null;
         $document->seller = null;
         $document->employee = null;
         $document->client = $this->header_client();
