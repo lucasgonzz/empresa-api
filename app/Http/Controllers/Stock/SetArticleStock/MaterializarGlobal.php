@@ -34,9 +34,11 @@ use Illuminate\Support\Facades\Log;
  *   - trae sucursal (`from` o `to`) y esa sucursal es una sucursal DE VERDAD del comercio
  *     (`SucursalVigenteHelper::existe()`, estricto: un domicilio de comprador de un pedido de la tienda
  *     no dispara nada y conserva su comportamiento histórico),
- *   - el concepto NO es de los que reparten (`CheckToAddress::CONCEPTOS_QUE_REPARTEN`: ésos ya definen
- *     el reparto inicial —el modal de crear depósitos y la edición por sucursal mandan porciones que
- *     suman el total—, y materializar ahí duplicaría el stock),
+ *   - el concepto NO es de los que definen el reparto inicial (`CONCEPTOS_QUE_NO_MATERIALIZAN`:
+ *     "Creacion de deposito", "Actualizacion de deposito" e "Importacion de excel" —el modal de crear
+ *     depósitos, la edición por sucursal y el Excel por sucursal mandan porciones que ya suman el
+ *     total, y materializar ahí duplicaría el stock—, más "Reseteo de Stock" y "Eliminacion de
+ *     sucursal", que operan sobre filas que ya existen),
  *   - y lo que mueve (el artículo, o la variante si el movimiento es de una variante) NO tiene filas
  *     vivas y tiene stock distinto de 0 (null cuenta como 0: no hay nada que materializar),
  *
@@ -53,6 +55,15 @@ use Illuminate\Support\Facades\Log;
  *  Sin recursión: el movimiento de materialización es "Creacion de deposito" (un concepto que
  *  reparte) y además viaja con `sin_materializar`, así que nunca vuelve a entrar acá.
  *
+ *  🔴 LOS TRASLADOS SÍ MATERIALIZAN ("Mov entre depositos" y "Mov manual entre depositos";
+ *  corrección del coordinador, 23/10/2026: el brief los había excluido por error). Sin materializar,
+ *  el traslado de un artículo sin filas le abría el destino con la cantidad trasladada y el global
+ *  pasaba a ser solo eso: se perdía el resto. Con la materialización primero:
+ *   - global 100 sin filas, traslado principal → B de 5: principal 95, B 5, global 100;
+ *   - global 100 sin filas, traslado B → C de 5: principal 100, B −5, C 5, global 100. El origen queda
+ *     en negativo y la principal con todo, que es lo correcto: el sistema no sabe dónde estaba
+ *     físicamente el stock global, y el negativo le muestra al usuario de dónde salió.
+ *
  *  Un artículo con variantes sin variante en el movimiento no se materializa: su stock es la suma de
  *  sus variantes y el movimiento del artículo entero no lo toca nadie (comportamiento de siempre).
  *
@@ -66,6 +77,20 @@ class MaterializarGlobal {
 
     /** Concepto con el que se materializa. */
     const CONCEPTO = 'Creacion de deposito';
+
+    /**
+     * Conceptos que NO materializan: los que definen el reparto inicial (sus porciones ya suman el
+     * total) y los que operan sobre filas existentes. Se comparan sin distinguir mayúsculas (la tabla
+     * guarda 'Reseteo de Stock' y el código lo pide como 'Reseteo de stock'). Los traslados NO están
+     * acá a propósito: ver el docblock de la clase.
+     */
+    const CONCEPTOS_QUE_NO_MATERIALIZAN = [
+        'Creacion de deposito',
+        'Actualizacion de deposito',
+        'Importacion de excel',
+        'Reseteo de Stock',
+        'Eliminacion de sucursal',
+    ];
 
     /**
      * Materializa el stock global del artículo (o de la variante) si el movimiento lo pide.
@@ -103,7 +128,7 @@ class MaterializarGlobal {
          * siempre (CheckToAddress no abre el depósito y el movimiento va al global). Materializar ahí
          * podría duplicar el reparto de un "Creacion de deposito" o una importación sin concepto.
          */
-        if (is_null($concepto) || in_array($concepto->name, CheckToAddress::CONCEPTOS_QUE_REPARTEN)) {
+        if (is_null($concepto) || Self::no_materializa($concepto->name)) {
             return false;
         }
 
@@ -138,6 +163,23 @@ class MaterializarGlobal {
         ], $set_updated_at, $owner, $employee_id);
 
         return true;
+    }
+
+    /**
+     * ¿El concepto está entre los que no materializan? (sin distinguir mayúsculas)
+     *
+     * @param  string  $nombre
+     * @return bool
+     */
+    static function no_materializa($nombre) {
+
+        foreach (Self::CONCEPTOS_QUE_NO_MATERIALIZAN as $concepto) {
+            if (mb_strtolower($concepto) === mb_strtolower((string) $nombre)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
