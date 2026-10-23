@@ -511,6 +511,13 @@ class SucursalVigenteHelper {
             return $data;
         }
 
+        if (!Self::el_comprobante_movio_stock($data)) {
+
+            Log::info('SucursalVigenteHelper::aplicar_red_de_la_principal: el movimiento sin sucursal del artículo '.$article->id.' revierte un comprobante cuyos movimientos originales no movieron stock; no se aplica la red (queda como antes).');
+
+            return $data;
+        }
+
         $principal = Address::principal_de((int) $owner_id);
 
         if (is_null($principal)) {
@@ -529,10 +536,109 @@ class SucursalVigenteHelper {
     }
 
     /**
+     * Las claves de comprobante que puede traer un movimiento, en el orden en que se usan para
+     * buscar sus movimientos ORIGINALES (ver el_comprobante_movio_stock()). La venta va primero: una
+     * nota de crédito desde Vender trae `sale_id` y `nota_credito_id`, y lo que importa es si la
+     * VENTA descontó.
+     */
+    const CLAVES_DE_COMPROBANTE = ['sale_id', 'provider_order_id', 'nota_credito_id', 'order_id'];
+
+    /**
+     * ¿Los movimientos que ESTE comprobante ya dejó para este artículo (y variante) movieron stock?
+     * (misión sucursal-siempre, corrección del chequeo del motor, 23/10/2026).
+     *
+     * 🔴 Por qué existe: la red de D3 manda a la principal un movimiento sin sucursal sobre un
+     * artículo que reparte. Pero las REVERSIONES (borrar o editar una venta, una compra, una nota de
+     * crédito, "Act Compra a proveedor") arman su neto desde el libro: si el movimiento ORIGINAL de
+     * ese comprobante fue de los que se perdían en silencio (sin sucursal, sobre un artículo que ya
+     * repartía: `stock_anterior == stock_resultante`), revertirlo hoy por la red movería stock que
+     * nunca se movió. Con la venta aparecía stock de la nada (A 10 → 12); con la compra se restaban
+     * unidades reales (−10). Si el original no movió nada, la reversión tampoco mueve: queda como en
+     * develop.
+     *
+     * Devuelve true (la red se aplica) cuando:
+     *  - el movimiento no nombra ningún comprobante (ingreso manual, asistente, masiva...);
+     *  - es el PRIMER movimiento del comprobante para ese artículo (una venta, una compra nueva);
+     *  - alguno de los originales quedó grabado con sucursal (`from`/`to`): movió stock en una fila;
+     *  - o alguno movió el stock del artículo (`stock_resultante − stock_anterior ≠ 0`; sin
+     *    `stock_anterior`, el de antes es el `stock_resultante` del movimiento anterior del artículo).
+     *    Es el caso del cliente MIGRADO: su venta vieja sí movió el global, y su reversión tiene que ir
+     *    a la principal, donde quedó ese stock.
+     *
+     * Se mira "alguno movió" y no "la suma ≠ 0": una venta que descontó 2 y una NC que devolvió 2
+     * suman 0 pero movieron stock de verdad.
+     *
+     * @param  array  $data
+     * @return bool
+     */
+    static function el_comprobante_movio_stock($data) {
+
+        $clave = null;
+
+        foreach (Self::CLAVES_DE_COMPROBANTE as $candidata) {
+            if (!empty($data[$candidata])) {
+                $clave = $candidata;
+                break;
+            }
+        }
+
+        if (is_null($clave)) {
+            return true;
+        }
+
+        $query = DB::table('stock_movements as sm')
+            ->where('sm.'.$clave, (int) $data[$clave])
+            ->where('sm.article_id', (int) $data['model_id']);
+
+        if (!empty($data['article_variant_id'])) {
+            $query->where('sm.article_variant_id', (int) $data['article_variant_id']);
+        } else {
+            $query->where(function ($q) {
+                $q->whereNull('sm.article_variant_id')->orWhere('sm.article_variant_id', 0);
+            });
+        }
+
+        $originales = $query->orderBy('sm.id')->get([
+            'sm.id', 'sm.from_address_id', 'sm.to_address_id', 'sm.stock_anterior', 'sm.stock_resultante',
+        ]);
+
+        if (count($originales) === 0) {
+            return true;
+        }
+
+        foreach ($originales as $original) {
+
+            if (!Self::es_vacio($original->from_address_id) || !Self::es_vacio($original->to_address_id)) {
+                return true;
+            }
+
+            $anterior = $original->stock_anterior;
+
+            if (is_null($anterior)) {
+                $anterior = DB::table('stock_movements')
+                    ->where('article_id', (int) $data['model_id'])
+                    ->where('id', '<', $original->id)
+                    ->orderBy('id', 'DESC')
+                    ->value('stock_resultante');
+            }
+
+            if (is_null($anterior) || is_null($original->stock_resultante)) {
+                continue;
+            }
+
+            if (abs((float) $original->stock_resultante - (float) $anterior) > 0.0001) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * ¿El movimiento cae sobre algo que reparte por sucursales (tiene filas vivas)? La variante si el
      * movimiento es de una variante; el artículo si no (y solo si no tiene variantes: ver
      * `aplicar_red_de_la_principal()`). "Vivas" = las que ve la relación `addresses` (INNER JOIN con
-     * `addresses`), que es el mismo criterio con el que el motor decide si un artículo reparte.
+     * `addresses`), sin contar las de domicilios de comprador (`buyer_id`), que no son sucursales.
      *
      * @param  array                $data
      * @param  \App\Models\Article  $article
@@ -544,14 +650,16 @@ class SucursalVigenteHelper {
 
             $variante = \App\Models\ArticleVariant::find((int) $data['article_variant_id']);
 
-            return !is_null($variante) && $variante->addresses()->count() >= 1;
+            return !is_null($variante) && $variante->addresses()->whereNull('addresses.buyer_id')->count() >= 1;
         }
 
         if ($article->article_variants()->count() >= 1) {
             return false;
         }
 
-        return $article->addresses()->count() >= 1;
+        // Una fila en el domicilio de un comprador (pedidos viejos de la tienda) no es "repartir por
+        // sucursales": no cuenta.
+        return $article->addresses()->whereNull('addresses.buyer_id')->count() >= 1;
     }
 
     /**
