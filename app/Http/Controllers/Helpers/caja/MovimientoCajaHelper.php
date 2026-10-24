@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\caja;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Exceptions\OperacionDeCajaInvalidaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
@@ -24,6 +25,11 @@ class MovimientoCajaHelper {
 				->where('caja_id', $id)->lockForUpdate()->first() : null;
 			if (!$caja || (int) $caja->abierta !== 1 || !$apertura || !is_null($apertura->cerrada_at)) {
 				$nombre = $caja ? $caja->name : ('N° '.$id);
+				// Una caja nunca abierta conserva el motivo histórico. No confundirla con
+				// una caja que tuvo turnos, pero cuyo turno actual ya no está disponible.
+				if ($caja && !$apertura && !AperturaCaja::where('caja_id', $id)->lockForUpdate()->first()) {
+					self::rechazar_operacion('La caja '.$nombre.' no tiene ninguna apertura registrada, asi que no puede recibir movimientos. Hay que abrirla primero.');
+				}
 				self::rechazar_operacion('La caja '.$nombre.' está cerrada o no tiene una apertura vigente. Abrila antes de registrar la operación.');
 			}
 		}
@@ -31,7 +37,7 @@ class MovimientoCajaHelper {
 
 	static function rechazar_operacion($mensaje, $campo = 'caja_id') {
 		$errores = [$campo => [$mensaje]];
-		$excepcion = \Illuminate\Validation\ValidationException::withMessages($errores);
+		$excepcion = OperacionDeCajaInvalidaException::withMessages($errores);
 		// El Handler de la aplicación reemplaza el mensaje nativo por uno genérico.
 		$excepcion->response = response()->json(['message' => $mensaje, 'errors' => $errores], 422);
 		throw $excepcion;
