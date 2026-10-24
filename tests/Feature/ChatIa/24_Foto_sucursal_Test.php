@@ -29,7 +29,7 @@ class Foto_sucursal_Test extends TestCase
 {
     use DatabaseTransactions;
 
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

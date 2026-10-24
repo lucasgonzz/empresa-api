@@ -9,7 +9,7 @@ use App\Models\CreditAccount;
 use App\Models\ImportHistory;
 use App\Models\Provider;
 use Illuminate\Http\UploadedFile;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 
 /**
  * Misión importacion-proveedores-saldo-inicial (8/10/2026) — los proveedores que crea la

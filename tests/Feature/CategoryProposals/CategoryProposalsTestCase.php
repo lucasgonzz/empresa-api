@@ -12,6 +12,7 @@ use App\Models\CategoryProposalRun;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\EmpresaTestCase;
 
 /**
@@ -33,6 +34,8 @@ use Tests\EmpresaTestCase;
  */
 abstract class CategoryProposalsTestCase extends EmpresaTestCase
 {
+    use OtorgaAgentesIa;
+
     /** La clave de `admin-sync` de mentira que fija `setUp()` en `config('services.admin_api.api_key')`. */
     const CLAVE_DE_ADMIN = 'CLAVE-DE-ADMIN-DE-PRUEBA';
 
@@ -67,12 +70,17 @@ abstract class CategoryProposalsTestCase extends EmpresaTestCase
      */
     protected function crear_comercio($nombre)
     {
-        return User::create([
+        $comercio = User::create([
             'name'         => $nombre,
             'company_name' => $nombre,
             'email'        => 'categorias-'.uniqid().'@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): las categorías con IA son de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($comercio);
+
+        return $comercio;
     }
 
     /**

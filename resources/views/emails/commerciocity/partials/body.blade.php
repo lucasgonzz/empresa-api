@@ -15,6 +15,28 @@
         </td>
     </tr>
     @endforeach
+    @if(!empty($payload->highlight))
+    @php
+        $highlight = $payload->highlight;
+    @endphp
+    <tr>
+        <td style="padding-top:24px;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f9fafb;border:2px solid {{ $accent }};border-radius:10px;">
+                <tr>
+                    <td align="center" style="padding:22px 12px;">
+                        @if(!empty($highlight['label']))
+                        <p style="margin:0 0 10px 0;font-size:13px;line-height:1.4;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#6b7280;">{{ $highlight['label'] }}</p>
+                        @endif
+                        <p style="margin:0;font-size:44px;line-height:1.15;font-weight:700;letter-spacing:0.28em;text-indent:0.28em;color:{{ $accent }};font-family:'SFMono-Regular',Menlo,Consolas,'Liberation Mono','Courier New',monospace;">{{ $highlight['value'] }}</p>
+                        @if(!empty($highlight['note']))
+                        <p style="margin:12px 0 0 0;font-size:13px;line-height:1.5;color:#6b7280;">{{ $highlight['note'] }}</p>
+                        @endif
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+    @endif
     @if(count($payload->detail_lines) > 0)
     <tr>
         <td style="padding-top:20px;">

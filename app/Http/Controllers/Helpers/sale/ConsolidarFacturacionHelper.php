@@ -30,6 +30,11 @@ class ConsolidarFacturacionHelper extends Controller
      * Valida que las ventas indicadas puedan consolidarse.
      * Lanza una Exception si alguna condición no se cumple.
      *
+     * 🔴 La llama `consolidar()` (misión cc-reactivar-validar-consolidacion, 23/10/2026). Estuvo
+     * comentada desde el commit original (27/4/2026), y sin ella el endpoint no rechazaba una venta
+     * ya consolidada, una con factura autorizada ni una de otro cliente: un doble envío o un POST
+     * armado a mano consolidaba dos veces la misma venta y emitía dos facturas.
+     *
      * @param array $sale_ids       IDs de ventas a consolidar.
      * @param int   $client_id      Cliente esperado para todas las ventas.
      * @param int   $user_id        Usuario autenticado; todas las ventas deben pertenecer a él.
@@ -37,8 +42,20 @@ class ConsolidarFacturacionHelper extends Controller
      */
     public static function validar(array $sale_ids, int $client_id, int $user_id): void
     {
+        /** La misma venta elegida dos veces cuenta una sola: no es una venta inexistente. */
+        $sale_ids = array_values(array_unique(array_map('intval', $sale_ids)));
+
         if (empty($sale_ids)) {
             throw new Exception('Debe seleccionar al menos una venta para consolidar.');
+        }
+
+        /**
+         * Sin cliente no hay consolidación: las ventas de mostrador no se consolidan. Además, con
+         * `client_id = 0` (el cast de un campo ausente) la comparación de abajo daría igual para
+         * una venta sin cliente y `CuentaCorrienteLock` no tomaría ningún candado.
+         */
+        if ($client_id <= 0) {
+            throw new Exception('Las ventas de mostrador (sin cliente) no se pueden consolidar.');
         }
 
         /** Carga las ventas a validar con relaciones mínimas necesarias. */
@@ -52,24 +69,38 @@ class ConsolidarFacturacionHelper extends Controller
 
         foreach ($sales as $sale) {
 
+            /** Cómo se nombra la venta en los mensajes: su número, o su id si todavía no tiene. */
+            $etiqueta = !is_null($sale->num) ? $sale->num : $sale->id;
+
             /** Todas las ventas deben pertenecer al usuario autenticado. */
             if ($sale->user_id != $user_id) {
-                throw new Exception("La venta #{$sale->num} no pertenece al usuario actual.");
+                throw new Exception("La venta #{$etiqueta} no pertenece al usuario actual.");
             }
 
             /** Todas las ventas deben ser del mismo cliente. */
-            if ($sale->client_id != $client_id) {
-                throw new Exception("La venta #{$sale->num} no corresponde al cliente indicado.");
+            if ((int) $sale->client_id !== $client_id) {
+                throw new Exception("La venta #{$etiqueta} no corresponde al cliente indicado.");
             }
 
-            /** No se puede consolidar una venta que ya está dentro de otra consolidación. */
+            /**
+             * No se puede consolidar una venta que ya está dentro de otra consolidación.
+             *
+             * Solo cuenta si la contenedora sigue viva: una contenedora que se borró (no se puede
+             * borrar con un comprobante, ver DeleteSaleHelper) ya no sostiene a nadie, y sus ventas
+             * originales pueden volver a consolidarse, que es lo que Ventas permitía antes.
+             */
             if (!is_null($sale->consolidacion_facturacion_id)) {
-                throw new Exception("La venta #{$sale->num} ya fue incluida en una consolidación anterior.");
+                $contenedora = Sale::find($sale->consolidacion_facturacion_id);
+
+                if (!is_null($contenedora)) {
+                    $num_contenedora = !is_null($contenedora->num) ? $contenedora->num : $contenedora->id;
+                    throw new Exception("La venta #{$etiqueta} ya fue incluida en la consolidación N° {$num_contenedora}.");
+                }
             }
 
             /** No se puede consolidar una venta que ya es ella misma una contenedora de facturación. */
             if ($sale->is_consolidacion_facturacion) {
-                throw new Exception("La venta #{$sale->num} es una consolidación y no puede volver a consolidarse.");
+                throw new Exception("La venta #{$etiqueta} es una consolidación y no puede volver a consolidarse.");
             }
 
             /** No se consolidan ventas que ya tienen un comprobante AFIP autorizado (con CAE). */
@@ -77,9 +108,47 @@ class ConsolidarFacturacionHelper extends Controller
                 return !empty($t->cae);
             });
             if ($tiene_cae) {
-                throw new Exception("La venta #{$sale->num} ya tiene un comprobante AFIP autorizado.");
+                throw new Exception("La venta #{$etiqueta} ya tiene un comprobante AFIP autorizado.");
             }
         }
+    }
+
+    /**
+     * Por qué una venta NO se puede facturar suelta, o null si se puede.
+     *
+     * Una venta ORIGINAL incluida en una consolidación no tiene factura propia: su comprobante es
+     * el de la venta contenedora. Si además se emitiera una factura suelta, la misma venta quedaría
+     * facturada dos veces (la suya y la de la consolidación). `POST api/afip-ticket` no lo miraba
+     * (misión cc-afip-ticket-rechaza-consolidada, 23/10/2026), y `validar()` solo cubre el orden
+     * inverso: facturar suelta y DESPUÉS consolidar.
+     *
+     * Reglas, a propósito iguales a las de `validar()`:
+     *  - Solo cuenta si la contenedora sigue viva. Una contenedora borrada ya no sostiene a nadie
+     *    (no se puede borrar con un comprobante, ver DeleteSaleHelper) y sus ventas originales
+     *    vuelven a poder facturarse.
+     *  - La propia contenedora SÍ se factura por este camino: es lo que se hace para reintentar el
+     *    comprobante de una consolidación que quedó sin CAE.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return string|null  El mensaje para el usuario, o null si se puede facturar.
+     */
+    public static function motivo_por_el_que_no_se_puede_facturar_suelta($sale)
+    {
+        if (is_null($sale->consolidacion_facturacion_id)) {
+            return null;
+        }
+
+        $contenedora = Sale::find($sale->consolidacion_facturacion_id);
+
+        if (is_null($contenedora)) {
+            return null;
+        }
+
+        $num_venta       = !is_null($sale->num) ? $sale->num : $sale->id;
+        $num_contenedora = !is_null($contenedora->num) ? $contenedora->num : $contenedora->id;
+
+        return 'La venta N° '.$num_venta.' está incluida en la consolidación N° '.$num_contenedora.': su factura es la de esa consolidación y no se factura por separado. '
+            .'Si esa factura tiene un problema, resolvelo desde la venta consolidada (en Ventas, "Ver consolidadas").';
     }
 
     /**
@@ -106,9 +175,6 @@ class ConsolidarFacturacionHelper extends Controller
         array $afip_data      = [],
         bool  $emitir_afip    = true
     ): Sale {
-        /** Validación previa a la transacción para fallar rápido con mensajes claros. */
-        // self::validar($sale_ids, $client_id, $user_id);
-
         DB::beginTransaction();
 
         try {
@@ -121,6 +187,15 @@ class ConsolidarFacturacionHelper extends Controller
              * stock). Ver CuentaCorrienteLock.
              */
             CuentaCorrienteLock::bloquear('client', $client_id);
+
+            /**
+             * La validación va ADENTRO de la transacción y DESPUÉS del candado, no antes de abrirla.
+             * Con el candado tomado el segundo envío de la misma selección (doble clic, dos
+             * pestañas) espera al primero y recién ahí lee las ventas: las encuentra ya marcadas y
+             * se rechaza. Validar antes del candado dejaba pasar a los dos. Si falla, el catch de
+             * abajo deshace la transacción (todavía no se escribió nada) y relanza el mensaje.
+             */
+            self::validar($sale_ids, $client_id, $user_id);
 
             /** Carga las ventas con sus artículos y datos de pivot para copiarlos. */
             $ventas_originales = Sale::whereIn('id', $sale_ids)

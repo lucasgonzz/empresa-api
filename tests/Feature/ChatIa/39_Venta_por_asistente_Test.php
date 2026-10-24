@@ -106,7 +106,7 @@ class Venta_por_asistente_Test extends EmpresaTestCase
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         $this->martillo = $this->articulo_de_prueba('zz-c39 Martillo prueba', 2000, 1000, 10);
         $this->pinza = $this->articulo_de_prueba('zz-c39 Pinza prueba', 500, 200, 3);

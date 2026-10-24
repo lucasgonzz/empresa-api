@@ -61,7 +61,7 @@ class Tokens_agente_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Los `prompt_tokens` que devuelve el fake de OpenAI para la búsqueda semántica. */
     const TOKENS_DEL_EMBEDDING = 42;

@@ -12,6 +12,17 @@ class CurrentAcount extends Model
     // protected $appends = ['moneda_id'];
 
     /**
+     * `to_pay_ids`: ids de los débitos a los que se dirigió un pago a VARIOS movimientos (misión
+     * pago-cc-multiples-movimientos, 22/10/2026). Se guarda como JSON en una columna text; null si el
+     * pago no fue a varios movimientos.
+     *
+     * @var array
+     */
+    protected $casts = [
+        'to_pay_ids' => 'array',
+    ];
+
+    /**
      * Baja en cascada de los certificados de retención del cobro (misión
      * compras-factura-manual-alicuotas, 17/9/2026, parte C).
      *
@@ -149,5 +160,52 @@ class CurrentAcount extends Model
 
     public function nota_credito_descriptions() {
         return $this->hasMany(NotaCreditoDescription::class);
+    }
+
+    /**
+     * Relaciones que necesita la pantalla "Notas de crédito" de Comprobantes para dibujar cada fila.
+     *
+     * Las comparten `NotaCreditoController@index` (el listado "Por fecha") y el buscador general
+     * cuando se lo llama con el nombre `nota_credito` (el modo "Historico" y la paginación), para
+     * que las dos formas de ver la pantalla devuelvan filas con la misma forma. Va como scope y no
+     * como `withAll()` a propósito: `withAll()` es el nombre que usa el buscador general para
+     * "cargá todo lo del modelo", y las cuentas corrientes comunes no lo definen.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeConRelacionesDeNotaCredito($query) {
+        return $query->with(
+            'afip_ticket.afip_errors',
+            'afip_ticket.afip_observations',
+            'sale',
+            'articles',
+            'discounts',
+            'surchages',
+            'nota_credito_descriptions',
+            'client',
+            'provider',
+            'sale.afip_tickets'
+        );
+    }
+
+    /**
+     * Pagos de clientes: los movimientos `pago_from_client` que son de un cliente (no de un
+     * proveedor), con las relaciones que dibuja la pantalla "Pagos de clientes" de Comprobantes.
+     *
+     * Lo comparten `PagoDeClienteController@index` (el listado "Por fecha") y el buscador general
+     * cuando se lo llama con el nombre `pago_de_cliente` (Historico, buscador y paginado), igual
+     * que `scopeConRelacionesDeNotaCredito` con las notas de crédito.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopePagosDeClientes($query) {
+        return $query->where($this->getTable().'.status', 'pago_from_client')
+                     ->whereNotNull($this->getTable().'.client_id')
+                     ->whereNull($this->getTable().'.provider_id')
+                     // 'client' agregado (grupo 332, 4/8/2026): el front lee la relacion embebida en
+                     // vez de buscar en el store, que no descarga el catalogo completo de clientes.
+                     ->with('current_acount_payment_methods', 'client');
     }
 }

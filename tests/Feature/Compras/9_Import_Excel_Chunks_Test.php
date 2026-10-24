@@ -10,7 +10,7 @@ use App\Models\ProviderOrder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 
 /**
  * Tests de la importación de Excel de artículos de una compra a proveedor procesando

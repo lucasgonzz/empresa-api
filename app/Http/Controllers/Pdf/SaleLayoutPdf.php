@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfNegritaHelper;
 use App\Http\Controllers\Helpers\PdfLayout\CamposDeVentaPdf;
 use App\Http\Controllers\Helpers\PdfLayout\CatalogoDeCamposPdf;
 use App\Http\Controllers\Helpers\PdfLayout\DisenoDePaginaPdf;
@@ -18,8 +19,9 @@ use fpdf;
 /*
 	| 🔴 EL ORDEN EN QUE SE CARGA FPDF NO ES UN DETALLE.
 	|
-	| `NewSalePdf.php` (el remito y la factura de siempre, que esta misión no toca) carga fpdf.php con
-	| un `require` pelado. Si FPDF ya está declarada cuando PHP lee ese archivo, el proceso muere con
+	| `NewSalePdf.php` (el remito y la factura de siempre) carga fpdf.php con `require_once` (antes, un
+	| `require` pelado; misión pdf-negrita-perfil). Si FPDF ya estuviera declarada por otro camino,
+	| el proceso moriría con
 	| 'Cannot declare class FPDF'. `SaleController::pdf()` pregunta por el diseño ANTES de decidir qué
 	| PDF dibujar, así que este archivo se carga primero también cuando la venta sale con el PDF de
 	| siempre (perfil sin diseño, o un diseño que falló y cae al de siempre). Si este archivo
@@ -782,9 +784,14 @@ class SaleLayoutPdf extends fpdf
             $valores[$i] = (string) $this->valor_de_columna($columna, $index, $item);
 
             if (! empty($columna['wrap_content'])) {
+                /** Se mide con la misma fuente con la que se imprime (la negrita ensancha las letras). */
+                $this->fuente_del_valor($columna);
                 $alto = max($alto, max(1, $this->NbLines($columna['width'], $valores[$i])) * $this->line_height);
             }
         }
+
+        /** Deja la fuente como estaba antes de medir. */
+        $this->restaurar_fuente_del_valor();
 
         return ['valores' => $valores, 'alto' => $alto];
     }
@@ -835,6 +842,9 @@ class SaleLayoutPdf extends fpdf
             $this->x = $x;
             $this->y = $y;
 
+            /** Fuente del valor de esta columna (normal o negrita); la misma con la que se midió. */
+            $this->fuente_del_valor($columna);
+
             if (! empty($columna['wrap_content'])) {
                 $this->MultiCell($columna['width'], $this->line_height, $valores[$i], $this->b, 'L', false);
             } else {
@@ -843,6 +853,9 @@ class SaleLayoutPdf extends fpdf
 
             $x += $columna['width'];
         }
+
+        /** La negrita es solo del valor de la columna: la fuente de los renglones vuelve a la de siempre. */
+        $this->restaurar_fuente_del_valor();
 
         $this->x = $this->pdf_x0;
         $this->y = $y + $alto;
@@ -884,6 +897,9 @@ class SaleLayoutPdf extends fpdf
             $perfil->load('pdf_column_options');
         }
 
+        /** Ids de las columnas cuyo valor va en negrita (perfil.bold_columns); null = ninguna. */
+        $bold_ids = PdfNegritaHelper::bold_option_ids($perfil);
+
         $columnas = [];
         foreach ($perfil->pdf_column_options as $option) {
             $visible = isset($option->pivot->visible) ? (bool) $option->pivot->visible : true;
@@ -899,6 +915,8 @@ class SaleLayoutPdf extends fpdf
                 'order' => isset($option->pivot->order) ? (int) $option->pivot->order : 0,
                 'width' => $ancho,
                 'wrap_content' => isset($option->pivot->wrap_content) ? (bool) $option->pivot->wrap_content : false,
+                /** Negrita del valor de esta columna (el encabezado de la tabla ya es negrita). */
+                'bold' => in_array((int) $option->id, $bold_ids, true),
             ];
         }
 
@@ -907,6 +925,51 @@ class SaleLayoutPdf extends fpdf
         });
 
         return $columnas;
+    }
+
+    /**
+     * ¿La fuente de los renglones está hoy en negrita por una columna marcada? Solo la prende
+     * fuente_del_valor() y la apaga restaurar_fuente_del_valor(): sirve para NO llamar a SetFont() cuando nada
+     * cambia. Este FPDF vuelve a escribir la fuente en el PDF cada vez que se la pide con 'Arial'
+     * (la guarda como 'helvetica' y no la reconoce), así que una llamada de más ya cambia los bytes
+     * del PDF: un perfil sin bold_columns no puede hacer ninguna.
+     *
+     * @var bool
+     */
+    private $item_font_is_bold = false;
+
+    /**
+     * Fuente con la que se mide e imprime el valor de una columna: Arial 8 (la que dejan los
+     * renglones al empezar), en negrita si el perfil marcó la columna (misión pdf-negrita-perfil).
+     * Solo toca la fuente si la columna pide un estilo distinto del que hay: sin bold_columns no
+     * hace nada y el PDF sale como siempre.
+     *
+     * @param array<string, mixed> $columna Columna armada por columnas_del_perfil().
+     * @return void
+     */
+    private function fuente_del_valor($columna)
+    {
+        $bold = ! empty($columna['bold']);
+
+        if ($bold === $this->item_font_is_bold) {
+            return;
+        }
+
+        $this->SetFont('Arial', $bold ? 'B' : '', 8);
+        $this->item_font_is_bold = $bold;
+    }
+
+    /**
+     * Vuelve a la fuente normal de los renglones si una columna en negrita la había cambiado.
+     *
+     * @return void
+     */
+    private function restaurar_fuente_del_valor()
+    {
+        if ($this->item_font_is_bold) {
+            $this->SetFont('Arial', '', 8);
+            $this->item_font_is_bold = false;
+        }
     }
 
     /**

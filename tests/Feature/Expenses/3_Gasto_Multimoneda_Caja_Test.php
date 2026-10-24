@@ -262,15 +262,13 @@ class Gasto_Multimoneda_Caja_Test extends EmpresaTestCase
     }
 
     /**
-     * Una caja CERRADA pero con aperturas previas tiene que seguir funcionando. Es la regresion que
-     * la prevalidacion podria haber introducido: se valida que la caja tenga ALGUNA apertura, no que
-     * este abierta ahora, porque si no se le rompe la carga de gastos a todo comercio que cierra la
-     * caja a la noche.
-     *
+     * Ananda (23/10/2026) cambia la regla previa: un gasto nuevo exige el turno abierto,
+     * aunque exista historial. El caso anterior esperaba 201 y protegía el fallo reportado.
      * @test
      */
-    public function una_caja_cerrada_con_aperturas_previas_sigue_aceptando_el_gasto()
+    public function una_caja_cerrada_con_aperturas_previas_rechaza_el_gasto()
     {
+        $cantidad_gastos = \App\Models\Expense::count();
         $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
 
         /*
@@ -299,20 +297,10 @@ class Gasto_Multimoneda_Caja_Test extends EmpresaTestCase
             ],
         ], 500));
 
-        $response->assertStatus(201);
-
-        $gasto_id = $this->extraer_id_de_respuesta($response, 'api/expense');
-
-        $this->gastos_creados_por_escenarios[] = $gasto_id;
-
-        $this->registrar_movimientos_caja_nuevos($antes);
-
-        // Y ademas tiene que haber registrado el movimiento: un 201 que no impacta la caja
-        // seria la misma regresion, en silencio.
-        $this->assertNotNull(
-            MovimientoCaja::where('caja_id', $caja->id)->where('id', '>', $antes)->first(),
-            'Una caja cerrada con apertura previa dejo de registrar el movimiento de caja.'
-        );
+        $response->assertStatus(422);
+        $this->assertStringContainsString($caja->name, $response->json('message'));
+        $this->assertNull(MovimientoCaja::where('caja_id', $caja->id)->where('id', '>', $antes)->first());
+        $this->assertEquals($cantidad_gastos, \App\Models\Expense::count());
     }
 
     /**

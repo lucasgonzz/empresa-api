@@ -77,8 +77,8 @@ class GenerarSugerenciasDeCompra extends Command
         // Doble gate: el Kernel ya filtra por extensión, pero el comando
         // puede correrse a mano y la extensión es lo que se le vendió (o no)
         // al cliente. --force no saltea esto.
-        if (!UserHelper::hasExtencion('sugerencias_compras', $user)) {
-            $this->info('compras:generar — el comercio no tiene la extensión sugerencias_compras, no se genera nada.');
+        if (!UserHelper::hasExtencion('agentes_ia', $user)) {
+            $this->info('compras:generar — el comercio no tiene la extensión agentes_ia, no se genera nada.');
             return 0;
         }
 

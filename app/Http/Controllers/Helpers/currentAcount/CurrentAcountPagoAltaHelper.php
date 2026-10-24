@@ -22,8 +22,8 @@ use Illuminate\Support\Facades\Log;
  * 🔴 ES UNA MUDANZA, NO UN ARREGLO. El cuerpo de registrar() es el de pago() desde el
  * `CurrentAcount::create` hasta `pagar_cuota`, en el MISMO orden y con las MISMAS escrituras. No hace
  * lo que el controller hace alrededor, y cada cosa tiene su porqué:
- *   - No prevalida las cajas sin apertura: cada llamador lo hace ANTES, para poder responder 422 sin
- *     haber escrito nada (ver CurrentAcountCajaHelper::cajas_sin_apertura_en_payload()).
+ *   - Desde el arreglo de Ananda (23/10/2026), valida y bloquea las cajas con apertura vigente
+ *     antes del alta, además del prechequeo que pueda hacer cada llamador.
  *   - No abre transacción: cada llamador decide. El asistente llama a registrar() adentro de la
  *     suya, y desde la misión cheques-endoso-y-bancos (21/9/2026) la pantalla y el botón Endosar
  *     del módulo de cheques también (cerró el hallazgo 5 del informe del 21/8/2026: un endoso que
@@ -34,7 +34,8 @@ use Illuminate\Support\Facades\Log;
 class CurrentAcountPagoAltaHelper {
 
     /**
-     * Las 12 claves que pago() le leía al request. Toda clave que no vino vale null, igual que
+     * Las 13 claves que pago() le leía al request (las 12 de siempre más `to_pay_ids`, misión
+     * pago-cc-multiples-movimientos, 22/10/2026). Toda clave que no vino vale null, igual que
      * `$request->clave`.
      *
      * @var array<int,string>
@@ -51,6 +52,7 @@ class CurrentAcountPagoAltaHelper {
         'current_date',
         'created_at',
         'to_pay',
+        'to_pay_ids',
         'payment_plan_cuota',
     ];
 
@@ -69,7 +71,7 @@ class CurrentAcountPagoAltaHelper {
          * 🔴 Los helpers viejos que reciben el pedido (CurrentAcountHelper::getCreatedAt(),
          * CurrentAcountCuotaHelper::get_to_pay_id() y pagar_cuota()) lo leen como objeto
          * (`$request->current_date`, `isset($request->payment_plan_cuota)`). Por eso se les pasa un
-         * objeto con las 12 claves SIEMPRE presentes: con una clave ausente, un `->clave` suelto
+         * objeto con las 13 claves SIEMPRE presentes: con una clave ausente, un `->clave` suelto
          * sería un "Undefined property" donde antes el Request devolvía null.
          */
         $pedido = self::pedido($datos);
@@ -83,6 +85,10 @@ class CurrentAcountPagoAltaHelper {
          * que ésta es la primera lectura del alta. Ver CuentaCorrienteLock.
          */
         CuentaCorrienteLock::bloquear($pedido->model_name, $pedido->model_id);
+
+        \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion(
+            \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::cajas_del_payload($pedido->current_acount_payment_methods)
+        );
 
         $pago = CurrentAcount::create([
             'haber'                             => self::get_haber($pedido),
@@ -107,6 +113,35 @@ class CurrentAcountPagoAltaHelper {
         ]);
 
         $pago->detalle = 'Pago N°'.$pago->num_receipt;
+
+        /*
+         * Pago a VARIOS movimientos (misión pago-cc-multiples-movimientos, 22/10/2026): la lista
+         * se persiste porque la imputación se REHACE leyendo el pago (check_saldos_y_pagos,
+         * "Chequear saldos", un pago con fecha pasada) y sin ella el primer recálculo lo
+         * convertiría en FIFO. Con menos de 2 ids distintos queda null y el pago es el de
+         * siempre, dirigido por `to_pay_id`.
+         *
+         * 🔴 Se escribe DESPUÉS del create y solo cuando hay lista, no como una clave más del
+         * create: así el cobro de todos los días (y el endoso de cheques y el asistente de IA, que
+         * pasan por acá) nunca toca la columna nueva, y no se caen con "Unknown column" si el
+         * código llega a una base donde la migración todavía no corrió.
+         *
+         * `to_pay_id` sigue guardando el `to_pay` explícito o, si no vino, el primero de la lista,
+         * para los consumidores que solo lo conocen a él (liberar_pago_con_to_pay_id, los comandos
+         * de chequeo). La imputación con lista no lo usa: manda la lista.
+         */
+        $to_pay_ids = self::to_pay_ids_normalizados($pedido->to_pay_ids);
+
+        if (!is_null($to_pay_ids)) {
+
+            $pago->to_pay_ids = $to_pay_ids;
+
+            if (is_null($pago->to_pay_id)) {
+
+                $pago->to_pay_id = $to_pay_ids[0];
+            }
+        }
+
         $pago->save();
 
         CurrentAcountPagoHelper::attachPaymentMethods($pago, $pedido->current_acount_payment_methods, $pedido->model_name);
@@ -218,7 +253,39 @@ class CurrentAcountPagoAltaHelper {
     }
 
     /**
-     * Objeto con las 12 claves siempre presentes (null las que no vinieron), que es la forma en que
+     * La lista de débitos dirigidos de un pago a varios movimientos, normalizada: enteros positivos,
+     * sin repetidos y en el orden en que vinieron. Con menos de 2 ids distintos devuelve null: un
+     * solo movimiento es el `to_pay` de siempre y la lista no se usa ni se guarda.
+     *
+     * 🔴 Es la ÚNICA definición de "este pago es a varios movimientos": la validación de la cuenta,
+     * el alta, la imputación y el borrado la llaman, así que ninguno puede tomar una lista que otro
+     * descarta.
+     *
+     * @param  mixed  $ids  Lo que vino en `to_pay_ids` (array, o cualquier otra cosa si el cliente se equivocó).
+     * @return array<int,int>|null
+     */
+    static function to_pay_ids_normalizados($ids) {
+
+        if (!is_array($ids)) {
+
+            return null;
+        }
+
+        $normalizados = [];
+
+        foreach ($ids as $id) {
+
+            if (is_numeric($id) && (int) $id > 0 && !in_array((int) $id, $normalizados, true)) {
+
+                $normalizados[] = (int) $id;
+            }
+        }
+
+        return count($normalizados) >= 2 ? $normalizados : null;
+    }
+
+    /**
+     * Objeto con las 13 claves siempre presentes (null las que no vinieron), que es la forma en que
      * los helpers viejos leen el pedido.
      *
      * @param  array  $datos

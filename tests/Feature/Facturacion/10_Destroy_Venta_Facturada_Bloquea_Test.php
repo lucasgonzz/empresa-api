@@ -988,10 +988,10 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
 
         $dueno = $this->usuario();
 
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $dueno->extencions()->syncWithoutDetaching([$extencion->id]);

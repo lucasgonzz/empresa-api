@@ -44,8 +44,12 @@ use Illuminate\Support\Facades\Schema;
  *    el camino normal de `StockMovementController::crear()`. El stock global no cambia.
  *  - D5 `descartar`: un "Eliminacion de sucursal" (monto = −stock) por artículo y variante. El
  *    global lo recalcula el motor: suma de las sucursales que quedan (o de las variantes).
- *  - D6 Última sucursal: los artículos conservan su `articles.stock` (vuelven a "sin depósitos"),
- *    sin movimientos, y se borran solo las filas del pivot.
+ *  - D6 Última sucursal: 🔴 REEMPLAZADA el 23/10/2026 por la D7 de la misión sucursal-siempre: la
+ *    última sucursal del comercio NO se puede borrar (422, bloqueo `ultima_sucursal`, ver
+ *    bloqueo_de_la_ultima()). Todo negocio trabaja con al menos una sucursal; volver a "sin depósitos"
+ *    es el modo que se está sacando. Antes: los artículos conservaban su `articles.stock`, sin
+ *    movimientos, y se borraban solo las filas del pivot. El código de fase_final() que contempla
+ *    `$es_la_ultima` queda como red (una carrera entre dos borrados simultáneos), no como camino.
  *  - D7 Artículos en la papelera: por SQL (el motor usa `Article::find`, que no los ve), sin
  *    renglón en el libro.
  *  - D8 Empleados: `reasignar` o `dejar_sin_sucursal`, solo del comercio.
@@ -333,7 +337,10 @@ class EliminarSucursalHelper {
             'marcas'                    => $marcas,
             // D9: con marcas y con otras sucursales a donde pasarlas, el reemplazo es obligatorio.
             'requiere_reemplazo'        => count($marcas) > 0 && !$es_la_ultima,
-            'bloqueos'                  => Self::bloqueos($address->id, $owner_id),
+            // D7 de sucursal-siempre: la última sucursal es un bloqueo más (va primero: es el que manda).
+            'bloqueos'                  => $es_la_ultima
+                ? array_merge([Self::bloqueo_de_la_ultima()], Self::bloqueos($address->id, $owner_id))
+                : Self::bloqueos($address->id, $owner_id),
             // D14, y solo si hay movimientos que hacer: en la última sucursal (D6) no se mueve nada.
             'en_segundo_plano'          => !$es_la_ultima && $stock['filas'] > Self::umbral(),
             'ya_en_proceso'             => Self::esta_en_proceso($owner_id, $address),
@@ -639,6 +646,11 @@ class EliminarSucursalHelper {
 
         $bloqueos = [];
 
+        /*
+         * (La última sucursal también bloquea, desde la misión sucursal-siempre, D7: no se agrega acá
+         * sino en resumen(), que es el que sabe si es la última. Ver bloqueo_de_la_ultima().)
+         */
+
         $query = DB::table('deposit_movements')
                         ->where('user_id', $owner_id)
                         ->where(function ($q) use ($address_id) {
@@ -666,6 +678,31 @@ class EliminarSucursalHelper {
         }
 
         return $bloqueos;
+    }
+
+    /**
+     * Mensaje del 422 al querer borrar la última sucursal (misión sucursal-siempre, D7).
+     */
+    const MENSAJE_ULTIMA_SUCURSAL = 'Tu negocio necesita al menos una sucursal: creá otra antes de eliminar esta.';
+
+    /**
+     * El bloqueo de la ÚLTIMA sucursal del comercio (misión sucursal-siempre, 23/10/2026, D7).
+     *
+     * Todo negocio trabaja con al menos una sucursal: el stock vive siempre en `address_article` y la
+     * sucursal principal es la que usa toda operación que no dice cuál (D3, D4, D15). Borrar la última
+     * devolvía el negocio a "stock global" (la vieja D6 de eliminar-sucursal-con-stock), que es justo
+     * el modo que se está sacando. Se rechaza con el mismo formato que los otros bloqueos, así el ABM,
+     * el borrado masivo (DeleteModelsHelper la respeta: `address` está en MODELOS_QUE_RESPETAN_RECHAZO)
+     * y la baja por el asistente (que llama al mismo destroy) reciben el mismo 422.
+     *
+     * @return array  {codigo, cantidad, mensaje}
+     */
+    static function bloqueo_de_la_ultima() {
+        return [
+            'codigo'   => 'ultima_sucursal',
+            'cantidad' => 1,
+            'mensaje'  => Self::MENSAJE_ULTIMA_SUCURSAL,
+        ];
     }
 
     /**
@@ -1747,6 +1784,27 @@ class EliminarSucursalHelper {
             : null;
 
         $resultado = DB::transaction(function () use ($address, $owner_id, $es_la_ultima, $reemplazo_id, $usuarios_destino_id) {
+
+            /*
+             * 🔴 D7 de sucursal-siempre, con candado por DUEÑO: se bloquean todas las sucursales del
+             * comercio y recién ahí se vuelve a contar si queda alguna otra. Sin esto, dos borrados
+             * simultáneos de las dos últimas sucursales pasaban los dos la validación (cada uno veía
+             * "hay otra") y el comercio quedaba sin ninguna. Con el candado, el segundo espera al
+             * primero, relee, ve que la suya es la última y no borra nada.
+             */
+            $vivas = DB::table('addresses')
+                        ->where('user_id', $owner_id)
+                        ->whereNull('buyer_id')
+                        ->orderBy('id')
+                        ->lockForUpdate()
+                        ->pluck('id')
+                        ->all();
+
+            $otras_vivas = array_values(array_diff(array_map('intval', $vivas), [(int) $address->id]));
+
+            if (count($otras_vivas) === 0) {
+                return ['error' => Self::MENSAJE_ULTIMA_SUCURSAL];
+            }
 
             /*
              * 🔴 PRIMERO se bloquean TODAS las filas de la sucursal, también las que están en 0 (tercera

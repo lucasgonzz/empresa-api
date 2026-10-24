@@ -11,7 +11,7 @@ use Illuminate\Http\Request;
  * CRUD de plantillas de WhatsApp (grupo 137, Prompt 04), consumido por empresa-spa.
  * Toda la lógica de negocio vive en `WhatsappTemplateHelper`; este controller solo
  * valida pertenencia al owner autenticado y orquesta. Rutas gateadas por
- * `auth:sanctum` + `check_extencion_empresa:whatsapp` (ver routes/api.php).
+ * `auth:sanctum` + `check_extencion_empresa:agentes_ia` (ver routes/api.php).
  */
 class WhatsappTemplateController extends Controller
 {

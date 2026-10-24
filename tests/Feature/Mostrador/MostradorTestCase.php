@@ -29,7 +29,7 @@ abstract class MostradorTestCase extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el módulo. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User Dueño de la cuenta del test */
     protected $comercio;

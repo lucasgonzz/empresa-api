@@ -24,6 +24,8 @@ class SaleCajaHelper {
 
 	static function crear_movimiento_caja($sale) {
 
+		MovimientoCajaHelper::validar_cajas_para_operacion($sale->current_acount_payment_methods->pluck('pivot.caja_id')->all());
+
         $helper = new MovimientoCajaHelper();
 
 		foreach ($sale->current_acount_payment_methods as $payment_method) {

@@ -59,7 +59,7 @@ class Gasto_tarea_con_hora_y_modulos_Test extends EmpresaTestCase
 
         $this->confianza_original = $this->dueno->agente_confianza;
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
     }
 
     protected function tearDown(): void

@@ -17,6 +17,7 @@ use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -48,6 +49,7 @@ use Tests\TestCase;
 class Comprobante_de_venta_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Teléfono del cliente final, el mismo que va a quedar marcado por la simulación. */
     const PHONE = '5493416009988';
@@ -80,6 +82,9 @@ class Comprobante_de_venta_Test extends TestCase
             'email'        => 'whatsapp-f8-9-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): lo que se prueba acá es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->comercio);
 
         $this->config = WhatsappBotConfig::create([
             'user_id'            => $this->comercio->id,

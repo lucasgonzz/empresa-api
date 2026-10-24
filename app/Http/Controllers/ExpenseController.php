@@ -56,12 +56,8 @@ class ExpenseController extends Controller
          * efectivo en dólares. El hotfix de agosto tapó este mismo agujero solo en cuenta corriente;
          * acá se cierra el camino del gasto, que había quedado como estaba.
          *
-         * 🔴 Lo que se valida es que la caja tenga ALGUNA apertura, no que esté abierta ahora. Una
-         * caja cerrada con aperturas previas cuelga el movimiento de la última y así funciona hoy en
-         * todos los flujos: rechazarla le rompería la carga de gastos a cualquier comercio que
-         * cierra la caja a la noche. El criterio completo está en
-         * CurrentAcountCajaHelper::cajas_sin_apertura_en_payload(), que recibe el array crudo del
-         * request y no sabe nada de cuenta corriente.
+         * Este prechequeo detecta cajas nunca abiertas; el alta vuelve a validar el turno
+         * vigente bajo lock dentro de la transacción y también rechaza las cajas cerradas.
          */
         $cajas_sin_apertura = CurrentAcountCajaHelper::cajas_sin_apertura_en_payload($request->payment_methods);
 
@@ -115,32 +111,34 @@ class ExpenseController extends Controller
     }
 
     public function update(Request $request, $id) {
-        $model = Expense::find($id);
-        $model->expense_concept_id                    = $request->expense_concept_id;
-        $model->amount                                = $request->amount;
-        $model->importe_iva                           = $request->importe_iva;
-        $model->observations                          = $request->observations;
-        $model->caja_id                               = 0;
-        $model->created_at                            = $request->created_at;
-        $model->save();
+        return DB::transaction(function () use ($request, $id) {
+            $model = Expense::find($id);
+            $model->expense_concept_id                    = $request->expense_concept_id;
+            $model->amount                                = $request->amount;
+            $model->importe_iva                           = $request->importe_iva;
+            $model->observations                          = $request->observations;
+            $model->caja_id                               = 0;
+            $model->created_at                            = $request->created_at;
+            $model->save();
 
-        /*
-         * Tanda correctivos 2408, ítem 5: hasta hoy la edición de un gasto solo tocaba la
-         * fila de expenses. El desglose por método de pago (pivot) y el movimiento de caja
-         * quedaban con el monto viejo: el estado de resultados mostraba el monto nuevo y el
-         * flujo/saldo de caja, el viejo.
-         *
-         * La SPA edita el gasto sin re-mandar el desglose (la tabla de métodos de pago del
-         * form es de solo lectura), así que: (1) se reparte el monto nuevo entre los métodos
-         * ya adjuntos en proporción a lo que cada uno pagaba, y (2) se sincronizan los
-         * movimientos de caja del gasto con ese desglose y se recalculan los saldos. El
-         * detalle de las dos operaciones vive en ExpenseCajaHelper.
-         */
-        ExpenseCajaHelper::escalar_desglose_por_nuevo_monto($model);
+            /*
+             * Tanda correctivos 2408, ítem 5: hasta hoy la edición de un gasto solo tocaba la
+             * fila de expenses. El desglose por método de pago (pivot) y el movimiento de caja
+             * quedaban con el monto viejo: el estado de resultados mostraba el monto nuevo y el
+             * flujo/saldo de caja, el viejo.
+             *
+             * La SPA edita el gasto sin re-mandar el desglose (la tabla de métodos de pago del
+             * form es de solo lectura), así que: (1) se reparte el monto nuevo entre los métodos
+             * ya adjuntos en proporción a lo que cada uno pagaba, y (2) se sincronizan los
+             * movimientos de caja del gasto con ese desglose y se recalculan los saldos. El
+             * detalle de las dos operaciones vive en ExpenseCajaHelper.
+             */
+            ExpenseCajaHelper::escalar_desglose_por_nuevo_monto($model);
 
-        ExpenseCajaHelper::editar_movimiento_caja($model);
+            ExpenseCajaHelper::editar_movimiento_caja($model);
 
-        return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);
+            return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);
+        });
     }
 
     public function destroy(Request $request, $id) {

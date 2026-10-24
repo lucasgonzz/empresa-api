@@ -189,8 +189,17 @@ class UserController extends Controller
         $model->clave_eliminar_article          = $request->clave_eliminar_article;
         $model->img_auto_timeout                = $request->img_auto_timeout;
 
-        $model->address_company                 = $request->address_company;
-        $model->all_addresses_in_sale_pdf       = $request->all_addresses_in_sale_pdf;
+        /**
+         * Con guard desde la mision pdf-direccion-sucursales (23/10/2026): la SPA ya no muestra estos
+         * dos campos en el perfil (la direccion del PDF sale de las sucursales). Un request que no los
+         * traiga no los pisa: address_company se usa para precargar el domicilio de la sucursal principal.
+         */
+        if ($request->has('address_company')) {
+            $model->address_company             = $request->address_company;
+        }
+        if ($request->has('all_addresses_in_sale_pdf')) {
+            $model->all_addresses_in_sale_pdf   = $request->all_addresses_in_sale_pdf;
+        }
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
@@ -252,7 +261,7 @@ class UserController extends Controller
          * Configuración de sugerencias de stock (v2): periodicidad de la
          * generación automática y valores por defecto de cada sugerencia.
          * Con guard has() (mismo criterio que usar_condicion_fiscal_en_costeo):
-         * el form sin la extensión sugerencias_inteligentes no manda estas
+         * el form sin la extensión agentes_ia no manda estas
          * claves, y un request viejo no puede pisar la configuración con null
          * (la periodicidad en null apagaría la generación en silencio).
          *
@@ -291,7 +300,7 @@ class UserController extends Controller
          * Configuración de sugerencias de compra a proveedores: periodicidad
          * de la generación automática (comando compras:generar). Mismo
          * criterio que el bloque de sugerencias de stock de arriba: guard
-         * has() para que un form sin la extensión sugerencias_compras no
+         * has() para que un form sin la extensión agentes_ia no
          * mande esta clave, y descarte explícito del null para que ese "no
          * mandó nada" nunca apague la generación en silencio (la
          * periodicidad en null se comporta como 'nunca' en compras:generar).

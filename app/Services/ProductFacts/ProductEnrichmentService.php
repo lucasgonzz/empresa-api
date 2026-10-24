@@ -49,6 +49,12 @@ class ProductEnrichmentService
             $product = $claim['product'] ?? null;
         } elseif ($status === 'claimed' && !empty($claim['lease_token'])) {
             try {
+                // Demo sin búsquedas de Serper (misión tope-serper-demos): se corta ANTES de gastar el
+                // intento diario de la ficha; el catch libera la reserva central como cualquier fallo.
+                // Un cache hit (arriba) sigue andando: no llama a Serper.
+                if (TopeSerperDemo::agotado($owner)) {
+                    throw new TopeSerperDemoAgotado(TopeSerperDemo::MENSAJE);
+                }
                 $this->reserveQuota($task, $owner);
                 if ($task->fresh()->status !== 'searching') {
                     $central->complete($task->gtin, $claim['lease_token'], 'failed');

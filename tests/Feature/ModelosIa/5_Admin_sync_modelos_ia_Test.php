@@ -284,10 +284,10 @@ class Admin_sync_modelos_ia_Test extends TestCase
      */
     public function el_asistente_gana_el_ultimo_entre_el_admin_y_el_modal_del_dueno()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (! $extencion) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $this->comercio->extencions()->attach($extencion->id);

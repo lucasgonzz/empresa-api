@@ -44,7 +44,7 @@ class Adjuntos_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita el chat. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** Clave que el admin manda en el header X-Admin-Api-Key. */
     const CLAVE = 'clave-del-admin-para-los-tests';

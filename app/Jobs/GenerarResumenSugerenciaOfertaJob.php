@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -88,7 +89,9 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
         // Salida 2 de 5: el job quedó encolado y la clave se quitó después. El estado vuelve a null
         // ('pendiente' sería un spinner eterno y no tener IA contratada no es un error) y, si este job
         // lleva la posta, la corrida se anuncia igual, con los dos botones de siempre.
-        if (!$service->hay_credenciales()) {
+        // Misión agentes-ia-extension-unica (22/10/2026): sin `agentes_ia` el resumen no se pide (no gasta
+        // tokens); se trata como «sin credenciales».
+        if (!$service->hay_credenciales() || !AgentesIaHelper::tiene_el_comercio_de($suggestion->user_id)) {
             if ($suggestion->resumen_ia_estado === 'pendiente') {
                 $suggestion->resumen_ia_estado = null;
                 $suggestion->save();
@@ -189,13 +192,13 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
     }
 
     /**
-     * Entrega del resumen por el chat: si el dueño tiene la extensión asistente_ia, la corrida deja
+     * Entrega del resumen por el chat: si el dueño tiene la extensión agentes_ia, la corrida deja
      * una conversación con origen 'sugerencia_oferta', el bloque de DATOS ya calculados como contexto
      * de fondo (armar_datos(), no el prompt de redacción) y el resumen como primer mensaje assistant.
      *
      * 🔴 SIN LA EXTENSIÓN NO SE CREA NINGUNA CONVERSACIÓN, y eso apaga el botón "Charlar con la IA" de
      * la notificación: es exactamente lo que pasó en la misión anterior y por eso va declarado en el
-     * despliegue. Quien no tiene asistente_ia ve el flujo completo igual (tabla + resumen + aviso),
+     * despliegue. Quien no tiene agentes_ia ve el flujo completo igual (tabla + resumen + aviso),
      * solo que sin el puente al chat.
      *
      * La conversación es del DUEÑO (auth_user_id = user_id): offer_suggestions no sabe de personas y
@@ -215,7 +218,7 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
         try {
             $owner = User::find($suggestion->user_id);
 
-            if (!$owner || !UserHelper::hasExtencion('asistente_ia', $owner)) {
+            if (!$owner || !UserHelper::hasExtencion('agentes_ia', $owner)) {
                 return;
             }
 

@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Services\ImageAssignment\CandidateImageProcessor;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
+use App\Services\ProductFacts\TopeSerperDemo;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -263,6 +264,61 @@ class ImageAssignmentRunHelper
     }
 
     /**
+     * Separa una selección en los artículos SIN imagen (los que vale la pena buscar) y cuántos ya
+     * tienen al menos una (pedido de Lucas, 23/10/2026: desde el listado "que no le vuelva a buscar
+     * imágenes a los artículos que ya tienen", para no gastar Serper/Google en ellos).
+     *
+     * Mismo criterio que base_del_catalogo(): "tiene imagen" es tener ≥1 fila en `images`. Los ids
+     * ajenos o inexistentes no cuentan en ninguno de los dos lados (crear() los descartaría igual).
+     *
+     * @param  int   $owner_id
+     * @param  array $article_ids
+     * @return array  ['sin_imagen' => int[] (en el orden recibido, sin repetidos, solo del dueño),
+     *                 'con_imagen' => int (cuántos del dueño tienen ≥1 imagen)]
+     */
+    public static function separar_con_imagen($owner_id, array $article_ids)
+    {
+        // Ids enteros, sin repetidos, en el orden recibido (mismo criterio que crear()).
+        $ids    = [];
+        $vistos = [];
+
+        foreach ($article_ids as $article_id) {
+            $id = (int) $article_id;
+
+            if ($id > 0 && !isset($vistos[$id])) {
+                $vistos[$id] = true;
+                $ids[]       = $id;
+            }
+        }
+
+        $del_dueno  = [];
+        $con_imagen = [];
+
+        foreach (array_chunk($ids, 1000) as $lote) {
+            foreach (Article::where('user_id', (int) $owner_id)->whereIn('id', $lote)->pluck('id') as $id) {
+                $del_dueno[(int) $id] = true;
+            }
+
+            foreach (Article::where('user_id', (int) $owner_id)->whereIn('id', $lote)->whereHas('images')->pluck('id') as $id) {
+                $con_imagen[(int) $id] = true;
+            }
+        }
+
+        $sin_imagen = [];
+
+        foreach ($ids as $id) {
+            if (isset($del_dueno[$id]) && !isset($con_imagen[$id])) {
+                $sin_imagen[] = $id;
+            }
+        }
+
+        return [
+            'sin_imagen' => $sin_imagen,
+            'con_imagen' => count($con_imagen),
+        ];
+    }
+
+    /**
      * Lo que se purga al crear una asignación, del dueño que la crea. Nunca lanza.
      *
      * @param  int $owner_id
@@ -429,7 +485,7 @@ class ImageAssignmentRunHelper
 
         $activa = self::corrida_de_catalogo_activa((int) $owner->id);
 
-        return [
+        $previa = [
             'sin_imagen'                       => $conteos['sin_imagen'],
             'excluidos_pendientes_de_revision' => $conteos['excluidos_pendientes_de_revision'],
             'excluidos_ya_buscados'            => $conteos['excluidos_ya_buscados'],
@@ -451,6 +507,17 @@ class ImageAssignmentRunHelper
             ],
             'corrida_activa'                   => is_null($activa) ? null : self::payload_de_asignacion($activa),
         ];
+
+        // Aditivo y OPCIONAL (misión tope-serper-demos): solo en una demo, cuántas búsquedas de Serper
+        // le quedan al dueño (con 0 el POST da 422). Fuera de una demo la previa queda exactamente como
+        // antes, sin el campo; la SPA toma su ausencia como "sin tope".
+        $tope_demo = TopeSerperDemo::estado($owner);
+
+        if ($tope_demo['aplica']) {
+            $previa['tope_demo'] = $tope_demo;
+        }
+
+        return $previa;
     }
 
     /**
@@ -466,6 +533,15 @@ class ImageAssignmentRunHelper
      */
     public static function crear_del_catalogo(User $owner, $auth_user_id = null)
     {
+        // Misión tope-serper-demos: una demo sin búsquedas no lanza nada (ni con Serper ni con Google).
+        if (TopeSerperDemo::agotado($owner)) {
+            return [
+                'status'  => 422,
+                'message' => TopeSerperDemo::MENSAJE,
+                'run'     => null,
+            ];
+        }
+
         // La clave del comercio o la del servidor (misión serper-en-user-setup): el mensaje nombra las
         // dos. Lo ve solo el acceso maestro, que es quien sabe dónde se carga cada una.
         if (!ImageSearchProviderFactory::serper_configurado($owner)) {
@@ -1752,6 +1828,11 @@ class ImageAssignmentRunHelper
      */
     public static function reanudar(ImageAssignmentRun $run)
     {
+        // Misión tope-serper-demos: en una demo sin búsquedas, reanudar solo volvería a cortarse.
+        if (TopeSerperDemo::agotado((int) $run->user_id)) {
+            return ['status' => 422, 'message' => TopeSerperDemo::MENSAJE];
+        }
+
         return DB::transaction(function () use ($run) {
             /*
              * 🔴 La decisión se toma sobre la fila BLOQUEADA, no sobre la copia que llegó: si un
@@ -1960,6 +2041,9 @@ class ImageAssignmentRunHelper
 
         if ($run->status === ImageAssignmentRun::STATUS_DETENIDA) {
             $etapa = 'Detenida';
+        } elseif ($cupo_agotado && TopeSerperDemo::agotado((int) $run->user_id)) {
+            // Misión tope-serper-demos: el cupo que se agotó es el de la demo, no el diario.
+            $etapa = 'Llegaste al límite de búsquedas de la demo';
         } elseif ($cupo_agotado) {
             $etapa = 'Se agotó el cupo diario de búsquedas';
         } else {

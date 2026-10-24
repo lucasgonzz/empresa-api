@@ -22,7 +22,7 @@ use Tests\TestCase;
  * migraciones 100000-100500 dejaron exactamente el esquema que el plan
  * describe (§3 y §6.1), que el índice único que arregla el pivot
  * `article_provider` (§4) quedó puesto, y que el gate por extensión
- * 'sugerencias_compras' existe de verdad en las rutas (la aserción del 403
+ * 'agentes_ia' existe de verdad en las rutas (la aserción del 403
  * no es decorativa: es la única que prueba que el gate está conectado).
  */
 class Esquema_y_extencion_Test extends TestCase
@@ -30,7 +30,14 @@ class Esquema_y_extencion_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea todo el módulo. */
-    const SLUG = 'sugerencias_compras';
+    const SLUG = 'agentes_ia';
+
+    /**
+     * Slug de la extensión vieja que siembra `ExtencionSugerenciasComprasSeeder` (y `ExtencionSeeder`). Desde la
+     * misión agentes-ia-extension-unica (22/10/2026) ya no gatea nada —las rutas piden `agentes_ia`—, pero esos
+     * dos seeders históricos siguen existiendo y siguen sembrándola: los dos tests de abajo prueban a esos seeders.
+     */
+    const SLUG_DEL_SEEDER_VIEJO = 'sugerencias_compras';
 
     protected function setUp(): void
     {
@@ -303,7 +310,7 @@ class Esquema_y_extencion_Test extends TestCase
 
         $this->assertEquals(
             1,
-            ExtencionEmpresa::where('slug', self::SLUG)->count(),
+            ExtencionEmpresa::where('slug', self::SLUG_DEL_SEEDER_VIEJO)->count(),
             'ExtencionSugerenciasComprasSeeder usa firstOrCreate: correrlo dos veces no puede duplicar la extensión.'
         );
     }
@@ -322,7 +329,7 @@ class Esquema_y_extencion_Test extends TestCase
             ->assertExitCode(0);
 
         $this->assertTrue(
-            ExtencionEmpresa::where('slug', self::SLUG)->exists(),
+            ExtencionEmpresa::where('slug', self::SLUG_DEL_SEEDER_VIEJO)->exists(),
             'El slug sugerencias_compras tiene que estar en el array de ExtencionSeeder.'
         );
     }

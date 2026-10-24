@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -59,6 +60,7 @@ use Tests\TestCase;
 class Endpoint_y_resumen_ia_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Slug de la extensión que gatea las dos rutas. */
     const SLUG = 'tracking_buyers';
@@ -104,6 +106,8 @@ class Endpoint_y_resumen_ia_Test extends TestCase
         if (is_null($this->user)) {
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
         }
+        // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->user);
 
         // forceCreate y no firstOrCreate: ExtencionEmpresa no declara $fillable y fuera de
         // Model::unguarded() (que solo aplica a db:seed) el create falla.

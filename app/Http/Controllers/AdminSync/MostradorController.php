@@ -32,7 +32,7 @@ use Illuminate\Support\Facades\Log;
  * por MostradorContenidoValidator.
  *
  * Todo se resuelve por el user_id del DUEÑO (owner_id null) con la extensión
- * asistente_ia; nunca por sesión (no hay).
+ * agentes_ia; nunca por sesión (no hay).
  *
  * Compras y stock en un catálogo grande no se calculan adentro del request: por encima
  * de config('mostrador.umbral_async') artículos candidatos, POST hechos deja la fila en
@@ -44,7 +44,7 @@ use Illuminate\Support\Facades\Log;
 class MostradorController extends Controller
 {
     /** Slug de la extensión que gatea el módulo. */
-    const EXTENSION = 'asistente_ia';
+    const EXTENSION = 'agentes_ia';
 
     /** Días hacia atrás de los informes no leídos que se informan en el contexto. */
     const DIAS_NO_LEIDOS = 7;
@@ -58,7 +58,7 @@ class MostradorController extends Controller
     /**
      * GET admin-sync/mostrador/duenos
      *
-     * Dueños (owner_id null) con la extensión asistente_ia. Si la instancia tiene
+     * Dueños (owner_id null) con la extensión agentes_ia. Si la instancia tiene
      * app.USER_ID, solo ese: en las bases compartidas por varios comercios cada
      * instancia atiende al suyo, y devolver los demás haría que la skill los
      * calculara una vez por instancia.

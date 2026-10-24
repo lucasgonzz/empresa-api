@@ -530,6 +530,12 @@ class DatabaseSeeder extends Seeder
         /* Extensión + permisos del módulo de chats de WhatsApp con clientes (grupo 137). */
         $this->call(ExtencionEmpresaWhatsappSeeder::class);
         $this->call(PermissionEmpresaWhatsappSeeder::class);
+        /*
+         * Extensión única «Agentes de IA» (misión agentes-ia-extension-unica, 22/10/2026): reemplaza a las
+         * seis de IA de arriba (asistente, escaneo, sugerencias x2, whatsapp y whatsapp_ia). Va DESPUÉS de
+         * todas las que reemplaza porque las marca en desuso. No se las asigna a nadie.
+         */
+        $this->call(ExtencionAgentesIaSeeder::class);
         /* Plantillas estándar `cc_cli_*` para las empresas con el bot ya configurado (grupo 137, Prompt 04). */
         $this->call(WhatsappTemplateStandardSeeder::class);
         /*

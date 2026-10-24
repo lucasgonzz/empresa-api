@@ -472,6 +472,17 @@ class PropuestaStockIaHelper
             return self::proponer_stock_total($contexto, $mensaje, $input, $articulo);
         }
 
+        /*
+         * Misión sucursal-siempre (23/10/2026, D12): con UNA sola sucursal el dueño ve el stock como un
+         * total (la interfaz de sucursales aparece desde la segunda, D1), así que no se le pregunta "¿a
+         * qué depósito?": si no nombró ninguno, va la tarjeta del stock TOTAL, que al confirmar escribe
+         * en la única sucursal si el artículo ya reparte (D3/D15) o en el total si todavía no.
+         */
+        if (count($depositos) === 1 && EntradaDeCargaIa::texto($input, 'deposito') === '') {
+
+            return self::proponer_stock_total($contexto, $mensaje, $input, $articulo);
+        }
+
         $deposito = self::resolver_deposito($contexto, $depositos, EntradaDeCargaIa::texto($input, 'deposito'), 'en qué depósito');
 
         if (RespuestaDeCargaIa::es_negativa($deposito)) {
@@ -672,9 +683,10 @@ class PropuestaStockIaHelper
         /*
          * El stock total se toca con el permiso general: en la ficha el botón de stock se dibuja
          * con can('article.edit_stock') (StockInput.vue / stock-btn). El "solo su sucursal" no
-         * alcanza: acá no hay ninguna sucursal que sea la suya.
+         * alcanza: acá no hay ninguna sucursal que sea la suya. Con UNA sola sucursal (D12), en
+         * cambio, el total ES el de esa sucursal: alcanza con poder tocarla.
          */
-        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+        if (!self::puede_tocar_el_total($contexto)) {
 
             return self::rechazo(
                 'tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y este negocio no tiene sucursales: el stock del artículo lo carga alguien con permiso para editar el stock.'
@@ -767,7 +779,9 @@ class PropuestaStockIaHelper
             [
                 'titulo'    => 'Stock del artículo',
                 'renglones' => $renglones,
-                'aviso'     => 'Este negocio no tiene sucursales: el stock se carga sobre el total del artículo.',
+                'aviso'     => is_null(Address::unica_sucursal_de($contexto->owner_id))
+                    ? 'Este negocio no tiene sucursales: el stock se carga sobre el total del artículo.'
+                    : null,
             ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
@@ -809,7 +823,7 @@ class PropuestaStockIaHelper
      */
     protected static function ejecutar_stock_total(ContextoDeCargaIa $contexto, $persona, Article $articulo, array $esperado): array
     {
-        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+        if (!self::puede_tocar_el_total($contexto)) {
 
             throw new AccionIaException(422, self::NO_SE_CARGO . 'tu usuario no tiene permiso para editar el stock del artículo.');
         }
@@ -910,12 +924,40 @@ class PropuestaStockIaHelper
             return 'el stock de un artículo con variantes se carga variante por variante desde el Listado: por acá no lo toco.';
         }
 
-        if ($modelo->addresses()->count()) {
+        /*
+         * Un solo criterio para "reparte" (misión sucursal-siempre, D12): el artículo tiene filas vivas.
+         * Con UNA sola sucursal un artículo que reparte SÍ lleva el total: el total es lo que hay en esa
+         * sucursal, y el movimiento sin depósito lo escribe ahí (la red del motor, D3). Con dos o más,
+         * como siempre: se carga en su depósito.
+         */
+        if ($modelo->addresses()->count() && is_null(Address::unica_sucursal_de($modelo->user_id))) {
 
             return 'este artículo tiene el stock repartido por depósitos: se carga en su depósito, no sobre el total.';
         }
 
         return null;
+    }
+
+    /**
+     * ¿La persona puede tocar el stock TOTAL de un artículo? Con el permiso general siempre. Con "solo su
+     * sucursal", solo si el negocio tiene UNA sola sucursal y es la suya (D12 de la misión
+     * sucursal-siempre: con una sola sucursal el total es el de esa sucursal).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return bool
+     */
+    protected static function puede_tocar_el_total(ContextoDeCargaIa $contexto): bool
+    {
+        if (PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+
+            return true;
+        }
+
+        $unica = Address::unica_sucursal_de($contexto->owner_id);
+
+        return !is_null($unica)
+            && PermisosIaHelper::puede($contexto->persona, self::PERMISO_SOLO_SU_SUCURSAL)
+            && self::puede_en_deposito($contexto->persona, $unica->id);
     }
 
     /**
@@ -1270,6 +1312,16 @@ class PropuestaStockIaHelper
             return [
                 'tiene_depositos' => false,
                 'el_stock_va'     => 'al total del artículo: stock_inicial en el alta, y para uno que ya existe proponer_stock_en_deposito SIN deposito.',
+            ];
+        }
+
+        // Una sola sucursal (misión sucursal-siempre, D12): no hay que preguntar a cuál.
+        if (count($nombres) === 1) {
+
+            return [
+                'tiene_depositos' => true,
+                'depositos'       => $nombres,
+                'el_stock_va'     => 'a su única sucursal (' . $nombres[0] . '), sin preguntar a cuál: stock_inicial en el alta y proponer_stock_en_deposito SIN deposito para uno que ya existe.',
             ];
         }
 

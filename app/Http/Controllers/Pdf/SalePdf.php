@@ -191,22 +191,24 @@ class SalePdf extends fpdf {
 										->get();
 
 			foreach ($addresses_models as $address_model) {
-				$addresses[] = "{$address_model->street} {$address_model->street_number}, {$address_model->city}, {$address_model->province}";
+				if (!Address::repite_la_direccion_de_la_empresa($address_model, $this->user->address_company)) {
+					$addresses[] = "{$address_model->street} {$address_model->street_number}, {$address_model->city}, {$address_model->province}";
+				}
 			}
 
 		} else {
 
-			if (!is_null($address)) {
+			if (!is_null($address) && !Address::repite_la_direccion_de_la_empresa($address, $this->user->address_company)) {
 
 				$addresses[] = "{$address->street} {$address->street_number}, {$address->city}, {$address->province}";
 
-			} 
+			}
 		}
 
 
 		return $addresses;
 	}
- 
+
 	function Footer() {
 		$this->print_numero_orden_de_compra();
 		if ($this->with_prices) {

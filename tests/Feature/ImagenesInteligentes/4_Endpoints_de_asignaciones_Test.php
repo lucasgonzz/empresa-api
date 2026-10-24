@@ -432,7 +432,12 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
         $respuesta = $this->postJson('api/google/batch-assign-images', ['article_ids' => $ids]);
 
         $respuesta->assertStatus(200);
-        $this->assertSame(['status', 'batch_uuid'], array_keys($respuesta->json()));
+        // 23/10/2026 (imagenes-listado-saltear-con-foto): la respuesta SUMA `articulos` y
+        // `saltados_con_imagen` (los elegidos que ya tenían imagen no se buscan). Cambio de contrato
+        // pedido por el plan, no aserción ajustada: lo de siempre sigue en el mismo lugar.
+        $this->assertSame(['status', 'batch_uuid', 'articulos', 'saltados_con_imagen'], array_keys($respuesta->json()));
+        $this->assertSame(3, $respuesta->json('articulos'));
+        $this->assertSame(0, $respuesta->json('saltados_con_imagen'));
         $this->assertSame('processing', $respuesta->json('status'));
 
         $run = ImageAssignmentRun::where('uuid', $respuesta->json('batch_uuid'))->first();

@@ -8,7 +8,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\TipoEnvase;
 use App\Models\User;
 use Illuminate\Support\Facades\Storage;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as ReaderEntityFactory;
 use Tests\EmpresaTestCase;
 
 /**
@@ -317,7 +317,7 @@ class Propiedades_De_Distribuidora_Test extends EmpresaTestCase
     protected function leer($ruta)
     {
         $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(true);
+
         $reader->open($ruta);
 
         $filas = [];

@@ -22,7 +22,7 @@ use Illuminate\Support\Facades\Storage;
  * Endpoints REST del módulo de chats de WhatsApp con clientes (grupo 137, Prompt 02),
  * consumidos por empresa-spa. Toda la lógica de negocio vive en `WhatsappChatHelper`;
  * este controller solo valida pertenencia al owner autenticado y orquesta.
- * Rutas gateadas por `auth:sanctum` + `check_extencion_empresa:whatsapp` (ver routes/api.php).
+ * Rutas gateadas por `auth:sanctum` + `check_extencion_empresa:agentes_ia` (ver routes/api.php).
  */
 class WhatsappChatController extends Controller
 {
@@ -1032,7 +1032,7 @@ class WhatsappChatController extends Controller
      * quedarían abiertos para siempre a cualquiera que tenga o adivine la URL — sin sesión,
      * sin pertenencia y sin forma de revocarlo. Los medios de conversación viven en el disco
      * `local`, fuera del docroot, y salen solo por acá: `auth:sanctum` +
-     * `check_extencion_empresa:whatsapp` (los dos en `routes/api.php`) + el chequeo de
+     * `check_extencion_empresa:agentes_ia` (los dos en `routes/api.php`) + el chequeo de
      * pertenencia de abajo. Si alguien "simplifica" esto mandando los archivos a
      * `Storage::disk('public')`, lo que se rompe es la privacidad de todas las conversaciones,
      * en silencio y sin ningún error.

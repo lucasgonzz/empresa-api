@@ -926,7 +926,7 @@ class Alta_y_edicion_de_empleado_Test extends EmpresaTestCase
         // 🔴 Nunca la clave real del .env.testing.
         config(['services.anthropic.api_key' => 'clave-de-prueba-empleados-3']);
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
         $this->dar_extension(PropuestaPermisoEmpleadoIaHelper::EXTENSION);
     }
 

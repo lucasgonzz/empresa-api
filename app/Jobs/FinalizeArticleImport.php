@@ -353,7 +353,7 @@ class FinalizeArticleImport implements ShouldQueue
      * mudo justo cuando más falta hace.
      *
      * No se chequea el código de salida a propósito: si no hay nada pendiente que vectorizar, o
-     * el dueño no tiene la extensión whatsapp_ia, el comando sale en 0 sin hacer nada y eso es
+     * el dueño no tiene la extensión agentes_ia, el comando sale en 0 sin hacer nada y eso es
      * lo correcto, no una falla que haya que propagar y que voltearía la finalización de una
      * importación que ya terminó bien.
      *

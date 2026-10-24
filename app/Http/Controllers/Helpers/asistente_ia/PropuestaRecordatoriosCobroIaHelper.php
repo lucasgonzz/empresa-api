@@ -42,7 +42,7 @@ use Carbon\Carbon;
 class PropuestaRecordatoriosCobroIaHelper
 {
     /** La extensión del módulo de WhatsApp: el grupo de rutas del recordatorio la exige. */
-    const EXTENSION = 'whatsapp';
+    const EXTENSION = 'agentes_ia';
 
     /** El permiso del recordatorio de cobro (el mismo que `RecordatorioCobroController::check_permiso()`). */
     const PERMISO = 'alerts.recordatorio_cobro';
@@ -427,7 +427,7 @@ class PropuestaRecordatoriosCobroIaHelper
     {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION)) {
 
-            return PermisosIaHelper::mensaje_sin_extencion('WhatsApp') . ' Sin él no se pueden mandar recordatorios de cobro.';
+            return PermisosIaHelper::mensaje_sin_extencion('WhatsApp (incluido en Agentes de IA)') . ' Sin él no se pueden mandar recordatorios de cobro.';
         }
 
         if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {

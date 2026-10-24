@@ -8,6 +8,7 @@ use App\Models\WhatsappBotConfig;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -21,15 +22,16 @@ use Tests\TestCase;
  * también del lado del servidor (`simulate_inbound_devuelve_422_si_el_toggle_esta_apagado`).
  *
  * Setup calcado de 8_Simular_entrante_Test.php: el endpoint de simulación está gateado además
- * por la extensión 'whatsapp' (`check_extencion_empresa:whatsapp`), así que hace falta
+ * por la extensión 'agentes_ia' (`check_extencion_empresa:agentes_ia`), así que hace falta
  * `dar_extension()` antes de pegarle.
  */
 class Toggle_de_simulacion_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Slug de la extensión que gatea el módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Ruta del endpoint de simulación. */
     const RUTA_SIMULAR = 'api/whatsapp-bot/simulate-inbound';
@@ -65,6 +67,9 @@ class Toggle_de_simulacion_Test extends TestCase
             'password'     => Hash::make('secret'),
         ]);
 
+        // Misión agentes-ia-extension-unica (22/10/2026): la configuración del bot de WhatsApp es de `agentes_ia`.
+        $this->otorgar_agentes_ia($this->comercio);
+
         // A propósito NO se manda `chat_simulation_enabled` acá: la default de la columna
         // (false) es la que tiene que quedar vigente para el caso "toggle apagado".
         $this->config = WhatsappBotConfig::create([
@@ -95,7 +100,7 @@ class Toggle_de_simulacion_Test extends TestCase
             ]);
         }
 
-        $this->comercio->extencions()->attach($extencion->id);
+        $this->comercio->extencions()->syncWithoutDetaching([$extencion->id]);
         $this->comercio->load('extencions');
     }
 

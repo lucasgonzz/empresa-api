@@ -411,7 +411,7 @@ class Envio_de_comprobante_al_cliente_Test extends EmpresaTestCase
         $this->assertStringContainsString('no tiene un mail válido', $respuesta['error']);
 
         // Sin el módulo de WhatsApp y pidiendo WhatsApp: tampoco.
-        $this->sacar_extension('whatsapp');
+        $this->sacar_extension('agentes_ia');
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_envio_de_comprobante', [
             'tipo' => 'presupuesto', 'numero' => 900004, 'canales' => ['whatsapp'],

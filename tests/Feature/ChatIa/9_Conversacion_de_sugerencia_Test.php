@@ -46,7 +46,7 @@ class Conversacion_de_sugerencia_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita el chat. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;
@@ -377,8 +377,10 @@ class Conversacion_de_sugerencia_Test extends TestCase
         // el aviso de fin de corrida lo manda este job al terminar.
         $this->correr_el_job($suggestion, 'Resumen sin chat.', true);
 
-        // El resumen sigue andando; la conversación no existe.
-        $this->assertEquals('listo', $suggestion->fresh()->resumen_ia_estado);
+        // Cambio de contrato (agentes-ia-extension-unica, 22/10/2026): el resumen con IA es de `agentes_ia`,
+        // la misma extensión que habilita el chat. Sin ella no se pide el resumen (no gasta tokens) y la
+        // conversación no existe; la corrida se anuncia igual.
+        $this->assertNull($suggestion->fresh()->resumen_ia_estado);
         $this->assertEquals(0, AiConversation::where('referencia_id', $suggestion->id)->count());
 
         // Y la notificación es EXACTAMENTE la de hoy: dos botones, sin claves nuevas.

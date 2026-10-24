@@ -36,7 +36,7 @@ class Validaciones_y_reprocesos_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea todo el módulo. */
-    const SLUG = 'sugerencias_compras';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

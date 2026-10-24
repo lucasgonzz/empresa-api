@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
+use App\Models\Address;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\OnlineTemplate;
@@ -131,21 +132,15 @@ class UserSetupHelper
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
         /*
-            'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder standalone
-            (pensado justamente para correr aparte en bases existentes). Sin esta linea, el
-            whereIn('slug', $extencions) de mas abajo no encuentra la fila y el sync() la
-            omite en silencio, aunque 'whatsapp' este en base_extencions(). Mismo fix que ya
-            tiene DemoSetupHelper.
+            Misión agentes-ia-extension-unica (22/10/2026): 'agentes_ia' NO esta en ExtencionSeeder --
+            vive solo en su seeder (idempotente), que ademas marca en desuso las seis extensiones de
+            IA que reemplaza. Se corre para que la fila exista en el catalogo de todo sistema real,
+            pero 🔴 NO se otorga: 'agentes_ia' no esta en base_extencions(), un sistema nuevo de
+            produccion NO la trae y se activa por cliente (desde el admin o el configurador de
+            extensiones). Reemplaza a las llamadas a ExtencionEmpresaWhatsappSeeder y
+            ExtencionEscaneoFacturaCompraSeeder que habia aca.
         */
-        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
-
-        /*
-            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
-            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
-            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
-            la omitiria en silencio.
-        */
-        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
+        Artisan::call('db:seed', ['--class' => 'ExtencionAgentesIaSeeder', '--force' => true]);
 
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
@@ -156,10 +151,15 @@ class UserSetupHelper
             $user->save();
         }
 
-        // Sucursales y listas de precios dependen de inputs del formulario
-        if (!empty($data['use_deposits'])) {
-            self::crear_depositos($data);
-        }
+        /*
+            Sucursales (misión sucursal-siempre, 23/10/2026, D10): el sistema nace SIEMPRE con al menos
+            una. Con `use_deposits`, las de address_1..3 como siempre (la primera, principal); sin
+            `use_deposits`, una "Principal". Ver crear_sucursales(). La extensión de movimientos entre
+            depósitos (`deposit_movements`) se sigue dando solo con `use_deposits` (D11, en
+            apply_flag_rules): con una sola sucursal no hay entre qué mover.
+        */
+        self::crear_sucursales($data, $user);
+
         if (!empty($data['use_price_lists'])) {
             self::crear_price_types($data);
         }
@@ -167,6 +167,9 @@ class UserSetupHelper
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
+
+        // Si algún seeder tocó las sucursales, que quede igual UNA sola principal (D2).
+        Address::asegurar_principal($user->id);
 
         // Descuentos/recargos por metodo de pago (dependen de que CurrentAcountPaymentMethodSeeder ya haya corrido).
         self::crear_current_acount_payment_method_discounts($data, $user->id);
@@ -361,37 +364,21 @@ class UserSetupHelper
             'enviar_mail_a_clientes',
 
             /*
-                Sin estas 4 extensiones encendidas, los modulos de sugerencias de stock,
-                sugerencias de compra, motor de ofertas y tracking de compradores quedan con
-                las rutas en 403. Mismo fix que ya tiene DemoSetupHelper.
+                Sin estas 2 extensiones encendidas, los modulos de motor de ofertas y tracking de
+                compradores quedan con las rutas en 403. Mismo fix que ya tiene DemoSetupHelper.
             */
-            'sugerencias_inteligentes',
-            'sugerencias_compras',
             'motor_de_ofertas',
             'tracking_buyers',
 
             /*
-                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
-                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
-                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
-                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
+                🔴 Misión agentes-ia-extension-unica (22/10/2026): ACÁ YA NO VA NINGUNA DE IA, y no es un
+                olvido. Hasta hoy iban de base asistente_ia, escaneo_factura_compra, whatsapp,
+                sugerencias_inteligentes y sugerencias_compras. Ahora toda la IA es UNA extension,
+                'agentes_ia', y un sistema real nuevo NO la trae: se activa por cliente (decision de
+                Lucas del 22/10/2026: "nadie hereda", las altas nuevas de produccion no la traen por
+                defecto). DemoSetupHelper::base_extencions() si la otorga, porque una demo existe para
+                mostrarla.
             */
-            'asistente_ia',
-            'escaneo_factura_compra',
-
-            /*
-                El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js):
-                sigue yendo de base para que el modulo de chat aparezca en el menu de todo cliente
-                real. 'whatsapp_ia' es otra cosa -- gatilla el embedding vectorial del catalogo
-                para que el agente de WhatsApp con IA responda consultas semanticas
-                (ArticleObserver, DescriptionObserver, articles:generate-embeddings) -- y DEJA de
-                sembrarse aca: se activa aparte, por cliente, cuando contrata esa busqueda
-                semantica (ver ExtencionEmpresaWhatsappIaSeeder, ya pensado para correrse
-                standalone). Medido en produccion el 10/9/2026: de 117 duenos con la extension en
-                esta lista base, solo 5 la tenian realmente en uso -- se corta la sembrada de
-                origen.
-            */
-            'whatsapp',
         ];
     }
 
@@ -646,24 +633,92 @@ class UserSetupHelper
     }
 
     /**
+     * Nombre de la sucursal que se crea sola cuando el formulario no trae sucursales (D9 de la misión
+     * sucursal-siempre, elegido por Lucas el 23/10/2026: es lo que va a leer el dueño el día que cree
+     * la segunda, "Principal" y "Centro").
+     */
+    const NOMBRE_SUCURSAL_PRINCIPAL = 'Principal';
+
+    /**
+     * Las sucursales del sistema nuevo (misión sucursal-siempre, 23/10/2026, D10 y D8).
+     *
+     *  - Con `use_deposits`: las de `address_1..3`, como siempre (crear_depositos()).
+     *  - Sin `use_deposits`, o con `use_deposits` y ningún nombre cargado: una sola, "Principal".
+     *  - La primera queda marcada como PRINCIPAL (`default_address = 1`, D2).
+     *  - A la principal se le precarga el domicilio (`street_number`, "Domicilio" en el ABM) con
+     *    `address_company` del payload, si viene no vacío (D8: se copia UNA vez; después la dirección
+     *    de la empresa y la de la sucursal viven cada una su vida).
+     *  - `users.address_company` del dueño se guarda desde el payload (hasta acá se descartaba aunque
+     *    el admin lo manda). El camino de leads del admin no lo manda: se tolera que falte.
+     *  - `users.address_id` del dueño apunta a la principal (Vender la toma sin preguntar).
+     *
+     * El contrato admin → empresa no cambia: son claves que el admin ya manda.
+     *
+     * @param array<string, mixed> $data
+     * @param User $user Dueño recién creado.
+     * @return void
+     */
+    private static function crear_sucursales(array $data, $user)
+    {
+        $address_company = isset($data['address_company']) && is_scalar($data['address_company'])
+            ? trim((string) $data['address_company'])
+            : '';
+
+        $creadas = [];
+
+        if (!empty($data['use_deposits'])) {
+            $creadas = self::crear_depositos($data);
+        }
+
+        if (count($creadas) === 0) {
+            Log::info('UserSetupHelper: el sistema nace con una sola sucursal, '.self::NOMBRE_SUCURSAL_PRINCIPAL);
+
+            $creadas[] = Address::create([
+                'street'  => self::NOMBRE_SUCURSAL_PRINCIPAL,
+                'user_id' => $user->id,
+            ]);
+        }
+
+        $principal = $creadas[0];
+
+        $principal->default_address = 1;
+
+        if ($address_company !== '') {
+            $principal->street_number = $address_company;
+        }
+
+        $principal->save();
+
+        if ($address_company !== '') {
+            $user->address_company = $address_company;
+        }
+
+        $user->address_id = $principal->id;
+        $user->save();
+    }
+
+    /**
      * Persiste hasta 3 direcciones de sucursal a partir de los campos address_1..3.
      *
      * @param array<string, mixed> $data
+     * @return Address[] Las creadas, en orden.
      */
     private static function crear_depositos(array $data)
     {
-        // Importamos Address aquí para no cargarla en el namespace global si no se usa
-        $addressClass = '\App\Models\Address';
+        $creadas = [];
+
         for ($i = 1; $i <= 3; $i++) {
             $address = $data['address_'.$i] ?? null;
             if (!empty($address)) {
                 Log::info('UserSetupHelper: creando address '.$address);
-                $addressClass::create([
+                $creadas[] = Address::create([
                     'street'  => $address,
                     'user_id' => config('app.USER_ID'),
                 ]);
             }
         }
+
+        return $creadas;
     }
 
     /**

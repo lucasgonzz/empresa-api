@@ -10,7 +10,7 @@ use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 use Tests\EmpresaTestCase;
 
 /**

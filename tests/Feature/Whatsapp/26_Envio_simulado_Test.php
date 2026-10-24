@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -58,6 +59,7 @@ use Tests\TestCase;
 class Envio_simulado_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Teléfono del cliente deudor principal. */
     const PHONE = '5493416007711';
@@ -139,16 +141,16 @@ class Envio_simulado_Test extends TestCase
      */
     protected function dar_extension()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'whatsapp')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
             $extencion = ExtencionEmpresa::forceCreate([
-                'slug' => 'whatsapp',
+                'slug' => 'agentes_ia',
                 'name' => 'WhatsApp',
             ]);
         }
 
-        $this->owner->extencions()->attach($extencion->id);
+        $this->owner->extencions()->syncWithoutDetaching([$extencion->id]);
         $this->owner->load('extencions');
     }
 
@@ -846,6 +848,9 @@ class Envio_simulado_Test extends TestCase
             'email'        => 'comercio-real-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): la configuración del bot es de `agentes_ia`; este negocio nuevo la paga.
+        $this->otorgar_agentes_ia($otro);
 
         $this->actuar_como($otro);
 

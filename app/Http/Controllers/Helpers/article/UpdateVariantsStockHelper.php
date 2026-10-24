@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Models\Address;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use Carbon\Carbon;
@@ -136,6 +137,29 @@ class UpdateVariantsStockHelper {
         }
 
         if (count($article_variant->addresses) >= 1) {
+
+            /*
+             * Misión sucursal-siempre (23/10/2026, D15): con UNA sola sucursal la SPA manda el stock de
+             * la variante como un total (no muestra sucursales, D1), y ese total es lo que hay en la
+             * única sucursal: se lleva la fila de la variante al valor pedido, por la diferencia contra
+             * la fila. Con dos o más sucursales, como siempre: se ignora.
+             */
+            $unica = Address::unica_sucursal_de($this->article->user_id);
+
+            // "Reparte" sin contar filas de domicilios de comprador: con una sola sucursal, la fila de
+            // la variante que cuenta es la de esa sucursal.
+            if (!is_null($unica) && $article_variant->addresses->contains('id', $unica->id)) {
+
+                $this->address = ['id' => $unica->id];
+
+                $diferencia = (float)$this->variant['stock'] - Address::stock_en_fila($this->article->id, $unica->id, $article_variant->id);
+
+                $this->guardar_stock_movement(round($diferencia, 2), $segundos);
+
+                $this->address = null;
+
+                return;
+            }
 
             Log::info('UpdateVariantsStockHelper: la variante '.$article_variant->id.' reparte por depositos, se ignora el stock global.');
 

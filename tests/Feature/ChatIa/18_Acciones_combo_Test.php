@@ -54,7 +54,7 @@ class Acciones_combo_Test extends EmpresaTestCase
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
-        $this->extencion('asistente_ia', 'Asistente IA');
+        $this->extencion('agentes_ia', 'Asistente IA');
         $this->extencion('combos', 'Combos');
 
         $this->dueno->load('extencions');

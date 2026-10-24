@@ -100,7 +100,7 @@ class Alta_con_marca_nueva_y_descripcion_Test extends EmpresaTestCase
             'agente_confianza' => $this->dueno->agente_confianza,
         ];
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         $this->dueno_con(['agente_confianza' => 'cauteloso', 'listas_de_precio' => 0]);
 

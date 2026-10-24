@@ -202,7 +202,7 @@ class ArticleObserver
      * las dos puntas (observer inmediato y scheduler cada 30 min) no se contradigan.
      *
      * Es pública y estática a propósito: DescriptionObserver la usa tal cual para no
-     * duplicar el criterio (extensión whatsapp_ia + importación en curso) ni tener un
+     * duplicar el criterio (extensión agentes_ia + importación en curso) ni tener un
      * segundo memo que resetear_cache_gate() se olvidaría de limpiar. Si mañana hay que
      * cambiar el criterio, se cambia acá y las dos puntas quedan iguales solas.
      *
@@ -222,11 +222,11 @@ class ArticleObserver
 
         // 0.5 Pausa global: interruptor independiente de la extensión por cliente (misión
         // busqueda-lenta-y-pausa-embeddings). Existe para poder cortar la generación en TODO el
-        // parque de un saque, sin depender de que alguien desactive whatsapp_ia comercio por
+        // parque de un saque, sin depender de que alguien desactive agentes_ia comercio por
         // comercio -- y sin el efecto secundario de apagar con eso la búsqueda del bot de WhatsApp
-        // para quien ya la esté usando (whatsapp_ia habilita las dos cosas, no solo embeddings).
+        // para quien ya la esté usando (agentes_ia habilita las dos cosas, no solo embeddings).
         // Pensado para cuando el performance de embeddings vuelva a ser un problema, o para frenar
-        // de entrada si alguien reactiva whatsapp_ia para un cliente antes de que el arreglo de
+        // de entrada si alguien reactiva agentes_ia para un cliente antes de que el arreglo de
         // sinEmbedding() (puntos 1-3 de esta misma misión) esté probado en producción. Default
         // false: no cambia nada para nadie hasta que alguien la prenda a mano en el .env.
         //
@@ -267,9 +267,9 @@ class ArticleObserver
                 return false;
             }
 
-            // Sin la extensión whatsapp_ia el catálogo vectorial no lo consume nadie, así
+            // Sin la extensión agentes_ia el catálogo vectorial no lo consume nadie, así
             // que generarlo sería gasto puro.
-            if (! UserHelper::hasExtencion('whatsapp_ia', $user)) {
+            if (! UserHelper::hasExtencion('agentes_ia', $user)) {
                 return false;
             }
 

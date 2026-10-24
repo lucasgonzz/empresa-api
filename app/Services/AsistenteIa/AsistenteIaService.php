@@ -3,6 +3,7 @@
 namespace App\Services\AsistenteIa;
 
 use App\Exceptions\AsistenteIaException;
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
@@ -1718,8 +1719,13 @@ CARGA;
              * Misión asistente-envios-a-clientes (16/10/2026): sin WhatsApp no hay recordatorios, ni
              * promociones, ni comprobantes por WhatsApp; sin los mails a clientes, no hay comprobantes
              * por mail. Las herramientas lo chequean igual; esto es para que no lo prometa antes.
+             *
+             * Misión agentes-ia-extension-unica (22/10/2026): el módulo de WhatsApp ya no es una extensión
+             * aparte, es parte de `agentes_ia`. La entrada se conserva atada a esa extensión: el asistente
+             * normalmente la tiene (la exige para existir), pero si un llamador arma el prompt de un dueño
+             * sin ella, el modelo sigue sabiendo desde el primer mensaje que no puede mandar por WhatsApp.
              */
-            'whatsapp'                          => 'WhatsApp (no podés mandar recordatorios de cobro, promociones ni comprobantes por WhatsApp)',
+            AgentesIaHelper::SLUG               => 'WhatsApp (no podés mandar recordatorios de cobro, promociones ni comprobantes por WhatsApp)',
             'enviar_mail_a_clientes'            => 'Mails a clientes (no podés mandar comprobantes por mail)',
         ];
 

@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
+use App\Models\CurrentAcount;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
@@ -533,6 +534,28 @@ class SearchController extends Controller
         // Resolución del modelo Eloquent a partir del nombre en snake_case del param de ruta.
         $model_name = GeneralHelper::getModelName($model_name_param);
 
+        // `nota_credito` NO es un modelo: es la pantalla "Notas de crédito" de Comprobantes, que
+        // lista las cuentas corrientes con status 'nota_credito'. Su listado "Por fecha" tiene un
+        // endpoint propio (NotaCreditoController@index), pero el modo "Historico", el buscador y
+        // el paginado de esa pantalla le piden a este endpoint con el nombre `nota_credito`, y sin
+        // este alias la respuesta era 400 "Modelo inexistente" (el cartel "Hubo un error y no
+        // pudimos leer el detalle" del 21/10/2026). Se resuelve como CurrentAcount acotado a NC;
+        // el resto del método (texto, filtros de columna, orden y paginado) es el de siempre.
+        //
+        // 🔴 El nombre llega CON GUION de la SPA (`routeString()` pasa los `_` a `-`: la ruta real
+        // es `global-search/nota-credito`) y con guion bajo desde cualquier otro consumidor; se
+        // reconocen los dos. getModelName() ya hace la misma equivalencia para los modelos reales.
+        $es_nota_credito = in_array($model_name_param, ['nota_credito', 'nota-credito'], true);
+
+        // Lo mismo le pasa a la otra solapa de Comprobantes, "Pagos de clientes" (`pago_de_cliente`):
+        // tampoco es un modelo, son cuentas corrientes con status 'pago_from_client' de un cliente.
+        // Su buscador general daba el mismo 400 (detectado por el chequeo independiente, 21/10/2026).
+        $es_pago_de_cliente = in_array($model_name_param, ['pago_de_cliente', 'pago-de-cliente'], true);
+
+        if ($es_nota_credito || $es_pago_de_cliente) {
+            $model_name = CurrentAcount::class;
+        }
+
         // Si el modelo no existe, devolvemos error controlado en vez de un 500 por clase inexistente.
         if (!class_exists($model_name)) {
             return response()->json(['error' => 'Modelo inexistente: '.$model_name_param], 400);
@@ -587,6 +610,20 @@ class SearchController extends Controller
         // ningún consumidor de Vender lee) para los artículos de la página que se va a mostrar.
         if (method_exists($model_instance, 'scopeWithAll') && !$usar_contexto_vender) {
             $models = $models->withAll();
+        }
+
+        // Alias `nota_credito` (ver arriba): solo las notas de crédito, y con las relaciones que
+        // dibuja la pantalla. Se califica la columna con la tabla para que no choque con ninguna
+        // relación que se una más abajo.
+        if ($es_nota_credito) {
+            $models = $models->where($table.'.status', 'nota_credito')
+                             ->conRelacionesDeNotaCredito();
+        }
+
+        // Alias `pago_de_cliente`: solo los pagos de clientes, con lo que dibuja la pantalla
+        // (mismo criterio que PagoDeClienteController@index, vía el scope compartido).
+        if ($es_pago_de_cliente) {
+            $models = $models->pagosDeClientes();
         }
 
         // Mismo gate que arriba, para scopeSinEmbedding (misión busqueda-lenta-y-pausa-embeddings).

@@ -63,7 +63,7 @@ class WhatsappChatMessage extends Model
      *    dos veces por un archivo que ya es público a propósito.
      *  - `media_path` cargado → el archivo es una conversación privada y vive en el disco
      *    `local`, fuera del docroot. Se arma la ruta autenticada
-     *    (`auth:sanctum` + `check_extencion_empresa:whatsapp` + chequeo de pertenencia).
+     *    (`auth:sanctum` + `check_extencion_empresa:agentes_ia` + chequeo de pertenencia).
      *
      * 🔴 La base sale de `ApiUrlHelper::public_base()` y no de `url()` ni de `route()`. El
      * generador de URLs de Laravel no sabe del sufijo `/public` del hosting compartido — es

@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Exceptions\SaleWhatsappSendException;
 use App\Models\Sale;
 use App\Models\WhatsappBotConfig;
@@ -66,6 +67,12 @@ class SendSaleWhatsappJob implements ShouldQueue
         try {
             $sale = Sale::find($this->sale_id);
             if (is_null($sale)) {
+                return;
+            }
+
+            // Misión agentes-ia-extension-unica (22/10/2026): el módulo de WhatsApp es de `agentes_ia`. Se
+            // revalida con el dueño de la venta (no con Auth) y se sale en silencio si ya no la tiene.
+            if (! AgentesIaHelper::tiene_el_comercio_de($sale->user_id)) {
                 return;
             }
 

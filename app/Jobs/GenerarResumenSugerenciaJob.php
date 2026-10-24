@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -95,7 +96,9 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
         // El estado vuelve a null ('pendiente' sería un spinner eterno y no
         // tener IA contratada no es un error) y, si este job lleva la posta,
         // la corrida se anuncia igual — con los dos botones de siempre.
-        if (!$service->hay_credenciales()) {
+        // Misión agentes-ia-extension-unica (22/10/2026): sin `agentes_ia` el resumen no se pide (no gasta
+        // tokens). Se trata igual que «sin credenciales»: el estado vuelve a null y la corrida se anuncia.
+        if (!$service->hay_credenciales() || !AgentesIaHelper::tiene_el_comercio_de($suggestion->user_id)) {
             if ($suggestion->resumen_ia_estado === 'pendiente') {
                 $suggestion->resumen_ia_estado = null;
                 $suggestion->save();
@@ -149,7 +152,7 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
 
     /**
      * Entrega del resumen por el chat (misión chat-ia-y-modulo-ia, D25/D26):
-     * si el dueño tiene la extensión asistente_ia, la sugerencia terminada
+     * si el dueño tiene la extensión agentes_ia, la sugerencia terminada
      * deja una conversación con origen 'sugerencia_stock', el bloque de DATOS
      * ya calculados como contexto de fondo (armar_datos, no el prompt de
      * redacción) y el resumen como primer mensaje del assistant.
@@ -179,7 +182,7 @@ class GenerarResumenSugerenciaJob implements ShouldQueue
 
             // Sin la extensión no se crea conversación: quien no la tiene ve
             // exactamente el flujo de hoy (resumen + notificación).
-            if (!$owner || !UserHelper::hasExtencion('asistente_ia', $owner)) {
+            if (!$owner || !UserHelper::hasExtencion('agentes_ia', $owner)) {
                 return;
             }
 

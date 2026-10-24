@@ -35,10 +35,10 @@ class Unificar_bancos_por_ia_Test extends ChequesTestCase
         // 🔴 Nunca la clave real del .env.testing: este archivo no sale a la red.
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
 
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);

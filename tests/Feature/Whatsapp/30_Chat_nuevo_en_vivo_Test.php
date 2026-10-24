@@ -35,7 +35,7 @@ class Chat_nuevo_en_vivo_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Teléfono del cliente final que escribe por primera vez (con prefijo de país). */
     const PHONE = '5493416007777';

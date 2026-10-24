@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Helpers\import\excel;
 
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 
 /**
@@ -190,7 +189,7 @@ class LecturaDeHojaCsv
                     foreach ($campos as $i => $texto) {
                         $tipo = ($codigos !== null && isset($codigos[$i])) ? $codigos[$i] : CsvDeHoja::TIPO_TEXTO;
 
-                        $celdas[] = new Cell(CsvDeHoja::tipar((string) $texto, $tipo));
+                        $celdas[] = OpenSpoutCompatible::celda_literal(CsvDeHoja::tipar((string) $texto, $tipo));
                     }
                 }
                 /* $codigos === '': fila sin celdas en el XLSX (hueco preservado); queda sin celdas acá también. */
@@ -227,7 +226,7 @@ class LecturaDeHojaCsv
     protected static function todas_vacias(array $celdas)
     {
         foreach ($celdas as $celda) {
-            if (!$celda->isEmpty()) {
+            if (!OpenSpoutCompatible::celda_vacia($celda)) {
                 return false;
             }
         }

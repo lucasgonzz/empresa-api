@@ -261,7 +261,7 @@ class Pipeline_y_prioridad_Test extends TestCase
      */
     public function con_credenciales_no_avisa_el_lote_y_el_aviso_sale_del_job_del_resumen()
     {
-        $this->dar_extension('asistente_ia', 'Asistente IA');
+        $this->dar_extension('agentes_ia', 'Asistente IA');
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
         Queue::fake();
         $this->escenario();
@@ -303,14 +303,16 @@ class Pipeline_y_prioridad_Test extends TestCase
     }
 
     /**
-     * 🔴 Sin la extensión asistente_ia NO se crea ninguna conversación —y por eso el aviso sale sin el
-     * botón del chat—, pero la corrida y el resumen terminan igual. Va declarado en el despliegue.
+     * 🔴 Sin la extensión agentes_ia NO se crea ninguna conversación —y por eso el aviso sale sin el
+     * botón del chat— y TAMPOCO se pide el resumen con IA (no gasta tokens): la corrida de ofertas termina
+     * igual y el aviso sale. Cambio de contrato de la misión agentes-ia-extension-unica (22/10/2026): antes
+     * el resumen era independiente de la extensión del asistente; ahora es parte de `agentes_ia`.
      * @group motor-de-ofertas
      * @test
      */
     public function sin_la_extension_del_asistente_no_se_crea_conversacion_y_el_aviso_sale_igual()
     {
-        if (UserHelper::hasExtencion('asistente_ia', $this->comercio)) {
+        if (UserHelper::hasExtencion('agentes_ia', $this->comercio)) {
             $this->markTestSkipped('El comercio 500 ya tiene la extensión asistente_ia sembrada.');
         }
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
@@ -336,7 +338,8 @@ class Pipeline_y_prioridad_Test extends TestCase
         (new GenerarResumenSugerenciaOfertaJob($suggestion->id, true))->handle();
 
         $this->assertNull(AiConversation::where('origen', 'sugerencia_oferta')->where('referencia_id', $suggestion->id)->first());
-        $this->assertEquals('listo', $suggestion->fresh()->resumen_ia_estado);
+        $this->assertNull($suggestion->fresh()->resumen_ia_estado, 'Sin agentes_ia no se pide el resumen con IA.');
+        Http::assertNothingSent();
         Notification::assertSentTo($this->comercio, GlobalNotification::class, function ($notification) {
             return array_column($notification->functions_to_execute, 'btn_text') === ['Ver las ofertas', 'Entendido'];
         });

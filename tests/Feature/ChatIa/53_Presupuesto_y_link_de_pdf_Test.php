@@ -74,7 +74,7 @@ class Presupuesto_y_link_de_pdf_Test extends EmpresaTestCase
 
         $this->api_url_original = $this->dueno->api_url;
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
         $this->dar_extension(PropuestaPresupuestoIaHelper::EXTENSION);
 
         $this->actingAs($this->dueno, 'web');

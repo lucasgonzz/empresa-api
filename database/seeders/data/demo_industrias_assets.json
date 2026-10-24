@@ -1,0 +1,1517 @@
+{
+  "version": 1,
+  "archivos": {
+    "public/demo-industrias/almacen/banner-desktop.webp": {
+      "bytes": 235840,
+      "sha256": "366d4d9af0dcc90256bda1dabe6b45a92fbafabfd0cc5d178ce58122828c26bd"
+    },
+    "public/demo-industrias/almacen/banner-mobile.webp": {
+      "bytes": 255314,
+      "sha256": "9b5b4966e7a32595d7ffb6582cb08d184242118428d837f6ede14be19c7deff8"
+    },
+    "public/demo-industrias/almacen/logo.webp": {
+      "bytes": 38158,
+      "sha256": "4c0280e9e9c654f62ac50d4cb079c6749897cb28a3af7b5a11d161d2be2cb90e"
+    },
+    "public/demo-industrias/almacen/productos/01.webp": {
+      "bytes": 34424,
+      "sha256": "8855a5829c6ca0d5da8a00b8b819f8ec236144276dbe6d56a05d48efed09c05f"
+    },
+    "public/demo-industrias/almacen/productos/02.webp": {
+      "bytes": 45352,
+      "sha256": "e69237de9620cc47bd5759ed8b8101bfe339bc82f929dfe6abc25f5ae4932399"
+    },
+    "public/demo-industrias/almacen/productos/03.webp": {
+      "bytes": 17760,
+      "sha256": "3339965d6e14cdd259cd09e29a960ca89d04b8d2b15825e27007b049fbd49e65"
+    },
+    "public/demo-industrias/almacen/productos/04.webp": {
+      "bytes": 48578,
+      "sha256": "766dbfd0c7d026048b0df70a0db7bd3329aa9795c775036a902b692ed658a2f5"
+    },
+    "public/demo-industrias/almacen/productos/05.webp": {
+      "bytes": 32444,
+      "sha256": "3289df17945574c830f0075530d114a1b1661294370ed0648d658e16d0cc17b4"
+    },
+    "public/demo-industrias/almacen/productos/06.webp": {
+      "bytes": 40004,
+      "sha256": "41f4cb5278e6bd3ed552f48e986229dad744ce017a7dd85f6cfff657b782989e"
+    },
+    "public/demo-industrias/almacen/productos/07.webp": {
+      "bytes": 38364,
+      "sha256": "3218ba89a5cf0a9b1077420b1beb5376c277e2c1ab79993205221d469b9da258"
+    },
+    "public/demo-industrias/almacen/productos/08.webp": {
+      "bytes": 49380,
+      "sha256": "e3f1b6be26b76f4cd2a85676403fcb13c410ec9d4227bc83e3508bfa5d9cd70a"
+    },
+    "public/demo-industrias/almacen/productos/09.webp": {
+      "bytes": 35498,
+      "sha256": "64450e34728eb869bfe830236636abfefebe51f5c0ad0ffe45ed49a9fe8044f8"
+    },
+    "public/demo-industrias/almacen/productos/10.webp": {
+      "bytes": 22630,
+      "sha256": "54b8885d55801d3ce4c4337a60b1fe257d0189bb1bab9906520a5a264a0d99e8"
+    },
+    "public/demo-industrias/almacen/productos/11.webp": {
+      "bytes": 38706,
+      "sha256": "4870d178158c403b45ba36747892c7500ee06efbe910d56c763c9fd1ebd8f21a"
+    },
+    "public/demo-industrias/almacen/productos/12.webp": {
+      "bytes": 33884,
+      "sha256": "e8681cf7357c8d42f1de234da7e87b3b62157de3abb5fd67f22379e6a88fd5f7"
+    },
+    "public/demo-industrias/almacen/productos/13.webp": {
+      "bytes": 10510,
+      "sha256": "67f6e5c212ed316989065c176e12f073e6b7f379eb9b47fec42e6eb1c093dfea"
+    },
+    "public/demo-industrias/almacen/productos/14.webp": {
+      "bytes": 69190,
+      "sha256": "1f8607293af65146be1493598bf2d56e934f309c4125e9b593fb5f12f565fe5f"
+    },
+    "public/demo-industrias/almacen/productos/15.webp": {
+      "bytes": 32992,
+      "sha256": "637a456f8d7bc4a7f8cf40c86f429737800f61c63bb87ff4d098aab826aba7db"
+    },
+    "public/demo-industrias/almacen/productos/16.webp": {
+      "bytes": 47702,
+      "sha256": "161b7b7c97b17a02abbb0587bbfcb3454e675c4cdfde0803e8fb77790aa59706"
+    },
+    "public/demo-industrias/almacen/productos/17.webp": {
+      "bytes": 11644,
+      "sha256": "c865f130d40de9d74f3956c9ea21a46bb15261fc454e64c9d9e6ee8a8845fcb6"
+    },
+    "public/demo-industrias/almacen/productos/18.webp": {
+      "bytes": 5878,
+      "sha256": "2e0efb4d79190430d1632e811e7f8d2017af036112a0db07c9c110739d960895"
+    },
+    "public/demo-industrias/almacen/productos/19.webp": {
+      "bytes": 15736,
+      "sha256": "5c3a629e2a3983e77663437160b4d1627cacabf2919ef9f60c0d7b5754c04a18"
+    },
+    "public/demo-industrias/almacen/productos/20.webp": {
+      "bytes": 23456,
+      "sha256": "f9336f56e6a286dca602fb92283265d6a3479f19d8e94ec82d25be4abc1bb0bf"
+    },
+    "public/demo-industrias/almacen/productos/21.webp": {
+      "bytes": 39796,
+      "sha256": "d74b5966b2dc94fd3f1da7d1a285e2a28d33f4661bb34fb548602b44c52be7f4"
+    },
+    "public/demo-industrias/almacen/productos/22.webp": {
+      "bytes": 19382,
+      "sha256": "1735e0120c492b43dcb95db2831a912371e4a9bc0757319a792715b1ec4ffe7c"
+    },
+    "public/demo-industrias/almacen/productos/23.webp": {
+      "bytes": 54472,
+      "sha256": "1ecc33cc75fd866f66cae3017c5e7d0358e6d14c848465d1d7f010c7901f86f7"
+    },
+    "public/demo-industrias/almacen/productos/24.webp": {
+      "bytes": 23560,
+      "sha256": "3448b99e3076daa6759e1d12d2cbaa4ce7838cdd6439d09eac8a3e81ec338176"
+    },
+    "public/demo-industrias/autopartes/banner-desktop.webp": {
+      "bytes": 259416,
+      "sha256": "ab0761ac0be3501c6dfdf7d4236d23a46e5ce98c572bd354697136d3e19bb837"
+    },
+    "public/demo-industrias/autopartes/banner-mobile.webp": {
+      "bytes": 277022,
+      "sha256": "b281009c1b77adf702d73fe7149cc6cf2435d0618ed7a5e74878d5d15e121ea3"
+    },
+    "public/demo-industrias/autopartes/logo.webp": {
+      "bytes": 45306,
+      "sha256": "56928f7a173e56516720b9aa68e486404a73ba635c9ff1d0949f07f4f5e1d33e"
+    },
+    "public/demo-industrias/autopartes/productos/01.webp": {
+      "bytes": 19312,
+      "sha256": "30f83a81ffdd008d7ed5026753308371e4f8ff0229cdf899269bdee83af95fdb"
+    },
+    "public/demo-industrias/autopartes/productos/02.webp": {
+      "bytes": 4582,
+      "sha256": "dbfe2bf39ea51b8f4e0098673446c78a23161dca90f377b165a354254502c981"
+    },
+    "public/demo-industrias/autopartes/productos/03.webp": {
+      "bytes": 4148,
+      "sha256": "a577e1cbd7f38f1560e9868e13f5109ea54c565cdd19852346ecc86a4feea9a4"
+    },
+    "public/demo-industrias/autopartes/productos/04.webp": {
+      "bytes": 21146,
+      "sha256": "371b3633f7144872f60e141dc0a69ac6810d40355c7d25dd25289dda1bb1c384"
+    },
+    "public/demo-industrias/autopartes/productos/05.webp": {
+      "bytes": 24236,
+      "sha256": "a9bd0c873a5975e0c327848fab55ab4193b46956b73d32c692bdf01ea5c87ab0"
+    },
+    "public/demo-industrias/autopartes/productos/06.webp": {
+      "bytes": 32304,
+      "sha256": "fdfb0570c97c5deb177e5d0f166bbb4707d9246f44f9604c34d6c77b0c39cc7b"
+    },
+    "public/demo-industrias/autopartes/productos/07.webp": {
+      "bytes": 10684,
+      "sha256": "7753d2cf24de785ad66b9fdc280dc88145dcebac0b973828990f18e0192f4109"
+    },
+    "public/demo-industrias/autopartes/productos/08.webp": {
+      "bytes": 16488,
+      "sha256": "835cc8b6debc3b1beb0e8b469124dea98c507666c7419b79a999bbb9bb21020e"
+    },
+    "public/demo-industrias/autopartes/productos/09.webp": {
+      "bytes": 21928,
+      "sha256": "b24c0cfdeddcb5cce54d9f3b1a2a1fdf3bb218bf874a92c5937dfcaf87ea6882"
+    },
+    "public/demo-industrias/autopartes/productos/10.webp": {
+      "bytes": 15882,
+      "sha256": "9fb208d7aa9c0dc02774e1134889f96858b4d6d1f1e6dc9e2ca2302bc127d576"
+    },
+    "public/demo-industrias/autopartes/productos/11.webp": {
+      "bytes": 10210,
+      "sha256": "f034eaaf1cf97bc18d460973e99a75ca5c0ed054910c631d7b71d99d54efe939"
+    },
+    "public/demo-industrias/autopartes/productos/12.webp": {
+      "bytes": 3056,
+      "sha256": "d4f398e1ae1aa18ea0165f152a21160fc6a7f6489f5d907d520b92e64f49e867"
+    },
+    "public/demo-industrias/autopartes/productos/13.webp": {
+      "bytes": 27256,
+      "sha256": "cf7c87da188c4f99215585a3c342006a0b657c27746cee1eee621353629ef13c"
+    },
+    "public/demo-industrias/autopartes/productos/14.webp": {
+      "bytes": 23746,
+      "sha256": "fda3247628355795ad06818aec2caf555a595b2278c9cdb398cec42e94a6fd06"
+    },
+    "public/demo-industrias/autopartes/productos/15.webp": {
+      "bytes": 13132,
+      "sha256": "f962a213cfca66fcd7ff52dfe8b08e4c375e87c5941b09e851616c98e08d01c0"
+    },
+    "public/demo-industrias/autopartes/productos/16.webp": {
+      "bytes": 15278,
+      "sha256": "68e4cfaf2d73b6ab8cfba27dac4bf0f4997d0fbb065fb2778c053729ba3a19a3"
+    },
+    "public/demo-industrias/autopartes/productos/17.webp": {
+      "bytes": 9724,
+      "sha256": "283e452b2dc83f6533d997b239bc6dd2aa72204f2b9e051d32e29076cd8a475f"
+    },
+    "public/demo-industrias/autopartes/productos/18.webp": {
+      "bytes": 28356,
+      "sha256": "b8e83a1ebe200bf8ae2b91ac5fdbcc9c8b272e90a69c880317db6d3e97a6b92a"
+    },
+    "public/demo-industrias/autopartes/productos/19.webp": {
+      "bytes": 36734,
+      "sha256": "ba1763fd09c860b1748281111f0a4bc26b40d6e69a9b61c8f273b0e3f743cfc4"
+    },
+    "public/demo-industrias/autopartes/productos/20.webp": {
+      "bytes": 15670,
+      "sha256": "915618f4274c3471b09b2220a55875826da7bf878525af7ed7e5b15e0c13ff5b"
+    },
+    "public/demo-industrias/autopartes/productos/21.webp": {
+      "bytes": 20296,
+      "sha256": "e684a14291fe1cf0d8816bc27ae708f6f59a270e510e18b0cf67bc40d9054705"
+    },
+    "public/demo-industrias/autopartes/productos/22.webp": {
+      "bytes": 37300,
+      "sha256": "bc7e1434a75fe1a04db56d1818e2f8b9c7283c7d314d734d39464023f24279a9"
+    },
+    "public/demo-industrias/autopartes/productos/23.webp": {
+      "bytes": 136820,
+      "sha256": "6487b4953b9ab59169a5455fe883c7fddf9b60f11f408e8367ffe00b825a5c1e"
+    },
+    "public/demo-industrias/autopartes/productos/24.webp": {
+      "bytes": 12510,
+      "sha256": "5c421ff52b893950e17c37f34efdd94179beb4497ffbf39adf7a0576ae068348"
+    },
+    "public/demo-industrias/bebidas/banner-desktop.webp": {
+      "bytes": 174212,
+      "sha256": "f6b88321af3e1e2543fc4ad8126f9d73d203cc076e9fe76cd00a593e0ed772ea"
+    },
+    "public/demo-industrias/bebidas/banner-mobile.webp": {
+      "bytes": 221776,
+      "sha256": "19b36c778d75768ea9b51f96296c9b474dc35448dbde76a91c0ecd3a67882bb1"
+    },
+    "public/demo-industrias/bebidas/logo.webp": {
+      "bytes": 34686,
+      "sha256": "3c807273f8866524a24878198a31cb11a8d53c17e15209a65123e3c35c6685bc"
+    },
+    "public/demo-industrias/bebidas/productos/01.webp": {
+      "bytes": 32780,
+      "sha256": "98641201f76133348e7635eaa0c56bc1b93269143fbf6a1a5600db507a2fe2b1"
+    },
+    "public/demo-industrias/bebidas/productos/02.webp": {
+      "bytes": 18930,
+      "sha256": "a8d8af9f7b8569888fa5adc8a0811b51e5eba55b9a7b34bed5d528894a69065f"
+    },
+    "public/demo-industrias/bebidas/productos/03.webp": {
+      "bytes": 7680,
+      "sha256": "764edc8638df6bc62a4e079b2c9b12b7ac9e31f25057ccb18d68bde07364fe66"
+    },
+    "public/demo-industrias/bebidas/productos/04.webp": {
+      "bytes": 12148,
+      "sha256": "801bb2e606a7cb8ba33634f54986346a4229b58907975aab67cd40aaba2b0145"
+    },
+    "public/demo-industrias/bebidas/productos/05.webp": {
+      "bytes": 45528,
+      "sha256": "b448fa8cf6e8fb1a6063a88466d73b349ab3399e1bcf061035a1100b3314ef65"
+    },
+    "public/demo-industrias/bebidas/productos/06.webp": {
+      "bytes": 17640,
+      "sha256": "86529068b4f4fda2364a0b33ab8985d5dfca82e1d42ff3141097afb62944c4ac"
+    },
+    "public/demo-industrias/bebidas/productos/07.webp": {
+      "bytes": 47554,
+      "sha256": "c49b87ac52081fc90894bd9190e3e988266cad1f54112c764cc0acff25c93790"
+    },
+    "public/demo-industrias/bebidas/productos/08.webp": {
+      "bytes": 22768,
+      "sha256": "06bfa0ec9ada0eaeafe9049f8129229127c22a5670f99b0000b0f162cfbb1ee3"
+    },
+    "public/demo-industrias/bebidas/productos/09.webp": {
+      "bytes": 19158,
+      "sha256": "fa5c71ce3cbf4bbe357a1dd7b19d8a91b647c2d37be10bed87dc5cd676920ae7"
+    },
+    "public/demo-industrias/bebidas/productos/10.webp": {
+      "bytes": 21342,
+      "sha256": "92e084909ef4599de4ce2645972df97dbe3c957c2b033e37a6f432f9a335f4a7"
+    },
+    "public/demo-industrias/bebidas/productos/11.webp": {
+      "bytes": 21698,
+      "sha256": "7113d42f70bcc07813f64a91bd7d45d255a4a6e3bb11728773b87ee0190a5486"
+    },
+    "public/demo-industrias/bebidas/productos/12.webp": {
+      "bytes": 34212,
+      "sha256": "b5e7ade6a55c1de19267efcb99eef99aeb96aa2e2ae4863cf3da76dabfcce8f4"
+    },
+    "public/demo-industrias/bebidas/productos/13.webp": {
+      "bytes": 13386,
+      "sha256": "f98bb52caec24eda25e90ea45071618b326dc9373c7f96fd70e31162a5d84d4a"
+    },
+    "public/demo-industrias/bebidas/productos/14.webp": {
+      "bytes": 25622,
+      "sha256": "7dcaabcb81ff5fe2b0654d14c781b37cc53e672c594001bacb0d202709b44e25"
+    },
+    "public/demo-industrias/bebidas/productos/15.webp": {
+      "bytes": 49616,
+      "sha256": "b95fc2d5e9e9c22e4047b869b78aaa182405bba672d641470cf6e7b7df4be27a"
+    },
+    "public/demo-industrias/bebidas/productos/16.webp": {
+      "bytes": 21758,
+      "sha256": "d462b63a0ca76e3bef363adf07e7f0e90ca0650d943a999a321e8296c8c98287"
+    },
+    "public/demo-industrias/bebidas/productos/17.webp": {
+      "bytes": 19012,
+      "sha256": "98e741d8ba47cdf28a1886564f70ff81a4be45e144a601ce3790273e2823ea52"
+    },
+    "public/demo-industrias/bebidas/productos/18.webp": {
+      "bytes": 58282,
+      "sha256": "511d460a9504ed4abc02e1d0ce65169da47a3749b053663f6337a7d16a58cd2c"
+    },
+    "public/demo-industrias/bebidas/productos/19.webp": {
+      "bytes": 19602,
+      "sha256": "32f2664818ed079cb19e44f91a59a77f652c8510db034bfee64c341e72e04964"
+    },
+    "public/demo-industrias/bebidas/productos/20.webp": {
+      "bytes": 37610,
+      "sha256": "3e5a7a22499fa26afba415c1f528b62fe55a8b63a7eb17be696b9acc2ca2e8c9"
+    },
+    "public/demo-industrias/bebidas/productos/21.webp": {
+      "bytes": 11742,
+      "sha256": "4e59185aabd388bebb8123760052867ff8181da10e65e8595e72cefbaff16f03"
+    },
+    "public/demo-industrias/bebidas/productos/22.webp": {
+      "bytes": 4988,
+      "sha256": "346553574cca50a5ad48d5fffedb759cf948efb9c668d7c6a0ea26f4cba29626"
+    },
+    "public/demo-industrias/bebidas/productos/23.webp": {
+      "bytes": 4814,
+      "sha256": "e11a0ec85009a648c5f6bcfc8317877cb3e727fc6c5fd824565ad9e07dd6d86a"
+    },
+    "public/demo-industrias/bebidas/productos/24.webp": {
+      "bytes": 18286,
+      "sha256": "9e71d11ad1aec0f040a6185ae0af808f05bd38b84cbd2b9c74bec8e9d9016490"
+    },
+    "public/demo-industrias/belleza/banner-desktop.webp": {
+      "bytes": 148590,
+      "sha256": "7a68f68251a247400c81ad4a93df961a042b2a83d084372811bc0a459b76d6fb"
+    },
+    "public/demo-industrias/belleza/banner-mobile.webp": {
+      "bytes": 182586,
+      "sha256": "5ee1bca72815e262664e5d4d9f76ce50663b887c5a485bf81bb723bbb40ca1c9"
+    },
+    "public/demo-industrias/belleza/logo.webp": {
+      "bytes": 36424,
+      "sha256": "4ead730162226d49088f8a11d5e7f2c3e8cebfd04691948f0bb42af093707873"
+    },
+    "public/demo-industrias/belleza/productos/01.webp": {
+      "bytes": 18660,
+      "sha256": "e0e82661e8496c3149d3347af57f065a53f93aa5df04d7f6fd1f8981894486b5"
+    },
+    "public/demo-industrias/belleza/productos/02.webp": {
+      "bytes": 15772,
+      "sha256": "fb506e116d61ef8ebf2bbb784aef1d25bbf69dbaa3a399fcccb5a01599969c5f"
+    },
+    "public/demo-industrias/belleza/productos/03.webp": {
+      "bytes": 14446,
+      "sha256": "6e4e591335af5226f7252923c878830dabf7866216118b822f4118f24b9ad814"
+    },
+    "public/demo-industrias/belleza/productos/04.webp": {
+      "bytes": 20646,
+      "sha256": "b398c678980892d399932981f4b81d721676db5364c129be469577ccf2a93824"
+    },
+    "public/demo-industrias/belleza/productos/05.webp": {
+      "bytes": 14070,
+      "sha256": "de2df621d945698beaf477eac959d7fdbf3ca8f1d59bd375dfc5f42916044479"
+    },
+    "public/demo-industrias/belleza/productos/06.webp": {
+      "bytes": 32576,
+      "sha256": "e0f6259bd535939a21d5687809046ff80cb2d59ce7d643773d494c285d7f637a"
+    },
+    "public/demo-industrias/belleza/productos/07.webp": {
+      "bytes": 17744,
+      "sha256": "e1833ad43e55f717ccaffdde566f4105d6ace1699b61b807f66a78162923b665"
+    },
+    "public/demo-industrias/belleza/productos/08.webp": {
+      "bytes": 9184,
+      "sha256": "6379756afb1123b58ed6e0a2f9833efb5cdca32f60e1e38bd676933f5299873f"
+    },
+    "public/demo-industrias/belleza/productos/09.webp": {
+      "bytes": 5096,
+      "sha256": "abc59ac5aac4a7c393df4320d30693f8f5775d38c3a8cbb9b5c71079744149e3"
+    },
+    "public/demo-industrias/belleza/productos/10.webp": {
+      "bytes": 31708,
+      "sha256": "e0cd0f261a414abd072f7c4058c35ed4257b041abc5f54a0d73f61584f782bd1"
+    },
+    "public/demo-industrias/belleza/productos/11.webp": {
+      "bytes": 49760,
+      "sha256": "a4c667e8a330f94460c6d504ab0396bf1ac354117a9f2dcf508e4976cb9bc06b"
+    },
+    "public/demo-industrias/belleza/productos/12.webp": {
+      "bytes": 36380,
+      "sha256": "d7ee53a6068656eea7a3222b38db681e3846bf110beeb1d496af14e7447e8271"
+    },
+    "public/demo-industrias/belleza/productos/13.webp": {
+      "bytes": 13140,
+      "sha256": "5abbfb783966c3cca1eaeae1f9b254032dbdb2e7f4a4da3d6e5bcd6bfdc6e810"
+    },
+    "public/demo-industrias/belleza/productos/14.webp": {
+      "bytes": 10340,
+      "sha256": "00574de956b5218aec7dcde48be3e8b46b83fc2ac8b712171f41ae4646ee8c85"
+    },
+    "public/demo-industrias/belleza/productos/15.webp": {
+      "bytes": 23218,
+      "sha256": "0174beb26c3daaafdff43ff714a19eb2f0df9942d4b53e2fa89941d3f297cfeb"
+    },
+    "public/demo-industrias/belleza/productos/16.webp": {
+      "bytes": 32610,
+      "sha256": "310e0314e1f3dac3317890b5ebf2c5d9786cada0d3842306e3099ff5300a6e45"
+    },
+    "public/demo-industrias/belleza/productos/17.webp": {
+      "bytes": 70510,
+      "sha256": "6db9dc940d66049422f5f6c9e7e073d4a8aa302c7b2d7eec5d3b849ad097cbf8"
+    },
+    "public/demo-industrias/belleza/productos/18.webp": {
+      "bytes": 21946,
+      "sha256": "f0f9220b46e2ec5e149878aafd2ec39c89cf0b0762d9e649beefcd0516cbd608"
+    },
+    "public/demo-industrias/belleza/productos/19.webp": {
+      "bytes": 20218,
+      "sha256": "6e1f4efc0ff62bfd5314814b209c266956c4530b6d029820ef22ad53da018970"
+    },
+    "public/demo-industrias/belleza/productos/20.webp": {
+      "bytes": 15072,
+      "sha256": "2a71cc1e731b8e6813a589d9e803a85c50f39b0c00422e7c207f1a73c0460e9c"
+    },
+    "public/demo-industrias/belleza/productos/21.webp": {
+      "bytes": 19636,
+      "sha256": "1eaff55053d3ce9dfeca0abf569b97b4684a17b51378d11e59b8bb24e663e2cb"
+    },
+    "public/demo-industrias/belleza/productos/22.webp": {
+      "bytes": 57262,
+      "sha256": "abd6dfc5f7052a8e0cb92426e1f36411c30e593a2ead48426fc73ee81a3d563f"
+    },
+    "public/demo-industrias/belleza/productos/23.webp": {
+      "bytes": 5580,
+      "sha256": "38b573e0be11518f51d0010d08fb8e1d954f6d8de28916bfee0c1b1322c41c74"
+    },
+    "public/demo-industrias/belleza/productos/24.webp": {
+      "bytes": 15032,
+      "sha256": "d258adaee15c4f0fbf081b999bcf5f437b85564acde43f681f08abf323646226"
+    },
+    "public/demo-industrias/construccion/banner-desktop.webp": {
+      "bytes": 169304,
+      "sha256": "ba18216e3577949553ba8d83b95be0d40a6ef908932bbb0627ca27cb28e88bee"
+    },
+    "public/demo-industrias/construccion/banner-mobile.webp": {
+      "bytes": 239882,
+      "sha256": "017dd94977083be9be62fc41a788258ad8243c20224039666a2b7409a4f89964"
+    },
+    "public/demo-industrias/construccion/logo.webp": {
+      "bytes": 30862,
+      "sha256": "b60c788086e3f19c01d37f51395dd2e09daa6f94d806fddb7cce0b93f2f158a9"
+    },
+    "public/demo-industrias/construccion/productos/01.webp": {
+      "bytes": 43638,
+      "sha256": "c0b0bbcc6141b84b56bc394fd95638c9ac6344a493f19516611ea89d71e8937e"
+    },
+    "public/demo-industrias/construccion/productos/02.webp": {
+      "bytes": 31078,
+      "sha256": "6b56c80b0419ae61a4402b7b0bdbc03fe3c0daa77e5ca109fe6bdea20c713c5e"
+    },
+    "public/demo-industrias/construccion/productos/03.webp": {
+      "bytes": 5860,
+      "sha256": "8a957a78bc092b1c1135c546cb9f40b2a2966ccdea140fff96ef06cbd1cd7c2c"
+    },
+    "public/demo-industrias/construccion/productos/04.webp": {
+      "bytes": 33380,
+      "sha256": "1188e53f188e49c46b190d3e313be64a1432cd7861e8234a5e7ecd92adde8fe6"
+    },
+    "public/demo-industrias/construccion/productos/05.webp": {
+      "bytes": 6498,
+      "sha256": "ea8fa4b3d1d85bc57bac24a3a13a4219ce3de4e7c0720662ce40f32625dd54fd"
+    },
+    "public/demo-industrias/construccion/productos/06.webp": {
+      "bytes": 82794,
+      "sha256": "9538b3f89b2cc6ac270cbb45c548d4796668a0069e7747f51cf8ad3456250ec8"
+    },
+    "public/demo-industrias/construccion/productos/07.webp": {
+      "bytes": 10486,
+      "sha256": "e7b77bc67e5f230a948ffceff45bd16913bac4cbc63c92d67146bf649972026a"
+    },
+    "public/demo-industrias/construccion/productos/08.webp": {
+      "bytes": 6630,
+      "sha256": "33c4cd1824c0bc9977c2555877ff024c42be2c4320d52e2fe2ab7a3586bf2e13"
+    },
+    "public/demo-industrias/construccion/productos/09.webp": {
+      "bytes": 71686,
+      "sha256": "b51ae3b156f6fa2013fbb487490f3847e2efd96587c6d5902c37dc2a14f8361e"
+    },
+    "public/demo-industrias/construccion/productos/10.webp": {
+      "bytes": 65560,
+      "sha256": "9f5a9b6643ca8ba5b68065f85cd22b04d4ecb3e2c0fbb522c81c91117581fd95"
+    },
+    "public/demo-industrias/construccion/productos/11.webp": {
+      "bytes": 13766,
+      "sha256": "cd0e65278a945895f0cdc923c4626b77ee2837386e97faa781741accae3d679e"
+    },
+    "public/demo-industrias/construccion/productos/12.webp": {
+      "bytes": 15930,
+      "sha256": "23e83806a21ef504851adaf23d77e9fbbbf76c0536b56745c20b20946c3b7043"
+    },
+    "public/demo-industrias/construccion/productos/13.webp": {
+      "bytes": 11976,
+      "sha256": "4bd7b6ee70b70cb0b55c2b2dabf2d4209f8159c409c15af2c56e8ca395113dfe"
+    },
+    "public/demo-industrias/construccion/productos/14.webp": {
+      "bytes": 84414,
+      "sha256": "d66e440b15059f9a7cbd0f03523d16e0eb475654a74473c38d460fe514616a2a"
+    },
+    "public/demo-industrias/construccion/productos/15.webp": {
+      "bytes": 24936,
+      "sha256": "fed299b4ea6383be210df1acd07045fca811dcbc7e78f7ea4a5b90217f0f6ae7"
+    },
+    "public/demo-industrias/construccion/productos/16.webp": {
+      "bytes": 20340,
+      "sha256": "9c23a39e693dc2685297046fb1044eeaa90e551d2016e317596962c81110efae"
+    },
+    "public/demo-industrias/construccion/productos/17.webp": {
+      "bytes": 15060,
+      "sha256": "fef8106a531480edd77f6d14df9fa36ac080420a82d975778068fa037a6fea26"
+    },
+    "public/demo-industrias/construccion/productos/18.webp": {
+      "bytes": 22394,
+      "sha256": "7ce53b00e914bd214fd20d0eeada5fadc69c3299bce9824b07c82bc40a146d15"
+    },
+    "public/demo-industrias/construccion/productos/19.webp": {
+      "bytes": 11978,
+      "sha256": "1cbfe50b3db32e73e55a49f477fc1065b2943441676da1748d356b0abafd4ed8"
+    },
+    "public/demo-industrias/construccion/productos/20.webp": {
+      "bytes": 24326,
+      "sha256": "598bb6b67a6932a7b5b39f42d36c922821de9d1b3569a6c21be95dfb4c58a292"
+    },
+    "public/demo-industrias/construccion/productos/21.webp": {
+      "bytes": 4482,
+      "sha256": "022bebf9ec421e619d74d7ec986991f05de16fc640f652505e7cd9a496bc4c01"
+    },
+    "public/demo-industrias/construccion/productos/22.webp": {
+      "bytes": 6708,
+      "sha256": "fbd86377d2be5990bc6ad2e6550a7887847227e10804143aca0e545a83302efc"
+    },
+    "public/demo-industrias/construccion/productos/23.webp": {
+      "bytes": 17330,
+      "sha256": "025648a2fc01c147a1eee20349d4ee7e0900ba5e159341a0bd4eee8ca7cd2ff4"
+    },
+    "public/demo-industrias/construccion/productos/24.webp": {
+      "bytes": 18086,
+      "sha256": "8b172752362844efc6f5354a169facb9943888163260d3a60cced65534c8f33b"
+    },
+    "public/demo-industrias/distribuidora/banner-desktop.webp": {
+      "bytes": 180242,
+      "sha256": "80ac6311b0e5aa49fc76babf6bc5dedaffc3f1518fd9bed30526d30258ae7995"
+    },
+    "public/demo-industrias/distribuidora/banner-mobile.webp": {
+      "bytes": 186588,
+      "sha256": "aedd198119a3a39f1a5ccf5593382057efa259991680e3a827e8ebdbb3b7e215"
+    },
+    "public/demo-industrias/distribuidora/logo.webp": {
+      "bytes": 43362,
+      "sha256": "38c3a9c7c8ca33589e49acfab6c4cf4bcbd7c8fa7fea94f7f0fd4844f4c2f054"
+    },
+    "public/demo-industrias/distribuidora/productos/01.webp": {
+      "bytes": 18530,
+      "sha256": "105459c6b59affd129de18281cbb2404ec10654c34d9092f91588e4274245ea4"
+    },
+    "public/demo-industrias/distribuidora/productos/02.webp": {
+      "bytes": 8226,
+      "sha256": "c692f1b3df6ff06d6999a0ffec7513bb66dbe328596ec0b6d93d53520aba86d7"
+    },
+    "public/demo-industrias/distribuidora/productos/03.webp": {
+      "bytes": 21798,
+      "sha256": "b75baa32e81b3631797d5288aa91aa668bc0141ed7a135a35670425bb92ae6e8"
+    },
+    "public/demo-industrias/distribuidora/productos/04.webp": {
+      "bytes": 3832,
+      "sha256": "de934d770688e8548871b826f712216dd37fd56c864e27d8877d85da394b80f4"
+    },
+    "public/demo-industrias/distribuidora/productos/05.webp": {
+      "bytes": 11072,
+      "sha256": "788ecd170032a69e1c555652dbae6ac6ad89a97a226aa0d23fe7e72f5caefed9"
+    },
+    "public/demo-industrias/distribuidora/productos/06.webp": {
+      "bytes": 12086,
+      "sha256": "964c2ce5ea6b315b850061cd6b541023a2229cf148269e8a3340e21936ed972f"
+    },
+    "public/demo-industrias/distribuidora/productos/07.webp": {
+      "bytes": 14570,
+      "sha256": "af5ecccb7c79965dbdc9060fc4ca502ac553050e940e6d4f5b42e7a3259269dc"
+    },
+    "public/demo-industrias/distribuidora/productos/08.webp": {
+      "bytes": 3438,
+      "sha256": "a4b51854968e7f11e49f7f8e165438c681e150a4ddb7301768d6c18bbd0f87aa"
+    },
+    "public/demo-industrias/distribuidora/productos/09.webp": {
+      "bytes": 3694,
+      "sha256": "145ab10ef1f24dd90e3e599adfbf25de5cc79c2a3d3ba1559538c83734040db7"
+    },
+    "public/demo-industrias/distribuidora/productos/10.webp": {
+      "bytes": 15346,
+      "sha256": "ed0b2d971b62eb61fd3f5608adf6c329d7ac0ec4c24a79749a5d7c0b5b59ffeb"
+    },
+    "public/demo-industrias/distribuidora/productos/11.webp": {
+      "bytes": 23284,
+      "sha256": "f0e44de0845b49c27b63f6205140780bc21833dc64572763a467fd1cbe19aab3"
+    },
+    "public/demo-industrias/distribuidora/productos/12.webp": {
+      "bytes": 16218,
+      "sha256": "a24bb24eafd537a183016edc78e20a4e937b6863dc1dae03fd8838c68e6cfb90"
+    },
+    "public/demo-industrias/distribuidora/productos/13.webp": {
+      "bytes": 15408,
+      "sha256": "78039c13b4cac7bd02d20f036a0bf096b33d402f55a75c2000a3c1a8d2ffdd53"
+    },
+    "public/demo-industrias/distribuidora/productos/14.webp": {
+      "bytes": 19348,
+      "sha256": "b635032e16a87a263e6a9c50d42a437ed5bd638aadf01757ea2dc2b49305edfa"
+    },
+    "public/demo-industrias/distribuidora/productos/15.webp": {
+      "bytes": 12300,
+      "sha256": "62da77184ddf7da123983aacfbd9f1e5a613647cc850f8f15a0b2a5a2f5bfd3b"
+    },
+    "public/demo-industrias/distribuidora/productos/16.webp": {
+      "bytes": 5364,
+      "sha256": "02017af12d9d36212e5eb5a0a964407b23feaf02c675fb84b336ebd52b5aaa8f"
+    },
+    "public/demo-industrias/distribuidora/productos/17.webp": {
+      "bytes": 9432,
+      "sha256": "8ca1ac471f30b9a0ddecdb49efd66703914bce26dde88e3d11ffd590c61efe95"
+    },
+    "public/demo-industrias/distribuidora/productos/18.webp": {
+      "bytes": 13930,
+      "sha256": "613a615c126ef88e682edfda41728aa5c08ba00b0dbacfd414b9781b2a526564"
+    },
+    "public/demo-industrias/distribuidora/productos/19.webp": {
+      "bytes": 12024,
+      "sha256": "69d46b1b4fa0bfb4a6cd86c95a6574b330b3a9b807f41f0cfa66a0b626d307e4"
+    },
+    "public/demo-industrias/distribuidora/productos/20.webp": {
+      "bytes": 6532,
+      "sha256": "bfdc74243a71fa5990979541efdb2edad5347d5f59d6024f9f1ae7f8123039b7"
+    },
+    "public/demo-industrias/distribuidora/productos/21.webp": {
+      "bytes": 13186,
+      "sha256": "b1bd0efa6df1475ae756c4a28a9d0bb34b732007829d58244b82463f2aae4cde"
+    },
+    "public/demo-industrias/distribuidora/productos/22.webp": {
+      "bytes": 9186,
+      "sha256": "05529cf71aba5d480617177d92cdcbd9c4cf99c11c89f8edf1f82406708fc048"
+    },
+    "public/demo-industrias/distribuidora/productos/23.webp": {
+      "bytes": 11830,
+      "sha256": "eaa7745dcf6a948a4f452e27fc3a2cf837d64c12244cbcd396656526e84f59fe"
+    },
+    "public/demo-industrias/distribuidora/productos/24.webp": {
+      "bytes": 30260,
+      "sha256": "e1c0398737e3e3f20de2ee70b1218282be5fe28eab514f5860b0deecd46998f8"
+    },
+    "public/demo-industrias/ferreteria/banner-desktop.webp": {
+      "bytes": 195780,
+      "sha256": "ad5fec430fcd4c607e7d7a336a76453d793fbb87b3b8caf1ca2eb32c7793e49f"
+    },
+    "public/demo-industrias/ferreteria/banner-mobile.webp": {
+      "bytes": 178544,
+      "sha256": "132ff6d8de70a9ee5cd90c5e7cbe7f71ff14dff408b336a00ae5a6cecc290582"
+    },
+    "public/demo-industrias/ferreteria/logo.webp": {
+      "bytes": 43490,
+      "sha256": "6df255965bae1f4b2786f3fcb41bd9f10a239de53e52c6d49a69f01835513316"
+    },
+    "public/demo-industrias/ferreteria/productos/01.webp": {
+      "bytes": 12144,
+      "sha256": "db6803437dda547fa1ed1c47e853cfd920b50942dc403b7b12fe07807c8d88d7"
+    },
+    "public/demo-industrias/ferreteria/productos/02.webp": {
+      "bytes": 3928,
+      "sha256": "8c356f80dce2c874e49f4099e9378a7933b0e1ca2166eec5fcb1cfe2b4697ea9"
+    },
+    "public/demo-industrias/ferreteria/productos/03.webp": {
+      "bytes": 23876,
+      "sha256": "5e8f7bb5b37c64d31717361fc905492e23e761d7a56306ebe402ef836cd22418"
+    },
+    "public/demo-industrias/ferreteria/productos/04.webp": {
+      "bytes": 7952,
+      "sha256": "d6fa918019c58ccb90f584197f1f75775447851124bb215153d903ae3d3aa4a3"
+    },
+    "public/demo-industrias/ferreteria/productos/05.webp": {
+      "bytes": 66784,
+      "sha256": "05bceaf74f9d267427931d64e03cb8ee861d89a5cb363b9c02f596603e98a43d"
+    },
+    "public/demo-industrias/ferreteria/productos/06.webp": {
+      "bytes": 15026,
+      "sha256": "5095385b08014a612d420f870a84511b9caee890a92ed90dbd2a98ba7006e97b"
+    },
+    "public/demo-industrias/ferreteria/productos/07.webp": {
+      "bytes": 23210,
+      "sha256": "f309d990c7c823e5d70d1eb43a7744af5a8436dd654065f50404e28de9989ccc"
+    },
+    "public/demo-industrias/ferreteria/productos/08.webp": {
+      "bytes": 6056,
+      "sha256": "09f74091a3435ca79f331d97fb777d8d86f7204a2f72d8526fb005c12baf7f36"
+    },
+    "public/demo-industrias/ferreteria/productos/09.webp": {
+      "bytes": 18528,
+      "sha256": "ca14abe7d6219d179e0c803655d0f8aad814ec76173176a6bef33203f982f559"
+    },
+    "public/demo-industrias/ferreteria/productos/10.webp": {
+      "bytes": 6308,
+      "sha256": "21ab248c27c37820966245963125dc055dbb37df1d0e1089b704cff44805cf23"
+    },
+    "public/demo-industrias/ferreteria/productos/11.webp": {
+      "bytes": 8228,
+      "sha256": "daccef505fdaa99063f1581ca70fca40223c45d7b9e26fee0f71984584e20dc1"
+    },
+    "public/demo-industrias/ferreteria/productos/12.webp": {
+      "bytes": 17672,
+      "sha256": "d431e8ba11f0e1a586f6050ff8a525a530b98c4041ff190b52416e353729a0de"
+    },
+    "public/demo-industrias/ferreteria/productos/13.webp": {
+      "bytes": 4018,
+      "sha256": "0c41abeed06071013474256b54028aee8be9dd3c2fc0b7848791b0946d81e334"
+    },
+    "public/demo-industrias/ferreteria/productos/14.webp": {
+      "bytes": 10772,
+      "sha256": "44816e7a7484f020cc8460e33d4acb7b3d449c069ab97fa18b0fb412da2b4ed2"
+    },
+    "public/demo-industrias/ferreteria/productos/15.webp": {
+      "bytes": 5442,
+      "sha256": "6b899f5bda4b14499a3d877b51be314b393b489a51bfaa5d622d4da511c8ec6f"
+    },
+    "public/demo-industrias/ferreteria/productos/16.webp": {
+      "bytes": 11680,
+      "sha256": "aefc9dbf6740f020e56717e02ecff60cb094ce0144418e95fbd19bc7af57911c"
+    },
+    "public/demo-industrias/ferreteria/productos/17.webp": {
+      "bytes": 4856,
+      "sha256": "e8de233720ae165be1f936324c050baa80653d34128854aee2efb970c6ad2821"
+    },
+    "public/demo-industrias/ferreteria/productos/18.webp": {
+      "bytes": 12680,
+      "sha256": "2931442ff66326b6b4c2e5dec00353e3ffbd92db312308982e4cc45fca4a647a"
+    },
+    "public/demo-industrias/ferreteria/productos/19.webp": {
+      "bytes": 30234,
+      "sha256": "b7d94f8fa8503be0d2d036deafa1cdaa2de6604e5a1f1a92d394231425b25063"
+    },
+    "public/demo-industrias/ferreteria/productos/20.webp": {
+      "bytes": 20038,
+      "sha256": "3aaf875d9cd27834d47944e24917f8d1958cf5d634d53e228081d2cdef81b4a1"
+    },
+    "public/demo-industrias/ferreteria/productos/21.webp": {
+      "bytes": 28728,
+      "sha256": "af8a2b58fbf8b4aa55f889eba97042888f0417fbd61187b6ab23d329eb424318"
+    },
+    "public/demo-industrias/ferreteria/productos/22.webp": {
+      "bytes": 18380,
+      "sha256": "1a528bac8b79331008e48a32c51d4440cfdab9fa9d62aa9e825b8cfb05ea07a4"
+    },
+    "public/demo-industrias/ferreteria/productos/23.webp": {
+      "bytes": 11504,
+      "sha256": "aac67dd8e697d093ddc5e1df0b65196420fb7b9a76e489728bae19b72a82e586"
+    },
+    "public/demo-industrias/ferreteria/productos/24.webp": {
+      "bytes": 28166,
+      "sha256": "c8b60bef3eb293f44a88306560e95547cbe98bd45468cc232f674b1dba2f8d08"
+    },
+    "public/demo-industrias/hogar/banner-desktop.webp": {
+      "bytes": 209204,
+      "sha256": "8c13d0eab20d2fa1558d4821b98ab73b873ae0731275fe181fd86e7506882230"
+    },
+    "public/demo-industrias/hogar/banner-mobile.webp": {
+      "bytes": 282674,
+      "sha256": "c41de373d51a7ca60b8b2cbad8850e4c09f2080ef7de080e66cb7e8a9ffdaaa8"
+    },
+    "public/demo-industrias/hogar/logo.webp": {
+      "bytes": 33442,
+      "sha256": "538c2b2e0c3e40decb42b34dfe6f0048d4dc03e0270f4f083c22889aaca8e352"
+    },
+    "public/demo-industrias/hogar/productos/01.webp": {
+      "bytes": 9642,
+      "sha256": "09c8d23f813cd052946dceaabcdc61f7f72be832f2a4a3cf2d4787ee965c0b29"
+    },
+    "public/demo-industrias/hogar/productos/02.webp": {
+      "bytes": 8532,
+      "sha256": "3c4a8aa50aa1a7d740f37bdb57292f6fb39a10af8aee76cfa3ab4da4aca8d962"
+    },
+    "public/demo-industrias/hogar/productos/03.webp": {
+      "bytes": 35694,
+      "sha256": "e06bf480d715de0637394de4c924fd0afc03cd775ffb8661a581e9eb9c881ddb"
+    },
+    "public/demo-industrias/hogar/productos/04.webp": {
+      "bytes": 15288,
+      "sha256": "0fbb723223f7df21976d315d162412746912d3a0e7eda71797e1ef7ade785b4a"
+    },
+    "public/demo-industrias/hogar/productos/05.webp": {
+      "bytes": 2308,
+      "sha256": "21ebf8fd0be800c8671a65da7109c8e587743086ea465904b244b0ac36383b9b"
+    },
+    "public/demo-industrias/hogar/productos/06.webp": {
+      "bytes": 3302,
+      "sha256": "4fdc6656e1f4e305fc63983fc387e6fd7ba2f3e51a249bf06b13a800a8f34903"
+    },
+    "public/demo-industrias/hogar/productos/07.webp": {
+      "bytes": 10262,
+      "sha256": "4e410f4881c49b5c3aa1706e8d5b40a7ef0a96d03628f7d822c9b542532ce95e"
+    },
+    "public/demo-industrias/hogar/productos/08.webp": {
+      "bytes": 52174,
+      "sha256": "8334f282da708da88ccff1bd234d173ec9395b54952a275635df58f612955f20"
+    },
+    "public/demo-industrias/hogar/productos/09.webp": {
+      "bytes": 18246,
+      "sha256": "eaec4423d4b9265ac7de6ba29e3770077f4421961863d4a8cd80d3ee57880cd9"
+    },
+    "public/demo-industrias/hogar/productos/10.webp": {
+      "bytes": 6504,
+      "sha256": "58fa540f2102288f8c9813ecbd61bd66787c64bade14b72fb6dc5d631d7ad90a"
+    },
+    "public/demo-industrias/hogar/productos/11.webp": {
+      "bytes": 10012,
+      "sha256": "ea3ab6564a950825c92247bfa1cbd08580496fcfdb1ed44752544cfaa7f242d5"
+    },
+    "public/demo-industrias/hogar/productos/12.webp": {
+      "bytes": 7496,
+      "sha256": "196991106c2693e5f525ebaac28585369048fa2dee0f0ca3766a4ef26fb8a97f"
+    },
+    "public/demo-industrias/hogar/productos/13.webp": {
+      "bytes": 2786,
+      "sha256": "95275fed0fe2aa8b943ceac16ef22dc4752695172355a7145150566940334c26"
+    },
+    "public/demo-industrias/hogar/productos/14.webp": {
+      "bytes": 90948,
+      "sha256": "2b435ac3729fd62fdbf79bc176c888296dfdf2789ce60f05d1449919ca2d2484"
+    },
+    "public/demo-industrias/hogar/productos/15.webp": {
+      "bytes": 82506,
+      "sha256": "e4be947adfbb2c93294e9967d1b5f29b13b8a70233ad15b012f13d434268271b"
+    },
+    "public/demo-industrias/hogar/productos/16.webp": {
+      "bytes": 110228,
+      "sha256": "e83deadabd5c7b0303653958cfc669f74bbd1fb9241e20010e31385a3ba97bf4"
+    },
+    "public/demo-industrias/hogar/productos/17.webp": {
+      "bytes": 14296,
+      "sha256": "035e0789fcb6eea93da9a4a6b44aac8abd0f009c7d66c228af5fe35a61517b50"
+    },
+    "public/demo-industrias/hogar/productos/18.webp": {
+      "bytes": 15554,
+      "sha256": "f4d43ca7302c00800d87a9e1b20e20eead033e15c84458e70e6feaebd57f8860"
+    },
+    "public/demo-industrias/hogar/productos/19.webp": {
+      "bytes": 14798,
+      "sha256": "c6b27fa38d81feacd3cd9a9a070dce06bf5ae350f69408588c83d8f0fe6c2bf3"
+    },
+    "public/demo-industrias/hogar/productos/20.webp": {
+      "bytes": 14180,
+      "sha256": "b55f81dbe43ec632f1a5e4ed0489183981afd49120b85d92d85cdd47be35ba0d"
+    },
+    "public/demo-industrias/hogar/productos/21.webp": {
+      "bytes": 8288,
+      "sha256": "644bdc216a9b5d429c370fddb8d934584e7292bb0316f90c47261e7bb6c33e6b"
+    },
+    "public/demo-industrias/hogar/productos/22.webp": {
+      "bytes": 10872,
+      "sha256": "14d009fccd7cc83f5278fc3dcf646b9255de7e6d8f19af6b4f0b859428be4a2c"
+    },
+    "public/demo-industrias/hogar/productos/23.webp": {
+      "bytes": 6250,
+      "sha256": "464d191463103183139818da15fa6a7f672ec6cbb588090ce2c926e331adcc1d"
+    },
+    "public/demo-industrias/hogar/productos/24.webp": {
+      "bytes": 7516,
+      "sha256": "a7dc6999bd312f3c9e01997cdec24070b7de25383a46ef118d25bf0649f1edaf"
+    },
+    "public/demo-industrias/indumentaria/banner-desktop.webp": {
+      "bytes": 182172,
+      "sha256": "4b69ee51bfee517b1210b57a28ee93a0c4ceabe6a9e68cfc3b9165a6ef00d19f"
+    },
+    "public/demo-industrias/indumentaria/banner-mobile.webp": {
+      "bytes": 256946,
+      "sha256": "7b0f0c3d1966fd43dafdbc81f2cbd150ce4be3f426c319bb16ac9423c22dda77"
+    },
+    "public/demo-industrias/indumentaria/logo.webp": {
+      "bytes": 34192,
+      "sha256": "3d5748c74c9f72123588128f31de6f5cf3e0224b4ffceed8691685d701d1d677"
+    },
+    "public/demo-industrias/indumentaria/productos/01.webp": {
+      "bytes": 2742,
+      "sha256": "4462f5a766cd4c6b055db7a9ab7ad647ece875ecf2572758437fa845d2147095"
+    },
+    "public/demo-industrias/indumentaria/productos/02.webp": {
+      "bytes": 9684,
+      "sha256": "06f0ead7a1a6277dfd0da20cd7cb7297e816b70cc0db7d900ac80cf9a55e1793"
+    },
+    "public/demo-industrias/indumentaria/productos/03.webp": {
+      "bytes": 3140,
+      "sha256": "f3a76f45181f83d02bbee81beb878ce77e3eaedaf36a1158709473eca27d039b"
+    },
+    "public/demo-industrias/indumentaria/productos/04.webp": {
+      "bytes": 5482,
+      "sha256": "bde36bb5b65568746bc7eeb9c3ae8704a9804900b00f545ff37b0ec08344d557"
+    },
+    "public/demo-industrias/indumentaria/productos/05.webp": {
+      "bytes": 16704,
+      "sha256": "ebdfb7b3b8a845ae25fd4fc26223ef6f147be395ac7c4ba59724e5796b657454"
+    },
+    "public/demo-industrias/indumentaria/productos/06.webp": {
+      "bytes": 60332,
+      "sha256": "43909c0e0051a534e564df974b3760dc4cdbc64d38dbb6f9226bc9737277c3b9"
+    },
+    "public/demo-industrias/indumentaria/productos/07.webp": {
+      "bytes": 122212,
+      "sha256": "e9d095ad84285e593238593349d814586f2e828090003d090b42ccc01255e429"
+    },
+    "public/demo-industrias/indumentaria/productos/08.webp": {
+      "bytes": 27772,
+      "sha256": "51ce1cfe42eb8516b5a2101cd8306d1a2abf2ec73715ab96e2a5555090106831"
+    },
+    "public/demo-industrias/indumentaria/productos/09.webp": {
+      "bytes": 42892,
+      "sha256": "c12b4cd26b1056576744687ce8fae8181795f9873d6fcc5ac8f86293d4d61c48"
+    },
+    "public/demo-industrias/indumentaria/productos/10.webp": {
+      "bytes": 34136,
+      "sha256": "afddec327e8624fef1d6124521bd450ffcd356f20a5282423e8cfb0f5d329819"
+    },
+    "public/demo-industrias/indumentaria/productos/11.webp": {
+      "bytes": 22806,
+      "sha256": "257eb4d76ee0752f25e056ba09d4244e50f873d340ed3863b9caa390e3ed539c"
+    },
+    "public/demo-industrias/indumentaria/productos/12.webp": {
+      "bytes": 70902,
+      "sha256": "01a71347fde1d10aa6973fca883da64077c084d24338414653f85778f69c4288"
+    },
+    "public/demo-industrias/indumentaria/productos/13.webp": {
+      "bytes": 7530,
+      "sha256": "59c844e2aa31dd4854bde1af6ef449a654c81f8d0e9365a7292fdc13c5f76a7c"
+    },
+    "public/demo-industrias/indumentaria/productos/14.webp": {
+      "bytes": 36408,
+      "sha256": "66d08b382a20346476a307ef85bcf81883572f217c970b692adc6786a97d8525"
+    },
+    "public/demo-industrias/indumentaria/productos/15.webp": {
+      "bytes": 151374,
+      "sha256": "833a9025f592e5b86f2440ea874e2e33973da43522ee4396b886019005177752"
+    },
+    "public/demo-industrias/indumentaria/productos/16.webp": {
+      "bytes": 21346,
+      "sha256": "5ead5e520e2f814fd2e9ab3b2ac5c611086a8471316b4ec2d192fe33f28f7032"
+    },
+    "public/demo-industrias/indumentaria/productos/17.webp": {
+      "bytes": 25066,
+      "sha256": "9e6598ebd3c057725501ab152ed0cb48899d6d6580056f32302d31926f6bd37e"
+    },
+    "public/demo-industrias/indumentaria/productos/18.webp": {
+      "bytes": 14038,
+      "sha256": "6f7bf5f12efef5fd241b68b154b2387769f5761eb51f80d892185964dfcdf648"
+    },
+    "public/demo-industrias/indumentaria/productos/19.webp": {
+      "bytes": 20026,
+      "sha256": "5b96d6a52dcae9b864d008ed5362e13930881dea667e3edd61c694d3c7dd44ce"
+    },
+    "public/demo-industrias/indumentaria/productos/20.webp": {
+      "bytes": 18206,
+      "sha256": "c88aa6e253ed6db3d43f8b41665060b42d5867507d05bf9c117508d8fed2b88e"
+    },
+    "public/demo-industrias/indumentaria/productos/21.webp": {
+      "bytes": 28124,
+      "sha256": "ee263a7ec55aab6b6b92001cf84df73c9a7a909f4220a1052c62c2fbc6ff499d"
+    },
+    "public/demo-industrias/indumentaria/productos/22.webp": {
+      "bytes": 14252,
+      "sha256": "7d66aa07cd6f537fe90e4549f4bb3811a05e4bd5d4f158bcc79cd57899df9a5d"
+    },
+    "public/demo-industrias/indumentaria/productos/23.webp": {
+      "bytes": 3698,
+      "sha256": "fa513e400e7a825493b43b93557778a1e9fce8a10302cd380fc50c0b842c0013"
+    },
+    "public/demo-industrias/indumentaria/productos/24.webp": {
+      "bytes": 62950,
+      "sha256": "a16bc6737fa539c216e2ff259f90c680fbad3f5c6af1449f4b6a7c008457031c"
+    },
+    "public/demo-industrias/jugueteria/banner-desktop.webp": {
+      "bytes": 153298,
+      "sha256": "7fc98cc28807f668b469dfe075ce06445d007df8b6df0a6fe01d0cc336873979"
+    },
+    "public/demo-industrias/jugueteria/banner-mobile.webp": {
+      "bytes": 221524,
+      "sha256": "388444682ca71a2c002219aa64c1d765b515d90df515f3b6ecd927a5aea96a5c"
+    },
+    "public/demo-industrias/jugueteria/logo.webp": {
+      "bytes": 42160,
+      "sha256": "d6bf0215fc75dd5fedf78414a945c52e3301acdfaf1aa4c6d2e4b75749d364c8"
+    },
+    "public/demo-industrias/jugueteria/productos/01.webp": {
+      "bytes": 14520,
+      "sha256": "28ff7fbdff2d365361f3fda1f238ffa3c4f1acfa5e6a36fdde8b6b12635ee78c"
+    },
+    "public/demo-industrias/jugueteria/productos/02.webp": {
+      "bytes": 96758,
+      "sha256": "09f61f97e15f5d447383c3bf3a3049b684f4a39c490e1762e7642000ab69d90a"
+    },
+    "public/demo-industrias/jugueteria/productos/03.webp": {
+      "bytes": 39484,
+      "sha256": "c8a4c1027ac30f2017b971d3717e5ece6bf35efbb0885537db1b042fe331ef39"
+    },
+    "public/demo-industrias/jugueteria/productos/04.webp": {
+      "bytes": 28628,
+      "sha256": "b0802c0cbe85fb99d5e1a0faa37ba3af646a0171f8fa770255aef7079a62bdd3"
+    },
+    "public/demo-industrias/jugueteria/productos/05.webp": {
+      "bytes": 41958,
+      "sha256": "8b8981a4244e3a7008d831d83779e8a5edf6933e58fb8171cf2fe1542eb3892a"
+    },
+    "public/demo-industrias/jugueteria/productos/06.webp": {
+      "bytes": 60198,
+      "sha256": "203c42ff8f08bd4c79acaa835a086b81c41279fdb45ca500e957e37b70c7d241"
+    },
+    "public/demo-industrias/jugueteria/productos/07.webp": {
+      "bytes": 18810,
+      "sha256": "0d950c4053ef897677b602f9564425867fea47e54203d911db86234d82a91a08"
+    },
+    "public/demo-industrias/jugueteria/productos/08.webp": {
+      "bytes": 19484,
+      "sha256": "42e6f5838ed4ce9689469fc8533d3717c28e047a31dd4ea0db1a4f899bd212b0"
+    },
+    "public/demo-industrias/jugueteria/productos/09.webp": {
+      "bytes": 12250,
+      "sha256": "93b202a468b94212ed7a61f4cc191552fb238b5290d5344cd2d436567085b6d9"
+    },
+    "public/demo-industrias/jugueteria/productos/10.webp": {
+      "bytes": 21662,
+      "sha256": "9e9805788abaafbe5ee93d6db2c8a287c00011efb35130da7e852d396a269e61"
+    },
+    "public/demo-industrias/jugueteria/productos/11.webp": {
+      "bytes": 34960,
+      "sha256": "6dbe1029d8c4cf40026696f7ec18c78b223f008ebed766dbbf8ede2b8876f344"
+    },
+    "public/demo-industrias/jugueteria/productos/12.webp": {
+      "bytes": 14964,
+      "sha256": "04ca22de691cd763364779aaa7e853667cf71ee34366bb73e41674a843137016"
+    },
+    "public/demo-industrias/jugueteria/productos/13.webp": {
+      "bytes": 56790,
+      "sha256": "398593da3b6fa44536c0264fd4cad99e306b7d122b18ce65bc312237f95d2a0a"
+    },
+    "public/demo-industrias/jugueteria/productos/14.webp": {
+      "bytes": 24798,
+      "sha256": "889d01f7bc3c1f386b63a8ae241d5971829751228640983396d650161209bc23"
+    },
+    "public/demo-industrias/jugueteria/productos/15.webp": {
+      "bytes": 77628,
+      "sha256": "8a49db8be0b3f73e7cac35de11ca243d190bfade64435eccfe8d93d93d3811a5"
+    },
+    "public/demo-industrias/jugueteria/productos/16.webp": {
+      "bytes": 24782,
+      "sha256": "e54679739ac4c21027b98511318c6b325465bab798c8f0a32fc982059b47c58c"
+    },
+    "public/demo-industrias/jugueteria/productos/17.webp": {
+      "bytes": 34076,
+      "sha256": "92ee5f106a0f4657979987cfd53325cc9020698f63c2e66e332d2fda968a5604"
+    },
+    "public/demo-industrias/jugueteria/productos/18.webp": {
+      "bytes": 52332,
+      "sha256": "7ac7492cc86ba90c9c15559694ca4ec1f93f0f7d6e5a9a0a27b941fea166b231"
+    },
+    "public/demo-industrias/jugueteria/productos/19.webp": {
+      "bytes": 17780,
+      "sha256": "09196d11c67576ee1d08e10b66139c3c8c69ab0c6b639242dbb59429282018e4"
+    },
+    "public/demo-industrias/jugueteria/productos/20.webp": {
+      "bytes": 15824,
+      "sha256": "f8e3e0b81087372f836cf19206e9736e00e410c99734f55629c8770f2e592f1d"
+    },
+    "public/demo-industrias/jugueteria/productos/21.webp": {
+      "bytes": 5856,
+      "sha256": "069ce4aede6cde62c01d0bc93cf818b1820ce34fadea24e000d658de33354e73"
+    },
+    "public/demo-industrias/jugueteria/productos/22.webp": {
+      "bytes": 37054,
+      "sha256": "3ed0c577673d32bd3428e2b1ccabf619a0c2bc18c44f258e7176bce9819cb07c"
+    },
+    "public/demo-industrias/jugueteria/productos/23.webp": {
+      "bytes": 46648,
+      "sha256": "f7ede767b78afa0157677db868f2b00d08d0a3d6ec06bbbee0f463f457caf557"
+    },
+    "public/demo-industrias/jugueteria/productos/24.webp": {
+      "bytes": 19136,
+      "sha256": "4367b1823da30f3ba0a368802fb12796ca613044babac183640aacef819f2ad7"
+    },
+    "public/demo-industrias/limpieza/banner-desktop.webp": {
+      "bytes": 196282,
+      "sha256": "bf915f04ffd6c45a19138f319f85d44443c1c60d8ae86f8719745103762364fc"
+    },
+    "public/demo-industrias/limpieza/banner-mobile.webp": {
+      "bytes": 216720,
+      "sha256": "5f04b067a84c04d58d1775f31954a6650d872042c4ea08215ab6e5c416b83783"
+    },
+    "public/demo-industrias/limpieza/logo.webp": {
+      "bytes": 33960,
+      "sha256": "5f0254aa472f94829c595eb769e58692c9fdf5b022fafee5c3f9048263c5eef8"
+    },
+    "public/demo-industrias/limpieza/productos/01.webp": {
+      "bytes": 30188,
+      "sha256": "dafc43658dfb9bdac65b35df2ee80fb1b1cdd0f3a728d6be759dbb89a13943e6"
+    },
+    "public/demo-industrias/limpieza/productos/02.webp": {
+      "bytes": 23854,
+      "sha256": "9f9d7e4158b515a9fb543d08fa69a5354edd078769271c2c23a999becc0e3fce"
+    },
+    "public/demo-industrias/limpieza/productos/03.webp": {
+      "bytes": 45364,
+      "sha256": "b1f81dfe0930de43276d6a015368ad8cbd3dbc7f697c4f1b806753969df7dd67"
+    },
+    "public/demo-industrias/limpieza/productos/04.webp": {
+      "bytes": 18230,
+      "sha256": "a92f3c7379e7951afbd7d99ce73f00c5604c91f991c2969a71891b02323bd792"
+    },
+    "public/demo-industrias/limpieza/productos/05.webp": {
+      "bytes": 53594,
+      "sha256": "c220b82f5a346ec773449c940a53a243ff96ae90582d1263fdb84647b8947b13"
+    },
+    "public/demo-industrias/limpieza/productos/06.webp": {
+      "bytes": 35922,
+      "sha256": "22d7aea3f3afceb733492a04868b9046c9b8d20757216dd77b7cdd4dc4b7f760"
+    },
+    "public/demo-industrias/limpieza/productos/07.webp": {
+      "bytes": 26264,
+      "sha256": "0cd651825a30ae72fca2d99e8471e27f432fe860973a661ebbbc42581f3d6870"
+    },
+    "public/demo-industrias/limpieza/productos/08.webp": {
+      "bytes": 37300,
+      "sha256": "bc7e1434a75fe1a04db56d1818e2f8b9c7283c7d314d734d39464023f24279a9"
+    },
+    "public/demo-industrias/limpieza/productos/09.webp": {
+      "bytes": 31924,
+      "sha256": "4afac08b1fe3fb2d0408305a14c082cc92c35f4b3006238d13aec076611b636e"
+    },
+    "public/demo-industrias/limpieza/productos/10.webp": {
+      "bytes": 22022,
+      "sha256": "b02c3d24de53e9f87345d64d611607769f886887eb7a71933f99e1837d2918c0"
+    },
+    "public/demo-industrias/limpieza/productos/11.webp": {
+      "bytes": 33518,
+      "sha256": "835d02cb3f903efc60f0da62b6e63c09f93628502ff4e0d2c166bfa0cd706a21"
+    },
+    "public/demo-industrias/limpieza/productos/12.webp": {
+      "bytes": 8506,
+      "sha256": "1ece2aaf85b301dc773ec2c91c5f98eabb606fa0cef6f05c514e8400d58393d9"
+    },
+    "public/demo-industrias/limpieza/productos/13.webp": {
+      "bytes": 16900,
+      "sha256": "aca57922aea0e09c2925f91d8714264c6d9793af8cfbbd1dcdf7c7a1b75ae361"
+    },
+    "public/demo-industrias/limpieza/productos/14.webp": {
+      "bytes": 29152,
+      "sha256": "906f07909887a44b72988f1276ae36473830cab54dd28a1d431e586411356277"
+    },
+    "public/demo-industrias/limpieza/productos/15.webp": {
+      "bytes": 41770,
+      "sha256": "0900c5a819bfdf6c61c027cffb929af49411bdfec0279843b7f80e56cbd7a3e0"
+    },
+    "public/demo-industrias/limpieza/productos/16.webp": {
+      "bytes": 30534,
+      "sha256": "c6ecdcbdb19fdc40f4a7917dacce92c5c91d582b3d13638da19cb7126332f66e"
+    },
+    "public/demo-industrias/limpieza/productos/17.webp": {
+      "bytes": 9194,
+      "sha256": "4f19842a2966c2939418b30abffda20670d866250a1b7f368bf5927437e08f86"
+    },
+    "public/demo-industrias/limpieza/productos/18.webp": {
+      "bytes": 14598,
+      "sha256": "2695563d2ff066e5aab9bb6555faae1e7644f5129511e4e5cca8bc9c99e43456"
+    },
+    "public/demo-industrias/limpieza/productos/19.webp": {
+      "bytes": 31188,
+      "sha256": "dab7455be99c9a493d8639135d4afc56a478d1811c1ccc962ca22f718df18304"
+    },
+    "public/demo-industrias/limpieza/productos/20.webp": {
+      "bytes": 29626,
+      "sha256": "dd5dadbca34f9312cbe712b51b2d7766999bc41b91ee4624bc396f15b0394c34"
+    },
+    "public/demo-industrias/limpieza/productos/21.webp": {
+      "bytes": 7794,
+      "sha256": "6ffd09d9dbc8b76b755fe3e1f199ccb38096fa09ea36524347b09c858d472b96"
+    },
+    "public/demo-industrias/limpieza/productos/22.webp": {
+      "bytes": 6132,
+      "sha256": "00b8ccf67ff8ce08e8029f50850bc77b243e6aef646c81d8674ffc2d67b63a60"
+    },
+    "public/demo-industrias/limpieza/productos/23.webp": {
+      "bytes": 23890,
+      "sha256": "cee8bbdd4169d459e676f95a73ab03ecd3d7d211d3b348685139f6f151dd0716"
+    },
+    "public/demo-industrias/limpieza/productos/24.webp": {
+      "bytes": 8188,
+      "sha256": "3af3ba2572e83ddd55290f160b5b0e25771f9d7d5885380744d0ef7bbac6b00f"
+    },
+    "public/demo-industrias/mascotas/banner-desktop.webp": {
+      "bytes": 166772,
+      "sha256": "b8d66e5bfac08e9299176327d9eae4c3070c3c52bd5a9a27dae69a9b5bdd55ee"
+    },
+    "public/demo-industrias/mascotas/banner-mobile.webp": {
+      "bytes": 221254,
+      "sha256": "7773ccb77127ec99e78fe065f63c6fdf3d405ece2f424eb7ab1a106088951b2b"
+    },
+    "public/demo-industrias/mascotas/logo.webp": {
+      "bytes": 30778,
+      "sha256": "f0aa20924b7c36808412ff80cab48600ef173d6faf276565eb8b9a07995d5f27"
+    },
+    "public/demo-industrias/mascotas/productos/01.webp": {
+      "bytes": 22574,
+      "sha256": "0c9a9afa301836b3996de50cd12eebb35dd136e439b4cc7713860f84466bb167"
+    },
+    "public/demo-industrias/mascotas/productos/02.webp": {
+      "bytes": 28854,
+      "sha256": "7779b4caeadd0810bce5a0a5fdf6212d8b58d09f0dbd06796ae32c951d033ecf"
+    },
+    "public/demo-industrias/mascotas/productos/03.webp": {
+      "bytes": 37094,
+      "sha256": "6f252861568de221bfbc7c2f9fe9ddf0ae2e2e2be09934fa380cb0b2635dd806"
+    },
+    "public/demo-industrias/mascotas/productos/04.webp": {
+      "bytes": 31274,
+      "sha256": "9c1b58d0b2a4e9595efe8c787f654c9a520cfc667c5335f00ea58a52137915ba"
+    },
+    "public/demo-industrias/mascotas/productos/05.webp": {
+      "bytes": 32196,
+      "sha256": "9fa80a21a2fc91dfe28c48b83a28b4cedde3f8cf721108b3d0ddc9d1c64ed1c2"
+    },
+    "public/demo-industrias/mascotas/productos/06.webp": {
+      "bytes": 46230,
+      "sha256": "6c4ebc79d05880b55f138bd92338cb1cf5b02dca3dd25e69c52fff67da946922"
+    },
+    "public/demo-industrias/mascotas/productos/07.webp": {
+      "bytes": 22926,
+      "sha256": "d143f52331c172191347d6d1f612487177cf158b7946cae8844f155b42db4f5f"
+    },
+    "public/demo-industrias/mascotas/productos/08.webp": {
+      "bytes": 24862,
+      "sha256": "f02d106063fb92c23793fad465d3c2f5e1d6a8eb3a8c6e87349d41b449c5af43"
+    },
+    "public/demo-industrias/mascotas/productos/09.webp": {
+      "bytes": 33474,
+      "sha256": "3478ac49c99916cc049d5783f3f7f4a1663acc4aa19e4dbb1d53a2879e4f8215"
+    },
+    "public/demo-industrias/mascotas/productos/10.webp": {
+      "bytes": 4260,
+      "sha256": "562d5162cf235864a253a63b8a45240c1cd6e4f026e9b0161a11fd0bb1e53125"
+    },
+    "public/demo-industrias/mascotas/productos/11.webp": {
+      "bytes": 21428,
+      "sha256": "8144cfe7ad8d646740e7fd642fda890df1253f064bc3ad0c08aac8a7cf779f6f"
+    },
+    "public/demo-industrias/mascotas/productos/12.webp": {
+      "bytes": 20848,
+      "sha256": "8a624850b5361f963e3ef23786a18a15c9912ab4d1d7bdc8b4e2352874578733"
+    },
+    "public/demo-industrias/mascotas/productos/13.webp": {
+      "bytes": 19660,
+      "sha256": "8d3fcbaaef8da67a4af30bae3c0d468b027ce51c3d37f40a5326c2c8d4c9bd96"
+    },
+    "public/demo-industrias/mascotas/productos/14.webp": {
+      "bytes": 18222,
+      "sha256": "1c5da7f7044214df02eedf1c84fd1a9bfbf3d4673f64bd2c959aa5715249c1bd"
+    },
+    "public/demo-industrias/mascotas/productos/15.webp": {
+      "bytes": 37052,
+      "sha256": "34833b45609027f518cbfa436b7d79eb506ad002bea9289a25ff8bb41644d0f3"
+    },
+    "public/demo-industrias/mascotas/productos/16.webp": {
+      "bytes": 15952,
+      "sha256": "5e37e734cfc5582ab9248fc2d0a1d5f10afcf8e8e4f31d8a02d5af1957d92f59"
+    },
+    "public/demo-industrias/mascotas/productos/17.webp": {
+      "bytes": 17046,
+      "sha256": "63ba4c7969a4e2aa58d6bf961ca3a7b5f8ab31f045ae2067a9820b0994b4f603"
+    },
+    "public/demo-industrias/mascotas/productos/18.webp": {
+      "bytes": 67702,
+      "sha256": "11c960c83514667096b397c0a9059a448f5ea1d91559d9187337809253cb8a63"
+    },
+    "public/demo-industrias/mascotas/productos/19.webp": {
+      "bytes": 10394,
+      "sha256": "f2573b94876ce245991440727437e407233332312a97445553dc8511d96bae9b"
+    },
+    "public/demo-industrias/mascotas/productos/20.webp": {
+      "bytes": 8092,
+      "sha256": "d80294ad7e383a376c9531ccfbee8f1e9dd5dd19880ccc1dd95c06b641f464c8"
+    },
+    "public/demo-industrias/mascotas/productos/21.webp": {
+      "bytes": 12166,
+      "sha256": "468019f88f972ba8d6fb818b485d2aa29f4c8bdcd886c9d299075aa68b917659"
+    },
+    "public/demo-industrias/mascotas/productos/22.webp": {
+      "bytes": 21196,
+      "sha256": "69e235817c618e5807d306b21d219b1421a86c79aff1833c395096429f570ea2"
+    },
+    "public/demo-industrias/mascotas/productos/23.webp": {
+      "bytes": 7608,
+      "sha256": "e4a1577093022b39da280d08ff30f58dba5711381094a1a23057904d4bf616e5"
+    },
+    "public/demo-industrias/mascotas/productos/24.webp": {
+      "bytes": 31314,
+      "sha256": "0a9d546ff7e5bcbf0b40c04aed7212826e8c1944db0a70a53a536b5f96aa332f"
+    },
+    "public/demo-industrias/pesca/banner-desktop.webp": {
+      "bytes": 326390,
+      "sha256": "be035ef5eb7122234a398062d378bea521b3ba66f72e98fd518854d7a54e65cc"
+    },
+    "public/demo-industrias/pesca/banner-mobile.webp": {
+      "bytes": 297504,
+      "sha256": "66a493fdccc41d8565fb37a88b15f685dccfa1b72bc14811d9f5a55b89d872be"
+    },
+    "public/demo-industrias/pesca/logo.webp": {
+      "bytes": 43912,
+      "sha256": "f2b4d274cf0e2e851a43c0f2b13fe424e1ddb9d7e0865a9e562e44c03dd1897e"
+    },
+    "public/demo-industrias/pesca/productos/01.webp": {
+      "bytes": 11626,
+      "sha256": "c58a0bcca3d25d7844d078da377020fbfd97347cb191d39890ae85c6bf5eeb79"
+    },
+    "public/demo-industrias/pesca/productos/02.webp": {
+      "bytes": 9704,
+      "sha256": "37b43acafe20fa61c49905b61122e18d660f4e9c9efca8ec198ede3646bc380f"
+    },
+    "public/demo-industrias/pesca/productos/03.webp": {
+      "bytes": 4654,
+      "sha256": "6f3d4334fe4192bb439d590dfbdbdba344144d486bc8d2ec2526123ac5afc65b"
+    },
+    "public/demo-industrias/pesca/productos/04.webp": {
+      "bytes": 2896,
+      "sha256": "c4467854f3d6caeba5929419bce8a295014ee0c92e820b94d1d3594f1d2ec7c7"
+    },
+    "public/demo-industrias/pesca/productos/05.webp": {
+      "bytes": 10852,
+      "sha256": "fc0c0e8a1a6a75716628eeeb92e9d0753204350ff14306a64344cb499118420d"
+    },
+    "public/demo-industrias/pesca/productos/06.webp": {
+      "bytes": 8204,
+      "sha256": "a36743cd3ba2bd0cd04d838848b2384fd58ea347a1411d63b58bbe6440fada34"
+    },
+    "public/demo-industrias/pesca/productos/07.webp": {
+      "bytes": 19882,
+      "sha256": "37300f6732ec994c9c88e16bce4fac2c8ab7ee319e9bfe4b4aa9c35af8fcb69b"
+    },
+    "public/demo-industrias/pesca/productos/08.webp": {
+      "bytes": 13448,
+      "sha256": "0d2ad16ce7a6a53302dc80baafc2daa93e14a12409563e5215007ab1db144726"
+    },
+    "public/demo-industrias/pesca/productos/09.webp": {
+      "bytes": 23992,
+      "sha256": "261404c33ff976e37518c285175c9c28e23a3a65561159e9cff0dbfae57bea91"
+    },
+    "public/demo-industrias/pesca/productos/10.webp": {
+      "bytes": 21970,
+      "sha256": "81dddfe4cb0af9363a3f212ce450ea5aa02e4d4a1a9c23e0e9c7e211c07af081"
+    },
+    "public/demo-industrias/pesca/productos/11.webp": {
+      "bytes": 17074,
+      "sha256": "434aedb7af1976c6dc7a4c40c3073a1ae7394000450b82d7bfcd3f9ae40a79ac"
+    },
+    "public/demo-industrias/pesca/productos/12.webp": {
+      "bytes": 21346,
+      "sha256": "5ff7224fb666214cbd5a6abac82a2835b2f30996ab97dd6e7436b7c1253a9ad3"
+    },
+    "public/demo-industrias/pesca/productos/13.webp": {
+      "bytes": 16684,
+      "sha256": "0c3e122790ac05d5f8a9c9f609f0523250b11a632907840a808769b11f28a63f"
+    },
+    "public/demo-industrias/pesca/productos/14.webp": {
+      "bytes": 13662,
+      "sha256": "efcc024eccda8ab8dd81aa6dce8f0f55c1e263c961901519e55a98ecfa123d5d"
+    },
+    "public/demo-industrias/pesca/productos/15.webp": {
+      "bytes": 15142,
+      "sha256": "53996fd1d7b320124b30dd6ac5f5082fbde312a801ff7cfc5ea58dbdba92047b"
+    },
+    "public/demo-industrias/pesca/productos/16.webp": {
+      "bytes": 5320,
+      "sha256": "74cc793cf8fb9791802cb16767e1a7875dd701fae5ccca1634f4811eeda30acc"
+    },
+    "public/demo-industrias/pesca/productos/17.webp": {
+      "bytes": 14734,
+      "sha256": "290e7a6f1f6aa840287353426862c99f840e0eb6b8994029967b80679e64b9d8"
+    },
+    "public/demo-industrias/pesca/productos/18.webp": {
+      "bytes": 21410,
+      "sha256": "897af7b9e5044f9f2ee0675ac8d8a9e755528fe9912cf378b6e7715e8a310adb"
+    },
+    "public/demo-industrias/pesca/productos/19.webp": {
+      "bytes": 6808,
+      "sha256": "f5082415e5b84819ef2d45ae76963d2991f784d4c4267d3600f9ad73b7eda299"
+    },
+    "public/demo-industrias/pesca/productos/20.webp": {
+      "bytes": 59472,
+      "sha256": "35d53e069f18c019c3dddde4cadebe400460a22e331e6e50773e7d832b29b77f"
+    },
+    "public/demo-industrias/pesca/productos/21.webp": {
+      "bytes": 17628,
+      "sha256": "7d577e09fae612380de7e01e18bd94b087ae41bff8858badadeb768875cfc21a"
+    },
+    "public/demo-industrias/pesca/productos/22.webp": {
+      "bytes": 36534,
+      "sha256": "828feb5925c4088b1af77bc398608260b04002c05d3a66853ffa78c3c4a63773"
+    },
+    "public/demo-industrias/pesca/productos/23.webp": {
+      "bytes": 14572,
+      "sha256": "af63e74cb7189ced8da5ba297a3b19f423efe5d055d7463e6cf0f8f85bb0b334"
+    },
+    "public/demo-industrias/pesca/productos/24.webp": {
+      "bytes": 2054,
+      "sha256": "8375c7c2f12e3c3c810ff742f0fbdf7a9d7de0663c005e3aa5ed23df20473c9b"
+    },
+    "public/demo-industrias/tecnologia/banner-desktop.webp": {
+      "bytes": 132746,
+      "sha256": "baf9952621138ce46bf9b07b24bae1583ddc27bc3dc9e150eb8ea696c3b5d18e"
+    },
+    "public/demo-industrias/tecnologia/banner-mobile.webp": {
+      "bytes": 152828,
+      "sha256": "58c9550f5f65e8122696d811feb96569c29dc41fa2fc6b2198de62a8542df9c1"
+    },
+    "public/demo-industrias/tecnologia/logo.webp": {
+      "bytes": 40056,
+      "sha256": "b38a49e02d504d36cb3cfbbc4c2936025a9e8e7186df1d6e1e6d91f30ea76d0b"
+    },
+    "public/demo-industrias/tecnologia/productos/01.webp": {
+      "bytes": 4826,
+      "sha256": "348133035f2f6a44ca93ebab80a5c37ec476ec968d310b2502dc8bcb33c75e93"
+    },
+    "public/demo-industrias/tecnologia/productos/02.webp": {
+      "bytes": 2940,
+      "sha256": "ea5e8a709bf46dc962a1beca402ea9070884d38ad02af15170281b220c724d5f"
+    },
+    "public/demo-industrias/tecnologia/productos/03.webp": {
+      "bytes": 18748,
+      "sha256": "40fb8121ffffc0c47ba2ecac1313228aa9bbf172cf88b55611c5fe2d4279ff61"
+    },
+    "public/demo-industrias/tecnologia/productos/04.webp": {
+      "bytes": 5066,
+      "sha256": "457d8c31a2e5ad49d4a5f03129399bcc375e212f388be7868296c9d596dc7f39"
+    },
+    "public/demo-industrias/tecnologia/productos/05.webp": {
+      "bytes": 5456,
+      "sha256": "2d698102441c991bf3f4235ec79f2eabd3418f9ccd48b6f788553ab8e652f8a2"
+    },
+    "public/demo-industrias/tecnologia/productos/06.webp": {
+      "bytes": 49952,
+      "sha256": "1aef2ce9fa47aa994a3b5133551bc25259b8d6d2f8ecc1e3d7efdf4317a07c03"
+    },
+    "public/demo-industrias/tecnologia/productos/07.webp": {
+      "bytes": 38984,
+      "sha256": "e57cf246b01273cbe637de924e376025ef19319117fc2bb125b1dc24fba9dfc4"
+    },
+    "public/demo-industrias/tecnologia/productos/08.webp": {
+      "bytes": 9976,
+      "sha256": "7c15bbdba696d16307499006049a093494105e27e387d5789b1fc2370db0fe95"
+    },
+    "public/demo-industrias/tecnologia/productos/09.webp": {
+      "bytes": 8788,
+      "sha256": "ca50a956a4c3d24e02e302473e2fa16c70f4cbfcf440ef8a6eddb6a7e4d1d39c"
+    },
+    "public/demo-industrias/tecnologia/productos/10.webp": {
+      "bytes": 21262,
+      "sha256": "567f8a4fa098d1b71398721c1282a372a6e2a9aa4b41a9008f358c0653682375"
+    },
+    "public/demo-industrias/tecnologia/productos/11.webp": {
+      "bytes": 19022,
+      "sha256": "6085473d05e29d46afb83ef22d71ee9bf12ab4e193b8c3fe1ec87d1860a9182f"
+    },
+    "public/demo-industrias/tecnologia/productos/12.webp": {
+      "bytes": 3950,
+      "sha256": "53acafa3b2af67abf9acee22cb447e9972bafb52ecbc120eead354c1d4b24cef"
+    },
+    "public/demo-industrias/tecnologia/productos/13.webp": {
+      "bytes": 6626,
+      "sha256": "58b91231f04ec4697bc5b32c65a0af090e243af2dede259e2038c70ee31bfda2"
+    },
+    "public/demo-industrias/tecnologia/productos/14.webp": {
+      "bytes": 25344,
+      "sha256": "443da71da57a960d5091f9e6d2e83b63f0bf5f4bc306a3ce997611f40648791e"
+    },
+    "public/demo-industrias/tecnologia/productos/15.webp": {
+      "bytes": 42390,
+      "sha256": "154d6d35fae31ed5c1e32d038b2ce78421e702bba91fbc579dcb63889e95f3b0"
+    },
+    "public/demo-industrias/tecnologia/productos/16.webp": {
+      "bytes": 12280,
+      "sha256": "c308452ca78f78325e53e79b01810c9ded6a9063b44bd49dac553fa8a5636c03"
+    },
+    "public/demo-industrias/tecnologia/productos/17.webp": {
+      "bytes": 14460,
+      "sha256": "15e104cb33bd9d80e3d08d26e10c9c5e1719aa70d7e0b07f07be6005b4c715be"
+    },
+    "public/demo-industrias/tecnologia/productos/18.webp": {
+      "bytes": 22434,
+      "sha256": "86d29f913df6850fc9c150a378a5c4b50b2d551ceac3dcf2459ef325ff6d9b21"
+    },
+    "public/demo-industrias/tecnologia/productos/19.webp": {
+      "bytes": 5782,
+      "sha256": "2fefa9c3862ae0c7ae7b2ffae3e525e7a28169de7fe375923fc869f9b3154bf8"
+    },
+    "public/demo-industrias/tecnologia/productos/20.webp": {
+      "bytes": 6348,
+      "sha256": "a88641239b8faa7c272d059c4e114d89c492ef3d143e7bc8255763ac6d53b8e9"
+    },
+    "public/demo-industrias/tecnologia/productos/21.webp": {
+      "bytes": 37770,
+      "sha256": "52ea61b86516e7a09547c5204f15cae3a9375affdc4a2e4d3a4b5ce134964894"
+    },
+    "public/demo-industrias/tecnologia/productos/22.webp": {
+      "bytes": 6538,
+      "sha256": "1bd17d3ce96b7d30d30ec27093d4e2ba3b67d4dc2604ee86130fccafc964e830"
+    },
+    "public/demo-industrias/tecnologia/productos/23.webp": {
+      "bytes": 8796,
+      "sha256": "aad0f9a4077ed7792c90ff7a4948b93e8e5d69df0ae6253ba87ecb6741e08c4d"
+    },
+    "public/demo-industrias/tecnologia/productos/24.webp": {
+      "bytes": 16044,
+      "sha256": "6c24df3e081570a53e5bea7c56cfa92208add08600ae5c633a9b646b21d48c51"
+    }
+  }
+}

@@ -82,10 +82,10 @@ class Correcciones_de_alta_con_margen_y_stock_Test extends EmpresaTestCase
             'agente_confianza' => $this->dueno->agente_confianza,
         ];
 
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'asistente_ia']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'agentes_ia']);
         }
 
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);

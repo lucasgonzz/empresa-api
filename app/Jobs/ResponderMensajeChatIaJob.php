@@ -120,11 +120,11 @@ class ResponderMensajeChatIaJob implements ShouldQueue
          */
         $owner = User::find($conversation->user_id);
 
-        if (!$owner || !UserHelper::hasExtencion('asistente_ia', $owner)) {
+        if (!$owner || !UserHelper::hasExtencion('agentes_ia', $owner)) {
             $this->marcar_error(
                 $message,
                 'La cuenta no tiene habilitado el asistente de IA en este momento.',
-                'extension asistente_ia no activa al momento de generar la respuesta'
+                'extension agentes_ia no activa al momento de generar la respuesta'
             );
             $this->avisar($conversation, $message);
 

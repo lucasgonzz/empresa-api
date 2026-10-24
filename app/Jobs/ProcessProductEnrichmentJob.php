@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Models\ProductEnrichment;
 use App\Services\ProductFacts\ProductEnrichmentService;
 use Illuminate\Bus\Queueable;
@@ -26,6 +27,17 @@ class ProcessProductEnrichmentJob implements ShouldQueue
     {
         $task = ProductEnrichment::find($this->id);
         if (!$task || !in_array($task->status, ['queued', 'waiting', 'searching'], true)) {
+            return;
+        }
+        // Misión agentes-ia-extension-unica (22/10/2026): se revalida con el dueño de la tarea (no con Auth);
+        // si el comercio ya no tiene `agentes_ia`, la tarea se marca fallida (la SPA no queda esperando) y no
+        // se gasta la búsqueda.
+        if (! AgentesIaHelper::tiene_el_comercio_de($task->user_id)) {
+            ProductEnrichment::where('id', $task->id)->whereIn('status', ['queued', 'searching', 'waiting'])->update([
+                'status'  => 'failed',
+                'message' => 'Agentes de IA no está activo para este comercio. Podés continuar manualmente.',
+            ]);
+
             return;
         }
         if ($task->created_at->lt(now()->subMinutes(8))) {

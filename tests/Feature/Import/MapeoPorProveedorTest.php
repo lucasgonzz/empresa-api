@@ -9,7 +9,7 @@ use App\Models\ProviderImportMapping;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 use Tests\Import\ImportTestCase;
 
 /**

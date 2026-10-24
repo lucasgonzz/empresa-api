@@ -88,7 +88,7 @@ class Marca_leida_de_una_foto_se_pregunta_Test extends EmpresaTestCase
             'agente_confianza' => $this->dueno->agente_confianza,
         ];
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         $this->dueno_con(['agente_confianza' => 'directo', 'listas_de_precio' => 0]);
 

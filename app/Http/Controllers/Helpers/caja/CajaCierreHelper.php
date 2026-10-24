@@ -19,12 +19,17 @@ class CajaCierreHelper {
 	}
 
 	function cerrar_caja() {
+		return \Illuminate\Support\Facades\DB::transaction(function () {
+			// Mismo orden de candados que los movimientos: caja y después apertura.
+			$this->caja = Caja::where('id', $this->caja->id)->lockForUpdate()->first();
+			MovimientoCajaHelper::validar_cajas_para_operacion([$this->caja->id]);
 
-		$this->cerrar_apertura();
+			$this->cerrar_apertura();
 
-		$this->marcar_cerrada();
+			$this->marcar_cerrada();
 
-		Log::info('se cerro caja');
+			Log::info('se cerro caja');
+		});
 	}
 
 	function marcar_cerrada() {

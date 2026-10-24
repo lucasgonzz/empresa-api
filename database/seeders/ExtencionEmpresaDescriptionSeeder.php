@@ -605,18 +605,8 @@ class ExtencionEmpresaDescriptionSeeder extends Seeder
                 'en_desuso'   => false,
                 'description' => 'Encendida habilita el modulo Tienda Nube: item "Tienda Nube" en el nav (ruta /tienda-nube) con badge de sincronizaciones fallidas que se carga al iniciar sesion, grupo "Tienda Nube" en el formulario de artículo (Disponible en Tienda Nube, Titulo y Descripcion para SEO, Tags, y medidas como alto), boton TN por fila en el listado de artículos, checkbox "se_usa_en_tienda_nube" en las listas de precio, y el scheduler registra sync_articles_to_tienda_nube cada minuto; ademas suma +1 cuenta al total de la mensualidad. Apagada, nada de eso aparece, el cron no se agenda, no se pide el contador de fallos y no se cobra el renglon de Tienda Nube.',
             ],
-            [
-                'slug'        => 'whatsapp',
-                'modulo'      => 'Tienda e integraciones',
-                'en_desuso'   => false,
-                'description' => 'Encendida habilita el modulo de chats de WhatsApp con clientes: aparece el item \'WhatsApp\' en el nav lateral (ruta /whatsapp, con lista de chats, conversacion, plantillas y config del agente), pasan las 20 rutas del grupo gateado (/whatsapp-chats/*, /whatsapp-templates/*, sales/{id}/send-whatsapp-agent y las cuatro de /recordatorio-cobro/*) y en la botonera del modal de una venta aparece el boton \'enviar comprobante por el agente de WhatsApp\'. Tambien habilita el recordatorio de cobro por WhatsApp del modulo de Alertas (solapa Cobros): el boton por cliente, que abre una previsualizacion con el mensaje exacto que va a salir (texto libre si el cliente escribio en las ultimas 24 horas, plantilla cc_cli_recordatorio_cobro si no), y el envio masivo a todos los deudores del filtro, que encola un job por cliente y saltea a quien ya recibio el recordatorio en las ultimas 24 horas. Apagada, el item del nav no se dibuja (esta ruta no pide ademas ningun permiso \'can\', asi que la extension es el unico gate del item) y la API responde 403 con \'No tenes acceso a esta funcionalidad. Extension requerida: whatsapp\' a cualquiera de esas 20 rutas. Con la extension apagada, en la solapa Cobros del modulo de Alertas tampoco se dibuja ningun boton de recordatorio: la lista de deudores se sigue viendo igual (sale de sales-ventas-sin-cobrar, que no esta gateada), lo que se corta es el envio. Ojo que la extension NO alcanza para mandar recordatorios: las cuatro rutas de /recordatorio-cobro/* piden ademas el permiso de empleado \'alerts.recordatorio_cobro\' y responden 403 sin el. Dos cosas NO se cortan apagada: (1) si el usuario entra a /whatsapp escribiendo la URL, la vista igual carga porque el router solo chequea sesion, y adentro la lista de chats y las plantillas fallan con 403 pero la solapa de config del agente sigue funcionando, porque whatsapp-bot/config vive en otro grupo de rutas que solo pide auth:sanctum; (2) el boton clasico de wa.me (WhatsappBtn), que abre WhatsApp Web con el celular del operador, sigue apareciendo en el modal de Ventas porque no consulta la extension.',
-            ],
-            [
-                'slug'        => 'whatsapp_ia',
-                'modulo'      => 'Tienda e integraciones',
-                'en_desuso'   => false,
-                'description' => 'Encendida el scheduler registra articles:generate-embeddings cada 30 minutos, que recorre los artículos activos del dueño y genera/actualiza su embedding vectorial para que el bot pueda hacer busqueda semantica del catalogo (RAG). Apagada, el comando no se agenda y si alguien lo corre a mano devuelve 0 en silencio sin tocar nada, con lo cual los artículos quedan con embedding NULL. Importante: apagada NO se apaga la IA del bot — WhatsappBotAiService sigue llamando a la API de Anthropic y contestando igual, solo que search_similar_articles no devuelve ningun artículo y la respuesta va sin contexto de catalogo.',
-            ],
+            self::fila_reemplazada_por_agentes_ia('whatsapp'),
+            self::fila_reemplazada_por_agentes_ia('whatsapp_ia'),
             [
                 'slug'        => 'support_chat',
                 'modulo'      => 'Tienda e integraciones',
@@ -677,6 +667,38 @@ class ExtencionEmpresaDescriptionSeeder extends Seeder
                 'en_desuso'   => true,
                 'description' => 'NO ESTA IMPLEMENTADA: por el nombre habria habilitado la opcion de cargar el precio final a mano en una lista de precios en vez de calcularlo desde el costo con el margen. Esa capacidad existe pero no depende de la extension: es la columna `setear_precio_final` de la tabla price_types (y su equivalente por moneda en el pivot), disponible para cualquier cuenta que use listas de precio. Encendida y apagada no cambia nada, salvo que la fila aparece tildada en la pantalla de extensiones.',
             ],
+            /*
+             * Misión agentes-ia-extension-unica (22/10/2026): la extensión única de IA y las que reemplaza.
+             * Las seis viejas quedan en desuso (nadie las lee); `whatsapp` y `whatsapp_ia` ya estaban en el
+             * padrón y se reescribieron arriba.
+             */
+            [
+                'slug'        => 'agentes_ia',
+                'modulo'      => ExtencionAgentesIaSeeder::MODULO,
+                'en_desuso'   => false,
+                'description' => ExtencionAgentesIaSeeder::DESCRIPCION,
+            ],
+            self::fila_reemplazada_por_agentes_ia('asistente_ia'),
+            self::fila_reemplazada_por_agentes_ia('escaneo_factura_compra'),
+            self::fila_reemplazada_por_agentes_ia('sugerencias_inteligentes'),
+            self::fila_reemplazada_por_agentes_ia('sugerencias_compras'),
+        ];
+    }
+
+    /**
+     * Una fila del padrón para una de las seis extensiones de IA que reemplaza `agentes_ia`: en desuso, con
+     * el motivo. Misión agentes-ia-extension-unica (22/10/2026).
+     *
+     * @param  string  $slug
+     * @return array
+     */
+    public static function fila_reemplazada_por_agentes_ia($slug)
+    {
+        return [
+            'slug'        => $slug,
+            'modulo'      => ExtencionAgentesIaSeeder::MODULO,
+            'en_desuso'   => true,
+            'description' => ExtencionAgentesIaSeeder::DESCRIPCION_REEMPLAZADA,
         ];
     }
 }

@@ -168,16 +168,18 @@ class AddressSeeder extends Seeder
                 'default_address'    => 1,
                 'user_id'   => config('app.USER_ID'),
             ],
+            // Misión sucursal-siempre (23/10/2026, D2): `default_address` es la sucursal PRINCIPAL y
+            // es una sola (el modelo desmarca las otras al marcar una). Antes estaban las tres de acá
+            // marcadas y, con el hook, la última en crearse se hubiera quedado con la marca: la
+            // principal de la demo es Santa Fe, la primera que estaba marcada.
             [
                 'num'       => 3,
                 'street'    => 'Buenos Aires',
-                'default_address'    => 1,
                 'user_id'   => config('app.USER_ID'),
             ],
             [
                 'num'       => 4,
                 'street'    => 'Mar del Plata',
-                'default_address'    => 1,
                 'user_id'   => config('app.USER_ID'),
             ],
         ];

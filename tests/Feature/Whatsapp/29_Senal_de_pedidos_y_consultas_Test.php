@@ -50,7 +50,7 @@ class Senal_de_pedidos_y_consultas_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Teléfono del cliente final. */
     const PHONE = '5493416029999';

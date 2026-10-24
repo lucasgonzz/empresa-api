@@ -89,12 +89,17 @@ class FichaArticuloIaHelper
      * como lo mide RecolectorStock::recolectar() (:52-56) antes de sugerir un traslado. Con una
      * sola sucursal no hay reparto que mostrar.
      *
+     * Misión sucursal-siempre (23/10/2026, D1/D12): es el mismo criterio de la interfaz, "las
+     * sucursales se muestran desde la segunda". Con una sola, el asistente ya no pregunta "¿a qué
+     * depósito?" (PropuestaStockIaHelper): la ficha y la carga de stock dicen lo mismo. Se cuentan solo
+     * sucursales de verdad: un domicilio de comprador de la tienda (`buyer_id`) no es una sucursal.
+     *
      * @param  int  $owner_id
      * @return bool
      */
     public static function tiene_depositos($owner_id): bool
     {
-        return Address::where('user_id', (int) $owner_id)->count() >= 2;
+        return Address::sucursales_de((int) $owner_id)->count() >= 2;
     }
 
     /**

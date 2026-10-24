@@ -60,10 +60,10 @@ class Seguimiento_de_tarea_por_su_id_Test extends AgendaTestCase
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);

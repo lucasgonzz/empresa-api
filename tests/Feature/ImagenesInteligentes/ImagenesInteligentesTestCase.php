@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\EmpresaTestCase;
 use Tests\Feature\ImagenesInteligentes\Dobles\GuardaSsrfConDnsDePrueba;
 
@@ -32,6 +33,8 @@ use Tests\Feature\ImagenesInteligentes\Dobles\GuardaSsrfConDnsDePrueba;
  */
 abstract class ImagenesInteligentesTestCase extends EmpresaTestCase
 {
+    use OtorgaAgentesIa;
+
     /** Colores de "producto" de las imágenes de prueba: cada imagen se reconoce por el suyo. */
     const COLORES = [
         'rojo'     => [200, 30, 30],
@@ -81,6 +84,9 @@ abstract class ImagenesInteligentesTestCase extends EmpresaTestCase
             'email'        => 'imagenes-inteligentes-'.uniqid().'@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): la asignación automática de imágenes es de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($this->owner);
 
         $this->actuar_como($this->owner);
     }

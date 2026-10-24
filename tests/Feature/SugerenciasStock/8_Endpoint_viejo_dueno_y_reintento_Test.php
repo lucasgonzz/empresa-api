@@ -28,7 +28,7 @@ class Endpoint_viejo_dueno_y_reintento_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea el flujo nuevo (el reintento vive ahí). */
-    const SLUG = 'sugerencias_inteligentes';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

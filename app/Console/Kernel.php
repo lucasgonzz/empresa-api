@@ -155,7 +155,7 @@ class Kernel extends ConsoleKernel
         }
 
         // Genera embeddings vectoriales de artículos nuevos o modificados,
-        // solo si el usuario tiene la extensión whatsapp_ia activa.
+        // solo si el usuario tiene la extensión agentes_ia activa.
         // withoutOverlapping(25) previene acumulación si un ciclo tarda más de lo esperado
         // (primer índice completo de catálogos grandes) con margen antes del próximo ciclo de 30 min.
         //
@@ -179,7 +179,7 @@ class Kernel extends ConsoleKernel
         // devuelve el default. Ver config/services.php.
         if (
             $company_owner
-            && UserHelper::hasExtencion('whatsapp_ia', $company_owner)
+            && UserHelper::hasExtencion('agentes_ia', $company_owner)
             && ! filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)
             && ! config('services.openai.embeddings_generacion_pausada')
         ) {

@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Models\AiConversation;
 use App\Models\StockSuggestion;
 use App\Models\StockSuggestionArticle;
@@ -110,7 +111,11 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
             // sin ANTHROPIC_API_KEY el estado queda null, que la vista
             // muestra como "sin resumen", no como error.
             $resumen_service = new ResumenIaService();
-            $pedir_resumen = $resumen_service->hay_credenciales();
+            // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA es de `agentes_ia`. Las
+            // sugerencias de stock en sí siguen andando para quien no la tiene; solo el resumen (que gasta
+            // tokens) se saltea. Se mira al dueño de la sugerencia, no a Auth: en la cola no hay sesión.
+            $pedir_resumen = $resumen_service->hay_credenciales()
+                && AgentesIaHelper::tiene_el_comercio_de($this->suggestion->user_id);
 
             if ($pedir_resumen) {
                 // 'pendiente' desde antes del dispatch: la vista muestra "lo
@@ -233,7 +238,7 @@ class ProcessStockSuggestionChunkJob implements ShouldQueue
         /*
          * Misión chat-ia-y-modulo-ia (D21): si la sugerencia dejó su
          * conversación en el chat del asistente (la crea
-         * GenerarResumenSugerenciaJob solo con la extensión asistente_ia
+         * GenerarResumenSugerenciaJob solo con la extensión agentes_ia
          * activa), la notificación suma el botón "Charlar con la IA" y los
          * dos ids que lee abrir_conversacion_de_sugerencia() en la SPA. Sin
          * conversación —sin la extensión, o el resumen falló— la notificación

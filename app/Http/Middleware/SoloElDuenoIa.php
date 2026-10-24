@@ -11,7 +11,7 @@ use Illuminate\Http\Request;
  * rutas del asistente de IA. Decisión de Lucas del 16/9/2026, misión agente-ia-mano-derecha.
  *
  * Uso en rutas, SIEMPRE después de auth:sanctum (necesita la persona autenticada):
- *   ->middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia', 'solo_el_dueno_ia'])
+ *   ->middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia', 'solo_el_dueno_ia'])
  *
  * 🔴 POR QUÉ REUSA MostradorHelper::puede_ver() Y NO ESCRIBE OTRA REGLA. El mostrador del módulo
  * IA ya resolvía exactamente esta pregunta, y por el mismo motivo: sus informes traen cobranzas,

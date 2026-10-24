@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\GlobalHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\address\SucursalVigenteHelper;
+use App\Http\Controllers\Stock\SetArticleStock\MaterializarGlobal;
 use App\Http\Controllers\Stock\SetArticleStock\SetArticleStock;
 use App\Http\Controllers\Stock\SetConcepto;
 use App\Http\Controllers\Stock\SetProvider;
@@ -169,6 +170,26 @@ class StockMovementController extends Controller
 
         if (is_null($data)) return null;
 
+        /*
+         * Misión sucursal-siempre (23/10/2026). Los dos pasos van DESPUÉS de la guarda de sucursales
+         * muertas (trabajan sobre sucursales ya resueltas) y ANTES de crear el renglón del libro (así
+         * la materialización queda primero en el libro y la foto de "antes" del movimiento ya la ve).
+         *
+         *  - D3, la red: sin sucursal sobre un artículo que reparte → la principal, en vez de perderse.
+         *    Ver SucursalVigenteHelper::aplicar_red_de_la_principal().
+         *  - D4: con sucursal sobre un artículo que todavía lleva stock global → primero el global
+         *    entero a la principal ("Creacion de deposito"), después el movimiento. Ver MaterializarGlobal.
+         */
+        $data = SucursalVigenteHelper::aplicar_red_de_la_principal($data, $article, $concepto_id, $this->user_id);
+
+        if (MaterializarGlobal::materializar_si_hace_falta($data, $article, $concepto_id, $this->user_id, $employee_id, $set_updated_at)) {
+
+            // La materialización le abrió la fila: el modelo en memoria (y sus relaciones) quedó viejo.
+            $article = Article::find($data['model_id']);
+
+            if (!$article) return;
+        }
+
         $amount = $this->check_unidades_individuales($article, (float)$data['amount'], $concepto_id, $data);
 
         // Log::info('observations: '.$data['observations']);
@@ -210,10 +231,27 @@ class StockMovementController extends Controller
 
         SetProvider::set_provider($stock_movement, $article, $data);
 
-        SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
+        /*
+         * `sin_stock_updated_at` (misión sucursal-siempre): la materialización del global en la principal
+         * y la migración a sucursal principal no cambian el stock, así que no pisan la fecha de "stock
+         * actualizado" del artículo.
+         */
+        if (empty($data['sin_stock_updated_at'])) {
+            SetStockUpdatedAt::set_stock_updated_at($stock_movement, $article);
+        }
 
-        ProductService::add_article_to_sync($article);
-        TiendaNubeSyncArticleService::add_article_to_sync($article);
+        /*
+         * `sin_sincronizar` (misión sucursal-siempre): para los movimientos que NO cambian el stock
+         * publicado —la materialización del global en la principal y la migración a sucursal principal
+         * (`sucursales:migrar-a-principal`)—. El stock total queda igual, así que encolar a Tienda Nube
+         * y Mercado Libre sería trabajo (y llamadas a la API) para nada. No se usa el `$update_tienda_nube`
+         * del constructor porque la importación ya lo pasa en false y hoy sincroniza igual: cambiarle el
+         * sentido le cortaría la sincronización.
+         */
+        if (empty($data['sin_sincronizar'])) {
+            ProductService::add_article_to_sync($article);
+            TiendaNubeSyncArticleService::add_article_to_sync($article);
+        }
 
         return $stock_movement;
     }

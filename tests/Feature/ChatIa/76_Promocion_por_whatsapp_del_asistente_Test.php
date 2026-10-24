@@ -467,7 +467,7 @@ class Promocion_por_whatsapp_del_asistente_Test extends EmpresaTestCase
         $conversation->auth_user_id = $this->dueno->id;
         $conversation->save();
 
-        $this->sacar_extension('whatsapp');
+        $this->sacar_extension('agentes_ia');
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_promocion_por_whatsapp', ['texto' => '20% en todo']);
 

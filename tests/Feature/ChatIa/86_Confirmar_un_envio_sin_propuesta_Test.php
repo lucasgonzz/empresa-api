@@ -56,7 +56,7 @@ class Confirmar_un_envio_sin_propuesta_Test extends EmpresaTestCase
             'agente_pensamiento' => 'agil',
         ]);
 
-        $this->dar_extension('asistente_ia');
+        $this->dar_extension('agentes_ia');
 
         config([
             'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-p86',

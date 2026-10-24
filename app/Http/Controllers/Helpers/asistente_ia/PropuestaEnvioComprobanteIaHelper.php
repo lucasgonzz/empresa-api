@@ -81,7 +81,7 @@ class PropuestaEnvioComprobanteIaHelper
     const CANAL_MAIL = 'mail';
 
     /** La extensión del módulo de WhatsApp. */
-    const EXTENSION_WHATSAPP = 'whatsapp';
+    const EXTENSION_WHATSAPP = 'agentes_ia';
 
     /** La extensión de los mails a clientes (la misma que exige el botón de la venta). */
     const EXTENSION_MAIL = 'enviar_mail_a_clientes';
@@ -735,7 +735,7 @@ class PropuestaEnvioComprobanteIaHelper
     {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION_WHATSAPP)) {
 
-            return ['ok' => false, 'texto' => 'el negocio no tiene el módulo de WhatsApp'];
+            return ['ok' => false, 'texto' => 'el negocio no tiene contratado Agentes de IA (que incluye el módulo de WhatsApp)'];
         }
 
         $persona_id = is_null($contexto->persona) ? null : (int) $contexto->persona->id;
@@ -940,7 +940,7 @@ class PropuestaEnvioComprobanteIaHelper
      */
     protected static function evaluar_canales(ContextoDeCargaIa $contexto, $tipo, $modelo, Client $client)
     {
-        $whatsapp = ['puede' => false, 'mensaje' => 'el negocio no tiene el módulo de WhatsApp.'];
+        $whatsapp = ['puede' => false, 'mensaje' => 'el negocio no tiene contratado Agentes de IA (que incluye el módulo de WhatsApp).'];
 
         if (PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION_WHATSAPP)) {
 

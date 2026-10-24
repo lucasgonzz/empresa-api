@@ -36,7 +36,7 @@ class Ficha_y_cuenta_de_mencion_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita el módulo IA. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** Slug de la extensión que habilita la cuenta corriente en dólares. */
     const SLUG_DOLARES = 'ventas_en_dolares';

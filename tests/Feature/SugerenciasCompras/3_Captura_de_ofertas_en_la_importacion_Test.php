@@ -17,7 +17,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible as WriterEntityFactory;
 use ReflectionMethod;
 use Tests\Import\ImportTestCase;
 
@@ -119,11 +119,11 @@ class Captura_de_ofertas_en_la_importacion_Test extends ImportTestCase
      */
     protected function dar_extension()
     {
-        $extencion = ExtencionEmpresa::where('slug', 'sugerencias_compras')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (!$extencion) {
             $extencion = ExtencionEmpresa::forceCreate([
-                'slug' => 'sugerencias_compras',
+                'slug' => 'agentes_ia',
                 'name' => 'Sugerencias de compra a proveedores',
             ]);
         }

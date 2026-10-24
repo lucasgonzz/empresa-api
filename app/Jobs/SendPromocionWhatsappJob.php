@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EnviosFallidosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPromocionWhatsappIaHelper;
 use App\Models\AiEnvioFallido;
@@ -132,6 +133,12 @@ class SendPromocionWhatsappJob implements ShouldQueue
      */
     public function handle()
     {
+        // Misión agentes-ia-extension-unica (22/10/2026): el módulo de WhatsApp es de `agentes_ia`. Se revalida
+        // con el dueño (no con Auth, que en la cola no existe) y se sale en silencio si ya no la tiene.
+        if (! AgentesIaHelper::tiene_el_comercio_de($this->owner_id)) {
+            return;
+        }
+
         try {
 
             $salida = PropuestaPromocionWhatsappIaHelper::enviar_a_cliente(

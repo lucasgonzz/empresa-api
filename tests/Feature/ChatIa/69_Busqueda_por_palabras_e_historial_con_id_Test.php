@@ -60,7 +60,7 @@ class Busqueda_por_palabras_e_historial_con_id_Test extends EmpresaTestCase
 
         $this->confianza_original = $this->dueno->agente_confianza;
 
-        foreach (['asistente_ia', PropuestaPresupuestoIaHelper::EXTENSION] as $slug) {
+        foreach (['agentes_ia', PropuestaPresupuestoIaHelper::EXTENSION] as $slug) {
 
             $extencion = ExtencionEmpresa::where('slug', $slug)->first();
 

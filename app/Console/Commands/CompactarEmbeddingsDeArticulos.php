@@ -24,7 +24,7 @@ use Illuminate\Console\Command;
  *   re-indexados) es poco y lo resuelve la búsqueda sola. Sirve también a mano, para reparar de un
  *   saque un catálogo que un frente viejo re-indexó entero.
  * - NO llama a OpenAI: re-empaqueta el vector que ya está en `articles.embedding`. Por eso no lo
- *   frena `EMBEDDINGS_GENERACION_PAUSADA` ni el gate de la extensión `whatsapp_ia`, y no cuesta
+ *   frena `EMBEDDINGS_GENERACION_PAUSADA` ni el gate de la extensión `agentes_ia`, y no cuesta
  *   plata.
  * - Es idempotente: solo toca los artículos sin compacto o con compacto viejo.
  *

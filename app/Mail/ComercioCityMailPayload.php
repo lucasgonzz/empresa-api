@@ -12,6 +12,8 @@ namespace App\Mail;
  * - paragraphs (string[]) Párrafos de texto, en orden
  * - detail_lines (array)  Lista de filas "etiqueta: valor". Cada ítem: label, value, opcional bold_label (bool)
  * - links (array)         Enlaces en el cuerpo. Cada ítem: text, url
+ * - highlight (array|null) Dato destacado en una caja grande y centrada (p. ej. un código de verificación), opcional.
+ *                         Claves: label (rótulo chico arriba), value (el dato grande), note (aclaración chica abajo)
  * - closing (string|null) Texto de cierre (p. ej. agradecimiento), opcional
  * - preheader (string|null) Texto de previsualización junto al asunto, opcional
  * - footer_links (array)  Íconos del pie. Cada ítem: img_url, link_url. Si no se envía, se usa defaultFooterLinks()
@@ -40,6 +42,15 @@ class ComercioCityMailPayload
      * @var array<int, array<string, string>>
      */
     public $links;
+
+    /**
+     * Dato destacado en una caja centrada entre los párrafos y el detalle (p. ej. el código de la
+     * recuperación de contraseña). Es opcional y ADITIVO: null = el cuerpo se arma exactamente como antes.
+     * Claves: label (rótulo chico), value (el dato, en grande), note (aclaración chica debajo).
+     *
+     * @var array<string, string>|null
+     */
+    public $highlight;
 
     /** @var string|null */
     public $closing;
@@ -74,7 +85,7 @@ class ComercioCityMailPayload
     }
 
     /**
-     * @param array<string, mixed> $data Claves: subject, title, paragraphs?, detail_lines?, links?, closing?, preheader?, footer_links?
+     * @param array<string, mixed> $data Claves: subject, title, paragraphs?, highlight?, detail_lines?, links?, closing?, preheader?, footer_links?
      */
     public function __construct(array $data)
     {
@@ -89,6 +100,9 @@ class ComercioCityMailPayload
         $this->links = isset($data['links']) && is_array($data['links'])
             ? $data['links']
             : [];
+        $this->highlight = isset($data['highlight']) && is_array($data['highlight']) && isset($data['highlight']['value'])
+            ? $data['highlight']
+            : null;
         $this->closing = array_key_exists('closing', $data) ? $data['closing'] : null;
         $this->preheader = array_key_exists('preheader', $data) ? $data['preheader'] : null;
 

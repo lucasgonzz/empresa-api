@@ -501,7 +501,7 @@ class CatalogoDeEscrituraIaHelper
             'solo_lectura'       => ['image_url', 'lat', 'lng', 'buyer_id', 'default_afip_information_id'],
             'claves_de_pantalla' => [],
             'ruta'               => ['name' => 'abm', 'params' => ['view' => 'sucursales', 'sub_view' => 'sucursales'], 'texto' => 'Ver en ABM'],
-            'aviso_de_baja'      => 'Solo se puede eliminar así si no tiene nada que decidir: si tiene stock, empleados asignados o es la sucursal por defecto, madre o de origen, hay que eliminarla desde ABM > Sucursales eligiendo qué hacer con cada cosa (pasar el stock a otra sucursal o descartarlo, a dónde van los empleados y qué sucursal la reemplaza).',
+            'aviso_de_baja'      => 'Solo se puede eliminar así si no tiene nada que decidir: si tiene stock, empleados asignados o es la sucursal por defecto, madre o de origen, hay que eliminarla desde ABM > Sucursales eligiendo qué hacer con cada cosa (pasar el stock a otra sucursal o descartarlo, a dónde van los empleados y qué sucursal la reemplaza). La ÚLTIMA sucursal del negocio no se puede eliminar por ningún camino: todo negocio trabaja con al menos una (hay que crear otra antes).',
             'aviso_de_alta'      => null,
             'extension'          => null,
             'revisado'           => 'AddressController: store() no lee phone ni email (update() sí); destroy() delega en EliminarSucursalHelper (misión eliminar-sucursal-con-stock, 5/10/2026): sin decisión (el genérico no la manda) responde 422 si la sucursal tiene stock, empleados o marcas; sin nada que decidir la borra y deja sus cajas, puntos de venta y clientes para todas las sucursales.',

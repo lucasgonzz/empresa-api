@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\caja;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Exceptions\OperacionDeCajaInvalidaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
@@ -14,7 +15,62 @@ use Illuminate\Support\Facades\Log;
 
 class MovimientoCajaHelper {
 
+	/** Valida y bloquea las cajas de una operación nueva hasta el commit del llamador. */
+	static function validar_cajas_para_operacion($caja_ids) {
+		$ids = array_unique(array_filter(array_map('intval', $caja_ids)));
+		sort($ids, SORT_NUMERIC);
+		foreach ($ids as $id) {
+			$caja = Caja::where('id', $id)->lockForUpdate()->first();
+			$apertura = $caja ? AperturaCaja::where('id', $caja->current_apertura_caja_id)
+				->where('caja_id', $id)->lockForUpdate()->first() : null;
+			if (!$caja || (int) $caja->abierta !== 1 || !$apertura || !is_null($apertura->cerrada_at)) {
+				$nombre = $caja ? $caja->name : ('N° '.$id);
+				// Una caja nunca abierta conserva el motivo histórico. No confundirla con
+				// una caja que tuvo turnos, pero cuyo turno actual ya no está disponible.
+				if ($caja && !$apertura && !AperturaCaja::where('caja_id', $id)->lockForUpdate()->first()) {
+					self::rechazar_operacion('La caja '.$nombre.' no tiene ninguna apertura registrada, asi que no puede recibir movimientos. Hay que abrirla primero.');
+				}
+				self::rechazar_operacion('La caja '.$nombre.' está cerrada o no tiene una apertura vigente. Abrila antes de registrar la operación.');
+			}
+		}
+	}
+
+	static function rechazar_operacion($mensaje, $campo = 'caja_id') {
+		$errores = [$campo => [$mensaje]];
+		$excepcion = OperacionDeCajaInvalidaException::withMessages($errores);
+		// El Handler de la aplicación reemplaza el mensaje nativo por uno genérico.
+		$excepcion->response = response()->json(['message' => $mensaje, 'errors' => $errores], 422);
+		throw $excepcion;
+	}
+
+	/** Solo las filas que el alta adjunta pueden generar un movimiento de caja. */
+	static function cajas_del_payload($filas) {
+		$ids = [];
+		foreach (is_array($filas) ? $filas : [] as $fila) {
+			if (isset($fila['amount']) && isset($fila['caja_id'])
+				&& isset($fila['current_acount_payment_method_id'])
+				&& \App\Models\CurrentAcountPaymentMethod::where('id', $fila['current_acount_payment_method_id'])->exists()) {
+				$ids[] = $fila['caja_id'];
+			}
+		}
+		return $ids;
+	}
+
 	function crear_movimiento($data) {
+		return DB::transaction(function () use ($data) {
+			// Los llamadores históricos que indican una apertura conservan su referencia.
+			// Una operación nueva sin apertura explícita solo puede usar el turno vigente.
+			if (empty($data['apertura_caja_id'])) {
+				self::validar_cajas_para_operacion([$data['caja_id']]);
+			} else {
+				Caja::where('id', $data['caja_id'])->lockForUpdate()->first();
+			}
+			return $this->persistir_movimiento($data);
+		});
+	}
+
+	/** Se ejecuta con la caja bloqueada y la transacción de crear_movimiento abierta. */
+	protected function persistir_movimiento($data) {
 
 		$this->caja_id = $data['caja_id'];
 
@@ -251,43 +307,15 @@ class MovimientoCajaHelper {
 		return $current_aperutra_caja_id;
 	}
 
-	/**
-	 * Ultima apertura de la caja donde va a impactar el movimiento.
-	 *
-	 * 🔴 Una caja SIN ninguna apertura no puede recibir movimientos: el movimiento nace colgado de
-	 * una apertura y de ahi salen el arqueo y el cierre. Hasta el 21/8/2026 aca se hacia
-	 * `$current_aperutra_caja->id` derecho, y con una caja nunca abierta eso tiraba
-	 * "Trying to get property 'id' of non-object" — un notice de PHP convertido en 500 que no le
-	 * decia a nadie cual era el problema real. El caso que lo destapo: un pago de cuenta corriente
-	 * repartido entre una caja en dolares (abierta, todos los dias) y una en pesos (nunca abierta);
-	 * el primer metodo impactaba, el segundo reventaba, y el pago quedaba a medias.
-	 *
-	 * NO se devuelve null para "seguir igual": el flujo se rompia igual dos lineas mas abajo, en
-	 * set_apertura_caja_ingresos_egresos(). Lo que cambia es el mensaje, no el desenlace.
-	 *
-	 * @return int Id de la apertura vigente.
-	 * @throws \Exception Si la caja no tiene ninguna apertura registrada.
-	 */
+	/** La apertura vigente real: puede ser una reapertura anterior a la última por fecha. */
 	function get_current_aperutra_caja() {
-
-		$current_aperutra_caja = AperturaCaja::where('caja_id', $this->caja_id)
-												->orderBy('created_at', 'DESC')
-												->first();
-
-		if (is_null($current_aperutra_caja)) {
-
-			$caja = Caja::find($this->caja_id);
-			$nombre_caja = !is_null($caja) && $caja->name ? $caja->name : ('N° '.$this->caja_id);
-
-			throw new \Exception('La caja '.$nombre_caja.' no tiene ninguna apertura registrada, asi que no puede recibir movimientos. Hay que abrirla primero.');
-		}
-
-		return $current_aperutra_caja->id;
+		self::validar_cajas_para_operacion([$this->caja_id]);
+		// Locking read para no volver a la foto vieja de REPEATABLE READ tras esperar el candado.
+		return Caja::where('id', $this->caja_id)->lockForUpdate()->first()->current_apertura_caja_id;
 	}
-
 	function set_saldos() {
 
-		$caja = Caja::find($this->movimiento_caja->caja_id);
+		$caja = Caja::where('id', $this->movimiento_caja->caja_id)->lockForUpdate()->first();
 		$saldo_actual = $caja->saldo;
 
 		$saldo = null;
@@ -311,12 +339,12 @@ class MovimientoCajaHelper {
 
 	function set_apertura_caja_ingresos_egresos($apertura_caja_id) {
 
-		$apertura_caja = AperturaCaja::find($apertura_caja_id);
+		$apertura_caja = AperturaCaja::where('id', $apertura_caja_id)->lockForUpdate()->first();
 
 		$total_ingresos = 0;
 		$total_egresos = 0;
 
-		foreach ($apertura_caja->movimientos_caja as $movimiento) {
+		foreach (MovimientoCaja::where('apertura_caja_id', $apertura_caja_id)->lockForUpdate()->get() as $movimiento) {
 			
 			if (!is_null($movimiento->ingreso)) {
 

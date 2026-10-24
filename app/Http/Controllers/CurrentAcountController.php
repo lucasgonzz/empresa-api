@@ -120,11 +120,8 @@ class CurrentAcountController extends Controller
          * Validar despues no alcanza: para cuando falla, la mitad del trabajo ya esta persistida.
          * Es la misma convencion que ya usa delete() de este mismo controlador para el borrado.
          *
-         * 🔴 Lo que se valida es que la caja tenga ALGUNA apertura, no que este abierta ahora. Una
-         * caja cerrada con aperturas previas registra el movimiento sin problema (se cuelga de la
-         * ultima) y asi funciona hoy en todos los flujos: rechazarla seria romperle el cobro a
-         * cualquier comercio que cierra la caja a la noche. Ver el detalle del criterio en
-         * CurrentAcountCajaHelper::cajas_sin_apertura_en_payload().
+         * Este prechequeo detecta cajas nunca abiertas; el alta vuelve a validar el turno
+         * vigente bajo lock dentro de la transacción y también rechaza las cajas cerradas.
          */
         $cajas_sin_apertura = CurrentAcountCajaHelper::cajas_sin_apertura_en_payload($request->current_acount_payment_methods);
 
@@ -153,7 +150,8 @@ class CurrentAcountController extends Controller
         list($error_de_monedas, $filas_normalizadas) = CurrentAcountPagoMonedaHelper::validar_y_normalizar(
             $request->credit_account_id,
             $request->current_acount_payment_methods,
-            $request->to_pay
+            $request->to_pay,
+            $request->to_pay_ids
         );
 
         if (!is_null($error_de_monedas)) {
@@ -197,7 +195,7 @@ class CurrentAcountController extends Controller
          * imputación contra los débitos y la cuota) vive en CurrentAcountPagoAltaHelper::registrar()
          * desde la misión asistente-ia-acciones (15/9/2026), junto con get_haber(): el asistente de
          * IA registra pagos por el MISMO camino, adentro de su propia transacción. Acá queda lo que
-         * es del HTTP: la prevalidación de cajas de arriba, armar las 12 claves que el alta le leía
+         * es del HTTP: la prevalidación de cajas de arriba, armar las claves que el alta le leía
          * al request, la notificación y la respuesta. El payload y las respuestas de
          * `POST api/current-acount/pago` no cambiaron.
          */
@@ -949,6 +947,9 @@ class CurrentAcountController extends Controller
             DB::rollBack();
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
+            if ($e instanceof \Illuminate\Validation\ValidationException) {
+                throw $e;
+            }
             report($e);
 
             return response()->json(['error' => true], 500);

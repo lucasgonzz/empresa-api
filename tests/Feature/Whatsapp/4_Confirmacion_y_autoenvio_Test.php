@@ -17,6 +17,7 @@ use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\TestCase;
 
 /**
@@ -43,9 +44,10 @@ use Tests\TestCase;
 class Confirmacion_y_autoenvio_Test extends TestCase
 {
     use DatabaseTransactions;
+    use OtorgaAgentesIa;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Teléfono del cliente final. */
     const PHONE = '5493416002233';
@@ -85,6 +87,9 @@ class Confirmacion_y_autoenvio_Test extends TestCase
             'password'     => Hash::make('secret'),
         ]);
 
+        // Misión agentes-ia-extension-unica (22/10/2026): el módulo de WhatsApp y el bot son de `agentes_ia`.
+        $this->otorgar_agentes_ia($this->comercio);
+
         $this->empleado = User::create([
             'name'     => 'Empleado whatsapp F8-4',
             'email'    => 'whatsapp-f8-4-empleado-' . uniqid() . '@test.local',
@@ -120,7 +125,7 @@ class Confirmacion_y_autoenvio_Test extends TestCase
             ]);
         }
 
-        $this->comercio->extencions()->attach($extencion->id);
+        $this->comercio->extencions()->syncWithoutDetaching([$extencion->id]);
         $this->comercio->load('extencions');
     }
 

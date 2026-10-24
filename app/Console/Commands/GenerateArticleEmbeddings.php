@@ -20,7 +20,7 @@ use Illuminate\Console\Command;
  * - Artículos modificados desde la última generación (updated_at > embedding_generated_at).
  *
  * Solo se ejecuta si el usuario dueño de la instancia tiene activa la extensión
- * "whatsapp_ia". Si hay una importación en proceso para ese usuario, el comando
+ * "agentes_ia". Si hay una importación en proceso para ese usuario, el comando
  * se saltea para evitar generar embeddings de artículos que pueden estar cambiando.
  *
  * Uso manual:
@@ -45,7 +45,7 @@ class GenerateArticleEmbeddings extends Command
      *
      * @var string
      */
-    protected $description = 'Despacha jobs para generar embeddings vectoriales de artículos pendientes (requiere extensión whatsapp_ia)';
+    protected $description = 'Despacha jobs para generar embeddings vectoriales de artículos pendientes (requiere extensión agentes_ia)';
 
     /**
      * Ejecuta el comando: verifica extensión activa, importaciones en curso y despacha
@@ -73,7 +73,7 @@ class GenerateArticleEmbeddings extends Command
 
         /*
          * Pausa global (misión busqueda-lenta-y-pausa-embeddings): interruptor independiente de la
-         * extensión whatsapp_ia, para poder cortar la generación en TODO el parque de un saque sin
+         * extensión agentes_ia, para poder cortar la generación en TODO el parque de un saque sin
          * ir comercio por comercio desactivando la extensión (que además apagaría con eso la
          * búsqueda del bot de WhatsApp para quien ya la esté usando). Va ANTES del gate de la
          * extensión a propósito: a diferencia del aviso de OPENAI_API_KEY de más abajo -que sigue
@@ -94,8 +94,8 @@ class GenerateArticleEmbeddings extends Command
             return 0;
         }
 
-        // Solo procesar si el usuario tiene la extensión whatsapp_ia activa.
-        if (! UserHelper::hasExtencion('whatsapp_ia', $user)) {
+        // Solo procesar si el usuario tiene la extensión agentes_ia activa.
+        if (! UserHelper::hasExtencion('agentes_ia', $user)) {
             // Silencioso en scheduler; el usuario simplemente no tiene la extensión.
             return 0;
         }
@@ -103,7 +103,7 @@ class GenerateArticleEmbeddings extends Command
         /*
          * Sin clave de OpenAI no hay nada que despachar (misión optimizacion-vps-fase1, 4.0.24).
          *
-         * Va DESPUÉS del gate de la extensión (que sigue silencioso: las instancias sin whatsapp_ia
+         * Va DESPUÉS del gate de la extensión (que sigue silencioso: las instancias sin agentes_ia
          * no tienen por qué ver un aviso cada 30 minutos) y ANTES de tocar la base. El caso real:
          * el .env del segundo frente de ferretotal se instaló sin OPENAI_API_KEY y este comando
          * siguió encolando cada media hora — 35.324 jobs fallidos (401 de OpenAI, tres intentos

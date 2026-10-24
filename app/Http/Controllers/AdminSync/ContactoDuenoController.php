@@ -12,7 +12,7 @@ use Illuminate\Http\JsonResponse;
  *
  * POR QUÉ EXISTE Y NO SE REUSÓ OTRO ENDPOINT. El único endpoint de este canal que
  * hoy devuelve `email` es `admin-sync/mostrador/duenos`, pero filtra por
- * `whereHas('extencions', slug = asistente_ia)`: para un cliente sin esa extensión
+ * `whereHas('extencions', slug = agentes_ia)`: para un cliente sin esa extensión
  * —que son la mayoría— devuelve la lista vacía. `branding/{user_id?}` y
  * `mensualidad-info/{user_id?}` no traen el email, y agregárselo a `branding`
  * mezclaría la casilla del dueño con la identidad visual del comercio.

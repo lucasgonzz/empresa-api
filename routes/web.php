@@ -54,15 +54,21 @@ Route::post('version-session-token', 'CommonLaravel\AuthController@create_versio
 Route::post('login-from-version-session-token', 'CommonLaravel\AuthController@login_from_version_session_token');
 
 // Password Reset
+/*
+ * Cada paso tiene su throttle por IP (limiters `recuperar-clave-*` de RouteServiceProvider::boot(),
+ * misión throttle-recuperar-clave-por-ip). Es una capa extra: la protección por cuenta (intentos y
+ * códigos por hora) sigue en PasswordResetController. `ip()` es spoofable por X-Forwarded-For: es un
+ * freno para un script torpe, no una defensa real (ver el comentario del limiter).
+ */
 Route::post('/password-reset/send-verification-code',
 	'CommonLaravel\PasswordResetController@sendVerificationCode'
-);
+)->middleware('throttle:recuperar-clave-pedir');
 Route::post('/password-reset/check-verification-code',
 	'CommonLaravel\PasswordResetController@checkVerificationCode'
-);
+)->middleware('throttle:recuperar-clave-verificar');
 Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
-);
+)->middleware('throttle:recuperar-clave-cambiar');
 
 /*
  * Las tres rutas de abajo son PUBLICAS (routes/web.php se monta con el grupo 'web', que no tiene

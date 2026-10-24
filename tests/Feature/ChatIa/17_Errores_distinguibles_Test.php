@@ -39,7 +39,7 @@ class Errores_distinguibles_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita el chat. */
-    const SLUG = 'asistente_ia';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;

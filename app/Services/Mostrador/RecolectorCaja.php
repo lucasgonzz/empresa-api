@@ -14,6 +14,7 @@ use App\Models\WhatsappBotConfig;
 use App\Services\RecordatorioCobroSenderService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Hechos del informe "Caja y vencimientos" (tipo 'caja', misión mostrador-caja-vencimientos):
@@ -79,7 +80,7 @@ class RecolectorCaja extends RecolectorBase
     const MONEDA_DOLARES = 2;
 
     /** Extensión que habilita el recordatorio de cobro: el mismo gate que el botón de Cobros.vue. */
-    const EXTENSION_WHATSAPP = 'whatsapp';
+    const EXTENSION_WHATSAPP = 'agentes_ia';
 
     /** Motivo de `aplica: false`. */
     const MOTIVO_NO_APLICA = 'Sin cajas, deudas, cheques ni tareas en la agenda';
@@ -165,7 +166,9 @@ class RecolectorCaja extends RecolectorBase
             return true;
         }
 
-        if (DB::table('payment_plan_cuotas')->where('user_id', $owner->id)->where('estado', 'pendiente')->exists()) {
+        // Con el mismo criterio de moneda que el bloque de cuotas: un dueño con solo cuotas en
+        // dólares no tiene nada que mostrar ahí.
+        if ($this->solo_cuotas_en_pesos(DB::table('payment_plan_cuotas')->where('user_id', $owner->id)->where('estado', 'pendiente'))->exists()) {
             return true;
         }
 
@@ -758,6 +761,11 @@ class RecolectorCaja extends RecolectorBase
      * vencidas. Con el filtro igual puede colarse una cuota ya pagada de un cliente que debe por
      * otra cosa: la skill no la afirma como deuda cierta.
      *
+     * 🔴 Y SOLO cuotas en pesos (misión planes-de-pago-saldo-y-dolares, 21/10/2026): desde que los
+     * planes llevan la moneda de su venta, una cuota en dólares se sumaría como pesos al total del
+     * bloque. NULL y 1 son pesos (la columna nace con default 1). La guarda de `hasColumn` cubre la
+     * ventana del despliegue en la que el código ya llegó y la migración todavía no corrió.
+     *
      * @param User $owner
      * @return \Illuminate\Database\Query\Builder
      */
@@ -768,10 +776,29 @@ class RecolectorCaja extends RecolectorBase
             ->havingRaw('SUM(saldo) > 0')
             ->select('model_id');
 
-        return DB::table('payment_plan_cuotas')
+        return $this->solo_cuotas_en_pesos(DB::table('payment_plan_cuotas')
             ->where('payment_plan_cuotas.user_id', $owner->id)
             ->where('payment_plan_cuotas.estado', 'pendiente')
-            ->whereIn('payment_plan_cuotas.client_id', $clientes_con_deuda);
+            ->whereIn('payment_plan_cuotas.client_id', $clientes_con_deuda));
+    }
+
+    /**
+     * Deja solo las cuotas en pesos (NULL o distinta de 2). Sin la columna todavía (ventana del
+     * despliegue), todas lo son.
+     *
+     * @param \Illuminate\Database\Query\Builder $consulta Sobre `payment_plan_cuotas`.
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function solo_cuotas_en_pesos($consulta)
+    {
+        if (Schema::hasColumn('payment_plan_cuotas', 'moneda_id')) {
+            $consulta->where(function ($q) {
+                $q->whereNull('payment_plan_cuotas.moneda_id')
+                    ->orWhere('payment_plan_cuotas.moneda_id', '<>', 2);
+            });
+        }
+
+        return $consulta;
     }
 
     /**
@@ -907,7 +934,7 @@ class RecolectorCaja extends RecolectorBase
      * MISMA regla que el modal y el envío masivo: no se reimplementa nada.
      *
      * Los cortes van en el orden del RecordatorioCobroController:
-     *   1. sin la extensión whatsapp no hay botón (y no se consulta nada más);
+     *   1. sin la extensión agentes_ia no hay botón (y no se consulta nada más);
      *   2. un cliente borrado o de otro negocio no se encuentra (el preview responde 404);
      *   3. sin ventas sin cobrar el preview responde 422 (`sin_ventas`);
      *   4. el resto lo decide RecordatorioCobroSenderService::motivo_de_salteo(), que es solo

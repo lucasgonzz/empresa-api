@@ -76,7 +76,7 @@ class PdfColumnProfile extends Model
          * Esquema:
          * {
          *   "emisor": {
-         *     "izquierda": ["razon_social", "domicilio_comercial", "condicion_iva"],
+         *     "izquierda": ["razon_social", "domicilio_comercial", "sucursal_comprobante", "condicion_iva"],
          *     "derecha": ["numero_comprobante", "fecha_emision", "cuit", "ingresos_brutos", "inicio_actividades"]
          *   },
          *   "receptor": {
@@ -88,6 +88,11 @@ class PdfColumnProfile extends Model
          * - Emisor (ubicables en izquierda/derecha): razon_social, domicilio_comercial, condicion_iva,
          *   punto_venta (solo perfiles fiscales), cuit, ingresos_brutos, inicio_actividades,
          *   numero_comprobante, fecha_emision, web, telefono, email.
+         * - Sucursales del emisor (misión pdf-direccion-sucursales, 23/10/2026; ubicables en
+         *   izquierda/derecha, en perfiles fiscales y no fiscales, nunca obligatorios):
+         *   sucursal_comprobante (la sucursal de la venta / presupuesto / pedido), todas_las_sucursales
+         *   (un renglón por sucursal del dueño) y sucursal_<id> (una puntual). Los resuelve
+         *   SucursalesDelEncabezadoPdf; un id ajeno o de una sucursal que ya no existe no imprime nada.
          * - Estructural fijo (NO va en el JSON, no se puede mover): nombre del negocio (título 18pt),
          *   recuadro de la letra, logo.
          * - Receptor izquierda (remito negro, ubicables/ordenables): cliente_nombre, cliente_telefono,
@@ -97,7 +102,8 @@ class PdfColumnProfile extends Model
          * - Perfiles fiscales (AFIP): el bloque receptor es fijo por requisito fiscal (no configurable).
          *   En el emisor, los campos fiscales obligatorios (razon_social, domicilio_comercial,
          *   condicion_iva, punto_venta, cuit, ingresos_brutos, inicio_actividades, numero_comprobante,
-         *   fecha_emision) no se pueden ocultar; solo se pueden sumar/ordenar web/telefono/email.
+         *   fecha_emision) no se pueden ocultar; solo se pueden sumar/ordenar web/telefono/email y
+         *   los chips de sucursal.
          */
         'header_layout' => 'array',
         /**
@@ -145,6 +151,16 @@ class PdfColumnProfile extends Model
          * Un diseño con page_layout ignora esos flags: lo que se imprime lo dicen las cajas.
          */
         'page_layout' => 'array',
+        /**
+         * Negrita en el VALOR de las columnas de la tabla (misión pdf-negrita-perfil, 20/10/2026):
+         * lista de ids de `pdf_column_options` cuyo valor se imprime en negrita, p. ej. [3, 7]. El
+         * encabezado de la tabla ya es negrita siempre. NULL (o columna sin migrar todavía) = ninguna
+         * en negrita: el PDF sale como siempre. Normaliza PdfNegritaHelper::normalize_bold_columns().
+         *
+         * Va en el perfil y no en el pivot a propósito: los pivots se leen con withPivot() explícito,
+         * y una columna nueva ahí rompería los PDF con tabla entre la subida del código y el migrate.
+         */
+        'bold_columns' => 'array',
         /**
          * Alto de la hoja en mm. Solo lo usa el PDF con page_layout; null = 297 (A4).
          */
@@ -235,6 +251,9 @@ class PdfColumnProfile extends Model
     {
         // Emisor: identidad (razón social, domicilio, condición IVA) a la izquierda;
         // datos del comprobante y fiscales a la derecha.
+        // La sucursal del comprobante va pegada al Domicilio Comercial (misión
+        // pdf-direccion-sucursales, D6): un perfil sin header_layout guardado la imprime sin comando.
+        // En fiscal no es obligatoria (ver AfipPdfHelper::enforce_fiscal_required_fields()).
         $emisor_derecha = [
             'numero_comprobante',
             'fecha_emision',
@@ -251,7 +270,7 @@ class PdfColumnProfile extends Model
 
         return [
             'emisor' => [
-                'izquierda' => ['razon_social', 'domicilio_comercial', 'condicion_iva'],
+                'izquierda' => ['razon_social', 'domicilio_comercial', 'sucursal_comprobante', 'condicion_iva'],
                 'derecha' => $emisor_derecha,
             ],
             // Receptor: solo aplica al remito negro (izquierda configurable);

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\ListadoPorFechaPaginadoHelper;
 use App\Http\Controllers\Helpers\ProductionMovementHelper;
 use App\Models\OrderProductionStatus;
 use App\Models\ProductionMovement;
@@ -72,7 +73,19 @@ class ProductionMovementController extends Controller
         return response()->json(['response' => $response], 200);
     }
 
-    public function index($from_date = null, $until_date = null) {
+    /**
+     * Listado "Por fecha" de movimientos de producción.
+     *
+     * Con `per_page` en la query string (modo opt-in, ver `ListadoPorFechaPaginadoHelper`) responde UNA
+     * página del día o del rango, con `models` como paginador de Laravel. Sin `per_page` responde el
+     * array entero de siempre.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  string|null $from_date  Fecha desde (Y-m-d); null no filtra por fecha.
+     * @param  string|null $until_date Fecha hasta (Y-m-d); null filtra solo el día de `from_date`.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function index(Request $request, $from_date = null, $until_date = null) {
         $models = ProductionMovement::where('user_id', $this->userId())
                         ->orderBy('created_at', 'DESC')
                         ->withAll();
@@ -84,6 +97,10 @@ class ProductionMovementController extends Controller
             } else {
                 $models = $models->whereDate('created_at', $from_date);
             }
+        }
+
+        if (ListadoPorFechaPaginadoHelper::pide_paginado($request)) {
+            return response()->json(ListadoPorFechaPaginadoHelper::respuesta($models, $request), 200);
         }
 
         $models = $models->get();

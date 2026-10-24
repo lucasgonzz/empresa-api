@@ -43,7 +43,7 @@ class Embeddings_observer_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que habilita la vectorización del catálogo. */
-    const SLUG = 'whatsapp_ia';
+    const SLUG = 'agentes_ia';
 
     /** Variable de la pausa global (misión busqueda-lenta-y-pausa-embeddings, 14/9/2026). */
     const VARIABLE_PAUSA = 'EMBEDDINGS_GENERACION_PAUSADA';

@@ -105,10 +105,10 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
 
         $this->confianza_original = $this->dueno->agente_confianza;
 
-        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
         if (is_null($extencion)) {
-            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Asistente IA']);
         }
 
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
@@ -877,11 +877,14 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $this->assertStringContainsString('proponer_borrado_por_pantalla', $masiva['error']);
 
         // Una ruta con extensión que el dueño no tiene.
-        $this->assertFalse(PermisosIaHelper::tiene_extencion($this->dueno, 'sugerencias_compras'), 'El fixture no trae la extensión sugerencias_compras');
-        $this->assertSame('sugerencias_compras', Catalogo::declaracion('POST', 'api/purchase-suggestion/{id}/create-provider-order')['extension']);
+        // Misión agentes-ia-extension-unica (22/10/2026): las sugerencias de compra pasaron a `agentes_ia`,
+        // que el fixture SÍ trae (es la del asistente). Se usa otra ruta con extensión propia que el fixture
+        // no tiene —el motor de ofertas— y el resto de la prueba sigue exigiendo lo mismo.
+        $this->assertFalse(PermisosIaHelper::tiene_extencion($this->dueno, 'motor_de_ofertas'), 'El fixture no trae la extensión motor_de_ofertas');
+        $this->assertSame('motor_de_ofertas', Catalogo::declaracion('POST', 'api/offer-suggestion')['extension']);
 
         $sin_extension = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
-            'metodo' => 'POST', 'ruta' => 'api/purchase-suggestion/{id}/create-provider-order', 'parametros' => ['id' => 1], 'descripcion' => 'Crear el pedido',
+            'metodo' => 'POST', 'ruta' => 'api/offer-suggestion', 'parametros' => [], 'descripcion' => 'Crear la oferta',
         ]);
 
         $this->assertFalse($sin_extension['ok']);

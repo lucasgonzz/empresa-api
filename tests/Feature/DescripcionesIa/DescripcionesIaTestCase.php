@@ -9,6 +9,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\EmpresaTestCase;
 
 /**
@@ -25,6 +26,8 @@ use Tests\EmpresaTestCase;
  */
 abstract class DescripcionesIaTestCase extends EmpresaTestCase
 {
+    use OtorgaAgentesIa;
+
     /** @var \App\Models\User Comercio nuevo de cada test (el que actúa). */
     protected $owner;
 
@@ -51,12 +54,17 @@ abstract class DescripcionesIaTestCase extends EmpresaTestCase
      */
     protected function crear_comercio($nombre)
     {
-        return User::create([
+        $comercio = User::create([
             'name'         => $nombre,
             'company_name' => $nombre,
             'email'        => 'descripciones-'.uniqid().'@test.local',
             'password'     => Hash::make('secret'),
         ]);
+
+        // Misión agentes-ia-extension-unica (22/10/2026): las descripciones con IA son de `agentes_ia`; el comercio de prueba la paga.
+        $this->otorgar_agentes_ia($comercio);
+
+        return $comercio;
     }
 
     /**

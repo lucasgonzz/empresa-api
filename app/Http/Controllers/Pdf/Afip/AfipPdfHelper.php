@@ -8,6 +8,8 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PdfLayout\SucursalesDelEncabezadoPdf;
+use App\Http\Controllers\Helpers\PdfNegritaHelper;
 use Carbon\Carbon;
 
 /**
@@ -313,6 +315,8 @@ class AfipPdfHelper
             'layout_izquierda' => isset($layout['emisor']['izquierda']) ? $layout['emisor']['izquierda'] : [],
             'layout_derecha' => isset($layout['emisor']['derecha']) ? $layout['emisor']['derecha'] : [],
             'field_values' => $field_values,
+            /** Keys cuyo valor va en negrita (header_layout.bold, misión pdf-negrita-perfil). */
+            'bold_keys' => PdfNegritaHelper::header_bold_keys($layout),
         ];
 
         /**
@@ -502,6 +506,8 @@ class AfipPdfHelper
             'layout_izquierda' => isset($layout['emisor']['izquierda']) ? $layout['emisor']['izquierda'] : [],
             'layout_derecha' => isset($layout['emisor']['derecha']) ? $layout['emisor']['derecha'] : [],
             'field_values' => $field_values,
+            /** Keys cuyo valor va en negrita (header_layout.bold, misión pdf-negrita-perfil). */
+            'bold_keys' => PdfNegritaHelper::header_bold_keys($layout),
         ];
 
         self::print_emisor_header_block($pdf, $descriptor);
@@ -692,16 +698,18 @@ class AfipPdfHelper
      * @param float $width Ancho total de la línea.
      * @param int $font_size Tamaño de fuente.
      * @param int $line_height Alto de línea.
+     * @param string $value_style Estilo FPDF del VALOR: '' (normal, lo de siempre) o 'B' (negrita pedida
+     *     en el perfil, misión pdf-negrita-perfil). El rótulo es siempre negrita.
      * @return void
      */
-    protected static function print_label_value_line($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    protected static function print_label_value_line($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4, $value_style = ''): void
     {
         $pdf->x = $x;
         $pdf->SetFont('Arial', 'B', $font_size);
         $label_width = $pdf->GetStringWidth($label);
         $pdf->Cell($label_width, $line_height, $label, 0, 0, 'L');
 
-        $pdf->SetFont('Arial', '', $font_size);
+        $pdf->SetFont('Arial', $value_style, $font_size);
         $value_width = $width - $label_width;
         if ($value_width > 0) {
             $pdf->Cell($value_width, $line_height, (string) $value, 0, 1, 'L');
@@ -725,15 +733,15 @@ class AfipPdfHelper
      * @param int    $line_height
      * @return void
      */
-    protected static function print_label_value_fit($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    protected static function print_label_value_fit($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4, $value_style = ''): void
     {
         if (self::tiene_geometria($pdf)) {
-            self::print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size, $line_height);
+            self::print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
 
             return;
         }
 
-        self::print_label_value_auto($pdf, $label, $value, $x, $width, $font_size, $line_height);
+        self::print_label_value_auto($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
     }
 
     /**
@@ -755,17 +763,18 @@ class AfipPdfHelper
      * @param float  $width
      * @param int    $font_size
      * @param int    $line_height
+     * @param string $value_style '' (valor normal, lo de siempre) o 'B' (valor en negrita).
      * @return void
      */
-    protected static function print_label_value_auto($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    protected static function print_label_value_auto($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4, $value_style = ''): void
     {
-        if (self::label_value_fits($pdf, $label, $value, $width, $font_size)) {
-            self::print_label_value_line($pdf, $label, $value, $x, $width, $font_size, $line_height);
+        if (self::label_value_fits($pdf, $label, $value, $width, $font_size, $value_style)) {
+            self::print_label_value_line($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
 
             return;
         }
 
-        self::print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size, $line_height);
+        self::print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
     }
 
     /**
@@ -778,15 +787,16 @@ class AfipPdfHelper
      * @param string $value
      * @param float  $width
      * @param int    $font_size
+     * @param string $value_style '' (valor normal) o 'B': el valor se mide con la fuente con la que se imprime.
      * @return bool
      */
-    protected static function label_value_fits($pdf, $label, $value, $width, $font_size = 9): bool
+    protected static function label_value_fits($pdf, $label, $value, $width, $font_size = 9, $value_style = ''): bool
     {
         $pdf->SetFont('Arial', 'B', $font_size);
         /** El rótulo se mide como lo mide print_label_value_line(): ahí empieza el valor. */
         $label_width = $pdf->GetStringWidth($label);
 
-        $pdf->SetFont('Arial', '', $font_size);
+        $pdf->SetFont('Arial', $value_style, $font_size);
         $value_width = self::ancho_impreso($pdf, (string) $value);
 
         return $label_width + $value_width + self::MARGEN_DE_CELDA <= $width;
@@ -821,9 +831,10 @@ class AfipPdfHelper
      * @param float  $width
      * @param int    $font_size
      * @param int    $line_height
+     * @param string $value_style '' (valor normal) o 'B' (valor en negrita; el corte en renglones se mide igual).
      * @return void
      */
-    protected static function print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    protected static function print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4, $value_style = ''): void
     {
         $pdf->SetFont('Arial', 'B', $font_size);
         /** El rótulo se mide como lo mide print_label_value_line(): ahí empieza el valor. */
@@ -835,12 +846,12 @@ class AfipPdfHelper
 
         /** Una columna en la que ni el rótulo entra: como antes, con Write(). */
         if ($ancho_primera <= 0) {
-            self::print_label_value_write($pdf, $label, $value, $x, $width, $font_size, $line_height);
+            self::print_label_value_write($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
 
             return;
         }
 
-        $pdf->SetFont('Arial', '', $font_size);
+        $pdf->SetFont('Arial', $value_style, $font_size);
         $renglones = self::partir_texto($pdf, (string) $value, $ancho_primera, $ancho_resto);
 
         foreach ($renglones as $indice => $texto) {
@@ -849,7 +860,7 @@ class AfipPdfHelper
             if ($indice === 0) {
                 $pdf->SetFont('Arial', 'B', $font_size);
                 $pdf->Cell($label_width, $line_height, $label, 0, 0, 'L');
-                $pdf->SetFont('Arial', '', $font_size);
+                $pdf->SetFont('Arial', $value_style, $font_size);
                 $pdf->Cell($width - $label_width, $line_height, $texto, 0, 1, 'L');
 
                 continue;
@@ -964,22 +975,23 @@ class AfipPdfHelper
      * @param float $width Ancho total disponible de la columna.
      * @param int $font_size Tamaño de fuente.
      * @param int $line_height Alto de línea.
+     * @param string $value_style '' (valor normal, lo de siempre) o 'B' (valor en negrita).
      * @return void
      */
-    protected static function print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    protected static function print_label_value_multiline($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4, $value_style = ''): void
     {
         /**
          * Lo que entra en un renglón sale exactamente como siempre (Write). Lo que no entra lo corta
          * print_label_value_wrapped(), que corta un mail o una web después de la @, el punto o la
          * barra en vez de partirlos por la mitad de una palabra (15/10/2026).
          */
-        if (!self::label_value_fits($pdf, $label, $value, $width, $font_size)) {
-            self::print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size, $line_height);
+        if (!self::label_value_fits($pdf, $label, $value, $width, $font_size, $value_style)) {
+            self::print_label_value_wrapped($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
 
             return;
         }
 
-        self::print_label_value_write($pdf, $label, $value, $x, $width, $font_size, $line_height);
+        self::print_label_value_write($pdf, $label, $value, $x, $width, $font_size, $line_height, $value_style);
     }
 
     /**
@@ -994,9 +1006,10 @@ class AfipPdfHelper
      * @param float  $width
      * @param int    $font_size
      * @param int    $line_height
+     * @param string $value_style '' (valor normal) o 'B' (valor en negrita).
      * @return void
      */
-    protected static function print_label_value_write($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4): void
+    protected static function print_label_value_write($pdf, $label, $value, $x, $width, $font_size = 9, $line_height = 4, $value_style = ''): void
     {
         /**
          * Establecer márgenes temporales para que Write() haga el wrap desde $x.
@@ -1011,7 +1024,7 @@ class AfipPdfHelper
         $pdf->SetFont('Arial', 'B', $font_size);
         $pdf->Write($line_height, $label);
 
-        $pdf->SetFont('Arial', '', $font_size);
+        $pdf->SetFont('Arial', $value_style, $font_size);
         $pdf->Write($line_height, (string) $value);
 
         $pdf->Ln($line_height);
@@ -1035,6 +1048,8 @@ class AfipPdfHelper
      * @param float $width Ancho total del renglón.
      * @param int $font_size Tamaño de fuente.
      * @param int $line_height Alto de línea.
+     * @param string $style_a Estilo del primer valor: '' (normal) o 'B' (negrita).
+     * @param string $style_b Estilo del segundo valor: '' (normal) o 'B' (negrita).
      * @return void
      */
     protected static function print_label_value_pair_line(
@@ -1046,7 +1061,9 @@ class AfipPdfHelper
         $x,
         $width,
         $font_size = 9,
-        $line_height = 4
+        $line_height = 4,
+        $style_a = '',
+        $style_b = ''
     ): void {
         /**
          * Mitad izquierda: primer par label/valor (p. ej. Punto de Venta).
@@ -1058,7 +1075,7 @@ class AfipPdfHelper
         $label_a_width = $pdf->GetStringWidth($label_a);
         $pdf->Cell($label_a_width, $line_height, $label_a, 0, 0, 'L');
 
-        $pdf->SetFont('Arial', '', $font_size);
+        $pdf->SetFont('Arial', $style_a, $font_size);
         $value_a_width = $half_width - $label_a_width;
         if ($value_a_width > 0) {
             $pdf->Cell($value_a_width, $line_height, (string) $value_a, 0, 0, 'L');
@@ -1071,7 +1088,7 @@ class AfipPdfHelper
         $label_b_width = $pdf->GetStringWidth($label_b);
         $pdf->Cell($label_b_width, $line_height, $label_b, 0, 0, 'L');
 
-        $pdf->SetFont('Arial', '', $font_size);
+        $pdf->SetFont('Arial', $style_b, $font_size);
         $value_b_width = $width - ($pdf->x - $x) - $label_b_width;
         if ($value_b_width > 0) {
             $pdf->Cell($value_b_width, $line_height, (string) $value_b, 0, 1, 'L');
@@ -1090,16 +1107,24 @@ class AfipPdfHelper
      * @param string $label_b
      * @param string $value_b
      * @param float  $width
+     * @param string $style_a Estilo del primer valor ('' o 'B'): se mide con la fuente con la que se imprime.
+     * @param string $style_b Estilo del segundo valor ('' o 'B').
      * @return bool
      */
-    protected static function pair_line_fits($pdf, $label_a, $value_a, $label_b, $value_b, $width): bool
+    protected static function pair_line_fits($pdf, $label_a, $value_a, $label_b, $value_b, $width, $style_a = '', $style_b = ''): bool
     {
         $pdf->SetFont('Arial', 'B', self::$header_row_font_size);
         $label_a_width = $pdf->GetStringWidth($label_a);
         $label_b_width = $pdf->GetStringWidth($label_b);
 
-        $pdf->SetFont('Arial', '', self::$header_row_font_size);
+        $pdf->SetFont('Arial', $style_a, self::$header_row_font_size);
         $value_a_width = $pdf->GetStringWidth((string) $value_a);
+
+        /** Solo se vuelve a elegir la fuente si el segundo valor tiene otro estilo (sin negrita: una sola vez, como siempre). */
+        if ($style_b !== $style_a) {
+            $pdf->SetFont('Arial', $style_b, self::$header_row_font_size);
+        }
+
         $value_b_width = $pdf->GetStringWidth((string) $value_b);
 
         return ($label_a_width + $value_a_width) <= ($width / 2)
@@ -1124,6 +1149,8 @@ class AfipPdfHelper
      *     @var array<int, string> $layout_derecha Claves de header_layout['emisor']['derecha'].
      *     @var array<string, string> $field_values Mapa clave => valor ya resuelto por
      *         build_emisor_field_values() (incluye '__owner_name' interno, no es una clave de layout).
+     *     @var array<int, string> $bold_keys Opcional. Keys de campos cuyo VALOR va en negrita
+     *         (header_layout.bold). Sin la clave, ningún valor en negrita: el encabezado de siempre.
      * }
      * @return void
      */
@@ -1144,6 +1171,17 @@ class AfipPdfHelper
         $layout_izquierda = $descriptor['layout_izquierda'];
         $layout_derecha = $descriptor['layout_derecha'];
         $field_values = $descriptor['field_values'];
+        $bold_keys = isset($descriptor['bold_keys']) ? $descriptor['bold_keys'] : [];
+
+        /**
+         * No repetir el domicilio (misión pdf-direccion-sucursales): si este encabezado imprime el
+         * Domicilio Comercial, una sucursal con ese mismo domicilio no sale otra vez.
+         */
+        $imprime_domicilio = (is_array($layout_izquierda) && in_array('domicilio_comercial', $layout_izquierda, true))
+            || (is_array($layout_derecha) && in_array('domicilio_comercial', $layout_derecha, true));
+        if ($imprime_domicilio && isset($field_values['__sucursales']) && array_key_exists('domicilio_comercial', $field_values)) {
+            $field_values['__sucursales']->no_repetir_domicilio($field_values['domicilio_comercial']);
+        }
 
         /**
          * Ancho del cuadro central calculado a partir de la letra (y código si aplica),
@@ -1197,7 +1235,7 @@ class AfipPdfHelper
          */
         $fields_start_y = $name_end_y;
         $pdf->y = $fields_start_y;
-        $fields_end_y = self::print_emisor_field_list($pdf, $layout_izquierda, $field_values, $beside_logo_x, $beside_logo_width);
+        $fields_end_y = self::print_emisor_field_list($pdf, $layout_izquierda, $field_values, $beside_logo_x, $beside_logo_width, $bold_keys);
 
         /**
          * Extensión vertical del contenido textual del panel izquierdo (sin contar el logo).
@@ -1224,7 +1262,7 @@ class AfipPdfHelper
          * orden que indique el layout. Ver print_emisor_field_list() para el detalle de cómo
          * se combinan/etiquetan 'numero_comprobante' y 'punto_venta'.
          */
-        $right_end_y = self::print_emisor_field_list($pdf, $layout_derecha, $field_values, $right_content_x, $right_content_width);
+        $right_end_y = self::print_emisor_field_list($pdf, $layout_derecha, $field_values, $right_content_x, $right_content_width, $bold_keys);
 
         /**
          * Cierre inferior del bloque: logo o el renglón más bajo de cualquier cuadrante, lo que llegue más abajo.
@@ -1541,6 +1579,14 @@ class AfipPdfHelper
         $values['telefono'] = (string) ($user->phone ?: '');
         $values['email'] = (string) ($user->email ?: '');
 
+        /**
+         * Chips de sucursal (sucursal_comprobante, todas_las_sucursales, sucursal_<id>; misión
+         * pdf-direccion-sucursales): no son un valor sino un resolvedor, que consulta las sucursales
+         * del dueño recién si el layout pide un chip y no repite una sucursal entre los dos
+         * cuadrantes. Prefijo '__' como '__owner_name': no es una clave de layout.
+         */
+        $values['__sucursales'] = new SucursalesDelEncabezadoPdf($sale, $user ? $user->id : null);
+
         return $values;
     }
 
@@ -1562,11 +1608,16 @@ class AfipPdfHelper
      * @param array<string, string> $field_values Mapa clave => valor (ver build_emisor_field_values()).
      * @param float $x Posición X inicial de la columna.
      * @param float $width Ancho disponible de la columna.
+     * @param array<int, string> $bold_keys Keys cuyo VALOR va en negrita (header_layout.bold). Vacío =
+     *     ninguno: el renglón sale como siempre.
      * @return float Posición Y final tras imprimir todos los renglones (para calcular la altura del bloque).
      */
-    protected static function print_emisor_field_list($pdf, $field_keys, $field_values, $x, $width): float
+    protected static function print_emisor_field_list($pdf, $field_keys, $field_values, $x, $width, $bold_keys = []): float
     {
         foreach ($field_keys as $key) {
+
+            /** Estilo FPDF del valor de este campo: negrita si el usuario la pidió en el diseño del encabezado. */
+            $value_style = in_array($key, $bold_keys, true) ? 'B' : '';
 
             if ($key === 'punto_venta') {
                 /**
@@ -1588,7 +1639,8 @@ class AfipPdfHelper
                     $x,
                     $width,
                     self::$header_row_font_size,
-                    self::$header_row_line_height
+                    self::$header_row_line_height,
+                    $value_style
                 );
 
                 continue;
@@ -1600,14 +1652,17 @@ class AfipPdfHelper
                 }
 
                 if (in_array('punto_venta', $field_keys, true) && array_key_exists('punto_venta', $field_values)) {
-                    if (!self::pair_line_fits($pdf, 'Punto de Venta: ', $field_values['punto_venta'], 'Factura Nro: ', $field_values['numero_comprobante'], $width)) {
+                    /** En el par, cada valor lleva el estilo de su propia key (punto_venta / numero_comprobante). */
+                    $style_punto_venta = in_array('punto_venta', $bold_keys, true) ? 'B' : '';
+
+                    if (!self::pair_line_fits($pdf, 'Punto de Venta: ', $field_values['punto_venta'], 'Factura Nro: ', $field_values['numero_comprobante'], $width, $style_punto_venta, $value_style)) {
                         /**
                          * Cuando el par no entra en un renglón partido al medio (una hoja angosta de
                          * un diseño con cajas, o un logo grande en el PDF de siempre) los textos se
                          * pisan: va en dos renglones. Si entra, el renglón de siempre.
                          */
-                        self::print_label_value_multiline($pdf, 'Punto de Venta: ', $field_values['punto_venta'], $x, $width, self::$header_row_font_size, self::$header_row_line_height);
-                        self::print_label_value_multiline($pdf, 'Factura Nro: ', $field_values['numero_comprobante'], $x, $width, self::$header_row_font_size, self::$header_row_line_height);
+                        self::print_label_value_multiline($pdf, 'Punto de Venta: ', $field_values['punto_venta'], $x, $width, self::$header_row_font_size, self::$header_row_line_height, $style_punto_venta);
+                        self::print_label_value_multiline($pdf, 'Factura Nro: ', $field_values['numero_comprobante'], $x, $width, self::$header_row_font_size, self::$header_row_line_height, $value_style);
                     } else {
                         self::print_label_value_pair_line(
                             $pdf,
@@ -1618,7 +1673,9 @@ class AfipPdfHelper
                             $x,
                             $width,
                             self::$header_row_font_size,
-                            self::$header_row_line_height
+                            self::$header_row_line_height,
+                            $style_punto_venta,
+                            $value_style
                         );
                     }
                 } else {
@@ -1629,7 +1686,33 @@ class AfipPdfHelper
                         $x,
                         $width,
                         self::$header_row_font_size,
-                        self::$header_row_line_height
+                        self::$header_row_line_height,
+                        $value_style
+                    );
+                }
+
+                continue;
+            }
+
+            /**
+             * Chips de sucursal (misión pdf-direccion-sucursales): cero, uno o varios renglones
+             * "rótulo + valor" (todas_las_sucursales imprime uno por sucursal). Con wrap, como el
+             * Domicilio Comercial: un domicilio con ciudad y provincia puede no entrar en un renglón.
+             * Sin sucursales con domicilio no se imprime nada (vacío = se saltea).
+             */
+            if (SucursalesDelEncabezadoPdf::es_chip($key)) {
+                $renglones = isset($field_values['__sucursales']) ? $field_values['__sucursales']->renglones($key) : [];
+
+                foreach ($renglones as $renglon) {
+                    self::print_label_value_multiline(
+                        $pdf,
+                        $renglon['rotulo'],
+                        $renglon['valor'],
+                        $x,
+                        $width,
+                        self::$header_row_font_size,
+                        self::$header_row_line_height,
+                        $value_style
                     );
                 }
 
@@ -1665,7 +1748,8 @@ class AfipPdfHelper
                     $x,
                     $width,
                     self::$header_row_font_size,
-                    self::$header_row_line_height
+                    self::$header_row_line_height,
+                    $value_style
                 );
 
                 /**
@@ -1688,7 +1772,8 @@ class AfipPdfHelper
                     $x,
                     $width,
                     self::$header_row_font_size,
-                    self::$header_row_line_height
+                    self::$header_row_line_height,
+                    $value_style
                 );
             }
         }
@@ -1702,6 +1787,14 @@ class AfipPdfHelper
      * (los que faltan se agregan al final de cada cuadrante). Solo debe aplicarse a
      * perfiles fiscales (is_afip_ticket): en perfiles no fiscales el layout se usa tal cual.
      *
+     * Chips de sucursal (misión pdf-direccion-sucursales, D1): la factura conserva el Domicilio
+     * Comercial de ARCA y ADEMÁS admite los chips de sucursal. No son obligatorios (no entran en el
+     * orden canónico aunque el default traiga 'sucursal_comprobante') y, a diferencia de
+     * web/telefono/email, conservan su lugar: van pegados al campo obligatorio que tenían antes en
+     * el mismo cuadrante (el default los pone después de 'domicilio_comercial'). Sin un obligatorio
+     * antes, van con los extras al final. Un layout sin chips de sucursal sale exactamente igual
+     * que antes de existir.
+     *
      * @param array<string, mixed> $layout header_layout guardado en el perfil o el default por código.
      * @return array<string, mixed> Layout con los campos obligatorios garantizados.
      */
@@ -1713,10 +1806,11 @@ class AfipPdfHelper
          * default_header_layout nunca se desincronicen, y que enforce sea IDEMPOTENTE
          * sobre el default (mismo emisor.izquierda/derecha de salida que de entrada) ->
          * la salida fiscal del caso sin header_layout custom queda byte-idéntica.
+         * Los chips de sucursal del default no son obligatorios: se sacan del canónico.
          */
         $default = \App\Models\PdfColumnProfile::default_header_layout(true);
-        $canonical_izquierda = $default['emisor']['izquierda'];
-        $canonical_derecha = $default['emisor']['derecha'];
+        $canonical_izquierda = self::sin_chips_de_sucursal($default['emisor']['izquierda']);
+        $canonical_derecha = self::sin_chips_de_sucursal($default['emisor']['derecha']);
 
         $current_izquierda = (isset($layout['emisor']['izquierda']) && is_array($layout['emisor']['izquierda']))
             ? $layout['emisor']['izquierda']
@@ -1726,32 +1820,75 @@ class AfipPdfHelper
             : array();
 
         /**
-         * Extras del usuario = campos NO obligatorios (los únicos admitidos en fiscal son
-         * web/telefono/email), preservando el orden relativo en que vengan. Van DESPUÉS del
-         * bloque obligatorio: nunca pueden empujar ni reordenar los campos legales.
+         * Obligatorios SIEMPRE primero y en orden canónico (con los chips de sucursal pegados al
+         * obligatorio que los precede); extras opcionales al final. Solo se sobrescribe el bloque
+         * emisor; el resto de $layout (receptor, etc.) queda intacto.
          */
-        $extras_izquierda = array();
-        foreach ($current_izquierda as $field) {
-            if (!in_array($field, $canonical_izquierda, true)) {
-                $extras_izquierda[] = $field;
-            }
-        }
-
-        $extras_derecha = array();
-        foreach ($current_derecha as $field) {
-            if (!in_array($field, $canonical_derecha, true)) {
-                $extras_derecha[] = $field;
-            }
-        }
-
-        /**
-         * Obligatorios SIEMPRE primero y en orden canónico; extras opcionales al final.
-         * Solo se sobrescribe el bloque emisor; el resto de $layout (receptor, etc.) queda intacto.
-         */
-        $layout['emisor']['izquierda'] = array_merge($canonical_izquierda, $extras_izquierda);
-        $layout['emisor']['derecha'] = array_merge($canonical_derecha, $extras_derecha);
+        $layout['emisor']['izquierda'] = self::fiscal_ordenado($canonical_izquierda, $current_izquierda);
+        $layout['emisor']['derecha'] = self::fiscal_ordenado($canonical_derecha, $current_derecha);
 
         return $layout;
+    }
+
+    /**
+     * Un cuadrante del emisor fiscal: los obligatorios en orden canónico, cada chip de sucursal
+     * detrás del obligatorio que lo precedía en el cuadrante, y los extras (web/telefono/email, y
+     * los chips de sucursal sin un obligatorio antes) al final, en el orden en que venían.
+     *
+     * @param array<int, string> $canonical Obligatorios del cuadrante, en orden.
+     * @param array<int, string> $current   El cuadrante tal como vino.
+     * @return array<int, string>
+     */
+    protected static function fiscal_ordenado($canonical, $current)
+    {
+        /**
+         * Extras del usuario = campos NO obligatorios (los únicos admitidos en fiscal son
+         * web/telefono/email y los chips de sucursal), preservando el orden relativo en que vengan.
+         * Van DESPUÉS del bloque obligatorio: nunca pueden empujar ni reordenar los campos legales.
+         */
+        $extras = array();
+        $despues_de = array();
+        $ultimo_obligatorio = null;
+
+        foreach ($current as $field) {
+            if (in_array($field, $canonical, true)) {
+                $ultimo_obligatorio = $field;
+                continue;
+            }
+
+            if (SucursalesDelEncabezadoPdf::es_chip($field) && !is_null($ultimo_obligatorio)) {
+                $despues_de[$ultimo_obligatorio][] = $field;
+                continue;
+            }
+
+            $extras[] = $field;
+        }
+
+        $ordenado = array();
+        foreach ($canonical as $field) {
+            $ordenado[] = $field;
+
+            if (isset($despues_de[$field])) {
+                foreach ($despues_de[$field] as $chip) {
+                    $ordenado[] = $chip;
+                }
+            }
+        }
+
+        return array_merge($ordenado, $extras);
+    }
+
+    /**
+     * Una lista de claves del emisor sin los chips de sucursal.
+     *
+     * @param array<int, string> $keys
+     * @return array<int, string>
+     */
+    protected static function sin_chips_de_sucursal($keys)
+    {
+        return array_values(array_filter($keys, function ($key) {
+            return !SucursalesDelEncabezadoPdf::es_chip($key);
+        }));
     }
 
     /**
@@ -1904,6 +2041,9 @@ class AfipPdfHelper
         $receptor_field_values = self::build_receptor_field_values($sale, $client);
         $receptor_izquierda = isset($layout['receptor']['izquierda']) ? $layout['receptor']['izquierda'] : [];
 
+        /** Keys cuyo valor va en negrita (header_layout.bold, misión pdf-negrita-perfil). */
+        $bold_keys = PdfNegritaHelper::header_bold_keys($layout);
+
         /**
          * Columna izquierda: campos del cliente configurables (mostrar/ocultar/ordenar)
          * más Vendedor/Empleado. Se saltea cualquier campo cuyo valor resuelva a vacío.
@@ -1924,7 +2064,10 @@ class AfipPdfHelper
                 $label,
                 $receptor_field_values[$field_key],
                 $content_x,
-                $left_content_width
+                $left_content_width,
+                9,
+                4,
+                in_array($field_key, $bold_keys, true) ? 'B' : ''
             );
         }
 

@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessMasiveUpdateJob;
+use App\Models\Address;
 use App\Models\Article;
 use App\Models\MasiveUpdate;
 use App\Models\User;
@@ -800,7 +801,8 @@ class MasiveUpdateHelper
      *    usuario ve en el listado, no bultos.
      *  - Un articulo con depositos o variantes NO se toca: su stock es la suma de esas partes y un
      *    numero global no dice a cual deposito o variante va. Se saltea y se deja constancia en el
-     *    log; el articulo no cuenta como modificado.
+     *    log; el articulo no cuenta como modificado. EXCEPCIÓN (misión sucursal-siempre, D15): con
+     *    UNA sola sucursal y sin variantes, el número va a esa sucursal (aplicar_stock_en_la_unica_sucursal()).
      *
      * @param  \App\Models\Article    $model
      * @param  float                  $nuevo        Stock final que pide la masiva.
@@ -815,6 +817,22 @@ class MasiveUpdateHelper
         // De la fila, no del modelo: un item anterior de la misma masiva pudo haberlo movido.
         $old_value = DB::table('articles')->where('id', $model->id)->value('stock');
         $old_value = is_null($old_value) ? null : (float) $old_value;
+
+        // "Reparte" sin contar las filas de domicilios de comprador (buyer_id): no son sucursales.
+        if ($model->addresses()->whereNull('addresses.buyer_id')->count() >= 1 && count($model->article_variants) == 0) {
+
+            /*
+             * Misión sucursal-siempre (23/10/2026, D15): con UNA sola sucursal el negocio ve el stock
+             * como un total (D1), así que el número de la masiva es el stock de esa sucursal: se lleva la
+             * fila al valor pedido con un movimiento por la diferencia contra la fila. Con dos o más, un
+             * número global no dice a qué sucursal va: se saltea como siempre.
+             */
+            $unica = Address::unica_sucursal_de(!is_null($owner) ? $owner->id : $model->user_id);
+
+            if (!is_null($unica)) {
+                return self::aplicar_stock_en_la_unica_sucursal($model, $nuevo, $operation, $form_key, $unica, $old_value, $owner, $employee_id);
+            }
+        }
 
         if (count($model->addresses) >= 1 || count($model->article_variants) >= 1) {
             Log::info('Masiva de stock: el articulo '.$model->id.' reparte por depositos o variantes, no se le puede fijar un stock global. Se saltea.');
@@ -862,6 +880,52 @@ class MasiveUpdateHelper
         ], false, $owner, $employee_id);
 
         // El modelo en memoria sigue en uso por el resto de la masiva (precios, sync).
+        $model->stock = $model->fresh()->stock;
+        $model->syncOriginalAttribute('stock');
+
+        return [
+            'prop_key' => 'stock',
+            'old_value' => $old_value,
+            'new_value' => $model->stock,
+            'operation' => $operation,
+            'form_key' => $form_key,
+        ];
+    }
+
+    /**
+     * D15 de la misión sucursal-siempre: el stock que pide la masiva, escrito en la ÚNICA sucursal de
+     * un negocio que tiene una sola. Mismo movimiento que el del stock global ("Ingreso manual", la
+     * observación de la masiva, sin unidades por bulto), pero por la diferencia contra la FILA de la
+     * sucursal y nombrándola (`to` si entra, `from` si sale, como lo lee el motor).
+     *
+     * @param  \App\Models\Article    $model
+     * @param  float                  $nuevo
+     * @param  string                 $operation
+     * @param  string                 $form_key
+     * @param  \App\Models\Address    $unica
+     * @param  float|null             $old_value   articles.stock antes (para el registro de la masiva).
+     * @param  \App\Models\User|null  $owner
+     * @param  int|null               $employee_id
+     * @return array|null
+     */
+    protected static function aplicar_stock_en_la_unica_sucursal($model, $nuevo, $operation, $form_key, $unica, $old_value, $owner = null, $employee_id = null)
+    {
+        $delta = round((float) $nuevo - Address::stock_en_fila($model->id, $unica->id), 2);
+
+        if (abs($delta) < 0.0001) {
+            return null;
+        }
+
+        $ct = new StockMovementController();
+        $ct->crear([
+            'model_id'                      => $model->id,
+            'amount'                        => $delta,
+            ($delta < 0 ? 'from_address_id' : 'to_address_id') => $unica->id,
+            'concepto_stock_movement_name'  => 'Ingreso manual',
+            'observations'                  => 'Actualizacion masiva del listado ('.$operation.')',
+            'sin_unidades_individuales'     => true,
+        ], false, $owner, $employee_id);
+
         $model->stock = $model->fresh()->stock;
         $model->syncOriginalAttribute('stock');
 

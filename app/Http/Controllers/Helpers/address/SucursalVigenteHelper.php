@@ -435,6 +435,250 @@ class SucursalVigenteHelper {
     }
 
     /**
+     * 🔴 La red de seguridad del motor (misión sucursal-siempre, 23/10/2026, D3): un movimiento SIN
+     * sucursal sobre un artículo que REPARTE por sucursales va a la sucursal PRINCIPAL en vez de
+     * perderse.
+     *
+     * ─── Por qué ─────────────────────────────────────────────────────────────────────────────────
+     *
+     * Con un artículo que ya tiene filas en `address_article`, un movimiento sin `from_address_id` ni
+     * `to_address_id` no cambiaba el stock y no avisaba: CheckFromAddress y CheckToAddress no hacen nada
+     * sin sucursal, CheckGlobalStock no actúa sobre un artículo con depósitos y
+     * `setArticleStockFromAddresses()` vuelve a dejar la suma de las filas. El libro decía "−1" y el
+     * stock seguía igual. Entra por: la venta sin sucursal, el pedido de Tienda Nube (nace con
+     * `address_id = 0`), Mercado Libre (null), la compra a proveedor sin depósito, la producción con la
+     * receta sin sucursal, la nota de crédito a proveedor, el "Asignar stock" del Listado con una sola
+     * sucursal (la SPA no manda depósito: D15). Les pasaba a TODOS los clientes con sucursales.
+     *
+     * ─── La semántica del signo ─────────────────────────────────────────────────────────────────
+     *
+     * Fuera de los traslados, el motor SUMA el monto con su signo en la fila que nombra el movimiento,
+     * sea `from` o `to` (`CheckFromAddress::get_amount_for_from_address()` solo invierte para "Mov entre
+     * depositos"): una venta llega con `from` y monto negativo; su anulación, una devolución, una compra
+     * o un ingreso llegan con `to` y monto positivo. Se respeta esa costumbre para que el libro se lea
+     * igual que el de un movimiento que sí trajo sucursal:
+     *
+     *  - monto < 0 (sale stock)  → `from_address_id` = la principal;
+     *  - monto > 0 (entra stock) → `to_address_id` = la principal;
+     *  - monto 0                 → nada (no mueve nada en ningún lado).
+     *
+     * ─── Cuándo NO aplica ───────────────────────────────────────────────────────────────────────
+     *
+     *  - El movimiento ya trae alguna sucursal (después de la guarda de sucursales muertas).
+     *  - El concepto NOMBRA depósitos a propósito (`CONCEPTOS_QUE_NOMBRAN_DEPOSITOS`: traslados,
+     *    creación/actualización de depósito, importación de Excel, reseteo, eliminación de sucursal):
+     *    sin sucursal esos conceptos hablan del stock global a propósito (la importación con la columna
+     *    de stock global, la variante que no reparte), y con dos o más sucursales su comportamiento no
+     *    cambia (D15).
+     *  - El artículo no reparte: sin filas vivas, el movimiento va al stock global como siempre. Con
+     *    variantes, decide la VARIANTE del movimiento (si reparte); un movimiento del artículo entero
+     *    con variantes no lo toca nadie (el stock es la suma de las variantes) y se deja como está.
+     *  - El comercio no tiene sucursales (no hay principal): nada cambia.
+     *
+     * No se inventa observación: el rastro es el `from/to_address_id` grabado con la principal.
+     *
+     * @param  array                    $data         Los datos del movimiento (los de crear()), ya con la guarda.
+     * @param  \App\Models\Article      $article
+     * @param  int|null                 $concepto_id
+     * @param  int|null                 $owner_id
+     * @return array  Los datos, con la principal puesta si correspondía.
+     */
+    static function aplicar_red_de_la_principal($data, $article, $concepto_id, $owner_id) {
+
+        if (is_null($owner_id) || is_null($article)) {
+            return $data;
+        }
+
+        foreach (['from_address_id', 'to_address_id'] as $clave) {
+            if (isset($data[$clave]) && !Self::es_vacio($data[$clave])) {
+                return $data;
+            }
+        }
+
+        $monto = isset($data['amount']) ? (float) $data['amount'] : 0.0;
+
+        if ($monto == 0.0) {
+            return $data;
+        }
+
+        $concepto = is_null($concepto_id) ? null : ConceptoStockMovement::find($concepto_id);
+
+        if (!is_null($concepto) && Self::nombra_depositos($concepto->name)) {
+            return $data;
+        }
+
+        if (!Self::reparte_el_movimiento($data, $article)) {
+            return $data;
+        }
+
+        if (!Self::el_comprobante_movio_stock($data)) {
+
+            Log::info('SucursalVigenteHelper::aplicar_red_de_la_principal: el movimiento sin sucursal del artículo '.$article->id.' revierte un comprobante cuyos movimientos originales no movieron stock; no se aplica la red (queda como antes).');
+
+            return $data;
+        }
+
+        $principal = Address::principal_de((int) $owner_id);
+
+        if (is_null($principal)) {
+            return $data;
+        }
+
+        if ($monto < 0) {
+            $data['from_address_id'] = (int) $principal->id;
+        } else {
+            $data['to_address_id'] = (int) $principal->id;
+        }
+
+        Log::info('SucursalVigenteHelper::aplicar_red_de_la_principal: movimiento sin sucursal ('.$monto.') sobre el artículo '.$article->id.(empty($data['article_variant_id']) ? '' : ' variante '.$data['article_variant_id']).', que reparte por sucursales: va a la principal '.$principal->id.'.');
+
+        return $data;
+    }
+
+    /**
+     * Las claves de comprobante que puede traer un movimiento, en el orden en que se usan para
+     * buscar sus movimientos ORIGINALES (ver el_comprobante_movio_stock()). La venta va primero: una
+     * nota de crédito desde Vender trae `sale_id` y `nota_credito_id`, y lo que importa es si la
+     * VENTA descontó.
+     */
+    const CLAVES_DE_COMPROBANTE = ['sale_id', 'provider_order_id', 'nota_credito_id', 'order_id'];
+
+    /**
+     * ¿Los movimientos que ESTE comprobante ya dejó para este artículo (y variante) movieron stock?
+     * (misión sucursal-siempre, corrección del chequeo del motor, 23/10/2026).
+     *
+     * 🔴 Por qué existe: la red de D3 manda a la principal un movimiento sin sucursal sobre un
+     * artículo que reparte. Pero las REVERSIONES (borrar o editar una venta, una compra, una nota de
+     * crédito, "Act Compra a proveedor") arman su neto desde el libro: si el movimiento ORIGINAL de
+     * ese comprobante fue de los que se perdían en silencio (sin sucursal, sobre un artículo que ya
+     * repartía: `stock_anterior == stock_resultante`), revertirlo hoy por la red movería stock que
+     * nunca se movió. Con la venta aparecía stock de la nada (A 10 → 12); con la compra se restaban
+     * unidades reales (−10). Si el original no movió nada, la reversión tampoco mueve: queda como en
+     * develop.
+     *
+     * Devuelve true (la red se aplica) cuando:
+     *  - el movimiento no nombra ningún comprobante (ingreso manual, asistente, masiva...);
+     *  - es el PRIMER movimiento del comprobante para ese artículo (una venta, una compra nueva);
+     *  - alguno de los originales quedó grabado con sucursal (`from`/`to`): movió stock en una fila;
+     *  - o alguno movió el stock del artículo (`stock_resultante − stock_anterior ≠ 0`; sin
+     *    `stock_anterior`, el de antes es el `stock_resultante` del movimiento anterior del artículo).
+     *    Es el caso del cliente MIGRADO: su venta vieja sí movió el global, y su reversión tiene que ir
+     *    a la principal, donde quedó ese stock.
+     *
+     * Se mira "alguno movió" y no "la suma ≠ 0": una venta que descontó 2 y una NC que devolvió 2
+     * suman 0 pero movieron stock de verdad.
+     *
+     * LIMITACIÓN CONOCIDA (a propósito, no se arregla acá): EDITAR un comprobante viejo cuyo original se
+     * había perdido sigue sin mover stock, igual que en develop. El ajuste de la edición también es
+     * "una reversión de algo que nunca se movió", y moverlo ahora inventaría stock.
+     *
+     * Las consultas usan los índices de 2026_10_23_130000_add_indexes_stock_movements_comprobantes
+     * (`provider_order_id`, `nota_credito_id`, `order_id` y `article_id`, que con la PK al final del
+     * índice resuelve el "movimiento anterior" sin ordenar); `sale_id` ya estaba indexado.
+     *
+     * @param  array  $data
+     * @return bool
+     */
+    static function el_comprobante_movio_stock($data) {
+
+        $clave = null;
+
+        foreach (Self::CLAVES_DE_COMPROBANTE as $candidata) {
+            if (!empty($data[$candidata])) {
+                $clave = $candidata;
+                break;
+            }
+        }
+
+        if (is_null($clave)) {
+            return true;
+        }
+
+        $query = DB::table('stock_movements as sm')
+            ->where('sm.'.$clave, (int) $data[$clave])
+            ->where('sm.article_id', (int) $data['model_id']);
+
+        if (!empty($data['article_variant_id'])) {
+            $query->where('sm.article_variant_id', (int) $data['article_variant_id']);
+        } else {
+            $query->where(function ($q) {
+                $q->whereNull('sm.article_variant_id')->orWhere('sm.article_variant_id', 0);
+            });
+        }
+
+        $originales = $query->orderBy('sm.id')->get([
+            'sm.id', 'sm.from_address_id', 'sm.to_address_id', 'sm.stock_anterior', 'sm.stock_resultante',
+        ]);
+
+        if (count($originales) === 0) {
+            return true;
+        }
+
+        foreach ($originales as $original) {
+
+            if (!Self::es_vacio($original->from_address_id) || !Self::es_vacio($original->to_address_id)) {
+                return true;
+            }
+
+            $anterior = $original->stock_anterior;
+
+            if (is_null($anterior)) {
+                $anterior = DB::table('stock_movements')
+                    ->where('article_id', (int) $data['model_id'])
+                    ->where('id', '<', $original->id)
+                    ->orderBy('id', 'DESC')
+                    ->value('stock_resultante');
+            }
+
+            /*
+             * Sin cómo saber el stock de antes (el original no tiene `stock_anterior` y el artículo no
+             * tiene ningún movimiento anterior), se toma como que SÍ movió (tercera ronda del chequeo,
+             * 23/10/2026). Para que un movimiento se perdiera el artículo ya tenía que tener filas, y
+             * casi siempre las abre un movimiento anterior; el que no tiene ninguno es, típicamente, un
+             * artículo dado de alta antes del libro cuya primera venta descontó del global: en un
+             * cliente migrado, borrarla tiene que devolver a la principal.
+             */
+            if (is_null($anterior) || is_null($original->stock_resultante)) {
+                return true;
+            }
+
+            if (abs((float) $original->stock_resultante - (float) $anterior) > 0.0001) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿El movimiento cae sobre algo que reparte por sucursales (tiene filas vivas)? La variante si el
+     * movimiento es de una variante; el artículo si no (y solo si no tiene variantes: ver
+     * `aplicar_red_de_la_principal()`). "Vivas" = las que ve la relación `addresses` (INNER JOIN con
+     * `addresses`), sin contar las de domicilios de comprador (`buyer_id`), que no son sucursales.
+     *
+     * @param  array                $data
+     * @param  \App\Models\Article  $article
+     * @return bool
+     */
+    static function reparte_el_movimiento($data, $article) {
+
+        if (!empty($data['article_variant_id'])) {
+
+            $variante = \App\Models\ArticleVariant::find((int) $data['article_variant_id']);
+
+            return !is_null($variante) && $variante->addresses()->whereNull('addresses.buyer_id')->count() >= 1;
+        }
+
+        if ($article->article_variants()->count() >= 1) {
+            return false;
+        }
+
+        // Una fila en el domicilio de un comprador (pedidos viejos de la tienda) no es "repartir por
+        // sucursales": no cuenta.
+        return $article->addresses()->whereNull('addresses.buyer_id')->count() >= 1;
+    }
+
+    /**
      * Como `resolver()`, pero para la EDICIÓN de un comprobante que ya existe (venta o presupuesto).
      *
      * 🔴 Si el request trae la MISMA sucursal que el comprobante ya tiene guardada, se deja tal cual

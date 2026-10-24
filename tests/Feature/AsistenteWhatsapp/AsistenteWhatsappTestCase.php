@@ -34,10 +34,10 @@ abstract class AsistenteWhatsappTestCase extends TestCase
     const CLAVE = 'clave-del-admin-para-los-tests';
 
     /** Slug de la extensión que gatea el módulo IA. */
-    const SLUG_ASISTENTE = 'asistente_ia';
+    const SLUG_ASISTENTE = 'agentes_ia';
 
     /** Slug de la extensión que gatea el escaneo de facturas de compra. */
-    const SLUG_ESCANEO = 'escaneo_factura_compra';
+    const SLUG_ESCANEO = 'agentes_ia';
 
     /** @var User El dueño de la instancia. */
     protected $comercio;

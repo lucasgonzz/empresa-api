@@ -11,9 +11,14 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum'])->group(function() {
 
-    Route::post('article-enrichments', 'ProductEnrichmentController@store')->middleware('throttle:20,1');
-    Route::get('article-enrichments/{uuid}', 'ProductEnrichmentController@show');
-    Route::delete('article-enrichments/{uuid}', 'ProductEnrichmentController@destroy');
+    // Ficha de producto por código de barras (GTIN) con IA. Misión agentes-ia-extension-unica
+    // (22/10/2026): exige la extensión `agentes_ia` (403 sin ella; nunca 404, que el admin lee como
+    // «versión vieja»).
+    Route::middleware('check_extencion_empresa:agentes_ia')->group(function () {
+        Route::post('article-enrichments', 'ProductEnrichmentController@store')->middleware('throttle:20,1');
+        Route::get('article-enrichments/{uuid}', 'ProductEnrichmentController@show');
+        Route::delete('article-enrichments/{uuid}', 'ProductEnrichmentController@destroy');
+    });
 
     /*
         Todos los catalogos del arranque en UNA sola respuesta (mision 41, 12/8/2026). Reemplaza a
@@ -110,13 +115,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('user/set-impresora', 'UserController@set_impresora');
 
     // Configuración del asistente de IA y consumo del plan, POR DUEÑO (misión
-    // foto-sucursal-y-asistente-configurable). Mismo gate que el chat: la extensión asistente_ia
+    // foto-sucursal-y-asistente-configurable). Mismo gate que el chat: la extensión agentes_ia
     // y solo el dueño (solo_el_dueno_ia); auth:sanctum ya lo pone el grupo de arriba.
     // 🔴 `user/asistente-config` va ANTES de `user/{id}` por la misma trampa del orden que
     // set-chat-ia-preferencias: son dos segmentos y abajo del comodín el PUT caería en
     // UserController@update con id = "asistente-config". `mi-consumo-ia` no tiene ese problema
     // (es de un solo segmento propio), pero comparte el mismo gate, así que va en el mismo grupo.
-    Route::middleware(['check_extencion_empresa:asistente_ia', 'solo_el_dueno_ia'])->group(function () {
+    Route::middleware(['check_extencion_empresa:agentes_ia', 'solo_el_dueno_ia'])->group(function () {
         Route::get('user/asistente-config', 'AsistenteConfigController@show');
         Route::put('user/asistente-config', 'AsistenteConfigController@update');
         Route::get('mi-consumo-ia', 'AsistenteConfigController@mi_consumo');
@@ -921,83 +926,100 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('price-type-surchage', 'PriceTypeSurchageController');
 
+    // Buscador MANUAL de imágenes de la ficha del artículo (SearchImage.vue): usa estos dos contadores
+    // de cuota de Google. Es una búsqueda, no un agente: QUEDAN ABIERTOS a propósito (decisión
+    // agentes-ia-extension-unica, 22/10/2026). Lo que sí es de `agentes_ia` es la asignación automática,
+    // que arranca en `google/batch-assign-images` (grupo de abajo).
     Route::get('google/custom-search/aumentar-contador', 'GoogleController@aumentar_contador_custom_search');
     Route::get('google/get-current', 'GoogleController@get_current');
-    Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
     /*
-        Asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026):
-        Alertas → Imágenes. Las rutas fijas (resumen, catalogo, por-uuid, aprobar-varios) van ANTES
-        de las que llevan {id}, y los {id} van restringidos a números: si no, "resumen" o "catalogo"
-        se leerían como un id y responderían 404. catalogo/*, detener y reanudar son solo para la
-        sesión del acceso maestro (lo valida ImageAssignmentRunController, 403 sin ella).
+        TODO lo que sigue hasta el cierre del grupo es de la extensión `agentes_ia` (misión
+        agentes-ia-extension-unica, 22/10/2026): asignación automática de imágenes (la valida un modelo de
+        visión), categorías con IA, intentos de búsqueda automática y descripciones con IA. Sin la
+        extensión, 403 con «Extensión requerida: agentes_ia».
     */
-    Route::get('image-assignment-runs', 'ImageAssignmentRunController@index');
-    Route::get('image-assignment-runs/resumen', 'ImageAssignmentRunController@resumen');
-    Route::get('image-assignment-runs/catalogo/previa', 'ImageAssignmentRunController@previa_catalogo');
-    Route::post('image-assignment-runs/catalogo', 'ImageAssignmentRunController@crear_catalogo');
-    Route::get('image-assignment-runs/por-uuid/{uuid}', 'ImageAssignmentRunController@por_uuid');
-    Route::get('image-assignment-runs/{id}', 'ImageAssignmentRunController@show')->where('id', '[0-9]+');
-    Route::get('image-assignment-runs/{id}/items', 'ImageAssignmentRunController@items')->where('id', '[0-9]+');
-    Route::post('image-assignment-runs/{id}/detener', 'ImageAssignmentRunController@detener')->where('id', '[0-9]+');
-    Route::post('image-assignment-runs/{id}/reanudar', 'ImageAssignmentRunController@reanudar')->where('id', '[0-9]+');
-    Route::post('image-assignment-items/aprobar-varios', 'ImageAssignmentRunController@aprobar_varios');
-    Route::post('image-assignment-items/rechazar-varios', 'ImageAssignmentRunController@rechazar_varios');
-    Route::post('image-assignment-items/{id}/aprobar', 'ImageAssignmentRunController@aprobar')->where('id', '[0-9]+');
-    Route::post('image-assignment-items/{id}/rechazar', 'ImageAssignmentRunController@rechazar')->where('id', '[0-9]+');
-    Route::post('image-assignment-items/{id}/quitar', 'ImageAssignmentRunController@quitar')->where('id', '[0-9]+');
+    Route::middleware('check_extencion_empresa:agentes_ia')->group(function () {
+        Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
-    /*
-        Categorización con IA en tres modelos (misión categorizacion-tres-modelos, 5/10/2026): Alertas →
-        Catálogo → Categorías. Contrato B del plan (§6). Las rutas fijas (resumen, actual,
-        aprobar-varios, rechazar-varios) van ANTES de las que llevan {id}, y los {id} van restringidos a
-        números: si no, "resumen" o "actual" se leerían como un id. Elegir, volver atrás, aprobar y
-        rechazar son solo para el dueño o el acceso maestro (403 `solo_el_dueno`, lo valida el
-        controlador); un id de otro comercio responde 404 igual que uno inexistente.
-    */
-    Route::get('category-proposal-runs/resumen', 'CategoryProposalRunController@resumen');
-    Route::get('category-proposal-runs/actual', 'CategoryProposalRunController@actual');
-    Route::put('category-proposal-runs/{id}/visto', 'CategoryProposalRunController@visto')->where('id', '[0-9]+');
-    Route::get('category-proposal-runs/{id}/items', 'CategoryProposalRunController@items')->where('id', '[0-9]+');
-    Route::post('category-proposal-runs/{id}/elegir', 'CategoryProposalEleccionController@elegir')->where('id', '[0-9]+');
-    Route::post('category-proposal-runs/{id}/volver-atras', 'CategoryProposalEleccionController@volver_atras')->where('id', '[0-9]+');
-    Route::post('category-proposal-items/aprobar-varios', 'CategoryProposalItemController@aprobar_varios');
-    Route::post('category-proposal-items/rechazar-varios', 'CategoryProposalItemController@rechazar_varios');
-    Route::post('category-proposal-items/{id}/aprobar', 'CategoryProposalItemController@aprobar')->where('id', '[0-9]+');
-    Route::post('category-proposal-items/{id}/rechazar', 'CategoryProposalItemController@rechazar')->where('id', '[0-9]+');
+        /*
+            Asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026):
+            Alertas → Imágenes. Las rutas fijas (resumen, catalogo, por-uuid, aprobar-varios) van ANTES
+            de las que llevan {id}, y los {id} van restringidos a números: si no, "resumen" o "catalogo"
+            se leerían como un id y responderían 404. catalogo/*, detener y reanudar son solo para la
+            sesión del acceso maestro (lo valida ImageAssignmentRunController, 403 sin ella).
+        */
+        Route::get('image-assignment-runs', 'ImageAssignmentRunController@index');
+        Route::get('image-assignment-runs/resumen', 'ImageAssignmentRunController@resumen');
+        // Misión tope-serper-demos (23/10/2026): búsquedas de la demo que le quedan al comercio.
+        Route::get('image-assignment-runs/tope-demo', 'ImageAssignmentRunController@tope_demo');
+        Route::get('image-assignment-runs/catalogo/previa', 'ImageAssignmentRunController@previa_catalogo');
+        Route::post('image-assignment-runs/catalogo', 'ImageAssignmentRunController@crear_catalogo');
+        Route::get('image-assignment-runs/por-uuid/{uuid}', 'ImageAssignmentRunController@por_uuid');
+        Route::get('image-assignment-runs/{id}', 'ImageAssignmentRunController@show')->where('id', '[0-9]+');
+        Route::get('image-assignment-runs/{id}/items', 'ImageAssignmentRunController@items')->where('id', '[0-9]+');
+        Route::post('image-assignment-runs/{id}/detener', 'ImageAssignmentRunController@detener')->where('id', '[0-9]+');
+        Route::post('image-assignment-runs/{id}/reanudar', 'ImageAssignmentRunController@reanudar')->where('id', '[0-9]+');
+        Route::post('image-assignment-items/aprobar-varios', 'ImageAssignmentRunController@aprobar_varios');
+        Route::post('image-assignment-items/rechazar-varios', 'ImageAssignmentRunController@rechazar_varios');
+        Route::post('image-assignment-items/{id}/aprobar', 'ImageAssignmentRunController@aprobar')->where('id', '[0-9]+');
+        Route::post('image-assignment-items/{id}/rechazar', 'ImageAssignmentRunController@rechazar')->where('id', '[0-9]+');
+        Route::post('image-assignment-items/{id}/quitar', 'ImageAssignmentRunController@quitar')->where('id', '[0-9]+');
 
-    // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
-    Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
-    // Resumen reconstruido de una corrida (grupo 217, prompt 03): mismo objeto que el payload de Pusher.
-    Route::get('article-image-search-attempts/summary/{batch_uuid}', 'ArticleImageSearchAttemptController@summary');
-    Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
+        /*
+            Categorización con IA en tres modelos (misión categorizacion-tres-modelos, 5/10/2026): Alertas →
+            Catálogo → Categorías. Contrato B del plan (§6). Las rutas fijas (resumen, actual,
+            aprobar-varios, rechazar-varios) van ANTES de las que llevan {id}, y los {id} van restringidos a
+            números: si no, "resumen" o "actual" se leerían como un id. Elegir, volver atrás, aprobar y
+            rechazar son solo para el dueño o el acceso maestro (403 `solo_el_dueno`, lo valida el
+            controlador); un id de otro comercio responde 404 igual que uno inexistente.
+        */
+        Route::get('category-proposal-runs/resumen', 'CategoryProposalRunController@resumen');
+        Route::get('category-proposal-runs/actual', 'CategoryProposalRunController@actual');
+        Route::put('category-proposal-runs/{id}/visto', 'CategoryProposalRunController@visto')->where('id', '[0-9]+');
+        Route::get('category-proposal-runs/{id}/items', 'CategoryProposalRunController@items')->where('id', '[0-9]+');
+        Route::post('category-proposal-runs/{id}/elegir', 'CategoryProposalEleccionController@elegir')->where('id', '[0-9]+');
+        Route::post('category-proposal-runs/{id}/volver-atras', 'CategoryProposalEleccionController@volver_atras')->where('id', '[0-9]+');
+        Route::post('category-proposal-items/aprobar-varios', 'CategoryProposalItemController@aprobar_varios');
+        Route::post('category-proposal-items/rechazar-varios', 'CategoryProposalItemController@rechazar_varios');
+        Route::post('category-proposal-items/{id}/aprobar', 'CategoryProposalItemController@aprobar')->where('id', '[0-9]+');
+        Route::post('category-proposal-items/{id}/rechazar', 'CategoryProposalItemController@rechazar')->where('id', '[0-9]+');
 
-    // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
-    Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
-    Route::post('article-description-ai/store/{article_id}', 'ArticleDescriptionAiController@store');
-    Route::post('article-description-ai/batch-generate', 'ArticleDescriptionAiController@batch_generate');
-    Route::get('article-description-ai/pending-review', 'ArticleDescriptionAiController@pending_review');
-    Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
-    Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
+        // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
+        Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
+        // Resumen reconstruido de una corrida (grupo 217, prompt 03): mismo objeto que el payload de Pusher.
+        Route::get('article-image-search-attempts/summary/{batch_uuid}', 'ArticleImageSearchAttemptController@summary');
+        Route::get('article-image-search-attempts/batch/{batch_uuid}', 'ArticleImageSearchAttemptController@by_batch');
 
-    /*
-        Alertas → Catálogo → Descripciones (misión alertas-descripciones, 14/10/2026): las que la IA no
-        pudo confirmar (A revisar) y las de IA ya publicadas. Contrato §1.4 del plan. Las rutas fijas
-        (resumen, revision, aprobar-varios, descartar-varios) van ANTES de las que llevan
-        {article_id}, y ese parámetro va restringido a números. Las ve cualquier sesión del comercio,
-        como Imágenes; lo de otro comercio responde 404.
-    */
-    Route::get('article-description-ai/resumen', 'ArticleDescriptionReviewController@resumen');
-    Route::get('article-description-ai/revision', 'ArticleDescriptionReviewController@revision');
-    Route::post('article-description-ai/revision/aprobar-varios', 'ArticleDescriptionReviewController@aprobar_varios');
-    Route::post('article-description-ai/revision/descartar-varios', 'ArticleDescriptionReviewController@descartar_varios');
-    Route::post('article-description-ai/revision/{article_id}/aprobar', 'ArticleDescriptionReviewController@aprobar')->where('article_id', '[0-9]+');
-    Route::post('article-description-ai/revision/{article_id}/descartar', 'ArticleDescriptionReviewController@descartar')->where('article_id', '[0-9]+');
-    Route::put('article-description-ai/revision/{article_id}/publicada', 'ArticleDescriptionReviewController@publicada')->where('article_id', '[0-9]+');
-    Route::post('article-description-ai/revision/{article_id}/quitar', 'ArticleDescriptionReviewController@quitar')->where('article_id', '[0-9]+');
+        // Descripciones inteligentes: preview individual, guardado, batch masivo (job + Pusher) y revisión.
+        Route::post('article-description-ai/preview/{article_id}', 'ArticleDescriptionAiController@preview');
+        Route::post('article-description-ai/store/{article_id}', 'ArticleDescriptionAiController@store');
+        Route::post('article-description-ai/batch-generate', 'ArticleDescriptionAiController@batch_generate');
+        Route::get('article-description-ai/pending-review', 'ArticleDescriptionAiController@pending_review');
+        Route::put('article-description-ai/approve/{id}', 'ArticleDescriptionAiController@approve');
+        Route::delete('article-description-ai/discard/{id}', 'ArticleDescriptionAiController@discard');
+
+        /*
+            Alertas → Catálogo → Descripciones (misión alertas-descripciones, 14/10/2026): las que la IA no
+            pudo confirmar (A revisar) y las de IA ya publicadas. Contrato §1.4 del plan. Las rutas fijas
+            (resumen, revision, aprobar-varios, descartar-varios) van ANTES de las que llevan
+            {article_id}, y ese parámetro va restringido a números. Las ve cualquier sesión del comercio,
+            como Imágenes; lo de otro comercio responde 404.
+        */
+        Route::get('article-description-ai/resumen', 'ArticleDescriptionReviewController@resumen');
+        Route::get('article-description-ai/revision', 'ArticleDescriptionReviewController@revision');
+        Route::post('article-description-ai/revision/aprobar-varios', 'ArticleDescriptionReviewController@aprobar_varios');
+        Route::post('article-description-ai/revision/descartar-varios', 'ArticleDescriptionReviewController@descartar_varios');
+        Route::post('article-description-ai/revision/{article_id}/aprobar', 'ArticleDescriptionReviewController@aprobar')->where('article_id', '[0-9]+');
+        Route::post('article-description-ai/revision/{article_id}/descartar', 'ArticleDescriptionReviewController@descartar')->where('article_id', '[0-9]+');
+        Route::put('article-description-ai/revision/{article_id}/publicada', 'ArticleDescriptionReviewController@publicada')->where('article_id', '[0-9]+');
+        Route::post('article-description-ai/revision/{article_id}/quitar', 'ArticleDescriptionReviewController@quitar')->where('article_id', '[0-9]+');
+    });
 
 
     Route::post('payment-plan', 'PaymentPlanController@store');
+    // Total, pagado y saldo de una venta para el modal «Nuevo plan de pago» (misión planes-de-pago-saldo-y-dolares).
+    Route::get('payment-plan/saldo-de-venta/{sale_id}', 'PaymentPlanController@saldo_de_venta')->where('sale_id', '[0-9]+');
 
     Route::resource('payment-plan-cuota', 'PaymentPlanCuotaController');
     Route::get('payment-plan-cuota/{estado}/from-date/{from_date?}/{until_date?}', 'PaymentPlanCuotaController@index');
@@ -1152,8 +1174,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
 // Webhook público (Kapso lo llama sin auth)
 Route::post('whatsapp-bot/webhook', 'WhatsappBotController@receive');
 
-// Configuración autenticada (singleton por empresa; POST/PUT con o sin id para el ABM de empresa-spa)
-Route::middleware('auth:sanctum')->group(function () {
+// Configuración autenticada (singleton por empresa; POST/PUT con o sin id para el ABM de empresa-spa).
+// Misión agentes-ia-extension-unica (22/10/2026): el bot de WhatsApp a clientes es de `agentes_ia`, así
+// que su configuración exige la extensión (403 sin ella). El webhook de arriba no tiene sesión: el
+// gate de la extensión lo hace WhatsappBotController::receive() con el dueño de la instancia.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group(function () {
     Route::get('whatsapp-bot/config', 'WhatsappBotController@get_config');
     Route::post('whatsapp-bot/config', 'WhatsappBotController@update_config');
     Route::put('whatsapp-bot/config', 'WhatsappBotController@update_config');
@@ -1161,8 +1186,8 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // Endpoints REST del módulo de chats de WhatsApp con clientes (grupo 137, Prompt 02),
-// gateados por auth Sanctum + la extensión 'whatsapp' (ver ExtencionEmpresaWhatsappSeeder).
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(function () {
+// gateados por auth Sanctum + la extensión 'agentes_ia' (ver ExtencionAgentesIaSeeder).
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group(function () {
     Route::get('whatsapp-chats', 'WhatsappChatController@index');
 
     // Contrato 3 de la misión sugerencia-ia-como-borrador. Va ANTES de cualquier
@@ -1275,11 +1300,11 @@ Route::get('integraciones/articulos/{export_key}', 'Integraciones\ArticulosExpor
         ->middleware('throttle:120,1');
 
 // Sugerencias inteligentes de stock (v2): rutas de la vista propia, gateadas por auth Sanctum +
-// la extensión 'sugerencias_inteligentes' (ver ExtencionSugerenciasInteligentesSeeder). Las tres
+// la extensión 'agentes_ia' (ver ExtencionAgentesIaSeeder). Las tres
 // rutas viejas del módulo (resource + create-deposit-movement + stock-suggestion-article) quedan
 // arriba SIN gate a propósito: son el flujo de modales que conservan los clientes sin la
 // extensión, y create-deposit-movement lo comparten los dos flujos.
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_inteligentes'])->group(function () {
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group(function () {
     Route::get('stock-suggestion/{id}/articles', 'StockSuggestionController@articles');
     // Reintento del resumen IA desde la vista: el job no reintenta solo
     // ($tries = 1, D29), este botón es el camino de vuelta tras un 529.
@@ -1287,12 +1312,12 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_intelige
 });
 
 // Chat con el asistente de IA del negocio (misión chat-ia-y-modulo-ia), gateado por auth
-// Sanctum + la extensión 'asistente_ia' (ver ExtencionAsistenteIaSeeder). La tenencia adentro
+// Sanctum + la extensión 'agentes_ia' (ver ExtencionAgentesIaSeeder). La tenencia adentro
 // del controller es por PERSONA (auth_user_id + user_id): el gate corta a quien no tiene la
 // extensión, el filtro doble corta al empleado que quiera leer los chats del dueño. El POST
 // del mensaje guarda y despacha el job de respuesta; el evento del canal privado avisa con
 // ids y la SPA busca el texto acá (show_message, también usado por el polling de respaldo).
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->group(function () {
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group(function () {
     // Encima del gate de extensión, SOLO EL DUEÑO (o admin_access / acceso maestro) usa el chat:
     // decisión de Lucas del 16/9/2026. Es el mismo criterio y el mismo MostradorHelper::puede_ver()
     // que ya gateaba el mostrador, porque es el mismo módulo y el chat contesta lo mismo que traen
@@ -1377,9 +1402,9 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
 });
 
 // Sugerencias de compra a proveedores (misión sugerencias-compra-proveedores), gateado por auth
-// Sanctum + la extensión 'sugerencias_compras' (ver ExtencionSugerenciasComprasSeeder). Sin
+// Sanctum + la extensión 'agentes_ia' (ver ExtencionAgentesIaSeeder). Sin
 // endpoint update: reprocesar es crear una corrida nueva (D10 del plan), no editar la existente.
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_compras'])->group(function () {
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group(function () {
     Route::get('purchase-suggestion', 'PurchaseSuggestionController@index');
     Route::post('purchase-suggestion', 'PurchaseSuggestionController@store');
     Route::get('purchase-suggestion/{id}', 'PurchaseSuggestionController@show');
@@ -1397,7 +1422,10 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:motor_de_ofertas'])-
     Route::get('offer-suggestion/{id}', 'OfferSuggestionController@show');
     Route::delete('offer-suggestion/{id}', 'OfferSuggestionController@destroy');
     Route::get('offer-suggestion/{id}/lines', 'OfferSuggestionController@lines');
-    Route::post('offer-suggestion/{id}/resumen', 'OfferSuggestionController@resumen');
+    // Misión agentes-ia-extension-unica (22/10/2026): el resumen con IA exige además `agentes_ia` (403);
+    // el motor de ofertas en sí (corridas, líneas, ofertas) sigue siendo solo de `motor_de_ofertas`.
+    Route::post('offer-suggestion/{id}/resumen', 'OfferSuggestionController@resumen')
+        ->middleware('check_extencion_empresa:agentes_ia');
     Route::get('client-offer', 'ClientOfferController@index');
     Route::post('client-offer', 'ClientOfferController@store');
     Route::delete('client-offer/{id}', 'ClientOfferController@destroy');
@@ -1414,7 +1442,11 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->
     // La lectura en criollo. SINCRÓNICA a propósito, no un job: el modal no puede quedar
     // esperando a un worker. Molde: WhatsappChatController@summary (llama a Anthropic desde el
     // request y devuelve el texto sin persistir nada).
-    Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen');
+    // Misión agentes-ia-extension-unica (22/10/2026): el resumen llama a la IA, así que además de
+    // `tracking_buyers` exige `agentes_ia` (403 «Extensión requerida: agentes_ia»). La lectura de la
+    // actividad en sí (la ruta de arriba) sigue siendo solo de `tracking_buyers`.
+    Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen')
+        ->middleware('check_extencion_empresa:agentes_ia');
 });
 
 // Cotización del dólar al iniciar sesión. Gateado por Sanctum + la extensión
@@ -1490,6 +1522,13 @@ Route::middleware('admin.api.key:siempre')
     ->prefix('admin-sync')
     ->group(function () {
         Route::post('extensiones/acceso', 'ExtensionesAccesoController@store');
+        // Agentes de IA (misión agentes-ia-extension-unica, 22/10/2026): el admin lee y prende/apaga la extensión
+        // única de IA de este cliente (ficha del cliente y activación automática al asignarle un plan de IA).
+        // `siempre` por el mismo motivo que la de arriba: el PUT ESCRIBE un permiso del comercio, y «no hay clave
+        // cargada» no puede significar «pasá». Idempotente. 409 si no hay dueño resoluble. Un cliente viejo sin
+        // esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
+        Route::get('agentes-ia', 'AdminSync\\AgentesIaController@show');
+        Route::put('agentes-ia', 'AdminSync\\AgentesIaController@update');
     });
 
 Route::middleware('admin.api.key')
@@ -1512,7 +1551,7 @@ Route::middleware('admin.api.key')
         // Contacto del dueño (misión aviso-de-actualizacion-al-cliente): el admin necesita su
         // casilla para mandarle el mail con las novedades cuando le actualiza el sistema. Hoy el
         // único endpoint del canal que devuelve `email` es mostrador/duenos, que filtra por la
-        // extensión `asistente_ia` y por eso devuelve vacío para la mayoría de los clientes;
+        // extensión `agentes_ia` y por eso devuelve vacío para la mayoría de los clientes;
         // branding y mensualidad-info no lo traen.
         // Solo lee: no escribe nada ni despacha jobs. Y devuelve UN solo campo, `contacto.email`:
         // el nombre y el teléfono el admin ya los tiene en `clients`, y esta ruta responde sin
@@ -1555,7 +1594,7 @@ Route::middleware('admin.api.key')
         // 🔴 Estas cuatro validan el header X-Admin-Api-Key ADENTRO del controlador, sin mirar
         // services.admin_api.require_api_key (que en producción está apagado): es un canal que
         // carga compras, gastos y pagos y no puede quedar abierto. Y el gate de la extensión
-        // asistente_ia va a mano, porque admin-sync no pasa por auth:sanctum.
+        // agentes_ia va a mano, porque admin-sync no pasa por auth:sanctum.
         Route::post('asistente/mensajes', 'AdminSync\\AsistenteController@mensajes');
         Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
         // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
@@ -1666,12 +1705,12 @@ Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware(
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
 
 // Escaneo de facturas de compra con IA (misión escaneo-factura-compra), gateado por auth
-// Sanctum + la extensión 'escaneo_factura_compra' (ver ExtencionEscaneoFacturaCompraSeeder).
+// Sanctum + la extensión 'agentes_ia' (ver ExtencionAgentesIaSeeder).
 // 🔴 'pendientes' y 'en-curso' van ANTES de '{uuid}': son segmentos fijos y si se declaran
 // después, /provider-order-scan/pendientes matchea el patrón {uuid} y devuelve 404 con un
 // mensaje que no dice nada. Mismo motivo por el que 'analysis-en-curso' va antes de
 // 'analysis/{uuid}' en el bloque de ai-excel-import.
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_compra'])->group(function () {
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group(function () {
     Route::get('provider-order-scan/pendientes', 'ProviderOrderScanController@pendientes');
     Route::get('provider-order-scan/en-curso',   'ProviderOrderScanController@en_curso');
     // Historial de escaneos de una compra (misión historial-escaneos-compra). Tiene dos segmentos,

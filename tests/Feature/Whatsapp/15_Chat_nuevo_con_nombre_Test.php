@@ -37,7 +37,7 @@ class Chat_nuevo_con_nombre_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea los endpoints del módulo. */
-    const SLUG = 'whatsapp';
+    const SLUG = 'agentes_ia';
 
     /** Teléfono del comprador, tal como lo manda la SPA (solo dígitos). */
     const PHONE = '5493416015555';

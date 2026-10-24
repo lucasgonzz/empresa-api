@@ -65,7 +65,7 @@ class Whatsapp_directo_detalle_y_sucursal_Test extends EmpresaTestCase
         $this->confianza_original = $this->dueno->agente_confianza;
         $this->address_id_original = $this->dueno->address_id;
 
-        foreach (['asistente_ia', PropuestaPresupuestoIaHelper::EXTENSION] as $slug) {
+        foreach (['agentes_ia', PropuestaPresupuestoIaHelper::EXTENSION] as $slug) {
 
             $extencion = ExtencionEmpresa::where('slug', $slug)->first();
 

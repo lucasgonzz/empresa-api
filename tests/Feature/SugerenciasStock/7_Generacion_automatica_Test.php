@@ -29,7 +29,7 @@ class Generacion_automatica_Test extends TestCase
     use DatabaseTransactions;
 
     /** Slug de la extensión que gatea la generación. */
-    const SLUG = 'sugerencias_inteligentes';
+    const SLUG = 'agentes_ia';
 
     /** @var User */
     protected $comercio;
