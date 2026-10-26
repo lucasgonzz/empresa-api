@@ -4,12 +4,20 @@ namespace App\Exports;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
+use App\Http\Controllers\Helpers\inventoryPerformance\StockMinimoConsulta;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
 
 class ArticleStockMinimoExport implements FromCollection, WithHeadings, WithMapping
 {
+
+    protected $consulta;
+
+    public function __construct(StockMinimoConsulta $consulta = null)
+    {
+        $this->consulta = $consulta ?: new StockMinimoConsulta(request()->user(), UserHelper::userId(), request());
+    }
 
     public function map($article): array
     {
@@ -24,9 +32,10 @@ class ArticleStockMinimoExport implements FromCollection, WithHeadings, WithMapp
             $article->stock_min,
             !is_null($article->provider) ? $article->provider->name : '',
             $article->final_price,
-            $article->stock_updated_at->format('d/m/Y'),
+            optional($article->stock_updated_at)->format('d/m/Y'),
             $article->created_at->format('d/m/Y'),
             $article->updated_at->format('d/m/Y'),
+            $this->consulta->addresses->firstWhere('id', $article->pivot->address_id)->street ?? 'General',
         ];
         return $map;
     }
@@ -34,28 +43,13 @@ class ArticleStockMinimoExport implements FromCollection, WithHeadings, WithMapp
 
     public function collection()
     {
-        
-        
-        $articles = Article::where('user_id', UserHelper::userId())
-                            ->orderBy('id', 'ASC')
-                            ->get();
-
-        $stock_minimo = [];
-
-        foreach ($articles as $article) {
-            
-            if (
-                !is_null($article->stock_min)
-                && !is_null($article->stock)
-                && $article->stock < $article->stock_min
-            ) {
-
-                $stock_minimo[] = $article;
-            }
-        }
-
-        return collect($stock_minimo);
+        $reporte = $this->consulta->reporte();
+        if (is_null($reporte)) { return collect(); }
+        return $this->consulta->query($reporte)->select(Article::columnas_sin_embedding())
+            ->with(['category', 'sub_category', 'provider'])->orderBy('articles.id')->get()
+            ->map(function ($article) { return $this->consulta->preparar_fila($article); });
     }
+
 
     public function headings(): array
     {
@@ -73,6 +67,7 @@ class ArticleStockMinimoExport implements FromCollection, WithHeadings, WithMapp
             'Stock Actualizado',
             'Creado',
             'Actualizado',
+            'Depósito',
         ];
         return $headings;
     }

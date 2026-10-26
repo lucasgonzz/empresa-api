@@ -312,7 +312,9 @@ class InventoryPerformanceHelper {
 		 * dan lo mismo en cualquier orden.
 		 */
 		Article::select(self::COLUMNAS_DEL_RECORRIDO)
-			->with('addresses', 'price_types')
+			->with(['addresses' => function ($q) {
+				$q->where('addresses.user_id', $this->user_id)->whereNull('addresses.buyer_id');
+			}, 'price_types'])
 			->where('user_id', $this->user_id)
 			->where('status', 'active')
 			->chunkById(2000, function ($articles) {
@@ -416,8 +418,8 @@ class InventoryPerformanceHelper {
 							$this->articles_stock_minimo[] = [
 								'article_id'		=> $article->id,
 								'address_id'		=> null,
-								'stock_address'		=> null,
-								'stock_min_address'	=> null,
+								'stock_address'		=> $article->stock,
+								'stock_min_address'	=> $article->stock_min,
 							];
 
 							// Faltante para llegar al stock mínimo (ej: min 1, stock -3 => faltante 4).
@@ -432,41 +434,45 @@ class InventoryPerformanceHelper {
 								$this->costo_reposicion_stock_minimo += $faltante * $costo_unitario;
 							}
 
-						} else if (
-							count($article->addresses) > 0
-						) {
-
-							foreach ($article->addresses as $address) {
-
-								if (
-									!is_null($address->pivot->stock_min)
-									&& $address->pivot->stock_min >= $address->pivot->amount
-								) {
-
-									$this->stock_minimo++;
-
-									// Misma acumulación plana, pero apuntando al depósito puntual bajo mínimo.
-									$this->articles_stock_minimo[] = [
-										'article_id'		=> $article->id,
-										'address_id'		=> $address->id,
-										'stock_address'		=> $address->pivot->amount,
-										'stock_min_address'	=> $address->pivot->stock_min,
-									];
-
-									// Faltante calculado con los valores del depósito puntual.
-									$faltante_address = $address->pivot->stock_min - $address->pivot->amount;
-
-									if ($faltante_address > 0 && !is_null($article->cost)) {
-
-										$costo_unitario = $this->costo_unitario_normalizado($article);
-
-										$this->costo_reposicion_stock_minimo += $faltante_address * $costo_unitario;
-									}
-								}
-							}
 						}
 
 					}
+
+					// Un faltante global no reemplaza los de cada local (ticket #21).
+					if (
+						count($article->addresses) > 0
+					) {
+
+						foreach ($article->addresses as $address) {
+
+							if (
+								!is_null($address->pivot->stock_min)
+								&& $address->pivot->stock_min >= $address->pivot->amount
+							) {
+
+								$this->stock_minimo++;
+
+								// Misma acumulación plana, pero apuntando al depósito puntual bajo mínimo.
+								$this->articles_stock_minimo[] = [
+									'article_id'		=> $article->id,
+									'address_id'		=> $address->id,
+									'stock_address'		=> $address->pivot->amount,
+									'stock_min_address'	=> $address->pivot->stock_min,
+								];
+
+								// Faltante calculado con los valores del depósito puntual.
+								$faltante_address = $address->pivot->stock_min - $address->pivot->amount;
+
+								if ($faltante_address > 0 && !is_null($article->cost)) {
+
+									$costo_unitario = $this->costo_unitario_normalizado($article);
+
+									$this->costo_reposicion_stock_minimo += $faltante_address * $costo_unitario;
+								}
+							}
+						}
+					}
+
 				}
 			});
 
