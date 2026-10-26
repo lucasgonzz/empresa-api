@@ -553,6 +553,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('current-acount-payment-method', 'CurrentAcountPaymentMethodController');
     // client/options tiene que declararse ANTES del resource, mismo motivo que provider/options.
     Route::get('client/options', 'ClientController@options');
+    // Caché de clientes de VENDER sin conexión (misión clientes-sin-internet, 26/10/2026): mismo
+    // contrato que `article/index/from-status` y `article/index/eliminados`. Antes del resource por
+    // el mismo motivo que client/options.
+    Route::get('client/index/offline', 'ClientController@index_offline');
+    Route::get('client/index/offline-eliminados', 'ClientController@index_offline_eliminados');
     Route::resource('client', 'ClientController');
     Route::post('client/excel/import', 'ClientController@import');
     Route::get('client/get-afip-information-by-cuit/{cuit}', 'ClientController@get_afip_information_by_cuit');

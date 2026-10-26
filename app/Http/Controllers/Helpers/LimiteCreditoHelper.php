@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\sale\VentaOfflineHelper;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Moneda;
 use App\Models\Sale;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Chequeo del límite de crédito del cliente al guardar o actualizar una venta (misión 160).
@@ -30,6 +32,9 @@ use App\Models\Sale;
 class LimiteCreditoHelper {
 
     /**
+     * 🔴 Salvo en la SUBIDA de una venta hecha sin conexión (`offline_uuid` + `venta_offline`),
+     * que nunca se rechaza: se deja pasar y queda en el log. Ver el comentario del final.
+     *
      * @param  \Illuminate\Http\Request  $request  Request del POST api/sale, sin tocar.
      * @return array|null  null = la venta puede guardarse. Array = cuerpo del 422.
      */
@@ -95,7 +100,45 @@ class LimiteCreditoHelper {
         // movimiento que va a persistir, no el denormalizado de credit_accounts.saldo.
         $saldo_actual = (float) CurrentAcountHelper::getSaldo($credit_account->id);
 
-        return Self::comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_actual, (float) $request->total);
+        $error = Self::comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_actual, (float) $request->total);
+
+        /*
+            🔴 La SUBIDA de una venta hecha sin conexión no se rechaza por el límite (misión
+            clientes-sin-internet, 26/10/2026).
+
+            Una venta offline ya se hizo: la mercadería se entregó en el mostrador y la venta quedó
+            guardada en el equipo esperando la red. Si al subirla este 422 la rechaza, la venta queda
+            varada en IndexedDB del equipo del cliente (`offline/sync_sales.js` la marca con
+            `rechazada_at`, avisa con un toast y la deja guardada en el equipo) y no hay ninguna
+            pantalla para resolverla: ni cambiarle el cliente, ni pasarla a contado, ni forzarla. Es peor que la cuenta corriente pasada de
+            límite, que el dueño ve y cobra.
+
+            La guarda sigue estando donde tiene sentido: en Vender, en el equipo, con el cliente
+            adelante (el chequeo de la SPA contra el saldo y el límite descargados). Este 422 sigue
+            siendo la autoridad para todo lo que NO es una subida offline (POST online, POST directo,
+            el asistente de IA), exactamente igual que antes.
+
+            Qué es "subida offline" lo decide `VentaOfflineHelper::es_subida_de_venta_offline()`:
+            `offline_uuid` válido Y `venta_offline` verdadero. Un `venta_offline` sin uuid no
+            alcanza, mismo criterio que la guarda de 5 segundos de `SaleController::store()`.
+
+            Se compara primero y se decide después (en vez de salir al principio) para que el log
+            deje constancia solo de las ventas que de verdad pasaron por encima del límite, con los
+            números, y no de cada venta offline a cuenta corriente.
+        */
+        if (!is_null($error) && VentaOfflineHelper::es_subida_de_venta_offline($request)) {
+
+            Log::info('LimiteCreditoHelper: venta offline por encima del limite de credito, se deja pasar. '.
+                'Cliente '.$client->id.' ('.$client->name.'), '.
+                'total '.Self::formato($request->total).', '.
+                'saldo resultante '.Self::formato($error['limite_credito']['saldo_resultante']).', '.
+                'limite '.Self::formato($error['limite_credito']['limite_credito']).', '.
+                'offline_uuid '.VentaOfflineHelper::normalizar_offline_uuid(VentaOfflineHelper::valor_del_request($request, 'offline_uuid')).'.');
+
+            return null;
+        }
+
+        return $error;
     }
 
     /**
