@@ -29,6 +29,7 @@ class PaymentPlanCuota extends Model
 
     public function is_pending(): bool
     {
-        return $this->status === 'pending';
+        // El estado canónico es el que actualiza el cobro; status existe en esquemas históricos.
+        return $this->estado !== null ? $this->estado === 'pendiente' : $this->status === 'pending';
     }
 }
