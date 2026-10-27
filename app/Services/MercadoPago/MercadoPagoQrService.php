@@ -1063,9 +1063,40 @@ class MercadoPagoQrService
 
         if ($this->es_transitoria($respuesta)) {
             $respuesta = $this->llamar($conexion['token'], 'POST', '/v1/orders', $opciones);
+
+            // El primer intento pudo haber llegado a MP y creado la orden aunque la respuesta no
+            // volviera: lo que conteste el reintento se lee como una recuperación (ver
+            // `registrar_orden()`).
+            $respuesta['hubo_intento_sin_respuesta'] = true;
         }
 
         return $respuesta;
+    }
+
+    /**
+     * Indica si un rechazo de MP prueba que la orden NO existe, para un pedido que pudo haber
+     * llegado antes a MP (una recuperación, o el reintento después de un intento sin respuesta).
+     *
+     * 🔴 Solo un rechazo de VALIDACIÓN del cuerpo (400 o 422) lo prueba: MP no crea una orden con
+     * un cuerpo que no valida, y como el cuerpo se arma siempre igual, el primer intento tampoco la
+     * creó. Cualquier otra cosa —401/403 (token vencido o revocado en el medio), 404, 409— no dice
+     * nada sobre si el primer intento creó la orden: si se tomara como "no existe", el cobro
+     * quedaría en `error`, la orden viva 10 minutos en el QR, y si el cliente paga nadie se entera
+     * (el comando no mira los `error`). Esos casos se tratan como "sin respuesta": el cobro sigue
+     * pendiente y se reintenta, y el tope de 20 horas lo cierra si nunca se resuelve.
+     *
+     * @param array $respuesta La de `llamar()`.
+     * @return bool
+     */
+    protected function prueba_que_la_orden_no_existe(array $respuesta)
+    {
+        if (!empty($respuesta['sin_cuerpo'])) {
+            return true;
+        }
+
+        $status = (int) $respuesta['status'];
+
+        return $status === 400 || $status === 422;
     }
 
     /**
@@ -1094,15 +1125,23 @@ class MercadoPagoQrService
      *   reintentando…".
      * - rechazo definitivo (4xx): `error` con el motivo legible.
      *
+     * 🔴 Si el pedido pudo haber llegado antes a MP (`$recuperando`, o el reintento de
+     * `enviar_orden()` después de un intento sin respuesta), "definitivo" es SOLO un rechazo de
+     * validación del cuerpo (400/422): cualquier otro rechazo se trata como sin respuesta, porque
+     * no prueba que la orden no exista (ver `prueba_que_la_orden_no_existe()`).
+     *
      * Las escrituras son condicionales (pendiente y sin orden): el polling y el comando pueden
      * estar recuperando el mismo cobro a la vez, y el segundo no pisa lo que ya escribió el primero.
      *
      * @param MercadoPagoQrCobro $cobro
      * @param array $respuesta La de `enviar_orden()`.
+     * @param bool $recuperando true si es el reenvío de una orden que MP no confirmó.
      * @return array{resultado: string, mensaje: string|null} `creada`, `sin_respuesta` o `rechazada`.
      */
-    protected function registrar_orden(MercadoPagoQrCobro $cobro, array $respuesta)
+    protected function registrar_orden(MercadoPagoQrCobro $cobro, array $respuesta, $recuperando = false)
     {
+        $puede_existir = $recuperando || !empty($respuesta['hubo_intento_sin_respuesta']);
+
         $sin_orden_pendiente = MercadoPagoQrCobro::where('id', $cobro->id)
             ->where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)
             ->whereNull('mp_order_id');
@@ -1129,7 +1168,7 @@ class MercadoPagoQrService
             return ['resultado' => 'creada', 'mensaje' => null];
         }
 
-        if ($this->es_transitoria($respuesta)) {
+        if ($this->es_transitoria($respuesta) || ($puede_existir && !$this->prueba_que_la_orden_no_existe($respuesta))) {
 
             $this->log_error_de_mp('crear orden del cobro ' . $cobro->id . ' (sin respuesta, queda para recuperar)', $cobro->user_id, $respuesta);
 
@@ -1185,7 +1224,7 @@ class MercadoPagoQrService
             return 'rechazada';
         }
 
-        $resultado = $this->registrar_orden($cobro, $this->enviar_orden($cobro, $conexion));
+        $resultado = $this->registrar_orden($cobro, $this->enviar_orden($cobro, $conexion), true);
 
         if ($resultado['resultado'] === 'creada') {
             Log::info('MercadoPagoQrService: recuperada la orden ' . $cobro->mp_order_id . ' del cobro ' . $cobro->id . '.');
@@ -1818,7 +1857,9 @@ class MercadoPagoQrService
      *
      * - más de 30 días: se deja de consultar y pasa a `error` ("No se pudo confirmar con Mercado
      *   Pago");
-     * - con orden: se consulta y se aplica lo que diga MP (`expired` → vencido, etc.);
+     * - con orden: se consulta y se aplica lo que diga MP (`expired` → vencido, etc.); si tiene más
+     *   de 15 minutos y MP la sigue dando sin pagar (o la consulta falló), se la cancela, en cada
+     *   corrida hasta que MP confirme algo;
      * - sin orden (MP no contestó al crearla) y con más de 15 minutos: se recupera reenviando el
      *   mismo pedido con la misma clave, y se consulta la orden recuperada. Si MP la da pagada,
      *   `pagado`; si sigue sin pagar, se la cancela (nadie la está esperando: el cajero ya volvió a
@@ -1896,27 +1937,38 @@ class MercadoPagoQrService
             return;
         }
 
-        if (!empty($cobro->mp_order_id)) {
-            $this->actualizar_cobro($cobro, $conexion);
+        $es_viejo = $cobro->created_at && $cobro->created_at->lt($tope_de_recuperar);
 
-            return;
+        if (empty($cobro->mp_order_id)) {
+
+            if (!$es_viejo) {
+                // Reciente: lo está recuperando el polling del modal de Vender.
+                return;
+            }
+
+            $this->recuperar_orden($cobro, $conexion);
+
+            if (!$cobro->esta_pendiente() || empty($cobro->mp_order_id)) {
+                return;
+            }
         }
 
-        if ($cobro->created_at && $cobro->created_at->gt($tope_de_recuperar)) {
-            // Reciente: lo está recuperando el polling del modal de Vender.
-            return;
-        }
-
-        $this->recuperar_orden($cobro, $conexion);
-
-        if (!$cobro->esta_pendiente() || empty($cobro->mp_order_id)) {
-            return;
-        }
-
-        // Orden recuperada: su estado de AHORA (el reenvío devuelve el de cuando se creó).
+        // Su estado de AHORA (después de recuperar, el reenvío devuelve el de cuando se creó).
         $this->actualizar_cobro($cobro, $conexion);
 
-        if (!$cobro->esta_pendiente()) {
+        if (!$cobro->esta_pendiente() || !$es_viejo) {
+            return;
+        }
+
+        /*
+         * Pendiente con orden y con más de 15 minutos: el cajero ya no lo espera (la orden vence a
+         * los 10 en MP y el modal ofrece volver a generar). Si MP la sigue dando sin pagar
+         * (`created`, o sin estado porque la consulta falló), se la cancela para que no quede viva
+         * en el QR. Va en CADA corrida y no solo justo después de recuperarla: si la consulta y la
+         * cancelación fallan una vez, la corrida siguiente vuelve a intentarlo. Un estado en curso
+         * (`action_required`, `at_terminal`...) no se toca: el cliente puede estar pagando.
+         */
+        if (!in_array((string) $cobro->mp_status, ['', 'created'], true)) {
             return;
         }
 
@@ -1924,7 +1976,7 @@ class MercadoPagoQrService
             $this->cancelar_cobro_con_conexion($cobro, $conexion, self::MENSAJE_CANCELADO_POR_DEMORA);
         } catch (MercadoPagoQrException $e) {
             // El cliente la está pagando, o MP no dejó: queda pendiente para la próxima corrida.
-            Log::info('MercadoPagoQrService: no se pudo cancelar la orden recuperada del cobro ' . $cobro->id . ': ' . $e->getMessage());
+            Log::info('MercadoPagoQrService: no se pudo cancelar la orden demorada del cobro ' . $cobro->id . ': ' . $e->getMessage());
         }
     }
 

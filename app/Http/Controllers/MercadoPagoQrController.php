@@ -145,8 +145,17 @@ class MercadoPagoQrController extends Controller
      * no el owner: es el rastro de quién cobró.
      *
      * @param Request $request `{total, caja_id?, address_id?, description?}`.
-     * @return \Illuminate\Http\JsonResponse 201 `{cobro: Cobro}`; 422 `{message, sin_qr: true}` /
-     *                                       `{message, sin_conexion: true}` / `{message}`.
+     * @return \Illuminate\Http\JsonResponse 201 `{cobro: Cobro}` (si MP no contestó, el cobro
+     *                                       viene `pendiente` sin `mp_order_id` y con "Mercado
+     *                                       Pago no respondió, reintentando…": el SPA sigue
+     *                                       consultando y el GET recupera la orden);
+     *                                       422 `{message, sin_qr: true}` /
+     *                                       `{message, sin_conexion: true}` /
+     *                                       `{message, qr_ocupado: true}` (otro cobro cargándose en
+     *                                       el mismo QR) / `{message, pagando: true}` (el cliente
+     *                                       paga el cobro anterior del QR) /
+     *                                       `{message, sin_respuesta: true}` (hay un cobro anterior
+     *                                       sin confirmar y MP no contesta) / `{message}` (texto de MP).
      */
     public function store_cobro(Request $request)
     {
