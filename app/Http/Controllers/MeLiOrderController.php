@@ -9,7 +9,9 @@ use App\Jobs\ProcessMeliOrderNotificationJob;
 use App\Models\MeliOrder;
 use App\Models\PlatformConnector;
 use App\Services\MercadoLibre\ErrorHandler;
+use App\Services\MercadoLibre\MercadoLibreLimiteException;
 use App\Services\MercadoLibre\OrderDownloaderService;
+use App\Services\MercadoLibre\ProductService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -27,14 +29,19 @@ class MeLiOrderController extends Controller
      */
     public function index($from_date = null, $until_date = null)
     {
-        if (env('USA_MERCADO_LIBRE', false)) {
+        // Misión mercado-libre-integracion (27/10/2026): el gate es la extensión `usa_mercado_libre`
+        // del dueño (o el USA_MERCADO_LIBRE viejo), y no se consulta a ML si el último poll (el del
+        // comando de cada 5 minutos o el de otra apertura del listado) fue hace menos de 1 minuto.
+        if (ProductService::modulo_habilitado((int) $this->userId())) {
             try {
-                // Credenciales OAuth del tenant: conector ML conectado con access_token vigente.
                 $connector = PlatformConnector::find_connected_mercado_libre_for_user((int) $this->userId());
-                if ($connector && $connector->access_token) {
+                if ($connector && OrderDownloaderService::corresponde_consultar($connector, 1)) {
                     $downloader = new OrderDownloaderService($this->userId());
-                    $downloader->get_recent_orders();
+                    $downloader->sincronizar_pedidos_recientes();
                 }
+            } catch (MercadoLibreLimiteException $e) {
+                // ML pidió esperar: el listado muestra lo que ya hay y la próxima consulta trae el resto.
+                Log::warning('MeLiOrderController index: Mercado Libre pidió esperar: '.$e->getMessage());
             } catch (\Exception $e) {
                 Log::warning('MeLiOrderController index: no se pudo sincronizar pedidos ML: '.$e->getMessage());
                 ErrorHandler::notify_exception(
