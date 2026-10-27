@@ -183,34 +183,41 @@ class MeLiOrderController extends Controller
         $model->meli_order_status_id = $request->meli_order_status_id;
         $model->save();
 
-        $this->confirmar_pedido_meli($model, $previous_status_id);
+        $ya_tenia_venta = $this->confirmar_pedido_meli($model, $previous_status_id);
 
         $this->sendAddModelNotification('MeliOrder', $model->id);
 
-        return response()->json(['model' => $this->fullModel('MeliOrder', $model->id)], 200);
+        // `ya_tenia_venta` (contrato con la SPA, Orders.vue): true si se pasó a Confirmado un pedido
+        // que YA tenía venta (no se creó nada; la SPA muestra "Este pedido ya tenía venta").
+        return response()->json([
+            'model'          => $this->fullModel('MeliOrder', $model->id),
+            'ya_tenia_venta' => $ya_tenia_venta,
+        ], 200);
     }
 
     /**
-     * Si el pedido pasa de Pendiente (1) a Confirmado (2), está pago en ML y aún no tiene venta, genera la Sale.
+     * Si el pedido pasa de Pendiente (1) a Confirmado (2) y está pago en ML, genera la Sale si
+     * todavía no la tiene.
      *
      * @param MeliOrder $order
      * @param int|null $previous_status_id
-     * @return void
+     * @return bool true si era el paso a Confirmado y el pedido YA tenía venta (no se creó nada).
      */
     protected function confirmar_pedido_meli(MeliOrder $order, $previous_status_id)
     {
-        $order->load('sale');
-
-        if (
-            (int) $order->meli_order_status_id === 2
+        $es_confirmacion = (int) $order->meli_order_status_id === 2
             && ($previous_status_id === null || (int) $previous_status_id === 1)
-            && $order->status === 'paid'
-            && !$order->sale
-        ) {
-            // Con candado y re-chequeo (misión mercado-libre-integracion): la venta automática o el
-            // botón "Crear venta" pueden estar creando la misma venta en este momento.
-            VentaDelPedidoMeli::generar_si_falta($order, $this);
+            && $order->status === 'paid';
+
+        if (!$es_confirmacion) {
+            return false;
         }
+
+        // Con candado y re-chequeo (misión mercado-libre-integracion): la venta automática o el
+        // botón "Crear venta" pueden estar creando la misma venta en este momento.
+        $creada = VentaDelPedidoMeli::generar_si_falta($order, $this);
+
+        return !$creada && $order->sale()->exists();
     }
 
     /**
@@ -248,10 +255,14 @@ class MeLiOrderController extends Controller
         $meli_order = MeliOrder::find($id);
 
         // Si ya tiene venta (la automática, o un confirmar desde otra pantalla) no se crea otra:
-        // se devuelve el pedido como está (misión mercado-libre-integracion).
-        VentaDelPedidoMeli::generar_si_falta($meli_order, $this);
+        // se devuelve el pedido como está con `ya_tenia_venta: true` (misión
+        // mercado-libre-integracion; la SPA lo lee en Orders.vue).
+        $creada = VentaDelPedidoMeli::generar_si_falta($meli_order, $this);
 
-        return response()->json(['model' => $this->fullModel('MeliOrder', $id)], 200);
+        return response()->json([
+            'model'          => $this->fullModel('MeliOrder', $id),
+            'ya_tenia_venta' => !$creada && $meli_order->sale()->exists(),
+        ], 200);
     }
 
     /**

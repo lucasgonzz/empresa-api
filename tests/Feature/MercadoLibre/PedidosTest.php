@@ -135,6 +135,8 @@ class PedidosTest extends MercadoLibreTestCase
 
         $respuesta->assertStatus(200);
         $this->assertSame((int) $pedido->id, (int) $respuesta->json('model.id'));
+        // Contrato con la SPA (Orders.vue): avisa "Este pedido ya tenía venta".
+        $respuesta->assertJsonPath('ya_tenia_venta', true);
         $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count(), 'El botón creó una segunda venta.');
         $this->assertEquals(8, (float) Article::find($this->articulo->id)->stock, 'El stock bajó dos veces.');
     }
@@ -152,7 +154,9 @@ class PedidosTest extends MercadoLibreTestCase
         $pedido = $this->pedidos_locales('2000001001')->first();
 
         $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 1])->assertStatus(200);
-        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 2])->assertStatus(200);
+        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 2])
+            ->assertStatus(200)
+            ->assertJsonPath('ya_tenia_venta', true);
 
         $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count(), 'Confirmar por PUT creó una segunda venta.');
         $this->assertEquals(8, (float) Article::find($this->articulo->id)->stock, 'El stock bajó dos veces.');
@@ -171,8 +175,12 @@ class PedidosTest extends MercadoLibreTestCase
         $pedido = $this->pedidos_locales('2000001001')->first();
         $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count());
 
-        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 2])->assertStatus(200);
-        $this->postJson('/api/meli-order/create-sale/'.$pedido->id)->assertStatus(200);
+        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 2])
+            ->assertStatus(200)
+            ->assertJsonPath('ya_tenia_venta', false);
+        $this->postJson('/api/meli-order/create-sale/'.$pedido->id)
+            ->assertStatus(200)
+            ->assertJsonPath('ya_tenia_venta', true);
 
         $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count());
         $this->assertSame(2, (int) $pedido->fresh()->meli_order_status_id);
