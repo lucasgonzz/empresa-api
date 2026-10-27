@@ -90,6 +90,12 @@ class MercadoLibreController extends Controller
         }
 
         if ((string) $article->meli_status === 'closed') {
+            // Sin tildar "Disponible en Mercado Libre" no se republica: le borraría el vínculo con
+            // la publicación vieja y la sincronización fallaría igual (revisión de merge).
+            if (!$article->mercado_libre) {
+                return response()->json(['message' => 'Para publicarlo de nuevo, tildá «Disponible en Mercado Libre» y guardá.'], 422);
+            }
+
             // Cerrada en ML: no se puede reactivar. "Sincronizar ahora" la publica de nuevo (le saca
             // el código de la publicación vieja y la encola como un alta).
             ProductService::republicar_cerrada($article);

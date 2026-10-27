@@ -300,6 +300,30 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
         $this->assertSame(1, SyncToMeliArticle::where('article_id', $article->id)->where('status', 'pendiente')->count());
     }
 
+    /**
+     * Arreglo 3 de la revisión de merge: una cerrada con el artículo SIN tildar "Disponible en
+     * Mercado Libre" no se republica (borraría el vínculo y la sync fallaría): 422 sin tocar nada.
+     */
+    public function test_republicar_una_cerrada_sin_tildar_disponible_responde_422_sin_tocar_nada()
+    {
+        $article = $this->articulo_ml($this->categoria, [
+            'mercado_libre'  => 0,
+            'me_li_id'       => 'MLA222',
+            'meli_status'    => 'closed',
+            'meli_permalink' => 'https://articulo.mercadolibre.com.ar/MLA-222',
+        ]);
+
+        $this->postJson('/api/mercado-libre/articulo/'.$article->id.'/sincronizar')
+            ->assertStatus(422)
+            ->assertExactJson(['message' => 'Para publicarlo de nuevo, tildá «Disponible en Mercado Libre» y guardá.']);
+
+        $article = $article->fresh();
+        $this->assertSame('MLA222', $article->me_li_id);
+        $this->assertSame('closed', $article->meli_status);
+        $this->assertSame('https://articulo.mercadolibre.com.ar/MLA-222', $article->meli_permalink);
+        $this->assertFalse(SyncToMeliArticle::where('article_id', $article->id)->exists());
+    }
+
     public function test_sincronizar_con_el_modulo_apagado_responde_422()
     {
         // Aun con el USA_MERCADO_LIBRE viejo prendido: el gate es solo la extensión.
