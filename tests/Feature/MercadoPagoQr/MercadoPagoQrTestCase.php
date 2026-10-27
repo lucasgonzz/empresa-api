@@ -10,6 +10,7 @@ use App\Models\PlatformConnector;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -58,6 +59,34 @@ abstract class MercadoPagoQrTestCase extends TestCase
         }
 
         $this->actingAs($this->user, 'web');
+
+        $this->partir_de_un_estado_limpio();
+    }
+
+    /**
+     * Cada test arma su propio estado: adentro de la transacción (se revierte al terminar, así que
+     * lo que haya en la base del slot queda intacto) se sacan el conector de Mercado Pago y los QR
+     * del usuario 500, y TODOS los cobros (el comando concilia los de cualquier comercio).
+     *
+     * Sin esto los tests dependían de que la base estuviera vacía: un conector o un QR sembrados a
+     * mano para probar en el navegador (pasó el 26/10 con el conector 894 y el QR 192) hacían que
+     * los casos "sin conexión" vieran conexión y los listados vieran filas de más.
+     *
+     * @return void
+     */
+    protected function partir_de_un_estado_limpio()
+    {
+        $platform = Platform::where('slug', Platform::SLUG_MERCADO_PAGO)->first();
+
+        if ($platform) {
+            DB::table('platform_connectors')
+                ->where('user_id', self::USER_ID)
+                ->where('platform_id', $platform->id)
+                ->delete();
+        }
+
+        DB::table('mercado_pago_qr_cajas')->where('user_id', self::USER_ID)->delete();
+        DB::table('mercado_pago_qr_cobros')->delete();
     }
 
     /**

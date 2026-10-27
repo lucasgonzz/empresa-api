@@ -71,6 +71,7 @@ class Conciliar_cobros_Test extends MercadoPagoQrTestCase
             ['GET', '#^/v1/orders/ORDESPERA$#', $this->orden_mp('ORDESPERA', 'created')],
             ['GET', '#^/v1/orders/ORDVIEJA$#', $this->orden_mp('ORDVIEJA', 'created')],
             ['GET', '#^/v1/orders/ORDEXPIRADA$#', $this->orden_mp('ORDEXPIRADA', 'expired')],
+            ['POST', '#^/v1/orders/ORDVIEJA/cancel$#', [200, ['id' => 'ORDVIEJA', 'status' => 'canceled']]],
         ]);
 
         $this->artisan('mercadopago:qr-conciliar')->assertExitCode(0);
@@ -78,7 +79,14 @@ class Conciliar_cobros_Test extends MercadoPagoQrTestCase
         $this->assertSame('pagado', $pagado_en_mp->fresh()->estado);
         $this->assertNotNull($pagado_en_mp->fresh()->paid_at);
         $this->assertSame('pendiente', $sigue_esperando->fresh()->estado);
-        $this->assertSame('pendiente', $viejo_created->fresh()->estado, 'Sin un "expired" de MP no se vence, tenga las horas que tenga.');
+        // Viejo y MP lo sigue dando sin pagar: nadie lo espera, se cancela EN MP (no se vence por
+        // tiempo: queda cancelado porque MP confirmó la cancelación).
+        $this->assertSame('cancelado', $viejo_created->fresh()->estado, 'Viejo y sin pagar: se cancela en MP.');
+        $this->assertSame('El cobro se canceló porque Mercado Pago tardó en confirmarlo.', $viejo_created->fresh()->error_message);
+
+        Http::assertNotSent(function (Request $request) {
+            return parse_url($request->url(), PHP_URL_PATH) === '/v1/orders/ORDESPERA/cancel';
+        });
         $this->assertSame('vencido', $viejo_expired->fresh()->estado);
         $this->assertSame('cancelado', $ya_cancelado->fresh()->estado);
 
@@ -101,6 +109,7 @@ class Conciliar_cobros_Test extends MercadoPagoQrTestCase
 
         $this->fake_mp([
             ['GET', '#^/v1/orders/ORDCAIDA$#', [500, ['message' => 'internal_error']]],
+            ['POST', '#^/v1/orders/ORDCAIDA/cancel$#', [500, ['message' => 'internal_error']]],
         ]);
 
         $this->artisan('mercadopago:qr-conciliar')->assertExitCode(0);
@@ -279,6 +288,96 @@ class Conciliar_cobros_Test extends MercadoPagoQrTestCase
         $this->assertSame('No se pudo confirmar con Mercado Pago.', $cobro->fresh()->error_message);
 
         Http::assertNothingSent();
+    }
+
+    /**
+     * N2: tras recuperar una orden huérfana fallan la consulta y la cancelación. El cobro queda
+     * pendiente CON orden, y la corrida siguiente (con MP de vuelta) vuelve a intentar cancelarla.
+     *
+     * @test
+     */
+    public function si_la_cancelacion_de_una_orden_recuperada_falla_la_corrida_siguiente_la_reintenta()
+    {
+        $this->conectar_mp();
+
+        $cobro = $this->cobro_en_base($this->qr_en_base(), ['mp_order_id' => null]);
+        $this->envejecer_minutos($cobro, 30);
+
+        $this->fake_mp([
+            ['POST', '#^/v1/orders$#', $this->orden_creada_mp('ORDTERCA')],
+            ['GET', '#^/v1/orders/ORDTERCA$#', [500, ['message' => 'internal_error']]],
+            ['POST', '#^/v1/orders/ORDTERCA/cancel$#', [500, ['message' => 'internal_error']]],
+        ]);
+
+        $this->artisan('mercadopago:qr-conciliar')->assertExitCode(0);
+
+        $cobro->refresh();
+        $this->assertSame('pendiente', $cobro->estado, 'Sin respuesta válida de MP no cambia.');
+        $this->assertSame('ORDTERCA', $cobro->mp_order_id, 'La orden quedó recuperada.');
+
+        // MP vuelve: la corrida siguiente consulta, la ve sin pagar y la cancela. Factory nuevo
+        // (con el mismo freno de internet) para que las respuestas de arriba no ganen.
+        $this->cerrar_la_salida_a_internet();
+
+        $this->fake_mp([
+            ['GET', '#^/v1/orders/ORDTERCA$#', $this->orden_mp('ORDTERCA', 'created')],
+            ['POST', '#^/v1/orders/ORDTERCA/cancel$#', [200, ['id' => 'ORDTERCA', 'status' => 'canceled']]],
+        ]);
+
+        $this->artisan('mercadopago:qr-conciliar')->assertExitCode(0);
+
+        $this->assertSame('cancelado', $cobro->fresh()->estado);
+    }
+
+    /**
+     * Un pendiente viejo con la orden en curso (`action_required`: el cliente puede estar pagando)
+     * no se cancela.
+     *
+     * @test
+     */
+    public function un_pendiente_viejo_con_la_orden_en_curso_no_se_cancela()
+    {
+        $this->conectar_mp();
+
+        $cobro = $this->cobro_en_base($this->qr_en_base(), ['mp_order_id' => 'ORDENCURSO']);
+        $this->envejecer_minutos($cobro, 30);
+
+        $this->fake_mp([
+            ['GET', '#^/v1/orders/ORDENCURSO$#', $this->orden_mp('ORDENCURSO', 'action_required')],
+        ]);
+
+        $this->artisan('mercadopago:qr-conciliar')->assertExitCode(0);
+
+        $this->assertSame('pendiente', $cobro->fresh()->estado);
+
+        Http::assertNotSent(function (Request $request) {
+            return parse_url($request->url(), PHP_URL_PATH) === '/v1/orders/ORDENCURSO/cancel';
+        });
+    }
+
+    /**
+     * N1: al recuperar, un 401 (token vencido en el medio) NO prueba que la orden no exista: el
+     * cobro sigue pendiente sin orden y se reintenta.
+     *
+     * @test
+     */
+    public function un_401_al_recuperar_deja_el_cobro_pendiente()
+    {
+        $this->conectar_mp();
+
+        $cobro = $this->cobro_en_base($this->qr_en_base(), ['mp_order_id' => null]);
+        $this->envejecer_minutos($cobro, 30);
+
+        $this->fake_mp([
+            ['POST', '#^/v1/orders$#', [401, ['message' => 'invalid access token', 'error' => 'unauthorized', 'status' => 401]]],
+        ]);
+
+        $this->artisan('mercadopago:qr-conciliar')->assertExitCode(0);
+
+        $cobro->refresh();
+        $this->assertSame('pendiente', $cobro->estado);
+        $this->assertNull($cobro->mp_order_id);
+        $this->assertSame('Mercado Pago no respondió, reintentando…', $cobro->error_message);
     }
 
     /**

@@ -71,6 +71,80 @@ class Orden_sin_respuesta_y_candado_Test extends MercadoPagoQrTestCase
     }
 
     /**
+     * N1: el primer intento no tiene respuesta (pudo crear la orden) y el reintento da 401. Eso no
+     * prueba que la orden no exista: 201 con el cobro pendiente sin orden, no `error`.
+     *
+     * @test
+     */
+    public function un_401_en_el_reintento_despues_de_un_intento_sin_respuesta_no_es_error()
+    {
+        $this->conectar_mp();
+        $this->qr_en_base();
+
+        $intentos = 0;
+
+        $this->fake_mp([
+            ['POST', '#^/v1/orders$#', function () use (&$intentos) {
+                $intentos++;
+
+                if ($intentos === 1) {
+                    throw new \Illuminate\Http\Client\ConnectionException('cURL error 28: Operation timed out');
+                }
+
+                return [401, ['message' => 'invalid access token', 'status' => 401]];
+            }],
+        ]);
+
+        $response = $this->postJson('api/mercado-pago/qr/cobros', ['total' => 1500]);
+
+        $response->assertStatus(201);
+        $response->assertJsonPath('cobro.estado', 'pendiente');
+        $response->assertJsonPath('cobro.mp_order_id', null);
+        $response->assertJsonPath('cobro.error_message', 'Mercado Pago no respondió, reintentando…');
+    }
+
+    /**
+     * Control de N1: un 401 en el PRIMER intento (nada pudo haber llegado a MP) sí es un rechazo
+     * definitivo: 422 y el cobro en `error`.
+     *
+     * @test
+     */
+    public function un_401_en_el_primer_intento_es_un_rechazo_definitivo()
+    {
+        $this->conectar_mp();
+        $this->qr_en_base();
+
+        $this->fake_mp([
+            ['POST', '#^/v1/orders$#', [401, ['message' => 'invalid access token', 'status' => 401]]],
+        ]);
+
+        $this->postJson('api/mercado-pago/qr/cobros', ['total' => 1500])->assertStatus(422);
+
+        $this->assertSame('error', MercadoPagoQrCobro::where('user_id', self::USER_ID)->first()->estado);
+    }
+
+    /**
+     * N1 en el polling: un 403 al recuperar deja el cobro pendiente; un 400 (validación) sí es error.
+     *
+     * @test
+     */
+    public function al_recuperar_un_403_sigue_pendiente()
+    {
+        $this->conectar_mp();
+
+        $cobro = $this->cobro_en_base($this->qr_en_base(), ['mp_order_id' => null]);
+
+        $this->fake_mp([
+            ['POST', '#^/v1/orders$#', [403, ['message' => 'forbidden', 'status' => 403]]],
+        ]);
+
+        $this->getJson('api/mercado-pago/qr/cobros/' . $cobro->id)
+            ->assertStatus(200)
+            ->assertJsonPath('cobro.estado', 'pendiente')
+            ->assertJsonPath('cobro.error_message', 'Mercado Pago no respondió, reintentando…');
+    }
+
+    /**
      * 5xx dos veces → pendiente sin orden con el aviso; después el polling recupera la orden con el
      * mismo pedido y consulta su estado.
      *
