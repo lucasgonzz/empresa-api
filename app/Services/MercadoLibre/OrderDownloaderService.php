@@ -104,6 +104,14 @@ class OrderDownloaderService extends MercadoLibreService
 
         $order = $this->make_request('GET', $resource);
 
+        // 404 (pedido de otra cuenta o borrado): no hay nada que guardar. Antes esto llegaba como
+        // null a store_or_update_order(array) y tiraba un TypeError en el job.
+        if (!is_array($order)) {
+            Log::warning('obtener_order: Mercado Libre no devolvió el pedido '.$resource);
+
+            return;
+        }
+
         $this->store_or_update_order($order);
     }
 
