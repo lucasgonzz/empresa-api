@@ -11,6 +11,7 @@ use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Models\Article;
 use App\Models\Client;
+use App\Models\ExtencionEmpresa;
 use App\Models\Image;
 use App\Models\InventoryLinkage;
 use App\Models\InventoryLinkageScope;
@@ -18,6 +19,7 @@ use App\Models\SyncToMeliArticle;
 use App\Models\SyncToTNArticle;
 use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeCarga;
+use App\Services\MercadoLibre\ProductService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
@@ -346,17 +348,30 @@ class Foto_de_articulo_Test extends TestCase
      * al de ImageController::setImage() y no igual: la foto queda en el sistema y no llega a la
      * tienda del cliente vinculado, ni a Tienda Nube, ni a Mercado Libre.
      *
-     * `USA_TIENDA_NUBE` y `USA_MERCADO_LIBRE` se prenden acá: los dos servicios salen temprano si el
-     * flag está apagado, así que con el `.env.testing` de siempre este test pasaría sin probar nada.
+     * `USA_TIENDA_NUBE` se prende acá y al dueño se le da la extensión `usa_mercado_libre`: los dos
+     * servicios salen temprano si su módulo está apagado, así que con el `.env.testing` de siempre este
+     * test pasaría sin probar nada. Desde la misión mercado-libre-integracion (commit 8bf091f7) Mercado
+     * Libre se prende por la extensión del dueño y ya no por `USA_MERCADO_LIBRE`: este test seguía
+     * prendiendo el flag y por eso dejó de ver el efecto de Mercado Libre (rojo del gate del 27/10/2026).
      *
      * @test
      */
     public function al_confirmar_dispara_los_cuatro_efectos_de_la_pantalla()
     {
         $flags_previos = [
-            'USA_TIENDA_NUBE'   => $this->prender_flag('USA_TIENDA_NUBE'),
-            'USA_MERCADO_LIBRE' => $this->prender_flag('USA_MERCADO_LIBRE'),
+            'USA_TIENDA_NUBE' => $this->prender_flag('USA_TIENDA_NUBE'),
         ];
+
+        // Mercado Libre se prende por la extensión del dueño (la transacción del test la deshace). El módulo
+        // guarda su estado en una caché estática: se la olvida al prender y al terminar (finally).
+        $extension_ml = ExtencionEmpresa::where('slug', 'usa_mercado_libre')->first();
+
+        if (!$extension_ml) {
+            $extension_ml = ExtencionEmpresa::forceCreate(['name' => 'usa_mercado_libre', 'slug' => 'usa_mercado_libre']);
+        }
+
+        $this->comercio->extencions()->syncWithoutDetaching([$extension_ml->id]);
+        ProductService::olvidar_cache_del_modulo();
 
         try {
 
@@ -455,6 +470,8 @@ class Foto_de_articulo_Test extends TestCase
             foreach ($flags_previos as $clave => $anterior) {
                 $this->restaurar_flag($clave, $anterior);
             }
+
+            ProductService::olvidar_cache_del_modulo();
         }
     }
 
