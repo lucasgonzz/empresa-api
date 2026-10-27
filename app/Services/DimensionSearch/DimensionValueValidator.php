@@ -111,7 +111,10 @@ class DimensionValueValidator
         'mts'         => [self::TIPO_MEDIDA, 100, 'm'],
         'metro'       => [self::TIPO_MEDIDA, 100, 'm'],
         'metros'      => [self::TIPO_MEDIDA, 100, 'm'],
-        'in'          => [self::TIPO_MEDIDA, 2.54, 'in'],
+        // 🔴 «in» pelado NO es pulgada (es la preposición inglesa, o parte de un código): solo «"», «pulg»,
+        // «pulgadas», «inch» e «inches».
+        'inch'        => [self::TIPO_MEDIDA, 2.54, 'in'],
+        'inches'      => [self::TIPO_MEDIDA, 2.54, 'in'],
         'pulg'        => [self::TIPO_MEDIDA, 2.54, 'in'],
         'pulgada'     => [self::TIPO_MEDIDA, 2.54, 'in'],
         'pulgadas'    => [self::TIPO_MEDIDA, 2.54, 'in'],
@@ -119,6 +122,22 @@ class DimensionValueValidator
         '″'           => [self::TIPO_MEDIDA, 2.54, 'in'],
         '”'           => [self::TIPO_MEDIDA, 2.54, 'in'],
     ];
+
+    /**
+     * Las palabras que, en la cita, dicen A QUÉ medida corresponde el número (sin tildes, en minúsculas).
+     * Para una asignación sola, la cita de cada campo tiene que traer una de las suyas, o una de las
+     * genéricas, o ser una agrupación «A x B x C unidad». Una cita pelada («25 cm») no dice qué medida es.
+     */
+    const ETIQUETAS_DEL_CAMPO = [
+        'peso'        => ['peso', 'pesa', 'weight'],
+        'alto'        => ['alto', 'altura', 'height'],
+        'ancho'       => ['ancho', 'anchura', 'width'],
+        'profundidad' => ['largo', 'longitud', 'profundidad', 'fondo', 'length', 'depth'],
+    ];
+
+    /** Etiquetas que valen para cualquier campo de medidas / de peso. */
+    const ETIQUETAS_GENERICAS_DE_MEDIDAS = ['medidas', 'dimensiones', 'dimensions', 'tamano', 'tamaño', 'size', 'envase', 'embalaje'];
+    const ETIQUETAS_GENERICAS_DE_PESO    = ['envase', 'embalaje'];
 
     /** Alcance que se guarda cuando la IA no dice uno válido. */
     const ALCANCES = ['envio', 'producto'];
@@ -192,7 +211,8 @@ class DimensionValueValidator
                 continue;
             }
 
-            if (is_null($mejor) || abs($par['canonico'] - $afirmado) < abs($mejor['canonico'] - $afirmado)) {
+            // Un par limpio le gana a uno ambiguo o de rango; entre iguales, el más cercano a lo afirmado.
+            if (is_null($mejor) || $this->es_mejor($par, $mejor, $afirmado)) {
                 $mejor = $par;
             }
         }
@@ -210,6 +230,15 @@ class DimensionValueValidator
 
         $alcance = isset($dato['scope']) && in_array($dato['scope'], self::ALCANCES, true) ? $dato['scope'] : 'producto';
 
+        // Lo que obliga a que una persona lo mire: el punto de miles que puede ser decimal y el rango.
+        $aviso = null;
+
+        if (!empty($mejor['rango'])) {
+            $aviso = 'La página da un rango: '.$mejor['texto'];
+        } elseif (!empty($mejor['ambiguo'])) {
+            $aviso = $this->frase_de_ambiguedad($mejor);
+        }
+
         return [
             'ok'     => true,
             'motivo' => null,
@@ -222,32 +251,155 @@ class DimensionValueValidator
                 'cita'            => mb_substr($cita, 0, 300),
                 'url'             => $url,
                 'alcance'         => $alcance,
+                // 🔴 B1: «1.200 g» puede ser 1,2 o 1.200. Se guarda la lectura que dijo el modelo, pero un
+                // valor ambiguo NUNCA se escribe solo.
+                'ambiguo'         => !empty($mejor['ambiguo']),
+                // M2: «10-20 cm» da un rango; el extremo que valida no es «la» medida. Tampoco se escribe solo.
+                'rango'           => !empty($mejor['rango']),
+                // M1(c): la cita dice a qué medida corresponde (una etiqueta del campo o «A x B x C unidad»).
+                'etiquetada'      => !empty($mejor['grupo']) || $this->cita_tiene_etiqueta($campo, $cita),
+                // La frase lista para mostrar cuando hay ambigüedad o rango (null si no).
+                'aviso'           => $aviso,
             ],
         ];
     }
 
     /**
+     * ¿El par candidato es mejor que el mejor hasta ahora? Primero el más limpio (sin ambigüedad ni rango),
+     * después el más cercano a lo que afirmó el modelo.
+     *
+     * @param  array $candidato
+     * @param  array $actual
+     * @param  float $afirmado
+     * @return bool
+     */
+    protected function es_mejor(array $candidato, array $actual, $afirmado)
+    {
+        $penalidad_candidato = (empty($candidato['ambiguo']) ? 0 : 1) + (empty($candidato['rango']) ? 0 : 1);
+        $penalidad_actual    = (empty($actual['ambiguo']) ? 0 : 1) + (empty($actual['rango']) ? 0 : 1);
+
+        if ($penalidad_candidato !== $penalidad_actual) {
+            return $penalidad_candidato < $penalidad_actual;
+        }
+
+        $diferencia_candidato = abs($candidato['canonico'] - $afirmado);
+        $diferencia_actual    = abs($actual['canonico'] - $afirmado);
+
+        // Misma distancia (el mismo número leído suelto y dentro de «A x B x C unidad»): gana el de la agrupación,
+        // que además dice de qué medidas habla.
+        if (abs($diferencia_candidato - $diferencia_actual) < 0.000000001) {
+            return !empty($candidato['grupo']) && empty($actual['grupo']);
+        }
+
+        return $diferencia_candidato < $diferencia_actual;
+    }
+
+    /**
+     * «La página escribe «1.200 g»: puede ser 1,2 o 1.200».
+     *
+     * @param  array $par  Un par ambiguo (trae `texto` y `token`).
+     * @return string
+     */
+    protected function frase_de_ambiguedad(array $par)
+    {
+        $partes = preg_split('/[.,]/', (string) $par['token']);
+        $entera = $partes[0];
+        $miles  = isset($partes[1]) ? $partes[1] : '';
+
+        $decimal = rtrim($miles, '0');
+
+        return 'La página escribe «'.$par['texto'].'»: puede ser '.$entera.($decimal === '' ? '' : ','.$decimal).' o '.$entera.'.'.$miles;
+    }
+
+    /**
+     * ¿La cita trae una etiqueta de este campo (o una genérica)?
+     *
+     * @param  string $campo
+     * @param  string $cita
+     * @return bool
+     */
+    protected function cita_tiene_etiqueta($campo, $cita)
+    {
+        $etiquetas = array_merge(
+            self::ETIQUETAS_DEL_CAMPO[$campo],
+            self::CAMPOS[$campo] === self::TIPO_PESO ? self::ETIQUETAS_GENERICAS_DE_PESO : self::ETIQUETAS_GENERICAS_DE_MEDIDAS
+        );
+
+        $texto = mb_strtolower($this->con_espacios_comunes((string) $cita), 'UTF-8');
+        $texto = strtr($texto, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u']);
+
+        $alternativas = [];
+
+        foreach ($etiquetas as $etiqueta) {
+            $alternativas[] = preg_quote($etiqueta, '/');
+        }
+
+        return (bool) preg_match('/(?<![\p{L}])(?:'.implode('|', $alternativas).')(?![\p{L}])/u', $texto);
+    }
+
+    /**
      * Los pares número + unidad de un texto, ya llevados a la unidad de la base. Reconoce «70 mm»,
-     * «0,82 kg», «16"» y agrupaciones «70 x 11 x 100 mm» (la unidad final vale para todos los números).
-     * Un número con separador ambiguo («1.500 g») devuelve las dos lecturas posibles (1,5 y 1500).
+     * «0,82 kg», «16"», agrupaciones «70 x 11 x 100 mm» (la unidad final vale para todos los números) y
+     * rangos («10-20 cm», «10 a 20 cm», «entre 10 y 20 cm», «10~20 cm»).
+     *
+     * Marcas de cada par:
+     *   - `ambiguo`: el número es de la forma «1.200» / «1,500» (un punto o coma y exactamente tres
+     *     dígitos), que puede ser 1,2 o 1.200: se devuelven las DOS lecturas y las dos van marcadas.
+     *   - `rango`: el número es un extremo de un rango; ninguno de los dos es «la» medida.
+     *   - `grupo`: viene de una agrupación «A x B x C unidad».
+     *   - `texto`: lo que estaba escrito («1.200 g», «10 a 20 cm») y `token`: el número tal cual.
      *
      * @param  string $texto
-     * @return array  Lista de ['numero' => float, 'tipo' => peso|medida, 'etiqueta' => string, 'canonico' => float].
+     * @return array  Lista de ['numero', 'tipo' (peso|medida), 'etiqueta', 'canonico', 'ambiguo', 'rango', 'grupo', 'texto', 'token'].
      */
     public function parsear_pares($texto)
     {
         // Sin tildes para reconocer «centímetros» y «milímetros» con la tabla de unidades (que no las lleva).
         $texto = strtr($this->con_espacios_comunes((string) $texto), ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U']);
-        $pares = [];
+        $pares  = [];
         $unidad = $this->regex_de_unidad();
         $numero = '\d+(?:[.,]\d+)*';
+
+        // Rangos: «10-20 cm», «10 a 20 cm», «entre 10 y 20 cm», «10~20 cm», «10 cm a 20 cm». Van PRIMERO:
+        // los extremos marcan a los pares sueltos que repiten su valor.
+        $rangos = [];
+        $union  = '(?:-|–|—|~|\ba\b|\bal\b|\by\b|\bhasta\b)';
+        $rango  = '/(?<![\p{L}\d.,])('.$numero.')\s*(?:('.$unidad.')\s*)?'.$union.'\s*('.$numero.')\s*('.$unidad.')/iu';
+
+        if (preg_match_all($rango, $texto, $coincidencias, PREG_SET_ORDER)) {
+            foreach ($coincidencias as $c) {
+                $final  = $this->unidad_del_modelo($c[4]);
+                $inicio = $c[2] !== '' ? $this->unidad_del_modelo($c[2]) : $final;
+
+                // «100 mm - 820 g» no es un rango: son dos datos de magnitudes distintas.
+                if (is_null($final) || is_null($inicio) || $inicio[0] !== $final[0]) {
+                    continue;
+                }
+
+                $desde = $this->lecturas_del_numero($c[1]);
+                $hasta = $this->lecturas_del_numero($c[3]);
+
+                if (empty($desde) || empty($hasta) || min($desde) * $inicio[1] >= max($hasta) * $final[1]) {
+                    continue;
+                }
+
+                $extra = ['rango' => true, 'texto' => trim($c[0])];
+
+                $this->sumar_pares($pares, [$c[1]], $c[2] !== '' ? $c[2] : $c[4], $extra);
+                $this->sumar_pares($pares, [$c[3]], $c[4], $extra);
+
+                foreach ($pares as $par) {
+                    $rangos[$par['tipo'].'|'.round($par['canonico'], 6)] = trim($c[0]);
+                }
+            }
+        }
 
         // Un número seguido de su unidad: «820 g», «5,5cm», «16"».
         $simple = '/(?<![\p{L}\d.,])('.$numero.')\s*('.$unidad.')/iu';
 
         if (preg_match_all($simple, $texto, $coincidencias, PREG_SET_ORDER)) {
             foreach ($coincidencias as $c) {
-                $this->sumar_pares($pares, [$c[1]], $c[2]);
+                $this->sumar_pares($pares, [$c[1]], $c[2], ['texto' => trim($c[0])], $rangos);
             }
         }
 
@@ -258,7 +410,7 @@ class DimensionValueValidator
         if (preg_match_all($grupo, $texto, $coincidencias, PREG_SET_ORDER)) {
             foreach ($coincidencias as $c) {
                 preg_match_all('/'.$numero.'/u', $c[1], $numeros);
-                $this->sumar_pares($pares, $numeros[0], $c[2]);
+                $this->sumar_pares($pares, $numeros[0], $c[2], ['grupo' => true, 'texto' => trim($c[0])], $rangos);
             }
         }
 
@@ -336,9 +488,11 @@ class DimensionValueValidator
      * @param  array  $pares
      * @param  array  $numeros  Tokens de texto.
      * @param  string $unidad   La unidad tal como estaba escrita.
+     * @param  array  $extra    Marcas del par: rango, grupo, texto.
+     * @param  array  $rangos   Valores que son extremo de un rango (tipo|valor => texto): marcan el par como rango.
      * @return void
      */
-    protected function sumar_pares(array &$pares, array $numeros, $unidad)
+    protected function sumar_pares(array &$pares, array $numeros, $unidad, array $extra = [], array $rangos = [])
     {
         $datos = $this->unidad_del_modelo($unidad);
 
@@ -347,13 +501,31 @@ class DimensionValueValidator
         }
 
         foreach ($numeros as $token) {
-            foreach ($this->lecturas_del_numero($token) as $lectura) {
-                $pares[] = [
+            $lecturas = $this->lecturas_del_numero($token);
+
+            foreach ($lecturas as $lectura) {
+                $canonico = $lectura * $datos[1];
+                $clave    = $datos[0].'|'.round($canonico, 6);
+
+                $par = array_merge([
                     'numero'   => $lectura,
                     'tipo'     => $datos[0],
                     'etiqueta' => $datos[2],
-                    'canonico' => $lectura * $datos[1],
-                ];
+                    'canonico' => $canonico,
+                    // Dos lecturas posibles = el token es de la forma «1.200» / «1,500».
+                    'ambiguo'  => count($lecturas) > 1,
+                    'rango'    => false,
+                    'grupo'    => false,
+                    'texto'    => $token.' '.$unidad,
+                    'token'    => $token,
+                ], $extra);
+
+                if (isset($rangos[$clave])) {
+                    $par['rango'] = true;
+                    $par['texto'] = $rangos[$clave];
+                }
+
+                $pares[] = $par;
             }
         }
     }
@@ -505,7 +677,7 @@ class DimensionValueValidator
                 return strlen($b) - strlen($a);
             });
 
-            $letras_regex = '(?:'.implode('|', $letras).')(?![\p{L}\d²³])';
+            $letras_regex = '(?:'.implode('|', $letras).')(?![\p{L}\d²³\/])';
             $signos_regex = '(?:'.implode('|', $signos).')';
 
             self::$regex_de_unidades = '(?:'.$letras_regex.'|'.$signos_regex.')';

@@ -152,32 +152,13 @@ class Validador_de_unidades_Test extends TestCase
     public function acepta_metros_pulgadas_libras_onzas_y_toneladas()
     {
         $this->assertEquals(120.0, $this->validador->validar('profundidad', $this->dato(1.2, 'm', 'Largo 1,2 m'), $this->paginas('Largo 1,2 m'))['dato']['valor']);
-        $this->assertEquals(40.64, $this->validador->validar('profundidad', $this->dato(16, 'in', 'barra de 16"'), $this->paginas('barra de 16"'))['dato']['valor']);
+        $this->assertEquals(40.64, $this->validador->validar('profundidad', $this->dato(16, 'inch', 'barra de 16"'), $this->paginas('barra de 16"'))['dato']['valor']);
         $this->assertEquals(40.64, $this->validador->validar('profundidad', $this->dato(16, 'pulgadas', 'barra de 16 pulgadas'), $this->paginas('barra de 16 pulgadas'))['dato']['valor']);
         $this->assertEquals(0.4536, $this->validador->validar('peso', $this->dato(1, 'lb', 'Peso: 1 lb'), $this->paginas('Peso: 1 lb'))['dato']['valor']);
         $this->assertEquals(0.2835, $this->validador->validar('peso', $this->dato(10, 'oz', 'Peso: 10 oz'), $this->paginas('Peso: 10 oz'))['dato']['valor']);
         $this->assertEquals(1000.0, $this->validador->validar('peso', $this->dato(1, 't', 'Peso: 1 t'), $this->paginas('Peso: 1 t'))['dato']['valor']);
         // Con tildes en la cita.
         $this->assertEquals(5.5, $this->validador->validar('ancho', $this->dato(5.5, 'cm', 'Ancho: 5,5 centímetros'), $this->paginas('Ancho: 5,5 centímetros'))['dato']['valor']);
-    }
-
-    /**
-     * @group dimension-search
-     * @test
-     */
-    public function un_numero_con_punto_de_miles_se_lee_de_las_dos_formas_y_vale_la_que_coincide()
-    {
-        $this->assertEqualsCanonicalizing([1.5, 1500.0], $this->validador->lecturas_del_numero('1.500'));
-        $this->assertSame([0.082], $this->validador->lecturas_del_numero('0,082'));
-        $this->assertSame([1234.5], $this->validador->lecturas_del_numero('1.234,5'));
-        $this->assertSame([1234.5], $this->validador->lecturas_del_numero('1,234.5'));
-        $this->assertSame([1234567.0], $this->validador->lecturas_del_numero('1.234.567'));
-        $this->assertSame([], $this->validador->lecturas_del_numero('1.2.3'));
-
-        // «Pesa 1.500 g» es 1,5 kg.
-        $r = $this->validador->validar('peso', $this->dato(1.5, 'kg', 'Pesa 1.500 g'), $this->paginas('Pesa 1.500 g'));
-        $this->assertTrue($r['ok']);
-        $this->assertEquals(1.5, $r['dato']['valor']);
     }
 
     /**
@@ -327,5 +308,223 @@ class Validador_de_unidades_Test extends TestCase
         $nulo = $this->validador->validar('peso', null, $this->paginas('Peso: 820 g'));
         $this->assertFalse($nulo['ok']);
         $this->assertSame('no_informado', $nulo['motivo']);
+    }
+
+    /**
+     * Las lecturas posibles de un token siguen siendo dos cuando es ambiguo (el validador las marca).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function las_lecturas_de_un_numero_con_separador()
+    {
+        $this->assertEqualsCanonicalizing([1.2, 1200.0], $this->validador->lecturas_del_numero('1.200'));
+        $this->assertEqualsCanonicalizing([1.5, 1500.0], $this->validador->lecturas_del_numero('1,500'));
+        $this->assertSame([0.082], $this->validador->lecturas_del_numero('0,082'));
+        $this->assertSame([1234.5], $this->validador->lecturas_del_numero('1.234,5'));
+        $this->assertSame([1234.5], $this->validador->lecturas_del_numero('1,234.5'));
+        $this->assertSame([1234567.0], $this->validador->lecturas_del_numero('1.234.567'));
+        $this->assertSame([], $this->validador->lecturas_del_numero('1.2.3'));
+    }
+
+    /**
+     * B1 (bloqueante del revisor): «Peso: 1.200 g» con el modelo diciendo 1.2 g guardaba 0,0012 kg sin avisar.
+     * Reemplaza al test anterior, que daba por bueno cualquier punto de miles.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_punto_de_miles_que_puede_ser_decimal_se_marca_ambiguo_con_su_frase_y_se_guarda_la_lectura_del_modelo()
+    {
+        $pagina = $this->paginas('Peso: 1.200 g. Alto: 0,082 kg.');
+
+        // El modelo leyó 1,2 g: se guarda esa lectura (0,0012 kg) pero marcada ambigua.
+        $decimal = $this->validador->validar('peso', $this->dato(1.2, 'g', 'Peso: 1.200 g'), $pagina);
+        $this->assertTrue($decimal['ok']);
+        $this->assertEquals(0.0012, $decimal['dato']['valor']);
+        $this->assertTrue($decimal['dato']['ambiguo']);
+        $this->assertFalse($decimal['dato']['rango']);
+        $this->assertSame('La página escribe «1.200 g»: puede ser 1,2 o 1.200', $decimal['dato']['aviso']);
+
+        // El modelo leyó 1.200 g: se guarda esa (1,2 kg), también marcada.
+        $miles = $this->validador->validar('peso', $this->dato(1200, 'g', 'Peso: 1.200 g'), $pagina);
+        $this->assertTrue($miles['ok']);
+        $this->assertEquals(1.2, $miles['dato']['valor']);
+        $this->assertTrue($miles['dato']['ambiguo']);
+
+        // Coma de miles en kg.
+        $kg = $this->validador->validar('peso', $this->dato(1.5, 'kg', 'Pesa 1,500 kg'), $this->paginas('Pesa 1,500 kg'));
+        $this->assertTrue($kg['dato']['ambiguo']);
+        $this->assertSame('La página escribe «1,500 kg»: puede ser 1,5 o 1.500', $kg['dato']['aviso']);
+
+        // «1.000 g»: la lectura decimal es 1.
+        $mil = $this->validador->validar('peso', $this->dato(1000, 'g', 'Peso: 1.000 g'), $this->paginas('Peso: 1.000 g'));
+        $this->assertSame('La página escribe «1.000 g»: puede ser 1 o 1.000', $mil['dato']['aviso']);
+    }
+
+    /**
+     * Lo que NO es ambiguo: un decimal con cero entero, con dos decimales o sin separador, y los miles
+     * con varios grupos.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function lo_que_no_es_ambiguo_no_se_marca()
+    {
+        foreach ([[0.082, 'kg', 'Peso: 0,082 kg'], [2.5, 'kg', 'Peso: 2,5 kg'], [820, 'g', 'Peso: 820 g'], [1.25, 'kg', 'Peso: 1,25 kg'], [1234567, 'g', 'Peso: 1.234.567 g']] as $caso) { // el último: dos grupos de miles no pueden ser un decimal (1234,567 kg)
+            $r = $this->validador->validar('peso', $this->dato($caso[0], $caso[1], $caso[2]), $this->paginas($caso[2]));
+
+            $this->assertTrue($r['ok'], $caso[2]);
+            $this->assertFalse($r['dato']['ambiguo'], $caso[2]);
+            $this->assertNull($r['dato']['aviso']);
+        }
+    }
+
+    /**
+     * Si la cita trae también la lectura limpia, esa le gana a la ambigua.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function entre_dos_lecturas_gana_la_que_no_es_ambigua()
+    {
+        $r = $this->validador->validar('peso', $this->dato(1.5, 'kg', 'Peso: 1.500 g (1,5 kg)'), $this->paginas('Peso: 1.500 g (1,5 kg)'));
+
+        $this->assertTrue($r['ok']);
+        $this->assertFalse($r['dato']['ambiguo']);
+        $this->assertEquals(1.5, $r['dato']['valor']);
+    }
+
+    /**
+     * M2: «Alto: 10-20 cm» validaba el extremo como si fuera la medida.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_rango_se_marca_y_no_vale_como_una_medida()
+    {
+        $casos = [
+            ['Alto: 10-20 cm', 20, 'La página da un rango: 10-20 cm'],
+            ['Alto: 10 a 20 cm', 10, 'La página da un rango: 10 a 20 cm'],
+            ['Alto: entre 10 y 20 cm', 20, 'La página da un rango: 10 y 20 cm'],
+            ['Alto: 10~20 cm', 10, 'La página da un rango: 10~20 cm'],
+            ['Alto: 10 – 20 cm', 20, 'La página da un rango: 10 – 20 cm'],
+            ['Alto: 10 cm a 20 cm', 10, 'La página da un rango: 10 cm a 20 cm'],
+        ];
+
+        foreach ($casos as $caso) {
+            $r = $this->validador->validar('alto', $this->dato($caso[1], 'cm', $caso[0]), $this->paginas($caso[0]));
+
+            $this->assertTrue($r['ok'], $caso[0]);
+            $this->assertTrue($r['dato']['rango'], $caso[0]);
+            $this->assertSame($caso[2], $r['dato']['aviso'], $caso[0]);
+        }
+    }
+
+    /**
+     * Lo que se parece a un rango pero no lo es.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function dos_datos_distintos_en_la_misma_cita_no_son_un_rango()
+    {
+        $cita = 'Alto 100 mm - Peso 820 g';
+
+        $alto = $this->validador->validar('alto', $this->dato(100, 'mm', $cita), $this->paginas($cita));
+        $peso = $this->validador->validar('peso', $this->dato(820, 'g', $cita), $this->paginas($cita));
+
+        $this->assertFalse($alto['dato']['rango']);
+        $this->assertFalse($peso['dato']['rango']);
+
+        // Y una medida suelta o una agrupación tampoco.
+        $this->assertFalse($this->validador->validar('alto', $this->dato(25, 'cm', 'Alto: 25 cm'), $this->paginas('Alto: 25 cm'))['dato']['rango']);
+        $this->assertFalse($this->validador->validar('alto', $this->dato(11, 'mm', 'Medidas 70 x 11 x 100 mm'), $this->paginas('Medidas 70 x 11 x 100 mm'))['dato']['rango']);
+    }
+
+    /**
+     * Menor 2: «in» pelado no es pulgada; lo son «"», «pulg», «pulgadas», «inch» e «inches».
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function in_pelado_no_es_una_pulgada()
+    {
+        $pelado = $this->validador->validar('profundidad', $this->dato(16, 'in', 'Largo 16 in'), $this->paginas('Largo 16 in'));
+        $this->assertFalse($pelado['ok']);
+        $this->assertSame('unidad_invalida', $pelado['motivo']);
+
+        // Y en la cita tampoco: «Modelo 12 in 1» no es una medida.
+        $en_la_cita = $this->validador->validar('profundidad', $this->dato(30.48, 'cm', 'Largo 12 in'), $this->paginas('Largo 12 in'));
+        $this->assertFalse($en_la_cita['ok']);
+
+        foreach ([['Largo 16 inch', 'inch'], ['Largo 16 inches', 'inches'], ['Largo 16 pulg', 'pulg'], ['Largo 16"', 'inch']] as $caso) {
+            $r = $this->validador->validar('profundidad', $this->dato(16, $caso[1], $caso[0]), $this->paginas($caso[0]));
+            $this->assertTrue($r['ok'], $caso[0]);
+            $this->assertEquals(40.64, $r['dato']['valor']);
+        }
+    }
+
+    /**
+     * Menor 2: una unidad seguida de «/» es otra magnitud (g/m2, kg/m, m/s).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function una_unidad_seguida_de_barra_no_es_una_medida()
+    {
+        foreach ([['peso', 100, 'g', 'Peso 100 g/m2'], ['peso', 2, 'kg', 'Peso 2 kg/m'], ['profundidad', 5, 'm', 'Largo 5 m/s'], ['peso', 80, 'g', 'Gramaje 80 g/m²']] as $caso) {
+            $r = $this->validador->validar($caso[0], $this->dato($caso[1], $caso[2], $caso[3]), $this->paginas($caso[3]));
+
+            $this->assertFalse($r['ok'], $caso[3]);
+        }
+    }
+
+    /**
+     * M1(c): la cita tiene que decir de qué medida habla.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_cita_trae_una_etiqueta_del_campo_o_es_una_agrupacion()
+    {
+        $con = [
+            ['peso', 0.82, 'kg', 'Peso: 0,82 kg'],
+            ['peso', 0.82, 'kg', 'Pesa 0,82 kg'],
+            ['peso', 0.82, 'kg', 'Weight 0.82 kg'],
+            ['peso', 0.82, 'kg', 'Peso del embalaje 0,82 kg'],
+            ['alto', 25, 'cm', 'Altura: 25 cm'],
+            ['alto', 25, 'cm', 'Height 25 cm'],
+            ['ancho', 25, 'cm', 'Anchura 25 cm'],
+            ['ancho', 25, 'cm', 'Width: 25 cm'],
+            ['profundidad', 25, 'cm', 'Longitud 25 cm'],
+            ['profundidad', 25, 'cm', 'Fondo: 25 cm'],
+            ['profundidad', 25, 'cm', 'Depth 25 cm'],
+            ['profundidad', 25, 'cm', 'Medidas del envase 25 cm'],
+            ['alto', 25, 'cm', 'Tamaño 25 cm'],
+            ['alto', 1.1, 'cm', '70 x 11 x 100 mm'],
+        ];
+
+        foreach ($con as $caso) {
+            $r = $this->validador->validar($caso[0], $this->dato($caso[1], $caso[2], $caso[3]), $this->paginas($caso[3]));
+
+            $this->assertTrue($r['ok'], $caso[3]);
+            $this->assertTrue($r['dato']['etiquetada'], $caso[3]);
+        }
+
+        $sin = [
+            ['alto', 25, 'cm', 'Mide 25 cm'],
+            ['peso', 0.82, 'kg', '0,82 kg'],
+            ['ancho', 25, 'cm', 'Diámetro 25 cm'],
+            // La etiqueta de OTRO campo no vale: «Peso» no dice cuál es el alto.
+            ['alto', 25, 'cm', 'Peso 3 kg, 25 cm'],
+        ];
+
+        foreach ($sin as $caso) {
+            $r = $this->validador->validar($caso[0], $this->dato($caso[1], $caso[2], $caso[3]), $this->paginas($caso[3]));
+
+            $this->assertTrue($r['ok'], $caso[3]);
+            $this->assertFalse($r['dato']['etiquetada'], $caso[3]);
+        }
     }
 }
