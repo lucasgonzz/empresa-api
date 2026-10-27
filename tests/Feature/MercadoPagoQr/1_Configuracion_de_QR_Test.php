@@ -244,7 +244,9 @@ class Configuracion_de_QR_Test extends MercadoPagoQrTestCase
     }
 
     /**
-     * MP rechaza la caja: la fila provisoria se borra del todo.
+     * MP rechaza la caja: la fila provisoria queda borrada (blando, sin caja) y no se lista. Desde
+     * el 27/10/2026 no se borra del todo: guarda la sucursal que sí quedó creada en MP para
+     * reusarla en el próximo intento (ver `7_Conector_sin_cuenta_registrada_Test`).
      *
      * @test
      */
@@ -262,7 +264,9 @@ class Configuracion_de_QR_Test extends MercadoPagoQrTestCase
         $response->assertStatus(422);
         $this->assertStringContainsString('external_store_id invalido', $response->json('message'));
 
-        $this->assertSame(0, MercadoPagoQrCaja::withTrashed()->where('user_id', self::USER_ID)->count());
+        $this->assertSame(0, MercadoPagoQrCaja::where('user_id', self::USER_ID)->count());
+        $this->assertSame(1, MercadoPagoQrCaja::onlyTrashed()->where('user_id', self::USER_ID)->whereNull('mp_pos_id')->count());
+        $this->getJson('api/mercado-pago/qr')->assertJsonCount(0, 'qrs');
     }
 
     /**

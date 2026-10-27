@@ -18,6 +18,22 @@ use Illuminate\Support\Facades\Http;
 class Conector_sin_cuenta_registrada_Test extends MercadoPagoQrTestCase
 {
     /**
+     * Datos del formulario "Crear QR" (los mismos que usa `1_Configuracion_de_QR_Test`).
+     *
+     * @return array
+     */
+    protected function datos_qr()
+    {
+        return [
+            'name'          => 'Mostrador',
+            'street_name'   => 'Av. Pellegrini',
+            'street_number' => '1234',
+            'city_name'     => 'Rosario',
+            'state_name'    => 'Santa Fe',
+        ];
+    }
+
+    /**
      * La cuenta se pide a `/users/me`, se guarda en el conector y el QR queda disponible.
      *
      * @test
@@ -40,6 +56,71 @@ class Conector_sin_cuenta_registrada_Test extends MercadoPagoQrTestCase
         $this->fake_mp([]);
         $this->getJson('api/mercado-pago/qr')->assertJsonPath('conectado', true);
         Http::assertNothingSent();
+    }
+
+    /**
+     * La sucursal recién creada tarda en aparecer para `/v2/pos` (medido el 27/10/2026 contra MP
+     * real: 404 `store_not_found` un segundo después del alta). Se reintenta y el QR se crea.
+     *
+     * @test
+     */
+    public function la_caja_se_reintenta_mientras_mp_no_reconoce_la_sucursal()
+    {
+        config(['services.mercadopago.qr_espera_sucursal_segundos' => 0]);
+        $this->conectar_mp();
+
+        $intentos = 0;
+        $this->fake_mp([
+            ['POST', '#^/users/\d+/stores$#', [201, ['id' => 555]]],
+            ['POST', '#^/v2/pos$#', function () use (&$intentos) {
+                $intentos++;
+
+                if ($intentos < 3) {
+                    return [404, ['errors' => [['code' => 'store_not_found', 'message' => 'Store with external_store_id does not exist']]]];
+                }
+
+                return [201, ['id' => 777, 'qr_response' => ['image' => 'https://mp/qr.png', 'template_document' => 'https://mp/qr.pdf', 'qr_code' => '000201']]];
+            }],
+        ]);
+
+        $response = $this->postJson('api/mercado-pago/qr/cajas', $this->datos_qr());
+
+        $response->assertStatus(201);
+        $this->assertSame(3, $intentos);
+        $this->assertSame('777', \App\Models\MercadoPagoQrCaja::where('user_id', self::USER_ID)->first()->mp_pos_id);
+    }
+
+    /**
+     * Si la caja falla igual, el próximo intento reusa la sucursal que ya quedó creada en MP: no se
+     * deja otra sucursal huérfana en la cuenta del comercio.
+     *
+     * @test
+     */
+    public function un_reintento_despues_de_una_caja_fallida_reusa_la_sucursal_de_mp()
+    {
+        config(['services.mercadopago.qr_espera_sucursal_segundos' => 0]);
+        $this->conectar_mp();
+
+        $cajas = 0;
+        $this->fake_mp([
+            ['POST', '#^/users/\d+/stores$#', [201, ['id' => 555]]],
+            ['POST', '#^/v2/pos$#', function () use (&$cajas) {
+                $cajas++;
+
+                return $cajas === 1
+                    ? [400, ['message' => 'rechazo puntual', 'status' => 400]]
+                    : [201, ['id' => 778, 'qr_response' => ['image' => 'https://mp/qr.png', 'template_document' => 'https://mp/qr.pdf', 'qr_code' => '000201']]];
+            }],
+        ]);
+
+        $this->postJson('api/mercado-pago/qr/cajas', $this->datos_qr())->assertStatus(422);
+        $this->postJson('api/mercado-pago/qr/cajas', $this->datos_qr())->assertStatus(201);
+
+        $posts_a_stores = Http::recorded(function ($request) {
+            return $request->method() === 'POST' && preg_match('#/stores$#', parse_url($request->url(), PHP_URL_PATH));
+        });
+
+        $this->assertCount(1, $posts_a_stores, 'La sucursal de MP se crea una sola vez.');
     }
 
     /**

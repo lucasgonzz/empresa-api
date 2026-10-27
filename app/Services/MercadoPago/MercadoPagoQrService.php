@@ -124,6 +124,9 @@ class MercadoPagoQrService
     /** Id del catálogo que se usa como método de pago del QR si no hay uno llamado "Mercado Pago". */
     const METODO_DE_PAGO_DE_RESPALDO = 6;
 
+    /** Intentos de crear la caja mientras MP todavía no reconoce la sucursal recién creada. */
+    const INTENTOS_DE_CAJA = 5;
+
     /** Máximo de cobros que devuelve el listado de la tarjeta de configuración. */
     const LIMITE_MAXIMO_DE_COBROS = 100;
 
@@ -428,7 +431,10 @@ class MercadoPagoQrService
         try {
             $caja_mp = $this->caja_en_mp($conexion, $qr, $sucursal['external_id']);
         } catch (\Throwable $e) {
-            $qr->forceDelete();
+            // Borrado blando y no total: la fila no tiene caja (no se lista ni sirve para cobrar),
+            // pero guarda la sucursal que SÍ quedó creada en MP, y `sucursal_en_mp()` la reusa en el
+            // próximo intento en vez de dejar otra sucursal huérfana en la cuenta del comercio.
+            $qr->delete();
             throw $e;
         }
 
@@ -567,10 +573,13 @@ class MercadoPagoQrService
      */
     protected function sucursal_en_mp($owner_id, array $conexion, array $datos)
     {
+        // Cualquier fila con sucursal de MP sirve, también una borrada o una cuya caja falló: la
+        // sucursal existe en MP igual (ver el borrado blando de `crear_qr()`).
         $query = MercadoPagoQrCaja::withTrashed()
             ->where('user_id', $owner_id)
             ->where('mp_user_id', $conexion['mp_user_id'])
-            ->whereNotNull('mp_pos_id');
+            ->whereNotNull('mp_store_external_id')
+            ->where('mp_store_external_id', '!=', '');
 
         if (is_null($datos['address_id'])) {
             $query->whereNull('address_id');
@@ -664,17 +673,36 @@ class MercadoPagoQrService
      */
     protected function caja_en_mp(array $conexion, MercadoPagoQrCaja $qr, $store_external_id)
     {
-        $respuesta = $this->llamar($conexion['token'], 'POST', '/v2/pos', [
-            'idempotency_key' => (string) Str::uuid(),
-            'json'            => [
-                'name'              => mb_substr($qr->name, 0, 120),
-                'external_store_id' => $store_external_id,
-                'external_id'       => $qr->mp_pos_external_id,
-                'config'            => [
-                    'qr' => ['operating_mode' => 'pdv'],
+        // Medido el 27/10/2026 contra MP real: la sucursal recién creada tarda en aparecer para
+        // `/v2/pos`, que contesta 404 `store_not_found` un segundo después del alta y 201 un minuto
+        // más tarde con el mismo cuerpo. Se reintenta unas veces esperando entre intentos, con una
+        // clave de idempotencia nueva cada vez (la del intento rechazado puede quedar asociada al
+        // error). La espera sale de configuración para que los tests no esperen.
+        $intentos = 0;
+        $espera   = (int) config('services.mercadopago.qr_espera_sucursal_segundos', 4);
+
+        do {
+            $intentos++;
+
+            $respuesta = $this->llamar($conexion['token'], 'POST', '/v2/pos', [
+                'idempotency_key' => (string) Str::uuid(),
+                'json'            => [
+                    'name'              => mb_substr($qr->name, 0, 120),
+                    'external_store_id' => $store_external_id,
+                    'external_id'       => $qr->mp_pos_external_id,
+                    'config'            => [
+                        'qr' => ['operating_mode' => 'pdv'],
+                    ],
                 ],
-            ],
-        ]);
+            ]);
+
+            $sucursal_todavia_no_aparece = !$respuesta['ok']
+                && in_array('store_not_found', $this->codigos_de_error($respuesta['json']), true);
+
+            if ($sucursal_todavia_no_aparece && $intentos < self::INTENTOS_DE_CAJA && $espera > 0) {
+                sleep($espera);
+            }
+        } while ($sucursal_todavia_no_aparece && $intentos < self::INTENTOS_DE_CAJA);
 
         if ($respuesta['ok'] && isset($respuesta['json']['id'])) {
             return $respuesta['json'];
