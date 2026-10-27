@@ -7,6 +7,7 @@ use App\Models\PlatformConnector;
 use App\Services\MercadoLibre\ErrorHandler;
 use Carbon\Carbon;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -176,7 +177,19 @@ class MercadoLibreService
                 $http = $http->withHeaders($request_headers);
             }
 
-            $response = $http->{$method}($url, $data);
+            try {
+                $response = $http->{$method}($url, $data);
+            } catch (ConnectionException $e) {
+                // Timeout o red caída. Si el llamador admite reintentar (todo menos el alta), es
+                // como un 5xx: la tarea vuelve a la cola y se reintenta sola. El alta lo maneja
+                // aparte (un POST cortado pudo haber creado el ítem igual).
+                if ($reintentar_5xx) {
+                    throw new MercadoLibreLimiteException('No se pudo conectar con Mercado Libre ('.$e->getMessage().'); se reintenta solo.');
+                }
+
+                throw $e;
+            }
+
             $status = $response->status();
 
             if ($status === 401 && !$refresh_hecho) {

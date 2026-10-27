@@ -546,6 +546,65 @@ class PublicacionTest extends MercadoLibreTestCase
         $this->assertCount(0, $this->pedidos_ml('PUT', 'items/MLA222'));
     }
 
+    /**
+     * Arreglo 9: una publicación cerrada no se reintenta en cada cambio de stock o precio.
+     */
+    public function test_una_publicacion_cerrada_no_se_encola_en_cada_cambio()
+    {
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'meli_status' => 'closed']);
+
+        ProductService::add_article_to_sync($article);
+
+        $this->assertFalse(SyncToMeliArticle::where('article_id', $article->id)->exists());
+    }
+
+    /**
+     * Arreglo 9: un timeout en el POST del alta se trata como el 5xx (pudo haber creado el ítem):
+     * no se reintenta solo y queda el aviso de revisar en ML.
+     */
+    public function test_un_timeout_en_el_alta_no_se_reintenta_y_pide_revisar_en_ml()
+    {
+        $this->conector_ml();
+
+        // Un pedido que tira en el fake no queda en Http::recorded(): se cuentan los intentos acá.
+        $intentos = 0;
+        $this->fake_ml($this->rutas_de_alta([
+            'POST items' => function ($request) use (&$intentos) {
+                $intentos++;
+
+                throw new \GuzzleHttp\Exception\ConnectException('cURL error 28: Operation timed out', $request->toPsrRequest());
+            },
+        ]));
+
+        $article = $this->articulo_ml($this->categoria);
+        $sync = $this->sync_pendiente($article);
+
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $this->assertSame(1, $intentos, 'Un timeout en el alta no se reintenta solo.');
+
+        $sync = $sync->fresh();
+        $this->assertSame('error', $sync->status);
+        $this->assertStringContainsString('fijate en tu cuenta de Mercado Libre si la publicación quedó creada', $sync->error_message);
+    }
+
+    /**
+     * Arreglo 9: el comando toma cada fila con un update atómico; si otro proceso ya la tomó, la
+     * saltea.
+     */
+    public function test_una_fila_se_toma_una_sola_vez()
+    {
+        $article = $this->articulo_ml($this->categoria);
+        $sync = $this->sync_pendiente($article);
+
+        $this->assertTrue(ProductService::tomar_para_procesar($sync));
+        $this->assertSame('en_progreso', $sync->fresh()->status);
+
+        $otra_copia = SyncToMeliArticle::find($sync->id);
+        $otra_copia->status = 'pendiente';
+        $this->assertFalse(ProductService::tomar_para_procesar($otra_copia), 'Otro proceso ya la tomó: no se procesa dos veces.');
+    }
+
     public function test_add_article_to_sync_usa_la_extension_y_no_encola_la_papelera()
     {
         // Punto de partida propio: sin la extensión (la base del slot puede tenerla prendida).

@@ -268,6 +268,38 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
         $this->assertSame(1, SyncToMeliArticle::where('article_id', $article->id)->count());
     }
 
+    /**
+     * Arreglo 9 (revisión, 27/10/2026): el estado de una publicación cerrada lo dice, y
+     * "Sincronizar ahora" la publica de nuevo (alta nueva).
+     */
+    public function test_una_publicacion_cerrada_se_republica_con_sincronizar_ahora()
+    {
+        $article = $this->articulo_ml($this->categoria, [
+            'me_li_id'             => 'MLA222',
+            'meli_status'          => 'closed',
+            'meli_permalink'       => 'https://articulo.mercadolibre.com.ar/MLA-222',
+            'meli_user_product_id' => 'MLAU222',
+            'meli_sync_state'      => json_encode(['fotos' => 'x']),
+        ]);
+
+        $faltantes = $this->getJson('/api/mercado-libre/articulo/'.$article->id)->assertStatus(200)->json('estado.faltantes');
+        $this->assertContains('La publicación está finalizada en Mercado Libre: «Sincronizar ahora» la publica de nuevo.', $faltantes);
+
+        $respuesta = $this->postJson('/api/mercado-libre/articulo/'.$article->id.'/sincronizar');
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertJsonPath('estado.me_li_id', null);
+        $respuesta->assertJsonPath('estado.ultima_sync.status', 'pendiente');
+
+        $article = $article->fresh();
+        $this->assertNull($article->me_li_id);
+        $this->assertNull($article->meli_user_product_id);
+        $this->assertNull($article->meli_permalink);
+        $this->assertNull($article->meli_sync_state);
+        $this->assertNull($article->meli_status);
+        $this->assertSame(1, SyncToMeliArticle::where('article_id', $article->id)->where('status', 'pendiente')->count());
+    }
+
     public function test_sincronizar_con_el_modulo_apagado_responde_422()
     {
         // Aun con el USA_MERCADO_LIBRE viejo prendido: el gate es solo la extensión.

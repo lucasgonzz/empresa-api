@@ -9,6 +9,7 @@ use App\Models\Article;
 use App\Models\MeliAttribute;
 use App\Models\SyncToMeliArticle;
 use App\Models\User;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -201,6 +202,34 @@ class ProductService extends MercadoLibreService
         $estado = json_decode((string) $article->meli_sync_state, true);
 
         return is_array($estado) && !empty($estado['pausado_por_sistema']);
+    }
+
+    /**
+     * Toma una sincronización pendiente para procesarla con un update ATÓMICO
+     * (`pendiente` → `en_progreso` en la misma sentencia). Si actualizó 0 filas, otro proceso ya la
+     * tomó (dos `sync_to_meli_articles` solapados, o el comando y un worker): se saltea, así el
+     * mismo artículo no se publica dos veces.
+     *
+     * @param SyncToMeliArticle $sync
+     * @return bool true si la tomó este proceso.
+     */
+    public static function tomar_para_procesar(SyncToMeliArticle $sync)
+    {
+        $ahora = now();
+
+        $tomadas = SyncToMeliArticle::where('id', $sync->id)
+            ->where('status', 'pendiente')
+            ->update(['status' => 'en_progreso', 'attempted_at' => $ahora]);
+
+        if ($tomadas === 0) {
+            return false;
+        }
+
+        $sync->status = 'en_progreso';
+        $sync->attempted_at = $ahora;
+        $sync->syncOriginalAttributes(['status', 'attempted_at']);
+
+        return true;
     }
 
     /**
@@ -439,9 +468,19 @@ class ProductService extends MercadoLibreService
 
         $this->validar_con_mercado_libre($meli_payload);
 
-        // Sin reintento ante un 5xx: un POST que falló del lado de ML puede haber creado el ítem
-        // igual, y reintentar a ciegas publicaría dos veces el mismo artículo.
-        $response = $this->meli_authenticated_request('post', 'items', $meli_payload, [], false);
+        // Sin reintento ante un 5xx ni ante un timeout: un POST que falló o se cortó del lado de ML
+        // puede haber creado el ítem igual, y reintentar a ciegas publicaría dos veces el mismo
+        // artículo.
+        try {
+            $response = $this->meli_authenticated_request('post', 'items', $meli_payload, [], false);
+        } catch (ConnectionException $e) {
+            Log::warning('Sync ML artículo '.$article->id.': el POST items se cortó: '.$e->getMessage());
+
+            throw new \Exception(
+                'Se cortó la conexión con Mercado Libre mientras se creaba la publicación. Antes de reintentar, '.
+                'fijate en tu cuenta de Mercado Libre si la publicación quedó creada, para no duplicarla.'
+            );
+        }
 
         if ($response->status() >= 500) {
             throw new \Exception(

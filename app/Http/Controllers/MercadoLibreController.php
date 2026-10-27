@@ -67,7 +67,8 @@ class MercadoLibreController extends Controller
      * "Sincronizar ahora": `POST mercado-libre/articulo/{id}/sincronizar`. Deja una sincronización
      * pendiente (la toma el comando del scheduler en el próximo minuto) y devuelve el mismo
      * `estado` que `articulo()`. Encola aunque falten datos: el veredicto, con el motivo legible,
-     * lo da la sincronización (que valida con ML antes de publicar).
+     * lo da la sincronización (que valida con ML antes de publicar). Sobre una publicación cerrada
+     * en ML, la publica de nuevo (alta nueva).
      *
      * Con el módulo apagado (sin la extensión `usa_mercado_libre`), 422 `{message}`: nadie la
      * procesaría.
@@ -88,7 +89,13 @@ class MercadoLibreController extends Controller
             return response()->json(['message' => 'Mercado Libre no está activado en este sistema. Avisale a ComercioCity.'], 422);
         }
 
-        ProductService::encolar($article);
+        if ((string) $article->meli_status === 'closed') {
+            // Cerrada en ML: no se puede reactivar. "Sincronizar ahora" la publica de nuevo (le saca
+            // el código de la publicación vieja y la encola como un alta).
+            ProductService::republicar_cerrada($article);
+        } else {
+            ProductService::encolar($article);
+        }
 
         return response()->json(['estado' => MercadoLibreArticuloService::estado($article)], 200);
     }

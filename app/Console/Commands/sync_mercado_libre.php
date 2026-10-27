@@ -20,6 +20,8 @@ use Illuminate\Console\Command;
  *   la mitad) vuelven a `pendiente`.
  * - Sin cuenta conectada no hace nada ni notifica (antes notificaba "Mercado Libre no conectado"
  *   en cada corrida).
+ * - Cada fila se toma con un update atómico `pendiente` → `en_progreso`
+ *   (`ProductService::tomar_para_procesar`): si otro proceso la tomó primero, se saltea.
  */
 class sync_mercado_libre extends Command
 {
@@ -99,6 +101,13 @@ class sync_mercado_libre extends Command
         }
 
         foreach ($sync_articles as $sync) {
+            // Toma atómica: si otro proceso ya la agarró entre la consulta y acá, se saltea.
+            if (!ProductService::tomar_para_procesar($sync)) {
+                $this->info('Sync #'.$sync->id.': la tomó otro proceso, se saltea.');
+
+                continue;
+            }
+
             try {
                 $service->sync_article($sync);
             } catch (\Throwable $e) {

@@ -174,6 +174,12 @@ class MercadoLibreArticuloService
     {
         $faltantes = [];
 
+        // Una publicación cerrada no se puede reactivar: la sincronización automática ya no la
+        // toca y "Sincronizar ahora" la publica de nuevo (revisión de la misión, 27/10/2026).
+        if ((string) $article->meli_status === 'closed') {
+            $faltantes[] = 'La publicación está finalizada en Mercado Libre: «Sincronizar ahora» la publica de nuevo.';
+        }
+
         if (!$article->mercado_libre) {
             $faltantes[] = 'Marcar «Disponible en Mercado Libre».';
         }
