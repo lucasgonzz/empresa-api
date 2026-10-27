@@ -488,6 +488,47 @@ class PublicacionTest extends MercadoLibreTestCase
     }
 
     /**
+     * Arreglo 6 de la revisión de merge: con el precio debajo del mínimo, cada cambio de stock
+     * dispara una sync que termina con el mismo error. Se notifica UNA vez por ese motivo en ese
+     * artículo (la sync igual queda con el aviso); si el motivo cambia, o se arregla y vuelve, se
+     * notifica de nuevo.
+     */
+    public function test_el_mismo_motivo_de_error_no_se_notifica_en_cada_sync()
+    {
+        $this->conector_ml();
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'stock' => 5, 'final_price' => 900]);
+        $this->fake_ml($this->rutas_de_alta([
+            'GET items/MLA222' => [200, $this->item_publicado($article, ['price' => 15000, 'available_quantity' => 10])],
+            'PUT items/MLA222' => [200, ['id' => 'MLA222', 'status' => 'active']],
+        ]));
+
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+        $this->assertSame('error', $sync->fresh()->status);
+        Notification::assertSentToTimes($this->owner, GlobalNotification::class, 1);
+
+        // Cambia el stock: misma sync, mismo motivo. Queda con el aviso, sin otra notificación.
+        $article->stock = 4;
+        $article->save();
+        $this->rutas_ml['GET items/MLA222'] = [200, $this->item_publicado($article->fresh(), ['price' => 15000, 'available_quantity' => 5])];
+
+        $sync2 = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync2);
+        $this->assertSame('error', $sync2->fresh()->status);
+        $this->assertStringContainsString('debajo del mínimo', $sync2->fresh()->error_message);
+        Notification::assertSentToTimes($this->owner, GlobalNotification::class, 1);
+
+        // Otro motivo (otro precio): sí se notifica.
+        $article->final_price = 800;
+        $article->save();
+        $this->rutas_ml['GET items/MLA222'] = [200, $this->item_publicado($article->fresh(), ['price' => 15000, 'available_quantity' => 4])];
+
+        $sync3 = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync3);
+        Notification::assertSentToTimes($this->owner, GlobalNotification::class, 2);
+    }
+
+    /**
      * Arreglo 3: si el PUT combinado da un 400 que no es de límite, se reintenta con SOLO stock y
      * estado antes de rendirse.
      */

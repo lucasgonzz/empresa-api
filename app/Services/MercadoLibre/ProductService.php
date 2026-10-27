@@ -53,6 +53,14 @@ class ProductService extends MercadoLibreService
     protected static $modulo_por_dueno = [];
 
     /**
+     * Motivo del error de la sincronización en curso cuando no es el mensaje entero (los errores
+     * parciales de la actualización, sin la línea de cierre). Para no notificar dos veces lo mismo.
+     *
+     * @var string|null
+     */
+    protected $motivo_del_error = null;
+
+    /**
      * True si el módulo de Mercado Libre está prendido para ese dueño: la extensión
      * `usa_mercado_libre`. Es el MISMO criterio que usan el Kernel (para correr la cola y la
      * consulta de pedidos) y el listado de pedidos: el `USA_MERCADO_LIBRE` del .env no cuenta,
@@ -289,6 +297,8 @@ class ProductService extends MercadoLibreService
      */
     public function sync_article(SyncToMeliArticle $sync)
     {
+        $this->motivo_del_error = null;
+
         // Una sola notificación al fallar la sync (evita duplicar con make_request).
         $previous_notify_on_api_error = $this->notify_on_api_error;
         $this->notify_on_api_error = false;
@@ -336,6 +346,9 @@ class ProductService extends MercadoLibreService
             $sync->error_message = count($avisos) > 0 ? 'Aviso: '.implode(' ', $avisos) : null;
             $sync->error_message_crudo = null;
             $sync->save();
+
+            // Salió bien: si el mismo error vuelve más adelante, se vuelve a avisar.
+            $this->recordar_motivo_notificado($article, null);
         } catch (MercadoLibreLimiteException $e) {
             // No es un error del artículo: ML pidió esperar. Vuelve a la cola y la próxima corrida
             // (pasados 2 minutos) lo reintenta. Sin notificación.
@@ -362,15 +375,72 @@ class ProductService extends MercadoLibreService
             $sync->error_message_crudo = $e->getMessage();
             $sync->save();
 
-            $article_label = $article ? $article->name : ('sync #'.$sync->id);
-            ArticlePlatformSyncNotificationHelper::notify_mercado_libre_sync_failed(
-                (int) $sync->user_id,
-                $article_label,
-                $error_message
-            );
+            /*
+             * Revisión de merge (27/10/2026): un error que no se arregla solo (el precio debajo del
+             * mínimo, un atributo que falta) se repetía en CADA sincronización, y cada venta o
+             * movimiento de stock dispara una: una notificación por venta. Se avisa UNA vez por
+             * motivo y por artículo; la sync igual queda con el error. El motivo es el error sin la
+             * línea de cierre ("el stock sí se actualizó" / "ya estaba al día"), que cambia de una
+             * corrida a otra sin que cambie el problema.
+             */
+            $motivo = $this->hash_de(!is_null($this->motivo_del_error) ? $this->motivo_del_error : $error_message);
+
+            if (!$article || $this->ultimo_motivo_notificado($article) !== $motivo) {
+                $article_label = $article ? $article->name : ('sync #'.$sync->id);
+                ArticlePlatformSyncNotificationHelper::notify_mercado_libre_sync_failed(
+                    (int) $sync->user_id,
+                    $article_label,
+                    $error_message
+                );
+
+                if ($article) {
+                    $this->recordar_motivo_notificado($article, $motivo);
+                }
+            }
         } finally {
             $this->notify_on_api_error = $previous_notify_on_api_error;
         }
+    }
+
+    /**
+     * Hash del último motivo de error que se le notificó al dueño por este artículo
+     * (`meli_sync_state.ultimo_motivo_notificado`), leído de la base (la sync pudo haberlo
+     * reescrito en esta misma corrida).
+     *
+     * @param Article $article
+     * @return string|null
+     */
+    protected function ultimo_motivo_notificado(Article $article)
+    {
+        $estado = json_decode((string) DB::table('articles')->where('id', $article->id)->value('meli_sync_state'), true);
+
+        return (is_array($estado) && isset($estado['ultimo_motivo_notificado'])) ? (string) $estado['ultimo_motivo_notificado'] : null;
+    }
+
+    /**
+     * Guarda (o borra, con null) el último motivo notificado en `meli_sync_state`, mezclándolo con
+     * lo que ya tiene la base.
+     *
+     * @param Article $article
+     * @param string|null $motivo Hash del motivo, o null para olvidarlo.
+     * @return void
+     */
+    protected function recordar_motivo_notificado(Article $article, $motivo)
+    {
+        $estado = json_decode((string) DB::table('articles')->where('id', $article->id)->value('meli_sync_state'), true);
+        $estado = is_array($estado) ? $estado : [];
+
+        if (is_null($motivo)) {
+            if (!array_key_exists('ultimo_motivo_notificado', $estado)) {
+                return;
+            }
+
+            unset($estado['ultimo_motivo_notificado']);
+        } else {
+            $estado['ultimo_motivo_notificado'] = $motivo;
+        }
+
+        $this->guardar_columnas($article, [], $estado);
     }
 
     /**
@@ -798,6 +868,8 @@ class ProductService extends MercadoLibreService
         $this->guardar_columnas($article, $columnas, $estado_nuevo);
 
         if (count($errores_parciales) > 0) {
+            $this->motivo_del_error = implode("\n", $errores_parciales);
+
             $cierre = $habia_stock_para_mandar
                 ? 'El stock y el estado de la publicación sí se actualizaron en Mercado Libre.'
                 : 'El stock en Mercado Libre ya estaba al día.';
