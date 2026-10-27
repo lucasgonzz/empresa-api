@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
-use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Jobs\ProcessMeliOrderNotificationJob;
 use App\Models\MeliOrder;
@@ -12,6 +11,7 @@ use App\Services\MercadoLibre\ErrorHandler;
 use App\Services\MercadoLibre\MercadoLibreLimiteException;
 use App\Services\MercadoLibre\OrderDownloaderService;
 use App\Services\MercadoLibre\ProductService;
+use App\Services\MercadoLibre\VentaDelPedidoMeli;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -207,7 +207,9 @@ class MeLiOrderController extends Controller
             && $order->status === 'paid'
             && !$order->sale
         ) {
-            CreateSaleOrderHelper::save_sale($order, $this, false, true);
+            // Con candado y re-chequeo (misión mercado-libre-integracion): la venta automática o el
+            // botón "Crear venta" pueden estar creando la misma venta en este momento.
+            VentaDelPedidoMeli::generar_si_falta($order, $this);
         }
     }
 
@@ -245,7 +247,9 @@ class MeLiOrderController extends Controller
 
         $meli_order = MeliOrder::find($id);
 
-        CreateSaleOrderHelper::save_sale($meli_order, $this, false, true);
+        // Si ya tiene venta (la automática, o un confirmar desde otra pantalla) no se crea otra:
+        // se devuelve el pedido como está (misión mercado-libre-integracion).
+        VentaDelPedidoMeli::generar_si_falta($meli_order, $this);
 
         return response()->json(['model' => $this->fullModel('MeliOrder', $id)], 200);
     }

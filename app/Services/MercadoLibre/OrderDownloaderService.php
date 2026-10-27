@@ -3,7 +3,6 @@
 namespace App\Services\MercadoLibre;
 
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Models\Article;
 use App\Models\MeliBuyer;
 use App\Models\MeliOrder;
@@ -11,7 +10,6 @@ use App\Models\SyncFromMeliOrder;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -505,36 +503,16 @@ class OrderDownloaderService extends MercadoLibreService
             return false;
         }
 
-        if ($meli_order->sale()->exists()) {
-            return false;
-        }
-
-        $lock = Cache::lock('meli_order_'.$meli_order->id, 30);
-
-        if (!$lock->get()) {
-            // Otro proceso (el webhook o la consulta) está creando esta misma venta.
-            return false;
-        }
-
         try {
-            $meli_order->refresh();
+            // El mismo camino (candado + re-chequeo + transacción) que el botón "Crear venta" y
+            // que confirmar el pedido: ninguno de los tres puede crear una segunda venta.
+            $creada = VentaDelPedidoMeli::generar_si_falta($meli_order, $this->controller, $this->user);
 
-            if ($meli_order->sale()->exists()) {
-                return false;
+            if ($creada) {
+                Log::info('meli pedidos: venta automática creada para el pedido '.$meli_order->meli_order_id);
             }
 
-            $meli_order->load('articles');
-
-            DB::transaction(function () use ($meli_order) {
-                CreateSaleOrderHelper::save_sale($meli_order, $this->controller, false, true, $this->user);
-
-                $meli_order->meli_order_status_id = 2;
-                $meli_order->save();
-            });
-
-            Log::info('meli pedidos: venta automática creada para el pedido '.$meli_order->meli_order_id);
-
-            return true;
+            return $creada;
         } catch (\Throwable $e) {
             Log::error('meli pedidos: no se pudo crear la venta automática del pedido '.$meli_order->meli_order_id.': '.$e->getMessage());
 
@@ -549,8 +527,6 @@ class OrderDownloaderService extends MercadoLibreService
             );
 
             return false;
-        } finally {
-            $lock->release();
         }
     }
 
@@ -748,7 +724,8 @@ class OrderDownloaderService extends MercadoLibreService
     {
         $meli_order = MeliOrder::find($id);
 
-        CreateSaleOrderHelper::save_sale($meli_order, $this->controller, false, true, $this->user);
+        // Con candado y re-chequeo: si ya tiene venta no se crea otra (ver VentaDelPedidoMeli).
+        VentaDelPedidoMeli::generar_si_falta($meli_order, $this->controller, $this->user);
 
         return response()->json(['model' => $this->controller->fullModel('MeliOrder', $id)], 200);
     }

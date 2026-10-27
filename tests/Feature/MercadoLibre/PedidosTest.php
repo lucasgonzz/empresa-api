@@ -118,6 +118,67 @@ class PedidosTest extends MercadoLibreTestCase
         $this->assertSame(1, Sale::where('meli_order_id', $pedidos->first()->id)->count());
     }
 
+    /**
+     * Arreglo 1 (revisión, 27/10/2026): venta automática y después el botón "Crear venta" de la
+     * pantalla vieja → una sola venta y el stock bajó una sola vez.
+     */
+    public function test_crear_venta_a_mano_despues_de_la_automatica_no_duplica()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [['MLA111', 2, 15000]])]);
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001001')->first();
+        $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count());
+
+        $respuesta = $this->postJson('/api/meli-order/create-sale/'.$pedido->id);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame((int) $pedido->id, (int) $respuesta->json('model.id'));
+        $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count(), 'El botón creó una segunda venta.');
+        $this->assertEquals(8, (float) Article::find($this->articulo->id)->stock, 'El stock bajó dos veces.');
+    }
+
+    /**
+     * Arreglo 1: la pantalla vieja pasa el pedido a Pendiente y otra vez a Confirmado después de la
+     * venta automática → sigue habiendo una sola venta.
+     */
+    public function test_confirmar_por_put_despues_de_la_automatica_no_duplica()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [['MLA111', 2, 15000]])]);
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001001')->first();
+
+        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 1])->assertStatus(200);
+        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 2])->assertStatus(200);
+
+        $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count(), 'Confirmar por PUT creó una segunda venta.');
+        $this->assertEquals(8, (float) Article::find($this->articulo->id)->stock, 'El stock bajó dos veces.');
+    }
+
+    /**
+     * Arreglo 1: sin venta automática, confirmar por PUT y además apretar "Crear venta" → una venta.
+     */
+    public function test_confirmar_y_crear_venta_a_mano_dan_una_sola_venta()
+    {
+        config(['services.mercadolibre.crear_venta_automatica' => false]);
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [['MLA111', 2, 15000]])]);
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001001')->first();
+        $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count());
+
+        $this->putJson('/api/meli-order/'.$pedido->id, ['notes' => null, 'address_id' => null, 'meli_order_status_id' => 2])->assertStatus(200);
+        $this->postJson('/api/meli-order/create-sale/'.$pedido->id)->assertStatus(200);
+
+        $this->assertSame(1, Sale::where('meli_order_id', $pedido->id)->count());
+        $this->assertSame(2, (int) $pedido->fresh()->meli_order_status_id);
+        $this->assertEquals(8, (float) Article::find($this->articulo->id)->stock);
+    }
+
     public function test_un_renglon_sin_vincular_no_genera_venta_y_avisa()
     {
         $this->conector_ml();
