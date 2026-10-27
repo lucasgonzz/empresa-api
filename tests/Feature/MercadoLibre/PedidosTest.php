@@ -31,6 +31,11 @@ class PedidosTest extends MercadoLibreTestCase
         Notification::fake();
 
         MeliOrder::whereIn('meli_order_id', ['2000001001', '2000001002', '2000001003'])->delete();
+        MeliOrder::where('meli_order_id', 'like', '30000000%')->delete();
+
+        // Punto de partida propio: ningún otro artículo del dueño con las publicaciones del test
+        // (la base del slot se usa para probar a mano y podría tener uno).
+        Article::where('user_id', $this->owner->id)->whereIn('me_li_id', ['MLA111', 'MLA999'])->update(['me_li_id' => null]);
 
         $this->articulo = $this->articulo_ml(null, ['me_li_id' => 'MLA111', 'stock' => 10]);
     }
