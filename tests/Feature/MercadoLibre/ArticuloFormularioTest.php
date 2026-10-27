@@ -153,7 +153,12 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
         $this->assertSame(['BRAND' => [null, 'Stanley']], $this->atributos_guardados($article->id));
     }
 
-    public function test_cambiar_de_categoria_sin_atributos_borra_los_de_la_categoria_anterior()
+    /**
+     * Contrato corregido por el chequeo del contrato (27/10/2026): la SPA nueva manda SIEMPRE
+     * `meli_attributes` junto con la categoría cuando el usuario toca la parte de Mercado Libre
+     * (lista vacía si la categoría nueva todavía no tiene datos cargados).
+     */
+    public function test_cambiar_de_categoria_con_la_lista_de_atributos_vacia_borra_los_de_la_anterior()
     {
         $otra = $this->categoria_local('MLA7777');
         $article = $this->articulo_ml($this->categoria);
@@ -167,10 +172,53 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
             'id'               => $article->id,
             'name'             => $article->name,
             'meli_category_id' => $otra->id,
+            'meli_attributes'  => [],
         ]))->assertStatus(200);
 
         $this->assertSame((string) $otra->id, (string) $article->fresh()->meli_category_id);
         $this->assertSame([], $this->atributos_guardados($article->id));
+    }
+
+    /**
+     * El PUT real de cualquier pantalla manda el artículo ENTERO (`getModelToSend()`), con el
+     * `meli_category_id` que tenía la fila. Con una fila vieja (null) y sin `meli_attributes`, no se
+     * le borra nada al artículo.
+     */
+    public function test_un_guardado_con_la_categoria_en_null_y_sin_atributos_no_borra_nada()
+    {
+        $article = $this->articulo_ml($this->categoria);
+        ArticleMeliAttribute::create([
+            'article_id'        => $article->id,
+            'meli_attribute_id' => $this->atributo($this->categoria, 'MODEL')->id,
+            'value_name'        => 'M-100',
+        ]);
+
+        $this->putJson('/api/article/'.$article->id, $this->payload_articulo([
+            'id'               => $article->id,
+            'name'             => $article->name,
+            'meli_category_id' => null,
+        ]))->assertStatus(200);
+
+        $this->assertSame((string) $this->categoria->id, (string) $article->fresh()->meli_category_id);
+        $this->assertSame(['MODEL' => [null, 'M-100']], $this->atributos_guardados($article->id));
+    }
+
+    /**
+     * Un cambio de categoría que el usuario canceló (cerró sin guardar) puede quedar en la fila; si
+     * el próximo guardado sale de otra solapa, viaja sin `meli_attributes` y no se aplica.
+     */
+    public function test_un_cambio_de_categoria_sin_atributos_no_se_aplica()
+    {
+        $otra = $this->categoria_local('MLA7777');
+        $article = $this->articulo_ml($this->categoria);
+
+        $this->putJson('/api/article/'.$article->id, $this->payload_articulo([
+            'id'               => $article->id,
+            'name'             => $article->name,
+            'meli_category_id' => $otra->id,
+        ]))->assertStatus(200);
+
+        $this->assertSame((string) $this->categoria->id, (string) $article->fresh()->meli_category_id);
     }
 
     public function test_el_estado_dice_que_falta_para_publicar()

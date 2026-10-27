@@ -710,9 +710,12 @@ class ArticleController extends Controller
      * Categoría y atributos de Mercado Libre del formulario del artículo (misión
      * mercado-libre-integracion, 27/10/2026).
      *
-     * 🔴 Solo si el request trae `meli_category_id` o `meli_attributes`: la SPA vieja no los manda
-     * y no se le pueden pisar al artículo. Después se encola la sincronización (si el artículo
-     * cumple las condiciones de siempre; ver `ProductService::add_article_to_sync`).
+     * 🔴 Solo si el request trae `meli_attributes`: el formulario genérico manda el artículo ENTERO
+     * en todo guardado (con el `meli_category_id` de la fila, que puede estar vieja), así que esa
+     * clave sola no dice que el usuario tocó Mercado Libre; `meli_attributes` lo manda únicamente
+     * el formulario nuevo de ML (ver el docblock de `ArticleMeliHelper`). Después se encola la
+     * sincronización (si el artículo cumple las condiciones de siempre; ver
+     * `ProductService::add_article_to_sync`).
      *
      * @param Article $model Artículo ya guardado.
      * @param Request $request
@@ -720,11 +723,9 @@ class ArticleController extends Controller
      */
     protected function guardar_mercado_libre($model, Request $request)
     {
-        if (!$request->has('meli_category_id') && !$request->has('meli_attributes')) {
+        if (!ArticleMeliHelper::guardar_categoria_y_atributos($model, $request)) {
             return;
         }
-
-        ArticleMeliHelper::guardar_categoria_y_atributos($model, $request);
 
         ProductService::add_article_to_sync($model);
     }
