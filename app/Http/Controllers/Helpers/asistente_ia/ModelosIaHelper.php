@@ -61,6 +61,18 @@ class ModelosIaHelper
     /** La importación de Excel: identificar columnas y la recomendación (los tres Ai*Analyzer). */
     const TAREA_EXCEL = 'excel';
 
+    /**
+     * La búsqueda masiva de peso y medidas en internet (misión medidas-masivas-catalogo, 27/10/2026):
+     * una llamada barata por artículo que lee páginas web (DimensionSearch\ArticleDimensionSearchEngine).
+     *
+     * 🔴 A PROPÓSITO NO ESTÁ EN `TAREAS`: esa lista es la que el admin muestra y escribe (columnas
+     * `ia_modelo_*` del dueño y el contrato `admin-sync/modelos-ia`), y esta tarea no tiene columna ni
+     * pantalla en el admin. Usa el default de DEFAULTS_POR_TAREA (DeepSeek Flash, sin pensamiento) y, si el
+     * comercio no tiene clave de DeepSeek, el Claude barato (Haiku) por CONFIG_LEGADO_ANTHROPIC. Moverla
+     * a TAREAS (con su columna y su pantalla) es una misión del admin, no de esta.
+     */
+    const TAREA_BUSQUEDA_MEDIDAS = 'busqueda_medidas';
+
     /** Las tareas, en el orden en que se muestran en el admin. */
     const TAREAS = [self::TAREA_ASISTENTE, self::TAREA_WHATSAPP, self::TAREA_IMAGENES, self::TAREA_EXCEL];
 
@@ -134,6 +146,7 @@ class ModelosIaHelper
         self::TAREA_WHATSAPP  => self::DEEPSEEK_FLASH,
         self::TAREA_IMAGENES  => self::DEEPSEEK_FLASH,
         self::TAREA_EXCEL     => self::DEEPSEEK_PRO,
+        self::TAREA_BUSQUEDA_MEDIDAS => self::DEEPSEEK_FLASH,
     ];
 
     /** La columna del dueño de cada tarea que tiene columna propia (el asistente no la tiene). */
@@ -164,6 +177,7 @@ class ModelosIaHelper
         self::TAREA_WHATSAPP => 'services.anthropic.model',
         self::TAREA_IMAGENES => 'services.article_image_validation.model',
         self::TAREA_EXCEL    => 'services.importacion_excel_ia.model_anthropic',
+        self::TAREA_BUSQUEDA_MEDIDAS => 'services.anthropic.model_agil',
     ];
 
     /**
