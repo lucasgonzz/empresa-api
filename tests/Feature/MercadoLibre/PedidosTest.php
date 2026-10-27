@@ -187,6 +187,34 @@ class PedidosTest extends MercadoLibreTestCase
         $this->assertEquals(8, (float) Article::find($this->articulo->id)->stock);
     }
 
+    /**
+     * Arreglo 4 (revisión, 27/10/2026): el mismo ítem en dos renglones del pedido (2 + 3 unidades)
+     * se suma: la venta lleva 5, el stock baja 5 y el total coincide.
+     */
+    public function test_el_mismo_item_en_dos_renglones_suma_las_cantidades()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [
+            ['MLA111', 2, 15000],
+            ['MLA111', 3, 14000],
+        ])]);
+
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001001')->first();
+
+        $renglon = $pedido->articles()->where('articles.id', $this->articulo->id)->first();
+        $this->assertEquals(5, (float) $renglon->pivot->amount);
+        // Precio unitario ponderado: (2 x 15000 + 3 x 14000) / 5 = 14400.
+        $this->assertEquals(14400, (float) $renglon->pivot->price);
+
+        $venta = Sale::where('meli_order_id', $pedido->id)->first();
+        $this->assertNotNull($venta);
+        $this->assertEquals(72000, (float) $venta->total);
+        $this->assertEquals(5, (float) $venta->articles()->where('articles.id', $this->articulo->id)->first()->pivot->amount);
+        $this->assertEquals(5, (float) Article::find($this->articulo->id)->stock, 'El stock tiene que bajar 5 (2 + 3).');
+    }
+
     public function test_un_renglon_sin_vincular_no_genera_venta_y_avisa()
     {
         $this->conector_ml();

@@ -620,6 +620,15 @@ class OrderDownloaderService extends MercadoLibreService
     {
         $order_items = $this->order_data['order_items'] ?? [];
 
+        /*
+         * Revisión de la misión (27/10/2026): el mismo ítem puede venir en dos renglones del
+         * pedido (2 + 3 unidades). Con un `syncWithoutDetaching` por renglón el segundo pisaba al
+         * primero y la venta salía con 3 en vez de 5 (y el stock bajaba 3). Se suma por artículo:
+         * cantidad total y precio unitario ponderado (suma de cantidad x precio / cantidad total),
+         * así el total de la venta coincide con el del pedido.
+         */
+        $por_articulo = [];
+
         foreach ($order_items as $item_data) {
             $item = $item_data['item'] ?? null;
             if (!$item || empty($item['id'])) {
@@ -630,18 +639,34 @@ class OrderDownloaderService extends MercadoLibreService
                 ->where('user_id', $this->user_id)
                 ->first();
 
-            if ($article) {
-                $this->meli_order->articles()->syncWithoutDetaching([
-                    $article->id => [
-                        'amount' => $item_data['quantity'] ?? 1,
-                        'price' => $item_data['unit_price'] ?? 0,
-                    ],
-                ]);
-            } else {
+            if (!$article) {
                 $titulo = isset($item['title']) ? (string) $item['title'] : 'Publicación';
                 $this->renglones_sin_vincular[] = '- '.$titulo.' ('.$item['id'].')';
                 Log::warning("Artículo no encontrado con meli_id: {$item['id']}");
+
+                continue;
             }
+
+            $cantidad = isset($item_data['quantity']) ? (float) $item_data['quantity'] : 1.0;
+            $precio = isset($item_data['unit_price']) ? (float) $item_data['unit_price'] : 0.0;
+
+            if (!isset($por_articulo[$article->id])) {
+                $por_articulo[$article->id] = ['cantidad' => 0.0, 'importe' => 0.0];
+            }
+
+            $por_articulo[$article->id]['cantidad'] += $cantidad;
+            $por_articulo[$article->id]['importe'] += $cantidad * $precio;
+        }
+
+        foreach ($por_articulo as $article_id => $suma) {
+            $precio_unitario = $suma['cantidad'] > 0 ? round($suma['importe'] / $suma['cantidad'], 2) : 0;
+
+            $this->meli_order->articles()->syncWithoutDetaching([
+                $article_id => [
+                    'amount' => $suma['cantidad'],
+                    'price'  => $precio_unitario,
+                ],
+            ]);
         }
     }
 
