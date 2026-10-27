@@ -8,12 +8,16 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Models\Combo;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
+use App\Models\MercadoPagoQrCobro;
+use App\Models\PlatformConnector;
 use App\Models\SyncToMeliArticle;
 use App\Models\SyncToTNArticle;
 use App\Models\User;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class Kernel extends ConsoleKernel
 {
@@ -141,14 +145,60 @@ class Kernel extends ConsoleKernel
 
         // Sincronización de artículos pendientes hacia Mercado Libre solo si tiene la extensión.
         // Mismo gate que Tienda Nube, sobre sync_to_meli_articles.
+        //
+        // Misión mercado-libre-integracion (27/10/2026): el gate cuenta solo lo que el comando va a
+        // tomar de verdad (pendientes sin intento o con el último hace más de 2 minutos, y
+        // en_progreso colgados hace más de 30). Un artículo que ML mandó a esperar vuelve a
+        // `pendiente` con `attempted_at` de recién: sin esto se arrancaba un artisan por minuto
+        // para no hacer nada.
         if ($company_owner && UserHelper::hasExtencion('usa_mercado_libre', $company_owner)) {
             $schedule->command('sync_to_meli_articles')
                 ->everyMinute()
                 ->withoutOverlapping(15)
                 ->when(function () {
                     return $this->gate_de_datos(function () {
-                        return SyncToMeliArticle::where('user_id', config('app.USER_ID'))
-                            ->where('status', 'pendiente')
+                        $user_id = config('app.USER_ID');
+
+                        // Sin cuenta de ML conectada el comando no tiene con qué trabajar (sale en
+                        // su primera línea): no se arranca un artisan por minuto para eso
+                        // (revisión de merge, 27/10/2026). Mismo criterio que meli_sync_orders.
+                        $conectado = PlatformConnector::mercadoLibreConnected()
+                            ->where('user_id', $user_id)
+                            ->whereNotNull('access_token')
+                            ->exists();
+
+                        if (!$conectado) {
+                            return false;
+                        }
+
+                        return SyncToMeliArticle::where('user_id', $user_id)
+                            ->where(function ($query) {
+                                $query->where(function ($pendientes) {
+                                    $pendientes->where('status', 'pendiente')
+                                        ->where(function ($intento) {
+                                            $intento->whereNull('attempted_at')
+                                                ->orWhere('attempted_at', '<=', now()->subMinutes(2));
+                                        });
+                                })->orWhere(function ($colgadas) {
+                                    $colgadas->where('status', 'en_progreso')
+                                        ->where('attempted_at', '<', now()->subMinutes(30));
+                                });
+                            })
+                            ->exists();
+                    });
+                });
+
+            // Pedidos de Mercado Libre por consulta periódica (no por notificaciones: la app de ML
+            // tiene UNA URL de notificaciones para todos los clientes). Cada 5 minutos, solo con la
+            // cuenta conectada; un pedido pago genera la venta solo (ver OrderDownloaderService).
+            $schedule->command('meli_sync_orders')
+                ->everyFiveMinutes()
+                ->withoutOverlapping(10)
+                ->when(function () {
+                    return $this->gate_de_datos(function () {
+                        return PlatformConnector::mercadoLibreConnected()
+                            ->where('user_id', config('app.USER_ID'))
+                            ->whereNotNull('access_token')
                             ->exists();
                     });
                 });
@@ -398,6 +448,32 @@ class Kernel extends ConsoleKernel
             ->daily()
             ->withoutOverlapping();
 
+        // Cobros con QR de Mercado Pago que quedaron pendientes (misión cobro-qr-mercado-pago,
+        // 26/10/2026): consulta su orden en MP y aplica lo que MP conteste (nunca vence nada sin
+        // respuesta de MP), y recupera las órdenes que MP no confirmó al crearlas. Es la red de
+        // abajo del polling del modal de Vender, porque esta misión no usa webhooks. Cada minuto
+        // porque un pago que entró con el modal cerrado tiene que aparecer pronto.
+        //
+        // El when() cumple la regla de arriba: sin ningún cobro pendiente (el estado normal de
+        // casi todas las instancias, y de TODAS las que no usan el QR) no se arranca ningún
+        // artisan. Antes de consultar se mira si la tabla existe, con el resultado cacheado unos
+        // minutos (`tabla_existe_para_el_schedule()`): en la ventana entre subir los archivos y
+        // migrar, gate_de_datos() escribiría un warning por minuto en el log. withoutOverlapping(15):
+        // cada cobro son hasta tres llamadas de 15 s, y un lock vencido antes de tiempo dejaría
+        // correr dos conciliaciones a la vez.
+        $schedule->command('mercadopago:qr-conciliar')
+            ->everyMinute()
+            ->withoutOverlapping(15)
+            ->when(function () {
+                if (!$this->tabla_existe_para_el_schedule('mercado_pago_qr_cobros')) {
+                    return false;
+                }
+
+                return $this->gate_de_datos(function () {
+                    return MercadoPagoQrCobro::where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)->exists();
+                });
+            });
+
         // Renueva los access_token de Zippin próximos a vencer (grupo 171, prompt 599).
         // Corre para TODOS los comercios con zippin_enabled=true (no depende de company_owner /
         // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
@@ -455,6 +531,36 @@ class Kernel extends ConsoleKernel
             Log::warning('Kernel: no se pudo evaluar el gate de un comando del schedule, se corre igual: ' . $e->getMessage());
 
             return true;
+        }
+    }
+
+    /**
+     * Indica si una tabla existe, para los gates del schedule, sin escribir nada en el log y con
+     * el resultado cacheado 5 minutos (un `information_schema` por minuto en cada instancia sería
+     * justo el costo que la regla del schedule quiere evitar).
+     *
+     * Se cachea también el "no existe": después de migrar, el comando arranca a lo sumo 5 minutos
+     * más tarde, que para una tabla nueva sin filas no cambia nada. Si el caché no responde se
+     * pregunta directo, y si la base tampoco, se contesta false en silencio: el comando que
+     * depende de esa tabla no tendría con qué trabajar.
+     *
+     * @param  string  $tabla
+     * @return bool
+     */
+    protected function tabla_existe_para_el_schedule($tabla)
+    {
+        $consultar = function () use ($tabla) {
+            try {
+                return Schema::hasTable($tabla);
+            } catch (\Throwable $e) {
+                return false;
+            }
+        };
+
+        try {
+            return (bool) Cache::remember('schedule_tabla_existe_' . $tabla, 300, $consultar);
+        } catch (\Throwable $e) {
+            return (bool) $consultar();
         }
     }
 

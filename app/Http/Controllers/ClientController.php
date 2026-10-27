@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ClienteDeMencionIaHelper;
+use App\Http\Controllers\Helpers\client\SincronizacionOfflineClientesHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
@@ -38,6 +39,50 @@ class ClientController extends Controller
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate($per_page);
+        return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Clientes del comercio para el caché de VENDER sin conexión (misión clientes-sin-internet,
+     * 26/10/2026). Mismo contrato que `ArticleController::index()` (`article/index/from-status`):
+     *
+     *   - `updated_after` opcional: sin él trae todos; con él, solo los modificados después.
+     *   - `per_page` default 500, techo 1000; orden estable por `id` ASC.
+     *   - Devuelve `{"models": <paginado>, "sincronizado_hasta": "Y-m-d H:i:s"}`: la marca la da el
+     *     servidor, tomada ANTES de consultar, y la SPA la usa como `updated_after` de la próxima
+     *     vuelta.
+     *
+     * Las reglas viven en `SincronizacionOfflineClientesHelper`.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function index_offline(Request $request) {
+
+        // 🔴 La marca primero, ANTES de consultar: ver SincronizacionOfflineClientesHelper::marca_de_sincronizacion().
+        $sincronizado_hasta = SincronizacionOfflineClientesHelper::marca_de_sincronizacion();
+
+        $models = SincronizacionOfflineClientesHelper::consulta_de_vivos($this->userId(), $request->input('updated_after'))
+                            ->paginate(SincronizacionOfflineClientesHelper::per_page($request));
+
+        return response()->json(['models' => $models, 'sincronizado_hasta' => $sincronizado_hasta], 200);
+    }
+
+    /**
+     * Clientes BORRADOS del comercio, para que la SPA los saque del caché de VENDER sin conexión
+     * (misión clientes-sin-internet, 26/10/2026). Mismo contrato que
+     * `ArticleController::index_deleted()` (`article/index/eliminados`): `updated_after` opcional
+     * (`deleted_at >= updated_after`), mismo paginado, orden por `id` ASC, solo `id` y
+     * `deleted_at`. Devuelve `{"models": <paginado>}`.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function index_offline_eliminados(Request $request) {
+
+        $models = SincronizacionOfflineClientesHelper::consulta_de_eliminados($this->userId(), $request->input('updated_after'))
+                            ->paginate(SincronizacionOfflineClientesHelper::per_page($request));
+
         return response()->json(['models' => $models], 200);
     }
 

@@ -553,6 +553,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('current-acount-payment-method', 'CurrentAcountPaymentMethodController');
     // client/options tiene que declararse ANTES del resource, mismo motivo que provider/options.
     Route::get('client/options', 'ClientController@options');
+    // Caché de clientes de VENDER sin conexión (misión clientes-sin-internet, 26/10/2026): mismo
+    // contrato que `article/index/from-status` y `article/index/eliminados`. Antes del resource por
+    // el mismo motivo que client/options.
+    Route::get('client/index/offline', 'ClientController@index_offline');
+    Route::get('client/index/offline-eliminados', 'ClientController@index_offline_eliminados');
     Route::resource('client', 'ClientController');
     Route::post('client/excel/import', 'ClientController@import');
     Route::get('client/get-afip-information-by-cuit/{cuit}', 'ClientController@get_afip_information_by_cuit');
@@ -788,6 +793,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    // Cobro con el QR de Mercado Pago en Vender (misión cobro-qr-mercado-pago, 26/10/2026). El
+    // contrato con el SPA está fijado en el plan de la misión. Sin extensión: alcanza con tener
+    // Mercado Pago conectado. Las de `cobros` con id van después del listado para que quede a la
+    // vista que `cobros` a secas es el listado (los verbos y segmentos no colisionan igual).
+    Route::get('/mercado-pago/qr', 'MercadoPagoQrController@index');
+    Route::put('/mercado-pago/qr/config', 'MercadoPagoQrController@update_config');
+    Route::post('/mercado-pago/qr/cajas', 'MercadoPagoQrController@store_qr');
+    Route::delete('/mercado-pago/qr/cajas/{id}', 'MercadoPagoQrController@destroy_qr');
+    Route::get('/mercado-pago/qr/cobros', 'MercadoPagoQrController@index_cobros');
+    Route::post('/mercado-pago/qr/cobros', 'MercadoPagoQrController@store_cobro');
+    Route::get('/mercado-pago/qr/cobros/{id}', 'MercadoPagoQrController@show_cobro');
+    Route::post('/mercado-pago/qr/cobros/{id}/cancelar', 'MercadoPagoQrController@cancelar_cobro');
+
     // Estado de las integraciones del comercio, para pintar las tarjetas de ABM -> Integraciones.
     // Va ANTES de las rutas `integraciones/{proveedor}/...` para que quede claro que es el
     // listado del grupo, no un proveedor mas. No serializa ningun token: ese es el motivo de
@@ -800,6 +818,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // backend y el comercio se identifica por el `state` persistido en connect, no por sesión.
     Route::get('integraciones/mercadopago/connect', 'MercadoPagoOAuthController@connect');
     Route::post('integraciones/mercadopago/disconnect', 'MercadoPagoOAuthController@disconnect');
+
+    // Mercado Libre (misión mercado-libre-integracion, 27/10/2026): connect con state aleatorio y
+    // la URL central del admin (mismo patrón que Mercado Pago). El callback sigue siendo el de
+    // routes/web.php (`/platform-connector/mercadolibre/callback`), que es a donde reenvía el admin.
+    Route::get('integraciones/mercadolibre/connect', 'MercadoLibreConexionController@connect');
+    Route::post('integraciones/mercadolibre/disconnect', 'MercadoLibreConexionController@disconnect');
+    // Solapa "Cuenta" del módulo: conexión, reputación, si puede publicar y la cola.
+    Route::get('mercado-libre/cuenta', 'MercadoLibreConexionController@cuenta');
+    // Estado de la publicación de un artículo y "Sincronizar ahora" (formulario del artículo).
+    Route::get('mercado-libre/articulo/{id}', 'MercadoLibreController@articulo');
+    Route::post('mercado-libre/articulo/{id}/sincronizar', 'MercadoLibreController@sincronizar');
 
     // OAuth de Zippin (grupo 171, prompt 599): el comercio autenticado conecta/desconecta su
     // propia cuenta para gestionar envíos. El callback (público, sin auth) se declara más abajo,
@@ -934,6 +963,31 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/get-current', 'GoogleController@get_current');
 
     /*
+        Búsqueda masiva de peso y medidas (misión medidas-masivas-catalogo, 27/10/2026): Alertas → Catálogo →
+        Medidas. Espejo de las rutas de imágenes de abajo, pero FUERA del grupo `agentes_ia` (decisión de
+        producto del 27/10/2026): el negocio que la necesita (Masquito) no tiene «Agentes de IA», y activarla
+        le prendería el paquete entero (agente personal, bot de WhatsApp...), que no se quiere. Lo que protege
+        estas rutas es: la sesión del grupo (auth), la tenencia por dueño (todo filtra por userId()) y el
+        acceso maestro para la previa, el lanzamiento, detener y reanudar de catálogo (lo valida
+        DimensionSearchRunController, 403 sin él).
+        Las rutas fijas (resumen, catalogo, aprobar-varios, rechazar-varios) van ANTES de las que llevan {id},
+        y los {id} van restringidos a números.
+    */
+    Route::get('dimension-search-runs', 'DimensionSearchRunController@index');
+    Route::get('dimension-search-runs/resumen', 'DimensionSearchRunController@resumen');
+    Route::get('dimension-search-runs/catalogo/previa', 'DimensionSearchRunController@previa_catalogo');
+    Route::post('dimension-search-runs/catalogo', 'DimensionSearchRunController@crear_catalogo');
+    Route::get('dimension-search-runs/{id}', 'DimensionSearchRunController@show')->where('id', '[0-9]+');
+    Route::get('dimension-search-runs/{id}/items', 'DimensionSearchRunController@items')->where('id', '[0-9]+');
+    Route::post('dimension-search-runs/{id}/detener', 'DimensionSearchRunController@detener')->where('id', '[0-9]+');
+    Route::post('dimension-search-runs/{id}/reanudar', 'DimensionSearchRunController@reanudar')->where('id', '[0-9]+');
+    Route::post('dimension-search-items/aprobar-varios', 'DimensionSearchRunController@aprobar_varios');
+    Route::post('dimension-search-items/rechazar-varios', 'DimensionSearchRunController@rechazar_varios');
+    Route::post('dimension-search-items/{id}/aprobar', 'DimensionSearchRunController@aprobar')->where('id', '[0-9]+');
+    Route::post('dimension-search-items/{id}/rechazar', 'DimensionSearchRunController@rechazar')->where('id', '[0-9]+');
+    Route::post('dimension-search-items/{id}/quitar', 'DimensionSearchRunController@quitar')->where('id', '[0-9]+');
+
+    /*
         TODO lo que sigue hasta el cierre del grupo es de la extensión `agentes_ia` (misión
         agentes-ia-extension-unica, 22/10/2026): asignación automática de imágenes (la valida un modelo de
         visión), categorías con IA, intentos de búsqueda automática y descripciones con IA. Sin la
@@ -1043,6 +1097,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('client-reputation', 'ClientReputationController');
 
     Route::resource('expense-category', 'ExpenseCategoryController');
+
+    // Categorías de ML para el formulario del artículo (misión mercado-libre-integracion): andan
+    // SIN cuenta conectada (catálogo público, con token de app). Van antes del resource para que
+    // `meli-category/resolve` no lo tome nadie más.
+    Route::get('meli-category-predictor', 'MeliCategoryController@predictor');
+    Route::get('meli-category-children/{meli_category_id?}', 'MeliCategoryController@children');
+    Route::post('meli-category/resolve', 'MeliCategoryController@resolve');
 
     Route::resource('meli-category', 'MeliCategoryController');
     Route::get('meli-category-predictor/{article_name}', 'MeliCategoryController@category_predictor');

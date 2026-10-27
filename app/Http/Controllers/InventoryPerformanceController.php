@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Exports\ArticleStockMinimoExport;
 use App\Http\Controllers\Helpers\inventoryPerformance\InventoryPerformanceHelper;
 use App\Models\Article;
+use App\Http\Controllers\Helpers\inventoryPerformance\StockMinimoConsulta;
 use App\Models\InventoryPerformance;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -26,16 +27,31 @@ class InventoryPerformanceController extends Controller
      * el botón Actualizar. Un comercio sin reporte (recién dado de alta, por ejemplo) se queda sin
      * reporte hasta la próxima 04:00 o hasta que alguien lo pida a mano.
      */
-    function index() {
+    function index(Request $request) {
 
         $user_id = $this->userId();
 
         // Sin withAll(): sólo se devuelven los contadores (stock_minimo, sin_stock, valores).
-        $inventory_performance = $this->get_created_inventory_performance(false);
+        // La campana cuenta todo el alcance autorizado, nunca el filtro temporal del listado.
+        $consulta = new StockMinimoConsulta($request->user(), $user_id, new Request());
+        $inventory_performance = $consulta->reporte();
+        if (!is_null($inventory_performance)) {
+            $resumen = $consulta->resumen($inventory_performance);
+            $inventory_performance->stock_minimo = $resumen['stock_minimo'];
+        }
+        if ($consulta->restricted && !is_null($inventory_performance)) {
+            // El reporte almacenado es del dueño: no serializar sus valuaciones ni porcentajes globales.
+            $seguro = $inventory_performance->only(['id', 'user_id', 'created_at', 'updated_at']);
+            foreach ($inventory_performance->getAttributes() as $key => $value) {
+                if (!array_key_exists($key, $seguro)) { $seguro[$key] = null; }
+            }
+            $inventory_performance = array_merge($seguro, $resumen);
+        }
 
         return response()->json([
             'models'     => [$inventory_performance],
             'generating' => InventoryPerformanceHelper::esta_generando($user_id),
+            'stock_minimo_scope' => $consulta->metadata(),
         ], 200);
     }
 
@@ -83,9 +99,11 @@ class InventoryPerformanceController extends Controller
         return $inventory_performance;
     }
 
-    function stock_minimo_excel() {
+    function stock_minimo_excel(Request $request) {
 
-        return Excel::download(new ArticleStockMinimoExport(), 'articulos_stock_minimo'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
+        $consulta = new StockMinimoConsulta($request->user(), $this->userId(), $request);
+
+        return Excel::download(new ArticleStockMinimoExport($consulta), 'articulos_stock_minimo'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
     }
 
     /**
@@ -107,11 +125,12 @@ class InventoryPerformanceController extends Controller
 
         // Último reporte generado para el usuario autenticado (sin cargar la relación
         // pesada de artículos: acá se pagina aparte).
-        $inventory_performance = $this->get_created_inventory_performance();
+        $consulta = new StockMinimoConsulta($request->user(), $this->userId(), $request);
+        $inventory_performance = $consulta->reporte();
 
         if (is_null($inventory_performance)) {
 
-            return response()->json(['models' => []], 200);
+            return response()->json(['models' => [], 'scope' => $consulta->metadata(), 'summary' => $consulta->resumen(null)], 200);
         }
 
         // per_page configurable por el frontend, con tope de 200 para evitar que alguien
@@ -131,27 +150,16 @@ class InventoryPerformanceController extends Controller
                     ->values()
                     ->all();
 
-        $query = $inventory_performance->articles_stock_minimo()
+        $query = $consulta->query($inventory_performance)
                     ->select($columns)
                     // Relaciones que las columnas configurables del frontend pueden mostrar
                     // (props_to_show + propertyText). Sin este eager loading serían N
                     // queries extra por cada artículo de la página.
                     ->with(['category', 'sub_category', 'provider', 'brand', 'images']);
 
-        // Buscador opcional por nombre, código de barras o código de proveedor.
-        if ($request->filled('search')) {
+        $models = $query->orderBy('articles.id')->orderBy('article_inventory_performance.address_id')->paginate($per_page);
+        $models->getCollection()->transform(function ($article) use ($consulta) { return $consulta->preparar_fila($article); });
 
-            $search = $request->search;
-
-            $query->where(function ($q) use ($search) {
-                $q->where('articles.name', 'LIKE', '%'.$search.'%')
-                  ->orWhere('articles.bar_code', 'LIKE', '%'.$search.'%')
-                  ->orWhere('articles.provider_code', 'LIKE', '%'.$search.'%');
-            });
-        }
-
-        $models = $query->paginate($per_page);
-
-        return response()->json(['models' => $models], 200);
+        return response()->json(['models' => $models, 'scope' => $consulta->metadata(), 'summary' => $consulta->resumen($inventory_performance)], 200);
     }
 }

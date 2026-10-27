@@ -270,6 +270,25 @@ class Gates_del_schedule_Test extends EmpresaTestCase
     {
         $this->dar_extension('usa_mercado_libre');
 
+        /*
+         * Misión mercado-libre-integracion (revisión de merge, 27/10/2026): el gate exige además la
+         * cuenta de ML conectada (sin ella el comando no tiene con qué trabajar). Este test mide los
+         * pendientes, así que arranca con la cuenta conectada; el caso "sin cuenta" está en
+         * tests/Feature/MercadoLibre/ScheduleTest.
+         */
+        $platform = \App\Models\Platform::firstOrCreate(
+            ['slug' => \App\Models\Platform::SLUG_MERCADO_LIBRE],
+            ['name' => 'Mercado Libre']
+        );
+        \App\Models\PlatformConnector::create([
+            'user_id'          => $this->owner->id,
+            'platform_id'      => $platform->id,
+            'status'           => \App\Models\PlatformConnector::STATUS_CONECTADO,
+            'access_token'     => 'TOKEN-ML-GATES',
+            'refresh_token'    => 'REFRESH-ML-GATES',
+            'platform_user_id' => '123456789',
+        ]);
+
         SyncToMeliArticle::where('user_id', $this->owner->id)->delete();
 
         $evento = $this->evento('sync_to_meli_articles');

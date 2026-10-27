@@ -137,6 +137,13 @@ class IntegracionesController extends Controller
             $estado['connected'] = self::token_descifrable($connector);
         }
 
+        // Mercado Libre (misión mercado-libre-integracion, 27/10/2026): el access_token vence cada
+        // pocas horas y el módulo lo renueva solo con el refresh_token. Mostrar ese vencimiento en
+        // la tarjeta asustaba al comercio con una fecha que no significa nada para él.
+        if ($integracion['slug'] === Platform::SLUG_MERCADO_LIBRE) {
+            $estado['expires_at'] = null;
+        }
+
         $item = [
             'slug'             => $integracion['slug'],
             'name'             => $integracion['name'],

@@ -396,6 +396,42 @@ class SaleController extends Controller
         $offline_uuid = VentaOfflineHelper::offline_uuid_utilizable($request->input('offline_uuid'));
 
         /*
+         * 🔴 Venta cobrada con el QR de Mercado Pago (misión cobro-qr-mercado-pago, 26/10/2026).
+         * Campo OPCIONAL: el SPA lo manda recién cuando vio el cobro `pagado`. Quinto 422
+         * temprano, con el mismo criterio que los de arriba: antes del candado y de la
+         * transacción, así un rechazo no toca la base ni consume número de venta. Exige que el
+         * cobro sea del comercio, esté pagado y no lo haya usado otra venta, y que la venta sea de
+         * contado (sin cuenta corriente), sin reparto, con el método de pago del cobro, en pesos y
+         * por el mismo total. Sin el campo (SPA vieja, ventas offline viejas, cualquier otro cobro)
+         * no corre ni una query.
+         *
+         * Va DESPUÉS de resolver el `offline_uuid` a propósito: un reintento de una venta que ya
+         * se guardó con este cobro (mismo uuid) no es "cobro ya usado", y se deja pasar para que
+         * la guarda de idempotencia de adentro devuelva esa venta sin revincular nada. Nombre
+         * completo de la clase, mismo motivo que `SucursalVigenteHelper` más abajo: no tocar los
+         * `use` de este controller, que otras misiones editan en paralelo. Toda la regla:
+         * `MercadoPagoQrService::validar_cobro_para_venta()`.
+         */
+        $mercado_pago_qr_cobro_id = is_numeric($request->input('mercado_pago_qr_cobro_id')) ? (int) $request->input('mercado_pago_qr_cobro_id') : 0;
+
+        if ($mercado_pago_qr_cobro_id > 0) {
+
+            $error_cobro_qr = (new \App\Services\MercadoPago\MercadoPagoQrService())->validar_cobro_para_venta(
+                $this->userId(),
+                $mercado_pago_qr_cobro_id,
+                $request,
+                $offline_uuid
+            );
+
+            if (!is_null($error_cobro_qr)) {
+
+                Log::info('store sale: rechazada por el cobro con QR '.$mercado_pago_qr_cobro_id.' (user_id '.$this->userId().'): '.$error_cobro_qr['message']);
+
+                return response()->json($error_cobro_qr, 422);
+            }
+        }
+
+        /*
          * 🔴 Candado por comercio mientras se crea la venta (auditoría de stock, 5/9/2026).
          *
          * venta_ya_cread() mira si hay una venta igual de los últimos 5 segundos, pero dos requests
@@ -482,7 +518,19 @@ class SaleController extends Controller
              * manda dos uuid distintos para la misma venta. Ver
              * `VentaOfflineHelper::saltear_guarda_de_cinco_segundos()`.
              */
+            /*
+             * Tampoco se aplica a una venta que trae un cobro QR de Mercado Pago TODAVÍA SIN VENTA
+             * (misión cobro-qr-mercado-pago, 26/10/2026): dos ventas del mismo total en 5 segundos,
+             * cada una con su propio cobro pagado, son dos clientes que pagaron lo mismo, no un
+             * doble clic; descartar la segunda dejaría un pago sin venta. Se pregunta acá, adentro
+             * del candado: en un doble clic de verdad con el MISMO cobro, el primer request ya lo
+             * ató al commitear, este lo ve con venta y la guarda se comporta como siempre.
+             */
+            $saltear_guarda_por_cobro_qr = $mercado_pago_qr_cobro_id > 0
+                && (new \App\Services\MercadoPago\MercadoPagoQrService())->cobro_todavia_sin_venta($this->userId(), $mercado_pago_qr_cobro_id);
+
             if (!VentaOfflineHelper::saltear_guarda_de_cinco_segundos($request, $offline_uuid)
+                && !$saltear_guarda_por_cobro_qr
                 && $this->venta_ya_cread($request, $created_at)) {
                 Log::info('No se volvio a crear la venta');
                 DB::rollBack();
@@ -625,6 +673,18 @@ class SaleController extends Controller
              */
             ], SaleHelper::normalized_forzar_total_monto($request), 'sales'), 'sales'), 'sales')));
 
+            /*
+             * El cobro con QR de Mercado Pago, ya validado afuera, se ata a la venta recién creada
+             * (misión cobro-qr-mercado-pago, 26/10/2026). Va ACÁ, apenas existe la venta y antes
+             * de lo pesado, para que si otra venta se llevó el cobro en el medio (el servicio lo
+             * relee con lockForUpdate) se revierta todo sin haber movido stock ni caja. Los dos
+             * caminos que devuelven una venta ya existente (uuid repetido y doble clic) salen
+             * antes de llegar acá: nunca revinculan.
+             */
+            if ($mercado_pago_qr_cobro_id > 0) {
+                (new \App\Services\MercadoPago\MercadoPagoQrService())->vincular_cobro_a_venta($this->userId(), $mercado_pago_qr_cobro_id, $model);
+            }
+
             // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
             SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
@@ -711,6 +771,16 @@ class SaleController extends Controller
                 $errores = $e->errors();
                 $primero = reset($errores);
                 return response()->json(['message' => $primero[0], 'errors' => $errores], 422);
+            }
+
+            /*
+             * El cobro con QR de Mercado Pago que se perdió entre la validación y el vínculo (misión
+             * cobro-qr-mercado-pago, 26/10/2026): la venta ya se revirtió arriba, y se responde el
+             * mismo 422 `{message, cobro_qr_invalido: true}` que la validación temprana, sin report()
+             * porque no es un error del programa.
+             */
+            if ($e instanceof \App\Services\MercadoPago\MercadoPagoQrException) {
+                return response()->json($e->payload(), $e->http_status());
             }
 
             /*
