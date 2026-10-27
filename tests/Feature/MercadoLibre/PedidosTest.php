@@ -433,6 +433,37 @@ class PedidosTest extends MercadoLibreTestCase
         $this->assertFalse(Sale::where('meli_order_id', $pedido->id)->exists(), 'Un pedido de antes de conectar ya lo atendió el comercio por fuera.');
     }
 
+    /**
+     * Arreglo 2 de la revisión de merge: los pedidos pagos que quedan Pendientes por ser
+     * anteriores a la conexión se le avisan al dueño UNA vez, con cuántos son.
+     */
+    public function test_los_pedidos_pagos_anteriores_a_la_conexion_se_avisan_una_vez()
+    {
+        $this->conector_ml([], [
+            'nickname' => 'VENDEDOR_PRUEBA', 'user_product_seller' => false, 'multiorigen' => false, 'site_id' => 'MLA',
+            'conectado_en' => Carbon::now()->toIso8601String(),
+        ]);
+        $viejo = [
+            'date_created' => Carbon::now()->subDays(2)->toIso8601String(),
+            'date_closed'  => Carbon::now()->subDays(2)->toIso8601String(),
+        ];
+        $this->ml_devuelve_pedidos([
+            $this->pedido_ml('2000001001', 'paid', [['MLA111', 1, 15000]], $viejo),
+            $this->pedido_ml('2000001002', 'paid', [['MLA111', 2, 15000]], $viejo),
+        ]);
+
+        $this->sincronizar();
+
+        Notification::assertSentTo($this->owner, GlobalNotification::class, function ($notificacion) {
+            return strpos($notificacion->message_text, '2 pedidos de Mercado Libre anteriores a la conexión quedaron Pendientes') !== false;
+        });
+
+        // La consulta siguiente los vuelve a traer (ML los actualizó): no se avisan de nuevo.
+        Notification::fake();
+        $this->sincronizar();
+        Notification::assertNothingSent();
+    }
+
     public function test_el_comando_consulta_por_fecha_de_actualizacion_sin_filtrar_por_pagado_y_guarda_el_poll()
     {
         $connector = $this->conector_ml();

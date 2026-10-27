@@ -49,6 +49,14 @@ class OrderDownloaderService extends MercadoLibreService
     /** @var array<int, string> Renglones del pedido sin artículo vinculado (para el aviso) */
     protected $renglones_sin_vincular = [];
 
+    /**
+     * Pedidos pagos de esta corrida que NO generaron venta por ser anteriores a la conexión de la
+     * cuenta (ids de ML). Se avisan al dueño al terminar (una vez por pedido).
+     *
+     * @var array<int, string>
+     */
+    protected $pedidos_anteriores_a_la_conexion = [];
+
     /** @var SyncFromMeliOrder|null Registro de sincronización masiva; null en polling o notificaciones */
     public $syncRecord;
 
@@ -112,6 +120,62 @@ class OrderDownloaderService extends MercadoLibreService
         }
 
         $this->store_or_update_order($order);
+
+        $this->avisar_pedidos_anteriores_a_la_conexion();
+    }
+
+    /**
+     * Avisa al dueño, UNA vez por pedido, los pedidos pagos que quedaron Pendientes por ser
+     * anteriores a la conexión de la cuenta (revisión de merge, 27/10/2026). Sin esto quedaban
+     * callados: no generaban venta ni bajaban stock.
+     *
+     * Los ya avisados se recuerdan en `extra_config.meli.pedidos_anteriores_avisados` (los últimos
+     * 500 ids), porque el mismo pedido vuelve a aparecer en la consulta cada vez que ML lo actualiza
+     * (por ejemplo, un cambio en el envío).
+     *
+     * @return void
+     */
+    protected function avisar_pedidos_anteriores_a_la_conexion()
+    {
+        $en_esta_corrida = array_values(array_unique($this->pedidos_anteriores_a_la_conexion));
+        $this->pedidos_anteriores_a_la_conexion = [];
+
+        if (count($en_esta_corrida) === 0) {
+            return;
+        }
+
+        $avisados = $this->extra_meli('pedidos_anteriores_avisados', []);
+        $avisados = is_array($avisados) ? array_map('strval', $avisados) : [];
+
+        $nuevos = array_values(array_diff($en_esta_corrida, $avisados));
+
+        if (count($nuevos) === 0) {
+            return;
+        }
+
+        $cantidad = count($nuevos);
+        $titulo = $cantidad === 1
+            ? '1 pedido de Mercado Libre anterior a la conexión quedó Pendiente: revisalo en Mercado Libre → Pedidos'
+            : $cantidad.' pedidos de Mercado Libre anteriores a la conexión quedaron Pendientes: revisalos en Mercado Libre → Pedidos';
+
+        ErrorHandler::notify(
+            (int) $this->user_id,
+            $titulo,
+            [[
+                'title'    => 'Pedidos sin venta',
+                'parrafos' => array_merge(
+                    ['Están pagos en Mercado Libre pero son de antes de conectar la cuenta, así que no se generó la venta ni se bajó el stock. Si no los atendiste por fuera del sistema, generá la venta desde el pedido.'],
+                    array_map(function ($id) {
+                        return '- Pedido '.$id;
+                    }, array_slice($nuevos, 0, 20))
+                ),
+            ]],
+            'warning'
+        );
+
+        $this->guardar_extra_meli([
+            'pedidos_anteriores_avisados' => array_slice(array_values(array_unique(array_merge($avisados, $nuevos))), -500),
+        ]);
     }
 
     /**
@@ -269,6 +333,8 @@ class OrderDownloaderService extends MercadoLibreService
         }
 
         $this->guardar_extra_meli($extra);
+
+        $this->avisar_pedidos_anteriores_a_la_conexion();
 
         Log::info('meli pedidos: '.$procesados.' procesados (total en ML '.$total.') para el comercio '.$this->user_id);
 
@@ -575,6 +641,12 @@ class OrderDownloaderService extends MercadoLibreService
 
         $fecha_del_pedido = $meli_order->meli_closed_at ?: $meli_order->meli_created_at;
         if ($fecha_del_pedido && Carbon::parse($fecha_del_pedido)->lt($this->fecha_desde_la_que_se_crean_ventas())) {
+            // Pago y vinculado, pero anterior a la conexión: no genera venta sola. Se anota para
+            // avisarle al dueño (un pedido así sin venta no bajó el stock: riesgo de sobreventa).
+            if (!$meli_order->sale()->exists()) {
+                $this->pedidos_anteriores_a_la_conexion[] = (string) $meli_order->meli_order_id;
+            }
+
             return false;
         }
 

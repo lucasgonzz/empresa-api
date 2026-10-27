@@ -96,6 +96,11 @@ class PlatformConnectorOAuthService
                     );
                 }
                 $data = $response->json();
+
+                // La cuenta de ML que tenía el conector ANTES de esta conexión (para saber si es
+                // una reconexión de la misma cuenta).
+                $cuenta_anterior = $connector->platform_user_id;
+
                 $connector->auth_code = $code;
                 $connector->access_token = $data['access_token'];
                 $connector->refresh_token = $data['refresh_token'] ?? null;
@@ -104,7 +109,9 @@ class PlatformConnectorOAuthService
                 $connector->status = PlatformConnector::STATUS_CONECTADO;
                 $connector->error_message = null;
 
-                $connector->extra_config = $this->extra_config_con_cuenta_de_meli($connector, (string) $data['access_token']);
+                $misma_cuenta = !empty($cuenta_anterior) && (string) $cuenta_anterior === (string) $connector->platform_user_id;
+
+                $connector->extra_config = $this->extra_config_con_cuenta_de_meli($connector, (string) $data['access_token'], $misma_cuenta);
 
                 $connector->save();
             }
@@ -117,19 +124,34 @@ class PlatformConnectorOAuthService
      * Si `users/me` falla la conexión igual queda hecha: se guarda solo `conectado_en` y el resto
      * se completa en la primera consulta (`MercadoLibreService::datos_de_la_cuenta`).
      *
+     * Reconexión (revisión de merge, 27/10/2026): si es la MISMA cuenta de ML que ya tenía el
+     * conector (la conexión se cortó y el comercio la volvió a conectar), se conservan
+     * `conectado_en`, el último poll de pedidos y los avisos ya dados. Si no, las ventas pagas que
+     * entraron mientras estuvo cortada quedaban como "anteriores a la conexión" y no generaban la
+     * venta (ni bajaban stock: riesgo de sobreventa), y la consulta volvía a mirar solo 7 días. Con
+     * OTRA cuenta, todo arranca de cero.
+     *
      * @param PlatformConnector $connector Conector que se está conectando.
      * @param string $access_token Token recién canjeado.
+     * @param bool $misma_cuenta true si es la misma cuenta de ML que ya tenía el conector.
      * @return array<string, mixed>
      */
-    protected function extra_config_con_cuenta_de_meli(PlatformConnector $connector, $access_token)
+    protected function extra_config_con_cuenta_de_meli(PlatformConnector $connector, $access_token, $misma_cuenta = false)
     {
         $extra = is_array($connector->extra_config) ? $connector->extra_config : [];
+        $anterior = (isset($extra['meli']) && is_array($extra['meli'])) ? $extra['meli'] : [];
 
-        // Una reconexión arranca de cero: el último poll de pedidos de una cuenta anterior no
-        // tiene por qué valer para esta.
         $meli = [
             'conectado_en' => Carbon::now()->toIso8601String(),
         ];
+
+        if ($misma_cuenta) {
+            foreach (['conectado_en', 'ultimo_poll_pedidos', 'aviso_tope_pedidos', 'pedidos_anteriores_avisados'] as $clave) {
+                if (array_key_exists($clave, $anterior) && !is_null($anterior[$clave])) {
+                    $meli[$clave] = $anterior[$clave];
+                }
+            }
+        }
 
         try {
             $response = Http::withOptions(MercadoLibreService::http_client_options())

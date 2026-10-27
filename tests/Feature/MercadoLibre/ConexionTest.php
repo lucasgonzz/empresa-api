@@ -264,6 +264,62 @@ class ConexionTest extends MercadoLibreTestCase
         $this->assertSame(self::TOKEN, $connector->access_token);
     }
 
+    /**
+     * Arreglo 2 de la revisión de merge: reconectar la MISMA cuenta (la conexión se cortó y el
+     * comercio la vuelve a conectar) conserva `conectado_en` y el último poll; si no, las ventas
+     * pagas de mientras estuvo cortada quedaban como "anteriores a la conexión" y no se vendían.
+     *
+     * @param string $cuenta_nueva user_id que devuelve el canje.
+     * @return \App\Models\PlatformConnector
+     */
+    protected function reconectar_con($cuenta_nueva)
+    {
+        $this->conector_ml([
+            'status'        => PlatformConnector::STATUS_ERROR,
+            'error_message' => 'Mercado Libre cortó la conexión (cambio de contraseña, permiso quitado o mucho tiempo sin uso). Volvé a conectar la cuenta.',
+        ], [
+            'nickname'            => 'VENDEDOR_PRUEBA',
+            'user_product_seller' => false,
+            'multiorigen'         => false,
+            'site_id'             => 'MLA',
+            'conectado_en'        => '2026-09-01T10:00:00-03:00',
+            'ultimo_poll_pedidos' => '2026-10-20T10:00:00-03:00',
+        ]);
+
+        $this->fake_ml([
+            'POST oauth/token' => [200, ['access_token' => 'APP_USR-RECONECTADO', 'refresh_token' => 'TG-RECONECTADO', 'expires_in' => 21600, 'user_id' => (int) $cuenta_nueva]],
+            'GET users/me'     => [200, array_merge($this->usuario_ml(), ['id' => (int) $cuenta_nueva])],
+        ]);
+
+        $url = $this->getJson('/api/integraciones/mercadolibre/connect')->json('url');
+        $state = substr($this->query_de($url)['state'], 0, 64);
+
+        $this->get('/platform-connector/mercadolibre/callback?code=TG-CODE&state='.$state)->assertStatus(200);
+
+        return PlatformConnector::where('user_id', $this->owner->id)
+            ->whereHas('platform', function ($q) {
+                $q->where('slug', Platform::SLUG_MERCADO_LIBRE);
+            })->first();
+    }
+
+    public function test_reconectar_la_misma_cuenta_conserva_la_fecha_de_conexion_y_el_ultimo_poll()
+    {
+        $connector = $this->reconectar_con(self::SELLER_ID);
+
+        $this->assertSame(PlatformConnector::STATUS_CONECTADO, $connector->status);
+        $this->assertSame('2026-09-01T10:00:00-03:00', $connector->extra_config['meli']['conectado_en']);
+        $this->assertSame('2026-10-20T10:00:00-03:00', $connector->extra_config['meli']['ultimo_poll_pedidos']);
+    }
+
+    public function test_conectar_otra_cuenta_arranca_de_cero()
+    {
+        $connector = $this->reconectar_con('987654321');
+
+        $this->assertSame('987654321', $connector->platform_user_id);
+        $this->assertNotSame('2026-09-01T10:00:00-03:00', $connector->extra_config['meli']['conectado_en']);
+        $this->assertArrayNotHasKey('ultimo_poll_pedidos', $connector->extra_config['meli']);
+    }
+
     public function test_desconectar_borra_los_tokens_y_la_cuenta()
     {
         $connector = $this->conector_ml();
