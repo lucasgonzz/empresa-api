@@ -356,6 +356,28 @@ class PlatformConnectorOAuthService
             return null;
         }
 
-        return PlatformConnector::with('platform')->find((int) $state);
+        $connector = PlatformConnector::with('platform')->find((int) $state);
+
+        // 🔴 Mercado Libre con el relay central: el formato viejo NO se acepta (misión
+        // mercado-libre-integracion, cierre de la revisión del 27/10/2026). El id del conector es
+        // un número chico y adivinable, y el callback es público: con un `code` válido de SU cuenta
+        // (autorizando la app contra la callback propia de una instancia), cualquiera podía atar el
+        // conector de OTRO comercio a su cuenta de Mercado Libre. Con relay, toda conexión nueva sale
+        // de `integraciones/mercadolibre/connect` con un state aleatorio de `oauth_states`, y el
+        // `auth_url` viejo del ABM deja de ofrecerse (PlatformConnector::getAuthUrlAttribute). Sin
+        // relay (desarrollo local, o MERCADO_LIBRE_OAUTH_RELAY_URL vacía) el formato viejo sigue.
+        // Tienda Nube no cambia.
+        if (
+            $connector
+            && $connector->platform
+            && $connector->platform->slug === Platform::SLUG_MERCADO_LIBRE
+            && MercadoLibreAppCredentials::usa_relay()
+        ) {
+            Log::warning('PlatformConnector OAuth: state numérico rechazado para Mercado Libre (con relay solo se acepta el de oauth_states).');
+
+            return null;
+        }
+
+        return $connector;
     }
 }

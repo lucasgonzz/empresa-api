@@ -137,8 +137,14 @@ class ConexionTest extends MercadoLibreTestCase
         $this->assertNotEmpty($meli['conectado_en']);
     }
 
+    /**
+     * El formato viejo (state = id del conector) solo vive SIN relay (desarrollo local o
+     * MERCADO_LIBRE_OAUTH_RELAY_URL vacía): con relay se rechaza, ver los tests de abajo.
+     */
     public function test_el_callback_con_el_state_viejo_canjea_con_la_redirect_propia()
     {
+        config(['services.mercadolibre.oauth_relay_url' => '']);
+
         $this->fake_ml([
             'POST oauth/token' => [200, ['access_token' => 'APP_USR-VIEJO', 'refresh_token' => 'TG-VIEJO', 'expires_in' => 21600, 'user_id' => 1]],
             'GET users/me'     => [200, $this->usuario_ml()],
@@ -179,6 +185,9 @@ class ConexionTest extends MercadoLibreTestCase
      */
     public function test_un_canje_fallido_sobre_un_conector_conectado_no_lo_toca()
     {
+        // Sin relay: es el único modo donde el state viejo llega al canje.
+        config(['services.mercadolibre.oauth_relay_url' => '']);
+
         $connector = $this->conector_ml();
         $this->fake_ml([
             'POST oauth/token' => [400, ['error' => 'invalid_grant', 'message' => 'invalid code']],
@@ -194,6 +203,42 @@ class ConexionTest extends MercadoLibreTestCase
         $this->assertNull($connector->error_message);
         $this->assertSame(self::TOKEN, $connector->access_token);
         $this->assertSame(self::REFRESH, $connector->refresh_token);
+    }
+
+    /**
+     * Con relay, el state viejo (id adivinable del conector) no se acepta: ni siquiera con un `code`
+     * válido se puede atar el conector de un comercio a otra cuenta de Mercado Libre.
+     */
+    public function test_con_relay_el_state_viejo_se_rechaza_sin_canjear_ni_tocar_el_conector()
+    {
+        $connector = $this->conector_ml(['status' => PlatformConnector::STATUS_SIN_CONECTAR, 'access_token' => null, 'refresh_token' => null]);
+        $cuenta_original = $connector->platform_user_id;
+        $this->fake_ml([
+            'POST oauth/token' => [200, ['access_token' => 'APP_USR-AJENO', 'refresh_token' => 'TG-AJENO', 'expires_in' => 21600, 'user_id' => 999]],
+            'GET users/me'     => [200, $this->usuario_ml()],
+        ]);
+
+        $this->get('/platform-connector/mercadolibre/callback?code=TG-VALIDO&state='.$connector->id)->assertStatus(404);
+
+        $this->assertCount(0, $this->pedidos_ml('POST', 'oauth/token'));
+        $connector = $connector->fresh();
+        $this->assertSame(PlatformConnector::STATUS_SIN_CONECTAR, $connector->status);
+        $this->assertSame((string) $cuenta_original, (string) $connector->platform_user_id);
+        $this->assertNull($connector->access_token);
+    }
+
+    /**
+     * Con relay, el link viejo del ABM (state = id del conector) no se ofrece: se conecta desde el
+     * módulo Mercado Libre → Cuenta. Sin relay sigue igual.
+     */
+    public function test_con_relay_el_auth_url_viejo_del_conector_viene_vacio()
+    {
+        $connector = $this->conector_ml(['status' => PlatformConnector::STATUS_SIN_CONECTAR, 'access_token' => null, 'refresh_token' => null]);
+
+        $this->assertSame('', $connector->fresh()->auth_url);
+
+        config(['services.mercadolibre.oauth_relay_url' => '']);
+        $this->assertStringContainsString('state='.$connector->id, $connector->fresh()->auth_url);
     }
 
     /**

@@ -285,6 +285,14 @@ class PlatformConnector extends Model
             // El connect nuevo es `GET integraciones/mercadolibre/connect`, con state aleatorio y el
             // relay del admin. Desde la misión mercado-libre-integracion el client_id sale de
             // `MercadoLibreAppCredentials` (puede estar en el .env y no en `platforms`).
+            //
+            // Con el relay central configurado este link NO se ofrece: su state (el id del conector)
+            // ya no se acepta en el callback de Mercado Libre (ver
+            // PlatformConnectorOAuthService::resolver_conector_del_state). Se conecta desde el módulo
+            // Mercado Libre → solapa Cuenta.
+            if (\App\Services\MercadoLibre\MercadoLibreAppCredentials::usa_relay()) {
+                return '';
+            }
             $client_id = \App\Services\MercadoLibre\MercadoLibreAppCredentials::client_id();
             $redirect_uri = \App\Services\MercadoLibre\MercadoLibreAppCredentials::redirect_uri_legacy();
             if (empty($client_id) || empty($redirect_uri)) {
