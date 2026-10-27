@@ -8,7 +8,10 @@ use Illuminate\Database\Seeder;
 class MeliBuyingModeSeeder extends Seeder
 {
     /**
-     * Run the database seeds.
+     * Modos de compra de Mercado Libre.
+     *
+     * Idempotente desde la misión mercado-libre-integracion (27/10/2026): `updateOrCreate` por
+     * `meli_id` (ver `MeliListingTypeSeeder`).
      *
      * @return void
      */
@@ -16,13 +19,13 @@ class MeliBuyingModeSeeder extends Seeder
     {
         $models = [
             [
-                "meli_id"        => "buy_it_now",
-                "name"          => "Compre Ya (buy_it_now)"
+                'meli_id' => 'buy_it_now',
+                'name'    => 'Compra inmediata',
             ],
         ];
 
         foreach ($models as $model) {
-            MeliBuyingMode::create($model);
+            MeliBuyingMode::updateOrCreate(['meli_id' => $model['meli_id']], ['name' => $model['name']]);
         }
     }
 }

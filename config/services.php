@@ -92,6 +92,52 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('MERCADO_LIBRE_GUZZLE_CA_BUNDLE', ''),
+
+        /*
+         * Misión mercado-libre-integracion (27/10/2026). Todo lo de abajo se lee con config() y no
+         * con env() suelto en el código: con config:cache activo (lo normal en producción) env()
+         * fuera de config/ devuelve el default y la integración quedaba muda sin que nadie lo note.
+         */
+
+        // Credenciales de la APLICACIÓN de ComercioCity en Mercado Libre (no son del comercio).
+        // `MercadoLibreAppCredentials` lee primero la fila `mercado_libre` de `platforms` y, si no
+        // está completa, cae a estas. El secret nunca se loguea ni viaja en una respuesta.
+        'client_id'     => env('MERCADO_LIBRE_CLIENT_ID'),
+        'client_secret' => env('MERCADO_LIBRE_CLIENT_SECRET'),
+
+        // LEGACY: callback propia de este backend registrada en la app de ML (una por cliente).
+        // Solo se usa si `oauth_relay_url` viene vacía, o para canjear un `state` del formato viejo
+        // (el id numérico del conector).
+        'redirect_uri'  => env('MERCADO_LIBRE_REDIRECT_URI'),
+
+        // URL CENTRAL del admin a la que ML redirige después de autorizar, para TODOS los clientes
+        // (igual que Mercado Pago). Es la `redirect_uri` de la autorización Y del canje del code:
+        // ML exige que sean idénticas. El admin lee el host que viaja en el `state` y reenvía a
+        // `<base del cliente>/platform-connector/mercadolibre/callback`. Vacía = vuelve a la legacy.
+        'oauth_relay_url' => env('MERCADO_LIBRE_OAUTH_RELAY_URL', 'https://api-admin.comerciocity.com/api/mercadolibre/callback'),
+
+        // Un pedido PAGO de ML genera la venta solo (decisión de Lucas, 27/10/2026). En false los
+        // pedidos llegan igual y la venta se genera a mano desde el módulo, como antes.
+        'crear_venta_automatica' => filter_var(env('MERCADO_LIBRE_CREAR_VENTA_AUTOMATICA', true), FILTER_VALIDATE_BOOLEAN),
+
+        // LEGACY: la variable vieja que hacía lo mismo. Si está en true también prende la venta
+        // automática, para que un .env que ya la tenía no cambie de comportamiento.
+        'crear_sales_al_descargar_legacy' => filter_var(env('CREAR_SALES_AL_DESCARGAR_MELI_ORDERS', false), FILTER_VALIDATE_BOOLEAN),
+
+        // Tope de artículos que `sync_to_meli_articles` procesa por corrida (una por minuto). Con
+        // 30 y la pausa de abajo, una corrida dura menos de un minuto aun con 2-3 llamadas por
+        // artículo. La app de ML tiene un cupo compartido por TODOS los clientes.
+        'max_por_corrida' => (int) env('MERCADO_LIBRE_MAX_POR_CORRIDA', 30),
+
+        // Pausa mínima entre dos llamadas a la API de ML desde un mismo proceso (milisegundos).
+        'ms_entre_llamadas' => (int) env('MERCADO_LIBRE_MS_ENTRE_LLAMADAS', 250),
+
+        // Base del backoff ante un 429 / 5xx (milisegundos): 1 s, 2 s, 4 s más jitter. Configurable
+        // para que los tests no duerman de verdad.
+        'backoff_ms' => (int) env('MERCADO_LIBRE_BACKOFF_MS', 1000),
+
+        // Espera ante un 409 de ML ("optimistic locking"), en milisegundos, antes del único reintento.
+        'espera_409_ms' => (int) env('MERCADO_LIBRE_ESPERA_409_MS', 2000),
     ],
 
     /*
