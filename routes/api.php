@@ -819,6 +819,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('integraciones/mercadopago/connect', 'MercadoPagoOAuthController@connect');
     Route::post('integraciones/mercadopago/disconnect', 'MercadoPagoOAuthController@disconnect');
 
+    // Mercado Libre (misión mercado-libre-integracion, 27/10/2026): connect con state aleatorio y
+    // la URL central del admin (mismo patrón que Mercado Pago). El callback sigue siendo el de
+    // routes/web.php (`/platform-connector/mercadolibre/callback`), que es a donde reenvía el admin.
+    Route::get('integraciones/mercadolibre/connect', 'MercadoLibreConexionController@connect');
+    Route::post('integraciones/mercadolibre/disconnect', 'MercadoLibreConexionController@disconnect');
+    // Solapa "Cuenta" del módulo: conexión, reputación, si puede publicar y la cola.
+    Route::get('mercado-libre/cuenta', 'MercadoLibreConexionController@cuenta');
+    // Estado de la publicación de un artículo y "Sincronizar ahora" (formulario del artículo).
+    Route::get('mercado-libre/articulo/{id}', 'MercadoLibreController@articulo');
+    Route::post('mercado-libre/articulo/{id}/sincronizar', 'MercadoLibreController@sincronizar');
+
     // OAuth de Zippin (grupo 171, prompt 599): el comercio autenticado conecta/desconecta su
     // propia cuenta para gestionar envíos. El callback (público, sin auth) se declara más abajo,
     // fuera de este grupo de middleware, mismo criterio que mercadopago/callback.
@@ -1061,6 +1072,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('client-reputation', 'ClientReputationController');
 
     Route::resource('expense-category', 'ExpenseCategoryController');
+
+    // Categorías de ML para el formulario del artículo (misión mercado-libre-integracion): andan
+    // SIN cuenta conectada (catálogo público, con token de app). Van antes del resource para que
+    // `meli-category/resolve` no lo tome nadie más.
+    Route::get('meli-category-predictor', 'MeliCategoryController@predictor');
+    Route::get('meli-category-children/{meli_category_id?}', 'MeliCategoryController@children');
+    Route::post('meli-category/resolve', 'MeliCategoryController@resolve');
 
     Route::resource('meli-category', 'MeliCategoryController');
     Route::get('meli-category-predictor/{article_name}', 'MeliCategoryController@category_predictor');

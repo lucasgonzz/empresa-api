@@ -56,6 +56,7 @@ use App\Models\PdfColumnProfile;
 use App\Services\DemoEventoEmitter;
 use App\Models\User;
 use App\Services\MercadoLibre\ProductService;
+use App\Http\Controllers\Helpers\ArticleMeliHelper;
 use App\Services\Pdf\Catalog\CatalogClassic;
 use App\Services\Pdf\Catalog\TCPDCCatalog;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
@@ -478,7 +479,7 @@ class ArticleController extends Controller
         // ProductService::add_article_to_sync($model);
         // TiendaNubeSyncArticleService::add_article_to_sync($model);
 
-
+        $this->guardar_mercado_libre($model, $request);
 
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
@@ -697,11 +698,35 @@ class ArticleController extends Controller
         // ProductService::add_article_to_sync($model);
         // TiendaNubeSyncArticleService::add_article_to_sync($model);
 
+        $this->guardar_mercado_libre($model, $request);
         
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
         
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
+    }
+
+    /**
+     * Categoría y atributos de Mercado Libre del formulario del artículo (misión
+     * mercado-libre-integracion, 27/10/2026).
+     *
+     * 🔴 Solo si el request trae `meli_category_id` o `meli_attributes`: la SPA vieja no los manda
+     * y no se le pueden pisar al artículo. Después se encola la sincronización (si el artículo
+     * cumple las condiciones de siempre; ver `ProductService::add_article_to_sync`).
+     *
+     * @param Article $model Artículo ya guardado.
+     * @param Request $request
+     * @return void
+     */
+    protected function guardar_mercado_libre($model, Request $request)
+    {
+        if (!$request->has('meli_category_id') && !$request->has('meli_attributes')) {
+            return;
+        }
+
+        ArticleMeliHelper::guardar_categoria_y_atributos($model, $request);
+
+        ProductService::add_article_to_sync($model);
     }
 
     // function check_tienda_nube($article) {
