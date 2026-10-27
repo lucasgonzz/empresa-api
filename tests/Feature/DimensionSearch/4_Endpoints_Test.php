@@ -164,23 +164,48 @@ class Endpoints_Test extends DimensionSearchTestCase
     }
 
     /**
-     * Sin la extensión Agentes de IA, 403 en todo.
+     * CAMBIO DE CONTRATO INTENCIONAL (decisión de producto del 27/10/2026): antes, sin la extensión Agentes de
+     * IA todo respondía 403. Ahora la búsqueda de medidas NO exige esa extensión (Masquito no la tiene y
+     * activarla le prendería el agente personal, el bot de WhatsApp, etc.). El test anterior fijaba el 403 y se
+     * reemplaza por este, que prueba lo nuevo: un negocio SIN la extensión lista, revisa y no puede lanzar sin
+     * acceso maestro.
      *
      * @group dimension-search
      * @test
      */
-    public function sin_la_extension_agentes_de_ia_todo_responde_403()
+    public function un_negocio_sin_la_extension_agentes_de_ia_puede_listar_y_revisar_pero_no_lanzar_sin_acceso_maestro()
     {
-        $this->owner->extencions()->detach();
-        $this->actuar_como($this->owner->fresh(), true);
+        Queue::fake();
 
-        $this->getJson('api/dimension-search-runs')->assertStatus(403);
-        $this->getJson('api/dimension-search-runs/resumen')->assertStatus(403);
+        $this->assertFalse($this->owner->fresh()->extencions->contains('slug', 'agentes_ia'), 'El comercio de prueba no tiene la extensión.');
+
+        $run  = $this->corrida_armada(['a_revisar', 'asignada', 'sin_datos']);
+        $item = $run->items()->where('status', 'a_revisar')->first();
+
+        $this->getJson('api/dimension-search-runs')->assertStatus(200)->assertJsonPath('total', 1);
+        $this->getJson('api/dimension-search-runs/resumen')->assertStatus(200)->assertJsonPath('a_revisar', 1);
+        $this->getJson('api/dimension-search-runs/'.$run->id)->assertStatus(200);
+        $this->getJson('api/dimension-search-runs/'.$run->id.'/items?solapa=a_revisar')->assertStatus(200)->assertJsonPath('total', 1);
+
+        // Revisar: aprobar escribe en el artículo.
+        $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar')->assertStatus(200)->assertJsonPath('status', 'aprobada');
+        $this->assertEquals(0.82, (float) \App\Models\Article::find($item->article_id)->peso);
+
+        // Sin acceso maestro: ni la previa, ni lanzar, ni detener, ni reanudar.
         $this->getJson('api/dimension-search-runs/catalogo/previa')->assertStatus(403);
         $this->postJson('api/dimension-search-runs/catalogo')->assertStatus(403);
-        $this->postJson('api/dimension-search-items/1/aprobar')->assertStatus(403);
-    }
+        $this->postJson('api/dimension-search-runs/'.$run->id.'/detener')->assertStatus(403);
+        $this->postJson('api/dimension-search-runs/'.$run->id.'/reanudar')->assertStatus(403);
+        $this->assertSame(1, DimensionSearchRun::count());
+        Queue::assertNothingPushed();
 
+        // Con acceso maestro, el mismo negocio sin la extensión sí puede lanzar.
+        $this->nuevo_articulo('PARA BUSCAR');
+        $this->actuar_como($this->owner, true);
+
+        $this->postJson('api/dimension-search-runs/catalogo')->assertStatus(201);
+        Queue::assertPushed(ProcessDimensionSearchRunJob::class, 1);
+    }
     /**
      * @group dimension-search
      * @test
@@ -335,8 +360,8 @@ class Endpoints_Test extends DimensionSearchTestCase
         DimensionSearchItem::where('run_id', $run->id)->delete();
         $item = $this->item_en($run, $articulo, 'a_revisar', ['alto_cm' => null]);
 
-        // Edita el peso, completa el alto que faltaba (con coma decimal) y deja el resto como estaba.
-        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => 0.9, 'alto' => '1,5', 'ancho' => null]]);
+        // Edita el peso, completa el alto que faltaba (con coma decimal) y NO manda ancho ni largo: ausente = lo propuesto.
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => 0.9, 'alto' => '1,5']]);
 
         $r->assertStatus(200);
 
@@ -352,6 +377,7 @@ class Endpoints_Test extends DimensionSearchTestCase
         $this->assertTrue($item->evidencia['peso']['editado']);
         $this->assertTrue($item->evidencia['alto']['editado']);
         $this->assertArrayNotHasKey('editado', $item->evidencia['ancho']);
+        $this->assertSame([], $r->json('excluidos'));
     }
 
     /**
@@ -416,7 +442,7 @@ class Endpoints_Test extends DimensionSearchTestCase
         $this->assertEquals(10, (float) $articulo->profundidad);
         $this->assertEqualsCanonicalizing(['alto', 'profundidad'], array_keys($item->fresh()->aplicado));
 
-        // Total: todo estaba cargado → 409, el item sigue a revisar.
+        // Total: todo estaba cargado → 409, y el item se cierra solo para que el badge baje.
         $lleno = $this->nuevo_articulo('YA CARGADA', null, ['peso' => 1, 'alto' => 2, 'ancho' => 3, 'profundidad' => 4]);
         $item2 = $this->item_en($run, $lleno, 'a_revisar');
 
@@ -426,7 +452,9 @@ class Endpoints_Test extends DimensionSearchTestCase
         $this->assertStringContainsString('ya tiene cargado', $r2->json('message'));
         $this->assertSame([], $r2->json('llenados'));
         $this->assertEqualsCanonicalizing(['peso', 'alto', 'ancho', 'profundidad'], $r2->json('salteados'));
-        $this->assertSame('a_revisar', $item2->fresh()->status);
+        $this->assertSame('rechazada', $item2->fresh()->status);
+        $this->assertSame('completado_a_mano', $item2->fresh()->motivo);
+        $this->assertStringContainsString('se completó a mano', $item2->fresh()->motivo_detalle);
         $this->assertEquals(1, (float) $lleno->fresh()->peso);
     }
 
@@ -691,5 +719,260 @@ class Endpoints_Test extends DimensionSearchTestCase
 
         $r->assertStatus(201);
         $this->assertSame(3, $r->json('total'));
+    }
+
+    /**
+     * Un item a revisar con los cuatro campos propuestos, en un artículo vacío.
+     *
+     * @return array  [artículo, item]
+     */
+    protected function item_a_revisar_completo()
+    {
+        $articulo = $this->nuevo_articulo('VARIANTE DUDOSA '.uniqid());
+        $run      = $this->corrida([$articulo]);
+        DimensionSearchItem::where('run_id', $run->id)->delete();
+
+        return [$articulo, $this->item_en($run, $articulo, 'a_revisar')];
+    }
+
+    /**
+     * Contrato nuevo de `valores`: una clave presente con `null` EXCLUYE el campo (aprobar el peso pero no el
+     * largo de una variante dudosa).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function aprobar_con_un_campo_en_null_lo_excluye_y_no_lo_escribe()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['profundidad' => null]]);
+
+        $r->assertStatus(200);
+        $this->assertSame(['profundidad'], $r->json('excluidos'));
+        $this->assertEqualsCanonicalizing(['peso', 'alto', 'ancho'], $r->json('llenados'));
+        $this->assertSame([], $r->json('salteados'));
+
+        $articulo = $articulo->fresh();
+        $this->assertEquals(0.82, (float) $articulo->peso);
+        $this->assertEquals(7, (float) $articulo->ancho);
+        $this->assertTrue(is_null($articulo->profundidad) || (float) $articulo->profundidad === 0.0, 'El largo excluido no se escribió.');
+
+        // El item aprobado ya no muestra el largo como propuesto.
+        $item->refresh();
+        $this->assertSame('aprobada', $item->status);
+        $this->assertNull($item->profundidad_cm);
+        $this->assertArrayNotHasKey('profundidad', $item->evidencia);
+        $this->assertEqualsCanonicalizing(['peso', 'alto', 'ancho'], array_keys($item->aplicado));
+        $this->assertContains('profundidad', $r->json('faltan'));
+    }
+
+    /**
+     * Un string vacío también es «sacar el campo» (un input borrado en la pantalla).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_campo_vacio_tambien_se_excluye()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => '', 'alto' => '  ']]);
+
+        $r->assertStatus(200);
+        $this->assertEqualsCanonicalizing(['peso', 'alto'], $r->json('excluidos'));
+        $this->assertTrue(is_null($articulo->fresh()->peso) || (float) $articulo->fresh()->peso === 0.0);
+        $this->assertEquals(7, (float) $articulo->fresh()->ancho);
+    }
+
+    /**
+     * Excluir todo: 422 y no se toca nada (el item sigue a revisar).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function excluir_todos_los_campos_da_422_y_no_cambia_nada()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => null, 'alto' => null, 'ancho' => null, 'profundidad' => null]]);
+
+        $r->assertStatus(422);
+        $this->assertSame('No quedó ningún valor para guardar. Si no sirven, rechazá la propuesta.', $r->json('message'));
+        $this->assertSame('a_revisar', $item->fresh()->status);
+        $this->assertTrue(is_null($articulo->fresh()->peso) || (float) $articulo->fresh()->peso === 0.0);
+
+        // Y lo mismo si lo que queda propuesto es nada (item parcial al que se le excluye lo único que tiene).
+        $parcial = $this->nuevo_articulo('PARCIAL '.uniqid());
+        $run = $this->corrida([$parcial]);
+        DimensionSearchItem::where('run_id', $run->id)->delete();
+        $item2 = $this->item_en($run, $parcial, 'a_revisar', ['alto_cm' => null, 'ancho_cm' => null, 'profundidad_cm' => null]);
+
+        $this->postJson('api/dimension-search-items/'.$item2->id.'/aprobar', ['valores' => ['peso' => null]])->assertStatus(422);
+        $this->assertSame('a_revisar', $item2->fresh()->status);
+    }
+
+    /**
+     * Editar uno: solo ese campo pierde su cita y su unidad original; los que se aprueban como están la conservan.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function editar_un_campo_pisa_solo_la_evidencia_de_ese_campo()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['ancho' => 8.5]]);
+
+        $r->assertStatus(200);
+
+        $item->refresh();
+        $this->assertEquals(8.5, (float) $articulo->fresh()->ancho);
+
+        // El editado: sin cita, con su valor y unidad.
+        $this->assertTrue($item->evidencia['ancho']['editado']);
+        $this->assertNull($item->evidencia['ancho']['cita']);
+        $this->assertEquals(8.5, $item->evidencia['ancho']['valor_original']);
+        $this->assertSame('cm', $item->evidencia['ancho']['unidad_original']);
+        $this->assertFalse($item->evidencia['ancho']['convertido']);
+
+        // Los demás, intactos: la cita de la página y su conversión.
+        foreach (['peso', 'alto', 'profundidad'] as $campo) {
+            $this->assertArrayNotHasKey('editado', $item->evidencia[$campo], $campo);
+            $this->assertNotNull($item->evidencia[$campo]['cita'], $campo);
+            $this->assertTrue($item->evidencia[$campo]['convertido'], $campo);
+        }
+
+        $this->assertSame('mm', $item->evidencia['alto']['unidad_original']);
+    }
+
+    /**
+     * Mandar el MISMO número que se propuso no es editar: la evidencia queda como estaba.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function mandar_el_mismo_numero_que_la_propuesta_no_marca_editado()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => 0.82, 'ancho' => '7', 'alto' => 1.1]]);
+
+        $r->assertStatus(200);
+
+        $item->refresh();
+
+        foreach (['peso', 'ancho', 'alto'] as $campo) {
+            $this->assertArrayNotHasKey('editado', $item->evidencia[$campo], $campo);
+            $this->assertNotNull($item->evidencia[$campo]['cita'], $campo);
+        }
+    }
+
+    /**
+     * Ausente = lo propuesto: sin `valores`, o con `valores` vacío, se escribe todo lo propuesto.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function una_clave_ausente_usa_lo_propuesto()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => 0.9]])->assertStatus(200);
+
+        $articulo = $articulo->fresh();
+        $this->assertEquals(0.9, (float) $articulo->peso);
+        $this->assertEquals(1.1, (float) $articulo->alto);
+        $this->assertEquals(7, (float) $articulo->ancho);
+        $this->assertEquals(10, (float) $articulo->profundidad);
+
+        // `valores` vacío.
+        list($articulo2, $item2) = $this->item_a_revisar_completo();
+        $r2 = $this->postJson('api/dimension-search-items/'.$item2->id.'/aprobar', ['valores' => []]);
+        $r2->assertStatus(200);
+        $this->assertSame([], $r2->json('excluidos'));
+        $this->assertEquals(10, (float) $articulo2->fresh()->profundidad);
+    }
+
+    /**
+     * Excluir y editar a la vez, y la respuesta lo informa.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function se_puede_excluir_un_campo_y_editar_otro_en_el_mismo_pedido()
+    {
+        list($articulo, $item) = $this->item_a_revisar_completo();
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['peso' => 1.5, 'profundidad' => null]]);
+
+        $r->assertStatus(200);
+        $this->assertSame(['profundidad'], $r->json('excluidos'));
+        $this->assertSame(['profundidad'], $r->json('model.excluidos'));
+        $this->assertEquals(1.5, (float) $articulo->fresh()->peso);
+        $this->assertTrue(is_null($articulo->fresh()->profundidad) || (float) $articulo->fresh()->profundidad === 0.0);
+    }
+
+    /**
+     * Menor 4: el artículo se completó a mano y la persona aprueba: 409 y el item se cierra solo, el badge baja.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function si_el_articulo_se_completo_a_mano_el_409_cierra_el_item_y_baja_el_badge()
+    {
+        $lleno = $this->nuevo_articulo('COMPLETADO A MANO', null, ['peso' => 1, 'alto' => 2, 'ancho' => 3, 'profundidad' => 4]);
+        $run   = $this->corrida([$lleno]);
+        DimensionSearchItem::where('run_id', $run->id)->delete();
+        $item  = $this->item_en($run, $lleno, 'a_revisar');
+        $run->update(['status' => DimensionSearchRun::STATUS_TERMINADA, 'visto_at' => Carbon::now()]);
+
+        $this->assertSame(1, $this->getJson('api/dimension-search-runs/resumen')->json('a_revisar'));
+
+        $r = $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar');
+
+        $r->assertStatus(409);
+
+        $item->refresh();
+        $this->assertSame('rechazada', $item->status);
+        $this->assertSame('completado_a_mano', $item->motivo);
+        $this->assertSame('El artículo ya tenía cargado el peso, el alto, el ancho y el largo (se completó a mano): no se guardó nada.', $item->motivo_detalle);
+        $this->assertNotNull($item->revisado_at);
+
+        $this->assertSame(0, $this->getJson('api/dimension-search-runs/resumen')->json('a_revisar'), 'El badge baja.');
+
+        // Pasa a la solapa «Sin datos».
+        $this->assertSame(1, (int) $this->getJson('api/dimension-search-runs/'.$run->id.'/items?solapa=sin_datos')->json('total'));
+    }
+
+    /**
+     * Los avisos del dato viajan en `campos[]`.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_item_informa_los_avisos_de_ambiguedad_rango_y_etiqueta_en_cada_campo()
+    {
+        $articulo = $this->nuevo_articulo('CON AVISOS');
+        $run      = $this->corrida([$articulo]);
+        DimensionSearchItem::where('run_id', $run->id)->delete();
+
+        $this->item_en($run, $articulo, 'a_revisar', [
+            'motivo'    => 'valor_ambiguo',
+            'evidencia' => [
+                'peso' => ['valor' => 0.0012, 'unidad' => 'kg', 'valor_original' => 1.2, 'unidad_original' => 'g', 'convertido' => true, 'cita' => 'Peso: 1.200 g', 'url' => 'https://tienda.test/p', 'alcance' => 'producto', 'ambiguo' => true, 'rango' => false, 'etiquetada' => true, 'aviso' => 'La página escribe «1.200 g»: puede ser 1,2 o 1.200'],
+                'alto' => ['valor' => 20, 'unidad' => 'cm', 'valor_original' => 20, 'unidad_original' => 'cm', 'convertido' => false, 'cita' => 'Alto: 10-20 cm', 'url' => 'https://tienda.test/p', 'alcance' => 'producto', 'ambiguo' => false, 'rango' => true, 'etiquetada' => true, 'aviso' => 'La página da un rango: 10-20 cm'],
+            ],
+            'peso_kg' => 0.0012, 'alto_cm' => 20, 'ancho_cm' => null, 'profundidad_cm' => null,
+        ]);
+
+        $campos = array_column($this->getJson('api/dimension-search-runs/'.$run->id.'/items?solapa=a_revisar')->json('data.0.campos'), null, 'clave');
+
+        $this->assertTrue($campos['peso']['ambiguo']);
+        $this->assertFalse($campos['peso']['rango']);
+        $this->assertSame('La página escribe «1.200 g»: puede ser 1,2 o 1.200', $campos['peso']['aviso']);
+        $this->assertTrue($campos['alto']['rango']);
+        $this->assertSame('La página da un rango: 10-20 cm', $campos['alto']['aviso']);
+        $this->assertTrue($campos['alto']['etiquetada']);
     }
 }

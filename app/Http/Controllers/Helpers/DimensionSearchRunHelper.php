@@ -37,6 +37,13 @@ use Illuminate\Support\Facades\Log;
  * `articles.stock > 0` (la columna `stock`, que ArticleHelper mantiene con el total de las sucursales),
  * las mismas que usó la prueba con Masquito (conteo.php). No se inventó otra.
  *
+ * 🔴 Consumo: la búsqueda registra su gasto en `serper_usage_events` y `ai_token_usages`, NO en
+ * `image_service_calls` (que es del circuito de imágenes y el admin lo muestra como tal). Decisión tomada;
+ * el porqué está en ArticleDimensionSearchEngine.
+ *
+ * 🔴 Sin la extensión `agentes_ia`: la búsqueda de medidas se puede usar sin «Agentes de IA» (decisión de
+ * producto del 27/10/2026); lo que la protege es la tenencia por dueño y el acceso maestro.
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
  */
 class DimensionSearchRunHelper
@@ -831,6 +838,11 @@ class DimensionSearchRunHelper
                 'url'             => isset($e['url']) ? (string) $e['url'] : null,
                 'alcance'         => isset($e['alcance']) ? (string) $e['alcance'] : null,
                 'editado'         => !empty($e['editado']),
+                // Avisos del dato: «1.200 g» (puede ser 1,2 o 1.200), rango («10 a 20 cm») y si la cita dice de qué medida habla.
+                'ambiguo'         => !empty($e['ambiguo']),
+                'rango'           => !empty($e['rango']),
+                'etiquetada'      => !array_key_exists('etiquetada', $e) || !empty($e['etiquetada']),
+                'aviso'           => isset($e['aviso']) ? (string) $e['aviso'] : null,
                 // true = este campo se escribió de verdad en el artículo.
                 'aplicado'        => isset($aplicado[$campo]),
             ];
@@ -899,13 +911,25 @@ class DimensionSearchRunHelper
 
     /**
      * Aprueba una propuesta «a revisar»: escribe las medidas en el artículo (solo los campos que sigan
-     * vacíos, D5). Con `$valores` escribe los editados en el lugar en vez de lo propuesto.
+     * vacíos, D5).
+     *
+     * `$valores` (opcional) es lo que la persona decidió en el lugar, campo por campo (kg / cm):
+     *   - clave AUSENTE = se usa lo propuesto (lo de siempre);
+     *   - clave presente con un NÚMERO = se escribe ese número;
+     *   - clave presente con `null` (o vacía) = NO se escribe ese campo («aprobar el peso pero no el largo
+     *     de una variante dudosa»). Si no queda ningún campo para escribir, es un 422.
+     * Solo los campos cuyo número realmente difiere de la propuesta se marcan `editado` y pierden su
+     * cita / valor y unidad originales (ya no son lo que dice la página); los demás quedan como estaban.
+     *
+     * Si el artículo se completó a mano mientras tanto (no queda nada por llenar), responde 409 y además
+     * CIERRA el item solo como `rechazada` / `completado_a_mano`, para que el badge baje y no quede colgado.
      *
      * @param  int        $owner_id
      * @param  int        $item_id
      * @param  int|null   $auth_user_id  Quién aprueba.
-     * @param  array|null $valores       Opcional: campo => número, en kg / cm. Un campo en null o vacío usa lo propuesto.
-     * @return array  ['status' => 200|404|409|422, 'message' => string|null, 'item' => DimensionSearchItem|null, 'extra' => array]
+     * @param  array|null $valores
+     * @return array  ['status' => 200|404|409|422, 'message' => string|null, 'item' => DimensionSearchItem|null,
+     *                'extra' => array (llenados, salteados, excluidos)]
      */
     public static function aprobar($owner_id, $item_id, $auth_user_id = null, $valores = null)
     {
@@ -919,14 +943,13 @@ class DimensionSearchRunHelper
             return self::respuesta(422, 'Este artículo ya no está esperando revisión.', $item);
         }
 
-        // Lo que se va a escribir: lo propuesto, pisado por lo que la persona editó.
-        $editados = self::valores_editados($valores);
+        $decisiones = self::valores_editados($valores);
 
-        if (is_string($editados)) {
-            return self::respuesta(422, $editados, $item);
+        if (is_string($decisiones)) {
+            return self::respuesta(422, $decisiones, $item);
         }
 
-        return DB::transaction(function () use ($owner_id, $item_id, $auth_user_id, $editados) {
+        return DB::transaction(function () use ($owner_id, $item_id, $auth_user_id, $decisiones) {
             $item = DimensionSearchItem::where('user_id', (int) $owner_id)->where('id', (int) $item_id)->lockForUpdate()->first();
 
             if (is_null($item)) {
@@ -938,9 +961,17 @@ class DimensionSearchRunHelper
                 return self::respuesta(422, 'Este artículo ya no está esperando revisión.', $item);
             }
 
+            $editados  = $decisiones['editados'];
+            $excluidos = $decisiones['excluidos'];
+
+            // Lo que se va a escribir: lo propuesto, pisado por lo que la persona escribió, sin lo que excluyó.
             $valores = [];
 
             foreach (DimensionApplier::COLUMNA_DE_PROPUESTA as $campo => $columna) {
+                if (in_array($campo, $excluidos, true)) {
+                    continue;
+                }
+
                 if (isset($editados[$campo])) {
                     $valores[$campo] = $editados[$campo];
                 } elseif (!is_null($item->{$columna})) {
@@ -949,7 +980,7 @@ class DimensionSearchRunHelper
             }
 
             if (empty($valores)) {
-                return self::respuesta(422, 'No hay medidas para guardar: cargá al menos un valor.', $item);
+                return self::respuesta(422, 'No quedó ningún valor para guardar. Si no sirven, rechazá la propuesta.', $item, ['excluidos' => $excluidos]);
             }
 
             $aplicacion = DimensionApplier::aplicar($owner_id, $item->article_id, $valores);
@@ -970,35 +1001,58 @@ class DimensionSearchRunHelper
             $llenados  = array_keys($aplicacion['escritos']);
             $salteados = array_keys($aplicacion['salteados']);
 
-            // D5: si todo lo que había para escribir ya estaba cargado, no se guarda nada y se avisa.
+            // D5: si todo lo que había para escribir ya estaba cargado, no se guarda nada y se avisa. El item
+            // se cierra solo (rechazada / completado_a_mano): nadie tiene nada más que decidir y, si quedara a
+            // revisar, el número rojo del badge no bajaría nunca.
             if (empty($llenados)) {
+                $item->fill(array_merge(self::propuesta_vacia(), [
+                    'status'         => DimensionSearchItem::STATUS_RECHAZADA,
+                    'motivo'         => 'completado_a_mano',
+                    'motivo_detalle' => 'El artículo ya tenía cargado '.self::lista_de_campos($salteados).' (se completó a mano): no se guardó nada.',
+                    'revisado_por'   => self::entero_o_null($auth_user_id),
+                    'revisado_at'    => Carbon::now(),
+                ]));
+                $item->save();
+
                 return self::respuesta(409, 'No se guardó nada: el artículo ya tiene cargado '.self::lista_de_campos($salteados).'. No se pisa lo que ya estaba.', $item, [
                     'llenados'  => [],
                     'salteados' => $salteados,
+                    'excluidos' => $excluidos,
                 ]);
             }
 
-            // Lo aprobado queda como propuesta del artículo (con los editados marcados).
+            // Lo aprobado queda como propuesta del artículo.
             $evidencia = is_array($item->evidencia) ? $item->evidencia : [];
             $cambios   = [];
 
             foreach (DimensionApplier::COLUMNA_DE_PROPUESTA as $campo => $columna) {
-                if (isset($editados[$campo])) {
+                // Lo que la persona excluyó no se escribió: sale de la propuesta del item.
+                if (in_array($campo, $excluidos, true)) {
+                    $cambios[$columna] = null;
+                    unset($evidencia[$campo]);
+                    continue;
+                }
+
+                // Solo si el número realmente difiere de lo propuesto es «editado»: ya no es lo que dice la
+                // página, así que pierde su cita, su valor y unidad originales y sus avisos.
+                if (isset($editados[$campo]) && (is_null($item->{$columna}) || abs((float) $item->{$columna} - $editados[$campo]) >= 0.00005)) {
                     $cambios[$columna] = $editados[$campo];
 
                     $unidad = DimensionValueValidator::UNIDAD_CANONICA[DimensionValueValidator::CAMPOS[$campo]];
                     $previa = isset($evidencia[$campo]) && is_array($evidencia[$campo]) ? $evidencia[$campo] : [];
 
                     $evidencia[$campo] = array_merge($previa, [
-                        'valor'      => $editados[$campo],
-                        'unidad'     => $unidad,
-                        'convertido' => false,
-                        'editado'    => true,
+                        'valor'           => $editados[$campo],
+                        'unidad'          => $unidad,
+                        'valor_original'  => $editados[$campo],
+                        'unidad_original' => $unidad,
+                        'convertido'      => false,
+                        'cita'            => null,
+                        'editado'         => true,
+                        'ambiguo'         => false,
+                        'rango'           => false,
+                        'aviso'           => null,
                     ]);
-
-                    // Un valor editado ya no es el de la cita: se muestra tal cual lo escribió la persona.
-                    $evidencia[$campo]['valor_original']  = $editados[$campo];
-                    $evidencia[$campo]['unidad_original'] = $unidad;
                 }
             }
 
@@ -1018,10 +1072,9 @@ class DimensionSearchRunHelper
             ]));
             $item->save();
 
-            return self::respuesta(200, null, $item, ['llenados' => $llenados, 'salteados' => $salteados]);
+            return self::respuesta(200, null, $item, ['llenados' => $llenados, 'salteados' => $salteados, 'excluidos' => $excluidos]);
         });
     }
-
     /**
      * Rechaza una propuesta «a revisar»: no se escribe nada y el artículo queda en «Sin datos». Lo
      * propuesto se descarta (el diagnóstico queda).
@@ -1151,25 +1204,33 @@ class DimensionSearchRunHelper
     }
 
     /**
-     * Valida los valores que la persona editó al aprobar.
+     * Valida lo que la persona decidió al aprobar (ver aprobar()): una clave ausente usa lo propuesto, una
+     * clave con `null` (o vacía) EXCLUYE el campo, una clave con un número lo reemplaza.
      *
      * @param  mixed $valores  Lo que llegó en el cuerpo: campo => número o null.
-     * @return array|string  campo => float (solo los que vinieron con valor), o el mensaje de error en español.
+     * @return array|string  ['editados' => campo => float, 'excluidos' => [campo, ...]], o el mensaje de error en español.
      */
     protected static function valores_editados($valores)
     {
         if (is_null($valores)) {
-            return [];
+            return ['editados' => [], 'excluidos' => []];
         }
 
         if (!is_array($valores)) {
             return 'Los valores tienen que ser un objeto con peso, alto, ancho y profundidad.';
         }
 
-        $editados = [];
+        $editados  = [];
+        $excluidos = [];
 
         foreach (DimensionValueValidator::CAMPOS as $campo => $tipo) {
-            if (!array_key_exists($campo, $valores) || is_null($valores[$campo]) || $valores[$campo] === '') {
+            if (!array_key_exists($campo, $valores)) {
+                continue;
+            }
+
+            // Presente pero sin valor: la persona sacó el campo.
+            if (is_null($valores[$campo]) || (is_string($valores[$campo]) && trim($valores[$campo]) === '')) {
+                $excluidos[] = $campo;
                 continue;
             }
 
@@ -1187,9 +1248,8 @@ class DimensionSearchRunHelper
             $editados[$campo] = round((float) $crudo, DimensionApplier::DECIMALES);
         }
 
-        return $editados;
+        return ['editados' => $editados, 'excluidos' => $excluidos];
     }
-
     /**
      * Las columnas de la propuesta en null (lo que queda de un artículo rechazado o quitado).
      *
