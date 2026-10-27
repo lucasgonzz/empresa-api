@@ -378,23 +378,11 @@ class Job_por_tramos_Test extends DimensionSearchTestCase
      * @group dimension-search
      * @test
      */
-    public function sin_la_extension_sin_clave_de_serper_o_sin_ia_la_corrida_falla_sin_gastar()
+    public function sin_clave_de_serper_o_sin_ia_la_corrida_falla_sin_gastar()
     {
-        $articulos = $this->articulos_asignables(1);
+        $this->articulos_asignables(1);
 
-        // 1. Le sacaron la extensión Agentes de IA.
-        $run = $this->corrida($articulos);
-        $this->owner->extencions()->detach();
-
-        Queue::fake();
-        (new ProcessDimensionSearchRunJob($run->id))->handle();
-
-        $this->assertSame(DimensionSearchRun::STATUS_FALLIDA, $run->fresh()->status);
-        $this->assertStringContainsString('Agentes de IA no está activo', $run->fresh()->motivo_estado);
-
-        $this->otorgar_agentes_ia($this->owner);
-
-        // 2. Le sacaron la clave de Serper.
+        // 1. Le sacaron la clave de Serper.
         $run2 = $this->corrida([$this->nuevo_articulo('OTRO PRODUCTO 1')]);
         config(['services.serper.api_key' => '']);
 
@@ -405,7 +393,7 @@ class Job_por_tramos_Test extends DimensionSearchTestCase
 
         config(['services.serper.api_key' => 'SERPER-DE-PRUEBA']);
 
-        // 3. Sin clave de IA.
+        // 2. Sin clave de IA.
         $run3 = $this->corrida([$this->nuevo_articulo('OTRO PRODUCTO 2')]);
         config(['services.deepseek.api_key' => '']);
 
@@ -414,7 +402,7 @@ class Job_por_tramos_Test extends DimensionSearchTestCase
         $this->assertSame(DimensionSearchRun::STATUS_FALLIDA, $run3->fresh()->status);
         $this->assertStringContainsString('clave de la IA', $run3->fresh()->motivo_estado);
 
-        $this->assertSame([], $this->consultas_serper, 'Ninguna de las tres gastó una búsqueda.');
+        $this->assertSame([], $this->consultas_serper, 'Ninguna de las dos gastó una búsqueda.');
     }
 
     /**

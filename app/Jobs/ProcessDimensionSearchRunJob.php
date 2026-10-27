@@ -2,7 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\DimensionSearchRunHelper;
 use App\Jobs\Concerns\InstrumentaMemoria;
 use App\Models\DimensionSearchItem;
@@ -121,14 +120,6 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
         $run = DimensionSearchRun::find($this->run_id);
 
         if (is_null($run) || !$run->esta_activa()) {
-            return;
-        }
-
-        // Se revalida con el DUEÑO (no con Auth, que en la cola no existe) que el comercio siga teniendo
-        // `agentes_ia`: entre que se encoló y corre pudieron sacársela.
-        if (!AgentesIaHelper::tiene_el_comercio_de($run->user_id)) {
-            DimensionSearchRunHelper::terminar($run, DimensionSearchRun::STATUS_FALLIDA, 'Agentes de IA no está activo para este comercio: la corrida no se procesó. Activá la extensión y volvé a lanzarla.');
-
             return;
         }
 

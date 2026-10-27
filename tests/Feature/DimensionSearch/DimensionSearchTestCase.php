@@ -16,7 +16,6 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\EmpresaTestCase;
-use Tests\Feature\AgentesIa\OtorgaAgentesIa;
 use Tests\Feature\DimensionSearch\Dobles\PaginasConDnsDePrueba;
 
 /**
@@ -32,8 +31,6 @@ use Tests\Feature\DimensionSearch\Dobles\PaginasConDnsDePrueba;
  */
 abstract class DimensionSearchTestCase extends EmpresaTestCase
 {
-    use OtorgaAgentesIa;
-
     /** @var \App\Models\User Comercio nuevo de cada test. */
     protected $owner;
 
@@ -69,8 +66,8 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
             'password'     => Hash::make('secret'),
         ]);
 
-        // La búsqueda masiva es de `agentes_ia` (lee páginas con IA): el comercio de prueba la paga.
-        $this->otorgar_agentes_ia($this->owner);
+        // 🔴 A propósito SIN la extensión `agentes_ia`: la búsqueda de medidas no la exige (decisión de producto
+        // del 27/10/2026, Masquito no la tiene). Todos los tests de esta carpeta corren así.
 
         $this->actuar_como($this->owner);
     }
@@ -397,8 +394,6 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
             'email'        => 'otro-medidas-'.uniqid().'@test.local',
             'password'     => Hash::make('secret'),
         ]);
-
-        $this->otorgar_agentes_ia($otro);
 
         return $otro;
     }

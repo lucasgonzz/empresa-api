@@ -952,6 +952,31 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/get-current', 'GoogleController@get_current');
 
     /*
+        Búsqueda masiva de peso y medidas (misión medidas-masivas-catalogo, 27/10/2026): Alertas → Catálogo →
+        Medidas. Espejo de las rutas de imágenes de abajo, pero FUERA del grupo `agentes_ia` (decisión de
+        producto del 27/10/2026): el negocio que la necesita (Masquito) no tiene «Agentes de IA», y activarla
+        le prendería el paquete entero (agente personal, bot de WhatsApp...), que no se quiere. Lo que protege
+        estas rutas es: la sesión del grupo (auth), la tenencia por dueño (todo filtra por userId()) y el
+        acceso maestro para la previa, el lanzamiento, detener y reanudar de catálogo (lo valida
+        DimensionSearchRunController, 403 sin él).
+        Las rutas fijas (resumen, catalogo, aprobar-varios, rechazar-varios) van ANTES de las que llevan {id},
+        y los {id} van restringidos a números.
+    */
+    Route::get('dimension-search-runs', 'DimensionSearchRunController@index');
+    Route::get('dimension-search-runs/resumen', 'DimensionSearchRunController@resumen');
+    Route::get('dimension-search-runs/catalogo/previa', 'DimensionSearchRunController@previa_catalogo');
+    Route::post('dimension-search-runs/catalogo', 'DimensionSearchRunController@crear_catalogo');
+    Route::get('dimension-search-runs/{id}', 'DimensionSearchRunController@show')->where('id', '[0-9]+');
+    Route::get('dimension-search-runs/{id}/items', 'DimensionSearchRunController@items')->where('id', '[0-9]+');
+    Route::post('dimension-search-runs/{id}/detener', 'DimensionSearchRunController@detener')->where('id', '[0-9]+');
+    Route::post('dimension-search-runs/{id}/reanudar', 'DimensionSearchRunController@reanudar')->where('id', '[0-9]+');
+    Route::post('dimension-search-items/aprobar-varios', 'DimensionSearchRunController@aprobar_varios');
+    Route::post('dimension-search-items/rechazar-varios', 'DimensionSearchRunController@rechazar_varios');
+    Route::post('dimension-search-items/{id}/aprobar', 'DimensionSearchRunController@aprobar')->where('id', '[0-9]+');
+    Route::post('dimension-search-items/{id}/rechazar', 'DimensionSearchRunController@rechazar')->where('id', '[0-9]+');
+    Route::post('dimension-search-items/{id}/quitar', 'DimensionSearchRunController@quitar')->where('id', '[0-9]+');
+
+    /*
         TODO lo que sigue hasta el cierre del grupo es de la extensión `agentes_ia` (misión
         agentes-ia-extension-unica, 22/10/2026): asignación automática de imágenes (la valida un modelo de
         visión), categorías con IA, intentos de búsqueda automática y descripciones con IA. Sin la
@@ -983,28 +1008,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
         Route::post('image-assignment-items/{id}/aprobar', 'ImageAssignmentRunController@aprobar')->where('id', '[0-9]+');
         Route::post('image-assignment-items/{id}/rechazar', 'ImageAssignmentRunController@rechazar')->where('id', '[0-9]+');
         Route::post('image-assignment-items/{id}/quitar', 'ImageAssignmentRunController@quitar')->where('id', '[0-9]+');
-
-        /*
-            Búsqueda masiva de peso y medidas (misión medidas-masivas-catalogo, 27/10/2026): Alertas →
-            Catálogo → Medidas. Espejo de las rutas de imágenes de arriba: las rutas fijas (resumen,
-            catalogo, aprobar-varios, rechazar-varios) van ANTES de las que llevan {id}, y los {id} van
-            restringidos a números. catalogo/*, detener y reanudar son solo para la sesión del acceso
-            maestro (lo valida DimensionSearchRunController, 403 sin ella). Son de `agentes_ia` porque la
-            búsqueda lee páginas con IA.
-        */
-        Route::get('dimension-search-runs', 'DimensionSearchRunController@index');
-        Route::get('dimension-search-runs/resumen', 'DimensionSearchRunController@resumen');
-        Route::get('dimension-search-runs/catalogo/previa', 'DimensionSearchRunController@previa_catalogo');
-        Route::post('dimension-search-runs/catalogo', 'DimensionSearchRunController@crear_catalogo');
-        Route::get('dimension-search-runs/{id}', 'DimensionSearchRunController@show')->where('id', '[0-9]+');
-        Route::get('dimension-search-runs/{id}/items', 'DimensionSearchRunController@items')->where('id', '[0-9]+');
-        Route::post('dimension-search-runs/{id}/detener', 'DimensionSearchRunController@detener')->where('id', '[0-9]+');
-        Route::post('dimension-search-runs/{id}/reanudar', 'DimensionSearchRunController@reanudar')->where('id', '[0-9]+');
-        Route::post('dimension-search-items/aprobar-varios', 'DimensionSearchRunController@aprobar_varios');
-        Route::post('dimension-search-items/rechazar-varios', 'DimensionSearchRunController@rechazar_varios');
-        Route::post('dimension-search-items/{id}/aprobar', 'DimensionSearchRunController@aprobar')->where('id', '[0-9]+');
-        Route::post('dimension-search-items/{id}/rechazar', 'DimensionSearchRunController@rechazar')->where('id', '[0-9]+');
-        Route::post('dimension-search-items/{id}/quitar', 'DimensionSearchRunController@quitar')->where('id', '[0-9]+');
 
         /*
             Categorización con IA en tres modelos (misión categorizacion-tres-modelos, 5/10/2026): Alertas →

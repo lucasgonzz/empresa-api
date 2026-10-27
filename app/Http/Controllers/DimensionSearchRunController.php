@@ -15,8 +15,9 @@ use Illuminate\Http\Request;
  *
  * Todo filtrado por el DUEÑO (`$this->userId()`): un empleado ve las corridas de su comercio, y un id de
  * otro comercio responde 404 (no existe para él). «Todo el catálogo» (la previa y el lanzamiento), detener
- * y reanudar son solo para la sesión del acceso maestro: sin ella, 403 con `{message}`. Las rutas llevan el
- * middleware de la extensión `agentes_ia` (routes/api.php), igual que las de imágenes.
+ * y reanudar son solo para la sesión del acceso maestro: sin ella, 403 con `{message}`. Las rutas NO llevan el
+ * middleware de la extensión `agentes_ia` (decisión de producto del 27/10/2026: el negocio que la usa no tiene
+ * «Agentes de IA» y activarla le prendería el paquete entero); ver routes/api.php.
  *
  * FORMA DE LAS RESPUESTAS: los payloads van PLANOS (`{id, status, ...}` para una corrida, `{data, total, ...}`
  * para un listado paginado) y, por compatibilidad con la SPA de imágenes, también bajo `model` / `models`
