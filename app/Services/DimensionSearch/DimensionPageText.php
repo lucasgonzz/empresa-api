@@ -41,7 +41,7 @@ class DimensionPageText
      */
     public static function contiene_codigo($contenido, $codigo, $tipo)
     {
-        $contenido = html_entity_decode((string) $contenido, ENT_QUOTES, 'UTF-8');
+        $contenido = html_entity_decode(self::sin_ruido_de_codigo((string) $contenido), ENT_QUOTES, 'UTF-8');
 
         foreach (self::patrones_del_codigo($codigo, $tipo) as $patron) {
             if (preg_match($patron, $contenido)) {
@@ -50,6 +50,66 @@ class DimensionPageText
         }
 
         return false;
+    }
+
+    /**
+     * El HTML sin lo que no es contenido de la página: comentarios, scripts y estilos. Un script de
+     * analítica o un comentario con el código de otro producto no prueba que la página sea de este. Se
+     * conserva el JSON-LD (`application/ld+json`), que sí describe el producto.
+     *
+     * @param  string $html
+     * @return string
+     */
+    public static function sin_ruido_de_codigo($html)
+    {
+        $html = (string) preg_replace('/<!--.*?-->/s', ' ', $html);
+        $html = (string) preg_replace('#<style\b[^>]*>.*?</style>#is', ' ', $html);
+
+        return (string) preg_replace_callback('#<script\b([^>]*)>.*?</script>#is', function ($m) {
+            return stripos($m[1], 'ld+json') !== false ? $m[0] : ' ';
+        }, $html);
+    }
+
+    /**
+     * El HTML en UTF-8. Una página vieja viene en ISO-8859-1 / Windows-1252: con `/u` un solo byte inválido
+     * hace que preg_* devuelva null y el extracto quede vacío. Se decide el juego de caracteres por la
+     * cabecera `Content-Type`, después por la meta (`<meta charset>` o `http-equiv`), y si lo declarado no
+     * coincide con los bytes (o no hay nada declarado) pero no es UTF-8 válido, se asume Windows-1252.
+     *
+     * @param  string      $html
+     * @param  string|null $content_type  La cabecera `Content-Type` de la respuesta, si se conoce.
+     * @return string  UTF-8 válido.
+     */
+    public static function a_utf8($html, $content_type = null)
+    {
+        $html = (string) $html;
+
+        $declarado = '';
+
+        if (preg_match('/charset\s*=\s*["\']?([A-Za-z0-9_\-:.]+)/i', (string) $content_type, $m)) {
+            $declarado = $m[1];
+        } elseif (preg_match('/<meta[^>]+charset\s*=\s*["\']?([A-Za-z0-9_\-:.]+)/i', substr($html, 0, 4096), $m)) {
+            $declarado = $m[1];
+        }
+
+        $declarado = strtoupper($declarado);
+        $es_utf8   = $declarado === '' || $declarado === 'UTF-8' || $declarado === 'UTF8';
+
+        if ($es_utf8 && mb_check_encoding($html, 'UTF-8')) {
+            return $html;
+        }
+
+        // Declaró otro juego (o declaró UTF-8 y los bytes no lo son): se convierte desde ese, o desde Windows-1252.
+        $origen = $es_utf8 || $declarado === 'ISO-8859-1' || $declarado === 'LATIN1' || $declarado === 'LATIN-1' ? 'Windows-1252' : $declarado;
+
+        try {
+            $convertido = mb_convert_encoding($html, 'UTF-8', $origen);
+        } catch (\Throwable $e) {
+            // Un juego de caracteres que mbstring no conoce.
+            $convertido = mb_convert_encoding($html, 'UTF-8', 'Windows-1252');
+        }
+
+        return mb_check_encoding((string) $convertido, 'UTF-8') ? (string) $convertido : (string) mb_convert_encoding($html, 'UTF-8', 'Windows-1252');
     }
 
     /**
@@ -62,8 +122,9 @@ class DimensionPageText
      */
     public static function recortar($html, array $codigos = [])
     {
-        $html    = (string) $html;
-        $partes  = [];
+        // Siempre UTF-8 válido: con bytes inválidos las regex /u devuelven null y el extracto sale vacío.
+        $html   = self::a_utf8((string) $html);
+        $partes = [];
 
         if (preg_match('#<title[^>]*>(.*?)</title>#is', $html, $m)) {
             $partes[] = 'TÍTULO: '.trim(html_entity_decode(strip_tags($m[1]), ENT_QUOTES, 'UTF-8'));
@@ -99,18 +160,21 @@ class DimensionPageText
 
         $texto = self::texto_plano($html);
 
-        // Ventanas [desde, hasta] (en bytes: son offsets de preg) alrededor de lo que interesa.
-        $ventanas = [];
+        // Ventanas [desde, hasta] (en bytes: son offsets de preg). Las del CÓDIGO van primero: el tope del
+        // extracto no puede dejar afuera justo la ventana que prueba que la página es del artículo.
+        $ventanas_de_codigo = [];
 
         foreach ($codigos as $c) {
             foreach (self::patrones_del_codigo($c['codigo'], $c['tipo']) as $patron) {
                 if (preg_match_all($patron, $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
                     foreach (array_slice($encontrados[0], 0, 3) as $x) {
-                        $ventanas[] = [$x[1] - 700, $x[1] + 700];
+                        $ventanas_de_codigo[] = [$x[1] - 700, $x[1] + 700];
                     }
                 }
             }
         }
+
+        $ventanas = [];
 
         if (preg_match_all('/descripci[oó]n|caracter[ií]sticas|especificaciones|ficha t[eé]cnica|sobre este producto/iu', $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
             foreach (array_slice($encontrados[0], 0, 4) as $x) {
@@ -124,27 +188,30 @@ class DimensionPageText
             }
         }
 
-        usort($ventanas, function ($a, $b) {
-            return $a[0] - $b[0];
-        });
+        $extracto = '';
 
-        // Se unen las ventanas que se pisan.
-        $unidas = [];
+        // Se unen TODAS las ventanas (las que se pisan, una sola vez) y salen primero las que tocan un código.
+        $con_codigo = [];
+        $sin_codigo = [];
 
-        foreach ($ventanas as $v) {
-            $v[0] = max(0, $v[0]);
-            $ultima = count($unidas) - 1;
+        foreach (self::unir_ventanas(array_merge($ventanas_de_codigo, $ventanas)) as $v) {
+            $toca_un_codigo = false;
 
-            if ($ultima >= 0 && $v[0] <= $unidas[$ultima][1]) {
-                $unidas[$ultima][1] = max($unidas[$ultima][1], $v[1]);
+            foreach ($ventanas_de_codigo as $vc) {
+                if ($vc[0] <= $v[1] && $vc[1] >= $v[0]) {
+                    $toca_un_codigo = true;
+                    break;
+                }
+            }
+
+            if ($toca_un_codigo) {
+                $con_codigo[] = $v;
             } else {
-                $unidas[] = $v;
+                $sin_codigo[] = $v;
             }
         }
 
-        $extracto = '';
-
-        foreach ($unidas as $v) {
+        foreach (array_merge($con_codigo, $sin_codigo) as $v) {
             $extracto .= ' […] '.substr($texto, $v[0], $v[1] - $v[0]);
 
             if (strlen($extracto) > self::MAXIMO_EXTRACTO) {
@@ -161,6 +228,34 @@ class DimensionPageText
     }
 
     /**
+     * Ordena las ventanas y une las que se pisan.
+     *
+     * @param  array $ventanas  Lista de [desde, hasta].
+     * @return array
+     */
+    protected static function unir_ventanas(array $ventanas)
+    {
+        usort($ventanas, function ($a, $b) {
+            return $a[0] - $b[0];
+        });
+
+        $unidas = [];
+
+        foreach ($ventanas as $v) {
+            $v[0]   = max(0, $v[0]);
+            $ultima = count($unidas) - 1;
+
+            if ($ultima >= 0 && $v[0] <= $unidas[$ultima][1]) {
+                $unidas[$ultima][1] = max($unidas[$ultima][1], $v[1]);
+            } else {
+                $unidas[] = $v;
+            }
+        }
+
+        return $unidas;
+    }
+
+    /**
      * El texto visible de una página: sin scripts, estilos, menús ni pies, con las entidades decodificadas
      * y los espacios colapsados.
      *
@@ -170,7 +265,9 @@ class DimensionPageText
     public static function texto_plano($html)
     {
         $sin_ruido = preg_replace('#<(script|style|noscript|svg|header|footer|nav)\b[^>]*>.*?</\1>#is', ' ', (string) $html);
-        $texto     = html_entity_decode(strip_tags((string) $sin_ruido), ENT_QUOTES, 'UTF-8');
+        // Cada etiqueta se cambia por un espacio (strip_tags las borra y pega «820 g</td><td>Ancho» en
+        // «820 gAncho», que el validador de unidades ya no reconoce).
+        $texto     = html_entity_decode((string) preg_replace('/<[^>]*>/', ' ', (string) $sin_ruido), ENT_QUOTES, 'UTF-8');
 
         return (string) preg_replace('/\s+/u', ' ', $texto);
     }

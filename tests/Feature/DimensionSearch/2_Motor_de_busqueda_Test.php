@@ -596,7 +596,7 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
     public function nunca_pisa_un_campo_que_ya_estaba_cargado()
     {
         $gtin = $this->con_verificador('779123456925');
-        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin, ['peso' => 2.5]);
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin, ['peso' => 0.9]);
 
         $this->falsear(
             ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
@@ -609,7 +609,7 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
         $articulo = $articulo->fresh();
 
         $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
-        $this->assertEquals(2.5, (float) $articulo->peso, 'El peso que ya tenía no se toca.');
+        $this->assertEquals(0.9, (float) $articulo->peso, 'El peso que ya tenía no se toca.');
         $this->assertEquals(7, (float) $articulo->ancho);
         $this->assertEqualsCanonicalizing(['alto', 'ancho', 'profundidad'], array_keys($item->aplicado), 'Solo se registra lo que se escribió.');
         $this->assertStringContainsString('No se pisó lo ya cargado: el peso', $item->motivo_detalle);
@@ -867,5 +867,326 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
         } finally {
             config(['app.FOR_USER' => $anterior[0], 'app.USER_ID' => $anterior[1]]);
         }
+    }
+
+    /**
+     * Un buscador y una página con los cuatro datos, parametrizables, para los tests de las compuertas.
+     *
+     * @param  string $gtin
+     * @param  string $cuerpo  Lo que dice la página.
+     * @param  array  $datos   peso, ancho, alto, largo => dato().
+     * @param  string $match
+     * @return void
+     */
+    protected function falsear_pagina_con($gtin, $cuerpo, array $datos, $match = 'exacto')
+    {
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
+            [self::URL_A => $this->pagina('Cuchilla', 'Código '.$gtin.'. '.$cuerpo)],
+            $this->ficha($match, $datos)
+        );
+    }
+
+    /**
+     * B1: un valor sobre «1.200 g» NUNCA queda asignado: va a revisar con la frase.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_valor_con_punto_de_miles_ambiguo_nunca_queda_asignado_va_a_revisar_con_la_frase()
+    {
+        $gtin = $this->con_verificador('779123457008');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+
+        $datos = $this->datos_completos(self::URL_A);
+        // El modelo leyó 1,2 g (la lectura decimal) de «1.200 g».
+        $datos['peso'] = $this->dato(1.2, 'g', 'Peso: 1.200 g', self::URL_A);
+
+        $this->falsear_pagina_con($gtin, 'Peso: 1.200 g. Ancho: 70 mm. Alto: 11 mm. Largo: 100 mm.', $datos);
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('valor_ambiguo', $item->motivo);
+        $this->assertSame('La página escribe «1.200 g»: puede ser 1,2 o 1.200', $item->motivo_detalle);
+        $this->assertStringContainsString('La página escribe «1.200 g»', $item->nota_ia);
+        $this->assertEquals(0.0012, (float) $item->peso_kg, 'Se guarda la lectura que dijo el modelo.');
+        $this->assertTrue($item->evidencia['peso']['ambiguo']);
+        $this->assertNull($item->aplicado);
+        $this->assertTrue(is_null($articulo->fresh()->peso) || (float) $articulo->fresh()->peso === 0.0, 'No se escribió nada.');
+    }
+
+    /**
+     * M2: un rango nunca queda asignado.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_rango_nunca_queda_asignado_va_a_revisar_con_la_frase()
+    {
+        $gtin = $this->con_verificador('779123457015');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+
+        $datos = $this->datos_completos(self::URL_A);
+        $datos['alto'] = $this->dato(20, 'cm', 'Alto: 10-20 cm', self::URL_A);
+
+        $this->falsear_pagina_con($gtin, 'Peso: 820 g. Ancho: 70 mm. Alto: 10-20 cm. Largo: 100 mm.', $datos);
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('valor_en_rango', $item->motivo);
+        $this->assertSame('La página da un rango: 10-20 cm', $item->motivo_detalle);
+        $this->assertTrue($item->evidencia['alto']['rango']);
+        $this->assertNull($item->aplicado);
+        $this->assertTrue(is_null($articulo->fresh()->alto) || (float) $articulo->fresh()->alto === 0.0);
+    }
+
+    /**
+     * M1(c): una cita pelada («Mide 25 cm») no dice qué medida es.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function una_cita_sin_etiqueta_nunca_queda_asignada()
+    {
+        $gtin = $this->con_verificador('779123457022');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+
+        $datos = $this->datos_completos(self::URL_A);
+        $datos['alto'] = $this->dato(25, 'cm', 'Mide 25 cm', self::URL_A);
+
+        $this->falsear_pagina_con($gtin, 'Peso: 820 g. Ancho: 70 mm. Mide 25 cm. Largo: 100 mm.', $datos);
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('cita_sin_etiqueta', $item->motivo);
+        $this->assertStringContainsString('La cita de el alto no dice a qué medida corresponde', $item->motivo_detalle);
+        $this->assertFalse($item->evidencia['alto']['etiquetada']);
+        $this->assertNull($item->aplicado);
+
+        // Una agrupación «A x B x C unidad» alcanza como etiqueta.
+        $otro = $this->nuevo_articulo('OTRA CUCHILLA', $this->con_verificador('779123457039'));
+        $gtin2 = $otro->bar_code;
+        $url = self::URL_B;
+
+        $this->falsear(
+            ['"'.$gtin2.'"' => [$this->resultado($url)]],
+            [$url => $this->pagina('Cuchilla', 'Código '.$gtin2.'. Peso: 820 g. Medidas 70 x 11 x 100 mm.')],
+            $this->ficha('exacto', [
+                'peso'  => $this->dato(820, 'g', 'Peso: 820 g', $url),
+                'ancho' => $this->dato(70, 'mm', '70 x 11 x 100 mm', $url),
+                'alto'  => $this->dato(11, 'mm', '70 x 11 x 100 mm', $url),
+                'largo' => $this->dato(100, 'mm', '70 x 11 x 100 mm', $url),
+            ])
+        );
+
+        list($item_grupo) = $this->buscar($otro);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item_grupo->status);
+    }
+
+    /**
+     * Menor 3: lo propuesto difiere más de 50 % de lo que una persona ya cargó.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function si_difiere_mas_de_la_mitad_de_lo_ya_cargado_no_se_asigna_sola()
+    {
+        $gtin = $this->con_verificador('779123457046');
+        // Cargó 2,5 kg a mano; la página dice 0,82 kg.
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin, ['peso' => 2.5]);
+
+        $this->falsear_pagina_con($gtin, $this->cuerpo_completo(), $this->datos_completos(self::URL_A));
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('difiere_de_lo_cargado', $item->motivo);
+        $this->assertStringContainsString('el peso (2,5 contra 0,82 de la página)', $item->motivo_detalle);
+        $this->assertEquals(2.5, (float) $articulo->fresh()->peso, 'No se tocó nada.');
+        $this->assertTrue(is_null($articulo->fresh()->ancho) || (float) $articulo->fresh()->ancho === 0.0);
+
+        // Justo por debajo del 50 %: sigue siendo una asignación (que no pisa el peso).
+        $parecido = $this->nuevo_articulo('CUCHILLA PARECIDA', $this->con_verificador('779123457053'), ['peso' => 1.2]);
+
+        $url = self::URL_B;
+        $this->falsear(
+            ['"'.$parecido->bar_code.'"' => [$this->resultado($url)]],
+            [$url => $this->pagina('Cuchilla', 'Código '.$parecido->bar_code.'. '.$this->cuerpo_completo())],
+            $this->ficha('exacto', $this->datos_completos($url))
+        );
+
+        list($item_parecido) = $this->buscar($parecido);
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item_parecido->status, '1,2 contra 0,82 difiere 32 %.');
+        $this->assertEquals(1.2, (float) $parecido->fresh()->peso);
+    }
+
+    /**
+     * M1(a): el código de proveedor tiene que parecer un código.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function solo_un_codigo_que_parece_un_codigo_genera_el_plan_de_proveedor()
+    {
+        $casos = [
+            // [código, ¿genera plan?]
+            ['VR-CU-0402', true],
+            ['AJM2032', true],
+            ['6202 2RST', true],
+            ['55.90-144', true],
+            ['2141058', true],
+            ['AB-12', true],
+            ['12345', false],      // 5 dígitos
+            ['1234', false],       // corto
+            ['ABCDEFG', false],    // solo letras
+            ['TRANSPORTE', false], // una palabra
+            ['AB-1', false],       // 4 caracteres
+        ];
+
+        foreach ($casos as $caso) {
+            $articulo = $this->nuevo_articulo('PRODUCTO DE PRUEBA LARGO', null, ['provider_code' => $caso[0]]);
+
+            $this->falsear([], [], $this->ficha('otro_producto'));
+            $this->buscar($articulo);
+
+            $buscadas_por_codigo = array_filter($this->consultas_serper, function ($consulta) use ($caso) {
+                return strpos($consulta, '"'.$caso[0].'"') === 0;
+            });
+
+            $this->assertSame($caso[1], count($buscadas_por_codigo) === 1, 'Código de proveedor «'.$caso[0].'»');
+
+            // Siempre queda el plan de nombre.
+            $this->assertContains('PRODUCTO DE PRUEBA LARGO ficha técnica peso medidas', $this->consultas_serper);
+        }
+    }
+
+    /**
+     * M1(b): el código en un script, un comentario o un estilo no prueba que la página sea del artículo.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_codigo_que_solo_esta_en_un_script_o_un_comentario_no_cuenta()
+    {
+        $gtin = $this->con_verificador('779123457060');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+
+        $html = '<html><head><title>Otra cosa</title><script>var producto_relacionado = "'.$gtin.'";</script><style>/* '.$gtin.' */</style></head>'
+            .'<body><!-- '.$gtin.' --><p>'.$this->cuerpo_completo().'</p></body></html>';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
+            [self::URL_A => $html],
+            $this->ficha('exacto', $this->datos_completos(self::URL_A))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame([], $this->pedidos_ia, 'La IA ni se llamó: ninguna página tenía el código.');
+        $this->assertFalse($item->diagnostico[0]['paginas'][0]['leida']);
+        $this->assertStringContainsString('no contiene el código', $item->diagnostico[0]['paginas'][0]['motivo']);
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
+    }
+
+    /**
+     * M1(b): el código en un JSON-LD de producto sí cuenta (es la descripción del producto).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_codigo_en_el_json_ld_del_producto_si_cuenta()
+    {
+        $gtin = $this->con_verificador('779123457077');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+
+        $html = '<html><head><title>Cuchilla</title><script type="application/ld+json">{"@type":"Product","gtin13":"'.$gtin.'"}</script></head>'
+            .'<body><p>'.$this->cuerpo_completo().'</p></body></html>';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
+            [self::URL_A => $html],
+            $this->ficha('exacto', $this->datos_completos(self::URL_A))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertStringContainsString('JSON-LD', $this->pedidos_ia[0]['entrada']['documents'][0]['text']);
+    }
+
+    /**
+     * M1(b): la ventana del código entra al extracto aunque la página sea larga y tenga mucho texto antes.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_ventana_del_codigo_entra_al_extracto_aunque_la_pagina_sea_larga()
+    {
+        $gtin = $this->con_verificador('779123457084');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+
+        // Mucho texto con las palabras de ficha técnica ANTES de la parte que tiene el código.
+        $relleno = str_repeat('Características del producto: peso y medidas generales de la línea completa. ', 150);
+        $cuerpo  = $relleno.' Código '.$gtin.'. '.$this->cuerpo_completo();
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
+            [self::URL_A => $this->pagina('Cuchilla', $cuerpo)],
+            $this->ficha('exacto', $this->datos_completos(self::URL_A))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $texto = $this->pedidos_ia[0]['entrada']['documents'][0]['text'];
+
+        $this->assertStringContainsString($gtin, $texto, 'La ventana alrededor del código no se la comió el tope.');
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+    }
+
+    /**
+     * Menor 1: una página en ISO-8859-1 / Windows-1252 se convierte a UTF-8 antes de recortarla.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function una_pagina_en_iso_8859_1_se_lee_en_utf8_y_no_queda_vacia()
+    {
+        $gtin = $this->con_verificador('779123457091');
+        $articulo = $this->nuevo_articulo('CUCHILLA RÍGIDA', $gtin);
+
+        $utf8 = '<html><head><title>Cuchilla rígida</title></head><body><p>Código '.$gtin.'. Descripción: cuchilla rígida de acero. '.$this->cuerpo_completo().'</p></body></html>';
+        $latin1 = iconv('UTF-8', 'Windows-1252', $utf8);
+
+        $this->assertFalse(mb_check_encoding($latin1, 'UTF-8'), 'El fixture es de verdad Latin-1.');
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
+            [self::URL_A => ['html' => $latin1, 'tipo' => 'text/html; charset=iso-8859-1']],
+            $this->ficha('exacto', $this->datos_completos(self::URL_A))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $texto = $this->pedidos_ia[0]['entrada']['documents'][0]['text'];
+
+        $this->assertStringContainsString('Descripción: cuchilla rígida de acero', $texto);
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+
+        // Sin charset declarado y con bytes que no son UTF-8: se asume Windows-1252.
+        $otro = $this->nuevo_articulo('OTRA CUCHILLA RÍGIDA', $this->con_verificador('779123457107'));
+
+        $this->falsear(
+            ['"'.$otro->bar_code.'"' => [$this->resultado(self::URL_B)]],
+            [self::URL_B => ['html' => iconv('UTF-8', 'Windows-1252', '<html><head><title>Cuchilla</title></head><body><p>Código '.$otro->bar_code.'. Ñandú rígido. '.$this->cuerpo_completo().'</p></body></html>'), 'tipo' => 'text/html']],
+            $this->ficha('otro_producto')
+        );
+
+        $this->buscar($otro);
+
+        $this->assertStringContainsString('Ñandú rígido', $this->pedidos_ia[0]['entrada']['documents'][0]['text']);
     }
 }

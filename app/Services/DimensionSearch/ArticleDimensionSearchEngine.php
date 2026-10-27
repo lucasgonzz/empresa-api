@@ -58,6 +58,18 @@ use Illuminate\Support\Str;
  * (AiTokenUsageHelper), y respeta el tope de búsquedas de las demos (TopeSerperDemo). Las claves nunca
  * van a un log ni a un mensaje.
  *
+ * 🔴 DECISIÓN TOMADA, NO UN OLVIDO: el consumo NO se registra en `image_service_calls`
+ * (ImageServiceCallLogger). Esa tabla es el registro del circuito de IMÁGENES: su `origen` es una lista
+ * cerrada (asignación, validación individual, asistente) que el admin muestra en la pestaña de imágenes de
+ * cada cliente, y mezclar ahí búsquedas de peso y medidas las haría pasar por búsquedas de fotos. Las dos
+ * tablas que sí se usan ya llegan al admin: `serper_usage_events` (se sincroniza con SyncSerperUsage y
+ * alimenta el tope de las demos) y `ai_token_usages` (el consumo de IA por proceso).
+ *
+ * LO QUE NUNCA SE ESCRIBE SOLO (aunque la IA diga `exacto`, el código esté en la página y los cuatro campos
+ * validen): un valor ambiguo (`valor_ambiguo`), un rango (`valor_en_rango`), una cita sin etiqueta
+ * (`cita_sin_etiqueta`) ni lo que difiere más de 50 % de lo ya cargado (`difiere_de_lo_cargado`). Van a
+ * `a_revisar`.
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
  */
 class ArticleDimensionSearchEngine
@@ -77,7 +89,7 @@ class ArticleDimensionSearchEngine
     const PALABRAS_DEL_NOMBRE = 6;
 
     /** Largo mínimo de un código de proveedor para buscarlo. */
-    const LARGO_MINIMO_CODIGO_PROVEEDOR = 4;
+    const LARGO_MINIMO_CODIGO_PROVEEDOR = 5;
 
     /** Resultados que se piden a Serper por búsqueda. */
     const RESULTADOS_POR_BUSQUEDA = 8;
@@ -398,7 +410,7 @@ class ArticleDimensionSearchEngine
             return $resultado;
         }
 
-        $this->cerrar($item, array_merge($this->clasificar($mejor, $codigos, $titulos), ['diagnostico' => $diagnostico]), $gasto);
+        $this->cerrar($item, array_merge($this->clasificar($mejor, $codigos, $titulos, $articulo), ['diagnostico' => $diagnostico]), $gasto);
 
         return $resultado;
     }
@@ -493,6 +505,28 @@ class ArticleDimensionSearchEngine
     }
 
     /**
+     * ¿Parece un código de verdad? Cinco caracteres o más y, o bien mezcla letras y dígitos («VR-CU-0402»,
+     * «AJM2032», «6202 2RST»), o bien son seis dígitos o más («55.90-144»). Una palabra («TRANSPORTE») o un
+     * número corto («12345») dan resultados al azar y no generan un plan de búsqueda por código.
+     *
+     * @param  string $codigo
+     * @return bool
+     */
+    protected function parece_un_codigo($codigo)
+    {
+        $codigo = trim((string) $codigo);
+
+        if (mb_strlen($codigo) < self::LARGO_MINIMO_CODIGO_PROVEEDOR) {
+            return false;
+        }
+
+        $hay_letras = (bool) preg_match('/\p{L}/u', $codigo);
+        $digitos    = preg_match_all('/\d/', $codigo);
+
+        return $hay_letras ? $digitos > 0 : $digitos >= 6;
+    }
+
+    /**
      * Por qué el código de proveedor no sirve para buscar (null si sirve).
      *
      * @param  string $proveedor
@@ -505,8 +539,8 @@ class ArticleDimensionSearchEngine
             return 'El artículo no tiene código de proveedor.';
         }
 
-        if (mb_strlen($proveedor) < self::LARGO_MINIMO_CODIGO_PROVEEDOR || !preg_match('/\d/', $proveedor)) {
-            return 'El código de proveedor no parece un código (muy corto o sin números): buscarlo daría resultados al azar.';
+        if (!$this->parece_un_codigo($proveedor)) {
+            return 'El código de proveedor no parece un código (muy corto, o ni mezcla letras y números ni tiene 6 dígitos o más): buscarlo daría resultados al azar.';
         }
 
         if (mb_strtolower($proveedor) === mb_strtolower($barras)) {
@@ -707,11 +741,20 @@ class ArticleDimensionSearchEngine
                 continue;
             }
 
+            // 🔴 El código tiene que estar en el texto que se le MANDA a la IA (la ventana alrededor), no en
+            // cualquier lugar del HTML crudo (un script, un comentario, un producto relacionado).
+            $texto = DimensionPageText::recortar($html, $codigos);
+
+            if (trim($texto) === '') {
+                $paginas[] = array_merge($pagina, ['leida' => false, 'motivo' => 'La página no tiene contenido útil.']);
+                continue;
+            }
+
             $tiene_barras    = false;
             $tiene_proveedor = false;
 
             foreach ($codigos as $c) {
-                if (DimensionPageText::contiene_codigo($html, $c['codigo'], $c['tipo'])) {
+                if (DimensionPageText::contiene_codigo($texto, $c['codigo'], $c['tipo'])) {
                     if ($c['tipo'] === DimensionPageText::CODIGO_DE_BARRAS) {
                         $tiene_barras = true;
                     } else {
@@ -729,14 +772,6 @@ class ArticleDimensionSearchEngine
                     continue;
                 }
             }
-
-            $texto = DimensionPageText::recortar($html, $codigos);
-
-            if (trim($texto) === '') {
-                $paginas[] = array_merge($pagina, ['leida' => false, 'motivo' => 'La página no tiene contenido útil.']);
-                continue;
-            }
-
             $leidas[$url]['enviada'] = true;
 
             $documentos[$url] = [
@@ -891,7 +926,7 @@ class ArticleDimensionSearchEngine
             .'"variante_distinta" (es el mismo modelo pero otra variante: otro tamaño, otro largo de espada, otro color, un paquete por N unidades) u '
             .'"otro_producto" (no es el mismo producto). En nota escribí UNA frase corta si la variante o la presentación difiere. '
             .'No inventes ni deduzcas: el peso y las medidas SOLO si están escritos en la página. '
-            .'Para cada dato físico devolvé {value:number,unit:"kg|g|mg|lb|oz|cm|mm|m|in",evidence:"cita literal copiada del documento, con el número y la unidad",source_url:"url del documento",scope:"envio|producto"}. '
+            .'Para cada dato físico devolvé {value:number,unit:"kg|g|mg|lb|oz|cm|mm|m|inch",evidence:"cita literal copiada del documento, con el número y la unidad",source_url:"url del documento",scope:"envio|producto"}. '
             .'value y unit son el número y la unidad de la cita tal como están escritos (no hace falta que los conviertas). '
             .'scope es "envio" si la cita habla de paquete, envío, embalaje o peso bruto, y "producto" si es del artículo. '
             .'Si no hay evidencia escrita de un dato, devolvé null para ese dato. '
@@ -940,9 +975,10 @@ class ArticleDimensionSearchEngine
      * @param  array $mejor     campos, match, nota, documentos, plan.
      * @param  array $codigos   Los códigos del artículo.
      * @param  array $titulos   url => título.
+     * @param  \App\Models\Article $articulo  El artículo (lo que ya tiene cargado).
      * @return array  Los campos del item: status, motivo, motivo_detalle, criterio_usado, propuesta, evidencia, fuentes, nota_ia.
      */
-    protected function clasificar(array $mejor, array $codigos, array $titulos)
+    protected function clasificar(array $mejor, array $codigos, array $titulos, Article $articulo)
     {
         $campos = $mejor['campos'];
 
@@ -1008,8 +1044,20 @@ class ArticleDimensionSearchEngine
             ]);
         }
 
-        // D1: exacto + código en la página + los cuatro campos válidos → se escribe sola.
+        // D1: exacto + código en la página + los cuatro campos válidos → se escribe sola, SALVO que algo del
+        // dato pida que una persona lo mire (valor ambiguo, rango, cita sin etiqueta, difiere de lo cargado).
         if ($mejor['match'] === self::MATCH_EXACTO && $criterio !== DimensionSearchItem::CRITERIO_NOMBRE && empty($faltan)) {
+            $revision = $this->motivo_de_revision($campos, $articulo);
+
+            if (!is_null($revision)) {
+                return array_merge($base, [
+                    'status'         => DimensionSearchItem::STATUS_A_REVISAR,
+                    'motivo'         => $revision['motivo'],
+                    'motivo_detalle' => $revision['detalle'],
+                    'nota_ia'        => $revision['nota'] ? trim((string) $mejor['nota'].' '.$revision['detalle']) : $mejor['nota'],
+                ]);
+            }
+
             return array_merge($base, [
                 'status'         => DimensionSearchItem::STATUS_ASIGNADA,
                 'motivo'         => 'codigo_exacto',
@@ -1043,6 +1091,88 @@ class ArticleDimensionSearchEngine
         ]);
     }
 
+    /**
+     * ¿Hay algo en los datos que impida escribirlos solos aunque todo lo demás sea perfecto? Se mira en este
+     * orden y gana el primero:
+     *
+     *   1. `valor_ambiguo` (B1): un valor validado sobre un número como «1.200 g», que puede ser 1,2 o 1.200.
+     *   2. `valor_en_rango` (M2): la cita da un rango («10-20 cm»); el extremo no es «la» medida.
+     *   3. `cita_sin_etiqueta` (M1c): la cita de algún campo no dice a qué medida corresponde (ni trae una
+     *      etiqueta del campo ni es una agrupación «A x B x C unidad»).
+     *   4. `difiere_de_lo_cargado`: el artículo ya tiene ese campo cargado por una persona y lo propuesto
+     *      difiere más de 50 %: probablemente la página es de otro producto o de otra presentación.
+     *
+     * @param  array               $campos    campo => dato validado.
+     * @param  \App\Models\Article $articulo
+     * @return array|null  ['motivo', 'detalle', 'nota' (bool: va también a nota_ia)] o null si nada lo impide.
+     */
+    protected function motivo_de_revision(array $campos, Article $articulo)
+    {
+        foreach ($campos as $dato) {
+            if (!empty($dato['ambiguo'])) {
+                return ['motivo' => 'valor_ambiguo', 'detalle' => (string) $dato['aviso'], 'nota' => true];
+            }
+        }
+
+        foreach ($campos as $dato) {
+            if (!empty($dato['rango'])) {
+                return ['motivo' => 'valor_en_rango', 'detalle' => (string) $dato['aviso'], 'nota' => true];
+            }
+        }
+
+        $sin_etiqueta = [];
+
+        foreach ($campos as $campo => $dato) {
+            if (empty($dato['etiquetada'])) {
+                $sin_etiqueta[] = 'el '.self::ETIQUETAS[$campo];
+            }
+        }
+
+        if (!empty($sin_etiqueta)) {
+            return [
+                'motivo'  => 'cita_sin_etiqueta',
+                'detalle' => 'La cita de '.implode(', ', $sin_etiqueta).' no dice a qué medida corresponde (falta una etiqueta como «peso», «alto», «ancho» o «largo»).',
+                'nota'    => false,
+            ];
+        }
+
+        $difieren = [];
+
+        foreach ($campos as $campo => $dato) {
+            $actual = $articulo->{$campo};
+
+            if (DimensionApplier::esta_vacio($actual)) {
+                continue;
+            }
+
+            if (abs((float) $dato['valor'] - (float) $actual) / (float) $actual > 0.5) {
+                $difieren[] = 'el '.self::ETIQUETAS[$campo].' ('.$this->numero_para_mostrar($actual).' contra '.$this->numero_para_mostrar($dato['valor']).' de la página)';
+            }
+        }
+
+        if (!empty($difieren)) {
+            return [
+                'motivo'  => 'difiere_de_lo_cargado',
+                'detalle' => 'El artículo ya tiene cargado '.implode(', ', $difieren).' y difiere más de 50 %: puede ser otra presentación del producto.',
+                'nota'    => false,
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Un número para mostrar: coma decimal y sin ceros de más («0,82», «10»).
+     *
+     * @param  mixed $valor
+     * @return string
+     */
+    protected function numero_para_mostrar($valor)
+    {
+        $texto = number_format((float) $valor, 4, ',', '');
+
+        return rtrim(rtrim($texto, '0'), ',');
+    }
     /**
      * ¿Todas esas páginas traen ese tipo de código del artículo?
      *

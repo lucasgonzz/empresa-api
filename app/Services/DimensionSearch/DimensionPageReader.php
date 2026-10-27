@@ -26,6 +26,9 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
     /** Presupuesto de tiempo de TODAS las páginas de un artículo, en segundos. */
     const PRESUPUESTO_POR_ARTICULO = 90;
 
+    /** @var string|null La cabecera Content-Type de la última página descargada. */
+    protected $content_type = null;
+
     /**
      * @param  \App\Models\User|null $owner
      */
@@ -60,7 +63,32 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
      */
     public function leer($url)
     {
-        return $this->descargar((string) $url, 'pagina', self::SEGUNDOS_POR_PAGINA);
+        $this->content_type = null;
+
+        $html = $this->descargar((string) $url, 'pagina', self::SEGUNDOS_POR_PAGINA);
+
+        if (is_null($html)) {
+            return null;
+        }
+
+        // Siempre UTF-8: una página en ISO-8859-1 / Windows-1252 no tiene que quedar ilegible.
+        return DimensionPageText::a_utf8($html, $this->content_type);
+    }
+
+    /**
+     * Antes de leer el cuerpo, anota la cabecera `Content-Type` de la respuesta final (la que trae el
+     * juego de caracteres), y sigue con la lectura de siempre.
+     *
+     * @param  \Illuminate\Http\Client\Response $respuesta
+     * @param  int    $max_bytes
+     * @param  string $url
+     * @return string|null
+     */
+    protected function leer_con_tope($respuesta, $max_bytes, $url)
+    {
+        $this->content_type = (string) $respuesta->header('Content-Type');
+
+        return parent::leer_con_tope($respuesta, $max_bytes, $url);
     }
 
     /**
