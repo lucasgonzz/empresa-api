@@ -124,6 +124,40 @@ class TokensTest extends MercadoLibreTestCase
     }
 
     /**
+     * Revisión de merge (27/10/2026): con `CACHE_DRIVER=array` el candado del refresh no cubre dos
+     * procesos. Si el refresh da `invalid_grant` porque OTRO proceso ya renovó (rotó el
+     * refresh_token mientras éste esperaba la respuesta), se relee la fila, se toma el token nuevo y
+     * se sigue: no se corta la conexión ni se avisa.
+     */
+    public function test_invalid_grant_porque_otro_proceso_ya_renovo_toma_el_token_nuevo_y_sigue()
+    {
+        Notification::fake();
+
+        $connector = $this->conector_ml(['expires_at' => Carbon::now()->subMinute()]);
+        $this->fake_ml([
+            'POST oauth/token' => function ($request) use ($connector) {
+                // "Otro proceso" renueva justo antes de que llegue la respuesta de éste.
+                $otro = PlatformConnector::find($connector->id);
+                $otro->access_token = 'APP_USR-DEL-OTRO-PROCESO';
+                $otro->refresh_token = 'TG-DEL-OTRO-PROCESO';
+                $otro->expires_at = Carbon::now()->addHours(6);
+                $otro->save();
+
+                return \Illuminate\Support\Facades\Http::response(['error' => 'invalid_grant', 'message' => 'refresh token already used'], 400);
+            },
+        ]);
+
+        $service = new MercadoLibreService($this->owner->id);
+
+        $this->assertSame('APP_USR-DEL-OTRO-PROCESO', $service->conector()->access_token);
+
+        $connector = $connector->fresh();
+        $this->assertSame(PlatformConnector::STATUS_CONECTADO, $connector->status);
+        $this->assertNull($connector->error_message);
+        Notification::assertNothingSent();
+    }
+
+    /**
      * Dos procesos con el mismo conector: el primero ya lo marcó en error y avisó; el segundo, al
      * recibir también invalid_grant, no vuelve a notificar.
      */

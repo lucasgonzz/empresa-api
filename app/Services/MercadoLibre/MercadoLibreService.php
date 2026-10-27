@@ -391,11 +391,15 @@ class MercadoLibreService
     {
         list($client_id, $client_secret) = $this->resolve_meli_oauth_app_credentials();
 
+        // El refresh_token con el que se pide (para saber, si ML lo rechaza, si otro proceso ya lo
+        // usó y guardó uno nuevo).
+        $refresh_usado = $this->credencial_del_conector('refresh_token');
+
         $response = $this->meli_http()->asForm()->post(MercadoLibreAppCredentials::TOKEN_URL, [
             'grant_type'    => 'refresh_token',
             'client_id'     => $client_id,
             'client_secret' => $client_secret,
-            'refresh_token' => $this->credencial_del_conector('refresh_token'),
+            'refresh_token' => $refresh_usado,
         ]);
 
         if (!$response->successful()) {
@@ -403,6 +407,19 @@ class MercadoLibreService
             $error = is_array($body) && isset($body['error']) ? (string) $body['error'] : '';
 
             if ($error === 'invalid_grant') {
+                /*
+                 * 🔴 Revisión de merge (27/10/2026): con `CACHE_DRIVER=array` (clientes viejos) el
+                 * candado de arriba no cubre dos procesos, y el refresh_token de ML es de UN uso: el
+                 * proceso que pierde la carrera recibe invalid_grant aunque la conexión esté bien.
+                 * Antes de cortarla se relee la fila: si el refresh_token cambió, otro proceso ya
+                 * renovó; se usa su token y se sigue.
+                 */
+                if ($this->otro_proceso_ya_renovo($refresh_usado)) {
+                    Log::info('MercadoLibreService: invalid_grant en el conector '.$this->platform_connector->id.' porque otro proceso ya había renovado; se usa su token.');
+
+                    return;
+                }
+
                 $this->marcar_conexion_cortada();
 
                 throw new \RuntimeException(self::MENSAJE_CONEXION_CORTADA);
@@ -442,6 +459,36 @@ class MercadoLibreService
         $this->platform_connector->status = PlatformConnector::STATUS_CONECTADO;
         $this->platform_connector->error_message = null;
         $this->platform_connector->save();
+    }
+
+    /**
+     * Relee la fila del conector y dice si otro proceso ya renovó el token: el refresh_token
+     * guardado es otro que el que se usó y la conexión sigue `conectado`. Si es así, el conector en
+     * memoria ya quedó con el token nuevo.
+     *
+     * No se toma la fila con `lockForUpdate` alrededor del refresh: eso dejaría una fila bloqueada
+     * mientras dura una llamada HTTP a ML (sin tope de tiempo), y cualquier otro proceso del
+     * comercio esperaría o caería por timeout de bloqueo. La relectura cubre el caso que importa
+     * (el que pierde la carrera no corta la conexión).
+     *
+     * @param string|null $refresh_usado
+     * @return bool
+     */
+    protected function otro_proceso_ya_renovo($refresh_usado)
+    {
+        $this->platform_connector->refresh();
+
+        if ($this->platform_connector->status !== PlatformConnector::STATUS_CONECTADO) {
+            return false;
+        }
+
+        try {
+            $refresh_actual = $this->platform_connector->refresh_token;
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        return !empty($refresh_actual) && $refresh_actual !== $refresh_usado;
     }
 
     /**

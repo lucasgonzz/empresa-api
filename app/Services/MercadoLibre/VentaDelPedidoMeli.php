@@ -19,8 +19,10 @@ use Illuminate\Support\Facades\Log;
  * re-chequeo: venta automática + el botón de una pantalla vieja = dos ventas y el stock
  * descontado dos veces (reproducido por el chequeo independiente).
  *
- * Acá: candado por pedido (`meli_order_<id>`, el mismo para los tres), relectura del pedido,
- * re-chequeo de que no tenga venta, y la venta junto con el paso a Confirmado en una transacción.
+ * Acá: candado por pedido (`meli_order_<id>`, el mismo para los tres) y, adentro de una
+ * transacción, la FILA del pedido tomada con `lockForUpdate` (lo que de verdad serializa dos
+ * procesos aunque el cache sea `array`), el re-chequeo de que no tenga venta, y la venta junto con
+ * el paso a Confirmado.
  * Las condiciones propias de cada camino (pagado, renglones vinculados, fecha) las decide el
  * llamador ANTES de llamar.
  */
@@ -58,22 +60,27 @@ class VentaDelPedidoMeli
         }
 
         try {
-            $meli_order->refresh();
+            return (bool) DB::transaction(function () use ($meli_order, $instance, $user) {
+                // 🔴 El candado de verdad es la FILA del pedido (revisión de merge, 27/10/2026): con
+                // `CACHE_DRIVER=array` (clientes viejos) el `Cache::lock` de arriba no cubre dos
+                // procesos distintos (el scheduler y un listado abierto). `lockForUpdate` hace que
+                // el segundo espere acá hasta que el primero confirme, y recién ahí re-chequea.
+                $bloqueado = MeliOrder::where('id', $meli_order->id)->lockForUpdate()->first();
 
-            if ($meli_order->sale()->exists()) {
-                return false;
-            }
+                if (!$bloqueado || $bloqueado->sale()->exists()) {
+                    return false;
+                }
 
-            $meli_order->load('articles');
+                $meli_order->refresh();
+                $meli_order->load('articles');
 
-            DB::transaction(function () use ($meli_order, $instance, $user) {
                 CreateSaleOrderHelper::save_sale($meli_order, $instance, false, true, $user);
 
                 $meli_order->meli_order_status_id = self::ESTADO_CONFIRMADO;
                 $meli_order->save();
-            });
 
-            return true;
+                return true;
+            });
         } finally {
             $lock->release();
         }

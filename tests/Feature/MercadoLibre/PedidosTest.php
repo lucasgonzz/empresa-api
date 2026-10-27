@@ -193,6 +193,46 @@ class PedidosTest extends MercadoLibreTestCase
     }
 
     /**
+     * Revisión de merge (27/10/2026): con `CACHE_DRIVER=array` (clientes viejos) el `Cache::lock` no
+     * cubre dos procesos. La venta toma la FILA del pedido con `lockForUpdate` adentro de la
+     * transacción y recién ahí re-chequea que no tenga venta. En un solo proceso no se pueden cruzar
+     * dos transacciones, así que se verifica el orden de las consultas: `select ... for update`
+     * sobre `meli_orders`, después el re-chequeo de la venta, después el alta de la venta.
+     */
+    public function test_la_venta_toma_la_fila_del_pedido_con_for_update_antes_de_rechequear()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [['MLA111', 1, 15000]])]);
+
+        $consultas = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = strtolower($query->sql);
+        });
+
+        $this->sincronizar();
+
+        $bloqueo = null;
+        $rechequeo = null;
+        $alta = null;
+        foreach ($consultas as $i => $sql) {
+            if (is_null($bloqueo) && strpos($sql, 'from `meli_orders`') !== false && strpos($sql, 'for update') !== false) {
+                $bloqueo = $i;
+            }
+            if (!is_null($bloqueo) && is_null($rechequeo) && $i > $bloqueo && strpos($sql, 'from `sales`') !== false && strpos($sql, 'meli_order_id') !== false) {
+                $rechequeo = $i;
+            }
+            if (is_null($alta) && strpos($sql, 'insert into `sales`') !== false) {
+                $alta = $i;
+            }
+        }
+
+        $this->assertNotNull($bloqueo, 'La venta no tomó la fila del pedido con lockForUpdate.');
+        $this->assertNotNull($rechequeo, 'No se re-chequeó la venta después de tomar la fila.');
+        $this->assertNotNull($alta);
+        $this->assertLessThan($alta, $rechequeo, 'El re-chequeo tiene que ir antes del alta de la venta.');
+    }
+
+    /**
      * Arreglo 4 (revisión, 27/10/2026): el mismo ítem en dos renglones del pedido (2 + 3 unidades)
      * se suma: la venta lleva 5, el stock baja 5 y el total coincide.
      */
