@@ -4,6 +4,7 @@ namespace App\Services\MercadoLibre;
 
 use App\Models\Platform;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -171,7 +172,13 @@ class MercadoLibreAppCredentials
         try {
             $cacheado = Cache::get(self::CACHE_TOKEN_DE_APP);
             if (!empty($cacheado)) {
-                return (string) $cacheado;
+                // Se guarda cifrado (es un token de la cuenta de ComercioCity). Si no se puede
+                // descifrar (otra APP_KEY, una entrada vieja en texto plano), se pide uno nuevo.
+                try {
+                    return Crypt::decryptString((string) $cacheado);
+                } catch (\Throwable $e) {
+                    Cache::forget(self::CACHE_TOKEN_DE_APP);
+                }
             }
 
             if (Cache::get(self::CACHE_TOKEN_DE_APP_FALLO)) {
@@ -216,7 +223,9 @@ class MercadoLibreAppCredentials
         }
 
         try {
-            Cache::put(self::CACHE_TOKEN_DE_APP, (string) $data['access_token'], $segundos);
+            // Cifrado con la APP_KEY (revisión de la misión, 27/10/2026): el cache del shared es un
+            // archivo en `storage/` y el token es de la cuenta de ComercioCity en ML.
+            Cache::put(self::CACHE_TOKEN_DE_APP, Crypt::encryptString((string) $data['access_token']), $segundos);
         } catch (\Throwable $e) {
             // Sin caché, el próximo pedido vuelve a canjear. No es un error.
         }

@@ -156,6 +156,28 @@ class TokensTest extends MercadoLibreTestCase
         Notification::assertNothingSent();
     }
 
+    /**
+     * Arreglo 11 (revisión, 27/10/2026): el token de APP (client_credentials, de la cuenta de
+     * ComercioCity) se guarda cifrado en el cache, nunca en texto plano.
+     */
+    public function test_el_token_de_app_se_guarda_cifrado_en_el_cache()
+    {
+        $this->fake_ml([
+            'POST oauth/token' => [200, ['access_token' => 'APP-TOKEN-SECRETO', 'expires_in' => 21600]],
+        ]);
+
+        $this->assertSame('APP-TOKEN-SECRETO', \App\Services\MercadoLibre\MercadoLibreAppCredentials::token_de_app());
+
+        $guardado = Cache::get(\App\Services\MercadoLibre\MercadoLibreAppCredentials::CACHE_TOKEN_DE_APP);
+        $this->assertNotEmpty($guardado);
+        $this->assertStringNotContainsString('APP-TOKEN-SECRETO', (string) $guardado, 'El token de app quedó en texto plano en el cache.');
+        $this->assertSame('APP-TOKEN-SECRETO', \Illuminate\Support\Facades\Crypt::decryptString($guardado));
+
+        // La segunda vez sale del cache (descifrado) sin pedir otro.
+        $this->assertSame('APP-TOKEN-SECRETO', \App\Services\MercadoLibre\MercadoLibreAppCredentials::token_de_app());
+        $this->assertCount(1, $this->pedidos_ml('POST', 'oauth/token'));
+    }
+
     public function test_429_reintenta_tres_veces_y_despues_tira_la_excepcion_de_limite()
     {
         $this->conector_ml();
