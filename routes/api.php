@@ -793,6 +793,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    // Cobro con el QR de Mercado Pago en Vender (misión cobro-qr-mercado-pago, 26/10/2026). El
+    // contrato con el SPA está fijado en el plan de la misión. Sin extensión: alcanza con tener
+    // Mercado Pago conectado. Las de `cobros` con id van después del listado para que quede a la
+    // vista que `cobros` a secas es el listado (los verbos y segmentos no colisionan igual).
+    Route::get('/mercado-pago/qr', 'MercadoPagoQrController@index');
+    Route::put('/mercado-pago/qr/config', 'MercadoPagoQrController@update_config');
+    Route::post('/mercado-pago/qr/cajas', 'MercadoPagoQrController@store_qr');
+    Route::delete('/mercado-pago/qr/cajas/{id}', 'MercadoPagoQrController@destroy_qr');
+    Route::get('/mercado-pago/qr/cobros', 'MercadoPagoQrController@index_cobros');
+    Route::post('/mercado-pago/qr/cobros', 'MercadoPagoQrController@store_cobro');
+    Route::get('/mercado-pago/qr/cobros/{id}', 'MercadoPagoQrController@show_cobro');
+    Route::post('/mercado-pago/qr/cobros/{id}/cancelar', 'MercadoPagoQrController@cancelar_cobro');
+
     // Estado de las integraciones del comercio, para pintar las tarjetas de ABM -> Integraciones.
     // Va ANTES de las rutas `integraciones/{proveedor}/...` para que quede claro que es el
     // listado del grupo, no un proveedor mas. No serializa ningun token: ese es el motivo de
