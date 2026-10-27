@@ -211,9 +211,33 @@ class PlatformConnector extends Model
     public function is_connected(): bool
     {
         $has_token = !empty($this->attributes['access_token']);
+
+        // Mercado Libre (misión mercado-libre-integracion, 27/10/2026): el access_token dura unas
+        // horas y el módulo lo renueva solo con el refresh_token (que dura 6 meses). Que el access
+        // haya vencido no es "desconectado": lo es el `status` (un refresh rechazado lo pasa a
+        // `error`) o que no haya refresh_token con qué renovar.
+        if ($this->es_de_mercado_libre()) {
+            return $this->status === self::STATUS_CONECTADO
+                && $has_token
+                && !empty($this->attributes['refresh_token']);
+        }
+
         $not_expired = empty($this->expires_at) || $this->expires_at->isFuture();
 
         return $has_token && $not_expired;
+    }
+
+    /**
+     * True si el conector apunta a la plataforma Mercado Libre. Usa la relación si ya está cargada
+     * (el listado de integraciones la carga para todos) y si no la consulta.
+     *
+     * @return bool
+     */
+    public function es_de_mercado_libre(): bool
+    {
+        $platform = $this->platform;
+
+        return $platform && $platform->slug === Platform::SLUG_MERCADO_LIBRE;
     }
 
     /**
@@ -252,23 +276,32 @@ class PlatformConnector extends Model
             $this->load('platform');
         }
         $platform = $this->platform;
-        if (!$platform || empty($platform->client_id)) {
+        if (!$platform) {
             return '';
         }
 
         if ($platform->slug === Platform::SLUG_MERCADO_LIBRE) {
-            $redirect_uri = env('MERCADO_LIBRE_REDIRECT_URI');
-            if (empty($redirect_uri)) {
+            // LEGACY (el ABM viejo de conectores): state = id del conector y la callback propia.
+            // El connect nuevo es `GET integraciones/mercadolibre/connect`, con state aleatorio y el
+            // relay del admin. Desde la misión mercado-libre-integracion el client_id sale de
+            // `MercadoLibreAppCredentials` (puede estar en el .env y no en `platforms`).
+            $client_id = \App\Services\MercadoLibre\MercadoLibreAppCredentials::client_id();
+            $redirect_uri = \App\Services\MercadoLibre\MercadoLibreAppCredentials::redirect_uri_legacy();
+            if (empty($client_id) || empty($redirect_uri)) {
                 return '';
             }
             $query = http_build_query([
                 'response_type' => 'code',
-                'client_id'     => $platform->client_id,
+                'client_id'     => $client_id,
                 'redirect_uri'  => $redirect_uri,
                 'state'         => (string) $this->id,
             ]);
 
             return 'https://auth.mercadolibre.com.ar/authorization?' . $query;
+        }
+
+        if (empty($platform->client_id)) {
+            return '';
         }
 
         if ($platform->slug === Platform::SLUG_TIENDA_NUBE) {
