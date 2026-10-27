@@ -8,7 +8,11 @@ use Illuminate\Database\Seeder;
 class MeliItemConditionSeeder extends Seeder
 {
     /**
-     * Run the database seeds.
+     * Condiciones del ítem en Mercado Libre.
+     *
+     * Idempotente desde la misión mercado-libre-integracion (27/10/2026): `updateOrCreate` por
+     * `meli_id` (ver `MeliListingTypeSeeder`). "Reacondicionado" se mantiene, pero ojo: ML exige
+     * una garantía de 90 días o más para publicarlo.
      *
      * @return void
      */
@@ -16,24 +20,21 @@ class MeliItemConditionSeeder extends Seeder
     {
         $models = [
             [
-                "meli_id"        => "new",
-                // "meli_id"        => "2230284",
-                "name"          => "Nuevo"
+                'meli_id' => 'new',
+                'name'    => 'Nuevo',
             ],
             [
-                "meli_id"        => "used",
-                // "meli_id"        => "2230581",
-                "name"          => "Usado"
+                'meli_id' => 'used',
+                'name'    => 'Usado',
             ],
             [
-                // "meli_id"        => "2230582",
-                "meli_id"        => "reconditioned",
-                "name"          => "Reacondicionado"
+                'meli_id' => 'reconditioned',
+                'name'    => 'Reacondicionado',
             ],
         ];
 
         foreach ($models as $model) {
-            MeliItemCondition::create($model);
+            MeliItemCondition::updateOrCreate(['meli_id' => $model['meli_id']], ['name' => $model['name']]);
         }
     }
 }

@@ -9,6 +9,7 @@ use App\Models\Combo;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
 use App\Models\MercadoPagoQrCobro;
+use App\Models\PlatformConnector;
 use App\Models\SyncToMeliArticle;
 use App\Models\SyncToTNArticle;
 use App\Models\User;
@@ -144,14 +145,60 @@ class Kernel extends ConsoleKernel
 
         // Sincronización de artículos pendientes hacia Mercado Libre solo si tiene la extensión.
         // Mismo gate que Tienda Nube, sobre sync_to_meli_articles.
+        //
+        // Misión mercado-libre-integracion (27/10/2026): el gate cuenta solo lo que el comando va a
+        // tomar de verdad (pendientes sin intento o con el último hace más de 2 minutos, y
+        // en_progreso colgados hace más de 30). Un artículo que ML mandó a esperar vuelve a
+        // `pendiente` con `attempted_at` de recién: sin esto se arrancaba un artisan por minuto
+        // para no hacer nada.
         if ($company_owner && UserHelper::hasExtencion('usa_mercado_libre', $company_owner)) {
             $schedule->command('sync_to_meli_articles')
                 ->everyMinute()
                 ->withoutOverlapping(15)
                 ->when(function () {
                     return $this->gate_de_datos(function () {
-                        return SyncToMeliArticle::where('user_id', config('app.USER_ID'))
-                            ->where('status', 'pendiente')
+                        $user_id = config('app.USER_ID');
+
+                        // Sin cuenta de ML conectada el comando no tiene con qué trabajar (sale en
+                        // su primera línea): no se arranca un artisan por minuto para eso
+                        // (revisión de merge, 27/10/2026). Mismo criterio que meli_sync_orders.
+                        $conectado = PlatformConnector::mercadoLibreConnected()
+                            ->where('user_id', $user_id)
+                            ->whereNotNull('access_token')
+                            ->exists();
+
+                        if (!$conectado) {
+                            return false;
+                        }
+
+                        return SyncToMeliArticle::where('user_id', $user_id)
+                            ->where(function ($query) {
+                                $query->where(function ($pendientes) {
+                                    $pendientes->where('status', 'pendiente')
+                                        ->where(function ($intento) {
+                                            $intento->whereNull('attempted_at')
+                                                ->orWhere('attempted_at', '<=', now()->subMinutes(2));
+                                        });
+                                })->orWhere(function ($colgadas) {
+                                    $colgadas->where('status', 'en_progreso')
+                                        ->where('attempted_at', '<', now()->subMinutes(30));
+                                });
+                            })
+                            ->exists();
+                    });
+                });
+
+            // Pedidos de Mercado Libre por consulta periódica (no por notificaciones: la app de ML
+            // tiene UNA URL de notificaciones para todos los clientes). Cada 5 minutos, solo con la
+            // cuenta conectada; un pedido pago genera la venta solo (ver OrderDownloaderService).
+            $schedule->command('meli_sync_orders')
+                ->everyFiveMinutes()
+                ->withoutOverlapping(10)
+                ->when(function () {
+                    return $this->gate_de_datos(function () {
+                        return PlatformConnector::mercadoLibreConnected()
+                            ->where('user_id', config('app.USER_ID'))
+                            ->whereNotNull('access_token')
                             ->exists();
                     });
                 });

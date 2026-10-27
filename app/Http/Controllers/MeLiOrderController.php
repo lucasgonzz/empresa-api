@@ -3,13 +3,15 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
-use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Jobs\ProcessMeliOrderNotificationJob;
 use App\Models\MeliOrder;
 use App\Models\PlatformConnector;
 use App\Services\MercadoLibre\ErrorHandler;
+use App\Services\MercadoLibre\MercadoLibreLimiteException;
 use App\Services\MercadoLibre\OrderDownloaderService;
+use App\Services\MercadoLibre\ProductService;
+use App\Services\MercadoLibre\VentaDelPedidoMeli;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -27,14 +29,20 @@ class MeLiOrderController extends Controller
      */
     public function index($from_date = null, $until_date = null)
     {
-        if (env('USA_MERCADO_LIBRE', false)) {
+        // Misión mercado-libre-integracion (27/10/2026): el gate es SOLO la extensión
+        // `usa_mercado_libre` del dueño (el mismo criterio que el Kernel y que encolar artículos;
+        // el USA_MERCADO_LIBRE del .env ya no cuenta), y no se consulta a ML si el último poll (el
+        // del comando de cada 5 minutos o el de otra apertura del listado) fue hace menos de 1 minuto.
+        if (ProductService::modulo_habilitado((int) $this->userId())) {
             try {
-                // Credenciales OAuth del tenant: conector ML conectado con access_token vigente.
                 $connector = PlatformConnector::find_connected_mercado_libre_for_user((int) $this->userId());
-                if ($connector && $connector->access_token) {
+                if ($connector && OrderDownloaderService::corresponde_consultar($connector, 1)) {
                     $downloader = new OrderDownloaderService($this->userId());
-                    $downloader->get_recent_orders();
+                    $downloader->sincronizar_pedidos_recientes();
                 }
+            } catch (MercadoLibreLimiteException $e) {
+                // ML pidió esperar: el listado muestra lo que ya hay y la próxima consulta trae el resto.
+                Log::warning('MeLiOrderController index: Mercado Libre pidió esperar: '.$e->getMessage());
             } catch (\Exception $e) {
                 Log::warning('MeLiOrderController index: no se pudo sincronizar pedidos ML: '.$e->getMessage());
                 ErrorHandler::notify_exception(
@@ -176,32 +184,41 @@ class MeLiOrderController extends Controller
         $model->meli_order_status_id = $request->meli_order_status_id;
         $model->save();
 
-        $this->confirmar_pedido_meli($model, $previous_status_id);
+        $ya_tenia_venta = $this->confirmar_pedido_meli($model, $previous_status_id);
 
         $this->sendAddModelNotification('MeliOrder', $model->id);
 
-        return response()->json(['model' => $this->fullModel('MeliOrder', $model->id)], 200);
+        // `ya_tenia_venta` (contrato con la SPA, Orders.vue): true si se pasó a Confirmado un pedido
+        // que YA tenía venta (no se creó nada; la SPA muestra "Este pedido ya tenía venta").
+        return response()->json([
+            'model'          => $this->fullModel('MeliOrder', $model->id),
+            'ya_tenia_venta' => $ya_tenia_venta,
+        ], 200);
     }
 
     /**
-     * Si el pedido pasa de Pendiente (1) a Confirmado (2), está pago en ML y aún no tiene venta, genera la Sale.
+     * Si el pedido pasa de Pendiente (1) a Confirmado (2) y está pago en ML, genera la Sale si
+     * todavía no la tiene.
      *
      * @param MeliOrder $order
      * @param int|null $previous_status_id
-     * @return void
+     * @return bool true si era el paso a Confirmado y el pedido YA tenía venta (no se creó nada).
      */
     protected function confirmar_pedido_meli(MeliOrder $order, $previous_status_id)
     {
-        $order->load('sale');
-
-        if (
-            (int) $order->meli_order_status_id === 2
+        $es_confirmacion = (int) $order->meli_order_status_id === 2
             && ($previous_status_id === null || (int) $previous_status_id === 1)
-            && $order->status === 'paid'
-            && !$order->sale
-        ) {
-            CreateSaleOrderHelper::save_sale($order, $this, false, true);
+            && $order->status === 'paid';
+
+        if (!$es_confirmacion) {
+            return false;
         }
+
+        // Con candado y re-chequeo (misión mercado-libre-integracion): la venta automática o el
+        // botón "Crear venta" pueden estar creando la misma venta en este momento.
+        $creada = VentaDelPedidoMeli::generar_si_falta($order, $this);
+
+        return !$creada && $order->sale()->exists();
     }
 
     /**
@@ -238,9 +255,15 @@ class MeLiOrderController extends Controller
 
         $meli_order = MeliOrder::find($id);
 
-        CreateSaleOrderHelper::save_sale($meli_order, $this, false, true);
+        // Si ya tiene venta (la automática, o un confirmar desde otra pantalla) no se crea otra:
+        // se devuelve el pedido como está con `ya_tenia_venta: true` (misión
+        // mercado-libre-integracion; la SPA lo lee en Orders.vue).
+        $creada = VentaDelPedidoMeli::generar_si_falta($meli_order, $this);
 
-        return response()->json(['model' => $this->fullModel('MeliOrder', $id)], 200);
+        return response()->json([
+            'model'          => $this->fullModel('MeliOrder', $id),
+            'ya_tenia_venta' => !$creada && $meli_order->sale()->exists(),
+        ], 200);
     }
 
     /**
