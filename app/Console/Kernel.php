@@ -159,6 +159,18 @@ class Kernel extends ConsoleKernel
                     return $this->gate_de_datos(function () {
                         $user_id = config('app.USER_ID');
 
+                        // Sin cuenta de ML conectada el comando no tiene con qué trabajar (sale en
+                        // su primera línea): no se arranca un artisan por minuto para eso
+                        // (revisión de merge, 27/10/2026). Mismo criterio que meli_sync_orders.
+                        $conectado = PlatformConnector::mercadoLibreConnected()
+                            ->where('user_id', $user_id)
+                            ->whereNotNull('access_token')
+                            ->exists();
+
+                        if (!$conectado) {
+                            return false;
+                        }
+
                         return SyncToMeliArticle::where('user_id', $user_id)
                             ->where(function ($query) {
                                 $query->where(function ($pendientes) {
