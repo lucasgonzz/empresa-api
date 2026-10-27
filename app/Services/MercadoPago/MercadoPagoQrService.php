@@ -11,7 +11,9 @@ use App\Models\MercadoPagoQrCobro;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
 use App\Models\Sale;
+use App\Http\Controllers\Helpers\sale\CotizacionDeVentaHelper;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -70,11 +72,51 @@ class MercadoPagoQrService
     const VENCIMIENTO_ORDEN = 'PT10M';
 
     /**
-     * Horas después de las cuales un cobro que sigue `pendiente` se da por vencido localmente.
-     * La orden en MP vence a los 10 minutos; las 3 horas son el margen para que el comando la
-     * consulte aunque el cron haya estado caído un rato.
+     * 🔴 REGLA DE PLATA: un cobro pendiente solo cambia de estado con una respuesta VÁLIDA de
+     * Mercado Pago. Nunca se lo vence "por tiempo" sin preguntar: si MP no contesta, el cliente
+     * puede haber pagado igual, y darlo por vencido haría que el cajero lo cobre dos veces. La
+     * orden vence sola en MP a los 10 minutos, así que la consulta devuelve `expired` y recién ahí
+     * se lo vence. Las únicas salidas sin respuesta son las de abajo, con su plazo y su motivo.
      */
-    const HORAS_DE_VIGENCIA = 3;
+
+    /**
+     * Días después de los cuales un pendiente con orden se deja de consultar y pasa a `error`
+     * ("No se pudo confirmar con Mercado Pago"). Es el plazo para que una caída larga de MP, de la
+     * red o del cron no deje filas consultándose para siempre.
+     */
+    const DIAS_MAXIMOS_DE_CONSULTA = 30;
+
+    /**
+     * Minutos que el comando espera antes de recuperar un cobro cuya orden MP no confirmó al
+     * crearla. Mientras tanto lo recupera el polling del modal de Vender, que tiene al cajero
+     * esperando; el comando es para el que quedó abandonado.
+     */
+    const MINUTOS_ANTES_DE_RECUPERAR_EN_EL_COMANDO = 15;
+
+    /**
+     * Horas durante las cuales se puede reenviar el POST de la orden con la misma
+     * `X-Idempotency-Key`. MP la respeta 24 horas: pasado eso, reenviar CREARÍA OTRA orden. Se
+     * corta antes, a las 20, con margen; después el cobro pasa a `error` sin reenviar nada.
+     */
+    const HORAS_DE_VIDA_DE_LA_CLAVE = 20;
+
+    /** Estado de un cobro cuya orden MP no confirmó al crearla (sigue `pendiente`, sin orden). */
+    const MENSAJE_SIN_RESPUESTA = 'Mercado Pago no respondió, reintentando…';
+
+    /** Motivo del `error` cuando se agotaron los plazos sin una respuesta de MP. */
+    const MENSAJE_SIN_CONFIRMAR = 'No se pudo confirmar con Mercado Pago.';
+
+    /** Motivo del `cancelado` cuando un cobro nuevo en el mismo QR reemplazó a este. */
+    const MENSAJE_REEMPLAZADO = 'Otro cobro usó este mismo QR y reemplazó a este.';
+
+    /** Motivo del `cancelado` cuando el comando cancela una orden recuperada que nadie esperaba. */
+    const MENSAJE_CANCELADO_POR_DEMORA = 'El cobro se canceló porque Mercado Pago tardó en confirmarlo.';
+
+    /** Moneda de las ventas en pesos (`CotizacionDeVentaHelper::normalizar_moneda_id`). */
+    const MONEDA_PESOS = 1;
+
+    /** Días hacia atrás del listado de pagos sin venta. */
+    const DIAS_DE_PAGOS_SIN_VENTA = 7;
 
     /** Tolerancia de un centavo al comparar el total del cobro con el de la venta. */
     const TOLERANCIA_TOTAL = 0.01;
@@ -807,16 +849,30 @@ class MercadoPagoQrService
     // =========================================================================================
 
     /**
-     * Carga el total de la venta en el QR del mostrador: resuelve el QR, cancela en MP los cobros
-     * pendientes anteriores de ese mismo QR y crea la orden.
+     * Carga el total de la venta en el QR del mostrador: resuelve el QR, y con el QR tomado
+     * (candado por QR) cancela en MP los cobros pendientes anteriores de ese mismo QR y crea la
+     * orden.
      *
      * Por qué se cancelan los anteriores: el QR es estático y tiene UNA orden a la vez. Si quedó
      * una vieja colgada (el cajero cerró el modal, se cortó la luz), el cliente que escanea podría
      * pagar el total de otra venta. Si MP contesta que el cliente está pagando esa vieja justo
      * ahora, no se pisa: 422 con `pagando: true` y el cajero espera.
      *
-     * Si MP rechaza la orden nueva, el cobro queda en `error` (con el motivo legible) y se
-     * responde 422 con ese mismo texto.
+     * 🔴 Por qué el candado: dos cajas que cobran con el MISMO QR a la vez (dos pestañas, dos
+     * cajeros con el QR General) cancelarían cada una el pendiente de la otra y cargarían dos
+     * órdenes en el mismo QR. Con el candado la segunda espera a la primera y, al entrar, la
+     * reemplaza de forma ordenada (el cobro reemplazado queda `cancelado` con el motivo, para que
+     * el SPA que lo esperaba lo muestre). Es un `GET_LOCK` de MySQL y no un `lockForUpdate`, para
+     * no dejar una transacción abierta durante las llamadas a MP.
+     *
+     * Qué devuelve según conteste MP la orden nueva:
+     * - la crea: el cobro `pendiente` con su `mp_order_id` (201);
+     * - no contesta (red caída o 5xx, después de un reintento con la misma clave): el cobro
+     *   `pendiente` SIN `mp_order_id` y con `error_message` = "Mercado Pago no respondió,
+     *   reintentando…" (201). El polling del SPA lo recupera reenviando el mismo pedido: la orden
+     *   puede haberse creado aunque no llegara la respuesta, y sin recuperarla el cliente podría
+     *   pagarla sin que nadie se entere;
+     * - la rechaza (4xx): el cobro en `error` con el motivo legible, y 422 con ese mismo texto.
      *
      * @param int $owner_id Comercio (owner).
      * @param int|null $employee_id Usuario autenticado (dueño o empleado) que cobra.
@@ -841,36 +897,129 @@ class MercadoPagoQrService
 
         $qr = $this->resolver_qr($owner_id, $caja_id, $address_id, $conexion['mp_user_id']);
 
-        $this->cancelar_pendientes_del_qr($qr, $conexion);
-
-        $cobro = MercadoPagoQrCobro::create([
-            'user_id'                 => $owner_id,
-            'mercado_pago_qr_caja_id' => $qr->id,
-            'employee_id'             => $employee_id,
-            'caja_id'                 => $caja_id,
-            'address_id'              => $address_id,
-            'total'                   => $total,
-            // Provisorio y único: el definitivo lleva el id de esta misma fila (ver abajo).
-            'external_reference'      => 'tmp-' . Str::uuid(),
-            'estado'                  => MercadoPagoQrCobro::ESTADO_PENDIENTE,
-        ]);
-
-        // Letras, números, - y _, ≤ 64. Lo aleatorio evita que dos instancias que comparten
-        // cuenta de MP (pasa: hay clientes con más de un sistema) choquen por el mismo id.
-        $cobro->external_reference = 'ccqr-' . $owner_id . '-' . $cobro->id . '-' . Str::random(4);
-        $cobro->save();
-
-        $monto = number_format($total, 2, '.', '');
-
         $descripcion = isset($datos['description']) && !is_array($datos['description']) ? trim((string) $datos['description']) : '';
 
         if ($descripcion === '') {
             $descripcion = 'Venta en el mostrador';
         }
 
-        $cuerpo = [
+        if (!$this->tomar_candado_del_qr($qr->id)) {
+            throw new MercadoPagoQrException(
+                'Se está cargando otro cobro en este mismo QR. Esperá unos segundos y volvé a intentar.',
+                422,
+                ['qr_ocupado' => true]
+            );
+        }
+
+        try {
+            $this->cancelar_pendientes_del_qr($qr, $conexion);
+
+            $cobro = MercadoPagoQrCobro::create([
+                'user_id'                          => $owner_id,
+                'mercado_pago_qr_caja_id'          => $qr->id,
+                'employee_id'                      => $employee_id,
+                'caja_id'                          => $caja_id,
+                'address_id'                       => $address_id,
+                'total'                            => $total,
+                // Congelado al nacer: la venta se valida contra este método (ver la migración).
+                'current_acount_payment_method_id' => $this->metodo_de_pago_configurado($owner_id, $conexion['connector']),
+                'description'                      => mb_substr($descripcion, 0, 150),
+                // Una sola clave por cobro, para siempre: es la que hace idempotente el reenvío.
+                'mp_idempotency_key'               => (string) Str::uuid(),
+                // Provisorio y único: el definitivo lleva el id de esta misma fila (ver abajo).
+                'external_reference'               => 'tmp-' . Str::uuid(),
+                'estado'                           => MercadoPagoQrCobro::ESTADO_PENDIENTE,
+            ]);
+
+            // Letras, números, - y _, ≤ 64. Lo aleatorio evita que dos instancias que comparten
+            // cuenta de MP (pasa: hay clientes con más de un sistema) choquen por el mismo id.
+            $cobro->external_reference = 'ccqr-' . $owner_id . '-' . $cobro->id . '-' . Str::random(4);
+            $cobro->save();
+
+            $resultado = $this->registrar_orden($cobro, $this->enviar_orden($cobro, $conexion));
+
+        } finally {
+            $this->soltar_candado_del_qr($qr->id);
+        }
+
+        if ($resultado['resultado'] === 'rechazada') {
+            throw new MercadoPagoQrException($resultado['mensaje'], 422);
+        }
+
+        Log::info('MercadoPagoQrService: cobro ' . $cobro->id . ' cargado en el QR ' . $qr->id . ' (' . $resultado['resultado'] . ', orden ' . var_export($cobro->mp_order_id, true) . ').');
+
+        return MercadoPagoQrCobro::withAll()->find($cobro->id);
+    }
+
+    /**
+     * Nombre del candado de MySQL de un QR. `GET_LOCK` es GLOBAL al servidor de MySQL, no a la
+     * base, y en el VPS varios clientes comparten servidor: sin la base en el nombre, el QR 5 de
+     * un cliente frenaría al QR 5 de otro. Se usa un hash corto de la base porque el nombre de un
+     * candado admite 64 caracteres.
+     *
+     * @param int $qr_id
+     * @return string
+     */
+    public static function nombre_del_candado($qr_id)
+    {
+        return 'mpqr_' . substr(md5((string) DB::connection()->getDatabaseName()), 0, 12) . '_' . (int) $qr_id;
+    }
+
+    /**
+     * Toma el candado del QR, esperando hasta `services.mercadopago.qr_candado_segundos` (10 por
+     * defecto: lo que tarda, como mucho, otro cajero en cargar su cobro).
+     *
+     * @param int $qr_id
+     * @return bool
+     */
+    protected function tomar_candado_del_qr($qr_id)
+    {
+        $segundos = (int) config('services.mercadopago.qr_candado_segundos', 10);
+
+        $fila = DB::select('SELECT GET_LOCK(?, ?) AS tomado', [self::nombre_del_candado($qr_id), max(0, $segundos)]);
+
+        return !empty($fila) && (int) $fila[0]->tomado === 1;
+    }
+
+    /**
+     * Suelta el candado del QR (no-op si no estaba tomado por esta conexión).
+     *
+     * @param int $qr_id
+     * @return void
+     */
+    protected function soltar_candado_del_qr($qr_id)
+    {
+        DB::select('SELECT RELEASE_LOCK(?)', [self::nombre_del_candado($qr_id)]);
+    }
+
+    /**
+     * Cuerpo de la orden en MP, armado SIEMPRE igual a partir del cobro (total, referencia, QR,
+     * descripción y vencimiento guardados). Tiene que ser determinístico: el reenvío con la misma
+     * `X-Idempotency-Key` tiene que ser el mismo pedido, o MP podría rechazarlo o tratarlo como
+     * otra orden.
+     *
+     * @param MercadoPagoQrCobro $cobro
+     * @return array|null null si el QR del cobro ya no existe (no se puede reconstruir).
+     */
+    protected function cuerpo_de_la_orden(MercadoPagoQrCobro $cobro)
+    {
+        $qr = $cobro->qr;
+
+        if (!$qr || empty($qr->mp_pos_external_id)) {
+            return null;
+        }
+
+        // STRING con 2 decimales: Orders rechaza el número.
+        $monto = number_format((float) $cobro->total, 2, '.', '');
+
+        $descripcion = trim((string) $cobro->description);
+
+        if ($descripcion === '') {
+            $descripcion = 'Venta en el mostrador';
+        }
+
+        return [
             'type'               => 'qr',
-            // STRING con 2 decimales: Orders rechaza el número.
             'total_amount'       => $monto,
             'external_reference' => $cobro->external_reference,
             'description'        => mb_substr($descripcion, 0, 150),
@@ -887,77 +1036,186 @@ class MercadoPagoQrService
                 ],
             ],
         ];
+    }
 
-        /*
-         * La MISMA clave de idempotencia en el reintento: si el primer intento murió por la red
-         * pero la orden se creó en MP, el reintento devuelve esa misma orden en vez de crear otra.
-         * Sin esto, un timeout dejaría una orden viva en el QR que el cobro no conoce y que el
-         * cliente podría pagar sin que nadie se entere.
-         */
-        $idempotency_key = (string) Str::uuid();
+    /**
+     * `POST /v1/orders` con la clave de idempotencia del cobro. Si la respuesta es transitoria
+     * (red caída, 5xx) se reintenta UNA vez enseguida con la misma clave y el mismo cuerpo.
+     *
+     * @param MercadoPagoQrCobro $cobro Con su `mp_idempotency_key`.
+     * @param array $conexion
+     * @return array La de `llamar()` (status 0 con `sin_cuerpo` si el QR ya no existe).
+     */
+    protected function enviar_orden(MercadoPagoQrCobro $cobro, array $conexion)
+    {
+        $cuerpo = $this->cuerpo_de_la_orden($cobro);
 
-        $respuesta = $this->llamar($conexion['token'], 'POST', '/v1/orders', [
-            'idempotency_key' => $idempotency_key,
+        if (is_null($cuerpo)) {
+            return ['ok' => false, 'status' => 0, 'json' => [], 'sin_cuerpo' => true];
+        }
+
+        $opciones = [
+            'idempotency_key' => $cobro->mp_idempotency_key,
             'json'            => $cuerpo,
+        ];
+
+        $respuesta = $this->llamar($conexion['token'], 'POST', '/v1/orders', $opciones);
+
+        if ($this->es_transitoria($respuesta)) {
+            $respuesta = $this->llamar($conexion['token'], 'POST', '/v1/orders', $opciones);
+        }
+
+        return $respuesta;
+    }
+
+    /**
+     * Indica si una respuesta de MP es transitoria (vale la pena reintentar con la misma clave):
+     * sin respuesta (status 0), 5xx, 408 o 429. Cualquier otro 4xx es un rechazo definitivo.
+     *
+     * @param array $respuesta La de `llamar()`.
+     * @return bool
+     */
+    protected function es_transitoria(array $respuesta)
+    {
+        if (!empty($respuesta['sin_cuerpo'])) {
+            return false;
+        }
+
+        $status = (int) $respuesta['status'];
+
+        return $status === 0 || $status >= 500 || $status === 408 || $status === 429;
+    }
+
+    /**
+     * Guarda en el cobro lo que contestó MP al crear (o reenviar) la orden.
+     *
+     * - creada: `mp_order_id`, estado crudo y el id del pago; se limpia el "no respondió".
+     * - transitoria: el cobro sigue `pendiente` sin orden, con "Mercado Pago no respondió,
+     *   reintentando…".
+     * - rechazo definitivo (4xx): `error` con el motivo legible.
+     *
+     * Las escrituras son condicionales (pendiente y sin orden): el polling y el comando pueden
+     * estar recuperando el mismo cobro a la vez, y el segundo no pisa lo que ya escribió el primero.
+     *
+     * @param MercadoPagoQrCobro $cobro
+     * @param array $respuesta La de `enviar_orden()`.
+     * @return array{resultado: string, mensaje: string|null} `creada`, `sin_respuesta` o `rechazada`.
+     */
+    protected function registrar_orden(MercadoPagoQrCobro $cobro, array $respuesta)
+    {
+        $sin_orden_pendiente = MercadoPagoQrCobro::where('id', $cobro->id)
+            ->where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)
+            ->whereNull('mp_order_id');
+
+        if ($respuesta['ok'] && !empty($respuesta['json']['id'])) {
+
+            $orden = $respuesta['json'];
+            $pago  = $this->primer_pago($orden);
+
+            $campos = [
+                'mp_order_id'      => (string) $orden['id'],
+                'mp_status'        => isset($orden['status']) ? mb_substr((string) $orden['status'], 0, 60) : null,
+                'mp_status_detail' => isset($orden['status_detail']) ? mb_substr((string) $orden['status_detail'], 0, 120) : null,
+                'error_message'    => null,
+            ];
+
+            if (!empty($pago['id'])) {
+                $campos['mp_payment_id'] = (string) $pago['id'];
+            }
+
+            $sin_orden_pendiente->update($campos);
+            $cobro->refresh();
+
+            return ['resultado' => 'creada', 'mensaje' => null];
+        }
+
+        if ($this->es_transitoria($respuesta)) {
+
+            $this->log_error_de_mp('crear orden del cobro ' . $cobro->id . ' (sin respuesta, queda para recuperar)', $cobro->user_id, $respuesta);
+
+            $sin_orden_pendiente->update(['error_message' => self::MENSAJE_SIN_RESPUESTA]);
+            $cobro->refresh();
+
+            return ['resultado' => 'sin_respuesta', 'mensaje' => self::MENSAJE_SIN_RESPUESTA];
+        }
+
+        $this->log_error_de_mp('crear orden del cobro ' . $cobro->id, $cobro->user_id, $respuesta);
+
+        $mensaje = !empty($respuesta['sin_cuerpo'])
+            ? 'El QR de este cobro ya no existe en ComercioCity.'
+            : $this->mensaje_de_error('Mercado Pago no dejó cargar el cobro en el QR', $respuesta);
+
+        $sin_orden_pendiente->update([
+            'estado'        => MercadoPagoQrCobro::ESTADO_ERROR,
+            'error_message' => mb_substr($mensaje, 0, 191),
         ]);
+        $cobro->refresh();
 
-        if ($respuesta['status'] === 0) {
-            $respuesta = $this->llamar($conexion['token'], 'POST', '/v1/orders', [
-                'idempotency_key' => $idempotency_key,
-                'json'            => $cuerpo,
-            ]);
+        return ['resultado' => 'rechazada', 'mensaje' => $mensaje];
+    }
+
+    /**
+     * Recupera la orden de un cobro pendiente que quedó SIN `mp_order_id` porque MP no contestó al
+     * crearla: reenvía el MISMO POST con la MISMA clave. Si MP la había creado, devuelve esa misma
+     * orden (no crea otra); si no, la crea ahora, que también está bien porque el cobro sigue
+     * pendiente y es exactamente lo que se quería cargar.
+     *
+     * Sin clave guardada, o pasadas 20 horas (la clave dura 24 en MP y reenviar después crearía
+     * una orden NUEVA), no se reenvía nada: el cobro pasa a `error` ("No se pudo confirmar con
+     * Mercado Pago") y el comercio lo revisa en su cuenta de MP.
+     *
+     * @param MercadoPagoQrCobro $cobro
+     * @param array $conexion
+     * @return string `creada`, `sin_respuesta`, `rechazada` o `nada` (no correspondía).
+     */
+    protected function recuperar_orden(MercadoPagoQrCobro $cobro, array $conexion)
+    {
+        if (!$cobro->esta_pendiente() || !empty($cobro->mp_order_id)) {
+            return 'nada';
         }
 
-        if (!$respuesta['ok'] || empty($respuesta['json']['id'])) {
+        $vencida = $cobro->created_at && $cobro->created_at->lt(Carbon::now()->subHours(self::HORAS_DE_VIDA_DE_LA_CLAVE));
 
-            $this->log_error_de_mp('crear orden del cobro ' . $cobro->id, $owner_id, $respuesta);
+        if (empty($cobro->mp_idempotency_key) || $vencida) {
 
-            $mensaje = $this->mensaje_de_error('Mercado Pago no dejó cargar el cobro en el QR', $respuesta);
+            Log::warning('MercadoPagoQrService: el cobro ' . $cobro->id . ' no tiene orden y ya no se puede reenviar con la misma clave; pasa a error.');
 
-            $cobro->estado        = MercadoPagoQrCobro::ESTADO_ERROR;
-            $cobro->error_message = mb_substr($mensaje, 0, 191);
-            $cobro->save();
+            $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_ERROR, self::MENSAJE_SIN_CONFIRMAR);
 
-            throw new MercadoPagoQrException($mensaje, 422);
+            return 'rechazada';
         }
 
-        $orden = $respuesta['json'];
+        $resultado = $this->registrar_orden($cobro, $this->enviar_orden($cobro, $conexion));
 
-        $cobro->mp_order_id      = (string) $orden['id'];
-        $cobro->mp_status        = isset($orden['status']) ? mb_substr((string) $orden['status'], 0, 60) : null;
-        $cobro->mp_status_detail = isset($orden['status_detail']) ? mb_substr((string) $orden['status_detail'], 0, 120) : null;
-
-        $pago = $this->primer_pago($orden);
-
-        if (!empty($pago['id'])) {
-            $cobro->mp_payment_id = (string) $pago['id'];
+        if ($resultado['resultado'] === 'creada') {
+            Log::info('MercadoPagoQrService: recuperada la orden ' . $cobro->mp_order_id . ' del cobro ' . $cobro->id . '.');
         }
 
-        $cobro->save();
-
-        Log::info('MercadoPagoQrService: cobro ' . $cobro->id . ' cargado en el QR ' . $qr->id . ' (orden ' . $cobro->mp_order_id . ', total ' . $monto . ').');
-
-        return MercadoPagoQrCobro::withAll()->find($cobro->id);
+        return $resultado['resultado'];
     }
 
     /**
      * Cancela en MP los cobros pendientes de un QR antes de cargarle uno nuevo (ver
-     * `crear_cobro()`).
+     * `crear_cobro()`, que ya tiene tomado el candado del QR). El reemplazado queda `cancelado`
+     * con el motivo "Otro cobro usó este mismo QR y reemplazó a este.".
      *
      * @param MercadoPagoQrCaja $qr
      * @param array $conexion
      * @return void
-     * @throws MercadoPagoQrException 422 `pagando: true` si el cliente está pagando uno de esos.
+     * @throws MercadoPagoQrException 422 `pagando: true` si el cliente está pagando uno de esos;
+     *                                422 `sin_respuesta: true` si hay uno sin confirmar y MP no
+     *                                contesta (no se sabe si el QR está libre).
      */
     protected function cancelar_pendientes_del_qr(MercadoPagoQrCaja $qr, array $conexion)
     {
         $pendientes = MercadoPagoQrCobro::where('mercado_pago_qr_caja_id', $qr->id)
             ->where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)
+            ->with('qr')
             ->get();
 
         foreach ($pendientes as $pendiente) {
             try {
-                $this->cancelar_cobro_con_conexion($pendiente, $conexion);
+                $this->cancelar_cobro_con_conexion($pendiente, $conexion, self::MENSAJE_REEMPLAZADO);
             } catch (MercadoPagoQrException $e) {
                 $payload = $e->payload();
 
@@ -969,17 +1227,29 @@ class MercadoPagoQrService
                     );
                 }
 
+                if (!empty($payload['sin_respuesta'])) {
+                    throw new MercadoPagoQrException(
+                        'Mercado Pago no responde y hay un cobro anterior sin confirmar en este QR. Probá de nuevo en unos segundos.',
+                        422,
+                        ['sin_respuesta' => true]
+                    );
+                }
+
                 // Cualquier otro problema con el viejo no frena el cobro nuevo: queda dicho y el
-                // comando lo concilia (o lo vence) solo.
+                // comando lo concilia solo.
                 Log::warning('MercadoPagoQrService: no se pudo cancelar el cobro pendiente ' . $pendiente->id . ' antes de cargar uno nuevo: ' . $e->getMessage());
             }
         }
     }
 
     /**
-     * Consulta la orden en MP y actualiza el cobro si todavía está pendiente. Si MP no contesta,
-     * el cobro queda como estaba (el SPA vuelve a preguntar en 3 segundos; el comando, en un
-     * minuto): un problema de red no es motivo para dar un cobro por perdido.
+     * Consulta la orden en MP y actualiza el cobro si todavía está pendiente.
+     *
+     * Si el cobro no tiene orden (MP no contestó al crearla), primero la recupera reenviando el
+     * mismo pedido (`recuperar_orden()`) y recién con la orden en la mano consulta su estado.
+     *
+     * Si MP no contesta, el cobro queda como estaba (el SPA vuelve a preguntar en 3 segundos; el
+     * comando, en un minuto): un problema de red no es motivo para dar un cobro por perdido.
      *
      * @param MercadoPagoQrCobro $cobro
      * @param array|null $conexion La del comercio del cobro, si el llamador ya la tiene.
@@ -987,7 +1257,7 @@ class MercadoPagoQrService
      */
     public function actualizar_cobro(MercadoPagoQrCobro $cobro, $conexion = null)
     {
-        if (!$cobro->esta_pendiente() || empty($cobro->mp_order_id)) {
+        if (!$cobro->esta_pendiente()) {
             return $cobro;
         }
 
@@ -997,6 +1267,15 @@ class MercadoPagoQrService
 
         if (is_null($conexion)) {
             return $cobro;
+        }
+
+        if (empty($cobro->mp_order_id)) {
+
+            $this->recuperar_orden($cobro, $conexion);
+
+            if (!$cobro->esta_pendiente() || empty($cobro->mp_order_id)) {
+                return $cobro;
+            }
         }
 
         $respuesta = $this->llamar($conexion['token'], 'GET', '/v1/orders/' . rawurlencode($cobro->mp_order_id));
@@ -1046,8 +1325,9 @@ class MercadoPagoQrService
         ];
 
         if ($status === 'processed' || ($pago_status === 'processed' && $pago_detail === 'accredited')) {
-            $campos['estado']  = MercadoPagoQrCobro::ESTADO_PAGADO;
-            $campos['paid_at'] = Carbon::now();
+            $campos['estado']        = MercadoPagoQrCobro::ESTADO_PAGADO;
+            $campos['paid_at']       = Carbon::now();
+            $campos['error_message'] = null;
 
             if (!empty($pago['id'])) {
                 $campos['mp_payment_id'] = (string) $pago['id'];
@@ -1082,7 +1362,8 @@ class MercadoPagoQrService
      * @param MercadoPagoQrCobro $cobro
      * @return MercadoPagoQrCobro Refrescado (puede volver `pagado` si el pago entró justo antes).
      * @throws MercadoPagoQrException 409 `pagando: true` si el cliente está pagando; 422 si no hay
-     *                                conexión o MP no dejó cancelar.
+     *                                conexión, si MP no responde (`sin_respuesta: true`) o si MP
+     *                                no dejó cancelar.
      */
     public function cancelar_cobro(MercadoPagoQrCobro $cobro)
     {
@@ -1090,21 +1371,14 @@ class MercadoPagoQrService
             return $cobro;
         }
 
-        if (empty($cobro->mp_order_id)) {
-            // Nunca llegó a MP: no hay nada que cancelar allá.
-            $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_CANCELADO, null);
-
-            return $cobro;
-        }
-
         /*
          * Sin conexión NO se cancela solo acá: la orden seguiría viva en el QR y el cliente podría
          * pagarla con el cobro ya marcado como cancelado. Se le dice al cajero y el comando la
-         * concilia cuando vuelva la conexión (o vence a los 10 minutos en MP).
+         * concilia cuando vuelva la conexión (la orden vence sola a los 10 minutos en MP).
          */
         $conexion = $this->conexion_o_falla($cobro->user_id);
 
-        $this->cancelar_cobro_con_conexion($cobro, $conexion);
+        $this->cancelar_cobro_con_conexion($cobro, $conexion, null);
 
         return $cobro;
     }
@@ -1112,7 +1386,12 @@ class MercadoPagoQrService
     /**
      * La cancelación en MP propiamente dicha (`POST /v1/orders/{id}/cancel`, sin cuerpo).
      *
-     * - ok, o 409 `order_already_canceled` → `cancelado`.
+     * - sin orden todavía (MP no contestó al crearla): primero se la recupera con el mismo pedido.
+     *   Si MP la rechaza de forma definitiva, nunca existió: el cobro ya quedó en `error` y no hay
+     *   nada que cancelar. Si MP sigue sin contestar, 422 `sin_respuesta: true`: no se puede
+     *   asegurar que no haya una orden viva en el QR. Un cobro sin orden y SIN clave (nunca llegó
+     *   a mandarse) se cancela acá.
+     * - ok, o 409 `order_already_canceled` → `cancelado` (con `$motivo` en `error_message`).
      * - 409 `instore_order_locked_error` → el cliente está pagando AHORA: 409 `pagando: true` y el
      *   cobro sigue pendiente (si el pago entra, el polling lo ve).
      * - cualquier otro rechazo → se consulta la orden: si ya no está pendiente (se pagó o venció
@@ -1120,15 +1399,33 @@ class MercadoPagoQrService
      *
      * @param MercadoPagoQrCobro $cobro
      * @param array $conexion
+     * @param string|null $motivo Lo que queda en `error_message` si se cancela.
      * @return void
      * @throws MercadoPagoQrException
      */
-    protected function cancelar_cobro_con_conexion(MercadoPagoQrCobro $cobro, array $conexion)
+    protected function cancelar_cobro_con_conexion(MercadoPagoQrCobro $cobro, array $conexion, $motivo)
     {
         if (empty($cobro->mp_order_id)) {
-            $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_CANCELADO, null);
 
-            return;
+            if (empty($cobro->mp_idempotency_key)) {
+                $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_CANCELADO, $motivo);
+
+                return;
+            }
+
+            $this->recuperar_orden($cobro, $conexion);
+
+            if (!$cobro->esta_pendiente()) {
+                return;
+            }
+
+            if (empty($cobro->mp_order_id)) {
+                throw new MercadoPagoQrException(
+                    'Mercado Pago no responde todavía y no se puede confirmar si el cobro quedó cargado en el QR. Probá de nuevo en unos segundos.',
+                    422,
+                    ['sin_respuesta' => true]
+                );
+            }
         }
 
         $respuesta = $this->llamar($conexion['token'], 'POST', '/v1/orders/' . rawurlencode($cobro->mp_order_id) . '/cancel', [
@@ -1138,7 +1435,7 @@ class MercadoPagoQrService
         $codigos = $this->codigos_de_error($respuesta['json']);
 
         if ($respuesta['ok'] || in_array('order_already_canceled', $codigos, true)) {
-            $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_CANCELADO, null, 'canceled');
+            $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_CANCELADO, $motivo, 'canceled');
 
             return;
         }
@@ -1200,14 +1497,68 @@ class MercadoPagoQrService
      */
     public function ultimos_cobros($owner_id, $limit)
     {
-        $limit = is_numeric($limit) ? (int) $limit : 20;
-        $limit = max(1, min(self::LIMITE_MAXIMO_DE_COBROS, $limit));
-
         return MercadoPagoQrCobro::where('user_id', (int) $owner_id)
             ->withAll()
             ->orderBy('id', 'DESC')
-            ->limit($limit)
+            ->limit($this->limite_de_cobros($limit))
             ->get();
+    }
+
+    /**
+     * Cobros PAGADOS que ninguna venta usó, de los últimos 7 días, más nuevos primero
+     * (`GET qr/cobros?pagados_sin_venta=1`). Es la plata que entró por QR y no quedó registrada
+     * (el SPA se cerró, la venta dio 422, se cortó la red al guardar): el SPA la muestra para que
+     * el cajero la registre o la devuelva.
+     *
+     * @param int $owner_id
+     * @param mixed $limit
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public function pagados_sin_venta($owner_id, $limit)
+    {
+        return MercadoPagoQrCobro::where('user_id', (int) $owner_id)
+            ->where('estado', MercadoPagoQrCobro::ESTADO_PAGADO)
+            ->whereNull('sale_id')
+            ->where('created_at', '>=', Carbon::now()->subDays(self::DIAS_DE_PAGOS_SIN_VENTA))
+            ->withAll()
+            ->orderBy('id', 'DESC')
+            ->limit($this->limite_de_cobros($limit))
+            ->get();
+    }
+
+    /**
+     * Normaliza el `limit` de los listados: 20 por defecto, entre 1 y 100.
+     *
+     * @param mixed $limit
+     * @return int
+     */
+    protected function limite_de_cobros($limit)
+    {
+        $limit = is_numeric($limit) ? (int) $limit : 20;
+
+        return max(1, min(self::LIMITE_MAXIMO_DE_COBROS, $limit));
+    }
+
+    /**
+     * Método de pago con el que se tiene que guardar la venta de un cobro: el congelado al
+     * crearlo; si no tiene (cobro sin método configurado en ese momento), el configurado hoy.
+     *
+     * @param MercadoPagoQrCobro $cobro
+     * @param int|null $metodo_configurado El de hoy, si el llamador ya lo tiene (evita la consulta).
+     * @param bool $configurado_resuelto true si `$metodo_configurado` ya viene resuelto (aunque sea null).
+     * @return int|null
+     */
+    public function metodo_del_cobro(MercadoPagoQrCobro $cobro, $metodo_configurado = null, $configurado_resuelto = false)
+    {
+        if (!empty($cobro->current_acount_payment_method_id)) {
+            return (int) $cobro->current_acount_payment_method_id;
+        }
+
+        if ($configurado_resuelto) {
+            return is_null($metodo_configurado) ? null : (int) $metodo_configurado;
+        }
+
+        return $this->metodo_de_pago_configurado($cobro->user_id);
     }
 
     /**
@@ -1215,18 +1566,20 @@ class MercadoPagoQrService
      * `{id, total, estado, mp_order_id, error_message, paid_at, sale_id, sale_num,
      * qr: {id, name, qr_image_url}, created_at, current_acount_payment_method_id}`.
      *
-     * `current_acount_payment_method_id` es el método configurado HOY para el QR (no se guarda en
-     * el cobro): es el que el SPA pone como método único de la venta cuando el pago entra.
+     * `current_acount_payment_method_id` es el método congelado en el cobro al crearlo (si no
+     * tiene, el configurado hoy): es el que el SPA pone como método único de la venta cuando el
+     * pago entra, y el mismo contra el que `SaleController@store` valida.
      * Las fechas van como el resto de los modelos del sistema (ISO 8601 en UTC).
      *
      * @param MercadoPagoQrCobro $cobro Con `qr` y `sale` cargadas (o se cargan solas).
-     * @param int|null $current_acount_payment_method_id
+     * @param int|null $metodo_configurado El configurado hoy (respaldo si el cobro no tiene).
      * @return array
      */
-    public function serializar_cobro(MercadoPagoQrCobro $cobro, $current_acount_payment_method_id)
+    public function serializar_cobro(MercadoPagoQrCobro $cobro, $metodo_configurado)
     {
-        $qr   = $cobro->qr;
-        $sale = is_null($cobro->sale_id) ? null : $cobro->sale;
+        $qr     = $cobro->qr;
+        $sale   = is_null($cobro->sale_id) ? null : $cobro->sale;
+        $metodo = $this->metodo_del_cobro($cobro, $metodo_configurado, true);
 
         return [
             'id'                               => (int) $cobro->id,
@@ -1243,7 +1596,7 @@ class MercadoPagoQrService
                 'qr_image_url' => $qr->qr_image_url,
             ] : null,
             'created_at'                       => $cobro->created_at ? $cobro->created_at->toJSON() : null,
-            'current_acount_payment_method_id' => is_null($current_acount_payment_method_id) ? null : (int) $current_acount_payment_method_id,
+            'current_acount_payment_method_id' => $metodo,
         ];
     }
 
@@ -1256,9 +1609,20 @@ class MercadoPagoQrService
      * candado y de la transacción de `SaleController@store`, como los otros 422 tempranos: un
      * rechazo no toca la base ni consume número de venta.
      *
-     * Exige que el cobro sea del comercio, esté `pagado`, no lo haya usado otra venta y su total
-     * coincida con el de la venta (al centavo). NO consulta a Mercado Pago: el SPA manda el campo
-     * recién cuando vio el cobro pagado, y guardar una venta no puede depender de la red.
+     * Exige, en este orden (cada uno con un mensaje que le dice al cajero qué hacer):
+     * 1. que el cobro sea del comercio;
+     * 2. que no lo haya usado otra venta;
+     * 3. que esté `pagado`;
+     * 4. que la venta sea de contado: sin cliente, o con el cliente pero fuera de la cuenta
+     *    corriente (`omitir_en_cuenta_corriente`). Una venta a cuenta corriente con un cobro QR
+     *    dejaría al cliente debiendo lo que ya pagó;
+     * 5. que no haya reparto (`selected_payment_methods` vacío) y que el método único sea el del
+     *    cobro: si no, la plata que entró por MP quedaría registrada como efectivo, tarjeta, etc.;
+     * 6. que sea en pesos: MP cobró pesos;
+     * 7. que el total coincida con el cobrado (al centavo).
+     *
+     * NO consulta a Mercado Pago: el SPA manda el campo recién cuando vio el cobro pagado, y
+     * guardar una venta no puede depender de la red.
      *
      * 🔴 La excepción del "ya usado": si el cobro ya está atado a una venta que tiene el MISMO
      * `offline_uuid` que este request, es un REINTENTO de esa venta (la red se cortó después del
@@ -1267,12 +1631,12 @@ class MercadoPagoQrService
      *
      * @param int $owner_id Comercio (owner).
      * @param int $cobro_id
-     * @param mixed $total Total de la venta del request.
+     * @param \Illuminate\Http\Request $request El de `SaleController@store` (moneda ya normalizada).
      * @param string|null $offline_uuid El de `VentaOfflineHelper::offline_uuid_utilizable()`.
      * @return array|null null si está todo bien; si no, el cuerpo del 422
      *                    (`{message, cobro_qr_invalido: true}`).
      */
-    public function validar_cobro_para_venta($owner_id, $cobro_id, $total, $offline_uuid = null)
+    public function validar_cobro_para_venta($owner_id, $cobro_id, $request, $offline_uuid = null)
     {
         try {
             $cobro = MercadoPagoQrCobro::where('id', (int) $cobro_id)
@@ -1280,7 +1644,7 @@ class MercadoPagoQrService
                 ->first();
 
             if (!$cobro) {
-                return $this->cobro_invalido('El cobro con QR de Mercado Pago no existe.');
+                return $this->cobro_invalido('El cobro con QR de Mercado Pago no existe. Quitá el cobro QR de la venta y volvé a cobrar.');
             }
 
             if (!is_null($cobro->sale_id)) {
@@ -1293,20 +1657,63 @@ class MercadoPagoQrService
                 $sale = Sale::withTrashed()->select('id', 'num')->find($cobro->sale_id);
 
                 return $this->cobro_invalido(
-                    'Este cobro con QR ya se usó en ' . ($sale ? 'la venta N° ' . $sale->num : 'otra venta') . '.'
+                    'Este cobro con QR ya se usó en ' . ($sale ? 'la venta N° ' . $sale->num : 'otra venta')
+                    . '. Quitá el cobro QR de esta venta y cobrala de nuevo.'
                 );
             }
 
             if ($cobro->estado !== MercadoPagoQrCobro::ESTADO_PAGADO) {
-                return $this->cobro_invalido('El cobro con QR de Mercado Pago todavía no figura como pagado.');
+                return $this->cobro_invalido('El cobro con QR de Mercado Pago todavía no figura como pagado. Esperá a que entre el pago o quitá el cobro QR de la venta.');
             }
 
-            $total = is_numeric($total) ? (float) $total : 0;
+            $client_id = $request->input('client_id');
+            $omitir    = in_array($request->input('omitir_en_cuenta_corriente'), [1, '1', true, 'true'], true);
+
+            if (!empty($client_id) && !$omitir) {
+                return $this->cobro_invalido(
+                    'Esta venta se cobró por QR de Mercado Pago: tiene que guardarse de contado, sin cliente en cuenta corriente. '
+                    . 'Sacá el cliente (o marcá que no vaya a la cuenta corriente) o quitá el cobro QR de la venta.'
+                );
+            }
+
+            $reparto = $request->input('selected_payment_methods');
+
+            if (is_array($reparto) && count($reparto) > 0) {
+                return $this->cobro_invalido(
+                    'Esta venta se cobró por QR de Mercado Pago: tiene que guardarse con un solo método de pago, sin repartir el cobro. '
+                    . 'Quitá el reparto o quitá el cobro QR de la venta.'
+                );
+            }
+
+            $metodo_del_cobro = $this->metodo_del_cobro($cobro);
+            $metodo_de_venta  = $request->input('current_acount_payment_method_id');
+
+            if (!is_null($metodo_del_cobro)
+                && (!is_numeric($metodo_de_venta) || (int) $metodo_de_venta !== $metodo_del_cobro)) {
+
+                $metodo = CurrentAcountPaymentMethod::find($metodo_del_cobro);
+
+                return $this->cobro_invalido(
+                    'Esta venta se cobró por QR de Mercado Pago: tiene que guardarse con el método '
+                    . ($metodo ? '"' . $metodo->name . '"' : 'del QR') . '. Elegí ese método o quitá el cobro QR de la venta.'
+                );
+            }
+
+            if (CotizacionDeVentaHelper::normalizar_moneda_id($request->input('moneda_id')) !== self::MONEDA_PESOS) {
+                return $this->cobro_invalido(
+                    'Esta venta se cobró por QR de Mercado Pago en pesos: tiene que guardarse en pesos. '
+                    . 'Cambiá la moneda a pesos o quitá el cobro QR de la venta.'
+                );
+            }
+
+            $total = is_numeric($request->input('total')) ? (float) $request->input('total') : 0;
 
             if (abs((float) $cobro->total - $total) > self::TOLERANCIA_TOTAL) {
+                $cobrado = '$' . number_format((float) $cobro->total, 2, ',', '.');
+
                 return $this->cobro_invalido(
-                    'El total de la venta ($' . number_format($total, 2, ',', '.') . ') no coincide con lo que se cobró por QR ($'
-                    . number_format((float) $cobro->total, 2, ',', '.') . ').'
+                    'El total de la venta ($' . number_format($total, 2, ',', '.') . ') no coincide con lo que se cobró por QR ('
+                    . $cobrado . '). Volvé a dejar la venta en ' . $cobrado . ' o quitá el cobro QR de la venta.'
                 );
             }
 
@@ -1318,6 +1725,30 @@ class MercadoPagoQrService
             Log::error('MercadoPagoQrService: no se pudo validar el cobro ' . (int) $cobro_id . ' para una venta: ' . get_class($e) . ' ' . $e->getMessage());
 
             return $this->cobro_invalido('No se pudo verificar el cobro con QR de Mercado Pago. Probá de nuevo.');
+        }
+    }
+
+    /**
+     * Indica si el cobro existe, es del comercio y todavía no lo usó ninguna venta. Lo usa la
+     * guarda anti doble clic de `SaleController@store`: dos ventas del mismo total en 5 segundos,
+     * cada una con SU cobro QR sin usar, son dos ventas legítimas (dos clientes que pagaron lo
+     * mismo), no un doble clic. Si el cobro ya tiene venta, la guarda se comporta como siempre.
+     *
+     * Ante cualquier problema devuelve false: la guarda sigue funcionando como hasta hoy.
+     *
+     * @param int $owner_id
+     * @param int $cobro_id
+     * @return bool
+     */
+    public function cobro_todavia_sin_venta($owner_id, $cobro_id)
+    {
+        try {
+            return MercadoPagoQrCobro::where('id', (int) $cobro_id)
+                ->where('user_id', (int) $owner_id)
+                ->whereNull('sale_id')
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
         }
     }
 
@@ -1348,7 +1779,7 @@ class MercadoPagoQrService
             || (!is_null($cobro->sale_id) && (int) $cobro->sale_id !== (int) $sale->id)) {
 
             throw new MercadoPagoQrException(
-                'Este cobro con QR ya se usó en otra venta o dejó de estar pagado. La venta no se guardó.',
+                'Este cobro con QR ya se usó en otra venta o dejó de estar pagado. La venta no se guardó: quitá el cobro QR de la venta y cobrala de nuevo.',
                 422,
                 ['cobro_qr_invalido' => true]
             );
@@ -1379,22 +1810,34 @@ class MercadoPagoQrService
     // =========================================================================================
 
     /**
-     * Concilia los cobros pendientes de TODOS los comercios de la instancia: consulta su orden en
-     * MP y, los que pasaron las 3 horas sin novedad, los vence.
+     * Concilia los cobros pendientes de TODOS los comercios de la instancia.
      *
-     * Antes de vencer uno viejo se lo consulta una última vez: si el cron estuvo caído y el pago
-     * entró, se lo ve pagado en vez de perderlo. La conexión se resuelve una vez por comercio. Un
-     * fallo con un cobro (o con un comercio) no corta el resto.
+     * 🔴 Solo cambia un estado con una respuesta válida de MP (ver la regla de plata arriba de las
+     * constantes). Sin conexión, o si MP falla, el cobro queda `pendiente` y se reintenta en la
+     * próxima corrida. Para cada pendiente:
      *
-     * @return array{revisados: int, actualizados: int, vencidos: int, fallidos: int}
+     * - más de 30 días: se deja de consultar y pasa a `error` ("No se pudo confirmar con Mercado
+     *   Pago");
+     * - con orden: se consulta y se aplica lo que diga MP (`expired` → vencido, etc.);
+     * - sin orden (MP no contestó al crearla) y con más de 15 minutos: se recupera reenviando el
+     *   mismo pedido con la misma clave, y se consulta la orden recuperada. Si MP la da pagada,
+     *   `pagado`; si sigue sin pagar, se la cancela (nadie la está esperando: el cajero ya volvió a
+     *   cobrar o se fue) y queda `cancelado`. Pasadas 20 horas sin poder recuperarla, `error` sin
+     *   reenviar más (la clave dejaría de ser idempotente).
+     *
+     * La conexión se resuelve una vez por comercio. Una excepción con un cobro no corta el resto.
+     *
+     * @return array{revisados: int, actualizados: int, sin_cambios: int, fallidos: int}
      */
     public function conciliar_pendientes()
     {
-        $limite     = Carbon::now()->subHours(self::HORAS_DE_VIGENCIA);
-        $conexiones = [];
-        $conteo     = ['revisados' => 0, 'actualizados' => 0, 'vencidos' => 0, 'fallidos' => 0];
+        $tope_de_consulta  = Carbon::now()->subDays(self::DIAS_MAXIMOS_DE_CONSULTA);
+        $tope_de_recuperar = Carbon::now()->subMinutes(self::MINUTOS_ANTES_DE_RECUPERAR_EN_EL_COMANDO);
+        $conexiones        = [];
+        $conteo            = ['revisados' => 0, 'actualizados' => 0, 'sin_cambios' => 0, 'fallidos' => 0];
 
         $pendientes = MercadoPagoQrCobro::where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)
+            ->with('qr')
             ->orderBy('id')
             ->get();
 
@@ -1403,30 +1846,12 @@ class MercadoPagoQrService
             $conteo['revisados']++;
 
             try {
-                $owner_id = (int) $cobro->user_id;
+                $this->conciliar_uno($cobro, $conexiones, $tope_de_consulta, $tope_de_recuperar);
 
-                if (!array_key_exists($owner_id, $conexiones)) {
-                    $conexiones[$owner_id] = $this->conexion($owner_id);
-                }
-
-                if (!is_null($conexiones[$owner_id]) && !empty($cobro->mp_order_id)) {
-
-                    $this->actualizar_cobro($cobro, $conexiones[$owner_id]);
-
-                    if (!$cobro->esta_pendiente()) {
-                        $conteo['actualizados']++;
-                    }
-                }
-
-                if ($cobro->esta_pendiente() && $cobro->created_at && $cobro->created_at->lt($limite)) {
-
-                    $this->marcar_si_sigue_pendiente(
-                        $cobro,
-                        MercadoPagoQrCobro::ESTADO_VENCIDO,
-                        'Pasaron más de ' . self::HORAS_DE_VIGENCIA . ' horas sin que el pago entrara.'
-                    );
-
-                    $conteo['vencidos']++;
+                if ($cobro->esta_pendiente()) {
+                    $conteo['sin_cambios']++;
+                } else {
+                    $conteo['actualizados']++;
                 }
             } catch (\Throwable $e) {
                 $conteo['fallidos']++;
@@ -1436,6 +1861,71 @@ class MercadoPagoQrService
         }
 
         return $conteo;
+    }
+
+    /**
+     * Concilia un cobro pendiente (ver `conciliar_pendientes()`).
+     *
+     * @param MercadoPagoQrCobro $cobro
+     * @param array $conexiones Caché de conexiones por comercio (por referencia).
+     * @param Carbon $tope_de_consulta Antes de esto, se deja de consultar.
+     * @param Carbon $tope_de_recuperar Antes de esto, un cobro sin orden se recupera.
+     * @return void
+     */
+    protected function conciliar_uno(MercadoPagoQrCobro $cobro, array &$conexiones, Carbon $tope_de_consulta, Carbon $tope_de_recuperar)
+    {
+        if ($cobro->created_at && $cobro->created_at->lt($tope_de_consulta)) {
+
+            Log::warning('MercadoPagoQrService: el cobro ' . $cobro->id . ' lleva más de ' . self::DIAS_MAXIMOS_DE_CONSULTA . ' días sin confirmarse; pasa a error.');
+
+            $this->marcar_si_sigue_pendiente($cobro, MercadoPagoQrCobro::ESTADO_ERROR, self::MENSAJE_SIN_CONFIRMAR);
+
+            return;
+        }
+
+        $owner_id = (int) $cobro->user_id;
+
+        if (!array_key_exists($owner_id, $conexiones)) {
+            $conexiones[$owner_id] = $this->conexion($owner_id);
+        }
+
+        $conexion = $conexiones[$owner_id];
+
+        if (is_null($conexion)) {
+            // Sin conexión no hay respuesta de MP: queda pendiente y se reintenta.
+            return;
+        }
+
+        if (!empty($cobro->mp_order_id)) {
+            $this->actualizar_cobro($cobro, $conexion);
+
+            return;
+        }
+
+        if ($cobro->created_at && $cobro->created_at->gt($tope_de_recuperar)) {
+            // Reciente: lo está recuperando el polling del modal de Vender.
+            return;
+        }
+
+        $this->recuperar_orden($cobro, $conexion);
+
+        if (!$cobro->esta_pendiente() || empty($cobro->mp_order_id)) {
+            return;
+        }
+
+        // Orden recuperada: su estado de AHORA (el reenvío devuelve el de cuando se creó).
+        $this->actualizar_cobro($cobro, $conexion);
+
+        if (!$cobro->esta_pendiente()) {
+            return;
+        }
+
+        try {
+            $this->cancelar_cobro_con_conexion($cobro, $conexion, self::MENSAJE_CANCELADO_POR_DEMORA);
+        } catch (MercadoPagoQrException $e) {
+            // El cliente la está pagando, o MP no dejó: queda pendiente para la próxima corrida.
+            Log::info('MercadoPagoQrService: no se pudo cancelar la orden recuperada del cobro ' . $cobro->id . ': ' . $e->getMessage());
+        }
     }
 
     // =========================================================================================

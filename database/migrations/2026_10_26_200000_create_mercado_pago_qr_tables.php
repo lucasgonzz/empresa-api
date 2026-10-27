@@ -103,6 +103,24 @@ class CreateMercadoPagoQrTables extends Migration
                 $table->decimal('total', 14, 2);
 
                 /*
+                 * Método de pago con el que se tiene que guardar la venta, congelado al crear el
+                 * cobro (el configurado en ese momento). La venta se valida contra este, no contra
+                 * el de hoy: si el comercio cambia la configuración con un cobro en curso, ese
+                 * cobro sigue pidiendo el método con el que nació.
+                 */
+                $table->integer('current_acount_payment_method_id')->nullable();
+
+                /* Descripción de la orden en MP. Se guarda para poder reenviar el MISMO cuerpo. */
+                $table->string('description', 150)->nullable();
+
+                /*
+                 * `X-Idempotency-Key` con la que se creó la orden. Si MP no contestó, se reenvía el
+                 * mismo POST con esta misma clave: si la orden se había creado, MP devuelve esa en
+                 * vez de crear otra (la clave vale 24 horas en MP).
+                 */
+                $table->string('mp_idempotency_key', 64)->nullable();
+
+                /*
                  * `external_reference` de la orden en MP: `ccqr-{owner}-{cobro}-{4 aleatorios}`.
                  * Único: es lo que permite encontrar el cobro desde MP si algún día se suma el
                  * webhook. 64 es el máximo que acepta Orders.

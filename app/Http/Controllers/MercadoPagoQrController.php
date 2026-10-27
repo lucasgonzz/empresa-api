@@ -112,6 +112,9 @@ class MercadoPagoQrController extends Controller
     /**
      * `GET /api/mercado-pago/qr/cobros?limit=20`: los últimos cobros del comercio.
      *
+     * Con `pagados_sin_venta=1`: solo los cobros PAGADOS que ninguna venta usó, de los últimos 7
+     * días, más nuevos primero. Es la plata que entró por QR y no quedó registrada en una venta.
+     *
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse 200 `{cobros: [Cobro]}`.
      */
@@ -120,10 +123,15 @@ class MercadoPagoQrController extends Controller
         $service  = new MercadoPagoQrService();
         $owner_id = $this->userId();
         $metodo   = $service->metodo_de_pago_configurado($owner_id);
+        $limit    = $request->query('limit', 20);
+
+        $lista = $request->boolean('pagados_sin_venta')
+            ? $service->pagados_sin_venta($owner_id, $limit)
+            : $service->ultimos_cobros($owner_id, $limit);
 
         $cobros = [];
 
-        foreach ($service->ultimos_cobros($owner_id, $request->query('limit', 20)) as $cobro) {
+        foreach ($lista as $cobro) {
             $cobros[] = $service->serializar_cobro($cobro, $metodo);
         }
 

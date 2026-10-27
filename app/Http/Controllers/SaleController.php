@@ -400,9 +400,10 @@ class SaleController extends Controller
          * Campo OPCIONAL: el SPA lo manda recién cuando vio el cobro `pagado`. Quinto 422
          * temprano, con el mismo criterio que los de arriba: antes del candado y de la
          * transacción, así un rechazo no toca la base ni consume número de venta. Exige que el
-         * cobro sea del comercio, esté pagado, no lo haya usado otra venta y su total sea el de
-         * esta venta. Sin el campo (SPA vieja, ventas offline viejas, cualquier otro cobro) no
-         * corre ni una query.
+         * cobro sea del comercio, esté pagado y no lo haya usado otra venta, y que la venta sea de
+         * contado (sin cuenta corriente), sin reparto, con el método de pago del cobro, en pesos y
+         * por el mismo total. Sin el campo (SPA vieja, ventas offline viejas, cualquier otro cobro)
+         * no corre ni una query.
          *
          * Va DESPUÉS de resolver el `offline_uuid` a propósito: un reintento de una venta que ya
          * se guardó con este cobro (mismo uuid) no es "cobro ya usado", y se deja pasar para que
@@ -418,7 +419,7 @@ class SaleController extends Controller
             $error_cobro_qr = (new \App\Services\MercadoPago\MercadoPagoQrService())->validar_cobro_para_venta(
                 $this->userId(),
                 $mercado_pago_qr_cobro_id,
-                $request->total,
+                $request,
                 $offline_uuid
             );
 
@@ -517,7 +518,19 @@ class SaleController extends Controller
              * manda dos uuid distintos para la misma venta. Ver
              * `VentaOfflineHelper::saltear_guarda_de_cinco_segundos()`.
              */
+            /*
+             * Tampoco se aplica a una venta que trae un cobro QR de Mercado Pago TODAVÍA SIN VENTA
+             * (misión cobro-qr-mercado-pago, 26/10/2026): dos ventas del mismo total en 5 segundos,
+             * cada una con su propio cobro pagado, son dos clientes que pagaron lo mismo, no un
+             * doble clic; descartar la segunda dejaría un pago sin venta. Se pregunta acá, adentro
+             * del candado: en un doble clic de verdad con el MISMO cobro, el primer request ya lo
+             * ató al commitear, este lo ve con venta y la guarda se comporta como siempre.
+             */
+            $saltear_guarda_por_cobro_qr = $mercado_pago_qr_cobro_id > 0
+                && (new \App\Services\MercadoPago\MercadoPagoQrService())->cobro_todavia_sin_venta($this->userId(), $mercado_pago_qr_cobro_id);
+
             if (!VentaOfflineHelper::saltear_guarda_de_cinco_segundos($request, $offline_uuid)
+                && !$saltear_guarda_por_cobro_qr
                 && $this->venta_ya_cread($request, $created_at)) {
                 Log::info('No se volvio a crear la venta');
                 DB::rollBack();
