@@ -215,6 +215,116 @@ class PedidosTest extends MercadoLibreTestCase
         $this->assertEquals(5, (float) Article::find($this->articulo->id)->stock, 'El stock tiene que bajar 5 (2 + 3).');
     }
 
+    /**
+     * Arreglo 8: si la consulta llega al tope de pedidos por corrida y ML todavía tiene más, se
+     * avisa al dueño UNA vez (y se vuelve a avisar recién después de una consulta completa).
+     */
+    public function test_si_la_consulta_queda_cortada_por_el_tope_avisa_una_vez()
+    {
+        config(['services.mercadolibre.max_pedidos_por_consulta' => 50]);
+        $this->conector_ml();
+
+        $pedidos = [];
+        for ($i = 0; $i < 50; $i++) {
+            $pedidos[] = $this->pedido_ml((string) (3000000000 + $i), 'paid', []);
+        }
+        $this->fake_ml([]);
+        $this->rutas_ml['GET orders/search'] = [200, ['results' => $pedidos, 'paging' => ['total' => 120, 'offset' => 0, 'limit' => 50]]];
+
+        $this->sincronizar();
+
+        $this->assertCount(1, $this->pedidos_ml('GET', 'orders/search'), 'Con el tope en 50 se pide una sola página.');
+        Notification::assertSentTo($this->owner, GlobalNotification::class, function ($notificacion) {
+            return strpos($notificacion->message_text, 'más de 50 pedidos de Mercado Libre') !== false;
+        });
+
+        Notification::fake();
+        $this->sincronizar();
+        Notification::assertNothingSent();
+
+        // Una consulta completa rearma el aviso.
+        $this->rutas_ml['GET orders/search'] = [200, ['results' => [], 'paging' => ['total' => 0, 'offset' => 0, 'limit' => 50]]];
+        $this->sincronizar();
+        $this->rutas_ml['GET orders/search'] = [200, ['results' => $pedidos, 'paging' => ['total' => 120, 'offset' => 0, 'limit' => 50]]];
+        $this->sincronizar();
+        Notification::assertSentTo($this->owner, GlobalNotification::class);
+    }
+
+    /**
+     * Arreglo 8: las fechas de ML (con su propio huso, p. ej. -04:00) se guardan en la hora de la
+     * app (Argentina, -03:00).
+     */
+    public function test_las_fechas_de_ml_se_guardan_en_la_hora_de_la_app()
+    {
+        config(['services.mercadolibre.crear_venta_automatica' => false]);
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'cancelled', [['MLA111', 1, 15000]], [
+            'date_created'  => '2026-10-27T10:00:00.000-04:00',
+            'date_closed'   => '2026-10-27T10:05:00.000-04:00',
+            'cancel_detail' => ['group' => 'buyer', 'code' => 'BC', 'description' => 'Cancelado', 'requested_by' => 'buyer', 'date' => '2026-10-27T12:00:00.000-04:00'],
+        ])]);
+
+        $this->sincronizar();
+
+        $fila = \Illuminate\Support\Facades\DB::table('meli_orders')->where('meli_order_id', '2000001001')->where('user_id', $this->owner->id)->first();
+        $this->assertSame('2026-10-27 11:00:00', $fila->meli_created_at);
+        $this->assertSame('2026-10-27 11:05:00', $fila->meli_closed_at);
+
+        $cancelacion = \Illuminate\Support\Facades\DB::table('meli_order_cancel_details')->where('meli_order_id', $fila->id)->first();
+        $this->assertSame('2026-10-27 13:00:00', $cancelacion->date);
+    }
+
+    /**
+     * Arreglo 8: si el pedido ya existe con el mismo `meli_order_id` (lo trajo otro proceso, o es
+     * de otro comercio de la base compartida), la violación del único no se le notifica al dueño
+     * con el SQL ni pisa la fila ajena.
+     */
+    public function test_un_pedido_que_ya_trajo_otro_proceso_no_notifica_el_sql()
+    {
+        config(['services.mercadolibre.crear_venta_automatica' => false]);
+        $otro = \App\Models\User::create([
+            'name'     => 'Otro comercio pedidos ML',
+            'email'    => 'ml-pedidos-'.uniqid().'@test.local',
+            'password' => \Illuminate\Support\Facades\Hash::make('secret'),
+        ]);
+        $ajeno = MeliOrder::create(['meli_order_id' => '2000001001', 'user_id' => $otro->id, 'status' => 'paid', 'meli_order_status_id' => 1]);
+
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [['MLA111', 1, 15000]])]);
+
+        $this->sincronizar();
+
+        Notification::assertNothingSent();
+        $this->assertSame((int) $otro->id, (int) $ajeno->fresh()->user_id);
+    }
+
+    /**
+     * Arreglo 8: `guardar_extra_meli` relee `extra_config` de la base y mezcla solo sus claves:
+     * no pisa lo que otro proceso escribió mientras tanto.
+     */
+    public function test_guardar_el_poll_no_pisa_lo_que_otro_proceso_escribio_en_extra_config()
+    {
+        $connector = $this->conector_ml();
+        $this->ml_devuelve_pedidos([]);
+
+        $service = new OrderDownloaderService($this->owner->id);
+
+        // Otro proceso (el callback, la cuenta) escribe mientras tanto.
+        $fresco = $connector->fresh();
+        $extra = $fresco->extra_config;
+        $extra['meli']['nickname'] = 'NICK_NUEVO';
+        $extra['otra_cosa'] = 'se queda';
+        $fresco->extra_config = $extra;
+        $fresco->save();
+
+        $service->sincronizar_pedidos_recientes();
+
+        $final = $connector->fresh()->extra_config;
+        $this->assertSame('NICK_NUEVO', $final['meli']['nickname']);
+        $this->assertSame('se queda', $final['otra_cosa']);
+        $this->assertNotEmpty($final['meli']['ultimo_poll_pedidos']);
+    }
+
     public function test_un_renglon_sin_vincular_no_genera_venta_y_avisa()
     {
         $this->conector_ml();

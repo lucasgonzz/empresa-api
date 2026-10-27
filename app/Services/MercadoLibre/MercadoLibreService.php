@@ -9,6 +9,7 @@ use Carbon\Carbon;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -592,13 +593,28 @@ class MercadoLibreService
      */
     protected function guardar_extra_meli(array $valores)
     {
-        $extra = is_array($this->platform_connector->extra_config) ? $this->platform_connector->extra_config : [];
-        $meli = isset($extra['meli']) && is_array($extra['meli']) ? $extra['meli'] : [];
+        // Se relee de la base (revisión de la misión, 27/10/2026): el conector en memoria puede
+        // tener horas (un comando largo) y otro proceso pudo haber escrito `extra_config` mientras
+        // tanto (el callback de una reconexión, la solapa Cuenta, otra consulta de pedidos).
+        // Partir de la copia vieja le pisaba esas claves.
+        $crudo = DB::table('platform_connectors')->where('id', $this->platform_connector->id)->value('extra_config');
+        $extra = is_string($crudo) ? json_decode($crudo, true) : null;
 
+        if (!is_array($extra)) {
+            $extra = is_array($this->platform_connector->extra_config) ? $this->platform_connector->extra_config : [];
+        }
+
+        $meli = (isset($extra['meli']) && is_array($extra['meli'])) ? $extra['meli'] : [];
         $extra['meli'] = array_merge($meli, $valores);
 
+        // Solo esta columna: un save() del modelo podría escribir otros atributos viejos.
+        DB::table('platform_connectors')->where('id', $this->platform_connector->id)->update([
+            'extra_config' => json_encode($extra),
+            'updated_at'   => now(),
+        ]);
+
         $this->platform_connector->extra_config = $extra;
-        $this->platform_connector->save();
+        $this->platform_connector->syncOriginalAttributes(['extra_config']);
     }
 
     /**

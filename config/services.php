@@ -129,6 +129,10 @@ return [
         // artículo. La app de ML tiene un cupo compartido por TODOS los clientes.
         'max_por_corrida' => (int) env('MERCADO_LIBRE_MAX_POR_CORRIDA', 30),
 
+        // Tope de pedidos que trae una consulta periódica (páginas de 50). Si ML tiene más
+        // actualizados en la ventana, se traen los más recientes y se avisa al dueño una vez.
+        'max_pedidos_por_consulta' => (int) env('MERCADO_LIBRE_MAX_PEDIDOS_POR_CONSULTA', 1000),
+
         // Pausa mínima entre dos llamadas a la API de ML desde un mismo proceso (milisegundos).
         'ms_entre_llamadas' => (int) env('MERCADO_LIBRE_MS_ENTRE_LLAMADAS', 250),
 

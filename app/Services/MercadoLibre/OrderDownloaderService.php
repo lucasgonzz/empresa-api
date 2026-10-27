@@ -10,6 +10,7 @@ use App\Models\SyncFromMeliOrder;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -39,8 +40,8 @@ class OrderDownloaderService extends MercadoLibreService
     /** Días hacia atrás en el primer poll. */
     const DIAS_PRIMER_POLL = 7;
 
-    /** Tope de pedidos por consulta (4 páginas de 50). */
-    const MAXIMO_POR_CONSULTA = 200;
+    /** Tope de pedidos por consulta por defecto (20 páginas de 50); ver `max_pedidos_por_consulta`. */
+    const MAXIMO_POR_CONSULTA = 1000;
 
     /** @var string|null Estado del pedido en ML antes de esta actualización (null si es nuevo) */
     protected $estado_anterior = null;
@@ -182,7 +183,8 @@ class OrderDownloaderService extends MercadoLibreService
     /**
      * Consulta periódica de pedidos: `orders/search` por `order.date_last_updated.from` (último poll
      * menos 10 minutos, o 7 días si nunca se consultó), del más nuevo al más viejo, paginando de a
-     * 50 hasta 200. Sin filtrar por estado: así llegan las cancelaciones.
+     * 50 hasta `max_pedidos_por_consulta` (1000 por defecto; si quedan más se avisa al dueño una
+     * vez). Sin filtrar por estado: así llegan las cancelaciones.
      *
      * El momento del poll se guarda en `extra_config.meli.ultimo_poll_pedidos` recién al terminar
      * (si la consulta se corta, la próxima vuelve a mirar desde el poll anterior).
@@ -212,6 +214,7 @@ class OrderDownloaderService extends MercadoLibreService
         $limit = 50;
         $procesados = 0;
         $total = 0;
+        $tope = max(1, (int) config('services.mercadolibre.max_pedidos_por_consulta', self::MAXIMO_POR_CONSULTA));
 
         do {
             $respuesta = $this->make_request('GET', 'orders/search', [
@@ -240,9 +243,32 @@ class OrderDownloaderService extends MercadoLibreService
             }
 
             $offset += $limit;
-        } while (count($resultados) > 0 && $offset < $total && $offset < self::MAXIMO_POR_CONSULTA);
+        } while (count($resultados) > 0 && $offset < $total && $offset < $tope);
 
-        $this->guardar_extra_meli(['ultimo_poll_pedidos' => $inicio->toIso8601String()]);
+        // ¿Quedó cortada por el tope? Se trajeron los más recientes; los más viejos de la ventana
+        // pueden no haber entrado. Se avisa al dueño UNA vez (hasta la próxima consulta completa).
+        $cortada = $offset >= $tope && $total > $offset;
+        $extra = ['ultimo_poll_pedidos' => $inicio->toIso8601String(), 'aviso_tope_pedidos' => $cortada];
+
+        if ($cortada) {
+            Log::warning('meli pedidos: la consulta quedó cortada en '.$tope.' de '.$total.' pedidos para el comercio '.$this->user_id);
+
+            if (!$this->extra_meli('aviso_tope_pedidos', false)) {
+                ErrorHandler::notify(
+                    (int) $this->user_id,
+                    'Hubo más de '.$tope.' pedidos de Mercado Libre para traer de una vez',
+                    [[
+                        'title'    => 'Pedidos de Mercado Libre',
+                        'parrafos' => [
+                            'Se trajeron los '.$tope.' más recientes. Algunos pedidos más viejos de ese período pueden no haber entrado al sistema: revisalos en Mercado Libre.',
+                        ],
+                    ]],
+                    'warning'
+                );
+            }
+        }
+
+        $this->guardar_extra_meli($extra);
 
         Log::info('meli pedidos: '.$procesados.' procesados (total en ML '.$total.') para el comercio '.$this->user_id);
 
@@ -379,23 +405,39 @@ class OrderDownloaderService extends MercadoLibreService
                 $this->attachSyncPivot('success');
             });
         } catch (\Exception $e) {
+            // Dos consultas a la vez (el comando y la apertura del listado, o el webhook) pueden
+            // querer crear el mismo pedido: el segundo choca con el único de `meli_order_id`. No es
+            // un error para el dueño: ya lo trajo el otro proceso. Tampoco se le muestra nunca el
+            // SQL (trae los valores del pedido).
+            if (self::es_pedido_duplicado($e)) {
+                Log::info('meli pedidos: el pedido '.(isset($order_data['id']) ? $order_data['id'] : '?').' ya lo trajo otro proceso (único de meli_order_id).');
+
+                return;
+            }
+
             $this->hubo_error = true;
 
             Log::error('Error al crear/actualizar orden desde MercadoLibre: '.$e->getMessage());
             Log::info($e->getTraceAsString());
 
+            $para_mostrar = ($e instanceof QueryException)
+                ? new \Exception('No se pudo guardar el pedido '.(isset($order_data['id']) ? $order_data['id'] : '').' en el sistema. El detalle quedó en el log del servidor.')
+                : $e;
+
             if ($this->syncRecord) {
-                $this->syncRecord->error_message_crudo = $e->__toString();
-                $this->syncRecord->error_message = $e->getMessage();
+                // `notificacion_error()` muestra el crudo: con una QueryException va el texto
+                // legible (el SQL quedó en el log de arriba).
+                $this->syncRecord->error_message_crudo = ($e instanceof QueryException) ? $para_mostrar->getMessage() : $e->__toString();
+                $this->syncRecord->error_message = $para_mostrar->getMessage();
                 $this->syncRecord->save();
 
-                $this->attachSyncPivot('error', $e->getMessage());
+                $this->attachSyncPivot('error', $para_mostrar->getMessage());
 
                 $this->notificacion_error();
             } else {
                 Log::error('OrderDownloaderService sin syncRecord: '.$e->getMessage());
                 $this->notify_meli_exception(
-                    $e,
+                    $para_mostrar,
                     'Error al procesar pedido de Mercado Libre'
                 );
             }
@@ -404,6 +446,39 @@ class OrderDownloaderService extends MercadoLibreService
         }
 
         $this->despues_de_guardar_el_pedido();
+    }
+
+    /**
+     * True si la excepción es la violación del único de `meli_orders.meli_order_id` (el pedido lo
+     * trajo otro proceso, o está en la base a nombre de otro comercio).
+     *
+     * @param \Throwable $e
+     * @return bool
+     */
+    protected static function es_pedido_duplicado(\Throwable $e)
+    {
+        if (!($e instanceof QueryException)) {
+            return false;
+        }
+
+        $codigo = (is_array($e->errorInfo) && isset($e->errorInfo[1])) ? (int) $e->errorInfo[1] : 0;
+
+        return ($codigo === 1062 || strpos($e->getMessage(), 'Duplicate entry') !== false)
+            && strpos($e->getMessage(), 'meli_order_id') !== false;
+    }
+
+    /**
+     * Fecha de ML (viene con su propio huso, p. ej. `-04:00`) pasada a la hora de la app antes de
+     * guardarla: Laravel guarda la hora "de pared" del Carbon, así que sin esto un pedido de las
+     * 10:00 de -04:00 quedaba a las 10:00 en lugar de a las 11:00 de Argentina (y la comparación con
+     * `conectado_en` se corría una hora).
+     *
+     * @param string $valor
+     * @return Carbon
+     */
+    protected function fecha_local($valor)
+    {
+        return Carbon::parse($valor)->setTimezone(config('app.timezone'));
     }
 
     /**
@@ -584,10 +659,10 @@ class OrderDownloaderService extends MercadoLibreService
 
         $meli_order->fill([
             'meli_created_at' => isset($this->order_data['date_created'])
-                ? Carbon::parse($this->order_data['date_created'])
+                ? $this->fecha_local($this->order_data['date_created'])
                 : null,
             'meli_closed_at' => isset($this->order_data['date_closed'])
-                ? Carbon::parse($this->order_data['date_closed'])
+                ? $this->fecha_local($this->order_data['date_closed'])
                 : null,
             'status' => $this->order_data['status'] ?? null,
             'status_detail' => is_scalar($status_detail) ? $status_detail : null,
@@ -706,7 +781,7 @@ class OrderDownloaderService extends MercadoLibreService
                     'description' => $cancel['description'] ?? null,
                     'requested_by' => $cancel['requested_by'] ?? null,
                     'date' => isset($cancel['date'])
-                        ? Carbon::parse($cancel['date'])
+                        ? $this->fecha_local($cancel['date'])
                         : null,
                     'application_id' => $cancel['application_id'] ?? null,
                 ]
