@@ -1083,6 +1083,34 @@ class ArticleDimensionSearchEngine
     }
 
     /**
+     * El diagnóstico en el orden de los planes (barras, proveedor, nombre), con los que se saltearon en su
+     * lugar y no todos juntos al principio. Hay a lo sumo una entrada por criterio.
+     *
+     * @param  array $diagnostico
+     * @return array
+     */
+    protected function diagnostico_en_orden(array $diagnostico)
+    {
+        $orden = [
+            DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS,
+            DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR,
+            DimensionSearchItem::CRITERIO_NOMBRE,
+        ];
+
+        $ordenado = [];
+
+        foreach ($orden as $criterio) {
+            foreach ($diagnostico as $entrada) {
+                if (isset($entrada['criterio']) && $entrada['criterio'] === $criterio) {
+                    $ordenado[] = $entrada;
+                }
+            }
+        }
+
+        return $ordenado;
+    }
+
+    /**
      * @return array
      */
     protected function gasto_en_cero()
@@ -1159,12 +1187,16 @@ class ArticleDimensionSearchEngine
                         $etiquetas = [];
 
                         foreach (array_keys($aplicacion['salteados']) as $campo) {
-                            $etiquetas[] = self::ETIQUETAS[$campo];
+                            $etiquetas[] = 'el '.self::ETIQUETAS[$campo];
                         }
 
                         $campos['motivo_detalle'] .= ' No se pisó lo ya cargado: '.implode(', ', $etiquetas).'.';
                     }
                 }
+            }
+
+            if (isset($campos['diagnostico']) && is_array($campos['diagnostico'])) {
+                $campos['diagnostico'] = $this->diagnostico_en_orden($campos['diagnostico']);
             }
 
             $vivo->fill(array_merge($campos, [
