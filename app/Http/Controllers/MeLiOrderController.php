@@ -29,9 +29,10 @@ class MeLiOrderController extends Controller
      */
     public function index($from_date = null, $until_date = null)
     {
-        // Misión mercado-libre-integracion (27/10/2026): el gate es la extensión `usa_mercado_libre`
-        // del dueño (o el USA_MERCADO_LIBRE viejo), y no se consulta a ML si el último poll (el del
-        // comando de cada 5 minutos o el de otra apertura del listado) fue hace menos de 1 minuto.
+        // Misión mercado-libre-integracion (27/10/2026): el gate es SOLO la extensión
+        // `usa_mercado_libre` del dueño (el mismo criterio que el Kernel y que encolar artículos;
+        // el USA_MERCADO_LIBRE del .env ya no cuenta), y no se consulta a ML si el último poll (el
+        // del comando de cada 5 minutos o el de otra apertura del listado) fue hace menos de 1 minuto.
         if (ProductService::modulo_habilitado((int) $this->userId())) {
             try {
                 $connector = PlatformConnector::find_connected_mercado_libre_for_user((int) $this->userId());
