@@ -1360,6 +1360,78 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
     }
 
     /**
+     * 5h-bis. 🔴 Zipnova (Correo Argentino, medido en Ferretotal el 27/10/2026) devuelve el PDF
+     *     como `{"format":"pdf","body":"<base64>"}`, no como `content`: el botón "Etiqueta PDF"
+     *     decía "formato que no se reconoce". Se aceptan `body`, `content`, `data.body`, un data
+     *     URI y un PDF crudo aunque el Content-Type no diga pdf; algo irreconocible sigue siendo 422.
+     *
+     * @dataProvider formas_de_etiqueta_de_zipnova
+     *
+     * @param mixed $cuerpo
+     * @param array $headers
+     * @return void
+     */
+    public function test_etiqueta_acepta_las_formas_con_que_zipnova_entrega_el_pdf($cuerpo, $headers)
+    {
+        $pdf = '%PDF-1.7 etiqueta de prueba';
+        $cuerpo = is_string($cuerpo) ? str_replace('@PDF@', $pdf, $cuerpo) : $this->con_pdf($cuerpo, $pdf);
+
+        Http::fake([
+            self::BASE_URL . '/shipments/' . self::SHIPMENT_ID . '/label.pdf*' => Http::response($cuerpo, 200, $headers),
+            '*' => Http::response(['message' => 'ruta no fakeada en el test'], 599),
+        ]);
+
+        $this->conectar_zipnova();
+        $pedido = $this->pedido_con_envio();
+        $envio = $this->envio_generado($pedido);
+
+        $respuesta = $this->get('api/envio/' . $envio->id . '/etiqueta');
+
+        $respuesta->assertStatus(200);
+        $this->assertSame($pdf, $respuesta->getContent());
+    }
+
+    /** Reemplaza `@B64@` por el PDF en base64, a cualquier profundidad. */
+    private function con_pdf(array $cuerpo, $pdf)
+    {
+        array_walk_recursive($cuerpo, function (&$v) use ($pdf) {
+            $v = str_replace('@B64@', base64_encode($pdf), $v);
+        });
+
+        return $cuerpo;
+    }
+
+    public function formas_de_etiqueta_de_zipnova()
+    {
+        return [
+            'body'      => [['format' => 'pdf', 'body' => '@B64@'], []],
+            'content'   => [['format' => 'pdf', 'content' => '@B64@'], []],
+            'data.body' => [['data' => ['body' => '@B64@']], []],
+            'data uri'  => [['format' => 'pdf', 'body' => 'data:application/pdf;base64,@B64@'], []],
+            'crudo'     => ['@PDF@', ['Content-Type' => 'application/octet-stream']],
+        ];
+    }
+
+    /**
+     * Una respuesta que no trae el archivo en ninguna clave conocida sigue siendo un 422.
+     *
+     * @return void
+     */
+    public function test_etiqueta_irreconocible_sigue_siendo_422()
+    {
+        Http::fake([
+            self::BASE_URL . '/shipments/' . self::SHIPMENT_ID . '/label.pdf*' => Http::response(['format' => 'pdf', 'algo' => 'raro'], 200),
+            '*' => Http::response(['message' => 'ruta no fakeada en el test'], 599),
+        ]);
+
+        $this->conectar_zipnova();
+        $pedido = $this->pedido_con_envio();
+        $envio = $this->envio_generado($pedido);
+
+        $this->getJson('api/envio/' . $envio->id . '/etiqueta')->assertStatus(422);
+    }
+
+    /**
      * 5i. El comando `zipnova:sincronizar-envios` consulta solo los envíos en curso: no los
      *     finales, no los que nunca se generaron ni los que se están generando, no los
      *     sincronizados hace un rato; y un 404 deja la fila en `not_found` sin cortar el resto.

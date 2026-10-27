@@ -250,8 +250,8 @@ class ZipnovaClient
     }
 
     /**
-     * Etiqueta del envío en PDF (bytes). La doc describe la respuesta como "documento en base64
-     * con formato y contenido"; se tolera también que venga el PDF crudo.
+     * Etiqueta del envío en PDF (bytes). Zipnova responde un JSON `{format, body}` con el PDF en
+     * base64 (la doc decía `content`: se aceptan ambas); se tolera también que venga el PDF crudo.
      *
      * @param string|int $shipment_id
      * @param bool $no_status_change Si es true, descargar no pasa el envío a "listo para despacho".
@@ -265,26 +265,37 @@ class ZipnovaClient
         $response = $this->enviar('GET', $path, $query, null);
 
         $content_type = strtolower((string) $response->header('Content-Type'));
+        $cuerpo = (string) $response->body();
 
-        if (strpos($content_type, 'pdf') !== false) {
-            return (string) $response->body();
+        // PDF crudo: por el Content-Type o, si el header miente, por la firma del archivo.
+        if (strpos($content_type, 'pdf') !== false || strncmp($cuerpo, '%PDF', 4) === 0) {
+            return $cuerpo;
         }
 
         $json = $response->json();
 
         if (is_array($json)) {
+            // Zipnova manda `{"format":"pdf","body":"<base64>"}` (medido en producción el
+            // 27/10/2026, Correo Argentino); la doc hablaba de `content`. Se aceptan las dos
+            // claves, también dentro de `data`, y `file`.
             $contenido = null;
-            if (isset($json['content'])) {
-                $contenido = $json['content'];
-            } elseif (isset($json['data']['content'])) {
-                $contenido = $json['data']['content'];
-            } elseif (isset($json['file'])) {
-                $contenido = $json['file'];
+            foreach ([$json, isset($json['data']) && is_array($json['data']) ? $json['data'] : []] as $nivel) {
+                foreach (['body', 'content', 'file'] as $clave) {
+                    if (isset($nivel[$clave]) && is_string($nivel[$clave]) && $nivel[$clave] !== '') {
+                        $contenido = $nivel[$clave];
+                        break 2;
+                    }
+                }
             }
 
             if (is_string($contenido) && $contenido !== '') {
+                // Tolera un data URI (`data:application/pdf;base64,...`).
+                if (preg_match('/^data:[^;,]*;base64,/i', $contenido, $m)) {
+                    $contenido = substr($contenido, strlen($m[0]));
+                }
+
                 $decodificado = base64_decode($contenido, true);
-                if ($decodificado !== false) {
+                if ($decodificado !== false && $decodificado !== '') {
                     return $decodificado;
                 }
             }
