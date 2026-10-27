@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Models\Combo;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
+use App\Models\MercadoPagoQrCobro;
 use App\Models\SyncToMeliArticle;
 use App\Models\SyncToTNArticle;
 use App\Models\User;
@@ -397,6 +398,24 @@ class Kernel extends ConsoleKernel
         $schedule->command('mercadopago:refresh-tokens')
             ->daily()
             ->withoutOverlapping();
+
+        // Cobros con QR de Mercado Pago que quedaron pendientes (misión cobro-qr-mercado-pago,
+        // 26/10/2026): consulta su orden en MP y vence los de más de 3 horas. Es la red de abajo
+        // del polling del modal de Vender, porque esta misión no usa webhooks. Cada minuto porque
+        // un pago que entró con el modal cerrado tiene que aparecer pronto en la lista de cobros.
+        //
+        // El when() cumple la regla de arriba: sin ningún cobro pendiente (el estado normal de
+        // casi todas las instancias, y de TODAS las que no usan el QR) no se arranca ningún
+        // artisan. Si la tabla todavía no existe, gate_de_datos() deja correr el comando, que
+        // sale en su primera línea. withoutOverlapping(5): cada cobro es una llamada de hasta 15 s.
+        $schedule->command('mercadopago:qr-conciliar')
+            ->everyMinute()
+            ->withoutOverlapping(5)
+            ->when(function () {
+                return $this->gate_de_datos(function () {
+                    return MercadoPagoQrCobro::where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)->exists();
+                });
+            });
 
         // Renueva los access_token de Zippin próximos a vencer (grupo 171, prompt 599).
         // Corre para TODOS los comercios con zippin_enabled=true (no depende de company_owner /
