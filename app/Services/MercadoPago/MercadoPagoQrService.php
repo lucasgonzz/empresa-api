@@ -135,7 +135,8 @@ class MercadoPagoQrService
      * Datos para hablar con Mercado Pago en nombre del comercio, o null si no está conectado.
      *
      * "Conectado" acá es más estricto que en el resto del sistema: hace falta el CONECTOR OAuth
-     * conectado y con su `platform_user_id`, porque el QR se crea y se valida contra esa cuenta.
+     * conectado y con su `platform_user_id`, porque el QR se crea y se valida contra esa cuenta
+     * (si el conector no lo tiene, se lo completa una vez con `/users/me`, ver abajo).
      * Una credencial cargada a mano en `payment_methods` (el fallback viejo del helper) sirve para
      * la tienda, pero no dice de qué cuenta es, así que no alcanza para el QR.
      *
@@ -148,7 +149,7 @@ class MercadoPagoQrService
 
         $connector = PlatformConnector::find_for_user_and_slug($owner_id, Platform::SLUG_MERCADO_PAGO);
 
-        if (!$connector || !$connector->is_connected() || empty($connector->platform_user_id)) {
+        if (!$connector || !$connector->is_connected()) {
             return null;
         }
 
@@ -156,6 +157,22 @@ class MercadoPagoQrService
 
         if (empty($token)) {
             return null;
+        }
+
+        // Un conector conectado SIN cuenta registrada: es el caso de las demos, donde el demo-setup
+        // carga una credencial fija (`conectar_mercado_pago_desde_payload`) en vez de pasar por el
+        // OAuth, que es el único camino que guarda el `user_id`. Se le pregunta a Mercado Pago de
+        // quién es el token (`/users/me`) y se guarda, así pasa una sola vez. Si MP no contesta, se
+        // sigue sin conexión y se reintenta en la próxima llamada.
+        if (empty($connector->platform_user_id)) {
+            $yo = $this->llamar($token, 'GET', '/users/me');
+
+            if (!$yo['ok'] || empty($yo['json']['id'])) {
+                return null;
+            }
+
+            $connector->platform_user_id = (string) $yo['json']['id'];
+            $connector->save();
         }
 
         return [
