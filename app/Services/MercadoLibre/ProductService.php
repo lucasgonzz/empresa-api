@@ -640,10 +640,21 @@ class ProductService extends MercadoLibreService
 
         $meli_payload = [];
 
-        // Precio. Solo si cambió (si ML ya no lo devuelve en /items, se manda igual).
-        $precio = $this->precio_validado($article);
-        if (!isset($meli_item['price']) || abs((float) $meli_item['price'] - $precio) >= 0.01) {
-            $meli_payload['price'] = $precio;
+        // Errores que NO frenan el resto (sobre todo el stock: no mandarlo es vender lo que no
+        // hay). Se informan al final, con la sync en error, después de haber mandado lo demás.
+        $errores_parciales = [];
+
+        // Precio. Solo si cambió (si ML ya no lo devuelve en /items, se manda igual). Si no valida
+        // (mínimo de $1.000, sin precio), no se manda, pero el stock y el estado viajan igual.
+        try {
+            $precio = $this->precio_validado($article);
+            if (!isset($meli_item['price']) || abs((float) $meli_item['price'] - $precio) >= 0.01) {
+                $meli_payload['price'] = $precio;
+            }
+        } catch (MercadoLibreLimiteException $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            $errores_parciales[] = $e->getMessage();
         }
 
         // Título / family_name: solo sin ventas, fuera de catálogo, y si cambió.
@@ -690,12 +701,28 @@ class ProductService extends MercadoLibreService
             }
         }
 
+        // Si en lo que hay que mandar va stock o estado (para el mensaje final).
+        $habia_stock_para_mandar = isset($meli_payload['available_quantity']) || isset($meli_payload['status']);
+
         if (count($meli_payload) > 0) {
             $resultado = $this->put_meli_item_with_fallback($me_li_id, $meli_payload);
             $avisos = array_merge($avisos, $resultado['avisos']);
 
             if (is_array($resultado['item']) && isset($resultado['item']['status'])) {
                 $columnas['meli_status'] = (string) $resultado['item']['status'];
+            }
+
+            // ML rechazó el PUT combinado y solo pasó el stock/estado: lo demás (fotos, atributos,
+            // título, precio) NO quedó en ML, así que tampoco se da por mandado.
+            if (!is_null($resultado['error_parcial'])) {
+                $errores_parciales[] = $resultado['error_parcial'];
+                foreach (['fotos', 'atributos'] as $clave) {
+                    if (isset($estado[$clave])) {
+                        $estado_nuevo[$clave] = $estado[$clave];
+                    } else {
+                        unset($estado_nuevo[$clave]);
+                    }
+                }
             }
 
             // ML rechazó `available_quantity` en /items: la publicación es User Product, se usa
@@ -730,6 +757,14 @@ class ProductService extends MercadoLibreService
         }
 
         $this->guardar_columnas($article, $columnas, $estado_nuevo);
+
+        if (count($errores_parciales) > 0) {
+            $cierre = $habia_stock_para_mandar
+                ? 'El stock y el estado de la publicación sí se actualizaron en Mercado Libre.'
+                : 'El stock en Mercado Libre ya estaba al día.';
+
+            throw new \Exception(implode("\n", $errores_parciales)."\n".$cierre);
+        }
 
         return $avisos;
     }
@@ -1039,17 +1074,25 @@ class ProductService extends MercadoLibreService
      * Si lo único que había para mandar era el precio y ML no lo deja cambiar (automatización de
      * precios activa), no es un error: se avisa y la sincronización sigue.
      *
+     * Último recurso (revisión de la misión, 27/10/2026): si ML rechaza el PUT por otro motivo
+     * (una foto, un atributo) y en el payload iba stock o estado, se reintenta con SOLO
+     * `available_quantity` / `status`. Un error en una foto no puede dejar la publicación vendiendo
+     * unidades que ya no hay. Si eso pasa, el motivo del rechazo vuelve en `error_parcial` para que
+     * la sincronización quede en error y lo muestre.
+     *
      * @param string $me_li_id
      * @param array<string, mixed> $meli_payload
-     * @return array{item: array<string, mixed>|null, quitados: array<int, string>, avisos: array<int, string>}
+     * @return array{item: array<string, mixed>|null, quitados: array<int, string>, avisos: array<int, string>, error_parcial: string|null}
      */
     protected function put_meli_item_with_fallback($me_li_id, array $meli_payload)
     {
-        $resultado = ['item' => null, 'quitados' => [], 'avisos' => []];
+        $resultado = ['item' => null, 'quitados' => [], 'avisos' => [], 'error_parcial' => null];
 
         if (count($meli_payload) === 0) {
             return $resultado;
         }
+
+        $original = $meli_payload;
 
         try {
             $resultado['item'] = $this->make_request('put', "items/{$me_li_id}", $meli_payload);
@@ -1058,11 +1101,12 @@ class ProductService extends MercadoLibreService
         } catch (MercadoLibreLimiteException $e) {
             throw $e;
         } catch (\Exception $e) {
-            $reduced_payload = $this->remove_blocked_item_fields_from_payload($meli_payload, $e);
-            if ($reduced_payload === null) {
-                throw $e;
-            }
+            $error = $e;
+        }
 
+        $reduced_payload = $this->remove_blocked_item_fields_from_payload($meli_payload, $error);
+
+        if ($reduced_payload !== null) {
             $resultado['quitados'] = array_values(array_diff(array_keys($meli_payload), array_keys($reduced_payload)));
 
             if (in_array('price', $resultado['quitados'], true)) {
@@ -1074,10 +1118,33 @@ class ProductService extends MercadoLibreService
             }
 
             Log::info("Reintento PUT /items/{$me_li_id} sin campos rechazados por Mercado Libre.");
-            $resultado['item'] = $this->make_request('put', "items/{$me_li_id}", $reduced_payload);
 
-            return $resultado;
+            try {
+                $resultado['item'] = $this->make_request('put', "items/{$me_li_id}", $reduced_payload);
+
+                return $resultado;
+            } catch (MercadoLibreLimiteException $e) {
+                throw $e;
+            } catch (\Exception $e) {
+                $error = $e;
+                $meli_payload = $reduced_payload;
+            }
         }
+
+        // Último recurso: solo stock y estado.
+        $solo_stock = array_intersect_key($meli_payload, ['available_quantity' => true, 'status' => true]);
+
+        if (count($solo_stock) === 0 || count($solo_stock) === count($meli_payload)) {
+            throw $error;
+        }
+
+        Log::info("Reintento PUT /items/{$me_li_id} solo con stock y estado (Mercado Libre rechazó el resto).");
+
+        $resultado['item'] = $this->make_request('put', "items/{$me_li_id}", $solo_stock);
+        $resultado['quitados'] = array_values(array_diff(array_keys($original), array_keys($solo_stock)));
+        $resultado['error_parcial'] = $this->mensaje_legible($error->getMessage());
+
+        return $resultado;
     }
 
     /**

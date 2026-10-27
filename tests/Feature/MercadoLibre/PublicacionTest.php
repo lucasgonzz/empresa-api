@@ -458,6 +458,78 @@ class PublicacionTest extends MercadoLibreTestCase
         $this->assertEquals(15000, $payload['price']);
     }
 
+    /**
+     * Arreglo 3 (revisión, 27/10/2026): un precio que no valida no puede frenar el stock (riesgo de
+     * sobreventa). Precio 900 + stock 0 → se manda la cantidad 0, no el precio, y la sync queda
+     * con el error del precio diciendo que el stock sí se actualizó.
+     */
+    public function test_con_el_precio_invalido_el_stock_viaja_igual_y_la_sync_avisa_el_precio()
+    {
+        $this->conector_ml();
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'stock' => 0, 'final_price' => 900]);
+        $this->fake_ml($this->rutas_de_alta([
+            'GET items/MLA222' => [200, $this->item_publicado($article, ['price' => 15000])],
+            'PUT items/MLA222' => [200, ['id' => 'MLA222', 'status' => 'paused']],
+        ]));
+
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $puts = $this->pedidos_ml('PUT', 'items/MLA222');
+        $this->assertCount(1, $puts, 'El stock tiene que viajar aunque el precio no valide.');
+        $payload = $this->cuerpo($puts[0]);
+        $this->assertSame(0, $payload['available_quantity']);
+        $this->assertArrayNotHasKey('price', $payload);
+
+        $sync = $sync->fresh();
+        $this->assertSame('error', $sync->status);
+        $this->assertStringContainsString('está debajo del mínimo de $1.000', $sync->error_message);
+        $this->assertStringContainsString('stock', $sync->error_message);
+    }
+
+    /**
+     * Arreglo 3: si el PUT combinado da un 400 que no es de límite, se reintenta con SOLO stock y
+     * estado antes de rendirse.
+     */
+    public function test_si_el_put_combinado_falla_se_reintenta_solo_con_el_stock()
+    {
+        $this->conector_ml();
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'stock' => 3]);
+        $this->fake_ml($this->rutas_de_alta([
+            'GET items/MLA222' => [200, $this->item_publicado($article, ['price' => 12000, 'available_quantity' => 10])],
+            'PUT items/MLA222' => function ($request) {
+                $cuerpo = $request->data();
+
+                if (isset($cuerpo['pictures']) || isset($cuerpo['price'])) {
+                    return Http::response([
+                        'message' => 'Validation error',
+                        'error'   => 'validation_error',
+                        'status'  => 400,
+                        'cause'   => [['code' => 'item.pictures.invalid', 'message' => 'Invalid picture source', 'type' => 'error']],
+                    ], 400);
+                }
+
+                return Http::response(['id' => 'MLA222', 'status' => 'active'], 200);
+            },
+        ]));
+
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $puts = $this->pedidos_ml('PUT', 'items/MLA222');
+        $ultimo = $this->cuerpo($puts[count($puts) - 1]);
+        $this->assertSame(['available_quantity' => 3], $ultimo, 'El último intento tiene que ser solo el stock.');
+
+        $sync = $sync->fresh();
+        $this->assertSame('error', $sync->status);
+        $this->assertStringContainsString('item.pictures.invalid', $sync->error_message);
+        $this->assertStringContainsString('stock', $sync->error_message);
+
+        // Las fotos NO se dan por mandadas: el próximo intento las vuelve a mandar.
+        $estado = json_decode((string) $article->fresh()->meli_sync_state, true);
+        $this->assertTrue(!is_array($estado) || !isset($estado['fotos']));
+    }
+
     public function test_una_publicacion_cerrada_da_error_legible()
     {
         $this->conector_ml();
