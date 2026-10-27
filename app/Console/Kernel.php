@@ -14,7 +14,9 @@ use App\Models\SyncToTNArticle;
 use App\Models\User;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class Kernel extends ConsoleKernel
 {
@@ -400,18 +402,26 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping();
 
         // Cobros con QR de Mercado Pago que quedaron pendientes (misión cobro-qr-mercado-pago,
-        // 26/10/2026): consulta su orden en MP y vence los de más de 3 horas. Es la red de abajo
-        // del polling del modal de Vender, porque esta misión no usa webhooks. Cada minuto porque
-        // un pago que entró con el modal cerrado tiene que aparecer pronto en la lista de cobros.
+        // 26/10/2026): consulta su orden en MP y aplica lo que MP conteste (nunca vence nada sin
+        // respuesta de MP), y recupera las órdenes que MP no confirmó al crearlas. Es la red de
+        // abajo del polling del modal de Vender, porque esta misión no usa webhooks. Cada minuto
+        // porque un pago que entró con el modal cerrado tiene que aparecer pronto.
         //
         // El when() cumple la regla de arriba: sin ningún cobro pendiente (el estado normal de
         // casi todas las instancias, y de TODAS las que no usan el QR) no se arranca ningún
-        // artisan. Si la tabla todavía no existe, gate_de_datos() deja correr el comando, que
-        // sale en su primera línea. withoutOverlapping(5): cada cobro es una llamada de hasta 15 s.
+        // artisan. Antes de consultar se mira si la tabla existe, con el resultado cacheado unos
+        // minutos (`tabla_existe_para_el_schedule()`): en la ventana entre subir los archivos y
+        // migrar, gate_de_datos() escribiría un warning por minuto en el log. withoutOverlapping(15):
+        // cada cobro son hasta tres llamadas de 15 s, y un lock vencido antes de tiempo dejaría
+        // correr dos conciliaciones a la vez.
         $schedule->command('mercadopago:qr-conciliar')
             ->everyMinute()
-            ->withoutOverlapping(5)
+            ->withoutOverlapping(15)
             ->when(function () {
+                if (!$this->tabla_existe_para_el_schedule('mercado_pago_qr_cobros')) {
+                    return false;
+                }
+
                 return $this->gate_de_datos(function () {
                     return MercadoPagoQrCobro::where('estado', MercadoPagoQrCobro::ESTADO_PENDIENTE)->exists();
                 });
@@ -474,6 +484,36 @@ class Kernel extends ConsoleKernel
             Log::warning('Kernel: no se pudo evaluar el gate de un comando del schedule, se corre igual: ' . $e->getMessage());
 
             return true;
+        }
+    }
+
+    /**
+     * Indica si una tabla existe, para los gates del schedule, sin escribir nada en el log y con
+     * el resultado cacheado 5 minutos (un `information_schema` por minuto en cada instancia sería
+     * justo el costo que la regla del schedule quiere evitar).
+     *
+     * Se cachea también el "no existe": después de migrar, el comando arranca a lo sumo 5 minutos
+     * más tarde, que para una tabla nueva sin filas no cambia nada. Si el caché no responde se
+     * pregunta directo, y si la base tampoco, se contesta false en silencio: el comando que
+     * depende de esa tabla no tendría con qué trabajar.
+     *
+     * @param  string  $tabla
+     * @return bool
+     */
+    protected function tabla_existe_para_el_schedule($tabla)
+    {
+        $consultar = function () use ($tabla) {
+            try {
+                return Schema::hasTable($tabla);
+            } catch (\Throwable $e) {
+                return false;
+            }
+        };
+
+        try {
+            return (bool) Cache::remember('schedule_tabla_existe_' . $tabla, 300, $consultar);
+        } catch (\Throwable $e) {
+            return (bool) $consultar();
         }
     }
 
