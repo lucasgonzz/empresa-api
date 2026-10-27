@@ -422,6 +422,22 @@ class PedidosTest extends MercadoLibreTestCase
         $this->assertCount(0, $this->pedidos_ml('GET', 'orders/search'));
     }
 
+    /**
+     * Arreglo 10: el listado usa el MISMO gate que el Kernel y que encolar (la extensión). Con el
+     * USA_MERCADO_LIBRE viejo prendido pero sin la extensión, no consulta a ML.
+     */
+    public function test_el_listado_sin_la_extension_no_consulta_aunque_este_el_env()
+    {
+        $this->forzar_env_usa_mercado_libre('true');
+        $this->extension_usa_mercado_libre(false);
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001001', 'paid', [['MLA111', 1, 15000]])]);
+
+        $this->getJson('/api/meli-order/from-date')->assertStatus(200);
+
+        $this->assertCount(0, $this->pedidos_ml('GET', 'orders/search'));
+    }
+
     public function test_el_listado_consulta_a_ml_si_el_ultimo_poll_es_viejo()
     {
         $this->conector_ml([], [
