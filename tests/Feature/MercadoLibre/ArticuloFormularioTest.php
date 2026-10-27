@@ -311,6 +311,47 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
         $this->assertFalse(SyncToMeliArticle::where('article_id', $article->id)->exists());
     }
 
+    /**
+     * Arreglo 7 (revisión, 27/10/2026): los atributos de ML de un artículo (`article-meli-attribute`,
+     * que el formulario nuevo usa para precargar) no se pueden leer ni escribir sobre un artículo
+     * de otro comercio. Lo ajeno contesta 404, igual que el resto.
+     */
+    public function test_los_atributos_de_ml_de_un_articulo_ajeno_dan_404()
+    {
+        $otro = User::create([
+            'name'     => 'Otro comercio atributos ML',
+            'email'    => 'ml-atributos-'.uniqid().'@test.local',
+            'password' => Hash::make('secret'),
+        ]);
+        $ajeno = Article::create(['name' => 'Artículo ajeno con atributos', 'user_id' => $otro->id, 'status' => 'active']);
+        $fila_ajena = ArticleMeliAttribute::create([
+            'article_id'        => $ajeno->id,
+            'meli_attribute_id' => $this->atributo($this->categoria, 'MODEL')->id,
+            'value_name'        => 'Secreto',
+        ]);
+
+        $this->getJson('/api/article-meli-attribute/'.$ajeno->id)->assertStatus(404);
+
+        $this->postJson('/api/article-meli-attribute', [
+            'article_id'        => $ajeno->id,
+            'meli_attribute_id' => $this->atributo($this->categoria, 'BRAND')->id,
+            'value_name'        => 'Intrusa',
+        ])->assertStatus(404);
+        $this->assertSame(1, ArticleMeliAttribute::where('article_id', $ajeno->id)->count());
+
+        $this->putJson('/api/article-meli-attribute/'.$fila_ajena->id, ['value_name' => 'Pisado'])->assertStatus(404);
+        $this->assertSame('Secreto', $fila_ajena->fresh()->value_name);
+
+        // Lo propio, como siempre.
+        $propio = $this->articulo_ml($this->categoria);
+        $this->postJson('/api/article-meli-attribute', [
+            'article_id'        => $propio->id,
+            'meli_attribute_id' => $this->atributo($this->categoria, 'BRAND')->id,
+            'value_name'        => 'Stanley',
+        ])->assertStatus(201);
+        $this->getJson('/api/article-meli-attribute/'.$propio->id)->assertStatus(200)->assertJsonCount(1, 'models');
+    }
+
     public function test_las_rutas_del_articulo_no_dejan_ver_ni_sincronizar_el_de_otro_comercio()
     {
         $otro = User::create([
