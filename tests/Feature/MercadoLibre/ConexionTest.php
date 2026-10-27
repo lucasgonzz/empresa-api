@@ -173,6 +173,52 @@ class ConexionTest extends MercadoLibreTestCase
         $this->assertStringNotContainsString('code expired', $connector->error_message);
     }
 
+    /**
+     * Arreglo 6 (revisión, 27/10/2026): el callback es público. Un `code` basura con el state viejo
+     * (el id del conector) no puede cortar una conexión que anda.
+     */
+    public function test_un_canje_fallido_sobre_un_conector_conectado_no_lo_toca()
+    {
+        $connector = $this->conector_ml();
+        $this->fake_ml([
+            'POST oauth/token' => [400, ['error' => 'invalid_grant', 'message' => 'invalid code']],
+        ]);
+
+        $respuesta = $this->get('/platform-connector/mercadolibre/callback?code=basura&state='.$connector->id);
+
+        $respuesta->assertStatus(400);
+        $this->assertStringContainsString('text/html', (string) $respuesta->headers->get('Content-Type'));
+
+        $connector = $connector->fresh();
+        $this->assertSame(PlatformConnector::STATUS_CONECTADO, $connector->status);
+        $this->assertNull($connector->error_message);
+        $this->assertSame(self::TOKEN, $connector->access_token);
+        $this->assertSame(self::REFRESH, $connector->refresh_token);
+    }
+
+    /**
+     * Arreglo 6: el comerciante canceló en ML (el relay reenvía `error`): página amable, sin canjear
+     * nada y sin tocar el conector.
+     */
+    public function test_si_el_comerciante_cancela_en_ml_se_muestra_una_pagina_amable_sin_tocar_nada()
+    {
+        $connector = $this->conector_ml();
+        $this->fake_ml([]);
+
+        $url = $this->getJson('/api/integraciones/mercadolibre/connect')->json('url');
+        $state = substr($this->query_de($url)['state'], 0, 64);
+
+        $respuesta = $this->get('/platform-connector/mercadolibre/callback?error=access_denied&error_description=user+denied&state='.$state);
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertSee('Cancelaste la conexión con Mercado Libre. Podés cerrar esta ventana y volver a ComercioCity.', false);
+        $this->assertCount(0, $this->pedidos_ml('POST', 'oauth/token'));
+
+        $connector = $connector->fresh();
+        $this->assertSame(PlatformConnector::STATUS_CONECTADO, $connector->status);
+        $this->assertSame(self::TOKEN, $connector->access_token);
+    }
+
     public function test_desconectar_borra_los_tokens_y_la_cuenta()
     {
         $connector = $this->conector_ml();

@@ -48,6 +48,19 @@ class PlatformConnectorOAuthService
      */
     public function handle_mercado_libre_callback(Request $request)
     {
+        // El comerciante canceló en la pantalla de Mercado Libre (ML vuelve con `error`, y el relay
+        // del admin lo reenvía): página amable, sin canjear nada ni tocar el conector (si ya estaba
+        // conectado, sigue conectado). El state NO se consume: no hace falta.
+        if (!empty($request->query('error'))) {
+            Log::info('PlatformConnector OAuth ML: el comerciante canceló la autorización ('.(string) $request->query('error').').');
+
+            return $this->pagina(
+                'Conexión cancelada',
+                'Cancelaste la conexión con Mercado Libre. Podés cerrar esta ventana y volver a ComercioCity.',
+                200
+            );
+        }
+
         return $this->handle_callback_internal(
             $request,
             Platform::SLUG_MERCADO_LIBRE,
@@ -232,6 +245,11 @@ class PlatformConnectorOAuthService
                 return response('La plataforma no tiene client_id o client_secret configurados en el catálogo.', 400);
             }
         }
+        // ¿Andaba la conexión antes de este callback? Se pregunta ANTES del canje (el canje cambia
+        // el conector en memoria). Se mira el token crudo, sin descifrarlo.
+        $estaba_conectado = $connector->status === PlatformConnector::STATUS_CONECTADO
+            && !empty($connector->getAttributes()['access_token']);
+
         try {
             $exchange($connector, $code);
         } catch (\Throwable $e) {
@@ -245,6 +263,17 @@ class PlatformConnectorOAuthService
                 ? $e->getMessage()
                 : 'No se pudo completar la conexión. El detalle quedó en el log del servidor.';
 
+            // El callback es PÚBLICO (revisión de la misión, 27/10/2026): cualquiera puede pegarle
+            // con un `code` basura y el state viejo (el id del conector, que es adivinable). Si la
+            // conexión venía andando, un canje fallido no la corta: no se toca el conector.
+            if ($estaba_conectado) {
+                return $this->pagina(
+                    'No se pudo completar la conexión',
+                    $mensaje.' Tu cuenta sigue conectada como antes.',
+                    400
+                );
+            }
+
             $connector->status = PlatformConnector::STATUS_ERROR;
             $connector->error_message = mb_substr($mensaje, 0, 500);
             $connector->save();
@@ -257,6 +286,22 @@ class PlatformConnectorOAuthService
             200,
             ['Content-Type' => 'text/html; charset=UTF-8']
         );
+    }
+
+    /**
+     * Página HTML simple para la ventana del callback (la abre el comerciante con `window.open`).
+     * El texto se escapa: puede traer un código de error que vino de la URL.
+     *
+     * @param string $titulo
+     * @param string $texto
+     * @param int $status
+     * @return \Illuminate\Http\Response
+     */
+    protected function pagina($titulo, $texto, $status)
+    {
+        $html = '<html><body><h1>'.e($titulo).'</h1><p>'.e($texto).'</p></body></html>';
+
+        return response($html, $status, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 
     /**
