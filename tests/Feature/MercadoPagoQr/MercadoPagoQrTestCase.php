@@ -146,6 +146,7 @@ abstract class MercadoPagoQrTestCase extends TestCase
             'employee_id'             => self::USER_ID,
             'total'                   => 1500,
             'external_reference'      => 'ccqr-test-' . $n . '-' . uniqid(),
+            'mp_idempotency_key'      => 'clave-test-' . $n . '-' . uniqid(),
             'mp_order_id'             => 'ORDTEST' . $n,
             'estado'                  => MercadoPagoQrCobro::ESTADO_PENDIENTE,
         ], $atributos));
@@ -219,6 +220,36 @@ abstract class MercadoPagoQrTestCase extends TestCase
                 ],
             ],
         ]];
+    }
+
+    /**
+     * Respuesta de MP a `POST /v1/orders` (orden creada).
+     *
+     * @param string $order_id
+     * @return array
+     */
+    protected function orden_creada_mp($order_id)
+    {
+        return [201, [
+            'id'           => $order_id,
+            'type'         => 'qr',
+            'status'       => 'created',
+            'transactions' => ['payments' => [['id' => 'PAY01JTEST', 'amount' => '1500.00', 'status' => 'created']]],
+        ]];
+    }
+
+    /**
+     * Pedidos `POST /v1/orders` registrados por `Http::fake`, en orden.
+     *
+     * @return \Illuminate\Support\Collection De `Illuminate\Http\Client\Request`.
+     */
+    protected function posts_de_ordenes()
+    {
+        return Http::recorded(function ($request) {
+            return $request->method() === 'POST' && parse_url($request->url(), PHP_URL_PATH) === '/v1/orders';
+        })->map(function ($par) {
+            return $par[0];
+        })->values();
     }
 
     /**

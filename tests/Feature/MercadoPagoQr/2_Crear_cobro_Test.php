@@ -297,7 +297,18 @@ class Crear_cobro_Test extends MercadoPagoQrTestCase
         $response->assertStatus(201);
 
         $this->assertSame('cancelado', $viejo->fresh()->estado);
+        $this->assertSame(
+            'Otro cobro usó este mismo QR y reemplazó a este.',
+            $viejo->fresh()->error_message,
+            'El SPA que esperaba el cobro viejo tiene que poder decir por qué se canceló.'
+        );
         $this->assertSame('pendiente', MercadoPagoQrCobro::find($response->json('cobro.id'))->estado);
+
+        // El SPA que seguía consultando el viejo lo ve cancelado con el motivo.
+        $this->getJson('api/mercado-pago/qr/cobros/' . $viejo->id)
+            ->assertStatus(200)
+            ->assertJsonPath('cobro.estado', 'cancelado')
+            ->assertJsonPath('cobro.error_message', 'Otro cobro usó este mismo QR y reemplazó a este.');
 
         Http::assertSent(function (Request $request) {
             return $request->method() === 'POST'

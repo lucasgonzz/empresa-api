@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Models\AperturaCaja;
 use App\Models\Article;
 use App\Models\Caja;
+use App\Models\Client;
 use App\Models\MercadoPagoQrCobro;
 use App\Models\MovimientoCaja;
 use App\Models\Sale;
@@ -372,6 +373,216 @@ class Venta_con_cobro_qr_Test extends MercadoPagoQrTestCase
             'mercado_pago_qr_cobro_id' => $cobro->id,
             'offline_uuid'             => (string) Str::uuid(),
         ]))->assertStatus(422)->assertJsonPath('cobro_qr_invalido', true);
+    }
+
+    /**
+     * Venta con cliente a cuenta corriente: 422 y no se crea. Con el cliente pero fuera de la
+     * cuenta corriente (`omitir_en_cuenta_corriente`), se guarda.
+     *
+     * @test
+     */
+    public function con_un_cliente_a_cuenta_corriente_no_se_crea_la_venta()
+    {
+        $cliente = Client::where('user_id', self::USER_ID)->orderBy('id')->first();
+        $this->assertNotNull($cliente, 'El fixture tiene que tener al menos un cliente del usuario 500.');
+
+        $cobro = $this->cobro_pagado();
+        $antes = $this->cantidad_de_ventas();
+
+        $response = $this->postJson('api/sale', $this->payload_venta([
+            'mercado_pago_qr_cobro_id'   => $cobro->id,
+            'client_id'                  => $cliente->id,
+            'save_current_acount'        => 1,
+            'omitir_en_cuenta_corriente' => 0,
+        ]));
+
+        $response->assertStatus(422)->assertJsonPath('cobro_qr_invalido', true);
+        $this->assertStringContainsString('de contado, sin cliente en cuenta corriente', $response->json('message'));
+        $this->assertSame($antes, $this->cantidad_de_ventas());
+        $this->assertNull($cobro->fresh()->sale_id);
+
+        $this->postJson('api/sale', $this->payload_venta([
+            'mercado_pago_qr_cobro_id'   => $cobro->id,
+            'client_id'                  => $cliente->id,
+            'omitir_en_cuenta_corriente' => 1,
+        ]))->assertStatus(201);
+
+        $this->assertNotNull($cobro->fresh()->sale_id);
+    }
+
+    /**
+     * Venta con otro método de pago que el del cobro: 422, con el nombre del método esperado.
+     *
+     * @test
+     */
+    public function con_otro_metodo_de_pago_no_se_crea_la_venta()
+    {
+        $cobro = $this->cobro_pagado();
+        $antes = $this->cantidad_de_ventas();
+
+        $response = $this->postJson('api/sale', $this->payload_venta([
+            'mercado_pago_qr_cobro_id'         => $cobro->id,
+            'current_acount_payment_method_id' => 3,
+        ]));
+
+        $response->assertStatus(422)->assertJsonPath('cobro_qr_invalido', true);
+        $this->assertStringContainsString('"Mercado Pago"', $response->json('message'));
+        $this->assertSame($antes, $this->cantidad_de_ventas());
+    }
+
+    /**
+     * El método se valida contra el CONGELADO en el cobro, no contra el configurado hoy.
+     *
+     * @test
+     */
+    public function el_metodo_se_valida_contra_el_congelado_en_el_cobro()
+    {
+        $cobro = $this->cobro_pagado(['current_acount_payment_method_id' => 4]);
+
+        $this->postJson('api/sale', $this->payload_venta(['mercado_pago_qr_cobro_id' => $cobro->id]))
+            ->assertStatus(422)
+            ->assertJsonPath('cobro_qr_invalido', true);
+
+        $this->postJson('api/sale', $this->payload_venta([
+            'mercado_pago_qr_cobro_id'         => $cobro->id,
+            'current_acount_payment_method_id' => 4,
+        ]))->assertStatus(201);
+    }
+
+    /**
+     * Venta con reparto en varios métodos: 422 y no se crea.
+     *
+     * @test
+     */
+    public function con_reparto_no_se_crea_la_venta()
+    {
+        $cobro = $this->cobro_pagado();
+        $antes = $this->cantidad_de_ventas();
+
+        $renglon = function ($metodo, $monto) {
+            return [
+                'current_acount_payment_method_id' => $metodo,
+                'amount'                           => $monto,
+                'caja_id'                          => $this->caja->id,
+                'amount_cotizado'                  => null,
+                'cotizacion'                       => null,
+                'moneda_id'                        => 1,
+            ];
+        };
+
+        $response = $this->postJson('api/sale', $this->payload_venta([
+            'mercado_pago_qr_cobro_id' => $cobro->id,
+            'selected_payment_methods' => [$renglon(self::METODO_MERCADO_PAGO, 1000), $renglon(3, 500)],
+        ]));
+
+        $response->assertStatus(422)->assertJsonPath('cobro_qr_invalido', true);
+        $this->assertStringContainsString('sin repartir el cobro', $response->json('message'));
+        $this->assertSame($antes, $this->cantidad_de_ventas());
+    }
+
+    /**
+     * Venta en dólares: 422 y no se crea (MP cobró pesos).
+     *
+     * @test
+     */
+    public function en_dolares_no_se_crea_la_venta()
+    {
+        $cobro = $this->cobro_pagado();
+        $antes = $this->cantidad_de_ventas();
+
+        $response = $this->postJson('api/sale', $this->payload_venta([
+            'mercado_pago_qr_cobro_id' => $cobro->id,
+            'moneda_id'                => 2,
+            'valor_dolar'              => 1000,
+        ]));
+
+        $response->assertStatus(422)->assertJsonPath('cobro_qr_invalido', true);
+        $this->assertStringContainsString('en pesos', $response->json('message'));
+        $this->assertSame($antes, $this->cantidad_de_ventas());
+    }
+
+    /**
+     * El mensaje del total distinto le dice al cajero a cuánto volver a dejar la venta.
+     *
+     * @test
+     */
+    public function el_mensaje_del_total_distinto_dice_que_hacer()
+    {
+        $cobro = $this->cobro_pagado(['total' => 1499]);
+
+        $response = $this->postJson('api/sale', $this->payload_venta(['mercado_pago_qr_cobro_id' => $cobro->id]));
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('Volvé a dejar la venta en $1.499,00 o quitá el cobro QR', $response->json('message'));
+    }
+
+    /**
+     * 🔴 La carrera del vínculo: la validación de afuera pasa, pero adentro de la transacción otra
+     * venta ya se llevó el cobro. El vínculo falla, la transacción se revierte entera y la
+     * respuesta es 422 `cobro_qr_invalido`: la venta NO queda creada.
+     *
+     * Para reproducirla en un solo proceso, un listener de `Sale::created` (que corre adentro de
+     * la transacción, justo después del `Sale::create` y antes del vínculo) le pone al cobro el
+     * `sale_id` de "otra venta", como lo habría hecho el otro request.
+     *
+     * @test
+     */
+    public function la_carrera_del_vinculo_revierte_la_venta_y_da_422()
+    {
+        $cobro = $this->cobro_pagado();
+        $antes = $this->cantidad_de_ventas();
+        $num_antes = (int) Sale::where('user_id', self::USER_ID)->max('num');
+
+        Sale::created(function ($sale) use ($cobro) {
+            MercadoPagoQrCobro::where('id', $cobro->id)->update(['sale_id' => 987654321]);
+        });
+
+        $response = $this->postJson('api/sale', $this->payload_venta(['mercado_pago_qr_cobro_id' => $cobro->id]));
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('cobro_qr_invalido', true);
+
+        $this->assertSame($antes, $this->cantidad_de_ventas(), 'La venta se revirtió.');
+        $this->assertSame($num_antes, (int) Sale::where('user_id', self::USER_ID)->max('num'));
+        $this->assertSame(0, MovimientoCaja::where('caja_id', $this->caja->id)->count(), 'Ni movimiento de caja.');
+        $this->assertNull($cobro->fresh()->sale_id, 'El sale_id que puso "la otra venta" también se revirtió con la transacción.');
+    }
+
+    /**
+     * Guarda anti doble clic: dos ventas del mismo total en el mismo segundo, cada una con SU
+     * cobro pagado, son dos ventas (dos clientes que pagaron lo mismo).
+     *
+     * @test
+     */
+    public function dos_ventas_del_mismo_total_con_cobros_distintos_se_guardan_las_dos()
+    {
+        $primer_cobro  = $this->cobro_pagado();
+        $segundo_cobro = $this->cobro_pagado();
+
+        $primera = $this->postJson('api/sale', $this->payload_venta(['mercado_pago_qr_cobro_id' => $primer_cobro->id]));
+        $segunda = $this->postJson('api/sale', $this->payload_venta(['mercado_pago_qr_cobro_id' => $segundo_cobro->id]));
+
+        $primera->assertStatus(201);
+        $segunda->assertStatus(201);
+
+        $this->assertNotSame($primera->json('model.id'), $segunda->json('model.id'));
+        $this->assertSame((int) $primera->json('model.id'), (int) $primer_cobro->fresh()->sale_id);
+        $this->assertSame((int) $segunda->json('model.id'), (int) $segundo_cobro->fresh()->sale_id);
+    }
+
+    /**
+     * Control: la guarda anti doble clic sigue funcionando para dos ventas iguales SIN cobro QR.
+     *
+     * @test
+     */
+    public function la_guarda_anti_doble_clic_sigue_igual_sin_cobro_qr()
+    {
+        $antes = $this->cantidad_de_ventas();
+
+        $this->postJson('api/sale', $this->payload_venta())->assertStatus(201);
+        $this->postJson('api/sale', $this->payload_venta())->assertStatus(200);
+
+        $this->assertSame($antes + 1, $this->cantidad_de_ventas(), 'La segunda se descartó como doble clic.');
     }
 
     /**

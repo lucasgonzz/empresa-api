@@ -3,6 +3,7 @@
 namespace Tests\Feature\MercadoPagoQr;
 
 use App\Models\MercadoPagoQrCobro;
+use Carbon\Carbon;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 
@@ -271,6 +272,47 @@ class Consultar_y_cancelar_cobro_Test extends MercadoPagoQrTestCase
         $this->postJson('api/mercado-pago/qr/cobros/' . $cobro->id . '/cancelar')
             ->assertStatus(200)
             ->assertJsonPath('cobro.estado', 'pagado');
+    }
+
+    /**
+     * `pagados_sin_venta=1`: solo los pagados sin venta del comercio, de los últimos 7 días, más
+     * nuevos primero.
+     *
+     * @test
+     */
+    public function pagados_sin_venta_trae_solo_la_plata_que_no_quedo_en_una_venta()
+    {
+        $this->conectar_mp();
+        $this->fake_mp([]);
+
+        $qr = $this->qr_en_base();
+
+        $sin_venta_viejo = $this->cobro_en_base($qr, ['estado' => 'pagado', 'paid_at' => Carbon::now()]);
+        $sin_venta_nuevo = $this->cobro_en_base($qr, ['estado' => 'pagado', 'paid_at' => Carbon::now()]);
+        $con_venta       = $this->cobro_en_base($qr, ['estado' => 'pagado', 'paid_at' => Carbon::now(), 'sale_id' => 123456789]);
+        $pendiente       = $this->cobro_en_base($qr);
+        $de_hace_un_mes  = $this->cobro_en_base($qr, ['estado' => 'pagado', 'paid_at' => Carbon::now()->subDays(30)]);
+        $ajeno           = $this->cobro_en_base($this->qr_en_base(['user_id' => 999999]), ['user_id' => 999999, 'estado' => 'pagado']);
+
+        MercadoPagoQrCobro::where('id', $de_hace_un_mes->id)->update(['created_at' => Carbon::now()->subDays(30)]);
+
+        $response = $this->getJson('api/mercado-pago/qr/cobros?pagados_sin_venta=1');
+
+        $response->assertStatus(200);
+
+        $ids = collect($response->json('cobros'))->pluck('id')->all();
+
+        $this->assertSame([$sin_venta_nuevo->id, $sin_venta_viejo->id], $ids, 'Solo los dos pagados sin venta recientes, más nuevos primero.');
+
+        foreach ([$con_venta, $pendiente, $de_hace_un_mes, $ajeno] as $afuera) {
+            $this->assertNotContains($afuera->id, $ids);
+        }
+
+        // Sin el parámetro, el listado de siempre.
+        $todos = collect($this->getJson('api/mercado-pago/qr/cobros')->json('cobros'))->pluck('id')->all();
+        $this->assertContains($pendiente->id, $todos);
+
+        Http::assertNothingSent();
     }
 
     /**
