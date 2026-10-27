@@ -425,6 +425,17 @@ return [
     ],
 
     /**
+     * Búsqueda masiva de peso y medidas (misión medidas-masivas-catalogo, 27/10/2026). Espejo de
+     * `imagenes_inteligentes`: `tope_catalogo` son los artículos como máximo por lanzamiento de «todo el
+     * catálogo» (se relanza y sigue con los que faltan) y `segundos_por_tramo` cuánto trabaja cada tramo
+     * del job antes de re-encolarse (el job lo acota a 20..90 s).
+     */
+    'medidas_masivas' => [
+        'tope_catalogo'      => (int) env('MEDIDAS_TOPE_CATALOGO', 5000),
+        'segundos_por_tramo' => (int) env('MEDIDAS_SEGUNDOS_POR_TRAMO', 50),
+    ],
+
+    /**
      * UPCitemdb (plan FREE, sin API key): lookup de producto por GTIN para el flujo de
      * descripciones inteligentes. Limite real: 100 requests/dia POR IP, compartidos por
      * TODOS los clientes de la plataforma. daily_cap deja margen antes de ese techo.

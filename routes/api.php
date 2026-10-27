@@ -985,6 +985,28 @@ Route::middleware(['auth:sanctum'])->group(function() {
         Route::post('image-assignment-items/{id}/quitar', 'ImageAssignmentRunController@quitar')->where('id', '[0-9]+');
 
         /*
+            Búsqueda masiva de peso y medidas (misión medidas-masivas-catalogo, 27/10/2026): Alertas →
+            Catálogo → Medidas. Espejo de las rutas de imágenes de arriba: las rutas fijas (resumen,
+            catalogo, aprobar-varios, rechazar-varios) van ANTES de las que llevan {id}, y los {id} van
+            restringidos a números. catalogo/*, detener y reanudar son solo para la sesión del acceso
+            maestro (lo valida DimensionSearchRunController, 403 sin ella). Son de `agentes_ia` porque la
+            búsqueda lee páginas con IA.
+        */
+        Route::get('dimension-search-runs', 'DimensionSearchRunController@index');
+        Route::get('dimension-search-runs/resumen', 'DimensionSearchRunController@resumen');
+        Route::get('dimension-search-runs/catalogo/previa', 'DimensionSearchRunController@previa_catalogo');
+        Route::post('dimension-search-runs/catalogo', 'DimensionSearchRunController@crear_catalogo');
+        Route::get('dimension-search-runs/{id}', 'DimensionSearchRunController@show')->where('id', '[0-9]+');
+        Route::get('dimension-search-runs/{id}/items', 'DimensionSearchRunController@items')->where('id', '[0-9]+');
+        Route::post('dimension-search-runs/{id}/detener', 'DimensionSearchRunController@detener')->where('id', '[0-9]+');
+        Route::post('dimension-search-runs/{id}/reanudar', 'DimensionSearchRunController@reanudar')->where('id', '[0-9]+');
+        Route::post('dimension-search-items/aprobar-varios', 'DimensionSearchRunController@aprobar_varios');
+        Route::post('dimension-search-items/rechazar-varios', 'DimensionSearchRunController@rechazar_varios');
+        Route::post('dimension-search-items/{id}/aprobar', 'DimensionSearchRunController@aprobar')->where('id', '[0-9]+');
+        Route::post('dimension-search-items/{id}/rechazar', 'DimensionSearchRunController@rechazar')->where('id', '[0-9]+');
+        Route::post('dimension-search-items/{id}/quitar', 'DimensionSearchRunController@quitar')->where('id', '[0-9]+');
+
+        /*
             Categorización con IA en tres modelos (misión categorizacion-tres-modelos, 5/10/2026): Alertas →
             Catálogo → Categorías. Contrato B del plan (§6). Las rutas fijas (resumen, actual,
             aprobar-varios, rechazar-varios) van ANTES de las que llevan {id}, y los {id} van restringidos a
