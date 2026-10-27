@@ -369,6 +369,27 @@ class Crear_cobro_Test extends MercadoPagoQrTestCase
     }
 
     /**
+     * El mínimo de MP para el QR, con la respuesta real medida el 27/10/2026: el cajero lee
+     * "no acepta cobros por QR de menos de $15" y no "Invalid value for property".
+     *
+     * @test
+     */
+    public function un_cobro_por_debajo_del_minimo_de_mp_lo_dice_en_castellano()
+    {
+        $this->conectar_mp();
+        $this->fake_mp([
+            ['POST', '#^/v1/orders$#', [400, ['errors' => [['code' => 'property_value', 'message' => 'Invalid value for property', 'details' => ['Amount must be greater than or equal to 15.00']]]]]],
+        ]);
+
+        $this->qr_en_base();
+
+        $response = $this->postJson('api/mercado-pago/qr/cobros', ['total' => 10]);
+
+        $response->assertStatus(422);
+        $this->assertSame('Mercado Pago no acepta cobros por QR de menos de $15.', $response->json('message'));
+    }
+
+    /**
      * Sin conexión: 422 `sin_conexion`. Total cero: 422.
      *
      * @test

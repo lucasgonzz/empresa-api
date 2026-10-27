@@ -2134,8 +2134,25 @@ class MercadoPagoQrService
         $json  = $respuesta['json'];
         $texto = '';
 
+        // El monto mínimo del QR: medido el 27/10/2026 contra MP real, Orders rechaza un cobro de
+        // menos de $15 con `property_value` y el motivo solo en `details` ("Amount must be greater
+        // than or equal to 15.00"). Se traduce, porque el `message` ("Invalid value for property")
+        // no le dice nada al cajero.
+        $detalle = (isset($json['errors'][0]['details'][0]) && is_scalar($json['errors'][0]['details'][0]))
+            ? (string) $json['errors'][0]['details'][0]
+            : '';
+
+        if (preg_match('/Amount must be greater than or equal to ([0-9.]+)/i', $detalle, $minimo)) {
+            return 'Mercado Pago no acepta cobros por QR de menos de $' . number_format((float) $minimo[1], 0, ',', '.') . '.';
+        }
+
         if (isset($json['errors'][0]['message']) && is_scalar($json['errors'][0]['message'])) {
             $texto = (string) $json['errors'][0]['message'];
+
+            // Cualquier otro detalle de MP va pegado al mensaje general: es lo que explica el rechazo.
+            if ($detalle !== '') {
+                $texto .= ' (' . $detalle . ')';
+            }
         } elseif (isset($json['cause'][0]['description']) && is_scalar($json['cause'][0]['description'])) {
             $texto = (string) $json['cause'][0]['description'];
         } elseif (isset($json['message']) && is_scalar($json['message'])) {
