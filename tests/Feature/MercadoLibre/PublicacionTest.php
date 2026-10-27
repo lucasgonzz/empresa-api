@@ -476,7 +476,8 @@ class PublicacionTest extends MercadoLibreTestCase
 
     public function test_add_article_to_sync_usa_la_extension_y_no_encola_la_papelera()
     {
-        $this->apagar_env_usa_mercado_libre();
+        // Punto de partida propio: sin la extensión (la base del slot puede tenerla prendida).
+        $this->extension_usa_mercado_libre(false);
         $article = $this->articulo_ml($this->categoria);
 
         ProductService::add_article_to_sync($article);
@@ -495,6 +496,102 @@ class PublicacionTest extends MercadoLibreTestCase
         $otro->delete();
         ProductService::add_article_to_sync(Article::withTrashed()->find($otro->id));
         $this->assertFalse(SyncToMeliArticle::where('article_id', $otro->id)->exists(), 'Un artículo de la papelera no se encola.');
+    }
+
+    /**
+     * Arreglo 10 (revisión, 27/10/2026): encolar, el Kernel y el listado de pedidos usan el MISMO
+     * criterio, la extensión. Con `USA_MERCADO_LIBRE=true` en el .env pero sin la extensión, el
+     * Kernel no corre la cola: encolar dejaba filas que nadie procesaba.
+     */
+    public function test_el_env_usa_mercado_libre_sin_la_extension_no_encola()
+    {
+        $this->forzar_env_usa_mercado_libre('true');
+        $this->extension_usa_mercado_libre(false);
+
+        $article = $this->articulo_ml($this->categoria);
+        ProductService::add_article_to_sync($article);
+
+        $this->assertFalse(SyncToMeliArticle::where('article_id', $article->id)->exists());
+    }
+
+    /**
+     * Arreglo 2: un artículo publicado que se desmarca de "Disponible en Mercado Libre" se encola
+     * igual (para pausarlo); uno que nunca se publicó, no.
+     */
+    public function test_desmarcado_se_encola_solo_si_tiene_publicacion()
+    {
+        $sin_publicar = $this->articulo_ml($this->categoria, ['mercado_libre' => 0]);
+        ProductService::add_article_to_sync($sin_publicar);
+        $this->assertFalse(SyncToMeliArticle::where('article_id', $sin_publicar->id)->exists());
+
+        $publicado = $this->articulo_ml($this->categoria, ['mercado_libre' => 0, 'me_li_id' => 'MLA222', 'meli_status' => 'active']);
+        ProductService::add_article_to_sync($publicado);
+        $this->assertSame(1, SyncToMeliArticle::where('article_id', $publicado->id)->where('status', 'pendiente')->count());
+
+        // Ya pausado por el sistema: no hay nada más que hacer, no se encola de nuevo.
+        $pausado = $this->articulo_ml($this->categoria, [
+            'mercado_libre'   => 0,
+            'me_li_id'        => 'MLA333',
+            'meli_status'     => 'paused',
+            'meli_sync_state' => json_encode(['pausado_por_sistema' => true]),
+        ]);
+        ProductService::add_article_to_sync($pausado);
+        $this->assertFalse(SyncToMeliArticle::where('article_id', $pausado->id)->exists());
+    }
+
+    public function test_un_articulo_desmarcado_y_publicado_se_pausa_y_al_marcarlo_se_reactiva()
+    {
+        $this->conector_ml();
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'mercado_libre' => 0, 'stock' => 5]);
+        $this->fake_ml($this->rutas_de_alta([
+            'GET items/MLA222' => [200, $this->item_publicado($article, ['available_quantity' => 5])],
+            'PUT items/MLA222' => [200, ['id' => 'MLA222', 'status' => 'paused']],
+        ]));
+
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $sync = $sync->fresh();
+        $this->assertSame('exitosa', $sync->status, (string) $sync->error_message);
+        $this->assertStringContainsString('la publicación se pausó', $sync->error_message);
+
+        $puts = $this->pedidos_ml('PUT', 'items/MLA222');
+        $this->assertCount(1, $puts);
+        $this->assertSame(['status' => 'paused'], $this->cuerpo($puts[0]), 'Desmarcado solo se pausa: ni precio ni stock.');
+
+        $article = $article->fresh();
+        $this->assertSame('paused', $article->meli_status);
+        $this->assertTrue(json_decode($article->meli_sync_state, true)['pausado_por_sistema']);
+
+        // Se vuelve a marcar: la sincronización normal reactiva la que pausó el sistema.
+        $article->mercado_libre = 1;
+        $article->save();
+
+        $this->rutas_ml['GET items/MLA222'] = [200, $this->item_publicado($article->fresh(), ['status' => 'paused', 'available_quantity' => 5])];
+        $this->rutas_ml['PUT items/MLA222'] = [200, ['id' => 'MLA222', 'status' => 'active']];
+
+        $sync2 = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync2);
+
+        $puts = $this->pedidos_ml('PUT', 'items/MLA222');
+        $this->assertSame('active', $this->cuerpo($puts[count($puts) - 1])['status']);
+        $this->assertSame('active', $article->fresh()->meli_status);
+    }
+
+    public function test_sincronizar_un_articulo_desmarcado_sin_publicacion_da_error_legible_sin_llamar_a_ml()
+    {
+        $this->conector_ml();
+        $this->fake_ml($this->rutas_de_alta());
+
+        $article = $this->articulo_ml($this->categoria, ['mercado_libre' => 0]);
+        $sync = $this->sync_pendiente($article);
+
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $sync = $sync->fresh();
+        $this->assertSame('error', $sync->status);
+        $this->assertStringContainsString('no está marcado como «Disponible en Mercado Libre»', $sync->error_message);
+        $this->assertCount(0, Http::recorded());
     }
 
     public function test_el_comando_toma_pendientes_respeta_la_espera_y_libera_los_colgados()

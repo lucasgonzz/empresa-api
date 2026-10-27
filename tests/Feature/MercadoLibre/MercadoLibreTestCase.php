@@ -84,6 +84,13 @@ abstract class MercadoLibreTestCase extends EmpresaTestCase
 
         ProductService::olvidar_cache_del_modulo();
 
+        // Punto de partida fijo: el módulo PRENDIDO (la extensión `usa_mercado_libre` del dueño),
+        // que es lo que asumen casi todos los tests. No se depende de lo que tenga la base del slot
+        // (la sesión de la raíz se la prendió al usuario 500 para probar la pantalla, y otra base
+        // puede no tenerla). Los tests del módulo apagado la sacan con
+        // `extension_usa_mercado_libre(false)`.
+        $this->extension_usa_mercado_libre(true);
+
         // La fila de platforms sin credenciales: las del .env (config) son las que valen en los
         // tests, salvo el que pruebe explícitamente lo contrario.
         Platform::updateOrCreate(
@@ -220,12 +227,13 @@ abstract class MercadoLibreTestCase extends EmpresaTestCase
     // ------------------------------------------------------------------ entorno
 
     /**
-     * Apaga `USA_MERCADO_LIBRE` (el .env.testing del slot lo trae prendido) para probar el gate
-     * por extensión. Se restaura en tearDown.
+     * Fuerza `USA_MERCADO_LIBRE` a un valor (el .env.testing del slot lo trae prendido) para probar
+     * que el gate NO depende de él. Se restaura en tearDown.
      *
+     * @param string $valor 'true' o 'false'.
      * @return void
      */
-    protected function apagar_env_usa_mercado_libre()
+    protected function forzar_env_usa_mercado_libre($valor)
     {
         $this->entorno_previo = [
             'env'    => array_key_exists('USA_MERCADO_LIBRE', $_ENV) ? $_ENV['USA_MERCADO_LIBRE'] : null,
@@ -233,9 +241,9 @@ abstract class MercadoLibreTestCase extends EmpresaTestCase
             'getenv' => getenv('USA_MERCADO_LIBRE'),
         ];
 
-        $_ENV['USA_MERCADO_LIBRE'] = 'false';
-        $_SERVER['USA_MERCADO_LIBRE'] = 'false';
-        putenv('USA_MERCADO_LIBRE=false');
+        $_ENV['USA_MERCADO_LIBRE'] = $valor;
+        $_SERVER['USA_MERCADO_LIBRE'] = $valor;
+        putenv('USA_MERCADO_LIBRE='.$valor);
 
         ProductService::olvidar_cache_del_modulo();
     }

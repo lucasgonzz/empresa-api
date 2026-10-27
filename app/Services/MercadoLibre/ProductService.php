@@ -16,8 +16,14 @@ use Illuminate\Support\Facades\Log;
  * Sincronización de artículos locales hacia publicaciones de Mercado Libre (items).
  *
  * Misión mercado-libre-integracion (27/10/2026), lo que cambió:
- * - El gate de `add_article_to_sync` es la extensión `usa_mercado_libre` del dueño (o el
- *   `USA_MERCADO_LIBRE` viejo): con config:cache el env() suelto daba false y no se encolaba nada.
+ * - El gate de `add_article_to_sync` es SOLO la extensión `usa_mercado_libre` del dueño, el mismo
+ *   criterio que el Kernel para correr la cola y que el listado de pedidos. El `USA_MERCADO_LIBRE`
+ *   viejo del .env ya no cuenta: encolar con él sin la extensión dejaba filas que nadie procesaba
+ *   (y con config:cache el env() suelto daba false de todos modos).
+ * - Un artículo publicado que se desmarca de "Disponible en Mercado Libre" se encola igual, para
+ *   PAUSAR la publicación; al volver a marcarlo, la sincronización normal la reactiva si la había
+ *   pausado el sistema. Una publicación cerrada (`meli_status = closed`) no se reintenta en cada
+ *   cambio: "Sincronizar ahora" la publica de nuevo.
  * - Alta: modelo User Products (`family_name` sin `title`) si la cuenta lo usa; título recortado al
  *   largo de la categoría; marca, código de barras y SKU como atributos automáticos; precio con
  *   fallback al precio final y mínimo de $1.000; solo fotos http/https; `POST items/validate`
@@ -47,17 +53,19 @@ class ProductService extends MercadoLibreService
 
     /**
      * True si el módulo de Mercado Libre está prendido para ese dueño: la extensión
-     * `usa_mercado_libre`, o el interruptor viejo `USA_MERCADO_LIBRE` del .env.
+     * `usa_mercado_libre`. Es el MISMO criterio que usan el Kernel (para correr la cola y la
+     * consulta de pedidos) y el listado de pedidos: el `USA_MERCADO_LIBRE` del .env no cuenta,
+     * porque encolar con él sin la extensión dejaba filas que el scheduler nunca procesaba.
+     *
+     * La respuesta se recuerda 60 segundos por dueño y por proceso: un recálculo masivo de precios
+     * o una importación pasan por acá con cada artículo y no pueden hacer una consulta por
+     * renglón.
      *
      * @param int $user_id Dueño (owner) del artículo.
      * @return bool
      */
     public static function modulo_habilitado($user_id)
     {
-        if (env('USA_MERCADO_LIBRE', false)) {
-            return true;
-        }
-
         $user_id = (int) $user_id;
         $ahora = time();
 
@@ -110,9 +118,26 @@ class ProductService extends MercadoLibreService
 
         // Primero lo barato: una columna del artículo que ya está en memoria.
         if (!$article->mercado_libre) {
-            if (!$en_lote) {
-                Log::error("Artículo Mercado Libre: ID {$article->id}");
+            // Sin publicación no hay nada que hacer en ML.
+            if (empty($article->me_li_id)) {
+                if (!$en_lote) {
+                    Log::error("Artículo Mercado Libre: ID {$article->id}");
+                }
+
+                return;
             }
+
+            // Publicado pero desmarcado: se encola para PAUSAR la publicación, salvo que ya la haya
+            // pausado el sistema o esté cerrada (no hay nada más que hacer).
+            if (self::ya_pausada_por_el_sistema($article) || (string) $article->meli_status === 'closed') {
+                return;
+            }
+
+            if (!self::modulo_habilitado($article->user_id) || (method_exists($article, 'trashed') && $article->trashed())) {
+                return;
+            }
+
+            self::encolar($article);
 
             return;
         }
@@ -123,6 +148,13 @@ class ProductService extends MercadoLibreService
 
         // Un artículo de la papelera no se publica ni se actualiza.
         if (method_exists($article, 'trashed') && $article->trashed()) {
+            return;
+        }
+
+        // Una publicación cerrada en ML no se puede reactivar: reintentarla en cada cambio de stock
+        // o de precio solo gastaba llamadas y repetía el mismo error. "Sincronizar ahora" la
+        // publica de nuevo (ver `MercadoLibreController::sincronizar`).
+        if ((string) $article->meli_status === 'closed') {
             return;
         }
 
@@ -148,6 +180,49 @@ class ProductService extends MercadoLibreService
             }
 
             return;
+        }
+
+        self::encolar($article);
+    }
+
+    /**
+     * True si la publicación del artículo está pausada y la pausó el sistema (según lo último que
+     * se guardó del ítem y de la sincronización).
+     *
+     * @param Article $article
+     * @return bool
+     */
+    protected static function ya_pausada_por_el_sistema($article)
+    {
+        if ((string) $article->meli_status !== 'paused') {
+            return false;
+        }
+
+        $estado = json_decode((string) $article->meli_sync_state, true);
+
+        return is_array($estado) && !empty($estado['pausado_por_sistema']);
+    }
+
+    /**
+     * Prepara una publicación CERRADA en ML para publicarse de nuevo: le saca el código de la
+     * publicación vieja (y lo que cuelga de ella) y la encola como un alta. ML no deja reactivar
+     * una cerrada; republicar es la única salida.
+     *
+     * @param Article $article
+     * @return void
+     */
+    public static function republicar_cerrada($article)
+    {
+        DB::table('articles')->where('id', $article->id)->update([
+            'me_li_id'             => null,
+            'meli_user_product_id' => null,
+            'meli_permalink'       => null,
+            'meli_sync_state'      => null,
+            'meli_status'          => null,
+        ]);
+
+        foreach (['me_li_id', 'meli_user_product_id', 'meli_permalink', 'meli_sync_state', 'meli_status'] as $columna) {
+            $article->setAttribute($columna, null);
         }
 
         self::encolar($article);
@@ -213,7 +288,15 @@ class ProductService extends MercadoLibreService
                 'descriptions',
             ]);
 
-            if ($article->me_li_id) {
+            if (!$article->mercado_libre) {
+                // Desmarcado de "Disponible en Mercado Libre": nunca se publica (aunque llegue por
+                // "Sincronizar ahora") y, si ya estaba publicado, se pausa.
+                if (empty($article->me_li_id)) {
+                    throw new \Exception('El artículo no está marcado como «Disponible en Mercado Libre»: no se publica. Marcalo en el formulario del artículo para publicarlo.');
+                }
+
+                $avisos = $this->pausar_por_no_disponible($article);
+            } elseif ($article->me_li_id) {
                 $avisos = $this->actualizar_publicacion($article);
             } else {
                 $avisos = $this->crear_publicacion($article);
@@ -652,6 +735,56 @@ class ProductService extends MercadoLibreService
     }
 
     /**
+     * El artículo se desmarcó de "Disponible en Mercado Libre" pero tiene publicación: se PAUSA
+     * (`status=paused`) y se anota `pausado_por_sistema`, para que al volver a marcarlo la
+     * sincronización normal la reactive. Si ya estaba pausada (por el vendedor o por falta de
+     * stock) o cerrada, no se toca: una pausa que no hizo el sistema no se reactiva sola después.
+     *
+     * @param Article $article
+     * @return array<int, string> Avisos para el registro de la sincronización.
+     */
+    protected function pausar_por_no_disponible(Article $article)
+    {
+        $me_li_id = (string) $article->me_li_id;
+
+        $meli_item = $this->make_request('get', "items/{$me_li_id}");
+        if (!is_array($meli_item)) {
+            throw new \Exception("La publicación {$me_li_id} no existe en Mercado Libre (puede haber sido eliminada).");
+        }
+
+        $status = isset($meli_item['status']) ? (string) $meli_item['status'] : null;
+        $estado = $this->estado_de_sync($article);
+
+        $columnas = [
+            'meli_status'    => $status,
+            'meli_permalink' => isset($meli_item['permalink']) ? (string) $meli_item['permalink'] : $article->meli_permalink,
+        ];
+
+        if ($status === 'closed') {
+            $this->guardar_columnas($article, $columnas, $estado);
+
+            return ['El artículo no está marcado como «Disponible en Mercado Libre» y la publicación ya estaba finalizada.'];
+        }
+
+        if ($status === 'paused') {
+            $this->guardar_columnas($article, $columnas, $estado);
+
+            return ['El artículo no está marcado como «Disponible en Mercado Libre» y la publicación ya estaba pausada.'];
+        }
+
+        $resultado = $this->put_meli_item_with_fallback($me_li_id, ['status' => 'paused']);
+
+        $columnas['meli_status'] = (is_array($resultado['item']) && isset($resultado['item']['status']))
+            ? (string) $resultado['item']['status']
+            : 'paused';
+        $estado['pausado_por_sistema'] = true;
+
+        $this->guardar_columnas($article, $columnas, $estado);
+
+        return ['El artículo no está marcado como «Disponible en Mercado Libre»: la publicación se pausó en Mercado Libre. Se reactiva sola cuando lo vuelvas a marcar.'];
+    }
+
+    /**
      * Cambios de stock / estado para el PUT, según tipo y condición de la publicación:
      *
      * - Catálogo: no se toca (lo sincroniza la publicación de marketplace asociada).
@@ -673,12 +806,20 @@ class ProductService extends MercadoLibreService
     {
         $cambios = [];
 
-        if ($es_catalogo) {
-            return [$cambios, $estado, null];
-        }
+        // En catálogo y en multiorigen el stock no se toca desde acá; lo único que sí se hace es
+        // reactivar una publicación que pausó el sistema (por ejemplo, porque el artículo se
+        // desmarcó de "Disponible en Mercado Libre" y ahora se volvió a marcar).
+        if ($es_catalogo || ($es_user_product && $this->es_multiorigen())) {
+            if (isset($meli_item['status']) && $meli_item['status'] === 'paused' && !empty($estado['pausado_por_sistema'])) {
+                $cambios['status'] = 'active';
+                $estado['pausado_por_sistema'] = false;
+            }
 
-        if ($es_user_product && $this->es_multiorigen()) {
-            return [$cambios, $estado, 'La cuenta usa multiorigen: el stock se maneja por depósito en Mercado Libre y no se actualiza desde el sistema.'];
+            $aviso = $es_catalogo
+                ? null
+                : 'La cuenta usa multiorigen: el stock se maneja por depósito en Mercado Libre y no se actualiza desde el sistema.';
+
+            return [$cambios, $estado, $aviso];
         }
 
         $stock = max($this->stock_entero($article), 0);

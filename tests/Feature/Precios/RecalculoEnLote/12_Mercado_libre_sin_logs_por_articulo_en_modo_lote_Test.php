@@ -55,7 +55,13 @@ class Mercado_libre_sin_logs_por_articulo_en_modo_lote_Test extends RecalculoEnL
 
         $this->assertTrue((bool) env('USA_MERCADO_LIBRE', false), 'Precondición: USA_MERCADO_LIBRE tiene que estar prendida para este test.');
 
-        $this->dueno = $this->crear_dueno();
+        /*
+         * Misión mercado-libre-integracion (27/10/2026): el gate de add_article_to_sync pasó a ser
+         * SOLO la extensión `usa_mercado_libre` (el mismo criterio que el Kernel), así que el dueño
+         * de este test la necesita para que "lo encolado sea lo de siempre". El env de arriba ya no
+         * decide nada; queda para no cambiar el resto del test.
+         */
+        $this->dueno = $this->crear_dueno([], ['usa_mercado_libre']);
 
         /*
          * Cada artículo falla UNA sola de las condiciones y cumple todas las demás: así, si

@@ -270,7 +270,8 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
 
     public function test_sincronizar_con_el_modulo_apagado_responde_422()
     {
-        $this->apagar_env_usa_mercado_libre();
+        // Aun con el USA_MERCADO_LIBRE viejo prendido: el gate es solo la extensión.
+        $this->forzar_env_usa_mercado_libre('true');
         $this->extension_usa_mercado_libre(false);
         $article = $this->articulo_ml($this->categoria);
 
