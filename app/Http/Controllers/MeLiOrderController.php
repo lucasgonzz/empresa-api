@@ -21,13 +21,6 @@ use Illuminate\Support\Facades\Log;
 class MeLiOrderController extends Controller
 {
     /**
-     * Estados de Mercado Libre en los que un pedido no admite venta (ver `create_sale`).
-     *
-     * @var array<int, string>
-     */
-    const ESTADOS_SIN_VENTA = ['cancelled', 'invalid'];
-
-    /**
      * Lista pedidos locales y, si aplica, sincroniza órdenes pagas recientes desde la API ML.
      *
      * @param string|null $from_date
@@ -262,13 +255,11 @@ class MeLiOrderController extends Controller
 
         $meli_order = MeliOrder::find($id);
 
-        // Un pedido cancelado (o inválido) en Mercado Libre no lleva venta: el botón la creaba igual
-        // y descontaba el stock de algo que no se vendió (misión mercado-libre-pruebas, 27/10/2026).
-        // Si ya tenía venta de antes, se devuelve como está (ver abajo).
-        if (in_array((string) $meli_order->status, self::ESTADOS_SIN_VENTA, true) && !$meli_order->sale()->exists()) {
-            return response()->json([
-                'message' => 'Este pedido está cancelado en Mercado Libre: no se le crea venta.',
-            ], 422);
+        // Un pedido cancelado, cancelándose o inválido en Mercado Libre no lleva venta: el botón la
+        // creaba igual y descontaba el stock de algo que no se vendió (misión mercado-libre-pruebas,
+        // 27/10/2026). Si ya tenía venta de antes, se devuelve como está (ver abajo).
+        if ($this->sin_venta_posible($meli_order)) {
+            return $this->respuesta_sin_venta($meli_order);
         }
 
         // Si ya tiene venta (la automática, o un confirmar desde otra pantalla) no se crea otra:
@@ -276,10 +267,49 @@ class MeLiOrderController extends Controller
         // mercado-libre-integracion; la SPA lo lee en Orders.vue).
         $creada = VentaDelPedidoMeli::generar_si_falta($meli_order, $this);
 
+        // Carrera: la consulta periódica lo canceló mientras tanto (el servicio lo re-chequea con la
+        // fila tomada y no crea la venta). Se contesta lo mismo que si hubiera llegado cancelado.
+        if (!$creada && $this->sin_venta_posible($meli_order->fresh())) {
+            return $this->respuesta_sin_venta($meli_order->fresh());
+        }
+
         return response()->json([
             'model'          => $this->fullModel('MeliOrder', $id),
             'ya_tenia_venta' => !$creada && $meli_order->sale()->exists(),
         ], 200);
+    }
+
+    /**
+     * true si el pedido está en un estado de Mercado Libre que no lleva venta y todavía no la tiene.
+     *
+     * @param MeliOrder $meli_order
+     * @return bool
+     */
+    protected function sin_venta_posible(MeliOrder $meli_order)
+    {
+        return in_array((string) $meli_order->status, VentaDelPedidoMeli::ESTADOS_SIN_VENTA, true)
+            && !$meli_order->sale()->exists();
+    }
+
+    /**
+     * El 422 de "Crear venta" para un pedido que no la admite, con el motivo en castellano (la SPA
+     * muestra el `message` tal cual).
+     *
+     * @param MeliOrder $meli_order
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function respuesta_sin_venta(MeliOrder $meli_order)
+    {
+        $motivos = [
+            'cancelled'      => 'está cancelado',
+            'pending_cancel' => 'se está cancelando',
+            'invalid'        => 'figura como inválido',
+        ];
+        $motivo = isset($motivos[$meli_order->status]) ? $motivos[$meli_order->status] : 'no admite venta';
+
+        return response()->json([
+            'message' => 'Este pedido '.$motivo.' en Mercado Libre: no se le crea venta.',
+        ], 422);
     }
 
     /**

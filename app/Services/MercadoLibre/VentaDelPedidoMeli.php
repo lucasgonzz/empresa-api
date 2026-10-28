@@ -35,6 +35,16 @@ class VentaDelPedidoMeli
     const SEGUNDOS_DE_ESPERA = 15;
 
     /**
+     * Estados de Mercado Libre en los que un pedido NO lleva venta, por ningún camino: cancelado,
+     * cancelándose (la cancelación está en curso) o inválido. Misión mercado-libre-pruebas
+     * (27/10/2026): el botón "Crear venta" la creaba igual y bajaba el stock de algo que no se
+     * vendió. Lo lee también la SPA (`meli_order_sin_venta_posible`, mismos tres estados).
+     *
+     * @var array<int, string>
+     */
+    const ESTADOS_SIN_VENTA = ['cancelled', 'pending_cancel', 'invalid'];
+
+    /**
      * Crea la venta del pedido si todavía no tiene una. Si otro proceso la está creando, espera a
      * que termine y no crea otra.
      *
@@ -68,6 +78,12 @@ class VentaDelPedidoMeli
                 $bloqueado = MeliOrder::where('id', $meli_order->id)->lockForUpdate()->first();
 
                 if (!$bloqueado || $bloqueado->sale()->exists()) {
+                    return false;
+                }
+
+                // El estado se vuelve a mirar ACÁ, con la fila tomada: si la consulta periódica lo
+                // pasó a cancelado entre el chequeo del llamador y este punto, no se crea la venta.
+                if (in_array((string) $bloqueado->status, self::ESTADOS_SIN_VENTA, true)) {
                     return false;
                 }
 
