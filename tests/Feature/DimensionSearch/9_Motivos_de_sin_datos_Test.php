@@ -185,6 +185,164 @@ class Motivos_de_sin_datos_Test extends DimensionSearchTestCase
     }
 
     /**
+     * Un timeout no es «el sitio bloquea la descarga»: dice que el sitio no respondió.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_timeout_se_rotula_como_que_el_sitio_no_respondio_y_no_como_bloqueo()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A)]],
+            [self::URL_A => ['excepcion' => true]],
+            $this->ficha('otro_producto'),
+            []
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('paginas_bloqueadas', $item->motivo);
+        $this->assertStringContainsString('el sitio no respondió', $item->motivo_detalle);
+        $this->assertStringNotContainsString('bloquea', $item->motivo_detalle);
+        $this->assertSame('No se pudo leer ni con el respaldo.', $item->diagnostico[0]['paginas'][0]['motivo']);
+
+        // Sin respaldo posible (la página antes del scrape): el motivo de la página es el timeout.
+        $otro = $this->nuevo_articulo('OTRA CUCHILLA', $this->gtin);
+        config(['services.medidas_masivas.max_scrapes_por_articulo' => 0]);
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A)]],
+            [self::URL_A => ['excepcion' => true]],
+            $this->ficha('otro_producto'),
+            []
+        );
+
+        list($item2) = $this->buscar($otro);
+
+        $this->assertSame('El sitio no respondió a tiempo.', $item2->diagnostico[0]['paginas'][0]['motivo']);
+    }
+
+    /**
+     * «Ni con el respaldo» solo si se probaron TODAS las páginas relevantes; si el tope por artículo dejó alguna sin
+     * probar, lo dice.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function ni_con_el_respaldo_solo_si_se_probaron_todas_y_si_no_dice_que_el_tope_dejo_sin_probar()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+        $urls     = ['https://a.test/p', 'https://b.test/p', 'https://c.test/p', 'https://d.test/p'];
+
+        $resultados = [];
+        $paginas    = [];
+
+        foreach ($urls as $url) {
+            $resultados[] = $this->resultado_con_codigo($url);
+            $paginas[$url] = ['status' => 403];
+        }
+
+        $this->falsear(['"'.$this->gtin.'"' => $resultados], $paginas, $this->ficha('otro_producto'), []);
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('paginas_bloqueadas', $item->motivo);
+        $this->assertCount(3, $this->scrapes_pedidos);
+        $this->assertStringContainsString('El producto apareció pero 4 páginas no se pudieron leer', $item->motivo_detalle);
+        $this->assertStringContainsString('no se probaron todas con el respaldo por el tope', $item->motivo_detalle);
+        $this->assertStringNotContainsString('ni con el respaldo', $item->motivo_detalle);
+    }
+
+    /**
+     * En el plan de nombre, si no hay ninguna página del mismo producto, no dice «El producto apareció».
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function en_el_plan_de_nombre_no_dice_que_el_producto_aparecio()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY GRANDE');
+
+        $this->falsear(
+            ['CUCHILLA ROTARY GRANDE ficha técnica peso medidas' => [$this->resultado(self::URL_A, 'Cuchilla rotary grande'), $this->resultado(self::URL_B, 'Cuchilla rotary grande')]],
+            [self::URL_A => ['status' => 403], self::URL_B => ['status' => 403]],
+            $this->ficha('otro_producto'),
+            []
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('paginas_bloqueadas', $item->motivo);
+        $this->assertStringStartsWith('Aparecieron 2 páginas pero no se pudieron leer', $item->motivo_detalle);
+        $this->assertStringNotContainsString('El producto apareció', $item->motivo_detalle);
+        // Solo se scrapeó una (tope del plan de nombre): no se dice «ni con el respaldo».
+        $this->assertCount(1, $this->scrapes_pedidos);
+        $this->assertStringContainsString('no se probaron todas con el respaldo por el tope', $item->motivo_detalle);
+    }
+
+    /**
+     * Si todo lo no leído era social / no relevante y no se leyó nada, no dice «se revisaron los resultados».
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function si_no_se_pudo_leer_ninguna_pagina_util_no_dice_que_se_revisaron_los_resultados()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+        $social   = 'https://www.facebook.com/marketplace/item/1';
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo($social), $this->resultado('https://tienda.test/no-existe', 'Cuchilla '.$this->gtin)]],
+            [$social => ['status' => 403], 'https://tienda.test/no-existe' => ['status' => 404]],
+            $this->ficha('otro_producto'),
+            []
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('no_coincide', $item->motivo);
+        $this->assertSame('No se pudo leer ninguna página útil de los resultados de la búsqueda.', $item->motivo_detalle);
+        $this->assertSame([], $this->scrapes_pedidos);
+    }
+
+    /**
+     * Con el tope de créditos de la corrida el detalle lo dice.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function con_el_tope_de_creditos_de_la_corrida_el_detalle_lo_dice()
+    {
+        config(['services.medidas_masivas.max_creditos_por_corrida' => 1]);
+
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A)]],
+            [self::URL_A => ['status' => 403]],
+            $this->ficha('otro_producto'),
+            [self::URL_A => $this->gtin.' Peso: 820 g']
+        );
+
+        $run = $this->corrida([$articulo]);
+        $ahora = \Carbon\Carbon::now()->addSecond();
+
+        \App\Models\SerperUsageEvent::insert([[
+            'event_uuid' => (string) \Illuminate\Support\Str::uuid(), 'user_id' => $this->owner->id, 'process' => 'medidas_scrape',
+            'endpoint' => 'search', 'query' => 'https://previa.test', 'ok' => true, 'credits' => 5,
+            'occurred_at' => $ahora, 'created_at' => $ahora, 'updated_at' => $ahora,
+        ]]);
+
+        list($item) = $this->procesar($run, $articulo);
+
+        $this->assertSame([], $this->scrapes_pedidos);
+        $this->assertSame('paginas_bloqueadas', $item->motivo);
+        $this->assertStringContainsString('se alcanzó el tope de créditos del respaldo', $item->motivo_detalle);
+    }
+
+    /**
      * Los dos motivos nuevos cuentan como «ya buscado sin éxito» (no se repiten solos en la próxima corrida), y los
      * ítems viejos con motivos viejos siguen igual.
      *

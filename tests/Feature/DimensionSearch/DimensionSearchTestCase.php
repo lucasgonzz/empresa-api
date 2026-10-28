@@ -289,6 +289,11 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
                 $test->paginas_pedidas[] = $url;
                 $pagina = $paginas[$url];
 
+                // Un corte de conexión / timeout de la descarga directa.
+                if (is_array($pagina) && !empty($pagina['excepcion'])) {
+                    throw new \Illuminate\Http\Client\ConnectionException('cURL error 28: Operation timed out (fake)');
+                }
+
                 if (is_array($pagina) && isset($pagina['status'])) {
                     return Http::response('error', $pagina['status'], ['Content-Type' => 'text/html']);
                 }

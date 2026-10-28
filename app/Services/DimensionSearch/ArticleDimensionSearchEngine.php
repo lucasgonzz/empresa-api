@@ -777,7 +777,8 @@ class ArticleDimensionSearchEngine
                 continue;
             }
 
-            $pagina = ['url' => $url, 'titulo' => $titulo, 'dominio' => $this->dominio($url), 'via_scrape' => false];
+            // `por_codigo`: la página salió de una búsqueda por código (barras o proveedor), no por nombre.
+            $pagina = ['url' => $url, 'titulo' => $titulo, 'dominio' => $this->dominio($url), 'via_scrape' => false, 'por_codigo' => !is_null($plan['codigo'])];
 
             // Una página que ya se le pasó a la IA en otra búsqueda no se manda dos veces.
             if (isset($leidas[$url]) && $leidas[$url]['enviada']) {
@@ -939,10 +940,11 @@ class ArticleDimensionSearchEngine
 
             if (!$respuesta['ok']) {
                 $paginas[$candidata['indice']] = array_merge($pagina, [
-                    'leida'     => false,
-                    'motivo'    => 'No se pudo leer ni con el respaldo.',
-                    'fallo'     => $leidas[$url]['fallo'],
-                    'relevante' => true,
+                    'leida'            => false,
+                    'motivo'           => 'No se pudo leer ni con el respaldo.',
+                    'fallo'            => $leidas[$url]['fallo'],
+                    'relevante'        => true,
+                    'respaldo_probado' => true,
                 ]);
 
                 continue;
@@ -1098,11 +1100,15 @@ class ArticleDimensionSearchEngine
             $motivo = 'Es un PDF: no se leen.';
         } elseif ($lectura['fallo'] === DimensionPageReader::FALLO_BLOQUEADA) {
             $motivo = 'El sitio bloquea la descarga ('.(int) $lectura['estado'].')';
+        } elseif ($lectura['fallo'] === DimensionPageReader::FALLO_SIN_RESPUESTA) {
+            // Un timeout o un corte de conexión no es un bloqueo: el sitio no respondió.
+            $motivo = 'El sitio no respondió a tiempo.';
         } else {
             $motivo = 'No se pudo descargar la página.';
         }
 
-        $entrada = ['leida' => false, 'motivo' => $motivo, 'fallo' => $lectura['fallo']];
+        // `respaldo_probado`: ya se le pidió el texto al respaldo (si falló, la página quedó sin leer ni así).
+        $entrada = ['leida' => false, 'motivo' => $motivo, 'fallo' => $lectura['fallo'], 'respaldo_probado' => (bool) $lectura['scrapeada']];
 
         if (!is_null($lectura['creditos'])) {
             $entrada['creditos'] = $lectura['creditos'];
@@ -1722,11 +1728,16 @@ class ArticleDimensionSearchEngine
      * El `sin_datos` que dice lo que pasó de verdad, calculado del diagnóstico (no se adivina):
      *
      *   - `sin_medidas_en_la_pagina`: la IA reconoció el producto y de verdad no había medidas que citar.
-     *   - `paginas_bloqueadas`: el producto apareció pero hubo páginas del resultado que no se pudieron leer
-     *     (el sitio bloquea la descarga), ni con el respaldo.
+     *   - `paginas_bloqueadas`: hubo páginas del resultado que no se pudieron leer (el sitio las bloquea o no
+     *     respondió). Dice «El producto apareció» solo si el producto de verdad apareció (la IA lo reconoció o el
+     *     resultado de una búsqueda por código traía el código); si no, «Aparecieron N páginas».
      *   - `pdf_no_leido`: idem, pero las que no se leyeron eran PDF.
-     *   - `no_coincide`: se revisaron páginas pero ninguna era el mismo producto, o no tenían el código.
+     *   - `no_coincide`: se leyeron páginas pero ninguna era el mismo producto, o no tenían el código.
      *   - `sin_resultados`: la búsqueda no devolvió nada útil.
+     *
+     * Lo que se dice del respaldo es lo que pasó: «ni con el respaldo» solo si se probaron con él TODAS las
+     * páginas relevantes; si el tope por artículo dejó algunas sin probar, o se alcanzó el tope de créditos de la
+     * corrida, o no había clave / búsquedas de la demo, lo dice.
      *
      * @param  array $diagnostico      Las entradas de diagnóstico de los planes.
      * @param  bool  $hubo_misma_cosa  La IA dijo que era el mismo producto en algún plan.
@@ -1738,46 +1749,81 @@ class ArticleDimensionSearchEngine
     {
         $resumen = $this->resumen_de_paginas($diagnostico);
 
-        // Cómo terminó el respaldo, para decir la verdad sobre «ni con el respaldo».
-        $con_respaldo = $this->scrapes['usados'] > 0 ? ', ni con el respaldo' : '';
+        // Páginas de un sitio que bloquea o no responde (sin contar PDF).
+        $del_sitio  = $resumen['bloqueadas'] + $resumen['sin_respuesta'];
+        $no_leidas  = $del_sitio + $resumen['pdf'];
+        $frase_resp = $this->frase_del_respaldo($resumen['sin_probar']);
 
-        if (!$this->scrapes['usados'] && ($this->scrapes['sin_clave'] || $this->scrapes['tope_demo'])) {
-            $con_respaldo = ' y el respaldo no estaba disponible';
-        }
-
-        $aviso_de_bloqueadas = $resumen['bloqueadas'] + $resumen['pdf'] > 0
-            ? ' Además, '.$this->no_se_pudieron_leer($resumen['bloqueadas'] + $resumen['pdf']).($resumen['pdf'] > 0 ? ' (el sitio bloquea la descarga o son PDF'.$con_respaldo.')' : ' (el sitio bloquea la descarga'.$con_respaldo.')').'.'
-            : '';
-
-        if ($hubo_misma_cosa) {
-            return $this->sin_datos(
-                'sin_medidas_en_la_pagina',
-                'Se encontró el producto, pero '.($resumen['leidas'] === 1 ? 'la página que se leyó' : 'las '.$resumen['leidas'].' páginas que se leyeron').' no trae peso ni medidas que se puedan comprobar con una cita.'.$aviso_de_bloqueadas
-            );
-        }
-
-        if ($resumen['bloqueadas'] > 0 && $resumen['bloqueadas'] >= $resumen['pdf']) {
-            return $this->sin_datos(
-                'paginas_bloqueadas',
-                'El producto apareció pero '.$this->no_se_pudieron_leer($resumen['bloqueadas'] + $resumen['pdf']).' (el sitio bloquea la descarga'.$con_respaldo.').'
-            );
+        // La causa, en palabras: bloquea / no respondió / PDF.
+        if ($resumen['bloqueadas'] > 0 && $resumen['sin_respuesta'] > 0) {
+            $causa = 'el sitio bloquea la descarga o no respondió';
+        } elseif ($resumen['sin_respuesta'] > 0 && $resumen['bloqueadas'] === 0) {
+            $causa = 'el sitio no respondió';
+        } else {
+            $causa = 'el sitio bloquea la descarga';
         }
 
         if ($resumen['pdf'] > 0) {
+            $causa = $del_sitio > 0 ? $causa.' o son PDF' : 'son PDF';
+        }
+
+        $entre_parentesis = ' ('.$causa.($frase_resp !== '' ? ', '.$frase_resp : '').')';
+
+        if ($hubo_misma_cosa) {
+            $aviso = $no_leidas > 0 ? ' Además, '.$this->no_se_pudieron_leer($no_leidas).$entre_parentesis.'.' : '';
+
             return $this->sin_datos(
-                'pdf_no_leido',
-                'Las páginas que aparecieron eran PDF que no se pudieron leer'.($con_respaldo !== '' ? ' ('.ltrim($con_respaldo, ', ').')' : '').'.'
+                'sin_medidas_en_la_pagina',
+                'Se encontró el producto, pero '.($resumen['leidas'] === 1 ? 'la página que se leyó' : 'las '.$resumen['leidas'].' páginas que se leyeron').' no trae peso ni medidas que se puedan comprobar con una cita.'.$aviso
             );
         }
 
+        if ($del_sitio > 0 && $del_sitio >= $resumen['pdf']) {
+            // ¿El producto apareció de verdad? Si alguna de las no leídas salió de una búsqueda por código y traía el código.
+            $comienzo = $resumen['por_codigo'] > 0
+                ? 'El producto apareció pero '.$this->no_se_pudieron_leer($no_leidas)
+                : ($no_leidas === 1 ? 'Apareció 1 página pero no se pudo leer' : 'Aparecieron '.$no_leidas.' páginas pero no se pudieron leer');
+
+            return $this->sin_datos('paginas_bloqueadas', $comienzo.$entre_parentesis.'.');
+        }
+
+        if ($resumen['pdf'] > 0) {
+            return $this->sin_datos('pdf_no_leido', 'Las páginas que aparecieron eran PDF que no se pudieron leer'.($frase_resp !== '' ? ' ('.$frase_resp.')' : '').'.');
+        }
+
+        if ($resumen['leidas'] > 0) {
+            return $this->sin_datos('no_coincide', 'Se revisaron '.$this->cuantas_paginas($resumen['leidas']).' pero ninguna era el mismo producto, o no tenían el código del artículo.');
+        }
+
+        // Hubo resultados pero ninguna página útil se pudo leer (eran redes sociales, no existían o no eran del producto).
         if ($hubo_paginas || $hubo_resultados) {
-            return $this->sin_datos(
-                'no_coincide',
-                'Se revisaron '.($resumen['leidas'] > 0 ? $this->cuantas_paginas($resumen['leidas']) : 'los resultados').' pero ninguna era el mismo producto, o no tenían el código del artículo.'
-            );
+            return $this->sin_datos('no_coincide', 'No se pudo leer ninguna página útil de los resultados de la búsqueda.');
         }
 
         return $this->sin_datos('sin_resultados', 'La búsqueda no devolvió resultados útiles para este artículo.');
+    }
+
+    /**
+     * Lo que se puede decir del respaldo por el scrape sin faltar a la verdad (vacío si nunca hizo falta decir nada).
+     *
+     * @param  int $sin_probar  Páginas relevantes que no se leyeron y a las que NO se les pidió el respaldo.
+     * @return string
+     */
+    protected function frase_del_respaldo($sin_probar)
+    {
+        if ($this->scrapes['tope_creditos']) {
+            return 'y se alcanzó el tope de créditos del respaldo';
+        }
+
+        if ($sin_probar > 0 && ($this->scrapes['sin_clave'] || $this->scrapes['tope_demo'])) {
+            return 'y el respaldo no estaba disponible';
+        }
+
+        if ($this->scrapes['usados'] > 0) {
+            return $sin_probar > 0 ? 'y no se probaron todas con el respaldo por el tope' : 'ni con el respaldo';
+        }
+
+        return '';
     }
 
     /**
@@ -1785,14 +1831,19 @@ class ArticleDimensionSearchEngine
      * planes, y sin contar como «no leída» a una que otro plan sí logró leer).
      *
      * @param  array $diagnostico
-     * @return array  leidas (las que entraron a la IA), bloqueadas (relevantes que el sitio no dejó bajar),
-     *                pdf (relevantes que eran PDF y no se pudieron leer).
+     * @return array  leidas (las que entraron a la IA); de las relevantes que no se leyeron: bloqueadas (el sitio las
+     *                bloquea), sin_respuesta (timeout), pdf, sin_probar (a las que no se les pidió el respaldo) y
+     *                por_codigo (cuántas salieron de una búsqueda por código con el código en el título o snippet).
      */
     protected function resumen_de_paginas(array $diagnostico)
     {
-        $leidas     = [];
-        $bloqueadas = [];
-        $pdf        = [];
+        $leidas        = [];
+        $bloqueadas    = [];
+        $sin_respuesta = [];
+        $pdf           = [];
+        $probadas      = [];
+        $por_codigo    = [];
+        $relevantes    = [];
 
         foreach ($diagnostico as $entrada) {
             if (empty($entrada['paginas']) || !is_array($entrada['paginas'])) {
@@ -1819,16 +1870,36 @@ class ArticleDimensionSearchEngine
 
                 if ($pagina['fallo'] === DimensionPageReader::FALLO_PDF) {
                     $pdf[$url] = true;
-                } elseif ($pagina['fallo'] === DimensionPageReader::FALLO_BLOQUEADA || $pagina['fallo'] === DimensionPageReader::FALLO_SIN_RESPUESTA) {
+                } elseif ($pagina['fallo'] === DimensionPageReader::FALLO_BLOQUEADA) {
                     $bloqueadas[$url] = true;
+                } elseif ($pagina['fallo'] === DimensionPageReader::FALLO_SIN_RESPUESTA) {
+                    $sin_respuesta[$url] = true;
+                } else {
+                    continue;
+                }
+
+                $relevantes[$url] = true;
+
+                if (!empty($pagina['respaldo_probado'])) {
+                    $probadas[$url] = true;
+                }
+
+                if (!empty($pagina['por_codigo'])) {
+                    $por_codigo[$url] = true;
                 }
             }
         }
 
+        // Una página que otro plan sí logró leer ya no es una «no leída».
+        $relevantes = array_diff_key($relevantes, $leidas);
+
         return [
-            'leidas'     => count($leidas),
-            'bloqueadas' => count(array_diff_key($bloqueadas, $leidas)),
-            'pdf'        => count(array_diff_key($pdf, $leidas)),
+            'leidas'        => count($leidas),
+            'bloqueadas'    => count(array_diff_key($bloqueadas, $leidas)),
+            'sin_respuesta' => count(array_diff_key($sin_respuesta, $leidas)),
+            'pdf'           => count(array_diff_key($pdf, $leidas)),
+            'sin_probar'    => count(array_diff_key($relevantes, $probadas)),
+            'por_codigo'    => count(array_diff_key($por_codigo, $leidas)),
         ];
     }
 
