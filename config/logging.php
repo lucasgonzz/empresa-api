@@ -83,6 +83,13 @@ return [
             'days' => 14,
         ],
 
+        'diagnostico_conexion' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/diagnostico-conexion.log'),
+            'level' => 'info',
+            'days' => 7,
+        ],
+
         'slack' => [
             'driver' => 'slack',
             'url' => env('LOG_SLACK_WEBHOOK_URL'),
