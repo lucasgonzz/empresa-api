@@ -245,6 +245,8 @@ class ErrorHandler
             'does not support titles greater than' => 'no permite títulos de más de',
             'are required for category'           => 'son obligatorios para la categoría',
             'User has not mode me1'               => 'El usuario no tiene habilitado el modo Mercado Envíos 1',
+            'ME2 adoption is mandatory for the user' => 'Mercado Libre exige que la cuenta use Mercado Envíos',
+            'The field family name is invalid'    => 'Mercado Libre no deja cambiar el nombre de esta publicación',
             'Free shipping costs exceeds sale'    => 'El costo de envío gratis supera el precio de venta',
             'Validation error'                    => 'Error de validación',
             'missing_required'                    => 'faltan atributos obligatorios',
@@ -253,9 +255,12 @@ class ErrorHandler
             'invalid'                             => 'inválido',
         ];
 
+        // Palabras enteras: con un reemplazo pelado, "BODY_INVALID_FIELDS" salía "BODY_inválido_FIELDS"
+        // (visto en la prueba real del 28/10/2026). El guion bajo cuenta como parte de la palabra.
         foreach ($traducciones as $ing => $esp) {
-            if (stripos($mensaje, $ing) !== false) {
-                return str_ireplace($ing, $esp, $mensaje);
+            $patron = '/(?<![\w])'.preg_quote($ing, '/').'(?![\w])/iu';
+            if (preg_match($patron, $mensaje)) {
+                return preg_replace($patron, $esp, $mensaje);
             }
         }
 
