@@ -445,6 +445,24 @@ class Alcance_De_Ventas_Del_Empleado_Test extends EmpresaTestCase
         $this->assertEquals(700, $resultado['totales']['pesos']['total'], 'Las ventas en dólares no se mezclan en los pesos.');
     }
 
+    /** Ticket #28: el permiso oculta tarjetas, nunca recorta ni altera los datos de las filas. */
+    public function test_ocultar_total_no_cambia_filas_paginador_ni_totales_autorizados()
+    {
+        $this->crear_venta(40, $this->empleado_a->id, $this->sucursal_1, ['moneda_id' => 2]);
+        $empleado = $this->empleado_acotado_a_sus_ventas($this->empleado_a);
+        $this->actuar_como($empleado);
+        $antes = $this->pedir(['per_page' => 1]);
+
+        $this->dar_permisos($empleado, ['sale.index.employees.only_your', 'sale.index.previus_days', 'sale.index.hide_total']);
+        $this->actuar_como($empleado->fresh());
+        $despues = $this->pedir(['per_page' => 1]);
+
+        $this->assertEquals($antes, $despues);
+        $this->assertSame(3, $despues['paginador_total']);
+        $this->assertEquals(700, $despues['totales']['pesos']['total']);
+        $this->assertEquals(40, $despues['totales']['dolares']['total']);
+    }
+
     // ---------------------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------------------

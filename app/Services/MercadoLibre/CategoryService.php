@@ -257,12 +257,19 @@ class CategoryService
      * True si el atributo es obligatorio para publicar (`required`, o `new_required`: el módulo
      * publica nuevo por defecto).
      *
+     * También `catalog_required`. Prueba real del 28/10/2026 con un vendedor del modelo nuevo
+     * (User Products): `items/validate` rechazó el alta por `item.attribute.missing_catalog_required`
+     * («Tipo de producto», que en Destornilladores solo trae `catalog_required`), y el formulario no
+     * lo pedía. Hoy las cuentas nuevas de MLA son User Products.
+     *
      * @param array<int, string> $tags
      * @return bool
      */
     public static function es_requerido(array $tags)
     {
-        return in_array('required', $tags, true) || in_array('new_required', $tags, true);
+        return in_array('required', $tags, true)
+            || in_array('new_required', $tags, true)
+            || in_array('catalog_required', $tags, true);
     }
 
     /**

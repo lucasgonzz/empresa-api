@@ -43,6 +43,12 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
     /** @var array URLs de páginas que el motor pidió, en orden. */
     protected $paginas_pedidas = [];
 
+    /** @var array URLs que el motor le pidió al scrape de Serper (el respaldo), en orden. */
+    protected $scrapes_pedidos = [];
+
+    /** @var array Las cabeceras X-API-KEY con las que llegaron los pedidos al scrape. */
+    protected $claves_del_scrape = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -197,21 +203,49 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
      * @param  array|string|callable $ia      Una ficha() fija, una función (array $pedido, int $n) que devuelve la
      *                                        ficha() según lo que se le mandó, o 'caida' (la IA responde 500) /
      *                                        'ilegible' (responde algo que no es JSON).
+     * @param  array                $scrape   url => texto plano que devuelve scrape.serper.dev (créditos 2), o
+     *                                        url => ['text' => ..., 'credits' => 4, 'title' => ...], o url => ['status' => 500].
+     *                                        Una URL que no está acá responde 404 (el respaldo no la baja).
      * @return void
      */
-    protected function falsear(array $serper, array $paginas, $ia)
+    protected function falsear(array $serper, array $paginas, $ia, array $scrape = [])
     {
         $this->consultas_serper = [];
         $this->pedidos_ia       = [];
         $this->paginas_pedidas  = [];
+        $this->scrapes_pedidos  = [];
+        $this->claves_del_scrape = [];
 
         $test = $this;
 
         // Un cliente HTTP nuevo en cada llamada: Http::fake() ACUMULA los stubs y el primero que responde gana.
         Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
-        Http::fake(function ($request) use ($test, $serper, $paginas, $ia) {
+        Http::fake(function ($request) use ($test, $serper, $paginas, $ia, $scrape) {
             $url = $request->url();
+
+            // El respaldo: scrape.serper.dev devuelve {text, metadata, credits} con el texto plano de la URL pedida.
+            if (strpos($url, 'scrape.serper.dev') !== false) {
+                $objetivo = isset($request->data()['url']) ? (string) $request->data()['url'] : '';
+                $test->scrapes_pedidos[]   = $objetivo;
+                $test->claves_del_scrape[] = implode(',', (array) $request->header('X-API-KEY'));
+
+                if (!isset($scrape[$objetivo])) {
+                    return Http::response(['message' => 'No se pudo leer (fake)'], 404);
+                }
+
+                $devuelto = $scrape[$objetivo];
+
+                if (is_array($devuelto) && isset($devuelto['status'])) {
+                    return Http::response(['message' => 'Error del respaldo (fake)'], $devuelto['status']);
+                }
+
+                return Http::response([
+                    'text'     => is_array($devuelto) ? $devuelto['text'] : $devuelto,
+                    'metadata' => ['title' => is_array($devuelto) && isset($devuelto['title']) ? $devuelto['title'] : 'Título del respaldo'],
+                    'credits'  => is_array($devuelto) && isset($devuelto['credits']) ? $devuelto['credits'] : 2,
+                ], 200);
+            }
 
             if (strpos($url, 'google.serper.dev') !== false) {
                 $consulta = isset($request->data()['q']) ? (string) $request->data()['q'] : '';
@@ -254,6 +288,11 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
             if (isset($paginas[$url])) {
                 $test->paginas_pedidas[] = $url;
                 $pagina = $paginas[$url];
+
+                // Un corte de conexión / timeout de la descarga directa.
+                if (is_array($pagina) && !empty($pagina['excepcion'])) {
+                    throw new \Illuminate\Http\Client\ConnectionException('cURL error 28: Operation timed out (fake)');
+                }
 
                 if (is_array($pagina) && isset($pagina['status'])) {
                     return Http::response('error', $pagina['status'], ['Content-Type' => 'text/html']);

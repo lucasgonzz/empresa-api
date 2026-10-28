@@ -4,6 +4,8 @@ namespace Tests\Feature\MercadoLibre;
 
 use App\Models\Article;
 use App\Models\ArticleMeliAttribute;
+use App\Models\MeliAttribute;
+use App\Models\MeliAttributeTag;
 use App\Models\SyncToMeliArticle;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
@@ -240,6 +242,27 @@ class ArticuloFormularioTest extends MercadoLibreTestCase
             $this->assertStringNotContainsString('universal', $faltante);
             $this->assertStringNotContainsString('«SKU»', $faltante);
         }
+    }
+
+    /**
+     * Prueba real del 28/10/2026: «Tipo de producto» solo trae `catalog_required` y ML lo exige para
+     * publicar (`item.attribute.missing_catalog_required`). Tiene que figurar como obligatorio.
+     */
+    public function test_un_atributo_catalog_required_cuenta_como_obligatorio()
+    {
+        $atributo = MeliAttribute::create([
+            'meli_id'          => 'PRODUCT_TYPE',
+            'name'             => 'Tipo de producto',
+            'value_type'       => 'list',
+            'meli_category_id' => $this->categoria->id,
+        ]);
+        MeliAttributeTag::create(['key' => 'catalog_required', 'value' => '1', 'meli_attribute_id' => $atributo->id]);
+
+        $article = $this->articulo_ml($this->categoria);
+
+        $faltantes = $this->getJson('/api/mercado-libre/articulo/'.$article->id)->assertStatus(200)->json('estado.faltantes');
+
+        $this->assertContains('Completar el atributo obligatorio «Tipo de producto».', $faltantes);
     }
 
     public function test_el_estado_sin_categoria_ni_fotos_ni_marcar_disponible()

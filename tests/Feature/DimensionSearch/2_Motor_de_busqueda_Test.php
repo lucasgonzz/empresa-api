@@ -541,6 +541,12 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
     /**
      * D3: la página es el producto pero no trae medidas.
      *
+     * Misión medidas-sin-datos (28/10/2026): antes la IA proponía «Pesa 50 gramos» (una cita que NO está en la página)
+     * y el ítem quedaba sin datos. Ahora esa propuesta se conserva como «a revisar» (`valor_sin_respaldo`, ver
+     * 7_Propuestas_sin_respaldo_Test). `sin_medidas_en_la_pagina` queda solo para lo verdadero: la IA reconoce el
+     * producto y NO propone ningún valor porque la página de verdad no trae medidas. Por eso el doble de la IA ya no
+     * inventa un peso.
+     *
      * @group dimension-search
      * @test
      */
@@ -552,7 +558,7 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
         $this->falsear(
             ['"'.$gtin.'"' => [$this->resultado(self::URL_A)]],
             [self::URL_A => $this->pagina('Rodamiento', $gtin.' Rodamiento rígido de bolas.')],
-            $this->ficha('exacto', ['peso' => $this->dato(0.05, 'kg', 'Pesa 50 gramos', self::URL_A)])
+            $this->ficha('exacto')
         );
 
         list($item) = $this->buscar($articulo);

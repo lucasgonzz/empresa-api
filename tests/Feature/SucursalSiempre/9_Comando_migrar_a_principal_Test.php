@@ -168,7 +168,7 @@ class Comando_migrar_a_principal_Test extends SucursalSiempreTestCase
             $this->assertEquals($stock, (float) $this->stock_crudo($e[$clave]), 'Global de "'.$clave.'".');
         }
 
-        $this->assertSame('0.00', number_format((float) $this->stock_crudo($e['nulo']), 2), 'El null pasa a 0.');
+        $this->assertNull($this->stock_crudo($e['nulo']), 'Repartir el stock no activa control de cantidad.');
 
         // Movimiento por el motor solo para los que tienen stock y no están en la papelera.
         $this->assertSame(1, StockMovement::where('article_id', $e['con_stock']->id)->count());
@@ -354,5 +354,116 @@ class Comando_migrar_a_principal_Test extends SucursalSiempreTestCase
         $this->assertStringContainsString("stock_updated_at = '2021-03-04 05:06:07' WHERE id = ".$articulo->id, $sql);
         $this->assertStringContainsString('INMEDIATAMENTE después de migrar', $sql);
         $this->assertStringContainsString('FUERA del horario del negocio', $this->texto);
+    }
+
+    /** @test */
+    public function conserva_stock_sin_control_en_la_copia_vinculada_y_en_la_papelera()
+    {
+        $dueno = $this->dueno_nuevo('sin-control');
+        $proveedor = $this->articulo_propio($this->usuario(), 'fuente disponible', 9);
+        $copia = $this->articulo_propio($dueno, 'copia disponible sin cantidad propia', null);
+        DB::table('articles')->where('id', $copia->id)->update([
+            'provider_article_id' => $proveedor->id,
+            'created_at' => '2024-01-02 03:04:05',
+            'stock_updated_at' => '2024-02-03 04:05:06',
+        ]);
+        $papelera = $this->articulo_propio($dueno, 'papelera sin control', null);
+        $papelera->delete();
+
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        foreach ([$copia, $papelera] as $articulo) {
+            $this->assertNull($this->stock_crudo($articulo), 'Sin control de stock no significa agotado.');
+            $this->assertCount(1, $this->filas($articulo));
+            $this->assertEquals(0, $this->filas($articulo)[0]->amount);
+            $this->assertSame(0, StockMovement::where('article_id', $articulo->id)->count());
+        }
+        $this->assertEquals(9, $this->stock_crudo($proveedor), 'No toca la cantidad del proveedor.');
+        $this->assertSame('2024-01-02 03:04:05', DB::table('articles')->where('id', $copia->id)->value('created_at'));
+        $this->assertSame('2024-02-03 04:05:06', DB::table('articles')->where('id', $copia->id)->value('stock_updated_at'));
+        $carpetas = glob($this->salida.DIRECTORY_SEPARATOR.'*', GLOB_ONLYDIR);
+        $respaldos = array_map(function ($linea) { return json_decode($linea, true); }, file($carpetas[0].DIRECTORY_SEPARATOR.'respaldo.jsonl', FILE_IGNORE_NEW_LINES));
+        $respaldo_copia = array_values(array_filter($respaldos, function ($fila) use ($copia) {
+            return $fila['tipo'] === 'articulo' && $fila['article_id'] === $copia->id;
+        }));
+        $this->assertCount(1, $respaldo_copia);
+        $this->assertNull($respaldo_copia[0]['stock'], 'El respaldo conserva la diferencia entre null y cero.');
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+        $this->assertNull($this->stock_crudo($copia), 'La segunda corrida tampoco lo vuelve agotado.');
+        $this->assertCount(1, $this->filas($copia));
+    }
+
+    /** @test */
+    public function conserva_stock_sin_control_en_el_articulo_y_sus_variantes()
+    {
+        $dueno = $this->dueno_nuevo('variantes-sin-control');
+        $articulo = $this->articulo_propio($dueno, 'variantes sin control', null);
+        $v1 = $this->variante($articulo, null);
+        $v2 = $this->variante($articulo, null);
+
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        $principal = Address::principal_de($dueno->id);
+        $this->assertNull($this->stock_crudo($articulo));
+        foreach ([$v1, $v2] as $variante) {
+            $this->assertNull($this->stock_de_variante($variante));
+            $this->assertSame(0.0, $this->stock_de_variante_en($variante, $principal->id));
+        }
+        $this->assertSame(0, StockMovement::where('article_id', $articulo->id)->count());
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+        $this->assertNull($this->stock_crudo($articulo));
+        $this->assertNull($this->stock_de_variante($v1));
+    }
+
+    /** @test */
+    public function conserva_la_variante_sin_control_al_migrar_otra_con_cantidad()
+    {
+        $dueno = $this->dueno_nuevo('variantes-mixtas');
+        $articulo = $this->articulo_propio($dueno, 'variantes mixtas', 5);
+        $sin_control = $this->variante($articulo, null);
+        $con_cantidad = $this->variante($articulo, 5);
+
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        $principal = Address::principal_de($dueno->id);
+        $this->assertNull($this->stock_de_variante($sin_control));
+        $this->assertSame(0.0, $this->stock_de_variante_en($sin_control, $principal->id));
+        $this->assertSame(5.0, $this->stock_de_variante($con_cantidad));
+        $this->assertSame(5.0, $this->stock_de_variante_en($con_cantidad, $principal->id));
+        $this->assertEquals(5, $this->stock_crudo($articulo));
+    }
+
+    /** @test */
+    public function conserva_stock_sin_control_con_filas_previas_de_comprador()
+    {
+        $dueno = $this->dueno_nuevo('sin-control-comprador');
+        $comprador = Address::create(['street' => 'zz Envio anterior', 'user_id' => null, 'buyer_id' => 555]);
+        $articulo = $this->articulo_propio($dueno, 'sin control con envio anterior', null);
+        $articulo->addresses()->attach($comprador->id, ['amount' => -2]);
+
+        $this->assertSame(0, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        $principal = Address::principal_de($dueno->id);
+        $this->assertNull($this->stock_crudo($articulo));
+        $this->assertEquals(2, DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $principal->id)->value('amount'));
+        $this->assertEquals(-2, DB::table('address_article')->where('article_id', $articulo->id)->where('address_id', $comprador->id)->value('amount'));
+        $this->assertEquals(0, DB::table('address_article')->where('article_id', $articulo->id)->sum('amount'));
+    }
+
+    /** @test */
+    public function preservar_null_no_tapa_un_total_de_variantes_inconsistente()
+    {
+        $dueno = $this->dueno_nuevo('null-inconsistente');
+        $articulo = $this->articulo_propio($dueno, 'total null con cantidad en variante', null);
+        $variante = $this->variante($articulo, 5);
+
+        $this->assertSame(1, $this->correr($dueno, ['--aplicar' => true]), $this->texto);
+
+        $this->assertStringContainsString('1 revertidos', $this->texto);
+        $this->assertNull($this->stock_crudo($articulo));
+        $this->assertSame(5.0, $this->stock_de_variante($variante));
+        $this->assertSame(0, DB::table('address_article_variant')->where('article_variant_id', $variante->id)->count());
+        $this->assertCount(0, $this->filas($articulo));
+        $this->assertSame(0, StockMovement::where('article_id', $articulo->id)->count());
     }
 }

@@ -14,6 +14,7 @@ use Illuminate\Console\Command;
  *     php artisan medidas:buscar --dry-run                 # solo muestra la previa (no gasta nada)
  *     php artisan medidas:buscar --solo-con-stock          # los artículos con stock
  *     php artisan medidas:buscar --solo-con-stock --limite=200
+ *     php artisan medidas:buscar --reintentar-sin-datos    # también los «sin datos» de una búsqueda anterior
  *
  * Toma al dueño de `config('app.USER_ID')` (igual que los demás comandos por negocio): en esta
  * arquitectura cada instalación tiene UN dueño, y este comando solo itera ese. Valida que haya clave de
@@ -38,6 +39,7 @@ class MedidasBuscar extends Command
     protected $signature = 'medidas:buscar
                             {--solo-con-stock : Solo los artículos con stock mayor a cero}
                             {--limite= : Máximo de artículos de esta corrida (además del tope de la configuración)}
+                            {--reintentar-sin-datos : También busca de nuevo los que quedaron «sin datos» (no los rechazados, ni los que esperan revisión, ni los que ya tienen todas las medidas)}
                             {--dry-run : Solo muestra la previa: no crea ni despacha nada}';
 
     /**
@@ -72,7 +74,9 @@ class MedidasBuscar extends Command
 
         $solo_con_stock = (bool) $this->option('solo-con-stock');
 
-        $previa = DimensionSearchRunHelper::previa_del_catalogo($owner, $solo_con_stock);
+        $reintentar_sin_datos = (bool) $this->option('reintentar-sin-datos');
+
+        $previa = DimensionSearchRunHelper::previa_del_catalogo($owner, $solo_con_stock, $reintentar_sin_datos);
 
         $this->imprimir_previa($previa, $limite);
 
@@ -82,7 +86,7 @@ class MedidasBuscar extends Command
             return 0;
         }
 
-        $resultado = DimensionSearchRunHelper::crear_del_catalogo($owner, null, $solo_con_stock, is_null($limite) ? null : (int) $limite);
+        $resultado = DimensionSearchRunHelper::crear_del_catalogo($owner, null, $solo_con_stock, is_null($limite) ? null : (int) $limite, $reintentar_sin_datos);
 
         if ($resultado['status'] !== 201) {
             $this->error($resultado['message']);
@@ -117,10 +121,17 @@ class MedidasBuscar extends Command
         }
 
         $this->line('  con una propuesta esperando revisión:     '.$previa['excluidos_pendientes_de_revision']);
+        if (!empty($previa['reintentar_sin_datos'])) {
+            $this->line('  (--reintentar-sin-datos: vuelven a entrar '.$previa['reintento_sin_datos'].' que habían quedado sin datos)');
+        } elseif (!empty($previa['reintento_sin_datos'])) {
+            $this->line('  (con --reintentar-sin-datos entrarían '.$previa['reintento_sin_datos'].' más, que habían quedado sin datos)');
+        }
+
         $this->line('  ya buscados sin éxito (últimos '.DimensionSearchRunHelper::DIAS_SIN_VOLVER_A_BUSCAR.' días):   '.$previa['excluidos_ya_buscados']);
         $this->line('  en otra corrida en curso:                 '.$previa['excluidos_en_otra_corrida']);
         $this->line('A buscar en esta corrida:                   '.$a_buscar.' (tope '.$previa['tope'].')');
         $this->line('Estimado: ~'.$previa['estimacion']['busquedas'].' búsquedas, ~'.$previa['estimacion']['minutos'].' min, USD '.number_format($previa['estimacion']['usd_busquedas'] + $previa['estimacion']['usd_ia'], 2).' (búsquedas '.number_format($previa['estimacion']['usd_busquedas'], 2).' + IA '.number_format($previa['estimacion']['usd_ia'], 2).')');
+        $this->line('Respaldo de lectura (páginas bloqueadas y PDF): ~'.number_format($previa['estimacion']['creditos_respaldo'], 0, ',', '.').' créditos de Serper (USD '.number_format($previa['estimacion']['usd_respaldo'], 2, ',', '.').'), aparte del costo de arriba. '.$previa['estimacion']['texto_respaldo']);
         $this->line('Serper configurado: '.($previa['proveedor_configurado'] ? 'sí' : 'NO').' · IA configurada: '.($previa['ia_configurada'] ? 'sí' : 'NO'));
 
         if (!$previa['ia_configurada'] && !empty($previa['ia_motivo'])) {

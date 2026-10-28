@@ -44,7 +44,8 @@ use Illuminate\Support\Facades\DB;
  *     - stock ≠ 0 → un movimiento "Creacion de deposito" a la principal por el stock ENTERO, por el
  *       motor (`StockMovementController::crear()`), con la observación OBSERVACION y sin avisar a
  *       Tienda Nube ni a Mercado Libre (`sin_sincronizar`: el stock publicado no cambia);
- *     - stock 0 o null → la fila con 0 directa, sin movimiento (y el null pasa a 0);
+ *     - stock 0 o null → la fila con 0 directa, sin movimiento; el global conserva null si no lleva
+ *       control de cantidad (null no significa agotado en la tienda ni en la vinculación);
  *     - en la papelera → la fila directa con su stock, sin movimiento: el motor no ve los artículos de
  *       la papelera (`Article::find`), mismo criterio que la D7 de eliminar-sucursal-con-stock;
  *     - con variantes: lo mismo por cada variante que no reparte (con `article_variant_id`), así el
@@ -54,7 +55,8 @@ use Illuminate\Support\Facades\DB;
  *     filas, para que el global quede idéntico. Los movimientos no tocan `stock_updated_at`
  *     (`sin_stock_updated_at`): el stock no cambia. Ese valor igual queda en el respaldo y en la reversión.
  *  e. Verifica artículo por artículo que `articles.stock` y el de cada variante quedaron IDÉNTICOS a
- *     los de antes (null cuenta como 0). Si alguno difiere, lo informa y revierte ESE artículo: cada
+ *     los de antes: conserva cantidades y también la ausencia de control (null). Si alguno difiere,
+ *     lo informa y revierte ESE artículo: cada
  *     artículo va en su transacción.
  *  f. Idempotente: una segunda corrida no encuentra nada que hacer.
  *  g. Respaldo write-ahead en `storage/app/respaldos/sucursal-principal/<fecha>/`: `respaldo.jsonl`
@@ -671,16 +673,12 @@ class MigrarASucursalPrincipal extends Command
 
             if ($a['papelera'] || $a_la_principal == 0.0) {
 
-                // Sin movimiento: la fila directa (con su stock en la papelera, en 0 si no) y el null → 0.
+                // Sin movimiento: la fila directa. El global null sigue sin control de cantidad.
                 DB::table('address_article')->insert([
                     'article_id' => $id,
                     'address_id' => $principal->id,
                     'amount'     => $a_la_principal,
                 ]);
-
-                if (is_null($articulo_antes->stock)) {
-                    DB::table('articles')->where('id', $id)->update(['stock' => 0]);
-                }
 
             } else {
 
@@ -715,10 +713,6 @@ class MigrarASucursalPrincipal extends Command
                         'updated_at'         => $ahora,
                     ]);
 
-                    if (is_null($stock_crudo_variante)) {
-                        DB::table('article_variants')->where('id', $v['id'])->update(['stock' => 0]);
-                    }
-
                     $directas = true;
 
                 } else {
@@ -736,7 +730,8 @@ class MigrarASucursalPrincipal extends Command
             }
         }
 
-        // e. Verificación: el stock del artículo y el de cada variante, idénticos (null ≡ 0).
+        // e. Primero se verifica la cantidad: un recálculo incorrecto se revierte aun si el global
+        // era null. Para sumar filas, null aporta 0; para disponibilidad NO equivale a agotado.
         $stock_despues = DB::table('articles')->where('id', $id)->value('stock');
         $stock_despues = is_null($stock_despues) ? 0.0 : (float) $stock_despues;
 
@@ -752,6 +747,20 @@ class MigrarASucursalPrincipal extends Command
 
             if (abs($despues - $antes) > self::TOLERANCIA) {
                 throw new \RuntimeException('el stock de la variante '.$v->id.' iba a quedar en '.$despues.' y era '.$antes);
+            }
+        }
+
+        /* El motor recalcula cantidades desde las filas y puede escribir 0 donde antes había null.
+           Esta operación solo reparte el stock existente: no activa el control de cantidad. Se
+           conserva el estado capturado bajo candado, también para variantes con filas previas o
+           artículos con movimientos de comprador. Las cantidades ya se verificaron arriba; esto
+           no tapa un total distinto. No se cambia el motor de ventas, compras ni ajustes reales. */
+        if (is_null($articulo_antes->stock)) {
+            DB::table('articles')->where('id', $id)->whereNotNull('stock')->update(['stock' => null]);
+        }
+        foreach ($todas_las_variantes as $v) {
+            if (is_null($v->stock)) {
+                DB::table('article_variants')->where('id', $v->id)->whereNotNull('stock')->update(['stock' => null]);
             }
         }
 

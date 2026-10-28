@@ -58,6 +58,7 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
         'sale.delete',
         'sale.index.previus_days',
         'sale.index.total',
+        'sale.index.hide_total',
         'sale.index.addresses.all',
         'sale.index.addresses.only_your',
         'sale.index.employees.all',
