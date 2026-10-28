@@ -9,7 +9,10 @@ use Illuminate\Support\Facades\Route;
 
 // Route::middleware(['set.user.database'])->group(function() {
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
-Route::middleware(['auth:sanctum'])->group(function() {
+Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::class])->group(function() {
+
+    Route::get('diagnostico-conexion/config', 'DiagnosticoConexionController@configuracion')->middleware('throttle:20,1');
+    Route::post('diagnostico-conexion/eventos', 'DiagnosticoConexionController@eventos')->middleware('throttle:10,1');
 
     // Ficha de producto por código de barras (GTIN) con IA. Misión agentes-ia-extension-unica
     // (22/10/2026): exige la extensión `agentes_ia` (403 sin ella; nunca 404, que el admin lee como

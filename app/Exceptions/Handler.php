@@ -9,6 +9,16 @@ use Throwable;
 
 class Handler extends ExceptionHandler
 {
+    public function render($request, Throwable $error)
+    {
+        // Routing Pipeline convierte excepciones en respuestas ANTES de volver al middleware.
+        // Sólo el diagnóstico optativo recibe la clase; nunca mensaje, traza ni parámetros.
+        if ($request->attributes->get('diagnostico_conexion_activo') === true) {
+            $request->attributes->set('diagnostico_conexion_clase', get_class($error));
+        }
+        return parent::render($request, $error);
+    }
+
     /**
      * A list of the exception types that are not reported.
      *

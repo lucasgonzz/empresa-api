@@ -4,9 +4,12 @@ namespace Tests\Feature\MercadoLibre;
 
 use App\Models\Article;
 use App\Models\MeliOrder;
+use App\Http\Controllers\Controller;
 use App\Models\Sale;
+use App\Models\SyncToMeliArticle;
 use App\Notifications\GlobalNotification;
 use App\Services\MercadoLibre\OrderDownloaderService;
+use App\Services\MercadoLibre\VentaDelPedidoMeli;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Notification;
@@ -387,6 +390,146 @@ class PedidosTest extends MercadoLibreTestCase
         Notification::assertSentTo($this->owner, GlobalNotification::class, function ($notificacion) {
             return $notificacion->message_text === 'Entró un pedido de Mercado Libre con un artículo que no está vinculado';
         });
+    }
+
+    /**
+     * Misión mercado-libre-pruebas (27/10/2026): "Crear venta" sobre un pedido cancelado en Mercado
+     * Libre creaba la venta igual y bajaba el stock de algo que no se vendió. Ahora 422 con un
+     * mensaje legible (la SPA lo muestra tal cual) y no se toca nada.
+     */
+    public function test_crear_venta_a_mano_de_un_pedido_cancelado_se_rechaza_sin_tocar_el_stock()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001002', 'cancelled', [['MLA111', 2, 15000]])]);
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001002')->first();
+        $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count(), 'Un pedido cancelado no genera venta automática.');
+
+        $respuesta = $this->postJson('/api/meli-order/create-sale/'.$pedido->id);
+
+        $respuesta->assertStatus(422);
+        $respuesta->assertJsonPath('message', 'Este pedido está cancelado en Mercado Libre: no se le crea venta.');
+        $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count(), 'El botón creó la venta de un pedido cancelado.');
+        $this->assertEquals(10, (float) Article::find($this->articulo->id)->stock, 'El stock bajó por un pedido cancelado.');
+    }
+
+    /**
+     * Mismo rechazo para "cancelándose" (la cancelación está en curso) e "inválido", con el motivo
+     * de cada uno en el mensaje.
+     */
+    public function test_crear_venta_a_mano_se_rechaza_tambien_cancelandose_o_invalido()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([
+            $this->pedido_ml('2000001002', 'pending_cancel', [['MLA111', 1, 15000]]),
+            $this->pedido_ml('2000001003', 'invalid', [['MLA111', 1, 15000]]),
+        ]);
+        $this->sincronizar();
+
+        foreach (['2000001002' => 'se está cancelando', '2000001003' => 'figura como inválido'] as $numero => $motivo) {
+            $pedido = $this->pedidos_locales($numero)->first();
+            $this->assertNotNull($pedido, 'La consulta tenía que traer el pedido '.$numero.'.');
+
+            $respuesta = $this->postJson('/api/meli-order/create-sale/'.$pedido->id);
+
+            $respuesta->assertStatus(422);
+            $respuesta->assertJsonPath('message', 'Este pedido '.$motivo.' en Mercado Libre: no se le crea venta.');
+            $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count());
+        }
+
+        $this->assertEquals(10, (float) Article::find($this->articulo->id)->stock, 'El stock bajó por pedidos que no se vendieron.');
+    }
+
+    /**
+     * El servicio de la venta (el único camino que la crea) vuelve a mirar el estado con la fila
+     * tomada: un llamador que no lo chequeó (o que lo chequeó antes de que la consulta periódica lo
+     * cancelara) no consigue venta de un pedido cancelado.
+     */
+    public function test_el_servicio_no_crea_la_venta_de_un_pedido_cancelado_aunque_el_llamador_no_lo_mire()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001002', 'cancelled', [['MLA111', 2, 15000]])]);
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001002')->first();
+
+        $creada = VentaDelPedidoMeli::generar_si_falta($pedido, new Controller(), $this->owner);
+
+        $this->assertFalse($creada);
+        $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count());
+        $this->assertEquals(10, (float) Article::find($this->articulo->id)->stock);
+    }
+
+    /**
+     * La lupa de "Estado" de Pedidos busca por lo que la tabla MUESTRA ("Pagado", "Cancelado"), no
+     * por el valor de Mercado Libre (`paid`, `cancelled`): MeliOrder::columnas_mostradas_para_filtros().
+     */
+    public function test_el_filtro_de_estado_de_pedidos_busca_por_lo_que_se_ve()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([
+            $this->pedido_ml('2000001001', 'paid', [['MLA111', 1, 15000]]),
+            $this->pedido_ml('2000001002', 'cancelled', [['MLA111', 1, 15000]]),
+        ]);
+        $this->sincronizar();
+
+        $pagado = (int) $this->pedidos_locales('2000001001')->first()->id;
+        $cancelado = (int) $this->pedidos_locales('2000001002')->first()->id;
+
+        $con_pagado = $this->buscar_ids('meli_order', [['key' => 'status', 'type' => 'text', 'que_contenga' => 'pagado']]);
+        $this->assertContains($pagado, $con_pagado);
+        $this->assertNotContains($cancelado, $con_pagado);
+
+        $con_cancel = $this->buscar_ids('meli_order', [['key' => 'status', 'type' => 'text', 'que_contenga' => 'cancel']]);
+        $this->assertContains($cancelado, $con_cancel);
+        $this->assertNotContains($pagado, $con_cancel);
+    }
+
+    /**
+     * Lo mismo en Publicaciones (salientes): "Con error" y "Con aviso" (una exitosa con un aviso en
+     * el detalle) se encuentran por lo que se ve. SyncToMeliArticle::columnas_mostradas_para_filtros().
+     */
+    public function test_el_filtro_de_estado_de_publicaciones_busca_por_lo_que_se_ve()
+    {
+        SyncToMeliArticle::where('user_id', $this->owner->id)->delete();
+        $base = ['article_id' => $this->articulo->id, 'user_id' => $this->owner->id];
+        $con_error = (int) SyncToMeliArticle::create($base + ['status' => 'error', 'error_message' => 'Mercado Libre rechazó la publicación: falta la marca.'])->id;
+        $con_aviso = (int) SyncToMeliArticle::create($base + ['status' => 'exitosa', 'error_message' => 'Aviso: el precio no se pudo actualizar.'])->id;
+        $actualizada = (int) SyncToMeliArticle::create($base + ['status' => 'exitosa'])->id;
+
+        $this->assertSame([$con_error], $this->buscar_ids('sync_to_meli_article', [['key' => 'status', 'type' => 'text', 'que_contenga' => 'con error']]));
+        $this->assertSame([$con_aviso], $this->buscar_ids('sync_to_meli_article', [['key' => 'status', 'type' => 'text', 'que_contenga' => 'con aviso']]));
+        $this->assertSame([$actualizada], $this->buscar_ids('sync_to_meli_article', [['key' => 'status', 'type' => 'text', 'igual_que' => 'Actualizada']]));
+    }
+
+    /**
+     * Ids que devuelve `POST global-search/{modelo}` con los filtros de columna que manda la lupa.
+     *
+     * @param string $modelo
+     * @param array $filtros
+     * @return array<int, int>
+     */
+    protected function buscar_ids($modelo, array $filtros)
+    {
+        $respuesta = $this->postJson('api/global-search/'.$modelo.'?page=1', [
+            'query_value'    => '',
+            'props'          => [],
+            'relation_props' => [],
+            'extra_filters'  => [],
+            'filters'        => $filtros,
+            'conector'       => 'or',
+            'per_page'       => 200,
+        ]);
+
+        $this->assertSame(200, $respuesta->getStatusCode(), 'global-search/'.$modelo.' dio '.$respuesta->getStatusCode().': '.$respuesta->getContent());
+
+        $ids = [];
+        foreach ($respuesta->json('models.data') as $encontrado) {
+            $ids[] = (int) $encontrado['id'];
+        }
+
+        return $ids;
     }
 
     public function test_un_pedido_cancelado_que_ya_tenia_venta_avisa_y_no_la_anula()
