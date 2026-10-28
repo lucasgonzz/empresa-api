@@ -195,12 +195,26 @@ class Reintentar_sin_datos_Test extends DimensionSearchTestCase
         $this->assertStringContainsString('como piso: al menos ~60 créditos', $est['texto_respaldo']);
         $this->assertStringContainsString('puede ser más', $est['texto_respaldo']);
 
+        // Formato argentino: coma decimal y punto de miles (incluido el tope por corrida).
+        $this->assertStringContainsString('(USD 0,06)', $est['texto_respaldo']);
+        $this->assertStringContainsString('al llegar a 30.000 créditos', $est['texto_respaldo']);
+        $this->assertStringNotContainsString('0.06', $est['texto_respaldo']);
+        $this->assertStringNotContainsString('30000', $est['texto_respaldo']);
+
         config(['services.medidas_masivas.creditos_estimados_por_articulo' => 10, 'services.medidas_masivas.max_scrapes_por_articulo' => 2]);
 
         $previa = DimensionSearchRunHelper::previa_del_catalogo($this->owner);
 
         $this->assertSame(100, $previa['estimacion']['creditos_respaldo']);
         $this->assertStringContainsString('hasta 2 por artículo', $previa['estimacion']['texto_respaldo']);
+
+        // Con miles: 5.000 créditos de piso y un tope de 12.500.
+        config(['services.medidas_masivas.max_creditos_por_corrida' => 12500, 'services.medidas_masivas.creditos_estimados_por_articulo' => 500]);
+
+        $previa = DimensionSearchRunHelper::previa_del_catalogo($this->owner);
+
+        $this->assertStringContainsString('al menos ~5.000 créditos de Serper (USD 5,00)', $previa['estimacion']['texto_respaldo']);
+        $this->assertStringContainsString('al llegar a 12.500 créditos', $previa['estimacion']['texto_respaldo']);
     }
 
     /**

@@ -131,7 +131,7 @@ class MedidasBuscar extends Command
         $this->line('  en otra corrida en curso:                 '.$previa['excluidos_en_otra_corrida']);
         $this->line('A buscar en esta corrida:                   '.$a_buscar.' (tope '.$previa['tope'].')');
         $this->line('Estimado: ~'.$previa['estimacion']['busquedas'].' búsquedas, ~'.$previa['estimacion']['minutos'].' min, USD '.number_format($previa['estimacion']['usd_busquedas'] + $previa['estimacion']['usd_ia'], 2).' (búsquedas '.number_format($previa['estimacion']['usd_busquedas'], 2).' + IA '.number_format($previa['estimacion']['usd_ia'], 2).')');
-        $this->line('Respaldo de lectura (páginas bloqueadas y PDF): ~'.$previa['estimacion']['creditos_respaldo'].' créditos de Serper (USD '.number_format($previa['estimacion']['usd_respaldo'], 2).'), aparte del costo de arriba. '.$previa['estimacion']['texto_respaldo']);
+        $this->line('Respaldo de lectura (páginas bloqueadas y PDF): ~'.number_format($previa['estimacion']['creditos_respaldo'], 0, ',', '.').' créditos de Serper (USD '.number_format($previa['estimacion']['usd_respaldo'], 2, ',', '.').'), aparte del costo de arriba. '.$previa['estimacion']['texto_respaldo']);
         $this->line('Serper configurado: '.($previa['proveedor_configurado'] ? 'sí' : 'NO').' · IA configurada: '.($previa['ia_configurada'] ? 'sí' : 'NO'));
 
         if (!$previa['ia_configurada'] && !empty($previa['ia_motivo'])) {
