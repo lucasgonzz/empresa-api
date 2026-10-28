@@ -21,6 +21,13 @@ use Illuminate\Support\Facades\Log;
 class MeLiOrderController extends Controller
 {
     /**
+     * Estados de Mercado Libre en los que un pedido no admite venta (ver `create_sale`).
+     *
+     * @var array<int, string>
+     */
+    const ESTADOS_SIN_VENTA = ['cancelled', 'invalid'];
+
+    /**
      * Lista pedidos locales y, si aplica, sincroniza órdenes pagas recientes desde la API ML.
      *
      * @param string|null $from_date
@@ -254,6 +261,15 @@ class MeLiOrderController extends Controller
         }
 
         $meli_order = MeliOrder::find($id);
+
+        // Un pedido cancelado (o inválido) en Mercado Libre no lleva venta: el botón la creaba igual
+        // y descontaba el stock de algo que no se vendió (misión mercado-libre-pruebas, 27/10/2026).
+        // Si ya tenía venta de antes, se devuelve como está (ver abajo).
+        if (in_array((string) $meli_order->status, self::ESTADOS_SIN_VENTA, true) && !$meli_order->sale()->exists()) {
+            return response()->json([
+                'message' => 'Este pedido está cancelado en Mercado Libre: no se le crea venta.',
+            ], 422);
+        }
 
         // Si ya tiene venta (la automática, o un confirmar desde otra pantalla) no se crea otra:
         // se devuelve el pedido como está con `ya_tenia_venta: true` (misión

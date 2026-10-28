@@ -389,6 +389,28 @@ class PedidosTest extends MercadoLibreTestCase
         });
     }
 
+    /**
+     * Misión mercado-libre-pruebas (27/10/2026): "Crear venta" sobre un pedido cancelado en Mercado
+     * Libre creaba la venta igual y bajaba el stock de algo que no se vendió. Ahora 422 con un
+     * mensaje legible (la SPA lo muestra tal cual) y no se toca nada.
+     */
+    public function test_crear_venta_a_mano_de_un_pedido_cancelado_se_rechaza_sin_tocar_el_stock()
+    {
+        $this->conector_ml();
+        $this->ml_devuelve_pedidos([$this->pedido_ml('2000001002', 'cancelled', [['MLA111', 2, 15000]])]);
+        $this->sincronizar();
+
+        $pedido = $this->pedidos_locales('2000001002')->first();
+        $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count(), 'Un pedido cancelado no genera venta automática.');
+
+        $respuesta = $this->postJson('/api/meli-order/create-sale/'.$pedido->id);
+
+        $respuesta->assertStatus(422);
+        $respuesta->assertJsonPath('message', 'Este pedido está cancelado en Mercado Libre: no se le crea venta.');
+        $this->assertSame(0, Sale::where('meli_order_id', $pedido->id)->count(), 'El botón creó la venta de un pedido cancelado.');
+        $this->assertEquals(10, (float) Article::find($this->articulo->id)->stock, 'El stock bajó por un pedido cancelado.');
+    }
+
     public function test_un_pedido_cancelado_que_ya_tenia_venta_avisa_y_no_la_anula()
     {
         $this->conector_ml();
