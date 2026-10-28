@@ -203,6 +203,15 @@ class TestingFerreteriaSeeder extends Seeder
     const EXTENCION_PRESUPUESTOS = 'budgets';
 
     /**
+     * Slug de la extension de Mercado Libre. Sin ella el formulario del articulo no tiene la
+     * pestaña "Mercado Libre" (`if_has_extencion: 'usa_mercado_libre'` en src/models/article.js),
+     * y el spec e2e del predictor de categorias (e2e/tests/mercado-libre-predictor.spec.js de
+     * empresa-spa) no tiene por donde entrar. No conecta ninguna cuenta: sin conector, guardar un
+     * articulo no le pega a Mercado Libre.
+     */
+    const EXTENCION_MERCADO_LIBRE = 'usa_mercado_libre';
+
+    /**
      * Descuento de VENTA (tabla `discounts`), el que se elige en la etapa 3 de Vender y se resta
      * del total. Es otra cosa que el descuento por metodo de pago: este se aplica a la venta
      * entera, aquel solo sobre lo que se cobra con ese metodo.
@@ -803,9 +812,11 @@ class TestingFerreteriaSeeder extends Seeder
      * apague la disponibilidad en el ecommerce.
      *
      * Lo mismo vale para `budgets`: sin ella el toggle "Guardar como presupuesto" de VENDER no se
-     * dibuja, y el circuito de presupuestos no tiene por donde entrar.
+     * dibuja, y el circuito de presupuestos no tiene por donde entrar. Y para `usa_mercado_libre`
+     * (27/10/2026): sin ella no existe la pestaña "Mercado Libre" del articulo, donde vive el
+     * predictor de categorias.
      *
-     * Se habilitan SOLO esas dos y no el catalogo entero a proposito: cada extension cambia lo que
+     * Se habilitan SOLO esas tres y no el catalogo entero a proposito: cada extension cambia lo que
      * la SPA dibuja, y prender de mas mueve pantallas que ningun test pidio.
      *
      * @return void
@@ -825,7 +836,7 @@ class TestingFerreteriaSeeder extends Seeder
             return;
         }
 
-        $slugs = [self::EXTENCION_ONLINE, self::EXTENCION_PRESUPUESTOS];
+        $slugs = [self::EXTENCION_ONLINE, self::EXTENCION_PRESUPUESTOS, self::EXTENCION_MERCADO_LIBRE];
 
         $ids = ExtencionEmpresa::whereIn('slug', $slugs)->pluck('id')->all();
 
