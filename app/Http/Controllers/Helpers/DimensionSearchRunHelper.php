@@ -58,6 +58,9 @@ class DimensionSearchRunHelper
      */
     const MOTIVOS_YA_BUSCADO_SIN_EXITO = ['sin_resultados', 'no_coincide', 'sin_medidas_en_la_pagina', 'paginas_bloqueadas', 'pdf_no_leido'];
 
+    /** Motivo de un «a revisar» cuyo valor propuso la IA sin que se pudiera comprobar la cita (no se aprueba en lote). */
+    const MOTIVO_SIN_RESPALDO = 'valor_sin_respaldo';
+
     /** Corridas terminadas de más de estos días, sin nada a revisar, se borran. */
     const DIAS_PARA_PURGAR = 180;
 
@@ -1073,6 +1076,13 @@ class DimensionSearchRunHelper
                     continue;
                 }
 
+                // Un campo que venía «sin respaldo» (la cita no se pudo comprobar) y que la persona aprueba, con o sin
+                // edición, ya lo revisó un humano: deja de figurar sin respaldo.
+                if (isset($evidencia[$campo]) && is_array($evidencia[$campo]) && !empty($evidencia[$campo]['sin_respaldo'])) {
+                    $evidencia[$campo]['sin_respaldo']   = false;
+                    $evidencia[$campo]['motivo_rechazo'] = null;
+                }
+
                 // Solo si el número realmente difiere de lo propuesto es «editado»: ya no es lo que dice la
                 // página, así que pierde su cita, su valor y unidad originales y sus avisos.
                 if (isset($editados[$campo]) && (is_null($item->{$columna}) || abs((float) $item->{$columna} - $editados[$campo]) >= 0.00005)) {
@@ -1092,6 +1102,9 @@ class DimensionSearchRunHelper
                         'ambiguo'         => false,
                         'rango'           => false,
                         'aviso'           => null,
+                        // Lo escribió una persona: ya no es una propuesta sin respaldo.
+                        'sin_respaldo'    => false,
+                        'motivo_rechazo'  => null,
                     ]);
                 }
             }
@@ -1213,6 +1226,31 @@ class DimensionSearchRunHelper
         $hechos   = 0;
         $fallidos = [];
         $vistos   = [];
+        $omitidos_sin_respaldo = 0;
+
+        // 🔴 Los `valor_sin_respaldo` (la IA propuso el valor pero el sistema no pudo comprobarlo en la página) NO
+        // se aprueban en lote: hay que aprobarlos de a uno, mirando la cita y la fuente. Se dejan afuera y se cuentan.
+        $sin_respaldo = [];
+
+        if ($accion === 'aprobar') {
+            $pedidos = [];
+
+            foreach (is_array($ids) ? $ids : [] as $id) {
+                if ((int) $id > 0) {
+                    $pedidos[] = (int) $id;
+                }
+            }
+
+            if (!empty($pedidos)) {
+                $sin_respaldo = DimensionSearchItem::where('user_id', (int) $owner_id)
+                    ->whereIn('id', $pedidos)
+                    ->where('status', DimensionSearchItem::STATUS_A_REVISAR)
+                    ->where('motivo', self::MOTIVO_SIN_RESPALDO)
+                    ->pluck('id')
+                    ->flip()
+                    ->all();
+            }
+        }
 
         foreach (is_array($ids) ? $ids : [] as $id) {
             $id = (int) $id;
@@ -1222,6 +1260,11 @@ class DimensionSearchRunHelper
             }
 
             $vistos[$id] = true;
+
+            if (isset($sin_respaldo[$id])) {
+                $omitidos_sin_respaldo++;
+                continue;
+            }
 
             try {
                 $resultado = $accion === 'aprobar'
@@ -1240,7 +1283,7 @@ class DimensionSearchRunHelper
             }
         }
 
-        return ['hechos' => $hechos, 'fallidos' => $fallidos];
+        return ['hechos' => $hechos, 'fallidos' => $fallidos, 'omitidos_sin_respaldo' => $omitidos_sin_respaldo];
     }
 
     /**

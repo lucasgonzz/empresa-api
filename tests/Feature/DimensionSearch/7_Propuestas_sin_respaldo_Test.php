@@ -346,6 +346,85 @@ class Propuestas_sin_respaldo_Test extends DimensionSearchTestCase
     }
 
     /**
+     * Al aprobar un campo que venía sin respaldo (editado o no), la evidencia deja de decir `sin_respaldo`: lo revisó
+     * un humano.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function al_aprobar_un_campo_sin_respaldo_la_evidencia_queda_revisada()
+    {
+        list($item) = $this->buscar_con_propuesta([
+            'peso'  => $this->dato(900, 'g', 'Peso neto: 900 g', self::URL_A),
+            'ancho' => $this->dato(70, 'mm', 'Ancho: 70 mm', self::URL_A),
+            'alto'  => $this->dato(11, 'mm', 'Alto: 11 mm', self::URL_A),
+        ]);
+
+        $this->assertTrue($item->evidencia['peso']['sin_respaldo']);
+
+        // Peso sin editar, ancho editado, alto excluido.
+        $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar', ['valores' => ['ancho' => 8, 'alto' => null]])->assertStatus(200);
+
+        $evidencia = $item->fresh()->evidencia;
+
+        $this->assertFalse($evidencia['peso']['sin_respaldo'], 'Sin editar.');
+        $this->assertNull($evidencia['peso']['motivo_rechazo']);
+        $this->assertFalse($evidencia['ancho']['sin_respaldo'], 'Editado.');
+        $this->assertNull($evidencia['ancho']['motivo_rechazo']);
+        $this->assertTrue($evidencia['ancho']['editado']);
+        $this->assertArrayNotHasKey('alto', $evidencia);
+
+        // El payload ya no marca esos campos como sin respaldo.
+        $campos = array_column($this->getJson('api/dimension-search-runs/'.$item->run_id.'/items?solapa=asignadas')->json('data.0.campos'), null, 'clave');
+        $this->assertFalse($campos['peso']['sin_respaldo']);
+        $this->assertNull($campos['peso']['motivo_rechazo']);
+    }
+
+    /**
+     * 🔴 Aprobar en lote NO escribe los `valor_sin_respaldo`: se aprueban de a uno. Se cuentan en `omitidos_sin_respaldo`.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function aprobar_en_lote_deja_afuera_los_sin_respaldo_y_los_cuenta()
+    {
+        list($sin_respaldo, $articulo) = $this->buscar_con_propuesta([
+            'peso' => $this->dato(900, 'g', 'Peso neto: 900 g', self::URL_A),
+        ]);
+
+        $run    = $this->corrida([$this->nuevo_articulo('COMUN')]);
+        $comun  = DimensionSearchItem::where('run_id', $run->id)->first();
+        $comun->update(['status' => 'a_revisar', 'motivo' => 'medidas_parciales', 'peso_kg' => 0.5]);
+
+        $r = $this->postJson('api/dimension-search-items/aprobar-varios', ['ids' => [$sin_respaldo->id, $comun->id, 999999]]);
+
+        $r->assertStatus(200);
+        $this->assertSame(1, $r->json('aprobados'));
+        $this->assertSame(1, $r->json('omitidos_sin_respaldo'));
+        $this->assertSame([999999], array_column($r->json('fallidos'), 'id'), 'El omitido no figura entre los fallidos.');
+
+        $this->assertSame('a_revisar', $sin_respaldo->fresh()->status, 'Sigue esperando que alguien lo mire.');
+        $this->assertTrue(is_null($articulo->fresh()->peso) || (float) $articulo->fresh()->peso === 0.0, 'No se escribió nada.');
+        $this->assertSame('aprobada', $comun->fresh()->status);
+
+        // Sin ninguno sin respaldo, la clave viaja en cero; y rechazar en lote conserva su forma de siempre.
+        $r2 = $this->postJson('api/dimension-search-items/aprobar-varios', ['ids' => [999998]]);
+        $this->assertSame(0, $r2->json('omitidos_sin_respaldo'));
+
+        $r3 = $this->postJson('api/dimension-search-items/rechazar-varios', ['ids' => [$sin_respaldo->id]]);
+        $this->assertSame(1, $r3->json('rechazados'));
+        $this->assertArrayNotHasKey('omitidos_sin_respaldo', $r3->json());
+
+        // De a uno sí se puede aprobar.
+        $otro = $this->nuevo_articulo('OTRO');
+        $run2 = $this->corrida([$otro]);
+        $item = DimensionSearchItem::where('run_id', $run2->id)->first();
+        $item->update(['status' => 'a_revisar', 'motivo' => 'valor_sin_respaldo', 'peso_kg' => 0.5]);
+        $this->postJson('api/dimension-search-items/'.$item->id.'/aprobar')->assertStatus(200);
+        $this->assertEquals(0.5, (float) $otro->fresh()->peso);
+    }
+
+    /**
      * Aprobar tal cual escribe la propuesta (decisión de una persona).
      *
      * @group dimension-search

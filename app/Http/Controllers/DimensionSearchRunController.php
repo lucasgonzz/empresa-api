@@ -152,7 +152,9 @@ class DimensionSearchRunController extends Controller
      * POST dimension-search-items/aprobar-varios {ids: []}
      *
      * @param  \Illuminate\Http\Request $request
-     * @return \Illuminate\Http\JsonResponse  {aprobados: n, fallidos: [{id, message}]}
+     * @return \Illuminate\Http\JsonResponse  {aprobados: n, fallidos: [{id, message}], omitidos_sin_respaldo: n}. Los
+     *         `valor_sin_respaldo` no se aprueban en lote: se dejan afuera y se cuentan en `omitidos_sin_respaldo`
+     *         (no figuran en `fallidos`); hay que aprobarlos de a uno.
      */
     public function aprobar_varios(Request $request)
     {
@@ -164,7 +166,11 @@ class DimensionSearchRunController extends Controller
 
         $resultado = DimensionSearchRunHelper::en_lote('aprobar', $this->userId(), $ids, $this->userId(false));
 
-        return response()->json(['aprobados' => $resultado['hechos'], 'fallidos' => $resultado['fallidos']], 200);
+        return response()->json([
+            'aprobados'             => $resultado['hechos'],
+            'fallidos'              => $resultado['fallidos'],
+            'omitidos_sin_respaldo' => $resultado['omitidos_sin_respaldo'],
+        ], 200);
     }
 
     /**
