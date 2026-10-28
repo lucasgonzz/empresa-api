@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\Article;
 use App\Models\DimensionSearchItem;
 use App\Models\DimensionSearchRun;
+use App\Models\SerperUsageEvent;
 use App\Models\User;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
@@ -113,6 +114,9 @@ class ArticleDimensionSearchEngine
      */
     const DOMINIOS_SIN_RESPALDO = ['facebook.com', 'instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'twitter.com', 'x.com'];
 
+    /** Scrapes como máximo por búsqueda en el plan de NOMBRE (no hay código que pruebe que la página sirve). */
+    const MAX_SCRAPES_PLAN_DE_NOMBRE = 1;
+
     /** Lo que la IA contesta en `match`. */
     const MATCH_EXACTO           = 'exacto';
     const MATCH_PROBABLE         = 'probable';
@@ -150,11 +154,12 @@ class ArticleDimensionSearchEngine
     /**
      * El respaldo por el scrape de Serper del artículo que se está procesando (se reinicia en cada procesar()):
      * usados = scrapes pedidos, creditos = lo que informó Serper, tope_demo = la demo ya no tiene búsquedas,
-     * sin_clave = no hay clave de Serper para el respaldo.
+     * sin_clave = no hay clave de Serper para el respaldo, tope_creditos = la corrida ya gastó el máximo de
+     * créditos del respaldo (`max_creditos_por_corrida`) y el respaldo quedó apagado para el resto.
      *
      * @var array
      */
-    protected $scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false];
+    protected $scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false, 'tope_creditos' => false];
 
     /**
      * @param \App\Models\DimensionSearchRun $run
@@ -233,7 +238,7 @@ class ArticleDimensionSearchEngine
         // Misión medidas-sin-datos: lo que la IA propuso y el validador no pudo respaldar con la página
         // (campo => propuesta), y el gasto del respaldo por el scrape de Serper de ESTE artículo.
         $propuestas_sin_respaldo = [];
-        $this->scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false];
+        $this->scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false, 'tope_creditos' => false];
 
         foreach ($planes as $plan) {
             if ($resultado['busquedas_intentadas'] >= self::MAX_BUSQUEDAS) {
@@ -847,6 +852,11 @@ class ArticleDimensionSearchEngine
             return;
         }
 
+        // Plan de CÓDIGO: si ya se leyó al menos una página útil (con el código) no se gastan créditos en más.
+        if (!is_null($plan['codigo']) && !empty($documentos)) {
+            return;
+        }
+
         // Plan de nombre: solo si no hay una página con el código ni un producto reconocido.
         if (is_null($plan['codigo'])) {
             if ($hubo_misma_cosa) {
@@ -860,6 +870,8 @@ class ArticleDimensionSearchEngine
             }
         }
 
+        $pedidos_en_esta_busqueda = 0;
+
         foreach ($candidatas as $url => $candidata) {
             if (count($documentos) >= self::MAX_PAGINAS_LEIDAS) {
                 break;
@@ -870,9 +882,26 @@ class ArticleDimensionSearchEngine
                 continue;
             }
 
-            if (!$this->puede_pedir_respaldo()) {
+            // Plan de CÓDIGO: con una página útil ya leída (aunque sea por el respaldo) no se pide ninguna más.
+            if (!is_null($plan['codigo']) && !empty($documentos)) {
                 break;
             }
+
+            // Plan de NOMBRE: como mucho UN scrape por búsqueda (sin el código no hay pista de que la página sirva).
+            if (is_null($plan['codigo']) && $pedidos_en_esta_busqueda >= self::MAX_SCRAPES_PLAN_DE_NOMBRE) {
+                break;
+            }
+
+            if (!$this->puede_pedir_respaldo()) {
+                // El tope de créditos de la corrida es la única razón que se le explica a quien mira la página.
+                if ($this->scrapes['tope_creditos']) {
+                    $paginas[$candidata['indice']]['motivo'] = 'Tope de créditos del respaldo alcanzado: no se pidió su texto.';
+                }
+
+                continue;
+            }
+
+            $pedidos_en_esta_busqueda++;
 
             $respuesta = $this->lector()->scrapear($url);
 
@@ -1133,7 +1162,15 @@ class ArticleDimensionSearchEngine
     {
         $maximo = (int) config('services.medidas_masivas.max_scrapes_por_articulo', 3);
 
-        if ($maximo <= 0 || $this->scrapes['usados'] >= $maximo || $this->scrapes['tope_demo'] || $this->scrapes['sin_clave']) {
+        if ($maximo <= 0 || $this->scrapes['usados'] >= $maximo || $this->scrapes['tope_demo'] || $this->scrapes['sin_clave'] || $this->scrapes['tope_creditos']) {
+            return false;
+        }
+
+        // Tope de créditos de TODA la corrida: se suma lo que ya costó el respaldo desde que arrancó. Pasado el tope
+        // el respaldo se apaga para el resto de la corrida (las páginas quedan bloqueadas); no es un error.
+        if ($this->creditos_del_respaldo_en_la_corrida() >= $this->max_creditos_por_corrida()) {
+            $this->scrapes['tope_creditos'] = true;
+
             return false;
         }
 
@@ -1145,6 +1182,36 @@ class ArticleDimensionSearchEngine
         }
 
         return true;
+    }
+
+    /**
+     * Los créditos que el respaldo (scrape) gastó en la corrida desde que arrancó: la suma de `credits` de
+     * `serper_usage_events` del dueño con proceso `medidas_scrape` y `occurred_at` desde el inicio de la corrida.
+     *
+     * @return float
+     */
+    protected function creditos_del_respaldo_en_la_corrida()
+    {
+        $desde = !is_null($this->run->started_at) ? $this->run->started_at : $this->run->created_at;
+
+        $consulta = SerperUsageEvent::where('user_id', (int) $this->owner->id)
+            ->where('process', DimensionPageReader::PROCESO_SCRAPE);
+
+        if (!is_null($desde)) {
+            $consulta->where('occurred_at', '>=', $desde);
+        }
+
+        return (float) $consulta->sum('credits');
+    }
+
+    /**
+     * El tope de créditos del respaldo por corrida (config `max_creditos_por_corrida`).
+     *
+     * @return int
+     */
+    protected function max_creditos_por_corrida()
+    {
+        return (int) config('services.medidas_masivas.max_creditos_por_corrida', 30000);
     }
 
     /**

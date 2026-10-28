@@ -192,7 +192,8 @@ class Reintentar_sin_datos_Test extends DimensionSearchTestCase
         $this->assertEquals(0.06, $est['usd_respaldo']);
         $this->assertEquals(0.02, $est['usd_busquedas'], 'usd_busquedas sigue siendo solo el de las búsquedas.');
         $this->assertStringContainsString('2 a 10 créditos', $est['texto_respaldo']);
-        $this->assertStringContainsString('~60 créditos', $est['texto_respaldo']);
+        $this->assertStringContainsString('como piso: al menos ~60 créditos', $est['texto_respaldo']);
+        $this->assertStringContainsString('puede ser más', $est['texto_respaldo']);
 
         config(['services.medidas_masivas.creditos_estimados_por_articulo' => 10, 'services.medidas_masivas.max_scrapes_por_articulo' => 2]);
 

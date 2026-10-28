@@ -486,6 +486,9 @@ return [
      *   - `max_scrapes_por_articulo`: scrapes como máximo por artículo, sumando los planes (0 = apagado).
      *   - `max_creditos_por_scrape`: créditos que se esperan como máximo por scrape. Si Serper cobra más, igual se
      *     usa la respuesta pero queda anotado en el diagnóstico (`creditos_sobre_el_tope`).
+     *   - `max_creditos_por_corrida`: créditos del respaldo como máximo por corrida (se suman los `credits` de
+     *     `serper_usage_events` con proceso `medidas_scrape` desde que arrancó). Pasado el tope el respaldo se apaga
+     *     para el resto de la corrida (las páginas quedan bloqueadas); la corrida sigue y no es un error.
      *   - `creditos_estimados_por_articulo`: lo que la previa suma como costo probable de scrapes por artículo
      *     (1,5 scrapes × 4 créditos = 6): es un promedio conservador, no un tope.
      */
@@ -494,6 +497,7 @@ return [
         'segundos_por_tramo' => (int) env('MEDIDAS_SEGUNDOS_POR_TRAMO', 50),
         'max_scrapes_por_articulo'        => (int) env('MEDIDAS_MAX_SCRAPES_POR_ARTICULO', 3),
         'max_creditos_por_scrape'         => (int) env('MEDIDAS_MAX_CREDITOS_POR_SCRAPE', 10),
+        'max_creditos_por_corrida'        => (int) env('MEDIDAS_MAX_CREDITOS_POR_CORRIDA', 30000),
         'creditos_estimados_por_articulo' => (float) env('MEDIDAS_CREDITOS_ESTIMADOS_POR_ARTICULO', 6),
     ],
 

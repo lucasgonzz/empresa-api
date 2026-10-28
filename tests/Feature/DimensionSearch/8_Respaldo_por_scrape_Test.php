@@ -166,8 +166,8 @@ class Respaldo_por_scrape_Test extends DimensionSearchTestCase
         $this->falsear(
             ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A), $this->resultado_con_codigo($pdf)]],
             [self::URL_A => ['status' => 403]],
-            $this->ficha('exacto', $this->datos(self::URL_A)),
-            [self::URL_A => $this->texto_completo(), $pdf => ['status' => 500]]
+            $this->ficha('exacto', $this->datos($pdf)),
+            [self::URL_A => ['status' => 500], $pdf => $this->texto_completo()]
         );
 
         $this->buscar($articulo);
@@ -325,6 +325,98 @@ class Respaldo_por_scrape_Test extends DimensionSearchTestCase
         $this->buscar($otro);
 
         $this->assertSame([], $this->scrapes_pedidos, 'Con el tope en cero el respaldo está apagado.');
+    }
+
+    /**
+     * En un plan de código, con una página útil ya leída por la vía directa no se gastan créditos en las bloqueadas.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function en_un_plan_de_codigo_con_una_pagina_util_ya_leida_no_se_pide_el_respaldo()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A), $this->resultado_con_codigo(self::URL_B)]],
+            [self::URL_A => $this->pagina('Cuchilla', $this->texto_completo()), self::URL_B => ['status' => 403]],
+            $this->ficha('exacto', $this->datos(self::URL_A)),
+            [self::URL_B => $this->texto_completo()]
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame([], $this->scrapes_pedidos);
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+    }
+
+    /**
+     * En el plan de nombre, como mucho UN scrape por búsqueda.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function en_el_plan_de_nombre_se_scrapea_como_mucho_una_pagina()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY GRANDE');
+
+        $this->falsear(
+            ['CUCHILLA ROTARY GRANDE ficha técnica peso medidas' => [
+                $this->resultado(self::URL_A, 'Cuchilla rotary grande'),
+                $this->resultado(self::URL_B, 'Cuchilla rotary grande'),
+                $this->resultado(self::URL_C, 'Cuchilla rotary grande'),
+            ]],
+            [self::URL_A => ['status' => 403], self::URL_B => ['status' => 403], self::URL_C => ['status' => 403]],
+            $this->ficha('otro_producto'),
+            [self::URL_A => 'Cuchilla rotary grande. Peso: 820 g.', self::URL_B => 'x', self::URL_C => 'x']
+        );
+
+        $this->buscar($articulo);
+
+        $this->assertSame([self::URL_A], $this->scrapes_pedidos);
+    }
+
+    /**
+     * Tope de créditos del respaldo por corrida: pasado el tope se apaga para el resto de la corrida, sin error. Solo
+     * cuenta lo gastado desde que arrancó ESTA corrida.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_respaldo_se_apaga_al_llegar_al_tope_de_creditos_de_la_corrida_y_no_es_un_error()
+    {
+        config(['services.medidas_masivas.max_creditos_por_corrida' => 10]);
+
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A)]],
+            [self::URL_A => ['status' => 403]],
+            $this->ficha('exacto', $this->datos(self::URL_A)),
+            [self::URL_A => $this->texto_completo()]
+        );
+
+        $run = $this->corrida([$articulo]);
+
+        $evento = function ($creditos, $cuando) {
+            return [
+                'event_uuid' => (string) \Illuminate\Support\Str::uuid(), 'user_id' => $this->owner->id, 'process' => 'medidas_scrape',
+                'endpoint' => 'search', 'query' => 'https://previa.test', 'ok' => true, 'credits' => $creditos,
+                'occurred_at' => $cuando, 'created_at' => $cuando, 'updated_at' => $cuando,
+            ];
+        };
+
+        // Un gasto de ayer (de otra corrida) no cuenta; 10 créditos de ahora (de esta corrida) sí.
+        SerperUsageEvent::insert([$evento(9999, Carbon::now()->subDay()), $evento(10, Carbon::now()->addSecond())]);
+
+        list($item, $resultado) = $this->procesar($run, $articulo);
+
+        $this->assertSame([], $this->scrapes_pedidos, 'Se llegó al tope: no se pide el respaldo.');
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
+        $this->assertSame('paginas_bloqueadas', $item->motivo);
+        $this->assertSame('Tope de créditos del respaldo alcanzado: no se pidió su texto.', $item->diagnostico[0]['paginas'][0]['motivo']);
+        $this->assertFalse($resultado['error_de_proveedor']);
+        $this->assertSame(0, $resultado['scrapes']);
     }
 
     /**

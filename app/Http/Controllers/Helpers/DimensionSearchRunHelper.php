@@ -504,7 +504,9 @@ class DimensionSearchRunHelper
                 'usd_ia'            => round($a_buscar * self::USD_DE_IA_POR_ARTICULO, 2),
                 'creditos_respaldo' => $creditos_respaldo,
                 'usd_respaldo'      => $usd_respaldo,
-                'texto_respaldo'    => 'Si una página bloquea la descarga o es un PDF, se pide su texto a un servicio de respaldo (2 a 10 créditos por página, hasta '.(int) config('services.medidas_masivas.max_scrapes_por_articulo', 3).' por artículo). Se estima aparte: ~'.$creditos_respaldo.' créditos de Serper (USD '.number_format($usd_respaldo, 2, '.', '').') además de las búsquedas.',
+                // 🔴 Es un PISO: el promedio supone que pocos artículos tienen páginas bloqueadas; en los que sí las
+                // tienen cada página cuesta de 2 a 10 créditos. Hay un tope por artículo y otro por corrida.
+                'texto_respaldo'    => 'Si una página bloquea la descarga o es un PDF, se pide su texto a un servicio de respaldo (2 a 10 créditos por página, hasta '.(int) config('services.medidas_masivas.max_scrapes_por_articulo', 3).' por artículo). Se estima aparte, como piso: al menos ~'.$creditos_respaldo.' créditos de Serper (USD '.number_format($usd_respaldo, 2, '.', '').') además de las búsquedas; puede ser más en los artículos que tienen páginas bloqueadas. El respaldo se apaga solo al llegar a '.(int) config('services.medidas_masivas.max_creditos_por_corrida', 30000).' créditos en la corrida.',
             ],
             'corrida_activa'                   => is_null($activa) ? null : self::payload_de_corrida($activa),
         ];
