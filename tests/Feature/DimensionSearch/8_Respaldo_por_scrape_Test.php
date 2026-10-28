@@ -135,7 +135,7 @@ class Respaldo_por_scrape_Test extends DimensionSearchTestCase
         $evento = SerperUsageEvent::where('process', 'medidas_scrape')->first();
 
         $this->assertNotNull($evento);
-        $this->assertSame('scrape', $evento->endpoint);
+        $this->assertSame('search', $evento->endpoint, 'El admin solo acepta search|images: el scrape se distingue por el proceso.');
         $this->assertEquals(4, (float) $evento->credits);
         $this->assertTrue((bool) $evento->ok);
         $this->assertSame(200, (int) $evento->http_status);
@@ -149,6 +149,34 @@ class Respaldo_por_scrape_Test extends DimensionSearchTestCase
         $this->assertSame(['SERPER-DE-PRUEBA'], $this->claves_del_scrape);
         $this->assertStringNotContainsString('SERPER-DE-PRUEBA', json_encode($item->diagnostico));
         $this->assertStringNotContainsString('SERPER-DE-PRUEBA', json_encode($item->getAttributes()));
+    }
+
+    /**
+     * 🔴 El admin valida `endpoint` con `in:search,images`: un evento con otro valor traba la sincronización de TODO el
+     * consumo de Serper del cliente. Ningún evento del motor puede quedar con otro endpoint.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function ningun_evento_de_serper_queda_con_un_endpoint_fuera_de_search_o_images()
+    {
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+        $pdf      = 'https://catalogo.test/ficha.pdf';
+
+        $this->falsear(
+            ['"'.$this->gtin.'"' => [$this->resultado_con_codigo(self::URL_A), $this->resultado_con_codigo($pdf)]],
+            [self::URL_A => ['status' => 403]],
+            $this->ficha('exacto', $this->datos(self::URL_A)),
+            [self::URL_A => $this->texto_completo(), $pdf => ['status' => 500]]
+        );
+
+        $this->buscar($articulo);
+
+        $this->assertGreaterThanOrEqual(3, SerperUsageEvent::count(), 'La búsqueda y dos scrapes (uno fallido).');
+        $this->assertSame(
+            [],
+            SerperUsageEvent::whereNotIn('endpoint', ['search', 'images'])->pluck('endpoint')->all()
+        );
     }
 
     /**

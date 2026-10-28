@@ -45,9 +45,16 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
     /** URL del scrape de Serper (texto plano de cualquier página o PDF). */
     const URL_SCRAPE = 'https://scrape.serper.dev';
 
-    /** Proceso y endpoint con los que se registra el consumo del scrape en serper_usage_events. */
+    /**
+     * Proceso y endpoint con los que se registra el consumo del scrape en serper_usage_events.
+     *
+     * 🔴 El endpoint es `search` y NO `scrape`: el admin valida `endpoint` con `in:search,images`
+     * (SerperUsageController::store) y UN solo evento con otro valor hace que responda 422 y trabe la
+     * sincronización de todo el consumo Serper del cliente (reintenta siempre el mismo lote). El scrape se
+     * distingue por el proceso (`medidas_scrape`).
+     */
     const PROCESO_SCRAPE  = 'medidas_scrape';
-    const ENDPOINT_SCRAPE = 'scrape';
+    const ENDPOINT_SCRAPE = 'search';
 
     /** Segundos de espera del scrape (un PDF grande o un sitio difícil tarda más que una búsqueda). */
     const TIMEOUT_SCRAPE = 30;
@@ -233,7 +240,7 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
      * Pide el TEXTO PLANO de una página (o de un PDF) al scrape de Serper. Nunca lanza.
      *
      * Respeta el tope de búsquedas de las demos (un scrape es una llamada real a Serper y cuenta como una) y
-     * registra el consumo en `serper_usage_events` (proceso `medidas_scrape`, endpoint `scrape`, `credits` = lo que
+     * registra el consumo en `serper_usage_events` (proceso `medidas_scrape`, endpoint `search`, `credits` = lo que
      * informe Serper en la respuesta). Sin clave de Serper no sale a la red.
      *
      * @param  string $url  La página o el PDF.
