@@ -950,17 +950,19 @@ class PublicacionTest extends MercadoLibreTestCase
         $this->assertStringContainsString('Se le mandó la corrección', $sync->error_message);
         $this->assertStringNotContainsString('Corregí el artículo', $sync->error_message);
 
-        // ML la vuelve a frenar por OTRO motivo: hay que corregir de nuevo.
-        $this->rutas_ml['GET moderations/last_moderation/MLA222-ITM'] = [200, [[
-            'name' => 'PICTURES_CHECK', 'wordings' => [['type' => 'REASON', 'value' => 'La foto tiene un logo de otra marca.']],
-        ]]];
+        // ML revisó la corrección y la vuelve a frenar con el MISMO texto: es otra moderación (otro
+        // id), así que hay que corregir de nuevo.
+        $otra_moderacion = $this->moderacion_real();
+        $otra_moderacion[0]['id'] = '11235434999';
+        $this->rutas_ml['GET moderations/last_moderation/MLA222-ITM'] = [200, $otra_moderacion];
 
         $sync3 = $this->sync_pendiente($article->fresh());
         (new ProductService($this->owner->id))->sync_article($sync3);
 
         $sync3 = $sync3->fresh();
         $this->assertSame('error', $sync3->status);
-        $this->assertStringContainsString('hasta que la corrijas: La foto tiene un logo de otra marca.', $sync3->error_message);
+        $this->assertStringContainsString('hasta que la corrijas: El título y/o las fotos no coinciden', $sync3->error_message);
+        $this->assertStringContainsString('Corregí el artículo', $sync3->error_message);
     }
 
     /**

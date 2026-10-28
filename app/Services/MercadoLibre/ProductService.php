@@ -71,6 +71,14 @@ class ProductService extends MercadoLibreService
     protected $motivo_del_error = null;
 
     /**
+     * Id de la última moderación leída por `motivo_de_moderacion` (o null). Distingue una moderación
+     * nueva de la que ya se corrigió aunque ML use el mismo texto de motivo.
+     *
+     * @var string|null
+     */
+    protected $id_de_la_moderacion = null;
+
+    /**
      * True si el módulo de Mercado Libre está prendido para ese dueño: la extensión
      * `usa_mercado_libre`. Es el MISMO criterio que usan el Kernel (para correr la cola y la
      * consulta de pedidos) y el listado de pedidos: el `USA_MERCADO_LIBRE` del .env no cuenta,
@@ -843,6 +851,8 @@ class ProductService extends MercadoLibreService
          * vendedor la corrija. Hasta entonces se cortaba acá sin mandar nada, y corregir el nombre o
          * las fotos en el sistema no llegaba nunca a ML. Con `waiting_for_patch` se sigue y se manda
          * lo que cambió; en cualquier otra revisión ML no acepta cambios y se corta con el motivo.
+         * Esa otra revisión es ML revisando la corrección: se borra la marca de corrección mandada,
+         * así un nuevo freno (aunque sea por el mismo motivo) vuelve a pedir corregir.
          */
         $esperando_correccion = false;
         $motivo_de_revision = null;
@@ -853,6 +863,7 @@ class ProductService extends MercadoLibreService
                 && in_array('waiting_for_patch', $meli_item['sub_status'], true);
 
             if (!$esperando_correccion) {
+                unset($estado['correccion_enviada']);
                 $this->guardar_columnas($article, $columnas, $estado);
 
                 throw new \Exception(
@@ -955,9 +966,10 @@ class ProductService extends MercadoLibreService
          * Corrección ya mandada para ESTE motivo. ML deja la publicación en `waiting_for_patch` hasta
          * que la vuelve a revisar (prueba real del 28/10/2026: horas después de mandarle los
          * atributos corregidos seguía igual), así que sin esta marca cada venta o movimiento de stock
-         * volvía a pedirle al dueño una corrección que ya hizo. Un motivo nuevo pide corregir de nuevo.
+         * volvía a pedirle al dueño una corrección que ya hizo. Una moderación nueva (otro id de ML, o
+         * otro motivo si ML no mandó id) pide corregir de nuevo.
          */
-        $hash_del_motivo = $this->hash_de((string) $motivo_de_revision);
+        $hash_del_motivo = $this->hash_de((string) $this->id_de_la_moderacion.'|'.(string) $motivo_de_revision);
         $correccion_ya_enviada = $esperando_correccion
             && isset($estado['correccion_enviada']) && $estado['correccion_enviada'] === $hash_del_motivo;
 
@@ -986,12 +998,16 @@ class ProductService extends MercadoLibreService
                     return $avisos;
                 }
 
-                $this->motivo_del_error = $correccion_ya_enviada
+                // Para no notificar dos veces lo mismo: con la corrección ya mandada el problema son
+                // los errores parciales (la misma clave que el cierre de abajo cuando viaja stock).
+                $encabezado = $correccion_ya_enviada
                     ? $this->aviso_de_correccion_en_revision($motivo_de_revision)
                     : $this->mensaje_de_correccion_pendiente($motivo_de_revision, $nombre_bloqueado);
 
+                $this->motivo_del_error = $correccion_ya_enviada ? implode("\n", $errores_parciales) : $encabezado;
+
                 throw new \Exception(
-                    $this->motivo_del_error.
+                    $encabezado.
                     (count($errores_parciales) > 0 ? "\n".implode("\n", $errores_parciales) : '')
                 );
             }
@@ -1244,6 +1260,8 @@ class ProductService extends MercadoLibreService
      */
     protected function motivo_de_moderacion($me_li_id)
     {
+        $this->id_de_la_moderacion = null;
+
         try {
             $moderacion = $this->make_request('get', "moderations/last_moderation/{$me_li_id}-ITM");
         } catch (\Throwable $e) {
@@ -1262,7 +1280,11 @@ class ProductService extends MercadoLibreService
          */
         if (isset($moderacion[0]) && is_array($moderacion[0])) {
             $textos = [];
+            $ids = [];
             foreach ($moderacion as $una) {
+                if (is_array($una) && isset($una['id']) && (is_string($una['id']) || is_int($una['id']))) {
+                    $ids[] = (string) $una['id'];
+                }
                 if (!is_array($una) || empty($una['wordings']) || !is_array($una['wordings'])) {
                     continue;
                 }
@@ -1272,6 +1294,8 @@ class ProductService extends MercadoLibreService
                     }
                 }
             }
+
+            $this->id_de_la_moderacion = count($ids) > 0 ? implode(',', $ids) : null;
 
             return count($textos) > 0 ? implode(' — ', array_unique($textos)) : null;
         }
