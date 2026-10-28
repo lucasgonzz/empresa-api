@@ -56,7 +56,7 @@ class DimensionSearchRunHelper
      * (articulo_borrado, ya_tenia_medidas, error_de_busqueda, ia_sin_respuesta, sin_cupo, error_interno) NO:
      * esos no dicen nada del producto y hay que volver a intentarlos.
      */
-    const MOTIVOS_YA_BUSCADO_SIN_EXITO = ['sin_resultados', 'no_coincide', 'sin_medidas_en_la_pagina'];
+    const MOTIVOS_YA_BUSCADO_SIN_EXITO = ['sin_resultados', 'no_coincide', 'sin_medidas_en_la_pagina', 'paginas_bloqueadas', 'pdf_no_leido'];
 
     /** Corridas terminadas de más de estos días, sin nada a revisar, se borran. */
     const DIAS_PARA_PURGAR = 180;
@@ -251,9 +251,12 @@ class DimensionSearchRunHelper
      * @param  int|null         $creada_por
      * @param  bool             $solo_con_stock
      * @param  int|null         $limite          Artículos como máximo (además del tope de la configuración).
+     * @param  bool             $reintentar_sin_datos  true = también entran los que quedaron `sin_datos` en una búsqueda
+     *                                           anterior (misión medidas-sin-datos); siguen afuera los rechazados o quitados
+     *                                           hace poco, los que esperan revisión y los que están en una corrida activa.
      * @return array  ['status' => 201|422, 'message' => string|null, 'run' => DimensionSearchRun|null]
      */
-    public static function crear_del_catalogo(User $owner, $creada_por = null, $solo_con_stock = false, $limite = null)
+    public static function crear_del_catalogo(User $owner, $creada_por = null, $solo_con_stock = false, $limite = null, $reintentar_sin_datos = false)
     {
         // Una demo sin búsquedas no lanza nada.
         if (TopeSerperDemo::agotado($owner)) {
@@ -269,7 +272,7 @@ class DimensionSearchRunHelper
         // Las purgas, FUERA de la transacción: la transacción toma el lock del dueño y no tiene que esperar un DELETE.
         self::purgar_viejas((int) $owner->id);
 
-        return DB::transaction(function () use ($owner, $creada_por, $solo_con_stock, $limite) {
+        return DB::transaction(function () use ($owner, $creada_por, $solo_con_stock, $limite, $reintentar_sin_datos) {
             User::where('id', $owner->id)->lockForUpdate()->first();
 
             if (!is_null(self::corrida_de_catalogo_activa((int) $owner->id))) {
@@ -282,12 +285,12 @@ class DimensionSearchRunHelper
                 $tope = min($tope, (int) $limite);
             }
 
-            $ids = self::ids_del_catalogo((int) $owner->id, (bool) $solo_con_stock, $tope);
+            $ids = self::ids_del_catalogo((int) $owner->id, (bool) $solo_con_stock, $tope, (bool) $reintentar_sin_datos);
 
             if (empty($ids)) {
                 return [
                     'status'  => 422,
-                    'message' => 'No hay artículos para buscar: todos los activos'.($solo_con_stock ? ' con stock' : '').' ya tienen peso y medidas, tienen una propuesta esperando revisión, ya se buscaron sin éxito en los últimos '.self::DIAS_SIN_VOLVER_A_BUSCAR.' días o están en otra corrida.',
+                    'message' => 'No hay artículos para buscar: todos los activos'.($solo_con_stock ? ' con stock' : '').' ya tienen peso y medidas, tienen una propuesta esperando revisión, ya se buscaron sin éxito en los últimos '.self::DIAS_SIN_VOLVER_A_BUSCAR.' días'.($reintentar_sin_datos ? ' (rechazados o quitados)' : '').' o están en otra corrida.',
                     'run'     => null,
                 ];
             }
@@ -357,10 +360,12 @@ class DimensionSearchRunHelper
      *
      * @param  int  $owner_id
      * @param  bool $solo_con_stock
+     * @param  bool $reintentar_sin_datos  true = los `sin_datos` de búsquedas anteriores NO cuentan como «ya buscados».
      * @return array  activos, con_medidas_completas, sin_medidas, excluidos_sin_stock,
-     *                excluidos_pendientes_de_revision, excluidos_ya_buscados, excluidos_en_otra_corrida, candidatos.
+     *                excluidos_pendientes_de_revision, excluidos_ya_buscados, excluidos_en_otra_corrida, candidatos
+     *                y reintento_sin_datos (cuántos artículos entran —o entrarían— por la opción de reintentar).
      */
-    public static function conteos_del_catalogo($owner_id, $solo_con_stock = false)
+    public static function conteos_del_catalogo($owner_id, $solo_con_stock = false, $reintentar_sin_datos = false)
     {
         $activos = (int) self::activos($owner_id)->count();
 
@@ -383,14 +388,23 @@ class DimensionSearchRunHelper
 
         $ya_buscados = (int) (clone $base)
             ->whereNotExists(self::subconsulta_a_revisar($owner_id))
-            ->whereExists(self::subconsulta_ya_buscado_sin_exito($owner_id))
+            ->whereExists(self::subconsulta_ya_buscado_sin_exito($owner_id, $reintentar_sin_datos))
             ->count();
 
         // Los que ya esperan su turno en otra corrida en curso.
         $en_otra_corrida = (int) (clone $base)
             ->whereNotExists(self::subconsulta_a_revisar($owner_id))
-            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id))
+            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id, $reintentar_sin_datos))
             ->whereExists(self::subconsulta_en_corrida_activa($owner_id))
+            ->count();
+
+        // Los que entran (o entrarían) solo por reintentar los «sin datos»: sin la opción figuran como «ya buscados
+        // sin éxito», con la opción dejan de figurar; y no esperan revisión ni están en una corrida en curso.
+        $reintento_sin_datos = (int) (clone $base)
+            ->whereNotExists(self::subconsulta_a_revisar($owner_id))
+            ->whereExists(self::subconsulta_ya_buscado_sin_exito($owner_id, false))
+            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id, true))
+            ->whereNotExists(self::subconsulta_en_corrida_activa($owner_id))
             ->count();
 
         $en_universo = (int) (clone $base)->count();
@@ -404,6 +418,7 @@ class DimensionSearchRunHelper
             'excluidos_ya_buscados'            => $ya_buscados,
             'excluidos_en_otra_corrida'        => $en_otra_corrida,
             'candidatos'                       => max(0, $en_universo - $pendientes_de_revision - $ya_buscados - $en_otra_corrida),
+            'reintento_sin_datos'              => $reintento_sin_datos,
         ];
     }
 
@@ -415,13 +430,14 @@ class DimensionSearchRunHelper
      * @param  int  $owner_id
      * @param  bool $solo_con_stock
      * @param  int  $tope
+     * @param  bool $reintentar_sin_datos  true = los `sin_datos` de búsquedas anteriores vuelven a entrar.
      * @return array
      */
-    public static function ids_del_catalogo($owner_id, $solo_con_stock, $tope)
+    public static function ids_del_catalogo($owner_id, $solo_con_stock, $tope, $reintentar_sin_datos = false)
     {
         return self::base_del_catalogo($owner_id, $solo_con_stock)
             ->whereNotExists(self::subconsulta_a_revisar($owner_id))
-            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id))
+            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id, $reintentar_sin_datos))
             ->whereNotExists(self::subconsulta_en_corrida_activa($owner_id))
             ->orderByRaw('COALESCE(articles.online, 0) DESC')
             ->orderByRaw('CASE WHEN articles.stock > 0 THEN 1 ELSE 0 END DESC')
@@ -439,15 +455,22 @@ class DimensionSearchRunHelper
      *
      * @param  \App\Models\User $owner
      * @param  bool             $solo_con_stock
+     * @param  bool             $reintentar_sin_datos  true = la previa cuenta como candidatos a los `sin_datos` anteriores.
      * @return array
      */
-    public static function previa_del_catalogo(User $owner, $solo_con_stock = false)
+    public static function previa_del_catalogo(User $owner, $solo_con_stock = false, $reintentar_sin_datos = false)
     {
         $tope    = self::tope_del_catalogo();
-        $conteos = self::conteos_del_catalogo((int) $owner->id, $solo_con_stock);
+        $conteos = self::conteos_del_catalogo((int) $owner->id, $solo_con_stock, $reintentar_sin_datos);
 
         $a_buscar  = min($tope, $conteos['candidatos']);
         $busquedas = (int) round($a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO);
+
+        // El respaldo por el scrape de Serper (páginas que bloquean la descarga y PDF): un promedio conservador
+        // por artículo (config `creditos_estimados_por_articulo`: 1,5 scrapes x 4 créditos). Cada scrape cuesta de 2 a
+        // 10 créditos y hay un tope de scrapes por artículo: es una estimación, no un techo.
+        $creditos_respaldo = (int) round($a_buscar * (float) config('services.medidas_masivas.creditos_estimados_por_articulo', 6));
+        $usd_respaldo      = round($creditos_respaldo / 1000 * self::USD_POR_MIL_BUSQUEDAS, 2);
 
         $configurado = ImageSearchProviderFactory::serper_configurado($owner);
         $ia          = self::ia_disponible($owner);
@@ -455,6 +478,8 @@ class DimensionSearchRunHelper
 
         $previa = [
             'solo_con_stock'                   => (bool) $solo_con_stock,
+            'reintentar_sin_datos'             => (bool) $reintentar_sin_datos,
+            'reintento_sin_datos'              => $conteos['reintento_sin_datos'],
             'activos'                          => $conteos['activos'],
             'con_medidas_completas'            => $conteos['con_medidas_completas'],
             'sin_medidas'                      => $conteos['sin_medidas'],
@@ -473,8 +498,13 @@ class DimensionSearchRunHelper
             'estimacion'                       => [
                 'busquedas'     => $busquedas,
                 'minutos'       => (int) round($a_buscar * self::SEGUNDOS_ESTIMADOS_POR_ARTICULO / 60),
-                'usd_busquedas' => round($busquedas / 1000 * self::USD_POR_MIL_BUSQUEDAS, 2),
-                'usd_ia'        => round($a_buscar * self::USD_DE_IA_POR_ARTICULO, 2),
+                // `usd_busquedas` es solo de las búsquedas (el contrato de siempre); el respaldo va aparte en `usd_respaldo`
+                // y el costo total de la corrida es usd_busquedas + usd_respaldo + usd_ia.
+                'usd_busquedas'     => round($busquedas / 1000 * self::USD_POR_MIL_BUSQUEDAS, 2),
+                'usd_ia'            => round($a_buscar * self::USD_DE_IA_POR_ARTICULO, 2),
+                'creditos_respaldo' => $creditos_respaldo,
+                'usd_respaldo'      => $usd_respaldo,
+                'texto_respaldo'    => 'Si una página bloquea la descarga o es un PDF, se pide su texto a un servicio de respaldo (2 a 10 créditos por página, hasta '.(int) config('services.medidas_masivas.max_scrapes_por_articulo', 3).' por artículo). Se estima aparte: ~'.$creditos_respaldo.' créditos de Serper (USD '.number_format($usd_respaldo, 2, '.', '').') además de las búsquedas.',
             ],
             'corrida_activa'                   => is_null($activa) ? null : self::payload_de_corrida($activa),
         ];
@@ -559,19 +589,21 @@ class DimensionSearchRunHelper
      * @param  int $owner_id
      * @return \Closure
      */
-    protected static function subconsulta_ya_buscado_sin_exito($owner_id)
+    protected static function subconsulta_ya_buscado_sin_exito($owner_id, $reintentar_sin_datos = false)
     {
         $desde = Carbon::now()->subDays(self::DIAS_SIN_VOLVER_A_BUSCAR);
 
-        return function ($query) use ($owner_id, $desde) {
+        return function ($query) use ($owner_id, $desde, $reintentar_sin_datos) {
             $query->select(DB::raw(1))
                 ->from('dimension_search_items')
                 ->where('dimension_search_items.user_id', (int) $owner_id)
                 ->whereColumn('dimension_search_items.article_id', 'articles.id')
-                ->where(function ($condicion) use ($desde) {
-                    $condicion->where(function ($sin_datos) use ($desde) {
+                ->where(function ($condicion) use ($desde, $reintentar_sin_datos) {
+                    // Con `reintentar_sin_datos` el «no había datos» no cuenta como búsqueda sin éxito: se vuelve a
+                    // buscar. El «no» de una persona (rechazada / quitada) sigue contando siempre.
+                    $condicion->where(function ($sin_datos) use ($desde, $reintentar_sin_datos) {
                         $sin_datos->where('dimension_search_items.status', DimensionSearchItem::STATUS_SIN_DATOS)
-                            ->whereIn('dimension_search_items.motivo', self::MOTIVOS_YA_BUSCADO_SIN_EXITO)
+                            ->whereIn('dimension_search_items.motivo', $reintentar_sin_datos ? [] : self::MOTIVOS_YA_BUSCADO_SIN_EXITO)
                             ->where('dimension_search_items.procesado_at', '>=', $desde);
                     })->orWhere(function ($revisada) use ($desde) {
                         $revisada->whereIn('dimension_search_items.status', [
@@ -843,6 +875,10 @@ class DimensionSearchRunHelper
                 'rango'           => !empty($e['rango']),
                 'etiquetada'      => !array_key_exists('etiquetada', $e) || !empty($e['etiquetada']),
                 'aviso'           => isset($e['aviso']) ? (string) $e['aviso'] : null,
+                // Misión medidas-sin-datos: true = la IA propuso este valor pero el sistema no pudo comprobar la
+                // cita en la página (`valor_sin_respaldo`); `motivo_rechazo` dice por qué. Sin esos datos: false / null.
+                'sin_respaldo'    => !empty($e['sin_respaldo']),
+                'motivo_rechazo'  => isset($e['motivo_rechazo']) ? (string) $e['motivo_rechazo'] : null,
                 // true = este campo se escribió de verdad en el artículo.
                 'aplicado'        => isset($aplicado[$campo]),
             ];
@@ -881,7 +917,9 @@ class DimensionSearchRunHelper
             'nota_ia'               => $item->nota_ia,
             'busquedas'             => (int) $item->busquedas,
             'validaciones_ia'       => (int) $item->validaciones_ia,
-            'diagnostico'           => in_array($item->status, DimensionSearchItem::ESTADOS_SIN_DATOS, true) && is_array($item->diagnostico) ? $item->diagnostico : [],
+            // El diagnóstico de páginas (leída / bloqueada / vía respaldo, créditos) viaja en los «sin datos» y también en
+            // los `valor_sin_respaldo`: ahí la persona que revisa necesita ver de qué páginas salió la propuesta.
+            'diagnostico'           => (in_array($item->status, DimensionSearchItem::ESTADOS_SIN_DATOS, true) || ($item->status === DimensionSearchItem::STATUS_A_REVISAR && $item->motivo === 'valor_sin_respaldo')) && is_array($item->diagnostico) ? $item->diagnostico : [],
             'revisado_por'          => !is_null($revisor) && isset($nombres[$revisor]) ? $nombres[$revisor] : null,
             'revisado_at'           => self::fecha($item->revisado_at),
             'procesado_at'          => self::fecha($item->procesado_at),

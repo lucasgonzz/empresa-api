@@ -187,7 +187,7 @@ class DimensionSearchRunController extends Controller
     }
 
     /**
-     * GET dimension-search-runs/catalogo/previa?solo_con_stock=1 — acceso maestro.
+     * GET dimension-search-runs/catalogo/previa?solo_con_stock=1&reintentar_sin_datos=1 — acceso maestro.
      *
      * @param  \Illuminate\Http\Request $request
      * @return \Illuminate\Http\JsonResponse  Previa (ver DimensionSearchRunHelper::previa_del_catalogo()).
@@ -204,11 +204,15 @@ class DimensionSearchRunController extends Controller
             return response()->json(['message' => 'No se pudo identificar la cuenta.'], 422);
         }
 
-        return response()->json(DimensionSearchRunHelper::previa_del_catalogo($owner, $this->booleano($request->query('solo_con_stock'))), 200);
+        return response()->json(DimensionSearchRunHelper::previa_del_catalogo(
+            $owner,
+            $this->booleano($request->query('solo_con_stock')),
+            $this->booleano($request->query('reintentar_sin_datos'))
+        ), 200);
     }
 
     /**
-     * POST dimension-search-runs/catalogo {solo_con_stock?, limite?} — acceso maestro: lanza «buscar peso y
+     * POST dimension-search-runs/catalogo {solo_con_stock?, limite?, reintentar_sin_datos?} — acceso maestro: lanza «buscar peso y
      * medidas de todo el catálogo».
      *
      * @param  \Illuminate\Http\Request $request
@@ -232,7 +236,8 @@ class DimensionSearchRunController extends Controller
             $owner,
             $this->userId(false),
             $this->booleano($request->input('solo_con_stock')),
-            is_numeric($limite) && (int) $limite > 0 ? (int) $limite : null
+            is_numeric($limite) && (int) $limite > 0 ? (int) $limite : null,
+            $this->booleano($request->input('reintentar_sin_datos'))
         );
 
         if ($resultado['status'] !== 201) {
