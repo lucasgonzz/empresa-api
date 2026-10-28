@@ -741,6 +741,45 @@ class Respaldo_por_scrape_Test extends DimensionSearchTestCase
     }
 
     /**
+     * El texto del respaldo se corta a MAXIMO_TEXTO_DE_RESPALDO dentro de scrapear(), y solo se piden direcciones
+     * http(s) (un `ftp:`, un `file:` o un `.pdf` no http no gastan ni una llamada).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_respaldo_corta_el_texto_enorme_y_solo_pide_direcciones_http()
+    {
+        $enorme = str_repeat('Texto de un PDF larguísimo. ', 30000);   // ~840.000 caracteres
+
+        $this->falsear([], [], $this->ficha('otro_producto'), [self::URL_A => $enorme]);
+
+        $lector    = app()->makeWith(DimensionPageReader::class, ['owner' => $this->owner]);
+        $respuesta = $lector->scrapear(self::URL_A);
+
+        $this->assertTrue($respuesta['ok']);
+        $this->assertGreaterThan(DimensionPageText::MAXIMO_TEXTO_DE_RESPALDO - 5, mb_strlen($respuesta['texto']));
+        $this->assertLessThanOrEqual(DimensionPageText::MAXIMO_TEXTO_DE_RESPALDO, mb_strlen($respuesta['texto']));
+
+        foreach (['ftp://catalogo.test/ficha.pdf', 'file:///etc/passwd', 'javascript:alert(1)', '//catalogo.test/ficha.pdf'] as $rara) {
+            $r = $lector->scrapear($rara);
+            $this->assertFalse($r['ok'], $rara);
+        }
+
+        $this->assertSame([self::URL_A], $this->scrapes_pedidos, 'Las direcciones raras no salieron a la red.');
+        $this->assertSame(1, SerperUsageEvent::where('process', 'medidas_scrape')->count());
+
+        // Un .pdf que no es http(s) tampoco es candidato en el motor.
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $this->gtin);
+        $ftp      = 'ftp://catalogo.test/ficha.pdf';
+
+        $this->falsear(['"'.$this->gtin.'"' => [$this->resultado_con_codigo($ftp)]], [], $this->ficha('otro_producto'), [$ftp => $this->texto_completo()]);
+
+        $this->buscar($articulo);
+
+        $this->assertSame([], $this->scrapes_pedidos);
+    }
+
+    /**
      * El lector con la clave del comercio usa esa y no la del servidor.
      *
      * @group dimension-search

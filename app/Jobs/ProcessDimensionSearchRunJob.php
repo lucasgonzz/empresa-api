@@ -57,12 +57,15 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
     public $tries = 1;
 
     /**
-     * @var int 7 minutos. Un tramo son hasta SEGUNDOS_POR_TRAMO_MAXIMO (90 s) más el último artículo; el
-     * peor artículo (tres búsquedas, hasta 90 s de páginas y tres llamadas a la IA de 45 s) ronda los 270 s.
-     * Tiene que quedar por debajo del retry_after de las colas (config/queue.php: 4200 en database, 9000
-     * en redis), o el mismo tramo se volvería a levantar mientras corre.
+     * @var int 8 minutos. Un tramo son hasta SEGUNDOS_POR_TRAMO_MAXIMO (90 s) más el último artículo. El peor
+     * artículo posible, con todo en contra a la vez: tres búsquedas de Serper de 15 s (45 s) + 90 s de páginas
+     * (presupuesto de DimensionPageReader) + tres scrapes del respaldo de 20 s (60 s; en el plan de nombre es uno
+     * solo) + tres llamadas a la IA de 45 s (135 s) = 330 s. Con los 90 s del tramo antes de empezarlo son 420 s: el
+     * valor anterior quedaba justo en el límite, así que se subió a 480 para dejar margen. En la práctica un
+     * artículo tarda ~12 s. Tiene que quedar por debajo del retry_after de las colas (config/queue.php: 4200 en
+     * database, 9000 en redis), o el mismo tramo se volvería a levantar mientras corre.
      */
-    public $timeout = 420;
+    public $timeout = 480;
 
     /** Intentos por artículo antes de darlo por «venenoso» (error_interno). */
     const MAX_INTENTOS_POR_ARTICULO = 2;

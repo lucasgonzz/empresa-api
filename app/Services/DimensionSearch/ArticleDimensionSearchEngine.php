@@ -157,6 +157,11 @@ class ArticleDimensionSearchEngine
      * sin_clave = no hay clave de Serper para el respaldo, tope_creditos = la corrida ya gastó el máximo de
      * créditos del respaldo (`max_creditos_por_corrida`) y el respaldo quedó apagado para el resto.
      *
+     * 🔴 Es del artículo en curso y vive en memoria: si el tramo muere y el artículo se reintenta (hasta
+     * MAX_INTENTOS_POR_ARTICULO veces), el tope de scrapes por artículo se cuenta de nuevo y los scrapes ya cobrados
+     * del intento anterior pueden repetirse. Es aceptable (como mucho el doble, y solo en un tramo muerto); el tope de
+     * créditos POR CORRIDA, que sí sale de serper_usage_events, los incluye a todos.
+     *
      * @var array
      */
     protected $scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false, 'tope_creditos' => false];
@@ -782,8 +787,8 @@ class ArticleDimensionSearchEngine
 
             if (!isset($leidas[$url])) {
                 if (preg_match('/\.pdf($|\?)/i', $url)) {
-                    // Un PDF no se baja directo: solo se puede leer con el respaldo.
-                    $leidas[$url] = $this->lectura_fallida(DimensionPageReader::FALLO_PDF, null);
+                    // Un PDF no se baja directo: solo se puede leer con el respaldo, y el respaldo solo lee http(s).
+                    $leidas[$url] = $this->lectura_fallida(preg_match('#^https?://#i', $url) ? DimensionPageReader::FALLO_PDF : DimensionPageReader::FALLO_NO_PERMITIDO, null);
                 } else {
                     $descargas++;
                     $html = $this->lector()->leer($url);

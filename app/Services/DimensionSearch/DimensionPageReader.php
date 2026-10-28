@@ -56,8 +56,11 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
     const PROCESO_SCRAPE  = 'medidas_scrape';
     const ENDPOINT_SCRAPE = 'search';
 
-    /** Segundos de espera del scrape (un PDF grande o un sitio difícil tarda más que una búsqueda). */
-    const TIMEOUT_SCRAPE = 30;
+    /**
+     * Segundos de espera del scrape (un PDF grande o un sitio difícil tarda más que una búsqueda de 15 s). Son 20 y no
+     * 30 para acotar el peor caso de un artículo: hasta 3 scrapes seguidos (ver ProcessDimensionSearchRunJob::$timeout).
+     */
+    const TIMEOUT_SCRAPE = 20;
 
     /** Por qué falló la última descarga directa (ver motivo_del_fallo()). */
     const FALLO_BLOQUEADA     = 'bloqueada';
@@ -259,8 +262,15 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
             return $fallo('No hay clave de Serper para el respaldo.', ['sin_clave' => true]);
         }
 
+        $url = (string) $url;
+
+        // Solo direcciones http(s): Serper no tiene nada que leer en un `file:`, `ftp:` o `javascript:`, y no se gasta
+        // una llamada (ni se registra consumo) en eso.
+        if (!preg_match('#^https?://\S+$#i', $url)) {
+            return $fallo('Solo se pueden leer direcciones http o https.');
+        }
+
         $contexto = ['user_id' => is_null($this->owner) ? null : (int) $this->owner->id, 'auth_user_id' => null, 'process' => self::PROCESO_SCRAPE];
-        $url      = (string) $url;
 
         try {
             $llamada = TopeSerperDemo::ejecutar($this->owner, function () use ($clave, $url, $contexto) {
@@ -309,7 +319,10 @@ class DimensionPageReader extends BusquedaPorCodigoDeBarrasService
             return $fallo('El respaldo de lectura respondió con error (HTTP '.(int) $respuesta->status().').', ['creditos' => $creditos]);
         }
 
-        $texto = is_array($cuerpo) && isset($cuerpo['text']) && is_string($cuerpo['text']) ? trim($cuerpo['text']) : '';
+        // El texto de un PDF largo puede ser enorme: se corta acá, antes de copiarlo o procesarlo en cualquier otro lado.
+        $texto = is_array($cuerpo) && isset($cuerpo['text']) && is_string($cuerpo['text'])
+            ? trim(mb_substr($cuerpo['text'], 0, DimensionPageText::MAXIMO_TEXTO_DE_RESPALDO))
+            : '';
 
         if ($texto === '') {
             return $fallo('El respaldo de lectura no devolvió texto.', ['creditos' => $creditos]);
