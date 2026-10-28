@@ -738,7 +738,7 @@ class PublicacionTest extends MercadoLibreTestCase
 
         $sync = $sync->fresh();
         $this->assertSame('exitosa', $sync->status, (string) $sync->error_message);
-        $this->assertStringContainsString('no deja cambiar el nombre', $sync->error_message);
+        $this->assertStringContainsString('no aceptó el nombre nuevo', $sync->error_message);
 
         // Siguiente sync, con el precio ya al día: el nombre rechazado no se vuelve a mandar.
         $this->rutas_ml['GET items/MLA222'] = [200, array_merge($item, ['price' => 15000])];
@@ -757,7 +757,183 @@ class PublicacionTest extends MercadoLibreTestCase
     {
         $this->assertSame('BODY_INVALID_FIELDS', ErrorHandler::translate_meli_message('BODY_INVALID_FIELDS'));
         $this->assertSame('El precio es inválido', ErrorHandler::translate_meli_message('El precio es invalid'));
-        $this->assertSame('Mercado Libre no deja cambiar el nombre de esta publicación', ErrorHandler::translate_meli_message('The field family name is invalid'));
+        $this->assertSame('Mercado Libre no aceptó el nombre de la publicación', ErrorHandler::translate_meli_message('The field family name is invalid'));
+    }
+
+    /**
+     * Revisión del 28/10/2026, punto 1: en revisión, si lo único corregido es la descripción (va en
+     * otra llamada), la corrección tiene que llegar igual.
+     */
+    public function test_en_revision_si_solo_se_corrige_la_descripcion_se_manda()
+    {
+        $this->conector_ml();
+        $this->fake_ml($this->rutas_de_alta());
+
+        $article = $this->articulo_ml($this->categoria, ['meli_descripcion' => 'Llamame al 341 555 5555.']);
+        (new ProductService($this->owner->id))->sync_article($this->sync_pendiente($article));
+
+        $article = $article->fresh();
+        $article->meli_descripcion = 'Martillo de acero forjado.';
+        $article->save();
+
+        $this->rutas_ml['GET items/MLA111'] = [200, $this->item_publicado($article->fresh(), [
+            'id' => 'MLA111', 'available_quantity' => 10, 'status' => 'under_review', 'sub_status' => ['waiting_for_patch'],
+        ])];
+        $this->rutas_ml['GET moderations/last_moderation/MLA111-ITM'] = [200, $this->moderacion_real()];
+
+        $sync = $this->sync_pendiente($article->fresh());
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $descripciones = $this->pedidos_ml('PUT', 'items/MLA111/description');
+        $this->assertCount(1, $descripciones, 'La descripción corregida no llegó a ML.');
+        $this->assertSame('Martillo de acero forjado.', $this->cuerpo($descripciones[0])['plain_text']);
+        $this->assertCount(0, $this->pedidos_ml('PUT', 'items/MLA111'));
+
+        $sync = $sync->fresh();
+        $this->assertSame('exitosa', $sync->status, (string) $sync->error_message);
+        $this->assertStringContainsString('Se le mandó la corrección', $sync->error_message);
+    }
+
+    /**
+     * Revisión del 28/10/2026, punto 3: en revisión, solo precio o stock no corrigen nada. El stock
+     * viaja igual (no venderlo de más), pero la sync queda en error con el motivo.
+     */
+    public function test_en_revision_solo_el_stock_viaja_pero_la_sync_queda_con_el_motivo()
+    {
+        $this->conector_ml();
+        $this->fake_ml($this->rutas_de_alta());
+
+        $article = $this->articulo_ml($this->categoria);
+        (new ProductService($this->owner->id))->sync_article($this->sync_pendiente($article));
+
+        $article = $article->fresh();
+        $article->stock = 7;
+        $article->save();
+
+        $this->rutas_ml['GET items/MLA111'] = [200, $this->item_publicado($article->fresh(), [
+            'id' => 'MLA111', 'available_quantity' => 10, 'status' => 'under_review', 'sub_status' => ['waiting_for_patch'],
+        ])];
+        $this->rutas_ml['GET moderations/last_moderation/MLA111-ITM'] = [200, $this->moderacion_real()];
+        $this->rutas_ml['PUT items/MLA111'] = [200, ['id' => 'MLA111', 'status' => 'under_review']];
+
+        $sync = $this->sync_pendiente($article->fresh());
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $puts = $this->pedidos_ml('PUT', 'items/MLA111');
+        $this->assertCount(1, $puts);
+        $this->assertSame(['available_quantity' => 7], $this->cuerpo($puts[0]));
+
+        $sync = $sync->fresh();
+        $this->assertSame('error', $sync->status);
+        $this->assertStringContainsString('pausó la publicación hasta que la corrijas: El título y/o las fotos no coinciden', $sync->error_message);
+        $this->assertStringContainsString('El stock sí se actualizó', $sync->error_message);
+        $this->assertStringNotContainsString('Se le mandó la corrección', $sync->error_message);
+    }
+
+    /**
+     * Revisión del 28/10/2026, punto 4: en revisión no se manda la pausa por stock, y entonces
+     * tampoco se anota `pausado_por_sistema` (si no, después se reactivaría una pausa ajena).
+     */
+    public function test_en_revision_la_pausa_por_stock_no_se_manda_ni_se_anota()
+    {
+        $this->conector_ml();
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'stock' => 0, 'name' => 'Taladro atornillador inalambrico']);
+        $this->fake_ml($this->rutas_de_alta([
+            'GET items/MLA222' => [200, $this->item_publicado($article, [
+                'title' => 'Item De Prueba', 'listing_type_id' => 'free', 'available_quantity' => 1,
+                'status' => 'under_review', 'sub_status' => ['waiting_for_patch'],
+            ])],
+            'GET moderations/last_moderation/MLA222-ITM' => [200, $this->moderacion_real()],
+            'PUT items/MLA222' => [200, ['id' => 'MLA222', 'status' => 'under_review']],
+        ]));
+
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $payload = $this->cuerpo($this->pedidos_ml('PUT', 'items/MLA222')[0]);
+        $this->assertArrayNotHasKey('status', $payload);
+        $this->assertSame('Taladro atornillador inalambrico', $payload['title']);
+
+        $estado = json_decode((string) $article->fresh()->meli_sync_state, true);
+        $this->assertTrue(!is_array($estado) || empty($estado['pausado_por_sistema']), 'Se anotó una pausa que no se mandó.');
+    }
+
+    /**
+     * Revisión del 28/10/2026, punto 2: si ML rechaza el PUT por otra cosa (una foto) y se cae al
+     * "solo stock", el nombre NO se anota como rechazado: tiene que volver a mandarse.
+     */
+    public function test_un_rechazo_ajeno_al_nombre_no_lo_anota_como_rechazado()
+    {
+        $this->conector_ml();
+        $article = $this->articulo_ml($this->categoria, ['me_li_id' => 'MLA222', 'name' => 'Taladro atornillador inalambrico']);
+        $this->fake_ml($this->rutas_de_alta([
+            'GET items/MLA222' => [200, $this->item_publicado($article, [
+                'title' => 'Item De Prueba', 'family_name' => 'Item De Prueba', 'user_product_id' => 'MLAU1',
+                'available_quantity' => 5, 'tags' => ['user_product_listing'],
+            ])],
+            'PUT items/MLA222' => function ($request) {
+                if (array_key_exists('pictures', $request->data())) {
+                    return Http::response(['message' => 'Validation error', 'error' => 'validation_error', 'status' => 400, 'cause' => [
+                        ['code' => 'item.pictures.invalid', 'message' => 'Picture is not valid', 'type' => 'error'],
+                    ]], 400);
+                }
+
+                return Http::response(['id' => 'MLA222', 'status' => 'active'], 200);
+            },
+        ]));
+
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $puts = $this->pedidos_ml('PUT', 'items/MLA222');
+        $this->assertSame(['available_quantity' => 10], $this->cuerpo($puts[count($puts) - 1]), 'Tenía que caer al "solo stock".');
+
+        $estado = json_decode((string) $article->fresh()->meli_sync_state, true);
+        $this->assertTrue(!is_array($estado) || !isset($estado['nombre_rechazado']), 'Se anotó el nombre como rechazado por un error de la foto.');
+        $this->assertSame('error', $sync->fresh()->status);
+    }
+
+    /**
+     * Revisión del 28/10/2026, punto 6: una advertencia que no está comprobada como inofensiva
+     * sigue frenando el alta.
+     */
+    public function test_una_advertencia_desconocida_del_validate_sigue_frenando()
+    {
+        $this->conector_ml();
+        $this->fake_ml($this->rutas_de_alta([
+            'POST items/validate' => [400, [
+                'message' => 'Validation error', 'error' => 'validation_error', 'status' => 400,
+                'cause'   => [['code' => 'item.title.length', 'message' => 'Title is too long', 'type' => 'warning']],
+            ]],
+        ]));
+
+        $article = $this->articulo_ml($this->categoria);
+        $sync = $this->sync_pendiente($article);
+        (new ProductService($this->owner->id))->sync_article($sync);
+
+        $this->assertCount(0, $this->pedidos_ml('POST', 'items'));
+        $this->assertSame('error', $sync->fresh()->status);
+    }
+
+    /**
+     * Revisión del 28/10/2026, punto 5: separar las oraciones pegadas del REMEDY sin partir nombres
+     * con mayúsculas en el medio.
+     */
+    public function test_el_texto_de_moderacion_separa_oraciones_sin_partir_nombres()
+    {
+        $this->conector_ml();
+        $metodo = new \ReflectionMethod(ProductService::class, 'texto_de_moderacion');
+        $metodo->setAccessible(true);
+        $servicio = new ProductService($this->owner->id);
+
+        $this->assertSame(
+            'Infringe nuestras políticas. Ajusta el título.',
+            $metodo->invoke($servicio, 'Infringe nuestras políticasAjusta el título.')
+        );
+        $this->assertSame(
+            'No pongas tu WhatsApp ni tu MercadoLibre en el iPhone 13.',
+            $metodo->invoke($servicio, 'No pongas tu WhatsApp ni tu MercadoLibre en el iPhone 13.')
+        );
     }
 
     /**

@@ -246,7 +246,7 @@ class ErrorHandler
             'are required for category'           => 'son obligatorios para la categoría',
             'User has not mode me1'               => 'El usuario no tiene habilitado el modo Mercado Envíos 1',
             'ME2 adoption is mandatory for the user' => 'Mercado Libre exige que la cuenta use Mercado Envíos',
-            'The field family name is invalid'    => 'Mercado Libre no deja cambiar el nombre de esta publicación',
+            'The field family name is invalid'    => 'Mercado Libre no aceptó el nombre de la publicación',
             'Free shipping costs exceeds sale'    => 'El costo de envío gratis supera el precio de venta',
             'Validation error'                    => 'Error de validación',
             'missing_required'                    => 'faltan atributos obligatorios',

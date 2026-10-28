@@ -44,6 +44,16 @@ class ProductService extends MercadoLibreService
     const SEGUNDOS_CACHE_DEL_MODULO = 60;
 
     /**
+     * Advertencias de `items/validate` con las que se comprobó que `POST items` publica igual
+     * (prueba real del 28/10/2026). Una advertencia que no esté acá sigue frenando: publicar a
+     * ciegas tras un 400 desconocido puede sumar 400 en `POST items`, que es lo que el validate evita.
+     */
+    const ADVERTENCIAS_QUE_NO_FRENAN = [
+        'shipping.me2_adoption_mandatory',
+        'shipping.lost_me1_by_user',
+    ];
+
+    /**
      * Respuesta cacheada por dueño de `modulo_habilitado()`: `[user_id => [bool, timestamp]]`.
      * Cada venta y cada movimiento de stock pasan por `add_article_to_sync`; sin esto serían una
      * consulta de extensiones por renglón.
@@ -715,8 +725,8 @@ class ProductService extends MercadoLibreService
     }
 
     /**
-     * True si el error de ML trae causas y todas son advertencias: ninguna de tipo `error` (ni sin
-     * tipo, que se toma como error para no publicar a ciegas).
+     * True si el error de ML trae causas y todas son advertencias conocidas que no frenan el alta
+     * (`ADVERTENCIAS_QUE_NO_FRENAN`). Una causa sin tipo se toma como error.
      *
      * @param array<string, mixed>|null $body
      * @return bool
@@ -729,6 +739,10 @@ class ProductService extends MercadoLibreService
 
         foreach ($body['cause'] as $causa) {
             if (!is_array($causa) || !isset($causa['type']) || $causa['type'] !== 'warning') {
+                return false;
+            }
+
+            if (!isset($causa['code']) || !in_array((string) $causa['code'], self::ADVERTENCIAS_QUE_NO_FRENAN, true)) {
                 return false;
             }
         }
@@ -874,6 +888,9 @@ class ProductService extends MercadoLibreService
             }
         }
 
+        // Lo guardado antes de los cambios de stock (que pueden anotar `pausado_por_sistema`).
+        $estado_antes_del_stock = $estado;
+
         // Stock y pausa por stock.
         list($cambios_de_stock, $estado, $aviso_de_stock) = $this->cambios_de_stock($article, $meli_item, $estado, $es_catalogo, $es_user_product);
         $meli_payload = array_merge($meli_payload, $cambios_de_stock);
@@ -906,24 +923,42 @@ class ProductService extends MercadoLibreService
             }
         }
 
+        // Descripción (va en otra llamada, más abajo): si cambió, en revisión también es corrección.
+        $texto = MercadoLibreArticuloService::texto_de_descripcion($article);
+        $descripcion_cambiada = !is_null($texto) && !$es_catalogo
+            && (!isset($estado['descripcion']) || $estado['descripcion'] !== $this->hash_de($texto));
+
+        // Lo que corrige una publicación frenada por ML. El precio y el stock no la corrigen.
+        $campos_de_correccion = ['title' => true, 'family_name' => true, 'pictures' => true, 'attributes' => true];
+
         if ($esperando_correccion) {
-            // Una publicación en revisión no se activa ni se pausa: lo decide ML al revisarla.
-            unset($meli_payload['status']);
+            // Una publicación en revisión no se activa ni se pausa: lo decide ML al revisarla. Si
+            // `cambios_de_stock` anotó una pausa del sistema que no se va a mandar, vuelve a como estaba
+            // (si no, al volver el stock se reactivaría sola una pausa que el sistema no hizo).
+            if (array_key_exists('status', $meli_payload)) {
+                unset($meli_payload['status']);
+                foreach (['estado', 'estado_nuevo'] as $variable) {
+                    if (array_key_exists('pausado_por_sistema', $estado_antes_del_stock)) {
+                        ${$variable}['pausado_por_sistema'] = $estado_antes_del_stock['pausado_por_sistema'];
+                    } else {
+                        unset(${$variable}['pausado_por_sistema']);
+                    }
+                }
+            }
 
             // Sin nada nuevo que mandar, la corrección todavía no está hecha: queda el motivo.
-            if (count($meli_payload) === 0) {
+            if (count($meli_payload) === 0 && !$descripcion_cambiada) {
                 $this->guardar_columnas($article, $columnas, $estado);
 
-                throw new \Exception(
-                    'Mercado Libre pausó la publicación hasta que la corrijas'.
-                    (!is_null($motivo_de_revision) ? ': '.$motivo_de_revision : '.').
-                    ' Corregí el artículo y guardalo: el sistema le manda la corrección a Mercado Libre.'
-                );
+                throw new \Exception($this->mensaje_de_correccion_pendiente($motivo_de_revision));
             }
         }
 
         // Si en lo que hay que mandar va stock o estado (para el mensaje final).
         $habia_stock_para_mandar = isset($meli_payload['available_quantity']) || isset($meli_payload['status']);
+
+        // Si en revisión llegó a ML alguna corrección (en el PUT o la descripción).
+        $correccion_enviada = false;
 
         if (count($meli_payload) > 0) {
             $resultado = $this->put_meli_item_with_fallback($me_li_id, $meli_payload);
@@ -933,9 +968,16 @@ class ProductService extends MercadoLibreService
                 $columnas['meli_status'] = (string) $resultado['item']['status'];
             }
 
-            // ML no dejó cambiar el nombre: se anota cuál, para no volver a mandarlo.
-            if (in_array('family_name', $resultado['quitados'], true) && isset($meli_payload['family_name'])) {
+            // ML no dejó cambiar el nombre: se anota cuál, para no volver a mandarlo. Solo con la
+            // marca del rechazo del nombre: en el reintento "solo stock", `quitados` trae todo.
+            if (!empty($resultado['nombre_rechazado']) && isset($meli_payload['family_name'])) {
                 $estado_nuevo['nombre_rechazado'] = $this->hash_de($meli_payload['family_name']);
+            }
+
+            // Corrección que de verdad quedó en ML: un campo de corrección que viajó y no se quitó.
+            if (is_null($resultado['error_parcial'])) {
+                $corregidos = array_diff(array_keys(array_intersect_key($meli_payload, $campos_de_correccion)), $resultado['quitados']);
+                $correccion_enviada = count($corregidos) > 0;
             }
 
             // ML rechazó el PUT combinado y solo pasó el stock/estado: lo demás (fotos, atributos,
@@ -966,28 +1008,39 @@ class ProductService extends MercadoLibreService
         }
 
         // Descripción: solo si cambió.
-        $texto = MercadoLibreArticuloService::texto_de_descripcion($article);
-        if (!is_null($texto) && !$es_catalogo) {
-            $hash_texto = $this->hash_de($texto);
-            if (!isset($estado['descripcion']) || $estado['descripcion'] !== $hash_texto) {
-                try {
-                    $this->subir_descripcion($me_li_id, $texto, !isset($estado['descripcion']));
-                    $estado_nuevo['descripcion'] = $hash_texto;
-                } catch (MercadoLibreLimiteException $e) {
-                    $avisos[] = 'La descripción no se pudo actualizar ahora; se reintenta en la próxima sincronización.';
-                } catch (\Throwable $e) {
-                    Log::warning('Sync ML artículo '.$article->id.': descripción no actualizada: '.$e->getMessage());
-                    $avisos[] = 'Mercado Libre no aceptó la descripción.';
-                }
+        if ($descripcion_cambiada) {
+            try {
+                $this->subir_descripcion($me_li_id, $texto, !isset($estado['descripcion']));
+                $estado_nuevo['descripcion'] = $this->hash_de($texto);
+                $correccion_enviada = true;
+            } catch (MercadoLibreLimiteException $e) {
+                $avisos[] = 'La descripción no se pudo actualizar ahora; se reintenta en la próxima sincronización.';
+            } catch (\Throwable $e) {
+                Log::warning('Sync ML artículo '.$article->id.': descripción no actualizada: '.$e->getMessage());
+                $avisos[] = 'Mercado Libre no aceptó la descripción.';
             }
         }
 
         $this->guardar_columnas($article, $columnas, $estado_nuevo);
 
-        // Se mandó la corrección y ML la vuelve a revisar: se avisa, con el motivo que tenía.
-        if ($esperando_correccion && $columnas['meli_status'] === 'under_review') {
-            $avisos[] = 'Se le mandó la corrección a Mercado Libre y la publicación sigue en revisión'.
-                (!is_null($motivo_de_revision) ? ' (motivo: '.$motivo_de_revision.')' : '').'.';
+        if ($esperando_correccion) {
+            // No llegó ninguna corrección (solo precio o stock, o ML rechazó lo corregido): la
+            // publicación sigue frenada y la sync queda en error con el motivo, aunque el stock viaje.
+            if (!$correccion_enviada) {
+                $this->motivo_del_error = $this->mensaje_de_correccion_pendiente($motivo_de_revision);
+
+                throw new \Exception(
+                    $this->motivo_del_error.
+                    (count($errores_parciales) > 0 ? "\n".implode("\n", $errores_parciales) : '').
+                    ($habia_stock_para_mandar ? "\nEl stock sí se actualizó en Mercado Libre." : '')
+                );
+            }
+
+            // Se mandó la corrección y ML la vuelve a revisar: se avisa, con el motivo que tenía.
+            if ($columnas['meli_status'] === 'under_review') {
+                $avisos[] = 'Se le mandó la corrección a Mercado Libre y la publicación sigue en revisión'.
+                    (!is_null($motivo_de_revision) ? ' (motivo: '.$motivo_de_revision.')' : '').'.';
+            }
         }
 
         if (count($errores_parciales) > 0) {
@@ -1192,6 +1245,20 @@ class ProductService extends MercadoLibreService
     }
 
     /**
+     * Mensaje de una publicación que ML frenó (`waiting_for_patch`) cuando todavía no le llegó la
+     * corrección.
+     *
+     * @param string|null $motivo Motivo de la moderación, si ML lo explicó.
+     * @return string
+     */
+    protected function mensaje_de_correccion_pendiente($motivo)
+    {
+        return 'Mercado Libre pausó la publicación hasta que la corrijas'.
+            (!is_null($motivo) ? ': '.$motivo : '.').
+            ' Corregí el artículo y guardalo: el sistema le manda la corrección a Mercado Libre.';
+    }
+
+    /**
      * Texto de una moderación listo para mostrar. ML arma el REMEDY con bloques HTML y la API lo
      * devuelve sin ellos, pegando las oraciones ("…nuestras políticasAjusta el título…"): se separan
      * donde una minúscula queda pegada a una palabra que empieza en mayúscula.
@@ -1202,7 +1269,9 @@ class ProductService extends MercadoLibreService
     protected function texto_de_moderacion($texto)
     {
         $texto = trim(strip_tags($texto));
-        $texto = preg_replace('/(\p{Ll})(\p{Lu}\p{Ll}+\s)/u', '$1. $2', $texto);
+        // Solo una palabra entera en minúsculas pegada a otra que empieza en mayúscula: así no se
+        // parten nombres como "WhatsApp", "iPhone" o "MercadoLibre" (revisión del 28/10/2026).
+        $texto = preg_replace('/(?<!\p{L})(\p{Ll}{3,})(\p{Lu}\p{Ll}+\s)/u', '$1. $2', $texto);
 
         return trim(preg_replace('/\s+/u', ' ', $texto));
     }
@@ -1358,7 +1427,9 @@ class ProductService extends MercadoLibreService
      */
     protected function put_meli_item_with_fallback($me_li_id, array $meli_payload)
     {
-        $resultado = ['item' => null, 'quitados' => [], 'avisos' => [], 'error_parcial' => null];
+        // `nombre_rechazado`: ML rechazó el nombre (family_name) y se reintentó sin él. Va aparte de
+        // `quitados` porque en el último recurso "solo stock" ahí entra todo lo que no es stock.
+        $resultado = ['item' => null, 'quitados' => [], 'avisos' => [], 'error_parcial' => null, 'nombre_rechazado' => false];
 
         if (count($meli_payload) === 0) {
             return $resultado;
@@ -1386,8 +1457,9 @@ class ProductService extends MercadoLibreService
             }
 
             if (in_array('family_name', $resultado['quitados'], true)) {
-                $resultado['avisos'][] = 'Mercado Libre no deja cambiar el nombre de esta publicación: en el modelo nuevo de publicaciones '.
-                    'el nombre queda fijo al publicar. Lo demás sí se actualizó.';
+                $resultado['nombre_rechazado'] = true;
+                $resultado['avisos'][] = 'Mercado Libre no aceptó el nombre nuevo de esta publicación: en el modelo nuevo de publicaciones '.
+                    'el nombre no se puede cambiar después de publicar. Lo demás sí se actualizó.';
             }
 
             if (count($reduced_payload) === 0) {
@@ -1447,7 +1519,7 @@ class ProductService extends MercadoLibreService
         // Prueba real del 28/10/2026: en User Products ML no deja cambiar el nombre ("The field
         // family name is invalid", BODY_INVALID_FIELDS) y rechaza el PUT entero, con el precio
         // adentro. Se saca el nombre y se reintenta con el resto.
-        if (stripos($error_message, 'family name') !== false || stripos($error_message, 'family_name') !== false) {
+        if (stripos($error_message, 'The field family name is invalid') !== false) {
             if (array_key_exists('family_name', $reduced_payload)) {
                 unset($reduced_payload['family_name']);
                 $changed = true;
