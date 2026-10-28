@@ -437,7 +437,16 @@ class ArticleDimensionSearchEngine
 
             // Lo que la IA propuso sin que se pudiera comprobar en la página no se tira: queda «a revisar».
             if (!empty($propuestas_sin_respaldo)) {
-                $this->cerrar($item, array_merge($this->propuesta_sin_respaldo($propuestas_sin_respaldo, $titulos), ['diagnostico' => $diagnostico]), $gasto);
+                // Las páginas que SÍ se le pasaron a la IA: la única url que se acepta como fuente de una propuesta.
+                $urls_leidas = [];
+
+                foreach ($leidas as $url_leida => $lectura_leida) {
+                    if (!empty($lectura_leida['enviada'])) {
+                        $urls_leidas[] = $url_leida;
+                    }
+                }
+
+                $this->cerrar($item, array_merge($this->propuesta_sin_respaldo($propuestas_sin_respaldo, $titulos, $urls_leidas), ['diagnostico' => $diagnostico]), $gasto);
 
                 return $resultado;
             }
@@ -1563,9 +1572,12 @@ class ArticleDimensionSearchEngine
      *                            cita, url, alcance, motivo_rechazo, criterio, match, nota). La primera por campo,
      *                            en el orden de los planes.
      * @param  array $titulos     url => título del resultado de búsqueda.
+     * @param  array $urls_leidas Las urls de las páginas que se le pasaron a la IA. La `url` de una propuesta (que
+     *                            escribió la IA) solo se conserva si es http(s), mide hasta 500 caracteres y es una de
+     *                            estas; si no, queda vacía y se deja la cita. Lo mismo para `fuentes`.
      * @return array  Los campos del item: status, motivo, motivo_detalle, criterio_usado, propuesta, evidencia, fuentes, nota_ia.
      */
-    protected function propuesta_sin_respaldo(array $propuestas, array $titulos)
+    protected function propuesta_sin_respaldo(array $propuestas, array $titulos, array $urls_leidas = [])
     {
         $primera   = reset($propuestas);
         $propuesta = [];
@@ -1580,6 +1592,11 @@ class ArticleDimensionSearchEngine
             }
 
             $p = $propuestas[$campo];
+
+            // 🔴 La url la dijo la IA: nunca se guarda una que no sea una página realmente leída.
+            if ($p['url'] !== '' && (!$this->validador->es_url_segura($p['url']) || !in_array($p['url'], $urls_leidas, true))) {
+                $p['url'] = '';
+            }
 
             $propuesta[$columna] = $p['valor'];
 

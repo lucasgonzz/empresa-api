@@ -333,6 +333,11 @@ class DimensionValueValidator
         $cita = isset($dato['evidence']) && is_string($dato['evidence']) ? trim($dato['evidence']) : '';
         $url  = isset($dato['source_url']) && is_string($dato['source_url']) ? trim($dato['source_url']) : '';
 
+        // La URL la escribió la IA: solo se conserva si es http(s) y razonable; si no, se guarda vacía (y se deja la cita).
+        if (!$this->es_url_segura($url)) {
+            $url = '';
+        }
+
         return [
             'valor'           => $canonico,
             'unidad'          => self::UNIDAD_CANONICA[$tipo],
@@ -343,6 +348,23 @@ class DimensionValueValidator
             'url'             => $url,
             'alcance'         => isset($dato['scope']) && in_array($dato['scope'], self::ALCANCES, true) ? $dato['scope'] : 'producto',
         ];
+    }
+
+    /** Largo máximo de una URL que se conserva de lo que dijo la IA. */
+    const MAXIMO_URL = 500;
+
+    /**
+     * ¿Es una URL que se puede mostrar y guardar tal cual? Solo `http://` o `https://` y de hasta MAXIMO_URL
+     * caracteres: una URL que escribió la IA puede ser `javascript:…`, `data:…` o un texto enorme.
+     *
+     * @param  string $url
+     * @return bool
+     */
+    public function es_url_segura($url)
+    {
+        $url = (string) $url;
+
+        return $url !== '' && mb_strlen($url) <= self::MAXIMO_URL && (bool) preg_match('#^https?://\S+$#i', $url);
     }
 
     /**

@@ -114,12 +114,53 @@ class Propuestas_sin_respaldo_Test extends DimensionSearchTestCase
 
         $this->assertSame('valor_sin_respaldo', $item->motivo);
         $this->assertSame('fuente_desconocida', $item->evidencia['peso']['motivo_rechazo']);
-        $this->assertSame('https://otra.test/inventada', $item->evidencia['peso']['url']);
+        // La url la inventó la IA y no es una página leída: no se guarda, pero la cita queda.
+        $this->assertSame('', $item->evidencia['peso']['url']);
+        $this->assertSame('Peso: 1,5 kg', $item->evidencia['peso']['cita']);
         $this->assertEquals(1.5, (float) $item->peso_kg);
 
         $this->assertSame('sin_cita', $item->evidencia['alto']['motivo_rechazo']);
         $this->assertEquals(1.1, (float) $item->alto_cm);
         $this->assertTrue($item->evidencia['alto']['convertido']);
+    }
+
+    /**
+     * La `url` de una propuesta la escribió la IA: solo se guarda si es http(s), mide hasta 500 caracteres y es una de
+     * las páginas leídas. Con `javascript:`, `data:`, una url no leída o una enorme queda vacía (y la cita se conserva).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_url_de_una_propuesta_solo_se_guarda_si_es_http_corta_y_de_una_pagina_leida()
+    {
+        $larga = 'https://catalogo.test/'.str_repeat('a', 500);
+
+        list($item) = $this->buscar_con_propuesta([
+            'peso'  => $this->dato(900, 'g', 'Peso neto: 900 g', 'javascript:alert(1)'),
+            'alto'  => $this->dato(11, 'mm', 'Alto: 11 mm', 'data:text/html;base64,PHNjcmlwdD4='),
+            'ancho' => $this->dato(70, 'mm', 'Ancho: 70 mm', 'https://no-leida.test/otra'),
+            'largo' => $this->dato(100, 'mm', 'Largo: 100 mm', $larga),
+        ]);
+
+        $this->assertSame('valor_sin_respaldo', $item->motivo);
+
+        foreach (['peso', 'alto', 'ancho', 'profundidad'] as $campo) {
+            $this->assertSame('', $item->evidencia[$campo]['url'], $campo);
+            $this->assertNotSame('', $item->evidencia[$campo]['cita'], 'La cita se conserva.');
+        }
+
+        $this->assertSame([], $item->fuentes, 'Ninguna url dudosa llega a las fuentes.');
+
+        // Las urls válidas y leídas sí.
+        $v = new DimensionValueValidator();
+        $this->assertTrue($v->es_url_segura('https://tienda.test/p?x=1'));
+        $this->assertTrue($v->es_url_segura('HTTP://tienda.test/p'));
+        $this->assertFalse($v->es_url_segura('ftp://tienda.test/p'));
+        $this->assertFalse($v->es_url_segura('//tienda.test/p'));
+        $this->assertFalse($v->es_url_segura('https://tienda.test/con espacio'));
+        $this->assertFalse($v->es_url_segura(''));
+        $this->assertSame('', $v->normalizar_propuesta('peso', $this->dato(1, 'kg', 'x', 'javascript:alert(1)'))['url']);
+        $this->assertSame('https://tienda.test/p', $v->normalizar_propuesta('peso', $this->dato(1, 'kg', 'x', 'https://tienda.test/p'))['url']);
     }
 
     /**
